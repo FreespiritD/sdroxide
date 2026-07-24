@@ -12,6 +12,11 @@ use sdroxide_types::Mode;
 pub enum ControlUpdate {
     Freq(f64),
     Mode(Mode),
+    /// TX drive the rig reports, as a 0..1 fraction (see
+    /// [`IqSource::commands_tx_power`]).
+    TxDrive(f32),
+    /// TUNE drive the rig reports, as a 0..1 fraction.
+    TuneDrive(f32),
 }
 
 /// Anything that produces a stream of complex baseband samples: a live
@@ -74,6 +79,16 @@ pub trait IqSource: Send {
     fn set_tx_drive(&mut self, _frac: f64) {}
     /// Set the TUNE drive as a `0..1` fraction (see [`Self::set_tx_drive`]).
     fn set_tune_drive(&mut self, _frac: f64) {}
+    /// Whether [`Self::set_tx_drive`] actually commands the rig's output power
+    /// (TCI). On such a rig the audio we send is just the modulating signal and
+    /// must go out at full scale — the power level is the rig's job, and
+    /// attenuating the audio as well would scale the output twice. Sources that
+    /// return `false` have no power control, so the audio amplitude *is* the
+    /// only drive control (a CAT rig's sound card) or drive is applied in our
+    /// own modulator chain (IQ sources).
+    fn commands_tx_power(&self) -> bool {
+        false
+    }
     /// Latest forward-power / SWR the rig reported, polled by the engine while
     /// transmitting. `None` when the source has no such sensor or hasn't
     /// produced a reading yet; individual fields inside may also be `None`.

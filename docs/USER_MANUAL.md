@@ -265,6 +265,11 @@ On a TX-capable rig the **Transmit** module appears:
 > amateur bands (`tx_ham_only`). Transmit hardware gains start at minimum and
 > the tune drive defaults low. Raise drive deliberately.
 
+On a rig with its own power control (TCI), Drive and Tune command the rig's
+output power directly — and both sliders adopt the rig's current settings when
+sdroxide connects, so a level you set in ExpertSDR3 carries over instead of
+being overwritten.
+
 ### 2.11 Memory channels
 
 Open **MEM** (System module) for the memory channels window. Type a name and

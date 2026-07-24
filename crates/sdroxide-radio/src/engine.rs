@@ -919,6 +919,23 @@ impl Engine {
                 self.update_display_center();
                 let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
             }
+            // Power levels the rig reports (the operator moved them on the rig,
+            // or these are the levels it came up with). Adopted, not overridden:
+            // the rig's own setting is what the operator asked for.
+            ControlUpdate::TxDrive(frac) => {
+                let frac = frac.clamp(0.0, 1.0);
+                if self.state.tx.drive != frac {
+                    self.state.tx.drive = frac;
+                    let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
+                }
+            }
+            ControlUpdate::TuneDrive(frac) => {
+                let frac = frac.clamp(0.0, 1.0);
+                if self.state.tx.tune_drive != frac {
+                    self.state.tx.tune_drive = frac;
+                    let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
+                }
+            }
             ControlUpdate::Mode(m) => {
                 let cur = self.state.rx[0].mode;
                 let same_class = rig_mode_class(cur) == rig_mode_class(m);
@@ -1284,16 +1301,29 @@ impl Engine {
             SetTune(on) => {
                 self.state.tx.tune = on;
                 self.sync_tx_state();
+                // Toggled mid-over (PTT held): already keyed, so `sync_tx_state`
+                // left the rig alone — swap the power level over by hand.
+                if self.tx_active {
+                    self.source.set_tx_drive(self.tx_power_level() as f64);
+                }
             }
             SetTxDrive(v) => {
                 self.state.tx.drive = v.clamp(0.0, 1.0);
                 // CAT/TCI rigs command output power directly; IQ sources ignore
-                // this and scale the modulated samples instead.
-                self.source.set_tx_drive(self.state.tx.drive as f64);
+                // this and scale the modulated samples instead. While tuning the
+                // rig is holding the tune level, so leave it alone until unkey.
+                if !self.state.tx.tune {
+                    self.source.set_tx_drive(self.state.tx.drive as f64);
+                }
             }
             SetTuneDrive(v) => {
                 self.state.tx.tune_drive = v.clamp(0.0, 1.0);
                 self.source.set_tune_drive(self.state.tx.tune_drive as f64);
+                // Tuning right now: the rig's power is the tune level, so the
+                // slider takes effect without unkeying.
+                if self.state.tx.tune {
+                    self.source.set_tx_drive(self.state.tx.tune_drive as f64);
+                }
             }
             SetMicGain(v) => self.state.tx.mic_gain = v.clamp(0.0, 1.0),
             SetGain { dir, element, db } => match dir {
@@ -1861,6 +1891,20 @@ impl Engine {
         self.source.set_if_offset(main_offset);
     }
 
+    /// The output power to command on a rig that has its own power control:
+    /// the TUNE level while tuning, the drive level otherwise. We tune by
+    /// transmitting a carrier through the normal TX path rather than through the
+    /// rig's own TUNE function, so without this the tune level would never reach
+    /// the rig and a tune would go out at the (typically much lower) voice
+    /// drive.
+    fn tx_power_level(&self) -> f32 {
+        if self.state.tx.tune {
+            self.state.tx.tune_drive
+        } else {
+            self.state.tx.drive
+        }
+    }
+
     /// Reconcile the TX hardware state with `ptt || tune`, enforcing the
     /// safety rails on key-down.
     fn sync_tx_state(&mut self) {
@@ -1894,7 +1938,7 @@ impl Engine {
             // output, or a stale/empty modulation). No-ops for IQ sources, which
             // apply mode and drive in the modulator chain instead.
             let _ = self.source.set_control_mode(self.state.rx[0].mode);
-            self.source.set_tx_drive(self.state.tx.drive as f64);
+            self.source.set_tx_drive(self.tx_power_level() as f64);
             self.source.set_tune_drive(self.state.tx.tune_drive as f64);
             // In audio mode `tx_begin` just asserts CAT PTT; there is no
             // modulator/DUC (the rig modulates the audio we feed its sound card).
@@ -2085,9 +2129,17 @@ impl Engine {
             burst_done = self.digi.as_mut().map(|d| d.fill_tx_block(&mut audio)).unwrap_or(true);
         } else if self.state.tx.tune {
             // An audio-modulated rig (CAT/TCI) needs a tone to produce a carrier;
-            // silence would key up with no output. The tune-drive level sets the
-            // tone amplitude (and, on TCI, the rig's tune power via `tune_drive:`).
-            let amp = self.state.tx.tune_drive.clamp(0.05, 1.0);
+            // silence would key up with no output. On a rig with its own power
+            // control the tone is just the modulating signal and goes out at full
+            // scale — `tx_power_level` already commanded the tune level, and
+            // attenuating here as well would scale the carrier twice. Elsewhere
+            // (a CAT rig's sound card) the tone amplitude is the only tune-level
+            // control there is.
+            let amp = if self.source.commands_tx_power() {
+                1.0
+            } else {
+                self.state.tx.tune_drive.clamp(0.05, 1.0)
+            };
             let inc = std::f32::consts::TAU * 1000.0 / TX_MONITOR_RATE as f32;
             for a in &mut audio {
                 *a = self.tune_phase.cos() * amp;

@@ -26,11 +26,15 @@ pub enum TciError {
     Msg(String),
 }
 
-/// A frequency or mode change reported by the rig (for two-way sync).
+/// A frequency, mode or power change reported by the rig (for two-way sync).
 #[derive(Debug, Clone)]
 pub enum TciUpdate {
     Freq(f64),
     Mode(Mode),
+    /// TX drive as a 0..1 fraction of the rig's `drive:` percentage.
+    Drive(f32),
+    /// TUNE drive as a 0..1 fraction of the rig's `tune_drive:` percentage.
+    TuneDrive(f32),
 }
 
 /// Control messages to the WebSocket thread.
@@ -85,9 +89,13 @@ impl TciHandle {
         let (mut ws, _) = tungstenite::client(url.as_str(), stream)
             .map_err(|e| TciError::Msg(format!("WebSocket handshake failed: {e}")))?;
 
-        // Read the status burst until `ready;` (or time out).
+        // Read the status burst until `ready;` (or time out). The burst carries
+        // the rig's current settings, including the power levels we adopt rather
+        // than overwrite (see `TciUpdate::Drive`).
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut device = String::new();
+        let mut drive_pct = None;
+        let mut tune_drive_pct = None;
         loop {
             if Instant::now() > deadline {
                 return Err(TciError::Msg("timed out waiting for 'ready;'".into()));
@@ -98,6 +106,8 @@ impl TciHandle {
                     for (cmd, args) in p::parse_status(t.as_str()) {
                         match cmd.as_str() {
                             "device" => device = args,
+                            "drive" => drive_pct = parse_pct(&args).or(drive_pct),
+                            "tune_drive" => tune_drive_pct = parse_pct(&args).or(tune_drive_pct),
                             "ready" => ready = true,
                             _ => {}
                         }
@@ -137,6 +147,15 @@ impl TciHandle {
         let (upd_tx, upd_rx) = crossbeam_channel::unbounded();
         let (telem_tx, telem_rx) = crossbeam_channel::unbounded();
 
+        // Adopt the rig's own power settings instead of imposing ours: whatever
+        // the operator set in ExpertSDR3 is what the first key-down should use.
+        if let Some(pct) = drive_pct {
+            let _ = upd_tx.send(TciUpdate::Drive(pct as f32 / 100.0));
+        }
+        if let Some(pct) = tune_drive_pct {
+            let _ = upd_tx.send(TciUpdate::TuneDrive(pct as f32 / 100.0));
+        }
+
         let thread = NetThread {
             ws,
             rx: rx_prod,
@@ -153,6 +172,11 @@ impl TciHandle {
             tx_pkts: 0,
             tx_fwd_w: None,
             tx_swr: None,
+            drive_pct,
+            tune_drive_pct,
+            tx_on_at: None,
+            chrono_seen: false,
+            tx_primed: false,
         };
         let join = std::thread::Builder::new()
             .name("sdroxide-tci".into())
@@ -221,6 +245,12 @@ impl TciHandle {
         }
     }
 
+    /// TX audio still queued for the rig (samples). Zero once everything the
+    /// engine wrote has gone out on the wire.
+    pub fn tx_pending(&self) -> usize {
+        self.tx.buffer().capacity() - self.tx.slots()
+    }
+
     /// Drain interleaved I,Q floats from the RX ring (always an even count).
     pub fn rx_read(&mut self, out: &mut [f32]) -> usize {
         let take = self.rx.slots().min(out.len()) & !1;
@@ -286,7 +316,27 @@ struct NetThread {
     /// key-down.
     tx_fwd_w: Option<f32>,
     tx_swr: Option<f32>,
+    /// Last known rig power levels (percent), updated both when we command them
+    /// and when the rig reports them — so our own echoes aren't mistaken for
+    /// operator changes.
+    drive_pct: Option<u32>,
+    tune_drive_pct: Option<u32>,
+    /// When the current key-down started, and whether the rig has asked for TX
+    /// audio with a `TxChrono` since. Until one arrives we fall back to sending
+    /// self-paced packets, for servers that never chrono.
+    tx_on_at: Option<Instant>,
+    chrono_seen: bool,
+    /// Whether the TX ring has filled enough to start feeding chronos from it.
+    tx_primed: bool,
 }
+
+/// How long to wait for the rig's first `TxChrono` before assuming this server
+/// doesn't send them and self-pacing the TX audio instead.
+const CHRONO_GRACE: Duration = Duration::from_millis(150);
+
+/// Stereo frames per `TxAudio` packet, bounded by the rig's 16 KiB stream
+/// buffer (4096 f32 values). Chronos ask for far less than this.
+const MAX_TX_FRAMES: usize = 2048;
 
 impl NetThread {
     fn run(mut self) {
@@ -341,6 +391,9 @@ impl NetThread {
                         send_text(&mut self.ws, p::audio_start(RX));
                         send_text(&mut self.ws, p::trx(RX, true, true));
                         self.ptt = true;
+                        self.tx_on_at = Some(Instant::now());
+                        self.chrono_seen = false;
+                        self.tx_primed = false;
                         // Start this key-down with no stale telemetry.
                         self.tx_fwd_w = None;
                         self.tx_swr = None;
@@ -358,6 +411,10 @@ impl NetThread {
                         self.if_hz = self.rx_if;
                         self.if_cmd_at = Some(Instant::now());
                         self.ptt = false;
+                        self.tx_on_at = None;
+                        // Drop whatever the engine queued past the unkey, so the
+                        // next over can't start with the tail of this one.
+                        while self.tx.pop().is_ok() {}
                         // Clear telemetry so the meter drops the reading on unkey.
                         self.tx_fwd_w = None;
                         self.tx_swr = None;
@@ -367,12 +424,14 @@ impl NetThread {
                     }
                     Ctrl::SetDrive(frac) => {
                         let pct = (frac.clamp(0.0, 1.0) * 100.0).round() as u32;
+                        self.drive_pct = Some(pct);
                         send_text(&mut self.ws, p::drive(RX, pct));
                         dirty = true;
                         tracing::debug!(pct, "TCI drive");
                     }
                     Ctrl::SetTuneDrive(frac) => {
                         let pct = (frac.clamp(0.0, 1.0) * 100.0).round() as u32;
+                        self.tune_drive_pct = Some(pct);
                         send_text(&mut self.ws, p::tune_drive(RX, pct));
                         dirty = true;
                     }
@@ -398,6 +457,16 @@ impl NetThread {
                                     let _ = self.rx.push(s);
                                 }
                             }
+                            // The rig meters the TX audio itself: each chrono
+                            // asks for exactly `length` floats, and one packet
+                            // of that size is played per chrono. Answering with
+                            // our own cadence leaves the rest of the rig's
+                            // buffer silent, which costs average power.
+                            p::DataType::TxChrono if h.receiver == RX && self.ptt => {
+                                self.chrono_seen = true;
+                                self.answer_chrono(h.length as usize);
+                                dirty = true;
+                            }
                             _ => {}
                         }
                     }
@@ -417,36 +486,17 @@ impl NetThread {
                 }
             }
 
-            // 3) While keyed, ship any pending TX audio (self-paced by the
-            //    engine's ~48 kHz fill; TxChrono also just means "send more").
+            // 3) While keyed, TX audio normally goes out one packet per
+            //    `TxChrono` (handled above). Only if the rig never chronos do we
+            //    fall back to self-paced packets at the engine's ~48 kHz fill.
             if self.ptt {
-                let avail = self.tx.slots();
-                if avail >= 480 {
-                    let take = avail.min(2400);
-                    let mut mono = Vec::with_capacity(take);
-                    for _ in 0..take {
-                        match self.tx.pop() {
-                            Ok(v) => mono.push(v),
-                            Err(_) => break,
-                        }
+                let in_grace = self.tx_on_at.is_some_and(|t| t.elapsed() < CHRONO_GRACE);
+                if !self.chrono_seen && !in_grace {
+                    let avail = self.tx.slots();
+                    if avail >= 480 {
+                        self.send_tx_audio(avail.min(MAX_TX_FRAMES), true);
+                        dirty = true;
                     }
-                    let peak = mono.iter().fold(0.0f32, |a, &v| a.max(v.abs()));
-                    let pkt = p::build_tx_audio(TX_RATE_HZ, RX, &mono);
-                    match self.ws.write(Message::Binary(pkt.into())) {
-                        Ok(()) => {
-                            self.tx_pkts += 1;
-                            if self.tx_pkts == 1 || self.tx_pkts % 50 == 0 {
-                                tracing::debug!(
-                                    pkts = self.tx_pkts,
-                                    samples = take,
-                                    peak,
-                                    "TCI TX audio sent"
-                                );
-                            }
-                        }
-                        Err(e) => tracing::warn!("TCI TX audio write failed: {e}"),
-                    }
-                    dirty = true;
                 }
             } else {
                 self.tx_pkts = 0;
@@ -455,6 +505,63 @@ impl NetThread {
             if dirty {
                 let _ = self.ws.flush();
             }
+        }
+    }
+
+    /// Answer one `TxChrono`, which asks for `floats` stereo values (i.e.
+    /// `floats / 2` frames — the rig divides by the channel count).
+    ///
+    /// A chrono covers ~21 ms while the engine feeds in 10 ms blocks, so the
+    /// first chronos of a key-down are answered with silence until the ring
+    /// holds a whole buffer. That standing cushion is what keeps a late block
+    /// from punching a hole in the audio; draining the ring dry from the first
+    /// chrono would leave it with no margin at all.
+    fn answer_chrono(&mut self, floats: usize) {
+        let frames = (floats / 2).min(MAX_TX_FRAMES);
+        if !self.tx_primed {
+            if self.tx.slots() < frames {
+                self.send_tx_audio(frames, false);
+                return;
+            }
+            self.tx_primed = true;
+        }
+        self.send_tx_audio(frames, true);
+    }
+
+    /// Send one `TxAudio` packet of exactly `frames` stereo frames, filled from
+    /// the TX ring when `from_ring` is set (zero-padded if the engine hasn't
+    /// produced enough yet — the spec's preferred way to say "nothing to play")
+    /// and silent otherwise.
+    fn send_tx_audio(&mut self, frames: usize, from_ring: bool) {
+        if frames == 0 {
+            return;
+        }
+        let mut mono = Vec::with_capacity(frames);
+        while from_ring && mono.len() < frames {
+            match self.tx.pop() {
+                Ok(v) => mono.push(v),
+                Err(_) => break,
+            }
+        }
+        let short = frames - mono.len();
+        mono.resize(frames, 0.0);
+        let peak = mono.iter().fold(0.0f32, |a, &v| a.max(v.abs()));
+        let pkt = p::build_tx_audio(TX_RATE_HZ, RX, &mono);
+        match self.ws.write(Message::Binary(pkt.into())) {
+            Ok(()) => {
+                self.tx_pkts += 1;
+                if self.tx_pkts == 1 || self.tx_pkts % 50 == 0 {
+                    tracing::debug!(
+                        pkts = self.tx_pkts,
+                        frames,
+                        short,
+                        peak,
+                        chrono = self.chrono_seen,
+                        "TCI TX audio sent"
+                    );
+                }
+            }
+            Err(e) => tracing::warn!("TCI TX audio write failed: {e}"),
         }
     }
 
@@ -502,6 +609,25 @@ impl NetThread {
                         }
                     }
                 }
+                // Power levels the operator changed in ExpertSDR3. Echoes of our
+                // own commands carry the value we already know, so only a real
+                // change is reported onwards.
+                "drive" => {
+                    if let Some(pct) = parse_pct(&args)
+                        && self.drive_pct != Some(pct)
+                    {
+                        self.drive_pct = Some(pct);
+                        let _ = self.updates.send(TciUpdate::Drive(pct as f32 / 100.0));
+                    }
+                }
+                "tune_drive" => {
+                    if let Some(pct) = parse_pct(&args)
+                        && self.tune_drive_pct != Some(pct)
+                    {
+                        self.tune_drive_pct = Some(pct);
+                        let _ = self.updates.send(TciUpdate::TuneDrive(pct as f32 / 100.0));
+                    }
+                }
                 "tx_sensors" => {
                     // tx_sensors:<trx>,<mic_db>,<fwd_pwr_w>,<rev_pwr_w>,<swr>.
                     // Broadcast at ~4-10 Hz during TX once tx_sensors_enable is on.
@@ -538,6 +664,18 @@ impl NetThread {
     }
 }
 
+/// Parse a `drive:`/`tune_drive:` payload (`<trx>,<percent>` since TCI 1.5, or
+/// a bare `<percent>` on older servers) for TRX 0, as a 0..=100 percentage.
+fn parse_pct(args: &str) -> Option<u32> {
+    let f: Vec<&str> = args.split(',').collect();
+    let raw = match f.as_slice() {
+        [pct] => pct,
+        [trx, pct] if trx.trim() == "0" => pct,
+        _ => return None,
+    };
+    raw.trim().parse::<f32>().ok().filter(|v| (0.0..=100.0).contains(v)).map(|v| v.round() as u32)
+}
+
 /// Parse a forward/reverse power field (watts): finite and non-negative.
 fn parse_watts(s: &str) -> Option<f32> {
     s.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w >= 0.0)
@@ -558,6 +696,17 @@ mod tests {
         let f: Vec<&str> = "0,-12.0,4.8,0.2,1.4".split(',').collect();
         assert_eq!(parse_watts(f[2]), Some(4.8)); // forward power (W)
         assert_eq!(parse_swr(f[4]), Some(1.4)); // SWR ratio
+    }
+
+    #[test]
+    fn drive_percentages_parse() {
+        assert_eq!(parse_pct("0,75"), Some(75)); // TCI >= 1.5: <trx>,<percent>
+        assert_eq!(parse_pct("40"), Some(40)); // older servers: bare percent
+        assert_eq!(parse_pct(" 0 , 100 "), Some(100));
+        assert_eq!(parse_pct("1,75"), None); // another TRX — not ours
+        assert_eq!(parse_pct("0,120"), None); // out of range
+        assert_eq!(parse_pct("0,x"), None);
+        assert_eq!(parse_pct(""), None);
     }
 
     #[test]

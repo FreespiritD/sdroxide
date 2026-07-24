@@ -4,7 +4,7 @@
 //! the rig modulates (`caps.tx_audio`). Control (freq/mode/PTT) goes over the
 //! same WebSocket.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sdroxide_radio::{Complex32, ControlUpdate, IqSource, Result};
 use sdroxide_tci::{TciHandle, TciUpdate};
@@ -91,6 +91,8 @@ impl IqSource for TciSource {
             .map(|u| match u {
                 TciUpdate::Freq(hz) => ControlUpdate::Freq(hz),
                 TciUpdate::Mode(m) => ControlUpdate::Mode(m),
+                TciUpdate::Drive(f) => ControlUpdate::TxDrive(f),
+                TciUpdate::TuneDrive(f) => ControlUpdate::TuneDrive(f),
             })
             .collect()
     }
@@ -102,6 +104,18 @@ impl IqSource for TciSource {
     fn tx_write_audio(&mut self, audio: &[f32]) -> Result<()> {
         self.handle.tx_write(audio);
         Ok(())
+    }
+
+    /// Let the queued audio reach the rig before PTT drops. The engine hands us
+    /// a burst faster than real time and the rig pulls it one buffer at a time,
+    /// so unkeying immediately would cut the tail (FT8 needs every symbol).
+    fn tx_drain(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self.handle.tx_pending() > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // The last packet handed over is still playing out in the rig.
+        std::thread::sleep(Duration::from_millis(40));
     }
 
     fn tx_end(&mut self) -> Result<()> {
@@ -123,6 +137,12 @@ impl IqSource for TciSource {
 
     fn set_tune_drive(&mut self, frac: f64) {
         self.handle.set_tune_drive(frac);
+    }
+
+    /// The rig's `drive:`/`tune_drive:` are its real power control, so the TX
+    /// audio we stream must stay full scale.
+    fn commands_tx_power(&self) -> bool {
+        true
     }
 
     fn set_if_offset(&mut self, hz: f64) {

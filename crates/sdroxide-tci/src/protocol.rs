@@ -51,8 +51,12 @@ pub struct Header {
     pub sample_rate: u32,
     pub format: u32,
     /// Number of f32 VALUES in the payload (2 × frames for stereo/complex).
+    /// On a `TxChrono` (which carries no payload) this is the sample count the
+    /// rig is asking us to send back in the matching `TxAudio` packet.
     pub length: u32,
     pub dtype: DataType,
+    /// Channel count (2 = stereo). Zero on servers that leave it unset.
+    pub channels: u32,
 }
 
 fn u32_le(b: &[u8], off: usize) -> u32 {
@@ -70,6 +74,7 @@ pub fn parse_header(msg: &[u8]) -> Option<Header> {
         format: u32_le(msg, 8),
         length: u32_le(msg, 20),
         dtype: DataType::from_u32(u32_le(msg, 24)),
+        channels: u32_le(msg, 28),
     })
 }
 
@@ -95,6 +100,9 @@ pub fn build_tx_audio(sample_rate: u32, receiver: u32, mono: &[f32]) -> Vec<u8> 
     hdr[2] = FORMAT_FLOAT32;
     hdr[5] = floats as u32; // length = float count
     hdr[6] = DataType::TxAudio.to_u32();
+    // `channels` must be set: the rig derives the frame count as
+    // length / channels, so leaving it zero makes the packet undecodable.
+    hdr[7] = 2;
     for w in hdr {
         buf.extend_from_slice(&w.to_le_bytes());
     }
@@ -268,12 +276,32 @@ mod tests {
         assert_eq!(h.sample_rate, 48_000);
         assert_eq!(h.format, FORMAT_FLOAT32);
         assert_eq!(h.length, 6); // 3 mono → 6 stereo floats
+        // The rig divides length by channels to get the frame count, so this
+        // must be 2 — a zero here makes the packet undecodable.
+        assert_eq!(h.channels, 2);
         let mut out = Vec::new();
         decode_f32_payload(&pkt, &h, &mut out);
         assert_eq!(out.len(), 6);
         // stereo-duplicated
         assert!((out[0] - 0.25).abs() < 1e-6 && (out[1] - 0.25).abs() < 1e-6);
         assert!((out[2] + 0.5).abs() < 1e-6 && (out[3] + 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn chrono_header_parses() {
+        // A chrono is header-only: it asks for `length` samples across all
+        // channels, i.e. length / channels frames (2048/2 = 1024 @ 48 kHz).
+        let mut hdr = [0u32; 16];
+        hdr[1] = 48_000;
+        hdr[2] = FORMAT_FLOAT32;
+        hdr[5] = 2048;
+        hdr[6] = DataType::TxChrono.to_u32();
+        hdr[7] = 2;
+        let msg: Vec<u8> = hdr.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let h = parse_header(&msg).expect("header");
+        assert_eq!(h.dtype, DataType::TxChrono);
+        assert_eq!(h.length, 2048);
+        assert_eq!(h.channels, 2);
     }
 
     #[test]
