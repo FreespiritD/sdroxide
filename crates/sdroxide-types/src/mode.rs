@@ -241,8 +241,14 @@ impl std::str::FromStr for Mode {
     }
 }
 
-/// Audio noise-reduction intensity — spectral NR applied to the demodulated
-/// audio to pull voice out of static/white noise. Cycled Off → Low → Med → High.
+/// Audio noise-reduction setting for the demodulated audio. Two engines are
+/// offered at three intensities each: a neural **RNNoise** denoiser (`Ai*`) and
+/// the classic spectral NR (`Low`/`Medium`/`High`). The button cycles
+/// Off → AI Low → AI Med → AI High → NR Low → NR Mid → NR High → Off.
+///
+/// The spectral variants keep their original discriminant order so persisted
+/// configs and the wire protocol stay compatible; the neural variants are
+/// appended, and [`NrLevel::next`] imposes the display cycle order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum NrLevel {
     #[default]
@@ -250,16 +256,31 @@ pub enum NrLevel {
     Low,
     Medium,
     High,
+    AiLow,
+    AiMed,
+    AiHigh,
 }
 
 impl NrLevel {
-    pub const ALL: [NrLevel; 4] = [NrLevel::Off, NrLevel::Low, NrLevel::Medium, NrLevel::High];
+    pub const ALL: [NrLevel; 7] = [
+        NrLevel::Off,
+        NrLevel::AiLow,
+        NrLevel::AiMed,
+        NrLevel::AiHigh,
+        NrLevel::Low,
+        NrLevel::Medium,
+        NrLevel::High,
+    ];
 
+    /// Suffix shown after "NR" on the toggle chip (Off shows just "NR").
     pub fn label(self) -> &'static str {
         match self {
             NrLevel::Off => "Off",
+            NrLevel::AiLow => "AI Low",
+            NrLevel::AiMed => "AI Med",
+            NrLevel::AiHigh => "AI High",
             NrLevel::Low => "Low",
-            NrLevel::Medium => "Med",
+            NrLevel::Medium => "Mid",
             NrLevel::High => "High",
         }
     }
@@ -268,10 +289,18 @@ impl NrLevel {
         !matches!(self, NrLevel::Off)
     }
 
-    /// Cycle to the next intensity (High wraps back to Off).
+    /// True for the neural (RNNoise) intensities.
+    pub fn is_ai(self) -> bool {
+        matches!(self, NrLevel::AiLow | NrLevel::AiMed | NrLevel::AiHigh)
+    }
+
+    /// Cycle to the next setting: Off → AI Low/Med/High → NR Low/Mid/High → Off.
     pub fn next(self) -> NrLevel {
         match self {
-            NrLevel::Off => NrLevel::Low,
+            NrLevel::Off => NrLevel::AiLow,
+            NrLevel::AiLow => NrLevel::AiMed,
+            NrLevel::AiMed => NrLevel::AiHigh,
+            NrLevel::AiHigh => NrLevel::Low,
             NrLevel::Low => NrLevel::Medium,
             NrLevel::Medium => NrLevel::High,
             NrLevel::High => NrLevel::Off,
@@ -284,21 +313,38 @@ impl NrLevel {
     /// The over-factors are modest because the MCRA estimator is unbiased (it
     /// tracks the noise mean, not an under-estimated minimum), so ~1.0 already
     /// removes stationary noise; higher values are pure over-subtraction.
+    /// Neutral (unused) for Off and the neural variants.
     pub fn params(self) -> (f32, f32) {
         match self {
-            NrLevel::Off => (1.0, 1.0),
             NrLevel::Low => (1.0, 0.30),
             NrLevel::Medium => (1.4, 0.14),
             NrLevel::High => (2.0, 0.07),
+            _ => (1.0, 1.0),
+        }
+    }
+
+    /// Neural-NR wet/dry depth (0 = bypass, 1 = full RNNoise). Only meaningful
+    /// for the `Ai*` variants.
+    pub fn ai_mix(self) -> f32 {
+        match self {
+            NrLevel::AiLow => 0.55,
+            NrLevel::AiMed => 0.8,
+            NrLevel::AiHigh => 1.0,
+            _ => 0.0,
         }
     }
 
     /// Make-up gain applied to the listener audio after noise reduction:
     /// suppression lowers the overall level (more so at higher settings), so a
     /// progressively larger boost keeps the perceived loudness roughly constant.
+    /// RNNoise preserves speech level far better than spectral subtraction, so
+    /// its make-up is gentle.
     pub fn makeup_gain(self) -> f32 {
         match self {
             NrLevel::Off => 1.0,
+            NrLevel::AiLow => 1.0,
+            NrLevel::AiMed => 1.1,
+            NrLevel::AiHigh => 1.2,
             NrLevel::Low => 1.3,
             NrLevel::Medium => 1.7,
             NrLevel::High => 2.1,

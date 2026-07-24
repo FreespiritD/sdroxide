@@ -18,8 +18,8 @@ use sdroxide_digi::{
 };
 use sdroxide_skimmer::{SkimmerAction, SkimmerController};
 use sdroxide_dsp::{
-    Agc, AutoNotch, DcBlock, Ddc, Demodulator, Duc, Modulator, MonoResampler, NoiseBlanker,
-    SpectralNr, SpectrumAnalyzer, channel_target, make_demod, make_modulator,
+    Agc, AutoNotch, DcBlock, Ddc, Demodulator, Duc, Modulator, MonoResampler, NeuralNr,
+    NoiseBlanker, SpectralNr, SpectrumAnalyzer, channel_target, make_demod, make_modulator,
 };
 use sdroxide_types::{
     Band, BandStackEntry, Command, DeviceCaps, DigiConfig, Direction, MemoryChannel, Meters,
@@ -150,6 +150,8 @@ struct RxChain {
     notch_on: bool,
     /// Spectral noise reduction on the listener audio (after the digital tap).
     nr: SpectralNr,
+    /// Neural (RNNoise) noise reduction — the alternative NR engine.
+    nnr: NeuralNr,
     nr_level: NrLevel,
     channel_buf: Vec<Complex32>,
     audio_buf: Vec<f32>,
@@ -173,6 +175,7 @@ impl RxChain {
             notch: AutoNotch::new(),
             notch_on: false,
             nr: SpectralNr::new(),
+            nnr: NeuralNr::new(),
             nr_level: NrLevel::Off,
             channel_buf: Vec::new(),
             audio_buf: Vec::new(),
@@ -260,15 +263,30 @@ impl RxChain {
             self.notch.process(&mut self.audio_buf);
         }
         if self.nr_level != rx.noise_reduction {
-            if !self.nr_level.is_on() && rx.noise_reduction.is_on() {
-                self.nr.reset(); // fresh start when switching on
-            }
+            let prev = self.nr_level;
             self.nr_level = rx.noise_reduction;
-            let (over, floor) = rx.noise_reduction.params();
-            self.nr.set_params(over, floor);
+            if self.nr_level.is_ai() {
+                // Reset only when switching *into* the neural engine.
+                if !prev.is_ai() {
+                    self.nnr.reset();
+                }
+                self.nnr.set_mix(self.nr_level.ai_mix());
+            } else if self.nr_level.is_on() {
+                // Reset when switching into spectral from off or the neural engine.
+                if !prev.is_on() || prev.is_ai() {
+                    self.nr.reset();
+                }
+                let (over, floor) = self.nr_level.params();
+                self.nr.set_params(over, floor);
+            }
         }
         if self.nr_level.is_on() {
-            self.nr.process(&mut self.audio_buf);
+            if self.nr_level.is_ai() {
+                self.nnr.set_rate(demod.audio_rate());
+                self.nnr.process(&mut self.audio_buf);
+            } else {
+                self.nr.process(&mut self.audio_buf);
+            }
             // Suppression lowers the level; boost it back up per NR strength.
             let g = self.nr_level.makeup_gain();
             for s in &mut self.audio_buf {
@@ -488,6 +506,7 @@ struct Engine {
     audio_notch: AutoNotch,
     audio_notch_on: bool,
     audio_nr: SpectralNr,
+    audio_nnr: NeuralNr,
     audio_nr_level: NrLevel,
     /// Digital-mode engine (slotted FT8/FT4 or continuous PSK/RTTY), present
     /// only while a digital mode is active.
@@ -623,6 +642,7 @@ fn engine_thread(
         audio_notch: AutoNotch::new(),
         audio_notch_on: false,
         audio_nr: SpectralNr::new(),
+        audio_nnr: NeuralNr::new(),
         audio_nr_level: NrLevel::Off,
         digi: None,
         digi_config,
@@ -838,15 +858,28 @@ impl Engine {
         }
         let nr_level = self.state.rx[0].noise_reduction;
         if self.audio_nr_level != nr_level {
-            if !self.audio_nr_level.is_on() && nr_level.is_on() {
-                self.audio_nr.reset();
-            }
+            let prev = self.audio_nr_level;
             self.audio_nr_level = nr_level;
-            let (over, floor) = nr_level.params();
-            self.audio_nr.set_params(over, floor);
+            if nr_level.is_ai() {
+                if !prev.is_ai() {
+                    self.audio_nnr.reset();
+                }
+                self.audio_nnr.set_rate(self.radio_fs);
+                self.audio_nnr.set_mix(nr_level.ai_mix());
+            } else if nr_level.is_on() {
+                if !prev.is_on() || prev.is_ai() {
+                    self.audio_nr.reset();
+                }
+                let (over, floor) = nr_level.params();
+                self.audio_nr.set_params(over, floor);
+            }
         }
         if self.audio_nr_level.is_on() {
-            self.audio_nr.process(&mut self.audio_re);
+            if self.audio_nr_level.is_ai() {
+                self.audio_nnr.process(&mut self.audio_re);
+            } else {
+                self.audio_nr.process(&mut self.audio_re);
+            }
             // Suppression lowers the level; boost it back up per NR strength.
             let g = self.audio_nr_level.makeup_gain();
             for s in &mut self.audio_re {

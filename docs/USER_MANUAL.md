@@ -41,8 +41,8 @@ or connects to a remote sdroxide server.
   **SSTV**, and the transmit-only **RF Paint** (spectrum-painting) mode.
 - **Receive controls:** AGC (Off/Slow/Med/Fast), volume, mute, squelch, an
   impulse noise blanker, an adaptive auto-notch (constant-tone canceller),
-  spectral noise reduction (Off/Low/Med/High), RIT, and a draggable filter
-  passband.
+  noise reduction (neural RNNoise or spectral, three levels each), RIT, and a
+  draggable filter passband.
 - **Transmit** (on TX-capable rigs): PTT, TUNE, drive and tune-drive levels,
   mic gain, XIT, and a transmit meter (power / SWR / ALC). A ham-band-only
   transmit lockout is on by default. While transmitting, the panadapter shows a
@@ -194,14 +194,23 @@ dial + XIT — so you can see at a glance how far RX and TX are shifted.
   noise. Toggle it on when a steady whistle is spoiling a voice signal. (Like NR,
   it affects only what you hear, not the digital decoders; leave it off for CW
   and data modes, whose signals *are* tones.)
-- **NR** — spectral noise reduction on the audio. Click it to cycle **Off → Low
-  → Med → High**. It pulls voice out of static and hiss by suppressing the
-  stationary noise floor while letting the changing, speech-like parts of the
-  signal through — quieter to listen to and easier to copy, with less fatigue.
-  Higher settings remove more noise but can add faint warble on weak signals, so
-  pick the lowest level that cleans the audio. (NR affects only what you hear;
-  the FT8/FT4/PSK/RTTY decoders still receive the untouched signal, and a steady
-  unmodulated carrier — a heterodyne — is treated as noise and suppressed.)
+- **NR** — noise reduction on the audio, with two selectable engines. Click it
+  to cycle **Off → AI Low → AI Med → AI High → NR Low → NR Mid → NR High → Off**:
+  - **AI Low/Med/High** — a neural **RNNoise** denoiser. Trained on speech, it
+    recognises the *voice* and mutes everything else, so it clears non-stationary
+    junk that spectral NR can't — babble, wind, keyboard/shack noise, fluttering
+    hiss — with little of the underwater warble. The three levels are a
+    wet/dry depth: AI High is the full effect, AI Low a lighter touch.
+  - **NR Low/Mid/High** — the classic **spectral** noise reduction: it suppresses
+    the stationary noise floor while letting the changing, speech-like parts
+    through. Fast and predictable on steady static and hiss.
+
+  Both make voice quieter to listen to and easier to copy with less fatigue.
+  Higher settings remove more noise but can add faint artefacts on weak signals,
+  so pick the lowest level that cleans the audio; on a noisy voice signal, start
+  with **AI Med**. (NR affects only what you hear; the FT8/FT4/PSK/RTTY decoders
+  still receive the untouched signal, and a steady unmodulated carrier — a
+  heterodyne — is treated as noise and suppressed.)
 
 **The receive filter** is set by dragging the passband edges directly on the
 panadapter: two vertical grip lines mark the filter's low and high edges (they

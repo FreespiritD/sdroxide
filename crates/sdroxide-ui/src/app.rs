@@ -894,13 +894,14 @@ impl SdroxideApp {
                         self.state.rx[0].auto_notch = !anc; // optimistic echo
                         cmds.push(Command::SetAutoNotch { rx: RxId::Main, on: !anc });
                     }
-                    // Spectral noise reduction — cycles Off → Low → Med → High.
+                    // Noise reduction — cycles Off → AI Low/Med/High (neural
+                    // RNNoise) → NR Low/Mid/High (spectral) → Off.
                     let nr = self.state.rx[0].noise_reduction;
                     let nr_label =
                         if nr.is_on() { format!("NR {}", nr.label()) } else { "NR".to_string() };
                     if crate::chrome::chip(ui, nr.is_on(), nr_label)
                         .on_hover_text(
-                            "Spectral noise reduction (voice) — click to cycle Off / Low / Med / High",
+                            "Noise reduction (voice) — click to cycle: AI Low/Med/High (neural RNNoise), then NR Low/Mid/High (spectral), then Off",
                         )
                         .clicked()
                     {

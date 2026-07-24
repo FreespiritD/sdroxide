@@ -30,8 +30,10 @@ use sdroxide_types::{
 /// `RadioState.recording` / `RadioState.recording_file`.
 /// v9: FT8/FT4 QSO handling — `QsoStep::WaitCq` / `Confirming` and
 /// `Command::DigiStartQso.wait_for_cq`.
-pub const PROTO_VERSION: u16 = 9;
-const VERSION_BYTE: u8 = 0x09;
+/// v10: neural (RNNoise) noise reduction — new `NrLevel::Ai{Low,Med,High}`
+/// variants can appear in `RxState.noise_reduction`.
+pub const PROTO_VERSION: u16 = 10;
+const VERSION_BYTE: u8 = 0x0A;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {

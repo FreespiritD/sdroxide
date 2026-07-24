@@ -8,3 +8,6 @@ sdroxide-types.workspace = true
 num-complex.workspace = true
 rustfft.workspace = true
 rubato = "4.0.0"
+# RNNoise neural speech denoiser (pure Rust, wasm-clean). Core library only —
+# the default features pull in a CLI binary (clap/hound/dasp).
+nnnoiseless = { version = "0.5.2", default-features = false }

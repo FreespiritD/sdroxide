@@ -35,8 +35,9 @@ One binary, three ways to run it:
   **SSTV** (Scottie, Martin, Robot), and transmit-only **RF Paint** (spectrum
   painting of text and images onto the waterfall).
 - **Receiver** — hang AGC, draggable passband filter edges (on the spectrum and
-  the waterfall), noise blanker, squelch, a second sub-receiver, RIT/XIT, VFO
-  A/B with split, per-band band stacks, and memory channels.
+  the waterfall), noise blanker, auto-notch, **neural (RNNoise) or spectral noise
+  reduction**, squelch, a second sub-receiver, RIT/XIT, VFO A/B with split,
+  per-band band stacks, and memory channels.
 - **Transmit** — PTT and tune carrier, drive/ALC metering, device-aware
   half-duplex sequencing (HackRF) or full-duplex (LimeSDR), and a ham-band /
   TX-range lockout so you can't key outside your allocation.
