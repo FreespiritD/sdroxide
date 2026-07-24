@@ -98,6 +98,17 @@ pub fn sstv_tx_dir() -> Result<PathBuf, ConfigError> {
     Ok(dir)
 }
 
+/// Directory for cached solar imagery and space-weather JSON
+/// (`~/.config/sdroxide/solar`), created on demand.
+///
+/// The 3D solar view loads this before its first network request, so the window
+/// opens with the last-known data and stays useful with no connection at all.
+pub fn solar_cache_dir() -> Result<PathBuf, ConfigError> {
+    let dir = config_dir()?.join("solar");
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
 /// Directory for audio recordings, created on demand: the user's music/audio
 /// directory (`<Music>/sdroxide`), or the config directory
 /// (`~/.config/sdroxide/recordings`) when the platform exposes no music folder.

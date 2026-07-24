@@ -169,6 +169,9 @@ pub struct SdroxideApp {
     log_edit: Option<LogEditForm>,
     /// F1 help: the embedded user manual with a navigation outline.
     help: crate::help::Help,
+    /// Solar-system 3D view, shown in its own OS window (native-only).
+    #[cfg(not(target_arch = "wasm32"))]
+    solar: crate::solar3d::Solar3d,
 }
 
 /// Editable text fields for a manual logbook entry (new or edit). Kept as
@@ -268,6 +271,9 @@ impl SdroxideApp {
             .storage
             .and_then(|s| eframe::get_value(s, "view"))
             .unwrap_or_default();
+        // Copied out before `view` is moved into the struct below.
+        #[cfg(not(target_arch = "wasm32"))]
+        let solar3d_view = view.solar3d;
         let soapy_supported = ctrl.soapy_supported();
         SdroxideApp {
             ctrl,
@@ -331,7 +337,23 @@ impl SdroxideApp {
             show_logbook: false,
             log_edit: None,
             help: crate::help::Help::default(),
+            // The GPU resources are built on first open, not here: most
+            // sessions never open this window.
+            #[cfg(not(target_arch = "wasm32"))]
+            solar: crate::solar3d::Solar3d::new(cc.wgpu_render_state.clone(), solar3d_view),
         }
+    }
+
+    /// The operator's grid square. Prefers the engine's copy but falls back to
+    /// the UI's edit buffer: `digi_status` only arrives once the engine sends
+    /// its first `DigiStatus`, and never at all in sessions with no digi engine.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn my_grid(&self) -> String {
+        self.digi_status
+            .as_ref()
+            .map(|s| s.config.my_grid.clone())
+            .filter(|g| !g.is_empty())
+            .unwrap_or_else(|| self.digi_cfg_edit.my_grid.clone())
     }
 
     /// Next free logbook id.
@@ -999,7 +1021,14 @@ impl SdroxideApp {
     }
 
     fn display_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        crate::chrome::module(ui, "Display", 284.0, |ui| {
+        // The module reserves its width before the content is drawn, so the
+        // extra native-only chip has to be paid for here.
+        #[cfg(not(target_arch = "wasm32"))]
+        const DISPLAY_W: f32 = 348.0;
+        #[cfg(target_arch = "wasm32")]
+        const DISPLAY_W: f32 = 284.0;
+
+        crate::chrome::module(ui, "Display", DISPLAY_W, |ui| {
             if crate::chrome::chip(ui, false, "FIT")
                 .on_hover_text("Auto-set floor/ceiling for best waterfall contrast")
                 .clicked()
@@ -1025,6 +1054,16 @@ impl SdroxideApp {
                 .clicked()
             {
                 cmds.push(Command::SetSkimmerEnabled(!skim));
+            }
+            // Opens a second OS window; not available in the browser client.
+            #[cfg(not(target_arch = "wasm32"))]
+            if crate::chrome::chip(ui, self.solar.open, "☀ 3D")
+                .on_hover_text(
+                    "Solar system 3D view — Sun, Earth, Moon, sunspots and CMEs (separate window)",
+                )
+                .clicked()
+            {
+                self.solar.open = !self.solar.open;
             }
             // Floor/ceiling + FFT size live in a popup off this button.
             let fft_btn = crate::chrome::chip(ui, false, "FFT")
@@ -4003,6 +4042,12 @@ impl eframe::App for SdroxideApp {
         self.digi_settings_window(&ctx, &mut cmds);
         self.logbook_window(&ctx);
         self.help.ui(&ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let grid = self.my_grid();
+            self.solar.viewport(&ctx, &grid);
+            self.view.solar3d = self.solar.persisted();
+        }
 
         // Debounced spectrum-config updates with pan hysteresis.
         let now = ctx.input(|i| i.time);

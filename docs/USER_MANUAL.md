@@ -58,6 +58,9 @@ or connects to a remote sdroxide server.
   SDRs, a TCI server (ExpertSDR3/Thetis), or a CAT-controlled radio with audio
   over a USB sound card (demodulated audio or stereo IQ).
 - **Memory channels** and per-band memory of your last frequency/mode/filter.
+- **Solar system 3D view** (native only) — the Sun, Earth and Moon with their
+  orbits, live NASA SDO solar imagery, sunspot regions and CME trajectory cones,
+  and an arrival estimate when one is headed our way.
 - **Remote and web operation:** run headless as a server and control it from a
   browser or from a second sdroxide instance over the network.
 
@@ -226,6 +229,8 @@ passband. The grips work on both the spectrum and the waterfall.
 - **SPEC** — show or hide the spectrum line above the waterfall (lit when the
   spectrum is shown).
 - **SKIM** — the CW / PSK / RTTY skimmers (see [Skimmers](#4-skimmers)).
+- **☀ 3D** — open the [solar system 3D view](#212-solar-system-3d-view) in its
+  own window. Native only; the button is absent in the browser client.
 
 **FFT module:**
 
@@ -277,6 +282,126 @@ press **Store** to save the current frequency and mode. Each saved row has a
 **RCL** (recall) button and a **DEL** (delete) button.
 
 ![The memory channels window](images/06-memories.png)
+
+### 2.12 Solar system 3D view
+
+The **☀ 3D** button in the Display module opens a second window showing the Sun,
+Earth and Moon in three dimensions, with live solar imagery, sunspot regions and
+coronal-mass-ejection trajectories. It is there to answer one question an HF
+operator actually cares about: **is anything on its way here, and when does it
+arrive?**
+
+![The solar disk in AIA 171, with sunspot regions, a flare marker and the CME arrival banner](images/3d-sun.jpg)
+
+The Earth wears the same coastline data as the FT8 world map, lit by the real
+Sun with a soft terminator, and your QTH is marked with a green ring once you
+zoom in far enough for a point on the surface to mean anything.
+
+The Earth carries the same coastlines as the FT8 map, your QTH is the green
+ring, and the yellow dot is the point the Sun is directly overhead.
+
+![The Earth with the FT8 coastlines, the QTH ring and the sub-solar point](images/3d-earth.jpg)
+
+**Mouse:**
+
+| Action | Effect |
+| --- | --- |
+| Drag | Rotate around the focused body |
+| Scroll | Zoom in and out |
+
+Any mouse input cancels **AUTO**.
+
+**View** — pick what the camera pivots around: `SUN`, `EARTH`, `MOON`, or `E+M`
+(the Earth–Moon midpoint). **▶ AUTO** flies a continuous camera path through
+eight framed viewpoints — overhead of the whole system, over the Earth's
+shoulder towards the Sun, face-on to the solar disk, along the day/night
+terminator, over the Sun's pole, a diagonal on the Earth–Moon pair, a long look
+back at the Earth from out by the Sun, and a wide inner-system view. The path is
+a spline through those viewpoints, so the camera curves between them rather than
+stopping and restarting at each; it holds each one for ten to sixteen seconds
+with a slow drift, and the whole loop takes about two minutes. Re-enabling AUTO
+picks up at whichever viewpoint is nearest your current view.
+
+**Layers** — `ORBITS` (Earth and Moon paths, sampled from the real ephemeris, so
+they are the true eccentric orbits), `CME`, `SPOTS`, `FLARES`, `GRID` (the solar
+rotation axis, equator and heliographic parallels), `LABELS`, `STARS`.
+
+**Sun** — which SDO product wraps the Sun:
+
+| Chip | Product |
+| --- | --- |
+| `HMI` | HMI continuum — white light. **This is the one that shows sunspots.** |
+| `193` | AIA 193 Å — corona and coronal holes |
+| `304` | AIA 304 Å — chromosphere and filaments |
+| `171` | AIA 171 Å — quiet corona and coronal loops |
+| `211` | AIA 211 Å — active-region corona |
+| `MIX` | The 211/193/171 composite |
+
+`↻` fetches everything again immediately. Next to the chips is the age of the
+solar image — green when it is current, yellow when the last fetch failed and
+you are seeing a cached picture, pink when there is nothing at all. It always
+tells you what you are actually looking at; a cached image is never presented as
+a live one.
+
+**Scale** — the Earth is 23 000 times smaller than its distance from the Sun, so
+at true scale it is invisible whenever the Sun is in frame. `body` exaggerates
+the Earth's and Moon's radii (default 20×) and `moon orbit` stretches the
+Earth–Moon distance. **Positions are never exaggerated** — only sizes — so the
+orbits and the CME geometry stay physically truthful. Body scale is capped
+against the moon-orbit scale, because past that point the enlarged Moon would
+render inside the Earth. Every body also has a glow with a minimum on-screen
+size, so nothing is ever invisible however you set these.
+
+**Time** — `NOW`, `−24h`, `−6h`, `+6h`, `+24h` scrub the whole scene, bodies and
+all, forwards and backwards.
+
+**Readouts** — the card at the bottom left gives UTC, the sub-solar point, the
+solar disk's B0 and L0 angles, the Sun's elevation and azimuth from your QTH
+(and whether it is day or night there), and how many CMEs and sunspot groups are
+being shown. When an Earth-directed CME is in the data, a banner across the
+bottom names it with its speed and estimated arrival:
+
+```
+⚡ EARTH-DIRECTED CME  2026-07-10 09:48Z  ·  516 km/s  ·  ETA 2026-07-12 14:20Z (+38 h)
+```
+
+Arrival is a straight-line constant-speed estimate from the fitted cone, which
+is roughly what you would work out by hand. Proper forecasts model the CME's
+drag against the solar wind and are typically good to about ±6 hours; treat this
+the same way.
+
+**Where the data comes from.** This is the only part of sdroxide that makes
+outbound internet connections, and it only does so **while this window is
+open** — closing it stops the background fetcher entirely, and never opening it
+means no request is ever made. Three hosts are contacted:
+
+| Host | Data | Refresh |
+| --- | --- | --- |
+| `sdo.gsfc.nasa.gov` | Solar disk imagery (NASA SDO — AIA and HMI) | 10 min |
+| `kauai.ccmc.gsfc.nasa.gov` | CMEs and solar flares ([NASA CCMC DONKI](https://ccmc.gsfc.nasa.gov/tools/DONKI/)) | 20 min |
+| `services.swpc.noaa.gov` | Sunspot regions (NOAA SWPC daily Solar Region Summary) | 60 min |
+
+Everything fetched is cached under `solar/` in the config directory and is
+loaded *before* the first network request, so the window opens instantly with
+the last data it had and stays useful with no connection at all. Requests are
+conditional, so a refresh that finds nothing new costs almost nothing.
+
+Sunspot markers are sized by each region's real spot area and coloured by NOAA's
+own next-24-hour flare probability — grey for quiet, yellow for likely, pink for
+a region worth watching. Regions on the far side of the Sun are hidden by the
+Sun itself, as they should be. CME cones grow from the Sun at the measured
+speed, so the picture is a direct read-out of where the plasma has got to; a
+cone drawn faint has its direction estimated from the source region rather than
+fitted, and cones are coloured cyan through pink with increasing speed.
+
+Pulled back to the whole inner system, the cones show at a glance which way each
+CME went and how far its leading edge has got — the Earth is the small marker on
+its orbit at the upper left.
+
+![CME trajectory cones seen from outside the Earth's orbit](images/3d-cme.jpg)
+
+*Credits: solar imagery courtesy of NASA/SDO and the AIA and HMI science teams;
+CME and flare data from NASA CCMC's DONKI; sunspot regions from NOAA SWPC.*
 
 ---
 
@@ -849,7 +974,9 @@ sdroxide --server --web-root path/to/sdroxide-web/dist
 The web client mirrors the native UI: tuning, mode and band changes, the
 panadapter and waterfall, receive audio, FT8/FT4, the logbook, memories, and
 meters. Microphone transmit is supported where the browser grants microphone
-access. The same single-client and no-authentication notes as
+access. The [solar system 3D view](#212-solar-system-3d-view) is native-only,
+and its **☀ 3D** button does not appear in the browser client. The same
+single-client and no-authentication notes as
 [remote operation](#6-remote-operation) apply — put the server behind HTTPS with
 authentication if it is reachable from an untrusted network.
 
@@ -905,6 +1032,7 @@ sdroxide stores its settings under the per-user config directory:
 | `sstv_messages.json` | JSON | The overlay message stored for each of the five SSTV transmit slots. |
 | `sstv_tx/` | dir | The five SSTV transmit-image slots (`slot0.png`…`slot4.png`). |
 | `sstv_rx/` | dir | Received SSTV pictures, kept for the gallery. |
+| `solar/` | dir | Cached solar imagery and space-weather JSON for the 3D view, with an index of HTTP validators so refreshes stay cheap. Safe to delete; it is re-fetched on demand. |
 
 Every file has sensible defaults, so a missing or partial file always loads. You
 normally edit these through the GUI rather than by hand.

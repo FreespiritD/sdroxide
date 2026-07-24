@@ -1,0 +1,20 @@
+[package]
+name = "sdroxide-solar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Solar-system ephemeris and space-weather data (DONKI, NOAA SWPC, SDO imagery) for sdroxide"
+
+[dependencies]
+sdroxide-types.workspace = true
+serde.workspace = true
+serde_json = "1"
+tracing.workspace = true
+# Pure-Rust JPEG/PNG decode for the SDO browse images.
+# Blocking HTTPS. Default features are rustls with the `ring` provider and
+# compiled-in Mozilla roots: no OpenSSL, no system certificate store, and no
+# async runtime — this crate owns exactly one worker thread.
+ureq = "3.3"
+crossbeam-channel.workspace = true
+sdroxide-config = { version = "0.5.0", path = "../sdroxide-config" }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

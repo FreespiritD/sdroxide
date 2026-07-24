@@ -36,6 +36,77 @@ pub struct ViewState {
     /// Render the S-meter as an analog needle instrument instead of the bar.
     /// Toggled by clicking the meter.
     pub smeter_analog: bool,
+    /// Solar-system 3D window: open state, camera and layer selection. The
+    /// window itself is native-only, but this rides in `ViewState` on both
+    /// targets so the persisted blob stays identical across builds.
+    pub solar3d: Solar3dView,
+}
+
+/// Layer visibility bits for [`Solar3dView::layers`].
+pub mod solar_layer {
+    pub const ORBITS: u32 = 1 << 0;
+    pub const CME: u32 = 1 << 1;
+    pub const SPOTS: u32 = 1 << 2;
+    pub const FLARES: u32 = 1 << 3;
+    pub const GRID: u32 = 1 << 4;
+    pub const LABELS: u32 = 1 << 5;
+    pub const STARS: u32 = 1 << 6;
+    pub const ALL: u32 = ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS;
+}
+
+/// Persisted state of the solar-system 3D window.
+///
+/// Deliberately free of any `eframe`/`wgpu` type so it compiles on wasm32 —
+/// `ViewState` must serialize identically on both targets.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Solar3dView {
+    /// Window open state, restored on the next launch.
+    pub open: bool,
+    /// Camera focus body (see `solar3d::state::Focus`).
+    pub focus: u8,
+    /// Orbit camera: yaw/pitch in radians, distance in gigametres.
+    pub yaw: f32,
+    pub pitch: f32,
+    pub dist: f32,
+    /// Whether the animated camera tour is running.
+    pub auto: bool,
+    /// SDO channel index (see `sdroxide_solar::SdoChannel`).
+    pub channel: u8,
+    /// SDO image edge length in pixels (1024 or 2048).
+    pub resolution: u16,
+    /// Radius exaggeration for Earth and Moon (positions are never scaled).
+    pub body_scale: f32,
+    /// Exaggeration of the Earth→Moon distance.
+    pub moon_orbit_scale: f32,
+    /// Radius exaggeration for the Sun.
+    pub sun_scale: f32,
+    /// Layer visibility bits — see [`solar_layer`].
+    pub layers: u32,
+    /// How far back CMEs are kept on screen, in hours.
+    pub cme_window_h: f32,
+}
+
+impl Default for Solar3dView {
+    fn default() -> Self {
+        Solar3dView {
+            open: false,
+            focus: 0,
+            // A three-quarter view from above that frames the whole Earth orbit.
+            yaw: 0.6,
+            pitch: 0.55,
+            dist: 360.0,
+            auto: false,
+            // HMI continuum: white light, so real sunspots are visible.
+            channel: 0,
+            resolution: 1024,
+            body_scale: 20.0,
+            moon_orbit_scale: 1.0,
+            sun_scale: 1.0,
+            layers: solar_layer::ALL,
+            cme_window_h: 72.0,
+        }
+    }
 }
 
 impl Default for ViewState {
@@ -55,6 +126,7 @@ impl Default for ViewState {
             sstv_tx_fraction: 0.38,
             sstv_gallery_fraction: 0.4,
             smeter_analog: false,
+            solar3d: Solar3dView::default(),
         }
     }
 }

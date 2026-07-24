@@ -1,7 +1,9 @@
 //! The sdroxide GUI: an egui app that talks to any [`sdroxide_types::RadioController`].
 //!
-//! Compiles native and for wasm32. All custom wgpu rendering is written to
-//! WebGL2 downlevel limits (fragment-only, sampled textures + uniforms).
+//! Compiles native and for wasm32. All custom wgpu rendering that the browser
+//! build shares is written to WebGL2 downlevel limits (fragment-only, sampled
+//! textures + uniforms). The one exception is [`solar3d`], which is native-only
+//! and does its 3D work in an offscreen pass of its own.
 
 mod app;
 pub mod chrome;
@@ -11,6 +13,10 @@ mod help;
 #[cfg(feature = "remote")]
 mod remote;
 mod rf_paint;
+/// Solar-system 3D window. Native-only: it is the sole outbound network client
+/// in the UI and the sole consumer of depth/MSAA/vertex buffers.
+#[cfg(not(target_arch = "wasm32"))]
+mod solar3d;
 mod sstv;
 pub mod theme;
 mod view;
