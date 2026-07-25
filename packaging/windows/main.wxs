@@ -18,6 +18,13 @@
         <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
         <MediaTemplate EmbedCab="yes" />
 
+        <!-- Used by the Start-menu shortcut below and by the Apps & features /
+             Add-Remove Programs entry. Path is relative to the repo root,
+             which is where the release workflow runs `wix build`. -->
+        <Icon Id="SdroxideIcon" SourceFile="packaging/windows/sdroxide.ico" />
+        <Property Id="ARPPRODUCTICON" Value="SdroxideIcon" />
+        <Property Id="ARPURLINFOABOUT" Value="https://github.com/dividebysandwich/sdroxide" />
+
         <StandardDirectory Id="ProgramFiles64Folder">
             <Directory Id="INSTALLFOLDER" Name="sdroxide">
                 <Component Id="MainExe" Guid="AE3DD3A4-EB4B-4921-BF67-60089CA6230E">
@@ -39,8 +46,21 @@
                           Name="sdroxide"
                           Description="Software-defined-radio transceiver"
                           Target="[INSTALLFOLDER]sdroxide.exe"
-                          WorkingDirectory="INSTALLFOLDER" />
+                          WorkingDirectory="INSTALLFOLDER"
+                          Icon="SdroxideIcon" />
                 <RegistryValue Root="HKCU" Key="Software\sdroxide" Name="Shortcut" Type="integer" Value="1" KeyPath="yes" />
+            </Component>
+        </StandardDirectory>
+
+        <StandardDirectory Id="DesktopFolder">
+            <Component Id="DesktopShortcut" Guid="9F4B5C21-7A6E-4D38-8C0A-3B1E9D2F6A47">
+                <Shortcut Id="DesktopAppShortcut"
+                          Name="sdroxide"
+                          Description="Software-defined-radio transceiver"
+                          Target="[INSTALLFOLDER]sdroxide.exe"
+                          WorkingDirectory="INSTALLFOLDER"
+                          Icon="SdroxideIcon" />
+                <RegistryValue Root="HKCU" Key="Software\sdroxide" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
             </Component>
         </StandardDirectory>
 
@@ -49,6 +69,7 @@
             <ComponentRef Id="LicenseFile" />
             <ComponentRef Id="PathEnv" />
             <ComponentRef Id="StartMenuShortcut" />
+            <ComponentRef Id="DesktopShortcut" />
         </Feature>
     </Package>
 </Wix>

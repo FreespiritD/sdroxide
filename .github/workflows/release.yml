@@ -142,6 +142,10 @@ jobs:
           strip target/release/sdroxide
           mkdir -p out stage/sdroxide
           cp target/release/sdroxide LICENSE stage/sdroxide/
+          # The .deb registers the menu entry itself; the portable tarball
+          # carries the same files plus a script that installs them per-user.
+          cp packaging/linux/sdroxide.desktop packaging/icons/sdroxide.svg stage/sdroxide/
+          cp packaging/linux/install-desktop-entry.sh stage/sdroxide/
           if [[ "${{ matrix.variant }}" == "cat" ]]; then
             cat > stage/sdroxide/README.txt <<'EOF'
           sdroxide — SDR transceiver (https://github.com/dividebysandwich/sdroxide)
@@ -168,6 +172,12 @@ jobs:
           on http://localhost:4950, or ./sdroxide --help for all options.
           EOF
           fi
+          cat >> stage/sdroxide/README.txt <<'EOF'
+
+          To add sdroxide to your desktop menu, run ./install-desktop-entry.sh
+          (per-user, no root needed; --uninstall removes it again). The .deb
+          package registers the menu entry automatically.
+          EOF
           tar czf "out/$PKG.tar.gz" -C stage sdroxide
           cargo install cargo-deb --locked
           # The SoapySDR build uses the `soapysdr` deb variant (package
@@ -254,9 +264,12 @@ jobs:
           if [[ "${{ matrix.variant }}" == "cat" ]]; then
             mkdir -p stage-dmg
             APP=stage-dmg/sdroxide.app
-            mkdir -p "$APP/Contents/MacOS"
+            mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
             sed "s/@VERSION@/$CARGO_VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
             cp target/release/sdroxide "$APP/Contents/MacOS/sdroxide"
+            # CFBundleIconFile=sdroxide resolves to this; without it Launchpad
+            # and the Dock fall back to the blank generic-application icon.
+            cp packaging/macos/sdroxide.icns "$APP/Contents/Resources/sdroxide.icns"
             codesign --force -s - "$APP/Contents/MacOS/sdroxide"
             codesign --force -s - "$APP"
             cp LICENSE stage-dmg/

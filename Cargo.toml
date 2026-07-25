@@ -107,6 +107,15 @@ features = ["embed-web"]
 assets = [
     ["target/release/sdroxide", "usr/bin/", "755"],
     ["packaging/linux/sdroxide.desktop", "usr/share/applications/", "644"],
+    ["packaging/icons/sdroxide.svg", "usr/share/icons/hicolor/scalable/apps/sdroxide.svg", "644"],
+    ["packaging/icons/sdroxide-16.png", "usr/share/icons/hicolor/16x16/apps/sdroxide.png", "644"],
+    ["packaging/icons/sdroxide-24.png", "usr/share/icons/hicolor/24x24/apps/sdroxide.png", "644"],
+    ["packaging/icons/sdroxide-32.png", "usr/share/icons/hicolor/32x32/apps/sdroxide.png", "644"],
+    ["packaging/icons/sdroxide-48.png", "usr/share/icons/hicolor/48x48/apps/sdroxide.png", "644"],
+    ["packaging/icons/sdroxide-64.png", "usr/share/icons/hicolor/64x64/apps/sdroxide.png", "644"],
+    ["packaging/icons/sdroxide-128.png", "usr/share/icons/hicolor/128x128/apps/sdroxide.png", "644"],
+    ["packaging/icons/sdroxide-256.png", "usr/share/icons/hicolor/256x256/apps/sdroxide.png", "644"],
+    ["packaging/icons/sdroxide-512.png", "usr/share/icons/hicolor/512x512/apps/sdroxide.png", "644"],
     ["README.md", "usr/share/doc/sdroxide/README.md", "644"],
 ]
 

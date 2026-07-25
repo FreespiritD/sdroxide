@@ -66,6 +66,10 @@ pub fn run(
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([800.0, 500.0])
+            // Matches StartupWMClass in packaging/linux/sdroxide.desktop, so
+            // the window groups under the menu entry in taskbars and docks.
+            .with_app_id("sdroxide")
+            .with_icon(sdroxide_ui::app_icon())
             .with_title("sdroxide"),
         ..Default::default()
     };
@@ -195,6 +199,8 @@ pub fn run_remote(url: &str) -> Result<()> {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([800.0, 500.0])
+            .with_app_id("sdroxide")
+            .with_icon(sdroxide_ui::app_icon())
             .with_title(format!("sdroxide — remote {url}")),
         ..Default::default()
     };

@@ -10,6 +10,10 @@
     <string>com.github.dividebysandwich.sdroxide</string>
     <key>CFBundleExecutable</key>
     <string>sdroxide</string>
+    <!-- Resources/sdroxide.icns; this is what Finder, the Dock and Launchpad
+         show for the bundle. -->
+    <key>CFBundleIconFile</key>
+    <string>sdroxide</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
