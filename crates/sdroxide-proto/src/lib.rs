@@ -9,8 +9,8 @@
 use serde::{Deserialize, Serialize};
 
 use sdroxide_types::{
-    Command, Decode, DeviceCaps, DigiStatus, MemoryChannel, Meters, QsoRecord, RadioState,
-    SkimmerSpot, SpectrumFrame, SstvMode, SstvStatus,
+    CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, MemoryChannel, Meters, QsoRecord,
+    RadioState, SkimmerSpot, Spot, SpectrumFrame, SstvMode, SstvStatus, UploadResult,
 };
 
 /// Bump on any incompatible change to the message enums (this includes the
@@ -32,8 +32,12 @@ use sdroxide_types::{
 /// `Command::DigiStartQso.wait_for_cq`.
 /// v10: neural (RNNoise) noise reduction — new `NrLevel::Ai{Low,Med,High}`
 /// variants can appear in `RxState.noise_reduction`.
-pub const PROTO_VERSION: u16 = 10;
-const VERSION_BYTE: u8 = 0x0A;
+/// v11: network cockpit — spot feeds, callsign lookup, and uploads. New
+/// `Command::SetNetworkConfig`/`SpotDialHint`/`LookupCallsign`/`UploadQso`/
+/// `SyncConfirmations` and `ServerMsg::Spots`/`NetStatus`/`CallsignResult`/
+/// `Upload`/`Confirmations`, plus new `QsoRecord` fields.
+pub const PROTO_VERSION: u16 = 11;
+const VERSION_BYTE: u8 = 0x0B;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {
@@ -102,6 +106,12 @@ pub enum ServerMsg {
     SstvStatus(SstvStatus),
     /// FSQ image: a completed received picture (PNG bytes).
     DigiImage { png: Vec<u8> },
+    // Network cockpit.
+    Spots(Vec<Spot>),
+    NetStatus(Option<String>),
+    CallsignResult(CallsignInfo),
+    Upload(UploadResult),
+    Confirmations(Vec<QsoRecord>),
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {

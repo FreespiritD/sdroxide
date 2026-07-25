@@ -542,6 +542,9 @@ struct Engine {
     /// Rebuilds the IQ source when the operator switches radio interface at
     /// runtime (see [`EngineSwap::ReopenSource`]).
     reopen: Option<ReopenFn>,
+    /// Network cockpit: owns the spot feeds (DX cluster / POTA / SOTA / PSK)
+    /// and the lookup/upload worker threads. The engine only drains it.
+    spots: sdroxide_net::SpotManager,
 }
 
 /// Target width of the CW skimmer window (Hz); the Ddc snaps to the nearest
@@ -659,6 +662,7 @@ fn engine_thread(
         audio_play: Vec::new(),
         audio_resampler,
         reopen: engine_cfg.reopen,
+        spots: sdroxide_net::SpotManager::new(),
     };
     if let Some(mic) = &engine.mic {
         engine.mic_resampler = MonoResampler::new(mic.rate, 48_000.0);
@@ -673,6 +677,8 @@ fn engine_thread(
     if !audio_mode {
         engine.sync_skimmer(); // starts if skimmer_enabled (default on)
     }
+    // Start any enabled network spot feeds from the persisted config.
+    engine.spots.set_config(sdroxide_config::load_network_config());
     engine.update_tuning();
 
     let mut buf = vec![Complex32::default(); 16_384];
@@ -715,6 +721,7 @@ fn engine_thread(
         // owned actions to avoid borrowing `engine.digi` and `engine` at once.
         engine.poll_digi();
         engine.poll_skimmer();
+        engine.poll_spots();
 
         if engine.tx_active {
             // Blocking TX write paces this loop at ~10 ms per block.
@@ -1494,6 +1501,32 @@ impl Engine {
                 self.state.skimmer_enabled = on;
                 self.sync_skimmer();
             }
+
+            // Network cockpit (no RadioState change → return before the State
+            // emit below).
+            SetNetworkConfig(cfg) => {
+                if let Err(e) = sdroxide_config::save_network_config(&cfg) {
+                    warn!("saving network config: {e}");
+                }
+                self.spots.set_config(cfg);
+                return;
+            }
+            SpotDialHint(hz) => {
+                self.spots.set_dial(hz);
+                return;
+            }
+            LookupCallsign { call } => {
+                self.spots.lookup(call);
+                return;
+            }
+            UploadQso { qso_id, adif, targets } => {
+                self.spots.upload(qso_id, adif, targets);
+                return;
+            }
+            SyncConfirmations => {
+                self.spots.sync_confirmations();
+                return;
+            }
         }
         let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
     }
@@ -1611,6 +1644,22 @@ impl Engine {
     fn emit_digi_status(&self) {
         if let Some(d) = self.digi.as_ref() {
             let _ = self.event_tx.send(RadioEvent::Ft8Status(d.status()));
+        }
+    }
+
+    /// Keep the spot manager's band context current and forward any spots,
+    /// lookup/upload results, confirmations, or status lines it produced.
+    fn poll_spots(&mut self) {
+        self.spots.set_dial(self.state.active_freq_hz());
+        for ev in self.spots.poll() {
+            let re = match ev {
+                sdroxide_net::NetEvent::Spots(s) => RadioEvent::Spots(s),
+                sdroxide_net::NetEvent::Status(s) => RadioEvent::NetStatus(s),
+                sdroxide_net::NetEvent::Callsign(c) => RadioEvent::CallsignResult(c),
+                sdroxide_net::NetEvent::Upload(r) => RadioEvent::Upload(r),
+                sdroxide_net::NetEvent::Confirmations(r) => RadioEvent::Confirmations(r),
+            };
+            let _ = self.event_tx.send(re);
         }
     }
 

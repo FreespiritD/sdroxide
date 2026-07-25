@@ -1,6 +1,6 @@
 use crate::{
-    Command, Decode, DeviceCaps, DigiStatus, MemoryChannel, Meters, QsoRecord, RadioState,
-    SkimmerSpot, SpectrumFrame, SstvMode, SstvStatus,
+    CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, MemoryChannel, Meters, QsoRecord,
+    RadioState, SkimmerSpot, Spot, SpectrumFrame, SstvMode, SstvStatus, UploadResult,
 };
 
 /// Events flowing engine → UI.
@@ -34,6 +34,19 @@ pub enum RadioEvent {
     SstvStatus(SstvStatus),
     /// FSQ image: a completed received picture (PNG bytes).
     DigiImage { png: Vec<u8> },
+    /// Latest set of network spots (DX cluster / POTA / SOTA / PSK Reporter),
+    /// merged and de-duplicated by the spot manager.
+    Spots(Vec<Spot>),
+    /// A human-readable status line for the spot feeds (cluster connection
+    /// state, feed errors). `None` clears it.
+    NetStatus(Option<String>),
+    /// Result of a [`Command::LookupCallsign`].
+    CallsignResult(CallsignInfo),
+    /// Result of one QSO/target upload from a [`Command::UploadQso`].
+    Upload(UploadResult),
+    /// Parsed QSL-confirmation records from a [`Command::SyncConfirmations`];
+    /// the UI matches these against the log to set the `*_rcvd` flags.
+    Confirmations(Vec<QsoRecord>),
 }
 
 /// Snapshot of the frontend's switchable sound devices (native clients).
@@ -122,4 +135,11 @@ pub trait RadioController {
     /// restart. Call after [`RadioController::set_radio_config`]. No-op on the
     /// remote client (the server owns its hardware).
     fn reopen_source(&mut self) {}
+
+    /// The persisted network-cockpit config (spot feeds, lookup, uploads), or
+    /// `None` where the client can't own it. Applied to the engine by sending
+    /// [`Command::SetNetworkConfig`]. Default `None`.
+    fn network_config(&self) -> Option<crate::NetworkConfig> {
+        None
+    }
 }

@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgcMode, Band, DigiConfig, Direction, Mode, NrLevel, RxId, SpectrumConfig, SstvMode, Vfo,
+    AgcMode, Band, DigiConfig, Direction, Mode, NetworkConfig, NrLevel, RxId, SpectrumConfig,
+    SstvMode, UploadTarget, Vfo,
 };
 
 /// The single control vocabulary. The GUI, the WebSocket protocol, and the
@@ -99,4 +100,21 @@ pub enum Command {
     // Skimmers
     /// Turn the (CW) skimmer on/off.
     SetSkimmerEnabled(bool),
+
+    // Network cockpit: spot feeds, lookups, uploads.
+    /// Apply (and persist) the network-feature configuration: (re)connect the
+    /// DX cluster, (dis)arm the POTA/SOTA/PSK feeds, and store credentials.
+    SetNetworkConfig(NetworkConfig),
+    /// The operator's current dial frequency, so band-scoped feeds (PSK
+    /// Reporter) can query the right slice. Sent by the engine on VFO change.
+    SpotDialHint(f64),
+    /// Look up a callsign via the configured provider; the result comes back as
+    /// [`crate::RadioEvent::CallsignResult`].
+    LookupCallsign { call: String },
+    /// Upload one QSO's ADIF to the given targets; each result comes back as
+    /// [`crate::RadioEvent::Upload`].
+    UploadQso { qso_id: u64, adif: String, targets: Vec<UploadTarget> },
+    /// Download QSL confirmations from LoTW/eQSL and return the parsed
+    /// confirmation records as [`crate::RadioEvent::Confirmations`].
+    SyncConfirmations,
 }

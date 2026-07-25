@@ -16,6 +16,33 @@ pub fn save(name: &str, data: &[u8]) {
     });
 }
 
+/// Open a text file via a native "Open" dialog (off the UI thread) and store
+/// its contents into `inbox` for the UI to pick up next frame. Native only —
+/// the browser client has no filesystem picker here.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_text(
+    filter_name: &str,
+    ext: &str,
+    inbox: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+) {
+    let filter_name = filter_name.to_string();
+    let ext = ext.to_string();
+    std::thread::spawn(move || {
+        if let Some(path) =
+            rfd::FileDialog::new().add_filter(&filter_name, &[ext.as_str()]).pick_file()
+        {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    if let Ok(mut g) = inbox.lock() {
+                        *g = Some(text);
+                    }
+                }
+                Err(e) => eprintln!("sdroxide: reading {}: {e}", path.display()),
+            }
+        }
+    });
+}
+
 #[cfg(target_arch = "wasm32")]
 pub fn save(name: &str, data: &[u8]) {
     use wasm_bindgen::JsCast;

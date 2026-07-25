@@ -179,6 +179,97 @@ pub struct QsoRecord {
     pub my_grid: String,
     /// Free-text note (manual entries, corrections).
     pub comment: String,
+
+    // ── Extended fields (Phase 2): contesting, awards, QSL status. All
+    // `#[serde(default)]` via the struct attribute, so older logs still load. ──
+    /// Worked operator's name.
+    pub name: String,
+    /// Worked station's town / QTH.
+    pub qth: String,
+    /// Worked station's primary subdivision (US state, etc.).
+    pub state: String,
+    /// County (US), if known.
+    pub county: String,
+    /// DXCC entity / country name.
+    pub country: String,
+    /// DXCC entity number.
+    pub dxcc: Option<u16>,
+    /// CQ zone (1..40).
+    pub cq_zone: Option<u8>,
+    /// ITU zone (1..90).
+    pub itu_zone: Option<u8>,
+    /// Continent (NA/SA/EU/AF/AS/OC/AN).
+    pub continent: String,
+    /// IOTA reference (e.g. "EU-005").
+    pub iota: String,
+    /// Special activity group (POTA / SOTA / WWFF) and its reference — mapped to
+    /// ADIF SIG / SIG_INFO.
+    pub sig: String,
+    pub sig_info: String,
+    /// Transmit power in watts.
+    pub tx_pwr: Option<f32>,
+    /// Logging operator (when different from the station call).
+    pub operator: String,
+    /// Contest identifier (ADIF CONTEST_ID).
+    pub contest_id: String,
+    /// Received serial (contest).
+    pub srx: Option<u32>,
+    /// Sent serial (contest).
+    pub stx: Option<u32>,
+    /// Received exchange string (contest).
+    pub srx_string: String,
+    /// Sent exchange string (contest).
+    pub stx_string: String,
+    /// My station's subdivision / country / zones (contest + awards).
+    pub my_state: String,
+    pub my_country: String,
+    pub my_dxcc: Option<u16>,
+    pub my_cq_zone: Option<u8>,
+    pub my_itu_zone: Option<u8>,
+
+    // ── QSL / confirmation status ──
+    pub lotw_sent: bool,
+    pub lotw_rcvd: bool,
+    pub eqsl_sent: bool,
+    pub eqsl_rcvd: bool,
+    /// Uploaded to the QRZ logbook.
+    pub qrz_sent: bool,
+    /// Uploaded to Club Log.
+    pub clublog_sent: bool,
+    /// Paper QSL card sent / received.
+    pub qsl_sent: bool,
+    pub qsl_rcvd: bool,
+    /// QSL routing / manager.
+    pub qsl_via: String,
+}
+
+impl QsoRecord {
+    /// True when any confirmation (LoTW, eQSL, or paper card) has been received.
+    pub fn is_confirmed(&self) -> bool {
+        self.lotw_rcvd || self.eqsl_rcvd || self.qsl_rcvd
+    }
+}
+
+/// True if `log` already contains a QSO with the same callsign on `band`
+/// (optionally the same `mode`) — a "worked before" / contest-dupe check.
+/// `mode` empty matches any mode. `exclude_id` skips the record being edited.
+pub fn worked_before(
+    log: &[QsoRecord],
+    call: &str,
+    band: &str,
+    mode: &str,
+    exclude_id: u64,
+) -> bool {
+    let call = call.trim();
+    if call.is_empty() {
+        return false;
+    }
+    log.iter().any(|q| {
+        q.id != exclude_id
+            && q.call.eq_ignore_ascii_case(call)
+            && q.band.eq_ignore_ascii_case(band)
+            && (mode.is_empty() || q.mode.eq_ignore_ascii_case(mode))
+    })
 }
 
 /// Operator configuration for digital-mode operation. Persisted engine-side,
@@ -414,11 +505,201 @@ pub fn qso_log_to_adif(records: &[QsoRecord]) -> String {
         if let Some(s) = r.rst_rcvd {
             out.push_str(&adif_field("RST_RCVD", &s.to_string()));
         }
+        // Extended fields — written only when populated.
+        let opt_str = |out: &mut String, name: &str, v: &str| {
+            if !v.trim().is_empty() {
+                out.push_str(&adif_field(name, v.trim()));
+            }
+        };
+        opt_str(&mut out, "NAME", &r.name);
+        opt_str(&mut out, "QTH", &r.qth);
+        opt_str(&mut out, "STATE", &r.state);
+        opt_str(&mut out, "CNTY", &r.county);
+        opt_str(&mut out, "COUNTRY", &r.country);
+        if let Some(v) = r.dxcc {
+            out.push_str(&adif_field("DXCC", &v.to_string()));
+        }
+        if let Some(v) = r.cq_zone {
+            out.push_str(&adif_field("CQZ", &v.to_string()));
+        }
+        if let Some(v) = r.itu_zone {
+            out.push_str(&adif_field("ITUZ", &v.to_string()));
+        }
+        opt_str(&mut out, "CONT", &r.continent);
+        opt_str(&mut out, "IOTA", &r.iota);
+        opt_str(&mut out, "SIG", &r.sig);
+        opt_str(&mut out, "SIG_INFO", &r.sig_info);
+        if let Some(v) = r.tx_pwr {
+            out.push_str(&adif_field("TX_PWR", &format!("{v}")));
+        }
+        opt_str(&mut out, "OPERATOR", &r.operator);
+        opt_str(&mut out, "CONTEST_ID", &r.contest_id);
+        if let Some(v) = r.srx {
+            out.push_str(&adif_field("SRX", &v.to_string()));
+        }
+        if let Some(v) = r.stx {
+            out.push_str(&adif_field("STX", &v.to_string()));
+        }
+        opt_str(&mut out, "SRX_STRING", &r.srx_string);
+        opt_str(&mut out, "STX_STRING", &r.stx_string);
+        opt_str(&mut out, "MY_STATE", &r.my_state);
+        opt_str(&mut out, "MY_COUNTRY", &r.my_country);
+        if let Some(v) = r.my_dxcc {
+            out.push_str(&adif_field("MY_DXCC", &v.to_string()));
+        }
+        if let Some(v) = r.my_cq_zone {
+            out.push_str(&adif_field("MY_CQ_ZONE", &v.to_string()));
+        }
+        if let Some(v) = r.my_itu_zone {
+            out.push_str(&adif_field("MY_ITU_ZONE", &v.to_string()));
+        }
+        opt_str(&mut out, "QSL_VIA", &r.qsl_via);
+        let yn = |out: &mut String, name: &str, v: bool| {
+            if v {
+                out.push_str(&adif_field(name, "Y"));
+            }
+        };
+        yn(&mut out, "LOTW_QSL_SENT", r.lotw_sent);
+        yn(&mut out, "LOTW_QSL_RCVD", r.lotw_rcvd);
+        yn(&mut out, "EQSL_QSL_SENT", r.eqsl_sent);
+        yn(&mut out, "EQSL_QSL_RCVD", r.eqsl_rcvd);
+        yn(&mut out, "QSL_SENT", r.qsl_sent);
+        yn(&mut out, "QSL_RCVD", r.qsl_rcvd);
         out.push_str(&adif_field("STATION_CALLSIGN", &r.my_call));
         out.push_str(&adif_field("MY_GRIDSQUARE", &r.my_grid));
         out.push_str("<EOR>\n");
     }
     out
+}
+
+/// Parse an ADIF (.adi) document into QSO records. Tolerant of unknown fields
+/// (ignored) and of a missing/short header. Used both for importing external
+/// logs and for ingesting downloaded QSL confirmations. The inverse of
+/// [`qso_log_to_adif`] for the fields sdroxide round-trips.
+pub fn adif_to_qso_log(adif: &str) -> Vec<QsoRecord> {
+    let mut records = Vec::new();
+    let mut fields: Vec<(String, String)> = Vec::new();
+    let bytes = adif.as_bytes();
+    let mut i = 0usize;
+    let mut in_header = adif.to_ascii_uppercase().contains("<EOH>");
+    while i < bytes.len() {
+        if bytes[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        let Some(close) = adif[i..].find('>') else { break };
+        let tag = &adif[i + 1..i + close];
+        i += close + 1;
+        let mut parts = tag.splitn(3, ':');
+        let name = parts.next().unwrap_or("").trim().to_ascii_uppercase();
+        if name == "EOH" {
+            in_header = false;
+            fields.clear();
+            continue;
+        }
+        if name == "EOR" {
+            if !fields.is_empty() {
+                records.push(record_from_fields(&fields));
+            }
+            fields.clear();
+            continue;
+        }
+        let len: usize = parts.next().and_then(|l| l.trim().parse().ok()).unwrap_or(0);
+        // A field with no length (or a header tag) has no value payload.
+        let value = if len > 0 && i + len <= bytes.len() {
+            let v = adif[i..i + len].to_string();
+            i += len;
+            v
+        } else {
+            String::new()
+        };
+        if !in_header {
+            fields.push((name, value));
+        }
+    }
+    // A final record without a trailing <EOR> (some exporters omit it).
+    if !fields.is_empty() {
+        records.push(record_from_fields(&fields));
+    }
+    records
+}
+
+fn record_from_fields(fields: &[(String, String)]) -> QsoRecord {
+    let get = |key: &str| fields.iter().find(|(k, _)| k == key).map(|(_, v)| v.trim().to_string());
+    let mut r = QsoRecord::default();
+    r.call = get("CALL").unwrap_or_default().to_ascii_uppercase();
+    r.grid = get("GRIDSQUARE").filter(|s| !s.is_empty());
+    r.rst_sent = get("RST_SENT").and_then(|s| s.parse().ok());
+    r.rst_rcvd = get("RST_RCVD").and_then(|s| s.parse().ok());
+    if let Some(f) = get("FREQ").and_then(|s| s.parse::<f64>().ok()) {
+        r.freq_hz = f * 1e6;
+    }
+    r.mode = get("MODE").unwrap_or_default().to_ascii_uppercase();
+    r.band = get("BAND").map(|b| b.to_ascii_lowercase()).unwrap_or_else(|| {
+        if r.freq_hz > 0.0 { adif_band(r.freq_hz).to_string() } else { String::new() }
+    });
+    let date = get("QSO_DATE").unwrap_or_default();
+    let time_on = get("TIME_ON").unwrap_or_default();
+    r.start_utc = parse_adif_datetime(&date, &time_on);
+    let time_off = get("TIME_OFF").unwrap_or_else(|| time_on.clone());
+    r.end_utc = if time_off.is_empty() { r.start_utc } else { parse_adif_datetime(&date, &time_off) };
+    r.my_call = get("STATION_CALLSIGN")
+        .or_else(|| get("OPERATOR"))
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    r.my_grid = get("MY_GRIDSQUARE").unwrap_or_default();
+    // Extended fields.
+    r.name = get("NAME").unwrap_or_default();
+    r.qth = get("QTH").unwrap_or_default();
+    r.state = get("STATE").unwrap_or_default();
+    r.county = get("CNTY").unwrap_or_default();
+    r.country = get("COUNTRY").unwrap_or_default();
+    r.dxcc = get("DXCC").and_then(|s| s.parse().ok());
+    r.cq_zone = get("CQZ").and_then(|s| s.parse().ok());
+    r.itu_zone = get("ITUZ").and_then(|s| s.parse().ok());
+    r.continent = get("CONT").unwrap_or_default();
+    r.iota = get("IOTA").unwrap_or_default();
+    r.sig = get("SIG").unwrap_or_default();
+    r.sig_info = get("SIG_INFO").unwrap_or_default();
+    r.tx_pwr = get("TX_PWR").and_then(|s| s.parse().ok());
+    r.operator = get("OPERATOR").unwrap_or_default();
+    r.contest_id = get("CONTEST_ID").unwrap_or_default();
+    r.srx = get("SRX").and_then(|s| s.parse().ok());
+    r.stx = get("STX").and_then(|s| s.parse().ok());
+    r.srx_string = get("SRX_STRING").unwrap_or_default();
+    r.stx_string = get("STX_STRING").unwrap_or_default();
+    r.my_state = get("MY_STATE").unwrap_or_default();
+    r.my_country = get("MY_COUNTRY").unwrap_or_default();
+    r.my_dxcc = get("MY_DXCC").and_then(|s| s.parse().ok());
+    r.my_cq_zone = get("MY_CQ_ZONE").and_then(|s| s.parse().ok());
+    r.my_itu_zone = get("MY_ITU_ZONE").and_then(|s| s.parse().ok());
+    r.qsl_via = get("QSL_VIA").unwrap_or_default();
+    let yn = |key: &str| get(key).map(|v| v.eq_ignore_ascii_case("Y")).unwrap_or(false);
+    r.lotw_sent = yn("LOTW_QSL_SENT");
+    r.lotw_rcvd = yn("LOTW_QSL_RCVD");
+    r.eqsl_sent = yn("EQSL_QSL_SENT");
+    r.eqsl_rcvd = yn("EQSL_QSL_RCVD");
+    r.qsl_sent = yn("QSL_SENT");
+    r.qsl_rcvd = yn("QSL_RCVD");
+    r
+}
+
+/// Parse an ADIF `YYYYMMDD` + `HHMM`/`HHMMSS` pair into a Unix timestamp.
+fn parse_adif_datetime(date: &str, time: &str) -> i64 {
+    if date.len() < 8 {
+        return 0;
+    }
+    let y = date[0..4].parse().unwrap_or(1970);
+    let mo = date[4..6].parse().unwrap_or(1);
+    let d = date[6..8].parse().unwrap_or(1);
+    let (h, mi, s) = if time.len() >= 6 {
+        (time[0..2].parse().unwrap_or(0), time[2..4].parse().unwrap_or(0), time[4..6].parse().unwrap_or(0))
+    } else if time.len() >= 4 {
+        (time[0..2].parse().unwrap_or(0), time[2..4].parse().unwrap_or(0), 0)
+    } else {
+        (0, 0, 0)
+    };
+    ymd_hms_to_unix(y, mo, d, h, mi, s)
 }
 
 /// Render a session's QSOs as a human-readable text log.
@@ -495,6 +776,37 @@ mod tests {
         assert!(adif.contains("<GRIDSQUARE:4>EM48"));
         assert!(adif.contains("<EOR>"));
         assert_eq!(adif_band(14_074_000.0), "20m");
+    }
+
+    #[test]
+    fn adif_import_round_trips() {
+        let rec = QsoRecord {
+            call: "W9XYZ".into(),
+            grid: Some("EM48".into()),
+            rst_sent: Some(-9),
+            rst_rcvd: Some(-12),
+            freq_hz: 14_074_000.0,
+            mode: "FT8".into(),
+            band: "20m".into(),
+            start_utc: 1_609_459_200,
+            end_utc: 1_609_459_260,
+            my_call: "AB1CD".into(),
+            my_grid: "FN42".into(),
+            ..Default::default()
+        };
+        let adif = qso_log_to_adif(std::slice::from_ref(&rec));
+        let back = adif_to_qso_log(&adif);
+        assert_eq!(back.len(), 1);
+        let b = &back[0];
+        assert_eq!(b.call, "W9XYZ");
+        assert_eq!(b.grid.as_deref(), Some("EM48"));
+        assert_eq!(b.mode, "FT8");
+        assert_eq!(b.band, "20m");
+        assert_eq!(b.rst_sent, Some(-9));
+        assert_eq!(b.rst_rcvd, Some(-12));
+        assert_eq!(b.start_utc, 1_609_459_200);
+        assert_eq!(b.my_call, "AB1CD");
+        assert_eq!(b.my_grid, "FN42");
     }
 
     #[test]

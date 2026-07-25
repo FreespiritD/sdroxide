@@ -3,9 +3,10 @@ use std::time::Duration;
 
 use eframe::egui::{self, Color32, ComboBox, DragValue, RichText, Slider};
 use sdroxide_types::{
-    AgcMode, AudioDevices, Band, Command, Decode, DeviceCaps, DigiStatus, Direction,
-    MemoryChannel, Meters, Mode, QsoRecord, RadioController, RadioEvent, RadioState, RxId,
-    SkimmerKind, SkimmerSpot, SpectrumConfig, SpectrumFrame, SstvMode, SstvStatus, Vfo,
+    AgcMode, AudioDevices, Band, CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, Direction,
+    LookupProvider, MemoryChannel, Meters, Mode, NetworkConfig, QsoRecord, RadioController,
+    RadioEvent, RadioState, RxId, SkimmerKind, SkimmerSpot, SpectrumConfig, SpectrumFrame, Spot,
+    SpotKind, SstvMode, SstvStatus, UploadResult, UploadTarget, Vfo,
 };
 
 use crate::view::ViewState;
@@ -20,14 +21,16 @@ const CFG_DEBOUNCE_S: f64 = 0.25;
 /// stops keying, instead of vanishing.
 const SKIMMER_FADE_SECS: f64 = 5.0;
 
-/// Settings dialog tabs: the radio interface + its settings, audio devices, and
-/// display/UI preferences.
+/// Settings dialog tabs: the radio interface + its settings, audio devices,
+/// display/UI preferences, and the network cockpit (spot feeds + uploads).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsTab {
     General,
     Radio,
     Audio,
     Ui,
+    Spots,
+    Uploads,
 }
 
 /// Repaint-poll cadence when no spectrum stream is flowing (startup, connection
@@ -48,6 +51,74 @@ fn hash_call(s: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     s.hash(&mut h);
     h.finish()
+}
+
+/// Fill `dst` from `src` only when `dst` is blank and `src` is non-empty;
+/// returns whether it changed anything.
+fn fill_blank(dst: &mut String, src: Option<&str>) -> bool {
+    if dst.trim().is_empty() {
+        if let Some(v) = src.map(str::trim) {
+            if !v.is_empty() {
+                *dst = v.to_string();
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Which upload targets are enabled for auto-upload in `cfg`.
+fn auto_upload_targets(cfg: &NetworkConfig) -> Vec<UploadTarget> {
+    let mut t = Vec::new();
+    if cfg.auto_upload_eqsl {
+        t.push(UploadTarget::Eqsl);
+    }
+    if cfg.auto_upload_qrz {
+        t.push(UploadTarget::QrzLogbook);
+    }
+    if cfg.auto_upload_clublog {
+        t.push(UploadTarget::ClubLog);
+    }
+    t
+}
+
+/// Upload targets that have credentials configured (for the manual per-QSO
+/// upload button).
+fn configured_upload_targets(cfg: &NetworkConfig) -> Vec<UploadTarget> {
+    let mut t = Vec::new();
+    if !cfg.eqsl.user.trim().is_empty() {
+        t.push(UploadTarget::Eqsl);
+    }
+    if !cfg.qrz_logbook_key.trim().is_empty() {
+        t.push(UploadTarget::QrzLogbook);
+    }
+    if !cfg.clublog.user.trim().is_empty() && !cfg.clublog_api_key.trim().is_empty() {
+        t.push(UploadTarget::ClubLog);
+    }
+    t
+}
+
+/// Single-record ADIF + targets for auto-upload of a freshly logged QSO, or
+/// `None` when auto-upload is off or no target is enabled.
+fn auto_upload_adif(cfg: &NetworkConfig, rec: &QsoRecord) -> Option<(u64, String, Vec<UploadTarget>)> {
+    if !cfg.auto_upload {
+        return None;
+    }
+    let targets = auto_upload_targets(cfg);
+    if targets.is_empty() {
+        return None;
+    }
+    Some((rec.id, sdroxide_types::qso_log_to_adif(std::slice::from_ref(rec)), targets))
+}
+
+/// Index of a spot kind into the app's `spot_kinds_shown` filter array.
+fn spot_kind_index(kind: SpotKind) -> usize {
+    match kind {
+        SpotKind::DxCluster => 0,
+        SpotKind::Pota => 1,
+        SpotKind::Sota => 2,
+        SpotKind::PskReporter => 3,
+    }
 }
 
 /// How the FT8/FT4 decode list orders the stations within each turn.
@@ -172,6 +243,41 @@ pub struct SdroxideApp {
     /// Logbook overlay open state, and the in-progress new/edit entry (if any).
     show_logbook: bool,
     log_edit: Option<LogEditForm>,
+    // ── Network cockpit (spots / lookup / uploads) ──
+    /// Latest merged network spots (DX cluster / POTA / SOTA / PSK Reporter).
+    spots: Vec<Spot>,
+    /// Latest feed/connection status line (cluster state, feed errors).
+    net_status: Option<String>,
+    /// Spots window open state.
+    show_spots: bool,
+    /// Which spot kinds are shown on the overlay/list (DX, POTA, SOTA, PSK).
+    spot_kinds_shown: [bool; 4],
+    /// Show only spots that fall inside the current panadapter view span.
+    spot_in_view_only: bool,
+    /// UI-owned editable copy of the network config (edited in the Settings
+    /// dialog's Spots / Uploads tabs).
+    net_cfg_edit: NetworkConfig,
+    net_cfg_seeded: bool,
+    /// Editable "extra cluster commands" (one per line), split into
+    /// `net_cfg_edit.cluster.commands` on apply.
+    net_cluster_cmds: String,
+    /// Rolling upload/lookup result log for the spots window (newest first).
+    net_log: Vec<String>,
+    /// Inbox for an ADIF file chosen via the native "Import" dialog (a picker
+    /// thread writes; the UI drains it each frame).
+    adif_import_inbox: Arc<Mutex<Option<String>>>,
+    /// Callsigns queued for lookup, drained into commands each frame.
+    pending_lookups: Vec<String>,
+    /// QSO uploads queued (id, single-record ADIF, targets), drained to commands.
+    pending_uploads: Vec<(u64, String, Vec<UploadTarget>)>,
+    /// Awards dashboard open state + band filter ("" = all bands).
+    show_awards: bool,
+    awards_band: String,
+    /// Cached award tally, keyed by (log length, band filter).
+    awards_cache: Option<(usize, String, sdroxide_types::Awards)>,
+    /// Cached set of worked DXCC entity names, keyed by log length (for the
+    /// "new entity" spot badge).
+    worked_entities_cache: Option<(usize, std::collections::HashSet<String>)>,
     /// F1 help: the embedded user manual with a navigation outline.
     help: crate::help::Help,
     /// Solar-system 3D view, shown in its own OS window (native-only).
@@ -180,13 +286,17 @@ pub struct SdroxideApp {
 }
 
 /// Editable text fields for a manual logbook entry (new or edit). Kept as
-/// strings so partial input doesn't fight the user; parsed on save.
+/// strings so partial input doesn't fight the user; parsed on save. On edit,
+/// `base` holds the original record so fields not shown in the form (QSL flags,
+/// resolved DXCC/zones, …) survive a save.
 #[derive(Default)]
 struct LogEditForm {
     /// 0 = new entry; otherwise the id of the record being edited.
     id: u64,
     /// Timestamp fallback if the date/time fields don't parse.
     seed_utc: i64,
+    /// Original record (edit) or default (new); preserves untouched fields.
+    base: QsoRecord,
     call: String,
     grid: String,
     freq_mhz: String,
@@ -195,6 +305,14 @@ struct LogEditForm {
     rst_rcvd: String,
     date: String,
     time: String,
+    name: String,
+    qth: String,
+    state: String,
+    country: String,
+    tx_pwr: String,
+    contest_id: String,
+    srx: String,
+    stx: String,
     comment: String,
 }
 
@@ -218,6 +336,7 @@ impl LogEditForm {
         LogEditForm {
             id: r.id,
             seed_utc: r.start_utc,
+            base: r.clone(),
             call: r.call.clone(),
             grid: r.grid.clone().unwrap_or_default(),
             freq_mhz: if r.freq_hz > 0.0 { format!("{:.4}", r.freq_hz / 1e6) } else { String::new() },
@@ -226,11 +345,20 @@ impl LogEditForm {
             rst_rcvd: r.rst_rcvd.map(|v| v.to_string()).unwrap_or_default(),
             date: format!("{y:04}-{mo:02}-{d:02}"),
             time: format!("{h:02}:{mi:02}"),
+            name: r.name.clone(),
+            qth: r.qth.clone(),
+            state: r.state.clone(),
+            country: r.country.clone(),
+            tx_pwr: r.tx_pwr.map(|v| v.to_string()).unwrap_or_default(),
+            contest_id: r.contest_id.clone(),
+            srx: r.srx.map(|v| v.to_string()).unwrap_or_default(),
+            stx: r.stx.map(|v| v.to_string()).unwrap_or_default(),
             comment: r.comment.clone(),
         }
     }
 
-    /// Parse into a record, or `None` if the callsign is empty.
+    /// Parse into a record, or `None` if the callsign is empty. Starts from
+    /// `base` so unshown fields are preserved across an edit.
     fn to_record(&self, my_call: &str, my_grid: &str) -> Option<QsoRecord> {
         let call = self.call.trim().to_uppercase();
         if call.is_empty() {
@@ -240,29 +368,36 @@ impl LogEditForm {
         let band =
             if freq_hz > 0.0 { sdroxide_types::adif_band(freq_hz).to_string() } else { String::new() };
         let start = parse_utc(&self.date, &self.time, self.seed_utc);
-        let grid = {
-            let g = self.grid.trim();
-            (!g.is_empty()).then(|| g.to_uppercase())
-        };
         let mode = {
             let m = self.mode.trim().to_uppercase();
             if m.is_empty() { "SSB".into() } else { m }
         };
-        Some(QsoRecord {
-            id: self.id,
-            call,
-            grid,
-            rst_sent: self.rst_sent.trim().parse().ok(),
-            rst_rcvd: self.rst_rcvd.trim().parse().ok(),
-            freq_hz,
-            mode,
-            band,
-            start_utc: start,
-            end_utc: start,
-            my_call: my_call.to_string(),
-            my_grid: my_grid.to_string(),
-            comment: self.comment.trim().to_string(),
-        })
+        let mut rec = self.base.clone();
+        rec.id = self.id;
+        rec.call = call;
+        rec.grid = {
+            let g = self.grid.trim();
+            (!g.is_empty()).then(|| g.to_uppercase())
+        };
+        rec.rst_sent = self.rst_sent.trim().parse().ok();
+        rec.rst_rcvd = self.rst_rcvd.trim().parse().ok();
+        rec.freq_hz = freq_hz;
+        rec.mode = mode;
+        rec.band = band;
+        rec.start_utc = start;
+        rec.end_utc = if rec.end_utc > start { rec.end_utc } else { start };
+        rec.my_call = my_call.to_string();
+        rec.my_grid = my_grid.to_string();
+        rec.name = self.name.trim().to_string();
+        rec.qth = self.qth.trim().to_string();
+        rec.state = self.state.trim().to_uppercase();
+        rec.country = self.country.trim().to_string();
+        rec.tx_pwr = self.tx_pwr.trim().parse().ok();
+        rec.contest_id = self.contest_id.trim().to_uppercase();
+        rec.srx = self.srx.trim().parse().ok();
+        rec.stx = self.stx.trim().parse().ok();
+        rec.comment = self.comment.trim().to_string();
+        Some(rec)
     }
 }
 
@@ -280,6 +415,10 @@ impl SdroxideApp {
         #[cfg(not(target_arch = "wasm32"))]
         let solar3d_view = view.solar3d;
         let soapy_supported = ctrl.soapy_supported();
+        // Seed the network config from disk up front so auto-lookup / auto-upload
+        // are honoured from launch (not only after the setup window is opened).
+        let net_cfg = ctrl.network_config().unwrap_or_default();
+        let net_cluster_cmds = net_cfg.cluster.commands.join("\n");
         SdroxideApp {
             ctrl,
             caps: None,
@@ -341,6 +480,22 @@ impl SdroxideApp {
             pre_digi_view: None,
             show_logbook: false,
             log_edit: None,
+            spots: Vec::new(),
+            net_status: None,
+            show_spots: false,
+            spot_kinds_shown: [true; 4],
+            spot_in_view_only: false,
+            net_cfg_edit: net_cfg,
+            net_cfg_seeded: true,
+            net_cluster_cmds,
+            net_log: Vec::new(),
+            adif_import_inbox: Arc::new(Mutex::new(None)),
+            pending_lookups: Vec::new(),
+            pending_uploads: Vec::new(),
+            show_awards: false,
+            awards_band: String::new(),
+            awards_cache: None,
+            worked_entities_cache: None,
             help: crate::help::Help::default(),
             // The GPU resources are built on first open, not here: most
             // sessions never open this window.
@@ -696,6 +851,344 @@ impl SdroxideApp {
             alpha.push(if newest { 1.0 } else { 0.5 });
         }
         (spots, alpha)
+    }
+
+    /// The network-spot overlay: the currently-shown spots (filtered by kind and,
+    /// optionally, to the panadapter view span) plus a parallel age-fade alpha.
+    /// Newest spots are solid; they dim over the last quarter of their lifetime.
+    fn net_overlay(&self, now_utc: i64) -> (Vec<Spot>, Vec<f32>) {
+        let max_age = self.net_cfg_edit.spot_max_age_secs.max(60) as i64;
+        let (lo, hi) = (self.view.view_lo_hz, self.view.view_hi_hz);
+        let mut spots = Vec::new();
+        let mut alpha = Vec::new();
+        for s in &self.spots {
+            if !self.spot_kinds_shown[spot_kind_index(s.kind)] {
+                continue;
+            }
+            if self.spot_in_view_only && !(lo..=hi).contains(&s.freq_hz) {
+                continue;
+            }
+            let age = (now_utc - s.when_utc).max(0);
+            let a = if age > max_age {
+                continue;
+            } else if age as f64 > max_age as f64 * 0.75 {
+                (1.0 - (age as f64 - max_age as f64 * 0.75) / (max_age as f64 * 0.25)) as f32
+            } else {
+                1.0
+            };
+            spots.push(s.clone());
+            alpha.push(a.clamp(0.15, 1.0));
+        }
+        (spots, alpha)
+    }
+
+    /// Open a fresh log entry pre-filled from a clicked spot, and kick a
+    /// callsign lookup if auto-lookup is on.
+    fn prefill_from_spot(&mut self, spot: &Spot) {
+        let mut form = LogEditForm::new_entry(now_unix(), spot.freq_hz, &spot.mode);
+        form.call = spot.call.clone();
+        if let Some(g) = &spot.grid {
+            form.grid = g.clone();
+        }
+        if !spot.comment.is_empty() {
+            form.comment = spot.comment.clone();
+        }
+        self.log_edit = Some(form);
+        self.show_logbook = true;
+        self.queue_lookup(spot.call.clone());
+    }
+
+    /// Queue an auto-lookup if a provider + auto-lookup are configured.
+    fn queue_lookup(&mut self, call: String) {
+        let call = call.trim().to_string();
+        if call.is_empty()
+            || !self.net_cfg_edit.auto_lookup
+            || self.net_cfg_edit.lookup_provider == LookupProvider::None
+        {
+            return;
+        }
+        self.pending_lookups.push(call);
+    }
+
+    /// Merge a callsign-lookup result into the open log entry and, if none
+    /// matches, into the most recent logged QSO for that call — filling only
+    /// blank fields.
+    fn apply_callsign(&mut self, info: CallsignInfo) {
+        let mut summary = info.call.clone();
+        if let Some(n) = &info.name {
+            summary.push_str(&format!(" — {n}"));
+        }
+        if let Some(q) = &info.qth {
+            summary.push_str(&format!(", {q}"));
+        }
+        if let Some(c) = &info.country {
+            summary.push_str(&format!(" ({c})"));
+        }
+        self.push_net_log(summary);
+
+        // 1) The open entry form, if it's for this call.
+        if let Some(f) = self.log_edit.as_mut() {
+            if f.call.trim().eq_ignore_ascii_case(&info.call) {
+                fill_blank(&mut f.name, info.name.as_deref());
+                fill_blank(&mut f.qth, info.qth.as_deref());
+                fill_blank(&mut f.grid, info.grid.as_deref());
+                fill_blank(&mut f.state, info.state.as_deref());
+                fill_blank(&mut f.country, info.country.as_deref());
+                return;
+            }
+        }
+        // 2) Otherwise, enrich the most recent logged QSO with that call.
+        if let Some(rec) = self
+            .qso_log
+            .iter_mut()
+            .filter(|q| q.call.eq_ignore_ascii_case(&info.call))
+            .max_by_key(|q| q.start_utc)
+        {
+            let mut changed = false;
+            changed |= fill_blank(&mut rec.name, info.name.as_deref());
+            changed |= fill_blank(&mut rec.qth, info.qth.as_deref());
+            changed |= fill_blank(&mut rec.state, info.state.as_deref());
+            changed |= fill_blank(&mut rec.country, info.country.as_deref());
+            if rec.grid.as_deref().unwrap_or("").is_empty() {
+                if let Some(g) = &info.grid {
+                    rec.grid = Some(g.clone());
+                    changed = true;
+                }
+            }
+            if rec.dxcc.is_none() && info.dxcc.is_some() {
+                rec.dxcc = info.dxcc;
+                changed = true;
+            }
+            if rec.cq_zone.is_none() && info.cq_zone.is_some() {
+                rec.cq_zone = info.cq_zone;
+                changed = true;
+            }
+            if rec.itu_zone.is_none() && info.itu_zone.is_some() {
+                rec.itu_zone = info.itu_zone;
+                changed = true;
+            }
+            if changed {
+                persist_qso_log(&self.qso_log);
+            }
+        }
+    }
+
+    /// Record an upload result and mark the QSO's sent flag on success.
+    fn on_upload_result(&mut self, r: UploadResult) {
+        let status = if r.ok { "OK" } else { "FAIL" };
+        self.push_net_log(format!("{} → {}: {}", r.target.label(), status, r.message));
+        if r.ok {
+            if let Some(rec) = self.qso_log.iter_mut().find(|q| q.id == r.qso_id) {
+                match r.target {
+                    UploadTarget::Eqsl => rec.eqsl_sent = true,
+                    UploadTarget::QrzLogbook => rec.qrz_sent = true,
+                    UploadTarget::ClubLog => rec.clublog_sent = true,
+                }
+                persist_qso_log(&self.qso_log);
+            }
+        }
+    }
+
+    /// Match downloaded QSL confirmations against the log by call + band (and,
+    /// when both have one, mode) within a day, and OR the confirmation flags
+    /// onto the local record.
+    fn apply_confirmations(&mut self, recs: Vec<QsoRecord>) {
+        let mut matched = 0usize;
+        let mut changed = false;
+        for c in &recs {
+            if c.call.trim().is_empty() {
+                continue;
+            }
+            if let Some(local) = self.qso_log.iter_mut().find(|q| {
+                q.call.eq_ignore_ascii_case(&c.call)
+                    && q.band.eq_ignore_ascii_case(&c.band)
+                    && (c.mode.is_empty() || q.mode.eq_ignore_ascii_case(&c.mode))
+                    && (q.start_utc - c.start_utc).abs() < 86_400
+            }) {
+                let before = (local.lotw_rcvd, local.eqsl_rcvd, local.qsl_rcvd);
+                local.lotw_rcvd |= c.lotw_rcvd;
+                local.eqsl_rcvd |= c.eqsl_rcvd;
+                local.qsl_rcvd |= c.qsl_rcvd;
+                if before != (local.lotw_rcvd, local.eqsl_rcvd, local.qsl_rcvd) {
+                    changed = true;
+                    matched += 1;
+                }
+            }
+        }
+        if changed {
+            persist_qso_log(&self.qso_log);
+        }
+        self.push_net_log(format!(
+            "Confirmations: {} downloaded, {matched} newly confirmed",
+            recs.len()
+        ));
+    }
+
+    fn push_net_log(&mut self, line: String) {
+        self.net_log.insert(0, line);
+        self.net_log.truncate(50);
+    }
+
+    /// The set of worked DXCC entity names (cached; recomputed when the log
+    /// length changes). Used to flag "new entity" spots.
+    fn worked_entities(&mut self) -> &std::collections::HashSet<String> {
+        let len = self.qso_log.len();
+        let stale = self.worked_entities_cache.as_ref().map(|(l, _)| *l != len).unwrap_or(true);
+        if stale {
+            let set: std::collections::HashSet<String> = self
+                .qso_log
+                .iter()
+                .filter_map(|q| sdroxide_types::entity_name(&q.call).map(str::to_string))
+                .collect();
+            self.worked_entities_cache = Some((len, set));
+        }
+        &self.worked_entities_cache.as_ref().unwrap().1
+    }
+
+    /// The cached award tally for the current band filter (recomputed when the
+    /// log length or the band filter changes).
+    fn ensure_awards(&mut self) {
+        let len = self.qso_log.len();
+        let band = self.awards_band.clone();
+        let stale = self
+            .awards_cache
+            .as_ref()
+            .map(|(l, b, _)| *l != len || *b != band)
+            .unwrap_or(true);
+        if stale {
+            let filter = (!band.is_empty()).then_some(band.as_str());
+            let awards = sdroxide_types::compute_awards(&self.qso_log, filter, None);
+            self.awards_cache = Some((len, band, awards));
+        }
+    }
+
+    /// The awards dashboard: DXCC / WAS / WAZ / grid counts (worked vs
+    /// confirmed) with a band filter, plus the WAS state grid and WAZ zone grid.
+    fn awards_window(&mut self, ctx: &egui::Context) {
+        if !self.show_awards {
+            return;
+        }
+        self.ensure_awards();
+        let bands = ["", "160m", "80m", "40m", "30m", "20m", "17m", "15m", "12m", "10m", "6m", "2m"];
+        let mut open = self.show_awards;
+        let mut new_band: Option<String> = None;
+        let awards = self.awards_cache.as_ref().map(|(_, _, a)| a.clone()).unwrap_or_default();
+        let resp = egui::Window::new("AWARDS")
+            .open(&mut open)
+            .frame(crate::chrome::window_frame())
+            .resizable(true)
+            .default_width(540.0)
+            .default_height(560.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Band").size(11.0).color(Color32::from_gray(150)));
+                    for b in bands {
+                        let label = if b.is_empty() { "All" } else { b };
+                        if crate::chrome::chip(ui, self.awards_band == b, label).clicked() {
+                            new_band = Some(b.to_string());
+                        }
+                    }
+                });
+                ui.separator();
+                // Summary counts.
+                award_summary(ui, "DXCC", &awards.dxcc);
+                award_summary(ui, "WAZ", &awards.waz);
+                award_summary(ui, "WAS", &awards.was);
+                award_summary(ui, "Grids", &awards.grids);
+                ui.add_space(6.0);
+
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    // WAS state grid.
+                    ui.label(RichText::new("Worked All States").size(12.0).strong().color(crate::theme::CYAN));
+                    award_cell_grid(
+                        ui,
+                        sdroxide_types::US_STATES.iter().map(|s| {
+                            (s.to_string(), awards.was.get(*s).copied().unwrap_or_default())
+                        }),
+                        44.0,
+                    );
+                    ui.add_space(8.0);
+                    // WAZ zone grid (1..40).
+                    ui.label(RichText::new("CQ Zones (WAZ)").size(12.0).strong().color(crate::theme::CYAN));
+                    award_cell_grid(
+                        ui,
+                        (1u8..=40).map(|z| {
+                            (format!("{z:02}"), awards.waz.get(&z).copied().unwrap_or_default())
+                        }),
+                        34.0,
+                    );
+                    ui.add_space(8.0);
+                    // DXCC worked list (confirmed marked).
+                    ui.label(RichText::new("DXCC entities").size(12.0).strong().color(crate::theme::CYAN));
+                    for (name, st) in &awards.dxcc {
+                        let col = if st.confirmed {
+                            crate::theme::GREEN
+                        } else {
+                            crate::theme::YELLOW
+                        };
+                        ui.label(
+                            RichText::new(format!("{} {name}", if st.confirmed { "✓" } else { "•" }))
+                                .size(11.5)
+                                .color(col),
+                        );
+                    }
+                });
+            });
+        if let Some(r) = &resp {
+            crate::chrome::paint_window_border(ctx, &r.response);
+        }
+        self.show_awards = open;
+        if let Some(b) = new_band {
+            self.awards_band = b;
+        }
+    }
+
+    /// Drain a pending ADIF import: parse, lightly de-dup against the current
+    /// log (same call+band within 2 minutes), append with fresh ids, persist.
+    fn poll_adif_import(&mut self) {
+        let text = self.adif_import_inbox.lock().ok().and_then(|mut g| g.take());
+        let Some(text) = text else { return };
+        let records = sdroxide_types::adif_to_qso_log(&text);
+        let mut added = 0usize;
+        let mut skipped = 0usize;
+        for mut r in records {
+            if r.call.trim().is_empty() {
+                continue;
+            }
+            let dup = self.qso_log.iter().any(|q| {
+                q.call.eq_ignore_ascii_case(&r.call)
+                    && q.band.eq_ignore_ascii_case(&r.band)
+                    && (q.start_utc - r.start_utc).abs() < 120
+            });
+            if dup {
+                skipped += 1;
+                continue;
+            }
+            r.id = self.next_log_id();
+            self.qso_log.push(r);
+            added += 1;
+        }
+        if added > 0 {
+            persist_qso_log(&self.qso_log);
+        }
+        self.push_net_log(format!("ADIF import: {added} added, {skipped} duplicates skipped"));
+    }
+
+    /// Apply the operator-identity fallback from the digi config to the network
+    /// config (idempotent; the config itself was loaded at startup). Called when
+    /// the spots / setup windows open, by when the digi config has been seeded.
+    fn seed_net_cfg(&mut self) {
+        let _ = self.net_cfg_seeded; // seeded at construction
+        if self.net_cfg_edit.my_call.trim().is_empty()
+            && !self.digi_cfg_edit.my_call.trim().is_empty()
+        {
+            self.net_cfg_edit.my_call = self.digi_cfg_edit.my_call.clone();
+        }
+        if self.net_cfg_edit.my_grid.trim().is_empty()
+            && !self.digi_cfg_edit.my_grid.trim().is_empty()
+        {
+            self.net_cfg_edit.my_grid = self.digi_cfg_edit.my_grid.clone();
+        }
     }
 
     /// Combined VFO + RIT/XIT box: the VFO A/B utility chips on top, with the
@@ -1160,6 +1653,18 @@ impl SdroxideApp {
                 .clicked()
             {
                 self.show_logbook = !self.show_logbook;
+            }
+            if crate::chrome::chip(ui, self.show_spots, "SPOTS")
+                .on_hover_text("Live spots — DX cluster, POTA, SOTA, PSK Reporter")
+                .clicked()
+            {
+                self.show_spots = !self.show_spots;
+            }
+            if crate::chrome::chip(ui, self.show_awards, "AWARDS")
+                .on_hover_text("Award tracking — DXCC / WAS / WAZ / grids")
+                .clicked()
+            {
+                self.show_awards = !self.show_awards;
             }
             if crate::chrome::chip(ui, self.show_memories, "MEM")
                 .on_hover_text("Memory channels")
@@ -1771,6 +2276,14 @@ impl SdroxideApp {
                 Some((lat, lon, alpha))
             })
             .collect();
+        // Located network spots (filtered by the shown-kind toggles), as
+        // kind-coloured dots on the map.
+        let spot_dots: Vec<(f64, f64, (u8, u8, u8))> = self
+            .spots
+            .iter()
+            .filter(|s| self.spot_kinds_shown[spot_kind_index(s.kind)])
+            .filter_map(|s| s.loc.map(|(lat, lon)| (lat, lon, s.kind.color())))
+            .collect();
         if map_budget >= crate::widgets::worldmap::MIN_HEIGHT {
             crate::widgets::worldmap::show(
                 ui,
@@ -1780,6 +2293,7 @@ impl SdroxideApp {
                 preview_ll,
                 hover_ll,
                 &stations,
+                &spot_dots,
                 tx_active,
                 map_budget,
             );
@@ -2704,6 +3218,117 @@ impl SdroxideApp {
         self.show_memories = open;
     }
 
+    /// Tune the active VFO onto a spot (CW dialed a pitch below, so it lands in
+    /// the CW passband), set its mode, and open a pre-filled log entry.
+    fn select_spot(&mut self, spot: &Spot, cmds: &mut Vec<Command>) {
+        match spot.radio_mode() {
+            Some(Mode::Cw) => {
+                let (lo, hi) = Mode::Cw.default_filter();
+                let pitch = ((lo + hi) * 0.5) as f64;
+                cmds.push(Command::SetVfo { vfo: self.state.active_vfo, hz: spot.freq_hz - pitch });
+                cmds.push(Command::SetMode { rx: RxId::Main, mode: Mode::Cw });
+            }
+            Some(m) => {
+                cmds.push(Command::SetVfo { vfo: self.state.active_vfo, hz: spot.freq_hz });
+                cmds.push(Command::SetMode { rx: RxId::Main, mode: m });
+            }
+            None => cmds.push(Command::SetVfo { vfo: self.state.active_vfo, hz: spot.freq_hz }),
+        }
+        self.prefill_from_spot(spot);
+    }
+
+    /// The live-spots window: source filters, a click-to-tune list of current
+    /// DX-cluster / POTA / SOTA / PSK-Reporter spots, and the feed status line.
+    fn spots_window(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
+        if self.show_spots {
+            self.seed_net_cfg();
+        }
+        let worked_entities = self.worked_entities().clone();
+        let mut open = self.show_spots;
+        let mut clicked: Option<Spot> = None;
+        let mut open_setup = false;
+        let now = now_unix();
+        let spots = self.spots.clone();
+        let labels = [
+            (SpotKind::DxCluster, "DX"),
+            (SpotKind::Pota, "POTA"),
+            (SpotKind::Sota, "SOTA"),
+            (SpotKind::PskReporter, "PSK"),
+        ];
+        let resp = egui::Window::new("SPOTS")
+            .open(&mut open)
+            .frame(crate::chrome::window_frame())
+            .resizable(true)
+            .default_width(580.0)
+            .default_height(480.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    for (i, (_, label)) in labels.iter().enumerate() {
+                        if crate::chrome::chip(ui, self.spot_kinds_shown[i], *label).clicked() {
+                            self.spot_kinds_shown[i] = !self.spot_kinds_shown[i];
+                        }
+                    }
+                    if crate::chrome::chip(ui, self.spot_in_view_only, "IN VIEW")
+                        .on_hover_text("Only spots inside the panadapter span")
+                        .clicked()
+                    {
+                        self.spot_in_view_only = !self.spot_in_view_only;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if crate::chrome::chip(ui, false, "⚙ SETUP")
+                            .on_hover_text("Feeds, lookup & upload settings")
+                            .clicked()
+                        {
+                            open_setup = true;
+                        }
+                    });
+                });
+                if let Some(s) = &self.net_status {
+                    ui.label(RichText::new(s).size(11.0).color(Color32::from_gray(150)));
+                }
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    let mut shown = 0usize;
+                    for s in &spots {
+                        if !self.spot_kinds_shown[spot_kind_index(s.kind)] {
+                            continue;
+                        }
+                        if self.spot_in_view_only
+                            && !(self.view.view_lo_hz..=self.view.view_hi_hz).contains(&s.freq_hz)
+                        {
+                            continue;
+                        }
+                        let needed = sdroxide_types::entity_name(&s.call)
+                            .map(|n| !worked_entities.contains(n))
+                            .unwrap_or(false);
+                        if spot_row(ui, s, now, needed).clicked() {
+                            clicked = Some(s.clone());
+                        }
+                        shown += 1;
+                    }
+                    if shown == 0 {
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new("no spots — enable a feed in ⚙ SETUP")
+                                .color(Color32::from_gray(120)),
+                        );
+                    }
+                });
+            });
+        if let Some(r) = &resp {
+            crate::chrome::paint_window_border(ctx, &r.response);
+        }
+        self.show_spots = open;
+        if open_setup {
+            // Open the main Settings dialog on the Spots tab.
+            self.show_settings = true;
+            self.settings_tab = SettingsTab::Spots;
+        }
+        if let Some(s) = clicked {
+            self.select_spot(&s, cmds);
+        }
+    }
+
     /// The logbook overlay: a session-grouped list of all QSOs (digital and
     /// manual), with add / edit / delete and ADIF/TXT export.
     fn logbook_window(&mut self, ctx: &egui::Context) {
@@ -2734,6 +3359,13 @@ impl SdroxideApp {
                                 crate::download::save("sdroxide-log.adi", adif.as_bytes());
                             }
                         });
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if crate::chrome::chip(ui, false, "IMPORT")
+                            .on_hover_text("Import QSOs from an ADIF (.adi) file")
+                            .clicked()
+                        {
+                            crate::download::load_text("ADIF", "adi", self.adif_import_inbox.clone());
+                        }
                         ui.label(
                             RichText::new(format!("{} QSO", self.qso_log.len()))
                                 .size(11.0)
@@ -2763,6 +3395,21 @@ impl SdroxideApp {
         }
         let mut action = 0u8; // 1 = save, 2 = cancel
         let mut set_now = false;
+        // "Worked before" (same call + band) — computed before the mutable
+        // borrow of the form below, against the current log.
+        let (dupe, dupe_band) = {
+            let f = self.log_edit.as_ref().unwrap();
+            let freq_hz = f.freq_mhz.trim().parse::<f64>().ok().map(|m| m * 1e6).unwrap_or(0.0);
+            let band =
+                if freq_hz > 0.0 { sdroxide_types::adif_band(freq_hz).to_string() } else { String::new() };
+            let dupe = !band.is_empty()
+                && !f.call.trim().is_empty()
+                && sdroxide_types::worked_before(&self.qso_log, f.call.trim(), &band, "", f.id);
+            (dupe, band)
+        };
+        let auto_lookup = self.net_cfg_edit.auto_lookup;
+        let has_provider = self.net_cfg_edit.lookup_provider != LookupProvider::None;
+        let mut lookup_call: Option<String> = None;
         {
             let f = self.log_edit.as_mut().unwrap();
             egui::Frame::new()
@@ -2771,12 +3418,22 @@ impl SdroxideApp {
                 .inner_margin(egui::Margin::same(9))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(
-                        RichText::new(if f.id == 0 { "NEW QSO" } else { "EDIT QSO" })
-                            .size(11.0)
-                            .strong()
-                            .color(crate::theme::CYAN),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(if f.id == 0 { "NEW QSO" } else { "EDIT QSO" })
+                                .size(11.0)
+                                .strong()
+                                .color(crate::theme::CYAN),
+                        );
+                        if dupe {
+                            ui.label(
+                                RichText::new(format!("⚠ WORKED BEFORE ({dupe_band})"))
+                                    .size(11.0)
+                                    .strong()
+                                    .color(crate::theme::PINK),
+                            );
+                        }
+                    });
                     ui.add_space(4.0);
                     // Horizontal rows (not a Grid) so each field keeps its
                     // explicit width — a Grid redistributes column widths and
@@ -2794,9 +3451,25 @@ impl SdroxideApp {
                     };
                     ui.horizontal(|ui| {
                         lbl(ui, "Call");
-                        field(ui, 150.0, &mut f.call);
+                        let cr = ui.add(egui::TextEdit::singleline(&mut f.call).desired_width(150.0));
+                        if has_provider
+                            && crate::chrome::chip(ui, false, "LOOKUP")
+                                .on_hover_text("Look up name / QTH / grid")
+                                .clicked()
+                            && !f.call.trim().is_empty()
+                        {
+                            lookup_call = Some(f.call.trim().to_string());
+                        }
                         lbl(ui, "Grid");
-                        field(ui, 120.0, &mut f.grid);
+                        field(ui, 110.0, &mut f.grid);
+                        // Auto-lookup when the call field loses focus.
+                        if cr.lost_focus()
+                            && auto_lookup
+                            && has_provider
+                            && !f.call.trim().is_empty()
+                        {
+                            lookup_call = Some(f.call.trim().to_string());
+                        }
                     });
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
@@ -2814,6 +3487,20 @@ impl SdroxideApp {
                     });
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
+                        lbl(ui, "Name");
+                        field(ui, 150.0, &mut f.name);
+                        lbl(ui, "QTH");
+                        field(ui, 120.0, &mut f.qth);
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        lbl(ui, "State");
+                        field(ui, 150.0, &mut f.state);
+                        lbl(ui, "Country");
+                        field(ui, 120.0, &mut f.country);
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
                         lbl(ui, "Date UTC");
                         field(ui, 150.0, &mut f.date);
                         lbl(ui, "Time");
@@ -2821,6 +3508,17 @@ impl SdroxideApp {
                         if crate::chrome::chip(ui, false, "NOW").clicked() {
                             set_now = true;
                         }
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        lbl(ui, "Pwr W");
+                        field(ui, 60.0, &mut f.tx_pwr);
+                        lbl(ui, "Contest");
+                        field(ui, 96.0, &mut f.contest_id);
+                        lbl(ui, "S# sent");
+                        field(ui, 56.0, &mut f.stx);
+                        lbl(ui, "S# rcvd");
+                        field(ui, 56.0, &mut f.srx);
                     });
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
@@ -2850,6 +3548,9 @@ impl SdroxideApp {
                 f.date = format!("{y:04}-{mo:02}-{d:02}");
                 f.time = format!("{h:02}:{mi:02}");
             }
+        }
+        if let Some(c) = lookup_call {
+            self.pending_lookups.push(c);
         }
         match action {
             1 => {
@@ -2891,6 +3592,10 @@ impl SdroxideApp {
 
         let mut to_edit: Option<u64> = None;
         let mut to_delete: Option<u64> = None;
+        let mut to_upload: Option<u64> = None;
+        // Which targets have credentials, so the per-QSO upload button is only
+        // offered when it can do something.
+        let up_targets = configured_upload_targets(&self.net_cfg_edit);
 
         let mut i = 0;
         while i < order.len() {
@@ -2990,6 +3695,47 @@ impl SdroxideApp {
                                         .color(crate::theme::CYAN_DIM),
                                 ),
                             );
+                            // QSL / confirmation status: green ✓ when confirmed,
+                            // dim ↑ when uploaded-but-unconfirmed, else blank.
+                            let (qsl_txt, qsl_col) = if r.is_confirmed() {
+                                ("✓", crate::theme::GREEN)
+                            } else if r.lotw_sent || r.eqsl_sent || r.qrz_sent || r.clublog_sent {
+                                ("↑", Color32::from_gray(140))
+                            } else {
+                                ("", gray)
+                            };
+                            let mut qsl_tip = String::new();
+                            for (on, name) in [
+                                (r.lotw_rcvd, "LoTW ✓"),
+                                (r.eqsl_rcvd, "eQSL ✓"),
+                                (r.qsl_rcvd, "card ✓"),
+                                (r.lotw_sent, "LoTW ↑"),
+                                (r.eqsl_sent, "eQSL ↑"),
+                                (r.qrz_sent, "QRZ ↑"),
+                                (r.clublog_sent, "Club Log ↑"),
+                            ] {
+                                if on {
+                                    if !qsl_tip.is_empty() {
+                                        qsl_tip.push_str(", ");
+                                    }
+                                    qsl_tip.push_str(name);
+                                }
+                            }
+                            {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(16.0, 20.0),
+                                    egui::Sense::hover(),
+                                );
+                                let mut c = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                ));
+                                let resp = c.add(egui::Label::new(
+                                    RichText::new(qsl_txt).size(13.0).strong().color(qsl_col),
+                                ));
+                                if !qsl_tip.is_empty() {
+                                    resp.on_hover_text(qsl_tip);
+                                }
+                            }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -3009,6 +3755,13 @@ impl SdroxideApp {
                                         .clicked()
                                     {
                                         to_edit = Some(r.id);
+                                    }
+                                    if !up_targets.is_empty()
+                                        && crate::chrome::chip(ui, false, RichText::new("UP").size(11.0))
+                                            .on_hover_text("Upload this QSO to configured logs")
+                                            .clicked()
+                                    {
+                                        to_upload = Some(r.id);
                                     }
                                     if !r.comment.is_empty() {
                                         ui.add(
@@ -3042,6 +3795,11 @@ impl SdroxideApp {
             if let Some(r) = self.qso_log.iter().find(|q| q.id == id) {
                 self.log_edit = Some(LogEditForm::from_record(r));
             }
+        } else if let Some(id) = to_upload {
+            if let Some(r) = self.qso_log.iter().find(|q| q.id == id) {
+                let adif = sdroxide_types::qso_log_to_adif(std::slice::from_ref(r));
+                self.pending_uploads.push((id, adif, up_targets));
+            }
         }
     }
 
@@ -3058,6 +3816,8 @@ impl SdroxideApp {
             self.serial_ports = self.ctrl.serial_ports();
             self.audio_devices_queried = true;
         }
+        // Apply the operator-identity fallback before editing the net config.
+        self.seed_net_cfg();
 
         // Edits collected here and applied after the window closure, which
         // borrows `&self` and so can't touch `&mut self.ctrl`.
@@ -3069,6 +3829,10 @@ impl SdroxideApp {
         let mut ui_edit = self.ui_settings;
         let mut digi_edit = self.digi_cfg_edit.clone();
         let digi_seeded = self.digi_cfg_seeded;
+        let mut net_edit = self.net_cfg_edit.clone();
+        let mut net_cmds = self.net_cluster_cmds.clone();
+        let mut net_apply = false;
+        let mut net_sync = false;
 
         // The concrete interface types the user chooses between. SoapySDR only
         // appears when compiled in; there is no auto-detect (an unavailable
@@ -3101,6 +3865,10 @@ impl SdroxideApp {
                     &mut ui_edit,
                     &mut digi_edit,
                     digi_seeded,
+                    &mut net_edit,
+                    &mut net_cmds,
+                    &mut net_apply,
+                    &mut net_sync,
                     &mut tab,
                 );
             });
@@ -3109,6 +3877,22 @@ impl SdroxideApp {
         }
         self.show_settings = open;
         self.settings_tab = tab;
+        // Persist net-config edits (kept across frames) and apply on demand.
+        self.net_cfg_edit = net_edit;
+        self.net_cluster_cmds = net_cmds;
+        if net_apply {
+            self.net_cfg_edit.cluster.commands = self
+                .net_cluster_cmds
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+            // The engine persists net.json when it applies this.
+            cmds.push(Command::SetNetworkConfig(self.net_cfg_edit.clone()));
+        }
+        if net_sync {
+            cmds.push(Command::SyncConfirmations);
+        }
         if let Some((output, name)) = audio_pick {
             self.ctrl.set_audio_device(output, name);
             self.audio_devices_queried = false;
@@ -3168,6 +3952,10 @@ impl SdroxideApp {
         ui_edit: &mut sdroxide_types::UiSettings,
         digi_edit: &mut sdroxide_types::DigiConfig,
         digi_seeded: bool,
+        net_edit: &mut NetworkConfig,
+        net_cmds: &mut String,
+        net_apply: &mut bool,
+        net_sync: &mut bool,
         tab: &mut SettingsTab,
     ) {
         use sdroxide_types::Backend;
@@ -3178,6 +3966,8 @@ impl SdroxideApp {
                 (SettingsTab::Radio, "Radio"),
                 (SettingsTab::Audio, "Audio"),
                 (SettingsTab::Ui, "UI"),
+                (SettingsTab::Spots, "Spots"),
+                (SettingsTab::Uploads, "Uploads"),
             ] {
                 if crate::chrome::chip(ui, *tab == t, label).clicked() {
                     *tab = t;
@@ -3325,6 +4115,114 @@ impl SdroxideApp {
                 }
             }
             SettingsTab::Ui => settings_ui_tab(ui, ui_edit),
+            SettingsTab::Spots => {
+                net_heading(ui, "Operator");
+                net_row(ui, "Callsign", &mut net_edit.my_call, 140.0);
+                net_row(ui, "Grid", &mut net_edit.my_grid, 140.0);
+
+                net_heading(ui, "DX cluster (telnet)");
+                ui.checkbox(&mut net_edit.cluster.enabled, "Enabled");
+                net_row(ui, "Host", &mut net_edit.cluster.host, 220.0);
+                ui.horizontal(|ui| {
+                    ui.add_sized([96.0, 22.0], egui::Label::new("Port"));
+                    ui.add(egui::DragValue::new(&mut net_edit.cluster.port).range(1..=65535));
+                });
+                net_row(ui, "Login call", &mut net_edit.cluster.login, 140.0);
+                ui.horizontal(|ui| {
+                    ui.add_sized([96.0, 22.0], egui::Label::new("Commands"));
+                    ui.add(
+                        egui::TextEdit::multiline(net_cmds)
+                            .desired_rows(2)
+                            .hint_text("one per line, e.g. SET/FT8")
+                            .desired_width(220.0),
+                    );
+                });
+
+                net_heading(ui, "POTA / SOTA / PSK Reporter");
+                ui.checkbox(&mut net_edit.pota.enabled, "POTA activator spots");
+                ui.checkbox(&mut net_edit.sota.enabled, "SOTA spots");
+                ui.checkbox(&mut net_edit.psk.enabled, "PSK Reporter (current band)");
+                ui.horizontal(|ui| {
+                    ui.add_sized([96.0, 22.0], egui::Label::new("Max age (s)"));
+                    ui.add(egui::DragValue::new(&mut net_edit.spot_max_age_secs).range(60..=7200));
+                });
+
+                ui.add_space(8.0);
+                if crate::chrome::chip_accent(
+                    ui,
+                    false,
+                    RichText::new(" APPLY ").strong(),
+                    crate::theme::GREEN,
+                    crate::theme::INK_ON_CYAN,
+                )
+                .on_hover_text("Persist and (re)connect the feeds")
+                .clicked()
+                {
+                    *net_apply = true;
+                }
+            }
+            SettingsTab::Uploads => {
+                net_heading(ui, "Callsign lookup");
+                ui.horizontal(|ui| {
+                    ui.add_sized([96.0, 22.0], egui::Label::new("Provider"));
+                    egui::ComboBox::from_id_salt("lookup_provider")
+                        .selected_text(net_edit.lookup_provider.label())
+                        .show_ui(ui, |ui| {
+                            for p in LookupProvider::ALL {
+                                ui.selectable_value(&mut net_edit.lookup_provider, p, p.label());
+                            }
+                        });
+                });
+                ui.checkbox(&mut net_edit.auto_lookup, "Auto-fill name/QTH/grid on spot click & QSO");
+                net_row(ui, "QRZ user", &mut net_edit.qrz.user, 140.0);
+                net_secret(ui, "QRZ pass", &mut net_edit.qrz.password, 140.0);
+                net_row(ui, "HamQTH user", &mut net_edit.hamqth.user, 140.0);
+                net_secret(ui, "HamQTH pass", &mut net_edit.hamqth.password, 140.0);
+
+                net_heading(ui, "Upload — eQSL / QRZ / Club Log");
+                net_row(ui, "eQSL user", &mut net_edit.eqsl.user, 140.0);
+                net_secret(ui, "eQSL pass", &mut net_edit.eqsl.password, 140.0);
+                net_secret(ui, "QRZ log key", &mut net_edit.qrz_logbook_key, 200.0);
+                net_row(ui, "Club Log email", &mut net_edit.clublog.user, 200.0);
+                net_secret(ui, "Club Log pass", &mut net_edit.clublog.password, 140.0);
+                net_secret(ui, "Club Log key", &mut net_edit.clublog_api_key, 200.0);
+                ui.checkbox(&mut net_edit.auto_upload, "Auto-upload each new QSO");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut net_edit.auto_upload_eqsl, "eQSL");
+                    ui.checkbox(&mut net_edit.auto_upload_qrz, "QRZ");
+                    ui.checkbox(&mut net_edit.auto_upload_clublog, "Club Log");
+                });
+
+                net_heading(ui, "Confirmations (download)");
+                net_row(ui, "LoTW user", &mut net_edit.lotw.user, 140.0);
+                net_secret(ui, "LoTW pass", &mut net_edit.lotw.password, 140.0);
+                ui.label(
+                    RichText::new(
+                        "LoTW upload uses TQSL — export ADIF from the logbook and sign it. \
+                         LoTW/eQSL confirmations are downloaded here to mark worked-vs-confirmed.",
+                    )
+                    .size(10.5)
+                    .color(Color32::from_gray(140)),
+                );
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if crate::chrome::chip_accent(
+                        ui,
+                        false,
+                        RichText::new(" APPLY ").strong(),
+                        crate::theme::GREEN,
+                        crate::theme::INK_ON_CYAN,
+                    )
+                    .clicked()
+                    {
+                        *net_apply = true;
+                    }
+                    if crate::chrome::chip(ui, false, "SYNC CONFIRMATIONS").clicked() {
+                        *net_sync = true;
+                    }
+                });
+            }
         }
     }
 
@@ -3455,6 +4353,28 @@ fn device_combo(
 
 /// A dropdown over an enum's `ALL`, using its `label()`.
 /// UI / display preferences: frame rate, waterfall scroll speed, spectrum speed.
+/// Section heading for the Spots / Uploads settings tabs.
+fn net_heading(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(6.0);
+    ui.label(RichText::new(text).size(12.0).strong().color(crate::theme::CYAN));
+}
+
+/// A labelled single-line text field for the network settings tabs.
+fn net_row(ui: &mut egui::Ui, label: &str, val: &mut String, w: f32) {
+    ui.horizontal(|ui| {
+        ui.add_sized([96.0, 22.0], egui::Label::new(label));
+        ui.add(egui::TextEdit::singleline(val).desired_width(w));
+    });
+}
+
+/// A labelled password field (masked) for the network settings tabs.
+fn net_secret(ui: &mut egui::Ui, label: &str, val: &mut String, w: f32) {
+    ui.horizontal(|ui| {
+        ui.add_sized([96.0, 22.0], egui::Label::new(label));
+        ui.add(egui::TextEdit::singleline(val).password(true).desired_width(w));
+    });
+}
+
 fn settings_ui_tab(ui: &mut egui::Ui, cfg: &mut sdroxide_types::UiSettings) {
     use sdroxide_types::{Speed, UiSettings};
     ui.label(RichText::new("Display").size(14.0).strong().color(crate::theme::CYAN));
@@ -3815,8 +4735,15 @@ impl eframe::App for SdroxideApp {
                 }
                 RadioEvent::Ft8QsoLogged(mut r) => {
                     r.id = self.next_log_id();
+                    let call = r.call.clone();
+                    let adif = auto_upload_adif(&self.net_cfg_edit, &r);
                     self.qso_log.push(r);
                     persist_qso_log(&self.qso_log);
+                    // Enrich + optionally upload the freshly logged QSO.
+                    self.queue_lookup(call);
+                    if let Some((qso_id, adif, targets)) = adif {
+                        self.pending_uploads.push((qso_id, adif, targets));
+                    }
                 }
                 RadioEvent::SstvLine { image_id, y, rgb } => {
                     self.sstv.on_line(image_id, y, &rgb, &ctx);
@@ -3862,12 +4789,18 @@ impl eframe::App for SdroxideApp {
                     self.skimmer_active_at.retain(|id, _| live.contains(id));
                     self.skimmer_spots = s;
                 }
+                RadioEvent::Spots(s) => self.spots = s,
+                RadioEvent::NetStatus(s) => self.net_status = s,
+                RadioEvent::CallsignResult(info) => self.apply_callsign(info),
+                RadioEvent::Upload(r) => self.on_upload_result(r),
+                RadioEvent::Confirmations(recs) => self.apply_confirmations(recs),
             }
         }
         // When the skimmer is off the engine stops emitting; drop stale boxes.
         if !self.state.skimmer_enabled && !self.skimmer_spots.is_empty() {
             self.skimmer_spots.clear();
         }
+        self.poll_adif_import();
 
         let mut cmds = Vec::new();
         // F1 toggles the manual — handled here (not in `keyboard_shortcuts`) so
@@ -3914,6 +4847,10 @@ impl eframe::App for SdroxideApp {
                     });
                 });
         }
+        // Network-spot overlay (shared by voice + digital panadapter paths). A
+        // clicked spot is captured here and pre-filled into a log entry below.
+        let (net_spots, net_alpha) = self.net_overlay(now_unix());
+        let mut clicked_spot: Option<Spot> = None;
         // Remaining space: the panadapter (+ FT8/FT4 operating panel).
         if let Some(err) = self.error.clone() {
             ui.centered_and_justified(|ui| {
@@ -3991,6 +4928,9 @@ impl eframe::App for SdroxideApp {
                     &markers,
                     &ft8_spots,
                     &ft8_alpha,
+                    &net_spots,
+                    &net_alpha,
+                    &mut clicked_spot,
                     wf_tuning,
                     &mut cmds,
                 );
@@ -4062,16 +5002,26 @@ impl eframe::App for SdroxideApp {
                 &mut self.trace_cache,
                 &cw_spots,
                 &cw_alpha,
+                &net_spots,
+                &net_alpha,
+                &mut clicked_spot,
                 wf_tuning,
                 &mut cmds,
             );
             self.frame = frame;
+        }
+        // A spot clicked on the panadapter: pre-fill a log entry (tuning + mode
+        // were already issued inside the widget).
+        if let Some(spot) = clicked_spot {
+            self.prefill_from_spot(&spot);
         }
 
         self.memories_window(&ctx, &mut cmds);
         self.settings_window(&ctx, &mut cmds);
         self.digi_settings_window(&ctx, &mut cmds);
         self.logbook_window(&ctx);
+        self.spots_window(&ctx, &mut cmds);
+        self.awards_window(&ctx);
         self.help.ui(&ctx);
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -4093,6 +5043,14 @@ impl eframe::App for SdroxideApp {
                 self.sent_cfg = Some(ideal);
                 cmds.push(Command::SetSpectrumCfg(ideal));
             }
+        }
+
+        // Flush queued lookups / uploads accumulated during window rendering.
+        for call in std::mem::take(&mut self.pending_lookups) {
+            cmds.push(Command::LookupCallsign { call });
+        }
+        for (qso_id, adif, targets) in std::mem::take(&mut self.pending_uploads) {
+            cmds.push(Command::UploadQso { qso_id, adif, targets });
         }
 
         for c in cmds {
@@ -4230,6 +5188,128 @@ fn date_str(unix: i64) -> String {
 fn time_str(unix: i64) -> String {
     let (_, _, _, h, mi, _) = sdroxide_types::utc_ymd_hms(unix);
     format!("{h:02}:{mi:02}")
+}
+
+/// Compact age of a spot: `"12s"`, `"3m"`, `"1h"`.
+fn fmt_age(secs: i64) -> String {
+    let s = secs.max(0);
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m", s / 60)
+    } else {
+        format!("{}h", s / 3600)
+    }
+}
+
+/// One clickable spot row for the spots window: kind badge, call, frequency,
+/// mode, age, and the park/summit reference or comment.
+fn spot_row(ui: &mut egui::Ui, s: &Spot, now_utc: i64, needed: bool) -> egui::Response {
+    let (r, g, b) = s.kind.color();
+    let kind_col = Color32::from_rgb(r, g, b);
+    let gray = Color32::from_gray(150);
+    let inner = egui::Frame::new()
+        .fill(crate::theme::ROW_BG)
+        .inner_margin(egui::Margin { left: 8, right: 6, top: 4, bottom: 4 })
+        .show(ui, |ui| {
+            ui.set_min_height(22.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let col = |ui: &mut egui::Ui, w: f32, lbl: egui::Label| {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(w, 20.0), egui::Sense::hover());
+                    ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(rect)
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    )
+                    .add(lbl);
+                };
+                col(ui, 44.0, egui::Label::new(RichText::new(s.kind.label()).size(10.0).strong().color(kind_col)));
+                col(
+                    ui,
+                    90.0,
+                    egui::Label::new(
+                        RichText::new(&s.call).size(14.0).strong().color(crate::theme::TEXT_STRONG),
+                    )
+                    .truncate(),
+                );
+                col(
+                    ui,
+                    78.0,
+                    egui::Label::new(
+                        RichText::new(format!("{:.4}", s.freq_hz / 1e6)).monospace().size(12.0).color(gray),
+                    ),
+                );
+                col(ui, 46.0, egui::Label::new(RichText::new(&s.mode).monospace().size(11.0).color(gray)));
+                col(ui, 34.0, egui::Label::new(RichText::new(fmt_age(now_utc - s.when_utc)).size(10.5).color(Color32::from_gray(120))));
+                if needed {
+                    col(
+                        ui,
+                        36.0,
+                        egui::Label::new(
+                            RichText::new("NEW").size(10.0).strong().color(crate::theme::GREEN),
+                        ),
+                    );
+                }
+                let info = match &s.reference {
+                    Some(r) if !s.comment.is_empty() => format!("{r} · {}", s.comment),
+                    Some(r) => r.clone(),
+                    None => s.comment.clone(),
+                };
+                ui.add(egui::Label::new(RichText::new(info).size(11.0).color(gray)).truncate());
+            });
+        });
+    let resp = inner.response.interact(egui::Sense::click());
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
+/// One "N worked / M confirmed" summary line for an award map.
+fn award_summary<K>(
+    ui: &mut egui::Ui,
+    name: &str,
+    map: &std::collections::BTreeMap<K, sdroxide_types::AwardStatus>,
+) {
+    let (w, c) = sdroxide_types::counts(map);
+    ui.horizontal(|ui| {
+        ui.add_sized([90.0, 20.0], egui::Label::new(RichText::new(name).strong()));
+        ui.label(RichText::new(format!("{w} worked")).color(crate::theme::YELLOW).monospace());
+        ui.label(RichText::new(format!("{c} confirmed")).color(crate::theme::GREEN).monospace());
+    });
+}
+
+/// A wrapping grid of fixed-width award cells: grey = not worked, amber =
+/// worked, green = confirmed.
+fn award_cell_grid(
+    ui: &mut egui::Ui,
+    items: impl Iterator<Item = (String, sdroxide_types::AwardStatus)>,
+    cell_w: f32,
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+        for (label, st) in items {
+            let (bg, fg) = if st.confirmed {
+                (crate::theme::GREEN, Color32::from_rgb(8, 18, 12))
+            } else if st.worked {
+                (crate::theme::YELLOW, Color32::from_rgb(20, 16, 6))
+            } else {
+                (Color32::from_gray(38), Color32::from_gray(110))
+            };
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(cell_w, 20.0), egui::Sense::hover());
+            let p = ui.painter_at(rect);
+            p.rect_filled(rect, 3.0, bg);
+            p.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::monospace(11.0),
+                fg,
+            );
+        }
+    });
 }
 
 /// Standard FT8/FT4 dial frequencies per HF/6 m band.

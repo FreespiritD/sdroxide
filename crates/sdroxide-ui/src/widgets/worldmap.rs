@@ -106,6 +106,8 @@ pub fn show(
     preview: Option<(f64, f64)>,
     hover: Option<(f64, f64)>,
     stations: &[(f64, f64, f32)],
+    // Network spots with a known location: (lat, lon, rgb tint by kind).
+    spots: &[(f64, f64, (u8, u8, u8))],
     tx_active: bool,
     max_h: f32,
 ) {
@@ -210,6 +212,14 @@ pub fn show(
     // Keep the slow fade progressing even after the zoom has settled.
     if !stations.is_empty() {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+    }
+
+    // Network spots (DX cluster / POTA / SOTA / PSK) as small kind-coloured
+    // diamonds — drawn under the home/DX markers so an active QSO stays clear.
+    for &(lat, lon, (r, g, b)) in spots {
+        let c = project(lat, lon);
+        p.circle_filled(c, dot_r + 2.0, Color32::from_rgba_unmultiplied(r, g, b, 55));
+        p.circle_filled(c, 2.2, Color32::from_rgb(r, g, b));
     }
 
     // Great-circle path as a dotted cyan trail (dots avoid antimeridian wrap).

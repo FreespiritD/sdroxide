@@ -38,6 +38,7 @@ sdroxide-ui = { path = "crates/sdroxide-ui" }
 sdroxide-cat = { path = "crates/sdroxide-cat" }
 sdroxide-hpsdr = { path = "crates/sdroxide-hpsdr" }
 sdroxide-tci = { path = "crates/sdroxide-tci" }
+sdroxide-net = { path = "crates/sdroxide-net" }
 
 serde = { version = "1", features = ["derive"] }
 num-complex = "0.4"

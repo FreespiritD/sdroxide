@@ -229,6 +229,15 @@ pub fn save_qso_log(log: &[sdroxide_types::QsoRecord]) -> Result<(), ConfigError
     save_json("qso_log.json", &log)
 }
 
+/// Network cockpit config (spot feeds, callsign lookup, uploads; credentials).
+pub fn load_network_config() -> sdroxide_types::NetworkConfig {
+    load_json("net.json")
+}
+
+pub fn save_network_config(cfg: &sdroxide_types::NetworkConfig) -> Result<(), ConfigError> {
+    save_json("net.json", cfg)
+}
+
 /// SSTV per-slot transmit overlay messages (one entry per image slot). The
 /// image pixels live as PNGs under [`sstv_tx_dir`]; this stores just the text
 /// that is composited over each slot's picture.

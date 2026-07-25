@@ -9,7 +9,9 @@ use eframe::egui::{
     self, Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui,
     pos2, vec2,
 };
-use sdroxide_types::{Command, Mode, RadioState, RxId, SkimmerKind, SkimmerSpot, SpectrumFrame, Vfo};
+use sdroxide_types::{
+    Command, Mode, RadioState, RxId, SkimmerKind, SkimmerSpot, SpectrumFrame, Spot, Vfo,
+};
 
 use crate::view::ViewState;
 use crate::waterfall_gpu::WaterfallCallback;
@@ -265,6 +267,139 @@ fn draw_spot_box(
     mp.galley(pos2(gx, ty), g, col);
 }
 
+// --- network spot markers (DX cluster / POTA / SOTA / PSK Reporter) --------
+// Rendered bottom-anchored (lanes grow upward from the waterfall floor) so they
+// stay clear of the top-anchored skimmer / FT8 boxes.
+const NET_BOX_H: f32 = 18.0;
+const NET_CALL_PT: f32 = 12.5;
+const NET_TAG_PT: f32 = 9.5;
+const NET_PAD: f32 = 5.0;
+const NET_LANE_GAP: f32 = 3.0;
+const NET_BOTTOM_MARGIN: f32 = 4.0;
+const NET_H_GAP: f32 = 6.0;
+const NET_LEADER: f32 = 14.0;
+const NET_MAX_LANES: usize = 5;
+
+/// A laid-out network-spot box (mirrors [`SpotBox`] but bottom-anchored).
+struct NetBox {
+    rect: Rect,
+    sig_x: f32,
+    idx: usize,
+}
+
+fn net_spot_width(p: &egui::Painter, spot: &Spot) -> f32 {
+    let mut w = 2.0 * NET_PAD;
+    w += p.layout_no_wrap(spot.call.clone(), FontId::monospace(NET_CALL_PT), Color32::WHITE).size().x;
+    w += 6.0
+        + p.layout_no_wrap(spot.kind.label().to_string(), FontId::monospace(NET_TAG_PT), Color32::WHITE)
+            .size()
+            .x;
+    w.clamp(40.0, 220.0)
+}
+
+/// Kind tint, brightened on hover.
+fn net_spot_color(spot: &Spot, hovered: bool) -> Color32 {
+    let (r, g, b) = spot.kind.color();
+    if hovered {
+        Color32::from_rgb(r, g, b)
+    } else {
+        Color32::from_rgba_unmultiplied(r, g, b, 225)
+    }
+}
+
+/// Lay visible network spots into bottom-anchored staggered lanes.
+fn layout_net_spots(
+    p: &egui::Painter,
+    view: &ViewState,
+    rect: &Rect,
+    wf_rect: &Rect,
+    spots: &[Spot],
+) -> Vec<NetBox> {
+    let mut vis: Vec<(f32, usize)> = spots
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| (view.view_lo_hz..=view.view_hi_hz).contains(&s.freq_hz))
+        .map(|(i, s)| (view.freq_to_x(s.freq_hz, rect), i))
+        .collect();
+    vis.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let mut lane_right: Vec<f32> = Vec::new();
+    let mut out = Vec::with_capacity(vis.len());
+    for (xc, idx) in vis {
+        let box_w = net_spot_width(p, &spots[idx]);
+        let box_left = xc + NET_LEADER;
+        let foot_right = box_left + box_w + NET_H_GAP;
+        let mut lane = lane_right.len();
+        for (k, &r) in lane_right.iter().enumerate() {
+            if xc >= r {
+                lane = k;
+                break;
+            }
+        }
+        if lane >= NET_MAX_LANES {
+            continue;
+        }
+        if lane == lane_right.len() {
+            lane_right.push(0.0);
+        }
+        lane_right[lane] = foot_right;
+        let top = wf_rect.bottom()
+            - NET_BOTTOM_MARGIN
+            - NET_BOX_H
+            - lane as f32 * (NET_BOX_H + NET_LANE_GAP);
+        out.push(NetBox {
+            rect: Rect::from_min_size(pos2(box_left, top), vec2(box_w, NET_BOX_H)),
+            sig_x: xc,
+            idx,
+        });
+    }
+    out
+}
+
+/// Draw one network-spot box at opacity `alpha`: callsign in the kind colour,
+/// then a small kind badge (DX/POTA/SOTA/PSK).
+fn draw_net_box(p: &egui::Painter, b: &NetBox, spot: &Spot, hovered: bool, alpha: f32) {
+    let rect = b.rect;
+    p.rect_filled(rect, 2.0, fade(Color32::from_rgba_unmultiplied(6, 12, 20, 232), alpha));
+    let border = net_spot_color(spot, hovered);
+    p.rect_stroke(
+        rect,
+        2.0,
+        Stroke::new(if hovered { 1.5 } else { 1.0 }, fade(border, alpha)),
+        StrokeKind::Inside,
+    );
+    let cy = rect.center().y;
+    let mut x = rect.left() + NET_PAD;
+    let call_col = fade(border, alpha);
+    let g = p.layout_no_wrap(spot.call.clone(), FontId::monospace(NET_CALL_PT), call_col);
+    p.galley(pos2(x, cy - g.size().y * 0.5), g.clone(), call_col);
+    x += g.size().x + 6.0;
+    let tag_col = fade(Color32::from_gray(180), alpha);
+    let tg = p.layout_no_wrap(spot.kind.label().to_string(), FontId::monospace(NET_TAG_PT), tag_col);
+    if x + tg.size().x <= rect.right() - NET_PAD {
+        p.galley(pos2(x, cy - tg.size().y * 0.5), tg, tag_col);
+    }
+}
+
+/// Tune the active VFO onto a network spot and set its mode. CW is dialed a
+/// sidetone-pitch below so the signal lands in the CW passband (as click-tune
+/// on a skimmer spot does).
+fn tune_to_net_spot(spot: &Spot, state: &RadioState, cmds: &mut Vec<Command>) {
+    match spot.radio_mode() {
+        Some(Mode::Cw) => {
+            let (lo, hi) = Mode::Cw.default_filter();
+            let pitch = ((lo + hi) * 0.5) as f64;
+            cmds.push(Command::SetVfo { vfo: state.active_vfo, hz: spot.freq_hz - pitch });
+            cmds.push(Command::SetMode { rx: RxId::Main, mode: Mode::Cw });
+        }
+        Some(m) => {
+            cmds.push(Command::SetVfo { vfo: state.active_vfo, hz: spot.freq_hz });
+            cmds.push(Command::SetMode { rx: RxId::Main, mode: m });
+        }
+        None => cmds.push(Command::SetVfo { vfo: state.active_vfo, hz: spot.freq_hz }),
+    }
+}
+
 /// Decaying peak-hold trace, reset whenever the frame mapping changes.
 #[derive(Default)]
 pub struct PeakHold {
@@ -365,6 +500,7 @@ impl TraceEntry {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
     view: &mut ViewState,
@@ -375,10 +511,16 @@ pub fn show(
     trace: &mut TraceCache,
     skimmer: &[SkimmerSpot],
     alpha: &[f32],
+    net_spots: &[Spot],
+    net_alpha: &[f32],
+    clicked_spot: &mut Option<Spot>,
     wf: WfTuning,
     cmds: &mut Vec<Command>,
 ) {
-    show_ext(ui, view, state, frame, peaks, smooth, trace, None, &[], skimmer, alpha, wf, cmds);
+    show_ext(
+        ui, view, state, frame, peaks, smooth, trace, None, &[], skimmer, alpha, net_spots,
+        net_alpha, clicked_spot, wf, cmds,
+    );
 }
 
 /// `show` with an optional digital-mode audio marker. When `digi_audio_hz`
@@ -401,6 +543,12 @@ pub fn show_ext(
     markers: &[f32],
     skimmer: &[SkimmerSpot],
     alpha: &[f32],
+    // Network spots (DX cluster / POTA / SOTA / PSK) with a parallel fade alpha.
+    // On click, the clicked spot is returned via `clicked_spot` (and the VFO is
+    // tuned + mode set here) so the app can pre-fill a log entry.
+    net_spots: &[Spot],
+    net_alpha: &[f32],
+    clicked_spot: &mut Option<Spot>,
     wf: WfTuning,
     cmds: &mut Vec<Command>,
 ) {
@@ -441,6 +589,7 @@ pub fn show_ext(
     // draw pass (bottom) agree on their rects. FT8 (digital) boxes fit their
     // text; CW skimmer boxes use a fixed width for their live-growing tail.
     let spot_boxes = layout_spots(&painter, view, &rect, &wf_rect, skimmer, digi_audio_hz.is_some());
+    let net_boxes = layout_net_spots(&painter, view, &rect, &wf_rect, net_spots);
 
     // --- interactions -----------------------------------------------------
     // Model: grabbing a filter edge (left button, spectrum strip) always
@@ -616,7 +765,13 @@ pub fn show_ext(
         }
         if resp.clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
-                if let Some(sb) = spot_boxes.iter().find(|b| b.rect.contains(pos)) {
+                if let Some(nb) = net_boxes.iter().find(|b| b.rect.contains(pos)) {
+                    // Network spot: tune + set mode, and hand the spot back so the
+                    // app can pre-fill a log entry (and optionally look it up).
+                    let spot = &net_spots[nb.idx];
+                    tune_to_net_spot(spot, state, cmds);
+                    *clicked_spot = Some(spot.clone());
+                } else if let Some(sb) = spot_boxes.iter().find(|b| b.rect.contains(pos)) {
                     let spot = &skimmer[sb.idx];
                     let spot_hz = spot.freq_hz;
                     if digi_audio_hz.is_some() {
@@ -908,6 +1063,27 @@ pub fn show_ext(
         draw_spot_box(&painter, b, spot, hovered, a, digi_audio_hz.is_some());
     }
 
+    // Network spot boxes (bottom-anchored lanes) — DX cluster / POTA / SOTA /
+    // PSK. A vertical tick over the signal, a leader up/down to the box.
+    for b in &net_boxes {
+        let spot = &net_spots[b.idx];
+        let a = net_alpha.get(b.idx).copied().unwrap_or(1.0).clamp(0.0, 1.0);
+        let hovered = hover_pos.is_some_and(|p| b.rect.contains(p));
+        if hovered {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        let border = net_spot_color(spot, hovered);
+        let cy = b.rect.center().y;
+        let vcol = fade(
+            Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), if hovered { 170 } else { 85 }),
+            a,
+        );
+        painter.vline(b.sig_x, wf_rect.y_range(), Stroke::new(1.0, vcol));
+        painter.line_segment([pos2(b.sig_x, cy), pos2(b.rect.left(), cy)], Stroke::new(1.0, fade(border, a)));
+        painter.circle_filled(pos2(b.sig_x, cy), 1.8, fade(border, a));
+        draw_net_box(&painter, b, spot, hovered, a);
+    }
+
     // --- 60-second time gridlines on the waterfall ------------------------
     // The newest row (top of the waterfall) is "now"; rows below are older at
     // `rows_per_sec` rows/second (≈ 1 row per pixel). Draw a faint gray line at
@@ -954,6 +1130,7 @@ pub fn show_ext(
             && !resizing
             && !resp.dragged()
             && !spot_boxes.iter().any(|b| b.rect.contains(p))
+            && !net_boxes.iter().any(|b| b.rect.contains(p))
         {
             // Item 6: crosshair + click-tune frequency readout.
             let line = Color32::from_rgba_unmultiplied(185, 205, 225, 70);

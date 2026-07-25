@@ -240,6 +240,11 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             }
             RadioEvent::SstvStatus(s) => Some(ServerMsg::SstvStatus(s)),
             RadioEvent::DigiImage { png } => Some(ServerMsg::DigiImage { png }),
+            RadioEvent::Spots(s) => Some(ServerMsg::Spots(s)),
+            RadioEvent::NetStatus(s) => Some(ServerMsg::NetStatus(s)),
+            RadioEvent::CallsignResult(c) => Some(ServerMsg::CallsignResult(c)),
+            RadioEvent::Upload(r) => Some(ServerMsg::Upload(r)),
+            RadioEvent::Confirmations(r) => Some(ServerMsg::Confirmations(r)),
         }
     };
     if let Some(msg) = msg {

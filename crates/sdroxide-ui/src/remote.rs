@@ -110,6 +110,11 @@ impl RemoteController {
             }
             ServerMsg::SstvStatus(s) => self.pending.push_back(RadioEvent::SstvStatus(s)),
             ServerMsg::DigiImage { png } => self.pending.push_back(RadioEvent::DigiImage { png }),
+            ServerMsg::Spots(s) => self.pending.push_back(RadioEvent::Spots(s)),
+            ServerMsg::NetStatus(s) => self.pending.push_back(RadioEvent::NetStatus(s)),
+            ServerMsg::CallsignResult(c) => self.pending.push_back(RadioEvent::CallsignResult(c)),
+            ServerMsg::Upload(r) => self.pending.push_back(RadioEvent::Upload(r)),
+            ServerMsg::Confirmations(r) => self.pending.push_back(RadioEvent::Confirmations(r)),
         }
     }
 
