@@ -11,7 +11,7 @@ use crate::theme;
 use crate::view::solar_layer as layer;
 
 /// Layer chips, in bar order.
-const LAYERS: [(u32, &str, &str); 7] = [
+const LAYERS: [(u32, &str, &str); 8] = [
     (layer::ORBITS, "ORBITS", "Earth and Moon orbital paths"),
     (layer::CME, "CME", "Coronal mass ejection trajectory cones"),
     (layer::SPOTS, "SPOTS", "Sunspot active regions"),
@@ -19,6 +19,7 @@ const LAYERS: [(u32, &str, &str); 7] = [
     (layer::GRID, "GRID", "Ecliptic plane and heliographic graticule"),
     (layer::LABELS, "LABELS", "Body and region labels"),
     (layer::STARS, "STARS", "Background star field"),
+    (layer::QSO, "QSO", "Decoded FT8/FT4 stations and the path to the station being worked"),
 ];
 
 pub fn ui(ui: &mut egui::Ui, st: &mut SolarUi) {
@@ -80,7 +81,7 @@ fn view_module(ui: &mut egui::Ui, st: &mut SolarUi) {
 }
 
 fn layers_module(ui: &mut egui::Ui, st: &mut SolarUi) {
-    chrome::module(ui, "Layers", 476.0, |ui| {
+    chrome::module(ui, "Layers", 528.0, |ui| {
         for (bit, label, hint) in LAYERS {
             if chrome::chip(ui, st.layer(bit), label).on_hover_text(hint).clicked() {
                 st.toggle_layer(bit);
@@ -206,6 +207,8 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
         },
     ));
 
+    clock(ui, rect, sim_now, st.sim_offset_s != 0.0);
+    weather_panel(ui, st, data, rect, sim_now as i64);
     info_card(ui, st, data, rect, sim_now);
     impact_banner(ui, data, rect, sim_now as i64);
 
@@ -217,6 +220,173 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
             egui::FontId::proportional(12.5),
             theme::YELLOW,
         );
+    }
+}
+
+/// A big dot-matrix UTC clock in the top-left corner.
+///
+/// UTC because everything else in the window is: the ephemeris, the DONKI
+/// timestamps, the arrival estimates and the FT8 slot boundaries. A local-time
+/// clock here would be the only thing on screen in a different frame.
+fn clock(ui: &egui::Ui, rect: egui::Rect, sim_now: f64, scrubbed: bool) {
+    use super::dotmatrix;
+
+    let (_, _, _, h, m, s) = sdroxide_types::utc_ymd_hms(sim_now as i64);
+    let text = format!("{h:02}:{m:02}:{s:02}");
+
+    // Scale with the window, but never so large it competes with the scene.
+    let pitch = (rect.width() * 0.0085).clamp(2.6, 7.0);
+    let size = dotmatrix::size(&text, pitch);
+    let label_pitch = pitch * 0.42;
+    let label = if scrubbed { "-- SIM" } else { "UTC" };
+    let label_size = dotmatrix::size(label, label_pitch);
+
+    let pad = egui::vec2(12.0, 9.0);
+    let panel = egui::Rect::from_min_size(
+        rect.left_top() + egui::vec2(12.0, 12.0),
+        egui::vec2(size.x, size.y + label_size.y + 6.0) + pad * 2.0,
+    );
+    if !rect.contains_rect(panel) {
+        return;
+    }
+
+    ui.painter().rect_filled(panel, 0, theme::BG_DEEP.gamma_multiply(0.72));
+    chrome::paint_cut_border(
+        ui.painter(),
+        panel,
+        if scrubbed { theme::YELLOW } else { theme::LINE_LIT },
+        egui::Color32::TRANSPARENT,
+    );
+
+    // Unlit dots at a low alpha are what make this read as a physical display
+    // rather than as text in a blocky face.
+    let on = if scrubbed { theme::YELLOW } else { theme::CYAN };
+    let off = on.gamma_multiply(0.11);
+    dotmatrix::draw(ui.painter(), panel.min + pad, &text, pitch, on, off);
+    dotmatrix::draw(
+        ui.painter(),
+        panel.min + pad + egui::vec2(0.0, size.y + 6.0),
+        label,
+        label_pitch,
+        on.gamma_multiply(0.6),
+        egui::Color32::TRANSPARENT,
+    );
+}
+
+/// The propagation numbers, top right: MUF at the QTH, K and A, the 10.7 cm
+/// flux and the current GOES X-ray level.
+fn weather_panel(
+    ui: &egui::Ui,
+    st: &SolarUi,
+    data: Option<&SolarData>,
+    rect: egui::Rect,
+    now: i64,
+) {
+    let Some(d) = data else { return };
+    let w = &d.weather;
+
+    // (label, value, colour). Colours say what the number means for the bands,
+    // which is the only reason an operator is reading them.
+    let mut rows: Vec<(String, String, egui::Color32)> = Vec::new();
+
+    if let Some((lat, lon)) = st.qth {
+        match sdroxide_solar::indices::estimate_muf(&w.ionosondes, lat, lon, now) {
+            Some(m) => rows.push((
+                "MUF".into(),
+                format!("{:.1} MHz", m.muf_mhz),
+                match m.muf_mhz {
+                    f if f >= 24.0 => theme::GREEN,
+                    f if f >= 14.0 => theme::CYAN,
+                    _ => theme::YELLOW,
+                },
+            )),
+            None => rows.push(("MUF".into(), "no sounder".into(), theme::LINE_LIT)),
+        }
+    }
+    if let Some(g) = &w.geomagnetic {
+        let color = match g.kp {
+            k if k >= 5.0 => theme::PINK,
+            k if k >= 4.0 => theme::YELLOW,
+            _ => theme::GREEN,
+        };
+        rows.push(("Kp / A".into(), format!("{:.1} / {:.0}", g.kp, g.a_index), color));
+    }
+    if let Some(f) = &w.flux {
+        rows.push((
+            "F10.7".into(),
+            format!("{:.0} sfu", f.sfu),
+            match f.sfu {
+                v if v >= 150.0 => theme::GREEN,
+                v if v >= 90.0 => theme::CYAN,
+                _ => theme::YELLOW,
+            },
+        ));
+    }
+    if let Some(x) = &w.xray {
+        rows.push((
+            "X-ray".into(),
+            x.class.clone(),
+            if x.causes_hf_absorption() { theme::PINK } else { theme::CYAN_DIM },
+        ));
+    }
+    if rows.is_empty() {
+        return;
+    }
+
+    let font = egui::FontId::proportional(12.0);
+    let small = egui::FontId::proportional(10.0);
+    let p = ui.painter();
+    let laid: Vec<_> = rows
+        .iter()
+        .map(|(k, v, c)| {
+            (
+                p.layout_no_wrap(k.clone(), small.clone(), theme::CYAN_DIM),
+                p.layout_no_wrap(v.clone(), font.clone(), *c),
+            )
+        })
+        .collect();
+    let key_w = laid.iter().map(|(k, _)| k.size().x).fold(0.0f32, f32::max);
+    let val_w = laid.iter().map(|(_, v)| v.size().x).fold(0.0f32, f32::max);
+    let row_h = laid.iter().map(|(_, v)| v.size().y + 3.0).fold(0.0f32, f32::max);
+
+    // A one-line caveat under the MUF: it is interpolated from ionosondes that
+    // may be a long way off, and saying so costs one line.
+    let note = st
+        .qth
+        .and_then(|(lat, lon)| {
+            sdroxide_solar::indices::estimate_muf(&w.ionosondes, lat, lon, now)
+        })
+        .map(|m| {
+            p.layout_no_wrap(
+                format!("{} · {:.0} km", m.confidence(), m.nearest_km),
+                small.clone(),
+                theme::LINE_LIT,
+            )
+        });
+
+    let pad = 10.0;
+    let width = key_w + val_w + 18.0 + pad * 2.0;
+    let width = note.as_ref().map_or(width, |n| width.max(n.size().x + pad * 2.0));
+    let height =
+        rows.len() as f32 * row_h + note.as_ref().map_or(0.0, |n| n.size().y + 4.0) + pad * 2.0;
+    let panel = egui::Rect::from_min_size(
+        egui::pos2(rect.right() - width - 12.0, rect.top() + 12.0),
+        egui::vec2(width, height),
+    );
+    if !rect.contains_rect(panel) {
+        return;
+    }
+
+    p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
+    chrome::paint_cut_border(p, panel, theme::LINE_LIT, egui::Color32::TRANSPARENT);
+    let mut y = panel.top() + pad;
+    for ((key, val), (_, _, color)) in laid.iter().zip(&rows) {
+        p.galley(egui::pos2(panel.left() + pad, y + 2.0), key.clone(), theme::CYAN_DIM);
+        p.galley(egui::pos2(panel.right() - pad - val.size().x, y), val.clone(), *color);
+        y += row_h;
+    }
+    if let Some(n) = note {
+        p.galley(egui::pos2(panel.left() + pad, y + 2.0), n, theme::LINE_LIT);
     }
 }
 
@@ -317,14 +487,18 @@ fn impact_banner(ui: &egui::Ui, data: Option<&SolarData>, rect: egui::Rect, now:
     let glancing = if hit.directness(a.half_angle_deg) < 0.35 { " · glancing" } else { "" };
     let estimated = if a.estimated { " · direction estimated" } else { "" };
     let text = format!(
-        "⚡ EARTH-DIRECTED CME  {}  ·  {:.0} km/s  ·  {when}{glancing}{estimated}",
+        "EARTH-DIRECTED CME  {}  ·  {:.0} km/s  ·  {when}{glancing}{estimated}",
         timefmt::ymd_hm(a.t21_5_unix),
         a.speed_km_s,
     );
 
+    // Hazard-striped tabs at both ends, the same mark the manual uses on every
+    // section header. A CME arrival is the one thing in this window that wants
+    // to be noticed without being read first.
+    const TAB_W: f32 = 22.0;
     let font = egui::FontId::proportional(13.0);
     let galley = ui.painter().layout_no_wrap(text, font, theme::TEXT_STRONG);
-    let size = galley.size() + egui::vec2(28.0, 14.0);
+    let size = galley.size() + egui::vec2(28.0 + TAB_W * 2.0, 15.0);
     if size.x > rect.width() - 24.0 {
         return;
     }
@@ -332,10 +506,20 @@ fn impact_banner(ui: &egui::Ui, data: Option<&SolarData>, rect: egui::Rect, now:
         egui::pos2(rect.center().x, rect.bottom() - size.y * 0.5 - 14.0),
         size,
     );
-    ui.painter().rect_filled(banner, 0, theme::CQ_BG.gamma_multiply(0.92));
-    chrome::paint_cut_border(ui.painter(), banner, theme::PINK, egui::Color32::TRANSPARENT);
-    ui.painter().galley(
-        banner.min + egui::vec2(14.0, 7.0),
+    let p = ui.painter();
+    p.rect_filled(banner, 0, theme::CQ_BG.gamma_multiply(0.94));
+    for tab in [
+        egui::Rect::from_min_size(banner.min, egui::vec2(TAB_W, banner.height())),
+        egui::Rect::from_min_size(
+            egui::pos2(banner.right() - TAB_W, banner.top()),
+            egui::vec2(TAB_W, banner.height()),
+        ),
+    ] {
+        chrome::hazard_stripes(p, tab, 7.0);
+    }
+    chrome::paint_cut_border(p, banner, theme::PINK, egui::Color32::TRANSPARENT);
+    p.galley(
+        egui::pos2(banner.left() + TAB_W + 14.0, banner.top() + 7.0),
         galley,
         theme::TEXT_STRONG,
     );

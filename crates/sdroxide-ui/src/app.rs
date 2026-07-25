@@ -36,6 +36,11 @@ const IDLE_POLL_MS: u64 = 250;
 /// The stream counts as stalled after this long without a new frame (seconds).
 const STREAM_STALE_S: f64 = 1.0;
 
+/// A decoded station's dot fades over this many seconds since it was last
+/// heard, then expires. Shared by the flat FT8 map and the 3D globe so the two
+/// always show the same set of stations.
+const STATION_FADE_S: f64 = 120.0;
+
 /// Stable per-callsign id for the FT8 overlay boxes (keeps a station's box in
 /// place across slots).
 fn hash_call(s: &str) -> u64 {
@@ -341,6 +346,33 @@ impl SdroxideApp {
             // sessions never open this window.
             #[cfg(not(target_arch = "wasm32"))]
             solar: crate::solar3d::Solar3d::new(cc.wgpu_render_state.clone(), solar3d_view),
+        }
+    }
+
+    /// The FT8/FT4 activity to plot on the 3D globe: the same decoded stations
+    /// the flat map shows, plus the station being worked.
+    ///
+    /// Read-only — the decode bookkeeping stays in `qso_area`, which is the one
+    /// place that knows a decode is new. Outside the digital modes the map
+    /// simply ages out and empties.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn digi_traffic(&self, now_t: f64) -> crate::solar3d::DigiTraffic {
+        let status = self.digi_status.as_ref();
+        crate::solar3d::DigiTraffic {
+            stations: self
+                .digi_station_seen
+                .iter()
+                .filter_map(|(grid, &(_, seen))| {
+                    let (lat, lon) = sdroxide_types::grid_to_latlon(grid)?;
+                    let alpha = (1.0 - (now_t - seen) / STATION_FADE_S).clamp(0.0, 1.0) as f32;
+                    (alpha > 0.0).then_some((lat, lon, alpha))
+                })
+                .collect(),
+            dx: status
+                .and_then(|s| s.dx_grid.as_deref())
+                .and_then(sdroxide_types::grid_to_latlon),
+            preview: self.digi_preview.as_ref().map(|(_, ll)| *ll),
+            transmitting: status.is_some_and(|s| s.transmitting),
         }
     }
 
@@ -1717,7 +1749,6 @@ impl SdroxideApp {
         // decoded, then expire (dropped from the map and from the zoom fit).
         // Ages use egui frame time (monotonic, works native + wasm); each grid
         // remembers the frame it was last freshly decoded in.
-        const STATION_FADE_S: f64 = 120.0;
         let now_t = ui.input(|i| i.time);
         let fresh: Vec<(String, i64)> = self
             .digi_decodes
@@ -4045,7 +4076,8 @@ impl eframe::App for SdroxideApp {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let grid = self.my_grid();
-            self.solar.viewport(&ctx, &grid);
+            let traffic = self.digi_traffic(ctx.input(|i| i.time));
+            self.solar.viewport(&ctx, &grid, traffic);
             self.view.solar3d = self.solar.persisted();
         }
 

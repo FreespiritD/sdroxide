@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use eframe::egui::{
-    self, Align, Color32, CursorIcon, FontFamily, FontId, Layout, Painter, Rect, Response,
+    self, Align, Color32, CursorIcon, FontFamily, FontId, Layout, Rect, Response,
     RichText, Sense, Shape, Stroke, Ui, pos2, vec2,
 };
 
@@ -469,7 +469,7 @@ fn draw_block(
             ui.add_space(9.0);
             let w = ui.available_width();
             let (rect, _) = ui.allocate_exact_size(vec2(w, 6.0), Sense::hover());
-            hazard_stripes(&ui.painter().clone(), rect, 11.0);
+            crate::chrome::hazard_stripes(&ui.painter().clone(), rect, 11.0);
             ui.add_space(9.0);
         }
         Block::Image { alt, path } => {
@@ -611,29 +611,6 @@ fn cut_outline(rect: Rect, cut: f32) -> Vec<egui::Pos2> {
     ]
 }
 
-/// 45° yellow/black hazard stripes filling `rect` (clipped to it).
-fn hazard_stripes(p: &Painter, rect: Rect, stripe_w: f32) {
-    let clip = p.with_clip_rect(rect);
-    let dark = Color32::from_rgb(0x16, 0x12, 0x04);
-    let h = rect.height();
-    let mut x = rect.left() - h;
-    let mut k = 0i32;
-    while x < rect.right() + stripe_w {
-        let color = if k % 2 == 0 { theme::YELLOW } else { dark };
-        clip.add(Shape::convex_polygon(
-            vec![
-                pos2(x, rect.bottom()),
-                pos2(x + h, rect.top()),
-                pos2(x + h + stripe_w, rect.top()),
-                pos2(x + stripe_w, rect.bottom()),
-            ],
-            color,
-            Stroke::NONE,
-        ));
-        x += stripe_w;
-        k += 1;
-    }
-}
 
 /// An angled section header: a cut-corner bar with a yellow/black hazard tab on
 /// the left and the section title in the techno heading face. Level 1 is the
@@ -654,7 +631,7 @@ fn draw_header(ui: &mut Ui, level: u8, text: &str) -> Response {
         p.add(Shape::convex_polygon(cut_outline(rect, cut), fill, Stroke::NONE));
         // Hazard-stripe accent tab down the left edge.
         let tab = Rect::from_min_max(rect.left_top(), pos2(rect.left() + 13.0, rect.bottom()));
-        hazard_stripes(&p, tab, 8.0);
+        crate::chrome::hazard_stripes(&p, tab, 8.0);
         // Mask the two square corners back to the panel colour so the bevel
         // reads as a real cut (this also clips the hazard tab's overflow), then
         // stroke the angled outline.

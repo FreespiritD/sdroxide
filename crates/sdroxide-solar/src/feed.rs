@@ -22,6 +22,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use crate::cache::{Cache, Validators};
 use crate::donki::{self, CmeEvent, FlareEvent};
 use crate::imagery::{self, SdoChannel, SunImage};
+use crate::indices::{self, SpaceWeather};
 use crate::swpc::{self, ActiveRegion};
 
 /// How far back events are requested, days.
@@ -37,17 +38,34 @@ const TICK: Duration = Duration::from_secs(15);
 const BACKOFF_BASE: i64 = 30;
 const BACKOFF_MAX: i64 = 1800;
 
-/// The four things this feed fetches.
+/// The things this feed fetches, each on its own cadence.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Source {
     Sun,
     Cme,
     Flare,
     Regions,
+    /// 10.7 cm solar flux.
+    Flux,
+    /// Planetary K and A indices.
+    Kp,
+    /// Current GOES soft X-ray class.
+    Xray,
+    /// Ionosonde soundings, for the MUF estimate.
+    Muf,
 }
 
 impl Source {
-    pub const ALL: [Source; 4] = [Source::Sun, Source::Cme, Source::Flare, Source::Regions];
+    pub const ALL: [Source; 8] = [
+        Source::Sun,
+        Source::Cme,
+        Source::Flare,
+        Source::Regions,
+        Source::Flux,
+        Source::Kp,
+        Source::Xray,
+        Source::Muf,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -55,6 +73,10 @@ impl Source {
             Source::Cme => "CME",
             Source::Flare => "FLR",
             Source::Regions => "SWPC",
+            Source::Flux => "F10.7",
+            Source::Kp => "Kp",
+            Source::Xray => "XRAY",
+            Source::Muf => "MUF",
         }
     }
 
@@ -65,10 +87,14 @@ impl Source {
             Source::Cme => 1200,
             Source::Flare => 1200,
             Source::Regions => 3600, // a once-a-day product
+            Source::Flux => 3600,    // published a few times a day
+            Source::Kp => 900,       // three-hourly, but revised in between
+            Source::Xray => 300,     // a flare develops in minutes
+            Source::Muf => 900,      // ionosondes sound every 5-15 minutes
         }
     }
 
-    /// A fixed stagger, so the four never fall due on the same tick. Constant
+    /// A fixed stagger, so several never fall due on the same tick. Constant
     /// rather than random: reproducible, and it achieves the same thing.
     fn stagger(self) -> i64 {
         match self {
@@ -76,6 +102,10 @@ impl Source {
             Source::Cme => 7,
             Source::Flare => 13,
             Source::Regions => 23,
+            Source::Flux => 31,
+            Source::Kp => 41,
+            Source::Xray => 53,
+            Source::Muf => 61,
         }
     }
 
@@ -148,7 +178,9 @@ pub struct SolarData {
     pub sun: Option<Arc<SunImage>>,
     /// Bumped on every new image, so the GPU uploads once per image.
     pub sun_gen: u64,
-    pub status: [SourceStatus; 4],
+    /// The propagation numbers: flux, K/A, X-ray level and ionosonde soundings.
+    pub weather: SpaceWeather,
+    pub status: [SourceStatus; Source::ALL.len()],
 }
 
 impl SolarData {
@@ -159,6 +191,12 @@ impl SolarData {
     /// True once anything at all has been loaded, from network or cache.
     pub fn has_any(&self) -> bool {
         self.sun.is_some() || !self.cmes.is_empty() || !self.regions.is_empty()
+    }
+
+    /// The newest successful fetch across every source, for a single "data as
+    /// of" readout.
+    pub fn newest_ok_unix(&self) -> i64 {
+        self.status.iter().map(|s| s.last_ok_unix).max().unwrap_or(0)
     }
 }
 
@@ -295,6 +333,10 @@ fn load_cached(
     let cmes = cache.read_string("cme.json").and_then(|s| donki::parse_cmes(&s).ok());
     let flares = cache.read_string("flr.json").and_then(|s| donki::parse_flares(&s).ok());
     let regions = cache.read_string("regions.json").and_then(|s| swpc::parse_regions(&s).ok());
+    let flux = cache.read_string("flux.json").and_then(|s| indices::parse_flux(&s));
+    let kp = cache.read_string("kp.json").and_then(|s| indices::parse_kp(&s));
+    let xray = cache.read_string("xray.json").and_then(|s| indices::parse_xray(&s));
+    let sondes = cache.read_string("ionosondes.json").map(|s| indices::parse_ionosondes(&s));
     {
         let mut d = shared.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(v) = cmes {
@@ -305,6 +347,12 @@ fn load_cached(
         }
         if let Some(v) = regions {
             d.regions = v;
+        }
+        d.weather.flux = flux;
+        d.weather.geomagnetic = kp;
+        d.weather.xray = xray;
+        if let Some(v) = sondes {
+            d.weather.ionosondes = v;
         }
     }
     load_cached_sun(shared, cache, channel, resolution);
@@ -352,6 +400,10 @@ fn refresh(
             JSON_LIMIT,
         ),
         Source::Regions => (swpc::REGIONS_URL.to_string(), "regions.json".to_string(), JSON_LIMIT),
+        Source::Flux => (indices::FLUX_URL.to_string(), "flux.json".to_string(), JSON_LIMIT),
+        Source::Kp => (indices::KP_URL.to_string(), "kp.json".to_string(), JSON_LIMIT),
+        Source::Xray => (indices::XRAY_URL.to_string(), "xray.json".to_string(), JSON_LIMIT),
+        Source::Muf => (indices::IONOSONDE_URL.to_string(), "ionosondes.json".to_string(), JSON_LIMIT),
     };
 
     match http_get(agent, &url, &cache.validators(&url), limit) {
@@ -381,6 +433,10 @@ fn refresh(
                     d.sun = Some(Arc::new(img));
                     d.sun_gen += 1;
                 }
+                Parsed::Flux(v) => d.weather.flux = Some(v),
+                Parsed::Kp(v) => d.weather.geomagnetic = Some(v),
+                Parsed::Xray(v) => d.weather.xray = Some(v),
+                Parsed::Ionosondes(v) => d.weather.ionosondes = v,
                 Parsed::None => {
                     d.status[src.index()]
                         .record_err(now, format!("{} returned unusable data", src.label()));
@@ -405,6 +461,10 @@ enum Parsed {
     Flares(Vec<FlareEvent>),
     Regions(Vec<ActiveRegion>),
     Sun(SunImage),
+    Flux(indices::SolarFlux),
+    Kp(indices::GeomagneticIndex),
+    Xray(indices::XrayLevel),
+    Ionosondes(Vec<indices::Ionosonde>),
     None,
 }
 
@@ -416,13 +476,22 @@ fn parse(src: Source, bytes: &[u8], channel: SdoChannel, now: i64) -> Parsed {
         },
         _ => {
             let Ok(text) = std::str::from_utf8(bytes) else { return Parsed::None };
-            match src {
+            let parsed = match src {
                 Source::Cme => donki::parse_cmes(text).map(Parsed::Cmes),
                 Source::Flare => donki::parse_flares(text).map(Parsed::Flares),
                 Source::Regions => swpc::parse_regions(text).map(Parsed::Regions),
+                // These four return an Option rather than a Result: a feed that
+                // is momentarily empty is normal, not an error.
+                Source::Flux => return indices::parse_flux(text).map_or(Parsed::None, Parsed::Flux),
+                Source::Kp => return indices::parse_kp(text).map_or(Parsed::None, Parsed::Kp),
+                Source::Xray => return indices::parse_xray(text).map_or(Parsed::None, Parsed::Xray),
+                Source::Muf => {
+                    let v = indices::parse_ionosondes(text);
+                    return if v.is_empty() { Parsed::None } else { Parsed::Ionosondes(v) };
+                }
                 Source::Sun => unreachable!(),
-            }
-            .unwrap_or_else(|e| {
+            };
+            parsed.unwrap_or_else(|e| {
                 tracing::warn!("solar feed: {} parse failed: {e}", src.label());
                 Parsed::None
             })
@@ -518,14 +587,28 @@ mod tests {
         assert_eq!(s.next_due(Source::Sun), Some(1_000_100 + 600));
     }
 
+    /// With eight sources on a fifteen-second tick, two falling due together
+    /// means two requests in the same instant; the staggers exist to prevent it.
     #[test]
-    fn the_four_sources_never_fall_due_together() {
+    fn no_two_sources_ever_fall_due_together() {
         let mut s = SourceStatus::default();
         s.record_ok(0);
         let dues: Vec<i64> = Source::ALL.iter().filter_map(|src| s.next_due(*src)).collect();
-        assert_eq!(dues.len(), 4);
+        assert_eq!(dues.len(), Source::ALL.len());
         let unique: std::collections::HashSet<_> = dues.iter().collect();
         assert_eq!(unique.len(), dues.len(), "sources collide: {dues:?}");
+    }
+
+    #[test]
+    fn every_source_has_a_distinct_label_and_a_sane_cadence() {
+        let labels: std::collections::HashSet<_> =
+            Source::ALL.iter().map(|s| s.label()).collect();
+        assert_eq!(labels.len(), Source::ALL.len(), "duplicate source labels");
+        for src in Source::ALL {
+            // Nothing polled more than once a minute, nothing left over a day.
+            assert!((60..=86_400).contains(&src.period()), "{src:?} period {}", src.period());
+            assert_eq!(Source::ALL[src.index()], src);
+        }
     }
 
     #[test]

@@ -51,7 +51,13 @@ pub mod solar_layer {
     pub const GRID: u32 = 1 << 4;
     pub const LABELS: u32 = 1 << 5;
     pub const STARS: u32 = 1 << 6;
-    pub const ALL: u32 = ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS;
+    /// Decoded FT8/FT4 stations and the arc to the station being worked.
+    pub const QSO: u32 = 1 << 7;
+    pub const ALL: u32 = ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO;
+    /// The value of `ALL` before [`QSO`] existed. A stored layer mask equal to
+    /// this predates the QSO layer, so it is upgraded rather than leaving a
+    /// brand-new layer silently switched off.
+    pub const ALL_BEFORE_QSO: u32 = ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS;
 }
 
 /// Persisted state of the solar-system 3D window.

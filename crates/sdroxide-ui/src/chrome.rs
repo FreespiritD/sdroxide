@@ -149,6 +149,34 @@ pub fn paint_cut_border(p: &Painter, rect: Rect, color: Color32, mask: Color32) 
     p.add(Shape::closed_line(outline, Stroke::new(1.2, color)));
 }
 
+/// 45° yellow/black hazard stripes filling `rect` (clipped to it).
+///
+/// The app's "pay attention to this" mark: it runs down the side of every
+/// section header in the manual, and along the CME arrival banner in the solar
+/// view. Shared so the two cannot drift apart.
+pub fn hazard_stripes(p: &Painter, rect: Rect, stripe_w: f32) {
+    let clip = p.with_clip_rect(rect);
+    let dark = Color32::from_rgb(0x16, 0x12, 0x04);
+    let h = rect.height();
+    let mut x = rect.left() - h;
+    let mut k = 0i32;
+    while x < rect.right() + stripe_w {
+        let color = if k % 2 == 0 { theme::YELLOW } else { dark };
+        clip.add(Shape::convex_polygon(
+            vec![
+                pos2(x, rect.bottom()),
+                pos2(x + h, rect.top()),
+                pos2(x + h + stripe_w, rect.top()),
+                pos2(x + stripe_w, rect.bottom()),
+            ],
+            color,
+            Stroke::NONE,
+        ));
+        x += stripe_w;
+        k += 1;
+    }
+}
+
 /// A captioned control module of fixed `width`: a bordered box with a small
 /// cyan uppercase label above a row of controls.
 ///

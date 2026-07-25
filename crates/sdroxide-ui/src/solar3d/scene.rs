@@ -203,6 +203,9 @@ pub fn build(
         grid(&mut s, &b);
     }
     markers(&mut s, st, &b, &cam);
+    if st.layer(layer::QSO) {
+        digi_traffic(&mut s, st, &b, &cam, anim_t);
+    }
     if let Some(d) = data {
         let now = unix_s as i64;
         if st.layer(layer::SPOTS) {
@@ -548,6 +551,113 @@ fn seg(a: V3, b: V3, width_px: f32, color: [f32; 4]) -> LineInst {
     LineInst { a: a.arr(), width_px, b: b.arr(), _pad: 0.0, color }
 }
 
+/// Decoded FT8/FT4 stations, and the path to the one being worked.
+///
+/// The flat map in the FT8 panel draws the same information as a great-circle
+/// line across a rectangle; here the path is the *actual* great circle, lifted
+/// off the surface so it arcs through space between the two stations instead of
+/// disappearing round the back of the globe.
+fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, anim_t: f32) {
+    let earth_px = cam.pixels_for(b.earth, b.earth_r);
+    // Below this the Earth is too small for a point on its surface to mean
+    // anything, same threshold the QTH marker uses.
+    let fade = ((earth_px - 3.0) / 9.0).clamp(0.0, 1.0);
+    if fade <= 0.0 {
+        return;
+    }
+    let (ex, ey, ez) = b.earth_basis;
+    let to_world = |v: sdroxide_solar::Vec3, lift: f32| {
+        b.earth + (ex * v.x as f32 + ey * v.y as f32 + ez * v.z as f32) * (b.earth_r * lift)
+    };
+
+    for (lat, lon, age) in &st.digi.stations {
+        if *age <= 0.0 {
+            continue;
+        }
+        s.sprites.push(SpriteInst {
+            center: to_world(ephem::geodetic_to_body(*lat, *lon), 1.015).arr(),
+            size_px: (4.0 + 3.0 * age).min(earth_px * 0.9),
+            color: lin(theme::TEXT_STRONG, 0.85 * age * fade),
+            params: [SPRITE_DOT, 0.0, 0.0, 0.0],
+        });
+    }
+
+    // The arcs need a home to start from.
+    let Some(home) = st.qth else { return };
+    for (target, color, width, animated) in [
+        (st.digi.dx, theme::CYAN, 2.4, true),
+        (st.digi.preview, theme::YELLOW, 1.6, false),
+    ] {
+        let Some(dx) = target else { continue };
+        arc(s, b, &to_world, home, dx, color, width, fade, animated.then_some(anim_t), st.digi.transmitting);
+    }
+}
+
+/// A great-circle arc between two points on the globe, bowed out into space.
+///
+/// The lift is proportional to the angular separation, so a short contact
+/// hugs the surface and an antipodal one springs well clear of it — which is
+/// also the only way both ends stay visible at once on a sphere.
+#[allow(clippy::too_many_arguments)]
+fn arc(
+    s: &mut Scene,
+    b: &Bodies,
+    to_world: &impl Fn(sdroxide_solar::Vec3, f32) -> V3,
+    from: (f64, f64),
+    to: (f64, f64),
+    color: Color32,
+    width_px: f32,
+    fade: f32,
+    anim: Option<f32>,
+    transmitting: bool,
+) {
+    const STEPS: usize = 96;
+    let a = ephem::geodetic_to_body(from.0, from.1);
+    let c = ephem::geodetic_to_body(to.0, to.1);
+    let omega = a.dot(c).clamp(-1.0, 1.0).acos();
+    if omega < 1e-4 {
+        return;
+    }
+    let bulge = 0.06 + 0.42 * (omega / std::f64::consts::PI) as f32;
+
+    let point = |t: f64| {
+        // Spherical interpolation, so the path is the true great circle rather
+        // than a chord through the planet.
+        let s0 = ((1.0 - t) * omega).sin() / omega.sin();
+        let s1 = (t * omega).sin() / omega.sin();
+        let dir = a * s0 + c * s1;
+        let lift = 1.0 + bulge * (std::f64::consts::PI * t).sin() as f32;
+        to_world(dir.normalize(), lift)
+    };
+
+    let mut prev = point(0.0);
+    for k in 1..=STEPS {
+        let t = k as f64 / STEPS as f64;
+        let p = point(t);
+        let mid = (k as f32 - 0.5) / STEPS as f32;
+        // A travelling bright band along the path while transmitting, the same
+        // cue the flat FT8 map uses for an outgoing transmission.
+        let pulse = match anim {
+            Some(t0) if transmitting => {
+                let head = (t0 * 0.55).fract();
+                let d = (mid - head).abs().min(1.0 - (mid - head).abs());
+                1.0 + 2.6 * (-d * d * 220.0).exp()
+            }
+            _ => 1.0,
+        };
+        s.lines.push(seg(prev, p, width_px * pulse.min(1.9), lin(color, (0.55 * pulse).min(1.0) * fade)));
+        prev = p;
+    }
+
+    // Anchor ticks: a short radial stub at each end, so the arc visibly lands
+    // on the surface rather than floating near it.
+    for (lat, lon) in [from, to] {
+        let d = ephem::geodetic_to_body(lat, lon);
+        s.lines.push(seg(to_world(d, 1.0), to_world(d, 1.0 + bulge * 0.16), width_px, lin(color, 0.7 * fade)));
+    }
+    let _ = b;
+}
+
 /// A fixed star field, generated once. Uniform on the sphere via the inverse
 /// transform of the z coordinate; a plain LCG keeps it reproducible without a
 /// dependency (and without `Math::random`, which is unavailable in wasm anyway).
@@ -743,6 +853,85 @@ mod tests {
         ];
         let s = build(&st, Some(&data), now as f64, [1600.0, 900.0], 0.0);
         assert_eq!(s.draws.iter().filter(|(p, _)| *p == Prim::Cone).count(), 0);
+    }
+
+    /// Framed on the Earth, with a contact on the other side of the planet.
+    fn earth_view_with_traffic(dx: Option<(f64, f64)>) -> SolarUi {
+        let mut st = ui();
+        st.view.focus = Focus::Earth.to_u8();
+        st.view.dist = 0.5;
+        st.digi = super::super::state::DigiTraffic {
+            stations: vec![(35.7, 139.7, 1.0), (-33.9, 151.2, 0.4), (40.7, -74.0, 0.05)],
+            dx,
+            preview: None,
+            transmitting: false,
+        };
+        st
+    }
+
+    #[test]
+    fn decoded_stations_become_dots_on_the_globe() {
+        let st = earth_view_with_traffic(None);
+        let s = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        // Three stations plus the sub-solar dot.
+        assert_eq!(s.sprites.iter().filter(|sp| sp.params[0] == SPRITE_DOT).count(), 4);
+        // ...and they sit on the surface, not floating or buried.
+        let b = bodies(&st, 1_784_937_600.0);
+        for sp in s.sprites.iter().filter(|sp| sp.params[0] == SPRITE_DOT) {
+            let r = (v3(sp.center[0], sp.center[1], sp.center[2]) - b.earth).len() / b.earth_r;
+            assert!((1.0..1.05).contains(&r), "marker at {r} Earth radii");
+        }
+    }
+
+    /// The arc has to leave the surface, or on a sphere the far half of it is
+    /// hidden behind the planet and the contact reads as going nowhere.
+    #[test]
+    fn a_qso_arc_bows_out_into_space_and_lands_at_both_ends() {
+        // Tokyo — nearly antipodal to the JN78ve test QTH, so the longest case.
+        let st = earth_view_with_traffic(Some((35.7, 139.7)));
+        let now = 1_784_937_600.0;
+        let b = bodies(&st, now);
+        let plain = build(&earth_view_with_traffic(None), None, now, [1600.0, 900.0], 0.0);
+        let s = build(&st, None, now, [1600.0, 900.0], 0.0);
+
+        let added = s.lines.len() - plain.lines.len();
+        assert!(added >= 96, "only {added} arc segments");
+
+        let radius = |p: [f32; 3]| (v3(p[0], p[1], p[2]) - b.earth).len() / b.earth_r;
+        let arc: Vec<f32> = s.lines[plain.lines.len()..].iter().map(|l| radius(l.a)).collect();
+        let peak = arc.iter().copied().fold(0.0f32, f32::max);
+        assert!(peak > 1.25, "arc only reached {peak} Earth radii — it hugs the surface");
+        // Both ends come back down to the ground.
+        assert!(arc[0] < 1.02, "arc starts {} radii up", arc[0]);
+        assert!(radius(s.lines.last().unwrap().b) < 1.05);
+        // ...and never dips inside the planet, which would hide it.
+        assert!(arc.iter().all(|r| *r >= 0.999), "arc passes through the Earth");
+    }
+
+    #[test]
+    fn a_short_hop_arcs_less_than_a_long_one() {
+        let now = 1_784_937_600.0;
+        let peak = |dx| {
+            let st = earth_view_with_traffic(Some(dx));
+            let b = bodies(&st, now);
+            let base = build(&earth_view_with_traffic(None), None, now, [1600.0, 900.0], 0.0);
+            let s = build(&st, None, now, [1600.0, 900.0], 0.0);
+            s.lines[base.lines.len()..]
+                .iter()
+                .map(|l| (v3(l.a[0], l.a[1], l.a[2]) - b.earth).len() / b.earth_r)
+                .fold(0.0f32, f32::max)
+        };
+        // A neighbouring country versus the far side of the world.
+        assert!(peak((48.0, 11.0)) < peak((35.7, 139.7)));
+    }
+
+    #[test]
+    fn the_qso_layer_removes_stations_and_arcs() {
+        let mut st = earth_view_with_traffic(Some((35.7, 139.7)));
+        st.view.layers &= !layer::QSO;
+        let s = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        // Only the sub-solar dot is left.
+        assert_eq!(s.sprites.iter().filter(|sp| sp.params[0] == SPRITE_DOT).count(), 1);
     }
 
     #[test]

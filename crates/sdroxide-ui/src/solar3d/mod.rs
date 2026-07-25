@@ -13,6 +13,7 @@
 //! confined to an offscreen pass so the shared egui render pass is untouched.
 
 mod camera;
+mod dotmatrix;
 mod gpu;
 mod math;
 mod mesh;
@@ -27,6 +28,7 @@ use eframe::egui;
 use crate::egui_wgpu::RenderState;
 use crate::view::Solar3dView;
 
+pub use state::DigiTraffic;
 use state::SolarUi;
 
 /// Stable id of the child viewport. Not a `const` because `Id::new` hashes at
@@ -101,7 +103,7 @@ impl Solar3d {
 
     /// Emit the window for this frame (or not, when closed). Call once per root
     /// pass, after the main UI. `grid` is the operator's Maidenhead locator.
-    pub fn viewport(&mut self, ctx: &egui::Context, grid: &str) {
+    pub fn viewport(&mut self, ctx: &egui::Context, grid: &str, traffic: DigiTraffic) {
         if !self.open {
             // Dropping the feed disconnects the worker's channel, which is how
             // it learns to stop. Closing the window therefore ends all network
@@ -123,7 +125,11 @@ impl Solar3d {
         // Publish this frame's inputs, then drop the guard: the deferred
         // callback takes the same lock, and on the embedded-viewport path it
         // would run synchronously inside `show_viewport_deferred`.
-        self.lock().set_qth(grid);
+        {
+            let mut st = self.lock();
+            st.set_qth(grid);
+            st.digi = traffic;
+        }
 
         let state = Arc::clone(&self.state);
         ctx.show_viewport_deferred(

@@ -60,7 +60,9 @@ or connects to a remote sdroxide server.
 - **Memory channels** and per-band memory of your last frequency/mode/filter.
 - **Solar system 3D view** (native only) — the Sun, Earth and Moon with their
   orbits, live NASA SDO solar imagery, sunspot regions and CME trajectory cones,
-  and an arrival estimate when one is headed our way.
+  an arrival estimate when one is headed our way, your FT8 contacts arcing
+  between stations, and a propagation panel with MUF, Kp/A, F10.7 and the
+  current GOES X-ray level.
 - **Remote and web operation:** run headless as a server and control it from a
   browser or from a second sdroxide instance over the network.
 
@@ -324,7 +326,17 @@ picks up at whichever viewpoint is nearest your current view.
 
 **Layers** — `ORBITS` (Earth and Moon paths, sampled from the real ephemeris, so
 they are the true eccentric orbits), `CME`, `SPOTS`, `FLARES`, `GRID` (the solar
-rotation axis, equator and heliographic parallels), `LABELS`, `STARS`.
+rotation axis, equator and heliographic parallels), `LABELS`, `STARS`, and
+`QSO`.
+
+**The QSO layer** puts your FT8/FT4 traffic on the globe. Every station decoded
+in the last two minutes is a white dot that fades as it ages — the same set the
+flat map in the FT8 panel shows, so the two never disagree. The station you are
+working is joined to your QTH by a cyan arc, and a decode you have clicked but
+not yet answered by a yellow one. The arcs are true great circles lifted off the
+surface, bowing further out the longer the path: an antipodal contact springs
+well clear of the planet, which is the only way both ends stay visible at once
+on a sphere. While you transmit, a bright pulse runs along the arc.
 
 **Sun** — which SDO product wraps the Sun:
 
@@ -355,14 +367,37 @@ size, so nothing is ever invisible however you set these.
 **Time** — `NOW`, `−24h`, `−6h`, `+6h`, `+24h` scrub the whole scene, bodies and
 all, forwards and backwards.
 
+**Clock** — a dot-matrix UTC readout sits in the top-left corner. UTC because
+everything else in this window is: the ephemeris, the DONKI timestamps, the
+arrival estimates and the FT8 slot boundaries. Scrubbing the time with the
+`±6h`/`±24h` chips turns it yellow and relabels it `SIM`, so a simulated time can
+never be mistaken for the real one.
+
+**Propagation panel** — top right, the numbers worth checking before you call CQ:
+
+| Row | What it is |
+| --- | --- |
+| `MUF` | Maximum usable frequency for a 3000 km path near your QTH, interpolated from the ionosonde network. Green above 24 MHz, cyan above 14, yellow below. |
+| `Kp / A` | Planetary geomagnetic indices. Green when quiet, yellow from Kp 4, pink from Kp 5 (a storm — polar paths degrade and aurora becomes possible). |
+| `F10.7` | 10.7 cm solar radio flux in solar flux units, the standard proxy for ionisation. Under about 90 the high bands stay shut; over 150 they open up. |
+| `X-ray` | Current GOES soft X-ray class. Turns pink at M class and above, which is when the D layer starts absorbing HF on the daylit side. |
+
+The line under the MUF says how far away the nearest contributing ionosonde is
+and how much to trust the number. MUF is interpolated, not measured at your
+location, and the ionosphere changes sharply across the day/night terminator —
+a value drawn from sounders 3000 km away on the other side of it is a guess, and
+the panel says so rather than hiding it. When no sounder is in range it reads
+`no sounder` instead of inventing a figure.
+
 **Readouts** — the card at the bottom left gives UTC, the sub-solar point, the
 solar disk's B0 and L0 angles, the Sun's elevation and azimuth from your QTH
 (and whether it is day or night there), and how many CMEs and sunspot groups are
 being shown. When an Earth-directed CME is in the data, a banner across the
-bottom names it with its speed and estimated arrival:
+bottom — flagged with the same yellow-and-black hazard stripes the manual uses
+on its section headers — names it with its speed and estimated arrival:
 
 ```
-⚡ EARTH-DIRECTED CME  2026-07-10 09:48Z  ·  516 km/s  ·  ETA 2026-07-12 14:20Z (+38 h)
+EARTH-DIRECTED CME  2026-07-10 09:48Z  ·  516 km/s  ·  ETA 2026-07-12 14:20Z (+38 h)
 ```
 
 Arrival is a straight-line constant-speed estimate from the fitted cone, which
@@ -379,7 +414,8 @@ means no request is ever made. Three hosts are contacted:
 | --- | --- | --- |
 | `sdo.gsfc.nasa.gov` | Solar disk imagery (NASA SDO — AIA and HMI) | 10 min |
 | `kauai.ccmc.gsfc.nasa.gov` | CMEs and solar flares ([NASA CCMC DONKI](https://ccmc.gsfc.nasa.gov/tools/DONKI/)) | 20 min |
-| `services.swpc.noaa.gov` | Sunspot regions (NOAA SWPC daily Solar Region Summary) | 60 min |
+| `services.swpc.noaa.gov` | Sunspot regions, planetary K/A, 10.7 cm flux, GOES X-ray level (NOAA SWPC) | 5–60 min |
+| `prop.kc2g.com` | Ionosonde soundings for the MUF estimate (GIRO network, aggregated by KC2G) | 15 min |
 
 Everything fetched is cached under `solar/` in the config directory and is
 loaded *before* the first network request, so the window opens instantly with
@@ -401,7 +437,9 @@ its orbit at the upper left.
 ![CME trajectory cones seen from outside the Earth's orbit](images/3d-cme.jpg)
 
 *Credits: solar imagery courtesy of NASA/SDO and the AIA and HMI science teams;
-CME and flare data from NASA CCMC's DONKI; sunspot regions from NOAA SWPC.*
+CME and flare data from NASA CCMC's DONKI; sunspot regions, geomagnetic indices,
+solar flux and X-ray data from NOAA SWPC; ionosonde soundings from the GIRO
+network via [prop.kc2g.com](https://prop.kc2g.com/).*
 
 ---
 

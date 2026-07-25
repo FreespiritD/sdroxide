@@ -74,25 +74,27 @@ pub struct FlareEvent {
     pub link: String,
 }
 
+/// Rough energy ordering of a GOES flare class: A=0, B=1, C=2, M=3, X=4, plus
+/// the mantissa as a fraction. Shared with the live X-ray readout in
+/// [`crate::indices`], which reports the same classes.
+pub fn flare_class_severity(class: &str) -> f64 {
+    let mut c = class.trim().chars();
+    let base = match c.next().map(|l| l.to_ascii_uppercase()) {
+        Some('A') => 0.0,
+        Some('B') => 1.0,
+        Some('C') => 2.0,
+        Some('M') => 3.0,
+        Some('X') => 4.0,
+        _ => return 0.0,
+    };
+    let mag: f64 = c.as_str().parse().unwrap_or(1.0);
+    base + (mag.max(1.0).log10()).clamp(0.0, 1.0)
+}
+
 impl FlareEvent {
-    /// Rough energy ordering for sizing markers: A=0, B=1, C=2, M=3, X=4, plus
-    /// the mantissa as a fraction.
+    /// See [`flare_class_severity`].
     pub fn severity(&self) -> f64 {
-        let mut c = self.class.chars();
-        let letter = match c.next() {
-            Some(l) => l.to_ascii_uppercase(),
-            None => return 0.0,
-        };
-        let base = match letter {
-            'A' => 0.0,
-            'B' => 1.0,
-            'C' => 2.0,
-            'M' => 3.0,
-            'X' => 4.0,
-            _ => return 0.0,
-        };
-        let mag: f64 = c.as_str().parse().unwrap_or(1.0);
-        base + (mag.max(1.0).log10()).clamp(0.0, 1.0)
+        flare_class_severity(&self.class)
     }
 }
 

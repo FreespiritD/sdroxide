@@ -66,13 +66,36 @@ pub struct SolarUi {
     /// Lock ordering is always `SolarUi` then `SolarData`; the worker thread
     /// only ever takes `SolarData`, so there is no cycle.
     pub data: Option<Arc<Mutex<SolarData>>>,
+    /// FT8/FT4 traffic to plot on the globe.
+    pub digi: DigiTraffic,
     /// Animated camera tour state, and the frame time it last advanced at.
     pub tour: super::camera::Tour,
     pub last_frame_time: f64,
 }
 
+/// FT8/FT4 activity, republished into the window each frame by the root pass.
+///
+/// The decode list lives in `SdroxideApp`, which this window cannot borrow, so
+/// the positions are copied across rather than shared.
+#[derive(Clone, Default)]
+pub struct DigiTraffic {
+    /// Decoded stations: latitude, longitude, and 1.0→0.0 as the decode ages out.
+    pub stations: Vec<(f64, f64, f32)>,
+    /// The station currently being worked.
+    pub dx: Option<(f64, f64)>,
+    /// A decode the operator has clicked but not yet answered.
+    pub preview: Option<(f64, f64)>,
+    /// True while transmitting, which animates the arc.
+    pub transmitting: bool,
+}
+
 impl SolarUi {
-    pub fn new(view: Solar3dView) -> Self {
+    pub fn new(mut view: Solar3dView) -> Self {
+        // Layer masks persisted before the QSO layer existed would leave it off
+        // for anyone upgrading, which reads as the feature being broken.
+        if view.layers == crate::view::solar_layer::ALL_BEFORE_QSO {
+            view.layers = crate::view::solar_layer::ALL;
+        }
         SolarUi {
             view,
             close_requested: false,
@@ -81,6 +104,7 @@ impl SolarUi {
             qth: None,
             sim_offset_s: 0.0,
             data: None,
+            digi: DigiTraffic::default(),
             tour: super::camera::Tour::default(),
             last_frame_time: 0.0,
         }
