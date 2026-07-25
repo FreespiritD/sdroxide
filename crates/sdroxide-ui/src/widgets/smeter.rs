@@ -22,6 +22,9 @@ const RED: Color32 = Color32::from_rgb(230, 70, 60);
 const AMBER: Color32 = Color32::from_rgb(255, 209, 66);
 /// Dark instrument face, painted over the whole box.
 const FACE: Color32 = Color32::from_gray(16);
+/// Both TX readouts (SWR left, power right) share one size, so neither reads as
+/// the subordinate of the other.
+const TX_READOUT_PT: f32 = 16.0;
 
 /// Position on the scale for `dbm`, 0.0 (S0) … 1.0 (S9+60).
 fn frac_of(dbm: f32) -> f32 {
@@ -54,15 +57,16 @@ fn rx_readout(meters: Option<&Meters>, dbm: f32) -> (String, String) {
     (primary, format!("{dbm:.0} dBm"))
 }
 
-/// Power / SWR / ALC label for the TX meter.
-fn tx_label(tx: &sdroxide_types::TxMeters) -> String {
-    match (tx.fwd_w, tx.swr) {
-        (Some(w), Some(s)) => format!("{w:.1} W {s:.1}:1"),
-        (Some(w), None) => format!("{w:.1} W"),
-        // SWR without a power sensor (CAT/TCI rigs that only report SWR).
-        (None, Some(s)) => format!("SWR {s:.1}:1"),
-        (None, None) => format!("ALC {:.0}%", tx.alc.clamp(0.0, 1.0) * 100.0),
-    }
+/// The TX meter's two readouts, laid out as separate columns: SWR on the left,
+/// forward power on the right. A rig without an SWR bridge simply has no left
+/// reading; one without a power sensor falls back to the engine's own ALC.
+fn tx_readouts(tx: &sdroxide_types::TxMeters) -> (String, String) {
+    let swr = tx.swr.map(|s| format!("SWR {s:.1}:1")).unwrap_or_default();
+    let power = match tx.fwd_w {
+        Some(w) => format!("{w:.1} W"),
+        None => format!("ALC {:.0}%", tx.alc.clamp(0.0, 1.0) * 100.0),
+    };
+    (swr, power)
 }
 
 /// Paint the instrument face over the full box and return the rect + response.
@@ -95,14 +99,18 @@ fn show_bar(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
     const READOUT_W: f32 = 78.0; // right column reserved for the digital readout
     const LABEL_BAND: f32 = 16.0; // bottom strip for the S-scale ticks + numbers
 
-    // Transmitting: show the TX meter instead of the S-meter.
+    // Transmitting: show the TX meter instead of the S-meter. The two readouts
+    // share the top row (SWR left, power right) and the ALC bar runs along the
+    // bottom beside the "TX" tag.
     if let Some(tx) = meters.and_then(|m| m.tx.as_ref()) {
+        let (swr_txt, pwr_txt) = tx_readouts(tx);
+        let row_h = (rect.height() * 0.34).clamp(14.0, 24.0);
         let bar_rect = Rect::from_min_max(
-            pos2(rect.left() + 34.0, rect.top() + INSET),
-            pos2(rect.right() - READOUT_W, rect.bottom() - INSET),
+            pos2(rect.left() + 34.0, rect.top() + row_h + INSET),
+            pos2(rect.right() - INSET, rect.bottom() - INSET),
         );
         p.text(
-            pos2(rect.left() + 6.0, rect.center().y),
+            pos2(rect.left() + 6.0, bar_rect.center().y),
             Align2::LEFT_CENTER,
             "TX",
             FontId::monospace(18.0),
@@ -119,12 +127,21 @@ fn show_bar(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
                 Color32::from_rgb(230, 150, 50)
             },
         );
+        if !swr_txt.is_empty() {
+            p.text(
+                pos2(rect.left() + 6.0, rect.top() + 3.0),
+                Align2::LEFT_TOP,
+                swr_txt,
+                FontId::monospace(TX_READOUT_PT),
+                AMBER,
+            );
+        }
         p.text(
-            pos2(rect.right() - 5.0, rect.center().y),
-            Align2::RIGHT_CENTER,
-            tx_label(tx),
-            FontId::monospace(13.0),
-            Color32::from_gray(200),
+            pos2(rect.right() - 5.0, rect.top() + 3.0),
+            Align2::RIGHT_TOP,
+            pwr_txt,
+            FontId::monospace(TX_READOUT_PT),
+            AMBER,
         );
         border(ui, rect);
         return resp;
@@ -243,9 +260,11 @@ fn show_analog(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
         p.line_segment([pt(r, ang(f0)), pt(r, ang(f1))], Stroke::new(2.2, col));
     }
 
-    // Value fraction + readouts.
+    // Value fraction + readouts. On TX the pair is SWR / power; on RX it is the
+    // S-unit reading and its dBm sub-reading.
     let (vfrac, primary, secondary) = if let Some(tx) = tx {
-        (tx.alc.clamp(0.0, 1.0), tx_label(tx), String::new())
+        let (swr_txt, pwr_txt) = tx_readouts(tx);
+        (tx.alc.clamp(0.0, 1.0), swr_txt, pwr_txt)
     } else {
         let dbm = meters.map(|m| m.s_dbm).unwrap_or(DBM_LO);
         let (a, b) = rx_readout(meters, dbm);
@@ -308,20 +327,29 @@ fn show_analog(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
     // Digital readouts along the top edge: the arc dips low toward the sides,
     // so the top corners stay clear of the needle and scale — keeping the S and
     // dBm labels readable.
-    p.text(
-        pos2(rect.left() + 5.0, rect.top() + 4.0),
-        Align2::LEFT_TOP,
-        primary,
-        FontId::monospace(16.0),
-        AMBER,
-    );
+    if !primary.is_empty() {
+        p.text(
+            pos2(rect.left() + 5.0, rect.top() + 4.0),
+            Align2::LEFT_TOP,
+            primary,
+            FontId::monospace(16.0),
+            AMBER,
+        );
+    }
     if !secondary.is_empty() {
+        // The TX power reading carries as much weight as the SWR beside it; the
+        // RX dBm reading stays a small grey sub-label under its S-unit.
+        let (pt, col) = if tx.is_some() {
+            (TX_READOUT_PT, AMBER)
+        } else {
+            (11.0, Color32::from_gray(150))
+        };
         p.text(
             pos2(rect.right() - 5.0, rect.top() + 4.0),
             Align2::RIGHT_TOP,
             secondary,
-            FontId::monospace(11.0),
-            Color32::from_gray(150),
+            FontId::monospace(pt),
+            col,
         );
     }
     border(ui, rect);
