@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
+use crate::aurora::{self, AuroraOval, HemisphericPower, KpPoint};
 use crate::cache::{Cache, Validators};
 use crate::donki::{self, CmeEvent, FlareEvent};
 use crate::imagery::{self, SdoChannel, SunImage};
@@ -59,10 +60,16 @@ pub enum Source {
     /// QO-100, which is absent from the amateur set (see
     /// [`satellites::QO100_URL`]).
     SatGeo,
+    /// The OVATION auroral-oval grid.
+    Aurora,
+    /// Auroral hemispheric power, gigawatts.
+    AuroraPower,
+    /// Three days of predicted planetary K.
+    KpForecast,
 }
 
 impl Source {
-    pub const ALL: [Source; 10] = [
+    pub const ALL: [Source; 13] = [
         Source::Sun,
         Source::Cme,
         Source::Flare,
@@ -73,6 +80,9 @@ impl Source {
         Source::Muf,
         Source::Sats,
         Source::SatGeo,
+        Source::Aurora,
+        Source::AuroraPower,
+        Source::KpForecast,
     ];
 
     pub fn label(self) -> &'static str {
@@ -87,6 +97,9 @@ impl Source {
             Source::Muf => "MUF",
             Source::Sats => "TLE",
             Source::SatGeo => "QO-100",
+            Source::Aurora => "OVATION",
+            Source::AuroraPower => "HPI",
+            Source::KpForecast => "Kp+3d",
         }
     }
 
@@ -105,6 +118,16 @@ impl Source {
             // for far longer than that, so there is no reason to poll hard.
             Source::Sats => 21_600,
             Source::SatGeo => 21_600,
+            // OVATION is issued every five minutes, but the grid is 900 kB —
+            // by far the largest JSON here — and the oval does not move far in
+            // half an hour. The overlay shows what the picture is valid for, so
+            // a slow cadence costs honesty nothing.
+            Source::Aurora => 1800,
+            // The power figure is the number that says "something is
+            // happening", and it is fifteen kilobytes.
+            Source::AuroraPower => 900,
+            // Issued three times a day.
+            Source::KpForecast => 3600,
         }
     }
 
@@ -122,6 +145,9 @@ impl Source {
             Source::Muf => 61,
             Source::Sats => 71,
             Source::SatGeo => 83,
+            Source::Aurora => 97,
+            Source::AuroraPower => 103,
+            Source::KpForecast => 109,
         }
     }
 
@@ -200,6 +226,15 @@ pub struct SolarData {
     /// own set. Iterate with [`SolarData::satellites`].
     pub sats_amateur: Vec<Satellite>,
     pub sats_geo: Vec<Satellite>,
+    /// The auroral oval. Shared by `Arc` for the same reason the solar image
+    /// is: the renderer takes a handle, not a copy of the grid.
+    pub aurora: Option<Arc<AuroraOval>>,
+    /// Bumped on every new issue, so the GPU uploads once per grid.
+    pub aurora_gen: u64,
+    /// Power going into each auroral zone, gigawatts.
+    pub aurora_power: Option<HemisphericPower>,
+    /// Planetary K in three-hour bins, observed and then predicted.
+    pub kp_forecast: Vec<KpPoint>,
     pub status: [SourceStatus; Source::ALL.len()],
 }
 
@@ -210,7 +245,10 @@ impl SolarData {
 
     /// True once anything at all has been loaded, from network or cache.
     pub fn has_any(&self) -> bool {
-        self.sun.is_some() || !self.cmes.is_empty() || !self.regions.is_empty()
+        self.sun.is_some()
+            || self.aurora.is_some()
+            || !self.cmes.is_empty()
+            || !self.regions.is_empty()
     }
 
     /// Every tracked satellite, from both element sets.
@@ -364,6 +402,11 @@ fn load_cached(
     let sondes = cache.read_string("ionosondes.json").map(|s| indices::parse_ionosondes(&s));
     let sats = cache.read_string("amateur.txt").map(|s| satellites::parse_tles(&s));
     let sats_geo = cache.read_string("qo100.txt").map(|s| satellites::parse_tles(&s));
+    let oval = cache.read_string("ovation.json").and_then(|s| aurora::parse_ovation(&s));
+    let power = cache
+        .read_string("hemipower.txt")
+        .and_then(|s| aurora::parse_hemispheric_power(&s));
+    let kp_forecast = cache.read_string("kpforecast.json").map(|s| aurora::parse_kp_forecast(&s));
     {
         let mut d = shared.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(v) = cmes {
@@ -386,6 +429,14 @@ fn load_cached(
         }
         if let Some(v) = sats_geo {
             d.sats_geo = v;
+        }
+        if let Some(v) = oval {
+            d.aurora = Some(Arc::new(v));
+            d.aurora_gen += 1;
+        }
+        d.aurora_power = power;
+        if let Some(v) = kp_forecast {
+            d.kp_forecast = v;
         }
     }
     load_cached_sun(shared, cache, channel, resolution);
@@ -439,6 +490,15 @@ fn refresh(
         Source::Muf => (indices::IONOSONDE_URL.to_string(), "ionosondes.json".to_string(), JSON_LIMIT),
         Source::Sats => (satellites::AMATEUR_URL.to_string(), "amateur.txt".to_string(), JSON_LIMIT),
         Source::SatGeo => (satellites::QO100_URL.to_string(), "qo100.txt".to_string(), JSON_LIMIT),
+        Source::Aurora => {
+            (aurora::OVATION_URL.to_string(), "ovation.json".to_string(), JSON_LIMIT)
+        }
+        Source::AuroraPower => {
+            (aurora::HEMI_POWER_URL.to_string(), "hemipower.txt".to_string(), JSON_LIMIT)
+        }
+        Source::KpForecast => {
+            (aurora::KP_FORECAST_URL.to_string(), "kpforecast.json".to_string(), JSON_LIMIT)
+        }
     };
 
     match http_get(agent, &url, &cache.validators(&url), limit) {
@@ -474,6 +534,12 @@ fn refresh(
                 Parsed::Ionosondes(v) => d.weather.ionosondes = v,
                 Parsed::Sats(v) => d.sats_amateur = v,
                 Parsed::SatGeo(v) => d.sats_geo = v,
+                Parsed::Aurora(v) => {
+                    d.aurora = Some(Arc::new(v));
+                    d.aurora_gen += 1;
+                }
+                Parsed::AuroraPower(v) => d.aurora_power = Some(v),
+                Parsed::KpForecast(v) => d.kp_forecast = v,
                 Parsed::None => {
                     d.status[src.index()]
                         .record_err(now, format!("{} returned unusable data", src.label()));
@@ -504,6 +570,9 @@ enum Parsed {
     Ionosondes(Vec<indices::Ionosonde>),
     Sats(Vec<Satellite>),
     SatGeo(Vec<Satellite>),
+    Aurora(AuroraOval),
+    AuroraPower(HemisphericPower),
+    KpForecast(Vec<KpPoint>),
     None,
 }
 
@@ -535,6 +604,17 @@ fn parse(src: Source, bytes: &[u8], channel: SdoChannel, now: i64) -> Parsed {
                         (false, Source::SatGeo) => Parsed::SatGeo(v),
                         (false, _) => Parsed::Sats(v),
                     };
+                }
+                Source::Aurora => {
+                    return aurora::parse_ovation(text).map_or(Parsed::None, Parsed::Aurora);
+                }
+                Source::AuroraPower => {
+                    return aurora::parse_hemispheric_power(text)
+                        .map_or(Parsed::None, Parsed::AuroraPower);
+                }
+                Source::KpForecast => {
+                    let v = aurora::parse_kp_forecast(text);
+                    return if v.is_empty() { Parsed::None } else { Parsed::KpForecast(v) };
                 }
                 Source::Sun => unreachable!(),
             };
@@ -634,7 +714,7 @@ mod tests {
         assert_eq!(s.next_due(Source::Sun), Some(1_000_100 + 600));
     }
 
-    /// With eight sources on a fifteen-second tick, two falling due together
+    /// With a dozen sources on a fifteen-second tick, two falling due together
     /// means two requests in the same instant; the staggers exist to prevent it.
     #[test]
     fn no_two_sources_ever_fall_due_together() {

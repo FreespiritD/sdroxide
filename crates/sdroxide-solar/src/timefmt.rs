@@ -1,9 +1,10 @@
 //! Timestamp parsing tolerant enough for the feeds we actually consume.
 //!
-//! DONKI emits `2026-06-25T00:48Z` — no seconds. NOAA SWPC emits both
-//! `2026-07-24` and `2026-07-24T06:11:37` — no zone marker at all. A strict
-//! RFC-3339 parser rejects every one of them, so this accepts the family:
-//! `YYYY-MM-DD` optionally followed by `THH:MM[:SS]` and an optional `Z`.
+//! DONKI emits `2026-06-25T00:48Z` — no seconds. NOAA SWPC emits
+//! `2026-07-24`, `2026-07-24T06:11:37` and, in the tabular aurora products,
+//! `2026-07-24_06:11` — no zone marker at all. A strict RFC-3339 parser
+//! rejects every one of them, so this accepts the family: `YYYY-MM-DD`
+//! optionally followed by a separator, `HH:MM[:SS]` and an optional `Z`.
 
 use sdroxide_types::{utc_ymd_hms, ymd_hms_to_unix};
 
@@ -12,7 +13,7 @@ use sdroxide_types::{utc_ymd_hms, ymd_hms_to_unix};
 /// Everything these APIs publish is UTC, whether or not it says so.
 pub fn parse_unix(s: &str) -> Option<i64> {
     let s = s.trim().trim_end_matches('Z').trim_end_matches('z');
-    let (date, time) = match s.split_once(['T', ' ']) {
+    let (date, time) = match s.split_once(['T', ' ', '_']) {
         Some((d, t)) => (d, t),
         None => (s, ""),
     };
@@ -76,6 +77,8 @@ mod tests {
         assert_eq!(parse_unix("2026-07-24"), Some(1_784_851_200));
         // Space separator and a fractional second, for good measure.
         assert_eq!(parse_unix("2026-07-24 06:11:37.482"), Some(1_784_873_497));
+        // SWPC's tabular aurora products, which separate with an underscore.
+        assert_eq!(parse_unix("2026-07-24_06:11"), Some(1_784_873_460));
     }
 
     #[test]

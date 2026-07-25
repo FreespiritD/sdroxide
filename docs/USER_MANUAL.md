@@ -69,7 +69,8 @@ or connects to a remote sdroxide server.
 - **Memory channels** and per-band memory of your last frequency/mode/filter.
 - **Solar system 3D view** (native only) — the Sun, Earth and Moon with their
   orbits, live NASA SDO solar imagery, sunspot regions and CME trajectory cones,
-  an arrival estimate when one is headed our way, live amateur-satellite orbits
+  an arrival estimate when one is headed our way, the live auroral oval standing
+  over the globe with a Kp forecast for tonight, live amateur-satellite orbits
   with click-through pass predictions, your FT8 contacts arcing between stations,
   and a propagation panel with MUF, Kp/A, F10.7 and the current GOES X-ray level.
 - **Remote and web operation:** run headless as a server and control it from a
@@ -337,8 +338,59 @@ picks up at whichever viewpoint is nearest your current view.
 
 **Layers** — `ORBITS` (Earth and Moon paths, sampled from the real ephemeris, so
 they are the true eccentric orbits), `CME`, `SPOTS`, `FLARES`, `GRID` (the solar
-rotation axis, equator and heliographic parallels), `LABELS`, `STARS`, `QSO` and
-`SATS`.
+rotation axis, equator and heliographic parallels), `LABELS`, `STARS`, `QSO`,
+`SATS` and `AURORA`.
+
+**The AURORA layer** puts the auroral oval on the globe, live, from NOAA's
+OVATION model — a 1°×1° grid of the probability of seeing aurora, issued every
+few minutes and valid about forty minutes ahead.
+
+It is drawn as a stack of glowing shells at the altitudes the atmosphere
+actually radiates at, not as a texture painted on the surface, and everything
+about how it looks falls out of that. The colour changes with height because the
+emission lines do: green oxygen at 557.7 nm around 110 km, the forbidden red
+line at 630 nm hundreds of kilometres above it, and a violet nitrogen fringe
+underneath when the precipitation is hard — which is why a quiet oval is green
+and a storm goes crimson at the top. The limb is far brighter than the disk,
+because a grazing line of sight crosses a great deal more of every shell, giving
+the thin bright ribbon on the horizon that is the most recognisable thing about
+aurora seen from orbit. The fine structure runs in arcs along the oval and in
+rays through the stack, because auroral precipitation is field-aligned. And
+because the emission is only *drowned out* by daylight rather than stopped by
+it, the sunlit half of the oval fades to a floor rather than to nothing — you
+can still see where it is.
+
+The structure is shaping, not invention: it multiplies what the grid says and
+can never put aurora where NOAA has none. **The green contour on the surface is
+the honest boundary** — the equatorward edge of the 10 % line, straight off the
+grid, drawn to be compared against your own latitude. It bulges towards the
+equator on the night side and over the magnetic poles, which is where it really
+does; the southern oval reaches much lower geographic latitudes than the
+northern one for exactly that reason.
+
+**Aurora panel** — under the propagation numbers on the right:
+
+| Row | What it is |
+| --- | --- |
+| `power N/S` | Gigawatts being deposited in each auroral zone. This is the number that says how big the event is. |
+| `activity` | The same figure as NOAA's Hemispheric Power Index, 1–10, with a word for it. Yellow from HPI 6, pink from 8. |
+| `edge N/S` | How far towards the equator the 10 % contour reaches in each hemisphere, read off the grid. |
+| *your grid square* | The probability of visible aurora directly over your QTH. Green when there is anything at all, yellow past 10 %, pink past 25 %. |
+| `Kp peak 24 h` | The worst three-hour bin still ahead of you in NOAA's planetary K forecast, and how far away it is. |
+| `viewline` | Roughly how far towards the equator that Kp puts the aurora, as a **geomagnetic** latitude. A rule of thumb — see below. |
+
+Under the rows, one bar per three-hour bin over the next day: the shape answers
+"is it worth staying up" faster than eight numbers would. Green is quiet, yellow
+worth watching, pink a storm. The footer says what the picture is *valid for*
+and how old the fetch is — never what time it is now, because the grid is a
+forecast for about forty minutes ahead and may itself be half an hour old.
+
+The `viewline` row is the one number here that is not measured. It is a
+straight-line fit to SWPC's published table (66.5° at Kp 0, falling about 2° per
+unit of Kp) and it says nothing about cloud, moonlight or how dark your sky is;
+geomagnetic latitude is also several degrees from geographic at most longitudes.
+The oval on the globe needs none of those caveats, so prefer it when the two
+seem to disagree.
 
 **The SATS layer** puts amateur-radio satellites in orbit around the globe, live,
 propagated with SGP4 from CelesTrak element sets. Ten popular ones are drawn by
@@ -352,7 +404,7 @@ With `LABELS` on, each of the curated satellites is named with **its elevation
 from your QTH right now** — a number means it is above your horizon and
 workable, `▼` means it is not.
 
-![The satellite visualization and pass table](images/17-sats-passes.jpg)
+![Aurora and satellite visualization and pass table](images/17-sats-passes.jpg)
 
 **Click a satellite's label** for its pass table:
 
@@ -455,12 +507,19 @@ means no request is ever made. Three hosts are contacted:
 | `sdo.gsfc.nasa.gov` | Solar disk imagery (NASA SDO — AIA and HMI) | 10 min |
 | `kauai.ccmc.gsfc.nasa.gov` | CMEs and solar flares ([NASA CCMC DONKI](https://ccmc.gsfc.nasa.gov/tools/DONKI/)) | 20 min |
 | `services.swpc.noaa.gov` | Sunspot regions, planetary K/A, 10.7 cm flux, GOES X-ray level (NOAA SWPC) | 5–60 min |
+| `services.swpc.noaa.gov` | The OVATION auroral oval grid, auroral hemispheric power, and the three-day planetary K forecast | 15–60 min |
 | `prop.kc2g.com` | Ionosonde soundings for the MUF estimate (GIRO network, aggregated by KC2G) | 15 min |
 | `celestrak.org` | Orbital element sets for the amateur satellites | 6 h |
 
 Everything fetched is cached under `solar/` in the config directory and is
 loaded *before* the first network request, so the window opens instantly with
 the last data it had and stays useful with no connection at all.
+
+The OVATION grid is issued every five minutes but fetched every thirty: it is
+900 kB, by far the largest thing here after the solar imagery, and the oval does
+not move far in half an hour. Nothing is hidden by that — the aurora panel says
+what the picture is valid for, so a half-hour-old forecast is labelled as one
+rather than presented as this instant's sky.
 
 Sunspot markers are sized by each region's real spot area and coloured by NOAA's
 own next-24-hour flare probability — grey for quiet, yellow for likely, pink for
@@ -474,7 +533,8 @@ fitted, and cones are coloured cyan through pink with increasing speed.
 
 *Credits: solar imagery courtesy of NASA/SDO and the AIA and HMI science teams;
 CME and flare data from NASA CCMC's DONKI; sunspot regions, geomagnetic indices,
-solar flux and X-ray data from NOAA SWPC; ionosonde soundings from the GIRO
+solar flux, X-ray data and the OVATION aurora model from NOAA SWPC; ionosonde
+soundings from the GIRO
 network via [prop.kc2g.com](https://prop.kc2g.com/); satellite element sets from
 [CelesTrak](https://celestrak.org/), propagated with SGP4.*
 
@@ -1175,7 +1235,7 @@ confirmation download is automated.)
 
 ### 8.4 Award tracking
 
-![The AWARDS window: DXCC / WAS / WAZ / grids, worked vs confirmed](images/17-awards.png)
+![The AWARDS window: DXCC / WAS / WAZ / grids, worked vs confirmed](images/18-awards.jpg)
 
 The **AWARDS** button opens a live tally computed from your log:
 

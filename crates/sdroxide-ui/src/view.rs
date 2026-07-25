@@ -55,13 +55,17 @@ pub mod solar_layer {
     pub const QSO: u32 = 1 << 7;
     /// Amateur-radio satellites and their orbits.
     pub const SATS: u32 = 1 << 8;
-    pub const ALL: u32 = ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS;
+    /// The auroral oval and its equatorward edge.
+    pub const AURORA: u32 = 1 << 9;
+    pub const ALL: u32 =
+        ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS | AURORA;
     /// Values `ALL` has had in earlier versions. A stored mask equal to one of
     /// these was "everything" when it was written, so it is upgraded rather
     /// than leaving newly added layers silently switched off.
-    pub const PREVIOUS_ALL: [u32; 2] = [
+    pub const PREVIOUS_ALL: [u32; 3] = [
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS,
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO,
+        ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS,
     ];
 }
 

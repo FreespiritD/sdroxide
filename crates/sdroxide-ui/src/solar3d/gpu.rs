@@ -45,6 +45,7 @@ struct Targets {
 
 pub struct SolarResources {
     body_pipe: wgpu::RenderPipeline,
+    aurora_pipe: wgpu::RenderPipeline,
     cone_pipe: wgpu::RenderPipeline,
     line_pipe: wgpu::RenderPipeline,
     sprite_pipe: wgpu::RenderPipeline,
@@ -83,6 +84,11 @@ pub struct SolarResources {
     /// Bumped whenever a new solar image is uploaded, so the scene bind group
     /// is rebuilt exactly once per image rather than every frame.
     sun_gen: u64,
+    aurora_tex: wgpu::Texture,
+    aurora_view: wgpu::TextureView,
+    /// As `sun_gen`, for the OVATION grid. Its size is fixed, so a new grid is
+    /// a texture write and never a bind-group rebuild.
+    aurora_gen: u64,
     sampler: wgpu::Sampler,
 
     sample_count: u32,
@@ -129,6 +135,7 @@ fn build(rs: &RenderState) -> SolarResources {
         })
     };
     let body_sh = shader("solar-body", include_str!("../shaders/solar_body.wgsl"));
+    let aurora_sh = shader("solar-aurora", include_str!("../shaders/solar_aurora.wgsl"));
     let cone_sh = shader("solar-cone", include_str!("../shaders/solar_cone.wgsl"));
     let line_sh = shader("solar-line", include_str!("../shaders/solar_line.wgsl"));
     let sprite_sh = shader("solar-sprite", include_str!("../shaders/solar_sprite.wgsl"));
@@ -167,6 +174,7 @@ fn build(rs: &RenderState) -> SolarResources {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            tex_entry(4),
         ],
     });
     let draw_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -230,8 +238,9 @@ fn build(rs: &RenderState) -> SolarResources {
         ],
     };
 
-    // Premultiplied "over". Additive strokes and glows emit zero alpha so they
-    // add light without occluding; markers emit real alpha and sit on top.
+    // Premultiplied "over". Additive strokes, glows and the aurora emit zero
+    // alpha so they add light without occluding; markers emit real alpha and
+    // sit on top.
     let premultiplied = wgpu::BlendState {
         color: wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::One,
@@ -302,6 +311,18 @@ fn build(rs: &RenderState) -> SolarResources {
         &[mesh_layout.clone()],
         None,
         depth_state(true, wgpu::CompareFunction::Greater),
+        sample_count,
+    );
+    // The aurora shells are emission: additive, and no depth write, so twenty
+    // of them stack into one glow. They still *test* depth, which is what puts
+    // the far side of the oval behind the planet for free.
+    let aurora_pipe = make_pipe(
+        "solar-aurora",
+        &draw_layout,
+        &aurora_sh,
+        &[mesh_layout.clone()],
+        Some(premultiplied),
+        depth_state(false, wgpu::CompareFunction::Greater),
         sample_count,
     );
     let cone_pipe = make_pipe(
@@ -422,6 +443,27 @@ fn build(rs: &RenderState) -> SolarResources {
         wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
     );
     let sun_view = sun_tex.create_view(&Default::default());
+
+    // The OVATION grid, one texel per degree. Created empty and never resized —
+    // a new issue is a texture write, not a reallocation — and zero everywhere
+    // means "no aurora", which is exactly what should be drawn before the first
+    // one arrives.
+    let aurora_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("solar-aurora-tex"),
+        size: wgpu::Extent3d {
+            width: sdroxide_solar::aurora::GRID_W as u32,
+            height: sdroxide_solar::aurora::GRID_H as u32,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let aurora_view = aurora_tex.create_view(&Default::default());
+
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("solar-sampler"),
         address_mode_u: wgpu::AddressMode::Repeat,
@@ -433,11 +475,13 @@ fn build(rs: &RenderState) -> SolarResources {
         ..Default::default()
     });
 
-    let scene_bg = make_scene_bg(device, &scene_bgl, &globals_buf, &land, &sun_view, &sampler);
+    let scene_bg =
+        make_scene_bg(device, &scene_bgl, &globals_buf, &land, &sun_view, &aurora_view, &sampler);
     let draw_bg = make_draw_bg(device, &draw_bgl, &draw_buf);
 
     SolarResources {
         body_pipe,
+        aurora_pipe,
         cone_pipe,
         line_pipe,
         sprite_pipe,
@@ -469,6 +513,9 @@ fn build(rs: &RenderState) -> SolarResources {
         sun_tex,
         sun_view,
         sun_gen: 0,
+        aurora_tex,
+        aurora_view,
+        aurora_gen: 0,
         sampler,
         sample_count,
         blit_format: rs.target_format,
@@ -483,6 +530,7 @@ fn make_scene_bg(
     globals: &wgpu::Buffer,
     land: &wgpu::TextureView,
     sun: &wgpu::TextureView,
+    aurora: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -493,6 +541,10 @@ fn make_scene_bg(
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(land) },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(sun) },
             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(aurora),
+            },
         ],
     })
 }
@@ -691,6 +743,7 @@ impl SolarResources {
                 &self.globals_buf,
                 &self.land_view,
                 &self.sun_view,
+                &self.aurora_view,
                 &self.sampler,
             );
         }
@@ -711,6 +764,46 @@ impl SolarResources {
         );
         self.sun_gen = generation;
     }
+
+    /// Replace the OVATION grid. Fixed size, so unlike the solar image this
+    /// never touches the bind group — the generation guard is only there to
+    /// keep a 65 kB upload off every frame.
+    ///
+    /// The grid holds percentages; an `R8Unorm` texel is sampled as `v / 255`.
+    /// Rescaling here rather than in the shader is what lets the thresholds in
+    /// the WGSL read as the probabilities they are.
+    pub fn set_aurora(&mut self, queue: &wgpu::Queue, grid: &[u8], generation: u64) {
+        let (w, h) = (sdroxide_solar::aurora::GRID_W, sdroxide_solar::aurora::GRID_H);
+        if self.aurora_gen == generation || grid.len() != w * h {
+            return;
+        }
+        // `write_texture` wants rows aligned to 256 bytes; 360 is not, so pad.
+        let stride = (w as u32).div_ceil(256) * 256;
+        let mut data = vec![0u8; stride as usize * h];
+        for row in 0..h {
+            let dst = row * stride as usize;
+            for col in 0..w {
+                let pct = grid[row * w + col].min(100) as u16;
+                data[dst + col] = (pct * 255 / 100) as u8;
+            }
+        }
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.aurora_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride),
+                rows_per_image: Some(h as u32),
+            },
+            wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+        );
+        self.aurora_gen = generation;
+    }
 }
 
 /// Draws one frame of the solar system. Carries the scene by `Arc` so the
@@ -724,6 +817,9 @@ pub struct SolarCallback {
     /// copied per frame. Uploaded only when `sun_gen` changes.
     pub sun_img: Option<std::sync::Arc<sdroxide_solar::SunImage>>,
     pub sun_gen: u64,
+    /// Latest auroral oval, on the same terms.
+    pub aurora: Option<std::sync::Arc<sdroxide_solar::AuroraOval>>,
+    pub aurora_gen: u64,
 }
 
 impl CallbackTrait for SolarCallback {
@@ -747,6 +843,9 @@ impl CallbackTrait for SolarCallback {
         let Some(alloc) = r.targets.as_ref().map(|t| t.alloc) else { return Vec::new() };
         if let Some(img) = &self.sun_img {
             r.set_sun_image(device, queue, img.w, img.h, &img.rgba, self.sun_gen);
+        }
+        if let Some(oval) = &self.aurora {
+            r.set_aurora(queue, &oval.grid, self.aurora_gen);
         }
 
         queue.write_buffer(&r.globals_buf, 0, bytemuck::bytes_of(&self.scene.globals));
@@ -854,6 +953,13 @@ impl CallbackTrait for SolarCallback {
                         pass.set_vertex_buffer(0, r.sphere_vb.slice(..));
                         pass.set_index_buffer(r.sphere_ib.slice(..), wgpu::IndexFormat::Uint32);
                     }
+                    // Same mesh as the bodies, different pipeline: the shells
+                    // are spheres that add light instead of occluding it.
+                    Prim::Aurora => {
+                        pass.set_pipeline(&r.aurora_pipe);
+                        pass.set_vertex_buffer(0, r.sphere_vb.slice(..));
+                        pass.set_index_buffer(r.sphere_ib.slice(..), wgpu::IndexFormat::Uint32);
+                    }
                     Prim::Cone => {
                         pass.set_pipeline(&r.cone_pipe);
                         pass.set_vertex_buffer(0, r.cone_vb.slice(..));
@@ -864,7 +970,7 @@ impl CallbackTrait for SolarCallback {
             }
             pass.set_bind_group(1, &r.draw_bg, &[i as u32 * r.draw_stride]);
             let n = match prim {
-                Prim::Sphere => r.sphere_indices,
+                Prim::Sphere | Prim::Aurora => r.sphere_indices,
                 Prim::Cone => r.cone_indices,
             };
             pass.draw_indexed(0..n, 0, 0..1);
@@ -935,6 +1041,7 @@ mod tests {
     fn shaders_compile_and_validate() {
         let shaders = [
             ("solar_body.wgsl", include_str!("../shaders/solar_body.wgsl")),
+            ("solar_aurora.wgsl", include_str!("../shaders/solar_aurora.wgsl")),
             ("solar_cone.wgsl", include_str!("../shaders/solar_cone.wgsl")),
             ("solar_line.wgsl", include_str!("../shaders/solar_line.wgsl")),
             ("solar_sprite.wgsl", include_str!("../shaders/solar_sprite.wgsl")),

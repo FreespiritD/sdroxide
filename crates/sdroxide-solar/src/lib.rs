@@ -8,9 +8,11 @@
 //! * [`ephem`] — pure arithmetic. No I/O, no threads, fully unit-tested against
 //!   the worked examples in Meeus.
 //! * the data layer — DONKI coronal mass ejections and flares, NOAA SWPC
-//!   sunspot regions, and SDO solar imagery, fetched on a background thread and
-//!   cached to disk so the view opens instantly and survives being offline.
+//!   sunspot regions and aurora, and SDO solar imagery, fetched on a background
+//!   thread and cached to disk so the view opens instantly and survives being
+//!   offline.
 
+pub mod aurora;
 pub mod cache;
 pub mod donki;
 pub mod feed;
@@ -24,6 +26,7 @@ pub mod swpc;
 pub mod timefmt;
 pub mod vec3;
 
+pub use aurora::{AuroraOval, HemisphericPower, KpPoint};
 pub use donki::{CmeAnalysis, CmeEvent, FlareEvent};
 pub use ephem::{AU, EARTH_R, MOON_R, SUN_R, SunFrame};
 pub use imagery::{SdoChannel, SunImage};

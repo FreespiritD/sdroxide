@@ -45,6 +45,7 @@ fn embedded_image(path: &str) -> Option<&'static [u8]> {
         "15-settings-spots.jpg" => &include_bytes!("../../../docs/images/15-settings-spots.jpg")[..],
         "16-settings-uploads.jpg" => &include_bytes!("../../../docs/images/16-settings-uploads.jpg")[..],
         "17-sats-passes.jpg" => &include_bytes!("../../../docs/images/17-sats-passes.jpg")[..],
+        "18-awards.jpg" => &include_bytes!("../../../docs/images/18-awards.jpg")[..],
         "bw_measurement.jpg" | "bw-measurement.jpg" => {
             &include_bytes!("../../../docs/images/bw_measurement.jpg")[..]
         }

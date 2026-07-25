@@ -11,7 +11,7 @@ use crate::theme;
 use crate::view::solar_layer as layer;
 
 /// Layer chips, in bar order.
-const LAYERS: [(u32, &str, &str); 9] = [
+const LAYERS: [(u32, &str, &str); 10] = [
     (layer::ORBITS, "ORBITS", "Earth and Moon orbital paths"),
     (layer::CME, "CME", "Coronal mass ejection trajectory cones"),
     (layer::SPOTS, "SPOTS", "Sunspot active regions"),
@@ -21,6 +21,12 @@ const LAYERS: [(u32, &str, &str); 9] = [
     (layer::STARS, "STARS", "Background star field"),
     (layer::QSO, "QSO", "Decoded FT8/FT4 stations and the path to the station being worked"),
     (layer::SATS, "SATS", "Amateur-radio satellites, their orbits and elevation from your QTH"),
+    (
+        layer::AURORA,
+        "AURORA",
+        "The auroral oval from NOAA's OVATION model, drawn as emission shells at their real \
+         altitudes, with the equatorward edge of the 10 % contour marked on the surface",
+    ),
 ];
 
 pub fn ui(ui: &mut egui::Ui, st: &mut SolarUi) {
@@ -207,9 +213,9 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     let labels = std::mem::take(&mut scene.labels);
     let view_proj = scene.globals.view_proj;
 
-    let (sun_img, sun_gen) = match data {
-        Some(d) => (d.sun.clone(), d.sun_gen),
-        None => (None, 0),
+    let (sun_img, sun_gen, aurora, aurora_gen) = match data {
+        Some(d) => (d.sun.clone(), d.sun_gen, d.aurora.clone(), d.aurora_gen),
+        None => (None, 0, None, 0),
     };
     ui.painter().add(crate::egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -218,12 +224,15 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
             px_size: [px[0] as u32, px[1] as u32],
             sun_img,
             sun_gen,
+            aurora,
+            aurora_gen,
         },
     ));
 
     draw_labels(ui, st, rect, &view_proj, &labels, &resp);
     clock(ui, rect, sim_now, st.sim_offset_s != 0.0);
-    weather_panel(ui, st, data, rect, sim_now as i64);
+    let below = weather_panel(ui, st, data, rect, sim_now as i64);
+    aurora_panel(ui, st, data, rect, below, sim_now as i64);
     info_card(ui, st, data, rect, sim_now);
     impact_banner(ui, data, rect, sim_now as i64);
     pass_window(ui, st, data, sim_now);
@@ -523,14 +532,18 @@ fn clock(ui: &egui::Ui, rect: egui::Rect, sim_now: f64, scrubbed: bool) {
 
 /// The propagation numbers, top right: MUF at the QTH, K and A, the 10.7 cm
 /// flux and the current GOES X-ray level.
+///
+/// Returns the y coordinate the next panel down the right-hand edge should
+/// start at, so the aurora panel stacks under it whether or not this one drew.
 fn weather_panel(
     ui: &egui::Ui,
     st: &SolarUi,
     data: Option<&SolarData>,
     rect: egui::Rect,
     now: i64,
-) {
-    let Some(d) = data else { return };
+) -> f32 {
+    let top = rect.top() + 12.0;
+    let Some(d) = data else { return top };
     let w = &d.weather;
 
     // (label, value, colour). Colours say what the number means for the bands,
@@ -578,7 +591,7 @@ fn weather_panel(
         ));
     }
     if rows.is_empty() {
-        return;
+        return top;
     }
 
     let font = egui::FontId::proportional(12.0);
@@ -617,12 +630,10 @@ fn weather_panel(
     let width = note.as_ref().map_or(width, |n| width.max(n.size().x + pad * 2.0));
     let height =
         rows.len() as f32 * row_h + note.as_ref().map_or(0.0, |n| n.size().y + 4.0) + pad * 2.0;
-    let panel = egui::Rect::from_min_size(
-        egui::pos2(rect.right() - width - 12.0, rect.top() + 12.0),
-        egui::vec2(width, height),
-    );
+    let panel =
+        egui::Rect::from_min_size(egui::pos2(rect.right() - width - 12.0, top), egui::vec2(width, height));
     if !rect.contains_rect(panel) {
-        return;
+        return top;
     }
 
     p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
@@ -635,6 +646,229 @@ fn weather_panel(
     }
     if let Some(n) = note {
         p.galley(egui::pos2(panel.left() + pad, y + 2.0), n, theme::LINE_LIT);
+    }
+    panel.bottom() + 8.0
+}
+
+/// Aurora, under the propagation numbers: how much power is going into each
+/// oval, how far towards the equator it reaches, whether it is over your head,
+/// and what the planetary K forecast says about tonight.
+///
+/// The colours here mean the same thing they do everywhere else in the window —
+/// green quiet, yellow worth watching, pink a storm.
+fn aurora_panel(
+    ui: &egui::Ui,
+    st: &SolarUi,
+    data: Option<&SolarData>,
+    rect: egui::Rect,
+    top: f32,
+    now: i64,
+) {
+    use sdroxide_solar::{HemisphericPower, aurora};
+
+    let Some(d) = data else { return };
+    // Nothing to say until one of the three aurora feeds has landed. Drawing an
+    // empty box would imply the aurora had been measured and found absent.
+    if d.aurora.is_none() && d.aurora_power.is_none() && d.kp_forecast.is_empty() {
+        return;
+    }
+    let kp_color = |kp: f64| match kp {
+        k if k >= 5.0 => theme::PINK,
+        k if k >= 4.0 => theme::YELLOW,
+        _ => theme::GREEN,
+    };
+
+    // Both hemispheres are reported throughout: without a QTH neither is more
+    // relevant than the other, and with one the QTH row already says what
+    // matters locally.
+    let mut rows: Vec<(String, String, egui::Color32)> = Vec::new();
+    if let Some(power) = &d.aurora_power {
+        let worst = power.north_gw.max(power.south_gw);
+        let color = match HemisphericPower::index(worst) {
+            8..=10 => theme::PINK,
+            6..=7 => theme::YELLOW,
+            _ => theme::GREEN,
+        };
+        rows.push((
+            "power N/S".into(),
+            format!("{:.0} / {:.0} GW", power.north_gw, power.south_gw),
+            color,
+        ));
+        rows.push((
+            "activity".into(),
+            format!("{} · HPI {}", HemisphericPower::words(worst), HemisphericPower::index(worst)),
+            color,
+        ));
+    }
+    if let Some(oval) = &d.aurora {
+        // The edge is where it stops being worth looking, so it is the number
+        // an operator compares their own latitude against.
+        let edge = |n: bool| {
+            oval.equatorward_edge(n, aurora::EDGE_PCT)
+                .map(|lat| format!("{:.0}°{}", lat.abs(), if n { "N" } else { "S" }))
+        };
+        // An oval too weak to reach the contour anywhere in one hemisphere is a
+        // real state, and one worth reading as a dash rather than as a row that
+        // silently disappeared.
+        let (n, s) = (edge(true), edge(false));
+        if n.is_some() || s.is_some() {
+            let show = |e: Option<String>| e.unwrap_or_else(|| "—".into());
+            rows.push(("edge N/S".into(), format!("{} / {}", show(n), show(s)), theme::CYAN));
+        }
+        if let Some((lat, lon)) = st.qth {
+            let pct = oval.probability(lat, lon);
+            let color = match pct {
+                p if p >= 25.0 => theme::PINK,
+                p if p >= aurora::EDGE_PCT => theme::YELLOW,
+                p if p >= aurora::NOISE_FLOOR_PCT => theme::GREEN,
+                _ => theme::LINE_LIT,
+            };
+            rows.push((st.qth_grid.clone(), format!("{pct:.0} %"), color));
+        }
+    }
+    // The forecast half: the worst three-hour bin still ahead of us, and how
+    // far away it is.
+    let peak = aurora::peak_forecast(&d.kp_forecast, now, 24 * 3600);
+    if let Some(p) = peak {
+        let in_h = (p.unix - now).max(0) as f64 / 3600.0;
+        rows.push((
+            "Kp peak 24 h".into(),
+            if in_h < 1.5 {
+                format!("{:.1} now", p.kp)
+            } else {
+                format!("{:.1} in {in_h:.0} h", p.kp)
+            },
+            kp_color(p.kp),
+        ));
+        rows.push((
+            "viewline".into(),
+            format!("{:.0}° geomag", aurora::viewline_geomagnetic_lat(p.kp)),
+            kp_color(p.kp),
+        ));
+    }
+    if rows.is_empty() {
+        return;
+    }
+
+    // The forecast strip: one bar per three-hour bin over the next day. Eight
+    // numbers in a column is a table nobody reads; the same eight as a shape is
+    // "it picks up after midnight" at a glance.
+    let bins: Vec<_> = aurora::upcoming(&d.kp_forecast, now, 24 * 3600).take(8).collect();
+    const BAR_W: f32 = 13.0;
+    const BAR_GAP: f32 = 3.0;
+    const STRIP_H: f32 = 26.0;
+
+    let font = egui::FontId::proportional(12.0);
+    let small = egui::FontId::proportional(10.0);
+    let p = ui.painter();
+    let laid: Vec<_> = rows
+        .iter()
+        .map(|(k, v, c)| {
+            (
+                p.layout_no_wrap(k.clone(), small.clone(), theme::CYAN_DIM),
+                p.layout_no_wrap(v.clone(), font.clone(), *c),
+            )
+        })
+        .collect();
+    let key_w = laid.iter().map(|(k, _)| k.size().x).fold(0.0f32, f32::max);
+    let val_w = laid.iter().map(|(_, v)| v.size().x).fold(0.0f32, f32::max);
+    let row_h = laid.iter().map(|(_, v)| v.size().y + 3.0).fold(0.0f32, f32::max);
+
+    // What the picture is valid for, never what time it is now: OVATION is a
+    // forecast for about forty minutes ahead and the grid may be an hour old.
+    let footer = d.aurora.as_ref().map(|o| {
+        let age = (now - o.observed_unix).max(0);
+        p.layout_no_wrap(
+            format!("valid {} · {} old", timefmt::ymd_hm(o.forecast_unix), timefmt::age(age)),
+            small.clone(),
+            theme::LINE_LIT,
+        )
+    });
+
+    let title = p.layout_no_wrap("AURORA".into(), small.clone(), theme::CYAN_DIM);
+    let pad = 10.0;
+    let strip_w = if bins.is_empty() {
+        0.0
+    } else {
+        bins.len() as f32 * (BAR_W + BAR_GAP) - BAR_GAP
+    };
+    let width = (key_w + val_w + 18.0)
+        .max(strip_w)
+        .max(footer.as_ref().map_or(0.0, |f| f.size().x))
+        + pad * 2.0;
+    let height = title.size().y
+        + 5.0
+        + rows.len() as f32 * row_h
+        // Strip: the gap above it, the bars, and the hour stamps under them.
+        + if bins.is_empty() { 0.0 } else { STRIP_H + 18.0 }
+        + footer.as_ref().map_or(0.0, |f| f.size().y + 4.0)
+        + pad * 2.0;
+
+    let panel =
+        egui::Rect::from_min_size(egui::pos2(rect.right() - width - 12.0, top), egui::vec2(width, height));
+    // Same rule as every other readout in this window: if it does not fit, it
+    // is not drawn. A panel clipped by the viewport edge is worse than none.
+    if !rect.contains_rect(panel) {
+        return;
+    }
+
+    p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
+    chrome::paint_cut_border(p, panel, theme::LINE_LIT, egui::Color32::TRANSPARENT);
+
+    let mut y = panel.top() + pad;
+    let title_h = title.size().y;
+    p.galley(egui::pos2(panel.left() + pad, y), title, theme::CYAN_DIM);
+    y += title_h + 5.0;
+    for ((key, val), (_, _, color)) in laid.iter().zip(&rows) {
+        p.galley(egui::pos2(panel.left() + pad, y + 2.0), key.clone(), theme::CYAN_DIM);
+        p.galley(egui::pos2(panel.right() - pad - val.size().x, y), val.clone(), *color);
+        y += row_h;
+    }
+
+    if !bins.is_empty() {
+        y += 6.0;
+        let base = y + STRIP_H;
+        for (i, bin) in bins.iter().enumerate() {
+            let x = panel.left() + pad + i as f32 * (BAR_W + BAR_GAP);
+            let h = (bin.kp / 9.0) as f32 * STRIP_H;
+            // An unlit socket under every bar, so a quiet forecast still reads
+            // as a scale rather than as missing data.
+            p.rect_filled(
+                egui::Rect::from_min_max(egui::pos2(x, y), egui::pos2(x + BAR_W, base)),
+                0,
+                theme::LINE.gamma_multiply(0.55),
+            );
+            p.rect_filled(
+                egui::Rect::from_min_max(egui::pos2(x, base - h.max(1.0)), egui::pos2(x + BAR_W, base)),
+                0,
+                kp_color(bin.kp),
+            );
+        }
+        // Hours under the ends, so the strip has a time axis without eight
+        // labels fighting for room.
+        let stamp = |unix: i64| {
+            let (_, _, _, h, _, _) = sdroxide_types::utc_ymd_hms(unix);
+            format!("{h:02}z")
+        };
+        p.text(
+            egui::pos2(panel.left() + pad, base + 2.0),
+            egui::Align2::LEFT_TOP,
+            stamp(bins[0].unix),
+            small.clone(),
+            theme::LINE_LIT,
+        );
+        p.text(
+            egui::pos2(panel.left() + pad + strip_w, base + 2.0),
+            egui::Align2::RIGHT_TOP,
+            stamp(bins[bins.len() - 1].unix),
+            small.clone(),
+            theme::LINE_LIT,
+        );
+        y = base + 12.0;
+    }
+
+    if let Some(f) = footer {
+        p.galley(egui::pos2(panel.left() + pad, y + 2.0), f, theme::LINE_LIT);
     }
 }
 

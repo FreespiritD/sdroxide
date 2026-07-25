@@ -4,7 +4,7 @@
 //! geometry can be reasoned about (and unit-tested) without a GPU.
 
 use eframe::egui::Color32;
-use sdroxide_solar::{SolarData, ephem};
+use sdroxide_solar::{AuroraOval, SolarData, aurora, ephem};
 
 use super::camera::Camera;
 use super::math::{M4, V3, v3};
@@ -78,11 +78,13 @@ pub const SPRITE_STAR: f32 = 1.0;
 pub const SPRITE_RING: f32 = 2.0;
 pub const SPRITE_DOT: f32 = 3.0;
 
-/// Which static mesh a draw uses.
+/// Which static mesh a draw uses, and with which pipeline.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Prim {
     Sphere,
     Cone,
+    /// The sphere mesh again, drawn as an additive auroral emission shell.
+    Aurora,
 }
 
 /// A text label anchored to a point in the scene.
@@ -234,6 +236,11 @@ pub fn build(
         if st.layer(layer::CME) {
             cones(&mut s, st, &d.cmes, now);
         }
+        if let Some(oval) = &d.aurora
+            && st.layer(layer::AURORA)
+        {
+            aurora_shells(&mut s, &b, &cam, oval);
+        }
         if st.layer(layer::SATS) {
             satellites(&mut s, st, &b, &cam, d, unix_s);
         }
@@ -319,6 +326,126 @@ fn satellites(
                 offset: [9.0, -7.0],
                 sat: Some(sat.norad_id),
             });
+        }
+    }
+}
+
+// ── Aurora ──────────────────────────────────────────────────────────────────
+//
+// The oval is drawn as a stack of concentric emission shells rather than as a
+// texture painted on the globe, because that is what it is: a hundred-odd
+// kilometres of thin glowing air standing above the surface. Doing it in the
+// round is what produces the bright ribbon on the limb and the colour change
+// with height, neither of which a flat overlay can show. See
+// `shaders/solar_aurora.wgsl` for what each shell contributes.
+
+/// The band of atmosphere the shells span, kilometres. Green oxygen emission
+/// begins around 95 km; the red line is still radiating at 400.
+const AURORA_BOTTOM_KM: f32 = 92.0;
+const AURORA_TOP_KM: f32 = 400.0;
+/// Earth mean radius, kilometres. Altitudes become fractions of whatever radius
+/// the globe is *drawn* at, so the aurora stays attached to the surface at any
+/// setting of the exaggeration slider — the same trick the satellites use.
+const AURORA_EARTH_R_KM: f32 = 6371.0;
+/// Shells are packed towards the bottom of the band, where the green emission
+/// that dominates the picture lives; spacing them evenly would spend most of
+/// them on the faint red top.
+const AURORA_SHELL_BIAS: f32 = 1.5;
+
+/// Altitude of shell `k` of `n`, kilometres.
+fn shell_altitude_km(k: usize, n: usize) -> f32 {
+    let t = if n <= 1 { 0.0 } else { k as f32 / (n - 1) as f32 };
+    AURORA_BOTTOM_KM + (AURORA_TOP_KM - AURORA_BOTTOM_KM) * t.powf(AURORA_SHELL_BIAS)
+}
+
+/// How many shells to spend on the oval, given how big the Earth is on screen.
+///
+/// Every shell is a full additive sphere, so this is the cost knob: twenty
+/// layers is worth it when the globe fills the window and pure waste when it is
+/// twenty pixels across and the layering cannot be resolved at all.
+pub fn shell_count(earth_px: f32) -> usize {
+    match earth_px {
+        px if px >= 260.0 => 20,
+        px if px >= 90.0 => 14,
+        px if px >= 26.0 => 8,
+        _ => 4,
+    }
+}
+
+/// The auroral oval: emission shells, and the contour of its equatorward edge.
+fn aurora_shells(s: &mut Scene, b: &Bodies, cam: &Camera, oval: &AuroraOval) {
+    let earth_px = cam.pixels_for(b.earth, b.earth_r);
+    // The oval is a feature *of the surface*, so it fades in with the same
+    // threshold as the QTH marker: a polar band on a three-pixel Earth reads as
+    // a property of the planet rather than of a place on it.
+    let fade = ((earth_px - 3.0) / 12.0).clamp(0.0, 1.0);
+    if fade <= 0.0 || oval.is_empty() {
+        return;
+    }
+
+    let (ex, ey, ez) = b.earth_basis;
+    let n = shell_count(earth_px);
+    for k in 0..n {
+        let alt = shell_altitude_km(k, n);
+        // The slab of atmosphere this shell stands for: half way to each
+        // neighbour. Passing it to the shader is what keeps total brightness
+        // independent of how many shells were drawn.
+        let lo = if k == 0 { alt } else { shell_altitude_km(k - 1, n) };
+        let hi = if k + 1 == n { alt } else { shell_altitude_km(k + 1, n) };
+        let slab = ((hi - lo) * 0.5).max(1.0);
+        let radius = 1.0 + alt / AURORA_EARTH_R_KM;
+        s.draws.push((
+            Prim::Aurora,
+            DrawData {
+                model: M4::from_basis(ex, ey, ez, b.earth, b.earth_r * radius).cols,
+                basis: M4::from_basis(ex, ey, ez, V3::ZERO, 1.0).cols,
+                tint: [1.0; 4],
+                params: [alt, slab, fade, 0.0],
+            },
+        ));
+    }
+
+    // The contour only means anything once a line on the surface can be told
+    // apart from the surface, which is a good deal closer in than the glow.
+    if earth_px > 60.0 {
+        aurora_edge(s, b, oval, fade);
+    }
+}
+
+/// The equatorward edge of the oval, as a ring on the globe.
+///
+/// This is the line to compare your own latitude against, and it comes from the
+/// grid rather than from a rule of thumb about Kp — so it bulges towards the
+/// equator on the night side and over the magnetic poles, which is where it
+/// really does.
+fn aurora_edge(s: &mut Scene, b: &Bodies, oval: &AuroraOval, fade: f32) {
+    /// Sample spacing along the contour, degrees of longitude.
+    const STEP_DEG: usize = 4;
+    /// A step larger than this is the contour ending rather than a boundary
+    /// that steep; joining across it would draw a chord through the oval.
+    const MAX_JUMP_DEG: f64 = 14.0;
+
+    let (ex, ey, ez) = b.earth_basis;
+    let on_earth = |lat: f64, lon: f64| {
+        let d = ephem::geodetic_to_body(lat, lon);
+        b.earth + (ex * d.x as f32 + ey * d.y as f32 + ez * d.z as f32) * (b.earth_r * 1.004)
+    };
+
+    for north in [true, false] {
+        let profile = oval.edge_profile(north, aurora::EDGE_PCT, STEP_DEG);
+        for k in 0..profile.len() {
+            let j = (k + 1) % profile.len();
+            let (Some(from), Some(to)) = (profile[k], profile[j]) else { continue };
+            if (from - to).abs() > MAX_JUMP_DEG {
+                continue;
+            }
+            let lon = |i: usize| -180.0 + (i * STEP_DEG) as f64;
+            s.lines.push(seg(
+                on_earth(from, lon(k)),
+                on_earth(to, lon(j)),
+                1.4,
+                lin(theme::GREEN, 0.45 * fade),
+            ));
         }
     }
 }
@@ -1061,6 +1188,151 @@ mod tests {
         let s = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
         // Only the sub-solar dot is left.
         assert_eq!(s.sprites.iter().filter(|sp| sp.params[0] == SPRITE_DOT).count(), 1);
+    }
+
+    /// A synthetic oval: a solid band from 60° to 75° in both hemispheres, so
+    /// the tests assert against a shape they know rather than against whatever
+    /// the sky was doing when a fixture was taken.
+    fn test_oval() -> AuroraOval {
+        let mut grid = vec![0u8; aurora::GRID_W * aurora::GRID_H];
+        for row in 0..aurora::GRID_H {
+            let lat = 90.0 - row as f64;
+            if (60.0..=75.0).contains(&lat.abs()) {
+                for col in 0..aurora::GRID_W {
+                    grid[row * aurora::GRID_W + col] = 40;
+                }
+            }
+        }
+        AuroraOval { observed_unix: 0, forecast_unix: 0, grid }
+    }
+
+    fn earth_view_with_aurora(oval: Option<AuroraOval>) -> (SolarUi, SolarData) {
+        let mut st = ui();
+        st.view.focus = Focus::Earth.to_u8();
+        st.view.dist = 0.5;
+        let mut data = SolarData::default();
+        data.aurora = oval.map(std::sync::Arc::new);
+        (st, data)
+    }
+
+    /// The shells have to be a *thin* shell of atmosphere standing on the
+    /// surface. If they drifted to satellite altitudes the oval would detach
+    /// from the globe and stop meaning anything.
+    #[test]
+    fn the_aurora_is_a_stack_of_shells_in_the_upper_atmosphere() {
+        let (st, data) = earth_view_with_aurora(Some(test_oval()));
+        let now = 1_784_937_600.0;
+        let b = bodies(&st, now);
+        let earth_px = Camera::from_view(&st, &b, [1600.0, 900.0]).pixels_for(b.earth, b.earth_r);
+        let s = build(&st, Some(&data), now, [1600.0, 900.0], 0.0);
+
+        let shells: Vec<_> = s.draws.iter().filter(|(p, _)| *p == Prim::Aurora).collect();
+        assert_eq!(shells.len(), shell_count(earth_px), "wrong number of shells");
+
+        let mut prev_alt = 0.0f32;
+        let mut slab_total = 0.0f32;
+        for (_, d) in &shells {
+            let (alt, slab, intensity) = (d.params[0], d.params[1], d.params[2]);
+            assert!(
+                (AURORA_BOTTOM_KM..=AURORA_TOP_KM).contains(&alt),
+                "shell at {alt} km is outside the emission band"
+            );
+            assert!(alt > prev_alt, "shells are not ordered by altitude");
+            prev_alt = alt;
+            assert!(slab > 0.0 && intensity > 0.0);
+            slab_total += slab;
+
+            // Scale is the first column's length, and it is the *rendered*
+            // radius, so the altitude must be a fraction of the globe's own
+            // radius however exaggerated that is.
+            let scale =
+                (d.model[0][0].powi(2) + d.model[0][1].powi(2) + d.model[0][2].powi(2)).sqrt();
+            let ratio = scale / b.earth_r;
+            assert!((1.014..1.064).contains(&ratio), "shell at {ratio}× the Earth's radius");
+        }
+        // The slabs tile the band rather than overlapping or leaving gaps.
+        let band = AURORA_TOP_KM - AURORA_BOTTOM_KM;
+        assert!(
+            (slab_total - band).abs() < band * 0.15,
+            "slabs total {slab_total} km over a {band} km band"
+        );
+
+        // Bodies first, then the shells: the draw loop only rebinds a pipeline
+        // when the primitive changes, so an interleaved order would cost a
+        // switch per shell.
+        let first = s.draws.iter().position(|(p, _)| *p == Prim::Aurora).unwrap();
+        assert!(first >= 3, "aurora drawn before the Sun, Earth and Moon");
+        assert!(s.draws[first..].iter().all(|(p, _)| *p == Prim::Aurora));
+    }
+
+    #[test]
+    fn fewer_shells_are_spent_on_a_smaller_earth() {
+        assert!(shell_count(600.0) > shell_count(120.0));
+        assert!(shell_count(120.0) > shell_count(40.0));
+        assert!(shell_count(40.0) > shell_count(4.0));
+        assert!(shell_count(0.0) >= 2, "an oval drawn with fewer than two shells has no depth");
+    }
+
+    /// The contour is the number an operator compares their own latitude
+    /// against, so it must land on the band the data actually has.
+    #[test]
+    fn the_edge_contour_lands_on_the_oval() {
+        let (st, data) = earth_view_with_aurora(Some(test_oval()));
+        let now = 1_784_937_600.0;
+        let b = bodies(&st, now);
+        let (_, _, ez) = b.earth_basis;
+        let (plain, _) = earth_view_with_aurora(None);
+        let base = build(&plain, Some(&SolarData::default()), now, [1600.0, 900.0], 0.0);
+        let s = build(&st, Some(&data), now, [1600.0, 900.0], 0.0);
+
+        let added = &s.lines[base.lines.len()..];
+        // Two rings, sampled every 4°: 90 segments each.
+        assert_eq!(added.len(), 180, "expected a closed ring in each hemisphere");
+        let mut north = 0;
+        for l in added {
+            let p = v3(l.a[0], l.a[1], l.a[2]) - b.earth;
+            let r = p.len() / b.earth_r;
+            assert!((1.0..1.01).contains(&r), "contour at {r} Earth radii — not on the surface");
+            let lat = (p.dot(ez) / p.len()).clamp(-1.0, 1.0).asin().to_degrees();
+            // The band's equatorward edge, wherever the sampler put it.
+            assert!((59.0..61.0).contains(&lat.abs()), "contour at {lat}°");
+            north += (lat > 0.0) as usize;
+        }
+        assert_eq!(north, 90, "the two hemispheres should contribute equally");
+    }
+
+    #[test]
+    fn the_aurora_layer_removes_the_oval_entirely() {
+        let (mut st, data) = earth_view_with_aurora(Some(test_oval()));
+        st.view.layers &= !layer::AURORA;
+        let s = build(&st, Some(&data), 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        assert!(s.draws.iter().all(|(p, _)| *p != Prim::Aurora));
+    }
+
+    /// A quiet night is not the same as no data: an all-zero grid must draw
+    /// nothing at all rather than a ring of black shells over the poles.
+    #[test]
+    fn a_quiet_oval_draws_nothing() {
+        let empty = AuroraOval {
+            observed_unix: 0,
+            forecast_unix: 0,
+            grid: vec![0u8; aurora::GRID_W * aurora::GRID_H],
+        };
+        let (st, data) = earth_view_with_aurora(Some(empty));
+        let s = build(&st, Some(&data), 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        assert!(s.draws.iter().all(|(p, _)| *p != Prim::Aurora));
+    }
+
+    /// From out by the Sun the Earth is a fraction of a pixel, and a polar band
+    /// on it cannot be seen — the shells there are pure overdraw.
+    #[test]
+    fn the_oval_fades_out_with_a_distant_earth() {
+        let mut st = ui();
+        st.view.focus = Focus::Sun.to_u8();
+        let mut data = SolarData::default();
+        data.aurora = Some(std::sync::Arc::new(test_oval()));
+        let s = build(&st, Some(&data), 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        assert!(s.draws.iter().all(|(p, _)| *p != Prim::Aurora));
     }
 
     #[test]
