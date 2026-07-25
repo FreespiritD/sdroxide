@@ -7,7 +7,12 @@ binary, as a **server that streams the same UI to a web browser** over
 WebSocket. It includes an integrated, persistent **logbook** and full
 **FT8/FT4** digital-mode operation.
 
-<img width="1683" height="933" alt="image" src="https://github.com/user-attachments/assets/8e708021-573e-42e0-b0a5-9ac9c294f874" />
+<img width="2400" height="984" alt="image" src="https://github.com/user-attachments/assets/910903b5-c418-4b71-90b3-f80f2ac32b19" />
+
+<img width="2400" height="984" alt="image" src="https://github.com/user-attachments/assets/b46d007d-8a1c-4c50-b852-4ff344362258" />
+
+
+
 
 > ## [User Manual](docs/USER_MANUAL.md)
 
