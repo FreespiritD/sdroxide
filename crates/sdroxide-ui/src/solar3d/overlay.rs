@@ -11,7 +11,7 @@ use crate::theme;
 use crate::view::solar_layer as layer;
 
 /// Layer chips, in bar order.
-const LAYERS: [(u32, &str, &str); 8] = [
+const LAYERS: [(u32, &str, &str); 9] = [
     (layer::ORBITS, "ORBITS", "Earth and Moon orbital paths"),
     (layer::CME, "CME", "Coronal mass ejection trajectory cones"),
     (layer::SPOTS, "SPOTS", "Sunspot active regions"),
@@ -20,6 +20,7 @@ const LAYERS: [(u32, &str, &str); 8] = [
     (layer::LABELS, "LABELS", "Body and region labels"),
     (layer::STARS, "STARS", "Background star field"),
     (layer::QSO, "QSO", "Decoded FT8/FT4 stations and the path to the station being worked"),
+    (layer::SATS, "SATS", "Amateur-radio satellites, their orbits and elevation from your QTH"),
 ];
 
 pub fn ui(ui: &mut egui::Ui, st: &mut SolarUi) {
@@ -81,7 +82,7 @@ fn view_module(ui: &mut egui::Ui, st: &mut SolarUi) {
 }
 
 fn layers_module(ui: &mut egui::Ui, st: &mut SolarUi) {
-    chrome::module(ui, "Layers", 528.0, |ui| {
+    chrome::module(ui, "Layers", 594.0, |ui| {
         for (bit, label, hint) in LAYERS {
             if chrome::chip(ui, st.layer(bit), label).on_hover_text(hint).clicked() {
                 st.toggle_layer(bit);
@@ -92,7 +93,7 @@ fn layers_module(ui: &mut egui::Ui, st: &mut SolarUi) {
 
 /// Which SDO product wraps the Sun, plus the honest freshness readout.
 fn sun_module(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, now: i64) {
-    chrome::module(ui, "Sun", 372.0, |ui| {
+    chrome::module(ui, "Sun", 470.0, |ui| {
         let current = SdoChannel::from_u8(st.view.channel);
         for c in SdoChannel::ALL {
             if chrome::chip(ui, current == c, c.label()).on_hover_text(c.description()).clicked() {
@@ -101,6 +102,15 @@ fn sun_module(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, now
         }
         if chrome::chip(ui, false, "↻").on_hover_text("Fetch everything again now").clicked() {
             st.refresh_requested = true;
+        }
+        if chrome::chip(ui, st.view.all_satellites, "ALL SATS")
+            .on_hover_text(
+                "Show every satellite in the element set, not just the popular ones. \
+                 Orbit rings stay on the curated few — ninety at once is unreadable.",
+            )
+            .clicked()
+        {
+            st.view.all_satellites = !st.view.all_satellites;
         }
 
         // Say what is actually being shown. Presenting hours-old cached data as
@@ -191,7 +201,11 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     let sim_now = super::wall_clock_unix() + st.sim_offset_s;
     let anim = ui.input(|i| i.time);
     advance_tour(ui, st, sim_now, anim);
-    let scene = super::scene::build(st, data, sim_now, px, anim as f32);
+    let mut scene = super::scene::build(st, data, sim_now, px, anim as f32);
+    // Labels are egui text over the top, so they come out before the rest of the
+    // scene is handed to the GPU callback.
+    let labels = std::mem::take(&mut scene.labels);
+    let view_proj = scene.globals.view_proj;
 
     let (sun_img, sun_gen) = match data {
         Some(d) => (d.sun.clone(), d.sun_gen),
@@ -207,10 +221,12 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
         },
     ));
 
+    draw_labels(ui, st, rect, &view_proj, &labels, &resp);
     clock(ui, rect, sim_now, st.sim_offset_s != 0.0);
     weather_panel(ui, st, data, rect, sim_now as i64);
     info_card(ui, st, data, rect, sim_now);
     impact_banner(ui, data, rect, sim_now as i64);
+    pass_window(ui, st, data, sim_now);
 
     if st.qth.is_none() {
         ui.painter().text(
@@ -221,6 +237,238 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
             theme::YELLOW,
         );
     }
+}
+
+/// Project the scene's labels to screen space, paint them, and let a satellite
+/// label be clicked.
+///
+/// The 3D pass has no text rendering, and adding one for a dozen short strings
+/// would be far more machinery than projecting a dozen points with the same
+/// matrix the vertex shaders use.
+fn draw_labels(
+    ui: &egui::Ui,
+    st: &mut SolarUi,
+    rect: egui::Rect,
+    view_proj: &[[f32; 4]; 4],
+    labels: &[super::scene::Label],
+    resp: &egui::Response,
+) {
+    let font = egui::FontId::proportional(11.5);
+    let pointer = ui.input(|i| i.pointer.interact_pos());
+    // A press-and-release without dragging: a drag is the camera's, a click is
+    // the label's.
+    let clicked = resp.clicked();
+    let mut hit: Option<Option<u64>> = None;
+    let p = ui.painter();
+
+    for l in labels {
+        // Column-major, so column i scales input component i.
+        let mut o = [0.0f32; 4];
+        for (r, out) in o.iter_mut().enumerate() {
+            *out = view_proj[0][r] * l.world[0]
+                + view_proj[1][r] * l.world[1]
+                + view_proj[2][r] * l.world[2]
+                + view_proj[3][r];
+        }
+        // Behind the eye: no on-screen position exists.
+        if o[3] <= 0.0 {
+            continue;
+        }
+        let pos = egui::pos2(
+            rect.left() + (o[0] / o[3] * 0.5 + 0.5) * rect.width() + l.offset[0],
+            rect.top() + (0.5 - o[1] / o[3] * 0.5) * rect.height() + l.offset[1],
+        );
+        if !rect.contains(pos) {
+            continue;
+        }
+
+        let galley = p.layout_no_wrap(l.text.clone(), font.clone(), l.color);
+        let text_rect = egui::Rect::from_min_size(
+            pos - egui::vec2(0.0, galley.size().y * 0.5),
+            galley.size(),
+        );
+        let hovered = l.sat.is_some()
+            && pointer.is_some_and(|q| text_rect.expand(4.0).contains(q));
+        if hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            // A backing plate, so it reads as something you can press.
+            p.rect_filled(text_rect.expand2(egui::vec2(4.0, 2.0)), 0, theme::FILL.gamma_multiply(0.85));
+            if clicked {
+                hit = Some(l.sat);
+            }
+        }
+
+        // A dark halo, so a label stays readable over the bright solar disk as
+        // well as over empty space.
+        let color = if hovered { theme::TEXT_STRONG } else { l.color };
+        let shadow = egui::Color32::from_black_alpha(color.a().saturating_sub(40));
+        p.text(pos + egui::vec2(1.0, 1.0), egui::Align2::LEFT_CENTER, &l.text, font.clone(), shadow);
+        p.text(pos, egui::Align2::LEFT_CENTER, &l.text, font.clone(), color);
+    }
+
+    if let Some(sat) = hit {
+        // Clicking the open satellite's label again closes the table.
+        st.selected_sat = if st.selected_sat == sat { None } else { sat };
+    }
+}
+
+/// The pass table for the selected satellite.
+///
+/// Prediction is expensive — stepping a whole orbit and bisecting each horizon
+/// crossing — so it is computed once per selection and refreshed only as it
+/// ages out, never per frame.
+fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_now: f64) {
+    use sdroxide_solar::{PassSearch, satellites::compass};
+
+    let Some(id) = st.selected_sat else { return };
+    let Some(d) = data else { return };
+    let Some((lat, lon)) = st.qth else {
+        st.selected_sat = None;
+        return;
+    };
+    let Some(sat) = d.satellites().find(|s| s.norad_id == id) else {
+        // The element set was replaced and no longer has it.
+        st.selected_sat = None;
+        return;
+    };
+
+    // Recompute on a change of satellite or QTH, or once the prediction has
+    // aged enough that its first pass may have gone by.
+    let stale = st.sat_passes.as_ref().is_none_or(|c| {
+        c.norad_id != id || c.qth != (lat, lon) || (sim_now - c.computed_unix).abs() > 300.0
+    });
+    if stale {
+        st.sat_passes = Some(super::state::SatPasses {
+            norad_id: id,
+            name: sat.name.clone(),
+            qth: (lat, lon),
+            computed_unix: sim_now,
+            // Two days ahead is enough for "the next few" without spending long
+            // in the search: a LEO satellite gives four to six usable passes.
+            result: sat.next_passes(lat, lon, sim_now, 48.0 * 3600.0, 6),
+        });
+    }
+    let Some(cache) = &st.sat_passes else { return };
+
+    let mut open = true;
+    egui::Window::new(format!("{}  ·  PASSES FROM {}", cache.name, st.qth_grid))
+        .id(egui::Id::new("solar-passes"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .frame(chrome::window_frame())
+        .default_pos(ui.max_rect().center() - egui::vec2(230.0, 120.0))
+        .show(ui.ctx(), |ui| {
+            ui.label(
+                RichText::new(format!(
+                    "elements {} old · SGP4",
+                    timefmt::age(sat.element_age_s(sim_now) as i64)
+                ))
+                .color(theme::CYAN_DIM)
+                .size(10.0),
+            );
+            ui.add_space(4.0);
+
+            match &cache.result {
+                PassSearch::AlwaysVisible { elevation, azimuth } => {
+                    ui.label(
+                        RichText::new("Geostationary — always above your horizon.")
+                            .color(theme::GREEN)
+                            .size(12.5),
+                    );
+                    ui.label(
+                        RichText::new(format!(
+                            "Point at {azimuth:.0}° ({}), elevation {elevation:.0}°.",
+                            compass(*azimuth)
+                        ))
+                        .color(theme::TEXT),
+                    );
+                }
+                PassSearch::NeverVisible => {
+                    ui.label(
+                        RichText::new("No passes in the next 48 hours from your QTH.")
+                            .color(theme::YELLOW),
+                    );
+                }
+                PassSearch::Passes(passes) => {
+                    egui::Grid::new("solar-pass-grid").num_columns(6).spacing([14.0, 3.0]).show(
+                        ui,
+                        |ui| {
+                            for h in ["START", "END", "DUR", "AOS", "LOS", "MAX EL"] {
+                                ui.label(
+                                    RichText::new(h).color(theme::CYAN_DIM).size(9.5).strong(),
+                                );
+                            }
+                            ui.end_row();
+                            for p in passes {
+                                let soon = p.rise_unix as f64 - sim_now;
+                                // The one happening now, or next, is the one the
+                                // operator cares about.
+                                let color = if soon < 0.0 {
+                                    theme::GREEN
+                                } else if soon < 3600.0 {
+                                    theme::YELLOW
+                                } else {
+                                    theme::TEXT
+                                };
+                                ui.label(
+                                    RichText::new(timefmt::ymd_hm(p.rise_unix)).color(color),
+                                );
+                                ui.label(
+                                    RichText::new(hhmm(p.set_unix)).color(color),
+                                );
+                                ui.label(
+                                    RichText::new(format!("{} min", p.duration_s() / 60))
+                                        .color(color),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{:.0}° {}",
+                                        p.rise_az,
+                                        compass(p.rise_az)
+                                    ))
+                                    .color(color),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{:.0}° {}",
+                                        p.set_az,
+                                        compass(p.set_az)
+                                    ))
+                                    .color(color),
+                                );
+                                ui.label(
+                                    RichText::new(format!("{:.0}°  {}", p.max_el, p.quality()))
+                                        .color(match p.max_el {
+                                            e if e >= 30.0 => theme::GREEN,
+                                            e if e >= 15.0 => theme::TEXT,
+                                            _ => theme::CYAN_DIM,
+                                        }),
+                                );
+                                ui.end_row();
+                            }
+                        },
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(
+                            "AOS/LOS are azimuths at the horizon. Times are UTC.",
+                        )
+                        .color(theme::LINE_LIT)
+                        .size(10.0),
+                    );
+                }
+            }
+        });
+    if !open {
+        st.selected_sat = None;
+    }
+}
+
+/// `HH:MM` — the date is already on the start column.
+fn hhmm(unix: i64) -> String {
+    let (_, _, _, h, m, _) = sdroxide_types::utc_ymd_hms(unix);
+    format!("{h:02}:{m:02}")
 }
 
 /// A big dot-matrix UTC clock in the top-left corner.
@@ -545,16 +793,20 @@ fn sun_elevation_azimuth(lat: f64, lon: f64, slat: f64, slon: f64) -> (f64, f64)
 /// independent.
 fn advance_tour(ui: &egui::Ui, st: &mut SolarUi, sim_now: f64, frame_time: f64) {
     let dt = (frame_time - st.last_frame_time) as f32;
+    let first_frame = st.last_frame_time <= 0.0;
     st.last_frame_time = frame_time;
     if !st.view.auto {
+        // Hand the pivot back to the focus chips.
+        st.focus_override = None;
         return;
     }
     let b = super::scene::bodies(st, sim_now);
     // `Tour` is `Copy`, so step a local and write it back rather than fighting
     // the borrow of `st.view` inside it.
     let mut tour = st.tour;
-    tour.step(&mut st.view, &b, if st.last_frame_time > 0.0 { dt } else { 1.0 / 60.0 });
+    let pivot = tour.step(&mut st.view, &b, if first_frame { 1.0 / 60.0 } else { dt });
     st.tour = tour;
+    st.focus_override = Some(pivot);
     ui.ctx().request_repaint();
 }
 

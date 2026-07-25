@@ -270,12 +270,20 @@ pub const EARTH_MEAN_MOTION_DEG_PER_DAY: f64 = 0.985_647;
 ///
 /// With this basis the mesh's body frame *is* ECEF, so the land-mask UVs, the
 /// QTH marker and the terminator all share one coordinate system.
-pub fn earth_basis(jd: f64) -> Basis {
+/// Rotate an equatorial-of-date vector into ecliptic-of-date coordinates.
+///
+/// A rotation by −ε about the X axis. Shared with the satellite tracker, whose
+/// SGP4 output is in the equatorial TEME frame.
+pub fn equatorial_to_ecliptic(v: Vec3, jd: f64) -> Vec3 {
     let eps = obliquity_deg(jd).to_radians();
+    vec3(v.x, v.y * eps.cos() + v.z * eps.sin(), -v.y * eps.sin() + v.z * eps.cos())
+}
+
+pub fn earth_basis(jd: f64) -> Basis {
     let theta = gmst_deg(jd).to_radians();
     // ECEF → equatorial of date is a rotation by GMST about the polar axis;
-    // equatorial → ecliptic is a rotation by −ε about the X axis.
-    let eq_to_ecl = |v: Vec3| vec3(v.x, v.y * eps.cos() + v.z * eps.sin(), -v.y * eps.sin() + v.z * eps.cos());
+    // equatorial → ecliptic is the obliquity rotation.
+    let eq_to_ecl = |v: Vec3| equatorial_to_ecliptic(v, jd);
     Basis {
         x: eq_to_ecl(vec3(theta.cos(), theta.sin(), 0.0)),
         y: eq_to_ecl(vec3(-theta.sin(), theta.cos(), 0.0)),

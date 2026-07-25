@@ -85,12 +85,29 @@ pub enum Prim {
     Cone,
 }
 
+/// A text label anchored to a point in the scene.
+///
+/// Drawn by the overlay with egui rather than in the 3D pass — there is no text
+/// rendering on the GPU side, and projecting a handful of points is cheaper than
+/// adding one.
+pub struct Label {
+    pub world: [f32; 3],
+    pub text: String,
+    pub color: Color32,
+    /// Pixels to offset from the anchor, so a label does not sit on its marker.
+    pub offset: [f32; 2],
+    /// Catalogue number when this labels a satellite — clicking it opens that
+    /// satellite's pass table.
+    pub sat: Option<u64>,
+}
+
 #[derive(Default)]
 pub struct Scene {
     pub globals: Globals,
     pub draws: Vec<(Prim, DrawData)>,
     pub lines: Vec<LineInst>,
     pub sprites: Vec<SpriteInst>,
+    pub labels: Vec<Label>,
     /// The star field is a static buffer on the GPU, so it is a flag here
     /// rather than 1500 instances rebuilt every frame.
     pub draw_stars: bool,
@@ -217,8 +234,120 @@ pub fn build(
         if st.layer(layer::CME) {
             cones(&mut s, st, &d.cmes, now);
         }
+        if st.layer(layer::SATS) {
+            satellites(&mut s, st, &b, &cam, d, unix_s);
+        }
+    }
+    if st.layer(layer::LABELS) {
+        body_labels(&mut s, &b, &cam);
     }
     s
+}
+
+/// Amateur-radio satellites: position, orbit and label.
+///
+/// Distances come back from the tracker in Earth radii, so they scale with
+/// whatever exaggerated radius the Earth is being drawn at — LEO stays just
+/// above the surface and QO-100 stays 6.6 radii out, at any setting.
+fn satellites(
+    s: &mut Scene,
+    st: &SolarUi,
+    b: &Bodies,
+    cam: &Camera,
+    data: &SolarData,
+    unix_s: f64,
+) {
+    let earth_px = cam.pixels_for(b.earth, b.earth_r);
+    // Orbits are several Earth radii across, so they are legible before a point
+    // on the surface is — a lower threshold than the QTH marker's.
+    let fade = ((earth_px - 1.5) / 6.0).clamp(0.0, 1.0);
+    if fade <= 0.0 {
+        return;
+    }
+    let show_all = st.view.all_satellites;
+    let place = |dir: sdroxide_solar::Vec3, radii: f64| {
+        b.earth + V3::from_f64(dir) * (b.earth_r * radii as f32)
+    };
+
+    for sat in data.satellites().filter(|s| show_all || s.popular) {
+        let Some(state) = sat.at(unix_s) else { continue };
+        let pos = place(state.dir_ecliptic, state.radii);
+
+        // Geostationary orbits read differently from low ones — one is a fixed
+        // relay, the other a pass you have to catch — so they are coloured apart.
+        let geo = sat.period_min > 1300.0;
+        let color = if geo { theme::GREEN } else { theme::CYAN_DIM };
+
+        s.sprites.push(SpriteInst {
+            center: pos.arr(),
+            size_px: if sat.popular { 7.0 } else { 4.0 },
+            color: lin(color, (if sat.popular { 0.95 } else { 0.5 }) * fade),
+            params: [SPRITE_DOT, 0.0, 0.0, 0.0],
+        });
+
+        // Orbit rings only for the curated set: ninety of them at once is noise.
+        if sat.popular {
+            let path = sat.orbit(unix_s, 96);
+            for w in path.windows(2) {
+                s.lines.push(seg(
+                    place(w[0].0, w[0].1),
+                    place(w[1].0, w[1].1),
+                    1.3,
+                    lin(color, 0.4 * fade),
+                ));
+            }
+        }
+
+        if st.layer(layer::LABELS) && sat.popular && earth_px > 24.0 {
+            // The elevation is what decides whether it is workable right now,
+            // so it goes in the label rather than a separate panel.
+            let text = match st.qth {
+                Some((lat, lon)) => {
+                    let el = state.elevation_from(lat, lon);
+                    if el > 0.0 {
+                        format!("{}  {el:.0}°", sat.name)
+                    } else {
+                        format!("{}  ▼", sat.name)
+                    }
+                }
+                None => sat.name.clone(),
+            };
+            s.labels.push(Label {
+                world: pos.arr(),
+                text,
+                color: lin_color(color, 0.9 * fade),
+                offset: [9.0, -7.0],
+                sat: Some(sat.norad_id),
+            });
+        }
+    }
+}
+
+/// Names for the Sun, Earth and Moon.
+fn body_labels(s: &mut Scene, b: &Bodies, cam: &Camera) {
+    for (pos, radius, name) in [
+        (V3::ZERO, b.sun_r, "SUN"),
+        (b.earth, b.earth_r, "EARTH"),
+        (b.moon, b.moon_r, "MOON"),
+    ] {
+        // Only once the body is actually on screen as more than a speck.
+        if cam.pixels_for(pos, radius) < 2.0 {
+            continue;
+        }
+        s.labels.push(Label {
+            world: pos.arr(),
+            text: name.to_string(),
+            color: theme::CYAN_DIM,
+            offset: [10.0, -6.0],
+            sat: None,
+        });
+    }
+}
+
+/// Fade a colour's alpha for a label, staying in sRGB (egui's space) rather
+/// than the linear space the shaders want.
+fn lin_color(c: Color32, alpha: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (255.0 * alpha.clamp(0.0, 1.0)) as u8)
 }
 
 /// Where a sunspot region is *now*, in Stonyhurst longitude.

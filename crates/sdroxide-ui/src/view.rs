@@ -53,11 +53,16 @@ pub mod solar_layer {
     pub const STARS: u32 = 1 << 6;
     /// Decoded FT8/FT4 stations and the arc to the station being worked.
     pub const QSO: u32 = 1 << 7;
-    pub const ALL: u32 = ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO;
-    /// The value of `ALL` before [`QSO`] existed. A stored layer mask equal to
-    /// this predates the QSO layer, so it is upgraded rather than leaving a
-    /// brand-new layer silently switched off.
-    pub const ALL_BEFORE_QSO: u32 = ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS;
+    /// Amateur-radio satellites and their orbits.
+    pub const SATS: u32 = 1 << 8;
+    pub const ALL: u32 = ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS;
+    /// Values `ALL` has had in earlier versions. A stored mask equal to one of
+    /// these was "everything" when it was written, so it is upgraded rather
+    /// than leaving newly added layers silently switched off.
+    pub const PREVIOUS_ALL: [u32; 2] = [
+        ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS,
+        ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO,
+    ];
 }
 
 /// Persisted state of the solar-system 3D window.
@@ -91,6 +96,8 @@ pub struct Solar3dView {
     pub layers: u32,
     /// How far back CMEs are kept on screen, in hours.
     pub cme_window_h: f32,
+    /// Show every satellite in the element set rather than the curated few.
+    pub all_satellites: bool,
 }
 
 impl Default for Solar3dView {
@@ -111,6 +118,7 @@ impl Default for Solar3dView {
             sun_scale: 1.0,
             layers: solar_layer::ALL,
             cme_window_h: 72.0,
+            all_satellites: false,
         }
     }
 }

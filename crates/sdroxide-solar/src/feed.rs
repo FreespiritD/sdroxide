@@ -23,6 +23,7 @@ use crate::cache::{Cache, Validators};
 use crate::donki::{self, CmeEvent, FlareEvent};
 use crate::imagery::{self, SdoChannel, SunImage};
 use crate::indices::{self, SpaceWeather};
+use crate::satellites::{self, Satellite};
 use crate::swpc::{self, ActiveRegion};
 
 /// How far back events are requested, days.
@@ -53,10 +54,15 @@ pub enum Source {
     Xray,
     /// Ionosonde soundings, for the MUF estimate.
     Muf,
+    /// CelesTrak's amateur-satellite element set.
+    Sats,
+    /// QO-100, which is absent from the amateur set (see
+    /// [`satellites::QO100_URL`]).
+    SatGeo,
 }
 
 impl Source {
-    pub const ALL: [Source; 8] = [
+    pub const ALL: [Source; 10] = [
         Source::Sun,
         Source::Cme,
         Source::Flare,
@@ -65,6 +71,8 @@ impl Source {
         Source::Kp,
         Source::Xray,
         Source::Muf,
+        Source::Sats,
+        Source::SatGeo,
     ];
 
     pub fn label(self) -> &'static str {
@@ -77,6 +85,8 @@ impl Source {
             Source::Kp => "Kp",
             Source::Xray => "XRAY",
             Source::Muf => "MUF",
+            Source::Sats => "TLE",
+            Source::SatGeo => "QO-100",
         }
     }
 
@@ -91,6 +101,10 @@ impl Source {
             Source::Kp => 900,       // three-hourly, but revised in between
             Source::Xray => 300,     // a flare develops in minutes
             Source::Muf => 900,      // ionosondes sound every 5-15 minutes
+            // Element sets are re-issued a few times a day; SGP4 stays accurate
+            // for far longer than that, so there is no reason to poll hard.
+            Source::Sats => 21_600,
+            Source::SatGeo => 21_600,
         }
     }
 
@@ -106,6 +120,8 @@ impl Source {
             Source::Kp => 41,
             Source::Xray => 53,
             Source::Muf => 61,
+            Source::Sats => 71,
+            Source::SatGeo => 83,
         }
     }
 
@@ -180,6 +196,10 @@ pub struct SolarData {
     pub sun_gen: u64,
     /// The propagation numbers: flux, K/A, X-ray level and ionosonde soundings.
     pub weather: SpaceWeather,
+    /// Amateur satellites, split by source so each refresh replaces only its
+    /// own set. Iterate with [`SolarData::satellites`].
+    pub sats_amateur: Vec<Satellite>,
+    pub sats_geo: Vec<Satellite>,
     pub status: [SourceStatus; Source::ALL.len()],
 }
 
@@ -191,6 +211,11 @@ impl SolarData {
     /// True once anything at all has been loaded, from network or cache.
     pub fn has_any(&self) -> bool {
         self.sun.is_some() || !self.cmes.is_empty() || !self.regions.is_empty()
+    }
+
+    /// Every tracked satellite, from both element sets.
+    pub fn satellites(&self) -> impl Iterator<Item = &Satellite> {
+        self.sats_amateur.iter().chain(&self.sats_geo)
     }
 
     /// The newest successful fetch across every source, for a single "data as
@@ -337,6 +362,8 @@ fn load_cached(
     let kp = cache.read_string("kp.json").and_then(|s| indices::parse_kp(&s));
     let xray = cache.read_string("xray.json").and_then(|s| indices::parse_xray(&s));
     let sondes = cache.read_string("ionosondes.json").map(|s| indices::parse_ionosondes(&s));
+    let sats = cache.read_string("amateur.txt").map(|s| satellites::parse_tles(&s));
+    let sats_geo = cache.read_string("qo100.txt").map(|s| satellites::parse_tles(&s));
     {
         let mut d = shared.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(v) = cmes {
@@ -353,6 +380,12 @@ fn load_cached(
         d.weather.xray = xray;
         if let Some(v) = sondes {
             d.weather.ionosondes = v;
+        }
+        if let Some(v) = sats {
+            d.sats_amateur = v;
+        }
+        if let Some(v) = sats_geo {
+            d.sats_geo = v;
         }
     }
     load_cached_sun(shared, cache, channel, resolution);
@@ -404,6 +437,8 @@ fn refresh(
         Source::Kp => (indices::KP_URL.to_string(), "kp.json".to_string(), JSON_LIMIT),
         Source::Xray => (indices::XRAY_URL.to_string(), "xray.json".to_string(), JSON_LIMIT),
         Source::Muf => (indices::IONOSONDE_URL.to_string(), "ionosondes.json".to_string(), JSON_LIMIT),
+        Source::Sats => (satellites::AMATEUR_URL.to_string(), "amateur.txt".to_string(), JSON_LIMIT),
+        Source::SatGeo => (satellites::QO100_URL.to_string(), "qo100.txt".to_string(), JSON_LIMIT),
     };
 
     match http_get(agent, &url, &cache.validators(&url), limit) {
@@ -437,6 +472,8 @@ fn refresh(
                 Parsed::Kp(v) => d.weather.geomagnetic = Some(v),
                 Parsed::Xray(v) => d.weather.xray = Some(v),
                 Parsed::Ionosondes(v) => d.weather.ionosondes = v,
+                Parsed::Sats(v) => d.sats_amateur = v,
+                Parsed::SatGeo(v) => d.sats_geo = v,
                 Parsed::None => {
                     d.status[src.index()]
                         .record_err(now, format!("{} returned unusable data", src.label()));
@@ -465,6 +502,8 @@ enum Parsed {
     Kp(indices::GeomagneticIndex),
     Xray(indices::XrayLevel),
     Ionosondes(Vec<indices::Ionosonde>),
+    Sats(Vec<Satellite>),
+    SatGeo(Vec<Satellite>),
     None,
 }
 
@@ -488,6 +527,14 @@ fn parse(src: Source, bytes: &[u8], channel: SdoChannel, now: i64) -> Parsed {
                 Source::Muf => {
                     let v = indices::parse_ionosondes(text);
                     return if v.is_empty() { Parsed::None } else { Parsed::Ionosondes(v) };
+                }
+                Source::Sats | Source::SatGeo => {
+                    let v = satellites::parse_tles(text);
+                    return match (v.is_empty(), src) {
+                        (true, _) => Parsed::None,
+                        (false, Source::SatGeo) => Parsed::SatGeo(v),
+                        (false, _) => Parsed::Sats(v),
+                    };
                 }
                 Source::Sun => unreachable!(),
             };

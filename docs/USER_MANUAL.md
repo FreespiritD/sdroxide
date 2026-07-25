@@ -69,9 +69,9 @@ or connects to a remote sdroxide server.
 - **Memory channels** and per-band memory of your last frequency/mode/filter.
 - **Solar system 3D view** (native only) — the Sun, Earth and Moon with their
   orbits, live NASA SDO solar imagery, sunspot regions and CME trajectory cones,
-  an arrival estimate when one is headed our way, your FT8 contacts arcing
-  between stations, and a propagation panel with MUF, Kp/A, F10.7 and the
-  current GOES X-ray level.
+  an arrival estimate when one is headed our way, live amateur-satellite orbits
+  with click-through pass predictions, your FT8 contacts arcing between stations,
+  and a propagation panel with MUF, Kp/A, F10.7 and the current GOES X-ray level.
 - **Remote and web operation:** run headless as a server and control it from a
   browser or from a second sdroxide instance over the network.
 
@@ -328,14 +328,49 @@ shoulder towards the Sun, face-on to the solar disk, along the day/night
 terminator, over the Sun's pole, a diagonal on the Earth–Moon pair, a long look
 back at the Earth from out by the Sun, and a wide inner-system view. The path is
 a spline through those viewpoints, so the camera curves between them rather than
-stopping and restarting at each; it holds each one for ten to sixteen seconds
+stopping and restarting at each. Moving between viewpoints that frame different
+bodies flies the camera across the gap — Earth to Sun is a 1 AU trip — rather
+than cutting; it holds each one for ten to sixteen seconds
 with a slow drift, and the whole loop takes about two minutes. Re-enabling AUTO
 picks up at whichever viewpoint is nearest your current view.
 
 **Layers** — `ORBITS` (Earth and Moon paths, sampled from the real ephemeris, so
 they are the true eccentric orbits), `CME`, `SPOTS`, `FLARES`, `GRID` (the solar
-rotation axis, equator and heliographic parallels), `LABELS`, `STARS`, and
-`QSO`.
+rotation axis, equator and heliographic parallels), `LABELS`, `STARS`, `QSO` and
+`SATS`.
+
+**The SATS layer** puts amateur-radio satellites in orbit around the globe, live,
+propagated with SGP4 from CelesTrak element sets. Ten popular ones are drawn by
+default with their orbit rings — QO-100, the ISS, AO-7, FO-29, SO-50, AO-73,
+JO-97, RS-44, XW-3 and IO-117. Geostationary orbits are green, low ones cyan.
+`ALL SATS` in the Sun module adds every satellite in the amateur element set as a
+plain dot; the orbit rings stay on the curated few, because ninety rings at once
+is unreadable.
+
+With `LABELS` on, each of the curated satellites is named with **its elevation
+from your QTH right now** — a number means it is above your horizon and
+workable, `▼` means it is not.
+
+![The satellite visualization and pass table](images/17-sats-passes.jpg)
+
+**Click a satellite's label** for its pass table:
+
+| Column | Meaning |
+| --- | --- |
+| `START` / `END` | Rise and set times, UTC |
+| `DUR` | How long the pass lasts |
+| `AOS` / `LOS` | Azimuth at the horizon on acquisition and loss — where to point, and where it ends up |
+| `MAX EL` | Highest elevation reached, with a word for how good that makes the pass |
+
+A pass already under way is shown in green, one starting within the hour in
+yellow. QO-100 is geostationary, so instead of a table it tells you the fixed
+azimuth and elevation to point at — it never sets. A satellite whose orbit never
+reaches your latitude says so rather than showing an empty table. Click the label
+again, or close the window, to dismiss it.
+
+Predictions come from SGP4 on the current element set, and the window shows how
+old those elements are. A day-old TLE is good to a second or so on rise time; a
+week-old one is not, which is why the age is on display.
 
 **The QSO layer** puts your FT8/FT4 traffic on the globe. Every station decoded
 in the last two minutes is a white dot that fades as it ages — the same set the
@@ -420,6 +455,7 @@ means no request is ever made. Three hosts are contacted:
 | `kauai.ccmc.gsfc.nasa.gov` | CMEs and solar flares ([NASA CCMC DONKI](https://ccmc.gsfc.nasa.gov/tools/DONKI/)) | 20 min |
 | `services.swpc.noaa.gov` | Sunspot regions, planetary K/A, 10.7 cm flux, GOES X-ray level (NOAA SWPC) | 5–60 min |
 | `prop.kc2g.com` | Ionosonde soundings for the MUF estimate (GIRO network, aggregated by KC2G) | 15 min |
+| `celestrak.org` | Orbital element sets for the amateur satellites | 6 h |
 
 Everything fetched is cached under `solar/` in the config directory and is
 loaded *before* the first network request, so the window opens instantly with
@@ -438,7 +474,8 @@ fitted, and cones are coloured cyan through pink with increasing speed.
 *Credits: solar imagery courtesy of NASA/SDO and the AIA and HMI science teams;
 CME and flare data from NASA CCMC's DONKI; sunspot regions, geomagnetic indices,
 solar flux and X-ray data from NOAA SWPC; ionosonde soundings from the GIRO
-network via [prop.kc2g.com](https://prop.kc2g.com/).*
+network via [prop.kc2g.com](https://prop.kc2g.com/); satellite element sets from
+[CelesTrak](https://celestrak.org/), propagated with SGP4.*
 
 ---
 
@@ -1052,11 +1089,11 @@ so a browser or remote client uses it too. Credentials are stored in plaintext i
 
 ### 8.1 Spot feeds (DX cluster, POTA, SOTA, PSK Reporter)
 
-![Live spots as clickable markers on the panadapter, and the SPOTS window](images/14-spots-panel.png)
+![Live spots as clickable markers on the panadapter, and the SPOTS window](images/14-spots-panel.jpg)
 
 Enable and configure the feeds on the **Spots** tab of Settings:
 
-![The Spots settings tab](images/15-settings-spots.png)
+![The Spots settings tab](images/15-settings-spots.jpg)
 
 - **Operator** — your callsign and grid (defaults to the values from the General
   tab / FT8 setup). The callsign is used to log in to the DX cluster.
@@ -1106,7 +1143,7 @@ zones).
 
 Configure your upload services on the **Uploads** tab:
 
-![The Uploads settings tab](images/16-settings-uploads.png)
+![The Uploads settings tab](images/16-settings-uploads.jpg)
 
 - **eQSL** — username and password.
 - **QRZ Logbook** — the logbook **API key** (from your QRZ logbook settings; this

@@ -38,7 +38,11 @@ pub fn dist_range(focus_radius: f32) -> (f32, f32) {
 impl Camera {
     pub fn from_view(st: &SolarUi, b: &Bodies, size_px: [f32; 2]) -> Camera {
         let v = &st.view;
-        let (focus, radius) = b.focus(st.focus());
+        // While the tour is flying between two stations it supplies a blended
+        // pivot. Without it the pivot would snap to the destination body on the
+        // transition's first frame — Sun to Earth is 1 AU — and the camera would
+        // teleport even though yaw, pitch and distance interpolate smoothly.
+        let (focus, radius) = st.focus_override.unwrap_or_else(|| b.focus(st.focus()));
         let (lo, hi) = dist_range(radius);
         let dist = v.dist.clamp(lo, hi);
         let eye = focus + orbit_dir(v.yaw, v.pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT)) * dist;
@@ -288,6 +292,10 @@ pub struct Tour {
     /// Pose the current move started from — normally the previous station, but
     /// an arbitrary one when the user re-enables AUTO mid-flight.
     from: Pose,
+    /// Pivot the current move started from: position and the radius the
+    /// distance clamp uses. Interpolated alongside the pose so the camera flies
+    /// between bodies instead of jumping to the next one.
+    from_focus: (V3, f32),
     /// True when `from` is a station pose, so the spline can use a real
     /// preceding control point instead of a duplicated one.
     from_is_station: bool,
@@ -303,6 +311,7 @@ impl Default for Tour {
             index: 0,
             elapsed: 0.0,
             from: Pose { yaw: 0.0, pitch: 0.0, ln_dist: 0.0 },
+            from_focus: (V3::ZERO, 1.0),
             from_is_station: false,
             started: false,
             resume_pending: false,
@@ -326,12 +335,23 @@ impl Tour {
         self.resume_pending = true;
     }
 
-    pub fn step(&mut self, view: &mut crate::view::Solar3dView, b: &Bodies, dt: f32) {
+    /// Advance the tour. Returns the pivot the camera should use this frame:
+    /// during a transition an interpolated point between the two stations'
+    /// bodies, and at rest simply the station's own body.
+    pub fn step(
+        &mut self,
+        view: &mut crate::view::Solar3dView,
+        b: &Bodies,
+        dt: f32,
+    ) -> (V3, f32) {
         if std::mem::take(&mut self.resume_pending) {
             self.resume_near(view, b);
         }
         if !self.started {
             self.from = Pose::new(view.yaw, view.pitch, view.dist);
+            // Start the flight from whatever the camera was actually looking
+            // at, so enabling AUTO mid-view does not jump either.
+            self.from_focus = b.focus(Focus::from_u8(view.focus));
             self.from_is_station = false;
             self.started = true;
             self.elapsed = 0.0;
@@ -342,7 +362,9 @@ impl Tour {
 
         let station = self.station();
         let target = self.pose_of(station, b);
+        let target_focus = b.focus(station.focus);
 
+        let pivot;
         if self.elapsed < TRANSITION_S {
             // p1 → p2 is this move; p0 and p3 shape its curvature.
             let p1 = self.from;
@@ -356,19 +378,33 @@ impl Tour {
                 p1
             };
             let p3 = unwrap_to(p2, self.pose_of(self.station_at(self.index as isize + 1), b));
-            catmull_rom(p0, p1, p2, p3, smootherstep(self.elapsed / TRANSITION_S)).apply(view);
+            let k = smootherstep(self.elapsed / TRANSITION_S);
+            catmull_rom(p0, p1, p2, p3, k).apply(view);
+            // The pivot is eased linearly rather than splined: a Catmull-Rom
+            // through Sun→Earth→Sun would overshoot past the bodies, and a
+            // camera that flies *beyond* its target and comes back reads as a
+            // mistake. Smootherstep still gives zero velocity at both ends.
+            pivot = (
+                self.from_focus.0 + (target_focus.0 - self.from_focus.0) * k,
+                self.from_focus.1 + (target_focus.1 - self.from_focus.1) * k,
+            );
         } else {
             // Dwell. A slow drift keeps the frame alive rather than freezing.
             let held = self.elapsed - TRANSITION_S;
             Pose { yaw: target.yaw + station.drift * held, ..target }.apply(view);
+            pivot = target_focus;
             if held >= station.dwell_s {
                 self.index = (self.index + 1) % STATIONS.len();
                 self.from = Pose::new(view.yaw, view.pitch, view.dist);
+                // Hand the *current* pivot to the next move, so the flight
+                // starts exactly where this one ended.
+                self.from_focus = target_focus;
                 self.from_is_station = true;
                 self.elapsed = 0.0;
             }
         }
         view.focus = station.focus.to_u8();
+        pivot
     }
 
     /// Resume at whichever station is closest to the current view, so
@@ -518,22 +554,33 @@ mod tests {
     }
 
     fn run_tour(seconds: f32, dt: f32) -> (Vec<Pose>, Vec<&'static str>) {
+        let (poses, names, _) = run_tour_eyes(seconds, dt);
+        (poses, names)
+    }
+
+    /// Run the tour, recording the pose, the station sequence, and — crucially —
+    /// the resulting **eye position**, which is what the viewer actually sees
+    /// move.
+    fn run_tour_eyes(
+        seconds: f32,
+        dt: f32,
+    ) -> (Vec<Pose>, Vec<&'static str>, Vec<V3>) {
         let mut st = SolarUi::new(Solar3dView::default());
         st.view.auto = true;
         let b = scene::bodies(&st, 1_784_937_600.0);
         let mut tour = Tour::default();
-        let mut poses = Vec::new();
-        let mut names = Vec::new();
-        let steps = (seconds / dt) as usize;
-        for _ in 0..steps {
-            tour.step(&mut st.view, &b, dt);
+        let (mut poses, mut names, mut eyes) = (Vec::new(), Vec::new(), Vec::new());
+        for _ in 0..(seconds / dt) as usize {
+            let pivot = tour.step(&mut st.view, &b, dt);
+            st.focus_override = Some(pivot);
             poses.push(Pose::new(st.view.yaw, st.view.pitch, st.view.dist));
+            eyes.push(Camera::from_view(&st, &b, [1600.0, 900.0]).eye);
             let n = tour.station().name;
             if names.last() != Some(&n) {
                 names.push(n);
             }
         }
-        (poses, names)
+        (poses, names, eyes)
     }
 
     /// The whole point of the spline: the camera must never jump. Sampled at
@@ -576,6 +623,79 @@ mod tests {
             .map(|w| (w[1] - w[0]).abs())
             .fold(0.0f32, f32::max);
         assert!(worst < 0.02, "yaw acceleration spike of {worst} rad/frame²");
+    }
+
+    /// The test that matters: the **eye** must not jump.
+    ///
+    /// Yaw, pitch and distance being continuous is not sufficient. The camera
+    /// pivots around a body, and stations focus different bodies — so switching
+    /// focus at the start of a transition teleports the eye by up to 1 AU while
+    /// every interpolated value stays perfectly smooth. Measuring the pose alone
+    /// misses that completely.
+    #[test]
+    fn the_eye_never_jumps_between_stations() {
+        let dt = 1.0 / 60.0;
+        let (_, _, eyes) = run_tour_eyes(160.0, dt);
+        assert!(eyes.len() > 9000);
+
+        // The criterion is the *smoothness* of the step profile, not its
+        // magnitude: the tour deliberately crosses 200 Gm in 3.2 s, so a 7 Gm
+        // frame is normal mid-flight. A teleport is instead one enormous step
+        // between two tiny ones, so it shows up as the step size changing by
+        // about its own size from one frame to the next.
+        let steps: Vec<f32> = eyes.windows(2).map(|w| (w[1] - w[0]).len()).collect();
+        let peak = steps.iter().copied().fold(0.0f32, f32::max);
+        let (jerk, at) = steps
+            .windows(2)
+            .enumerate()
+            .map(|(i, w)| ((w[1] - w[0]).abs(), i))
+            .fold((0.0f32, 0usize), |acc, x| if x.0 > acc.0 { x } else { acc });
+        // A smooth ease measures about 0.025; an instant focus switch is ~1.0.
+        assert!(
+            jerk < peak * 0.15,
+            "eye step changed by {jerk} Gm at frame {at} against a {peak} Gm peak \
+             ({:.2} of it) — that is a jump, not a flight",
+            jerk / peak
+        );
+
+        // And nothing pathological: no NaNs, nothing flung outside the system.
+        for e in &eyes {
+            assert!(e.x.is_finite() && e.y.is_finite() && e.z.is_finite());
+            assert!(e.len() < 3000.0, "eye at {} Gm from the Sun", e.len());
+        }
+    }
+
+    /// A focus change on its own — the exact case the pivot interpolation
+    /// exists for. Stepping from a Sun-focused station to an Earth-focused one
+    /// must move the pivot gradually, not snap it 1 AU.
+    #[test]
+    fn the_pivot_eases_between_bodies() {
+        let mut st = SolarUi::new(Solar3dView::default());
+        st.view.auto = true;
+        let b = scene::bodies(&st, 1_784_937_600.0);
+        let mut tour = Tour::default();
+
+        // Settle at station 0 (Sun), then advance to station 1 (Earth).
+        let mut pivot = tour.step(&mut st.view, &b, 1.0 / 60.0);
+        while tour.index == 0 {
+            pivot = tour.step(&mut st.view, &b, 0.05);
+        }
+        assert_eq!(tour.station().focus, Focus::Earth);
+        // The first frame of the new move must still be at the Sun, not at the
+        // Earth: that is the jump this guards against.
+        assert!(pivot.0.len() < 1.0, "pivot already {} Gm out", pivot.0.len());
+
+        let mut prev = pivot.0;
+        let mut worst = 0.0f32;
+        for _ in 0..(TRANSITION_S / 0.02) as usize + 4 {
+            let p = tour.step(&mut st.view, &b, 0.02).0;
+            worst = worst.max((p - prev).len());
+            prev = p;
+        }
+        // Arrived at the Earth...
+        assert!((prev - b.earth).len() < 0.01, "pivot ended {} Gm off the Earth", (prev - b.earth).len());
+        // ...having covered 1 AU in steps no larger than a smooth ease implies.
+        assert!(worst < 3.0, "pivot moved {worst} Gm in a single 20 ms step");
     }
 
     #[test]

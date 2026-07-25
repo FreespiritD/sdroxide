@@ -68,9 +68,30 @@ pub struct SolarUi {
     pub data: Option<Arc<Mutex<SolarData>>>,
     /// FT8/FT4 traffic to plot on the globe.
     pub digi: DigiTraffic,
+    /// Satellite whose pass table is open, by catalogue number.
+    pub selected_sat: Option<u64>,
+    /// Cached pass prediction: which satellite, from what QTH, computed when,
+    /// and the result. Stepping a whole orbit at second resolution is far too
+    /// expensive to redo every frame.
+    pub sat_passes: Option<SatPasses>,
+    /// Pivot supplied by the AUTO tour while it is flying between stations:
+    /// position and the radius the distance clamp uses. Frame-scoped — cleared
+    /// whenever the tour is not driving.
+    pub focus_override: Option<(super::math::V3, f32)>,
     /// Animated camera tour state, and the frame time it last advanced at.
     pub tour: super::camera::Tour,
     pub last_frame_time: f64,
+}
+
+/// A cached pass prediction for one satellite.
+pub struct SatPasses {
+    pub norad_id: u64,
+    pub name: String,
+    /// The QTH it was computed for, so moving the QTH invalidates it.
+    pub qth: (f64, f64),
+    /// Wall clock when it was computed, so it can be refreshed as it ages.
+    pub computed_unix: f64,
+    pub result: sdroxide_solar::PassSearch,
 }
 
 /// FT8/FT4 activity, republished into the window each frame by the root pass.
@@ -91,9 +112,10 @@ pub struct DigiTraffic {
 
 impl SolarUi {
     pub fn new(mut view: Solar3dView) -> Self {
-        // Layer masks persisted before the QSO layer existed would leave it off
-        // for anyone upgrading, which reads as the feature being broken.
-        if view.layers == crate::view::solar_layer::ALL_BEFORE_QSO {
+        // A layer mask persisted before a layer existed would leave that layer
+        // off for anyone upgrading, which reads as the feature being broken. Any
+        // mask that was "everything" at the time becomes "everything" now.
+        if crate::view::solar_layer::PREVIOUS_ALL.contains(&view.layers) {
             view.layers = crate::view::solar_layer::ALL;
         }
         SolarUi {
@@ -105,6 +127,9 @@ impl SolarUi {
             sim_offset_s: 0.0,
             data: None,
             digi: DigiTraffic::default(),
+            selected_sat: None,
+            sat_passes: None,
+            focus_override: None,
             tour: super::camera::Tour::default(),
             last_frame_time: 0.0,
         }
