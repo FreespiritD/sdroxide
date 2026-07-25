@@ -174,7 +174,7 @@ fn time_module(ui: &mut egui::Ui, st: &mut SolarUi) {
         if chrome::chip(ui, st.sim_offset_s == 0.0, "NOW").clicked() {
             st.sim_offset_s = 0.0;
         }
-        for (label, dt) in [("−24h", -86400.0), ("−6h", -21600.0), ("+6h", 21600.0), ("+24h", 86400.0)]
+        for (label, dt) in [("−24h", -86400.0), ("−1h", -3600.0), ("+1h", 3600.0), ("+24h", 86400.0)]
         {
             if chrome::chip(ui, false, label).clicked() {
                 st.sim_offset_s += dt;
