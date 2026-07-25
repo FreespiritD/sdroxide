@@ -99,6 +99,13 @@ impl Mode {
         )
     }
 
+    /// True for the slotted FT8/FT4 modes, as opposed to the continuous
+    /// keyboard modems and the image modes. Drives the decode-list / callsign
+    /// overlays that only make sense for a slot-based decoder.
+    pub fn is_slotted(self) -> bool {
+        matches!(self, Mode::Ft8 | Mode::Ft4)
+    }
+
     /// True for the FSQ mode (adds a directed-message / contacts / image layer
     /// on top of the plain keyboard-modem panel).
     pub fn is_fsq(self) -> bool {

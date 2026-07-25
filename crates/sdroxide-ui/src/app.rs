@@ -21,6 +21,11 @@ const CFG_DEBOUNCE_S: f64 = 0.25;
 /// stops keying, instead of vanishing.
 const SKIMMER_FADE_SECS: f64 = 5.0;
 
+/// FT8/FT4 callsign boxes stop being drawn once the newest decode is this old,
+/// so a stalled decoder (dead band, band change) doesn't leave labels pinned to
+/// the waterfall for good.
+const FT8_LABEL_MAX_AGE_SECS: i64 = 45;
+
 /// Settings dialog tabs: the radio interface + its settings, audio devices,
 /// display/UI preferences, and the network cockpit (spot feeds + uploads).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -817,6 +822,16 @@ impl SdroxideApp {
         (spots, alpha)
     }
 
+    /// Drop everything derived from the previous mode's decodes: the waterfall
+    /// callsign boxes, the decode list, the world-map station dots and the
+    /// clicked-decode preview. Called on every RX mode change so leaving FT8/FT4
+    /// (for SSTV, a keyboard mode, or plain SSB) doesn't carry its labels over.
+    fn clear_digi_rx(&mut self) {
+        self.digi_decodes.clear();
+        self.digi_station_seen.clear();
+        self.digi_preview = None;
+    }
+
     /// Reuse the skimmer overlay to mark FT8/FT4 stations: one box per decoded
     /// callsign at its audio frequency (`dial + audio_hz`). The newest slot is
     /// solid; the previous slot is dimmed. Clicking a box sets the audio offset.
@@ -826,6 +841,12 @@ impl SdroxideApp {
         let Some(latest) = self.digi_decodes.first().map(|d| d.slot_utc) else {
             return (spots, alpha);
         };
+        // Age the whole overlay against the wall clock, not just against its own
+        // newest entry: once decoding stops the boxes expire instead of staying
+        // on the waterfall indefinitely.
+        if now_unix() - latest > FT8_LABEL_MAX_AGE_SECS {
+            return (spots, alpha);
+        }
         let dial = self.state.rx_freq_hz();
         let mut seen = std::collections::HashSet::new();
         for d in &self.digi_decodes {
@@ -4706,7 +4727,11 @@ impl eframe::App for SdroxideApp {
                 }
                 RadioEvent::State(s) => {
                     let prev_vfo = self.state.active_freq_hz();
+                    let prev_mode = self.state.rx[0].mode;
                     self.state = s;
+                    if self.state.rx[0].mode != prev_mode {
+                        self.clear_digi_rx();
+                    }
                     self.recenter_if_tuned_away(prev_vfo);
                 }
                 RadioEvent::Spectrum(f) => {
@@ -4900,8 +4925,10 @@ impl eframe::App for SdroxideApp {
                 Vec::new()
             };
             // FT8 station callsign boxes (built before the &mut self borrows).
+            // Only the slotted modes have them — SSTV / RF Paint share the digi
+            // path but must not inherit FT8's overlay.
             let (ft8_spots, ft8_alpha) =
-                if is_text { (Vec::new(), Vec::new()) } else { self.ft8_overlay() };
+                if mode.is_slotted() { self.ft8_overlay() } else { (Vec::new(), Vec::new()) };
 
             let frame = self.frame.take();
             // Manual vertical split with a draggable divider: the operating
