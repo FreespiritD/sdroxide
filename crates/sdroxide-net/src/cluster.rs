@@ -188,6 +188,14 @@ fn merge_spot(spots: &mut Vec<Spot>, spot: Spot) {
 
 /// Parse a `DX de <spotter>: <freq_khz> <dxcall> <comment...> <time>` line.
 fn parse_dx_line(line: &str, now: i64) -> Option<Spot> {
+    // Cluster nodes append alert BEL bytes (and occasionally other control /
+    // non-UTF-8 bytes) to spot lines; map them to spaces so they don't show as
+    // tofu and don't glue onto the trailing time token.
+    let cleaned: String = line
+        .chars()
+        .map(|c| if c.is_control() || c == '\u{FFFD}' { ' ' } else { c })
+        .collect();
+    let line = cleaned.trim();
     let rest = line.strip_prefix("DX de ").or_else(|| line.strip_prefix("Dx de "))?;
     let (spotter, after) = rest.split_once(':')?;
     let spotter = spotter.trim().to_ascii_uppercase();
@@ -267,5 +275,16 @@ mod tests {
         let s = parse_dx_line("DX de EA1AB:      7074.0  JA1ZZZ  FT8 -12dB  2359Z", 0).unwrap();
         assert_eq!(s.mode, "FT8");
         assert_eq!(s.freq_hz, 7_074_000.0);
+    }
+
+    #[test]
+    fn strips_trailing_bell_and_time() {
+        // Real cluster spots end with two BEL alert bytes after the time.
+        let s = parse_dx_line("DX de IK5ABC:  7123.0  IU1LSY  leone di creta/ 1421Z\u{7}\u{7}", 0)
+            .unwrap();
+        assert_eq!(s.call, "IU1LSY");
+        assert_eq!(s.comment, "leone di creta/");
+        assert!(!s.comment.contains('\u{7}'));
+        assert!(!s.comment.contains("1421Z"));
     }
 }
