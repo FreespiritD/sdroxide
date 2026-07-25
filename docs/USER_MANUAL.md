@@ -19,10 +19,11 @@ or connects to a remote sdroxide server.
 5. [Radio and audio setup](#5-radio-and-audio-setup)
 6. [Remote operation](#6-remote-operation)
 7. [Web operation](#7-web-operation)
-8. [Command-line reference](#8-command-line-reference)
-9. [Configuration files](#9-configuration-files)
-10. [Troubleshooting](#10-troubleshooting)
-11. [Appendix: keyboard shortcuts, modes, bands](#11-appendix)
+8. [Spotting, awards, and QSL upload](#8-spotting-awards-and-qsl-upload)
+9. [Command-line reference](#9-command-line-reference)
+10. [Configuration files](#10-configuration-files)
+11. [Troubleshooting](#11-troubleshooting)
+12. [Appendix: keyboard shortcuts, modes, bands](#12-appendix)
 
 ---
 
@@ -51,7 +52,15 @@ or connects to a remote sdroxide server.
   transmit-sideband scope (an approximation built from the outgoing audio).
 - **FT8 / FT4** with a live decode list, automatic QSO sequencing, a world map,
   a transcript, and automatic logging.
-- **Integrated logbook** for digital and manual QSOs, with ADIF and text export.
+- **Integrated logbook** for digital and manual QSOs, with contest and QSL
+  fields, a worked-before check, ADIF import/export and text export.
+- **Live spotting** — a DX cluster (telnet) plus POTA, SOTA and PSK Reporter
+  feeds shown as clickable markers on the panadapter and world map; click to tune
+  and pre-fill a log entry.
+- **Callsign lookup and QSL upload** — QRZ/HamQTH name/QTH/grid auto-fill, and
+  one-click (or automatic) upload to eQSL, QRZ Logbook and Club Log, with LoTW
+  ADIF export and confirmation download.
+- **Award tracking** — live DXCC / WAS / WAZ / grid tallies, worked vs confirmed.
 - **Wideband skimmers** — a CW skimmer plus PSK31 and RTTY skimmers that decode
   many signals at once and label them on the waterfall.
 - **Four radio backends:** SoapySDR devices, OpenHPSDR (Hermes/Metis) Ethernet
@@ -84,7 +93,7 @@ To try the interface with no hardware, use the built-in signal generator:
 sdroxide --siggen
 ```
 
-See the [command-line reference](#8-command-line-reference) for all options.
+See the [command-line reference](#9-command-line-reference) for all options.
 
 ### 2.2 The main window
 
@@ -159,7 +168,7 @@ popup with three rows:
 
 ![The band and mode selector popup](images/04-band-mode-popup.jpg)
 
-See the [appendix](#11-appendix) for what each mode is.
+See the [appendix](#12-appendix) for what each mode is.
 
 ### 2.5 VFOs, split, and the sub-receiver
 
@@ -289,9 +298,8 @@ press **Store** to save the current frequency and mode. Each saved row has a
 
 The **☀ 3D** button in the Display module opens a second window showing the Sun,
 Earth and Moon in three dimensions, with live solar imagery, sunspot regions and
-coronal-mass-ejection trajectories. It is there to answer one question an HF
-operator actually cares about: **is anything on its way here, and when does it
-arrive?**
+coronal-mass-ejection trajectories. This enables operators to see if anything is 
+on its way here, and when it will arrive.
 
 ![The solar disk in AIA 171, with sunspot regions, a flare marker and the CME arrival banner](images/3d-sun.jpg)
 
@@ -357,7 +365,7 @@ a live one.
 
 **Scale** — the Earth is 23 000 times smaller than its distance from the Sun, so
 at true scale it is invisible whenever the Sun is in frame. `body` exaggerates
-the Earth's and Moon's radii (default 20×) and `moon orbit` stretches the
+Earth and Moon radius (default 20×) and `moon orbit` stretches the
 Earth–Moon distance. **Positions are never exaggerated** — only sizes — so the
 orbits and the CME geometry stay physically truthful. Body scale is capped
 against the moon-orbit scale, because past that point the enlarged Moon would
@@ -367,11 +375,9 @@ size, so nothing is ever invisible however you set these.
 **Time** — `NOW`, `−24h`, `−6h`, `+6h`, `+24h` scrub the whole scene, bodies and
 all, forwards and backwards.
 
-**Clock** — a dot-matrix UTC readout sits in the top-left corner. UTC because
-everything else in this window is: the ephemeris, the DONKI timestamps, the
-arrival estimates and the FT8 slot boundaries. Scrubbing the time with the
-`±6h`/`±24h` chips turns it yellow and relabels it `SIM`, so a simulated time can
-never be mistaken for the real one.
+**Clock** — a UTC time readout sits in the top-left corner. Scrubbing the time 
+with the `±6h`/`±24h` chips turns it yellow and relabels it `SIM`, denoting  
+that the time displayed is not the current real time.
 
 **Propagation panel** — top right, the numbers worth checking before you call CQ:
 
@@ -387,23 +393,21 @@ and how much to trust the number. MUF is interpolated, not measured at your
 location, and the ionosphere changes sharply across the day/night terminator —
 a value drawn from sounders 3000 km away on the other side of it is a guess, and
 the panel says so rather than hiding it. When no sounder is in range it reads
-`no sounder` instead of inventing a figure.
+`no sounder`.
 
 **Readouts** — the card at the bottom left gives UTC, the sub-solar point, the
 solar disk's B0 and L0 angles, the Sun's elevation and azimuth from your QTH
 (and whether it is day or night there), and how many CMEs and sunspot groups are
 being shown. When an Earth-directed CME is in the data, a banner across the
-bottom — flagged with the same yellow-and-black hazard stripes the manual uses
-on its section headers — names it with its speed and estimated arrival:
+bottom names it with its speed and estimated arrival:
 
 ```
 EARTH-DIRECTED CME  2026-07-10 09:48Z  ·  516 km/s  ·  ETA 2026-07-12 14:20Z (+38 h)
 ```
 
-Arrival is a straight-line constant-speed estimate from the fitted cone, which
-is roughly what you would work out by hand. Proper forecasts model the CME's
-drag against the solar wind and are typically good to about ±6 hours; treat this
-the same way.
+Arrival is a straight-line constant-speed estimate from the fitted cone. Proper 
+forecasts model the CME's drag against the solar wind and are typically good to 
+about ±6 hours; treat this the same way.
 
 **Where the data comes from.** This is the only part of sdroxide that makes
 outbound internet connections, and it only does so **while this window is
@@ -419,8 +423,7 @@ means no request is ever made. Three hosts are contacted:
 
 Everything fetched is cached under `solar/` in the config directory and is
 loaded *before* the first network request, so the window opens instantly with
-the last data it had and stays useful with no connection at all. Requests are
-conditional, so a refresh that finds nothing new costs almost nothing.
+the last data it had and stays useful with no connection at all.
 
 Sunspot markers are sized by each region's real spot area and coloured by NOAA's
 own next-24-hour flare probability — grey for quiet, yellow for likely, pink for
@@ -429,10 +432,6 @@ Sun itself, as they should be. CME cones grow from the Sun at the measured
 speed, so the picture is a direct read-out of where the plasma has got to; a
 cone drawn faint has its direction estimated from the source region rather than
 fitted, and cones are coloured cyan through pink with increasing speed.
-
-Pulled back to the whole inner system, the cones show at a glance which way each
-CME went and how far its leading edge has got — the Earth is the small marker on
-its orbit at the upper left.
 
 ![CME trajectory cones seen from outside the Earth's orbit](images/3d-cme.jpg)
 
@@ -451,8 +450,8 @@ timeslot-based modes with QSO sequencing, a world map, and automatic logging
 modes: you tune onto a signal, read the decoded text, and type a reply that
 transmits as you go (3.6–3.7). **SSTV** is an image mode: received pictures build
 up in a gallery and you transmit composed images (3.8). **RF Paint** is a
-transmit-only novelty mode that draws text and pictures directly onto the far
-station's waterfall (3.9).
+transmit-only mode that draws text and pictures directly onto the far station's 
+waterfall (3.9).
 
 ### 3.1 Entering the mode
 
@@ -482,7 +481,7 @@ Click **SETUP** in the QSO area to open the **FT8 / FT4 Setup** window:
 
 ![The FT8 / FT4 setup window](images/08-ft8-setup.png)
 
-These settings are saved to `digi.json` (see [configuration files](#9-configuration-files)).
+These settings are saved to `digi.json` (see [configuration files](#10-configuration-files)).
 
 ### 3.3 The operating panel
 
@@ -524,11 +523,29 @@ Completed FT8/FT4 QSOs are logged automatically. Open the full logbook with the
 The logbook lists QSOs grouped by day (newest first) and covers both digital and
 manual entries. You can:
 
-- **+ NEW ENTRY** — add a manual QSO (Call, Grid, Freq MHz, Mode, RST sent, RST
-  received, Date/Time UTC with a **NOW** button, and a comment).
-- **EDIT** / **DEL** — edit or delete an entry.
-- **ADIF** — export the whole log to `sdroxide-log.adi`.
+- **+ NEW ENTRY** — add a manual QSO. Besides the basics (Call, Grid, Freq MHz,
+  Mode, RST sent/received, Date/Time UTC with a **NOW** button, comment) the form
+  carries **Name, QTH, State, Country**, transmit **Pwr**, and **Contest** fields
+  (contest id and sent/received serial numbers). If you've already worked that
+  call on the band, a **⚠ WORKED BEFORE** badge appears. Press **LOOKUP** to
+  fill name/QTH/grid from your callsign-lookup provider (see
+  [§8.2](#82-callsign-lookup)).
+- **EDIT** / **DEL** — edit or delete an entry. Editing preserves fields the form
+  doesn't show (resolved DXCC/zones, QSL status).
+- **IMPORT** — load QSOs from an ADIF (`.adi`) file. Imported records are
+  de-duplicated against the log (same call + band within two minutes are skipped).
+- **ADIF** — export the whole log to `sdroxide-log.adi` (also the file you sign
+  with TQSL for LoTW).
 - **TXT** — export the whole log to `sdroxide-log.txt`.
+
+A small status column on each row shows QSL state: a green **✓** once a QSO is
+confirmed (LoTW, eQSL or card), a dim **↑** once it has been uploaded but not yet
+confirmed. Hover it for the per-service detail.
+
+Records also hold the fields used by lookup, upload and awards — DXCC entity,
+CQ/ITU zones, IOTA and POTA/SOTA references, and per-service QSL status. See
+[§8. Spotting, awards, and QSL upload](#8-spotting-awards-and-qsl-upload) for the
+one-click upload buttons and award tracking.
 
 The log is stored in `qso_log.json`.
 
@@ -915,7 +932,7 @@ symptom is silent receive and a "waiting for spectrum" panadapter). For a
 sound card dedicated to the radio, the reliable fix is to tell WirePlumber to
 stop managing that card, leaving it for sdroxide. Create a drop-in such as
 `~/.config/wireplumber/wireplumber.conf.d/51-radio.conf` that disables the
-card, then restart WirePlumber. See [troubleshooting](#10-troubleshooting).
+card, then restart WirePlumber. See [troubleshooting](#11-troubleshooting).
 
 ### 5.9 UI preferences
 
@@ -1020,7 +1037,118 @@ authentication if it is reachable from an untrusted network.
 
 ---
 
-## 8. Command-line reference
+## 8. Spotting, awards, and QSL upload
+
+SDR Oxide features spots you can click to work, automatic callsign lookup, 
+one-click QSO upload, and award tracking. These features are 
+configured on the **Spots** and **Uploads** tabs of the Settings
+window (the **⚙ SETTINGS** button, or the **⚙ SETUP** button in the SPOTS
+window), and surfaced by the **SPOTS** and **AWARDS** buttons in the System
+module.
+
+All of this runs on the machine with the radio (the server, in remote/web mode),
+so a browser or remote client uses it too. Credentials are stored in plaintext in
+`net.json` (see [§10](#10-configuration-files)).
+
+### 8.1 Spot feeds (DX cluster, POTA, SOTA, PSK Reporter)
+
+![Live spots as clickable markers on the panadapter, and the SPOTS window](images/14-spots-panel.png)
+
+Enable and configure the feeds on the **Spots** tab of Settings:
+
+![The Spots settings tab](images/15-settings-spots.png)
+
+- **Operator** — your callsign and grid (defaults to the values from the General
+  tab / FT8 setup). The callsign is used to log in to the DX cluster.
+- **DX cluster (telnet)** — tick **Enabled**, then enter the node **Host** and
+  **Port** (commonly 7300/7373/8000). **Login call** overrides the operator
+  callsign if needed, and **Commands** (one per line, e.g. `SET/FT8`) are sent
+  after login to set node-side filters.
+- **POTA / SOTA / PSK Reporter** — tick each feed to poll it. POTA and SOTA show
+  current activator spots; PSK Reporter shows who is being heard on your current
+  band. **Max age** drops spots older than the given number of seconds.
+- Press **APPLY** to connect/disconnect the feeds and save the settings.
+
+Spots then appear two ways:
+
+- **On the panadapter** — colour-coded, clickable boxes along the bottom of the
+  waterfall (DX = cyan, POTA = green, SOTA = amber, PSK = violet), each with a
+  leader line down to the spotted frequency. Located spots (POTA parks, PSK
+  reporters) also appear as dots on the FT8 world map.
+- **In the SPOTS window** — a filterable list (toggle **DX / POTA / SOTA / PSK**,
+  or **IN VIEW** to show only spots inside the current panadapter span). Each row
+  shows the source, callsign, frequency, mode, age and reference/comment, and a
+  green **NEW** flag when it is a DXCC entity you haven't worked yet.
+
+**Click a spot** — on the panadapter or in the SPOTS list — to tune your VFO onto
+it, switch to its mode, and open a **pre-filled New Entry** in the logbook (call,
+frequency, mode, and any grid/reference from the spot). If auto-lookup is on
+(below), the name/QTH/grid are filled in too. CW spots are tuned a sidetone pitch
+low so the signal lands in the CW passband.
+
+### 8.2 Callsign lookup
+
+Auto-fill operator details from an online callsign database. On the **Uploads**
+tab of Settings, pick a **Provider** and enter its credentials:
+
+- **QRZ.com** — needs a QRZ username and password with an active XML-data
+  subscription.
+- **HamQTH** — free; needs a HamQTH username and password.
+
+Tick **Auto-fill name/QTH/grid on spot click & QSO** to look a call up
+automatically when you click a spot, start an FT8 QSO, or finish typing a call in
+the entry form. Either way, the **LOOKUP** button in the New/Edit Entry form does
+it on demand. Lookups only fill fields you've left blank, so they never overwrite
+what you typed; results also enrich the matching logged QSO (name, grid, DXCC,
+zones).
+
+### 8.3 Uploading QSOs (eQSL, QRZ, Club Log, LoTW)
+
+Configure your upload services on the **Uploads** tab:
+
+![The Uploads settings tab](images/16-settings-uploads.png)
+
+- **eQSL** — username and password.
+- **QRZ Logbook** — the logbook **API key** (from your QRZ logbook settings; this
+  is different from the XML-lookup login above).
+- **Club Log** — the account email, password, and an application **API key**.
+- Tick **Auto-upload each new QSO** and the target(s) to push every QSO as it is
+  logged, or upload individual QSOs from the logbook with the per-row **UP**
+  button. Each upload sets that QSO's status flag (the **↑** in the logbook), and
+  failures are reported in the SPOTS window's status line.
+
+**LoTW** upload is deliberately not automated — LoTW requires a signed upload via
+ARRL's TQSL. Export your log to **ADIF** from the logbook and sign/upload it with
+TQSL as usual.
+
+**Confirmations** — enter your **LoTW** login (and/or use your eQSL credentials)
+and press **SYNC CONFIRMATIONS**. sdroxide downloads your LoTW/eQSL confirmations
+and matches them against the log to set the **✓** (confirmed) status, which drives
+worked-vs-confirmed in the awards view. (LoTW upload stays manual; only the
+confirmation download is automated.)
+
+### 8.4 Award tracking
+
+![The AWARDS window: DXCC / WAS / WAZ / grids, worked vs confirmed](images/17-awards.png)
+
+The **AWARDS** button opens a live tally computed from your log:
+
+- **DXCC** (entities), **WAZ** (CQ zones), **WAS** (US states) and **grid
+  squares**, each shown as *worked* and *confirmed* counts, with a per-band
+  filter across the top.
+- The WAS and WAZ grids colour each slot **grey** (not worked), **amber**
+  (worked) or **green** (confirmed); the DXCC list marks confirmed entities.
+
+DXCC entity and CQ/ITU zone are resolved from the callsign using a bundled
+country file (`cty.dat`), so awards work even for QSOs you never looked up —
+though a lookup adds exact zones and state. A QSO counts as *confirmed* once any
+of LoTW, eQSL or a paper card is received for it. The same entity resolution
+flags **new** DXCC entities in the SPOTS list, so you can spot an all-time-new
+one at a glance.
+
+---
+
+## 9. Command-line reference
 
 | Option | Description |
 | --- | --- |
@@ -1049,7 +1177,7 @@ authentication if it is reachable from an untrusted network.
 
 ---
 
-## 9. Configuration files
+## 10. Configuration files
 
 sdroxide stores its settings under the per-user config directory:
 
@@ -1066,7 +1194,8 @@ sdroxide stores its settings under the per-user config directory:
 | `digi.json` | JSON | FT8/FT4 operator settings: your callsign and grid, TX period, auto-sequence, and message templates. |
 | `memories.json` | JSON | Saved memory channels. |
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |
-| `qso_log.json` | JSON | The logbook (digital and manual QSOs). |
+| `qso_log.json` | JSON | The logbook (digital and manual QSOs, with contest/QSL fields). |
+| `net.json` | JSON | Network cockpit: DX cluster / POTA / SOTA / PSK feed settings, and callsign-lookup / eQSL / QRZ / Club Log / LoTW credentials (stored in plaintext). |
 | `sstv_messages.json` | JSON | The overlay message stored for each of the five SSTV transmit slots. |
 | `sstv_tx/` | dir | The five SSTV transmit-image slots (`slot0.png`…`slot4.png`). |
 | `sstv_rx/` | dir | Received SSTV pictures, kept for the gallery. |
@@ -1077,7 +1206,7 @@ normally edit these through the GUI rather than by hand.
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 **"Waiting for spectrum" and no receive audio (CAT radio).**
 The radio's capture device could not be opened. Common causes:
@@ -1126,7 +1255,7 @@ stuck, press Apply / reconnect again.
 
 ---
 
-## 11. Appendix
+## 12. Appendix
 
 ### Keyboard shortcuts
 

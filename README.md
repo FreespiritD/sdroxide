@@ -44,8 +44,12 @@ One binary, three ways to run it:
 - **Resizable layout** — drag the frequency-scale strip to resize the spectrum
   vs. waterfall split; in FT8/FT4, drag the divider to resize the operating
   panel.
+- **Live spotting, awards & QSL** — DX cluster / POTA / SOTA / PSK Reporter spots
+  as clickable panadapter markers (click to tune + pre-fill a log entry),
+  QRZ/HamQTH callsign lookup, one-click upload to LoTW / eQSL / Club Log / QRZ,
+  and live **DXCC / WAS / WAZ / grid** award tracking (worked vs confirmed).
 - **Persistence** — device, rates, gains, memories, band stacks, the FT8/FT4
-  operator profile, and the logbook are all stored under
+  operator profile, network/QSL credentials, and the logbook are all stored under
   `~/.config/sdroxide/`.
 
 ## FT8 / FT4
@@ -146,13 +150,47 @@ Open the **LOG** button (available in any mode) for a persistent logbook that
 holds both FT8/FT4 and manually entered QSOs:
 
 - Entries are grouped into daily **sessions** with a time span and QSO count.
-- **+ New Entry** adds a manual QSO (call, frequency, mode, RST, grid, comment,
-  UTC date/time); **EDIT** and **DEL** amend or remove any past entry.
+- **+ New Entry** adds a manual QSO. Alongside the basics (call, frequency, mode,
+  RST, grid, UTC date/time) the entry form now carries **name, QTH, state,
+  country**, transmit **power**, and **contest** fields (contest id + sent/received
+  serials); a **worked-before** badge warns when you've already worked that call
+  on the band. **EDIT** and **DEL** amend or remove any past entry.
 - FT8/FT4 QSOs are logged automatically as they complete.
-- Export the whole book to **ADIF** (`.adi`, importable into standard logging
-  software) or plain **TXT**.
+- **IMPORT** loads QSOs from an ADIF (`.adi`) file (de-duplicated against the
+  existing log); export the whole book to **ADIF** or plain **TXT**. A
+  QSL/confirmation status column shows what's been uploaded and confirmed.
+- Records also hold DXCC entity, CQ/ITU zones, IOTA and POTA/SOTA references, and
+  per-service QSL status — the data behind lookup, upload and award tracking.
 - The log is stored at `~/.config/sdroxide/qso_log.json` (native) or in browser
   storage (remote).
+
+## Spotting, awards & QSL upload
+
+Turn the logbook into a live station cockpit. Everything here is configured on
+the **Spots** and **Uploads** tabs of the Settings dialog, and surfaced by the
+**SPOTS** and **AWARDS** buttons in the System module.
+
+![Live spots as clickable markers on the panadapter, and the SPOTS window](docs/images/14-spots-panel.png)
+
+- **Spot feeds** — connect a **DX cluster** (telnet) and poll **POTA**, **SOTA**
+  and **PSK Reporter**. Spots appear as clickable, colour-coded markers along the
+  bottom of the waterfall (and as dots on the FT8 world map); the **SPOTS** window
+  lists them with per-source filters. **Click a spot** to tune the VFO, set the
+  mode, and pre-fill a new log entry — one click from "heard" to "working".
+- **Callsign lookup** — auto-fill name, QTH, grid and state from **QRZ.com** or
+  **HamQTH** on a spot click, at QSO start, or when you type a call (or press
+  **LOOKUP** in the entry form).
+- **One-click upload** — push QSOs to **eQSL**, **QRZ Logbook** and **Club Log**
+  (a per-QSO **UP** button, or automatically as each QSO is logged). **LoTW** is
+  handled by exporting ADIF for TQSL signing; LoTW/eQSL **confirmations are
+  downloaded** to mark worked-vs-confirmed.
+- **Award tracking** — the **AWARDS** window tallies **DXCC**, **WAS**, **WAZ**
+  and **grid squares**, worked vs confirmed, with a per-band filter. DXCC entity
+  and CQ/ITU zones are resolved from the callsign (bundled `cty.dat`), so spots
+  for a **new entity** are flagged in the SPOTS list.
+
+Credentials are stored in plaintext under `~/.config/sdroxide/net.json` (as with
+other ham software). See the [User Manual](docs/USER_MANUAL.md) for setup steps.
 
 ## Radio backends
 
