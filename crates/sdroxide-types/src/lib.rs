@@ -59,7 +59,7 @@ pub use radio::{
     Backend, CatConfig, CatFamily, DigiMode, HpsdrConfig, HpsdrDevice, LineState, ModeControl,
     Parity, PttMethod, RadioConfig, SerialConfig, SoundFormat, StopBits, TciConfig,
 };
-pub use skimmer::{SkimmerKind, SkimmerSpot};
+pub use skimmer::{SkimmerKind, SkimmerSettings, SkimmerSpot};
 pub use spectrum::{SpectrumConfig, SpectrumFrame};
 pub use spot::{Spot, SpotKind};
 pub use sstv::{SstvMode, SstvStatus};

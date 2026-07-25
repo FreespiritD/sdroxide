@@ -36,8 +36,11 @@ use sdroxide_types::{
 /// `Command::SetNetworkConfig`/`SpotDialHint`/`LookupCallsign`/`UploadQso`/
 /// `SyncConfirmations` and `ServerMsg::Spots`/`NetStatus`/`CallsignResult`/
 /// `Upload`/`Confirmations`, plus new `QsoRecord` fields.
-pub const PROTO_VERSION: u16 = 11;
-const VERSION_BYTE: u8 = 0x0B;
+/// v12: per-kind skimmer control — `RadioState.skimmer_enabled` became
+/// `RadioState.skimmer: SkimmerSettings` (CW/PSK/RTTY enables + squelch) and
+/// `Command::SetSkimmerEnabled` became `Command::SetSkimmerConfig`.
+pub const PROTO_VERSION: u16 = 12;
+const VERSION_BYTE: u8 = 0x0C;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {

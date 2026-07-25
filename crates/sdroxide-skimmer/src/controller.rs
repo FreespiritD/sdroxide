@@ -2,12 +2,17 @@
 //! realtime engine thread ships IQ blocks to a worker over a bounded channel
 //! (dropping on backpressure) and drains emitted spots non-blocking via
 //! [`SkimmerController::poll`]. All the heavy DSP runs on the worker thread.
+//!
+//! Control messages (re-center, settings, stop) ride a separate unbounded
+//! channel: they are rare, must never be dropped, and must still arrive while
+//! the IQ queue is backed up — which is exactly when the operator is likely to
+//! be switching a skimmer off.
 
 use std::thread::JoinHandle;
 
-use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded, select, unbounded};
 use sdroxide_dsp::Complex32 as C32;
-use sdroxide_types::{SkimmerKind, SkimmerSpot};
+use sdroxide_types::{SkimmerKind, SkimmerSettings, SkimmerSpot};
 
 use crate::cw::CwSkimmer;
 use crate::digi::DigiSkimmer;
@@ -17,21 +22,27 @@ pub enum SkimmerAction {
     Spots(Vec<SkimmerSpot>),
 }
 
-enum Job {
-    Iq(Vec<C32>),
+/// Realtime data, dropped on backpressure.
+struct Iq(Vec<C32>);
+
+/// Control traffic, never dropped.
+enum Ctl {
     Center(f64),
+    Config(SkimmerSettings),
     Stop,
 }
 
 pub struct SkimmerController {
-    job_tx: Sender<Job>,
+    iq_tx: Sender<Iq>,
+    ctl_tx: Sender<Ctl>,
     res_rx: Receiver<Vec<SkimmerSpot>>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl SkimmerController {
-    pub fn new(skim_rate: f64, skim_center_hz: f64) -> Self {
-        let (job_tx, job_rx) = bounded::<Job>(64);
+    pub fn new(skim_rate: f64, skim_center_hz: f64, cfg: SkimmerSettings) -> Self {
+        let (iq_tx, iq_rx) = bounded::<Iq>(64);
+        let (ctl_tx, ctl_rx) = unbounded::<Ctl>();
         let (res_tx, res_rx) = unbounded::<Vec<SkimmerSpot>>();
         // Emit a fresh spot snapshot roughly 4×/second.
         let emit_every = (skim_rate * 0.25) as usize;
@@ -40,48 +51,92 @@ impl SkimmerController {
             .spawn(move || {
                 // One shared worker runs the CW skimmer plus the continuous
                 // PSK/RTTY skimmers; each gates its own spots to its band
-                // segments, so their spot sets never overlap.
+                // segments, so their spot sets never overlap. A skimmer the
+                // operator switched off is skipped entirely — no DSP, no spots.
+                let mut cfg = cfg;
                 let mut cw = CwSkimmer::new(skim_rate, skim_center_hz);
                 let mut psk = DigiSkimmer::new(SkimmerKind::Psk, skim_rate, skim_center_hz);
                 let mut rtty = DigiSkimmer::new(SkimmerKind::Rtty, skim_rate, skim_center_hz);
                 let mut since = 0usize;
-                for job in job_rx {
-                    match job {
-                        Job::Iq(iq) => {
-                            since += iq.len();
-                            cw.process(&iq);
-                            psk.process(&iq);
-                            rtty.process(&iq);
-                            if since >= emit_every {
-                                since = 0;
-                                let mut spots = cw.spots();
-                                spots.extend(psk.spots());
-                                spots.extend(rtty.spots());
-                                let _ = res_tx.send(spots);
+                loop {
+                    select! {
+                        recv(ctl_rx) -> msg => match msg {
+                            Ok(Ctl::Center(hz)) => {
+                                cw.set_center(hz);
+                                psk.set_center(hz);
+                                rtty.set_center(hz);
                             }
-                        }
-                        Job::Center(hz) => {
-                            cw.set_center(hz);
-                            psk.set_center(hz);
-                            rtty.set_center(hz);
-                        }
-                        Job::Stop => break,
+                            Ok(Ctl::Config(next)) => {
+                                // Drop the tracks of a skimmer being switched
+                                // off, so switching it back on starts from a
+                                // clean band instead of replaying a stale one.
+                                if !next.enabled(SkimmerKind::Cw) {
+                                    cw.reset();
+                                }
+                                if !next.enabled(SkimmerKind::Psk) {
+                                    psk.reset();
+                                }
+                                if !next.enabled(SkimmerKind::Rtty) {
+                                    rtty.reset();
+                                }
+                                cfg = next;
+                            }
+                            Ok(Ctl::Stop) | Err(_) => break,
+                        },
+                        recv(iq_rx) -> msg => match msg {
+                            Ok(Iq(iq)) => {
+                                since += iq.len();
+                                if cfg.enabled(SkimmerKind::Cw) {
+                                    cw.process(&iq);
+                                }
+                                if cfg.enabled(SkimmerKind::Psk) {
+                                    psk.process(&iq);
+                                }
+                                if cfg.enabled(SkimmerKind::Rtty) {
+                                    rtty.process(&iq);
+                                }
+                                if since >= emit_every {
+                                    since = 0;
+                                    let mut spots = Vec::new();
+                                    if cfg.enabled(SkimmerKind::Cw) {
+                                        spots.extend(cw.spots());
+                                    }
+                                    if cfg.enabled(SkimmerKind::Psk) {
+                                        spots.extend(psk.spots());
+                                    }
+                                    if cfg.enabled(SkimmerKind::Rtty) {
+                                        spots.extend(rtty.spots());
+                                    }
+                                    // Squelch: a track has to stand this far
+                                    // above its skimmer's noise floor to be
+                                    // worth a box on the waterfall.
+                                    spots.retain(|s| s.snr_db >= cfg.squelch_db(s.kind));
+                                    let _ = res_tx.send(spots);
+                                }
+                            }
+                            Err(_) => break,
+                        },
                     }
                 }
             })
             .expect("spawn skimmer worker");
-        SkimmerController { job_tx, res_rx, worker: Some(worker) }
+        SkimmerController { iq_tx, ctl_tx, res_rx, worker: Some(worker) }
     }
 
     /// Realtime path: hand a block of skim-rate IQ to the worker. Non-blocking;
     /// drops the block if the worker is behind (backpressure).
     pub fn on_rx_iq(&self, iq: &[C32]) {
-        let _ = self.job_tx.try_send(Job::Iq(iq.to_vec()));
+        let _ = self.iq_tx.try_send(Iq(iq.to_vec()));
     }
 
     /// Re-center the skim window (band/center change); clears tracks.
     pub fn set_center(&self, center_hz: f64) {
-        let _ = self.job_tx.try_send(Job::Center(center_hz));
+        let _ = self.ctl_tx.send(Ctl::Center(center_hz));
+    }
+
+    /// Apply new per-kind enables / squelches to the running worker.
+    pub fn set_config(&self, cfg: SkimmerSettings) {
+        let _ = self.ctl_tx.send(Ctl::Config(cfg));
     }
 
     /// Drain any spot snapshots produced since the last poll. Non-blocking.
@@ -96,7 +151,7 @@ impl SkimmerController {
 
 impl Drop for SkimmerController {
     fn drop(&mut self) {
-        let _ = self.job_tx.send(Job::Stop);
+        let _ = self.ctl_tx.send(Ctl::Stop);
         if let Some(h) = self.worker.take() {
             let _ = h.join();
         }

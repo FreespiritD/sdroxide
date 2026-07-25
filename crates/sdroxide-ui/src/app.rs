@@ -188,9 +188,11 @@ pub struct SdroxideApp {
     seen_first_state: bool,
     show_memories: bool,
     show_settings: bool,
-    /// When the band/mode and FFT popups opened (egui time), for their auto-fade.
+    /// When the band/mode, FFT and skimmer popups opened (egui time), for their
+    /// auto-fade.
     mode_popup_since: Option<f64>,
     fft_popup_since: Option<f64>,
+    skimmer_popup_since: Option<f64>,
     mem_name: String,
     // Skimmer (CW etc.) spots, newest merge-by-id.
     skimmer_spots: Vec<SkimmerSpot>,
@@ -457,6 +459,7 @@ impl SdroxideApp {
             show_settings: false,
             mode_popup_since: None,
             fft_popup_since: None,
+            skimmer_popup_since: None,
             mem_name: String::new(),
             skimmer_spots: Vec::new(),
             skimmer_active_at: std::collections::HashMap::new(),
@@ -1566,6 +1569,75 @@ impl SdroxideApp {
         }
     }
 
+    /// The SKIM chip: lit while any skimmer runs, and a popup with one row per
+    /// kind (CW / PSK / RTTY) — an on/off chip plus that skimmer's squelch, the
+    /// SNR a track must reach before it earns a box on the waterfall. Fades out
+    /// on its own like the band/mode popup.
+    fn skimmer_button(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let btn = crate::chrome::chip(ui, self.state.skimmer.any_enabled(), "SKIM").on_hover_text(
+            "CW / PSK / RTTY skimmers — decode signals across the band and mark them on the waterfall",
+        );
+        // A CAT rig feeding demodulated audio has no IQ span to skim; the engine
+        // forces the skimmers off there, so the rows are shown disabled.
+        let wideband = self.caps.as_ref().is_none_or(|c| !c.audio_mode);
+        let popup_id = egui::Popup::default_response_id(&btn);
+        let now = ui.input(|i| i.time);
+        let alpha =
+            crate::chrome::popup_fade_alpha(ui.ctx(), popup_id, now, &mut self.skimmer_popup_since);
+        let resp = egui::Popup::from_toggle_button_response(&btn)
+            .frame(crate::chrome::window_frame_alpha(alpha))
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_opacity(alpha);
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                ui.label(RichText::new("SKIMMERS").color(crate::theme::CYAN_DIM).size(9.5).strong());
+                // Edit a copy and send the whole struct on any change; the
+                // engine echoes it back in the next RadioState.
+                let mut cfg = self.state.skimmer;
+                // A grid so the squelch fields line up under each other despite
+                // the kind chips having different widths.
+                egui::Grid::new("skimmer-kinds").num_columns(3).spacing([6.0, 5.0]).show(ui, |ui| {
+                    if !wideband {
+                        ui.disable();
+                    }
+                    for kind in SkimmerKind::ALL {
+                        if crate::chrome::chip(ui, cfg.enabled(kind), kind.label())
+                            .on_hover_text("Run this skimmer")
+                            .clicked()
+                        {
+                            cfg.set_enabled(kind, !cfg.enabled(kind));
+                        }
+                        ui.label(RichText::new("sql").size(10.0).color(crate::theme::CYAN_DIM));
+                        let mut sql = cfg.squelch_db(kind);
+                        if ui
+                            .add(DragValue::new(&mut sql).speed(0.25).range(0..=40).suffix(" dB"))
+                            .on_hover_text("Minimum SNR a decoded signal needs to be spotted")
+                            .changed()
+                        {
+                            cfg.set_squelch_db(kind, sql);
+                        }
+                        ui.end_row();
+                    }
+                });
+                if !wideband {
+                    ui.label(
+                        RichText::new("needs a wideband IQ source")
+                            .size(9.5)
+                            .color(Color32::from_gray(150)),
+                    );
+                }
+                if cfg != self.state.skimmer {
+                    cmds.push(Command::SetSkimmerConfig(cfg));
+                }
+            });
+        if let Some(r) = &resp {
+            crate::chrome::paint_popup_cut_border(ui.ctx(), &r.response, alpha);
+            if r.response.contains_pointer() {
+                self.skimmer_popup_since = Some(now); // keep it up while the pointer is on it
+            }
+        }
+    }
+
     fn display_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
         // The module reserves its width before the content is drawn, so the
         // extra native-only chip has to be paid for here.
@@ -1594,13 +1666,7 @@ impl SdroxideApp {
             {
                 self.view.spectrum_collapsed = !self.view.spectrum_collapsed;
             }
-            let skim = self.state.skimmer_enabled;
-            if crate::chrome::chip(ui, skim, "SKIM")
-                .on_hover_text("Decode CW signals in the CW band segments and mark them on the waterfall")
-                .clicked()
-            {
-                cmds.push(Command::SetSkimmerEnabled(!skim));
-            }
+            self.skimmer_button(ui, cmds);
             // Opens a second OS window; not available in the browser client.
             #[cfg(not(target_arch = "wasm32"))]
             if crate::chrome::chip(ui, self.solar.open, "☀ 3D")
@@ -4821,9 +4887,10 @@ impl eframe::App for SdroxideApp {
                 RadioEvent::Confirmations(recs) => self.apply_confirmations(recs),
             }
         }
-        // When the skimmer is off the engine stops emitting; drop stale boxes.
-        if !self.state.skimmer_enabled && !self.skimmer_spots.is_empty() {
-            self.skimmer_spots.clear();
+        // A switched-off skimmer stops emitting, so its last boxes would sit on
+        // the waterfall until something else replaced them; drop them per kind.
+        if !self.skimmer_spots.is_empty() {
+            self.skimmer_spots.retain(|s| self.state.skimmer.enabled(s.kind));
         }
         self.poll_adif_import();
 

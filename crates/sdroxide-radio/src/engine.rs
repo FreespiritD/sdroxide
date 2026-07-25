@@ -579,7 +579,7 @@ fn engine_thread(
         }
     }
     if audio_mode {
-        state.skimmer_enabled = false; // wideband-only feature
+        state.skimmer = sdroxide_types::SkimmerSettings::OFF; // wideband-only feature
     }
 
     let cfg = SpectrumConfig::default();
@@ -675,7 +675,7 @@ fn engine_thread(
     // If we start up already in a digital mode, spin up the controller.
     engine.sync_digi_mode();
     if !audio_mode {
-        engine.sync_skimmer(); // starts if skimmer_enabled (default on)
+        engine.sync_skimmer(); // starts if any skimmer kind is enabled (default: all)
     }
     // Start any enabled network spot feeds from the persisted config.
     engine.spots.set_config(sdroxide_config::load_network_config());
@@ -1497,9 +1497,14 @@ impl Engine {
             }
 
             // Skimmers.
-            SetSkimmerEnabled(on) => {
-                self.state.skimmer_enabled = on;
+            SetSkimmerConfig(cfg) => {
+                self.state.skimmer = cfg;
+                // Start/stop the shared skim window, then hand the running
+                // worker its per-kind enables and squelches.
                 self.sync_skimmer();
+                if let Some(sk) = self.skimmer.as_ref() {
+                    sk.set_config(cfg);
+                }
             }
 
             // Network cockpit (no RadioState change → return before the State
@@ -1597,24 +1602,33 @@ impl Engine {
         )
     }
 
-    /// Construct or tear down the wideband CW skimmer to match
-    /// `skimmer_enabled`. The skim window is a dedicated decimation of the raw
-    /// IQ centered on the device center (offset 0), so tuning the VFO within the
-    /// span doesn't disturb the streaming decoders.
+    /// Construct or tear down the wideband skimmer worker: it runs while at
+    /// least one kind (CW / PSK / RTTY) is enabled. The skim window is a
+    /// dedicated decimation of the raw IQ centered on the device center (offset
+    /// 0), so tuning the VFO within the span doesn't disturb the streaming
+    /// decoders.
     fn sync_skimmer(&mut self) {
-        match (self.state.skimmer_enabled, self.skimmer.is_some()) {
+        // Wideband-only: an audio-mode source (a CAT rig on a sound card) has
+        // only a narrow audio slice, so the skimmers stay off there — and the
+        // state is corrected so the UI reflects that rather than a request the
+        // engine silently ignored.
+        if self.audio_mode {
+            self.state.skimmer = sdroxide_types::SkimmerSettings::OFF;
+        }
+        match (self.state.skimmer.any_enabled(), self.skimmer.is_some()) {
             (true, false) => {
                 let ddc = Ddc::new(self.state.sample_rate, SKIM_TARGET_HZ);
                 let rate = ddc.out_rate();
-                self.skimmer = Some(SkimmerController::new(rate, self.state.center_hz));
+                self.skimmer =
+                    Some(SkimmerController::new(rate, self.state.center_hz, self.state.skimmer));
                 self.skim_ddc = Some(ddc);
-                info!(rate, "CW skimmer started");
+                info!(rate, "skimmer started");
             }
             (false, true) => {
                 self.skimmer = None;
                 self.skim_ddc = None;
                 self.skim_buf.clear();
-                info!("CW skimmer stopped");
+                info!("skimmer stopped");
             }
             _ => {}
         }
@@ -1865,7 +1879,7 @@ impl Engine {
         state.tx_gains = self.source.current_tx_gains();
         state.antenna_rx = self.source.current_antenna();
         if self.audio_mode {
-            state.skimmer_enabled = false; // wideband-only feature
+            state.skimmer = sdroxide_types::SkimmerSettings::OFF; // wideband-only feature
         }
         self.state = state;
 

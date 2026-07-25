@@ -208,17 +208,23 @@ impl DigiSkimmer {
     pub fn set_center(&mut self, center_hz: f64) {
         if (center_hz - self.skim_center_hz).abs() > 1.0 {
             self.skim_center_hz = center_hz;
-            self.tracks.clear();
-            self.confirm.clear();
-            self.inbuf.clear();
-            self.read_pos = 0;
-            self.frames = 0;
-            for p in self.floor.iter_mut() {
-                *p = 0.0;
-            }
-            for p in self.smooth_power.iter_mut() {
-                *p = 0.0;
-            }
+            self.reset();
+        }
+    }
+
+    /// Forget every track and re-prime the noise floor (band moved, or the
+    /// skimmer was switched off and its state is now stale).
+    pub fn reset(&mut self) {
+        self.tracks.clear();
+        self.confirm.clear();
+        self.inbuf.clear();
+        self.read_pos = 0;
+        self.frames = 0;
+        for p in self.floor.iter_mut() {
+            *p = 0.0;
+        }
+        for p in self.smooth_power.iter_mut() {
+            *p = 0.0;
         }
     }
 

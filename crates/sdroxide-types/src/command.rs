@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgcMode, Band, DigiConfig, Direction, Mode, NetworkConfig, NrLevel, RxId, SpectrumConfig,
-    SstvMode, UploadTarget, Vfo,
+    AgcMode, Band, DigiConfig, Direction, Mode, NetworkConfig, NrLevel, RxId, SkimmerSettings,
+    SpectrumConfig, SstvMode, UploadTarget, Vfo,
 };
 
 /// The single control vocabulary. The GUI, the WebSocket protocol, and the
@@ -98,8 +98,8 @@ pub enum Command {
     DigiImageTx { png: Vec<u8> },
 
     // Skimmers
-    /// Turn the (CW) skimmer on/off.
-    SetSkimmerEnabled(bool),
+    /// Set which skimmers (CW / PSK / RTTY) run and how hard each squelches.
+    SetSkimmerConfig(SkimmerSettings),
 
     // Network cockpit: spot feeds, lookups, uploads.
     /// Apply (and persist) the network-feature configuration: (re)connect the

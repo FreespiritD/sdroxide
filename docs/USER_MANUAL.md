@@ -239,7 +239,8 @@ passband. The grips work on both the spectrum and the waterfall.
 - **PEAK** — show a decaying peak-hold trace over the spectrum.
 - **SPEC** — show or hide the spectrum line above the waterfall (lit when the
   spectrum is shown).
-- **SKIM** — the CW / PSK / RTTY skimmers (see [Skimmers](#4-skimmers)).
+- **SKIM** — opens the skimmer popup (per-skimmer on/off and squelch); lit while
+  any skimmer runs. See [Skimmers](#4-skimmers).
 - **☀ 3D** — open the [solar system 3D view](#212-solar-system-3d-view) in its
   own window. Native only; the button is absent in the browser client.
 
@@ -768,8 +769,16 @@ label each one on the waterfall. There are three: **CW**, **PSK31**, and
 
 ![The skimmer labelling signals on the waterfall](images/10-skimmer.png)
 
-- Toggle them with the **SKIM** button in the Display module. On a SoapySDR (IQ)
-  source the skimmer is **on by default**.
+- The **SKIM** button in the Display module opens the skimmer popup: one row per
+  skimmer (**CW**, **PSK**, **RTTY**), each with an on/off chip and its own
+  **squelch** — the minimum SNR (dB) a decoded signal must reach before it earns
+  a box. The SKIM chip stays lit while any skimmer runs, and a skimmer you switch
+  off stops decoding entirely (it costs no CPU) and its boxes disappear. Like the
+  band/mode popup, this one fades away by itself after a few seconds; keep the
+  pointer on it to hold it open.
+- On a SoapySDR (IQ) source all three skimmers are **on by default**, with
+  squelch at `0 dB` — everything that decodes is spotted. Raise a squelch to keep
+  only the stronger signals of that mode on the waterfall.
 - Each decoded signal appears as a box next to its trace on the waterfall,
   showing the callsign (once resolved, for CW) and a rolling tail of decoded
   text. Boxes fade out a few seconds after a signal stops.

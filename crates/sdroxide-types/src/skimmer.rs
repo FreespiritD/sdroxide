@@ -15,6 +15,9 @@ pub enum SkimmerKind {
 }
 
 impl SkimmerKind {
+    /// Every kind, in UI order. Also the index order of [`SkimmerSettings`].
+    pub const ALL: [SkimmerKind; 3] = [SkimmerKind::Cw, SkimmerKind::Psk, SkimmerKind::Rtty];
+
     /// The operating mode a spot of this kind tunes to on click.
     pub fn mode(self) -> crate::Mode {
         match self {
@@ -30,6 +33,61 @@ impl SkimmerKind {
             SkimmerKind::Psk => "PSK",
             SkimmerKind::Rtty => "RTTY",
         }
+    }
+
+    /// Position in the per-kind arrays of [`SkimmerSettings`].
+    pub fn index(self) -> usize {
+        match self {
+            SkimmerKind::Cw => 0,
+            SkimmerKind::Psk => 1,
+            SkimmerKind::Rtty => 2,
+        }
+    }
+}
+
+/// Which skimmers run, and how hard each squelches its own spots. Owned by the
+/// engine (it lives in [`crate::RadioState`]), edited from the SKIM popup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkimmerSettings {
+    /// Per [`SkimmerKind::index`]: whether that skimmer decodes at all. A
+    /// switched-off skimmer costs no DSP and emits no spots.
+    pub enabled: [bool; 3],
+    /// Per [`SkimmerKind::index`]: the minimum SNR (dB) a track must reach
+    /// before it is reported as a spot. `0` reports whatever decodes.
+    pub squelch_db: [i16; 3],
+}
+
+impl Default for SkimmerSettings {
+    fn default() -> Self {
+        SkimmerSettings { enabled: [true; 3], squelch_db: [0; 3] }
+    }
+}
+
+impl SkimmerSettings {
+    /// Nothing running — the state for devices without a wideband IQ stream.
+    pub const OFF: SkimmerSettings =
+        SkimmerSettings { enabled: [false; 3], squelch_db: [0; 3] };
+
+    pub fn enabled(&self, kind: SkimmerKind) -> bool {
+        self.enabled[kind.index()]
+    }
+
+    pub fn set_enabled(&mut self, kind: SkimmerKind, on: bool) {
+        self.enabled[kind.index()] = on;
+    }
+
+    pub fn squelch_db(&self, kind: SkimmerKind) -> i16 {
+        self.squelch_db[kind.index()]
+    }
+
+    pub fn set_squelch_db(&mut self, kind: SkimmerKind, db: i16) {
+        self.squelch_db[kind.index()] = db;
+    }
+
+    /// True while at least one skimmer is running — what the engine starts and
+    /// stops the shared skim window on.
+    pub fn any_enabled(&self) -> bool {
+        self.enabled.iter().any(|&on| on)
     }
 }
 
