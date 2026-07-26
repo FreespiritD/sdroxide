@@ -9,11 +9,16 @@ use crate::http;
 
 /// Upload one QSO's ADIF to `target`, returning a human-readable status on
 /// success or an error string.
-pub fn upload(cfg: &NetworkConfig, target: UploadTarget, adif: &str) -> Result<String, String> {
+pub fn upload(
+    cfg: &NetworkConfig,
+    my_call: &str,
+    target: UploadTarget,
+    adif: &str,
+) -> Result<String, String> {
     match target {
         UploadTarget::Eqsl => upload_eqsl(cfg, adif),
         UploadTarget::QrzLogbook => upload_qrz(cfg, adif),
-        UploadTarget::ClubLog => upload_clublog(cfg, adif),
+        UploadTarget::ClubLog => upload_clublog(cfg, my_call, adif),
     }
 }
 
@@ -74,7 +79,7 @@ fn upload_qrz(cfg: &NetworkConfig, adif: &str) -> Result<String, String> {
     }
 }
 
-fn upload_clublog(cfg: &NetworkConfig, adif: &str) -> Result<String, String> {
+fn upload_clublog(cfg: &NetworkConfig, my_call: &str, adif: &str) -> Result<String, String> {
     if cfg.clublog.user.trim().is_empty() || cfg.clublog_api_key.trim().is_empty() {
         return Err("Club Log email/password/API key not set".into());
     }
@@ -84,7 +89,7 @@ fn upload_clublog(cfg: &NetworkConfig, adif: &str) -> Result<String, String> {
         &[
             ("email", cfg.clublog.user.trim()),
             ("password", cfg.clublog.password.trim()),
-            ("callsign", cfg.my_call.trim()),
+            ("callsign", my_call.trim()),
             ("api", cfg.clublog_api_key.trim()),
             ("adif", adif),
         ],

@@ -43,7 +43,9 @@ use sdroxide_types::{
 /// `ServerMsg::TciServerStatus`.
 /// v14: FreeDV Reporter — new `SpotKind::FreeDv` (extends the postcard
 /// discriminant space of `ServerMsg::Spots`) and `NetworkConfig`'s new
-/// `freedv_reporter` field, carried by `Command::SetNetworkConfig`.
+/// `freedv_reporter` field. `NetworkConfig` also lost `my_call`/`my_grid`: the
+/// operator identity is `DigiConfig`'s alone, so both ends must agree on the
+/// shape `Command::SetNetworkConfig` carries.
 pub const PROTO_VERSION: u16 = 14;
 const VERSION_BYTE: u8 = 0x0E;
 

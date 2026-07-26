@@ -2,16 +2,20 @@
 //! upload path, then DELETE it so nothing is left behind. The API key is read
 //! from the `QRZ_KEY` env var (never committed); the test is skipped if unset.
 //!
-//!   QRZ_KEY=XXXX-XXXX-XXXX-XXXX cargo test -p sdroxide-net --test qrz_upload -- --ignored --nocapture
+//!   QRZ_KEY=XXXX-XXXX-XXXX-XXXX MY_CALL=OE3JJS cargo test -p sdroxide-net --test qrz_upload -- --ignored --nocapture
 
 use sdroxide_net::upload_qso;
 use sdroxide_types::{NetworkConfig, QsoRecord, UploadTarget, qso_log_to_adif};
 
 #[test]
-#[ignore = "uploads to the live QRZ logbook (needs QRZ_KEY)"]
+#[ignore = "uploads to the live QRZ logbook (needs QRZ_KEY and MY_CALL)"]
 fn qrz_insert_then_delete() {
     let Ok(key) = std::env::var("QRZ_KEY") else {
         eprintln!("QRZ_KEY not set — skipping");
+        return;
+    };
+    let Ok(my_call) = std::env::var("MY_CALL") else {
+        eprintln!("MY_CALL not set — skipping");
         return;
     };
 
@@ -25,14 +29,16 @@ fn qrz_insert_then_delete() {
         band: "20m".into(),
         start_utc: 1_700_000_000, // 2023-11-14, fixed so it's easy to spot/remove
         end_utc: 1_700_000_000,
-        my_call: "OE3JJS".into(),
+        my_call: my_call.clone(),
         comment: "sdroxide upload test — safe to delete".into(),
         ..Default::default()
     };
     let adif = qso_log_to_adif(std::slice::from_ref(&rec));
 
     let cfg = NetworkConfig { qrz_logbook_key: key.clone(), ..Default::default() };
-    let result = upload_qso(&cfg, UploadTarget::QrzLogbook, &adif);
+    // The operator callsign is only used by the Club Log target, which this
+    // test does not exercise.
+    let result = upload_qso(&cfg, &my_call, UploadTarget::QrzLogbook, &adif);
     println!("QRZ INSERT result: {result:?}");
     assert!(result.is_ok(), "QRZ upload failed: {result:?}");
 

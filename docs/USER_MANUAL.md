@@ -1208,10 +1208,11 @@ authentication if it is reachable from an untrusted network.
 
 SDR Oxide features spots you can click to work, automatic callsign lookup, 
 one-click QSO upload, and award tracking. These features are 
-configured on the **Spots** and **Uploads** tabs of the Settings
+configured on the **Spots**, **FreeDV** and **Uploads** tabs of the Settings
 window (the **⚙ SETTINGS** button, or the **⚙ SETUP** button in the SPOTS
 window), and surfaced by the **SPOTS** and **AWARDS** buttons in the System
-module.
+module. Your callsign and grid come from the **General** tab and are used by all
+of them.
 
 All of this runs on the machine with the radio (the server, in remote/web mode),
 so a browser or remote client uses it too. Credentials are stored in plaintext in
@@ -1228,8 +1229,9 @@ Enable and configure the feeds on the **Spots** tab of Settings:
 
 ![The Spots settings tab](images/15-settings-spots.jpg)
 
-- **Operator** — your callsign and grid (defaults to the values from the General
-  tab / FT8 setup). The callsign is used to log in to the DX cluster.
+- **Operator** — shown for reference only; your callsign and grid are set once
+  on the **General** tab and used everywhere, including to log in to the DX
+  cluster.
 - **DX cluster (telnet)** — tick **Enabled**, then enter the node **Host** and
   **Port** (commonly 7300/7373/8000). **Login call** overrides the operator
   callsign if needed, and **Commands** (one per line, e.g. `SET/FT8`) are sent
@@ -1332,11 +1334,10 @@ Configure it on the **FreeDV** tab of Settings:
   station is hidden, so the site never lists you as working FreeDV when you are
   actually on CW.
 - **Station** — you are reported under the operator callsign and grid from the
-  **Spots** tab (themselves defaulting to the General tab / FT8 setup), so there
-  is one place to set them. **Message** is a free-text status shown beside your
-  callsign, and **Receive only** marks you as a listener. *Without both a
-  callsign and a grid the connection is view-only: you will see other stations
-  but will not appear yourself.*
+  **General** tab, the same identity the rest of the app uses. **Message** is a
+  free-text status shown beside your callsign, and **Receive only** marks you as
+  a listener. *Without both a callsign and a grid the connection is view-only:
+  you will see other stations but will not appear yourself.*
 - **Server** — **Host** and **Port** default to the public server
   (`qso.freedv.org:80`).
 - **Reporting** — **Report stations I decode** sends a reception report for each

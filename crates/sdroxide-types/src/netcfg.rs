@@ -1,7 +1,12 @@
 //! Configuration for the network "cockpit" features: spot feeds (DX cluster,
-//! POTA, SOTA, PSK Reporter), callsign lookup, and QSO upload. Pure data +
-//! serde, persisted by `sdroxide-config` as `net.json` and carried to the
-//! engine by [`crate::Command::SetNetworkConfig`].
+//! POTA, SOTA, PSK Reporter, FreeDV Reporter), callsign lookup, and QSO upload.
+//! Pure data + serde, persisted by `sdroxide-config` as `net.json` and carried
+//! to the engine by [`crate::Command::SetNetworkConfig`].
+//!
+//! Deliberately **not** here: the operator's callsign and grid. Those live in
+//! [`crate::DigiConfig`] and are the same identity everywhere in the app; the
+//! engine hands them to the network workers separately. A second copy would
+//! only give the two a way to disagree.
 //!
 //! Credentials are stored in plaintext (matching the existing config
 //! convention). Every field defaults so an older/absent file always loads.
@@ -17,8 +22,8 @@ pub struct ClusterConfig {
     pub host: String,
     /// TCP port (commonly 7300/7373/8000).
     pub port: u16,
-    /// Login callsign sent at the node's `login:` prompt. Falls back to
-    /// [`NetworkConfig::my_call`] when empty.
+    /// Login callsign sent at the node's `login:` prompt. Falls back to the
+    /// operator callsign when empty.
     pub login: String,
     /// Extra commands sent after login (e.g. `SET/FT8`, band/spotter filters),
     /// one per line.
@@ -71,10 +76,9 @@ impl Default for PskConfig {
 /// FreeDV Reporter (<https://qso.freedv.org/>): announce our station and
 /// surface everyone else's as spots. Both halves ride one Socket.IO connection.
 ///
-/// The reported identity is the operator's — [`NetworkConfig::my_call`] and
-/// [`NetworkConfig::my_grid`] — rather than a copy of its own, so there is one
-/// place to set it and no way for the two to disagree. With either unset we
-/// connect read-only and never appear on the site.
+/// The reported identity is the operator's callsign and grid, set once on the
+/// General tab, rather than a copy of its own. With either unset we connect
+/// read-only and never appear on the site.
 ///
 /// We are only *shown* to others while the radio is in RADE — in any other mode
 /// the connection stays up but the station is hidden, matching FreeDV GUI.
@@ -147,11 +151,6 @@ pub struct Credentials {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NetworkConfig {
-    /// Operator callsign (falls back to the digi config's `my_call` when empty).
-    pub my_call: String,
-    /// Operator grid, used for map centring and PSK Reporter context.
-    pub my_grid: String,
-
     // ── Spot feeds ──
     pub cluster: ClusterConfig,
     pub pota: FeedConfig,
@@ -190,8 +189,6 @@ pub struct NetworkConfig {
 impl Default for NetworkConfig {
     fn default() -> Self {
         NetworkConfig {
-            my_call: String::new(),
-            my_grid: String::new(),
             cluster: ClusterConfig::default(),
             pota: FeedConfig::default(),
             sota: FeedConfig::default(),
@@ -214,16 +211,4 @@ impl Default for NetworkConfig {
             auto_upload_clublog: false,
         }
     }
-}
-
-impl NetworkConfig {
-    /// Effective login callsign for the cluster (config login, else my_call).
-    pub fn cluster_login(&self) -> &str {
-        if self.cluster.login.trim().is_empty() {
-            self.my_call.trim()
-        } else {
-            self.cluster.login.trim()
-        }
-    }
-
 }

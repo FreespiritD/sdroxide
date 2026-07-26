@@ -309,22 +309,25 @@ mod tests {
     fn network_config_loads_without_the_freedv_section() {
         // A net.json written before FreeDV Reporter existed.
         let c: sdroxide_types::NetworkConfig =
-            serde_json::from_str(r#"{"my_call":"AB1CD","my_grid":"FN42"}"#).unwrap();
-        assert_eq!(c.my_call, "AB1CD");
+            serde_json::from_str(r#"{"spot_max_age_secs":600}"#).unwrap();
+        assert_eq!(c.spot_max_age_secs, 600);
         assert_eq!(c.freedv_reporter, sdroxide_types::FreeDvReporterConfig::default());
     }
 
     #[test]
-    fn network_config_ignores_the_retired_reporter_identity_keys() {
-        // The reporter briefly carried its own callsign/grid before those were
-        // folded into the operator identity. A file still holding them must
-        // load, not fail — and must not resurrect them.
+    fn network_config_ignores_the_retired_operator_identity_keys() {
+        // net.json used to hold its own copy of the operator callsign and grid,
+        // and the reporter section briefly held a third. All of that now comes
+        // from the digi config, so a file still carrying them must load and
+        // ignore them rather than fail.
         let c: sdroxide_types::NetworkConfig = serde_json::from_str(
-            r#"{"my_call":"AB1CD","my_grid":"FN42",
+            r#"{"my_call":"AB1CD","my_grid":"FN42","spot_max_age_secs":600,
+                "cluster":{"enabled":true,"host":"cluster.example","port":7373},
                 "freedv_reporter":{"enabled":true,"callsign":"OLD","grid":"AA00"}}"#,
         )
         .unwrap();
-        assert_eq!(c.my_call, "AB1CD");
-        assert!(c.freedv_reporter.enabled, "the rest of the section still applies");
+        assert_eq!(c.spot_max_age_secs, 600, "the rest of the file still applies");
+        assert!(c.cluster.enabled);
+        assert!(c.freedv_reporter.enabled);
     }
 }

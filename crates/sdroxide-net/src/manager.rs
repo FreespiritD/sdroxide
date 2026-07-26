@@ -38,6 +38,12 @@ pub struct SpotManager {
     pota: Option<PollHandle>,
     sota: Option<PollHandle>,
     psk: Option<PollHandle>,
+    /// The operator's callsign and grid, pushed in from the digi config by the
+    /// engine. Not part of [`NetworkConfig`]: there is one operator identity in
+    /// the app and it is set on the General tab.
+    op_call: String,
+    op_grid: String,
+
     freedv: Option<ReporterHandle>,
     /// What we last told the reporter. Replayed into a freshly rebuilt session
     /// so a config change never leaves the site showing a stale frequency.
@@ -64,6 +70,8 @@ impl SpotManager {
             pota: None,
             sota: None,
             psk: None,
+            op_call: String::new(),
+            op_grid: String::new(),
             freedv: None,
             rep_freq: 0,
             rep_tx: false,
@@ -75,7 +83,7 @@ impl SpotManager {
     /// changed. Disabled feeds have their threads dropped and spots cleared.
     pub fn set_config(&mut self, cfg: NetworkConfig) {
         let old = std::mem::replace(&mut self.cfg, cfg);
-        if old.cluster != self.cfg.cluster || old.my_call != self.cfg.my_call {
+        if old.cluster != self.cfg.cluster {
             self.rebuild_cluster();
         }
         if old.pota != self.cfg.pota {
@@ -87,23 +95,42 @@ impl SpotManager {
         if old.psk != self.cfg.psk {
             self.rebuild_psk();
         }
-        // The reporter reports the operator identity and sends it at connect,
-        // so a change to either that or its own settings has to restart the
-        // session. The status message is the one field that can be pushed down
-        // a live session, and editing a line of text should not cost a
-        // reconnect.
+        // The reporter sends its settings at connect, so a change to them has
+        // to restart the session. The status message is the one field that can
+        // be pushed down a live session, and editing a line of text should not
+        // cost a reconnect.
         let rep_changed = {
             let mut without_message = old.freedv_reporter.clone();
             without_message.message = self.cfg.freedv_reporter.message.clone();
             without_message != self.cfg.freedv_reporter
         };
-        if rep_changed || old.my_call != self.cfg.my_call || old.my_grid != self.cfg.my_grid {
+        if rep_changed {
             self.rebuild_freedv();
         } else if old.freedv_reporter.message != self.cfg.freedv_reporter.message
             && let Some(h) = &self.freedv
         {
             h.set_message(self.cfg.freedv_reporter.message.clone());
         }
+    }
+
+    /// Set the operator's callsign and grid, which the engine takes from the
+    /// digi config so the whole app reports one identity.
+    ///
+    /// Both are sent when a session opens rather than during it, so a change
+    /// restarts the feeds that carry them.
+    pub fn set_operator(&mut self, call: &str, grid: &str) {
+        let (call, grid) = (call.trim(), grid.trim());
+        if call == self.op_call && grid == self.op_grid {
+            return;
+        }
+        let call_changed = call != self.op_call;
+        self.op_call = call.to_string();
+        self.op_grid = grid.to_string();
+        // The cluster logs in with the callsign; the reporter sends both.
+        if call_changed && self.cfg.cluster.login.trim().is_empty() {
+            self.rebuild_cluster();
+        }
+        self.rebuild_freedv();
     }
 
     // The engine pushes these on every tick of its ~100 Hz loop, so each one
@@ -182,10 +209,11 @@ impl SpotManager {
     /// Upload one QSO's ADIF to the given targets; results arrive via `poll`.
     pub fn upload(&self, qso_id: u64, adif: String, targets: Vec<UploadTarget>) {
         let cfg = self.cfg.clone();
+        let my_call = self.op_call.clone();
         let tx = self.event_tx.clone();
         std::thread::spawn(move || {
             for target in targets {
-                let (ok, message) = match crate::upload::upload(&cfg, target, &adif) {
+                let (ok, message) = match crate::upload::upload(&cfg, &my_call, target, &adif) {
                     Ok(m) => (true, m),
                     Err(e) => (false, e),
                 };
@@ -258,7 +286,13 @@ impl SpotManager {
         self.cluster = None; // drop stops the thread
         self.by_kind.remove(&SpotKind::DxCluster);
         if self.cfg.cluster.enabled && !self.cfg.cluster.host.trim().is_empty() {
-            let login = self.cfg.cluster_login().to_string();
+            // The node's `login:` prompt takes the override if set, else the
+            // operator callsign.
+            let login = if self.cfg.cluster.login.trim().is_empty() {
+                self.op_call.clone()
+            } else {
+                self.cfg.cluster.login.trim().to_string()
+            };
             self.cluster = Some(ClusterHandle::connect(
                 self.cfg.cluster.clone(),
                 login,
@@ -326,8 +360,8 @@ impl SpotManager {
         }
         let h = ReporterHandle::connect(
             self.cfg.freedv_reporter.clone(),
-            self.cfg.my_call.trim().to_string(),
-            self.cfg.my_grid.trim().to_string(),
+            self.op_call.clone(),
+            self.op_grid.clone(),
             self.feed_tx.clone(),
             self.event_tx.clone(),
         );

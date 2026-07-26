@@ -293,9 +293,9 @@ pub struct SdroxideApp {
     /// Show only spots that fall inside the current panadapter view span.
     spot_in_view_only: bool,
     /// UI-owned editable copy of the network config (edited in the Settings
-    /// dialog's Spots / Uploads tabs).
+    /// dialog's Spots / FreeDV / Uploads tabs). Carries no operator identity —
+    /// that comes from the digi config, edited on the General tab.
     net_cfg_edit: NetworkConfig,
-    net_cfg_seeded: bool,
     // ── Built-in TCI server ──
     /// UI-owned editable copy of the TCI server config, seeded from the
     /// controller when the settings dialog opens.
@@ -533,7 +533,6 @@ impl SdroxideApp {
             spot_kinds_shown: [true; 5],
             spot_in_view_only: false,
             net_cfg_edit: net_cfg,
-            net_cfg_seeded: true,
             tci_srv_edit: sdroxide_types::TciServerConfig::default(),
             tci_srv_seeded: false,
             tci_srv_status: None,
@@ -1238,23 +1237,6 @@ impl SdroxideApp {
             persist_qso_log(&self.qso_log);
         }
         self.push_net_log(format!("ADIF import: {added} added, {skipped} duplicates skipped"));
-    }
-
-    /// Apply the operator-identity fallback from the digi config to the network
-    /// config (idempotent; the config itself was loaded at startup). Called when
-    /// the spots / setup windows open, by when the digi config has been seeded.
-    fn seed_net_cfg(&mut self) {
-        let _ = self.net_cfg_seeded; // seeded at construction
-        if self.net_cfg_edit.my_call.trim().is_empty()
-            && !self.digi_cfg_edit.my_call.trim().is_empty()
-        {
-            self.net_cfg_edit.my_call = self.digi_cfg_edit.my_call.clone();
-        }
-        if self.net_cfg_edit.my_grid.trim().is_empty()
-            && !self.digi_cfg_edit.my_grid.trim().is_empty()
-        {
-            self.net_cfg_edit.my_grid = self.digi_cfg_edit.my_grid.clone();
-        }
     }
 
     /// Combined VFO + RIT/XIT box: the VFO A/B utility chips on top, with the
@@ -3369,9 +3351,6 @@ impl SdroxideApp {
     /// The live-spots window: source filters, a click-to-tune list of current
     /// DX-cluster / POTA / SOTA / PSK-Reporter spots, and the feed status line.
     fn spots_window(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
-        if self.show_spots {
-            self.seed_net_cfg();
-        }
         let worked_entities = self.worked_entities().clone();
         let mut open = self.show_spots;
         let mut clicked: Option<Spot> = None;
@@ -3952,9 +3931,6 @@ impl SdroxideApp {
             }
             self.audio_devices_queried = true;
         }
-        // Apply the operator-identity fallback before editing the net config.
-        self.seed_net_cfg();
-
         // Edits collected here and applied after the window closure, which
         // borrows `&self` and so can't touch `&mut self.ctrl`.
         let mut audio_pick: Option<(bool, Option<String>)> = None;
@@ -4256,9 +4232,7 @@ impl SdroxideApp {
             }
             SettingsTab::Ui => settings_ui_tab(ui, io.ui_edit),
             SettingsTab::Spots => {
-                net_heading(ui, "Operator");
-                net_row(ui, "Callsign", &mut io.net_edit.my_call, 140.0);
-                net_row(ui, "Grid", &mut io.net_edit.my_grid, 140.0);
+                operator_identity_note(ui, io.digi_edit, io.digi_seeded);
 
                 net_heading(ui, "DX cluster (telnet)");
                 ui.checkbox(&mut io.net_edit.cluster.enabled, "Enabled");
@@ -4369,7 +4343,18 @@ impl SdroxideApp {
                 });
             }
             SettingsTab::FreeDv => {
-                settings_freedv_tab(ui, io.net_edit, &self.net_status, io.net_apply)
+                // The reported identity is the operator's, from the General tab.
+                let call = io.digi_edit.my_call.trim().to_string();
+                let grid = io.digi_edit.my_grid.trim().to_string();
+                settings_freedv_tab(
+                    ui,
+                    io.net_edit,
+                    &call,
+                    &grid,
+                    io.digi_seeded,
+                    &self.net_status,
+                    io.net_apply,
+                )
             }
             SettingsTab::TciServer => settings_tci_server_tab(
                 ui,
@@ -4855,15 +4840,41 @@ struct TciServerStatus {
     error: Option<String>,
 }
 
+/// Where the operator's callsign and grid actually live, for the network tabs
+/// that report under them but deliberately do not offer a second copy to edit.
+fn operator_identity_note(
+    ui: &mut egui::Ui,
+    digi: &sdroxide_types::DigiConfig,
+    seeded: bool,
+) {
+    net_heading(ui, "Operator");
+    if !seeded {
+        ui.label(RichText::new("Callsign and grid are set on the General tab.").weak());
+        return;
+    }
+    let (call, grid) = (digi.my_call.trim(), digi.my_grid.trim());
+    if call.is_empty() || grid.is_empty() {
+        ui.label(
+            RichText::new("⚠ Set your callsign and grid on the General tab.")
+                .color(Color32::from_rgb(230, 170, 60)),
+        );
+    } else {
+        ui.label(RichText::new(format!("{call} / {grid}  — set on the General tab")).weak());
+    }
+}
+
 /// FreeDV Reporter (<https://qso.freedv.org/>): announce this station and show
 /// everyone else's as spots.
 ///
-/// Takes the whole [`sdroxide_types::NetworkConfig`] rather than just the
-/// reporter section, because the station is reported under the operator
-/// identity from the Spots tab, which this tab shows but does not duplicate.
+/// `call`/`grid` are the operator identity from the General tab, shown here but
+/// not editable: reporting under a second copy would only let the two disagree.
+#[allow(clippy::too_many_arguments)]
 fn settings_freedv_tab(
     ui: &mut egui::Ui,
     net: &mut sdroxide_types::NetworkConfig,
+    call: &str,
+    grid: &str,
+    digi_seeded: bool,
     status: &Option<String>,
     apply: &mut bool,
 ) {
@@ -4875,11 +4886,6 @@ fn settings_freedv_tab(
     );
     ui.add_space(6.0);
 
-    // The operator identity, read before the mutable borrow below. It is edited
-    // on the Spots tab (and seeded from the General tab); reporting under a
-    // second copy of it would only create a way for the two to disagree.
-    let call = net.my_call.trim().to_string();
-    let grid = net.my_grid.trim().to_string();
     let enabled = net.freedv_reporter.enabled;
 
     ui.add_enabled_ui(enabled, |ui| {
@@ -4910,15 +4916,16 @@ fn settings_freedv_tab(
     });
 
     ui.add_space(8.0);
-    if enabled && (call.is_empty() || grid.is_empty()) {
+    if enabled && digi_seeded && (call.is_empty() || grid.is_empty()) {
         ui.label(
             RichText::new(
-                "⚠ Set your callsign and grid on the Spots tab. Without both, the connection \
-                 is view-only: you will see other stations but will not appear yourself.",
+                "⚠ Set your callsign and grid on the General tab. Without both, the \
+                 connection is view-only: you will see other stations but will not appear \
+                 yourself.",
             )
             .color(Color32::from_rgb(230, 170, 60)),
         );
-    } else if enabled {
+    } else if enabled && digi_seeded {
         ui.label(
             RichText::new(format!(
                 "Reporting as {call} / {grid} — SDRoxide {}",
@@ -4926,7 +4933,7 @@ fn settings_freedv_tab(
             ))
             .weak(),
         );
-        ui.label(RichText::new("Callsign and grid are set on the Spots tab.").weak());
+        ui.label(RichText::new("Callsign and grid are set on the General tab.").weak());
     }
     // The status line is shared by every network feed, so only show it here
     // when it is actually ours.

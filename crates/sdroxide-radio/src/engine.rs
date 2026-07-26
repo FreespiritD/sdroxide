@@ -744,7 +744,10 @@ fn engine_thread(
     if !audio_mode {
         engine.sync_skimmer(); // starts if any skimmer kind is enabled (default: all)
     }
-    // Start any enabled network spot feeds from the persisted config.
+    // Start any enabled network spot feeds from the persisted config. The
+    // operator identity comes from the digi config — one identity for the whole
+    // app — and has to be in place before the feeds that log in with it.
+    engine.spots.set_operator(&engine.digi_config.my_call, &engine.digi_config.my_grid);
     engine.spots.set_config(sdroxide_config::load_network_config());
     // Bring up the built-in TCI server (enabled by default) so third-party
     // clients can connect without the operator having to arm anything.
@@ -1590,6 +1593,10 @@ impl Engine {
                 if let Err(e) = sdroxide_config::save_digi_config(&self.digi_config) {
                     warn!("saving digi config: {e}");
                 }
+                // The network features report the same operator identity, so a
+                // callsign or grid edit reaches them from here.
+                self.spots
+                    .set_operator(&self.digi_config.my_call, &self.digi_config.my_grid);
                 self.emit_digi_status();
             }
             SetDigiAudioFreq(hz) => {
