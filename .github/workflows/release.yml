@@ -72,7 +72,10 @@ jobs:
       run:
         shell: bash
     steps:
+      # `submodules` pulls vendor/rade_c, which the RADE codec is built from.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Compute version
         run: |
@@ -97,19 +100,52 @@ jobs:
         run: |
           sudo apt-get update
           # ALSA + pkg-config are needed by both variants; SoapySDR only by `soapy`.
-          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+          # RADE builds a FARGAN-enabled Opus from source with autotools, and
+          # bindgen needs libclang.
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev pkg-config cmake autoconf automake libtool libclang-dev
           if [[ "${{ matrix.variant }}" == "soapy" ]]; then
             sudo apt-get install -y --no-install-recommends libsoapysdr-dev
           fi
 
       # Extract the PothosSDR bundle (no install needed); soapysdr-sys finds
       # SoapySDR.dll via PATH. Same approach as rust-soapysdr's own CI.
+      # RADE's Opus dependency is built with autotools, which MSVC cannot drive
+      # and whose static library MSVC cannot link. Windows therefore builds the
+      # `x86_64-pc-windows-gnu` target inside MSYS2/MinGW — the same way
+      # upstream FreeDV ships its Windows binaries.
+      - name: Set up MSYS2 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-clang
+            autoconf
+            automake
+            libtool
+      - name: Use the MSYS2 toolchain (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          echo "CARGO_BUILD_TARGET=x86_64-pc-windows-gnu" >> "$GITHUB_ENV"
+          echo "D:/a/_temp/msys64/mingw64/bin" >> "$GITHUB_PATH"
+          echo "D:/a/_temp/msys64/usr/bin" >> "$GITHUB_PATH"
+
       - name: Install SoapySDR (Windows)
         if: runner.os == 'Windows' && matrix.variant == 'soapy'
         run: |
           curl -L https://downloads.myriadrf.org/builds/PothosSDR/PothosSDR-2021.07.25-vc16-x64.exe -o pothossdr.exe
           7z x -opothos -y pothossdr.exe > /dev/null
           echo "${{ github.workspace }}/pothos/bin" >> "$GITHUB_PATH"
+
+      # RADE builds a FARGAN-enabled Opus from source with autotools.
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake autoconf automake libtool
 
       - name: Install SoapySDR (macOS)
         if: runner.os == 'macOS' && matrix.variant == 'soapy'

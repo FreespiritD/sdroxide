@@ -31,7 +31,8 @@ fn mode_digit(m: Mode) -> char {
         | Mode::Rtty
         | Mode::Olivia
         | Mode::Thor
-        | Mode::Fsq => 'C',
+        | Mode::Fsq
+        | Mode::Rade => 'C',
         Mode::Usb | Mode::Spec | Mode::Sstv | Mode::RfPaint => '2',
     }
 }

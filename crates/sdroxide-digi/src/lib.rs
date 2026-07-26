@@ -10,6 +10,7 @@ pub mod fsq_controller;
 pub mod modem;
 pub mod params;
 pub mod qso;
+pub mod rade_controller;
 pub mod rf_paint_controller;
 pub mod scheduler;
 pub mod squelch;
@@ -18,6 +19,7 @@ pub mod text_modem;
 
 pub use controller::{DigiAction, DigiController};
 pub use fsq_controller::FsqController;
+pub use rade_controller::RadeController;
 pub use rf_paint_controller::RfPaintController;
 pub use sstv_controller::SstvController;
 pub use modem::Ft8Modem;
@@ -72,4 +74,29 @@ pub trait DigiEngine: Send {
     fn set_sstv_image(&mut self, _mode: SstvMode, _rgb: Vec<u8>, _w: u16, _h: u16) {}
     /// FSQ image: queue a grayscale image (`w*h` bytes) and start transmitting.
     fn set_image(&mut self, _gray: Vec<u8>, _w: u16, _h: u16) {}
+
+    // --- digital voice ---
+    //
+    // The text and image modes are decoded *from* the receive audio and
+    // transmitted *as* a synthesised burst. Digital voice is neither: it
+    // produces receive audio of its own, and it transmits the live microphone.
+    // These three hooks are the whole difference, and default to inert.
+
+    /// Take decoded speech at 48 kHz, appending to `out`.
+    ///
+    /// `true` means this mode is producing audio and the engine should play it
+    /// instead of the demodulated signal; `false` leaves the normal audio path
+    /// alone (so an out-of-sync RADE receiver still passes the raw SSB through).
+    fn rx_audio_out(&mut self, _out: &mut Vec<f32>) -> bool {
+        false
+    }
+
+    /// True for modes that transmit live microphone audio, so the engine keeps
+    /// the mic alive during transmit instead of discarding it.
+    fn wants_mic(&self) -> bool {
+        false
+    }
+
+    /// Microphone audio at 48 kHz, delivered only while [`DigiEngine::wants_mic`].
+    fn on_tx_mic(&mut self, _mic_48k: &[f32]) {}
 }

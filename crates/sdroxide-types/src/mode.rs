@@ -33,10 +33,13 @@ pub enum Mode {
     /// RF Paint (Spectrum Painting) — USB underneath; paints text/images
     /// directly onto the receiver's waterfall. Transmit-only (no decode).
     RfPaint,
+    /// FreeDV RADE V1 (Radio Autoencoder) digital voice — USB underneath, a
+    /// neural codec over an OFDM waveform occupying ~1000–1900 Hz of audio.
+    Rade,
 }
 
 impl Mode {
-    pub const ALL: [Mode; 20] = [
+    pub const ALL: [Mode; 21] = [
         Mode::Lsb,
         Mode::Usb,
         Mode::Cw,
@@ -57,11 +60,12 @@ impl Mode {
         Mode::Thor,
         Mode::Fsq,
         Mode::RfPaint,
+        Mode::Rade,
     ];
 
     /// The digital modes handled by a dedicated decode/encode engine over USB
     /// (slotted FT8/FT4, the continuous keyboard modes, SSTV, and RF Paint).
-    pub const DIGITAL: [Mode; 9] = [
+    pub const DIGITAL: [Mode; 10] = [
         Mode::Ft8,
         Mode::Ft4,
         Mode::Psk,
@@ -71,6 +75,7 @@ impl Mode {
         Mode::Fsq,
         Mode::Sstv,
         Mode::RfPaint,
+        Mode::Rade,
     ];
 
     /// True for modes that use a dedicated decode/QSO layer over USB.
@@ -86,6 +91,7 @@ impl Mode {
                 | Mode::Thor
                 | Mode::Fsq
                 | Mode::RfPaint
+                | Mode::Rade
         )
     }
 
@@ -124,6 +130,13 @@ impl Mode {
         matches!(self, Mode::RfPaint)
     }
 
+    /// True for FreeDV RADE V1 digital voice. Unlike the other digital modes it
+    /// carries speech rather than text or images, so it both replaces the
+    /// receive audio and consumes the microphone on transmit.
+    pub fn is_rade(self) -> bool {
+        matches!(self, Mode::Rade)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Mode::Lsb => "LSB",
@@ -146,6 +159,7 @@ impl Mode {
             Mode::Thor => "THOR",
             Mode::Fsq => "FSQ",
             Mode::RfPaint => "RFPAINT",
+            Mode::Rade => "RADE",
         }
     }
 
@@ -176,6 +190,10 @@ impl Mode {
             | Mode::Thor
             | Mode::Fsq
             | Mode::RfPaint => (100.0, 3300.0),
+            // RADE V1's OFDM carriers sit between roughly 1060 and 1880 Hz;
+            // the wider passband leaves room for the acquisition search to
+            // track a signal that is off frequency.
+            Mode::Rade => (300.0, 2700.0),
         }
     }
 
@@ -232,7 +250,8 @@ impl Mode {
             | Mode::Olivia
             | Mode::Thor
             | Mode::Fsq
-            | Mode::RfPaint => &[],
+            | Mode::RfPaint
+            | Mode::Rade => &[],
         }
     }
 }

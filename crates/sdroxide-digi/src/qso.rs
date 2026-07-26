@@ -403,6 +403,7 @@ impl QsoMachine {
             tx_sent: 0,
             fsq_heard: Vec::new(),
             fsq_messages: Vec::new(),
+            rade: None,
         }
     }
 }

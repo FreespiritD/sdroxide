@@ -27,10 +27,16 @@ opt-level = 2
 [profile.dev.package.sdroxide-skimmer]
 opt-level = 2
 
+# RADE's per-frame buffer shuffling sits between two C libraries that are
+# always built optimized; leaving the Rust glue slow would stall the worker.
+[profile.dev.package.sdroxide-rade]
+opt-level = 2
+
 [workspace.dependencies]
 sdroxide-types = { path = "crates/sdroxide-types" }
 sdroxide-proto = { path = "crates/sdroxide-proto" }
 sdroxide-dsp = { path = "crates/sdroxide-dsp" }
+sdroxide-rade = { path = "crates/sdroxide-rade" }
 sdroxide-audio = { path = "crates/sdroxide-audio" }
 sdroxide-server = { path = "crates/sdroxide-server" }
 sdroxide-config = { path = "crates/sdroxide-config" }
@@ -77,6 +83,7 @@ clap.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 num-complex.workspace = true
+rtrb.workspace = true
 
 [features]
 default = ["soapy"]

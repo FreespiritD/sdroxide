@@ -205,6 +205,7 @@ impl FsqController {
             tx_sent: self.tx.sent_chars(),
             fsq_heard: self.heard.clone(),
             fsq_messages: self.messages.clone(),
+            rade: None,
         }
     }
 

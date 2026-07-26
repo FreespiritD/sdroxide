@@ -1,0 +1,32 @@
+[package]
+name = "sdroxide-rade"
+version.workspace = true
+edition.workspace = true
+# The crate itself is workspace-licensed; the vendored C it links
+# (freedv/rade_c, BSD-2-Clause) and the Opus/FARGAN vocoder (BSD-3-Clause) are
+# both GPL-compatible, so the binary's licensing posture is unchanged.
+license.workspace = true
+
+# Native-only: links librade (C) and a patched Opus built from source by
+# build.rs. Must never be a dependency of any wasm-targeted crate.
+
+[dependencies]
+sdroxide-dsp.workspace = true
+num-complex.workspace = true
+crossbeam-channel.workspace = true
+rtrb.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# CLI harness only (src/bin/rade_harness.rs).
+hound = "3"
+clap.workspace = true
+anyhow.workspace = true
+
+[build-dependencies]
+cmake = "0.1"
+cc = "1"
+bindgen = "0.72"
+
+[[bin]]
+name = "rade-harness"
+path = "src/bin/rade_harness.rs"

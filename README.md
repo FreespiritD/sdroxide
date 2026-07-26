@@ -150,6 +150,35 @@ fits a normal SSB channel:
   the picture. Transmit goes through the normal path, so the ham-band lockout and
   transmit safety still apply.
 
+## RADE digital voice
+
+Selecting **RADE** switches the receiver to **FreeDV RADE V1** (Radio
+Autoencoder) — a neural speech codec carried on an OFDM waveform, which stays
+intelligible at signal-to-noise ratios where SSB is just noise. It fits inside a
+normal USB channel, occupying roughly 1060–1880 Hz of audio.
+
+- **Receive** replaces the demodulated audio with the decoded speech as soon as
+  the modem locks. Out of sync you still hear the raw signal, so you can tune by
+  ear; the panel shows a sync lamp, the SNR estimate and the frequency offset,
+  and the waterfall is marked with the band the waveform occupies.
+- **Transmit** with the panel's **TALK** button or the ordinary PTT. The modem 
+  needs ~120 ms of speech before the first frame goes out and appends an 
+  end-of-over frame when you stop, so transmit runs on slightly past the button.
+- Band buttons tune to the FreeDV calling frequencies (e.g. 20 m = 14.236 MHz).
+- Decoding is neural-network inference and runs on its own thread; it is far
+  faster than real time on a modern CPU, but the panel warns if the machine
+  falls behind.
+
+`rade-harness` (in `crates/sdroxide-rade`) drives the same codec over files, for
+bench testing without a radio:
+
+```sh
+cargo run -p sdroxide-rade --bin rade-harness -- \
+    tx --input vendor/rade_c/wav/david_vk5dgr.wav --output modem8k.wav
+cargo run -p sdroxide-rade --bin rade-harness -- \
+    rx --input modem8k.wav --speech decoded16k.wav --stats rx.csv
+```
+
 ## Logbook
 
 Open the **LOG** button (available in any mode) for a persistent logbook that
@@ -255,9 +284,23 @@ It has been developed against a **HackRF One** (half-duplex TX) and a
 
 ## Building
 
+The RADE digital-voice codec is vendored as a git submodule, so clone with:
+
+```sh
+git clone --recurse-submodules https://github.com/dividebysandwich/sdroxide
+# or, in an existing checkout:
+git submodule update --init --recursive
+```
+
 You need the SoapySDR development libraries and the driver module(s) for your
 radio installed (e.g. `soapysdr`, `soapysdr-module-hackrf`,
 `soapysdr-module-lms7` on Arch/Debian-style distros).
+
+Building RADE additionally needs **CMake**, a **C compiler**, **libclang**
+(for `bindgen`) and **autoconf / automake / libtool** — its build fetches and
+compiles a FARGAN-enabled Opus from source. That fetch means the *first* build
+needs network access; later builds reuse it. It is also the slow part of a clean
+build: RADE's model weights are ~110 MB of generated C.
 
 ```sh
 cargo build --release
@@ -299,7 +342,7 @@ sdroxide --connect 192.168.1.10:4950
 | `--freq <HZ>` | Center frequency in Hz (default `14200000`). |
 | `--rate <HZ>` | Sample rate in Hz (default: from config). |
 | `--gain <DB>` | Overall RX gain in dB (default: hardware AGC / moderate). |
-| `--mode <MODE>` | Initial mode: `USB LSB CW AM SAM NFM WFM DIGU DIGL DSB SPEC FT8 FT4 PSK RTTY OLIVIA THOR FSQ SSTV RFPAINT`. |
+| `--mode <MODE>` | Initial mode: `USB LSB CW AM SAM NFM WFM DIGU DIGL DSB SPEC FT8 FT4 PSK RTTY OLIVIA THOR FSQ SSTV RFPAINT RADE`. |
 | `--server` | Run as a server: HTTP web client + WebSocket streaming backend. |
 | `--connect <HOST[:PORT]>` | Connect as a native remote client to a running server. |
 | `--port <PORT>` | Server port (default: from config, `4950`). |
@@ -307,6 +350,7 @@ sdroxide --connect 192.168.1.10:4950
 | `--fft <N>` | Spectrum FFT size (default `4096`). |
 | `--tx-tune <SECS>` | Headless TX smoke test: key a tune carrier at minimal drive, then exit. |
 | `--ft8-cq <SECS>` | Headless FT8 smoke test: call CQ at minimal power, then exit. |
+| `--rade-rx <SECS>` | Headless RADE smoke test: receive for SECS seconds and report whether the modem synced. Pair with `--file`. |
 | console extras | `--fps <N>` lines/sec, `--width <CHARS>`, `--db-floor <dBFS>`, `--db-ceil <dBFS>`. |
 
 ## Keyboard shortcuts

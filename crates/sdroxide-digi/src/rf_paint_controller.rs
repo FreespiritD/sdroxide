@@ -66,6 +66,7 @@ impl RfPaintController {
             tx_sent: self.tx.as_ref().map(|t| (t.progress() * 1000.0) as usize).unwrap_or(0),
             fsq_heard: Vec::new(),
             fsq_messages: Vec::new(),
+            rade: None,
         }
     }
 }

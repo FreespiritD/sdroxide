@@ -1,3 +1,12 @@
 /target
 crates/sdroxide-web/dist
 crates/sdroxide-web/dist/index.html
+
+# Vendoring rade_c put a CMakeLists.txt in the tree, so IDE CMake integrations
+# (VS Code's CMake Tools) configure it on their own and leave a build tree and
+# their own settings at the repo root. The real RADE build is driven by
+# crates/sdroxide-rade/build.rs and lives under /target.
+/build
+/compile_commands.json
+.cache/
+.vscode/

@@ -9,6 +9,7 @@ license = "GPL-3.0-or-later"
 [dependencies]
 sdroxide-types.workspace = true
 sdroxide-dsp.workspace = true
+sdroxide-rade.workspace = true
 mfsk-core = { version = "0.7.4", default-features = false, features = ["std", "ft8", "ft4", "parallel", "fft-rustfft"] }
 crossbeam-channel.workspace = true
 tracing.workspace = true

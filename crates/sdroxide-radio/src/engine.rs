@@ -13,8 +13,8 @@ use tracing::{info, warn};
 
 use sdroxide_config::BandStacks;
 use sdroxide_digi::{
-    DigiAction, DigiController, DigiEngine, FsqController, RfPaintController, SstvController,
-    TextModemController,
+    DigiAction, DigiController, DigiEngine, FsqController, RadeController, RfPaintController,
+    SstvController, TextModemController,
 };
 use sdroxide_skimmer::{SkimmerAction, SkimmerController};
 use sdroxide_dsp::{
@@ -561,6 +561,15 @@ struct Engine {
     tci_aud_rs: Option<MonoResampler>,
     tci_aud_in_rate: f64,
     tci_aud_buf: Vec<f32>,
+    /// Digital voice (RADE) synthesises its own receive audio at 48 kHz; these
+    /// carry it to the speaker rate in place of the demodulated signal.
+    voice_rs: Option<MonoResampler>,
+    voice_rs_out_rate: f64,
+    voice_buf: Vec<f32>,
+    voice_play: Vec<f32>,
+    /// The main chain's audio for this block, copied out so the borrow of the
+    /// chain ends before a digital-voice mode gets the chance to replace it.
+    main_play: Vec<f32>,
     /// True while the current over is fed by a TCI client's audio stream.
     tci_tx: bool,
     /// Consecutive short TX blocks this over, for the dead-client unkey.
@@ -705,6 +714,11 @@ fn engine_thread(
         tci_aud_rs: None,
         tci_aud_in_rate: 0.0,
         tci_aud_buf: Vec::new(),
+        voice_rs: None,
+        voice_rs_out_rate: 0.0,
+        voice_buf: Vec::new(),
+        voice_play: Vec::new(),
+        main_play: Vec::new(),
         tci_tx: false,
         tci_tx_starved: 0,
         tci_last_snap: None,
@@ -860,7 +874,30 @@ impl Drop for Engine {
 impl Engine {
     fn run_audio(&mut self, iq: &[Complex32]) {
         let Some(main) = self.main.as_mut() else { return };
-        let main_audio = main.run(iq, &self.state.rx[0]);
+        let out_rate = main.out_rate;
+        // Copied out rather than borrowed: a digital-voice mode may replace
+        // this audio wholesale, and deciding that needs the digi engine, which
+        // would otherwise be borrowed against the chain.
+        self.main_play.clear();
+        let audio = main.run(iq, &self.state.rx[0]);
+        self.main_play.extend_from_slice(audio);
+
+        // Feed the digital-mode decoder from the clean tap (not the mixed,
+        // possibly-muted output).
+        if let (Some(digi), Some(main)) = (self.digi.as_mut(), self.main.as_ref()) {
+            if main.tap_enabled {
+                digi.on_rx_audio(&main.tap_out);
+            }
+        }
+        // Digital voice: play the decoded speech instead of the demodulated
+        // signal. The mode declines while it is out of sync, so the operator
+        // still hears the raw audio while tuning.
+        if self.take_voice_audio(out_rate) {
+            let rx0 = &self.state.rx[0];
+            let vol = if rx0.muted { 0.0 } else { rx0.volume * rx0.volume };
+            self.main_play.clear();
+            self.main_play.extend(self.voice_play.iter().map(|s| s * vol));
+        }
 
         let sub_audio: Option<&[f32]> = match (&mut self.sub, self.state.sub_rx_enabled) {
             (Some(sub), true) => {
@@ -873,15 +910,7 @@ impl Engine {
         };
 
         if let Some(mixer) = self.mixer.as_mut() {
-            mixer.push(main_audio, sub_audio);
-        }
-
-        // Feed the digital-mode decoder from the clean tap (not the mixed,
-        // possibly-muted output).
-        if let (Some(digi), Some(main)) = (self.digi.as_mut(), self.main.as_ref()) {
-            if main.tap_enabled {
-                digi.on_rx_audio(&main.tap_out);
-            }
+            mixer.push(&self.main_play, sub_audio);
         }
         // Feed the high-resolution channel spectrum from the DDC output.
         if let (Some(ca), Some(main)) = (self.channel_analyzer.as_mut(), self.main.as_ref()) {
@@ -1001,9 +1030,38 @@ impl Engine {
                 *s *= vol;
             }
         }
+        // Digital voice replaces the rig's audio with what it decoded from it.
+        if self.take_voice_audio(self.audio_out_rate) {
+            self.audio_play.clear();
+            self.audio_play.extend(self.voice_play.iter().map(|s| s * vol));
+        }
         if let Some(mixer) = self.mixer.as_mut() {
             mixer.push(&self.audio_play, None);
         }
+    }
+
+    /// Pull decoded speech from a digital-voice mode into `voice_play`, at
+    /// `out_rate`.
+    ///
+    /// Returns false when no such mode is active or it has nothing to play, in
+    /// which case the caller keeps the demodulated audio.
+    fn take_voice_audio(&mut self, out_rate: f64) -> bool {
+        let Some(digi) = self.digi.as_mut() else { return false };
+        self.voice_buf.clear();
+        if !digi.rx_audio_out(&mut self.voice_buf) {
+            return false;
+        }
+        // The mode produces 48 kHz; the speaker may want something else.
+        if (out_rate - self.voice_rs_out_rate).abs() > 0.01 {
+            self.voice_rs_out_rate = out_rate;
+            self.voice_rs = MonoResampler::new(48_000.0, out_rate);
+        }
+        self.voice_play.clear();
+        match self.voice_rs.as_mut() {
+            Some(r) => r.push(&self.voice_buf, &mut self.voice_play),
+            None => self.voice_play.extend_from_slice(&self.voice_buf),
+        }
+        true
     }
 
     /// A change the CAT rig reported (operator moved the dial/mode on the
@@ -1154,7 +1212,9 @@ impl Engine {
     /// Build the digital-mode engine for `mode`: the continuous keyboard
     /// controller for PSK/RTTY, else the slotted FT8/FT4 controller.
     fn make_digi(&self, mode: Mode, tap_rate: f64) -> Box<dyn DigiEngine> {
-        if mode.is_sstv() {
+        if mode.is_rade() {
+            Box::new(RadeController::new(self.digi_config.clone(), tap_rate))
+        } else if mode.is_sstv() {
             Box::new(SstvController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_rf_paint() {
             Box::new(RfPaintController::new(self.digi_config.clone(), tap_rate))
@@ -1396,6 +1456,18 @@ impl Engine {
                 // locally mid-over takes the transmitter back rather than
                 // swapping the on-air audio out from under whoever is talking.
                 self.end_tci_tx();
+                // A digital-voice mode owns its own over: it has to build the
+                // first modem frame before there is anything to send, and it
+                // has to append the end-of-over frame afterwards. Route PTT
+                // through the mode so the main button and the panel's transmit
+                // button do the same thing.
+                if self.state.rx[0].mode.is_rade() {
+                    if let Some(d) = self.digi.as_mut() {
+                        d.set_tx_active(on);
+                        self.emit_digi_status();
+                        return;
+                    }
+                }
                 self.state.tx.ptt = on;
                 self.sync_tx_state();
             }
@@ -2498,6 +2570,28 @@ impl Engine {
         true
     }
 
+    /// Route the microphone for a digital-mode transmission.
+    ///
+    /// Synthesised-burst modes (FT8, SSTV, the keyboard modems) don't want it,
+    /// and it is drained and discarded so it can't back up or leak into the
+    /// burst. Digital *voice* is the exception: the mic is the payload, so it
+    /// is resampled to 48 kHz and handed to the mode.
+    fn feed_digi_mic(&mut self) {
+        if self.digi.as_ref().is_some_and(|d| d.wants_mic()) {
+            self.fill_tx_audio_fifo();
+            if !self.mic_fifo.is_empty() {
+                if let Some(d) = self.digi.as_mut() {
+                    d.on_tx_mic(&self.mic_fifo);
+                }
+                self.mic_fifo.clear();
+            }
+            return;
+        }
+        if let Some(mic) = self.mic.as_mut() {
+            while mic.consumer.pop().is_ok() {}
+        }
+    }
+
     /// One ~10 ms transmit block: mic → modulator → drive → DUC → device.
     fn tx_block(&mut self) -> crate::Result<()> {
         // A CAT/TCI rig modulates itself; we just route raw 48 kHz TX audio to
@@ -2575,10 +2669,7 @@ impl Engine {
     /// synthesized burst, USB-modulate it (same SsbMod path as voice), and
     /// write it out. Unkeys and advances the QSO when the burst finishes.
     fn tx_block_digi(&mut self) -> crate::Result<()> {
-        // Discard any real mic so it can't back up or leak into the burst.
-        if let Some(mic) = self.mic.as_mut() {
-            while mic.consumer.pop().is_ok() {}
-        }
+        self.feed_digi_mic();
         let Some(tx) = self.tx.as_mut() else { return Ok(()) };
 
         let mut audio = [0.0f32; TX_AUDIO_BLOCK];
@@ -2638,9 +2729,7 @@ impl Engine {
         let mut burst_done = false;
 
         if self.digi_tx {
-            if let Some(mic) = self.mic.as_mut() {
-                while mic.consumer.pop().is_ok() {} // discard mic during a burst
-            }
+            self.feed_digi_mic();
             burst_done = self.digi.as_mut().map(|d| d.fill_tx_block(&mut audio)).unwrap_or(true);
         } else if self.state.tx.tune {
             // An audio-modulated rig (CAT/TCI) needs a tone to produce a carrier;
@@ -2765,7 +2854,7 @@ fn rig_mode_class(m: Mode) -> u8 {
     match m {
         Mode::Lsb | Mode::Digl => 0,
         Mode::Usb | Mode::Digu | Mode::Ft8 | Mode::Ft4 | Mode::Psk | Mode::Rtty | Mode::Sstv
-        | Mode::Olivia | Mode::Thor | Mode::Fsq | Mode::RfPaint | Mode::Spec => 1,
+        | Mode::Olivia | Mode::Thor | Mode::Fsq | Mode::RfPaint | Mode::Rade | Mode::Spec => 1,
         Mode::Am | Mode::Sam | Mode::Dsb => 2,
         Mode::Cw => 3,
         Mode::Nfm | Mode::Wfm => 5,

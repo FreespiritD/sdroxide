@@ -1,8 +1,3 @@
-//! DSP building blocks: spectrum analysis, and (in later milestones) DDC,
-//! demodulators, AGC, and modulators.
-//!
-//! Pure Rust, no native dependencies — kept wasm-clean by policy.
-
 mod agc;
 mod ddc;
 mod decim;

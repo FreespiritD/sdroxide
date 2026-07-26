@@ -228,6 +228,7 @@ impl TextModemController {
             tx_sent: self.tx.sent_chars(),
             fsq_heard: Vec::new(),
             fsq_messages: Vec::new(),
+            rade: None,
         }
     }
 }

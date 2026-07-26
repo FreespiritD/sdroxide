@@ -15,10 +15,6 @@ use sdroxide_radio::{FileSource, IqSource, SigGenSource};
 use sdroxide_radio::{SoapyDevice, enumerate_devices};
 use sdroxide_types::{Backend, DeviceCaps, RadioConfig};
 
-/// sdroxide — SDR transceiver client.
-///
-/// M1 scope: `--probe` prints device capabilities, `--console` shows a live
-/// terminal waterfall. The GUI arrives in milestone M2, server mode in M6.
 #[derive(Parser, Debug, Clone)]
 #[command(version, about)]
 struct Cli {
@@ -68,6 +64,11 @@ struct Cli {
     /// power for ~SECS seconds, report whether a slot-aligned burst keyed
     #[arg(long, value_name = "SECS")]
     ft8_cq: Option<f64>,
+
+    /// Headless RADE smoke test: run the digital-voice receiver for ~SECS
+    /// seconds (pair with --file) and report whether the modem reached sync
+    #[arg(long, value_name = "SECS")]
+    rade_rx: Option<f64>,
 
     /// Run as a server: HTTP web client + WebSocket streaming backend
     #[arg(long)]
@@ -143,6 +144,10 @@ fn main() -> anyhow::Result<()> {
     if let Some(secs) = cli.ft8_cq {
         let (source, caps) = open_source(&cli, &settings)?;
         return ft8_cq_test(source, caps, &settings, secs.clamp(16.0, 60.0));
+    }
+    if let Some(secs) = cli.rade_rx {
+        let (source, caps) = open_source(&cli, &settings)?;
+        return rade_rx_test(source, caps, &settings, secs.clamp(2.0, 120.0));
     }
     if cli.server {
         let (source, caps) = open_source(&cli, &settings)?;
@@ -284,6 +289,81 @@ fn ft8_cq_test(
         )),
         (true, None) => {
             println!("FT8 CQ test OK: a slot-aligned burst keyed and released.");
+            Ok(())
+        }
+    };
+    drop(handles);
+    if let Some(t) = engine_thread {
+        let _ = t.join();
+    }
+    outcome
+}
+
+/// Headless RADE receive check: bring the engine up in RADE mode and report
+/// what the modem made of whatever the source is feeding it.
+///
+/// Pair with `--file` and an IQ file from `rade-harness iq` for a repeatable
+/// end-to-end run with no radio and no sound card.
+fn rade_rx_test(
+    source: Box<dyn IqSource>,
+    caps: sdroxide_types::DeviceCaps,
+    settings: &Settings,
+    secs: f64,
+) -> anyhow::Result<()> {
+    use sdroxide_types::{Command, Mode, RadioEvent, RxId};
+    use std::time::Duration;
+
+    // The receive chain — and with it the decoder's audio tap — only exists
+    // when the engine has somewhere to play audio. Give it a ring buffer we
+    // drain and throw away, so the test needs no sound card.
+    let (producer, mut sink) = rtrb::RingBuffer::<f32>::new(96_000);
+    let mut handles = sdroxide_radio::start_engine(
+        source,
+        caps,
+        sdroxide_radio::EngineConfig {
+            tx_ham_only: settings.tx_ham_only,
+            initial_mode: Some(Mode::Rade),
+            audio: Some(sdroxide_radio::AudioParams { producer, out_rate: 48_000.0 }),
+            ..Default::default()
+        },
+    );
+    let engine_thread = handles.thread.take();
+    handles.cmd_tx.send(Command::SetMode { rx: RxId::Main, mode: Mode::Rade })?;
+
+    let (mut synced, mut best_snr, mut eoo, mut dropped) = (false, f32::MIN, 0u64, 0u64);
+    let mut failure = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs_f64(secs);
+    while std::time::Instant::now() < deadline {
+        while let Ok(ev) = handles.event_rx.try_recv() {
+            match ev {
+                RadioEvent::Ft8Status(s) => {
+                    if let Some(r) = s.rade {
+                        if r.sync {
+                            synced = true;
+                            best_snr = best_snr.max(r.snr_db);
+                        }
+                        eoo = eoo.max(r.eoo_count);
+                        dropped = dropped.max(r.dropped);
+                    }
+                }
+                RadioEvent::ConnectionLost(e) => failure = Some(e),
+                _ => {}
+            }
+        }
+        while sink.pop().is_ok() {}
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let outcome = match (synced, failure) {
+        (_, Some(e)) => Err(anyhow::anyhow!("RADE test failed: {e}")),
+        (false, None) => Err(anyhow::anyhow!(
+            "RADE never reached sync in {secs:.0}s — is the source carrying a RADE signal?"
+        )),
+        (true, None) => {
+            println!(
+                "RADE RX test OK: sync reached, best SNR {best_snr:.1} dB, \
+                 {eoo} end-of-over frame(s), {dropped} samples dropped."
+            );
             Ok(())
         }
     };

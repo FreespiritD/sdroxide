@@ -117,6 +117,28 @@ pub struct DigiStatus {
     /// FSQ directed layer: parsed directed/allcall messages (rolling, capped).
     #[serde(default)]
     pub fsq_messages: Vec<FsqMsg>,
+    /// RADE digital voice: modem state, when that mode is active.
+    #[serde(default)]
+    pub rade: Option<RadeStatus>,
+}
+
+/// Live state of the RADE V1 modem.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct RadeStatus {
+    /// The receiver is locked to a signal.
+    pub sync: bool,
+    /// SNR estimate in a 3 kHz noise bandwidth (meaningful while `sync`).
+    pub snr_db: f32,
+    /// Frequency offset of the received signal (meaningful while `sync`).
+    pub freq_offset_hz: f32,
+    /// Peak level of the decoded speech, 0..1 — drives the RX meter.
+    pub rx_level: f32,
+    /// End-of-over frames seen this session; a change means the far end
+    /// finished an over.
+    pub eoo_count: u64,
+    /// Samples dropped between the engine and the decode thread. Should stay
+    /// at zero; anything else means the machine can't keep up.
+    pub dropped: u64,
 }
 
 /// One parsed FSQ directed (or ALLCALL) message.
@@ -153,6 +175,7 @@ impl DigiStatus {
             tx_sent: 0,
             fsq_heard: Vec::new(),
             fsq_messages: Vec::new(),
+            rade: None,
         }
     }
 }
