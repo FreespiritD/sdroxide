@@ -338,14 +338,14 @@ provided the following rules are observed:
 * **Read and review** generated code. You should be able to answer questions 
 about your contribution.
 * **Document and comment** non-trivial parts of the code.
-* Don't use LLMs for trivial things like changing a constant, this is slow,  
-wasteful and runs the risk of unneccessary modifications elsewhere.
+* Don't use LLMs for trivial things like changing a constant. This is slow,  wasteful
+and runs the risk of unneccessary modifications elsewhere.
 * Use modern, sufficiently sized models with sufficient context size. Running 
 small or outdated models or limiting them to small contexts results in low 
 quality code and damage to existing functionality.
 * Usage of locally-hosted LLMs is encouraged, but not required.
 * Please keep commits vendor-neutral and don't commit specific files for 
-one specific cloud hosted LLMs.
+one specific cloud hosted LLM.
 * Observe the project license. This is a GPLv3 project. Changing the license 
-violates the terms several of the used libraries.
+would violate the terms of several of the used libraries.
 
