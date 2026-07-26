@@ -142,30 +142,6 @@ jobs:
           7z x -opothos -y pothossdr.exe > /dev/null
           echo "${{ github.workspace }}/pothos/bin" >> "$GITHUB_PATH"
 
-      # The arm64 macOS runners ship very little free disk, and the RADE build
-      # (an Opus built from source plus the neural weight tables) fills enough
-      # of it that `hdiutil` later has nowhere to write the DMG image. None of
-      # what is removed here is used by this build.
-      - name: Free disk space (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          avail() { df -m /System/Volumes/Data | awk 'NR==2 {print $4}'; }
-          before=$(avail)
-          # Simulator runtimes are the single biggest item on the image.
-          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* \
-                      ~/Library/Developer/CoreSimulator/Caches \
-                      ~/Library/Android || true
-          # Spare Xcode versions, keeping the selected one for clang + the SDK.
-          # Xcode.app itself is a symlink to that version on the runner images,
-          # so symlinks are left alone.
-          keep="$(xcode-select -p | sed 's#/Contents/Developer##')"
-          if [[ "$keep" == /Applications/* ]]; then
-            for app in /Applications/Xcode*.app; do
-              if [[ ! -L "$app" && "$app" != "$keep" ]]; then sudo rm -rf "$app"; fi
-            done
-          fi
-          echo "free space: $before MB -> $(avail) MB"
-
       # RADE builds a FARGAN-enabled Opus from source with autotools.
       - name: Install build dependencies (macOS)
         if: runner.os == 'macOS'
@@ -253,7 +229,11 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           mkdir -p out stage/sdroxide
-          cp target/release/sdroxide.exe stage/sdroxide/
+          # CARGO_BUILD_TARGET (the MSYS2/MinGW toolchain, set above) makes
+          # cargo write to a target-specific directory rather than
+          # target/release.
+          BIN_DIR="target/$CARGO_BUILD_TARGET/release"
+          cp "$BIN_DIR/sdroxide.exe" stage/sdroxide/
           cp LICENSE stage/sdroxide/LICENSE.txt
           if [[ "${{ matrix.variant }}" == "cat" ]]; then
             cat > stage/sdroxide/README.txt <<'EOF'
@@ -285,7 +265,7 @@ jobs:
           if [[ "${{ matrix.variant }}" == "cat" ]]; then
             dotnet tool install --global wix --version 5.0.2
             wix build packaging/windows/main.wxs -arch x64 \
-              -d Version="$CARGO_VERSION" -d BinDir="target/release" \
+              -d Version="$CARGO_VERSION" -d BinDir="$BIN_DIR" \
               -o "out/$PKG.msi"
           fi
 
@@ -294,9 +274,9 @@ jobs:
         run: |
           mkdir -p out stage/sdroxide
           # As on Linux, drop the symbol table — `-x` because a Rust binary's
-          # indirect symbol table entries make a full strip fail. It also keeps
-          # the DMG image within the runner's free disk.
+          # indirect symbol table entries make a full strip fail.
           strip -x target/release/sdroxide
+          ls -lh target/release/sdroxide
           # Portable tarball (both variants)
           cp target/release/sdroxide LICENSE stage/sdroxide/
           if [[ "${{ matrix.variant }}" == "cat" ]]; then
@@ -326,12 +306,6 @@ jobs:
           # The .app/.dmg (fixed bundle identity) is only built for the default
           # (non-SoapySDR) variant; SoapySDR users take the portable tarball.
           if [[ "${{ matrix.variant }}" == "cat" ]]; then
-            # hdiutil builds the image on the same disk that holds several GB
-            # of cargo and CMake intermediates. The binary is staged by now, so
-            # they are no longer needed; without this the runner runs out of
-            # space part-way through writing the DMG.
-            rm -rf target/release/build target/release/deps target/release/incremental
-            df -m /System/Volumes/Data | awk 'NR==2 {print "free space before DMG: " $4 " MB"}'
             mkdir -p stage-dmg
             APP=stage-dmg/sdroxide.app
             mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -343,8 +317,27 @@ jobs:
             codesign --force -s - "$APP/Contents/MacOS/sdroxide"
             codesign --force -s - "$APP"
             cp LICENSE stage-dmg/
-            ln -s /Applications stage-dmg/Applications
-            hdiutil create -volname sdroxide -srcfolder stage-dmg -ov -format UDZO "out/$PKG.dmg"
+            # The image is created at an explicit size and filled by hand
+            # rather than handed to `hdiutil create -srcfolder`, whose own
+            # sizing runs out of room mid-copy ("hdiutil: create failed - No
+            # space left on device") with ~160 GB still free on the host: the
+            # image, not the disk, is what fills up. The /Applications
+            # shortcut is the one thing in that folder whose size is open to
+            # interpretation, so it is made inside the mounted image instead,
+            # where it cannot enter the size calculation at all.
+            size_mb=$(( $(du -sm stage-dmg | cut -f1) + 64 ))
+            hdiutil create -volname sdroxide -fs HFS+ -size "${size_mb}m" \
+              -ov -format UDRW rw.dmg
+            mnt=$(mktemp -d)
+            hdiutil attach rw.dmg -mountpoint "$mnt" -nobrowse -noautoopen
+            # ditto, not cp: the code signature lives in extended attributes.
+            ditto "$APP" "$mnt/sdroxide.app"
+            codesign --verify --strict "$mnt/sdroxide.app"
+            cp LICENSE "$mnt/"
+            ln -s /Applications "$mnt/Applications"
+            hdiutil detach "$mnt" || { sleep 5; hdiutil detach "$mnt" -force; }
+            hdiutil convert rw.dmg -format UDZO -ov -o "out/$PKG.dmg"
+            rm -f rw.dmg
           fi
 
       - uses: actions/upload-artifact@v4
