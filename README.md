@@ -8,10 +8,9 @@ WebSocket. It includes an integrated, persistent **logbook**, full **FT8/FT4**
 digital-mode operation, and a **built-in TCI server** so third-party programs
 like WSJT-X can use it as their radio.
 
-<img width="2400" height="984" alt="image" src="https://github.com/user-attachments/assets/910903b5-c418-4b71-90b3-f80f2ac32b19" />
+<img width="2351" height="984" alt="image" src="https://github.com/user-attachments/assets/6130eb56-9486-414c-b4b8-ceeb366d812c" />
 
-<img width="2400" height="984" alt="image" src="https://github.com/user-attachments/assets/b46d007d-8a1c-4c50-b852-4ff344362258" />
-
+<img width="2422" height="984" alt="image" src="https://github.com/user-attachments/assets/2b502c2b-f37c-43be-9eb9-e55eaea04419" />
 
 
 
