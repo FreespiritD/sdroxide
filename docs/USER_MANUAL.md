@@ -71,8 +71,9 @@ or connects to a remote sdroxide server.
   SDRs, a TCI server (ExpertSDR3/Thetis), or a CAT-controlled radio with audio
   over a USB sound card (demodulated audio or stereo IQ).
 - **Memory channels** and per-band memory of your last frequency/mode/filter.
-- **Solar system 3D view** (native only) — the Sun, Earth and Moon with their
-  orbits, live NASA SDO solar imagery, sunspot regions and CME trajectory cones,
+- **Solar system 3D view** (native only) — the Sun, the Earth and the Moon, the
+  other seven planets and eighteen of their moons with their orbits, live NASA
+  SDO solar imagery, sunspot regions and CME trajectory cones,
   an arrival estimate when one is headed our way, the live auroral oval standing
   over the globe with a Kp forecast for tonight, live amateur-satellite orbits
   with click-through pass predictions, your FT8 contacts arcing between stations,
@@ -876,19 +877,19 @@ The **UI** tab holds display preferences (stored in `config.toml` under `[ui]`):
 
 ## 6. Solar system 3D view
 
-The **☀ 3D** button in the Display module opens a second window showing the Sun,
-Earth and Moon in three dimensions, with live solar imagery, sunspot regions and
-coronal-mass-ejection trajectories. This enables operators to see if anything is 
-on its way here, and when it will arrive.
+The **☀ 3D** button in the Display module opens a second window showing the
+solar system in three dimensions — the Sun, the Earth and the Moon, the other
+seven planets and eighteen of their moons — with live solar imagery, sunspot
+regions and coronal-mass-ejection trajectories. This enables operators to see if
+anything is on its way here, and when it will arrive.
 
 ![The solar disk in AIA 171, with sunspot regions, a flare marker and the CME arrival banner](images/3d-sun.jpg)
 
-The Earth wears the same coastline data as the FT8 world map, lit by the real
-Sun with a soft terminator, and your QTH is marked with a green ring once you
-zoom in far enough for a point on the surface to mean anything.
-
-The Earth carries the same coastlines as the FT8 map, your QTH is the green
-ring, and the yellow dot is the point the Sun is directly overhead.
+The Earth carries a higher-resolution version of the same Natural Earth
+coastline data as the FT8 world map, with international borders, lit by the real
+Sun with a soft terminator. Your QTH is the green ring and the yellow dot is the
+point the Sun is directly overhead; both appear once you zoom in far enough for
+a point on the surface to mean anything.
 
 ![The Earth with the FT8 coastlines, the QTH ring and the sub-solar point](images/3d-earth.jpg)
 
@@ -898,11 +899,17 @@ ring, and the yellow dot is the point the Sun is directly overhead.
 | --- | --- |
 | Drag | Rotate around the focused body |
 | Scroll | Zoom in and out |
+| Click a body or its label | Make it the camera's target |
 
 Any mouse input cancels **AUTO**.
 
-**View** — pick what the camera pivots around: `SUN`, `EARTH`, `MOON`, or `E+M`
-(the Earth–Moon midpoint). **▶ AUTO** flies a continuous camera path through
+**Target** — the **◎** button names what the camera pivots around and opens a
+picker with everything in the system: `SUN`, `EARTH`, `MOON` and `E+M` (the
+Earth–Moon midpoint), then a row per planet with its own moons beside it.
+Choosing a target pulls the camera in to frame it. You can also simply click a
+planet, a moon or its name in the view — hovering marks the body with a reticle
+first, so there is no guessing about what a click will grab. **▶ AUTO** flies a
+continuous camera path through
 eight framed viewpoints — overhead of the whole system, over the Earth's
 shoulder towards the Sun, face-on to the solar disk, along the day/night
 terminator, over the Sun's pole, a diagonal on the Earth–Moon pair, a long look
@@ -914,10 +921,35 @@ than cutting; it holds each one for ten to sixteen seconds
 with a slow drift, and the whole loop takes about two minutes. Re-enabling AUTO
 picks up at whichever viewpoint is nearest your current view.
 
-**Layers** — `ORBITS` (Earth and Moon paths, sampled from the real ephemeris, so
-they are the true eccentric orbits), `CME`, `SPOTS`, `FLARES`, `GRID` (the solar
-rotation axis, equator and heliographic parallels), `LABELS`, `STARS`, `QSO`,
-`SATS` and `AURORA`.
+**Layers** — `ORBITS` (orbital paths, sampled from the real ephemeris, so they
+are the true eccentric orbits), `PLANETS`, `CME`, `SPOTS`, `FLARES`, `GRID` (the
+solar rotation axis, equator and heliographic parallels), `LABELS`, `STARS`,
+`QSO`, `SATS` and `AURORA`.
+
+**The PLANETS layer** adds the rest of the solar system: the seven other
+planets, eighteen major moons, and Saturn's and Uranus's rings. Names are shown
+for every planet however small it is on screen — from anywhere in the inner
+system Neptune is a fraction of a pixel, and the label is the only thing that
+makes it findable — and a body's own name disappears once you have flown close
+enough to it that the name would be stamped across the picture. A planet's moons
+are named once the planet itself is big enough on screen for the names not to
+pile up.
+
+Where the numbers come from, and how good they are:
+
+| | Source | Accuracy |
+| --- | --- | --- |
+| Planet positions | JPL's Keplerian element set for 1800–2050 | Measured against JPL Horizons over 2015–2045: better than 0.02° for the inner planets, 0.12° for Saturn |
+| Orientations | IAU/WGCCRE rotational elements | Poles and rotation rates; the small periodic terms are dropped |
+| Moon orbits | Circular orbits fitted to JPL Horizons | Under 1° of orbital phase for most, up to 4° for Titan and Iapetus, whose real orbits a circle cannot express |
+
+The Moon, Jupiter and Saturn are drawn from published spacecraft maps — LRO's
+lunar albedo mosaic and Cassini's global maps of the two giants. The other
+bodies are procedural: Mars gets its polar caps and dark albedo markings, Io its
+sulphur yellows, Iapetus its black leading hemisphere. Radii are exaggerated by
+the **body** scale like the Earth's, but capped so that no planet ever outgrows
+the Sun; each planet's moons are scaled by the same factor as the planet, so a
+moon at six planet radii is drawn at six planet radii.
 
 **The AURORA layer** puts the auroral oval on the globe, live, from NOAA's
 OVATION model — a 1°×1° grid of the probability of seeing aurora, issued every
@@ -1114,7 +1146,11 @@ CME and flare data from NASA CCMC's DONKI; sunspot regions, geomagnetic indices,
 solar flux, X-ray data and the OVATION aurora model from NOAA SWPC; ionosonde
 soundings from the GIRO
 network via [prop.kc2g.com](https://prop.kc2g.com/); satellite element sets from
-[CelesTrak](https://celestrak.org/), propagated with SGP4.*
+[CelesTrak](https://celestrak.org/), propagated with SGP4. Planetary positions
+from JPL's approximate element set, moon orbits fitted to JPL Horizons, and body
+maps from NASA/GSFC's LRO mosaic (Moon) and NASA/JPL-Caltech/SSI's Cassini
+global maps (Jupiter, Saturn); coastlines and borders from
+[Natural Earth](https://www.naturalearthdata.com/).*
 
 ---
 

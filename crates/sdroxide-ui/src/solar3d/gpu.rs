@@ -16,6 +16,11 @@ use eframe::egui_wgpu::{CallbackResources, CallbackTrait, RenderState, ScreenDes
 use super::mesh;
 use super::scene::{DrawData, Globals, LineInst, Prim, Scene, SpriteInst};
 
+/// Size every body map is stored at. One size for all of them, because they
+/// live in a single array texture.
+const BODY_MAP_W: u32 = 2048;
+const BODY_MAP_H: u32 = 1024;
+
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Reversed-Z: the far plane is 0, so that is what depth clears to.
 const DEPTH_CLEAR: f32 = 0.0;
@@ -84,7 +89,7 @@ pub struct SolarResources {
 
     land_view: wgpu::TextureView,
     border_view: wgpu::TextureView,
-    moon_view: wgpu::TextureView,
+    body_map_view: wgpu::TextureView,
     sun_tex: wgpu::Texture,
     sun_view: wgpu::TextureView,
     /// Bumped whenever a new solar image is uploaded, so the scene bind group
@@ -183,7 +188,16 @@ fn build(rs: &RenderState) -> SolarResources {
             },
             tex_entry(4),
             tex_entry(5),
-            tex_entry(6),
+            wgpu::BindGroupLayoutEntry {
+                binding: 6,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     });
     let draw_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -313,7 +327,6 @@ fn build(rs: &RenderState) -> SolarResources {
         })
     };
 
-    let mesh_layout_ring = mesh_layout.clone();
     let body_pipe = make_pipe(
         "solar-body",
         &draw_layout,
@@ -351,7 +364,7 @@ fn build(rs: &RenderState) -> SolarResources {
         "solar-ring",
         &draw_layout,
         &ring_sh,
-        &[mesh_layout_ring],
+        &[mesh_layout.clone()],
         Some(premultiplied),
         depth_state(false, wgpu::CompareFunction::Greater),
         sample_count,
@@ -446,7 +459,7 @@ fn build(rs: &RenderState) -> SolarResources {
     // ── Textures ────────────────────────────────────────────────────────────
     let land = upload_map(device, &rs.queue, "solar-land-mask", LAND_PNG);
     let border_view = upload_map(device, &rs.queue, "solar-borders", BORDER_PNG);
-    let moon_view = upload_moon(device, &rs.queue);
+    let body_maps = upload_body_maps(device, &rs.queue);
     let sun_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("solar-sun-tex"),
         size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
@@ -509,7 +522,7 @@ fn build(rs: &RenderState) -> SolarResources {
         &sun_view,
         &aurora_view,
         &border_view,
-        &moon_view,
+        &body_maps,
         &sampler,
     );
     let draw_bg = make_draw_bg(device, &draw_bgl, &draw_buf);
@@ -550,7 +563,7 @@ fn build(rs: &RenderState) -> SolarResources {
         star_count: stars.len() as u32,
         land_view: land,
         border_view,
-        moon_view,
+        body_map_view: body_maps,
         sun_tex,
         sun_view,
         sun_gen: 0,
@@ -574,7 +587,7 @@ fn make_scene_bg(
     sun: &wgpu::TextureView,
     aurora: &wgpu::TextureView,
     borders: &wgpu::TextureView,
-    moon: &wgpu::TextureView,
+    body_maps: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -595,7 +608,7 @@ fn make_scene_bg(
             },
             wgpu::BindGroupEntry {
                 binding: 6,
-                resource: wgpu::BindingResource::TextureView(moon),
+                resource: wgpu::BindingResource::TextureView(body_maps),
             },
         ],
     })
@@ -631,13 +644,20 @@ fn make_draw_bg(
 const LAND_PNG: &[u8] = include_bytes!("../../assets/earth/land.png");
 const BORDER_PNG: &[u8] = include_bytes!("../../assets/earth/borders.png");
 
-/// The Moon's albedo map: NASA/GSFC's LRO Wide Angle Camera mosaic, public
-/// domain (see `assets/bodies/README.md`).
+/// The bodies drawn from real imagery rather than procedurally, in the layer
+/// order the shader's `STYLE`/`MAP_*` constants use. All 2048×1024
+/// equirectangular and public domain; see `assets/bodies/README.md` for the
+/// provenance of each.
 ///
-/// The one body here that is drawn from a photograph rather than procedurally.
-/// Everybody has seen the Moon, and no amount of noise-and-ellipses puts
-/// Imbrium, Serenitatis and Tycho's rays where the eye expects them.
-const MOON_JPG: &[u8] = include_bytes!("../../assets/bodies/moon.jpg");
+/// These three are the ones a viewer can *check*. Everybody has seen the Moon,
+/// Jupiter's belts and the Great Red Spot are on every poster, and Saturn is
+/// exactly as bland as it looks here — no amount of noise-and-ellipses puts
+/// Imbrium or the GRS where the eye expects them.
+const BODY_MAPS: [(&str, &[u8]); 3] = [
+    ("moon", include_bytes!("../../assets/bodies/moon.jpg")),
+    ("jupiter", include_bytes!("../../assets/bodies/jupiter.jpg")),
+    ("saturn", include_bytes!("../../assets/bodies/saturn.jpg")),
+];
 
 /// Decode one of those maps into an R8 texture with a full mip chain.
 ///
@@ -705,54 +725,83 @@ fn upload_map(
     tex.create_view(&Default::default())
 }
 
-/// The Moon's albedo map: an RGB texture with its own mip chain, built the same
-/// way as the masks above.
-fn upload_moon(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
-    let rgba = match image::load_from_memory_with_format(MOON_JPG, image::ImageFormat::Jpeg) {
-        Ok(img) => img.to_rgba8(),
-        Err(e) => {
-            eprintln!("sdroxide: decoding the Moon map: {e}");
-            image::RgbaImage::from_raw(1, 1, vec![90, 90, 96, 255]).expect("1×1")
-        }
-    };
-    let (w, h) = rgba.dimensions();
-    let mut levels: Vec<(u32, u32, Vec<u8>)> = vec![(w, h, rgba.into_raw())];
-    while levels.last().is_some_and(|(w, h, _)| *w > 1 || *h > 1) {
-        levels.push(halve_rgba(levels.last().expect("just checked")));
-    }
+/// The body maps, as one array texture with a mip chain: one layer per body,
+/// indexed by the draw's style, so adding a map costs a JPEG and a constant
+/// rather than another binding.
+fn upload_body_maps(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let decoded: Vec<image::RgbaImage> = BODY_MAPS
+        .iter()
+        .map(|(name, bytes)| {
+            match image::load_from_memory_with_format(bytes, image::ImageFormat::Jpeg) {
+                Ok(img) => img.to_rgba8(),
+                Err(e) => {
+                    // A checked-in asset failing to decode should cost that
+                    // body's surface, not the window.
+                    eprintln!("sdroxide: decoding the {name} map: {e}");
+                    image::RgbaImage::from_pixel(
+                        BODY_MAP_W,
+                        BODY_MAP_H,
+                        image::Rgba([120, 116, 112, 255]),
+                    )
+                }
+            }
+        })
+        .collect();
 
+    let mips = (BODY_MAP_W.max(BODY_MAP_H).ilog2() + 1) as usize;
     let tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("solar-moon-tex"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: levels.len() as u32,
+        label: Some("solar-body-maps"),
+        size: wgpu::Extent3d {
+            width: BODY_MAP_W,
+            height: BODY_MAP_H,
+            depth_or_array_layers: decoded.len() as u32,
+        },
+        mip_level_count: mips as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        // sRGB: the map is a photograph, and the offscreen target is encoded,
-        // so the hardware has to linearise on the way in.
+        // sRGB: these are photographs, and the offscreen target is encoded, so
+        // the hardware has to linearise them on the way in.
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    for (level, (lw, lh, data)) in levels.iter().enumerate() {
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &tex,
-                mip_level: level as u32,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                // 4 bytes per texel, so every row is already 256-aligned for
-                // any width that is a multiple of 64 — and padded here if not.
-                bytes_per_row: Some(lw * 4),
-                rows_per_image: Some(*lh),
-            },
-            wgpu::Extent3d { width: *lw, height: *lh, depth_or_array_layers: 1 },
-        );
+
+    for (layer, img) in decoded.into_iter().enumerate() {
+        // Every map is the same size, so a mismatched asset is dropped rather
+        // than smeared across the wrong latitudes.
+        if img.dimensions() != (BODY_MAP_W, BODY_MAP_H) {
+            eprintln!("sdroxide: {} is {:?}, expected {BODY_MAP_W}×{BODY_MAP_H}",
+                BODY_MAPS[layer].0, img.dimensions());
+            continue;
+        }
+        let mut level = (BODY_MAP_W, BODY_MAP_H, img.into_raw());
+        for mip in 0..mips {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &tex,
+                    mip_level: mip as u32,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer as u32 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &level.2,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    // Four bytes per texel, so a power-of-two width is already
+                    // past the 256-byte row alignment `write_texture` wants.
+                    bytes_per_row: Some(level.0 * 4),
+                    rows_per_image: Some(level.1),
+                },
+                wgpu::Extent3d { width: level.0, height: level.1, depth_or_array_layers: 1 },
+            );
+            if mip + 1 < mips {
+                level = halve_rgba(&level);
+            }
+        }
     }
-    tex.create_view(&Default::default())
+    tex.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    })
 }
 
 /// [`halve`] for four-channel data.
@@ -919,7 +968,7 @@ impl SolarResources {
                 &self.sun_view,
                 &self.aurora_view,
                 &self.border_view,
-                &self.moon_view,
+                &self.body_map_view,
                 &self.sampler,
             );
         }

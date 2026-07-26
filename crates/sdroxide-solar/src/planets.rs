@@ -218,6 +218,11 @@ impl Moon {
 ///
 /// Orbit geometry is the output of `tools/fit_bodies.py`; radii are the IAU
 /// mean values.
+///
+/// **The order is a persisted format.** The 3D view stores its camera target as
+/// an index into this table, so a new moon is appended at the *end* — inserting
+/// one mid-table would re-point everybody's saved target at a different body.
+/// Grouping is by lookup rather than by position, so appending costs nothing.
 pub static MOONS: &[Moon] = &[
     moon("Phobos", Planet::Mars, Surface::Cratered, 0.000_011_1,
          0.009_378, 0.318_910_1, 26.9468, 81.3020, 175.2965, 3.1),

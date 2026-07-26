@@ -132,8 +132,9 @@ fn target_button(ui: &mut egui::Ui, st: &mut SolarUi) {
             ui.add_space(2.0);
             ui.label(
                 RichText::new(
-                    "Moons are drawn on circular orbits fitted to JPL Horizons — good to a \
-                     degree or so, except Titan and Iapetus.",
+                    "Moons ride circular orbits fitted to JPL Horizons: within a degree or two \
+                     of where they really are, and up to six for Miranda, whose orbit plane \
+                     swings too fast for a circle to follow.",
                 )
                 .color(theme::LINE_LIT)
                 .size(10.0),

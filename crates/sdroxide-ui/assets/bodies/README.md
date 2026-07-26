@@ -12,3 +12,18 @@ Re-encoded to JPEG at quality 88 (3.2 MB TIFF → 0.5 MB) because it is a
 photograph: PNG of the same data is four times the size for no visible gain,
 and this is the one body in the view whose real surface everybody already
 knows by sight.
+
+`jupiter.jpg`, `saturn.jpg` — 2048×1024, same layout, built by
+`make_body_maps.py` from published Cassini map data:
+
+* Jupiter — PIA07782, *Cassini's Best Maps of Jupiter* (December 2000),
+  <https://images-assets.nasa.gov/image/PIA07782/PIA07782~orig.jpg>.
+* Saturn — the Cassini ISS RGB global colour map of 11 August 2011, from the
+  PDS Atmospheres node's `co_iss_global-maps` bundle. Saturn's rings hide a
+  band of the planet from Cassini's viewpoint and neither pole was in view, so
+  those latitudes are interpolated from the rows either side — sound because
+  Saturn is zonal, and noted here because it is a reconstruction.
+
+Both are NASA/JPL-Caltech/Space Science Institute, public domain. The script
+documents the tone mapping it applies; the published data is calibrated
+reflectance and looks washed out shown raw.

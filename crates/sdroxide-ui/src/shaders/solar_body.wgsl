@@ -1,14 +1,18 @@
 // Every solid body in the scene. One pipeline, one branch on `d.params.x` —
 // the branch is uniform across a draw, so it costs nothing.
 //
-// Only the Sun and the Earth are drawn from photographs or measured data; the
-// rest is procedural, on purpose. A photographic Jupiter next to this Earth
-// would read as a different program's window, and shipping a dozen planet maps
-// would put megabytes of imagery into the binary for a body that is four pixels
-// across most of the time. What the procedural surfaces *do* get right is the
-// things a viewer can check: the bands run along the right latitudes, the maria
-// sit where the maria are, Mars's caps are at its poles, and each of them turns
-// with the body's real rotation.
+// Five bodies are drawn from real data: the Sun (live SDO imagery), the Earth
+// (the Natural Earth coastline and border masks), and the Moon, Jupiter and
+// Saturn from published spacecraft maps. Those are the ones a viewer can check
+// against a photograph they have already seen, and a procedural stand-in for
+// any of them reads as broken rather than as stylised.
+//
+// Everything else is procedural, which is a deliberate trade rather than a
+// shortcut: a map per moon would be tens of megabytes of imagery for bodies
+// that are a handful of pixels across in almost every frame. What the
+// procedural surfaces get right is what is checkable at that size — Mars's
+// caps are at its poles, Io is sulphur-yellow, Iapetus has one black
+// hemisphere — and each of them turns with the body's real rotation.
 
 struct Globals {
     view_proj: mat4x4<f32>,
@@ -26,7 +30,7 @@ struct DrawData {
     tint: vec4<f32>,
     tint2: vec4<f32>,
     params: vec4<f32>,       // x mode, y half-angle, z alpha, w spare
-    style: vec4<f32>,        // x style, y detail, z feature, w two-tone
+    style: vec4<f32>,        // x style, y detail or map layer, z two-tone, w spare
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -35,7 +39,7 @@ struct DrawData {
 @group(0) @binding(3) var samp: sampler;
 @group(1) @binding(0) var<uniform> d: DrawData;
 @group(0) @binding(5) var border_tex: texture_2d<f32>;
-@group(0) @binding(6) var moon_tex: texture_2d<f32>;
+@group(0) @binding(6) var body_maps: texture_2d_array<f32>;
 
 // The FT8 map's own palette, so the globe reads as the same map (see
 // widgets/worldmap.rs, land `#1c4458`).
@@ -207,7 +211,7 @@ fn shade_earth(in: VsOut, n: vec3<f32>) -> vec3<f32> {
 fn shade_moon(in: VsOut, n: vec3<f32>) -> vec3<f32> {
     let to_sun = sun_dir(in);
     let day = smoothstep(-0.03, 0.08, dot(n, to_sun));
-    let albedo = textureSample(moon_tex, samp, in.uv).rgb;
+    let albedo = textureSample(body_maps, samp, in.uv, i32(d.style.y)).rgb;
 
     // The Moon is famously flat-looking at full — the regolith backscatters
     // straight at the light source — so the falloff is deliberately blunt
@@ -225,48 +229,6 @@ fn shade_moon(in: VsOut, n: vec3<f32>) -> vec3<f32> {
 
 // ── Everything else ─────────────────────────────────────────────────────────
 
-/// Latitude bands with turbulence: Jupiter and Saturn.
-///
-/// The belts are built from several harmonics rather than one sine, and mixed
-/// *linearly* rather than through a smoothstep: a single hard-edged sine makes
-/// a beach ball, and neither planet has a hard edge anywhere on it. `d.style.y`
-/// is the contrast — Jupiter's belts are unmistakable, Saturn's are a
-/// suggestion under a much deeper haze.
-fn shade_bands(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
-    let ll = lat_lon(in.body);
-    let contrast = d.style.y;
-    // Turbulence first, then bands — so the belt edges are wavy and shear into
-    // each other the way a differentially rotating atmosphere does.
-    let turb = fbm(in.body * vec3(2.2, 2.2, 7.0)) - 0.5;
-    let y = ll.x / 90.0 + turb * 0.05;
-    // Uneven widths, because the real zones are not evenly spaced.
-    let band = 0.50 * sin(y * PI * 6.0 + 0.4)
-             + 0.30 * sin(y * PI * 11.0 - 1.1)
-             + 0.20 * sin(y * PI * 19.0 + 2.3);
-    var col = mix(d.tint.rgb, d.tint2.rgb, clamp(0.5 + 0.62 * band * contrast, 0.0, 1.0));
-    // Storms strung along the belts, and fine shear at their boundaries.
-    col = col * (0.96 + 0.09 * contrast * (fbm(in.body * vec3(6.0, 6.0, 22.0)) - 0.5) * 2.0);
-    // A bright equatorial zone: the one band both giants really do show.
-    col = mix(col, d.tint.rgb * 1.06, smoothstep(0.16, 0.0, abs(y)) * 0.5);
-    // Polar hoods, greyer than the tropics.
-    col = mix(col, mix(d.tint.rgb, d.tint2.rgb, 0.55) * 0.9, smoothstep(0.55, 0.98, abs(y)));
-
-    // The Great Red Spot, for the one planet that has it.
-    if (d.style.z > 0.5) {
-        let e = ellipse(ll, vec4(-22.0, -95.0, 5.5, 10.0));
-        // A pale collar around it, which is what makes it read as a storm
-        // sitting in the belt rather than as a sticker on the planet.
-        col = mix(col, d.tint.rgb * 1.05, smoothstep(1.35, 1.0, e) * 0.5);
-        col = mix(col, vec3(0.46, 0.17, 0.10), smoothstep(1.0, 0.5, e) * 0.8);
-    }
-    let day = daylight(n, to_sun);
-    // Limb darkening: a deep atmosphere seen edge-on is dimmer, and it is what
-    // stops the disc looking like a flat painted circle.
-    let to_eye = normalize(g.camera_pos.xyz - in.world);
-    let mu = clamp(dot(n, to_eye), 0.0, 1.0);
-    return col * (0.02 + 1.1 * day) * (0.62 + 0.38 * pow(mu, 0.45));
-}
-
 /// Methane blue, nearly featureless: Uranus and Neptune.
 fn shade_ice_giant(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
     let ll = lat_lon(in.body);
@@ -283,7 +245,7 @@ fn shade_ice_giant(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
 }
 
 /// Airless, saturated with craters: Mercury, Ganymede, Callisto, the two
-/// Martian rocks. `d.style.w` adds Iapetus's dark leading hemisphere.
+/// Martian rocks. `d.style.z` adds Iapetus's dark leading hemisphere.
 fn shade_cratered(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
     let craters = ridged(in.body * 30.0) * 0.5 + ridged(in.body * 85.0) * 0.32
                 + ridged(in.body * 220.0) * 0.18;
@@ -292,7 +254,7 @@ fn shade_cratered(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
 
     // Iapetus: the leading hemisphere is nearly black, the trailing one is
     // clean ice. In a tidally locked frame the leading side is −y.
-    if (d.style.w > 0.5) {
+    if (d.style.z > 0.5) {
         let leading = clamp(-in.body.y, 0.0, 1.0);
         col = mix(col, col * 0.12, smoothstep(0.15, 0.8, leading));
     }
@@ -374,6 +336,21 @@ fn shade_desert(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
     return col * (0.02 + 1.15 * day) + vec3(0.35, 0.20, 0.14) * rim * day * 0.5;
 }
 
+/// A body drawn from a real map: `d.style.y` picks the layer.
+///
+/// Only the lighting is added here — the surface itself is a photograph, so
+/// there is nothing to invent. Gas giants get the limb darkening a deep
+/// atmosphere has; there is no second case yet, and the Moon has its own
+/// branch because regolith does not behave like anything else here.
+fn shade_mapped(in: VsOut, n: vec3<f32>) -> vec3<f32> {
+    let to_sun = sun_dir(in);
+    let albedo = textureSample(body_maps, samp, in.uv, i32(d.style.y)).rgb;
+    let day = daylight(n, to_sun);
+    let to_eye = normalize(g.camera_pos.xyz - in.world);
+    let mu = clamp(dot(n, to_eye), 0.0, 1.0);
+    return albedo * (0.02 + 1.15 * day) * (0.62 + 0.38 * pow(mu, 0.45));
+}
+
 fn shade_body(in: VsOut, n: vec3<f32>) -> vec3<f32> {
     let to_sun = sun_dir(in);
     let style = d.style.x;
@@ -384,15 +361,15 @@ fn shade_body(in: VsOut, n: vec3<f32>) -> vec3<f32> {
     } else if (style < 2.5) {
         return shade_desert(in, n, to_sun);
     } else if (style < 3.5) {
-        return shade_bands(in, n, to_sun);
-    } else if (style < 4.5) {
         return shade_ice_giant(in, n, to_sun);
-    } else if (style < 5.5) {
+    } else if (style < 4.5) {
         return shade_icy(in, n, to_sun);
-    } else if (style < 6.5) {
+    } else if (style < 5.5) {
         return shade_volcanic(in, n, to_sun);
+    } else if (style < 6.5) {
+        return shade_cloud(in, n, to_sun, 0.75);
     }
-    return shade_cloud(in, n, to_sun, 0.75);
+    return shade_mapped(in, n);
 }
 
 fn shade_sun(in: VsOut, n: vec3<f32>) -> vec3<f32> {

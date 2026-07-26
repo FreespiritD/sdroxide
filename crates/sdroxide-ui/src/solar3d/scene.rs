@@ -79,11 +79,17 @@ pub const MODE_BODY: f32 = 3.0;
 pub const STYLE_CRATERED: f32 = 0.0;
 pub const STYLE_CLOUDY: f32 = 1.0;
 pub const STYLE_DESERT: f32 = 2.0;
-pub const STYLE_BANDS: f32 = 3.0;
-pub const STYLE_ICE_GIANT: f32 = 4.0;
-pub const STYLE_ICY: f32 = 5.0;
-pub const STYLE_VOLCANIC: f32 = 6.0;
-pub const STYLE_HAZE: f32 = 7.0;
+pub const STYLE_ICE_GIANT: f32 = 3.0;
+pub const STYLE_ICY: f32 = 4.0;
+pub const STYLE_VOLCANIC: f32 = 5.0;
+pub const STYLE_HAZE: f32 = 6.0;
+/// Not procedural at all: sample layer `style.y` of the body-map array.
+pub const STYLE_MAPPED: f32 = 7.0;
+
+/// Layers of that array, in `gpu::BODY_MAPS` order.
+pub const MAP_MOON: f32 = 0.0;
+pub const MAP_JUPITER: f32 = 1.0;
+pub const MAP_SATURN: f32 = 2.0;
 
 /// How one body is painted: which procedural surface, in what colours, and the
 /// two per-body switches that surface understands.
@@ -94,11 +100,9 @@ pub struct Look {
     base: Color32,
     /// The shade it varies towards: a gas giant's belts, a rocky body's basins.
     second: Color32,
-    /// How strongly that variation shows. Jupiter's belts are obvious at 1.0;
-    /// Saturn's are a suggestion at 0.4.
-    contrast: f32,
-    /// A named feature the style knows about (the Great Red Spot).
-    feature: f32,
+    /// Style-specific: how strongly the second colour shows for a procedural
+    /// surface, or which layer of the body-map array for [`STYLE_MAPPED`].
+    detail: f32,
     /// Iapetus's dark leading hemisphere.
     two_tone: f32,
 }
@@ -110,20 +114,20 @@ pub struct Look {
 /// to this cyan Earth would read as a different program's window.
 fn look_of(s: sdroxide_solar::Surface) -> Look {
     use sdroxide_solar::Surface as S;
-    let look = |style, base: u32, second: u32, contrast| Look {
+    let look = |style, base: u32, second: u32, detail| Look {
         style,
         base: Color32::from_rgb((base >> 16) as u8, (base >> 8) as u8, base as u8),
         second: Color32::from_rgb((second >> 16) as u8, (second >> 8) as u8, second as u8),
-        contrast,
-        feature: 0.0,
+        detail,
         two_tone: 0.0,
     };
     match s {
         S::Cratered => look(STYLE_CRATERED, 0x9a938a, 0x4a4642, 1.0),
         S::Cloudy => look(STYLE_CLOUDY, 0xe6d3a8, 0xc9ac74, 0.5),
         S::Desert => look(STYLE_DESERT, 0xc46a42, 0x7d3f2c, 1.0),
-        // Both giants are pale and creamy; the belts are a shade, not a stripe.
-        S::GasBands => look(STYLE_BANDS, 0xe4d2b4, 0x9a6945, 1.0),
+        // Both giants are drawn from Cassini's maps; `planet_look` picks which
+        // layer, and this is only the fallback average colour.
+        S::GasBands => look(STYLE_MAPPED, 0xd8be9c, 0x9a6945, MAP_JUPITER),
         S::IceGiant => look(STYLE_ICE_GIANT, 0x76c8e0, 0x3a7fb8, 0.5),
         S::Icy => look(STYLE_ICY, 0xd9e2ea, 0x8a9db0, 1.0),
         S::Volcanic => look(STYLE_VOLCANIC, 0xe0c25a, 0xa84e30, 1.0),
@@ -137,14 +141,20 @@ fn planet_look(p: sdroxide_solar::Planet) -> Look {
     use sdroxide_solar::Planet as P;
     let mut look = look_of(p.info().surface);
     match p {
-        // The Great Red Spot, and belts that are genuinely high-contrast.
-        P::Jupiter => look.feature = 1.0,
-        // Saturn is the same chemistry seen through a much deeper, hazier
-        // atmosphere: the same banding, washed out to almost nothing.
+        // The two giants are drawn from Cassini's own global maps: their belts
+        // and the Great Red Spot are things a viewer knows by sight, and no
+        // procedural stand-in survives being compared with the photograph.
+        // `base` stays the average colour, since it is what the glow and the
+        // label take.
+        P::Jupiter => {
+            look.style = STYLE_MAPPED;
+            look.detail = MAP_JUPITER;
+            look.base = Color32::from_rgb(0xd8, 0xbe, 0x9c);
+        }
         P::Saturn => {
-            look.base = Color32::from_rgb(0xf0, 0xdf, 0xb8);
-            look.second = Color32::from_rgb(0xc8, 0xa4, 0x74);
-            look.contrast = 0.4;
+            look.style = STYLE_MAPPED;
+            look.detail = MAP_SATURN;
+            look.base = Color32::from_rgb(0xe8, 0xd2, 0xa4);
         }
         // Neptune is the deeper blue of the two ice giants.
         P::Neptune => {
@@ -696,6 +706,9 @@ fn label_visible(px: f32, view_h: f32) -> bool {
     px < view_h * 0.18
 }
 
+/// How big a planet has to be on screen before its moons are named too.
+const MOON_LABEL_PX: f32 = 26.0;
+
 /// Names for every body, and the click targets that go with them.
 fn body_labels(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, view_h: f32, labels: bool) {
     let mut add = |pos: V3, radius: f32, name: &str, color: Color32, focus: Focus, show: bool| {
@@ -715,12 +728,16 @@ fn body_labels(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, view_h: f3
         });
     };
 
-    for (pos, radius, name, focus) in [
-        (V3::ZERO, b.sun_r, "SUN", Focus::Sun),
-        (b.earth, b.earth_r, "EARTH", Focus::Earth),
-        (b.moon, b.moon_r, "MOON", Focus::Moon),
+    // Our own Moon follows the same rule as everybody else's: it is named once
+    // the Earth is big enough on screen for the two names not to sit on top of
+    // one another, and from further out the Earth's label stands for the pair.
+    let earth_px = cam.pixels_for(b.earth, b.earth_r);
+    for (pos, radius, name, focus, show) in [
+        (V3::ZERO, b.sun_r, "SUN", Focus::Sun, true),
+        (b.earth, b.earth_r, "EARTH", Focus::Earth, true),
+        (b.moon, b.moon_r, "MOON", Focus::Moon, earth_px > MOON_LABEL_PX),
     ] {
-        add(pos, radius, name, theme::CYAN_DIM, focus, true);
+        add(pos, radius, name, theme::CYAN_DIM, focus, show);
     }
 
     if !st.layer(layer::PLANETS) {
@@ -732,10 +749,9 @@ fn body_labels(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, view_h: f3
         add(p.pos, p.radius, &name, color, Focus::Planet(p.planet), true);
     }
     for m in &b.moons {
-        // A moon is only named once its planet is big enough on screen for the
-        // names not to pile up on one another.
+        // Same rule for every other moon.
         let parent = &b.planets[m.parent];
-        let show = cam.pixels_for(parent.pos, parent.radius) > 26.0;
+        let show = cam.pixels_for(parent.pos, parent.radius) > MOON_LABEL_PX;
         let color = moon_look(m.info).base;
         let name = m.info.name.to_uppercase();
         add(m.pos, m.radius, &name, color, Focus::Satellite(m.index), show);
@@ -916,28 +932,29 @@ fn perpendicular_basis(z: V3) -> (V3, V3) {
 
 fn bodies_draws(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
     let sun_basis = basis_cols(b.sun_frame.basis);
-    let sphere = |s: &mut Scene, (x, y, z): (V3, V3, V3), pos, r, tint, mode| {
-        s.draws.push((
-            Prim::Sphere,
-            DrawData::new(
-                M4::from_basis(x, y, z, pos, r),
-                M4::from_basis(x, y, z, V3::ZERO, 1.0),
-                tint,
-                mode,
-            ),
-        ));
+    let sphere = |s: &mut Scene, (x, y, z): (V3, V3, V3), pos, r, tint, mode, style| {
+        let mut d = DrawData::new(
+            M4::from_basis(x, y, z, pos, r),
+            M4::from_basis(x, y, z, V3::ZERO, 1.0),
+            tint,
+            mode,
+        );
+        d.style = style;
+        s.draws.push((Prim::Sphere, d));
     };
 
     // Sun.
-    sphere(s, sun_basis, V3::ZERO, b.sun_r, Color32::from_rgb(0xff, 0xc4, 0x6a), MODE_SUN);
+    let sun = Color32::from_rgb(0xff, 0xc4, 0x6a);
+    sphere(s, sun_basis, V3::ZERO, b.sun_r, sun, MODE_SUN, [0.0; 4]);
 
     // Earth — its body frame is ECEF, so the land mask, the QTH marker and the
     // terminator all share one coordinate system.
-    sphere(s, b.earth_basis, b.earth, b.earth_r, theme::CYAN, MODE_EARTH);
+    sphere(s, b.earth_basis, b.earth, b.earth_r, theme::CYAN, MODE_EARTH, [0.0; 4]);
 
-    // Moon, in the tidally locked frame — which is what puts the maria on the
-    // near side, where they belong.
-    sphere(s, b.moon_basis, b.moon, b.moon_r, Color32::from_rgb(0x9a, 0xa4, 0xb4), MODE_MOON);
+    // Moon, in the tidally locked frame — which is what puts Imbrium and
+    // Tranquillitatis on the near side, where they belong.
+    let moon = Color32::from_rgb(0x9a, 0xa4, 0xb4);
+    sphere(s, b.moon_basis, b.moon, b.moon_r, moon, MODE_MOON, [0.0, MAP_MOON, 0.0, 0.0]);
 
     if st.layer(layer::PLANETS) {
         for p in &b.planets {
@@ -994,7 +1011,7 @@ fn body_sphere(s: &mut Scene, (x, y, z): (V3, V3, V3), pos: V3, radius: f32, loo
         MODE_BODY,
     );
     d.tint2 = lin(look.second, 1.0);
-    d.style = [look.style, look.contrast, look.feature, look.two_tone];
+    d.style = [look.style, look.detail, look.two_tone, 0.0];
     s.draws.push((Prim::Sphere, d));
 }
 
@@ -1023,8 +1040,10 @@ fn rings(s: &mut Scene, p: &PlanetBody) {
     );
     d.tint2 = lin(Color32::from_rgb(0xa9, 0x95, 0x78), 1.0);
     // x = inner edge as a fraction of the outer, y = opacity, z = the planet's
-    // radius in the same units, for the shadow the planet casts on the rings.
-    d.params = [inner / outer, opacity, p.radius / outer, 0.0];
+    // radius in the same units (for the shadow it casts on them), w = which
+    // radial profile: Saturn's broad sheet, or Uranus's handful of threads.
+    let narrow = if opacity < 0.5 { 1.0 } else { 0.0 };
+    d.params = [inner / outer, opacity, p.radius / outer, narrow];
     s.draws.push((Prim::Ring, d));
 }
 
