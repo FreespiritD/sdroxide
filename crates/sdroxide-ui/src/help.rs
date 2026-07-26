@@ -402,7 +402,15 @@ fn draw_block(
 ) {
     match block {
         Block::Heading { level, text, slug } => {
-            ui.add_space(if *level <= 2 { 15.0 } else { 11.0 });
+            // Breathing room above the bar: a clear break before a chapter, a
+            // smaller one before a subsection. The first block needs neither.
+            ui.add_space(if idx == 0 {
+                0.0
+            } else if *level <= 2 {
+                68.0
+            } else {
+                28.0
+            });
             let resp = draw_header(ui, *level, &plain_text(text));
             if *level == 2 || *level == 3 {
                 heading_tops.push((slug.clone(), resp.rect.top()));
@@ -410,7 +418,13 @@ fn draw_block(
             if scroll_target == Some(slug.as_str()) {
                 resp.scroll_to_me(Some(Align::TOP));
             }
-            ui.add_space(6.0);
+            ui.add_space(if idx == 0 {
+                6.0
+            } else if *level <= 2 {
+                24.0
+            } else {
+                12.0
+            });
         }
         Block::Paragraph(inl) => {
             draw_inline(ui, inl, theme::TEXT, false, actions);
