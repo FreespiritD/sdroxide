@@ -3999,6 +3999,7 @@ dependencies = [
  "sdroxide-config",
  "sdroxide-dsp",
  "sdroxide-hpsdr",
+ "sdroxide-net",
  "sdroxide-proto",
  "sdroxide-radio",
  "sdroxide-server",
@@ -4089,6 +4090,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "tracing",
+ "tungstenite 0.30.0",
  "ureq 2.12.1",
 ]
 

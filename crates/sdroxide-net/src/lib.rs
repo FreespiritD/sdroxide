@@ -9,12 +9,14 @@
 
 mod cluster;
 mod event;
+mod freedvreporter;
 mod http;
 mod lookup;
 mod manager;
 mod poll;
 mod pota;
 mod pskreporter;
+mod socketio;
 mod sota;
 mod upload;
 
@@ -22,5 +24,6 @@ pub use event::NetEvent;
 pub use manager::SpotManager;
 
 // On-demand blocking helpers, exposed for tests / direct use.
+pub use freedvreporter::{ProbeStation, ProbeSummary, probe as freedv_reporter_probe};
 pub use lookup::lookup as lookup_callsign;
 pub use upload::{sync_confirmations, upload as upload_qso};

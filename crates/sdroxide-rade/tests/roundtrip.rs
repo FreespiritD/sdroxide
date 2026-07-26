@@ -15,6 +15,11 @@ use sdroxide_rade::{
     f32_to_i16, vocoder,
 };
 
+/// Callsign carried in the End-of-Over frame. Deliberately not a real one:
+/// nothing here goes on the air, but a test fixture should not look like it
+/// belongs to someone.
+const TEST_CALL: &str = "AA1ZZZZZ";
+
 /// The C library documents one context per process, and cargo runs the tests in
 /// this binary on threads, so they take turns.
 static LOCK: Mutex<()> = Mutex::new(());
@@ -93,6 +98,7 @@ fn transmit_then_receive_recovers_the_features() {
     let mut rade = Rade::open_v1().expect("reopen");
     let mut received = Vec::new();
     let mut feats = Vec::new();
+    let mut eoo_bits = Vec::new();
     let mut pos = 0;
     let mut synced = false;
     while pos < iq.len() {
@@ -104,7 +110,7 @@ fn transmit_then_receive_recovers_the_features() {
             *dst = Complex32::new(src.re * TX_REAL_SCALE * RX_REAL_SCALE, 0.0);
         }
         pos += nin;
-        rade.rx(&block, &mut feats).expect("rx");
+        rade.rx(&block, &mut feats, &mut eoo_bits).expect("rx");
         synced |= rade.sync();
         received.extend_from_slice(&feats);
     }
@@ -160,6 +166,8 @@ fn worker_transmits_an_over_that_decodes_back() {
     let mut modem = Vec::new();
     {
         let mut worker = RadeWorker::new(AUDIO_RATE, AUDIO_RATE).expect("worker");
+        // Identify ourselves in the End-of-Over frame, as a real over would.
+        worker.set_callsign(TEST_CALL);
         worker.set_tx(true);
 
         // Feed and drain in 10 ms blocks, the granularity the engine uses.
@@ -202,7 +210,9 @@ fn worker_transmits_an_over_that_decodes_back() {
 
     let mut rade = Rade::open_v1().expect("open");
     let mut feats = Vec::new();
+    let mut eoo_bits = Vec::new();
     let (mut pos, mut valid, mut eoo, mut synced) = (0usize, 0usize, 0usize, false);
+    let mut heard: Option<String> = None;
     while pos < down.len() {
         let nin = rade.nin();
         let mut blk = vec![Complex32::default(); nin];
@@ -210,15 +220,31 @@ fn worker_transmits_an_over_that_decodes_back() {
             *dst = Complex32::new(src * RX_REAL_SCALE, 0.0);
         }
         pos += nin;
-        let out = rade.rx(&blk, &mut feats).expect("rx");
+        let out = rade.rx(&blk, &mut feats, &mut eoo_bits).expect("rx");
         valid += usize::from(out.n_features > 0);
-        eoo += usize::from(out.has_eoo);
         synced |= rade.sync();
+        if out.has_eoo {
+            eoo += 1;
+            assert_eq!(eoo_bits.len(), rade.n_eoo_bits(), "eoo bits must be handed back");
+            heard = heard.or_else(|| sdroxide_rade::text::decode(&eoo_bits));
+        } else {
+            assert!(eoo_bits.is_empty(), "eoo bits must be empty without an end-of-over");
+        }
     }
-    eprintln!("transmitted {:.1} s, {valid} valid frames, {eoo} eoo", modem.len() as f64 / AUDIO_RATE);
+    eprintln!(
+        "transmitted {:.1} s, {valid} valid frames, {eoo} eoo, heard {heard:?}",
+        modem.len() as f64 / AUDIO_RATE
+    );
     assert!(synced, "the transmitted over never decoded");
     assert!(valid > 50, "only {valid} frames decoded from our own transmission");
     assert!(eoo > 0, "the end-of-over frame was not transmitted");
+    // The whole point of the text channel: our callsign survived modulation,
+    // the audio path and demodulation.
+    assert_eq!(
+        heard.as_deref(),
+        Some(TEST_CALL),
+        "the callsign did not survive the round trip through the modem"
+    );
 }
 
 #[test]

@@ -40,6 +40,13 @@ pub struct RadeController {
     /// True once the end-of-over frame has gone out and transmit has drained.
     tx_done: bool,
 
+    /// Dial frequency at the last poll, so a decoded callsign can be reported
+    /// at an absolute frequency.
+    dial_hz: f64,
+    /// The last callsign decoded from a remote End-of-Over frame, shown until
+    /// the next over starts.
+    last_dx_call: Option<String>,
+
     last_status: DigiStatus,
     status_dirty: bool,
 }
@@ -53,16 +60,34 @@ impl RadeController {
                 None
             }
         };
-        let last_status = build_status(&cfg, false, None);
-        RadeController { cfg, worker, tx_active: false, keyed: false, tx_done: false, last_status, status_dirty: true }
+        if let Some(w) = worker.as_ref() {
+            w.set_callsign(&cfg.my_call);
+        }
+        let last_status = build_status(&cfg, false, None, None);
+        RadeController {
+            cfg,
+            worker,
+            tx_active: false,
+            keyed: false,
+            tx_done: false,
+            dial_hz: 0.0,
+            last_dx_call: None,
+            last_status,
+            status_dirty: true,
+        }
     }
 }
 
-fn build_status(cfg: &DigiConfig, keyed: bool, rade: Option<RadeStatus>) -> DigiStatus {
+fn build_status(
+    cfg: &DigiConfig,
+    keyed: bool,
+    rade: Option<RadeStatus>,
+    dx_call: Option<String>,
+) -> DigiStatus {
     DigiStatus {
         mode: Mode::Rade,
         step: QsoStep::Idle,
-        dx_call: None,
+        dx_call,
         dx_grid: None,
         tx_next: keyed,
         tx_pending_msg: None,
@@ -111,8 +136,9 @@ impl DigiEngine for RadeController {
         true
     }
 
-    fn poll(&mut self, _now: SystemTime, _dial_hz: f64) -> Vec<DigiAction> {
+    fn poll(&mut self, _now: SystemTime, dial_hz: f64) -> Vec<DigiAction> {
         let mut actions = Vec::new();
+        self.dial_hz = dial_hz;
         if self.tx_active && !self.keyed {
             self.keyed = true;
             self.tx_done = false;
@@ -120,7 +146,26 @@ impl DigiEngine for RadeController {
             actions.push(DigiAction::KeyTx);
         }
 
-        let status = build_status(&self.cfg, self.keyed, self.worker.as_ref().map(stats_of));
+        // Callsigns the far end put in its End-of-Over frame. At most one per
+        // received over, so this is empty on nearly every poll.
+        if let Some(w) = self.worker.as_ref() {
+            for t in w.poll_text() {
+                self.last_dx_call = Some(t.call.clone());
+                self.status_dirty = true;
+                actions.push(DigiAction::RadeCallsign {
+                    call: t.call,
+                    snr_db: t.snr_db,
+                    freq_hz: self.dial_hz,
+                });
+            }
+        }
+
+        let status = build_status(
+            &self.cfg,
+            self.keyed,
+            self.worker.as_ref().map(stats_of),
+            self.last_dx_call.clone(),
+        );
         if self.status_dirty || status.rade != self.last_status.rade {
             self.status_dirty = false;
             self.last_status = status.clone();
@@ -186,6 +231,11 @@ impl DigiEngine for RadeController {
     }
 
     fn set_config(&mut self, cfg: DigiConfig) {
+        if cfg.my_call != self.cfg.my_call
+            && let Some(w) = self.worker.as_ref()
+        {
+            w.set_callsign(&cfg.my_call);
+        }
         self.cfg = cfg;
         self.status_dirty = true;
     }
@@ -199,12 +249,22 @@ impl DigiEngine for RadeController {
     }
 
     fn status(&self) -> DigiStatus {
-        build_status(&self.cfg, self.keyed, self.worker.as_ref().map(stats_of))
+        build_status(
+            &self.cfg,
+            self.keyed,
+            self.worker.as_ref().map(stats_of),
+            self.last_dx_call.clone(),
+        )
     }
 
     fn set_tx_active(&mut self, on: bool) {
         if on == self.tx_active {
             return;
+        }
+        if on {
+            // A new over of our own: whoever we last heard is no longer the
+            // station on frequency as far as the display is concerned.
+            self.last_dx_call = None;
         }
         self.tx_active = on;
         if let Some(w) = self.worker.as_ref() {

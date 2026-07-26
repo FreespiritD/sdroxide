@@ -19,11 +19,12 @@
 //! that cost lands on its own thread.
 
 mod sys;
+pub mod text;
 pub mod vocoder;
 mod worker;
 
 pub use vocoder::{VocoderDec, VocoderEnc};
-pub use worker::{RadeStats, RadeWorker};
+pub use worker::{RadeStats, RadeTextRx, RadeWorker};
 
 use std::sync::Once;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -192,10 +193,18 @@ impl Rade {
     /// `features` is cleared and refilled with whatever this call produced;
     /// an empty result is normal and means the modem is still acquiring or
     /// mid-frame.
+    ///
+    /// `eoo` is likewise cleared, and refilled with [`Rade::n_eoo_bits`]
+    /// soft-decision floats (interleaved I/Q) **only** when the returned
+    /// [`RxOut::has_eoo`] is set — `rade_api.h` guarantees nothing about the
+    /// buffer's contents otherwise, so it is left empty rather than holding
+    /// something that looks like data. Pass it to [`crate::text::decode`] to
+    /// recover the far end's callsign.
     pub fn rx(
         &mut self,
         rx_in: &[Complex32],
         features: &mut Vec<f32>,
+        eoo: &mut Vec<f32>,
     ) -> Result<RxOut, RadeError> {
         let nin = self.nin();
         if rx_in.len() != nin {
@@ -203,27 +212,52 @@ impl Rade {
         }
         features.clear();
         features.resize(self.n_features, 0.0);
-        let mut eoo_bits = vec![0.0f32; self.n_eoo_bits];
+        eoo.clear();
+        eoo.resize(self.n_eoo_bits, 0.0);
         let mut has_eoo: i32 = 0;
 
-        // Safety: `rx_in` holds exactly `nin` samples, `features` and
-        // `eoo_bits` are sized from the library's own getters, and
-        // `RADE_COMP` is layout-compatible with `Complex32` (asserted below).
+        // Safety: `rx_in` holds exactly `nin` samples, `features` and `eoo` are
+        // sized from the library's own getters, and `RADE_COMP` is
+        // layout-compatible with `Complex32` (asserted below).
         let n = unsafe {
             sys::rade_rx(
                 self.r,
                 features.as_mut_ptr(),
                 &mut has_eoo,
-                eoo_bits.as_mut_ptr(),
+                eoo.as_mut_ptr(),
                 rx_in.as_ptr() as *mut sys::RADE_COMP,
             )
         };
         if n < 0 {
             features.clear();
+            eoo.clear();
             return Err(RadeError::Rx(n));
         }
         features.truncate(n as usize);
+        if has_eoo == 0 {
+            eoo.clear();
+        }
         Ok(RxOut { n_features: n as usize, has_eoo: has_eoo != 0 })
+    }
+
+    /// Set the soft-decision bits the next [`Rade::tx_eoo`] will carry.
+    ///
+    /// `bits` must be [`Rade::n_eoo_bits`] long; build it with
+    /// [`crate::text::encode`]. The library `memcpy`s the array, so the buffer
+    /// need not outlive the call.
+    ///
+    /// Without this the End-of-Over frame's data symbols are all zero (the
+    /// library's own initial value), which carries no callsign *and* denies the
+    /// far end the known sequence it estimates its noise variance from. Set it
+    /// on every over, even for an empty callsign.
+    pub fn set_tx_eoo_bits(&mut self, bits: &[f32]) -> Result<(), RadeError> {
+        if bits.len() != self.n_eoo_bits {
+            return Err(RadeError::BadLength { want: self.n_eoo_bits, got: bits.len() });
+        }
+        // Safety: the C side copies exactly `n_eoo_bits` floats out of `bits`
+        // and retains no pointer to it.
+        unsafe { sys::rade_tx_set_eoo_bits(self.r, bits.as_ptr() as *mut f32) };
+        Ok(())
     }
 
     /// Modulate one feature block into [`Rade::n_tx_out`] IQ samples, appended
@@ -335,10 +369,11 @@ mod tests {
         let _g = exclusive();
         let mut r = Rade::open_v1().expect("open");
         let mut feats = Vec::new();
+        let mut eoo = Vec::new();
         let short = vec![Complex32::default(); r.nin() - 1];
-        assert!(matches!(r.rx(&short, &mut feats), Err(RadeError::BadLength { .. })));
+        assert!(matches!(r.rx(&short, &mut feats, &mut eoo), Err(RadeError::BadLength { .. })));
         let long = vec![Complex32::default(); r.nin() + 1];
-        assert!(matches!(r.rx(&long, &mut feats), Err(RadeError::BadLength { .. })));
+        assert!(matches!(r.rx(&long, &mut feats, &mut eoo), Err(RadeError::BadLength { .. })));
         assert!(matches!(
             r.tx(&[0.0; 8], &mut Vec::new()),
             Err(RadeError::BadLength { .. })
@@ -350,10 +385,12 @@ mod tests {
         let _g = exclusive();
         let mut r = Rade::open_v1().expect("open");
         let mut feats = Vec::new();
+        let mut eoo = Vec::new();
         for _ in 0..50 {
             let block = vec![Complex32::default(); r.nin()];
-            let out = r.rx(&block, &mut feats).expect("rx");
+            let out = r.rx(&block, &mut feats, &mut eoo).expect("rx");
             assert_eq!(out.n_features, 0);
+            assert!(eoo.is_empty(), "no end-of-over, so no bits");
         }
         assert!(!r.sync());
     }

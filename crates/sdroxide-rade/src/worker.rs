@@ -36,10 +36,24 @@ const LEVEL_DECAY: f32 = 0.85;
 
 enum Ctl {
     SetTx(bool),
+    /// The callsign to transmit in the End-of-Over frame. Re-encoded on change
+    /// so keying up costs nothing.
+    SetCallsign(String),
     /// Drop receive state — used when re-entering the mode or after a big
     /// discontinuity.
     Reset,
     Stop,
+}
+
+/// A remote station's callsign, recovered from its End-of-Over frame.
+///
+/// This is the only station identification RADE carries, and it is what a
+/// FreeDV Reporter reception report is built from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RadeTextRx {
+    pub call: String,
+    /// The SNR the receiver was reporting while the over was still in sync.
+    pub snr_db: f32,
 }
 
 #[derive(Default)]
@@ -83,6 +97,7 @@ pub struct RadeWorker {
     tx_in: rtrb::Producer<f32>,
     tx_out: rtrb::Consumer<f32>,
     ctl: Sender<Ctl>,
+    text_rx: Receiver<RadeTextRx>,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
 }
@@ -105,7 +120,14 @@ impl RadeWorker {
         let (tx_in, tx_in_rx) = rtrb::RingBuffer::new((audio_rate * RING_SECS) as usize);
         let (tx_out_tx, tx_out) = rtrb::RingBuffer::new((audio_rate * RING_SECS) as usize);
         let (ctl, ctl_rx) = unbounded();
+        let (text_tx, text_rx) = unbounded();
         let shared = Arc::new(Shared::default());
+
+        // Never leave the End-of-Over payload at the library's all-zero
+        // default: even with no callsign the frame carries the known sequence
+        // the far end measures its noise floor from.
+        let mut eoo_tx = vec![0.0f32; rade.n_eoo_bits()];
+        crate::text::encode("", &mut eoo_tx);
 
         let inner = Inner {
             rade,
@@ -128,6 +150,10 @@ impl RadeWorker {
             audio: Vec::new(),
             pcm: Vec::new(),
             iq: Vec::new(),
+            eoo_tx,
+            eoo_rx: Vec::new(),
+            last_sync_snr: 0.0,
+            text_tx,
             transmitting: false,
             was_sync: false,
             level: 0.0,
@@ -139,7 +165,30 @@ impl RadeWorker {
             .expect("spawn sdroxide-rade thread");
 
         info!(rx_rate, audio_rate, "RADE worker started");
-        Ok(RadeWorker { rx_in, rx_out, tx_in, tx_out, ctl, shared, thread: Some(thread) })
+        Ok(RadeWorker {
+            rx_in,
+            rx_out,
+            tx_in,
+            tx_out,
+            ctl,
+            text_rx,
+            shared,
+            thread: Some(thread),
+        })
+    }
+
+    /// Set the callsign transmitted in the End-of-Over frame. Empty clears it.
+    ///
+    /// This is how other FreeDV stations — and, through them, FreeDV Reporter —
+    /// learn who we are.
+    pub fn set_callsign(&self, call: &str) {
+        let _ = self.ctl.send(Ctl::SetCallsign(call.to_string()));
+    }
+
+    /// Drain the callsigns decoded from remote End-of-Over frames since the
+    /// last call. Usually empty: one arrives per received over.
+    pub fn poll_text(&self) -> Vec<RadeTextRx> {
+        self.text_rx.try_iter().collect()
     }
 
     /// Hand the worker receive audio at the rate given to [`RadeWorker::new`].
@@ -262,6 +311,17 @@ struct Inner {
     pcm: Vec<i16>,
     iq: Vec<Complex32>,
 
+    /// Our callsign, pre-encoded as End-of-Over soft bits so keying down costs
+    /// nothing. Always `rade.n_eoo_bits()` long.
+    eoo_tx: Vec<f32>,
+    /// Scratch for the End-of-Over bits `rade_rx` hands back.
+    eoo_rx: Vec<f32>,
+    /// The last SNR seen while in sync. `snr_mdb` freezes when sync drops, and
+    /// the End-of-Over frame is the last thing to arrive before that happens,
+    /// so the report needs the latched value rather than a later read.
+    last_sync_snr: f32,
+    text_tx: Sender<RadeTextRx>,
+
     transmitting: bool,
     was_sync: bool,
     level: f32,
@@ -273,6 +333,7 @@ impl Inner {
             match ctl.recv_timeout(POLL) {
                 Ok(Ctl::Stop) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                 Ok(Ctl::SetTx(on)) => self.set_tx(on),
+                Ok(Ctl::SetCallsign(c)) => crate::text::encode(&c, &mut self.eoo_tx),
                 Ok(Ctl::Reset) => self.reset_rx(),
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
             }
@@ -313,6 +374,12 @@ impl Inner {
                 }
             }
             self.iq.clear();
+            // Load our callsign into the frame about to go out. Done here
+            // rather than when the callsign changes, so the value is current
+            // even if the operator edited it mid-over.
+            if let Err(e) = self.rade.set_tx_eoo_bits(&self.eoo_tx) {
+                warn!(?e, "rade_tx_set_eoo_bits failed");
+            }
             if let Err(e) = self.rade.tx_eoo(&mut self.iq) {
                 warn!(?e, "rade_tx_eoo failed");
             }
@@ -354,17 +421,27 @@ impl Inner {
             );
             self.buf8.drain(..nin);
 
-            let out = match self.rade.rx(&self.iq, &mut self.features) {
+            let out = match self.rade.rx(&self.iq, &mut self.features, &mut self.eoo_rx) {
                 Ok(o) => o,
                 Err(e) => {
                     warn!(?e, "rade_rx failed");
                     continue;
                 }
             };
+            // Before the End-of-Over handling, so a frame that arrived while
+            // still in sync refreshes the SNR the report will carry.
+            self.publish_rx_state();
             if out.has_eoo {
                 self.shared.eoo_count.fetch_add(1, Ordering::Relaxed);
+                // Tens of microseconds of belief propagation, once per over,
+                // on this thread — never the audio callback.
+                if let Some(call) = crate::text::decode(&self.eoo_rx) {
+                    info!(%call, snr_db = self.last_sync_snr, "RADE End-of-Over callsign");
+                    let _ = self
+                        .text_tx
+                        .send(RadeTextRx { call, snr_db: self.last_sync_snr });
+                }
             }
-            self.publish_rx_state();
             if out.n_features == 0 {
                 continue;
             }
@@ -418,9 +495,12 @@ impl Inner {
         self.was_sync = sync;
         self.shared.sync.store(sync, Ordering::Relaxed);
         if sync {
-            self.shared
-                .snr_mdb
-                .store((self.rade.snr_3k_db() * 1000.0) as i32, Ordering::Relaxed);
+            let snr = self.rade.snr_3k_db();
+            // Latched for the End-of-Over report: by the time an over's
+            // callsign is decoded, sync may already have dropped and the
+            // published value stopped moving.
+            self.last_sync_snr = snr;
+            self.shared.snr_mdb.store((snr * 1000.0) as i32, Ordering::Relaxed);
             self.shared
                 .foff_mhz
                 .store((self.rade.freq_offset_hz() * 1000.0) as i32, Ordering::Relaxed);

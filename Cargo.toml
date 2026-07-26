@@ -71,6 +71,7 @@ sdroxide-proto.workspace = true
 sdroxide-dsp.workspace = true
 sdroxide-radio = { path = "crates/sdroxide-radio", default-features = false }
 sdroxide-config.workspace = true
+sdroxide-net.workspace = true
 sdroxide-audio.workspace = true
 sdroxide-server.workspace = true
 sdroxide-cat.workspace = true

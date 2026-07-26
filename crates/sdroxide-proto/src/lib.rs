@@ -41,8 +41,11 @@ use sdroxide_types::{
 /// `Command::SetSkimmerEnabled` became `Command::SetSkimmerConfig`.
 /// v13: built-in TCI server — `Command::SetTciServerConfig` and
 /// `ServerMsg::TciServerStatus`.
-pub const PROTO_VERSION: u16 = 13;
-const VERSION_BYTE: u8 = 0x0D;
+/// v14: FreeDV Reporter — new `SpotKind::FreeDv` (extends the postcard
+/// discriminant space of `ServerMsg::Spots`) and `NetworkConfig`'s new
+/// `freedv_reporter` field, carried by `Command::SetNetworkConfig`.
+pub const PROTO_VERSION: u16 = 14;
+const VERSION_BYTE: u8 = 0x0E;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {

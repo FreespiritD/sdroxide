@@ -19,6 +19,9 @@ pub enum SpotKind {
     Sota,
     /// A PSK Reporter reception report (someone heard us / a monitored call).
     PskReporter,
+    /// A station connected to FreeDV Reporter (<https://qso.freedv.org/>).
+    /// Appended last so the postcard discriminants above never move.
+    FreeDv,
 }
 
 impl SpotKind {
@@ -28,6 +31,7 @@ impl SpotKind {
             SpotKind::Pota => "POTA",
             SpotKind::Sota => "SOTA",
             SpotKind::PskReporter => "PSK",
+            SpotKind::FreeDv => "FREEDV",
         }
     }
 
@@ -38,6 +42,7 @@ impl SpotKind {
             SpotKind::Pota => (120, 230, 140),      // green
             SpotKind::Sota => (255, 190, 90),       // amber
             SpotKind::PskReporter => (210, 150, 255), // violet
+            SpotKind::FreeDv => (255, 130, 160),      // pink
         }
     }
 }

@@ -203,8 +203,9 @@ pub struct QsoRecord {
     /// Free-text note (manual entries, corrections).
     pub comment: String,
 
-    // ── Extended fields (Phase 2): contesting, awards, QSL status. All
-    // `#[serde(default)]` via the struct attribute, so older logs still load. ──
+    // Extended fields: contesting, awards, QSL status. All
+    // `#[serde(default)]` via the struct attribute, so older logs still load.
+    
     /// Worked operator's name.
     pub name: String,
     /// Worked station's town / QTH.

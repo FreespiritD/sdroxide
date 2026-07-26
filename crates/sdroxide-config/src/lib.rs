@@ -304,4 +304,27 @@ mod tests {
         assert_eq!(s.sample_rate, 2_400_000.0);
         assert_eq!(s.server_port, Settings::default().server_port);
     }
+
+    #[test]
+    fn network_config_loads_without_the_freedv_section() {
+        // A net.json written before FreeDV Reporter existed.
+        let c: sdroxide_types::NetworkConfig =
+            serde_json::from_str(r#"{"my_call":"AB1CD","my_grid":"FN42"}"#).unwrap();
+        assert_eq!(c.my_call, "AB1CD");
+        assert_eq!(c.freedv_reporter, sdroxide_types::FreeDvReporterConfig::default());
+    }
+
+    #[test]
+    fn network_config_ignores_the_retired_reporter_identity_keys() {
+        // The reporter briefly carried its own callsign/grid before those were
+        // folded into the operator identity. A file still holding them must
+        // load, not fail — and must not resurrect them.
+        let c: sdroxide_types::NetworkConfig = serde_json::from_str(
+            r#"{"my_call":"AB1CD","my_grid":"FN42",
+                "freedv_reporter":{"enabled":true,"callsign":"OLD","grid":"AA00"}}"#,
+        )
+        .unwrap();
+        assert_eq!(c.my_call, "AB1CD");
+        assert!(c.freedv_reporter.enabled, "the rest of the section still applies");
+    }
 }

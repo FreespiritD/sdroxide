@@ -54,7 +54,8 @@ pub use memory::{BandStackEntry, MemoryChannel};
 pub use meters::{Meters, TxMeters, TxTelemetry};
 pub use mode::{AgcMode, Mode, NrLevel};
 pub use netcfg::{
-    ClusterConfig, Credentials, FeedConfig, LookupProvider, NetworkConfig, PskConfig,
+    ClusterConfig, Credentials, FeedConfig, FreeDvReporterConfig, LookupProvider, NetworkConfig,
+    PskConfig,
 };
 pub use radio::{
     Backend, CatConfig, CatFamily, DigiMode, HpsdrConfig, HpsdrDevice, LineState, ModeControl,

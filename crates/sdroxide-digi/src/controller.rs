@@ -41,6 +41,13 @@ pub enum DigiAction {
     SstvStatus(SstvStatus),
     /// FSQ image: a completed grayscale-as-RGB image — the engine encodes it.
     DigiImage { w: u16, h: u16, rgb: Vec<u8> },
+    /// RADE: a remote station's callsign, recovered from its End-of-Over frame,
+    /// with the SNR at the end of the over and the dial it was heard on.
+    ///
+    /// An event rather than a field on [`sdroxide_types::RadeStatus`]: status is
+    /// emitted by diff, so decoding the *same* station twice running — the
+    /// common case in a QSO — would stop re-reporting it.
+    RadeCallsign { call: String, snr_db: f32, freq_hz: f64 },
 }
 
 struct DecodeJob {

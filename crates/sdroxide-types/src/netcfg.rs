@@ -68,6 +68,52 @@ impl Default for PskConfig {
     }
 }
 
+/// FreeDV Reporter (<https://qso.freedv.org/>): announce our station and
+/// surface everyone else's as spots. Both halves ride one Socket.IO connection.
+///
+/// The reported identity is the operator's — [`NetworkConfig::my_call`] and
+/// [`NetworkConfig::my_grid`] — rather than a copy of its own, so there is one
+/// place to set it and no way for the two to disagree. With either unset we
+/// connect read-only and never appear on the site.
+///
+/// We are only *shown* to others while the radio is in RADE — in any other mode
+/// the connection stays up but the station is hidden, matching FreeDV GUI.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FreeDvReporterConfig {
+    pub enabled: bool,
+    /// Reporter host name. Empty falls back to the public server.
+    pub host: String,
+    pub port: u16,
+    /// Reserved: the public server also answers TLS on 443, but FreeDV GUI
+    /// speaks plain `ws://` and so do we. Not yet implemented.
+    pub tls: bool,
+    /// Advertise this station as receive-only.
+    pub rx_only: bool,
+    /// Free-text status shown beside our callsign on the site.
+    pub message: String,
+    /// Send an `rx_report` for every callsign decoded from a RADE End-of-Over
+    /// frame.
+    pub report_rx: bool,
+    /// Surface other reporter stations as spots on the panadapter and map.
+    pub show_spots: bool,
+}
+
+impl Default for FreeDvReporterConfig {
+    fn default() -> Self {
+        FreeDvReporterConfig {
+            enabled: false,
+            host: "qso.freedv.org".to_string(),
+            port: 80,
+            tls: false,
+            rx_only: false,
+            message: String::new(),
+            report_rx: true,
+            show_spots: true,
+        }
+    }
+}
+
 /// Which callsign-lookup provider to use for auto-fill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum LookupProvider {
@@ -111,6 +157,7 @@ pub struct NetworkConfig {
     pub pota: FeedConfig,
     pub sota: FeedConfig,
     pub psk: PskConfig,
+    pub freedv_reporter: FreeDvReporterConfig,
     /// Drop/expire spots older than this many seconds.
     pub spot_max_age_secs: u32,
     /// Show only spots that fall in the operator's current band.
@@ -149,6 +196,7 @@ impl Default for NetworkConfig {
             pota: FeedConfig::default(),
             sota: FeedConfig::default(),
             psk: PskConfig::default(),
+            freedv_reporter: FreeDvReporterConfig::default(),
             spot_max_age_secs: 900,
             spot_current_band_only: false,
             lookup_provider: LookupProvider::None,
@@ -177,4 +225,5 @@ impl NetworkConfig {
             self.cluster.login.trim()
         }
     }
+
 }

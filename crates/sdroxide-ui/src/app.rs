@@ -36,6 +36,7 @@ enum SettingsTab {
     Audio,
     Ui,
     Spots,
+    FreeDv,
     Uploads,
     TciServer,
 }
@@ -151,6 +152,7 @@ fn spot_kind_index(kind: SpotKind) -> usize {
         SpotKind::Pota => 1,
         SpotKind::Sota => 2,
         SpotKind::PskReporter => 3,
+        SpotKind::FreeDv => 4,
     }
 }
 
@@ -285,8 +287,9 @@ pub struct SdroxideApp {
     net_status: Option<String>,
     /// Spots window open state.
     show_spots: bool,
-    /// Which spot kinds are shown on the overlay/list (DX, POTA, SOTA, PSK).
-    spot_kinds_shown: [bool; 4],
+    /// Which spot kinds are shown on the overlay/list (DX, POTA, SOTA, PSK,
+    /// FREEDV) — indexed by [`spot_kind_index`].
+    spot_kinds_shown: [bool; 5],
     /// Show only spots that fall inside the current panadapter view span.
     spot_in_view_only: bool,
     /// UI-owned editable copy of the network config (edited in the Settings
@@ -527,7 +530,7 @@ impl SdroxideApp {
             spots: Vec::new(),
             net_status: None,
             show_spots: false,
-            spot_kinds_shown: [true; 4],
+            spot_kinds_shown: [true; 5],
             spot_in_view_only: false,
             net_cfg_edit: net_cfg,
             net_cfg_seeded: true,
@@ -3380,6 +3383,7 @@ impl SdroxideApp {
             (SpotKind::Pota, "POTA"),
             (SpotKind::Sota, "SOTA"),
             (SpotKind::PskReporter, "PSK"),
+            (SpotKind::FreeDv, "FREEDV"),
         ];
         let resp = egui::Window::new("SPOTS")
             .open(&mut open)
@@ -4088,13 +4092,15 @@ impl SdroxideApp {
     fn settings_body(&self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, io: &mut SettingsIo) {
         use sdroxide_types::Backend;
 
-        ui.horizontal(|ui| {
+        // Wrapped: eight tabs no longer fit the window's width on one line.
+        ui.horizontal_wrapped(|ui| {
             for (t, label) in [
                 (SettingsTab::General, "General"),
                 (SettingsTab::Radio, "Radio"),
                 (SettingsTab::Audio, "Audio"),
                 (SettingsTab::Ui, "UI"),
                 (SettingsTab::Spots, "Spots"),
+                (SettingsTab::FreeDv, "FreeDV"),
                 (SettingsTab::Uploads, "Uploads"),
                 (SettingsTab::TciServer, "TCI Server"),
             ] {
@@ -4361,6 +4367,9 @@ impl SdroxideApp {
                         *io.net_sync = true;
                     }
                 });
+            }
+            SettingsTab::FreeDv => {
+                settings_freedv_tab(ui, io.net_edit, &self.net_status, io.net_apply)
             }
             SettingsTab::TciServer => settings_tci_server_tab(
                 ui,
@@ -4844,6 +4853,102 @@ struct TciServerStatus {
     addr: String,
     clients: usize,
     error: Option<String>,
+}
+
+/// FreeDV Reporter (<https://qso.freedv.org/>): announce this station and show
+/// everyone else's as spots.
+///
+/// Takes the whole [`sdroxide_types::NetworkConfig`] rather than just the
+/// reporter section, because the station is reported under the operator
+/// identity from the Spots tab, which this tab shows but does not duplicate.
+fn settings_freedv_tab(
+    ui: &mut egui::Ui,
+    net: &mut sdroxide_types::NetworkConfig,
+    status: &Option<String>,
+    apply: &mut bool,
+) {
+    ui.label(RichText::new("FreeDV Reporter").size(14.0).strong().color(crate::theme::CYAN));
+    ui.add_space(6.0);
+    ui.checkbox(&mut net.freedv_reporter.enabled, "Enable").on_hover_text(
+        "Connects whenever enabled. Your station is only shown to others while the radio is \
+         in RADE — in any other mode you stay connected but hidden.",
+    );
+    ui.add_space(6.0);
+
+    // The operator identity, read before the mutable borrow below. It is edited
+    // on the Spots tab (and seeded from the General tab); reporting under a
+    // second copy of it would only create a way for the two to disagree.
+    let call = net.my_call.trim().to_string();
+    let grid = net.my_grid.trim().to_string();
+    let enabled = net.freedv_reporter.enabled;
+
+    ui.add_enabled_ui(enabled, |ui| {
+        let c = &mut net.freedv_reporter;
+
+        net_heading(ui, "Station");
+        net_row(ui, "Message", &mut c.message, 260.0);
+        ui.checkbox(&mut c.rx_only, "Receive only (I cannot transmit)");
+
+        net_heading(ui, "Server");
+        net_row(ui, "Host", &mut c.host, 220.0);
+        ui.horizontal(|ui| {
+            ui.add_sized([96.0, 22.0], egui::Label::new("Port"));
+            ui.add(egui::DragValue::new(&mut c.port).range(1..=65535));
+        });
+        ui.add_enabled_ui(false, |ui| {
+            ui.checkbox(&mut c.tls, "TLS (wss://)")
+                .on_hover_text("Not yet implemented — FreeDV GUI uses plain ws:// too.");
+        });
+
+        net_heading(ui, "Reporting");
+        ui.checkbox(&mut c.report_rx, "Report stations I decode")
+            .on_hover_text("Sends an rx_report for each callsign recovered from a RADE \
+                            End-of-Over frame.");
+        ui.checkbox(&mut c.show_spots, "Show other reporter stations as spots")
+            .on_hover_text("Adds them to the panadapter overlay, world map and SPOTS window \
+                            under the FREEDV filter.");
+    });
+
+    ui.add_space(8.0);
+    if enabled && (call.is_empty() || grid.is_empty()) {
+        ui.label(
+            RichText::new(
+                "⚠ Set your callsign and grid on the Spots tab. Without both, the connection \
+                 is view-only: you will see other stations but will not appear yourself.",
+            )
+            .color(Color32::from_rgb(230, 170, 60)),
+        );
+    } else if enabled {
+        ui.label(
+            RichText::new(format!(
+                "Reporting as {call} / {grid} — SDRoxide {}",
+                env!("CARGO_PKG_VERSION")
+            ))
+            .weak(),
+        );
+        ui.label(RichText::new("Callsign and grid are set on the Spots tab.").weak());
+    }
+    // The status line is shared by every network feed, so only show it here
+    // when it is actually ours.
+    if let Some(s) = status {
+        if s.starts_with("FreeDV Reporter") {
+            ui.label(RichText::new(s).weak());
+        }
+    }
+
+    ui.add_space(8.0);
+    if crate::chrome::chip_accent(
+        ui,
+        false,
+        RichText::new(" APPLY ").strong(),
+        crate::theme::GREEN,
+        crate::theme::INK_ON_CYAN,
+    )
+    .on_hover_text("Persist and (re)connect")
+    .clicked()
+    {
+        *apply = true;
+    }
 }
 
 /// The built-in TCI *server*: this app acting as a TCI rig for third-party

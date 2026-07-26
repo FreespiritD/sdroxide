@@ -13,6 +13,7 @@ use sdroxide_types::{NetworkConfig, Spot, SpotKind, UploadResult, UploadTarget, 
 
 use crate::cluster::ClusterHandle;
 use crate::event::{EventTx, FeedBatch, FeedTx, NetEvent};
+use crate::freedvreporter::ReporterHandle;
 use crate::poll::{self, PollHandle};
 use crate::{pota, pskreporter, sota};
 
@@ -37,6 +38,12 @@ pub struct SpotManager {
     pota: Option<PollHandle>,
     sota: Option<PollHandle>,
     psk: Option<PollHandle>,
+    freedv: Option<ReporterHandle>,
+    /// What we last told the reporter. Replayed into a freshly rebuilt session
+    /// so a config change never leaves the site showing a stale frequency.
+    rep_freq: u64,
+    rep_tx: bool,
+    rep_visible: bool,
 }
 
 impl SpotManager {
@@ -57,6 +64,10 @@ impl SpotManager {
             pota: None,
             sota: None,
             psk: None,
+            freedv: None,
+            rep_freq: 0,
+            rep_tx: false,
+            rep_visible: false,
         }
     }
 
@@ -75,6 +86,72 @@ impl SpotManager {
         }
         if old.psk != self.cfg.psk {
             self.rebuild_psk();
+        }
+        // The reporter reports the operator identity and sends it at connect,
+        // so a change to either that or its own settings has to restart the
+        // session. The status message is the one field that can be pushed down
+        // a live session, and editing a line of text should not cost a
+        // reconnect.
+        let rep_changed = {
+            let mut without_message = old.freedv_reporter.clone();
+            without_message.message = self.cfg.freedv_reporter.message.clone();
+            without_message != self.cfg.freedv_reporter
+        };
+        if rep_changed || old.my_call != self.cfg.my_call || old.my_grid != self.cfg.my_grid {
+            self.rebuild_freedv();
+        } else if old.freedv_reporter.message != self.cfg.freedv_reporter.message
+            && let Some(h) = &self.freedv
+        {
+            h.set_message(self.cfg.freedv_reporter.message.clone());
+        }
+    }
+
+    // The engine pushes these on every tick of its ~100 Hz loop, so each one
+    // sends only on a change. The cached value is what `rebuild_freedv` replays
+    // into a new session, so nothing is lost by not re-sending.
+
+    /// Tell the FreeDV Reporter where we transmit.
+    pub fn set_reporter_freq(&mut self, hz: u64) {
+        if hz == self.rep_freq {
+            return;
+        }
+        self.rep_freq = hz;
+        if let Some(h) = &self.freedv {
+            h.set_freq(hz);
+        }
+    }
+
+    /// Tell the FreeDV Reporter whether we are transmitting.
+    pub fn set_reporter_tx(&mut self, on: bool) {
+        if on == self.rep_tx {
+            return;
+        }
+        self.rep_tx = on;
+        if let Some(h) = &self.freedv {
+            h.set_tx(on);
+        }
+    }
+
+    /// Show or hide this station on FreeDV Reporter. The engine pushes whether
+    /// the radio is currently in RADE, so we only appear when we can actually
+    /// work FreeDV.
+    pub fn set_reporter_visible(&mut self, visible: bool) {
+        if visible == self.rep_visible {
+            return;
+        }
+        self.rep_visible = visible;
+        if let Some(h) = &self.freedv {
+            h.set_visible(visible);
+        }
+    }
+
+    /// Report a station we decoded (from a RADE End-of-Over callsign).
+    pub fn reporter_rx_report(&self, call: String, snr: i32) {
+        if !self.cfg.freedv_reporter.report_rx {
+            return;
+        }
+        if let Some(h) = &self.freedv {
+            h.rx_report(call, snr);
         }
     }
 
@@ -239,6 +316,27 @@ impl SpotManager {
                 move || pskreporter::fetch(f64::from_bits(dial.load(Ordering::Relaxed)), now_utc()),
             ));
         }
+    }
+
+    fn rebuild_freedv(&mut self) {
+        self.freedv = None; // drop stops the thread and closes the session
+        self.by_kind.remove(&SpotKind::FreeDv);
+        if !self.cfg.freedv_reporter.enabled {
+            return;
+        }
+        let h = ReporterHandle::connect(
+            self.cfg.freedv_reporter.clone(),
+            self.cfg.my_call.trim().to_string(),
+            self.cfg.my_grid.trim().to_string(),
+            self.feed_tx.clone(),
+            self.event_tx.clone(),
+        );
+        // Replay what the engine last told us, so the new session starts with
+        // the current picture instead of waiting for the next change.
+        h.set_freq(self.rep_freq);
+        h.set_tx(self.rep_tx);
+        h.set_visible(self.rep_visible);
+        self.freedv = Some(h);
     }
 }
 

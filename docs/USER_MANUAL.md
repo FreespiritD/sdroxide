@@ -55,9 +55,12 @@ or connects to a remote sdroxide server.
   a transcript, and automatic logging.
 - **Integrated logbook** for digital and manual QSOs, with contest and QSL
   fields, a worked-before check, ADIF import/export and text export.
-- **Live spotting** — a DX cluster (telnet) plus POTA, SOTA and PSK Reporter
-  feeds shown as clickable markers on the panadapter and world map; click to tune
-  and pre-fill a log entry.
+- **Live spotting** — a DX cluster (telnet) plus POTA, SOTA, PSK Reporter and
+  FreeDV Reporter feeds shown as clickable markers on the panadapter and world
+  map; click to tune and pre-fill a log entry.
+- **FreeDV Reporter** — report your station to
+  [qso.freedv.org](https://qso.freedv.org/) and see who else is on FreeDV,
+  including callsign exchange in the RADE End-of-Over frame.
 - **Callsign lookup and QSL upload** — QRZ/HamQTH name/QTH/grid auto-fill, and
   one-click (or automatic) upload to eQSL, QRZ Logbook and Club Log, with LoTW
   ADIF export and confirmation download.
@@ -1216,6 +1219,9 @@ so a browser or remote client uses it too. Credentials are stored in plaintext i
 
 ### 9.1 Spot feeds (DX cluster, POTA, SOTA, PSK Reporter)
 
+> FreeDV Reporter is configured separately, on its own Settings tab — see
+> [§9.5](#95-freedv-reporter-qsofreedvorg).
+
 ![Live spots as clickable markers on the panadapter, and the SPOTS window](images/14-spots-panel.jpg)
 
 Enable and configure the feeds on the **Spots** tab of Settings:
@@ -1236,11 +1242,13 @@ Enable and configure the feeds on the **Spots** tab of Settings:
 Spots then appear two ways:
 
 - **On the panadapter** — colour-coded, clickable boxes along the bottom of the
-  waterfall (DX = cyan, POTA = green, SOTA = amber, PSK = violet), each with a
-  leader line down to the spotted frequency. Located spots (POTA parks, PSK
-  reporters) also appear as dots on the FT8 world map.
-- **In the SPOTS window** — a filterable list (toggle **DX / POTA / SOTA / PSK**,
-  or **IN VIEW** to show only spots inside the current panadapter span). Each row
+  waterfall (DX = cyan, POTA = green, SOTA = amber, PSK = violet, FREEDV = pink),
+  each with a leader line down to the spotted frequency. Located spots (POTA
+  parks, PSK reporters, FreeDV stations) also appear as dots on the FT8 world
+  map.
+- **In the SPOTS window** — a filterable list (toggle **DX / POTA / SOTA / PSK /
+  FREEDV**, or **IN VIEW** to show only spots inside the current panadapter
+  span). Each row
   shows the source, callsign, frequency, mode, age and reference/comment, and a
   green **NEW** flag when it is a DXCC entity you haven't worked yet.
 
@@ -1310,6 +1318,48 @@ of LoTW, eQSL or a paper card is received for it. The same entity resolution
 flags **new** DXCC entities in the SPOTS list, so you can spot an all-time-new
 one at a glance.
 
+### 9.5 FreeDV Reporter (qso.freedv.org)
+
+[FreeDV Reporter](https://qso.freedv.org/) is where FreeDV operators announce
+where they are listening and who they are hearing. SDRoxide talks to it in both
+directions: your station appears on the site, and everyone else's appears in
+SDRoxide as spots.
+
+Configure it on the **FreeDV** tab of Settings:
+
+- **Enable** — connects while ticked. You are only *shown* to others while the
+  radio is in **RADE** mode; in any other mode the connection stays up but your
+  station is hidden, so the site never lists you as working FreeDV when you are
+  actually on CW.
+- **Station** — you are reported under the operator callsign and grid from the
+  **Spots** tab (themselves defaulting to the General tab / FT8 setup), so there
+  is one place to set them. **Message** is a free-text status shown beside your
+  callsign, and **Receive only** marks you as a listener. *Without both a
+  callsign and a grid the connection is view-only: you will see other stations
+  but will not appear yourself.*
+- **Server** — **Host** and **Port** default to the public server
+  (`qso.freedv.org:80`).
+- **Reporting** — **Report stations I decode** sends a reception report for each
+  callsign recovered from a received End-of-Over frame. **Show other reporter
+  stations as spots** adds them to the panadapter, world map and SPOTS window
+  under the **FREEDV** filter.
+- Press **APPLY** to connect/disconnect and save.
+
+While the feature is on, SDRoxide reports your transmit frequency as you tune and
+your transmit/receive state as you key up, and reports your software as
+`SDRoxide <version>`.
+
+**Callsign exchange.** RADE carries a callsign in the frame at the end of each
+over. SDRoxide transmits the callsign from your digital-mode configuration there,
+so other FreeDV stations can identify you, and decodes the far end's, showing it
+as the DX call and reporting it. This uses the same over-the-air format as
+FreeDV GUI, so the two interoperate.
+
+**Checking it works without going on air:** `sdroxide --freedv-reporter-probe 20`
+connects read-only for twenty seconds and prints the stations and events it saw.
+It uses the server's view role, so it needs no radio and never makes you visible
+to anyone.
+
 ---
 
 ## 10. Command-line reference
@@ -1334,6 +1384,8 @@ one at a glance.
 | `--db-floor <DBFS>` | Display floor in dBFS (default −110). |
 | `--db-ceil <DBFS>` | Display ceiling in dBFS (default −10). |
 | `--width <CHARS>` | Console spectrum width in characters (default 100). |
+| `--freedv-reporter-probe <SECS>` | Connect to FreeDV Reporter read-only for SECS seconds and print what arrives. Uses the server's view role, so nothing is reported and you do not appear on the site. Needs no radio. |
+| `--freedv-reporter-host <HOST[:PORT]>` | FreeDV Reporter host for the probe (default `qso.freedv.org`). |
 
 **Testing without a radio:** `--siggen` (built-in signal generator), `--file`
 (replay an IQ recording), `--probe` (list SoapySDR devices), and `--console`
@@ -1359,7 +1411,7 @@ sdroxide stores its settings under the per-user config directory:
 | `memories.json` | JSON | Saved memory channels. |
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |
 | `qso_log.json` | JSON | The logbook (digital and manual QSOs, with contest/QSL fields). |
-| `net.json` | JSON | Network cockpit: DX cluster / POTA / SOTA / PSK feed settings, and callsign-lookup / eQSL / QRZ / Club Log / LoTW credentials (stored in plaintext). |
+| `net.json` | JSON | Network cockpit: DX cluster / POTA / SOTA / PSK / FreeDV Reporter feed settings, and callsign-lookup / eQSL / QRZ / Club Log / LoTW credentials (stored in plaintext). |
 | `tciserver.json` | JSON | Built-in TCI server: enabled, bind address, port, advertised device name, whether clients may transmit, and the client limit. |
 | `sstv_messages.json` | JSON | The overlay message stored for each of the five SSTV transmit slots. |
 | `sstv_tx/` | dir | The five SSTV transmit-image slots (`slot0.png`…`slot4.png`). |

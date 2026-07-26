@@ -9,7 +9,7 @@
 use std::time::{Duration, Instant, SystemTime};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use sdroxide_config::BandStacks;
 use sdroxide_digi::{
@@ -1163,6 +1163,15 @@ impl Engine {
                 DigiAction::QsoLogged(r) => {
                     let _ = self.event_tx.send(RadioEvent::Ft8QsoLogged(r));
                 }
+                DigiAction::RadeCallsign { call, snr_db, freq_hz } => {
+                    // A RADE station identified itself in its End-of-Over
+                    // frame: report hearing it. The reporter pairs the report
+                    // with the frequency we already told it we are on, so
+                    // `freq_hz` is only of interest to the log line.
+                    debug!(%call, snr_db, freq_hz, "RADE callsign decoded");
+                    self.spots
+                        .reporter_rx_report(call, snr_db.round().clamp(-128.0, 127.0) as i32);
+                }
                 DigiAction::KeyTx => {
                     // Key up via the normal PTT path so the safety rails apply.
                     self.digi_tx = true;
@@ -2120,6 +2129,19 @@ impl Engine {
     /// lookup/upload results, confirmations, or status lines it produced.
     fn poll_spots(&mut self) {
         self.spots.set_dial(self.state.active_freq_hz());
+
+        // FreeDV Reporter. Pushed unconditionally every tick and deduplicated
+        // on the reporter thread, so this one place also catches a CAT rig's
+        // dial being turned, a mode change made on the radio itself, and a
+        // transmit request the safety rails refused.
+        //
+        // `tx_freq_hz` (not `rx_freq_hz`) because the reporter shows where a
+        // station transmits, and `tx_active` (not `state.tx.ptt`) because a
+        // refused key must never be reported as being on the air.
+        self.spots.set_reporter_freq(self.state.tx_freq_hz().round().max(0.0) as u64);
+        self.spots.set_reporter_visible(self.state.rx[0].mode.is_rade());
+        self.spots.set_reporter_tx(self.tx_active);
+
         for ev in self.spots.poll() {
             let re = match ev {
                 sdroxide_net::NetEvent::Spots(s) => RadioEvent::Spots(s),

@@ -159,6 +159,7 @@ fn rx(
     }
 
     let mut feats = Vec::new();
+    let mut eoo_bits = Vec::new();
     let mut pcm = Vec::new();
     let mut pos = 0usize;
     let mut call = 0usize;
@@ -176,10 +177,13 @@ fn rx(
         }
         pos += if take < nin { modem.len() - pos } else { nin };
 
-        let out = rade.rx(&block, &mut feats)?;
+        let out = rade.rx(&block, &mut feats, &mut eoo_bits)?;
         if out.has_eoo {
             eoo_count += 1;
-            eprintln!("end-of-over at call {call}");
+            match sdroxide_rade::text::decode(&eoo_bits) {
+                Some(c) => eprintln!("end-of-over at call {call}: callsign {c}"),
+                None => eprintln!("end-of-over at call {call}: no callsign"),
+            }
         }
         if out.n_features > 0 {
             valid += 1;

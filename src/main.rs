@@ -70,6 +70,16 @@ struct Cli {
     #[arg(long, value_name = "SECS")]
     rade_rx: Option<f64>,
 
+    /// Connect to FreeDV Reporter read-only for ~SECS seconds and print what
+    /// arrives. Uses the server's "view" role: nothing is reported and this
+    /// station does not appear on qso.freedv.org. Needs no radio.
+    #[arg(long, value_name = "SECS")]
+    freedv_reporter_probe: Option<f64>,
+
+    /// FreeDV Reporter host for --freedv-reporter-probe
+    #[arg(long, value_name = "HOST[:PORT]", default_value = "qso.freedv.org")]
+    freedv_reporter_host: String,
+
     /// Run as a server: HTTP web client + WebSocket streaming backend
     #[arg(long)]
     server: bool,
@@ -148,6 +158,10 @@ fn main() -> anyhow::Result<()> {
     if let Some(secs) = cli.rade_rx {
         let (source, caps) = open_source(&cli, &settings)?;
         return rade_rx_test(source, caps, &settings, secs.clamp(2.0, 120.0));
+    }
+    // Before any radio setup: the probe talks to the network and nothing else.
+    if let Some(secs) = cli.freedv_reporter_probe {
+        return freedv_reporter_probe(&cli.freedv_reporter_host, secs.clamp(2.0, 300.0));
     }
     if cli.server {
         let (source, caps) = open_source(&cli, &settings)?;
@@ -297,6 +311,64 @@ fn ft8_cq_test(
         let _ = t.join();
     }
     outcome
+}
+
+/// Read-only FreeDV Reporter check: connect, listen, and print what the server
+/// sends.
+///
+/// This uses the reporter's `"view"` role, which receives every broadcast but
+/// never joins the public roster — so it is safe to point at qso.freedv.org.
+/// Going *visible* requires an operator enabling the feature in Settings with a
+/// real callsign; there is deliberately no flag for it here.
+fn freedv_reporter_probe(host_arg: &str, secs: f64) -> anyhow::Result<()> {
+    let (host, port) = match host_arg.rsplit_once(':') {
+        Some((h, p)) => (h, p.parse::<u16>().unwrap_or(80)),
+        None => (host_arg, 80),
+    };
+    println!("FreeDV Reporter probe (view role — not visible to others): {host}:{port}");
+    println!("listening for {secs:.0} s…\n");
+
+    let s = sdroxide_net::freedv_reporter_probe(host, port, secs);
+
+    if s.event_counts.is_empty() {
+        println!("events: (none)");
+    } else {
+        let counts: Vec<String> =
+            s.event_counts.iter().map(|(name, n)| format!("{name} {n}")).collect();
+        println!("events: {}", counts.join("  "));
+    }
+    let with_freq = s.stations.iter().filter(|st| st.freq_hz > 0).count();
+    println!("stations: {} ({with_freq} with a frequency)\n", s.stations.len());
+    for st in &s.stations {
+        println!(
+            "  {:<10} {:<8} {:>10.3} kHz  {:<8} {:<3} {}",
+            st.call,
+            st.grid,
+            st.freq_hz as f64 / 1000.0,
+            st.mode,
+            if st.tx {
+                "TX"
+            } else if st.rx_only {
+                "RX"
+            } else {
+                ""
+            },
+            st.version,
+        );
+    }
+    println!(
+        "\nhandshake: open={} connect_ack={} connection_successful={}",
+        s.got_open, s.got_connect_ack, s.got_connection_successful
+    );
+    if let Some(status) = &s.last_status {
+        println!("status: {status}");
+    }
+    if s.ok() {
+        println!("\nPASS");
+        Ok(())
+    } else {
+        bail!("FreeDV Reporter probe did not complete a session with at least one station")
+    }
 }
 
 /// Headless RADE receive check: bring the engine up in RADE mode and report
