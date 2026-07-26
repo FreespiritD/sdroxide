@@ -338,6 +338,9 @@ provided the following rules are observed:
 * **Read and review** generated code. You should be able to answer questions 
 about your contribution.
 * **Document and comment** non-trivial parts of the code.
+* **Test** your contribution using real radio equipment. If this is not possible,
+consider if this is a useful contribution and disclose the need for testing help
+before you start.
 * Don't use LLMs for trivial things like changing a constant. This is slow,  wasteful
 and runs the risk of unneccessary modifications elsewhere.
 * Use modern, sufficiently sized models with sufficient context size. Running 
