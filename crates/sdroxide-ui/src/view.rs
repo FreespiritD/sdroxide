@@ -57,16 +57,19 @@ pub mod solar_layer {
     pub const SATS: u32 = 1 << 8;
     /// The auroral oval and its equatorward edge.
     pub const AURORA: u32 = 1 << 9;
+    /// The other planets, their moons and their ring systems.
+    pub const PLANETS: u32 = 1 << 10;
     pub const ALL: u32 =
-        ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS | AURORA;
+        ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS | AURORA | PLANETS;
     /// Values `ALL` has had in earlier versions. A stored mask equal to one of
     /// these was "everything" when it was written, so it is upgraded rather
     /// than leaving newly added layers silently switched off.
     #[allow(dead_code)]
-    pub const PREVIOUS_ALL: [u32; 3] = [
+    pub const PREVIOUS_ALL: [u32; 4] = [
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS,
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO,
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS,
+        ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS | AURORA,
     ];
 }
 

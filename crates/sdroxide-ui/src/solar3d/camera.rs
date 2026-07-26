@@ -12,8 +12,11 @@ use super::state::{Focus, SolarUi};
 pub const FOV_Y: f32 = std::f32::consts::FRAC_PI_4;
 /// Pitch limit, just short of the pole where look-at degenerates.
 pub const PITCH_LIMIT: f32 = 1.552;
-/// Farthest the camera may pull back, gigametres (≈13 AU).
-pub const MAX_DIST: f32 = 2000.0;
+/// Farthest the camera may pull back, gigametres (≈80 AU).
+///
+/// Enough to frame Neptune's orbit — 30 AU across — with room to spare, which
+/// is the outermost thing the view draws.
+pub const MAX_DIST: f32 = 12_000.0;
 /// Far plane. Reversed-Z makes this ratio to the near plane a non-issue.
 const FAR: f32 = 1.0e6;
 

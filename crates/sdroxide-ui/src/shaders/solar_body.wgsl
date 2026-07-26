@@ -1,5 +1,14 @@
-// Sun, Earth and Moon. One pipeline, one branch on `d.params.x` — the branch
-// is uniform across a draw, so it costs nothing.
+// Every solid body in the scene. One pipeline, one branch on `d.params.x` —
+// the branch is uniform across a draw, so it costs nothing.
+//
+// Only the Sun and the Earth are drawn from photographs or measured data; the
+// rest is procedural, on purpose. A photographic Jupiter next to this Earth
+// would read as a different program's window, and shipping a dozen planet maps
+// would put megabytes of imagery into the binary for a body that is four pixels
+// across most of the time. What the procedural surfaces *do* get right is the
+// things a viewer can check: the bands run along the right latitudes, the maria
+// sit where the maria are, Mars's caps are at its poles, and each of them turns
+// with the body's real rotation.
 
 struct Globals {
     view_proj: mat4x4<f32>,
@@ -15,7 +24,9 @@ struct DrawData {
     model: mat4x4<f32>,
     basis: mat4x4<f32>,
     tint: vec4<f32>,
+    tint2: vec4<f32>,
     params: vec4<f32>,       // x mode, y half-angle, z alpha, w spare
+    style: vec4<f32>,        // x style, y detail, z feature, w two-tone
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -23,6 +34,8 @@ struct DrawData {
 @group(0) @binding(2) var sun_tex: texture_2d<f32>;
 @group(0) @binding(3) var samp: sampler;
 @group(1) @binding(0) var<uniform> d: DrawData;
+@group(0) @binding(5) var border_tex: texture_2d<f32>;
+@group(0) @binding(6) var moon_tex: texture_2d<f32>;
 
 // The FT8 map's own palette, so the globe reads as the same map (see
 // widgets/worldmap.rs, land `#1c4458`).
@@ -30,6 +43,8 @@ const LAND_DAY  = vec3<f32>(0.109804, 0.266667, 0.345098); // #1c4458
 const OCEAN_DAY = vec3<f32>(0.039216, 0.094118, 0.149020); // #0a1826
 const COAST     = vec3<f32>(0.113725, 0.611765, 0.745098); // #1d9cbe  theme::CYAN_DIM
 const ATMO      = vec3<f32>(0.000000, 0.815686, 0.956863); // #00d0f4  theme::CYAN
+
+const PI = 3.14159265;
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let lo = c / 12.92;
@@ -60,6 +75,27 @@ fn vnoise(p: vec3<f32>) -> f32 {
     return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
 }
 
+/// Four octaves of value noise, the workhorse behind every procedural surface
+/// here. Sampled on the body-space normal, so it turns with the body instead of
+/// swimming across it.
+fn fbm(p: vec3<f32>) -> f32 {
+    var v = 0.0;
+    var amp = 0.5;
+    var q = p;
+    for (var i = 0; i < 4; i = i + 1) {
+        v = v + amp * vnoise(q);
+        q = q * 2.03;
+        amp = amp * 0.5;
+    }
+    return v;
+}
+
+/// Ridged noise: the |·| fold turns smooth blobs into creases, which is what
+/// reads as fractured ice or a crater rim rather than as cloud.
+fn ridged(p: vec3<f32>) -> f32 {
+    return 1.0 - abs(vnoise(p) * 2.0 - 1.0);
+}
+
 fn granulation(n: vec3<f32>) -> f32 {
     return vnoise(n * 34.0) * 0.55 + vnoise(n * 91.0) * 0.30 + vnoise(n * 210.0) * 0.15;
 }
@@ -69,6 +105,9 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
     @location(1) nrm: vec3<f32>,
     @location(2) world: vec3<f32>,
+    // The same normal in the *body* frame, which is where latitude, longitude
+    // and every surface feature live.
+    @location(3) body: vec3<f32>,
 };
 
 @vertex
@@ -79,12 +118,42 @@ fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>) -> VsOut {
     o.world = world.xyz;
     // The mesh is a unit sphere, so its position *is* its object-space normal.
     o.nrm = normalize((d.basis * vec4(pos, 0.0)).xyz);
+    o.body = normalize(pos);
     o.uv = uv;
     return o;
 }
 
+/// Latitude and east longitude of a body-frame direction, degrees.
+fn lat_lon(body: vec3<f32>) -> vec2<f32> {
+    return vec2(degrees(asin(clamp(body.z, -1.0, 1.0))), degrees(atan2(body.y, body.x)));
+}
+
+/// Signed shortest difference between two longitudes, degrees.
+fn dlon(a: f32, b: f32) -> f32 {
+    return abs(fract((a - b) / 360.0 + 0.5) - 0.5) * 360.0;
+}
+
+/// How far inside an elliptical patch a point is: 0 at the centre, 1 at the
+/// edge. Longitudes are compressed by cos(latitude) so a patch stays round on
+/// the sphere instead of fanning out towards the poles.
+fn ellipse(ll: vec2<f32>, c: vec4<f32>) -> f32 {
+    let dy = (ll.x - c.x) / c.z;
+    let dx = dlon(ll.y, c.y) * cos(radians(ll.x)) / c.w;
+    return sqrt(dx * dx + dy * dy);
+}
+
+fn sun_dir(in: VsOut) -> vec3<f32> {
+    return normalize(g.sun_pos.xyz - in.world);
+}
+
+/// The day/night ramp every solid body shares. Softer than the geometric
+/// terminator, because the Sun is half a degree wide.
+fn daylight(n: vec3<f32>, to_sun: vec3<f32>) -> f32 {
+    return smoothstep(-0.05, 0.12, dot(n, to_sun));
+}
+
 fn shade_earth(in: VsOut, n: vec3<f32>) -> vec3<f32> {
-    let to_sun = normalize(g.sun_pos.xyz - in.world);
+    let to_sun = sun_dir(in);
     // A soft terminator: the Sun is half a degree wide and the atmosphere
     // scatters well past the geometric line.
     let day = smoothstep(-0.06, 0.16, dot(n, to_sun));
@@ -108,6 +177,12 @@ fn shade_earth(in: VsOut, n: vec3<f32>) -> vec3<f32> {
     col += srgb_to_linear(COAST) * land * (1.0 - day) * 0.045;
     col = mix(col, srgb_to_linear(COAST) * (0.35 + 0.9 * day), coast * (0.35 + 0.55 * day));
 
+    // International borders, from the same Natural Earth data as the coastline
+    // and drawn dimmer than it: on a globe the coast is the shape you navigate
+    // by, and a border that competed with it would bury the map.
+    let border = textureSample(border_tex, samp, in.uv).r;
+    col = mix(col, srgb_to_linear(COAST) * (0.30 + 0.55 * day), border * 0.5 * (0.35 + 0.65 * day));
+
     // Atmospheric limb. Brightest on the daylit edge, which is what gives the
     // globe its depth against a black background.
     let to_eye = normalize(g.camera_pos.xyz - in.world);
@@ -116,12 +191,208 @@ fn shade_earth(in: VsOut, n: vec3<f32>) -> vec3<f32> {
     return col;
 }
 
+// ── The Moon ────────────────────────────────────────────────────────────────
+//
+// From a photograph, unlike everything else here that is not the Earth or the
+// Sun: NASA's LRO Wide Angle Camera albedo mosaic (`assets/bodies/moon.jpg`).
+// Procedural maria were tried and thrown away — the near side is the one
+// surface in the solar system that every viewer already knows by heart, and
+// noise-and-ellipses lands Imbrium in the wrong place in a way that reads as
+// broken rather than as stylised.
+//
+// The frame the Moon is drawn in is tidally locked (`ephem::moon_basis`), so
+// the mesh's own UVs index the map directly: u = 0.5 is the sub-Earth point,
+// which is exactly where the map's 0° meridian is.
+
 fn shade_moon(in: VsOut, n: vec3<f32>) -> vec3<f32> {
-    let to_sun = normalize(g.sun_pos.xyz - in.world);
+    let to_sun = sun_dir(in);
     let day = smoothstep(-0.03, 0.08, dot(n, to_sun));
-    // Faint maria so the disk is not a flat ball.
-    let mottle = 0.86 + 0.14 * vnoise(n * 7.0);
-    return d.tint.rgb * (0.02 + 1.25 * day) * mottle;
+    let albedo = textureSample(moon_tex, samp, in.uv).rgb;
+
+    // The Moon is famously flat-looking at full — the regolith backscatters
+    // straight at the light source — so the falloff is deliberately blunt
+    // until close to the terminator, where the relief suddenly stands up.
+    let mu = clamp(dot(n, to_sun), 0.0, 1.0);
+    let backscatter = 0.55 + 0.45 * pow(mu, 0.35);
+    // A little extra bite along the terminator, where real shadows are long.
+    let grazing = 1.0 - smoothstep(0.0, 0.4, mu);
+    let relief = 1.0 + (ridged(in.body * 90.0) - 0.45) * grazing * 0.9;
+    // Earthshine on the night side: the same faint blue-grey the naked eye
+    // sees on the dark limb of a crescent.
+    let night = vec3<f32>(0.06, 0.075, 0.10) * (1.0 - day);
+    return albedo * (1.35 * day * backscatter * relief) + albedo * night;
+}
+
+// ── Everything else ─────────────────────────────────────────────────────────
+
+/// Latitude bands with turbulence: Jupiter and Saturn.
+///
+/// The belts are built from several harmonics rather than one sine, and mixed
+/// *linearly* rather than through a smoothstep: a single hard-edged sine makes
+/// a beach ball, and neither planet has a hard edge anywhere on it. `d.style.y`
+/// is the contrast — Jupiter's belts are unmistakable, Saturn's are a
+/// suggestion under a much deeper haze.
+fn shade_bands(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
+    let ll = lat_lon(in.body);
+    let contrast = d.style.y;
+    // Turbulence first, then bands — so the belt edges are wavy and shear into
+    // each other the way a differentially rotating atmosphere does.
+    let turb = fbm(in.body * vec3(2.2, 2.2, 7.0)) - 0.5;
+    let y = ll.x / 90.0 + turb * 0.05;
+    // Uneven widths, because the real zones are not evenly spaced.
+    let band = 0.50 * sin(y * PI * 6.0 + 0.4)
+             + 0.30 * sin(y * PI * 11.0 - 1.1)
+             + 0.20 * sin(y * PI * 19.0 + 2.3);
+    var col = mix(d.tint.rgb, d.tint2.rgb, clamp(0.5 + 0.62 * band * contrast, 0.0, 1.0));
+    // Storms strung along the belts, and fine shear at their boundaries.
+    col = col * (0.96 + 0.09 * contrast * (fbm(in.body * vec3(6.0, 6.0, 22.0)) - 0.5) * 2.0);
+    // A bright equatorial zone: the one band both giants really do show.
+    col = mix(col, d.tint.rgb * 1.06, smoothstep(0.16, 0.0, abs(y)) * 0.5);
+    // Polar hoods, greyer than the tropics.
+    col = mix(col, mix(d.tint.rgb, d.tint2.rgb, 0.55) * 0.9, smoothstep(0.55, 0.98, abs(y)));
+
+    // The Great Red Spot, for the one planet that has it.
+    if (d.style.z > 0.5) {
+        let e = ellipse(ll, vec4(-22.0, -95.0, 5.5, 10.0));
+        // A pale collar around it, which is what makes it read as a storm
+        // sitting in the belt rather than as a sticker on the planet.
+        col = mix(col, d.tint.rgb * 1.05, smoothstep(1.35, 1.0, e) * 0.5);
+        col = mix(col, vec3(0.46, 0.17, 0.10), smoothstep(1.0, 0.5, e) * 0.8);
+    }
+    let day = daylight(n, to_sun);
+    // Limb darkening: a deep atmosphere seen edge-on is dimmer, and it is what
+    // stops the disc looking like a flat painted circle.
+    let to_eye = normalize(g.camera_pos.xyz - in.world);
+    let mu = clamp(dot(n, to_eye), 0.0, 1.0);
+    return col * (0.02 + 1.1 * day) * (0.62 + 0.38 * pow(mu, 0.45));
+}
+
+/// Methane blue, nearly featureless: Uranus and Neptune.
+fn shade_ice_giant(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
+    let ll = lat_lon(in.body);
+    let band = sin((ll.x / 90.0 * 5.0 + (fbm(in.body * 4.0) - 0.5) * 0.4) * PI);
+    var col = mix(d.tint2.rgb, d.tint.rgb, 0.5 + 0.5 * smoothstep(-0.8, 0.8, band));
+    // A soft bright pole, which is what both actually show.
+    col = mix(col, d.tint.rgb * 1.15, smoothstep(0.55, 1.0, abs(ll.x / 90.0)) * 0.35);
+    let day = daylight(n, to_sun);
+    // Deep atmosphere: strongly limb-darkened, which is most of what makes
+    // these two read as balls of gas rather than as painted marbles.
+    let to_eye = normalize(g.camera_pos.xyz - in.world);
+    let mu = clamp(dot(n, to_eye), 0.0, 1.0);
+    return col * (0.02 + 1.1 * day) * (0.55 + 0.45 * pow(mu, 0.5));
+}
+
+/// Airless, saturated with craters: Mercury, Ganymede, Callisto, the two
+/// Martian rocks. `d.style.w` adds Iapetus's dark leading hemisphere.
+fn shade_cratered(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
+    let craters = ridged(in.body * 30.0) * 0.5 + ridged(in.body * 85.0) * 0.32
+                + ridged(in.body * 220.0) * 0.18;
+    let basins = fbm(in.body * 3.5);
+    var col = mix(d.tint2.rgb, d.tint.rgb, clamp(craters * 0.8 + basins * 0.5, 0.0, 1.0));
+
+    // Iapetus: the leading hemisphere is nearly black, the trailing one is
+    // clean ice. In a tidally locked frame the leading side is −y.
+    if (d.style.w > 0.5) {
+        let leading = clamp(-in.body.y, 0.0, 1.0);
+        col = mix(col, col * 0.12, smoothstep(0.15, 0.8, leading));
+    }
+    let day = daylight(n, to_sun);
+    let mu = clamp(dot(n, to_sun), 0.0, 1.0);
+    // Rough regolith: bright to the terminator, then a hard edge.
+    return col * (0.015 + 1.2 * day * (0.6 + 0.4 * pow(mu, 0.4)));
+}
+
+/// Ice, bright and fractured: Europa, Enceladus, the Saturnian and Uranian
+/// moons, Triton.
+fn shade_icy(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
+    // Long curved fractures, from ridged noise stretched along one axis.
+    let cracks = pow(ridged(in.body * vec3(9.0, 9.0, 3.0)), 6.0)
+               + pow(ridged(in.body * vec3(21.0, 6.0, 21.0)), 8.0) * 0.6;
+    let mottle = 0.88 + 0.12 * fbm(in.body * 12.0);
+    var col = d.tint.rgb * mottle;
+    col = mix(col, d.tint2.rgb, clamp(cracks, 0.0, 1.0) * 0.55);
+    let day = daylight(n, to_sun);
+    return col * (0.02 + 1.3 * day);
+}
+
+/// Io: sulphur yellows over dark volcanic paterae.
+fn shade_volcanic(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
+    let blotch = fbm(in.body * 7.0);
+    let vents = smoothstep(0.62, 0.78, ridged(in.body * 17.0));
+    var col = mix(d.tint.rgb, d.tint2.rgb, smoothstep(0.35, 0.7, blotch));
+    col = mix(col, vec3(0.22, 0.10, 0.06), vents * 0.7);
+    // Sulphur dioxide frost near the poles.
+    col = mix(col, vec3(0.85, 0.83, 0.70), smoothstep(0.72, 1.0, abs(in.body.z)) * 0.4);
+    let day = daylight(n, to_sun);
+    return col * (0.02 + 1.25 * day);
+}
+
+/// An opaque atmosphere with nothing to see through it: Venus, Titan.
+fn shade_cloud(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>, haze: f32) -> vec3<f32> {
+    // Very low contrast: the whole point of both bodies is that the surface is
+    // not visible, and any strong feature here would be a lie about them.
+    let swirl = fbm(in.body * vec3(2.5, 2.5, 6.0));
+    var col = mix(d.tint2.rgb, d.tint.rgb, 0.35 + 0.65 * swirl);
+    let day = daylight(n, to_sun);
+    let to_eye = normalize(g.camera_pos.xyz - in.world);
+    let mu = clamp(dot(n, to_eye), 0.0, 1.0);
+    // The haze layer stands above the limb and glows there — Titan's is
+    // detached and obvious, Venus's is a thin bright ring.
+    let rim = pow(1.0 - mu, 3.0) * (0.15 + 0.85 * day);
+    return col * (0.02 + 1.1 * day) * (0.7 + 0.3 * pow(mu, 0.4)) + d.tint.rgb * rim * haze;
+}
+
+/// Mars: iron-oxide desert, dark albedo features, and the caps.
+fn shade_desert(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
+    let ll = lat_lon(in.body);
+    var col = mix(d.tint2.rgb, d.tint.rgb, 0.45 + 0.55 * fbm(in.body * 6.0));
+
+    // The classical dark markings, the ones a small telescope shows.
+    var dark = array<vec4<f32>, 5>(
+        vec4(  8.0,  70.0, 14.0, 12.0),  // Syrtis Major
+        vec4(-25.0, -35.0, 16.0, 26.0),  // Mare Erythraeum
+        vec4(-20.0, 100.0, 14.0, 22.0),  // Mare Cimmerium
+        vec4( 20.0, -60.0,  9.0, 14.0),  // Acidalia Planitia
+        vec4(-15.0, 160.0, 12.0, 18.0),  // Mare Sirenum
+    );
+    let rough = (fbm(in.body * 4.0) - 0.5) * 0.5;
+    for (var i = 0; i < 5; i = i + 1) {
+        let m = smoothstep(1.0, 0.6, ellipse(ll, dark[i]) + rough);
+        col = mix(col, d.tint2.rgb * 0.55, m * 0.75);
+    }
+    // Hellas, the bright basin below Syrtis.
+    col = mix(col, d.tint.rgb * 1.25, smoothstep(1.0, 0.5, ellipse(ll, vec4(-42.0, 70.0, 9.0, 12.0))) * 0.5);
+
+    // Polar caps. Ragged edges, because they are.
+    let cap = smoothstep(0.80, 0.93, abs(in.body.z) + (fbm(in.body * 9.0) - 0.5) * 0.06);
+    col = mix(col, vec3(0.92, 0.94, 0.97), cap);
+
+    let day = daylight(n, to_sun);
+    // A thin dusty atmosphere: a faint pink limb, nothing like the Earth's.
+    let to_eye = normalize(g.camera_pos.xyz - in.world);
+    let rim = pow(1.0 - clamp(dot(n, to_eye), 0.0, 1.0), 4.0);
+    return col * (0.02 + 1.15 * day) + vec3(0.35, 0.20, 0.14) * rim * day * 0.5;
+}
+
+fn shade_body(in: VsOut, n: vec3<f32>) -> vec3<f32> {
+    let to_sun = sun_dir(in);
+    let style = d.style.x;
+    if (style < 0.5) {
+        return shade_cratered(in, n, to_sun);
+    } else if (style < 1.5) {
+        return shade_cloud(in, n, to_sun, 0.25);
+    } else if (style < 2.5) {
+        return shade_desert(in, n, to_sun);
+    } else if (style < 3.5) {
+        return shade_bands(in, n, to_sun);
+    } else if (style < 4.5) {
+        return shade_ice_giant(in, n, to_sun);
+    } else if (style < 5.5) {
+        return shade_icy(in, n, to_sun);
+    } else if (style < 6.5) {
+        return shade_volcanic(in, n, to_sun);
+    }
+    return shade_cloud(in, n, to_sun, 0.75);
 }
 
 fn shade_sun(in: VsOut, n: vec3<f32>) -> vec3<f32> {
@@ -164,8 +435,10 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
         col = shade_earth(in, n);
     } else if (mode < 1.5) {
         col = shade_moon(in, n);
-    } else {
+    } else if (mode < 2.5) {
         col = shade_sun(in, n);
+    } else {
+        col = shade_body(in, n);
     }
     return vec4(col, 1.0);
 }

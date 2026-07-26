@@ -11,8 +11,15 @@ use crate::theme;
 use crate::view::solar_layer as layer;
 
 /// Layer chips, in bar order.
-const LAYERS: [(u32, &str, &str); 10] = [
-    (layer::ORBITS, "ORBITS", "Earth and Moon orbital paths"),
+const LAYERS: [(u32, &str, &str); 11] = [
+    (layer::ORBITS, "ORBITS", "Orbital paths"),
+    (
+        layer::PLANETS,
+        "PLANETS",
+        "The other seven planets, eighteen of their moons, and Saturn's and Uranus's rings. \
+         Planet positions come from JPL's Keplerian element set; the moons are circular orbits \
+         fitted to JPL Horizons.",
+    ),
     (layer::CME, "CME", "Coronal mass ejection trajectory cones"),
     (layer::SPOTS, "SPOTS", "Sunspot active regions"),
     (layer::FLARES, "FLARES", "Solar flare source locations"),
@@ -63,16 +70,10 @@ pub fn ui(ui: &mut egui::Ui, st: &mut SolarUi) {
     scene(ui, st, data);
 }
 
-/// Camera focus + the animated tour toggle.
+/// Camera target + the animated tour toggle.
 fn view_module(ui: &mut egui::Ui, st: &mut SolarUi) {
     chrome::module(ui, "View", 336.0, |ui| {
-        for f in Focus::ALL {
-            if chrome::chip(ui, st.focus() == f, f.label()).clicked() {
-                st.view.focus = f.to_u8();
-                // The tour drives the focus itself, so let the user win.
-                st.view.auto = false;
-            }
-        }
+        target_button(ui, st);
         if chrome::chip_accent(ui, st.view.auto, "▶ AUTO", theme::CYAN, theme::INK_ON_CYAN)
             .on_hover_text(
                 "Fly a spline through a set of framed viewpoints. Any mouse input cancels it.",
@@ -85,6 +86,65 @@ fn view_module(ui: &mut egui::Ui, st: &mut SolarUi) {
             }
         }
     });
+}
+
+/// The camera target, as a button that opens the whole solar system.
+///
+/// A chip per body would be thirty chips across the top bar, so the current
+/// target is the button face and the rest live in a popup laid out the way the
+/// system is: the Sun and the Earth–Moon pair first, then one row per planet
+/// with its own moons beside it.
+fn target_button(ui: &mut egui::Ui, st: &mut SolarUi) {
+    let btn = chrome::chip(ui, true, RichText::new(format!("◎ {}", st.focus().short())).size(13.0))
+        .on_hover_text(
+            "Body the camera orbits. Planets, moons and their labels can also be clicked \
+             directly in the view.",
+        );
+
+    let mut chosen = None;
+    let resp = egui::Popup::from_toggle_button_response(&btn)
+        .frame(chrome::window_frame())
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .show(|ui| {
+            ui.set_max_width(560.0);
+            for (caption, targets) in Focus::groups() {
+                ui.label(
+                    RichText::new(caption.to_uppercase())
+                        .color(theme::CYAN_DIM)
+                        .size(9.5)
+                        .strong(),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    for f in targets {
+                        // Moons are dimmer, so a row reads as "this planet, and
+                        // the things that go round it".
+                        let text = if f.is_satellite() {
+                            RichText::new(f.short()).size(11.5).color(theme::CYAN_DIM)
+                        } else {
+                            RichText::new(f.short()).size(13.0)
+                        };
+                        if chrome::chip(ui, st.focus() == f, text).clicked() {
+                            chosen = Some(f);
+                        }
+                    }
+                });
+            }
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(
+                    "Moons are drawn on circular orbits fitted to JPL Horizons — good to a \
+                     degree or so, except Titan and Iapetus.",
+                )
+                .color(theme::LINE_LIT)
+                .size(10.0),
+            );
+        });
+    if let Some(r) = &resp {
+        chrome::paint_popup_cut_border(ui.ctx(), &r.response, 1.0);
+    }
+    if let Some(f) = chosen {
+        st.set_focus(f);
+    }
 }
 
 fn layers_module(ui: &mut egui::Ui, st: &mut SolarUi) {
@@ -207,10 +267,12 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     let sim_now = super::wall_clock_unix() + st.sim_offset_s;
     let anim = ui.input(|i| i.time);
     advance_tour(ui, st, sim_now, anim);
+    reframe(st, sim_now);
     let mut scene = super::scene::build(st, data, sim_now, px, anim as f32);
-    // Labels are egui text over the top, so they come out before the rest of the
-    // scene is handed to the GPU callback.
+    // Labels and pick targets are egui's business, not the GPU's, so they come
+    // out before the rest of the scene is handed to the paint callback.
     let labels = std::mem::take(&mut scene.labels);
+    let picks = std::mem::take(&mut scene.picks);
     let view_proj = scene.globals.view_proj;
 
     let (sun_img, sun_gen, aurora, aurora_gen) = match data {
@@ -229,7 +291,10 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
         },
     ));
 
-    draw_labels(ui, st, rect, &view_proj, &labels, &resp);
+    let took_click = draw_labels(ui, st, rect, &view_proj, &labels, &resp);
+    // Only if a label did not already take it: a name sits on top of its own
+    // body, and clicking the text should not be ambiguous.
+    pick_bodies(ui, st, rect, &view_proj, &picks, &resp, took_click);
     clock(ui, rect, sim_now, st.sim_offset_s != 0.0);
     let below = weather_panel(ui, st, data, rect, sim_now as i64);
     aurora_panel(ui, st, data, rect, below, sim_now as i64);
@@ -248,8 +313,31 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     }
 }
 
-/// Project the scene's labels to screen space, paint them, and let a satellite
-/// label be clicked.
+/// Project a world point into the widget. `None` when it is behind the eye.
+fn project(
+    view_proj: &[[f32; 4]; 4],
+    rect: egui::Rect,
+    world: [f32; 3],
+) -> Option<egui::Pos2> {
+    // Column-major, so column i scales input component i.
+    let mut o = [0.0f32; 4];
+    for (r, out) in o.iter_mut().enumerate() {
+        *out = view_proj[0][r] * world[0]
+            + view_proj[1][r] * world[1]
+            + view_proj[2][r] * world[2]
+            + view_proj[3][r];
+    }
+    if o[3] <= 0.0 {
+        return None;
+    }
+    Some(egui::pos2(
+        rect.left() + (o[0] / o[3] * 0.5 + 0.5) * rect.width(),
+        rect.top() + (0.5 - o[1] / o[3] * 0.5) * rect.height(),
+    ))
+}
+
+/// Project the scene's labels to screen space, paint them, and let one be
+/// clicked. Returns whether the click was consumed.
 ///
 /// The 3D pass has no text rendering, and adding one for a dozen short strings
 /// would be far more machinery than projecting a dozen points with the same
@@ -261,32 +349,20 @@ fn draw_labels(
     view_proj: &[[f32; 4]; 4],
     labels: &[super::scene::Label],
     resp: &egui::Response,
-) {
+) -> bool {
+    use super::scene::Click;
+
     let font = egui::FontId::proportional(11.5);
     let pointer = ui.input(|i| i.pointer.interact_pos());
     // A press-and-release without dragging: a drag is the camera's, a click is
     // the label's.
     let clicked = resp.clicked();
-    let mut hit: Option<Option<u64>> = None;
+    let mut hit: Option<Click> = None;
     let p = ui.painter();
 
     for l in labels {
-        // Column-major, so column i scales input component i.
-        let mut o = [0.0f32; 4];
-        for (r, out) in o.iter_mut().enumerate() {
-            *out = view_proj[0][r] * l.world[0]
-                + view_proj[1][r] * l.world[1]
-                + view_proj[2][r] * l.world[2]
-                + view_proj[3][r];
-        }
-        // Behind the eye: no on-screen position exists.
-        if o[3] <= 0.0 {
-            continue;
-        }
-        let pos = egui::pos2(
-            rect.left() + (o[0] / o[3] * 0.5 + 0.5) * rect.width() + l.offset[0],
-            rect.top() + (0.5 - o[1] / o[3] * 0.5) * rect.height() + l.offset[1],
-        );
+        let Some(anchor) = project(view_proj, rect, l.world) else { continue };
+        let pos = anchor + egui::vec2(l.offset[0], l.offset[1]);
         if !rect.contains(pos) {
             continue;
         }
@@ -296,14 +372,14 @@ fn draw_labels(
             pos - egui::vec2(0.0, galley.size().y * 0.5),
             galley.size(),
         );
-        let hovered = l.sat.is_some()
+        let hovered = l.click != Click::None
             && pointer.is_some_and(|q| text_rect.expand(4.0).contains(q));
         if hovered {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             // A backing plate, so it reads as something you can press.
             p.rect_filled(text_rect.expand2(egui::vec2(4.0, 2.0)), 0, theme::FILL.gamma_multiply(0.85));
             if clicked {
-                hit = Some(l.sat);
+                hit = Some(l.click);
             }
         }
 
@@ -315,10 +391,89 @@ fn draw_labels(
         p.text(pos, egui::Align2::LEFT_CENTER, &l.text, font.clone(), color);
     }
 
-    if let Some(sat) = hit {
+    match hit {
         // Clicking the open satellite's label again closes the table.
-        st.selected_sat = if st.selected_sat == sat { None } else { sat };
+        Some(Click::Sat(id)) => {
+            st.selected_sat = if st.selected_sat == Some(id) { None } else { Some(id) };
+            true
+        }
+        Some(Click::Focus(f)) => {
+            st.set_focus(f);
+            true
+        }
+        _ => false,
     }
+}
+
+/// Let the bodies themselves be clicked, not only their names.
+///
+/// Picking is done in screen space against the projected centres rather than by
+/// reading back a depth or id buffer: there are under thirty candidates, and a
+/// GPU readback would stall the frame for something a dot product answers.
+fn pick_bodies(
+    ui: &egui::Ui,
+    st: &mut SolarUi,
+    rect: egui::Rect,
+    view_proj: &[[f32; 4]; 4],
+    picks: &[super::scene::Pick],
+    resp: &egui::Response,
+    consumed: bool,
+) {
+    let Some(pointer) = ui.input(|i| i.pointer.interact_pos()) else { return };
+    if !rect.contains(pointer) {
+        return;
+    }
+
+    // Nearest hit wins, measured in fractions of each body's own radius, so a
+    // moon in front of its planet is reachable rather than swallowed by it.
+    let mut best: Option<(f32, &super::scene::Pick, egui::Pos2)> = None;
+    for pick in picks {
+        if st.focus() == pick.focus {
+            continue; // already the target; nothing to click it for
+        }
+        let Some(pos) = project(view_proj, rect, pick.world) else { continue };
+        let d = pos.distance(pointer);
+        if d > pick.radius_px {
+            continue;
+        }
+        let score = d / pick.radius_px;
+        if best.as_ref().is_none_or(|(b, _, _)| score < *b) {
+            best = Some((score, pick, pos));
+        }
+    }
+    let Some((_, pick, pos)) = best else { return };
+
+    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    // A reticle, so it is obvious what the click will grab.
+    let r = pick.radius_px.clamp(9.0, 90.0);
+    ui.painter().circle_stroke(pos, r, egui::Stroke::new(1.2, theme::CYAN.gamma_multiply(0.8)));
+    ui.painter().text(
+        pos + egui::vec2(0.0, -r - 4.0),
+        egui::Align2::CENTER_BOTTOM,
+        pick.focus.short(),
+        egui::FontId::proportional(11.0),
+        theme::CYAN,
+    );
+    if resp.clicked() && !consumed {
+        st.set_focus(pick.focus);
+    }
+}
+
+/// Frame the camera on a newly chosen target.
+///
+/// Without this, picking Io while framed on the whole system leaves the camera
+/// 2 AU away pointed at something 3600 km across, which reads as the click
+/// having done nothing. The distance is set from the target's own radius, and
+/// the orientation is left alone so the move feels like a pan rather than a
+/// reset.
+fn reframe(st: &mut SolarUi, sim_now: f64) {
+    if !std::mem::take(&mut st.retarget) {
+        return;
+    }
+    let b = super::scene::bodies(st, sim_now);
+    let (_, radius) = b.focus(st.focus());
+    let (lo, hi) = super::camera::dist_range(radius);
+    st.view.dist = (radius * 9.0).clamp(lo, hi);
 }
 
 /// The pass table for the selected satellite.

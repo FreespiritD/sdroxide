@@ -33,7 +33,7 @@ pub struct Globals {
     pub misc: [f32; 4],
 }
 
-/// Per-draw constants. Also 160 bytes, uploaded at a dynamic offset.
+/// Per-draw constants. 192 bytes, uploaded at a dynamic offset.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct DrawData {
@@ -43,15 +43,128 @@ pub struct DrawData {
     /// to 16 bytes, which silently corrupts a naively packed uniform.
     pub basis: [[f32; 4]; 4],
     pub tint: [f32; 4],
+    /// Second colour: the dark half of a gas giant's bands, or a ring's outer
+    /// tint. Unused by the modes that do not need one.
+    pub tint2: [f32; 4],
     /// x = shading mode, y = cone half-angle (radians), z = alpha, w = the
     /// cone's inner radius as a fraction of its length.
     pub params: [f32; 4],
+    /// Surface style, for the modes that share one shading branch: x = the
+    /// [`STYLE_*`] selector, y..w its parameters (see `solar_body.wgsl`).
+    pub style: [f32; 4],
+}
+
+impl DrawData {
+    /// A draw with everything that is usually left alone already zeroed.
+    fn new(model: M4, basis: M4, tint: Color32, mode: f32) -> DrawData {
+        DrawData {
+            model: model.cols,
+            basis: basis.cols,
+            tint: lin(tint, 1.0),
+            tint2: [0.0; 4],
+            params: [mode, 0.0, 1.0, 0.0],
+            style: [0.0; 4],
+        }
+    }
 }
 
 /// Shading branch selected by `DrawData::params.x`.
 pub const MODE_EARTH: f32 = 0.0;
 pub const MODE_MOON: f32 = 1.0;
 pub const MODE_SUN: f32 = 2.0;
+/// Every other body: a procedural surface picked by `DrawData::style.x`.
+pub const MODE_BODY: f32 = 3.0;
+
+/// Surface styles for [`MODE_BODY`], in step with `solar_body.wgsl`.
+pub const STYLE_CRATERED: f32 = 0.0;
+pub const STYLE_CLOUDY: f32 = 1.0;
+pub const STYLE_DESERT: f32 = 2.0;
+pub const STYLE_BANDS: f32 = 3.0;
+pub const STYLE_ICE_GIANT: f32 = 4.0;
+pub const STYLE_ICY: f32 = 5.0;
+pub const STYLE_VOLCANIC: f32 = 6.0;
+pub const STYLE_HAZE: f32 = 7.0;
+
+/// How one body is painted: which procedural surface, in what colours, and the
+/// two per-body switches that surface understands.
+#[derive(Clone, Copy)]
+pub struct Look {
+    style: f32,
+    /// Main colour — also what the body's glow and label take.
+    base: Color32,
+    /// The shade it varies towards: a gas giant's belts, a rocky body's basins.
+    second: Color32,
+    /// How strongly that variation shows. Jupiter's belts are obvious at 1.0;
+    /// Saturn's are a suggestion at 0.4.
+    contrast: f32,
+    /// A named feature the style knows about (the Great Red Spot).
+    feature: f32,
+    /// Iapetus's dark leading hemisphere.
+    two_tone: f32,
+}
+
+/// The palette and surface each body type is drawn with.
+///
+/// Colours are eyeball-matched to what the body looks like through a telescope,
+/// then muted a little towards the app's palette — a photographic Jupiter next
+/// to this cyan Earth would read as a different program's window.
+fn look_of(s: sdroxide_solar::Surface) -> Look {
+    use sdroxide_solar::Surface as S;
+    let look = |style, base: u32, second: u32, contrast| Look {
+        style,
+        base: Color32::from_rgb((base >> 16) as u8, (base >> 8) as u8, base as u8),
+        second: Color32::from_rgb((second >> 16) as u8, (second >> 8) as u8, second as u8),
+        contrast,
+        feature: 0.0,
+        two_tone: 0.0,
+    };
+    match s {
+        S::Cratered => look(STYLE_CRATERED, 0x9a938a, 0x4a4642, 1.0),
+        S::Cloudy => look(STYLE_CLOUDY, 0xe6d3a8, 0xc9ac74, 0.5),
+        S::Desert => look(STYLE_DESERT, 0xc46a42, 0x7d3f2c, 1.0),
+        // Both giants are pale and creamy; the belts are a shade, not a stripe.
+        S::GasBands => look(STYLE_BANDS, 0xe4d2b4, 0x9a6945, 1.0),
+        S::IceGiant => look(STYLE_ICE_GIANT, 0x76c8e0, 0x3a7fb8, 0.5),
+        S::Icy => look(STYLE_ICY, 0xd9e2ea, 0x8a9db0, 1.0),
+        S::Volcanic => look(STYLE_VOLCANIC, 0xe0c25a, 0xa84e30, 1.0),
+        S::Haze => look(STYLE_HAZE, 0xd79c4e, 0x9c662a, 0.4),
+    }
+}
+
+/// The look of a specific planet: the shared surface type, plus what is true of
+/// that planet alone.
+fn planet_look(p: sdroxide_solar::Planet) -> Look {
+    use sdroxide_solar::Planet as P;
+    let mut look = look_of(p.info().surface);
+    match p {
+        // The Great Red Spot, and belts that are genuinely high-contrast.
+        P::Jupiter => look.feature = 1.0,
+        // Saturn is the same chemistry seen through a much deeper, hazier
+        // atmosphere: the same banding, washed out to almost nothing.
+        P::Saturn => {
+            look.base = Color32::from_rgb(0xf0, 0xdf, 0xb8);
+            look.second = Color32::from_rgb(0xc8, 0xa4, 0x74);
+            look.contrast = 0.4;
+        }
+        // Neptune is the deeper blue of the two ice giants.
+        P::Neptune => {
+            look.base = Color32::from_rgb(0x54, 0x84, 0xd8);
+            look.second = Color32::from_rgb(0x2c, 0x50, 0xa8);
+        }
+        _ => {}
+    }
+    look
+}
+
+fn moon_look(m: &sdroxide_solar::Moon) -> Look {
+    let mut look = look_of(m.surface);
+    // Cassini Regio: one hemisphere of Iapetus is as dark as asphalt and the
+    // other is clean ice, which is the single most recognisable thing about it.
+    if m.name == "Iapetus" {
+        look.two_tone = 1.0;
+    }
+    look
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -85,6 +198,8 @@ pub enum Prim {
     Cone,
     /// The sphere mesh again, drawn as an additive auroral emission shell.
     Aurora,
+    /// A flat annulus: a planet's ring system.
+    Ring,
 }
 
 /// A text label anchored to a point in the scene.
@@ -98,9 +213,32 @@ pub struct Label {
     pub color: Color32,
     /// Pixels to offset from the anchor, so a label does not sit on its marker.
     pub offset: [f32; 2],
-    /// Catalogue number when this labels a satellite — clicking it opens that
-    /// satellite's pass table.
-    pub sat: Option<u64>,
+    /// What clicking the label does: open a satellite's pass table, or point
+    /// the camera at a body.
+    pub click: Click,
+}
+
+/// What a clickable thing in the scene does.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum Click {
+    #[default]
+    None,
+    /// Open this satellite's pass table (by catalogue number).
+    Sat(u64),
+    /// Make this body the camera's target.
+    Focus(Focus),
+}
+
+/// A body the pointer can grab to re-target the camera.
+///
+/// Kept apart from [`Label`] so a planet can be clicked whether or not the
+/// labels layer is on, and so the disc itself is a target rather than only the
+/// text beside it.
+pub struct Pick {
+    pub world: [f32; 3],
+    /// Screen radius of the grab area, pixels.
+    pub radius_px: f32,
+    pub focus: Focus,
 }
 
 #[derive(Default)]
@@ -110,6 +248,7 @@ pub struct Scene {
     pub lines: Vec<LineInst>,
     pub sprites: Vec<SpriteInst>,
     pub labels: Vec<Label>,
+    pub picks: Vec<Pick>,
     /// The star field is a static buffer on the GPU, so it is a flag here
     /// rather than 1500 instances rebuilt every frame.
     pub draw_stars: bool,
@@ -140,6 +279,33 @@ pub fn lin(c: Color32, alpha: f32) -> [f32; 4] {
     [f(c.r()), f(c.g()), f(c.b()), alpha]
 }
 
+/// A planet, placed and oriented for this frame.
+pub struct PlanetBody {
+    pub planet: sdroxide_solar::Planet,
+    pub pos: V3,
+    /// Rendered radius, which is the true one times [`PlanetBody::exaggeration`].
+    pub radius: f32,
+    pub basis: (V3, V3, V3),
+    /// Ring system as rendered: inner radius, outer radius, opacity.
+    pub rings: Option<(f32, f32, f32)>,
+    /// How much the radius was exaggerated. Its moons are scaled by the same
+    /// factor — orbit radii included — so the system keeps its true shape: a
+    /// moon at six planet radii is drawn at six planet radii.
+    pub exaggeration: f32,
+}
+
+/// A moon of one of those planets.
+pub struct MoonBody {
+    /// Index into [`sdroxide_solar::planets::MOONS`], which is what
+    /// [`Focus::Satellite`] stores.
+    pub index: usize,
+    pub info: &'static sdroxide_solar::Moon,
+    pub pos: V3,
+    pub radius: f32,
+    /// The planet it belongs to, as an index into [`Bodies::planets`].
+    pub parent: usize,
+}
+
 /// Positions of everything, in the heliocentric ecliptic frame, gigametres.
 pub struct Bodies {
     pub jd: f64,
@@ -149,7 +315,22 @@ pub struct Bodies {
     pub earth_basis: (V3, V3, V3),
     pub moon: V3,
     pub moon_r: f32,
+    pub moon_basis: (V3, V3, V3),
     pub sun_frame: ephem::SunFrame,
+    pub planets: Vec<PlanetBody>,
+    pub moons: Vec<MoonBody>,
+}
+
+/// The most of the Sun's rendered radius any planet may reach.
+///
+/// The body slider goes to 20×, at which Jupiter would be twice the Sun's size
+/// and the picture would be nonsense. Capping the exaggeration per body keeps
+/// the ordering everyone knows — the Sun dwarfs everything — while still
+/// lifting Mercury off a single pixel.
+const PLANET_MAX_SUN_FRAC: f32 = 0.35;
+
+fn basis_cols(b: sdroxide_solar::Basis) -> (V3, V3, V3) {
+    (V3::from_f64(b.x), V3::from_f64(b.y), V3::from_f64(b.z))
 }
 
 pub fn bodies(st: &SolarUi, unix_s: f64) -> Bodies {
@@ -158,15 +339,54 @@ pub fn bodies(st: &SolarUi, unix_s: f64) -> Bodies {
     let earth = V3::from_f64(ephem::earth_heliocentric(jd));
     let b = ephem::earth_basis(jd);
     let moon_off = V3::from_f64(ephem::moon_geocentric_vec(jd)) * v.moon_orbit_scale;
+    let sun_r = ephem::SUN_R as f32 * v.sun_scale;
+
+    let mut planets = Vec::with_capacity(sdroxide_solar::Planet::ALL.len());
+    let mut moons = Vec::new();
+    for p in sdroxide_solar::Planet::ALL {
+        let info = p.info();
+        let true_r = info.radius as f32;
+        let radius = (true_r * v.body_scale).clamp(true_r, sun_r * PLANET_MAX_SUN_FRAC);
+        let exaggeration = radius / true_r;
+        let pos = V3::from_f64(p.heliocentric(jd));
+        let parent = planets.len();
+        planets.push(PlanetBody {
+            planet: p,
+            pos,
+            radius,
+            basis: basis_cols(p.basis(jd)),
+            rings: info
+                .rings
+                .map(|r| (r.inner as f32 * radius, r.outer as f32 * radius, r.opacity as f32)),
+            exaggeration,
+        });
+        for (index, m) in sdroxide_solar::planets::MOONS.iter().enumerate() {
+            if m.parent != p {
+                continue;
+            }
+            moons.push(MoonBody {
+                index,
+                info: m,
+                pos: pos
+                    + V3::from_f64(m.offset(jd)) * (exaggeration * v.moon_orbit_scale),
+                radius: m.radius as f32 * exaggeration,
+                parent,
+            });
+        }
+    }
+
     Bodies {
         jd,
-        sun_r: ephem::SUN_R as f32 * v.sun_scale,
+        sun_r,
         earth,
         earth_r: ephem::EARTH_R as f32 * v.body_scale,
-        earth_basis: (V3::from_f64(b.x), V3::from_f64(b.y), V3::from_f64(b.z)),
+        earth_basis: basis_cols(b),
         moon: earth + moon_off,
         moon_r: ephem::MOON_R as f32 * v.body_scale,
+        moon_basis: basis_cols(ephem::moon_basis(jd)),
         sun_frame: ephem::sun_frame(jd),
+        planets,
+        moons,
     }
 }
 
@@ -182,6 +402,19 @@ impl Bodies {
                 (self.earth + self.moon) * 0.5,
                 ((self.moon - self.earth).len() * 0.5).max(self.earth_r),
             ),
+            Focus::Planet(p) => self
+                .planets
+                .iter()
+                .find(|b| b.planet == p)
+                .map_or((V3::ZERO, self.sun_r), |b| (b.pos, b.radius)),
+            Focus::Satellite(i) => self
+                .moons
+                .iter()
+                .find(|m| m.index == i)
+                // A moon can be tiny even exaggerated, so the clamp radius has
+                // a floor: without one the camera may end up closer to it than
+                // the near plane allows.
+                .map_or((V3::ZERO, self.sun_r), |m| (m.pos, m.radius.max(1e-4))),
         }
     }
 }
@@ -216,7 +449,7 @@ pub fn build(
 
     bodies_draws(&mut s, st, &b, &cam);
     if st.layer(layer::ORBITS) {
-        orbits(&mut s, st, &b);
+        orbits(&mut s, st, &b, &cam);
     }
     if st.layer(layer::GRID) {
         grid(&mut s, &b);
@@ -245,9 +478,9 @@ pub fn build(
             satellites(&mut s, st, &b, &cam, d, unix_s);
         }
     }
-    if st.layer(layer::LABELS) {
-        body_labels(&mut s, &b, &cam);
-    }
+    // Always called: it also builds the click targets, which are not a layer —
+    // turning names off should not make the planets unclickable.
+    body_labels(&mut s, st, &b, &cam, size_px[1], st.layer(layer::LABELS));
     s
 }
 
@@ -324,7 +557,7 @@ fn satellites(
                 text,
                 color: lin_color(color, 0.9 * fade),
                 offset: [9.0, -7.0],
-                sat: Some(sat.norad_id),
+                click: Click::Sat(sat.norad_id),
             });
         }
     }
@@ -400,7 +633,9 @@ fn aurora_shells(s: &mut Scene, b: &Bodies, cam: &Camera, oval: &AuroraOval) {
                 model: M4::from_basis(ex, ey, ez, b.earth, b.earth_r * radius).cols,
                 basis: M4::from_basis(ex, ey, ez, V3::ZERO, 1.0).cols,
                 tint: [1.0; 4],
+                tint2: [0.0; 4],
                 params: [alt, slab, fade, 0.0],
+                style: [0.0; 4],
             },
         ));
     }
@@ -450,24 +685,60 @@ fn aurora_edge(s: &mut Scene, b: &Bodies, oval: &AuroraOval, fade: f32) {
     }
 }
 
-/// Names for the Sun, Earth and Moon.
-fn body_labels(s: &mut Scene, b: &Bodies, cam: &Camera) {
-    for (pos, radius, name) in [
-        (V3::ZERO, b.sun_r, "SUN"),
-        (b.earth, b.earth_r, "EARTH"),
-        (b.moon, b.moon_r, "MOON"),
-    ] {
-        // Only once the body is actually on screen as more than a speck.
-        if cam.pixels_for(pos, radius) < 2.0 {
-            continue;
+/// A body is named while it is small enough on screen to need naming, and the
+/// name gets out of the way once it is not.
+///
+/// The same rule for every body, the Earth included. A name is how you find
+/// something that is a fraction of a pixel across — which, from anywhere in the
+/// inner system, is what Neptune is — and it is pure clutter stamped across a
+/// planet you have flown right up to and can obviously identify.
+fn label_visible(px: f32, view_h: f32) -> bool {
+    px < view_h * 0.18
+}
+
+/// Names for every body, and the click targets that go with them.
+fn body_labels(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, view_h: f32, labels: bool) {
+    let mut add = |pos: V3, radius: f32, name: &str, color: Color32, focus: Focus, show: bool| {
+        let px = cam.pixels_for(pos, radius);
+        // Everything named is also clickable, and the grab area never shrinks
+        // below something a pointer can actually hit.
+        s.picks.push(Pick { world: pos.arr(), radius_px: px.clamp(7.0, 400.0), focus });
+        if !show || !labels || !label_visible(px, view_h) {
+            return;
         }
         s.labels.push(Label {
             world: pos.arr(),
             text: name.to_string(),
-            color: theme::CYAN_DIM,
+            color: if st.focus() == focus { theme::CYAN } else { color },
             offset: [10.0, -6.0],
-            sat: None,
+            click: Click::Focus(focus),
         });
+    };
+
+    for (pos, radius, name, focus) in [
+        (V3::ZERO, b.sun_r, "SUN", Focus::Sun),
+        (b.earth, b.earth_r, "EARTH", Focus::Earth),
+        (b.moon, b.moon_r, "MOON", Focus::Moon),
+    ] {
+        add(pos, radius, name, theme::CYAN_DIM, focus, true);
+    }
+
+    if !st.layer(layer::PLANETS) {
+        return;
+    }
+    for p in &b.planets {
+        let color = planet_look(p.planet).base;
+        let name = p.planet.name().to_uppercase();
+        add(p.pos, p.radius, &name, color, Focus::Planet(p.planet), true);
+    }
+    for m in &b.moons {
+        // A moon is only named once its planet is big enough on screen for the
+        // names not to pile up on one another.
+        let parent = &b.planets[m.parent];
+        let show = cam.pixels_for(parent.pos, parent.radius) > 26.0;
+        let color = moon_look(m.info).base;
+        let name = m.info.name.to_uppercase();
+        add(m.pos, m.radius, &name, color, Focus::Satellite(m.index), show);
     }
 }
 
@@ -621,12 +892,14 @@ fn cones(s: &mut Scene, st: &SolarUi, cmes: &[sdroxide_solar::CmeEvent], now: i6
                 model: M4::from_basis(x, y, axis, V3::ZERO, length as f32).cols,
                 basis: M4::from_basis(x, y, axis, V3::ZERO, 1.0).cols,
                 tint: lin(color, 1.0),
+                tint2: [0.0; 4],
                 params: [
                     0.0,
                     (a.half_angle_deg as f32).to_radians(),
                     alpha,
                     (launch / length) as f32,
                 ],
+                style: [0.0; 4],
             },
         ));
     }
@@ -642,78 +915,122 @@ fn perpendicular_basis(z: V3) -> (V3, V3) {
 }
 
 fn bodies_draws(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
-    let ident = M4::IDENTITY;
+    let sun_basis = basis_cols(b.sun_frame.basis);
+    let sphere = |s: &mut Scene, (x, y, z): (V3, V3, V3), pos, r, tint, mode| {
+        s.draws.push((
+            Prim::Sphere,
+            DrawData::new(
+                M4::from_basis(x, y, z, pos, r),
+                M4::from_basis(x, y, z, V3::ZERO, 1.0),
+                tint,
+                mode,
+            ),
+        ));
+    };
 
     // Sun.
-    s.draws.push((
-        Prim::Sphere,
-        DrawData {
-            model: M4::from_basis(
-                V3::from_f64(b.sun_frame.basis.x),
-                V3::from_f64(b.sun_frame.basis.y),
-                V3::from_f64(b.sun_frame.basis.z),
-                V3::ZERO,
-                b.sun_r,
-            )
-            .cols,
-            basis: M4::from_basis(
-                V3::from_f64(b.sun_frame.basis.x),
-                V3::from_f64(b.sun_frame.basis.y),
-                V3::from_f64(b.sun_frame.basis.z),
-                V3::ZERO,
-                1.0,
-            )
-            .cols,
-            tint: lin(Color32::from_rgb(0xff, 0xc4, 0x6a), 1.0),
-            params: [MODE_SUN, 0.0, 1.0, 0.0],
-        },
-    ));
+    sphere(s, sun_basis, V3::ZERO, b.sun_r, Color32::from_rgb(0xff, 0xc4, 0x6a), MODE_SUN);
 
     // Earth — its body frame is ECEF, so the land mask, the QTH marker and the
     // terminator all share one coordinate system.
-    let (ex, ey, ez) = b.earth_basis;
-    s.draws.push((
-        Prim::Sphere,
-        DrawData {
-            model: M4::from_basis(ex, ey, ez, b.earth, b.earth_r).cols,
-            basis: M4::from_basis(ex, ey, ez, V3::ZERO, 1.0).cols,
-            tint: lin(theme::CYAN, 1.0),
-            params: [MODE_EARTH, 0.0, 1.0, 0.0],
-        },
-    ));
+    sphere(s, b.earth_basis, b.earth, b.earth_r, theme::CYAN, MODE_EARTH);
 
-    // Moon.
-    s.draws.push((
-        Prim::Sphere,
-        DrawData {
-            model: M4::from_translation_scale(b.moon, b.moon_r).cols,
-            basis: ident.cols,
-            tint: lin(Color32::from_rgb(0x9a, 0xa4, 0xb4), 1.0),
-            params: [MODE_MOON, 0.0, 1.0, 0.0],
-        },
-    ));
+    // Moon, in the tidally locked frame — which is what puts the maria on the
+    // near side, where they belong.
+    sphere(s, b.moon_basis, b.moon, b.moon_r, Color32::from_rgb(0x9a, 0xa4, 0xb4), MODE_MOON);
+
+    if st.layer(layer::PLANETS) {
+        for p in &b.planets {
+            body_sphere(s, p.basis, p.pos, p.radius, planet_look(p.planet));
+        }
+        for m in &b.moons {
+            body_sphere(s, moon_facing_basis(b, m), m.pos, m.radius, moon_look(m.info));
+        }
+        // Rings last of all the bodies: they are transparent, so they have to
+        // blend over whatever is already there — and keeping them in one run
+        // costs a single pipeline switch.
+        for p in &b.planets {
+            rings(s, p);
+        }
+    }
 
     // A glow billboard with a pixel floor under every body, so "can I see the
     // Earth from 2 AU" never depends on the exaggeration slider.
-    for (pos, radius, min_px, color) in [
-        (V3::ZERO, b.sun_r, 22.0, Color32::from_rgb(0xff, 0xd0, 0x80)),
-        (b.earth, b.earth_r, 7.0, theme::CYAN),
-        (b.moon, b.moon_r, 5.0, Color32::from_rgb(0xc8, 0xd2, 0xe0)),
-    ] {
-        let px = cam.pixels_for(pos, radius);
-        s.sprites.push(SpriteInst {
-            center: pos.arr(),
-            size_px: (px * 2.6).max(min_px),
-            color: lin(color, if px > min_px * 0.5 { 0.35 } else { 0.9 }),
-            params: [SPRITE_GLOW, 0.0, 0.0, 0.0],
-        });
+    glow(s, cam, V3::ZERO, b.sun_r, 22.0, Color32::from_rgb(0xff, 0xd0, 0x80));
+    glow(s, cam, b.earth, b.earth_r, 7.0, theme::CYAN);
+    glow(s, cam, b.moon, b.moon_r, 5.0, Color32::from_rgb(0xc8, 0xd2, 0xe0));
+    if st.layer(layer::PLANETS) {
+        for p in &b.planets {
+            glow(s, cam, p.pos, p.radius, 6.0, planet_look(p.planet).base);
+        }
+        for m in &b.moons {
+            // A moon's glow only once its planet is big enough on screen for
+            // the two to be told apart; further out the planet's own glow
+            // stands for the whole system.
+            if cam.pixels_for(b.planets[m.parent].pos, b.planets[m.parent].radius) > 6.0 {
+                glow(s, cam, m.pos, m.radius, 3.0, moon_look(m.info).base);
+            }
+        }
     }
-    let _ = st;
+}
+
+/// A billboard under a body, never smaller than `min_px` across.
+fn glow(s: &mut Scene, cam: &Camera, pos: V3, radius: f32, min_px: f32, color: Color32) {
+    let px = cam.pixels_for(pos, radius);
+    s.sprites.push(SpriteInst {
+        center: pos.arr(),
+        size_px: (px * 2.6).max(min_px),
+        color: lin(color, if px > min_px * 0.5 { 0.35 } else { 0.9 }),
+        params: [SPRITE_GLOW, 0.0, 0.0, 0.0],
+    });
+}
+
+/// One of the procedurally shaded bodies: a planet or one of their moons.
+fn body_sphere(s: &mut Scene, (x, y, z): (V3, V3, V3), pos: V3, radius: f32, look: Look) {
+    let mut d = DrawData::new(
+        M4::from_basis(x, y, z, pos, radius),
+        M4::from_basis(x, y, z, V3::ZERO, 1.0),
+        look.base,
+        MODE_BODY,
+    );
+    d.tint2 = lin(look.second, 1.0);
+    d.style = [look.style, look.contrast, look.feature, look.two_tone];
+    s.draws.push((Prim::Sphere, d));
+}
+
+/// A moon's body frame. Every moon this view draws is tidally locked, so — as
+/// with our own — the near side faces the planet and the frame follows from
+/// the geometry rather than from a rotation rate.
+fn moon_facing_basis(b: &Bodies, m: &MoonBody) -> (V3, V3, V3) {
+    let parent = &b.planets[m.parent];
+    let to_parent = (parent.pos - m.pos).normalize();
+    let pole = parent.basis.2;
+    let z = (pole - to_parent * pole.dot(to_parent)).normalize();
+    (to_parent, z.cross(to_parent), z)
+}
+
+/// A planet's rings, as a flat annulus in its equatorial plane.
+fn rings(s: &mut Scene, p: &PlanetBody) {
+    let Some((inner, outer, opacity)) = p.rings else { return };
+    let (x, y, z) = p.basis;
+    let mut d = DrawData::new(
+        // Scaled to the outer edge; the shader carries the inner one as a
+        // fraction, so one unit annulus mesh serves every ring system.
+        M4::from_basis(x, y, z, p.pos, outer),
+        M4::from_basis(x, y, z, V3::ZERO, 1.0),
+        Color32::from_rgb(0xe8, 0xdc, 0xc0),
+        0.0,
+    );
+    d.tint2 = lin(Color32::from_rgb(0xa9, 0x95, 0x78), 1.0);
+    // x = inner edge as a fraction of the outer, y = opacity, z = the planet's
+    // radius in the same units, for the shadow the planet casts on the rings.
+    d.params = [inner / outer, opacity, p.radius / outer, 0.0];
+    s.draws.push((Prim::Ring, d));
 }
 
 /// Orbital paths, sampled from the same ephemeris that places the bodies — so
 /// the ring is the real (eccentric) orbit rather than an idealised circle.
-fn orbits(s: &mut Scene, st: &SolarUi, b: &Bodies) {
+fn orbits(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
     const EARTH_STEPS: usize = 256;
     let mut prev = V3::from_f64(ephem::earth_heliocentric(b.jd));
     for k in 1..=EARTH_STEPS {
@@ -735,6 +1052,41 @@ fn orbits(s: &mut Scene, st: &SolarUi, b: &Bodies) {
         let p = moon_at(jd);
         s.lines.push(seg(prev, p, 1.3, lin(theme::LINE_LIT, 0.7)));
         prev = p;
+    }
+
+    if !st.layer(layer::PLANETS) {
+        return;
+    }
+    // The other planets. Sampled over one of their own years, so Neptune's
+    // ring is as smooth as Mercury's rather than 165 times coarser.
+    const PLANET_STEPS: usize = 192;
+    for p in &b.planets {
+        let period = p.planet.info().orbit_days();
+        let at = |jd: f64| V3::from_f64(p.planet.heliocentric(jd));
+        let mut prev = at(b.jd);
+        for k in 1..=PLANET_STEPS {
+            let q = at(b.jd + period * k as f64 / PLANET_STEPS as f64);
+            s.lines.push(seg(prev, q, 1.2, lin(theme::CYAN_DIM, 0.3)));
+            prev = q;
+        }
+    }
+
+    // Moon paths, only for a planet big enough on screen for a ring around it
+    // to be a ring rather than a smudge.
+    const SAT_STEPS: usize = 64;
+    for m in &b.moons {
+        let parent = &b.planets[m.parent];
+        if cam.pixels_for(parent.pos, parent.radius) < 10.0 {
+            continue;
+        }
+        let scale = parent.exaggeration * st.view.moon_orbit_scale;
+        let at = |jd: f64| parent.pos + V3::from_f64(m.info.offset(jd)) * scale;
+        let mut prev = at(b.jd);
+        for k in 1..=SAT_STEPS {
+            let q = at(b.jd + m.info.period_d * k as f64 / SAT_STEPS as f64);
+            s.lines.push(seg(prev, q, 1.0, lin(theme::LINE_LIT, 0.5)));
+            prev = q;
+        }
     }
 }
 
@@ -960,7 +1312,7 @@ mod tests {
     #[test]
     fn uniform_blocks_are_the_size_the_shaders_expect() {
         assert_eq!(std::mem::size_of::<Globals>(), 160);
-        assert_eq!(std::mem::size_of::<DrawData>(), 160);
+        assert_eq!(std::mem::size_of::<DrawData>(), 192);
         assert_eq!(std::mem::size_of::<LineInst>(), 48);
         assert_eq!(std::mem::size_of::<SpriteInst>(), 48);
     }
@@ -976,16 +1328,124 @@ mod tests {
         assert!((0.35..0.41).contains(&moon_off), "Earth–Moon {moon_off} Gm");
     }
 
+    /// How many bodies the scene is made of, so the counts below read as
+    /// something other than magic numbers.
+    fn population() -> (usize, usize) {
+        (sdroxide_solar::Planet::ALL.len(), sdroxide_solar::planets::MOONS.len())
+    }
+
     #[test]
     fn a_frame_produces_every_body_plus_orbits() {
+        let (planets, moons) = population();
         let s = build(&ui(), None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
-        assert_eq!(s.draws.len(), 3, "Sun, Earth and Moon");
-        assert!(s.draws.iter().all(|(p, _)| *p == Prim::Sphere));
-        // 256 Earth-orbit + 128 Moon-orbit segments, plus the grid.
-        assert!(s.lines.len() > 384, "only {} line segments", s.lines.len());
+
+        let spheres = s.draws.iter().filter(|(p, _)| *p == Prim::Sphere).count();
+        assert_eq!(spheres, 3 + planets + moons, "Sun, Earth, Moon, the planets and their moons");
+        // Saturn and Uranus have rings; nothing else drawn here does.
+        assert_eq!(s.draws.iter().filter(|(p, _)| *p == Prim::Ring).count(), 2);
+        // ...and the rings come after every sphere, so the transparent sheet
+        // blends over the planet instead of being clipped by it.
+        let first_ring = s.draws.iter().position(|(p, _)| *p == Prim::Ring).expect("rings");
+        assert!(s.draws[..first_ring].iter().all(|(p, _)| *p == Prim::Sphere));
+
+        // 256 Earth-orbit + 128 Moon-orbit segments, plus the grid and a ring
+        // for every planet.
+        assert!(s.lines.len() > 384 + 192 * planets, "only {} line segments", s.lines.len());
         // A glow under each body, so none of them can be invisible.
-        assert_eq!(s.sprites.iter().filter(|sp| sp.params[0] == SPRITE_GLOW).count(), 3);
+        assert_eq!(
+            s.sprites.iter().filter(|sp| sp.params[0] == SPRITE_GLOW).count(),
+            3 + planets,
+            "at this framing the moons are inside their planets' glows"
+        );
         assert!(s.globals.view_proj[3][3].is_finite());
+    }
+
+    /// Every planet is named from anywhere in the system — that is the only
+    /// thing that makes a body a fraction of a pixel across findable — and
+    /// every body is clickable whether or not it is named.
+    #[test]
+    fn distant_planets_are_labelled_and_clickable() {
+        let (planets, moons) = population();
+        let s = build(&ui(), None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
+
+        for p in sdroxide_solar::Planet::ALL {
+            let name = p.name().to_uppercase();
+            assert!(s.labels.iter().any(|l| l.text == name), "{name} is not labelled");
+        }
+        // Moons stay quiet until their planet is big enough to hang names off.
+        assert!(!s.labels.iter().any(|l| l.text == "IO"), "moons labelled from 2 AU away");
+
+        // Pick targets exist for everything, name or no name, and each is big
+        // enough to actually hit.
+        assert_eq!(s.picks.len(), 3 + planets + moons);
+        assert!(s.picks.iter().all(|p| p.radius_px >= 7.0));
+        for f in [Focus::Sun, Focus::Earth, Focus::Planet(sdroxide_solar::Planet::Neptune)] {
+            assert!(s.picks.iter().any(|p| p.focus == f), "{f:?} cannot be clicked");
+        }
+
+        // With the labels layer off the names go but the targets stay.
+        let mut dark = ui();
+        dark.view.layers &= !layer::LABELS;
+        let s = build(&dark, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        assert!(s.labels.is_empty());
+        assert_eq!(s.picks.len(), 3 + planets + moons);
+    }
+
+    /// Framed on Jupiter, its moons get their names — and they are in the right
+    /// order outward from the planet, which is the check that the table's
+    /// orbit radii and the renderer's scaling agree.
+    #[test]
+    fn a_planets_moons_appear_when_it_fills_the_frame() {
+        let mut st = ui();
+        st.set_focus(Focus::Planet(sdroxide_solar::Planet::Jupiter));
+        st.view.dist = 0.6;
+        let s = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        for name in ["IO", "EUROPA", "GANYMEDE", "CALLISTO"] {
+            assert!(s.labels.iter().any(|l| l.text == name), "{name} missing");
+        }
+
+        let b = bodies(&st, 1_784_937_600.0);
+        let jupiter = b.planets.iter().find(|p| p.planet == sdroxide_solar::Planet::Jupiter).unwrap();
+        let radii: Vec<f32> = b
+            .moons
+            .iter()
+            .filter(|m| m.info.parent == sdroxide_solar::Planet::Jupiter)
+            .map(|m| (m.pos - jupiter.pos).len() / jupiter.radius)
+            .collect();
+        assert!(radii.windows(2).all(|w| w[0] < w[1]), "the Galilean order is wrong: {radii:?}");
+        // Io orbits at 5.9 Jupiter radii and Callisto at 26.3, whatever the
+        // exaggeration slider is set to — the system keeps its true shape.
+        assert!((radii[0] - 5.9).abs() < 0.2, "Io at {} radii", radii[0]);
+        assert!((radii[3] - 26.9).abs() < 0.5, "Callisto at {} radii", radii[3]);
+    }
+
+    /// The exaggeration cap: the Sun has to stay the biggest thing in the
+    /// picture, or the view stops being a picture of the solar system.
+    #[test]
+    fn no_planet_outgrows_the_sun() {
+        let mut st = ui();
+        st.view.body_scale = 20.0;
+        let b = bodies(&st, 1_784_937_600.0);
+        for p in &b.planets {
+            assert!(p.radius < b.sun_r * 0.5, "{} is {} Gm across", p.planet.name(), p.radius);
+            assert!(p.radius >= p.planet.info().radius as f32, "{} shrank", p.planet.name());
+            assert!(p.exaggeration >= 1.0);
+        }
+        // Mercury is small enough that the cap never binds: it gets the full
+        // exaggeration the slider asks for.
+        let mercury = b.planets.iter().find(|p| p.planet == sdroxide_solar::Planet::Mercury).unwrap();
+        assert!((mercury.exaggeration - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_planets_layer_removes_them_all() {
+        let mut st = ui();
+        st.view.layers &= !layer::PLANETS;
+        let s = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        assert_eq!(s.draws.len(), 3, "only the Sun, the Earth and the Moon are left");
+        assert!(s.draws.iter().all(|(p, _)| *p == Prim::Sphere), "a ring survived");
+        assert!(!s.labels.iter().any(|l| l.text == "JUPITER"));
+        assert_eq!(s.picks.len(), 3);
     }
 
     /// Surface markers are positions *on* the Earth, so they appear only once
@@ -1020,7 +1480,7 @@ mod tests {
         st.view.layers = 0;
         let s = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
         assert!(s.lines.is_empty(), "layers off but {} lines drawn", s.lines.len());
-        assert_eq!(s.draws.len(), 3, "bodies are not a layer");
+        assert_eq!(s.draws.len(), 3, "the Sun, the Earth and the Moon are not a layer");
     }
 
     #[test]

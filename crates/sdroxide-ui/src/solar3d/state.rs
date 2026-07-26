@@ -11,6 +11,10 @@ use sdroxide_solar::SolarData;
 use crate::view::Solar3dView;
 
 /// Which body the orbit camera pivots around.
+///
+/// Persisted as a `u8` in [`Solar3dView::focus`], so the encoding in
+/// [`Focus::to_u8`] is a stable format: the four original values keep indices
+/// 0–3 and everything new is appended after them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Sun,
@@ -18,26 +22,97 @@ pub enum Focus {
     Moon,
     /// Midpoint of the Earth–Moon line, for framing the pair.
     EarthMoon,
+    Planet(sdroxide_solar::Planet),
+    /// A moon of another planet, by index into [`sdroxide_solar::planets::MOONS`].
+    Satellite(usize),
 }
 
 impl Focus {
-    pub const ALL: [Focus; 4] = [Focus::Sun, Focus::Earth, Focus::Moon, Focus::EarthMoon];
+    /// The four targets that are not a table lookup.
+    pub const NEAR: [Focus; 4] = [Focus::Sun, Focus::Earth, Focus::Moon, Focus::EarthMoon];
+
+    /// Every target, grouped the way the picker lays them out: the Sun and the
+    /// Earth–Moon system first, then a row per planet with its own moons.
+    pub fn groups() -> Vec<(&'static str, Vec<Focus>)> {
+        let mut v = vec![("HOME", Focus::NEAR.to_vec())];
+        for p in sdroxide_solar::Planet::ALL {
+            let mut row = vec![Focus::Planet(p)];
+            row.extend(
+                sdroxide_solar::planets::MOONS
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| m.parent == p)
+                    .map(|(i, _)| Focus::Satellite(i)),
+            );
+            v.push((p.name(), row));
+        }
+        v
+    }
+
+    /// Every target, flattened. Used by the tests that guard the persisted
+    /// encoding; the picker itself wants them grouped.
+    #[cfg(test)]
+    pub fn all() -> Vec<Focus> {
+        Focus::groups().into_iter().flat_map(|(_, row)| row).collect()
+    }
 
     pub fn from_u8(v: u8) -> Focus {
-        *Focus::ALL.get(v as usize).unwrap_or(&Focus::Sun)
+        let v = v as usize;
+        if let Some(f) = Focus::NEAR.get(v) {
+            return *f;
+        }
+        let k = v - Focus::NEAR.len();
+        match sdroxide_solar::Planet::ALL.get(k) {
+            Some(p) => Focus::Planet(*p),
+            None => {
+                let m = k - sdroxide_solar::Planet::ALL.len();
+                // An index from a future version with more moons: fall back to
+                // the Sun rather than to a body that is not the one meant.
+                if m < sdroxide_solar::planets::MOONS.len() {
+                    Focus::Satellite(m)
+                } else {
+                    Focus::Sun
+                }
+            }
+        }
     }
 
     pub fn to_u8(self) -> u8 {
-        Focus::ALL.iter().position(|f| *f == self).unwrap_or(0) as u8
+        let base = Focus::NEAR.len();
+        let planets = sdroxide_solar::Planet::ALL.len();
+        (match self {
+            Focus::Planet(p) => base + p.index(),
+            Focus::Satellite(i) => base + planets + i,
+            f => Focus::NEAR.iter().position(|x| *x == f).unwrap_or(0),
+        }) as u8
     }
 
+    /// Full name, as the picker shows it.
     pub fn label(self) -> &'static str {
         match self {
-            Focus::Sun => "SUN",
-            Focus::Earth => "EARTH",
-            Focus::Moon => "MOON",
-            Focus::EarthMoon => "E+M",
+            Focus::Sun => "Sun",
+            Focus::Earth => "Earth",
+            Focus::Moon => "Moon",
+            Focus::EarthMoon => "Earth + Moon",
+            Focus::Planet(p) => p.name(),
+            Focus::Satellite(i) => {
+                sdroxide_solar::planets::MOONS.get(i).map_or("Sun", |m| m.name)
+            }
         }
+    }
+
+    /// Short upper-case form for the button face.
+    pub fn short(self) -> String {
+        match self {
+            Focus::EarthMoon => "E+M".to_string(),
+            f => f.label().to_uppercase(),
+        }
+    }
+
+    /// True for a body that orbits another body this view also draws — the
+    /// picker indents those under their planet.
+    pub fn is_satellite(self) -> bool {
+        matches!(self, Focus::Moon | Focus::Satellite(_))
     }
 }
 
@@ -81,6 +156,9 @@ pub struct SolarUi {
     /// Animated camera tour state, and the frame time it last advanced at.
     pub tour: super::camera::Tour,
     pub last_frame_time: f64,
+    /// Set when the target changes, so the next frame — which has the bodies
+    /// placed already — can pull the camera in to frame whatever was picked.
+    pub retarget: bool,
 }
 
 /// A cached pass prediction for one satellite.
@@ -132,6 +210,7 @@ impl SolarUi {
             focus_override: None,
             tour: super::camera::Tour::default(),
             last_frame_time: 0.0,
+            retarget: false,
         }
     }
 
@@ -148,11 +227,87 @@ impl SolarUi {
         Focus::from_u8(self.view.focus)
     }
 
+    /// Point the camera at a body, from the picker or from a click in the view.
+    ///
+    /// Cancels the tour — the tour drives the target itself, so a user choosing
+    /// one has to win — and asks the next frame to close the distance.
+    pub fn set_focus(&mut self, f: Focus) {
+        if self.focus() != f {
+            self.retarget = true;
+        }
+        self.view.focus = f.to_u8();
+        self.view.auto = false;
+    }
+
     pub fn layer(&self, bit: u32) -> bool {
         self.view.layers & bit != 0
     }
 
     pub fn toggle_layer(&mut self, bit: u32) {
         self.view.layers ^= bit;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The camera target is persisted as a single byte, so its encoding is a
+    /// file format: every target has to survive the round trip, and the four
+    /// that existed before the planets were added have to keep their original
+    /// values or an upgrade would silently move everyone's camera.
+    #[test]
+    fn every_target_round_trips_through_its_persisted_byte() {
+        for f in Focus::all() {
+            assert_eq!(Focus::from_u8(f.to_u8()), f, "{f:?} did not survive");
+        }
+        for (i, f) in Focus::NEAR.iter().enumerate() {
+            assert_eq!(f.to_u8() as usize, i, "{f:?} moved off its historical index");
+        }
+        // Distinct bytes, or two bodies would share a slot.
+        let mut seen: Vec<u8> = Focus::all().iter().map(|f| f.to_u8()).collect();
+        let count = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), count, "two targets encode to the same byte");
+    }
+
+    /// A stored byte from a *newer* build, or from a corrupt file, must land on
+    /// something rather than on a body that is not the one meant.
+    #[test]
+    fn an_unknown_target_byte_falls_back_to_the_sun() {
+        assert_eq!(Focus::from_u8(u8::MAX), Focus::Sun);
+        assert_eq!(Focus::from_u8(Focus::all().len() as u8), Focus::Sun);
+    }
+
+    #[test]
+    fn the_picker_lists_every_body_with_its_planet() {
+        let all = Focus::all();
+        // The four near targets, seven planets, and every moon in the table.
+        assert_eq!(all.len(), 4 + 7 + sdroxide_solar::planets::MOONS.len());
+        // Each planet is immediately followed by its own moons.
+        let jupiter = all.iter().position(|f| *f == Focus::Planet(sdroxide_solar::Planet::Jupiter));
+        let after = &all[jupiter.expect("Jupiter is in the list") + 1..][..4];
+        for f in after {
+            let Focus::Satellite(i) = f else { panic!("{f:?} is not a moon") };
+            assert_eq!(sdroxide_solar::planets::MOONS[*i].parent, sdroxide_solar::Planet::Jupiter);
+        }
+        assert_eq!(after[0].label(), "Io");
+    }
+
+    #[test]
+    fn choosing_a_target_stops_the_tour_and_asks_for_a_reframe() {
+        let mut st = SolarUi::new(Solar3dView::default());
+        st.view.auto = true;
+        st.set_focus(Focus::Planet(sdroxide_solar::Planet::Saturn));
+        assert!(!st.view.auto, "the tour kept driving after the user picked a target");
+        assert!(st.retarget);
+        assert_eq!(st.focus(), Focus::Planet(sdroxide_solar::Planet::Saturn));
+
+        // Picking the body that is already the target is not a reframe: it
+        // would yank the camera back out of a close-up the user zoomed into.
+        st.retarget = false;
+        st.set_focus(Focus::Planet(sdroxide_solar::Planet::Saturn));
+        assert!(!st.retarget);
     }
 }

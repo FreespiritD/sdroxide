@@ -20,9 +20,12 @@ struct DrawData {
     model: mat4x4<f32>,
     basis: mat4x4<f32>,
     tint: vec4<f32>,
+    tint2: vec4<f32>,
     // x mode, y half-angle (rad), z alpha, w inner radius as a fraction of the
     // front distance (the cone is truncated there — see the vertex shader).
     params: vec4<f32>,
+    // Unused here; the block is shared with `solar_body.wgsl`.
+    style: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;

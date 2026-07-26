@@ -291,6 +291,28 @@ pub fn earth_basis(jd: f64) -> Basis {
     }
 }
 
+/// Orientation of the Moon: the mean Earth/polar-axis frame, as columns in
+/// ecliptic coordinates.
+///
+/// The Moon is tidally locked, so its body frame is defined by where it is:
+/// `x` points at the Earth (selenographic 0°, the centre of the near side),
+/// `z` is the rotation axis, and `y` completes the pair, which puts
+/// selenographic **east** — the Mare Crisium limb — along the direction of
+/// orbital motion, exactly as it appears from the ground.
+///
+/// Cassini's laws put the axis within 1.54° of the ecliptic pole, so that is
+/// what is used for `z`. Physical and optical libration (±8° in longitude,
+/// ±7° in latitude) is not modelled: it rocks the near side by a few degrees
+/// about a face that is otherwise always the same one.
+pub fn moon_basis(jd: f64) -> Basis {
+    let to_earth = (-moon_geocentric_vec(jd)).normalize();
+    let pole = vec3(0.0, 0.0, 1.0);
+    // Orthogonalise, so the frame stays exactly orthonormal as the Moon moves
+    // through its 5° of ecliptic latitude.
+    let z = (pole - to_earth * pole.dot(to_earth)).normalize();
+    Basis { x: to_earth, y: z.cross(to_earth), z }
+}
+
 /// Unit vector of a geodetic latitude/longitude in the Earth's body (ECEF)
 /// frame. Spherical: WGS-84 flattening is 0.3%, invisible at any exaggeration
 /// this view offers.
@@ -569,6 +591,55 @@ mod tests {
         assert!((wrap180(b - a) + 90.0).abs() < 0.5, "{a} → {b}");
     }
 
+    /// The one thing everybody knows about the Moon: the same face, always.
+    #[test]
+    fn the_moon_keeps_one_face_towards_the_earth() {
+        for d in 0..60 {
+            let jd = 2_460_500.0 + d as f64 * 0.5;
+            let b = moon_basis(jd);
+            for v in [b.x, b.y, b.z] {
+                assert!((v.len() - 1.0).abs() < 1e-12);
+            }
+            assert!(b.x.dot(b.y).abs() < 1e-12 && b.x.dot(b.z).abs() < 1e-12);
+            assert!((b.x.cross(b.y) - b.z).len() < 1e-12, "left-handed lunar frame");
+
+            // Selenographic (0°, 0°) is the sub-Earth point...
+            let near_side = b.apply(geodetic_to_body(0.0, 0.0));
+            let to_earth = (-moon_geocentric_vec(jd)).normalize();
+            assert!(near_side.dot(to_earth) > 0.999_999, "the near side has turned away");
+            // ...and the far side is the far side.
+            let far = b.apply(geodetic_to_body(0.0, 180.0));
+            assert!(far.dot(to_earth) < -0.999_999);
+        }
+    }
+
+    /// Which way round the map goes, settled by something anyone can check
+    /// with binoculars: a few days after new moon the crescent lights the
+    /// **eastern** limb, so Mare Crisium (17°N 59°E) catches the Sun days
+    /// before Oceanus Procellarum (18°N 57°W) does.
+    ///
+    /// This is the test that pins the sign of `y`. Mirror the frame and every
+    /// lunar feature lands on the wrong limb while the Moon still, misleadingly,
+    /// keeps one face towards the Earth.
+    #[test]
+    fn the_waxing_crescent_lights_the_eastern_limb() {
+        // Elongation 45–75° east of the Sun: three or four days old, by which
+        // point the terminator has moved past Crisium.
+        let jd = (0..120)
+            .map(|k| 2_460_500.0 + k as f64 * 0.5)
+            .find(|jd| {
+                let elong = wrap180(moon_geocentric(*jd).0 - sun_geocentric(*jd).0);
+                (45.0..75.0).contains(&elong)
+            })
+            .expect("no waxing crescent in two months");
+
+        let b = moon_basis(jd);
+        let to_sun = (-(earth_heliocentric(jd) + moon_geocentric_vec(jd))).normalize();
+        let lit = |lat: f64, lon: f64| b.apply(geodetic_to_body(lat, lon)).dot(to_sun);
+        assert!(lit(17.0, 59.0) > 0.15, "Mare Crisium is dark on a waxing crescent");
+        assert!(lit(18.0, -57.0) < -0.15, "Oceanus Procellarum is lit on a waxing crescent");
+    }
+
     #[test]
     fn geodetic_to_body_is_ecef() {
         // 0°N 0°E is the +X axis; 0°N 90°E is +Y; the north pole is +Z.
@@ -577,3 +648,4 @@ mod tests {
         assert!((geodetic_to_body(90.0, 0.0) - vec3(0.0, 0.0, 1.0)).len() < 1e-12);
     }
 }
+

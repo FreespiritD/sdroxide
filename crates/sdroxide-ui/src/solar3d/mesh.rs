@@ -101,6 +101,37 @@ pub fn cone() -> (Vec<Vertex>, Vec<u32>) {
     (verts, idx)
 }
 
+pub const RING_RADIAL: u32 = 128;
+/// Steps across the ring. More than a flat sheet needs, but the radial
+/// structure (the Cassini division, the ringlets) is shaded per fragment, so
+/// this only has to be smooth enough that the inner and outer edges are round.
+const RING_ACROSS: u32 = 6;
+
+/// A planet's ring system, parametric like [`cone`]: `pos` carries
+/// `[azimuth, t, 0]` and the vertex shader places `t = 0` at the inner edge and
+/// `t = 1` at the outer one, using the radii the draw supplies. One mesh
+/// therefore serves Saturn's sheet and Uranus's threads both.
+pub fn ring() -> (Vec<Vertex>, Vec<u32>) {
+    let row = RING_RADIAL + 1;
+    let mut verts = Vec::with_capacity(((RING_ACROSS + 1) * row) as usize);
+    for j in 0..=RING_ACROSS {
+        let t = j as f32 / RING_ACROSS as f32;
+        for i in 0..=RING_RADIAL {
+            let u = i as f32 / RING_RADIAL as f32;
+            verts.push(Vertex { pos: [u * std::f32::consts::TAU, t, 0.0], uv: [t, u] });
+        }
+    }
+    let mut idx = Vec::with_capacity((RING_RADIAL * RING_ACROSS * 6) as usize);
+    for j in 0..RING_ACROSS {
+        for i in 0..RING_RADIAL {
+            let a = j * row + i;
+            let (b, c, d) = (a + 1, a + row, a + row + 1);
+            idx.extend_from_slice(&[a, c, b, b, c, d]);
+        }
+    }
+    (verts, idx)
+}
+
 /// Corner offsets of a quad, `[-1, 1]` in both axes, as two triangles.
 ///
 /// Instanced pipelines (lines, sprites) expand this in the vertex shader, which
@@ -137,6 +168,23 @@ mod tests {
         // u = 0.5 is 0° longitude, i.e. the +X axis.
         let mid = &v[(SPHERE_LON / 2) as usize];
         assert!((mid.uv[0] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_ring_spans_the_annulus_exactly_once() {
+        let (v, idx) = ring();
+        assert!(idx.iter().all(|i| (*i as usize) < v.len()));
+        for vert in &v {
+            assert!((0.0..=std::f32::consts::TAU + 1e-4).contains(&vert.pos[0]));
+            assert!((0.0..=1.0).contains(&vert.pos[1]));
+        }
+        // The seam is duplicated (0 and τ both present), so the annulus closes
+        // without a triangle spanning the whole ring.
+        assert_eq!(v[0].pos[0], 0.0);
+        assert!((v[RING_RADIAL as usize].pos[0] - std::f32::consts::TAU).abs() < 1e-5);
+        // t = 0 is the inner edge everywhere in the first row.
+        assert!(v[..=RING_RADIAL as usize].iter().all(|x| x.pos[1] == 0.0));
+        assert_eq!(v[v.len() - 1].pos[1], 1.0);
     }
 
     #[test]

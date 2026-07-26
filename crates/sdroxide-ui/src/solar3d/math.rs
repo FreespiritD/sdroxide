@@ -106,11 +106,6 @@ impl M4 {
         }
     }
 
-    /// Axis-aligned placement (no rotation).
-    pub fn from_translation_scale(origin: V3, scale: f32) -> M4 {
-        M4::from_basis(v3(1.0, 0.0, 0.0), v3(0.0, 1.0, 0.0), v3(0.0, 0.0, 1.0), origin, scale)
-    }
-
     pub fn mul(&self, o: &M4) -> M4 {
         let mut cols = [[0.0f32; 4]; 4];
         for (c, out) in cols.iter_mut().enumerate() {

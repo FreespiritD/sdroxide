@@ -47,6 +47,7 @@ pub struct SolarResources {
     body_pipe: wgpu::RenderPipeline,
     aurora_pipe: wgpu::RenderPipeline,
     cone_pipe: wgpu::RenderPipeline,
+    ring_pipe: wgpu::RenderPipeline,
     line_pipe: wgpu::RenderPipeline,
     sprite_pipe: wgpu::RenderPipeline,
     blit_pipe: wgpu::RenderPipeline,
@@ -69,6 +70,9 @@ pub struct SolarResources {
     cone_vb: wgpu::Buffer,
     cone_ib: wgpu::Buffer,
     cone_indices: u32,
+    ring_vb: wgpu::Buffer,
+    ring_ib: wgpu::Buffer,
+    ring_indices: u32,
     quad_vb: wgpu::Buffer,
 
     line_buf: wgpu::Buffer,
@@ -79,6 +83,8 @@ pub struct SolarResources {
     star_count: u32,
 
     land_view: wgpu::TextureView,
+    border_view: wgpu::TextureView,
+    moon_view: wgpu::TextureView,
     sun_tex: wgpu::Texture,
     sun_view: wgpu::TextureView,
     /// Bumped whenever a new solar image is uploaded, so the scene bind group
@@ -137,6 +143,7 @@ fn build(rs: &RenderState) -> SolarResources {
     let body_sh = shader("solar-body", include_str!("../shaders/solar_body.wgsl"));
     let aurora_sh = shader("solar-aurora", include_str!("../shaders/solar_aurora.wgsl"));
     let cone_sh = shader("solar-cone", include_str!("../shaders/solar_cone.wgsl"));
+    let ring_sh = shader("solar-ring", include_str!("../shaders/solar_ring.wgsl"));
     let line_sh = shader("solar-line", include_str!("../shaders/solar_line.wgsl"));
     let sprite_sh = shader("solar-sprite", include_str!("../shaders/solar_sprite.wgsl"));
     let blit_sh = shader("solar-blit", include_str!("../shaders/solar_blit.wgsl"));
@@ -175,6 +182,8 @@ fn build(rs: &RenderState) -> SolarResources {
                 count: None,
             },
             tex_entry(4),
+            tex_entry(5),
+            tex_entry(6),
         ],
     });
     let draw_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -304,6 +313,7 @@ fn build(rs: &RenderState) -> SolarResources {
         })
     };
 
+    let mesh_layout_ring = mesh_layout.clone();
     let body_pipe = make_pipe(
         "solar-body",
         &draw_layout,
@@ -329,9 +339,20 @@ fn build(rs: &RenderState) -> SolarResources {
         "solar-cone",
         &draw_layout,
         &cone_sh,
-        &[mesh_layout],
+        &[mesh_layout.clone()],
         Some(premultiplied),
         // No depth write, so overlapping cones blend rather than clip.
+        depth_state(false, wgpu::CompareFunction::Greater),
+        sample_count,
+    );
+    // Rings are a transparent sheet: they blend over whatever is behind them
+    // and must not write depth, or the near half would hide the far half.
+    let ring_pipe = make_pipe(
+        "solar-ring",
+        &draw_layout,
+        &ring_sh,
+        &[mesh_layout_ring],
+        Some(premultiplied),
         depth_state(false, wgpu::CompareFunction::Greater),
         sample_count,
     );
@@ -369,6 +390,7 @@ fn build(rs: &RenderState) -> SolarResources {
     // ── Static meshes ───────────────────────────────────────────────────────
     let (sv, si) = mesh::sphere();
     let (cv, ci) = mesh::cone();
+    let (rv, ri) = mesh::ring();
     let quad = mesh::quad();
     let vb = |label: &str, data: &[u8], usage: wgpu::BufferUsages| {
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -381,6 +403,8 @@ fn build(rs: &RenderState) -> SolarResources {
     let sphere_ib = vb("solar-sphere-ib", bytemuck::cast_slice(&si), wgpu::BufferUsages::INDEX);
     let cone_vb = vb("solar-cone-vb", bytemuck::cast_slice(&cv), wgpu::BufferUsages::VERTEX);
     let cone_ib = vb("solar-cone-ib", bytemuck::cast_slice(&ci), wgpu::BufferUsages::INDEX);
+    let ring_vb = vb("solar-ring-vb", bytemuck::cast_slice(&rv), wgpu::BufferUsages::VERTEX);
+    let ring_ib = vb("solar-ring-ib", bytemuck::cast_slice(&ri), wgpu::BufferUsages::INDEX);
     let quad_vb = vb("solar-quad-vb", bytemuck::cast_slice(&quad), wgpu::BufferUsages::VERTEX);
 
     let stars = super::scene::stars();
@@ -420,7 +444,9 @@ fn build(rs: &RenderState) -> SolarResources {
     let sprite_cap = 256;
 
     // ── Textures ────────────────────────────────────────────────────────────
-    let land = upload_land_mask(device, &rs.queue);
+    let land = upload_map(device, &rs.queue, "solar-land-mask", LAND_PNG);
+    let border_view = upload_map(device, &rs.queue, "solar-borders", BORDER_PNG);
+    let moon_view = upload_moon(device, &rs.queue);
     let sun_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("solar-sun-tex"),
         size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
@@ -475,14 +501,24 @@ fn build(rs: &RenderState) -> SolarResources {
         ..Default::default()
     });
 
-    let scene_bg =
-        make_scene_bg(device, &scene_bgl, &globals_buf, &land, &sun_view, &aurora_view, &sampler);
+    let scene_bg = make_scene_bg(
+        device,
+        &scene_bgl,
+        &globals_buf,
+        &land,
+        &sun_view,
+        &aurora_view,
+        &border_view,
+        &moon_view,
+        &sampler,
+    );
     let draw_bg = make_draw_bg(device, &draw_bgl, &draw_buf);
 
     SolarResources {
         body_pipe,
         aurora_pipe,
         cone_pipe,
+        ring_pipe,
         line_pipe,
         sprite_pipe,
         blit_pipe,
@@ -502,6 +538,9 @@ fn build(rs: &RenderState) -> SolarResources {
         cone_vb,
         cone_ib,
         cone_indices: ci.len() as u32,
+        ring_vb,
+        ring_ib,
+        ring_indices: ri.len() as u32,
         quad_vb,
         line_buf: inst_buf("solar-lines", line_cap),
         line_cap,
@@ -510,6 +549,8 @@ fn build(rs: &RenderState) -> SolarResources {
         star_buf,
         star_count: stars.len() as u32,
         land_view: land,
+        border_view,
+        moon_view,
         sun_tex,
         sun_view,
         sun_gen: 0,
@@ -524,6 +565,7 @@ fn build(rs: &RenderState) -> SolarResources {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_scene_bg(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -531,6 +573,8 @@ fn make_scene_bg(
     land: &wgpu::TextureView,
     sun: &wgpu::TextureView,
     aurora: &wgpu::TextureView,
+    borders: &wgpu::TextureView,
+    moon: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -544,6 +588,14 @@ fn make_scene_bg(
             wgpu::BindGroupEntry {
                 binding: 4,
                 resource: wgpu::BindingResource::TextureView(aurora),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(borders),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(moon),
             },
         ],
     })
@@ -568,52 +620,174 @@ fn make_draw_bg(
     })
 }
 
-/// Expand the packed FT8 land bitmap into an R8 texture.
+/// The globe's coastline and border maps.
 ///
-/// `sdroxide_types::worldmask` stores 2160×1080 cells as one bit each,
-/// row-major, MSB first — the same equirectangular grid the flat FT8 map
-/// samples, so the globe and the map agree coastline for coastline.
-fn upload_land_mask(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
-    let (w, h) = sdroxide_types::land_mask_dims();
-    let (w, h) = (w as u32, h as u32);
-    // `write_texture` wants rows aligned to 256 bytes; 2160 is not, so pad.
-    let stride = w.div_ceil(256) * 256;
-    let mut data = vec![0u8; (stride * h) as usize];
-    for row in 0..h {
-        let base = (row * stride) as usize;
-        for col in 0..w {
-            if sdroxide_types::land_cell(col as usize, row as usize) {
-                data[base + col as usize] = 255;
-            }
+/// Both are equirectangular, 4320×2160 (1/12°), rasterised from Natural Earth
+/// 1:10m by `assets/earth/make_earth_maps.py` — twice the flat FT8 map's grid
+/// in each axis, because a globe you can fly right up to needs more coastline
+/// than a panel-sized rectangle does. They share the map's coordinate
+/// convention exactly (x = −180°…180°, y = +90°…−90°), so a QTH marker lands on
+/// the same shoreline in both views.
+const LAND_PNG: &[u8] = include_bytes!("../../assets/earth/land.png");
+const BORDER_PNG: &[u8] = include_bytes!("../../assets/earth/borders.png");
+
+/// The Moon's albedo map: NASA/GSFC's LRO Wide Angle Camera mosaic, public
+/// domain (see `assets/bodies/README.md`).
+///
+/// The one body here that is drawn from a photograph rather than procedurally.
+/// Everybody has seen the Moon, and no amount of noise-and-ellipses puts
+/// Imbrium, Serenitatis and Tycho's rays where the eye expects them.
+const MOON_JPG: &[u8] = include_bytes!("../../assets/bodies/moon.jpg");
+
+/// Decode one of those maps into an R8 texture with a full mip chain.
+///
+/// The mips are not optional at this resolution: 4320 texels of coastline
+/// crammed into a 40-pixel globe without them is a shimmering mess, and the
+/// borders — one texel wide — would strobe in and out as the camera moves.
+/// With them, both fade out gracefully as the Earth shrinks.
+fn upload_map(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    png: &[u8],
+) -> wgpu::TextureView {
+    // A checked-in asset failing to decode is not a reason to lose the window;
+    // it costs the layer instead, and says so.
+    let gray = match image::load_from_memory_with_format(png, image::ImageFormat::Png) {
+        Ok(img) => img.to_luma8(),
+        Err(e) => {
+            eprintln!("sdroxide: decoding {label}: {e}");
+            image::GrayImage::from_raw(1, 1, vec![0u8]).expect("1×1")
         }
+    };
+    let (w, h) = gray.dimensions();
+    let mut levels: Vec<(u32, u32, Vec<u8>)> = vec![(w, h, gray.into_raw())];
+    while levels.last().is_some_and(|(w, h, _)| *w > 1 || *h > 1) {
+        levels.push(halve(levels.last().expect("just checked")));
     }
 
     let tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("solar-land-mask"),
+        label: Some(label),
         size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: 1,
+        mip_level_count: levels.len() as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::R8Unorm,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &tex,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &data,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(stride),
-            rows_per_image: Some(h),
-        },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-    );
+    for (level, (lw, lh, data)) in levels.iter().enumerate() {
+        // `write_texture` wants rows aligned to 256 bytes, which no level here
+        // happens to be.
+        let stride = lw.div_ceil(256) * 256;
+        let mut padded = vec![0u8; (stride * lh) as usize];
+        for row in 0..*lh {
+            let (src, dst) = ((row * lw) as usize, (row * stride) as usize);
+            padded[dst..dst + *lw as usize]
+                .copy_from_slice(&data[src..src + *lw as usize]);
+        }
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: level as u32,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &padded,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride),
+                rows_per_image: Some(*lh),
+            },
+            wgpu::Extent3d { width: *lw, height: *lh, depth_or_array_layers: 1 },
+        );
+    }
     tex.create_view(&Default::default())
+}
+
+/// The Moon's albedo map: an RGB texture with its own mip chain, built the same
+/// way as the masks above.
+fn upload_moon(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let rgba = match image::load_from_memory_with_format(MOON_JPG, image::ImageFormat::Jpeg) {
+        Ok(img) => img.to_rgba8(),
+        Err(e) => {
+            eprintln!("sdroxide: decoding the Moon map: {e}");
+            image::RgbaImage::from_raw(1, 1, vec![90, 90, 96, 255]).expect("1×1")
+        }
+    };
+    let (w, h) = rgba.dimensions();
+    let mut levels: Vec<(u32, u32, Vec<u8>)> = vec![(w, h, rgba.into_raw())];
+    while levels.last().is_some_and(|(w, h, _)| *w > 1 || *h > 1) {
+        levels.push(halve_rgba(levels.last().expect("just checked")));
+    }
+
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("solar-moon-tex"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: levels.len() as u32,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        // sRGB: the map is a photograph, and the offscreen target is encoded,
+        // so the hardware has to linearise on the way in.
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (level, (lw, lh, data)) in levels.iter().enumerate() {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: level as u32,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                // 4 bytes per texel, so every row is already 256-aligned for
+                // any width that is a multiple of 64 — and padded here if not.
+                bytes_per_row: Some(lw * 4),
+                rows_per_image: Some(*lh),
+            },
+            wgpu::Extent3d { width: *lw, height: *lh, depth_or_array_layers: 1 },
+        );
+    }
+    tex.create_view(&Default::default())
+}
+
+/// [`halve`] for four-channel data.
+fn halve_rgba((w, h, src): &(u32, u32, Vec<u8>)) -> (u32, u32, Vec<u8>) {
+    let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+    let mut out = vec![0u8; (nw * nh * 4) as usize];
+    for y in 0..nh {
+        for x in 0..nw {
+            let (x0, y0) = (x * 2, y * 2);
+            let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+            for c in 0..4 {
+                let at = |x: u32, y: u32| src[((y * w + x) * 4 + c) as usize] as u32;
+                let sum = at(x0, y0) + at(x1, y0) + at(x0, y1) + at(x1, y1);
+                out[((y * nw + x) * 4 + c) as usize] = ((sum + 2) / 4) as u8;
+            }
+        }
+    }
+    (nw, nh, out)
+}
+
+/// One mip level down: a 2×2 box filter, with the odd row/column carried over
+/// rather than dropped.
+fn halve((w, h, src): &(u32, u32, Vec<u8>)) -> (u32, u32, Vec<u8>) {
+    let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+    let mut out = vec![0u8; (nw * nh) as usize];
+    for y in 0..nh {
+        for x in 0..nw {
+            let (x0, y0) = (x * 2, y * 2);
+            let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+            let at = |x: u32, y: u32| src[(y * w + x) as usize] as u32;
+            let sum = at(x0, y0) + at(x1, y0) + at(x0, y1) + at(x1, y1);
+            out[(y * nw + x) as usize] = ((sum + 2) / 4) as u8;
+        }
+    }
+    (nw, nh, out)
 }
 
 impl SolarResources {
@@ -744,6 +918,8 @@ impl SolarResources {
                 &self.land_view,
                 &self.sun_view,
                 &self.aurora_view,
+                &self.border_view,
+                &self.moon_view,
                 &self.sampler,
             );
         }
@@ -965,6 +1141,11 @@ impl CallbackTrait for SolarCallback {
                         pass.set_vertex_buffer(0, r.cone_vb.slice(..));
                         pass.set_index_buffer(r.cone_ib.slice(..), wgpu::IndexFormat::Uint32);
                     }
+                    Prim::Ring => {
+                        pass.set_pipeline(&r.ring_pipe);
+                        pass.set_vertex_buffer(0, r.ring_vb.slice(..));
+                        pass.set_index_buffer(r.ring_ib.slice(..), wgpu::IndexFormat::Uint32);
+                    }
                 }
                 bound = Some(*prim);
             }
@@ -972,6 +1153,7 @@ impl CallbackTrait for SolarCallback {
             let n = match prim {
                 Prim::Sphere | Prim::Aurora => r.sphere_indices,
                 Prim::Cone => r.cone_indices,
+                Prim::Ring => r.ring_indices,
             };
             pass.draw_indexed(0..n, 0, 0..1);
         }
@@ -1043,6 +1225,7 @@ mod tests {
             ("solar_body.wgsl", include_str!("../shaders/solar_body.wgsl")),
             ("solar_aurora.wgsl", include_str!("../shaders/solar_aurora.wgsl")),
             ("solar_cone.wgsl", include_str!("../shaders/solar_cone.wgsl")),
+            ("solar_ring.wgsl", include_str!("../shaders/solar_ring.wgsl")),
             ("solar_line.wgsl", include_str!("../shaders/solar_line.wgsl")),
             ("solar_sprite.wgsl", include_str!("../shaders/solar_sprite.wgsl")),
             ("solar_blit.wgsl", include_str!("../shaders/solar_blit.wgsl")),
