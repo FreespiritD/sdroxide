@@ -1,0 +1,3 @@
+[submodule "vendor/rade_c"]
+	path = vendor/rade_c
+	url = https://github.com/freedv/rade_c
