@@ -17,13 +17,14 @@ or connects to a remote sdroxide server.
 3. [Digital modes (FT8, FT4, PSK31, RTTY, Olivia, THOR, FSQ, SSTV, RF Paint)](#3-digital-modes)
 4. [Skimmers (CW, PSK, RTTY)](#4-skimmers)
 5. [Radio and audio setup](#5-radio-and-audio-setup)
-6. [Remote operation](#6-remote-operation)
-7. [Web operation](#7-web-operation)
-8. [Spotting, awards, and QSL upload](#8-spotting-awards-and-qsl-upload)
-9. [Command-line reference](#9-command-line-reference)
-10. [Configuration files](#10-configuration-files)
-11. [Troubleshooting](#11-troubleshooting)
-12. [Appendix: keyboard shortcuts, modes, bands](#12-appendix)
+6. [Solar system 3D view](#6-solar-system-3d-view)
+7. [Remote operation](#7-remote-operation)
+8. [Web operation](#8-web-operation)
+9. [Spotting, awards, and QSL upload](#9-spotting-awards-and-qsl-upload)
+10. [Command-line reference](#10-command-line-reference)
+11. [Configuration files](#11-configuration-files)
+12. [Troubleshooting](#12-troubleshooting)
+13. [Appendix: keyboard shortcuts, modes, bands](#13-appendix)
 
 ---
 
@@ -94,7 +95,7 @@ To try the interface with no hardware, use the built-in signal generator:
 sdroxide --siggen
 ```
 
-See the [command-line reference](#9-command-line-reference) for all options.
+See the [command-line reference](#10-command-line-reference) for all options.
 
 ### 2.2 The main window
 
@@ -169,7 +170,7 @@ popup with three rows:
 
 ![The band and mode selector popup](images/04-band-mode-popup.jpg)
 
-See the [appendix](#12-appendix) for what each mode is.
+See the [appendix](#13-appendix) for what each mode is.
 
 ### 2.5 VFOs, split, and the sub-receiver
 
@@ -242,7 +243,7 @@ passband. The grips work on both the spectrum and the waterfall.
   spectrum is shown).
 - **SKIM** — opens the skimmer popup (per-skimmer on/off and squelch); lit while
   any skimmer runs. See [Skimmers](#4-skimmers).
-- **☀ 3D** — open the [solar system 3D view](#212-solar-system-3d-view) in its
+- **☀ 3D** — open the [solar system 3D view](#6-solar-system-3d-view) in its
   own window. Native only; the button is absent in the browser client.
 
 **FFT module:**
@@ -296,248 +297,6 @@ press **Store** to save the current frequency and mode. Each saved row has a
 
 ![The memory channels window](images/06-memories.png)
 
-### 2.12 Solar system 3D view
-
-The **☀ 3D** button in the Display module opens a second window showing the Sun,
-Earth and Moon in three dimensions, with live solar imagery, sunspot regions and
-coronal-mass-ejection trajectories. This enables operators to see if anything is 
-on its way here, and when it will arrive.
-
-![The solar disk in AIA 171, with sunspot regions, a flare marker and the CME arrival banner](images/3d-sun.jpg)
-
-The Earth wears the same coastline data as the FT8 world map, lit by the real
-Sun with a soft terminator, and your QTH is marked with a green ring once you
-zoom in far enough for a point on the surface to mean anything.
-
-The Earth carries the same coastlines as the FT8 map, your QTH is the green
-ring, and the yellow dot is the point the Sun is directly overhead.
-
-![The Earth with the FT8 coastlines, the QTH ring and the sub-solar point](images/3d-earth.jpg)
-
-**Mouse:**
-
-| Action | Effect |
-| --- | --- |
-| Drag | Rotate around the focused body |
-| Scroll | Zoom in and out |
-
-Any mouse input cancels **AUTO**.
-
-**View** — pick what the camera pivots around: `SUN`, `EARTH`, `MOON`, or `E+M`
-(the Earth–Moon midpoint). **▶ AUTO** flies a continuous camera path through
-eight framed viewpoints — overhead of the whole system, over the Earth's
-shoulder towards the Sun, face-on to the solar disk, along the day/night
-terminator, over the Sun's pole, a diagonal on the Earth–Moon pair, a long look
-back at the Earth from out by the Sun, and a wide inner-system view. The path is
-a spline through those viewpoints, so the camera curves between them rather than
-stopping and restarting at each. Moving between viewpoints that frame different
-bodies flies the camera across the gap — Earth to Sun is a 1 AU trip — rather
-than cutting; it holds each one for ten to sixteen seconds
-with a slow drift, and the whole loop takes about two minutes. Re-enabling AUTO
-picks up at whichever viewpoint is nearest your current view.
-
-**Layers** — `ORBITS` (Earth and Moon paths, sampled from the real ephemeris, so
-they are the true eccentric orbits), `CME`, `SPOTS`, `FLARES`, `GRID` (the solar
-rotation axis, equator and heliographic parallels), `LABELS`, `STARS`, `QSO`,
-`SATS` and `AURORA`.
-
-**The AURORA layer** puts the auroral oval on the globe, live, from NOAA's
-OVATION model — a 1°×1° grid of the probability of seeing aurora, issued every
-few minutes and valid about forty minutes ahead.
-
-It is drawn as a stack of glowing shells at the altitudes the atmosphere
-actually radiates at, not as a texture painted on the surface, and everything
-about how it looks falls out of that. The colour changes with height because the
-emission lines do: green oxygen at 557.7 nm around 110 km, the forbidden red
-line at 630 nm hundreds of kilometres above it, and a violet nitrogen fringe
-underneath when the precipitation is hard — which is why a quiet oval is green
-and a storm goes crimson at the top. The limb is far brighter than the disk,
-because a grazing line of sight crosses a great deal more of every shell, giving
-the thin bright ribbon on the horizon that is the most recognisable thing about
-aurora seen from orbit. The fine structure runs in arcs along the oval and in
-rays through the stack, because auroral precipitation is field-aligned. And
-because the emission is only *drowned out* by daylight rather than stopped by
-it, the sunlit half of the oval fades to a floor rather than to nothing — you
-can still see where it is.
-
-The structure is shaping, not invention: it multiplies what the grid says and
-can never put aurora where NOAA has none. **The green contour on the surface is
-the honest boundary** — the equatorward edge of the 10 % line, straight off the
-grid, drawn to be compared against your own latitude. It bulges towards the
-equator on the night side and over the magnetic poles, which is where it really
-does; the southern oval reaches much lower geographic latitudes than the
-northern one for exactly that reason.
-
-**Aurora panel** — under the propagation numbers on the right:
-
-| Row | What it is |
-| --- | --- |
-| `power N/S` | Gigawatts being deposited in each auroral zone. This is the number that says how big the event is. |
-| `activity` | The same figure as NOAA's Hemispheric Power Index, 1–10, with a word for it. Yellow from HPI 6, pink from 8. |
-| `edge N/S` | How far towards the equator the 10 % contour reaches in each hemisphere, read off the grid. |
-| *your grid square* | The probability of visible aurora directly over your QTH. Green when there is anything at all, yellow past 10 %, pink past 25 %. |
-| `Kp peak 24 h` | The worst three-hour bin still ahead of you in NOAA's planetary K forecast, and how far away it is. |
-| `viewline` | Roughly how far towards the equator that Kp puts the aurora, as a **geomagnetic** latitude. A rule of thumb — see below. |
-
-Under the rows, one bar per three-hour bin over the next day: the shape answers
-"is it worth staying up" faster than eight numbers would. Green is quiet, yellow
-worth watching, pink a storm. The footer says what the picture is *valid for*
-and how old the fetch is — never what time it is now, because the grid is a
-forecast for about forty minutes ahead and may itself be half an hour old.
-
-The `viewline` row is the one number here that is not measured. It is a
-straight-line fit to SWPC's published table (66.5° at Kp 0, falling about 2° per
-unit of Kp) and it says nothing about cloud, moonlight or how dark your sky is;
-geomagnetic latitude is also several degrees from geographic at most longitudes.
-The oval on the globe needs none of those caveats, so prefer it when the two
-seem to disagree.
-
-**The SATS layer** puts amateur-radio satellites in orbit around the globe, live,
-propagated with SGP4 from CelesTrak element sets. Ten popular ones are drawn by
-default with their orbit rings — QO-100, the ISS, AO-7, FO-29, SO-50, AO-73,
-JO-97, RS-44, XW-3 and IO-117. Geostationary orbits are green, low ones cyan.
-`ALL SATS` in the Sun module adds every satellite in the amateur element set as a
-plain dot; the orbit rings stay on the curated few, because ninety rings at once
-is unreadable.
-
-With `LABELS` on, each of the curated satellites is named with **its elevation
-from your QTH right now** — a number means it is above your horizon and
-workable, `▼` means it is not.
-
-![Aurora and satellite visualization and pass table](images/17-sats-passes.jpg)
-
-**Click a satellite's label** for its pass table:
-
-| Column | Meaning |
-| --- | --- |
-| `START` / `END` | Rise and set times, UTC |
-| `DUR` | How long the pass lasts |
-| `AOS` / `LOS` | Azimuth at the horizon on acquisition and loss — where to point, and where it ends up |
-| `MAX EL` | Highest elevation reached, with a word for how good that makes the pass |
-
-A pass already under way is shown in green, one starting within the hour in
-yellow. QO-100 is geostationary, so instead of a table it tells you the fixed
-azimuth and elevation to point at — it never sets. A satellite whose orbit never
-reaches your latitude says so rather than showing an empty table. Click the label
-again, or close the window, to dismiss it.
-
-Predictions come from SGP4 on the current element set, and the window shows how
-old those elements are. A day-old TLE is good to a second or so on rise time; a
-week-old one is not, which is why the age is on display.
-
-**The QSO layer** puts your FT8/FT4 traffic on the globe. Every station decoded
-in the last two minutes is a white dot that fades as it ages — the same set the
-flat map in the FT8 panel shows, so the two never disagree. The station you are
-working is joined to your QTH by a cyan arc, and a decode you have clicked but
-not yet answered by a yellow one. The arcs are true great circles lifted off the
-surface, bowing further out the longer the path: an antipodal contact springs
-well clear of the planet, which is the only way both ends stay visible at once
-on a sphere. While you transmit, a bright pulse runs along the arc.
-
-**Sun** — which SDO product wraps the Sun:
-
-| Chip | Product |
-| --- | --- |
-| `HMI` | HMI continuum — white light. **This is the one that shows sunspots.** |
-| `193` | AIA 193 Å — corona and coronal holes |
-| `304` | AIA 304 Å — chromosphere and filaments |
-| `171` | AIA 171 Å — quiet corona and coronal loops |
-| `211` | AIA 211 Å — active-region corona |
-| `MIX` | The 211/193/171 composite |
-
-`↻` fetches everything again immediately. Next to the chips is the age of the
-solar image — green when it is current, yellow when the last fetch failed and
-you are seeing a cached picture, pink when there is nothing at all. It always
-tells you what you are actually looking at; a cached image is never presented as
-a live one.
-
-**Scale** — the Earth is 23 000 times smaller than its distance from the Sun, so
-at true scale it is invisible whenever the Sun is in frame. `body` exaggerates
-Earth and Moon radius (default 20×) and `moon orbit` stretches the
-Earth–Moon distance. **Positions are never exaggerated** — only sizes — so the
-orbits and the CME geometry stay physically truthful. Body scale is capped
-against the moon-orbit scale, because past that point the enlarged Moon would
-render inside the Earth. Every body also has a glow with a minimum on-screen
-size, so nothing is ever invisible however you set these.
-
-**Time** — `NOW`, `−24h`, `−6h`, `+6h`, `+24h` scrub the whole scene, bodies and
-all, forwards and backwards.
-
-**Clock** — a UTC time readout sits in the top-left corner. Scrubbing the time 
-with the `±6h`/`±24h` chips turns it yellow and relabels it `SIM`, denoting  
-that the time displayed is not the current real time.
-
-**Propagation panel** — top right, the numbers worth checking before you call CQ:
-
-| Row | What it is |
-| --- | --- |
-| `MUF` | Maximum usable frequency for a 3000 km path near your QTH, interpolated from the ionosonde network. Green above 24 MHz, cyan above 14, yellow below. |
-| `Kp / A` | Planetary geomagnetic indices. Green when quiet, yellow from Kp 4, pink from Kp 5 (a storm — polar paths degrade and aurora becomes possible). |
-| `F10.7` | 10.7 cm solar radio flux in solar flux units, the standard proxy for ionisation. Under about 90 the high bands stay shut; over 150 they open up. |
-| `X-ray` | Current GOES soft X-ray class. Turns pink at M class and above, which is when the D layer starts absorbing HF on the daylit side. |
-
-The line under the MUF says how far away the nearest contributing ionosonde is
-and how much to trust the number. MUF is interpolated, not measured at your
-location, and the ionosphere changes sharply across the day/night terminator —
-a value drawn from sounders 3000 km away on the other side of it is a guess, and
-the panel says so rather than hiding it. When no sounder is in range it reads
-`no sounder`.
-
-**Readouts** — the card at the bottom left gives UTC, the sub-solar point, the
-solar disk's B0 and L0 angles, the Sun's elevation and azimuth from your QTH
-(and whether it is day or night there), and how many CMEs and sunspot groups are
-being shown. When an Earth-directed CME is in the data, a banner across the
-bottom names it with its speed and estimated arrival:
-
-```
-EARTH-DIRECTED CME  2026-07-10 09:48Z  ·  516 km/s  ·  ETA 2026-07-12 14:20Z (+38 h)
-```
-
-Arrival is a straight-line constant-speed estimate from the fitted cone. Proper 
-forecasts model the CME's drag against the solar wind and are typically good to 
-about ±6 hours; treat this the same way.
-
-**Where the data comes from.** This is the only part of sdroxide that makes
-outbound internet connections, and it only does so **while this window is
-open** — closing it stops the background fetcher entirely, and never opening it
-means no request is ever made. Three hosts are contacted:
-
-| Host | Data | Refresh |
-| --- | --- | --- |
-| `sdo.gsfc.nasa.gov` | Solar disk imagery (NASA SDO — AIA and HMI) | 10 min |
-| `kauai.ccmc.gsfc.nasa.gov` | CMEs and solar flares ([NASA CCMC DONKI](https://ccmc.gsfc.nasa.gov/tools/DONKI/)) | 20 min |
-| `services.swpc.noaa.gov` | Sunspot regions, planetary K/A, 10.7 cm flux, GOES X-ray level (NOAA SWPC) | 5–60 min |
-| `services.swpc.noaa.gov` | The OVATION auroral oval grid, auroral hemispheric power, and the three-day planetary K forecast | 15–60 min |
-| `prop.kc2g.com` | Ionosonde soundings for the MUF estimate (GIRO network, aggregated by KC2G) | 15 min |
-| `celestrak.org` | Orbital element sets for the amateur satellites | 6 h |
-
-Everything fetched is cached under `solar/` in the config directory and is
-loaded *before* the first network request, so the window opens instantly with
-the last data it had and stays useful with no connection at all.
-
-The OVATION grid is issued every five minutes but fetched every thirty: it is
-900 kB, by far the largest thing here after the solar imagery, and the oval does
-not move far in half an hour. Nothing is hidden by that — the aurora panel says
-what the picture is valid for, so a half-hour-old forecast is labelled as one
-rather than presented as this instant's sky.
-
-Sunspot markers are sized by each region's real spot area and coloured by NOAA's
-own next-24-hour flare probability — grey for quiet, yellow for likely, pink for
-a region worth watching. Regions on the far side of the Sun are hidden by the
-Sun itself, as they should be. CME cones grow from the Sun at the measured
-speed, so the picture is a direct read-out of where the plasma has got to; a
-cone drawn faint has its direction estimated from the source region rather than
-fitted, and cones are coloured cyan through pink with increasing speed.
-
-![CME trajectory cones seen from outside the Earth's orbit](images/3d-cme.jpg)
-
-*Credits: solar imagery courtesy of NASA/SDO and the AIA and HMI science teams;
-CME and flare data from NASA CCMC's DONKI; sunspot regions, geomagnetic indices,
-solar flux, X-ray data and the OVATION aurora model from NOAA SWPC; ionosonde
-soundings from the GIRO
-network via [prop.kc2g.com](https://prop.kc2g.com/); satellite element sets from
-[CelesTrak](https://celestrak.org/), propagated with SGP4.*
-
 ---
 
 ## 3. Digital modes
@@ -579,7 +338,7 @@ Click **SETUP** in the QSO area to open the **FT8 / FT4 Setup** window:
 
 ![The FT8 / FT4 setup window](images/08-ft8-setup.png)
 
-These settings are saved to `digi.json` (see [configuration files](#10-configuration-files)).
+These settings are saved to `digi.json` (see [configuration files](#11-configuration-files)).
 
 ### 3.3 The operating panel
 
@@ -627,7 +386,7 @@ manual entries. You can:
   (contest id and sent/received serial numbers). If you've already worked that
   call on the band, a **⚠ WORKED BEFORE** badge appears. Press **LOOKUP** to
   fill name/QTH/grid from your callsign-lookup provider (see
-  [§8.2](#82-callsign-lookup)).
+  [§9.2](#92-callsign-lookup)).
 - **EDIT** / **DEL** — edit or delete an entry. Editing preserves fields the form
   doesn't show (resolved DXCC/zones, QSL status).
 - **IMPORT** — load QSOs from an ADIF (`.adi`) file. Imported records are
@@ -642,7 +401,7 @@ confirmed. Hover it for the per-service detail.
 
 Records also hold the fields used by lookup, upload and awards — DXCC entity,
 CQ/ITU zones, IOTA and POTA/SOTA references, and per-service QSL status. See
-[§8. Spotting, awards, and QSL upload](#8-spotting-awards-and-qsl-upload) for the
+[§9. Spotting, awards, and QSL upload](#9-spotting-awards-and-qsl-upload) for the
 one-click upload buttons and award tracking.
 
 The log is stored in `qso_log.json`.
@@ -913,7 +672,7 @@ the command line with `--device`.
 ### 5.3 CAT radios (serial control + USB audio)
 
 A CAT radio is configured on the **Radio** tab (with the sound card chosen on
-the **Audio** tab, [5.6](#56-radio-audio-devices)). The audio arrives over a USB
+the **Audio** tab, [5.7](#57-radio-audio-devices)). The audio arrives over a USB
 sound card, separately from your computer's speakers and microphone.
 
 ![The Radio tab with the CAT / Audio interface selected](images/settings-radio-cat.jpg)
@@ -999,7 +758,62 @@ wideband IQ stream and transmitting audio back. On the **Radio** tab:
 Receive is wideband IQ (full panadapter and skimmers); transmit sends audio to
 the TCI server, which modulates it.
 
-### 5.6 Radio audio devices
+> This is sdroxide acting as a TCI *client*. For the other direction — sdroxide
+> acting as the rig so WSJT-X and friends can drive it — see
+> [§ 5.6 Built-in TCI server](#56-built-in-tci-server).
+
+### 5.6 Built-in TCI server
+
+sdroxide also *is* a TCI server, so TCI-capable programs can use it as their
+radio: frequency and mode control, a wideband IQ stream, receive audio to
+decode, and transmit audio to put on the air. It is **on by default** and
+configured on the **TCI Server** tab of the Settings dialog.
+
+![The TCI server settings](images/settings-tci-server.jpg)
+
+- **Enable** — turn the whole server on or off.
+- **Listen on** — `127.0.0.1` (this machine only, the default) or `0.0.0.0`
+  (reachable from your whole network).
+- **Port** — 50001 by default, the port TCI clients expect.
+- **Device name** — what clients see in the connect handshake.
+- **Max clients** — how many programs may connect at once. They all see the same
+  radio, and the last command wins.
+- **Allow clients to transmit** — turn this off to let programs read and tune
+  but never key the transmitter.
+
+The status line under the settings shows whether the server is listening, on
+which address, and **how many clients are connected right now**. Press **APPLY**
+to save and (re)bind.
+
+Setting up WSJT-X: under *Settings → Radio*, choose the **TCI Client RX1** rig,
+put sdroxide's address in **TCI Server** (e.g. `127.0.0.1:50002`), set PTT to
+**CAT**, and tick **TCI audio** so both audio devices come over TCI. JTDX and
+MSHV are configured the same way. Verified against WSJT-X on this address.
+
+If a client won't connect, run sdroxide with
+`RUST_LOG=sdroxide_tci=debug` — the whole TCI conversation is logged in both
+directions, which is usually enough to see which command it gave up on. WSJT-X
+also records the reason in `~/.local/share/WSJT-X/wsjtx_syslog.log`
+(`handle_transceiver_failure: reason: …`).
+
+A few things worth knowing:
+
+- **Port 50001 may already be taken.** If you also run ExpertSDR3 or Thetis on
+  this machine, it owns that port and sdroxide's server can't bind — the status
+  line says so. Move sdroxide's server to another port and point your clients
+  there.
+- **No authentication.** TCI has none, which is why the default is localhost. On
+  `0.0.0.0`, anyone who can reach the port can tune and key your transmitter.
+- **The transmitter has one owner.** A second program asking to transmit while
+  another is mid-over is refused, and keying up yourself (PTT, TUNE, or a
+  digital-mode burst) always takes the transmitter back from a client.
+- **A CAT radio has no IQ to share.** On the CAT interface sdroxide only
+  receives demodulated audio, so it offers control and audio to clients but no
+  IQ stream.
+- **Receive pauses while you transmit**, unless the radio is full-duplex — the
+  same as any other TCI rig.
+
+### 5.7 Radio audio devices
 
 On the **Audio** tab, the *Radio audio* section selects the sound card the CAT
 radio uses:
@@ -1019,7 +833,7 @@ example `C-Media Electronics Inc. USB Audio Device, USB Audio [Device · 0d8c:00
 > for IQ, sdroxide refuses it and shows a warning banner. Use a stereo line-input
 > interface for IQ, or choose **Demod audio**.
 
-### 5.7 Your own audio devices
+### 5.8 Your own audio devices
 
 The *Your audio* section of the **Audio** tab selects the speakers and
 microphone sdroxide uses for you (separate from the radio-audio devices):
@@ -1030,7 +844,7 @@ microphone sdroxide uses for you (separate from the radio-audio devices):
 Each defaults to **System default**. These can be changed live. The equivalents
 in `config.toml` are `audio_output` and `audio_input`.
 
-### 5.8 Linux / PipeWire note for dedicated radio sound cards
+### 5.9 Linux / PipeWire note for dedicated radio sound cards
 
 On a PipeWire system, the desktop audio server can hold a USB radio codec's
 capture device open, which intermittently blocks sdroxide from opening it (the
@@ -1038,9 +852,9 @@ symptom is silent receive and a "waiting for spectrum" panadapter). For a
 sound card dedicated to the radio, the reliable fix is to tell WirePlumber to
 stop managing that card, leaving it for sdroxide. Create a drop-in such as
 `~/.config/wireplumber/wireplumber.conf.d/51-radio.conf` that disables the
-card, then restart WirePlumber. See [troubleshooting](#11-troubleshooting).
+card, then restart WirePlumber. See [troubleshooting](#12-troubleshooting).
 
-### 5.9 UI preferences
+### 5.10 UI preferences
 
 ![The UI tab: frame rate, scroll/spectrum speed, palette, and spectrum background](images/settings-ui.jpg)
 
@@ -1057,12 +871,256 @@ The **UI** tab holds display preferences (stored in `config.toml` under `[ui]`):
 
 ---
 
-## 6. Remote operation
+## 6. Solar system 3D view
+
+The **☀ 3D** button in the Display module opens a second window showing the Sun,
+Earth and Moon in three dimensions, with live solar imagery, sunspot regions and
+coronal-mass-ejection trajectories. This enables operators to see if anything is 
+on its way here, and when it will arrive.
+
+![The solar disk in AIA 171, with sunspot regions, a flare marker and the CME arrival banner](images/3d-sun.jpg)
+
+The Earth wears the same coastline data as the FT8 world map, lit by the real
+Sun with a soft terminator, and your QTH is marked with a green ring once you
+zoom in far enough for a point on the surface to mean anything.
+
+The Earth carries the same coastlines as the FT8 map, your QTH is the green
+ring, and the yellow dot is the point the Sun is directly overhead.
+
+![The Earth with the FT8 coastlines, the QTH ring and the sub-solar point](images/3d-earth.jpg)
+
+**Mouse:**
+
+| Action | Effect |
+| --- | --- |
+| Drag | Rotate around the focused body |
+| Scroll | Zoom in and out |
+
+Any mouse input cancels **AUTO**.
+
+**View** — pick what the camera pivots around: `SUN`, `EARTH`, `MOON`, or `E+M`
+(the Earth–Moon midpoint). **▶ AUTO** flies a continuous camera path through
+eight framed viewpoints — overhead of the whole system, over the Earth's
+shoulder towards the Sun, face-on to the solar disk, along the day/night
+terminator, over the Sun's pole, a diagonal on the Earth–Moon pair, a long look
+back at the Earth from out by the Sun, and a wide inner-system view. The path is
+a spline through those viewpoints, so the camera curves between them rather than
+stopping and restarting at each. Moving between viewpoints that frame different
+bodies flies the camera across the gap — Earth to Sun is a 1 AU trip — rather
+than cutting; it holds each one for ten to sixteen seconds
+with a slow drift, and the whole loop takes about two minutes. Re-enabling AUTO
+picks up at whichever viewpoint is nearest your current view.
+
+**Layers** — `ORBITS` (Earth and Moon paths, sampled from the real ephemeris, so
+they are the true eccentric orbits), `CME`, `SPOTS`, `FLARES`, `GRID` (the solar
+rotation axis, equator and heliographic parallels), `LABELS`, `STARS`, `QSO`,
+`SATS` and `AURORA`.
+
+**The AURORA layer** puts the auroral oval on the globe, live, from NOAA's
+OVATION model — a 1°×1° grid of the probability of seeing aurora, issued every
+few minutes and valid about forty minutes ahead.
+
+It is drawn as a stack of glowing shells at the altitudes the atmosphere
+actually radiates at, not as a texture painted on the surface, and everything
+about how it looks falls out of that. The colour changes with height because the
+emission lines do: green oxygen at 557.7 nm around 110 km, the forbidden red
+line at 630 nm hundreds of kilometres above it, and a violet nitrogen fringe
+underneath when the precipitation is hard — which is why a quiet oval is green
+and a storm goes crimson at the top. The limb is far brighter than the disk,
+because a grazing line of sight crosses a great deal more of every shell, giving
+the thin bright ribbon on the horizon that is the most recognisable thing about
+aurora seen from orbit. The fine structure runs in arcs along the oval and in
+rays through the stack, because auroral precipitation is field-aligned. And
+because the emission is only *drowned out* by daylight rather than stopped by
+it, the sunlit half of the oval fades to a floor rather than to nothing — you
+can still see where it is.
+
+The structure is shaping, not invention: it multiplies what the grid says and
+can never put aurora where NOAA has none. **The green contour on the surface is
+the honest boundary** — the equatorward edge of the 10 % line, straight off the
+grid, drawn to be compared against your own latitude. It bulges towards the
+equator on the night side and over the magnetic poles, which is where it really
+does; the southern oval reaches much lower geographic latitudes than the
+northern one for exactly that reason.
+
+**Aurora panel** — under the propagation numbers on the right:
+
+| Row | What it is |
+| --- | --- |
+| `power N/S` | Gigawatts being deposited in each auroral zone. This is the number that says how big the event is. |
+| `activity` | The same figure as NOAA's Hemispheric Power Index, 1–10, with a word for it. Yellow from HPI 6, pink from 8. |
+| `edge N/S` | How far towards the equator the 10 % contour reaches in each hemisphere, read off the grid. |
+| *your grid square* | The probability of visible aurora directly over your QTH. Green when there is anything at all, yellow past 10 %, pink past 25 %. |
+| `Kp peak 24 h` | The worst three-hour bin still ahead of you in NOAA's planetary K forecast, and how far away it is. |
+| `viewline` | Roughly how far towards the equator that Kp puts the aurora, as a **geomagnetic** latitude. A rule of thumb — see below. |
+
+Under the rows, one bar per three-hour bin over the next day: the shape answers
+"is it worth staying up" faster than eight numbers would. Green is quiet, yellow
+worth watching, pink a storm. The footer says what the picture is *valid for*
+and how old the fetch is — never what time it is now, because the grid is a
+forecast for about forty minutes ahead and may itself be half an hour old.
+
+The `viewline` row is the one number here that is not measured. It is a
+straight-line fit to SWPC's published table (66.5° at Kp 0, falling about 2° per
+unit of Kp) and it says nothing about cloud, moonlight or how dark your sky is;
+geomagnetic latitude is also several degrees from geographic at most longitudes.
+The oval on the globe needs none of those caveats, so prefer it when the two
+seem to disagree.
+
+**The SATS layer** puts amateur-radio satellites in orbit around the globe, live,
+propagated with SGP4 from CelesTrak element sets. Ten popular ones are drawn by
+default with their orbit rings — QO-100, the ISS, AO-7, FO-29, SO-50, AO-73,
+JO-97, RS-44, XW-3 and IO-117. Geostationary orbits are green, low ones cyan.
+`ALL SATS` in the Sun module adds every satellite in the amateur element set as a
+plain dot; the orbit rings stay on the curated few, because ninety rings at once
+is unreadable.
+
+With `LABELS` on, each of the curated satellites is named with **its elevation
+from your QTH right now** — a number means it is above your horizon and
+workable, `▼` means it is not.
+
+![Aurora and satellite visualization and pass table](images/17-sats-passes.jpg)
+
+**Click a satellite's label** for its pass table:
+
+| Column | Meaning |
+| --- | --- |
+| `START` / `END` | Rise and set times, UTC |
+| `DUR` | How long the pass lasts |
+| `AOS` / `LOS` | Azimuth at the horizon on acquisition and loss — where to point, and where it ends up |
+| `MAX EL` | Highest elevation reached, with a word for how good that makes the pass |
+
+A pass already under way is shown in green, one starting within the hour in
+yellow. QO-100 is geostationary, so instead of a table it tells you the fixed
+azimuth and elevation to point at — it never sets. A satellite whose orbit never
+reaches your latitude says so rather than showing an empty table. Click the label
+again, or close the window, to dismiss it.
+
+Predictions come from SGP4 on the current element set, and the window shows how
+old those elements are. A day-old TLE is good to a second or so on rise time; a
+week-old one is not, which is why the age is on display.
+
+**The QSO layer** puts your FT8/FT4 traffic on the globe. Every station decoded
+in the last two minutes is a white dot that fades as it ages — the same set the
+flat map in the FT8 panel shows, so the two never disagree. The station you are
+working is joined to your QTH by a cyan arc, and a decode you have clicked but
+not yet answered by a yellow one. The arcs are true great circles lifted off the
+surface, bowing further out the longer the path: an antipodal contact springs
+well clear of the planet, which is the only way both ends stay visible at once
+on a sphere. While you transmit, a bright pulse runs along the arc.
+
+**Sun** — which SDO product wraps the Sun:
+
+| Chip | Product |
+| --- | --- |
+| `HMI` | HMI continuum — white light. **This is the one that shows sunspots.** |
+| `193` | AIA 193 Å — corona and coronal holes |
+| `304` | AIA 304 Å — chromosphere and filaments |
+| `171` | AIA 171 Å — quiet corona and coronal loops |
+| `211` | AIA 211 Å — active-region corona |
+| `MIX` | The 211/193/171 composite |
+
+`↻` fetches everything again immediately. Next to the chips is the age of the
+solar image — green when it is current, yellow when the last fetch failed and
+you are seeing a cached picture, pink when there is nothing at all. It always
+tells you what you are actually looking at; a cached image is never presented as
+a live one.
+
+**Scale** — the Earth is 23 000 times smaller than its distance from the Sun, so
+at true scale it is invisible whenever the Sun is in frame. `body` exaggerates
+Earth and Moon radius (default 20×) and `moon orbit` stretches the
+Earth–Moon distance. **Positions are never exaggerated** — only sizes — so the
+orbits and the CME geometry stay physically truthful. Body scale is capped
+against the moon-orbit scale, because past that point the enlarged Moon would
+render inside the Earth. Every body also has a glow with a minimum on-screen
+size, so nothing is ever invisible however you set these.
+
+**Time** — `NOW`, `−24h`, `−6h`, `+6h`, `+24h` scrub the whole scene, bodies and
+all, forwards and backwards.
+
+**Clock** — a UTC time readout sits in the top-left corner. Scrubbing the time 
+with the `±6h`/`±24h` chips turns it yellow and relabels it `SIM`, denoting  
+that the time displayed is not the current real time.
+
+**Propagation panel** — top right, the numbers worth checking before you call CQ:
+
+| Row | What it is |
+| --- | --- |
+| `MUF` | Maximum usable frequency for a 3000 km path near your QTH, interpolated from the ionosonde network. Green above 24 MHz, cyan above 14, yellow below. |
+| `Kp / A` | Planetary geomagnetic indices. Green when quiet, yellow from Kp 4, pink from Kp 5 (a storm — polar paths degrade and aurora becomes possible). |
+| `F10.7` | 10.7 cm solar radio flux in solar flux units, the standard proxy for ionisation. Under about 90 the high bands stay shut; over 150 they open up. |
+| `X-ray` | Current GOES soft X-ray class. Turns pink at M class and above, which is when the D layer starts absorbing HF on the daylit side. |
+
+The line under the MUF says how far away the nearest contributing ionosonde is
+and how much to trust the number. MUF is interpolated, not measured at your
+location, and the ionosphere changes sharply across the day/night terminator —
+a value drawn from sounders 3000 km away on the other side of it is a guess, and
+the panel says so rather than hiding it. When no sounder is in range it reads
+`no sounder`.
+
+**Readouts** — the card at the bottom left gives UTC, the sub-solar point, the
+solar disk's B0 and L0 angles, the Sun's elevation and azimuth from your QTH
+(and whether it is day or night there), and how many CMEs and sunspot groups are
+being shown. When an Earth-directed CME is in the data, a banner across the
+bottom names it with its speed and estimated arrival:
+
+```
+EARTH-DIRECTED CME  2026-07-10 09:48Z  ·  516 km/s  ·  ETA 2026-07-12 14:20Z (+38 h)
+```
+
+Arrival is a straight-line constant-speed estimate from the fitted cone. Proper 
+forecasts model the CME's drag against the solar wind and are typically good to 
+about ±6 hours; treat this the same way.
+
+**Where the data comes from.** This is the only part of sdroxide that makes
+outbound internet connections, and it only does so **while this window is
+open** — closing it stops the background fetcher entirely, and never opening it
+means no request is ever made. Three hosts are contacted:
+
+| Host | Data | Refresh |
+| --- | --- | --- |
+| `sdo.gsfc.nasa.gov` | Solar disk imagery (NASA SDO — AIA and HMI) | 10 min |
+| `kauai.ccmc.gsfc.nasa.gov` | CMEs and solar flares ([NASA CCMC DONKI](https://ccmc.gsfc.nasa.gov/tools/DONKI/)) | 20 min |
+| `services.swpc.noaa.gov` | Sunspot regions, planetary K/A, 10.7 cm flux, GOES X-ray level (NOAA SWPC) | 5–60 min |
+| `services.swpc.noaa.gov` | The OVATION auroral oval grid, auroral hemispheric power, and the three-day planetary K forecast | 15–60 min |
+| `prop.kc2g.com` | Ionosonde soundings for the MUF estimate (GIRO network, aggregated by KC2G) | 15 min |
+| `celestrak.org` | Orbital element sets for the amateur satellites | 6 h |
+
+Everything fetched is cached under `solar/` in the config directory and is
+loaded *before* the first network request, so the window opens instantly with
+the last data it had and stays useful with no connection at all.
+
+The OVATION grid is issued every five minutes but fetched every thirty: it is
+900 kB, by far the largest thing here after the solar imagery, and the oval does
+not move far in half an hour. Nothing is hidden by that — the aurora panel says
+what the picture is valid for, so a half-hour-old forecast is labelled as one
+rather than presented as this instant's sky.
+
+Sunspot markers are sized by each region's real spot area and coloured by NOAA's
+own next-24-hour flare probability — grey for quiet, yellow for likely, pink for
+a region worth watching. Regions on the far side of the Sun are hidden by the
+Sun itself, as they should be. CME cones grow from the Sun at the measured
+speed, so the picture is a direct read-out of where the plasma has got to; a
+cone drawn faint has its direction estimated from the source region rather than
+fitted, and cones are coloured cyan through pink with increasing speed.
+
+![CME trajectory cones seen from outside the Earth's orbit](images/3d-cme.jpg)
+
+*Credits: solar imagery courtesy of NASA/SDO and the AIA and HMI science teams;
+CME and flare data from NASA CCMC's DONKI; sunspot regions, geomagnetic indices,
+solar flux, X-ray data and the OVATION aurora model from NOAA SWPC; ionosonde
+soundings from the GIRO
+network via [prop.kc2g.com](https://prop.kc2g.com/); satellite element sets from
+[CelesTrak](https://celestrak.org/), propagated with SGP4.*
+
+---
+
+## 7. Remote operation
 
 sdroxide can run as a headless server and be controlled from a second sdroxide
 instance (a native remote client) elsewhere on the network.
 
-### 6.1 Start the server
+### 7.1 Start the server
 
 ```
 sdroxide --server --port 4950
@@ -1072,7 +1130,7 @@ The server opens the configured radio, streams spectrum and audio, and accepts a
 WebSocket control connection. The default port is **4950** and the default bind
 address is **all interfaces** (`0.0.0.0`).
 
-### 6.2 Connect a native remote client
+### 7.2 Connect a native remote client
 
 On another machine:
 
@@ -1087,7 +1145,7 @@ Receive audio streams down (48 kHz mono), and your microphone is sent up to the
 server while you transmit. The remote client uses your local speakers and
 microphone for audio.
 
-### 6.3 What to know
+### 7.3 What to know
 
 - **One client at a time.** A second connection is refused with a "server busy"
   message.
@@ -1099,14 +1157,14 @@ microphone for audio.
 
 ---
 
-## 7. Web operation
+## 8. Web operation
 
 The same server serves a browser client, so you can operate from any device with
 a web browser.
 
 ![The web client in a browser](images/13-web-client.png)
 
-### 7.1 Serve the web client
+### 8.1 Serve the web client
 
 Builds that bundle the web UI (compiled with the `embed-web` feature, including
 the packaged binaries) serve it automatically:
@@ -1130,20 +1188,20 @@ trunk-built web directory:
 sdroxide --server --web-root path/to/sdroxide-web/dist
 ```
 
-### 7.2 What works in the browser
+### 8.2 What works in the browser
 
 The web client mirrors the native UI: tuning, mode and band changes, the
 panadapter and waterfall, receive audio, FT8/FT4, the logbook, memories, and
 meters. Microphone transmit is supported where the browser grants microphone
-access. The [solar system 3D view](#212-solar-system-3d-view) is native-only,
+access. The [solar system 3D view](#6-solar-system-3d-view) is native-only,
 and its **☀ 3D** button does not appear in the browser client. The same
 single-client and no-authentication notes as
-[remote operation](#6-remote-operation) apply — put the server behind HTTPS with
+[remote operation](#7-remote-operation) apply — put the server behind HTTPS with
 authentication if it is reachable from an untrusted network.
 
 ---
 
-## 8. Spotting, awards, and QSL upload
+## 9. Spotting, awards, and QSL upload
 
 SDR Oxide features spots you can click to work, automatic callsign lookup, 
 one-click QSO upload, and award tracking. These features are 
@@ -1154,9 +1212,9 @@ module.
 
 All of this runs on the machine with the radio (the server, in remote/web mode),
 so a browser or remote client uses it too. Credentials are stored in plaintext in
-`net.json` (see [§10](#10-configuration-files)).
+`net.json` (see [§11](#11-configuration-files)).
 
-### 8.1 Spot feeds (DX cluster, POTA, SOTA, PSK Reporter)
+### 9.1 Spot feeds (DX cluster, POTA, SOTA, PSK Reporter)
 
 ![Live spots as clickable markers on the panadapter, and the SPOTS window](images/14-spots-panel.jpg)
 
@@ -1192,7 +1250,7 @@ frequency, mode, and any grid/reference from the spot). If auto-lookup is on
 (below), the name/QTH/grid are filled in too. CW spots are tuned a sidetone pitch
 low so the signal lands in the CW passband.
 
-### 8.2 Callsign lookup
+### 9.2 Callsign lookup
 
 Auto-fill operator details from an online callsign database. On the **Uploads**
 tab of Settings, pick a **Provider** and enter its credentials:
@@ -1208,7 +1266,7 @@ it on demand. Lookups only fill fields you've left blank, so they never overwrit
 what you typed; results also enrich the matching logged QSO (name, grid, DXCC,
 zones).
 
-### 8.3 Uploading QSOs (eQSL, QRZ, Club Log, LoTW)
+### 9.3 Uploading QSOs (eQSL, QRZ, Club Log, LoTW)
 
 Configure your upload services on the **Uploads** tab:
 
@@ -1233,7 +1291,7 @@ and matches them against the log to set the **✓** (confirmed) status, which dr
 worked-vs-confirmed in the awards view. (LoTW upload stays manual; only the
 confirmation download is automated.)
 
-### 8.4 Award tracking
+### 9.4 Award tracking
 
 ![The AWARDS window: DXCC / WAS / WAZ / grids, worked vs confirmed](images/18-awards.jpg)
 
@@ -1254,7 +1312,7 @@ one at a glance.
 
 ---
 
-## 9. Command-line reference
+## 10. Command-line reference
 
 | Option | Description |
 | --- | --- |
@@ -1283,7 +1341,7 @@ one at a glance.
 
 ---
 
-## 10. Configuration files
+## 11. Configuration files
 
 sdroxide stores its settings under the per-user config directory:
 
@@ -1302,6 +1360,7 @@ sdroxide stores its settings under the per-user config directory:
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |
 | `qso_log.json` | JSON | The logbook (digital and manual QSOs, with contest/QSL fields). |
 | `net.json` | JSON | Network cockpit: DX cluster / POTA / SOTA / PSK feed settings, and callsign-lookup / eQSL / QRZ / Club Log / LoTW credentials (stored in plaintext). |
+| `tciserver.json` | JSON | Built-in TCI server: enabled, bind address, port, advertised device name, whether clients may transmit, and the client limit. |
 | `sstv_messages.json` | JSON | The overlay message stored for each of the five SSTV transmit slots. |
 | `sstv_tx/` | dir | The five SSTV transmit-image slots (`slot0.png`…`slot4.png`). |
 | `sstv_rx/` | dir | Received SSTV pictures, kept for the gallery. |
@@ -1312,7 +1371,7 @@ normally edit these through the GUI rather than by hand.
 
 ---
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 **"Waiting for spectrum" and no receive audio (CAT radio).**
 The radio's capture device could not be opened. Common causes:
@@ -1361,7 +1420,7 @@ stuck, press Apply / reconnect again.
 
 ---
 
-## 12. Appendix
+## 13. Appendix
 
 ### Keyboard shortcuts
 
@@ -1407,4 +1466,4 @@ disabled in the selector.
 
 `Classic` (PowerSDR-style), `Viridis`, `Gray`, `Icom` (Icom-style palette,
 peaking at red with no white blow-out), `Neon`, `Synthwave`, `Matrix`, and
-`Tron`. Chosen on the **UI** tab of the Settings window ([5.9](#59-ui-preferences)).
+`Tron`. Chosen on the **UI** tab of the Settings window ([5.10](#510-ui-preferences)).

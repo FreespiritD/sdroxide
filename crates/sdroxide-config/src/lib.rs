@@ -238,6 +238,16 @@ pub fn save_network_config(cfg: &sdroxide_types::NetworkConfig) -> Result<(), Co
     save_json("net.json", cfg)
 }
 
+/// Built-in TCI server config (the listener third-party TCI clients connect
+/// to). Owned by the engine, like the network-cockpit config above.
+pub fn load_tci_server_config() -> sdroxide_types::TciServerConfig {
+    load_json("tciserver.json")
+}
+
+pub fn save_tci_server_config(cfg: &sdroxide_types::TciServerConfig) -> Result<(), ConfigError> {
+    save_json("tciserver.json", cfg)
+}
+
 /// SSTV per-slot transmit overlay messages (one entry per image slot). The
 /// image pixels live as PNGs under [`sstv_tx_dir`]; this stores just the text
 /// that is composited over each slot's picture.

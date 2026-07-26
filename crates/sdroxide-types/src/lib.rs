@@ -25,6 +25,7 @@ mod spectrum;
 mod spot;
 mod sstv;
 mod state;
+mod tciserver;
 mod ui;
 
 pub use awards::{Awards, Status as AwardStatus, US_STATES, compute_awards, counts, entity_name};
@@ -64,4 +65,5 @@ pub use spectrum::{SpectrumConfig, SpectrumFrame};
 pub use spot::{Spot, SpotKind};
 pub use sstv::{SstvMode, SstvStatus};
 pub use state::{OffsetState, RadioState, RxId, RxState, SQUELCH_OPEN_DB, TxState, Vfo};
+pub use tciserver::TciServerConfig;
 pub use ui::{Speed, UiSettings};

@@ -47,6 +47,10 @@ pub enum RadioEvent {
     /// Parsed QSL-confirmation records from a [`Command::SyncConfirmations`];
     /// the UI matches these against the log to set the `*_rcvd` flags.
     Confirmations(Vec<QsoRecord>),
+    /// Built-in TCI server status: whether the listener is up, where it is
+    /// bound, how many third-party clients are connected, and any bind error.
+    /// Emitted on every transition, so the settings dialog never polls.
+    TciServerStatus { running: bool, addr: String, clients: usize, error: Option<String> },
 }
 
 /// Snapshot of the frontend's switchable sound devices (native clients).
@@ -140,6 +144,13 @@ pub trait RadioController {
     /// `None` where the client can't own it. Applied to the engine by sending
     /// [`Command::SetNetworkConfig`]. Default `None`.
     fn network_config(&self) -> Option<crate::NetworkConfig> {
+        None
+    }
+
+    /// The persisted built-in TCI server config, or `None` where the client
+    /// can't own it (the browser remote client — the server runs where the
+    /// engine runs). Applied by sending [`Command::SetTciServerConfig`].
+    fn tci_server_config(&self) -> Option<crate::TciServerConfig> {
         None
     }
 }

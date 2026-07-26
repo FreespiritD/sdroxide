@@ -245,6 +245,9 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             RadioEvent::CallsignResult(c) => Some(ServerMsg::CallsignResult(c)),
             RadioEvent::Upload(r) => Some(ServerMsg::Upload(r)),
             RadioEvent::Confirmations(r) => Some(ServerMsg::Confirmations(r)),
+            RadioEvent::TciServerStatus { running, addr, clients, error } => {
+                Some(ServerMsg::TciServerStatus { running, addr, clients, error })
+            }
         }
     };
     if let Some(msg) = msg {

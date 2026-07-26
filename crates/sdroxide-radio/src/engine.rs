@@ -21,10 +21,11 @@ use sdroxide_dsp::{
     Agc, AutoNotch, DcBlock, Ddc, Demodulator, Duc, Modulator, MonoResampler, NeuralNr,
     NoiseBlanker, SpectralNr, SpectrumAnalyzer, channel_target, make_demod, make_modulator,
 };
+use sdroxide_tci::server::{ServerRequest, TciServerController, TciStateSnapshot};
 use sdroxide_types::{
     Band, BandStackEntry, Command, DeviceCaps, DigiConfig, Direction, MemoryChannel, Meters,
-    Mode, NrLevel, RadioEvent, RadioState, RxId, RxState, SpectrumConfig, SpectrumFrame, TxMeters,
-    Vfo,
+    Mode, NrLevel, RadioEvent, RadioState, RxId, RxState, SpectrumConfig, SpectrumFrame,
+    TciServerConfig, TxMeters, Vfo,
 };
 
 use crate::recorder::Recorder;
@@ -406,6 +407,21 @@ struct TxChain {
 
 /// 10 ms of TX audio per iteration.
 const TX_AUDIO_BLOCK: usize = 480;
+/// Standing depth (40 ms) the TCI TX queue is paced towards. Each block asks
+/// the client, via a `TxChrono`, for exactly what would restore this — so a
+/// client that honours chronos tracks our real consumption instead of guessing.
+const TCI_TX_TARGET: usize = TX_AUDIO_BLOCK * 4;
+/// Consecutive short TX blocks (1.5 s) before we conclude a keyed TCI client
+/// has died and unkey. A brief gap is normal on a WebSocket and must not chop
+/// the over — half a transmitted FT8 burst decodes nowhere.
+const TCI_TX_STARVE_LIMIT: u32 = 150;
+/// IQ rate advertised to TCI clients before any of them has picked one — the
+/// widest of TCI's standard rates, snapped to a divisor of the device rate.
+const TCI_IQ_DEFAULT_HZ: f64 = 192_000.0;
+/// Queue bound for a TCI over (0.5 s). Deliberately looser than the mic's
+/// 100 ms: network audio arrives in bursts, and this only trims a client whose
+/// clock genuinely runs fast — nobody can transmit faster than real time.
+const TCI_TX_FIFO_CAP: usize = 24_000;
 /// Sample rate of the TX baseband/audio fed to the TX-monitor analyzer.
 const TX_MONITOR_RATE: f64 = 48_000.0;
 /// The TX monitor's baseband/IQ runs near digital full scale (~0 dBFS), far
@@ -526,6 +542,31 @@ struct Engine {
     skim_ddc: Option<Ddc>,
     skimmer: Option<SkimmerController>,
     skim_buf: Vec<Complex32>,
+    /// Built-in TCI server: third-party clients (WSJT-X, JTDX, skimmers)
+    /// driving this radio. Present while enabled and successfully bound.
+    tci_srv: Option<TciServerController>,
+    tci_cfg: TciServerConfig,
+    /// Last bind failure, kept so the settings dialog can show why the server
+    /// isn't running.
+    tci_srv_err: Option<String>,
+    /// Dedicated wideband decimation feeding the TCI IQ stream, at the rate the
+    /// clients asked for. `None` while nobody is subscribed.
+    tci_iq_ddc: Option<Ddc>,
+    tci_iq_buf: Vec<Complex32>,
+    /// Scratch for the interleaved I,Q the server takes.
+    tci_iq_ilv: Vec<f32>,
+    /// Resamples the clean audio tap to the 48 kHz TCI clients expect. The tap
+    /// runs at the demod's rate, which is a device-rate divisor near 48 kHz for
+    /// most modes and 64 kHz for WFM, so this is rebuilt when the mode changes.
+    tci_aud_rs: Option<MonoResampler>,
+    tci_aud_in_rate: f64,
+    tci_aud_buf: Vec<f32>,
+    /// True while the current over is fed by a TCI client's audio stream.
+    tci_tx: bool,
+    /// Consecutive short TX blocks this over, for the dead-client unkey.
+    tci_tx_starved: u32,
+    /// What we last published to TCI clients, so unchanged ticks cost nothing.
+    tci_last_snap: Option<TciStateSnapshot>,
     /// Demod-audio (CAT-rig) mode: the source delivers already-demodulated real
     /// audio, so the DDC/demod/skimmer path is bypassed for a narrow
     /// audio-band panadapter mapped to RF.
@@ -655,6 +696,18 @@ fn engine_thread(
         skim_ddc: None,
         skimmer: None,
         skim_buf: Vec::new(),
+        tci_srv: None,
+        tci_cfg: TciServerConfig::default(),
+        tci_srv_err: None,
+        tci_iq_ddc: None,
+        tci_iq_buf: Vec::new(),
+        tci_iq_ilv: Vec::new(),
+        tci_aud_rs: None,
+        tci_aud_in_rate: 0.0,
+        tci_aud_buf: Vec::new(),
+        tci_tx: false,
+        tci_tx_starved: 0,
+        tci_last_snap: None,
         audio_mode,
         radio_fs,
         audio_bw,
@@ -679,6 +732,10 @@ fn engine_thread(
     }
     // Start any enabled network spot feeds from the persisted config.
     engine.spots.set_config(sdroxide_config::load_network_config());
+    // Bring up the built-in TCI server (enabled by default) so third-party
+    // clients can connect without the operator having to arm anything.
+    engine.tci_cfg = sdroxide_config::load_tci_server_config();
+    engine.sync_tci_server();
     engine.update_tuning();
 
     let mut buf = vec![Complex32::default(); 16_384];
@@ -721,6 +778,7 @@ fn engine_thread(
         // owned actions to avoid borrowing `engine.digi` and `engine` at once.
         engine.poll_digi();
         engine.poll_skimmer();
+        engine.poll_tci_server();
         engine.poll_spots();
 
         if engine.tx_active {
@@ -766,6 +824,10 @@ fn engine_thread(
                 // IQ sources have no such sensor and leave both `None` (the meter
                 // then falls back to showing drive-side ALC).
                 let tele = engine.source.tx_telemetry().unwrap_or_default();
+                // Clients that asked for `tx_sensors` get the same figures.
+                if let Some(srv) = engine.tci_srv.as_ref() {
+                    srv.push_telemetry(tele);
+                }
                 Some(Meters {
                     s_dbm: -127.0,
                     adc_peak_dbfs: 0.0,
@@ -832,6 +894,38 @@ impl Engine {
             ddc.process(iq, &mut self.skim_buf);
             if let Some(sk) = self.skimmer.as_ref() {
                 sk.on_rx_iq(&self.skim_buf);
+            }
+        }
+        // Feed TCI clients: the same clean tap the digital decoders use (so
+        // muting or turning down sdroxide can't silence somebody's decoder),
+        // resampled to the 48 kHz TCI mandates.
+        if let (Some(srv), Some(main)) = (self.tci_srv.as_ref(), self.main.as_ref()) {
+            if main.tap_enabled && srv.wants_audio() {
+                let in_rate = main.audio_rate();
+                if (in_rate - self.tci_aud_in_rate).abs() > 0.01 {
+                    self.tci_aud_in_rate = in_rate;
+                    self.tci_aud_rs = MonoResampler::new(in_rate, 48_000.0);
+                }
+                self.tci_aud_buf.clear();
+                match self.tci_aud_rs.as_mut() {
+                    Some(r) => r.push(&main.tap_out, &mut self.tci_aud_buf),
+                    None => self.tci_aud_buf.extend_from_slice(&main.tap_out),
+                }
+                srv.on_rx_audio(&self.tci_aud_buf);
+            }
+        }
+        // ...and their wideband IQ, from its own decimation at the rate they
+        // asked for (mirroring the skimmer window above).
+        if let Some(ddc) = self.tci_iq_ddc.as_mut() {
+            self.tci_iq_buf.clear();
+            ddc.process(iq, &mut self.tci_iq_buf);
+            if let Some(srv) = self.tci_srv.as_ref() {
+                self.tci_iq_ilv.clear();
+                for c in &self.tci_iq_buf {
+                    self.tci_iq_ilv.push(c.re);
+                    self.tci_iq_ilv.push(c.im);
+                }
+                srv.on_rx_iq(&self.tci_iq_ilv, ddc.out_rate() as u32);
             }
         }
     }
@@ -1087,9 +1181,7 @@ impl Engine {
         };
         if want && !have {
             self.digi = Some(self.make_digi(mode, tap_rate));
-            if let Some(c) = self.main.as_mut() {
-                c.tap_enabled = true;
-            }
+            self.sync_audio_tap();
             if !self.audio_mode {
                 // High-resolution channel spectrum: 16k-point FFT over the
                 // ~50 kHz channel ≈ 3 Hz/bin, enough to resolve 6.25 Hz FT8 tones.
@@ -1113,14 +1205,12 @@ impl Engine {
             if self.digi_tx || self.state.tx.ptt {
                 self.state.tx.ptt = false;
                 self.digi_tx = false;
+                self.tci_tx = false;
                 self.sync_tx_state();
             }
             self.digi = None;
             self.channel_analyzer = None;
-            if let Some(c) = self.main.as_mut() {
-                c.tap_enabled = false;
-                c.tap_out.clear();
-            }
+            self.sync_audio_tap();
             info!("FT8/FT4 engine stopped");
         }
     }
@@ -1302,10 +1392,16 @@ impl Engine {
             }
             SetXit { enabled, hz } => self.state.xit = sdroxide_types::OffsetState { enabled, hz },
             SetPtt(on) => {
+                // The operator takes precedence over a TCI client: keying up
+                // locally mid-over takes the transmitter back rather than
+                // swapping the on-air audio out from under whoever is talking.
+                self.end_tci_tx();
                 self.state.tx.ptt = on;
                 self.sync_tx_state();
             }
             SetTune(on) => {
+                // As with PTT, an operator TUNE takes the transmitter back.
+                self.end_tci_tx();
                 self.state.tx.tune = on;
                 self.sync_tx_state();
                 // Toggled mid-over (PTT held): already keyed, so `sync_tx_state`
@@ -1532,6 +1628,17 @@ impl Engine {
                 self.spots.sync_confirmations();
                 return;
             }
+
+            // Built-in TCI server (no RadioState change → return before the
+            // State emit below).
+            SetTciServerConfig(cfg) => {
+                if let Err(e) = sdroxide_config::save_tci_server_config(&cfg) {
+                    warn!("saving TCI server config: {e}");
+                }
+                self.tci_cfg = cfg;
+                self.sync_tci_server();
+                return;
+            }
         }
         let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
     }
@@ -1652,6 +1759,282 @@ impl Engine {
                     let _ = self.event_tx.send(RadioEvent::SkimmerSpots(spots));
                 }
             }
+        }
+    }
+
+    /// The main receiver's clean audio tap is shared: the digital-mode engine
+    /// and the TCI server's RX-audio stream both read `tap_out`. Whoever wants
+    /// it turns it on; it switches off only when nobody does. Every decision to
+    /// enable or disable the tap goes through here — two owners writing the
+    /// flag directly would silently starve one of them.
+    fn sync_audio_tap(&mut self) {
+        let want = self.digi.is_some()
+            || self.tci_srv.as_ref().is_some_and(|s| s.wants_audio());
+        if let Some(c) = self.main.as_mut() {
+            if c.tap_enabled != want {
+                c.tap_enabled = want;
+                if !want {
+                    c.tap_out.clear();
+                }
+            }
+        }
+    }
+
+    /// Start, stop or rebind the built-in TCI server to match `tci_cfg`.
+    /// Mirrors [`Engine::sync_skimmer`].
+    fn sync_tci_server(&mut self) {
+        match (self.tci_cfg.enabled, self.tci_srv.is_some()) {
+            (true, true) => {
+                if self.tci_srv.as_ref().map(|s| s.addr()) != Some(self.tci_cfg.addr().as_str()) {
+                    // Address changed: drop first so the old port is released
+                    // before we try to take the new one (they may be the same
+                    // port on a different interface).
+                    self.tci_srv = None;
+                    self.start_tci_server();
+                } else if let Some(s) = self.tci_srv.as_ref() {
+                    // Client limit and transmit permission apply live.
+                    s.set_config(self.tci_cfg.clone());
+                    self.emit_tci_status();
+                }
+            }
+            (true, false) => self.start_tci_server(),
+            (false, true) => {
+                self.tci_srv = None;
+                self.tci_iq_ddc = None;
+                self.tci_iq_buf.clear();
+                self.tci_aud_rs = None;
+                self.tci_aud_in_rate = 0.0;
+                self.tci_tx = false;
+                self.tci_last_snap = None;
+                self.sync_audio_tap();
+                info!("TCI server stopped");
+                self.emit_tci_status();
+            }
+            (false, false) => self.emit_tci_status(),
+        }
+    }
+
+    fn start_tci_server(&mut self) {
+        self.tci_srv_err = None;
+        // The most likely first-run failure by far: sdroxide is itself a TCI
+        // client of a rig on this machine, and that rig already owns the port.
+        // Diagnose it rather than leaving the operator with "address in use".
+        if let Some(conflict) = self.tci_backend_conflict() {
+            self.tci_srv_err = Some(conflict);
+            self.emit_tci_status();
+            return;
+        }
+        let snap = self.tci_snapshot();
+        match TciServerController::start(&self.tci_cfg, &self.caps, snap.clone()) {
+            Ok(srv) => {
+                info!(addr = %self.tci_cfg.addr(), "TCI server started");
+                self.tci_srv = Some(srv);
+                self.tci_last_snap = Some(snap);
+            }
+            Err(e) => {
+                warn!("TCI server: {e}");
+                self.tci_srv_err = Some(e);
+            }
+        }
+        self.emit_tci_status();
+    }
+
+    /// The address we'd bind, when it is the very rig we are connected to as a
+    /// TCI client.
+    fn tci_backend_conflict(&self) -> Option<String> {
+        let radio = sdroxide_config::load_radio_config();
+        if radio.backend != sdroxide_types::Backend::Tci {
+            return None;
+        }
+        // The client address may omit the port (defaulting to 50001) and may
+        // name localhost in any of its spellings.
+        let (host, port) = match radio.tci.address.trim().rsplit_once(':') {
+            Some((h, p)) => (h.trim().to_string(), p.trim().parse::<u16>().unwrap_or(50_001)),
+            None => (radio.tci.address.trim().to_string(), 50_001),
+        };
+        let local = |h: &str| matches!(h, "127.0.0.1" | "localhost" | "::1" | "0.0.0.0" | "");
+        if port == self.tci_cfg.port && local(&host) && local(&self.tci_cfg.bind) {
+            return Some(format!(
+                "port {port} is the TCI radio sdroxide is connected to — pick another port"
+            ));
+        }
+        None
+    }
+
+    fn emit_tci_status(&self) {
+        let _ = self.event_tx.send(RadioEvent::TciServerStatus {
+            running: self.tci_srv.is_some(),
+            addr: self.tci_cfg.addr(),
+            clients: self.tci_srv.as_ref().map(|s| s.clients()).unwrap_or(0),
+            error: self.tci_srv_err.clone(),
+        });
+    }
+
+    /// The slice of state TCI clients see.
+    fn tci_snapshot(&self) -> TciStateSnapshot {
+        // An audio-mode source (a CAT rig on a sound card) has no wideband IQ,
+        // so a zero rate tells the server not to advertise the stream at all.
+        // Otherwise report the live decimation, or — before anyone has
+        // subscribed — the rate we *would* deliver, since a client that sees no
+        // `iq_samplerate` concludes there is no IQ stream and never asks.
+        let iq_rate = if self.audio_mode {
+            0
+        } else {
+            match self.tci_iq_ddc.as_ref() {
+                Some(d) => d.out_rate() as u32,
+                None => Ddc::rate_for(self.state.sample_rate, TCI_IQ_DEFAULT_HZ) as u32,
+            }
+        };
+        let span = if self.audio_mode { self.audio_bw } else { self.state.sample_rate } / 2.0;
+        let (lo, hi) = self
+            .caps
+            .freq_ranges_rx
+            .iter()
+            .fold((f64::MAX, 0.0f64), |(lo, hi), &(a, b)| (lo.min(a), hi.max(b)));
+        TciStateSnapshot {
+            vfo_a_hz: self.state.vfo_a_hz,
+            vfo_b_hz: self.state.vfo_b_hz,
+            center_hz: self.state.center_hz,
+            if_span_hz: span,
+            mode: self.state.rx[0].mode,
+            split: self.state.split,
+            ptt: self.state.tx.ptt,
+            tune: self.state.tx.tune,
+            drive_pct: (self.state.tx.drive * 100.0).round().clamp(0.0, 100.0) as u32,
+            tune_drive_pct: (self.state.tx.tune_drive * 100.0).round().clamp(0.0, 100.0) as u32,
+            muted: self.state.rx[0].muted,
+            volume_db: TciStateSnapshot::volume_db_from(self.state.rx[0].volume),
+            iq_rate,
+            vfo_lo_hz: if lo == f64::MAX { 0.0 } else { lo },
+            vfo_hi_hz: hi,
+            can_tx: self.caps.is_transmit_capable(),
+        }
+    }
+
+    /// Service the TCI server: carry out what clients asked for, keep the IQ
+    /// decimation matched to their subscription, and publish any state change.
+    fn poll_tci_server(&mut self) {
+        let Some(srv) = self.tci_srv.as_ref() else { return };
+        let mut clients_changed = false;
+        for req in srv.poll() {
+            match req {
+                // Everything a client can command goes through `apply`, so the
+                // ham-band guard, frequency-range checks and the usual state
+                // broadcast to the GUI all apply unchanged.
+                ServerRequest::Cmd(c) => self.apply(c),
+                ServerRequest::Key(on) => self.tci_key(on),
+                ServerRequest::Clients(_) => clients_changed = true,
+            }
+        }
+        if clients_changed {
+            self.emit_tci_status();
+        }
+        // A client that stopped feeding audio without unkeying would otherwise
+        // leave us transmitting silence indefinitely.
+        if self.tci_tx_starved > TCI_TX_STARVE_LIMIT {
+            warn!("TCI client stopped sending TX audio; unkeying");
+            self.end_tci_tx();
+            self.apply(Command::SetPtt(false));
+        }
+        self.sync_tci_iq();
+        self.sync_audio_tap();
+        self.broadcast_tci_state();
+    }
+
+    /// Build, retune or drop the IQ decimation feeding TCI clients, following
+    /// the rate they asked for. The `Ddc` snaps to an integer decimation of the
+    /// device rate, so the rate we report back is rarely the round number they
+    /// requested — which is exactly what the `iq_samplerate` echo is for.
+    fn sync_tci_iq(&mut self) {
+        // Wideband only: an audio-mode source has no IQ to decimate.
+        let want = if self.audio_mode {
+            None
+        } else {
+            self.tci_srv.as_ref().and_then(|s| s.wants_iq())
+        };
+        match want {
+            Some(rate) => {
+                // Rebuild only when the snapped result would actually differ —
+                // `rate_for` answers that without building the filters.
+                let target = Ddc::rate_for(self.state.sample_rate, rate as f64);
+                if self.tci_iq_ddc.as_ref().map(|d| d.out_rate()) != Some(target) {
+                    let ddc = Ddc::new(self.state.sample_rate, rate as f64);
+                    info!(requested = rate, actual = ddc.out_rate(), "TCI server IQ stream");
+                    self.tci_iq_ddc = Some(ddc);
+                }
+            }
+            None => {
+                if self.tci_iq_ddc.is_some() {
+                    self.tci_iq_ddc = None;
+                    self.tci_iq_buf.clear();
+                    self.tci_iq_ilv.clear();
+                }
+            }
+        }
+    }
+
+    /// Hand the transmitter to a TCI client, or take it back.
+    ///
+    /// Keying never touches `tx_active` directly: it goes through
+    /// [`Command::SetPtt`] so `sync_tx_state`'s guards (transmit-capable
+    /// device, frequency in range, `tx_ham_only`) decide, exactly as they do
+    /// for the operator. A refusal is reflected straight back to the client.
+    fn tci_key(&mut self, on: bool) {
+        if !on {
+            self.end_tci_tx();
+            self.apply(Command::SetPtt(false));
+            return;
+        }
+        // Refuse rather than interrupt: the operator, a digital-mode burst and
+        // TUNE all outrank a network client.
+        if !self.tci_cfg.allow_tx || self.digi_tx || self.state.tx.ptt || self.state.tx.tune {
+            if let Some(s) = self.tci_srv.as_ref() {
+                s.deny_tx();
+            }
+            return;
+        }
+        self.apply(Command::SetPtt(true));
+        if self.state.tx.ptt {
+            self.tci_tx = true;
+            self.tci_tx_starved = 0;
+            // Start from an empty ring so a previous over's tail can't play.
+            if let Some(s) = self.tci_srv.as_mut() {
+                s.drain_tx_audio();
+            }
+        } else if let Some(s) = self.tci_srv.as_ref() {
+            // A safety rail refused; tell the client so it stops streaming.
+            s.deny_tx();
+        }
+    }
+
+    /// End a TCI-driven over: stop sourcing from the client, discard what it
+    /// queued, and tell it we are no longer transmitting on its behalf.
+    /// Idempotent — every path that could end the over calls it.
+    fn end_tci_tx(&mut self) {
+        if !self.tci_tx {
+            return;
+        }
+        self.tci_tx = false;
+        self.tci_tx_starved = 0;
+        self.mic_fifo.clear();
+        if let Some(s) = self.tci_srv.as_mut() {
+            s.drain_tx_audio();
+            s.deny_tx();
+        }
+    }
+
+    /// Publish the current state to TCI clients when it has changed.
+    ///
+    /// One diff per tick rather than emits scattered through `apply`: this also
+    /// catches a CAT rig's dial being turned (`apply_control`), a device swap,
+    /// and a transmit request the safety rails refused — none of which any
+    /// single command handler sees.
+    fn broadcast_tci_state(&mut self) {
+        let Some(srv) = self.tci_srv.as_ref() else { return };
+        let snap = self.tci_snapshot();
+        if self.tci_last_snap.as_ref() != Some(&snap) {
+            srv.broadcast_state(snap.clone());
+            self.tci_last_snap = Some(snap);
         }
     }
 
@@ -1797,11 +2180,7 @@ impl Engine {
                 self.sub = self.state.sub_rx_enabled.then(|| {
                     RxChain::new(self.state.sample_rate, &self.state.rx[1], a.out_rate)
                 });
-                if self.digi.is_some() {
-                    if let Some(c) = self.main.as_mut() {
-                        c.tap_enabled = true;
-                    }
-                }
+                self.sync_audio_tap();
                 info!(out_rate = a.out_rate, "audio output swapped");
             }
             None => {
@@ -1897,6 +2276,16 @@ impl Engine {
         self.skimmer = None;
         self.skim_ddc = None;
         self.skim_buf.clear();
+        // The TCI server itself survives the swap — clients stay connected
+        // across a device change — but everything derived from the old device
+        // rate is rebuilt below by `sync_tci_iq` / `sync_audio_tap`.
+        self.tci_iq_ddc = None;
+        self.tci_iq_buf.clear();
+        self.tci_iq_ilv.clear();
+        self.tci_aud_rs = None;
+        self.tci_aud_in_rate = 0.0;
+        self.tci_tx = false;
+        self.tci_last_snap = None;
         self.audio_re.clear();
         self.audio_play.clear();
 
@@ -1926,6 +2315,11 @@ impl Engine {
         if !self.audio_mode {
             self.sync_skimmer();
         }
+        // Re-derive the TCI streams at the new device rate and push a fresh
+        // state burst, so connected clients follow the swap.
+        self.sync_tci_iq();
+        self.sync_audio_tap();
+        self.broadcast_tci_state();
         self.update_tuning();
     }
 
@@ -2037,6 +2431,73 @@ impl Engine {
         }
     }
 
+    /// Top up the 48 kHz TX FIFO from whichever source owns this over — a TCI
+    /// client's audio stream, or the local microphone — and bound the queue.
+    ///
+    /// Returns `false` while a TCI over is still building its cushion: network
+    /// audio arrives in bursts, so transmitting the first block that turns up
+    /// would underrun a moment later.
+    fn fill_tx_audio_fifo(&mut self) -> bool {
+        if !self.tci_tx {
+            if let Some(mic) = self.mic.as_mut() {
+                let mut raw = Vec::with_capacity(mic.consumer.slots());
+                while let Ok(s) = mic.consumer.pop() {
+                    raw.push(s);
+                }
+                match &mut self.mic_resampler {
+                    Some(r) => r.push(&raw, &mut self.mic_fifo),
+                    None => self.mic_fifo.extend_from_slice(&raw),
+                }
+            }
+            // Latency bound: keep at most 100 ms queued.
+            if self.mic_fifo.len() > 4_800 {
+                let cut = self.mic_fifo.len() - 4_800;
+                self.mic_fifo.drain(..cut);
+            }
+            return true;
+        }
+
+        // A TCI client owns this over. Drain and discard the real microphone so
+        // it can't leak in alongside.
+        if let Some(mic) = self.mic.as_mut() {
+            while mic.consumer.pop().is_ok() {}
+        }
+        if let Some(srv) = self.tci_srv.as_mut() {
+            let mut block = [0.0f32; TX_AUDIO_BLOCK];
+            loop {
+                let n = srv.read_tx_audio(&mut block);
+                self.mic_fifo.extend_from_slice(&block[..n]);
+                if n < TX_AUDIO_BLOCK {
+                    break;
+                }
+            }
+            // Closed-loop pacing: ask for exactly what would restore the target
+            // depth. A client that honours chronos then follows our real
+            // consumption; one that self-paces (as sdroxide's own client does
+            // when a rig never chronos) simply ignores them and still works.
+            let deficit = TCI_TX_TARGET.saturating_sub(self.mic_fifo.len());
+            if deficit >= TX_AUDIO_BLOCK {
+                srv.request_chrono(deficit as u32);
+            }
+        }
+        if self.mic_fifo.len() > TCI_TX_FIFO_CAP {
+            let cut = self.mic_fifo.len() - TCI_TX_FIFO_CAP;
+            self.mic_fifo.drain(..cut);
+        }
+        // `tx_pace` is unset until the first block goes out, marking the pre-roll.
+        if self.tx_pace.is_none() {
+            return self.mic_fifo.len() >= TX_AUDIO_BLOCK * 3;
+        }
+        // Short of a full block is an underrun: pad with silence rather than
+        // chop the over, but count it so a dead client is eventually unkeyed.
+        if self.mic_fifo.len() < TX_AUDIO_BLOCK {
+            self.tci_tx_starved += 1;
+        } else {
+            self.tci_tx_starved = 0;
+        }
+        true
+    }
+
     /// One ~10 ms transmit block: mic → modulator → drive → DUC → device.
     fn tx_block(&mut self) -> crate::Result<()> {
         // A CAT/TCI rig modulates itself; we just route raw 48 kHz TX audio to
@@ -2050,24 +2511,13 @@ impl Engine {
             return self.tx_block_digi();
         }
 
-        let Some(tx) = self.tx.as_mut() else { return Ok(()) };
-
-        // Drain the mic into a 48 kHz FIFO.
-        if let Some(mic) = self.mic.as_mut() {
-            let mut raw = Vec::with_capacity(mic.consumer.slots());
-            while let Ok(s) = mic.consumer.pop() {
-                raw.push(s);
-            }
-            match &mut self.mic_resampler {
-                Some(r) => r.push(&raw, &mut self.mic_fifo),
-                None => self.mic_fifo.extend_from_slice(&raw),
-            }
-            // Latency bound: keep at most 100 ms queued.
-            if self.mic_fifo.len() > 4_800 {
-                let cut = self.mic_fifo.len() - 4_800;
-                self.mic_fifo.drain(..cut);
-            }
+        // Fill the 48 kHz FIFO from whoever owns this over (mic or TCI client).
+        if !self.fill_tx_audio_fifo() {
+            std::thread::sleep(Duration::from_millis(2));
+            return Ok(());
         }
+        let tci_tx = self.tci_tx;
+        let Some(tx) = self.tx.as_mut() else { return Ok(()) };
 
         tx.mod_buf.clear();
         if self.state.tx.tune || tx.modulator.is_none() {
@@ -2081,7 +2531,9 @@ impl Engine {
             audio[..take].copy_from_slice(&self.mic_fifo[..take]);
             self.mic_fifo.drain(..take);
 
-            let mic_gain = self.state.tx.mic_gain * 2.0;
+            // Mic gain is the operator's microphone control; a TCI client sets
+            // its own level and uses `drive` for power, so it is left alone.
+            let mic_gain = if tci_tx { 1.0 } else { self.state.tx.mic_gain * 2.0 };
             for a in &mut audio {
                 *a = tx.dc.run(*a) * mic_gain;
             }
@@ -2212,20 +2664,10 @@ impl Engine {
                 }
             }
         } else {
-            // Voice: mic → 48 kHz FIFO → this block, with mic gain.
-            if let Some(mic) = self.mic.as_mut() {
-                let mut raw = Vec::with_capacity(mic.consumer.slots());
-                while let Ok(s) = mic.consumer.pop() {
-                    raw.push(s);
-                }
-                match &mut self.mic_resampler {
-                    Some(r) => r.push(&raw, &mut self.mic_fifo),
-                    None => self.mic_fifo.extend_from_slice(&raw),
-                }
-                if self.mic_fifo.len() > 4_800 {
-                    let cut = self.mic_fifo.len() - 4_800;
-                    self.mic_fifo.drain(..cut);
-                }
+            // Voice: mic (or a TCI client's stream) → 48 kHz FIFO → this block.
+            if !self.fill_tx_audio_fifo() {
+                std::thread::sleep(Duration::from_millis(2));
+                return Ok(());
             }
             // On a real-time-paced network rig (TCI), build a small cushion before
             // the first block so the mic's bursty delivery can't underrun the
@@ -2241,7 +2683,9 @@ impl Engine {
             let take = self.mic_fifo.len().min(TX_AUDIO_BLOCK);
             audio[..take].copy_from_slice(&self.mic_fifo[..take]);
             self.mic_fifo.drain(..take);
-            let gain = self.state.tx.mic_gain * 2.0;
+            // A TCI client sets its own audio level; the mic-gain control is for
+            // the operator's microphone and would double-scale it.
+            let gain = if self.tci_tx { 1.0 } else { self.state.tx.mic_gain * 2.0 };
             for a in &mut audio {
                 *a = (*a * gain).clamp(-1.0, 1.0);
             }

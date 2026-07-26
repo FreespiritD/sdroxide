@@ -27,7 +27,8 @@ const SKIMMER_FADE_SECS: f64 = 5.0;
 const FT8_LABEL_MAX_AGE_SECS: i64 = 45;
 
 /// Settings dialog tabs: the radio interface + its settings, audio devices,
-/// display/UI preferences, and the network cockpit (spot feeds + uploads).
+/// display/UI preferences, the network cockpit (spot feeds + uploads), and the
+/// built-in TCI server.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsTab {
     General,
@@ -36,6 +37,33 @@ enum SettingsTab {
     Ui,
     Spots,
     Uploads,
+    TciServer,
+}
+
+/// Everything the settings dialog can change, collected in one place.
+///
+/// The window closure borrows `&self`, so `settings_body` can't reach
+/// `&mut self.ctrl` — edits are written here and applied by `settings_window`
+/// after the closure returns.
+struct SettingsIo<'a> {
+    iface_opts: &'a [sdroxide_types::Backend],
+    radio_edit: &'a mut Option<sdroxide_types::RadioConfig>,
+    audio_pick: &'a mut Option<(bool, Option<String>)>,
+    hpsdr_discover: &'a mut bool,
+    tci_test: &'a mut bool,
+    apply_iface: &'a mut bool,
+    ui_edit: &'a mut sdroxide_types::UiSettings,
+    digi_edit: &'a mut sdroxide_types::DigiConfig,
+    digi_seeded: bool,
+    net_edit: &'a mut NetworkConfig,
+    net_cmds: &'a mut String,
+    net_apply: &'a mut bool,
+    net_sync: &'a mut bool,
+    /// The built-in TCI *server* — this app acting as a rig for third-party
+    /// clients, as opposed to the TCI client configured on the Radio tab.
+    tci_srv_edit: &'a mut sdroxide_types::TciServerConfig,
+    tci_srv_apply: &'a mut bool,
+    tab: &'a mut SettingsTab,
 }
 
 /// Repaint-poll cadence when no spectrum stream is flowing (startup, connection
@@ -265,6 +293,14 @@ pub struct SdroxideApp {
     /// dialog's Spots / Uploads tabs).
     net_cfg_edit: NetworkConfig,
     net_cfg_seeded: bool,
+    // ── Built-in TCI server ──
+    /// UI-owned editable copy of the TCI server config, seeded from the
+    /// controller when the settings dialog opens.
+    tci_srv_edit: sdroxide_types::TciServerConfig,
+    tci_srv_seeded: bool,
+    /// Live server status (bound address, connected clients, bind error) from
+    /// `RadioEvent::TciServerStatus`.
+    tci_srv_status: Option<TciServerStatus>,
     /// Editable "extra cluster commands" (one per line), split into
     /// `net_cfg_edit.cluster.commands` on apply.
     net_cluster_cmds: String,
@@ -495,6 +531,9 @@ impl SdroxideApp {
             spot_in_view_only: false,
             net_cfg_edit: net_cfg,
             net_cfg_seeded: true,
+            tci_srv_edit: sdroxide_types::TciServerConfig::default(),
+            tci_srv_seeded: false,
+            tci_srv_status: None,
             net_cluster_cmds,
             net_log: Vec::new(),
             adif_import_inbox: Arc::new(Mutex::new(None)),
@@ -3901,6 +3940,12 @@ impl SdroxideApp {
             self.audio_devices = self.ctrl.audio_devices();
             self.radio_cfg = self.ctrl.radio_config();
             self.serial_ports = self.ctrl.serial_ports();
+            // The TCI server lives with the engine, so only a native client
+            // owns its config; the browser remote gets `None` and a note.
+            if let Some(cfg) = self.ctrl.tci_server_config() {
+                self.tci_srv_edit = cfg;
+                self.tci_srv_seeded = true;
+            }
             self.audio_devices_queried = true;
         }
         // Apply the operator-identity fallback before editing the net config.
@@ -3920,6 +3965,8 @@ impl SdroxideApp {
         let mut net_cmds = self.net_cluster_cmds.clone();
         let mut net_apply = false;
         let mut net_sync = false;
+        let mut tci_srv_edit = self.tci_srv_edit.clone();
+        let mut tci_srv_apply = false;
 
         // The concrete interface types the user chooses between. SoapySDR only
         // appears when compiled in; there is no auto-detect (an unavailable
@@ -3943,20 +3990,24 @@ impl SdroxideApp {
                 self.settings_body(
                     ui,
                     cmds,
-                    &iface_opts,
-                    &mut radio_edit,
-                    &mut audio_pick,
-                    &mut hpsdr_discover,
-                    &mut tci_test,
-                    &mut apply_iface,
-                    &mut ui_edit,
-                    &mut digi_edit,
-                    digi_seeded,
-                    &mut net_edit,
-                    &mut net_cmds,
-                    &mut net_apply,
-                    &mut net_sync,
-                    &mut tab,
+                    &mut SettingsIo {
+                        iface_opts: &iface_opts,
+                        radio_edit: &mut radio_edit,
+                        audio_pick: &mut audio_pick,
+                        hpsdr_discover: &mut hpsdr_discover,
+                        tci_test: &mut tci_test,
+                        apply_iface: &mut apply_iface,
+                        ui_edit: &mut ui_edit,
+                        digi_edit: &mut digi_edit,
+                        digi_seeded,
+                        net_edit: &mut net_edit,
+                        net_cmds: &mut net_cmds,
+                        net_apply: &mut net_apply,
+                        net_sync: &mut net_sync,
+                        tci_srv_edit: &mut tci_srv_edit,
+                        tci_srv_apply: &mut tci_srv_apply,
+                        tab: &mut tab,
+                    },
                 );
             });
         if let Some(r) = &resp {
@@ -3979,6 +4030,11 @@ impl SdroxideApp {
         }
         if net_sync {
             cmds.push(Command::SyncConfirmations);
+        }
+        self.tci_srv_edit = tci_srv_edit;
+        if tci_srv_apply {
+            // The engine persists tciserver.json when it binds (or fails to).
+            cmds.push(Command::SetTciServerConfig(self.tci_srv_edit.clone()));
         }
         if let Some((output, name)) = audio_pick {
             self.ctrl.set_audio_device(output, name);
@@ -4026,25 +4082,10 @@ impl SdroxideApp {
 
     /// The Settings body: a Radio tab (one interface selector drives the
     /// interface-specific section) and an Audio tab (device selection).
-    fn settings_body(
-        &self,
-        ui: &mut egui::Ui,
-        cmds: &mut Vec<Command>,
-        iface_opts: &[sdroxide_types::Backend],
-        radio_edit: &mut Option<sdroxide_types::RadioConfig>,
-        audio_pick: &mut Option<(bool, Option<String>)>,
-        hpsdr_discover: &mut bool,
-        tci_test: &mut bool,
-        apply_iface: &mut bool,
-        ui_edit: &mut sdroxide_types::UiSettings,
-        digi_edit: &mut sdroxide_types::DigiConfig,
-        digi_seeded: bool,
-        net_edit: &mut NetworkConfig,
-        net_cmds: &mut String,
-        net_apply: &mut bool,
-        net_sync: &mut bool,
-        tab: &mut SettingsTab,
-    ) {
+    ///
+    /// Everything the dialog changes goes out through `io`, because the window
+    /// closure borrows `&self` — see [`SettingsIo`].
+    fn settings_body(&self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, io: &mut SettingsIo) {
         use sdroxide_types::Backend;
 
         ui.horizontal(|ui| {
@@ -4055,21 +4096,22 @@ impl SdroxideApp {
                 (SettingsTab::Ui, "UI"),
                 (SettingsTab::Spots, "Spots"),
                 (SettingsTab::Uploads, "Uploads"),
+                (SettingsTab::TciServer, "TCI Server"),
             ] {
-                if crate::chrome::chip(ui, *tab == t, label).clicked() {
-                    *tab = t;
+                if crate::chrome::chip(ui, *io.tab == t, label).clicked() {
+                    *io.tab = t;
                 }
             }
         });
         ui.separator();
 
-        let backend = radio_edit.as_ref().map(|c| c.backend);
+        let backend = io.radio_edit.as_ref().map(|c| c.backend);
 
-        match tab {
+        match io.tab {
             SettingsTab::General => {
                 ui.label(RichText::new("Station").size(14.0).strong().color(crate::theme::CYAN));
                 ui.add_space(6.0);
-                if !digi_seeded {
+                if !io.digi_seeded {
                     ui.label(
                         RichText::new(
                             "Enter a digital mode (FT8 / SSTV / …) once to load the saved values.",
@@ -4077,17 +4119,17 @@ impl SdroxideApp {
                         .weak(),
                     );
                 }
-                ui.add_enabled_ui(digi_seeded, |ui| {
+                ui.add_enabled_ui(io.digi_seeded, |ui| {
                     egui::Grid::new("general-grid").num_columns(2).spacing([12.0, 8.0]).show(
                         ui,
                         |ui| {
                             ui.label("Callsign");
-                            if ui.text_edit_singleline(&mut digi_edit.my_call).changed() {
-                                digi_edit.my_call = digi_edit.my_call.to_uppercase();
+                            if ui.text_edit_singleline(&mut io.digi_edit.my_call).changed() {
+                                io.digi_edit.my_call = io.digi_edit.my_call.to_uppercase();
                             }
                             ui.end_row();
                             ui.label("Grid square");
-                            ui.text_edit_singleline(&mut digi_edit.my_grid);
+                            ui.text_edit_singleline(&mut io.digi_edit.my_grid);
                             ui.end_row();
                         },
                     );
@@ -4102,14 +4144,14 @@ impl SdroxideApp {
                 );
             }
             SettingsTab::Radio => {
-                let Some(cfg) = radio_edit.as_mut() else {
+                let Some(cfg) = io.radio_edit.as_mut() else {
                     ui.label("Radio configuration is only available in the native app.");
                     return;
                 };
                 // The single "which radio interface" selector.
                 egui::Grid::new("iface-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                     ui.label(RichText::new("Radio interface").strong());
-                    enum_combo(ui, "iface", &mut cfg.backend, iface_opts, Backend::label);
+                    enum_combo(ui, "iface", &mut cfg.backend, io.iface_opts, Backend::label);
                     ui.end_row();
                 });
                 ui.separator();
@@ -4127,11 +4169,16 @@ impl SdroxideApp {
                         );
                     }
                     Backend::Hpsdr => {
-                        settings_hpsdr_tab(ui, &self.hpsdr_devices, radio_edit, hpsdr_discover)
+                        settings_hpsdr_tab(
+                            ui,
+                            &self.hpsdr_devices,
+                            io.radio_edit,
+                            io.hpsdr_discover,
+                        )
                     }
-                    Backend::Cat => settings_cat_tab(ui, &self.serial_ports, radio_edit),
+                    Backend::Cat => settings_cat_tab(ui, &self.serial_ports, io.radio_edit),
                     Backend::Tci => {
-                        settings_tci_tab(ui, radio_edit, tci_test, &self.tci_test_result)
+                        settings_tci_tab(ui, io.radio_edit, io.tci_test, &self.tci_test_result)
                     }
                     // Legacy configs may still carry the removed auto-detect
                     // backend; prompt the user to pick a concrete interface.
@@ -4152,7 +4199,7 @@ impl SdroxideApp {
                         .on_hover_text("Switch to this interface now — no restart needed")
                         .clicked()
                     {
-                        *apply_iface = true;
+                        *io.apply_iface = true;
                     }
                     ui.label(
                         RichText::new("Switches the live radio without restarting.").weak(),
@@ -4160,11 +4207,11 @@ impl SdroxideApp {
                 });
             }
             SettingsTab::Audio => {
-                self.settings_user_audio(ui, audio_pick);
+                self.settings_user_audio(ui, io.audio_pick);
                 // The radio's own sound card is only used by the CAT / Audio interface.
                 if backend == Some(Backend::Cat) {
                     if let (Some(devs), Some(cfg)) =
-                        (self.audio_devices.as_ref(), radio_edit.as_mut())
+                        (self.audio_devices.as_ref(), io.radio_edit.as_mut())
                     {
                         ui.separator();
                         ui.label(RichText::new("Radio audio (sound card)").strong());
@@ -4192,7 +4239,7 @@ impl SdroxideApp {
                                 .on_hover_text("Reopen the CAT rig with these sound cards — no restart")
                                 .clicked()
                             {
-                                *apply_iface = true;
+                                *io.apply_iface = true;
                             }
                             ui.label(
                                 RichText::new("Reconnects the radio without restarting.").weak(),
@@ -4201,24 +4248,24 @@ impl SdroxideApp {
                     }
                 }
             }
-            SettingsTab::Ui => settings_ui_tab(ui, ui_edit),
+            SettingsTab::Ui => settings_ui_tab(ui, io.ui_edit),
             SettingsTab::Spots => {
                 net_heading(ui, "Operator");
-                net_row(ui, "Callsign", &mut net_edit.my_call, 140.0);
-                net_row(ui, "Grid", &mut net_edit.my_grid, 140.0);
+                net_row(ui, "Callsign", &mut io.net_edit.my_call, 140.0);
+                net_row(ui, "Grid", &mut io.net_edit.my_grid, 140.0);
 
                 net_heading(ui, "DX cluster (telnet)");
-                ui.checkbox(&mut net_edit.cluster.enabled, "Enabled");
-                net_row(ui, "Host", &mut net_edit.cluster.host, 220.0);
+                ui.checkbox(&mut io.net_edit.cluster.enabled, "Enabled");
+                net_row(ui, "Host", &mut io.net_edit.cluster.host, 220.0);
                 ui.horizontal(|ui| {
                     ui.add_sized([96.0, 22.0], egui::Label::new("Port"));
-                    ui.add(egui::DragValue::new(&mut net_edit.cluster.port).range(1..=65535));
+                    ui.add(egui::DragValue::new(&mut io.net_edit.cluster.port).range(1..=65535));
                 });
-                net_row(ui, "Login call", &mut net_edit.cluster.login, 140.0);
+                net_row(ui, "Login call", &mut io.net_edit.cluster.login, 140.0);
                 ui.horizontal(|ui| {
                     ui.add_sized([96.0, 22.0], egui::Label::new("Commands"));
                     ui.add(
-                        egui::TextEdit::multiline(net_cmds)
+                        egui::TextEdit::multiline(io.net_cmds)
                             .desired_rows(2)
                             .hint_text("one per line, e.g. SET/FT8")
                             .desired_width(220.0),
@@ -4226,12 +4273,13 @@ impl SdroxideApp {
                 });
 
                 net_heading(ui, "POTA / SOTA / PSK Reporter");
-                ui.checkbox(&mut net_edit.pota.enabled, "POTA activator spots");
-                ui.checkbox(&mut net_edit.sota.enabled, "SOTA spots");
-                ui.checkbox(&mut net_edit.psk.enabled, "PSK Reporter (current band)");
+                ui.checkbox(&mut io.net_edit.pota.enabled, "POTA activator spots");
+                ui.checkbox(&mut io.net_edit.sota.enabled, "SOTA spots");
+                ui.checkbox(&mut io.net_edit.psk.enabled, "PSK Reporter (current band)");
                 ui.horizontal(|ui| {
                     ui.add_sized([96.0, 22.0], egui::Label::new("Max age (s)"));
-                    ui.add(egui::DragValue::new(&mut net_edit.spot_max_age_secs).range(60..=7200));
+                    let age = &mut io.net_edit.spot_max_age_secs;
+                    ui.add(egui::DragValue::new(age).range(60..=7200));
                 });
 
                 ui.add_space(8.0);
@@ -4245,7 +4293,7 @@ impl SdroxideApp {
                 .on_hover_text("Persist and (re)connect the feeds")
                 .clicked()
                 {
-                    *net_apply = true;
+                    *io.net_apply = true;
                 }
             }
             SettingsTab::Uploads => {
@@ -4253,36 +4301,40 @@ impl SdroxideApp {
                 ui.horizontal(|ui| {
                     ui.add_sized([96.0, 22.0], egui::Label::new("Provider"));
                     egui::ComboBox::from_id_salt("lookup_provider")
-                        .selected_text(net_edit.lookup_provider.label())
+                        .selected_text(io.net_edit.lookup_provider.label())
                         .show_ui(ui, |ui| {
                             for p in LookupProvider::ALL {
-                                ui.selectable_value(&mut net_edit.lookup_provider, p, p.label());
+                                let cur = &mut io.net_edit.lookup_provider;
+                                ui.selectable_value(cur, p, p.label());
                             }
                         });
                 });
-                ui.checkbox(&mut net_edit.auto_lookup, "Auto-fill name/QTH/grid on spot click & QSO");
-                net_row(ui, "QRZ user", &mut net_edit.qrz.user, 140.0);
-                net_secret(ui, "QRZ pass", &mut net_edit.qrz.password, 140.0);
-                net_row(ui, "HamQTH user", &mut net_edit.hamqth.user, 140.0);
-                net_secret(ui, "HamQTH pass", &mut net_edit.hamqth.password, 140.0);
+                ui.checkbox(
+                    &mut io.net_edit.auto_lookup,
+                    "Auto-fill name/QTH/grid on spot click & QSO",
+                );
+                net_row(ui, "QRZ user", &mut io.net_edit.qrz.user, 140.0);
+                net_secret(ui, "QRZ pass", &mut io.net_edit.qrz.password, 140.0);
+                net_row(ui, "HamQTH user", &mut io.net_edit.hamqth.user, 140.0);
+                net_secret(ui, "HamQTH pass", &mut io.net_edit.hamqth.password, 140.0);
 
                 net_heading(ui, "Upload — eQSL / QRZ / Club Log");
-                net_row(ui, "eQSL user", &mut net_edit.eqsl.user, 140.0);
-                net_secret(ui, "eQSL pass", &mut net_edit.eqsl.password, 140.0);
-                net_secret(ui, "QRZ log key", &mut net_edit.qrz_logbook_key, 200.0);
-                net_row(ui, "Club Log email", &mut net_edit.clublog.user, 200.0);
-                net_secret(ui, "Club Log pass", &mut net_edit.clublog.password, 140.0);
-                net_secret(ui, "Club Log key", &mut net_edit.clublog_api_key, 200.0);
-                ui.checkbox(&mut net_edit.auto_upload, "Auto-upload each new QSO");
+                net_row(ui, "eQSL user", &mut io.net_edit.eqsl.user, 140.0);
+                net_secret(ui, "eQSL pass", &mut io.net_edit.eqsl.password, 140.0);
+                net_secret(ui, "QRZ log key", &mut io.net_edit.qrz_logbook_key, 200.0);
+                net_row(ui, "Club Log email", &mut io.net_edit.clublog.user, 200.0);
+                net_secret(ui, "Club Log pass", &mut io.net_edit.clublog.password, 140.0);
+                net_secret(ui, "Club Log key", &mut io.net_edit.clublog_api_key, 200.0);
+                ui.checkbox(&mut io.net_edit.auto_upload, "Auto-upload each new QSO");
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut net_edit.auto_upload_eqsl, "eQSL");
-                    ui.checkbox(&mut net_edit.auto_upload_qrz, "QRZ");
-                    ui.checkbox(&mut net_edit.auto_upload_clublog, "Club Log");
+                    ui.checkbox(&mut io.net_edit.auto_upload_eqsl, "eQSL");
+                    ui.checkbox(&mut io.net_edit.auto_upload_qrz, "QRZ");
+                    ui.checkbox(&mut io.net_edit.auto_upload_clublog, "Club Log");
                 });
 
                 net_heading(ui, "Confirmations (download)");
-                net_row(ui, "LoTW user", &mut net_edit.lotw.user, 140.0);
-                net_secret(ui, "LoTW pass", &mut net_edit.lotw.password, 140.0);
+                net_row(ui, "LoTW user", &mut io.net_edit.lotw.user, 140.0);
+                net_secret(ui, "LoTW pass", &mut io.net_edit.lotw.password, 140.0);
                 ui.label(
                     RichText::new(
                         "LoTW upload uses TQSL — export ADIF from the logbook and sign it. \
@@ -4303,13 +4355,20 @@ impl SdroxideApp {
                     )
                     .clicked()
                     {
-                        *net_apply = true;
+                        *io.net_apply = true;
                     }
                     if crate::chrome::chip(ui, false, "SYNC CONFIRMATIONS").clicked() {
-                        *net_sync = true;
+                        *io.net_sync = true;
                     }
                 });
             }
+            SettingsTab::TciServer => settings_tci_server_tab(
+                ui,
+                io.tci_srv_edit,
+                self.tci_srv_seeded,
+                &self.tci_srv_status,
+                io.tci_srv_apply,
+            ),
         }
     }
 
@@ -4778,6 +4837,145 @@ fn settings_tci_tab(
     );
 }
 
+/// Live status of the built-in TCI server, from `RadioEvent::TciServerStatus`.
+#[derive(Clone, PartialEq)]
+struct TciServerStatus {
+    running: bool,
+    addr: String,
+    clients: usize,
+    error: Option<String>,
+}
+
+/// The built-in TCI *server*: this app acting as a TCI rig for third-party
+/// clients (WSJT-X's TCI rig type, JTDX, MSHV, skimmers). Distinct from the TCI
+/// *client* section on the Radio tab, which connects sdroxide to another rig.
+fn settings_tci_server_tab(
+    ui: &mut egui::Ui,
+    cfg: &mut sdroxide_types::TciServerConfig,
+    seeded: bool,
+    status: &Option<TciServerStatus>,
+    apply: &mut bool,
+) {
+    use sdroxide_types::TciServerConfig;
+
+    if !seeded {
+        ui.label(
+            RichText::new("The TCI server runs alongside the radio engine, so it can only be \
+                           configured from the native app.")
+                .weak(),
+        );
+        return;
+    }
+
+    ui.label(RichText::new("Built-in TCI server").size(14.0).strong().color(crate::theme::CYAN));
+    ui.add_space(6.0);
+    ui.checkbox(&mut cfg.enabled, "Enable");
+    ui.add_space(6.0);
+
+    ui.add_enabled_ui(cfg.enabled, |ui| {
+        egui::Grid::new("tci-srv-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Listen on");
+            ComboBox::from_id_salt("tci_srv_bind").selected_text(&cfg.bind).show_ui(ui, |ui| {
+                for b in TciServerConfig::BINDS {
+                    let label = if b == "127.0.0.1" {
+                        "127.0.0.1 (this machine)"
+                    } else {
+                        "0.0.0.0 (whole network)"
+                    };
+                    if ui.selectable_label(cfg.bind == b, label).clicked() {
+                        cfg.bind = b.to_string();
+                    }
+                }
+            });
+            ui.end_row();
+
+            ui.label("Port");
+            ui.add(egui::DragValue::new(&mut cfg.port).range(1..=65535));
+            ui.end_row();
+
+            ui.label("Device name");
+            ui.add(
+                egui::TextEdit::singleline(&mut cfg.device_name)
+                    .desired_width(160.0)
+                    .hint_text("reported to clients"),
+            );
+            ui.end_row();
+
+            ui.label("Max clients");
+            ui.add(egui::DragValue::new(&mut cfg.max_clients).range(1..=32));
+            ui.end_row();
+        });
+        ui.add_space(4.0);
+        ui.checkbox(&mut cfg.allow_tx, "Allow clients to transmit").on_hover_text(
+            "Off leaves control and the receive streams working, but every key request \
+             is refused.",
+        );
+    });
+
+    // Security: TCI has no authentication at all, so binding wide open hands
+    // the transmitter to anyone who can reach the port.
+    if cfg.enabled && cfg.is_open_to_network() {
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(
+                "⚠ TCI has no authentication. On 0.0.0.0, anyone who can reach this port can \
+                 tune and key your transmitter.",
+            )
+            .color(Color32::from_rgb(230, 170, 60)),
+        );
+    }
+
+    ui.add_space(8.0);
+    match status {
+        Some(s) if s.running => {
+            let clients = match s.clients {
+                1 => "1 client".to_string(),
+                n => format!("{n} clients"),
+            };
+            ui.label(
+                RichText::new(format!("● Listening on {} — {clients}", s.addr))
+                    .color(Color32::from_rgb(90, 200, 110)),
+            );
+        }
+        Some(s) => match &s.error {
+            Some(e) => {
+                let msg = RichText::new(format!("Failed: {e}"));
+                ui.label(msg.color(Color32::from_rgb(230, 90, 80)));
+            }
+            None => {
+                ui.label(RichText::new("Not running.").weak());
+            }
+        },
+        None => {
+            ui.label(RichText::new("Status unknown — press APPLY.").weak());
+        }
+    }
+
+    ui.add_space(8.0);
+    if crate::chrome::chip_accent(
+        ui,
+        false,
+        RichText::new(" APPLY ").strong(),
+        crate::theme::GREEN,
+        crate::theme::INK_ON_CYAN,
+    )
+    .on_hover_text("Persist and (re)bind the server")
+    .clicked()
+    {
+        *apply = true;
+    }
+
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new(
+            "Lets TCI-capable programs drive this radio: frequency and mode control, wideband IQ, \
+             receive audio, and transmit audio. In WSJT-X choose the SunSDR (TCI) rig type, point \
+             it at this address, and set PTT to TCI.",
+        )
+        .weak(),
+    );
+}
+
 impl eframe::App for SdroxideApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -4882,6 +5080,9 @@ impl eframe::App for SdroxideApp {
                 }
                 RadioEvent::Spots(s) => self.spots = s,
                 RadioEvent::NetStatus(s) => self.net_status = s,
+                RadioEvent::TciServerStatus { running, addr, clients, error } => {
+                    self.tci_srv_status = Some(TciServerStatus { running, addr, clients, error });
+                }
                 RadioEvent::CallsignResult(info) => self.apply_callsign(info),
                 RadioEvent::Upload(r) => self.on_upload_result(r),
                 RadioEvent::Confirmations(recs) => self.apply_confirmations(recs),

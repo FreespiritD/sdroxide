@@ -89,28 +89,72 @@ pub fn decode_f32_payload(msg: &[u8], header: &Header, out: &mut Vec<f32>) {
     }
 }
 
-/// Build a `TxAudio` binary message from mono 48 kHz audio, duplicating each
-/// sample to both stereo channels.
-pub fn build_tx_audio(sample_rate: u32, receiver: u32, mono: &[f32]) -> Vec<u8> {
-    let floats = mono.len() * 2; // stereo
-    let mut buf = Vec::with_capacity(HEADER_LEN + floats * 4);
+/// Build any binary stream message: the 64-byte header followed by `payload` as
+/// little-endian f32.
+///
+/// `payload` is the already-interleaved float stream (I,Q for IQ; L,R for
+/// audio) and `channels` must match that interleave — the peer derives the
+/// frame count as `length / channels`, so a zero there makes the packet
+/// undecodable. Pass an empty `payload` for a header-only message (a chrono).
+pub fn build_binary(
+    dtype: DataType,
+    receiver: u32,
+    sample_rate: u32,
+    channels: u32,
+    payload: &[f32],
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(HEADER_LEN + payload.len() * 4);
     let mut hdr = [0u32; 16];
     hdr[0] = receiver;
     hdr[1] = sample_rate;
     hdr[2] = FORMAT_FLOAT32;
-    hdr[5] = floats as u32; // length = float count
-    hdr[6] = DataType::TxAudio.to_u32();
-    // `channels` must be set: the rig derives the frame count as
-    // length / channels, so leaving it zero makes the packet undecodable.
-    hdr[7] = 2;
+    hdr[5] = payload.len() as u32; // length = float count
+    hdr[6] = dtype.to_u32();
+    hdr[7] = channels;
     for w in hdr {
         buf.extend_from_slice(&w.to_le_bytes());
     }
-    for &s in mono {
-        buf.extend_from_slice(&s.to_le_bytes()); // L
-        buf.extend_from_slice(&s.to_le_bytes()); // R
+    for &s in payload {
+        buf.extend_from_slice(&s.to_le_bytes());
     }
     buf
+}
+
+/// Build a `TxAudio` binary message from mono 48 kHz audio, duplicating each
+/// sample to both stereo channels.
+pub fn build_tx_audio(sample_rate: u32, receiver: u32, mono: &[f32]) -> Vec<u8> {
+    build_binary(DataType::TxAudio, receiver, sample_rate, 2, &dup_stereo(mono))
+}
+
+/// Build an `Iq` binary message. `iq` is already interleaved I,Q — the two
+/// "channels" of an IQ stream.
+pub fn build_iq(sample_rate: u32, receiver: u32, iq: &[f32]) -> Vec<u8> {
+    build_binary(DataType::Iq, receiver, sample_rate, 2, iq)
+}
+
+/// Build an `RxAudio` binary message from mono audio, duplicating each sample
+/// to both stereo channels (the mirror of [`build_tx_audio`]).
+pub fn build_rx_audio(sample_rate: u32, receiver: u32, mono: &[f32]) -> Vec<u8> {
+    build_binary(DataType::RxAudio, receiver, sample_rate, 2, &dup_stereo(mono))
+}
+
+/// Build a `TxChrono`: a header-only request for `frames` more stereo frames of
+/// TX audio. The count travels in `length`, which is across all channels.
+pub fn build_chrono(sample_rate: u32, receiver: u32, frames: u32) -> Vec<u8> {
+    let mut msg = build_binary(DataType::TxChrono, receiver, sample_rate, 2, &[]);
+    // Header-only: `length` is the request, not a payload size.
+    msg[20..24].copy_from_slice(&(frames * 2).to_le_bytes());
+    msg
+}
+
+/// Duplicate each mono sample into an interleaved L,R pair.
+fn dup_stereo(mono: &[f32]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(mono.len() * 2);
+    for &s in mono {
+        out.push(s);
+        out.push(s);
+    }
+    out
 }
 
 // --- Text commands (lowercase, ';'-terminated) ---
@@ -121,7 +165,6 @@ pub fn dds(rx: u32, hz: f64) -> String {
 pub fn if_offset(rx: u32, channel: u32, hz: f64) -> String {
     format!("if:{rx},{channel},{};", hz.round() as i64)
 }
-#[allow(dead_code)] // reserved: absolute-VFO tune (we use dds + if instead)
 pub fn vfo(rx: u32, channel: u32, hz: f64) -> String {
     format!("vfo:{rx},{channel},{};", hz.round() as i64)
 }
@@ -173,6 +216,69 @@ pub fn tx_sensors_enable(on: bool) -> String {
 }
 pub fn rx_enable(rx: u32, on: bool) -> String {
     format!("rx_enable:{rx},{on};")
+}
+pub fn mute(rx: u32, on: bool) -> String {
+    format!("mute:{rx},{on};")
+}
+/// Master AF level, -60..0 dB (TCI's volume is global, not per receiver).
+pub fn volume(db: i32) -> String {
+    format!("volume:{};", db.clamp(-60, 0))
+}
+pub fn split_enable(rx: u32, on: bool) -> String {
+    format!("split_enable:{rx},{on};")
+}
+pub fn tune(rx: u32, on: bool) -> String {
+    format!("tune:{rx},{on};")
+}
+
+// --- Server → client only: the status burst sent on connect, plus telemetry.
+// A client that never receives these (or receives them malformed) typically
+// gives up silently, so they are emitted in full even where sdroxide has no
+// meaningful value to report.
+
+/// `protocol:<name>,<version>;` — the first line of the burst.
+pub fn protocol_line(name: &str, version: &str) -> String {
+    format!("protocol:{name},{version};")
+}
+pub fn device(name: &str) -> String {
+    format!("device:{name};")
+}
+pub fn receive_only(on: bool) -> String {
+    format!("receive_only:{on};")
+}
+/// Number of independent receivers ("transceivers" in TCI terms).
+pub fn trx_count(n: u32) -> String {
+    format!("trx_count:{n};")
+}
+/// VFO channels per receiver (2 = VFO A and B).
+pub fn channels_count(n: u32) -> String {
+    format!("channels_count:{n};")
+}
+pub fn vfo_limits(lo_hz: f64, hi_hz: f64) -> String {
+    format!("vfo_limits:{},{};", lo_hz.round() as i64, hi_hz.round() as i64)
+}
+/// Range the VFO may be offset from the IQ stream centre.
+pub fn if_limits(lo_hz: f64, hi_hz: f64) -> String {
+    format!("if_limits:{},{};", lo_hz.round() as i64, hi_hz.round() as i64)
+}
+pub fn modulations_list(modes: &[&str]) -> String {
+    format!("modulations_list:{};", modes.join(","))
+}
+/// Every mode sdroxide can be put into over TCI, in the order clients expect.
+pub const MODULATIONS: [&str; 10] =
+    ["lsb", "usb", "cw", "am", "sam", "nfm", "wfm", "digu", "digl", "dsb"];
+/// Streams are live.
+pub fn start() -> &'static str {
+    "start;"
+}
+/// End of the status burst — clients block on this, so it must come last.
+pub fn ready() -> &'static str {
+    "ready;"
+}
+/// Periodic TX metering: `tx_sensors:<trx>,<mic dB>,<fwd W>,<rev W>,<SWR>;`.
+/// Only sent once the client has asked for it with `tx_sensors_enable:true;`.
+pub fn tx_sensors(trx: u32, mic_db: f32, fwd_w: f32, rev_w: f32, swr: f32) -> String {
+    format!("tx_sensors:{trx},{mic_db:.1},{fwd_w:.1},{rev_w:.1},{swr:.2};")
 }
 
 /// Split a text frame into `(command, args)` pairs (command lowercased, args as
@@ -255,6 +361,63 @@ mod tests {
         assert_eq!(tune_drive(0, 10), "tune_drive:0,10;");
         assert_eq!(tx_sensors_enable(true), "tx_sensors_enable:true;");
         assert_eq!(tx_sensors_enable(false), "tx_sensors_enable:false;");
+    }
+
+    #[test]
+    fn server_burst_commands() {
+        assert_eq!(protocol_line("sdroxide", "1.9"), "protocol:sdroxide,1.9;");
+        assert_eq!(device("sdroxide"), "device:sdroxide;");
+        assert_eq!(receive_only(false), "receive_only:false;");
+        assert_eq!(trx_count(2), "trx_count:2;");
+        assert_eq!(channels_count(2), "channels_count:2;");
+        assert_eq!(vfo_limits(0.0, 600_000_000.0), "vfo_limits:0,600000000;");
+        assert_eq!(if_limits(-96_000.0, 96_000.0), "if_limits:-96000,96000;");
+        assert_eq!(
+            modulations_list(&MODULATIONS),
+            "modulations_list:lsb,usb,cw,am,sam,nfm,wfm,digu,digl,dsb;"
+        );
+        assert_eq!(start(), "start;");
+        assert_eq!(ready(), "ready;");
+        assert_eq!(mute(0, true), "mute:0,true;");
+        assert_eq!(volume(-20), "volume:-20;");
+        assert_eq!(volume(-99), "volume:-60;"); // clamped to the TCI range
+        assert_eq!(volume(12), "volume:0;");
+        assert_eq!(split_enable(0, true), "split_enable:0,true;");
+        assert_eq!(tune(0, false), "tune:0,false;");
+        assert_eq!(tx_sensors(0, -12.0, 55.0, 1.5, 1.25), "tx_sensors:0,-12.0,55.0,1.5,1.25;");
+    }
+
+    #[test]
+    fn server_binary_builders() {
+        // IQ: the payload is already interleaved, so it is copied verbatim.
+        let iq = [1.0f32, -1.0, 0.5, -0.5];
+        let pkt = build_iq(96_000, 0, &iq);
+        let h = parse_header(&pkt).expect("header");
+        assert_eq!(h.dtype, DataType::Iq);
+        assert_eq!(h.sample_rate, 96_000);
+        assert_eq!(h.length, 4);
+        assert_eq!(h.channels, 2);
+        let mut out = Vec::new();
+        decode_f32_payload(&pkt, &h, &mut out);
+        assert_eq!(out, iq);
+
+        // RX audio: mono in, stereo-duplicated out.
+        let pkt = build_rx_audio(48_000, 0, &[0.25, -0.5]);
+        let h = parse_header(&pkt).expect("header");
+        assert_eq!(h.dtype, DataType::RxAudio);
+        assert_eq!(h.length, 4);
+        assert_eq!(h.channels, 2);
+        let mut out = Vec::new();
+        decode_f32_payload(&pkt, &h, &mut out);
+        assert_eq!(out, [0.25, 0.25, -0.5, -0.5]);
+
+        // Chrono: header only, `length` = frames across both channels.
+        let pkt = build_chrono(48_000, 0, 1024);
+        assert_eq!(pkt.len(), HEADER_LEN);
+        let h = parse_header(&pkt).expect("header");
+        assert_eq!(h.dtype, DataType::TxChrono);
+        assert_eq!(h.length, 2048);
+        assert_eq!(h.channels, 2);
     }
 
     #[test]

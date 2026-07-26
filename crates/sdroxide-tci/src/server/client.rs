@@ -1,0 +1,199 @@
+//! One thread per connected client: pure transport. It completes the WebSocket
+//! handshake, writes whatever the hub queues, and hands back what the peer
+//! sends. Every protocol decision belongs to the hub, so nothing here inspects
+//! a command.
+//!
+//! The loop mirrors the client-side `NetThread::run`: a short socket read
+//! timeout turns a blocking WebSocket into a poll loop that interleaves reads
+//! and writes on one thread, which is what lets us avoid an async runtime in
+//! the GUI process.
+
+use std::net::TcpStream;
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use tracing::{debug, warn};
+use tungstenite::{Bytes, HandshakeError, Message, WebSocket};
+
+use crate::protocol as p;
+
+/// Socket read timeout; also the loop's tick.
+const READ_TIMEOUT: Duration = Duration::from_millis(20);
+
+/// Realtime frames written per iteration before we go back to reading, so a
+/// backlog can drain quickly without starving inbound control.
+const WRITE_BUDGET: usize = 32;
+
+/// Anything a client sends that the hub must see.
+pub(crate) enum Up {
+    Text(u64, String),
+    /// Decoded TX audio, already downmixed to 48 kHz mono.
+    TxAudio(u64, Vec<f32>),
+    Gone(u64),
+}
+
+/// The two outbound lanes: text is never dropped, realtime data is.
+pub(crate) struct Out {
+    pub text_rx: Receiver<String>,
+    pub data_rx: Receiver<Bytes>,
+}
+
+pub(crate) struct ClientParams {
+    pub id: u64,
+    pub stream: TcpStream,
+    pub out: Out,
+    pub up_tx: Sender<Up>,
+}
+
+pub(crate) fn spawn(params: ClientParams) -> JoinHandle<()> {
+    let id = params.id;
+    std::thread::Builder::new()
+        .name(format!("sdroxide-tciserv-{id}"))
+        .spawn(move || {
+            let up_tx = params.up_tx.clone();
+            run(params);
+            let _ = up_tx.send(Up::Gone(id));
+        })
+        .expect("spawn TCI server client")
+}
+
+fn run(pr: ClientParams) {
+    let ClientParams { id, stream, out, up_tx } = pr;
+    if stream.set_nodelay(true).is_err() {
+        debug!(id, "TCI client: could not disable Nagle");
+    }
+    // The handshake needs a timeout too, or a peer that connects and says
+    // nothing would pin this thread forever.
+    if stream.set_read_timeout(Some(READ_TIMEOUT)).is_err() {
+        warn!(id, "TCI client: could not set read timeout");
+        return;
+    }
+    let Some(mut ws) = accept(id, stream) else { return };
+
+    let mut scratch: Vec<f32> = Vec::new();
+    loop {
+        let mut dirty = false;
+
+        // 1) Status and control text. Never dropped, so drain it all.
+        loop {
+            match out.text_rx.try_recv() {
+                Ok(line) => {
+                    if ws.write(Message::Text(line.into())).is_err() {
+                        return;
+                    }
+                    dirty = true;
+                }
+                Err(TryRecvError::Empty) => break,
+                // The hub dropped our lanes: it is closing this client.
+                Err(TryRecvError::Disconnected) => {
+                    let _ = ws.close(None);
+                    let _ = ws.flush();
+                    return;
+                }
+            }
+        }
+
+        // 2) Stream frames, bounded so a backlog can't starve the read below.
+        for _ in 0..WRITE_BUDGET {
+            match out.data_rx.try_recv() {
+                Ok(pkt) => {
+                    if ws.write(Message::Binary(pkt)).is_err() {
+                        return;
+                    }
+                    dirty = true;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return,
+            }
+        }
+
+        if dirty && ws.flush().is_err() {
+            return;
+        }
+
+        // 3) One inbound message. The read timeout is what paces this loop.
+        match ws.read() {
+            Ok(Message::Text(t)) => {
+                if up_tx.send(Up::Text(id, t.as_str().to_string())).is_err() {
+                    return;
+                }
+            }
+            Ok(Message::Binary(b)) => {
+                if let Some(mono) = decode_tx_audio(&b, &mut scratch)
+                    && up_tx.send(Up::TxAudio(id, mono)).is_err()
+                {
+                    return;
+                }
+            }
+            Ok(Message::Close(_)) => {
+                let _ = ws.close(None);
+                let _ = ws.flush();
+                return;
+            }
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(e))
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) => {
+                debug!(id, "TCI client read ended: {e}");
+                return;
+            }
+        }
+    }
+}
+
+/// Complete the server-side WebSocket handshake, retrying while the
+/// non-blocking read timeout interrupts it.
+fn accept(id: u64, stream: TcpStream) -> Option<WebSocket<TcpStream>> {
+    let mut result = tungstenite::accept(stream);
+    loop {
+        match result {
+            Ok(ws) => return Some(ws),
+            Err(HandshakeError::Interrupted(mid)) => result = mid.handshake(),
+            Err(HandshakeError::Failure(e)) => {
+                debug!(id, "TCI client handshake failed: {e}");
+                return None;
+            }
+        }
+    }
+}
+
+/// Decode a client `TxAudio` packet to 48 kHz mono. Returns `None` for any
+/// other stream type — a client has no other reason to send us binary.
+fn decode_tx_audio(msg: &[u8], scratch: &mut Vec<f32>) -> Option<Vec<f32>> {
+    let h = p::parse_header(msg)?;
+    if h.dtype != p::DataType::TxAudio {
+        return None;
+    }
+    scratch.clear();
+    p::decode_f32_payload(msg, &h, scratch);
+    // `channels` is what the sender says the interleave is; a server that
+    // leaves it zero (some do) is treated as mono rather than dropped.
+    Some(match h.channels {
+        0 | 1 => scratch.clone(),
+        n => scratch.chunks(n as usize).map(|f| f.iter().sum::<f32>() / f.len() as f32).collect(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tx_audio_downmix() {
+        // Stereo in, mono out: the two channels are averaged.
+        let pkt = p::build_binary(p::DataType::TxAudio, 0, 48_000, 2, &[1.0, 0.0, 0.5, 0.5]);
+        let mut scratch = Vec::new();
+        assert_eq!(decode_tx_audio(&pkt, &mut scratch), Some(vec![0.5, 0.5]));
+
+        // A sender that left `channels` unset is taken at face value as mono.
+        let pkt = p::build_binary(p::DataType::TxAudio, 0, 48_000, 0, &[0.25, -0.25]);
+        assert_eq!(decode_tx_audio(&pkt, &mut scratch), Some(vec![0.25, -0.25]));
+
+        // Anything that isn't TX audio is not ours to interpret.
+        let pkt = p::build_iq(96_000, 0, &[1.0, 1.0]);
+        assert_eq!(decode_tx_audio(&pkt, &mut scratch), None);
+        assert_eq!(decode_tx_audio(&[0u8; 8], &mut scratch), None);
+    }
+}

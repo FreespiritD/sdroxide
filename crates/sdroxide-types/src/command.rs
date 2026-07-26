@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgcMode, Band, DigiConfig, Direction, Mode, NetworkConfig, NrLevel, RxId, SkimmerSettings,
-    SpectrumConfig, SstvMode, UploadTarget, Vfo,
+    SpectrumConfig, SstvMode, TciServerConfig, UploadTarget, Vfo,
 };
 
 /// The single control vocabulary. The GUI, the WebSocket protocol, and the
@@ -117,4 +117,9 @@ pub enum Command {
     /// Download QSL confirmations from LoTW/eQSL and return the parsed
     /// confirmation records as [`crate::RadioEvent::Confirmations`].
     SyncConfirmations,
+
+    /// Apply (and persist) the built-in TCI server configuration: bind, rebind
+    /// or stop the listener that third-party TCI clients connect to. The result
+    /// comes back as [`crate::RadioEvent::TciServerStatus`].
+    SetTciServerConfig(TciServerConfig),
 }

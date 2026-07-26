@@ -154,4 +154,8 @@ impl RadioController for LocalController {
     fn network_config(&self) -> Option<sdroxide_types::NetworkConfig> {
         Some(sdroxide_config::load_network_config())
     }
+
+    fn tci_server_config(&self) -> Option<sdroxide_types::TciServerConfig> {
+        Some(sdroxide_config::load_tci_server_config())
+    }
 }

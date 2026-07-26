@@ -4,8 +4,9 @@ A PowerSDR/Thetis-style software-defined-radio transceiver client in Rust, with
 pluggable radio backends (**SoapySDR**, **OpenHPSDR**, **TCI**, and **CAT**), an
 [egui](https://github.com/emilk/egui) GUI, and a cyberpunk theme. It runs as a **native desktop application** and, from the same
 binary, as a **server that streams the same UI to a web browser** over
-WebSocket. It includes an integrated, persistent **logbook** and full
-**FT8/FT4** digital-mode operation.
+WebSocket. It includes an integrated, persistent **logbook**, full **FT8/FT4**
+digital-mode operation, and a **built-in TCI server** so third-party programs
+like WSJT-X can use it as their radio.
 
 <img width="2400" height="984" alt="image" src="https://github.com/user-attachments/assets/910903b5-c418-4b71-90b3-f80f2ac32b19" />
 
@@ -219,6 +220,20 @@ press **Apply / reconnect**:
 The wideband-IQ backends (SoapySDR, HPSDR, TCI) drive the full panadapter, the
 CW/PSK/RTTY skimmers, and internal demodulation; a CAT rig feeding demodulated
 audio shows only a narrow audio-band slice.
+
+## Built-in TCI server
+
+sdroxide is also a **TCI server**, so TCI-capable programs — WSJT-X's SunSDR
+(TCI) rig type, JTDX, MSHV, skimmers — can use it as their radio: frequency and
+mode control, a wideband IQ stream, receive audio to decode, and transmit audio
+to put on the air. Several clients can connect at once.
+
+It is on by default at `127.0.0.1:50001` and configured on the **TCI Server**
+tab of the Settings dialog, which also shows the live client count. TCI has no
+authentication, so it listens on localhost only unless you change that; the
+transmitter has a single owner, and keying up locally always takes it back.
+Verified against WSJT-X (rig *TCI Client RX1*, PTT via CAT, TCI audio). See the
+user manual, §5.6.
 
 ## SoapySDR connectivity
 

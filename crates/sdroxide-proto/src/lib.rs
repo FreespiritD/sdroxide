@@ -39,8 +39,10 @@ use sdroxide_types::{
 /// v12: per-kind skimmer control — `RadioState.skimmer_enabled` became
 /// `RadioState.skimmer: SkimmerSettings` (CW/PSK/RTTY enables + squelch) and
 /// `Command::SetSkimmerEnabled` became `Command::SetSkimmerConfig`.
-pub const PROTO_VERSION: u16 = 12;
-const VERSION_BYTE: u8 = 0x0C;
+/// v13: built-in TCI server — `Command::SetTciServerConfig` and
+/// `ServerMsg::TciServerStatus`.
+pub const PROTO_VERSION: u16 = 13;
+const VERSION_BYTE: u8 = 0x0D;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {
@@ -115,6 +117,8 @@ pub enum ServerMsg {
     CallsignResult(CallsignInfo),
     Upload(UploadResult),
     Confirmations(Vec<QsoRecord>),
+    /// Built-in TCI server status (listener up, bind address, client count).
+    TciServerStatus { running: bool, addr: String, clients: usize, error: Option<String> },
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {

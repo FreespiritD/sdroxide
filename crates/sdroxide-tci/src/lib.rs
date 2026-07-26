@@ -1,15 +1,23 @@
-//! Native TCI (Transceiver Control Interface) client over WebSocket.
+//! Native TCI (Transceiver Control Interface) over WebSocket — both halves.
 //!
 //! NATIVE ONLY. Pure-Rust WebSocket (tungstenite); this crate must never be a
-//! dependency of any wasm-targeted crate. It is reached only from the root
-//! binary and `local_controller.rs`; the settings UI talks to it exclusively
-//! through the `RadioController` trait.
+//! dependency of any wasm-targeted crate.
 //!
-//! Receive is wideband IQ (sdroxide demodulates); transmit is audio (the rig
-//! modulates the audio we send).
+//! [`TciHandle`] is the **client**: sdroxide as the operator of somebody else's
+//! rig (ExpertSDR3, Thetis). Receive is wideband IQ (sdroxide demodulates);
+//! transmit is audio (the rig modulates the audio we send). It is reached only
+//! from the root binary and `local_controller.rs`; the settings UI talks to it
+//! exclusively through the `RadioController` trait.
+//!
+//! [`server`] is the **server**: sdroxide as the rig, driven by third-party TCI
+//! clients (WSJT-X, JTDX, MSHV, skimmers). It is owned by the DSP engine, which
+//! feeds it IQ and RX audio and drains its client requests.
+//!
+//! [`protocol`] holds the wire format both halves share.
 
 mod net;
-mod protocol;
+pub mod protocol;
+pub mod server;
 
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};

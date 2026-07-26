@@ -4020,6 +4020,7 @@ dependencies = [
  "sdroxide-dsp",
  "sdroxide-net",
  "sdroxide-skimmer",
+ "sdroxide-tci",
  "sdroxide-types",
  "shine-rs",
  "soapysdr",
