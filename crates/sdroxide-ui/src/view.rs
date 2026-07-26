@@ -62,6 +62,7 @@ pub mod solar_layer {
     /// Values `ALL` has had in earlier versions. A stored mask equal to one of
     /// these was "everything" when it was written, so it is upgraded rather
     /// than leaving newly added layers silently switched off.
+    #[allow(dead_code)]
     pub const PREVIOUS_ALL: [u32; 3] = [
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS,
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO,

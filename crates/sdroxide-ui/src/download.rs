@@ -51,7 +51,7 @@ pub fn save(name: &str, data: &[u8]) {
     let parts = js_sys::Array::new();
     parts.push(&array.buffer());
     let mut opts = web_sys::BlobPropertyBag::new();
-    opts.type_("text/plain");
+    opts.set_type("text/plain");
     let blob = match web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts) {
         Ok(b) => b,
         Err(_) => return,
