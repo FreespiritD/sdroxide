@@ -132,7 +132,9 @@ impl Rade {
 
         // Safety: an empty, NUL-terminated model path selects the built-in
         // weights; the C side copies nothing and only reads it for a log line.
-        let mut model = [0i8; 1];
+        // `c_char` is signed on x86 and unsigned on ARM, so it is spelled out
+        // rather than written as `0i8`.
+        let mut model = [0 as std::os::raw::c_char; 1];
         let r = unsafe { sys::rade_open(model.as_mut_ptr(), sys::RADE_VERBOSE_0 as i32) };
         if r.is_null() {
             OPEN.store(false, Ordering::Release);

@@ -109,7 +109,8 @@ fn main() {
 /// then add `src`) and adds one static target built from upstream's own source
 /// list. `BuildOpus.cmake` resolves its Opus patches relative to
 /// `CMAKE_SOURCE_DIR`, which is now *this* project, so the two `.diff` files
-/// are copied in alongside.
+/// are copied in alongside. On Windows the C sources are copied into the build
+/// tree as well — see the comment in the generated file.
 fn write_wrapper_project(out: &std::path::Path, rade_c: &std::path::Path) -> PathBuf {
     let wrapper = out.join("wrapper");
     std::fs::create_dir_all(wrapper.join("src")).expect("create wrapper dir");
@@ -135,7 +136,24 @@ add_subdirectory(${RADE_C_DIR}/src rade_c_src)
 
 get_target_property(RADE_SOURCES rade SOURCES)
 get_target_property(RADE_SRC_DIR rade SOURCE_DIR)
-list(TRANSFORM RADE_SOURCES PREPEND "${RADE_SRC_DIR}/")
+
+if(WIN32)
+    # The windows-gnu build runs through MSYS make, whose makefile parser has
+    # no notion of drive letters. For a source outside the build tree CMake
+    # emits the rule line
+    #     CMakeFiles/rade_static.dir/....obj: D:/.../rade_api.c
+    # whose second colon makes it a malformed static pattern rule — make stops
+    # with "target pattern contains no '%'". Compiling from copies inside the
+    # binary directory keeps every path in the generated makefiles relative.
+    set(RADE_COPY_DIR ${CMAKE_CURRENT_BINARY_DIR}/rade_src)
+    set(RADE_ABS_SOURCES ${RADE_SOURCES})
+    list(TRANSFORM RADE_ABS_SOURCES PREPEND "${RADE_SRC_DIR}/")
+    file(GLOB RADE_HEADERS "${RADE_SRC_DIR}/*.h")
+    file(COPY ${RADE_ABS_SOURCES} ${RADE_HEADERS} DESTINATION ${RADE_COPY_DIR})
+    list(TRANSFORM RADE_SOURCES PREPEND "${RADE_COPY_DIR}/")
+else()
+    list(TRANSFORM RADE_SOURCES PREPEND "${RADE_SRC_DIR}/")
+endif()
 
 add_library(rade_static STATIC ${RADE_SOURCES})
 target_include_directories(rade_static PRIVATE ${RADE_SRC_DIR})
