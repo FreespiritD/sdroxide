@@ -18,10 +18,10 @@ soapysdr = { version = "0.5.1", optional = true }
 triple_buffer = "9.0.0"
 crossbeam-channel.workspace = true
 rtrb.workspace = true
-sdroxide-config = { version = "0.5.0", path = "../sdroxide-config" }
-sdroxide-digi = { version = "0.5.0", path = "../sdroxide-digi" }
-sdroxide-skimmer = { version = "0.5.0", path = "../sdroxide-skimmer" }
-sdroxide-net = { version = "0.5.0", path = "../sdroxide-net" }
+sdroxide-config = { version = "0.6.0", path = "../sdroxide-config" }
+sdroxide-digi = { version = "0.6.0", path = "../sdroxide-digi" }
+sdroxide-skimmer = { version = "0.6.0", path = "../sdroxide-skimmer" }
+sdroxide-net = { version = "0.6.0", path = "../sdroxide-net" }
 # The built-in TCI server, which the engine owns and feeds. (The TCI *client*
 # in the same crate is built by the binary, not from here.)
 sdroxide-tci.workspace = true

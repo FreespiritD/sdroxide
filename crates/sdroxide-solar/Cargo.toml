@@ -16,7 +16,7 @@ tracing.workspace = true
 # async runtime — this crate owns exactly one worker thread.
 ureq = "3.3"
 crossbeam-channel.workspace = true
-sdroxide-config = { version = "0.5.0", path = "../sdroxide-config" }
+sdroxide-config = { version = "0.6.0", path = "../sdroxide-config" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # SGP4 orbit propagation for the amateur satellites. Pure Rust; default
 # features are off so it brings only chrono (for the TLE epoch) and not serde.
