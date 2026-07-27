@@ -233,6 +233,12 @@ pub struct SdroxideApp {
     seen_first_state: bool,
     show_memories: bool,
     show_settings: bool,
+    /// Voice keyer: the engine's slot list and what it is doing, the window's
+    /// open state, and the one slot label being typed into (only the focused
+    /// row is UI-owned, so the status echo can't fight the keyboard).
+    voice: sdroxide_types::VoiceStatus,
+    show_voice: bool,
+    voice_name_edit: Option<(usize, String)>,
     /// When the band/mode, FFT and skimmer popups opened (egui time), for their
     /// auto-fade.
     mode_popup_since: Option<f64>,
@@ -537,6 +543,9 @@ impl SdroxideApp {
             seen_first_state: false,
             show_memories: false,
             show_settings: false,
+            voice: sdroxide_types::VoiceStatus::default(),
+            show_voice: false,
+            voice_name_edit: None,
             mode_popup_since: None,
             fft_popup_since: None,
             skimmer_popup_since: None,
@@ -1563,7 +1572,11 @@ impl SdroxideApp {
     }
 
     fn tx_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        crate::chrome::module(ui, "Transmit", 470.0, |ui| {
+        // The voice keyer's button only appears where the keyer can transmit —
+        // every voice mode plus RADE, which takes a message as its microphone.
+        let keyer_ok = self.state.rx[0].mode.allows_voice_keyer();
+        let width = if keyer_ok { 520.0 } else { 470.0 };
+        crate::chrome::module(ui, "Transmit", width, |ui| {
             let tx = self.state.tx;
             if crate::chrome::chip_accent(
                 ui,
@@ -1586,6 +1599,33 @@ impl SdroxideApp {
             .clicked()
             {
                 cmds.push(Command::SetTune(!tx.tune));
+            }
+            if keyer_ok {
+                // Lit while a message is on the air, so the button doubles as
+                // the "something is transmitting from the keyer" indicator.
+                let playing = self.voice.playing.is_some();
+                let hover = match self.voice.playing {
+                    Some(i) => format!(
+                        "Transmitting {} — click to open the voice keyer",
+                        sdroxide_types::slot_label(
+                            i as usize,
+                            &self.voice.slot(i as usize).name
+                        )
+                    ),
+                    None => "Voice keyer: record and transmit stored messages".to_string(),
+                };
+                if crate::chrome::chip_accent(
+                    ui,
+                    playing || self.show_voice,
+                    RichText::new(" ▶ ").size(15.0),
+                    if playing { crate::theme::PINK } else { crate::theme::CYAN },
+                    if playing { Color32::WHITE } else { crate::theme::INK_ON_CYAN },
+                )
+                .on_hover_text(hover)
+                .clicked()
+                {
+                    self.show_voice = !self.show_voice;
+                }
             }
             let mut drive = tx.drive;
             ui.label("Drive");
@@ -1910,6 +1950,7 @@ impl SdroxideApp {
             show_logbook,
             show_spots,
             show_memories,
+            show_voice,
             ..
         } = self;
         let mut sink = crate::input::UiSink {
@@ -1919,6 +1960,7 @@ impl SdroxideApp {
             logbook: show_logbook,
             spots: show_spots,
             memories: show_memories,
+            voice: show_voice,
         };
         input.poll_pointer_and_keys(ctx, state, &mut sink, cmds);
         #[cfg(not(target_arch = "wasm32"))]
@@ -1937,6 +1979,7 @@ impl SdroxideApp {
             show_logbook,
             show_spots,
             show_memories,
+            show_voice,
             ..
         } = self;
         let mut sink = crate::input::UiSink {
@@ -1946,6 +1989,7 @@ impl SdroxideApp {
             logbook: show_logbook,
             spots: show_spots,
             memories: show_memories,
+            voice: show_voice,
         };
         input.release_all(state, &mut sink, cmds);
     }
@@ -3543,6 +3587,262 @@ impl SdroxideApp {
             crate::chrome::paint_window_border(ctx, &r.response);
         }
         self.show_memories = open;
+    }
+
+    /// The voice keyer: ten recorded messages with record / transmit / erase
+    /// per slot.
+    ///
+    /// Everything the window shows comes from the engine (it owns the
+    /// recordings and the transmitter), so the buttons only ever send commands
+    /// — there is no local latch that could disagree with what is on the air.
+    fn voice_window(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
+        // Entering a digital mode other than RADE takes the feature away; the
+        // window goes with it rather than sitting there doing nothing.
+        if !self.state.rx[0].mode.allows_voice_keyer() {
+            self.show_voice = false;
+            return;
+        }
+        let mut open = self.show_voice;
+        let recording = self.voice.recording;
+        let playing = self.voice.playing;
+        let previewing = self.voice.previewing;
+        let pos = self.voice.position_s;
+        let max_len = self.voice.max_len_s;
+        // TUNE holds the transmitter at the tune level, so a message would go
+        // nowhere; the engine refuses, and the buttons say so up front.
+        let tuning = self.state.tx.tune;
+        let slots: Vec<sdroxide_types::VoiceSlotInfo> = self.voice.slots.clone();
+
+        let resp = egui::Window::new("Voice keyer")
+            .open(&mut open)
+            .frame(crate::chrome::window_frame())
+            .resizable(false)
+            // `min_width` as well as `default_width`: the default only applies
+            // the first time the window is ever shown, and egui persists its
+            // size — without the minimum, a build that shipped a narrower
+            // window would keep squeezing the slot-name fields forever.
+            .default_width(600.0)
+            .min_width(600.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(
+                        "REC records from your microphone, PLAY lets you listen to what you \
+                         recorded, TX puts it on the air — as does a numpad key, a MIDI pad, \
+                         or rigctld's send_voice_mem.",
+                    )
+                    .weak()
+                    .size(11.5),
+                );
+                ui.add_space(6.0);
+                egui::Grid::new("voice-grid").num_columns(6).spacing([8.0, 6.0]).striped(true).show(
+                    ui,
+                    |ui| {
+                        for (i, slot) in slots.iter().enumerate() {
+                            let is_rec = recording == Some(i as u8);
+                            let is_play = playing == Some(i as u8);
+                            let is_prev = previewing == Some(i as u8);
+
+                            ui.label(
+                                RichText::new(format!("{:>2}", i + 1))
+                                    .monospace()
+                                    .color(crate::theme::CYAN_DIM),
+                            );
+
+                            // The slot label. Only the row being typed into is
+                            // UI-owned; every other row shows the engine's copy.
+                            let mut text = match &self.voice_name_edit {
+                                Some((row, s)) if *row == i => s.clone(),
+                                _ => slot.name.clone(),
+                            };
+                            // `add_sized`, not `desired_width`: inside a Grid a
+                            // desired width is clamped by the column width egui
+                            // measured (and persisted) last frame, so a field
+                            // that once came up narrow would stay narrow.
+                            let edit = ui.add_sized(
+                                [190.0, 20.0],
+                                egui::TextEdit::singleline(&mut text)
+                                    .hint_text(format!("Slot {}", i + 1)),
+                            );
+                            if edit.changed() {
+                                self.voice_name_edit = Some((i, text.clone()));
+                            }
+                            if edit.lost_focus()
+                                && let Some((row, name)) = self.voice_name_edit.take()
+                                && row == i
+                            {
+                                cmds.push(Command::VoiceRename { slot: i as u8, name });
+                            }
+
+                            // REC — starts/stops recording this slot. Refused
+                            // while the transmitter is up (same microphone).
+                            let busy_elsewhere = (recording.is_some() && !is_rec)
+                                || playing.is_some()
+                                || previewing.is_some()
+                                || self.state.tx.ptt
+                                || tuning;
+                            let rec = ui
+                                .add_enabled_ui(!busy_elsewhere, |ui| {
+                                    crate::chrome::chip_accent(
+                                        ui,
+                                        is_rec,
+                                        RichText::new("REC").size(11.5),
+                                        crate::theme::PINK,
+                                        Color32::WHITE,
+                                    )
+                                })
+                                .inner
+                                .on_hover_text(if is_rec {
+                                    "Stop and store".to_string()
+                                } else {
+                                    format!("Record from the microphone (up to {max_len:.0} s)")
+                                });
+                            if rec.clicked() {
+                                cmds.push(Command::VoiceRecord(
+                                    if is_rec { None } else { Some(i as u8) },
+                                ));
+                            }
+
+                            // PLAY — listen to the message locally. Nothing goes
+                            // on the air, so this is safe to press any time the
+                            // receiver is running.
+                            let can_prev = !slot.is_empty()
+                                && recording.is_none()
+                                && !self.state.tx.ptt
+                                && !tuning
+                                && (is_prev || previewing.is_none());
+                            let prev = ui
+                                .add_enabled_ui(can_prev || is_prev, |ui| {
+                                    crate::chrome::chip(
+                                        ui,
+                                        is_prev,
+                                        RichText::new(if is_prev { "STOP" } else { "PLAY" })
+                                            .size(11.5),
+                                    )
+                                })
+                                .inner
+                                .on_hover_text(if is_prev {
+                                    "Stop listening"
+                                } else if slot.is_empty() {
+                                    "Nothing recorded in this slot"
+                                } else if self.state.tx.ptt || tuning {
+                                    "Not while transmitting"
+                                } else {
+                                    "Listen to this message — nothing is transmitted"
+                                });
+                            if prev.clicked() {
+                                cmds.push(if is_prev {
+                                    Command::VoicePreview(None)
+                                } else {
+                                    Command::VoicePreview(Some(i as u8))
+                                });
+                            }
+
+                            // TX — puts the message on the air.
+                            let can_play = !slot.is_empty()
+                                && recording.is_none()
+                                && !tuning
+                                && (is_play || playing.is_none());
+                            let play = ui
+                                .add_enabled_ui(can_play || is_play, |ui| {
+                                    crate::chrome::chip_accent(
+                                        ui,
+                                        is_play,
+                                        RichText::new(if is_play { "STOP" } else { "TX" })
+                                            .size(11.5),
+                                        crate::theme::PINK,
+                                        Color32::WHITE,
+                                    )
+                                })
+                                .inner
+                                .on_hover_text(if is_play {
+                                    "Stop transmitting"
+                                } else if slot.is_empty() {
+                                    "Nothing recorded in this slot"
+                                } else if tuning {
+                                    "TUNE is active — switch it off first"
+                                } else {
+                                    "Transmit this message"
+                                });
+                            if play.clicked() {
+                                cmds.push(if is_play {
+                                    Command::VoicePlay(None)
+                                } else {
+                                    Command::VoicePlay(Some(i as u8))
+                                });
+                            }
+
+                            // Length, or the running position of whichever of
+                            // record / listen / transmit this row owns.
+                            ui.horizontal(|ui| {
+                                let (text, colour) = if is_rec {
+                                    (format!("● {pos:.1} s"), crate::theme::PINK)
+                                } else if is_play {
+                                    (
+                                        format!("▶ {pos:.1} / {:.1} s", slot.len_s),
+                                        crate::theme::PINK,
+                                    )
+                                } else if is_prev {
+                                    (
+                                        format!("▶ {pos:.1} / {:.1} s", slot.len_s),
+                                        crate::theme::CYAN,
+                                    )
+                                } else if slot.is_empty() {
+                                    ("—".to_string(), Color32::from_gray(110))
+                                } else {
+                                    (format!("{:.1} s", slot.len_s), Color32::from_gray(170))
+                                };
+                                ui.add_sized(
+                                    [88.0, 18.0],
+                                    egui::Label::new(
+                                        RichText::new(text).monospace().size(11.5).color(colour),
+                                    )
+                                    .selectable(false),
+                                );
+                                let erasable =
+                                    !slot.is_empty() && !is_rec && !is_play && !is_prev;
+                                if ui
+                                    .add_enabled_ui(erasable, |ui| {
+                                        crate::chrome::chip_accent(
+                                            ui,
+                                            false,
+                                            RichText::new("DEL").size(11.0),
+                                            crate::theme::PINK,
+                                            Color32::WHITE,
+                                        )
+                                    })
+                                    .inner
+                                    .on_hover_text("Erase this recording")
+                                    .clicked()
+                                {
+                                    cmds.push(Command::VoiceClear(i as u8));
+                                }
+                            });
+                            ui.end_row();
+                        }
+                    },
+                );
+
+                if self.state.rx[0].mode.is_rade() {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(
+                            "RADE: the message is encoded by the digital-voice codec, \
+                             exactly as a live over would be.",
+                        )
+                        .weak()
+                        .size(11.0),
+                    );
+                }
+            });
+        if let Some(r) = &resp {
+            crate::chrome::paint_window_border(ctx, &r.response);
+        }
+        // Keep the position readout moving while something is running; the app
+        // otherwise idles between spectrum frames.
+        if self.voice.busy() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+        self.show_voice = open;
     }
 
     /// Tune the active VFO onto a spot (CW dialed a pitch below, so it lands in
@@ -6237,6 +6537,7 @@ impl eframe::App for SdroxideApp {
                 RadioEvent::RigctldStatus { running, addr, clients, error } => {
                     self.rigctld_status = Some(TciServerStatus { running, addr, clients, error });
                 }
+                RadioEvent::VoiceStatus(v) => self.voice = v,
                 RadioEvent::CallsignResult(info) => self.apply_callsign(info),
                 RadioEvent::Upload(r) => self.on_upload_result(r),
                 RadioEvent::Confirmations(recs) => self.apply_confirmations(recs),
@@ -6479,6 +6780,7 @@ impl eframe::App for SdroxideApp {
         }
 
         self.memories_window(&ctx, &mut cmds);
+        self.voice_window(&ctx, &mut cmds);
         self.settings_window(&ctx, &mut cmds);
         self.digi_settings_window(&ctx, &mut cmds);
         self.logbook_window(&ctx);

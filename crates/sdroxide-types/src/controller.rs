@@ -1,6 +1,6 @@
 use crate::{
     CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, MemoryChannel, Meters, QsoRecord,
-    RadioState, SkimmerSpot, Spot, SpectrumFrame, SstvMode, SstvStatus, UploadResult,
+    RadioState, SkimmerSpot, Spot, SpectrumFrame, SstvMode, SstvStatus, UploadResult, VoiceStatus,
 };
 
 /// Events flowing engine → UI.
@@ -34,6 +34,10 @@ pub enum RadioEvent {
     SstvStatus(SstvStatus),
     /// FSQ image: a completed received picture (PNG bytes).
     DigiImage { png: Vec<u8> },
+    /// Voice keyer: slot contents plus what is being recorded or transmitted.
+    /// Emitted on every change and, while one of the two runs, often enough for
+    /// the UI to animate a position.
+    VoiceStatus(VoiceStatus),
     /// Latest set of network spots (DX cluster / POTA / SOTA / PSK Reporter),
     /// merged and de-duplicated by the spot manager.
     Spots(Vec<Spot>),

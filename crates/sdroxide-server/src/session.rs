@@ -69,13 +69,14 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>) {
     let tx_codec =
         if audio_caps.opus_encode { AudioCodec::Opus48kMono } else { AudioCodec::Pcm16_48k };
 
-    let (caps, state, memories, digi) = {
+    let (caps, state, memories, digi, voice) = {
         let latest = shared.latest.lock().unwrap();
         (
             latest.caps.clone(),
             latest.state.clone(),
             latest.memories.clone(),
             latest.digi.clone(),
+            latest.voice.clone(),
         )
     };
     let ack = ServerMsg::HelloAck { proto: PROTO_VERSION, caps, state, rx_codec, tx_codec };
@@ -87,6 +88,10 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>) {
     // this replay the client's callsign and grid come up empty and greyed out.
     if let Some(d) = digi {
         let _ = socket.send(msg(&ServerMsg::Ft8Status(d))).await;
+    }
+    // Likewise the voice keyer's slots, announced once at engine start.
+    if let Some(v) = voice {
+        let _ = socket.send(msg(&ServerMsg::VoiceStatus(v))).await;
     }
     info!(?rx_codec, ?tx_codec, "remote client connected");
 

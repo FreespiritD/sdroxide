@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use sdroxide_types::{
     CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, MemoryChannel, Meters, QsoRecord,
-    RadioState, SkimmerSpot, Spot, SpectrumFrame, SstvMode, SstvStatus, UploadResult,
+    RadioState, SkimmerSpot, Spot, SpectrumFrame, SstvMode, SstvStatus, UploadResult, VoiceStatus,
 };
 
 /// Bump on any incompatible change to the message enums (this includes the
@@ -59,7 +59,10 @@ use sdroxide_types::{
 /// `Command::DigiSendText` (both extend the postcard discriminant space).
 /// v18: FT8 transmit watchdog — `DigiStatus.tx_watchdog` plus `DigiConfig`'s
 /// `tx_watchdog_min` / `max_tx_repeats`, which both ends must agree on.
-pub const PROTO_VERSION: u16 = 18;
+/// v19: voice keyer — `Command::VoiceRecord`/`VoicePlay`/`VoicePreview`/
+/// `VoiceClear`/`VoiceRename` and `ServerMsg::VoiceStatus` (both extend the
+/// postcard discriminant space).
+pub const PROTO_VERSION: u16 = 19;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -129,6 +132,8 @@ pub enum ServerMsg {
     SstvStatus(SstvStatus),
     /// FSQ image: a completed received picture (PNG bytes).
     DigiImage { png: Vec<u8> },
+    /// Voice keyer: slot contents plus what is being recorded or transmitted.
+    VoiceStatus(VoiceStatus),
     // Network cockpit.
     Spots(Vec<Spot>),
     NetStatus(Option<String>),

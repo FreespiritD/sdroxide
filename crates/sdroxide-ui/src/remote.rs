@@ -34,6 +34,10 @@ pub struct RemoteController {
     pending: VecDeque<RadioEvent>,
     tx_codec: Option<AudioCodec>,
     transmitting: bool,
+    /// The engine is recording a voice-keyer message. Its microphone is *our*
+    /// microphone, so the uplink has to run for this too — otherwise a remote
+    /// operator's recording comes back silent.
+    voice_recording: bool,
     mic_buf: Vec<f32>,
     mic_seq: u32,
 }
@@ -57,6 +61,7 @@ impl RemoteController {
             pending: VecDeque::new(),
             tx_codec: None,
             transmitting: false,
+            voice_recording: false,
             mic_buf: Vec::new(),
             mic_seq: 0,
         })
@@ -110,6 +115,10 @@ impl RemoteController {
             }
             ServerMsg::SstvStatus(s) => self.pending.push_back(RadioEvent::SstvStatus(s)),
             ServerMsg::DigiImage { png } => self.pending.push_back(RadioEvent::DigiImage { png }),
+            ServerMsg::VoiceStatus(v) => {
+                self.voice_recording = v.recording.is_some();
+                self.pending.push_back(RadioEvent::VoiceStatus(v));
+            }
             ServerMsg::Spots(s) => self.pending.push_back(RadioEvent::Spots(s)),
             ServerMsg::NetStatus(s) => self.pending.push_back(RadioEvent::NetStatus(s)),
             ServerMsg::CallsignResult(c) => self.pending.push_back(RadioEvent::CallsignResult(c)),
@@ -126,7 +135,7 @@ impl RemoteController {
 
     fn pump_mic(&mut self) {
         let Some(bridge) = self.audio.as_mut() else { return };
-        if !self.transmitting {
+        if !self.transmitting && !self.voice_recording {
             self.mic_buf.clear();
             // Keep draining the capture ring so it doesn't back up.
             let mut scratch = Vec::new();

@@ -36,6 +36,7 @@ pub(crate) struct UiSink<'a> {
     pub logbook: &'a mut bool,
     pub spots: &'a mut bool,
     pub memories: &'a mut bool,
+    pub voice: &'a mut bool,
 }
 
 /// Which binding table an in-flight momentary press came from. Held state is
@@ -322,6 +323,11 @@ pub(crate) fn apply_action(
         MemoryRecall(n) => cmds.push(Command::RecallMemory(n)),
         RecordToggle => cmds.push(Command::SetRecording(!state.recording)),
         AbortTx => cmds.push(Command::DigiAbortTx),
+        // The engine decides whether this can transmit: an empty slot, a
+        // digital mode other than RADE, or TUNE in progress all make it a
+        // no-op there, which is where the keyer's state actually lives.
+        VoicePlay(slot) => cmds.push(Command::VoicePlay(Some(slot))),
+        VoiceStop => cmds.push(Command::VoicePlay(None)),
         FitSpan => ui.view.fit(state.center_hz, state.sample_rate),
         ZoomIn | ZoomOut => {
             let span = ui.view.span();
@@ -340,6 +346,7 @@ pub(crate) fn apply_action(
         ToggleLogbook => *ui.logbook = !*ui.logbook,
         ToggleSpots => *ui.spots = !*ui.spots,
         ToggleMemories => *ui.memories = !*ui.memories,
+        ToggleVoice => *ui.voice = !*ui.voice,
         _ => {}
     }
 }
@@ -962,11 +969,12 @@ mod tests {
     use super::*;
     use sdroxide_types::{Band, Mode};
 
-    fn sink<'a>(view: &'a mut ViewState, flags: &'a mut [bool; 5]) -> UiSink<'a> {
+    fn sink<'a>(view: &'a mut ViewState, flags: &'a mut [bool; 6]) -> UiSink<'a> {
         let (help, rest) = flags.split_at_mut(1);
         let (settings, rest) = rest.split_at_mut(1);
         let (logbook, rest) = rest.split_at_mut(1);
-        let (spots, memories) = rest.split_at_mut(1);
+        let (spots, rest) = rest.split_at_mut(1);
+        let (memories, voice) = rest.split_at_mut(1);
         UiSink {
             view,
             help: &mut help[0],
@@ -974,6 +982,7 @@ mod tests {
             logbook: &mut logbook[0],
             spots: &mut spots[0],
             memories: &mut memories[0],
+            voice: &mut voice[0],
         }
     }
 
@@ -984,7 +993,7 @@ mod tests {
         let mut state =
             RadioState { vfo_a_hz: 14_074_000.0, active_vfo: Vfo::A, ..RadioState::default() };
         let mut view = ViewState::default();
-        let mut flags = [false; 5];
+        let mut flags = [false; 6];
         let mut ui = sink(&mut view, &mut flags);
         let mut cmds = Vec::new();
         apply_action(
@@ -1003,7 +1012,7 @@ mod tests {
     fn tuning_never_goes_negative() {
         let mut state = RadioState { vfo_a_hz: 100.0, ..RadioState::default() };
         let mut view = ViewState::default();
-        let mut flags = [false; 5];
+        let mut flags = [false; 6];
         let mut ui = sink(&mut view, &mut flags);
         let mut cmds = Vec::new();
         apply_action(
@@ -1021,7 +1030,7 @@ mod tests {
     fn momentary_ptt_follows_the_button() {
         let mut state = RadioState::default();
         let mut view = ViewState::default();
-        let mut flags = [false; 5];
+        let mut flags = [false; 6];
         let mut ui = sink(&mut view, &mut flags);
         let mut cmds = Vec::new();
         apply_action(Action::Ptt, ActionInput::Press, ButtonMode::Momentary, &mut state, &mut ui, &mut cmds);
@@ -1037,7 +1046,7 @@ mod tests {
         state.tx.ptt = true;
 
         let mut view = ViewState::default();
-        let mut flags = [false; 5];
+        let mut flags = [false; 6];
         let mut ui = sink(&mut view, &mut flags);
         let mut cmds = Vec::new();
         apply_action(Action::Ptt, ActionInput::Press, ButtonMode::Toggle, &mut state, &mut ui, &mut cmds);
@@ -1053,7 +1062,7 @@ mod tests {
     fn one_shot_actions_ignore_release() {
         let mut state = RadioState::default();
         let mut view = ViewState::default();
-        let mut flags = [false; 5];
+        let mut flags = [false; 6];
         let mut ui = sink(&mut view, &mut flags);
         let mut cmds = Vec::new();
         apply_action(Action::SwapVfos, ActionInput::Press, ButtonMode::Momentary, &mut state, &mut ui, &mut cmds);
@@ -1065,7 +1074,7 @@ mod tests {
     fn absolute_fader_maps_into_range() {
         let mut state = RadioState::default();
         let mut view = ViewState::default();
-        let mut flags = [false; 5];
+        let mut flags = [false; 6];
         let mut ui = sink(&mut view, &mut flags);
         let mut cmds = Vec::new();
         apply_action(
@@ -1087,7 +1096,7 @@ mod tests {
         let mut state = RadioState::default();
         let before = state.vfo_a_hz;
         let mut view = ViewState::default();
-        let mut flags = [false; 5];
+        let mut flags = [false; 6];
         let mut ui = sink(&mut view, &mut flags);
         let mut cmds = Vec::new();
         apply_action(
@@ -1108,7 +1117,7 @@ mod tests {
         state.rx[0] = sdroxide_types::RxState::with_mode(Mode::Usb);
 
         let mut view = ViewState::default();
-        let mut flags = [false; 5];
+        let mut flags = [false; 6];
         let mut ui = sink(&mut view, &mut flags);
         let mut cmds = Vec::new();
         // Squeeze far past zero width.
@@ -1138,7 +1147,7 @@ mod tests {
     fn ui_only_actions_emit_no_commands() {
         let mut state = RadioState::default();
         let mut view = ViewState::default();
-        let mut flags = [false; 5];
+        let mut flags = [false; 6];
         let mut cmds = Vec::new();
         {
             let mut ui = sink(&mut view, &mut flags);

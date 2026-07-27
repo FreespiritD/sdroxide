@@ -531,6 +531,27 @@ fn dispatch(
             out.finish(OK, false)
         }
 
+        // ── Voice keyer ──────────────────────────────────────────────────────
+        // Hamlib's `send_voice_mem` / `stop_voice_mem`. Channels are 1-based on
+        // the wire and 0-based inside sdroxide. This keys the transmitter, so it
+        // obeys the same `allow_tx` gate as PTT and TUNE.
+        "send_voice_mem" => {
+            if !cfg.allow_tx {
+                return out.finish(ERJCTED, false);
+            }
+            match int(0) {
+                Some(ch) if (1..=sdroxide_types::VOICE_SLOTS as i32).contains(&ch) => {
+                    cmds.push(Command::VoicePlay(Some(ch as u8 - 1)));
+                    out.finish(OK, false)
+                }
+                _ => out.finish(EINVAL, false),
+            }
+        }
+        "stop_voice_mem" => {
+            cmds.push(Command::VoicePlay(None));
+            out.finish(OK, false)
+        }
+
         // ── Identity and capabilities ────────────────────────────────────────
         "get_info" => {
             out.value("Info", format!("{} {}", cfg.rig_name, env!("CARGO_PKG_VERSION")));
@@ -729,6 +750,10 @@ fn dump_state(st: &RigState, cfg: &RigctldConfig) -> String {
     s.push_str("has_mW2power=0\n");
     s.push_str("has_get_ant=0\n");
     s.push_str("has_set_ant=0\n");
+    // Voice keyer. Hamlib ignores unknown keys here, so advertising it costs
+    // nothing on clients that don't look — and the ones that do can tell.
+    let voice = i32::from(st.can_tx && cfg.allow_tx);
+    s.push_str(&format!("has_send_voice_mem={voice}\n"));
     s.push_str("timeout=2000\n");
     s.push_str("rig_model=2\n");
     s.push_str(&format!("rigctld_version={} {}\n", cfg.rig_name, env!("CARGO_PKG_VERSION")));
@@ -866,6 +891,25 @@ mod tests {
         assert!(dump.contains("ptt_type=0x0"));
         let tx_lines = dump.lines().filter(|l| l.contains("1 100")).count();
         assert_eq!(tx_lines, 0, "no TX ranges may be advertised");
+    }
+
+    /// `send_voice_mem` is 1-based on the wire; out-of-range channels are an
+    /// error rather than a silently clamped transmission.
+    #[test]
+    fn voice_memories_play_and_stop() {
+        assert_eq!(run("\\send_voice_mem 1").1, vec![Command::VoicePlay(Some(0))]);
+        assert_eq!(run("\\send_voice_mem 10").1, vec![Command::VoicePlay(Some(9))]);
+        assert_eq!(run("\\stop_voice_mem").1, vec![Command::VoicePlay(None)]);
+
+        assert_eq!(run("\\send_voice_mem 0").0, "RPRT -1\n");
+        assert_eq!(run("\\send_voice_mem 11").0, "RPRT -1\n");
+        assert!(run("\\send_voice_mem 11").1.is_empty());
+
+        // Keying is keying: the transmit gate applies.
+        let cfg = RigctldConfig { allow_tx: false, ..RigctldConfig::default() };
+        let (reply, cmds) = run_with("\\send_voice_mem 1", &st(), &cfg);
+        assert_eq!(reply, "RPRT -9\n");
+        assert!(cmds.is_empty());
     }
 
     #[test]

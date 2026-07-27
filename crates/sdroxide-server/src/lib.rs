@@ -69,6 +69,10 @@ pub(crate) struct Latest {
     /// it a client's callsign and grid stay empty *and disabled*, because the
     /// editors deliberately refuse to write until they have been seeded.
     pub digi: Option<DigiStatus>,
+    /// The voice keyer's slot list, announced once at startup for the same
+    /// reason as `digi` and replayed on connect so the keyer window opens
+    /// populated instead of showing ten empty slots.
+    pub voice: Option<sdroxide_types::VoiceStatus>,
 }
 
 pub(crate) struct Shared {
@@ -279,6 +283,10 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             }
             RadioEvent::SstvStatus(s) => Some(ServerMsg::SstvStatus(s)),
             RadioEvent::DigiImage { png } => Some(ServerMsg::DigiImage { png }),
+            RadioEvent::VoiceStatus(v) => {
+                latest.voice = Some(v.clone());
+                Some(ServerMsg::VoiceStatus(v))
+            }
             RadioEvent::Spots(s) => Some(ServerMsg::Spots(s)),
             RadioEvent::NetStatus(s) => Some(ServerMsg::NetStatus(s)),
             RadioEvent::CallsignResult(c) => Some(ServerMsg::CallsignResult(c)),

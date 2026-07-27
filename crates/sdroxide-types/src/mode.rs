@@ -137,6 +137,15 @@ impl Mode {
         matches!(self, Mode::Rade)
     }
 
+    /// Whether the voice keyer may transmit in this mode.
+    ///
+    /// The digital modes synthesise their own transmit audio, so a recorded
+    /// message has nowhere to go — RADE excepted: it carries speech, and takes
+    /// the playback as its microphone input exactly like a live over.
+    pub fn allows_voice_keyer(self) -> bool {
+        !self.is_digital() || self.is_rade()
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Mode::Lsb => "LSB",

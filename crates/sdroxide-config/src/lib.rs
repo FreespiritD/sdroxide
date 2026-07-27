@@ -98,6 +98,15 @@ pub fn sstv_tx_dir() -> Result<PathBuf, ConfigError> {
     Ok(dir)
 }
 
+/// Directory for the voice keyer's recorded messages
+/// (`~/.config/sdroxide/voice`), created on demand. One 48 kHz mono WAV per
+/// slot, so a message can be edited or replaced with any audio editor.
+pub fn voice_dir() -> Result<PathBuf, ConfigError> {
+    let dir = config_dir()?.join("voice");
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
 /// Directory for cached solar imagery and space-weather JSON
 /// (`~/.config/sdroxide/solar`), created on demand.
 ///
@@ -301,6 +310,16 @@ pub fn load_sstv_messages() -> Vec<String> {
 
 pub fn save_sstv_messages(messages: &[String]) -> Result<(), ConfigError> {
     save_json("sstv_messages.json", &messages)
+}
+
+/// Voice-keyer slot labels (one entry per slot). The recordings themselves are
+/// WAV files under [`voice_dir`]; this stores only what each slot is called.
+pub fn load_voice_names() -> Vec<String> {
+    load_json("voice_names.json")
+}
+
+pub fn save_voice_names(names: &[String]) -> Result<(), ConfigError> {
+    save_json("voice_names.json", &names)
 }
 
 #[cfg(test)]

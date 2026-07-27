@@ -28,6 +28,7 @@ mod spot;
 mod sstv;
 mod state;
 mod tciserver;
+mod voice;
 mod wsjtx;
 mod ui;
 
@@ -81,3 +82,4 @@ pub use sstv::{SstvMode, SstvStatus};
 pub use state::{OffsetState, RadioState, RxId, RxState, SQUELCH_OPEN_DB, TxState, Vfo};
 pub use tciserver::TciServerConfig;
 pub use ui::{Speed, UiSettings};
+pub use voice::{VOICE_MAX_LEN_S, VOICE_SLOTS, VoiceSlotInfo, VoiceStatus, slot_label};

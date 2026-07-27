@@ -51,6 +51,9 @@ or connects to a remote sdroxide server.
   **monitor of your own signal**: wideband IQ rigs display it at its on-air
   frequency in the full span; CAT rigs and digital modes show a narrow
   transmit-sideband scope (an approximation built from the outgoing audio).
+- **Voice keyer** — ten recorded messages, transmitted from a button, a numpad
+  key, a MIDI pad or a Hamlib `send_voice_mem` command; works in the voice modes
+  and in RADE digital voice.
 - **FT8 / FT4** with a live decode list, automatic QSO sequencing, a world map,
   a transcript, and automatic logging.
 - **Integrated logbook** for digital and manual QSOs, with contest and QSL
@@ -290,7 +293,49 @@ output power directly — and both sliders adopt the rig's current settings when
 sdroxide connects, so a level you set in ExpertSDR3 carries over instead of
 being overwritten.
 
-### 2.11 Memory channels
+### 2.11 Voice keyer
+
+The **▶** button in the Transmit module opens the **voice keyer**: ten recorded
+messages you can put on the air with one press — a CQ call, your callsign, a
+contest exchange, a 73.
+
+Each row is one slot:
+
+- Type a **name** for the slot (optional; it is just a label).
+- **REC** records from your microphone. Press it again to stop and store the
+  message; recordings stop by themselves after two minutes.
+- **PLAY** plays the message back through your speakers so you can check it.
+  Nothing is transmitted, and it replaces the receive audio while it runs.
+- **TX** keys the transmitter, sends the message and unkeys at the end.
+  **STOP** ends it early — so does pressing PTT, TUNE, or Abort transmit.
+- **✕** erases the recording.
+
+Recordings are stored as plain 48 kHz mono WAV files in
+`~/.config/sdroxide/voice` (see [11. Configuration files](#11-configuration-files)),
+one per slot, so you can also record a message in an audio editor, name it
+`slot3.wav`, and drop it in.
+
+**Triggering a message.** Out of the box the digits **1**–**9** and **0** play
+slots 1–10 and **−** stops one; on a full keyboard those are the numpad keys
+(the platform reports numpad and top-row digits identically, so either works).
+Like every other binding these can be changed — or moved onto a MIDI pad or
+footswitch — on the **Controls** tab; see
+[5.4](#54-controls-keyboard-mouse-and-midi). A key over an **empty** slot does
+nothing at all, which is why the digits can ship bound when PTT deliberately
+does not.
+
+External programs can trigger the keyer too: with the built-in Hamlib server
+running ([5.8](#58-servers-letting-other-programs-drive-the-radio)),
+`\send_voice_mem <1–10>` plays a slot and `\stop_voice_mem` stops it.
+
+> **Where it works.** The keyer is available in every voice mode and in
+> **RADE** digital voice, where the message is fed to the codec exactly as a
+> live over would be. The other digital modes generate their own transmit
+> audio, so the button is hidden there (and the window closes if you switch
+> into one). Recording is refused while you are transmitting — it is the same
+> microphone.
+
+### 2.12 Memory channels
 
 Open **MEM** (System module) for the memory channels window. Type a name and
 press **Store** to save the current frequency and mode. Each saved row has a
@@ -955,6 +1000,9 @@ or a control has keyboard focus.
 
 **Push-to-talk deserves a note.** No PTT key ships bound, on purpose: a
 transmitter keyed by accident is the worst thing this feature could do to you.
+(The voice-keyer digits *are* bound out of the box — see
+[2.11](#211-voice-keyer) — because a key over an empty slot does nothing, and a
+new installation has ten of them.)
 **Bind hold-to-talk to Space** sets it up in one click. A held PTT is released
 when you let go, when the window loses focus, when a text field takes the
 keyboard, and after the **Unkey a held PTT after** timeout at the bottom of the
@@ -1145,8 +1193,11 @@ fails on 4532, the usual cause is a real `rigctld` already running.
 
 Supported: frequency, mode and passband, PTT, VFO A/B and split (including split
 frequency and mode), RIT and XIT, the `RFPOWER` / `AF` / `MICGAIN` / `STRENGTH`
-levels, the `NB` / `NR` / `ANF` / `MUTE` functions, and the `XCHG` / `CPY` /
-`TOGGLE` / `BAND_UP` / `BAND_DOWN` / `TUNE` VFO operations.
+levels, the `NB` / `NR` / `ANF` / `MUTE` functions, the `XCHG` / `CPY` /
+`TOGGLE` / `BAND_UP` / `BAND_DOWN` / `TUNE` VFO operations, and the voice keyer
+(`send_voice_mem 1`…`10`, `stop_voice_mem` — see
+[2.11](#211-voice-keyer)). The voice keyer obeys **Allow clients to transmit**
+like PTT does.
 
 Setting up clients:
 
@@ -1815,6 +1866,8 @@ sdroxide stores its settings under the per-user config directory:
 | `skimmer.json` | JSON | Skimmers: which of CW / PSK / RTTY run, and each one's spot squelch in dB. Restored at startup; a narrowband (audio-mode) radio still forces them off without disturbing what you picked. |
 | `input.json` | JSON | Control inputs: keyboard bindings, panadapter mouse behaviour, mouse-button bindings, and the MIDI controller mapping. Belongs to the machine running the user interface, not the engine. |
 | `sstv_messages.json` | JSON | The overlay message stored for each of the five SSTV transmit slots. |
+| `voice_names.json` | JSON | The label given to each of the ten voice-keyer slots. |
+| `voice/` | dir | The voice-keyer recordings (`slot1.wav`…`slot10.wav`), 48 kHz mono. Drop your own WAV in to replace a message. |
 | `sstv_tx/` | dir | The five SSTV transmit-image slots (`slot0.png`…`slot4.png`). |
 | `sstv_rx/` | dir | Received SSTV pictures, kept for the gallery. |
 | `solar/` | dir | Cached solar imagery and space-weather JSON for the 3D view, with an index of HTTP validators so refreshes stay cheap. Safe to delete; it is re-fetched on demand. |
@@ -1893,6 +1946,8 @@ stuck, press Apply / reconnect again.
 | M | Toggle mute. |
 | N | Toggle noise blanker. |
 | F | Fit the view to the full receiver span. |
+| 1 – 9, 0 (numpad) | Transmit voice-keyer slots 1–10 (nothing if the slot is empty). |
+| − (numpad) | Stop a voice-keyer message. |
 | F1 | Open this manual (works even while typing). |
 
 Shortcuts are ignored while typing in a text field.

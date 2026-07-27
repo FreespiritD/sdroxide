@@ -70,6 +70,11 @@ pub enum Action {
     MemoryRecall(u32),
     RecordToggle,
     AbortTx,
+    /// Transmit voice-keyer slot `n` (0-based). Does nothing when the slot is
+    /// empty, which is what makes the shipped numpad bindings safe.
+    VoicePlay(u8),
+    /// Stop a voice-keyer message mid-transmission.
+    VoiceStop,
 
     // ── Client-local only: never becomes a Command ──────────────────────────
     FitSpan,
@@ -82,6 +87,7 @@ pub enum Action {
     ToggleLogbook,
     ToggleSpots,
     ToggleMemories,
+    ToggleVoice,
 }
 
 /// Whether an action is driven by a value or by a button.
@@ -114,14 +120,12 @@ impl Action {
             Volume | SubVolume | Squelch | FilterWidth | FilterShift | AgcMaxGain | Mute
             | NoiseBlanker | NoiseReductionCycle | AutoNotch | AgcCycle | SubRx | ModeNext
             | ModePrev | ModeSelect(_) | RecordToggle => "Receive",
-            Ptt | TuneCarrier | TxDrive | TuneDrive | MicGain | DigiAudioFreq | AbortTx => {
-                "Transmit"
-            }
+            Ptt | TuneCarrier | TxDrive | TuneDrive | MicGain | DigiAudioFreq | AbortTx
+            | VoicePlay(_) | VoiceStop => "Transmit",
             SpectrumZoom | SpectrumPan | SpectrumFloorDb | SpectrumCeilDb | FitSpan | ZoomIn
             | ZoomOut | PeakHold | SpectrumCollapse => "Display",
-            ToggleHelp | ToggleSettings | ToggleLogbook | ToggleSpots | ToggleMemories => {
-                "Windows"
-            }
+            ToggleHelp | ToggleSettings | ToggleLogbook | ToggleSpots | ToggleMemories
+            | ToggleVoice => "Windows",
         }
     }
 
@@ -167,6 +171,7 @@ impl Action {
             ModePrev => "Mode previous",
             RecordToggle => "Record on/off",
             AbortTx => "Abort transmit",
+            VoiceStop => "Voice keyer stop",
             FitSpan => "Fit span",
             ZoomIn => "Zoom in",
             ZoomOut => "Zoom out",
@@ -177,10 +182,12 @@ impl Action {
             ToggleLogbook => "Logbook window",
             ToggleSpots => "Spots window",
             ToggleMemories => "Memories window",
+            ToggleVoice => "Voice keyer window",
             VfoSelect(v) => return format!("Select VFO {}", if v == Vfo::A { "A" } else { "B" }),
             BandSelect(b) => return format!("Band {}", b.label()),
             ModeSelect(m) => return format!("Mode {}", m.label()),
             MemoryRecall(n) => return format!("Recall memory {n}"),
+            VoicePlay(n) => return format!("Voice keyer slot {}", n + 1),
         };
         fixed.to_string()
     }
@@ -247,9 +254,9 @@ impl Action {
         v.extend(Band::ALL.iter().map(|b| BandSelect(*b)));
         v.extend([ModeNext, ModePrev]);
         v.extend(Mode::ALL.iter().map(|m| ModeSelect(*m)));
+        v.extend([RecordToggle, AbortTx, VoiceStop]);
+        v.extend((0..crate::VOICE_SLOTS as u8).map(VoicePlay));
         v.extend([
-            RecordToggle,
-            AbortTx,
             FitSpan,
             ZoomIn,
             ZoomOut,
@@ -260,6 +267,7 @@ impl Action {
             ToggleLogbook,
             ToggleSpots,
             ToggleMemories,
+            ToggleVoice,
         ]);
         v
     }
@@ -440,8 +448,14 @@ impl KeyBinding {
     ///
     /// PTT is deliberately *not* bound: an accidentally keyed transmitter is
     /// the worst failure mode here, so the operator opts in.
+    ///
+    /// The voice-keyer digits *are* bound, because they can only ever transmit
+    /// something the operator recorded on purpose: an empty slot does nothing,
+    /// and a fresh installation has ten of them. Note that the numpad digits
+    /// are not distinguishable from the top-row ones here — the platform layer
+    /// reports both as plain digits — so either row fires a slot.
     pub fn defaults() -> Vec<KeyBinding> {
-        vec![
+        let mut v = vec![
             KeyBinding::tune(KeyChord::plain("ArrowRight"), 1.0, 100.0),
             KeyBinding::tune(KeyChord::plain("ArrowLeft"), -1.0, 100.0),
             KeyBinding::tune(KeyChord::shift("ArrowRight"), 1.0, 10.0),
@@ -453,7 +467,17 @@ impl KeyBinding {
             KeyBinding::toggle(KeyChord::plain("M"), Action::Mute),
             KeyBinding::toggle(KeyChord::plain("N"), Action::NoiseBlanker),
             KeyBinding::toggle(KeyChord::plain("F"), Action::FitSpan),
-        ]
+        ];
+        // Numpad 1–9 then 0 play slots 1–10; numpad "−" stops a message early.
+        for slot in 0..crate::VOICE_SLOTS as u8 {
+            let digit = (slot + 1) % 10; // slot 10 sits on the 0 key
+            v.push(KeyBinding::toggle(
+                KeyChord::plain(&digit.to_string()),
+                Action::VoicePlay(slot),
+            ));
+        }
+        v.push(KeyBinding::toggle(KeyChord::plain("Minus"), Action::VoiceStop));
+        v
     }
 }
 
@@ -893,6 +917,27 @@ mod tests {
         assert_eq!(find("F").action, Action::FitSpan);
         // PTT must never ship bound.
         assert!(!d.iter().any(|b| b.action == Action::Ptt));
+    }
+
+    /// The keypad plays slot 1 on "1" … slot 10 on "0", and every slot has
+    /// exactly one shipped key.
+    #[test]
+    fn voice_slots_ship_on_the_numpad() {
+        let d = KeyBinding::defaults();
+        let key_for = |slot: u8| {
+            d.iter()
+                .find(|b| b.action == Action::VoicePlay(slot))
+                .map(|b| b.chord.key.clone())
+                .unwrap_or_else(|| panic!("slot {slot} unbound"))
+        };
+        assert_eq!(key_for(0), "1");
+        assert_eq!(key_for(8), "9");
+        assert_eq!(key_for(9), "0");
+        for slot in 0..crate::VOICE_SLOTS as u8 {
+            let n = d.iter().filter(|b| b.action == Action::VoicePlay(slot)).count();
+            assert_eq!(n, 1, "slot {slot} bound {n} times");
+        }
+        assert!(d.iter().any(|b| b.action == Action::VoiceStop));
     }
 
     #[test]

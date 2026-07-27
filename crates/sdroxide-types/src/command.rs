@@ -50,6 +50,23 @@ pub enum Command {
     SetTuneDrive(f32),
     SetMicGain(f32),
 
+    // Voice keyer (10 recorded messages; see [`crate::VoiceStatus`])
+    /// Start recording the microphone into a slot (`Some`), or stop and store
+    /// what has been recorded (`None`). Refused while transmitting.
+    VoiceRecord(Option<u8>),
+    /// Transmit a recorded message (`Some`), or stop one in progress (`None`).
+    /// The engine keys the transmitter itself and unkeys at the end of the
+    /// message. In RADE the recording is fed to the codec in place of the
+    /// microphone; in the other digital modes the keyer is refused.
+    VoicePlay(Option<u8>),
+    /// Listen to a recorded message through the speakers without transmitting
+    /// (`Some`), or stop the monitor (`None`). Refused while transmitting.
+    VoicePreview(Option<u8>),
+    /// Erase a slot's recording.
+    VoiceClear(u8),
+    /// Rename a slot (the label the UI and the bindings editor show).
+    VoiceRename { slot: u8, name: String },
+
     // Hardware
     SetGain { dir: Direction, element: String, db: f64 },
     SetAntenna { dir: Direction, name: String },

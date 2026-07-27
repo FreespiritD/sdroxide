@@ -32,6 +32,7 @@ use sdroxide_types::{
 };
 
 use crate::recorder::Recorder;
+use crate::voice::VoiceKeyer;
 use crate::{Complex32, ControlUpdate, IqSource};
 
 /// Number of bins in emitted display frames (matches the waterfall texture width).
@@ -533,6 +534,31 @@ struct Engine {
     digi_config: DigiConfig,
     /// True while the current TX burst is driven by the digi engine.
     digi_tx: bool,
+    /// Voice keyer: ten recorded messages plus whichever is being recorded or
+    /// transmitted right now.
+    voice: VoiceKeyer,
+    /// True while the voice keyer owns the transmitter. Set from the moment it
+    /// keys up until the over has fully ended — including a digital-voice tail
+    /// after the message itself has played out, so the live microphone can
+    /// never leak into the end of a keyer over.
+    voice_tx: bool,
+    /// Scratch for microphone audio on its way into a recording.
+    voice_rec_buf: Vec<f32>,
+    /// Local monitor ("preview") playback: the message resampled to the speaker
+    /// rate and queued, so each audio block takes exactly the samples it needs
+    /// and the monitor plays at real time without a ring of its own.
+    voice_prev_q: Vec<f32>,
+    voice_prev_rs: Option<MonoResampler>,
+    voice_prev_rate: f64,
+    /// The monitored block handed to whichever speaker path is in use.
+    voice_prev_out: Vec<f32>,
+    /// When the current keyer over was requested, so one that never reached the
+    /// air (the transmit rails refused, a digital-voice burst was aborted)
+    /// releases the keyer instead of leaving it stuck "transmitting".
+    voice_started: Option<Instant>,
+    /// When the running record/playback position was last published. The status
+    /// is otherwise event-driven; this paces the moving-position updates.
+    voice_tick: Option<Instant>,
     /// Wall-clock pacer for audio-mode digi TX: (burst start, samples fed at
     /// 48 kHz). Ensures the burst plays at real time even if the sound card
     /// drains its ring faster than real time (otherwise FT8/FT4 finish early).
@@ -749,6 +775,15 @@ fn engine_thread(
         digi: None,
         digi_config,
         digi_tx: false,
+        voice: VoiceKeyer::load(),
+        voice_tx: false,
+        voice_rec_buf: Vec::new(),
+        voice_prev_q: Vec::new(),
+        voice_prev_rs: None,
+        voice_prev_rate: 0.0,
+        voice_prev_out: Vec::new(),
+        voice_started: None,
+        voice_tick: None,
         tx_pace: None,
         channel_analyzer: None,
         skim_ddc: None,
@@ -801,6 +836,8 @@ fn engine_thread(
     let _ = engine
         .event_tx
         .send(RadioEvent::Ft8Status(sdroxide_types::DigiStatus::idle(engine.digi_config.clone())));
+    // Likewise the voice keyer: the UI's slot list is whatever is on disk.
+    engine.emit_voice_status();
     // If we start up already in a digital mode, spin up the controller.
     engine.sync_digi_mode();
     if !audio_mode {
@@ -863,6 +900,7 @@ fn engine_thread(
         // Drive the FT8/FT4 slot machine (runs in both RX and TX). Returns
         // owned actions to avoid borrowing `engine.digi` and `engine` at once.
         engine.poll_digi();
+        engine.poll_voice();
         engine.poll_skimmer();
         engine.poll_tci_server();
         engine.poll_rigctld();
@@ -1003,6 +1041,9 @@ impl Drop for Engine {
         if let Some(rec) = self.recorder.take() {
             rec.stop();
         }
+        // Store a voice-keyer message that was still being recorded, rather
+        // than throwing away what the operator had just said.
+        self.voice.stop_record();
         // A reconnect attempt may be halfway through opening a device; let it
         // finish rather than leave it running into process exit, where its
         // teardown would race the device libraries' own exit handlers.
@@ -1034,7 +1075,13 @@ impl Engine {
         // signal. The mode declines while it is out of sync, so the operator
         // still hears the raw audio while tuning — unless they asked for it
         // muted.
-        if self.take_voice_audio(out_rate) {
+        // Monitoring a voice-keyer message takes the speakers for its duration:
+        // the operator asked to hear the recording, not the band.
+        let block = self.main_play.len();
+        if self.take_preview_audio(out_rate, block) {
+            self.main_play.clear();
+            self.main_play.extend_from_slice(&self.voice_prev_out);
+        } else if self.take_voice_audio(out_rate) {
             let rx0 = &self.state.rx[0];
             let vol = if rx0.muted { 0.0 } else { rx0.volume * rx0.volume };
             self.main_play.clear();
@@ -1176,8 +1223,13 @@ impl Engine {
                 *s *= vol;
             }
         }
-        // Digital voice replaces the rig's audio with what it decoded from it.
-        if self.take_voice_audio(self.audio_out_rate) {
+        // A monitored voice-keyer message takes the speakers; otherwise digital
+        // voice replaces the rig's audio with what it decoded from it.
+        let block = self.audio_play.len();
+        if self.take_preview_audio(self.audio_out_rate, block) {
+            self.audio_play.clear();
+            self.audio_play.extend_from_slice(&self.voice_prev_out);
+        } else if self.take_voice_audio(self.audio_out_rate) {
             self.audio_play.clear();
             self.audio_play.extend(self.voice_play.iter().map(|s| s * vol));
         } else if self.mutes_analog_audio() {
@@ -1733,6 +1785,10 @@ impl Engine {
                 // locally mid-over takes the transmitter back rather than
                 // swapping the on-air audio out from under whoever is talking.
                 self.end_tci_tx();
+                // Same rule for the voice keyer: a hand on PTT ends the
+                // recorded message rather than talking over it. Releasing PTT
+                // stops it too — that is the natural "shut up" gesture.
+                self.cancel_voice_play();
                 // A digital-voice mode owns its own over: it has to build the
                 // first modem frame before there is anything to send, and it
                 // has to append the end-of-over frame afterwards. Route PTT
@@ -1751,6 +1807,7 @@ impl Engine {
             SetTune(on) => {
                 // As with PTT, an operator TUNE takes the transmitter back.
                 self.end_tci_tx();
+                self.cancel_voice_play();
                 self.state.tx.tune = on;
                 self.sync_tx_state();
                 // Toggled mid-over (PTT held): already keyed, so `sync_tx_state`
@@ -1778,6 +1835,68 @@ impl Engine {
                 }
             }
             SetMicGain(v) => self.state.tx.mic_gain = v.clamp(0.0, 1.0),
+
+            // ── Voice keyer ─────────────────────────────────────────────────
+            VoiceRecord(Some(slot)) => {
+                // Recording reads the same microphone the transmitter does, so
+                // the two can't run at once.
+                if self.tx_active || self.digi_tx {
+                    warn!("voice keyer: cannot record while transmitting");
+                    return;
+                }
+                if self.mic.is_none() {
+                    warn!("voice keyer: no microphone configured");
+                    return;
+                }
+                if !self.voice.start_record(slot as usize) {
+                    return;
+                }
+                // Whatever accumulated in the capture ring while nothing was
+                // draining it is stale; the recording starts from now.
+                if let Some(mic) = self.mic.as_mut() {
+                    while mic.consumer.pop().is_ok() {}
+                }
+                self.voice_tick = None;
+                self.emit_voice_status();
+            }
+            VoiceRecord(None) => {
+                if self.voice.is_recording() {
+                    self.voice.stop_record();
+                    self.emit_voice_status();
+                }
+            }
+            VoicePlay(Some(slot)) => self.start_voice_play(slot as usize),
+            VoicePlay(None) => self.stop_voice_play(),
+            VoicePreview(Some(slot)) => {
+                // Monitoring rides on the receive audio path, which stands
+                // still while transmitting (and does not exist at all without an
+                // audio device) — so there would be nothing to listen to.
+                if self.tx_active || self.digi_tx {
+                    warn!("voice keyer: cannot monitor a message while transmitting");
+                    return;
+                }
+                if self.mixer.is_none() {
+                    warn!("voice keyer: no audio output to monitor through");
+                    return;
+                }
+                if self.voice.is_recording() {
+                    self.voice.stop_record();
+                }
+                if self.voice.start_preview(slot as usize) {
+                    self.voice_prev_q.clear();
+                    self.voice_tick = None;
+                    self.emit_voice_status();
+                }
+            }
+            VoicePreview(None) => self.stop_voice_preview(),
+            VoiceClear(slot) => {
+                self.voice.clear(slot as usize);
+                self.emit_voice_status();
+            }
+            VoiceRename { slot, name } => {
+                self.voice.rename(slot as usize, name);
+                self.emit_voice_status();
+            }
             SetGain { dir, element, db } => match dir {
                 Direction::Rx => {
                     if let Err(e) = self.source.set_gain_element(&element, db) {
@@ -1895,6 +2014,7 @@ impl Engine {
                 }
             }
             DigiAbortTx => {
+                self.cancel_voice_play();
                 if let Some(d) = self.digi.as_mut() {
                     d.abort_tx();
                 }
@@ -2626,6 +2746,17 @@ impl Engine {
     }
 
     fn set_rx_mode(&mut self, rx: RxId, mode: Mode) {
+        // Changing modes under a running keyer message would leave it playing
+        // into a transmit chain that has just been rebuilt (or into a digital
+        // mode that has no use for it).
+        if rx == RxId::Main && self.state.rx[0].mode != mode {
+            self.stop_voice_play();
+            self.stop_voice_preview();
+            if self.voice.is_recording() {
+                self.voice.stop_record();
+                self.emit_voice_status();
+            }
+        }
         let r = &mut self.state.rx[rx.index()];
         r.mode = mode;
         let (lo, hi) = mode.default_filter();
@@ -2931,6 +3062,14 @@ impl Engine {
         self.tx_pace = None;
         self.digi = None;
         self.digi_tx = false;
+        // The keyer's recordings survive a device swap; an over in flight — or a
+        // monitor running through the old audio rate — does not.
+        self.voice.stop_play();
+        self.voice.stop_preview();
+        self.voice_prev_q.clear();
+        self.voice_prev_rs = None;
+        self.voice_prev_rate = 0.0;
+        self.voice_tx = false;
         self.sub = None;
         self.channel_analyzer = None;
         self.skimmer = None;
@@ -3030,6 +3169,16 @@ impl Engine {
             return;
         }
         if want_tx {
+            // A recording reads the same microphone the transmitter does, so
+            // keying up — by any route: PTT, TUNE, a digital burst, a TCI
+            // client — ends it and stores what was captured. The local monitor
+            // goes too: it rides the receive path, which stands still during a
+            // (half-duplex) over.
+            if self.voice.is_recording() {
+                self.voice.stop_record();
+                self.emit_voice_status();
+            }
+            self.stop_voice_preview();
             let txf = self.state.tx_freq_hz();
             let deny = |reason: &str, state: &mut RadioState| {
                 warn!("TX refused: {reason}");
@@ -3091,13 +3240,265 @@ impl Engine {
         }
     }
 
-    /// Top up the 48 kHz TX FIFO from whichever source owns this over — a TCI
-    /// client's audio stream, or the local microphone — and bound the queue.
+    // ── Voice keyer ─────────────────────────────────────────────────────────
+
+    fn emit_voice_status(&mut self) {
+        let _ = self.event_tx.send(RadioEvent::VoiceStatus(self.voice.status()));
+    }
+
+    /// Replace one block of speaker audio with the message being monitored.
+    ///
+    /// `n` is the block length the receive path just produced, so taking
+    /// exactly that many samples paces the monitor to real time — the same
+    /// trick the digital-voice substitution uses. Returns true when
+    /// `voice_prev_out` holds the block to play, false when nothing is being
+    /// monitored or the message has just played out.
+    fn take_preview_audio(&mut self, out_rate: f64, n: usize) -> bool {
+        if !self.voice.is_previewing() || n == 0 {
+            return false;
+        }
+        if (out_rate - self.voice_prev_rate).abs() > 0.01 {
+            self.voice_prev_rate = out_rate;
+            self.voice_prev_rs = MonoResampler::new(crate::voice::VOICE_RATE, out_rate);
+            self.voice_prev_q.clear();
+        }
+        while self.voice_prev_q.len() < n {
+            let mut block = [0.0f32; TX_AUDIO_BLOCK];
+            let got = self.voice.fill_preview(&mut block);
+            if got == 0 {
+                break; // end of the message
+            }
+            match self.voice_prev_rs.as_mut() {
+                Some(r) => r.push(&block[..got], &mut self.voice_prev_q),
+                None => self.voice_prev_q.extend_from_slice(&block[..got]),
+            }
+        }
+        if self.voice_prev_q.is_empty() {
+            self.stop_voice_preview();
+            return false;
+        }
+        let rx0 = &self.state.rx[0];
+        // The operator's own volume control, as for any other received audio.
+        let vol = if rx0.muted { 0.0 } else { rx0.volume * rx0.volume };
+        let take = self.voice_prev_q.len().min(n);
+        self.voice_prev_out.clear();
+        self.voice_prev_out.extend(self.voice_prev_q.drain(..take).map(|s| s * vol));
+        // The tail of the last block: silence, so the output stays paced.
+        self.voice_prev_out.resize(n, 0.0);
+        true
+    }
+
+    fn stop_voice_preview(&mut self) {
+        if !self.voice.is_previewing() {
+            return;
+        }
+        self.voice.stop_preview();
+        self.voice_prev_q.clear();
+        self.voice_tick = None;
+        self.emit_voice_status();
+    }
+
+    /// Feed a recording from the microphone, and end a keyer over once its
+    /// message has played out. Called once per engine iteration.
+    fn poll_voice(&mut self) {
+        if self.voice.is_recording() {
+            self.record_voice_block();
+        }
+        // An over that never reached the air — the transmit rails refused, or a
+        // digital-voice burst was aborted — must release the keyer rather than
+        // leave it playing into nothing with the button lit.
+        if self.voice_tx
+            && !self.tx_active
+            && !self.digi_tx
+            && self.voice_started.is_some_and(|t| t.elapsed() > Duration::from_secs(1))
+        {
+            warn!("voice keyer: transmit never started; message cancelled");
+            self.cancel_voice_play();
+            return;
+        }
+        // `play_finished` only means the message has been read *out of* the
+        // keyer; the last blocks are still in the transmit FIFO, and unkeying
+        // on it alone would chop the tail.
+        if self.voice_tx && self.voice.play_finished() && self.mic_fifo.len() < TX_AUDIO_BLOCK {
+            // The message is out. Unkey through the mode's own path, then let
+            // go of the transmitter once the over has actually ended — a
+            // digital-voice mode still has its end-of-over frame to send, and
+            // holding `voice_tx` keeps the live mic out of it.
+            self.release_voice_tx();
+            if !self.tx_active && !self.digi_tx {
+                self.voice_tx = false;
+                self.voice.stop_play();
+                self.mic_fifo.clear();
+                self.voice_tick = None;
+                self.emit_voice_status();
+                return;
+            }
+        }
+        // Publish the moving position a few times a second while something runs.
+        if self.voice.is_recording() || self.voice.is_playing() || self.voice.is_previewing() {
+            let now = Instant::now();
+            let due = self.voice_tick.is_none_or(|t| now.duration_since(t).as_millis() >= 200);
+            if due {
+                self.voice_tick = Some(now);
+                self.emit_voice_status();
+            }
+        }
+    }
+
+    /// Drain the microphone into the running recording, stopping at the cap.
+    fn record_voice_block(&mut self) {
+        self.voice_rec_buf.clear();
+        if let Some(mic) = self.mic.as_mut() {
+            let mut raw = Vec::with_capacity(mic.consumer.slots());
+            while let Ok(s) = mic.consumer.pop() {
+                raw.push(s);
+            }
+            match &mut self.mic_resampler {
+                Some(r) => r.push(&raw, &mut self.voice_rec_buf),
+                None => self.voice_rec_buf.extend_from_slice(&raw),
+            }
+        }
+        if self.voice_rec_buf.is_empty() {
+            return;
+        }
+        let buf = std::mem::take(&mut self.voice_rec_buf);
+        let room = self.voice.push_mic(&buf);
+        self.voice_rec_buf = buf;
+        if !room {
+            info!("voice keyer: length cap reached; recording stored");
+            self.voice.stop_record();
+            self.emit_voice_status();
+        }
+    }
+
+    /// Transmit slot `slot`, keying up the same way the operator's PTT does.
+    fn start_voice_play(&mut self, slot: usize) {
+        if !self.state.rx[0].mode.allows_voice_keyer() {
+            warn!("voice keyer: not available in {}", self.state.rx[0].mode.label());
+            return;
+        }
+        if self.state.tx.tune {
+            warn!("voice keyer: TUNE is active; turn it off first");
+            return;
+        }
+        if self.voice.is_recording() {
+            self.voice.stop_record();
+        }
+        if self.state.rx[0].mode.is_rade() && self.digi.is_none() {
+            warn!("voice keyer: the digital-voice modem is not running");
+            return;
+        }
+        if !self.voice.start_play(slot) {
+            // An empty slot is a no-op, not a keyed transmitter with nothing to
+            // say. This is what makes the shipped numpad bindings harmless on a
+            // fresh installation.
+            return;
+        }
+        // A local message takes the transmitter back from a TCI client, exactly
+        // as an operator PTT does.
+        self.end_tci_tx();
+        self.voice_tx = true;
+        self.voice_tick = None;
+        self.voice_started = Some(Instant::now());
+        self.mic_fifo.clear();
+        if self.state.rx[0].mode.is_rade() {
+            // Digital voice owns its own over (it has to build the first modem
+            // frame before there is anything to send, and append an end-of-over
+            // frame afterwards), so key through the mode as PTT does.
+            if let Some(d) = self.digi.as_mut() {
+                d.set_tx_active(true);
+            }
+            self.emit_digi_status();
+        } else {
+            self.state.tx.ptt = true;
+            self.sync_tx_state();
+            // The transmit rails (band limits, device capability) may have
+            // refused; don't leave a message playing into nothing.
+            if !self.tx_active {
+                self.voice_tx = false;
+                self.voice.stop_play();
+            }
+        }
+        let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
+        self.emit_voice_status();
+    }
+
+    /// Stop a message and end the over (the operator pressed stop, or an
+    /// external control asked us to).
+    fn stop_voice_play(&mut self) {
+        if !self.voice_tx && !self.voice.is_playing() {
+            return;
+        }
+        self.voice.stop_play();
+        self.release_voice_tx();
+        self.voice_tx = false;
+        self.mic_fifo.clear();
+        self.voice_tick = None;
+        self.emit_voice_status();
+    }
+
+    /// Unkey a keyer over. RADE closes its own over (end-of-over frame, then
+    /// the burst finishes on its own, announcing the state change itself);
+    /// everything else drops PTT here.
+    fn release_voice_tx(&mut self) {
+        if self.state.rx[0].mode.is_rade() {
+            if let Some(d) = self.digi.as_mut() {
+                d.set_tx_active(false);
+            }
+        } else if self.state.tx.ptt {
+            self.state.tx.ptt = false;
+            self.sync_tx_state();
+            let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
+        }
+    }
+
+    /// Drop any keyer playback without touching the key state — the caller is
+    /// about to set it (operator PTT/TUNE, or an abort).
+    fn cancel_voice_play(&mut self) {
+        if !self.voice_tx && !self.voice.is_playing() {
+            return;
+        }
+        self.voice.stop_play();
+        self.voice_tx = false;
+        self.mic_fifo.clear();
+        self.voice_tick = None;
+        self.emit_voice_status();
+    }
+
+    /// Top up the 48 kHz TX FIFO from whichever source owns this over — the
+    /// voice keyer, a TCI client's audio stream, or the local microphone — and
+    /// bound the queue.
     ///
     /// Returns `false` while a TCI over is still building its cushion: network
     /// audio arrives in bursts, so transmitting the first block that turns up
     /// would underrun a moment later.
     fn fill_tx_audio_fifo(&mut self) -> bool {
+        self.fill_tx_audio_fifo_depth(TX_AUDIO_BLOCK * 2)
+    }
+
+    /// [`Self::fill_tx_audio_fifo`], with the depth the voice keyer queues ahead.
+    ///
+    /// The modulator paths take one block per call and want a block of slack;
+    /// the digital-voice path hands the *whole* FIFO to the codec each block, so
+    /// it asks for exactly one — queueing more there would feed the vocoder
+    /// faster than real time.
+    fn fill_tx_audio_fifo_depth(&mut self, voice_depth: usize) -> bool {
+        // A recorded message owns this over: the real microphone is drained and
+        // discarded so it cannot leak in alongside, and the stored audio is
+        // metered out a block at a time. Once the message has been read out the
+        // FIFO is left to drain, which is what tells `poll_voice` the over can
+        // end without chopping the tail.
+        if self.voice_tx {
+            if let Some(mic) = self.mic.as_mut() {
+                while mic.consumer.pop().is_ok() {}
+            }
+            while !self.voice.play_finished() && self.mic_fifo.len() < voice_depth {
+                let mut block = [0.0f32; TX_AUDIO_BLOCK];
+                self.voice.fill_tx_block(&mut block);
+                self.mic_fifo.extend_from_slice(&block);
+            }
+            return true;
+        }
         if !self.tci_tx {
             if let Some(mic) = self.mic.as_mut() {
                 let mut raw = Vec::with_capacity(mic.consumer.slots());
@@ -3166,7 +3567,7 @@ impl Engine {
     /// is resampled to 48 kHz and handed to the mode.
     fn feed_digi_mic(&mut self) {
         if self.digi.as_ref().is_some_and(|d| d.wants_mic()) {
-            self.fill_tx_audio_fifo();
+            self.fill_tx_audio_fifo_depth(TX_AUDIO_BLOCK);
             if !self.mic_fifo.is_empty() {
                 if let Some(d) = self.digi.as_mut() {
                     d.on_tx_mic(&self.mic_fifo);
@@ -3350,7 +3751,11 @@ impl Engine {
             // the first block so the mic's bursty delivery can't underrun the
             // steady 48 kHz feed into choppy silence. `tx_pace` is unset until the
             // first block goes out, marking the pre-roll.
+            // The voice keyer plays from memory and can never arrive late, so
+            // it needs no cushion — and a message shorter than the cushion
+            // would never satisfy this at all.
             if self.caps.tx_audio
+                && !self.voice_tx
                 && self.tx_pace.is_none()
                 && self.mic_fifo.len() < TX_AUDIO_BLOCK * 2
             {

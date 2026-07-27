@@ -9,6 +9,7 @@ pub mod engine;
 mod error;
 mod recorder;
 mod source;
+mod voice;
 
 #[cfg(feature = "soapy")]
 pub use device::{DeviceInfo, SoapyDevice, SoapyRxSource, enumerate_devices};
