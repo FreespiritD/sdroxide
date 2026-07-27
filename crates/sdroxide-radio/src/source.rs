@@ -136,6 +136,16 @@ pub trait IqSource: Send {
     fn open_status(&self) -> Option<String> {
         None
     }
+
+    /// Whether this source is a stand-in for a radio that isn't actually
+    /// connected — the placeholder used when the configured interface couldn't
+    /// be opened at startup, or a network rig whose link has since dropped. The
+    /// engine retries the configured interface in the background while this is
+    /// true, so a rig that appears (or reappears) attaches on its own instead of
+    /// waiting for Settings → Radio → Apply. Default: a real device.
+    fn needs_reopen(&self) -> bool {
+        false
+    }
 }
 
 /// Paces reads so a non-hardware source delivers samples in real time.

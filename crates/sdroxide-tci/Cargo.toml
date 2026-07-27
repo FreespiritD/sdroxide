@@ -14,3 +14,8 @@ thiserror.workspace = true
 tracing.workspace = true
 # Blocking WebSocket client (ws:// only — `handshake` for the client, no TLS).
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+
+# The handshake tests stand in for a rig with a hand-built WebSocket server, so
+# they can stall the upgrade the way a busy ExpertSDR3 does.
+[dev-dependencies]
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }

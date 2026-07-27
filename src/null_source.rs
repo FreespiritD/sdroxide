@@ -44,4 +44,10 @@ impl IqSource for NullSource {
     fn open_status(&self) -> Option<String> {
         Some(self.status.clone())
     }
+
+    /// Always: this is the "no radio" placeholder, so the engine keeps trying
+    /// the configured interface until it comes up.
+    fn needs_reopen(&self) -> bool {
+        true
+    }
 }

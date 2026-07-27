@@ -145,6 +145,12 @@ impl IqSource for TciSource {
         true
     }
 
+    /// The WebSocket thread stops when the rig closes the connection (ExpertSDR3
+    /// quit or restarted); the engine then reconnects on its own.
+    fn needs_reopen(&self) -> bool {
+        !self.handle.is_alive()
+    }
+
     fn set_if_offset(&mut self, hz: f64) {
         if (hz - self.if_offset).abs() > 0.5 {
             self.if_offset = hz;

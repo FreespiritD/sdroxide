@@ -3,6 +3,8 @@
 //! carries frequency/mode/PTT control. Mirrors the `sdroxide-hpsdr` net thread.
 
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -60,6 +62,9 @@ pub struct TciHandle {
     updates: Receiver<TciUpdate>,
     telem_rx: Receiver<TxTelemetry>,
     join: Option<JoinHandle<()>>,
+    /// Cleared when the streaming thread exits (the rig closed the socket, or a
+    /// read failed), so the owner can tell a live link from a dead one.
+    alive: Arc<AtomicBool>,
     pub device: String,
     pub sample_rate_hz: f64,
 }
@@ -82,12 +87,19 @@ impl TciHandle {
             .ok_or_else(|| TciError::Msg(format!("no address for {host}:{port}")))?;
         let stream = TcpStream::connect_timeout(&sockaddr, Duration::from_secs(3))
             .map_err(|e| TciError::Msg(format!("connect {host}:{port}: {e}")))?;
+        // A generous timeout for the upgrade — the rig can take tens of
+        // milliseconds to answer while it is busy with its own DSP — then the
+        // short streaming timeout once the socket is a WebSocket.
         stream
-            .set_read_timeout(Some(Duration::from_millis(20)))
+            .set_read_timeout(Some(crate::HANDSHAKE_POLL))
             .map_err(|e| TciError::Msg(e.to_string()))?;
         let url = format!("ws://{host}:{port}/");
-        let (mut ws, _) = tungstenite::client(url.as_str(), stream)
-            .map_err(|e| TciError::Msg(format!("WebSocket handshake failed: {e}")))?;
+        let mut ws =
+            crate::ws_handshake(stream, url.as_str(), Instant::now() + crate::HANDSHAKE_TIMEOUT)
+                .map_err(TciError::Msg)?;
+        ws.get_ref()
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .map_err(|e| TciError::Msg(e.to_string()))?;
 
         // Read the status burst until `ready;` (or time out). The burst carries
         // the rig's current settings, including the power levels we adopt rather
@@ -178,9 +190,14 @@ impl TciHandle {
             chrono_seen: false,
             tx_primed: false,
         };
+        let alive = Arc::new(AtomicBool::new(true));
+        let thread_alive = Arc::clone(&alive);
         let join = std::thread::Builder::new()
             .name("sdroxide-tci".into())
-            .spawn(move || thread.run())
+            .spawn(move || {
+                thread.run();
+                thread_alive.store(false, Ordering::Relaxed);
+            })
             .map_err(|e| TciError::Msg(format!("spawn thread: {e}")))?;
 
         Ok(TciHandle {
@@ -190,9 +207,18 @@ impl TciHandle {
             updates: upd_rx,
             telem_rx,
             join: Some(join),
+            alive,
             device,
             sample_rate_hz: iq_rate_hz,
         })
+    }
+
+    /// Whether the streaming thread is still running. It stops when the rig
+    /// closes the WebSocket (ExpertSDR3 shut down) or a read fails, at which
+    /// point this connection is dead and only a fresh [`Self::connect`] revives
+    /// it.
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
     }
 
     /// Retune: set the DDC center (the IQ stream centers here).

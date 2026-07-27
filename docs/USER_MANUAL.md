@@ -674,6 +674,13 @@ The controls shown below the selector change to match the chosen interface.
 > keeps running and an error is shown; your tuning resets to the new radio's
 > default frequency, as it would on a fresh start.
 
+**Apply / reconnect is for *changing* the radio, not for attaching it.** If the
+radio you already configured isn't there when sdroxide starts — a network rig
+still booting, ExpertSDR3 launched a moment later, a USB cable plugged in
+afterwards — sdroxide keeps trying it in the background and attaches by itself,
+retrying at first every second and then more slowly. The same happens if the
+link drops mid-session: it reconnects when the radio comes back.
+
 ### 5.2 SoapySDR devices
 
 With the **SoapySDR** interface, the **Radio** tab shows the controls the device
@@ -743,11 +750,9 @@ involved. On the **Radio** tab:
 
 Receive is wideband IQ, so the full panadapter and the skimmers work.
 
-> **Help wanted — the HPSDR backend is not yet hardware-verified.** The wire
-> offsets were written against the OpenHPSDR protocol docs and the rustyHPSDR
-> reference, but have not been confirmed on real hardware. If you own an HPSDR
-> board, you can help by running with diagnostic logging and reporting what you
-> see:
+> **Help wanted — the HPSDR backend is not fully tested yet.** 
+> If you own an HPSDR board, you can help by running with diagnostic logging 
+> and reporting what you see:
 >
 > ```sh
 > RUST_LOG=sdroxide_hpsdr=debug sdroxide
@@ -1593,6 +1598,14 @@ The radio's capture device could not be opened. Common causes:
 - The device is in use by another program, or was unplugged. sdroxide shows a
   warning banner naming the device; use **Dismiss** to hide it after fixing the
   device.
+
+**"No radio" at startup, or the radio disappears mid-session.**
+sdroxide shows the reason it could not open the interface and keeps trying it in
+the background — every second at first, then more slowly — so a rig that is
+merely late (ExpertSDR3 not up yet, an SDR still booting) attaches on its own
+within a few seconds of appearing. The same applies when a network rig hangs up:
+it reconnects once the radio is back. You only need **Apply / reconnect** to
+switch to a *different* interface, or to apply a settings change.
 
 **IQ shows no spectrum, or a warning that the device is mono.**
 IQ requires a two-channel (stereo) capture device. A mono USB adapter cannot

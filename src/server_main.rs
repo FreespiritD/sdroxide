@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use sdroxide_config::Settings;
 use sdroxide_radio::rtrb;
-use sdroxide_radio::{AudioParams, EngineConfig, IqSource, MicParams, start_engine};
+use sdroxide_radio::{AudioParams, EngineConfig, IqSource, MicParams, ReopenFn, start_engine};
 use sdroxide_server::ServerParams;
 use sdroxide_types::{DeviceCaps, Mode};
 
@@ -16,6 +16,7 @@ pub fn run(
     initial_mode: Option<Mode>,
     port: u16,
     web_root: Option<PathBuf>,
+    reopen: Option<ReopenFn>,
 ) -> Result<()> {
     // Demod audio ring (engine → server, interleaved stereo @48 k) and mic
     // ring (server → engine, mono @48 k).
@@ -31,7 +32,9 @@ pub fn run(
             cal_offset_db: settings.cal_offset_db as f32,
             initial_mode,
             tx_ham_only: settings.tx_ham_only,
-            reopen: None,
+            // A headless server is typically started before the rig it talks
+            // to; the engine uses this to attach as soon as the radio is there.
+            reopen,
         },
     );
 

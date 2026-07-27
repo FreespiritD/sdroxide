@@ -6,6 +6,7 @@
 //! (persisted engine-side), hardware gain/antenna control, and
 //! viewport-aware spectrum frames. TX arrives in M5.
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
@@ -607,8 +608,20 @@ struct Engine {
     /// Resamples the radio's audio to the speaker rate in audio mode.
     audio_resampler: Option<MonoResampler>,
     /// Rebuilds the IQ source when the operator switches radio interface at
-    /// runtime (see [`EngineSwap::ReopenSource`]).
-    reopen: Option<ReopenFn>,
+    /// runtime (see [`EngineSwap::ReopenSource`]). Shared with the background
+    /// reconnect thread, which uses the same factory (never both at once — the
+    /// lock serialises them).
+    reopen: Option<Arc<Mutex<ReopenFn>>>,
+    /// Result channel of a background reconnect attempt in flight (see
+    /// [`IqSource::needs_reopen`]), and its thread — joined before the engine
+    /// goes away so an open in progress can't outlive the process and race a
+    /// device library's own exit handlers.
+    retry: Option<Receiver<Result<(Box<dyn IqSource>, DeviceCaps), String>>>,
+    retry_join: Option<std::thread::JoinHandle<()>>,
+    /// Earliest time the next background attempt may start, and the current
+    /// spacing (doubles on each failure up to [`RETRY_MAX`]).
+    retry_at: Option<Instant>,
+    retry_every: Duration,
     /// Network cockpit: owns the spot feeds (DX cluster / POTA / SOTA / PSK)
     /// and the lookup/upload worker threads. The engine only drains it.
     spots: sdroxide_net::SpotManager,
@@ -617,6 +630,11 @@ struct Engine {
 /// Target width of the CW skimmer window (Hz); the Ddc snaps to the nearest
 /// integer decimation of the device rate.
 const SKIM_TARGET_HZ: f64 = 192_000.0;
+
+/// How soon after noticing a disconnected front-end the first reconnect attempt
+/// runs, and the ceiling the spacing doubles up to while attempts keep failing.
+const RETRY_FIRST: Duration = Duration::from_secs(1);
+const RETRY_MAX: Duration = Duration::from_secs(15);
 
 fn engine_thread(
     source: Box<dyn IqSource>,
@@ -750,7 +768,11 @@ fn engine_thread(
         audio_re: Vec::new(),
         audio_play: Vec::new(),
         audio_resampler,
-        reopen: engine_cfg.reopen,
+        reopen: engine_cfg.reopen.map(|f| Arc::new(Mutex::new(f))),
+        retry: None,
+        retry_join: None,
+        retry_at: None,
+        retry_every: RETRY_FIRST,
         spots: sdroxide_net::SpotManager::new(),
     };
     if let Some(mic) = &engine.mic {
@@ -824,6 +846,9 @@ fn engine_thread(
         engine.poll_tci_server();
         engine.poll_rigctld();
         engine.poll_spots();
+        // Attach (or re-attach) the configured radio on its own when the
+        // front-end is only a stand-in — no trip through Settings.
+        engine.poll_reconnect();
 
         if engine.tx_active {
             // Blocking TX write paces this loop at ~10 ms per block.
@@ -955,6 +980,12 @@ impl Drop for Engine {
         // when the engine thread exits (all controllers gone / fatal error).
         if let Some(rec) = self.recorder.take() {
             rec.stop();
+        }
+        // A reconnect attempt may be halfway through opening a device; let it
+        // finish rather than leave it running into process exit, where its
+        // teardown would race the device libraries' own exit handlers.
+        if let Some(j) = self.retry_join.take() {
+            let _ = j.join();
         }
     }
 }
@@ -2581,17 +2612,117 @@ impl Engine {
     /// running with an on-screen error instead of going dark.
     fn reopen_source(&mut self) {
         let center = self.state.active_freq_hz();
-        let Some(reopen) = self.reopen.as_mut() else {
+        let Some(factory) = self.reopen.clone() else {
             warn!("runtime interface switching unavailable in this build");
             return;
         };
-        match reopen(center) {
+        // A background attempt may hold the factory; the operator's own change
+        // wins as soon as that one finishes.
+        let opened = {
+            let mut reopen = factory.lock().unwrap_or_else(|e| e.into_inner());
+            reopen(center)
+        };
+        // Whatever the operator just chose starts the retry schedule over.
+        self.retry_at = None;
+        self.retry_every = RETRY_FIRST;
+        match opened {
             Ok((source, caps)) => self.adopt_source(source, caps),
             Err(e) => {
                 warn!("interface change failed: {e}");
                 let _ = self
                     .event_tx
                     .send(RadioEvent::Notice(Some(format!("Interface change failed: {e}"))));
+            }
+        }
+    }
+
+    /// Keep trying the configured interface while the front-end is only a
+    /// stand-in (see [`IqSource::needs_reopen`]): the rig wasn't there when we
+    /// started — a network rig like TCI is commonly still coming up, or the app
+    /// launched first — or its link has since dropped. Attaching on our own is
+    /// what the operator expects; hunting for Settings → Radio → Apply is not.
+    ///
+    /// The attempt itself runs on a worker thread: opening a backend can block
+    /// for seconds (a TCP connect to a host that never answers), and the engine
+    /// loop still has to serve commands and the built-in servers meanwhile.
+    fn poll_reconnect(&mut self) {
+        // Collect an attempt that has finished.
+        if let Some(rx) = &self.retry {
+            let outcome = rx.try_recv();
+            if matches!(outcome, Err(TryRecvError::Empty)) {
+                return; // still connecting
+            }
+            self.retry = None;
+            if let Some(j) = self.retry_join.take() {
+                let _ = j.join(); // it has answered; this returns at once
+            }
+            match outcome {
+                Ok(Ok((source, caps))) => {
+                    self.retry_every = RETRY_FIRST;
+                    self.retry_at = None;
+                    info!(source = %source.describe(), "radio interface connected");
+                    self.adopt_source(source, caps);
+                }
+                Ok(Err(e)) => {
+                    // Back off: a rig that isn't there yet is the normal case
+                    // here, so this must not turn into a busy retry loop.
+                    self.retry_every = (self.retry_every * 2).min(RETRY_MAX);
+                    self.retry_at = Some(Instant::now() + self.retry_every);
+                    debug!("radio interface still unavailable: {e}");
+                }
+                // The worker died without answering (a panic inside a backend's
+                // open). Count it as a failed attempt; the backoff keeps that
+                // from becoming a thread-spawning loop.
+                Err(_) => {
+                    warn!("reconnect attempt died before answering");
+                    self.retry_every = (self.retry_every * 2).min(RETRY_MAX);
+                    self.retry_at = Some(Instant::now() + self.retry_every);
+                }
+            }
+        }
+
+        if !self.source.needs_reopen() {
+            self.retry_at = None;
+            self.retry_every = RETRY_FIRST;
+            return;
+        }
+        let Some(factory) = self.reopen.clone() else { return };
+        let now = Instant::now();
+        match self.retry_at {
+            // First time we notice: give the interface a moment, and say so —
+            // unless the source already carries an on-screen reason (the
+            // "no radio" placeholder does).
+            None => {
+                self.retry_at = Some(now + self.retry_every);
+                if self.source.open_status().is_none() {
+                    let _ = self.event_tx.send(RadioEvent::Notice(Some(
+                        "Radio disconnected — reconnecting…".into(),
+                    )));
+                }
+                return;
+            }
+            Some(at) if now < at => return,
+            Some(_) => {}
+        }
+
+        let center = self.state.active_freq_hz();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let spawned = std::thread::Builder::new().name("sdroxide-reconnect".into()).spawn(move || {
+            let opened = {
+                let mut reopen = factory.lock().unwrap_or_else(|e| e.into_inner());
+                reopen(center)
+            };
+            let _ = tx.send(opened);
+        });
+        match spawned {
+            Ok(join) => {
+                self.retry = Some(rx);
+                self.retry_join = Some(join);
+            }
+            Err(e) => {
+                warn!("could not spawn the reconnect thread: {e}");
+                self.retry_every = (self.retry_every * 2).min(RETRY_MAX);
+                self.retry_at = Some(now + self.retry_every);
             }
         }
     }

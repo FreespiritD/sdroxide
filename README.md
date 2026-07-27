@@ -235,7 +235,9 @@ other ham software). See the [User Manual](docs/USER_MANUAL.md) for setup steps.
 
 sdroxide can drive four kinds of radio, selected on the **Radio** tab of the
 Settings window. Backend, serial, and radio-audio changes apply live when you
-press **Apply / reconnect**:
+press **Apply / reconnect**. A radio that isn't there yet at startup — or that
+drops mid-session — is retried in the background and attaches by itself, so
+starting sdroxide before the rig is fine:
 
 - **SoapySDR** — any [SoapySDR](https://github.com/pothosware/SoapySDR) device
   (wideband IQ). See below.

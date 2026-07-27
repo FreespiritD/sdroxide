@@ -22,12 +22,49 @@ pub mod server;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
-use tungstenite::Message;
+use tungstenite::{HandshakeError, Message, WebSocket};
 
 pub use net::{TciError, TciHandle, TciUpdate, TX_RATE_HZ};
 
 /// Default TCI port (ExpertSDR3).
 pub const DEFAULT_PORT: u16 = 50001;
+
+/// How long the WebSocket upgrade itself may take, before any status is read.
+pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Read timeout held during the upgrade. Short enough to keep the deadline
+/// below responsive, long enough that the usual case completes in one read.
+pub(crate) const HANDSHAKE_POLL: Duration = Duration::from_millis(500);
+
+/// Perform the WebSocket upgrade on an already-connected socket, retrying until
+/// `deadline`.
+///
+/// Both callers put a read timeout on the socket (they poll the connection
+/// afterwards), and tungstenite reports a read that timed out mid-upgrade as
+/// `Interrupted` — the server simply hasn't answered yet, which is not a
+/// failure. Resuming the handshake instead of giving up on the first
+/// `Interrupted` is what makes connecting to a busy ExpertSDR3 reliable; taking
+/// it as fatal is why a freshly started sdroxide so often needed a manual
+/// "Apply / reconnect" to attach to a rig that was running all along.
+pub(crate) fn ws_handshake(
+    stream: TcpStream,
+    url: &str,
+    deadline: Instant,
+) -> Result<WebSocket<TcpStream>, String> {
+    let mut attempt = tungstenite::client(url, stream);
+    loop {
+        match attempt {
+            Ok((ws, _response)) => return Ok(ws),
+            Err(HandshakeError::Interrupted(mid)) => {
+                if Instant::now() > deadline {
+                    return Err("timed out during the WebSocket handshake".into());
+                }
+                attempt = mid.handshake();
+            }
+            Err(e) => return Err(format!("WebSocket handshake failed: {e}")),
+        }
+    }
+}
 
 /// Split a `host[:port]` (or `ws://host:port`) address into `(host, port)`,
 /// defaulting the port to [`DEFAULT_PORT`].
@@ -56,13 +93,15 @@ pub fn test_connection(address: &str, timeout: Duration) -> Result<String, Strin
         .ok_or_else(|| format!("no address for {host}:{port}"))?;
     let stream = TcpStream::connect_timeout(&sockaddr, timeout.min(Duration::from_secs(3)))
         .map_err(|e| format!("connect {host}:{port}: {e}"))?;
-    stream.set_read_timeout(Some(Duration::from_millis(250))).ok();
+    stream.set_read_timeout(Some(HANDSHAKE_POLL)).ok();
 
     let url = format!("ws://{host}:{port}/");
-    let (mut ws, _resp) = tungstenite::client(url.as_str(), stream)
-        .map_err(|e| format!("WebSocket handshake failed: {e}"))?;
-
     let deadline = Instant::now() + timeout;
+    let upgrade_by = deadline.min(Instant::now() + HANDSHAKE_TIMEOUT);
+    let mut ws = ws_handshake(stream, url.as_str(), upgrade_by)?;
+    // Status polling from here on: don't sit in a blocking read.
+    ws.get_ref().set_read_timeout(Some(Duration::from_millis(250))).ok();
+
     let mut device = String::new();
     let mut protocol = String::new();
     let mut iq_rate = String::new();
