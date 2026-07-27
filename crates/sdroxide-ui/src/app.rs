@@ -212,6 +212,10 @@ pub struct SdroxideApp {
     soapy_supported: bool,
     /// Settings dialog: current tab, plus the radio-backend config + serial
     /// ports loaded once on open (edited live, persisted on change).
+    ///
+    /// The tab is deliberately session-only — reopening the dialog returns to
+    /// wherever you last were, but a restart starts again at General, so it is
+    /// never written to storage in [`eframe::App::save`].
     settings_tab: SettingsTab,
     /// Display preferences (frame rate, waterfall + spectrum speed), loaded from
     /// config at startup, edited in the UI tab, persisted on change.
@@ -508,7 +512,7 @@ impl SdroxideApp {
             audio_devices: None,
             audio_devices_queried: false,
             soapy_supported,
-            settings_tab: SettingsTab::Radio,
+            settings_tab: SettingsTab::General,
             ui_settings: load_ui_settings(cc.storage),
             radio_cfg: None,
             serial_ports: Vec::new(),
