@@ -1066,9 +1066,8 @@ fn info_card(
         lines.push(format!("{visible} CME · {} spots", d.regions.len()));
     }
     if st.view.auto {
-        let s = st.tour.station();
         let phase = if st.tour.in_transit() { "→ " } else { "" };
-        lines.push(format!("AUTO  {phase}{}", s.name));
+        lines.push(format!("AUTO  {phase}{}", st.tour.leg_name()));
     }
 
     let font = egui::FontId::proportional(11.5);
@@ -1191,10 +1190,18 @@ fn advance_tour(ui: &egui::Ui, st: &mut SolarUi, sim_now: f64, frame_time: f64) 
         return;
     }
     let b = super::scene::bodies(st, sim_now);
+    // The contact being worked pre-empts the tour — but only while its arc is
+    // actually on screen: with the layer switched off there is nothing there
+    // for the camera to fly to.
+    let qso = st
+        .layer(crate::view::solar_layer::QSO)
+        .then(|| st.qth.zip(st.digi.dx))
+        .flatten()
+        .map(|(home, dx)| super::camera::QsoPath { home, dx });
     // `Tour` is `Copy`, so step a local and write it back rather than fighting
     // the borrow of `st.view` inside it.
     let mut tour = st.tour;
-    let pivot = tour.step(&mut st.view, &b, if first_frame { 1.0 / 60.0 } else { dt });
+    let pivot = tour.step(&mut st.view, &b, if first_frame { 1.0 / 60.0 } else { dt }, qso);
     st.tour = tour;
     st.focus_override = Some(pivot);
     ui.ctx().request_repaint();

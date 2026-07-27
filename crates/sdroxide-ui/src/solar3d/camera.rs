@@ -205,6 +205,100 @@ pub const STATIONS: &[Station] = &[
 /// not to be most of the loop.
 pub const TRANSITION_S: f32 = 3.2;
 
+// ── The contact being worked ────────────────────────────────────────────────
+
+/// The two ends of a contact to frame: the operator's QTH and the station being
+/// worked, each (latitude, longitude) in degrees.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct QsoPath {
+    pub home: (f64, f64),
+    pub dx: (f64, f64),
+}
+
+/// How far off vertical the camera looks down on the arc's midpoint.
+///
+/// Straight overhead — 0° — is the worst possible view of a path: the arc's
+/// rise is then entirely along the line of sight, so it collapses onto the
+/// surface, and the globe reads as a flat disc. Fully side-on, 90°, shows the
+/// rise at its full height but leaves both stations sitting exactly on the
+/// limb. This sits nearer the side-on end: a shallow enough angle that the
+/// horizon curves visibly across the frame and the arc plainly springs off the
+/// surface, while both ends stay inside the limb.
+const QSO_TILT: f32 = 62.0 * DEG;
+
+/// Fraction of the frame's half-height the framed path may fill. The remainder
+/// is margin — which is what keeps the two station markers clear of the edges.
+const QSO_FILL: f32 = 0.66;
+
+/// Closest the contact view may get, as a multiple of the Earth's rendered
+/// radius. Two stations a few hundred kilometres apart would otherwise pull the
+/// camera down to a patch of surface with no horizon in it at all.
+const QSO_MIN_DIST: f32 = 0.6;
+
+/// Dwell sway for the contact view: amplitude, and phase rate in radians per
+/// second (a round trip every ~24 s).
+///
+/// The stations drift by a constant yaw, which is fine for a fixed dwell. A
+/// contact is held for as long as it lasts, so a constant drift would walk the
+/// path out of the frame; swaying keeps the shot alive without leaving it.
+const QSO_SWAY: f32 = 5.0 * DEG;
+const QSO_SWAY_RATE: f32 = 0.26;
+
+/// Camera pose and pivot that frame a contact: both stations and the arc
+/// between them, seen from off to one side of the great circle they lie on.
+///
+/// `None` when the two ends coincide — which is also when no arc is drawn.
+pub fn qso_frame(p: QsoPath, b: &Bodies) -> Option<(Pose, (V3, f32))> {
+    let a = b.surface_dir(p.home.0, p.home.1);
+    let c = b.surface_dir(p.dx.0, p.dx.1);
+    let omega = a.dot(c).clamp(-1.0, 1.0).acos();
+    if !omega.is_finite() || omega < 1e-3 {
+        return None;
+    }
+
+    // The plane the path lies in. Both of these degenerate for an exactly
+    // antipodal pair — which has no unique great circle between its ends — so
+    // each falls back to an arbitrary but well-defined choice rather than
+    // handing the camera a normalised zero vector.
+    let n = a.cross(c);
+    let normal = if n.len() > 1e-5 { n.normalize() } else { any_perp(a) };
+    let s = a + c;
+    // Midpoint of the arc: the direction its apex sits over.
+    let mid = if s.len() > 1e-5 { s.normalize() } else { normal.cross(a).normalize() };
+
+    let bulge = super::scene::arc_bulge(omega as f64);
+    // Pivot half way up the bulge, so the arc's peak and the two ends it
+    // springs from straddle the centre of the frame rather than one of them
+    // taking it.
+    let pivot = b.earth + mid * (b.earth_r * (1.0 + bulge * 0.5));
+    // Tilting towards the plane's *normal* is what keeps the two ends
+    // equidistant from the view axis: they sit either side of the frame's
+    // centre however long the path is.
+    let dir = mid * QSO_TILT.cos() + normal * QSO_TILT.sin();
+
+    // Everything the shot has to hold: the two stations, and the top of the arc.
+    let span = [a * b.earth_r, c * b.earth_r, mid * (b.earth_r * (1.0 + bulge))]
+        .iter()
+        .map(|p| (b.earth + *p - pivot).len())
+        .fold(0.0f32, f32::max);
+    let dist = (span / ((FOV_Y * 0.5).tan() * QSO_FILL)).max(b.earth_r * QSO_MIN_DIST);
+
+    Some((
+        Pose::new(dir.y.atan2(dir.x), dir.z.clamp(-1.0, 1.0).asin(), dist),
+        // The clamp radius is the size of what is being framed rather than the
+        // Earth's, or a short hop could never be approached closely enough to
+        // see.
+        (pivot, span.max(b.earth_r * 0.15)),
+    ))
+}
+
+/// Some unit vector perpendicular to `v`, for the cases where the geometry
+/// itself singles none out.
+fn any_perp(v: V3) -> V3 {
+    let alt = if v.z.abs() < 0.9 { v3(0.0, 0.0, 1.0) } else { v3(1.0, 0.0, 0.0) };
+    v.cross(alt).normalize()
+}
+
 /// A camera pose in the space the tour interpolates.
 ///
 /// Distance is carried as its **logarithm**: a linear ramp across a
@@ -285,6 +379,16 @@ fn short_angle(a: f32, b: f32) -> f32 {
     d
 }
 
+/// What the camera is currently flying to and holding.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Leg {
+    /// The scripted tour; [`Tour::index`] says which station.
+    Station,
+    /// The contact being worked, which pre-empts the tour for as long as it
+    /// lasts.
+    Qso,
+}
+
 /// Where the tour is, and where the camera was when it started moving.
 #[derive(Clone, Copy)]
 pub struct Tour {
@@ -306,6 +410,12 @@ pub struct Tour {
     /// Set when AUTO is switched back on: the next `step` picks up at the
     /// nearest station instead of flinging the camera across the system.
     resume_pending: bool,
+    /// Which leg the camera is on. Switching between them starts a new move.
+    leg: Leg,
+    /// The pivot the last step handed back, so a switch between legs can fly
+    /// from wherever the camera actually is rather than from the station it
+    /// happened to be heading for.
+    last_pivot: (V3, f32),
 }
 
 impl Default for Tour {
@@ -318,6 +428,8 @@ impl Default for Tour {
             from_is_station: false,
             started: false,
             resume_pending: false,
+            leg: Leg::Station,
+            last_pivot: (V3::ZERO, 1.0),
         }
     }
 }
@@ -325,6 +437,14 @@ impl Default for Tour {
 impl Tour {
     pub fn station(&self) -> &'static Station {
         &STATIONS[self.index % STATIONS.len()]
+    }
+
+    /// What the readout calls the leg the camera is on.
+    pub fn leg_name(&self) -> &'static str {
+        match self.leg {
+            Leg::Qso => "QSO PATH",
+            Leg::Station => self.station().name,
+        }
     }
 
     /// Whether the camera is currently moving rather than holding a station.
@@ -341,11 +461,17 @@ impl Tour {
     /// Advance the tour. Returns the pivot the camera should use this frame:
     /// during a transition an interpolated point between the two stations'
     /// bodies, and at rest simply the station's own body.
+    ///
+    /// `qso` is the contact being worked, if any. A contact pre-empts the tour
+    /// entirely — the camera flies to it and holds it until the contact ends,
+    /// because a path being worked *now* is the one thing on this globe worth
+    /// watching more than the scripted loop.
     pub fn step(
         &mut self,
         view: &mut crate::view::Solar3dView,
         b: &Bodies,
         dt: f32,
+        qso: Option<QsoPath>,
     ) -> (V3, f32) {
         if std::mem::take(&mut self.resume_pending) {
             self.resume_near(view, b);
@@ -355,17 +481,43 @@ impl Tour {
             // Start the flight from whatever the camera was actually looking
             // at, so enabling AUTO mid-view does not jump either.
             self.from_focus = b.focus(Focus::from_u8(view.focus));
+            self.last_pivot = self.from_focus;
             self.from_is_station = false;
             self.started = true;
             self.elapsed = 0.0;
         }
+
+        // A contact that has no framing — both ends in the same place — is no
+        // contact as far as the camera is concerned; the arc is not drawn for
+        // one either.
+        let frame = qso.and_then(|p| qso_frame(p, b));
+        let want = if frame.is_some() { Leg::Qso } else { Leg::Station };
+        if want != self.leg {
+            // Hand over from wherever the camera is at this instant, mid-flight
+            // or not, so picking up a contact and giving it back are both
+            // ordinary camera moves.
+            self.from = Pose::new(view.yaw, view.pitch, view.dist);
+            self.from_focus = self.last_pivot;
+            self.from_is_station = false;
+            self.elapsed = 0.0;
+            if want == Leg::Station {
+                // Rejoin the loop at whatever station is nearest rather than
+                // where it was left, which by now may be on the far side of the
+                // system.
+                self.index = self.nearest_station(view, b);
+            }
+            self.leg = want;
+        }
+
         // Clamped, so a stalled frame (a resize, a GPU hitch) does not teleport
         // the camera halfway through a move.
         self.elapsed += dt.clamp(0.0, 0.25);
 
         let station = self.station();
-        let target = self.pose_of(station, b);
-        let target_focus = b.focus(station.focus);
+        let (target, target_focus) = match frame {
+            Some(f) => f,
+            None => (self.pose_of(station, b), b.focus(station.focus)),
+        };
 
         let pivot;
         if self.elapsed < TRANSITION_S {
@@ -380,7 +532,13 @@ impl Tour {
                 // of where the user left the camera).
                 p1
             };
-            let p3 = unwrap_to(p2, self.pose_of(self.station_at(self.index as isize + 1), b));
+            // On the contact leg there is no station after this one to bend
+            // towards; duplicating p2 gives a zero outgoing tangent, so the
+            // camera settles onto the path instead of sweeping past it.
+            let p3 = match frame {
+                Some(_) => p2,
+                None => unwrap_to(p2, self.pose_of(self.station_at(self.index as isize + 1), b)),
+            };
             let k = smootherstep(self.elapsed / TRANSITION_S);
             catmull_rom(p0, p1, p2, p3, k).apply(view);
             // The pivot is eased linearly rather than splined: a Catmull-Rom
@@ -394,9 +552,15 @@ impl Tour {
         } else {
             // Dwell. A slow drift keeps the frame alive rather than freezing.
             let held = self.elapsed - TRANSITION_S;
-            Pose { yaw: target.yaw + station.drift * held, ..target }.apply(view);
+            let drift = match frame {
+                Some(_) => QSO_SWAY * (held * QSO_SWAY_RATE).sin(),
+                None => station.drift * held,
+            };
+            Pose { yaw: target.yaw + drift, ..target }.apply(view);
             pivot = target_focus;
-            if held >= station.dwell_s {
+            // A contact is held for as long as it lasts; only the tour's own
+            // stations time out.
+            if frame.is_none() && held >= station.dwell_s {
                 self.index = (self.index + 1) % STATIONS.len();
                 self.from = Pose::new(view.yaw, view.pitch, view.dist);
                 // Hand the *current* pivot to the next move, so the flight
@@ -406,13 +570,25 @@ impl Tour {
                 self.elapsed = 0.0;
             }
         }
-        view.focus = station.focus.to_u8();
+        // The contact view pivots around a point above the Earth's surface, but
+        // the Earth is what the user gets if they take the controls back.
+        view.focus = match frame {
+            Some(_) => Focus::Earth.to_u8(),
+            None => station.focus.to_u8(),
+        };
+        self.last_pivot = pivot;
         pivot
     }
 
     /// Resume at whichever station is closest to the current view, so
     /// re-enabling AUTO does not fling the camera across the system.
     pub fn resume_near(&mut self, view: &crate::view::Solar3dView, b: &Bodies) {
+        self.index = self.nearest_station(view, b);
+        self.started = false;
+    }
+
+    /// The station the camera would have the shortest flight to from here.
+    fn nearest_station(&self, view: &crate::view::Solar3dView, b: &Bodies) -> usize {
         let here = Pose::new(view.yaw, view.pitch, view.dist);
         let mut best = (f32::MAX, 0usize);
         for (i, s) in STATIONS.iter().enumerate() {
@@ -424,8 +600,7 @@ impl Tour {
                 best = (cost, i);
             }
         }
-        self.index = best.1;
-        self.started = false;
+        best.1
     }
 
     fn station_at(&self, i: isize) -> &'static Station {
@@ -574,7 +749,7 @@ mod tests {
         let mut tour = Tour::default();
         let (mut poses, mut names, mut eyes) = (Vec::new(), Vec::new(), Vec::new());
         for _ in 0..(seconds / dt) as usize {
-            let pivot = tour.step(&mut st.view, &b, dt);
+            let pivot = tour.step(&mut st.view, &b, dt, None);
             st.focus_override = Some(pivot);
             poses.push(Pose::new(st.view.yaw, st.view.pitch, st.view.dist));
             eyes.push(Camera::from_view(&st, &b, [1600.0, 900.0]).eye);
@@ -679,9 +854,9 @@ mod tests {
         let mut tour = Tour::default();
 
         // Settle at station 0 (Sun), then advance to station 1 (Earth).
-        let mut pivot = tour.step(&mut st.view, &b, 1.0 / 60.0);
+        let mut pivot = tour.step(&mut st.view, &b, 1.0 / 60.0, None);
         while tour.index == 0 {
-            pivot = tour.step(&mut st.view, &b, 0.05);
+            pivot = tour.step(&mut st.view, &b, 0.05, None);
         }
         assert_eq!(tour.station().focus, Focus::Earth);
         // The first frame of the new move must still be at the Sun, not at the
@@ -691,7 +866,7 @@ mod tests {
         let mut prev = pivot.0;
         let mut worst = 0.0f32;
         for _ in 0..(TRANSITION_S / 0.02) as usize + 4 {
-            let p = tour.step(&mut st.view, &b, 0.02).0;
+            let p = tour.step(&mut st.view, &b, 0.02, None).0;
             worst = worst.max((p - prev).len());
             prev = p;
         }
@@ -743,7 +918,7 @@ mod tests {
         st.view.dist = target.ln_dist.exp();
         tour.index = 0;
         tour.request_resume();
-        tour.step(&mut st.view, &b, 1.0 / 60.0);
+        tour.step(&mut st.view, &b, 1.0 / 60.0, None);
         assert_eq!(tour.index, 4, "resumed at {} instead", tour.station().name);
     }
 
@@ -754,9 +929,9 @@ mod tests {
         let mut st = SolarUi::new(Solar3dView::default());
         let b = scene::bodies(&st, 1_784_937_600.0);
         let mut tour = Tour::default();
-        tour.step(&mut st.view, &b, 1.0 / 60.0);
+        tour.step(&mut st.view, &b, 1.0 / 60.0, None);
         let before = Pose::new(st.view.yaw, st.view.pitch, st.view.dist);
-        tour.step(&mut st.view, &b, 5.0);
+        tour.step(&mut st.view, &b, 5.0, None);
         let after = Pose::new(st.view.yaw, st.view.pitch, st.view.dist);
         assert!(tour.elapsed <= 0.3, "elapsed jumped to {}", tour.elapsed);
         assert!(
@@ -773,5 +948,259 @@ mod tests {
         let far = unwrap_to(near, pose(-3.0, 0.0, 0.0));
         assert!((far.yaw - near.yaw).abs() < 0.4, "unwrapped to {}", far.yaw);
         assert!(far.yaw > std::f32::consts::PI, "took the long way: {}", far.yaw);
+    }
+
+    // ── The contact view ────────────────────────────────────────────────────
+
+    /// A path of `sep` degrees, from a mid-latitude QTH along a meridian.
+    fn path_of(sep: f64) -> QsoPath {
+        QsoPath { home: (48.2, 16.4), dx: (48.2 - sep, 16.4) }
+    }
+
+    /// Fly the tour with a contact in progress until it has settled on it.
+    fn settled_on(path: QsoPath) -> (SolarUi, Bodies, Camera) {
+        let mut st = SolarUi::new(Solar3dView::default());
+        st.view.auto = true;
+        let b = scene::bodies(&st, 1_784_937_600.0);
+        let mut tour = Tour::default();
+        let dt = 1.0 / 60.0;
+        // Long enough for the flight in (3.2 s) and a good part of the sway.
+        for _ in 0..(12.0 / dt) as usize {
+            let pivot = tour.step(&mut st.view, &b, dt, Some(path));
+            st.focus_override = Some(pivot);
+        }
+        assert_eq!(tour.leg_name(), "QSO PATH");
+        let cam = Camera::from_view(&st, &b, [1600.0, 900.0]);
+        (st, b, cam)
+    }
+
+    /// Normalised device coordinates, or `None` when the point is behind the
+    /// camera. The viewport is everything within ±1 on both axes.
+    fn ndc(cam: &Camera, p: V3) -> Option<(f32, f32)> {
+        let m = &cam.view_proj;
+        let mut o = [0.0f32; 4];
+        for (r, out) in o.iter_mut().enumerate() {
+            *out = m.cols[0][r] * p.x + m.cols[1][r] * p.y + m.cols[2][r] * p.z + m.cols[3][r];
+        }
+        (o[3] > 0.0).then(|| (o[0] / o[3], o[1] / o[3]))
+    }
+
+    /// A point on (or above) the globe, the way the arc is drawn.
+    fn on_globe(b: &Bodies, lat: f64, lon: f64, lift: f32) -> V3 {
+        b.earth + b.surface_dir(lat, lon) * (b.earth_r * lift)
+    }
+
+    /// Whether any part of the Earth's horizon is in the frame — the test of
+    /// "the curvature is visible" that survives the camera being close enough
+    /// for the globe to overflow the viewport.
+    fn limb_on_screen(cam: &Camera, b: &Bodies) -> bool {
+        let d = (cam.eye - b.earth).len();
+        let u = (cam.eye - b.earth).normalize();
+        let (e1, e2) = (any_perp(u), u.cross(any_perp(u)));
+        // The horizon is the circle at this angle from the sub-camera point.
+        let alpha = (b.earth_r / d).clamp(-1.0, 1.0).acos();
+        (0..180).any(|k| {
+            let phi = k as f32 / 180.0 * std::f32::consts::TAU;
+            let dir = u * alpha.cos() + (e1 * phi.cos() + e2 * phi.sin()) * alpha.sin();
+            ndc(cam, b.earth + dir * b.earth_r)
+                .is_some_and(|(x, y)| x.abs() <= 1.0 && y.abs() <= 1.0)
+        })
+    }
+
+    /// The point of the whole thing: both stations and the arc between them
+    /// have to be on screen, at every path length from a local contact to a
+    /// near-antipodal one.
+    #[test]
+    fn the_contact_view_frames_both_stations_and_the_arc() {
+        for sep in [1.0, 12.0, 60.0, 120.0, 178.0] {
+            let path = path_of(sep);
+            let (_, b, cam) = settled_on(path);
+            let ends = [path.home, path.dx].map(|(lat, lon)| {
+                ndc(&cam, on_globe(&b, lat, lon, 1.0))
+                    .unwrap_or_else(|| panic!("{sep}° path: an end is behind the camera"))
+            });
+            for (i, (x, y)) in ends.iter().enumerate() {
+                assert!(
+                    x.abs() < 0.98 && y.abs() < 0.98,
+                    "{sep}° path: end {i} is off screen at ({x:.2}, {y:.2})",
+                );
+            }
+            // ...and framed, not merely present: a shot where the two ends sit
+            // on top of each other has not zoomed in on anything. Only a path
+            // long enough to *have* a shape gets held to the tighter bound —
+            // two stations 100 km apart are close together on any globe with a
+            // horizon still in it.
+            let gap = ((ends[0].0 - ends[1].0).powi(2) + (ends[0].1 - ends[1].1).powi(2)).sqrt();
+            let want = if sep >= 12.0 { 0.35 } else { 0.03 };
+            assert!(gap > want, "{sep}° path: the two ends are {gap:.3} apart on screen");
+        }
+    }
+
+    /// Shallow enough that the globe reads as a sphere and the arc's rise is
+    /// plainly visible, rather than the overhead view that flattens both.
+    #[test]
+    fn the_contact_view_is_a_shallow_one() {
+        for sep in [12.0, 60.0, 120.0] {
+            let path = path_of(sep);
+            let (st, b, cam) = settled_on(path);
+            let pivot = st.focus_override.expect("the tour supplies a pivot").0;
+
+            // How far the line of sight is off the vertical where it lands.
+            // Straight down is 0°, along the surface is 90°.
+            let vertical = (pivot - b.earth).normalize();
+            let ray = (cam.eye - pivot).normalize();
+            let tilt = ray.dot(vertical).clamp(-1.0, 1.0).acos() / DEG;
+            assert!(
+                (40.0..80.0).contains(&tilt),
+                "{sep}° path: looking down at {tilt:.0}° off the vertical",
+            );
+            // Shallow is only half of it: the horizon has to be in the frame,
+            // or there is no curvature on screen to see.
+            assert!(limb_on_screen(&cam, &b), "{sep}° path: no horizon in the frame");
+
+            // And the rise itself: the apex of the arc must project clear of
+            // the surface directly below it, which is exactly what an overhead
+            // shot loses.
+            let omega = (sep as f32) * DEG;
+            let bulge = scene::arc_bulge(omega as f64);
+            let (mlat, mlon) = (path.home.0 - sep * 0.5, path.home.1);
+            let apex = ndc(&cam, on_globe(&b, mlat, mlon, 1.0 + bulge)).expect("apex on screen");
+            let below = ndc(&cam, on_globe(&b, mlat, mlon, 1.0)).expect("surface on screen");
+            let rise = ((apex.0 - below.0).powi(2) + (apex.1 - below.1).powi(2)).sqrt();
+            assert!(rise > 0.06, "{sep}° path: the arc rises only {rise:.3} on screen");
+        }
+    }
+
+    /// The same, for paths that lie the way real ones do rather than along a
+    /// meridian: the framing is built on the plane of the path, so a path over
+    /// the pole and one along the equator put the camera in quite different
+    /// places relative to the ecliptic the camera's "up" is fixed to.
+    #[test]
+    fn the_contact_view_holds_up_for_real_paths() {
+        let vienna = (48.2, 16.4);
+        for (what, path) in [
+            ("Vienna–Tokyo", QsoPath { home: vienna, dx: (35.7, 139.7) }),
+            ("Vienna–Sydney", QsoPath { home: vienna, dx: (-33.9, 151.2) }),
+            ("Vienna–Buenos Aires", QsoPath { home: vienna, dx: (-34.6, -58.4) }),
+            // Along the equator: the plane of the path is the one furthest
+            // from the ecliptic the camera keeps level.
+            ("Nairobi–Singapore", QsoPath { home: (-1.3, 36.8), dx: (1.4, 103.8) }),
+            // And straight over the pole.
+            ("Reykjavik–Anchorage", QsoPath { home: (64.1, -21.9), dx: (61.2, -149.9) }),
+        ] {
+            let (st, b, cam) = settled_on(path);
+            let ends = [path.home, path.dx].map(|(lat, lon)| {
+                ndc(&cam, on_globe(&b, lat, lon, 1.0))
+                    .unwrap_or_else(|| panic!("{what}: an end is behind the camera"))
+            });
+            for (i, (x, y)) in ends.iter().enumerate() {
+                assert!(x.abs() < 0.98 && y.abs() < 0.98, "{what}: end {i} at ({x:.2}, {y:.2})");
+            }
+            let gap = ((ends[0].0 - ends[1].0).powi(2) + (ends[0].1 - ends[1].1).powi(2)).sqrt();
+            assert!(gap > 0.35, "{what}: the two ends are {gap:.3} apart on screen");
+
+            let pivot = st.focus_override.expect("the tour supplies a pivot").0;
+            let tilt = (cam.eye - pivot)
+                .normalize()
+                .dot((pivot - b.earth).normalize())
+                .clamp(-1.0, 1.0)
+                .acos()
+                / DEG;
+            assert!((40.0..80.0).contains(&tilt), "{what}: {tilt:.0}° off the vertical");
+            assert!(limb_on_screen(&cam, &b), "{what}: no horizon in the frame");
+            assert!((cam.eye - b.earth).len() > b.earth_r * 1.05, "{what}: eye inside the globe");
+        }
+    }
+
+    /// However the path lies, the camera must stay out in space — a pivot that
+    /// sits just above the surface makes this easy to get wrong.
+    #[test]
+    fn the_contact_view_stays_outside_the_globe() {
+        for sep in [0.5, 5.0, 45.0, 90.0, 150.0, 179.9] {
+            let path = path_of(sep);
+            let (_, b, cam) = settled_on(path);
+            let h = (cam.eye - b.earth).len();
+            assert!(h > b.earth_r * 1.05, "{sep}° path: eye {h} inside a {} globe", b.earth_r);
+            assert!(cam.eye.x.is_finite() && cam.eye.y.is_finite() && cam.eye.z.is_finite());
+        }
+    }
+
+    /// Two stations in the same place have no path between them and no arc is
+    /// drawn for them either, so the tour must carry on rather than framing a
+    /// point.
+    #[test]
+    fn a_contact_with_itself_is_not_framed() {
+        let mut st = SolarUi::new(Solar3dView::default());
+        let b = scene::bodies(&st, 1_784_937_600.0);
+        assert!(qso_frame(QsoPath { home: (48.2, 16.4), dx: (48.2, 16.4) }, &b).is_none());
+
+        let mut tour = Tour::default();
+        let path = QsoPath { home: (48.2, 16.4), dx: (48.200_01, 16.400_01) };
+        for _ in 0..600 {
+            tour.step(&mut st.view, &b, 1.0 / 60.0, Some(path));
+        }
+        assert_ne!(tour.leg_name(), "QSO PATH");
+    }
+
+    /// A contact takes the camera over for as long as it lasts — well past the
+    /// dwell any station gets — and hands it back when it ends. Neither
+    /// handover may jump the eye.
+    #[test]
+    fn a_contact_pre_empts_the_tour_and_hands_it_back() {
+        let dt = 1.0 / 60.0;
+        let mut st = SolarUi::new(Solar3dView::default());
+        st.view.auto = true;
+        let b = scene::bodies(&st, 1_784_937_600.0);
+        let mut tour = Tour::default();
+        let path = path_of(75.0);
+
+        let mut eyes: Vec<V3> = Vec::new();
+        let frame = |tour: &mut Tour, st: &mut SolarUi, qso, eyes: &mut Vec<V3>| {
+            let pivot = tour.step(&mut st.view, &b, dt, qso);
+            st.focus_override = Some(pivot);
+            eyes.push(Camera::from_view(st, &b, [1600.0, 900.0]).eye);
+        };
+
+        // Settle into the tour first, so the contact arrives mid-dwell.
+        for _ in 0..(10.0 / dt) as usize {
+            frame(&mut tour, &mut st, None, &mut eyes);
+        }
+        assert!(!tour.in_transit(), "the tour should be dwelling by now");
+        let at_pickup = eyes.len();
+
+        // The contact runs for 40 s — longer than any station's dwell.
+        for _ in 0..(40.0 / dt) as usize {
+            frame(&mut tour, &mut st, Some(path), &mut eyes);
+        }
+        assert_eq!(tour.leg_name(), "QSO PATH", "the tour walked off the contact");
+        let (target, pivot) = qso_frame(path, &b).expect("a 75° path is framable");
+        assert!(
+            short_angle(st.view.yaw, target.yaw).abs() < QSO_SWAY * 1.1,
+            "settled {} rad off the framing",
+            short_angle(st.view.yaw, target.yaw).abs(),
+        );
+        assert!((st.view.dist - target.ln_dist.exp()).abs() < target.ln_dist.exp() * 0.02);
+        assert!((st.focus_override.expect("pivot").0 - pivot.0).len() < b.earth_r * 0.01);
+        let at_handback = eyes.len();
+
+        // Contact over: the tour takes back over.
+        for _ in 0..(20.0 / dt) as usize {
+            frame(&mut tour, &mut st, None, &mut eyes);
+        }
+        assert_ne!(tour.leg_name(), "QSO PATH", "the camera never left the contact");
+
+        // Both handovers start a flight from rest, so the frame either side of
+        // one may not move further than the frame before it did.
+        for (what, i) in [("pick-up", at_pickup), ("hand-back", at_handback)] {
+            let before = (eyes[i - 1] - eyes[i - 2]).len();
+            let after = (eyes[i] - eyes[i - 1]).len();
+            assert!(
+                after <= before * 2.0 + 1e-6,
+                "{what}: the eye jumped {after} Gm against {before} Gm the frame before",
+            );
+        }
+        for e in &eyes {
+            assert!(e.x.is_finite() && e.y.is_finite() && e.z.is_finite());
+        }
     }
 }

@@ -1033,6 +1033,17 @@ than cutting; it holds each one for ten to sixteen seconds
 with a slow drift, and the whole loop takes about two minutes. Re-enabling AUTO
 picks up at whichever viewpoint is nearest your current view.
 
+While you are working a station, AUTO leaves the loop and flies down to the
+contact instead, holding it for as long as the QSO lasts — the readout calls it
+`QSO PATH`. The shot is centred on your QTH, the station you are working and the
+arc between them, from off to one side of the path and at a shallow angle, so
+the horizon curves across the frame and the arc's rise off the surface is plain
+rather than flattened into a line by an overhead view. It frames itself to the
+path: a neighbouring country is a low pass over the horizon, an antipodal
+contact pulls back until both ends and the whole arc are in the picture. When
+the QSO ends the camera rejoins the tour at whichever viewpoint is nearest.
+Switching the `QSO` layer off leaves AUTO on its normal loop.
+
 **Layers** — `ORBITS` (orbital paths, sampled from the real ephemeris, so they
 are the true eccentric orbits), `PLANETS`, `CME`, `SPOTS`, `FLARES`, `GRID` (the
 solar rotation axis, equator and heliographic parallels), `LABELS`, `STARS`,

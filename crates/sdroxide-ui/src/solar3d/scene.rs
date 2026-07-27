@@ -401,6 +401,15 @@ pub fn bodies(st: &SolarUi, unix_s: f64) -> Bodies {
 }
 
 impl Bodies {
+    /// Unit vector, in world space, from the Earth's centre towards a point on
+    /// its surface. The Earth's own orientation is in `earth_basis`, so this
+    /// turns with the planet.
+    pub fn surface_dir(&self, lat: f64, lon: f64) -> V3 {
+        let (ex, ey, ez) = self.earth_basis;
+        let v = ephem::geodetic_to_body(lat, lon);
+        (ex * v.x as f32 + ey * v.y as f32 + ez * v.z as f32).normalize()
+    }
+
     /// Where the camera pivots, and a characteristic radius used to clamp how
     /// close it may get.
     pub fn focus(&self, f: Focus) -> (V3, f32) {
@@ -1220,11 +1229,20 @@ fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, anim_t: f
     }
 }
 
-/// A great-circle arc between two points on the globe, bowed out into space.
+/// How far an arc spanning `omega` radians bows off the surface, as a fraction
+/// of the Earth's rendered radius.
 ///
-/// The lift is proportional to the angular separation, so a short contact
-/// hugs the surface and an antipodal one springs well clear of it — which is
-/// also the only way both ends stay visible at once on a sphere.
+/// The lift is proportional to the angular separation, so a short contact hugs
+/// the surface and an antipodal one springs well clear of it — which is also
+/// the only way both ends stay visible at once on a sphere.
+///
+/// The camera's contact framing reads this too: the shot it composes has to be
+/// built around the arc that actually gets drawn, not a second guess at it.
+pub fn arc_bulge(omega: f64) -> f32 {
+    0.06 + 0.42 * (omega / std::f64::consts::PI) as f32
+}
+
+/// A great-circle arc between two points on the globe, bowed out into space.
 #[allow(clippy::too_many_arguments)]
 fn arc(
     s: &mut Scene,
@@ -1245,7 +1263,7 @@ fn arc(
     if omega < 1e-4 {
         return;
     }
-    let bulge = 0.06 + 0.42 * (omega / std::f64::consts::PI) as f32;
+    let bulge = arc_bulge(omega);
 
     let point = |t: f64| {
         // Spherical interpolation, so the path is the true great circle rather
