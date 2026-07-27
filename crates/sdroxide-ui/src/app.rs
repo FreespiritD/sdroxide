@@ -2028,18 +2028,23 @@ impl SdroxideApp {
         let period = if self.state.rx[0].mode == Mode::Ft4 { 7.5 } else { 15.0 };
         // Filter (CQ-only) and precompute distance for sorting/display. Entries
         // stay newest-turn-first; same-slot decodes are contiguous in the list.
-        let mut items: Vec<(usize, &Decode, Option<f64>)> = self
+        // A "CQ DX" from a station we're local to is not a CQ *we* can answer:
+        // it neither passes the filter nor gets the CQ highlight.
+        let mut items: Vec<(usize, &Decode, Option<f64>, bool)> = self
             .digi_decodes
             .iter()
             .enumerate()
-            .filter(|(_, d)| !cq_only || d.is_cq)
-            .map(|(i, d)| {
+            .filter_map(|(i, d)| {
+                let cq = sdroxide_types::cq_is_for_us(d, &my_call, &my_grid);
+                if cq_only && !cq {
+                    return None;
+                }
                 let dist = (!my_grid.is_empty())
                     .then(|| {
                         d.grid.as_deref().and_then(|g| sdroxide_types::grid_distance_km(&my_grid, g))
                     })
                     .flatten();
-                (i, d, dist)
+                Some((i, d, dist, cq))
             })
             .collect();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show_themed(ui, |ui| {
@@ -2089,8 +2094,7 @@ impl SdroxideApp {
                 });
                 ui.separator();
                 for k in gi..end {
-                    let (i, d, dist_km) = items[k];
-                    let cq = d.is_cq;
+                    let (i, d, dist_km, cq) = items[k];
                     // Decodes addressed to our own station stand out most.
                     let to_me = !my_call.is_empty() && d.to.as_deref() == Some(my_call.as_str());
                     let who = d.from.clone().unwrap_or_else(|| "?".into());
@@ -2292,12 +2296,14 @@ impl SdroxideApp {
                     if let Some(from) = &d.from {
                         // If they're neither calling CQ nor calling us, hold until
                         // they call CQ rather than barging into their exchange.
+                        // Any CQ counts here, including a "CQ DX" we're local to:
+                        // the operator asked to call them, and they are free now.
                         cmds.push(Command::DigiStartQso {
                             from: from.clone(),
                             grid: d.grid.clone(),
                             snr: d.snr_db,
                             audio_hz: d.audio_hz,
-                            wait_for_cq: !cq && !to_me,
+                            wait_for_cq: !d.is_cq && !to_me,
                         });
                     }
                     // Starting a QSO promotes the station to the active DX
@@ -2561,7 +2567,11 @@ impl SdroxideApp {
                             if let Some(s) = status.as_ref() {
                                 for line in &s.transcript {
                                     any = true;
-                                    let (tag, col) = if line.tx {
+                                    // Pink marks traffic that isn't ours: the
+                                    // station we called is working someone else.
+                                    let (tag, col) = if line.overheard {
+                                        ("·", crate::theme::PINK)
+                                    } else if line.tx {
                                         ("»", crate::theme::YELLOW)
                                     } else {
                                         ("«", crate::theme::GREEN)

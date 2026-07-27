@@ -349,16 +349,28 @@ The panel has two halves:
   (colour-coded by strength), the audio frequency, the callsign, the grid, and
   the full message, with a **REPLY** button on the right. CQ calls are
   highlighted. Decoded stations are also marked as boxes on the waterfall.
+  A **CQ DX** call only counts as a CQ for you when you actually are DX for the
+  caller — a different DXCC entity, or (when the prefix can't be resolved)
+  3000 km or more away. Otherwise the row stays plain and the **CQ only** filter
+  skips it, so the list isn't full of DX calls you shouldn't answer. You can
+  still **REPLY** to such a station if you want to.
 - **QSO** (right) — a world map (your location, the station you are working, and
   a transmit indicator), a station card showing the current step
-  (`Idle`, `Calling CQ`, `Tx Grid`, `Tx Report`, `Tx R+Report`, `Tx RR73`,
-  `Tx 73`, `Done`), and a transcript of the exchange (outgoing and incoming
-  lines, plus the queued next message).
+  (`Idle`, `Wait CQ`, `Calling CQ`, `Tx Grid`, `Tx Report`, `Tx R+Report`,
+  `Tx RR73`, `Tx 73`, `Confirming`, `Done`), and a transcript of the exchange
+  (outgoing lines in gold, incoming in green, plus the queued next message).
 
 ### 3.4 Working stations
 
 - **Answer a call:** click **REPLY** on a decode. sdroxide adopts that station,
   picks the opposite time slot, and runs the exchange automatically.
+- **Losing a pile-up:** if the station you called comes back to someone else
+  instead, sdroxide stops calling and holds at `Wait CQ` rather than doubling
+  into their QSO. The transcript shows a pink line — *"W9XYZ is working K1ABC"* —
+  so it's clear they aren't talking to you, and calling resumes automatically
+  when they call CQ again (or come back to you). The hold gives up after five
+  minutes. A 73 / RR73 you already owe still goes out, so a finished contact is
+  never dropped unlogged.
 - **Call CQ:** click **CALL CQ**. The first station that answers becomes your
   QSO.
 - **Set your transmit tone:** click a decode row (or click a station box on the

@@ -78,7 +78,7 @@ impl Ft8Modem {
 /// Unpack 77 message bits and build a [`Decode`], or `None` if unpacking fails.
 fn build_decode(bits77: &[u8; 77], snr_db: f32, dt_sec: f32, freq_hz: f32, slot_utc: i64) -> Option<Decode> {
     let text = wsjt77::unpack77(bits77)?;
-    let (to, from, grid, is_cq) = parse_message(&text);
+    let (to, from, grid, is_cq, cq_dx) = parse_message(&text);
     Some(Decode {
         slot_utc,
         snr_db: snr_db.round() as i16,
@@ -89,6 +89,7 @@ fn build_decode(bits77: &[u8; 77], snr_db: f32, dt_sec: f32, freq_hz: f32, slot_
         from,
         grid,
         is_cq,
+        cq_dx,
     })
 }
 
@@ -104,22 +105,23 @@ fn three_tokens(text: &str) -> (String, String, String) {
 }
 
 /// Parse a standard `<to> <from> <payload>` message into its parts.
-/// Returns (to, from, grid, is_cq). `to` is None for a CQ.
-fn parse_message(text: &str) -> (Option<String>, Option<String>, Option<String>, bool) {
+/// Returns (to, from, grid, is_cq, cq_dx). `to` is None for a CQ; `cq_dx` marks
+/// the "CQ DX" form, which only wants stations outside the caller's own entity.
+fn parse_message(text: &str) -> (Option<String>, Option<String>, Option<String>, bool, bool) {
     let toks: Vec<&str> = text.split_whitespace().collect();
     if toks.is_empty() {
-        return (None, None, None, false);
+        return (None, None, None, false, false);
     }
     if toks[0] == "CQ" {
         // "CQ [DX|modifier] <from> [grid]"
         let from = toks.iter().skip(1).find(|t| is_callish(t)).map(|s| s.to_string());
         let grid = toks.last().filter(|t| is_grid(t)).map(|s| s.to_string());
-        return (None, from, grid, true);
+        return (None, from, grid, true, toks.get(1) == Some(&"DX"));
     }
     let to = Some(toks[0].to_string());
     let from = toks.get(1).map(|s| s.to_string());
     let grid = toks.get(2).filter(|t| is_grid(t)).map(|s| s.to_string());
-    (to, from, grid, false)
+    (to, from, grid, false, false)
 }
 
 fn is_grid(t: &str) -> bool {
@@ -146,25 +148,33 @@ mod tests {
 
     #[test]
     fn parse_cq_and_qso_messages() {
-        let (to, from, grid, cq) = parse_message("CQ AB1CD FN42");
+        let (to, from, grid, cq, dx) = parse_message("CQ AB1CD FN42");
         assert_eq!(to, None);
         assert_eq!(from.as_deref(), Some("AB1CD"));
         assert_eq!(grid.as_deref(), Some("FN42"));
         assert!(cq);
+        assert!(!dx);
 
-        let (to, from, grid, cq) = parse_message("W9XYZ AB1CD -13");
+        let (to, from, grid, cq, _) = parse_message("W9XYZ AB1CD -13");
         assert_eq!(to.as_deref(), Some("W9XYZ"));
         assert_eq!(from.as_deref(), Some("AB1CD"));
         assert_eq!(grid, None);
         assert!(!cq);
 
-        let (to, from, grid, _) = parse_message("AB1CD W9XYZ EM48");
+        let (to, from, grid, _, _) = parse_message("AB1CD W9XYZ EM48");
         assert_eq!(to.as_deref(), Some("AB1CD"));
         assert_eq!(from.as_deref(), Some("W9XYZ"));
         assert_eq!(grid.as_deref(), Some("EM48"));
 
+        // "CQ DX": the caller only wants stations outside their own entity.
+        let (to, from, grid, cq, dx) = parse_message("CQ DX AB1CD FN42");
+        assert_eq!(to, None);
+        assert_eq!(from.as_deref(), Some("AB1CD"), "the DX modifier is not the sender");
+        assert_eq!(grid.as_deref(), Some("FN42"));
+        assert!(cq && dx);
+
         // "RR73" is a sign-off, not a locator — it must not be read as a grid.
-        let (_, from, grid, _) = parse_message("AB1CD W9XYZ RR73");
+        let (_, from, grid, _, _) = parse_message("AB1CD W9XYZ RR73");
         assert_eq!(from.as_deref(), Some("W9XYZ"));
         assert_eq!(grid, None, "RR73 must not parse as a grid position");
         // Invalid Maidenhead fields (S..Z) aren't grids either.

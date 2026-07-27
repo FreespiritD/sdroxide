@@ -86,6 +86,7 @@ mod tests {
             from: Some("AB1CD".into()),
             grid: Some(grid.into()),
             is_cq: true,
+            cq_dx: false,
         }
     }
 

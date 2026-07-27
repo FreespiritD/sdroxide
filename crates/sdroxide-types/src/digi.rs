@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Mode;
+use crate::entity::resolve_callsign;
+use crate::geo::grid_distance_km;
 
 /// One decoded FT8/FT4 message from a receive slot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -28,6 +30,44 @@ pub struct Decode {
     pub grid: Option<String>,
     /// True when the message is a CQ call.
     pub is_cq: bool,
+    /// True when the CQ carried the `DX` modifier ("CQ DX AB1CD FN42") — the
+    /// caller only wants stations outside their own DXCC entity. See
+    /// [`cq_is_for_us`].
+    #[serde(default)]
+    pub cq_dx: bool,
+}
+
+/// How far away a station has to be to count as DX when the DXCC entity can't
+/// be resolved from either callsign — a rough stand-in for "another country".
+const DX_FALLBACK_KM: f64 = 3000.0;
+
+/// True when a decoded CQ is one *we* may answer.
+///
+/// A plain CQ is open to everyone. "CQ DX" asks for stations outside the
+/// caller's own DXCC entity, so it only counts as a CQ for us when we really are
+/// DX for them: the UI neither colours nor lists such a call under "CQ only"
+/// when we'd just be a local answering a DX call.
+///
+/// When the entity can't be resolved on both sides we fall back to the
+/// great-circle distance between the grids, and if that is unavailable too the
+/// call is treated as open — showing a CQ we can't judge beats hiding one we
+/// could have worked.
+pub fn cq_is_for_us(d: &Decode, my_call: &str, my_grid: &str) -> bool {
+    if !d.is_cq {
+        return false;
+    }
+    if !d.cq_dx {
+        return true;
+    }
+    let Some(from) = d.from.as_deref() else { return true };
+    match (resolve_callsign(from), resolve_callsign(my_call)) {
+        // The DXCC entity is what "DX" means on HF: same entity → we're local.
+        (Some(theirs), Some(mine)) => theirs.name != mine.name,
+        _ => match d.grid.as_deref().and_then(|g| grid_distance_km(my_grid, g)) {
+            Some(km) => km >= DX_FALLBACK_KM,
+            None => true,
+        },
+    }
 }
 
 /// Where a QSO is in the standard FT8/FT4 exchange.
@@ -80,6 +120,28 @@ pub struct TranscriptLine {
     /// True = we transmitted it, false = we received it.
     pub tx: bool,
     pub text: String,
+    /// True for a note about the station we called working *someone else* —
+    /// overheard traffic, not part of our own exchange. The UI colours these
+    /// differently so it's obvious they aren't talking to us.
+    #[serde(default)]
+    pub overheard: bool,
+}
+
+impl TranscriptLine {
+    /// A message we transmitted.
+    pub fn sent(text: impl Into<String>) -> Self {
+        TranscriptLine { tx: true, text: text.into(), overheard: false }
+    }
+
+    /// A message we received as part of our exchange.
+    pub fn rcvd(text: impl Into<String>) -> Self {
+        TranscriptLine { tx: false, text: text.into(), overheard: false }
+    }
+
+    /// A note about the DX working another station.
+    pub fn note(text: impl Into<String>) -> Self {
+        TranscriptLine { tx: false, text: text.into(), overheard: true }
+    }
 }
 
 /// Live status of the digital-mode engine, broadcast to clients.
@@ -763,6 +825,57 @@ mod tests {
         assert_eq!(fmt_report(-13), "-13");
         assert_eq!(fmt_report(2), "+02");
         assert_eq!(fmt_report(0), "+00");
+    }
+
+    fn cq(msg: &str, from: &str, grid: Option<&str>) -> Decode {
+        Decode {
+            slot_utc: 0,
+            snr_db: -10,
+            dt: 0.1,
+            audio_hz: 1500.0,
+            message: msg.to_string(),
+            to: None,
+            from: Some(from.to_string()),
+            grid: grid.map(|g| g.to_string()),
+            is_cq: true,
+            cq_dx: msg.starts_with("CQ DX"),
+        }
+    }
+
+    #[test]
+    fn cq_dx_is_only_for_stations_outside_the_callers_entity() {
+        // A plain CQ is for everyone, near or far.
+        let plain = cq("CQ W1AW FN31", "W1AW", Some("FN31"));
+        assert!(cq_is_for_us(&plain, "K2XYZ", "FN30"));
+
+        // "CQ DX" from a US station: another US station is not DX for them.
+        let dx = cq("CQ DX W1AW FN31", "W1AW", Some("FN31"));
+        assert!(!cq_is_for_us(&dx, "K2XYZ", "FN30"));
+        // A German station is.
+        assert!(cq_is_for_us(&dx, "DL1ABC", "JN48"));
+        // So is Hawaii — same country, but a separate DXCC entity.
+        assert!(cq_is_for_us(&dx, "KH6ABC", "BL11"));
+
+        // Not a CQ at all → never counted as one.
+        let mut qso = plain.clone();
+        qso.is_cq = false;
+        assert!(!cq_is_for_us(&qso, "DL1ABC", "JN48"));
+    }
+
+    #[test]
+    fn unresolvable_cq_dx_falls_back_to_distance_then_to_showing_it() {
+        // "QQ" is no country cty.dat knows; with grids on both sides the
+        // great-circle distance decides instead.
+        let mut dx = cq("CQ DX QQ1QQ JN48", "QQ1QQ", Some("JN48"));
+        assert!(!cq_is_for_us(&dx, "QQ2QQ", "JN47"), "a neighbour is not DX");
+        assert!(cq_is_for_us(&dx, "QQ2QQ", "FN31"), "an ocean away is DX");
+
+        // No grid and no resolvable entity → we can't judge, so show it.
+        dx.grid = None;
+        assert!(cq_is_for_us(&dx, "QQ2QQ", "JN47"));
+        // Nor can we judge with no station callsign or grid of our own.
+        let dx = cq("CQ DX W1AW FN31", "W1AW", Some("FN31"));
+        assert!(cq_is_for_us(&dx, "", ""));
     }
 
     #[test]

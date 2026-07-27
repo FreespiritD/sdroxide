@@ -124,7 +124,7 @@ impl QsoMachine {
     /// Record a message we transmitted (called by the controller when it
     /// actually keys the burst).
     pub fn record_tx(&mut self, text: &str) {
-        self.transcript.push(TranscriptLine { tx: true, text: text.to_string() });
+        self.transcript.push(TranscriptLine::sent(text));
     }
 
     /// Engage a decoded station. `snr` is their signal at us — the report we'll
@@ -205,10 +205,23 @@ impl QsoMachine {
         if my_call.is_empty() {
             return false;
         }
+        // A pileup can decode both their answer to us *and* other traffic from
+        // them in the same slot; an answer to us always wins over "they're
+        // working someone else".
+        let dx_call = self.dx.as_ref().map(|d| d.call.clone());
+        let answered_us = dx_call.as_deref().is_some_and(|dx| {
+            decodes
+                .iter()
+                .any(|d| d.from.as_deref() == Some(dx) && d.to.as_deref() == Some(my_call.as_str()))
+        });
         let mut changed = false;
         for d in decodes {
             let Some(from) = d.from.as_deref().filter(|f| !f.is_empty()) else { continue };
             let to_me = d.to.as_deref() == Some(my_call.as_str());
+            // Our station answering someone else: they're in another exchange.
+            let other = (!to_me && !answered_us && !d.is_cq && dx_call.as_deref() == Some(from))
+                .then(|| d.to.as_deref().filter(|t| !t.is_empty() && *t != my_call))
+                .flatten();
 
             // Waiting for our picked station: start replying once they call CQ
             // (they're free) or address us directly (no need to keep waiting).
@@ -224,8 +237,26 @@ impl QsoMachine {
                     }
                     self.step = QsoStep::TxGrid;
                     changed = true;
+                } else if let Some(other) = other {
+                    // Still busy — keep the log showing who with.
+                    changed |= self.note_working(from, other);
                 }
                 continue;
+            }
+
+            // We called them, but they took someone else's call: stop calling
+            // and hold until they're free again rather than doubling into their
+            // exchange. Only while our own exchange is still unfinished — once
+            // we owe them a 73 / RR73 that message goes out regardless, so the
+            // contact gets completed and logged.
+            if let Some(other) = other {
+                if matches!(self.step, QsoStep::TxGrid | QsoStep::TxRReport) {
+                    self.note_working(from, other);
+                    self.step = QsoStep::WaitCq;
+                    self.deadline_utc = now_utc + WAIT_CQ_S;
+                    changed = true;
+                    continue;
+                }
             }
 
             if !to_me {
@@ -238,7 +269,7 @@ impl QsoMachine {
             // got it and are closing, so nothing to do.
             if self.step == QsoStep::Confirming {
                 if self.dx.as_ref().map(|x| x.call.as_str()) == Some(from) {
-                    self.transcript.push(TranscriptLine { tx: false, text: d.message.clone() });
+                    self.transcript.push(TranscriptLine::rcvd(d.message.clone()));
                     if !matches!(payload, Payload::B73) {
                         self.resend = true;
                     }
@@ -261,7 +292,7 @@ impl QsoMachine {
                     started_utc: now_utc,
                     last_utc: now_utc,
                 });
-                self.transcript.push(TranscriptLine { tx: false, text: d.message.clone() });
+                self.transcript.push(TranscriptLine::rcvd(d.message.clone()));
                 changed |= self.advance(&payload, now_utc);
                 continue;
             }
@@ -281,10 +312,23 @@ impl QsoMachine {
                     dx.rpt_sent = Some(d.snr_db);
                 }
             }
-            self.transcript.push(TranscriptLine { tx: false, text: d.message.clone() });
+            self.transcript.push(TranscriptLine::rcvd(d.message.clone()));
             changed |= self.advance(&payload, now_utc);
         }
         changed
+    }
+
+    /// Note in the transcript that the station we called is working someone
+    /// else. Deduplicated against the line before it, so holding through a whole
+    /// exchange adds one line per partner rather than one per slot. Returns true
+    /// if a line was added.
+    fn note_working(&mut self, dx: &str, other: &str) -> bool {
+        let text = format!("{dx} is working {other}");
+        if self.transcript.last().is_some_and(|l| l.overheard && l.text == text) {
+            return false;
+        }
+        self.transcript.push(TranscriptLine::note(text));
+        true
     }
 
     fn advance(&mut self, payload: &Payload, _now_utc: i64) -> bool {
@@ -430,6 +474,7 @@ mod tests {
             },
             grid: None,
             is_cq: msg.starts_with("CQ"),
+            cq_dx: msg.starts_with("CQ DX"),
         }
     }
 
@@ -502,8 +547,12 @@ mod tests {
     fn ignores_other_stations() {
         let mut q = QsoMachine::new(Mode::Ft8, cfg());
         q.start_qso("W9XYZ".into(), None, -10, false, 100);
-        // A decode addressed to someone else must not advance us.
-        assert!(!q.on_rx(&[decode("K1ABC W9XYZ -05")], 115));
+        // Traffic between two other stations must not touch our exchange.
+        assert!(!q.on_rx(&[decode("K1ABC G4XYZ -05")], 115));
+        assert_eq!(q.step(), QsoStep::TxGrid);
+        // Nor must a report someone else sent *our* DX (that's their SNR, not
+        // ours) — only what the DX sends us advances the QSO.
+        assert!(!q.on_rx(&[decode("W9XYZ K1ABC -05")], 130));
         assert_eq!(q.step(), QsoStep::TxGrid);
     }
 
@@ -516,15 +565,73 @@ mod tests {
         assert!(!q.wants_tx());
         assert_eq!(q.plan_tx(), None);
 
-        // Them working someone else keeps us waiting.
-        assert!(!q.on_rx(&[decode("K1ABC W9XYZ RR73")], 115));
+        // Them working someone else keeps us waiting (and says who with).
+        q.on_rx(&[decode("K1ABC W9XYZ RR73")], 115);
         assert_eq!(q.step(), QsoStep::WaitCq);
+        assert!(!q.wants_tx());
 
         // They call CQ → we start replying.
         assert!(q.on_rx(&[decode("CQ W9XYZ EM48")], 130));
         assert_eq!(q.step(), QsoStep::TxGrid);
         assert!(q.wants_tx());
         assert_eq!(q.plan_tx().as_deref(), Some("W9XYZ AB1CD FN42"));
+    }
+
+    #[test]
+    fn dx_taking_another_caller_holds_us_until_their_next_cq() {
+        // We answered W9XYZ's CQ, but they came back to K1ABC instead.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100);
+        assert_eq!(q.step(), QsoStep::TxGrid);
+
+        assert!(q.on_rx(&[decode("K1ABC W9XYZ -13")], 115));
+        assert_eq!(q.step(), QsoStep::WaitCq, "we must stop calling into their QSO");
+        assert!(!q.wants_tx());
+        assert_eq!(q.plan_tx(), None);
+        let note = q.status(false).transcript.pop().expect("a note about who they're working");
+        assert!(note.overheard);
+        assert_eq!(note.text, "W9XYZ is working K1ABC");
+
+        // Their exchange continues: one note per partner, not one per slot.
+        assert!(!q.on_rx(&[decode("K1ABC W9XYZ RR73")], 130));
+        assert_eq!(q.status(false).transcript.iter().filter(|l| l.overheard).count(), 1);
+        // A new partner is worth a new line.
+        assert!(q.on_rx(&[decode("G4XYZ W9XYZ -07")], 145));
+        assert_eq!(
+            q.status(false).transcript.last().map(|l| l.text.clone()),
+            Some("W9XYZ is working G4XYZ".into())
+        );
+
+        // They're free again → we resume calling them.
+        assert!(q.on_rx(&[decode("CQ W9XYZ EM48")], 160));
+        assert_eq!(q.step(), QsoStep::TxGrid);
+        assert!(q.wants_tx());
+        assert_eq!(q.plan_tx().as_deref(), Some("W9XYZ AB1CD FN42"));
+    }
+
+    #[test]
+    fn an_answer_to_us_beats_other_traffic_in_the_same_slot() {
+        // Both their reply to us and a stray decode to someone else land in one
+        // slot: the reply wins, so we keep the QSO instead of standing down.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100);
+        assert!(q.on_rx(&[decode("K1ABC W9XYZ -13"), decode("AB1CD W9XYZ -09")], 115));
+        assert_eq!(q.step(), QsoStep::TxRReport);
+        assert!(q.status(false).transcript.iter().all(|l| !l.overheard));
+    }
+
+    #[test]
+    fn a_final_message_still_goes_out_when_they_move_on() {
+        // They rogered us and moved to K1ABC before our 73 left: the contact is
+        // complete, so we send it and log rather than standing down.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100);
+        q.on_rx(&[decode("AB1CD W9XYZ -13")], 115);
+        q.on_rx(&[decode("AB1CD W9XYZ RR73")], 130);
+        assert_eq!(q.step(), QsoStep::Tx73);
+        assert!(!q.on_rx(&[decode("K1ABC W9XYZ -05")], 145));
+        assert_eq!(q.step(), QsoStep::Tx73);
+        assert!(q.wants_tx());
     }
 
     #[test]

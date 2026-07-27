@@ -45,8 +45,8 @@ pub use command::Command;
 pub use controller::{AudioDevices, RadioController, RadioEvent};
 pub use digi::{
     Decode, DigiConfig, DigiStatus, FsqMsg, QsoRecord, QsoStep, RadeStatus, ThorMode,
-    TranscriptLine, adif_band, adif_to_qso_log, fmt_report, qso_log_to_adif, qso_log_to_text,
-    utc_ymd_hms, worked_before, ymd_hms_to_unix,
+    TranscriptLine, adif_band, adif_to_qso_log, cq_is_for_us, fmt_report, qso_log_to_adif,
+    qso_log_to_text, utc_ymd_hms, worked_before, ymd_hms_to_unix,
 };
 pub use geo::{
     distance_km, grid_bearing, grid_distance_km, grid_to_latlon, great_circle_points, is_land,
