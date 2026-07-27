@@ -191,6 +191,19 @@ impl DigiController {
         self.status_dirty = true;
     }
 
+    /// Pick which message goes out next (the operator's Tx1–Tx6).
+    pub fn set_step(&mut self, step: sdroxide_types::QsoStep) {
+        if self.qso.set_step(step) {
+            self.status_dirty = true;
+        }
+    }
+
+    /// Queue a message to send verbatim in the next transmit slot.
+    pub fn send_text(&mut self, text: String) {
+        self.qso.queue_text(text);
+        self.status_dirty = true;
+    }
+
     pub fn stop_qso(&mut self) {
         self.qso.stop();
         self.status_dirty = true;
@@ -453,6 +466,12 @@ impl crate::DigiEngine for DigiController {
     }
     fn stop_qso(&mut self) {
         DigiController::stop_qso(self)
+    }
+    fn set_step(&mut self, step: sdroxide_types::QsoStep) {
+        DigiController::set_step(self, step)
+    }
+    fn send_text(&mut self, text: String) {
+        DigiController::send_text(self, text)
     }
 }
 

@@ -55,8 +55,10 @@ use sdroxide_types::{
 /// upload fields — postcard is not self-describing, so every added field
 /// changes the layout of the messages carrying them. Also new:
 /// `Command::SetWsjtxConfig` (WSJT-X UDP broadcast).
-pub const PROTO_VERSION: u16 = 16;
-const VERSION_BYTE: u8 = 0x10;
+/// v17: manual FT8 message control — `Command::DigiSetStep` and
+/// `Command::DigiSendText` (both extend the postcard discriminant space).
+pub const PROTO_VERSION: u16 = 17;
+const VERSION_BYTE: u8 = 0x11;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {

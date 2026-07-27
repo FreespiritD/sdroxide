@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgcMode, Band, DigiConfig, Direction, Mode, NetworkConfig, NrLevel, RxId, SkimmerSettings,
-    RigctldConfig, SpectrumConfig, SstvMode, TciServerConfig, UploadTarget, Vfo, WsjtxConfig,
+    QsoStep, RigctldConfig, SpectrumConfig, SstvMode, TciServerConfig, UploadTarget, Vfo,
+    WsjtxConfig,
 };
 
 /// The single control vocabulary. The GUI, the WebSocket protocol, and the
@@ -79,6 +80,13 @@ pub enum Command {
         #[serde(default)]
         wait_for_cq: bool,
     },
+    /// FT8/FT4: jump the exchange to this step, choosing by hand which message
+    /// goes out next (WSJT-X's Tx1–Tx6). Steps that address a station are
+    /// ignored when none is being worked.
+    DigiSetStep(QsoStep),
+    /// FT8/FT4: send this message verbatim in the next transmit slot, then
+    /// carry on with the exchange. Empty text cancels one queued but unsent.
+    DigiSendText(String),
     /// Gracefully stop the QSO sequence (finish the current burst, then idle).
     DigiStopQso,
     /// Abort any in-progress transmission immediately.

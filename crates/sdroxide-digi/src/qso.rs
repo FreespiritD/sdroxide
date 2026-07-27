@@ -74,6 +74,10 @@ pub struct QsoMachine {
     final_msg: Option<String>,
     /// A re-send of `final_msg` is queued for the next transmit slot.
     resend: bool,
+    /// A message the operator queued by hand. It takes the next transmit slot
+    /// whatever the sequencer had planned, then the exchange carries on from
+    /// where it was.
+    manual: Option<String>,
 }
 
 impl QsoMachine {
@@ -91,6 +95,7 @@ impl QsoMachine {
             deadline_utc: 0,
             final_msg: None,
             resend: false,
+            manual: None,
         }
     }
 
@@ -123,7 +128,32 @@ impl QsoMachine {
         self.transcript.clear();
         self.final_msg = None;
         self.resend = false;
+        self.manual = None;
         self.step = QsoStep::CallingCq;
+    }
+
+    /// Jump the exchange to `step`, the way WSJT-X's Tx1–Tx6 buttons do: the
+    /// operator picks which message goes next and the sequencer carries on from
+    /// there. Steps that address a station need one; `Idle` stands down.
+    pub fn set_step(&mut self, step: QsoStep) -> bool {
+        let needs_dx = !matches!(step, QsoStep::Idle | QsoStep::CallingCq);
+        if needs_dx && self.dx.is_none() {
+            return false;
+        }
+        if step == QsoStep::CallingCq {
+            self.call_cq();
+            return true;
+        }
+        self.manual = None;
+        self.step = step;
+        true
+    }
+
+    /// Send `text` verbatim in the next transmit slot, then carry on with the
+    /// exchange. Empty text cancels a message queued but not yet sent.
+    pub fn queue_text(&mut self, text: String) {
+        let text = text.trim().to_ascii_uppercase();
+        self.manual = (!text.is_empty()).then_some(text);
     }
 
     /// Record a message we transmitted (called by the controller when it
@@ -148,6 +178,7 @@ impl QsoMachine {
         self.transcript.clear();
         self.final_msg = None;
         self.resend = false;
+        self.manual = None;
         self.dx = Some(Dx {
             call: from,
             grid,
@@ -167,18 +198,23 @@ impl QsoMachine {
     /// Graceful stop: no new bursts planned, revert to idle.
     pub fn stop(&mut self) {
         self.step = QsoStep::Idle;
+        self.manual = None;
     }
 
     /// Hard reset.
     pub fn abort(&mut self) {
         self.step = QsoStep::Idle;
         self.dx = None;
+        self.manual = None;
     }
 
     /// True while we intend to transmit this cycle. `WaitCq` holds silently
     /// until the DX calls CQ; `Confirming` transmits only when a re-send of our
     /// final message is queued.
     pub fn wants_tx(&self) -> bool {
+        if self.manual.is_some() && !self.cfg.my_call.trim().is_empty() {
+            return true; // the operator asked for this one explicitly
+        }
         match self.step {
             QsoStep::Idle | QsoStep::Done | QsoStep::WaitCq => false,
             QsoStep::Confirming => self.resend,
@@ -401,6 +437,9 @@ impl QsoMachine {
         if self.cfg.my_call.trim().is_empty() {
             return None;
         }
+        if let Some(m) = &self.manual {
+            return Some(m.clone());
+        }
         let dx = self.dx.as_ref();
         let dx_call = dx.map(|d| d.call.as_str()).unwrap_or("");
         let mc = &self.cfg.my_call;
@@ -426,6 +465,10 @@ impl QsoMachine {
     /// message (73 as answerer, RR73 as CQ caller) has gone out, log the QSO and
     /// move to `Confirming`; while confirming, a queued re-send has now left.
     pub fn note_tx_sent(&mut self, now_utc: i64) {
+        // A hand-queued message took this slot; the exchange is where it was.
+        if self.manual.take().is_some() {
+            return;
+        }
         match self.step {
             QsoStep::Tx73 | QsoStep::TxRr73 => {
                 self.final_msg = self.plan_tx();
@@ -645,6 +688,62 @@ mod tests {
         assert!(!q.on_rx(&[decode("K1ABC W9XYZ -05")], 145));
         assert_eq!(q.step(), QsoStep::Tx73);
         assert!(q.wants_tx());
+    }
+
+    #[test]
+    fn the_operator_can_pick_which_message_goes_next() {
+        // Mid-exchange, jumping to RR73 skips the rest of the sequence and the
+        // machine carries on from there — WSJT-X's Tx4 button.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100);
+        assert!(q.set_step(QsoStep::TxRr73));
+        assert_eq!(q.plan_tx().as_deref(), Some("W9XYZ AB1CD RR73"));
+        // Sending it still completes and logs the contact.
+        q.note_tx_sent(115);
+        assert_eq!(q.step(), QsoStep::Confirming);
+        assert!(q.take_completed().is_some());
+
+        // A step that addresses a station is refused when there is none.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        assert!(!q.set_step(QsoStep::TxReport));
+        assert_eq!(q.step(), QsoStep::Idle);
+        // Calling CQ needs no DX.
+        assert!(q.set_step(QsoStep::CallingCq));
+        assert_eq!(q.plan_tx().as_deref(), Some("CQ AB1CD FN42"));
+    }
+
+    #[test]
+    fn a_queued_message_takes_one_slot_and_leaves_the_exchange_alone() {
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100);
+        q.queue_text("w9xyz ab1cd tnx".into());
+        assert!(q.wants_tx());
+        assert_eq!(q.plan_tx().as_deref(), Some("W9XYZ AB1CD TNX"), "sent verbatim, uppercased");
+
+        // After it goes out the sequencer picks up exactly where it was.
+        q.note_tx_sent(115);
+        assert_eq!(q.step(), QsoStep::TxGrid);
+        assert_eq!(q.plan_tx().as_deref(), Some("W9XYZ AB1CD FN42"));
+
+        // Queued at the last step, it must not log the QSO in place of the 73.
+        q.on_rx(&[decode("AB1CD W9XYZ -13")], 130);
+        q.on_rx(&[decode("AB1CD W9XYZ RR73")], 145);
+        assert_eq!(q.step(), QsoStep::Tx73);
+        q.queue_text("TNX 73 GL".into());
+        q.note_tx_sent(160);
+        assert_eq!(q.step(), QsoStep::Tx73, "the 73 still owes us a slot");
+        assert!(q.take_completed().is_none(), "nothing to log until the 73 is sent");
+        q.note_tx_sent(175);
+        assert_eq!(q.step(), QsoStep::Confirming);
+        assert!(q.take_completed().is_some());
+    }
+
+    #[test]
+    fn a_queued_message_still_needs_a_callsign() {
+        let mut q = QsoMachine::new(Mode::Ft8, DigiConfig::default());
+        q.queue_text("CQ TEST".into());
+        assert!(!q.wants_tx());
+        assert_eq!(q.plan_tx(), None);
     }
 
     #[test]

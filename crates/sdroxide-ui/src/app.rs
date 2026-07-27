@@ -291,6 +291,8 @@ pub struct SdroxideApp {
     /// Decode-list filter: only stations that would put something new in the
     /// log (new entity, new band-slot, new grid, or a callsign never worked).
     digi_new_only: bool,
+    /// The FT8 free-text entry, sent verbatim in the next transmit slot.
+    digi_free_text: String,
     /// Voice-mode view span saved on entering FT8/FT4 (which locks the view to
     /// the narrow sub-band), restored on leaving so the panadapter isn't left
     /// stuck zoomed in.
@@ -564,6 +566,7 @@ impl SdroxideApp {
             digi_sort_desc: true,
             digi_cq_only: false,
             digi_new_only: false,
+            digi_free_text: String::new(),
             pre_digi_view: None,
             show_logbook: false,
             log_edit: None,
@@ -2632,7 +2635,8 @@ impl SdroxideApp {
         // visible no matter how short the window is; the transcript takes the
         // rest. Floor at 0 (not a fixed minimum) so a very short window shrinks
         // the conversation rather than pushing the buttons off-screen.
-        let trans_h = (ui.available_height() - btn_h - gap).max(0.0);
+        let msg_row_h = 26.0;
+        let trans_h = (ui.available_height() - btn_h - msg_row_h - 2.0 * gap).max(0.0);
         ui.allocate_ui(egui::vec2(ui.available_width(), trans_h), |ui| {
             let inner = egui::Frame::new()
                 .fill(crate::theme::ROW_BG)
@@ -2692,6 +2696,55 @@ impl SdroxideApp {
                 0.0,
                 crate::theme::PINK,
             );
+        });
+
+        ui.add_space(gap);
+        // Message picker: choose by hand which message goes next (WSJT-X's
+        // Tx1–Tx6), or send a line of free text in the next slot.
+        let has_dx = status.as_ref().and_then(|s| s.dx_call.as_ref()).is_some();
+        let step_now = status.as_ref().map(|s| s.step);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (step, label) in [
+                (sdroxide_types::QsoStep::TxGrid, "GRID"),
+                (sdroxide_types::QsoStep::TxReport, "RPT"),
+                (sdroxide_types::QsoStep::TxRReport, "R+RPT"),
+                (sdroxide_types::QsoStep::TxRr73, "RR73"),
+                (sdroxide_types::QsoStep::Tx73, "73"),
+            ] {
+                let resp = ui.add_enabled_ui(has_dx, |ui| {
+                    crate::chrome::chip(
+                        ui,
+                        step_now == Some(step),
+                        RichText::new(label).size(11.0),
+                    )
+                });
+                if resp.inner.clicked() {
+                    cmds.push(Command::DigiSetStep(step));
+                }
+            }
+            ui.add_space(4.0);
+            // Free text: 13 characters is all FT8 carries, so cap the entry
+            // there rather than letting the operator type a message that would
+            // be silently cut on the air.
+            let entry = ui.add(
+                egui::TextEdit::singleline(&mut self.digi_free_text)
+                    .desired_width(ui.available_width() - 52.0)
+                    .char_limit(13)
+                    .hint_text("free text (13 chars)"),
+            );
+            let send = crate::chrome::chip_accent(
+                ui,
+                false,
+                RichText::new("SEND").size(11.0).strong(),
+                crate::theme::CYAN,
+                crate::theme::INK_ON_CYAN,
+            );
+            let entered = entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (send.clicked() || entered) && !self.digi_free_text.trim().is_empty() {
+                cmds.push(Command::DigiSendText(self.digi_free_text.clone()));
+                self.digi_free_text.clear();
+            }
         });
 
         ui.add_space(gap);

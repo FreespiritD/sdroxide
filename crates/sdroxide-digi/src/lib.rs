@@ -64,6 +64,10 @@ pub trait DigiEngine: Send {
     ) {
     }
     fn stop_qso(&mut self) {}
+    /// FT8/FT4: pick which message goes out next (the operator's Tx1–Tx6).
+    fn set_step(&mut self, _step: sdroxide_types::QsoStep) {}
+    /// FT8/FT4: queue a message to send verbatim in the next transmit slot.
+    fn send_text(&mut self, _text: String) {}
     /// Continuous keyboard modes: replace the outgoing text buffer.
     fn set_tx_text(&mut self, _text: String) {}
     /// Continuous keyboard modes: enter/leave transmit.

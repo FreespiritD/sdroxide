@@ -393,6 +393,16 @@ free text is cut to 13 characters.
 - **Set your transmit tone:** click a decode row (or click a station box on the
   waterfall) to set your transmit audio frequency to that station's frequency.
   The audio frequency is clamped to 200–3500 Hz.
+- **Pick the message yourself:** the row under the transcript holds the five
+  exchange messages — **GRID**, **RPT**, **R+RPT**, **RR73**, **73**. Clicking
+  one jumps the exchange to that message and the sequencer carries on from
+  there, the way WSJT-X's Tx1–Tx6 buttons do. The current step is highlighted,
+  and the buttons are inactive until you are working someone.
+- **Send free text:** type into the field beside those buttons and press
+  **SEND** (or Enter). It goes out verbatim in the next transmit slot and then
+  the exchange picks up exactly where it left off — a queued line never
+  completes or logs a contact in place of your 73. FT8 carries 13 characters of
+  free text, so that is what the field accepts.
 - **Stop:** **STOP QSO** ends the current QSO gracefully; **STOP TX** aborts the
   current transmission immediately and un-keys.
 

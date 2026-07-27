@@ -1871,6 +1871,16 @@ impl Engine {
                     d.start_qso(from, grid, snr, audio_hz, wait_for_cq);
                 }
             }
+            DigiSetStep(step) => {
+                if let Some(d) = self.digi.as_mut() {
+                    d.set_step(step);
+                }
+            }
+            DigiSendText(text) => {
+                if let Some(d) = self.digi.as_mut() {
+                    d.send_text(text);
+                }
+            }
             DigiStopQso => {
                 if let Some(d) = self.digi.as_mut() {
                     d.stop_qso();
