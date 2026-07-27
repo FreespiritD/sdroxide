@@ -20,6 +20,12 @@
 //! The engine pushes frequency, TX and visibility unconditionally on every poll
 //! tick; the dedup guards in [`Reporter::apply`] make that free and keep the
 //! reporter self-healing across reconnects and config rebuilds.
+//!
+//! Those same dedup guards are why a *listening* station needs the keepalive in
+//! [`Reporter::send_keepalive`]: with nothing to say, an operator who neither
+//! transmits nor retunes emits nothing at all, and the server's record of us
+//! ages until it looks like a stale session. See that function for what the
+//! server does with it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -62,6 +68,12 @@ const PUBLISH_MIN_INTERVAL: Duration = Duration::from_secs(1);
 /// Republish at least this often even when nothing changed, so `when_utc` stays
 /// fresh and live stations are never pruned by the manager's age filter.
 const PUBLISH_MAX_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How long our reported state may go unrefreshed before the keepalive
+/// re-asserts it. Any real report postpones it, so this is a floor on the
+/// silence we tolerate, not a fixed cadence: we never emit more than one
+/// keepalive per minute, and none at all while we have genuine traffic.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Guard against a malicious or buggy server nesting `bulk_update`s.
 const MAX_BULK_DEPTH: u32 = 1;
@@ -234,7 +246,14 @@ impl Roster {
                 };
                 // The server sends SNR as an integer or a float.
                 let Some(snr) = args.get("snr").and_then(Value::as_f64) else { return false };
+                // An empty callsign is a routine part of this event, not a
+                // sighting: RADE stations report one to say they are hearing
+                // *something*, and the server sends one to clear a station's RX
+                // data when it retunes. Neither attributes a decode to anybody.
                 let heard = heard.to_uppercase();
+                if heard.is_empty() {
+                    return false;
+                }
                 let mut changed = false;
                 for s in self.by_sid.values_mut() {
                     if s.call == heard {
@@ -360,6 +379,10 @@ struct Reporter {
     /// *and* every disconnect schedules the one after it, so no failure path
     /// can spin the loop.
     next_attempt: Instant,
+    /// When we last sent something the server counts as an update from us.
+    /// Only the four state emitters below move it — never the engine.io pong,
+    /// which keeps the socket alive but tells the server nothing about us.
+    last_report: Instant,
     last_status: Option<String>,
 
     // ── Inbound.
@@ -402,6 +425,7 @@ impl Reporter {
             last_server_ping: Instant::now(),
             backoff: BACKOFF_MIN,
             next_attempt: Instant::now(),
+            last_report: Instant::now(),
             last_status: None,
             roster: Roster::default(),
             roster_dirty: false,
@@ -520,6 +544,11 @@ impl Reporter {
             if (self.roster_dirty && since >= PUBLISH_MIN_INTERVAL) || since >= PUBLISH_MAX_INTERVAL
             {
                 self.publish_spots();
+            }
+
+            // (f) Keep the server's record of us fresh through a quiet watch.
+            if self.keepalive_due(Instant::now()) {
+                self.send_keepalive();
             }
         }
     }
@@ -743,18 +772,46 @@ impl Reporter {
         }
     }
 
+    /// True when our reported state has gone [`KEEPALIVE_INTERVAL`] without a
+    /// refresh and there is a visible station for the server to remember.
+    ///
+    /// A hidden or view-only session is deliberately excluded: the server
+    /// refuses state from the `view` role outright, and a station that has
+    /// asked to be hidden has nothing to keep alive.
+    fn keepalive_due(&self, now: Instant) -> bool {
+        self.fully_connected
+            && self.visible
+            && self.can_report()
+            && now.duration_since(self.last_report) >= KEEPALIVE_INTERVAL
+    }
+
+    /// Re-assert our current frequency and TX state.
+    ///
+    /// Both are exactly what we last reported, which is the point: the server
+    /// stamps its `last_update` for our session on receipt but only relays a
+    /// `freq_change` / `tx_report` on to other clients when the *value* changed
+    /// — so this refreshes our record without adding a single broadcast to a
+    /// server that is already busy. Re-sending unchanged state also cannot
+    /// misreport us the way a synthetic RX report would: `last_tx` moves only
+    /// while we really are transmitting.
+    fn send_keepalive(&mut self) {
+        debug!("FreeDV Reporter: keepalive");
+        self.emit_freq();
+        self.emit_tx();
+    }
+
     // Each emitter stores unconditionally and sends only when fully connected,
     // so reconnects replay the current state rather than a stale one.
 
     fn emit_freq(&mut self) {
         if self.fully_connected {
-            self.send(socketio::emit("freq_change", Some(&json!({ "freq": self.freq }))));
+            self.report(socketio::emit("freq_change", Some(&json!({ "freq": self.freq }))));
         }
     }
 
     fn emit_tx(&mut self) {
         if self.fully_connected {
-            self.send(socketio::emit(
+            self.report(socketio::emit(
                 "tx_report",
                 Some(&json!({ "mode": MODE_STRING, "transmitting": self.tx })),
             ));
@@ -763,7 +820,10 @@ impl Reporter {
 
     fn emit_message(&mut self) {
         if self.fully_connected {
-            self.send(socketio::emit("message_update", Some(&json!({ "message": self.message }))));
+            self.report(socketio::emit(
+                "message_update",
+                Some(&json!({ "message": self.message })),
+            ));
         }
     }
 
@@ -772,7 +832,7 @@ impl Reporter {
             return;
         }
         info!(%call, snr, "reporting RX callsign to FreeDV Reporter");
-        self.send(socketio::emit(
+        self.report(socketio::emit(
             "rx_report",
             Some(&json!({
                 "callsign": call.trim().to_uppercase(),
@@ -780,6 +840,14 @@ impl Reporter {
                 "snr": snr,
             })),
         ));
+    }
+
+    /// Send a frame the server treats as an update from us, and postpone the
+    /// keepalive by a full interval — a station with real traffic never pays
+    /// for one.
+    fn report(&mut self, text: String) {
+        self.last_report = Instant::now();
+        self.send(text);
     }
 
     fn send(&mut self, text: String) {
@@ -1081,6 +1149,21 @@ mod tests {
     }
 
     #[test]
+    fn an_rx_report_without_a_callsign_is_not_a_sighting() {
+        let mut r = Roster::default();
+        r.on_event("new_connection", &connect_ev("s1", "K1ABC", "FN42"));
+        r.on_event("freq_change", &json!({ "sid": "s1", "freq": 14_236_000u64 }));
+        // What a RADE station sends while it hears something it cannot name,
+        // and what the server sends to clear RX data on a QSY.
+        assert!(!r.on_event(
+            "rx_report",
+            &json!({ "sid": "s2", "receiver_callsign": "W1AW", "callsign": "", "snr": 0 }),
+        ));
+        assert_eq!(r.spots(0, None)[0].spotter, "qso.freedv.org");
+        assert_eq!(r.spots(0, None)[0].snr_db, None);
+    }
+
+    #[test]
     fn message_update_reaches_the_comment() {
         let mut r = Roster::default();
         r.on_event("new_connection", &connect_ev("s1", "K1ABC", "FN42"));
@@ -1194,6 +1277,68 @@ mod tests {
         });
         assert_eq!(rep.watchdog, Duration::from_secs(10));
         assert!(rep.got_open);
+    }
+
+    #[test]
+    fn a_quiet_visible_station_keeps_itself_alive_once_a_minute() {
+        let mut rep = reporter("OE1TKJ", "JN88dd");
+        rep.fully_connected = true;
+        rep.visible = true;
+        let t0 = rep.last_report;
+
+        assert!(!rep.keepalive_due(t0));
+        assert!(!rep.keepalive_due(t0 + KEEPALIVE_INTERVAL - Duration::from_millis(1)));
+        assert!(rep.keepalive_due(t0 + KEEPALIVE_INTERVAL));
+    }
+
+    #[test]
+    fn a_station_with_real_traffic_never_pays_for_a_keepalive() {
+        let mut rep = reporter("OE1TKJ", "JN88dd");
+        rep.fully_connected = true;
+        rep.visible = true;
+        let t0 = rep.last_report;
+
+        // Any report the server counts as an update from us postpones it...
+        rep.apply(Ctrl::Freq(14_236_000));
+        assert!(!rep.keepalive_due(t0 + KEEPALIVE_INTERVAL));
+        // ...as does the keepalive itself, so it can never run back to back.
+        rep.send_keepalive();
+        assert!(!rep.keepalive_due(t0 + KEEPALIVE_INTERVAL));
+        assert!(rep.keepalive_due(rep.last_report + KEEPALIVE_INTERVAL));
+    }
+
+    #[test]
+    fn nothing_that_cannot_be_seen_is_kept_alive() {
+        let mut rep = reporter("OE1TKJ", "JN88dd");
+        rep.fully_connected = true;
+        rep.visible = true;
+        let due = rep.last_report + KEEPALIVE_INTERVAL;
+        assert!(rep.keepalive_due(due));
+
+        // Hidden (the radio left RADE), disconnected, and the view-only role
+        // each have nothing to keep alive.
+        rep.visible = false;
+        assert!(!rep.keepalive_due(due));
+        rep.visible = true;
+        rep.fully_connected = false;
+        assert!(!rep.keepalive_due(due));
+
+        let mut view = reporter("", "");
+        view.fully_connected = true;
+        view.visible = true;
+        assert!(!view.keepalive_due(view.last_report + KEEPALIVE_INTERVAL));
+    }
+
+    #[test]
+    fn the_engine_io_pong_is_not_a_report() {
+        // The pong keeps the *socket* alive and says nothing about our station,
+        // so it must not postpone the keepalive.
+        let mut rep = reporter("OE1TKJ", "JN88dd");
+        rep.fully_connected = true;
+        rep.visible = true;
+        let due = rep.last_report + KEEPALIVE_INTERVAL;
+        rep.on_frame(Frame::Ping);
+        assert!(rep.keepalive_due(due));
     }
 
     #[test]
