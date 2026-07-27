@@ -354,6 +354,12 @@ The panel has two halves:
   3000 km or more away. Otherwise the row stays plain and the **CQ only** filter
   skips it, so the list isn't full of DX calls you shouldn't answer. You can
   still **REPLY** to such a station if you want to.
+  A badge after the callsign says what the station would be worth against your
+  log: **DXCC** (an entity you have never worked), **BAND** (worked before, but
+  not on this band), **GRID** (a new grid square), **NEW** (a callsign you have
+  never worked) or **DUPE** (already in the log for this band — the row fades
+  back). The **New only** filter keeps just the rows that would put something new
+  in the log.
 - **QSO** (right) — a world map (your location, the station you are working, and
   a transmit indicator), a station card showing the current step
   (`Idle`, `Wait CQ`, `Calling CQ`, `Tx Grid`, `Tx Report`, `Tx R+Report`,

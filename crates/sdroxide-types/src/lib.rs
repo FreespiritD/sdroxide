@@ -30,7 +30,10 @@ mod state;
 mod tciserver;
 mod ui;
 
-pub use awards::{Awards, Status as AwardStatus, US_STATES, compute_awards, counts, entity_name};
+pub use awards::{
+    Awards, Highlight, LogIndex, Novelty, Status as AwardStatus, US_STATES, compute_awards, counts,
+    entity_name,
+};
 pub use band::Band;
 pub use callsign::{CallsignInfo, UploadResult, UploadTarget};
 pub use entity::{EntityInfo, resolve_callsign};

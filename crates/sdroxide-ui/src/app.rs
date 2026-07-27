@@ -284,6 +284,9 @@ pub struct SdroxideApp {
     /// Sort direction: `true` = descending (strongest / farthest first).
     digi_sort_desc: bool,
     digi_cq_only: bool,
+    /// Decode-list filter: only stations that would put something new in the
+    /// log (new entity, new band-slot, new grid, or a callsign never worked).
+    digi_new_only: bool,
     /// Voice-mode view span saved on entering FT8/FT4 (which locks the view to
     /// the narrow sub-band), restored on leaving so the panadapter isn't left
     /// stuck zoomed in.
@@ -343,6 +346,9 @@ pub struct SdroxideApp {
     /// Cached set of worked DXCC entity names, keyed by log length (for the
     /// "new entity" spot badge).
     worked_entities_cache: Option<(usize, std::collections::HashSet<String>)>,
+    /// Cached membership sets over the log, keyed by log length — the decode
+    /// list asks these which stations would be a new one, every row, every slot.
+    log_index_cache: Option<(usize, sdroxide_types::LogIndex)>,
     /// F1 help: the embedded user manual with a navigation outline.
     help: crate::help::Help,
     /// Control inputs: keyboard/mouse bindings, MIDI, and what is held right now.
@@ -549,6 +555,7 @@ impl SdroxideApp {
             digi_sort: DecodeSort::None,
             digi_sort_desc: true,
             digi_cq_only: false,
+            digi_new_only: false,
             pre_digi_view: None,
             show_logbook: false,
             log_edit: None,
@@ -573,6 +580,7 @@ impl SdroxideApp {
             awards_band: String::new(),
             awards_cache: None,
             worked_entities_cache: None,
+            log_index_cache: None,
             help: crate::help::Help::default(),
             input: crate::input::InputRuntime::new(cc.storage, &cc.egui_ctx),
             midi_in_ports: Vec::new(),
@@ -1130,6 +1138,16 @@ impl SdroxideApp {
             self.worked_entities_cache = Some((len, set));
         }
         &self.worked_entities_cache.as_ref().unwrap().1
+    }
+
+    /// Membership sets over the log (cached; rebuilt when the log length
+    /// changes), so every decode row can be judged new-or-dupe for free.
+    fn log_index(&mut self) -> &sdroxide_types::LogIndex {
+        let len = self.qso_log.len();
+        if self.log_index_cache.as_ref().map(|(l, _)| *l != len).unwrap_or(true) {
+            self.log_index_cache = Some((len, sdroxide_types::LogIndex::build(&self.qso_log)));
+        }
+        &self.log_index_cache.as_ref().unwrap().1
     }
 
     /// The cached award tally for the current band filter (recomputed when the
@@ -2007,6 +2025,12 @@ impl SdroxideApp {
             if crate::chrome::chip(ui, self.digi_cq_only, "CQ only").clicked() {
                 self.digi_cq_only = !self.digi_cq_only;
             }
+            if crate::chrome::chip(ui, self.digi_new_only, "New only")
+                .on_hover_text("Only stations that would be new: entity, band-slot, grid, or call")
+                .clicked()
+            {
+                self.digi_new_only = !self.digi_new_only;
+            }
         });
         ui.add_space(2.0);
         // Call of the currently previewed decode (cloned so the scroll closure
@@ -2022,15 +2046,24 @@ impl SdroxideApp {
         // Location of the row hovered this frame → yellow dot on the map.
         let mut hover_ll: Option<(f64, f64)> = None;
         let cq_only = self.digi_cq_only;
+        let new_only = self.digi_new_only;
         let sort = self.digi_sort;
         let desc = self.digi_sort_desc;
         // Turn parity needs the mode's slot length (FT8 15 s, FT4 7.5 s).
         let period = if self.state.rx[0].mode == Mode::Ft4 { 7.5 } else { 15.0 };
-        // Filter (CQ-only) and precompute distance for sorting/display. Entries
-        // stay newest-turn-first; same-slot decodes are contiguous in the list.
-        // A "CQ DX" from a station we're local to is not a CQ *we* can answer:
-        // it neither passes the filter nor gets the CQ highlight.
-        let mut items: Vec<(usize, &Decode, Option<f64>, bool)> = self
+        // The band we'd log a contact on, for the "is this one new?" judgement.
+        let dial_hz = self.state.active_freq_hz();
+        let band = if dial_hz > 0.0 { sdroxide_types::adif_band(dial_hz) } else { "" };
+        // Refresh the log index (needs &mut self), then borrow it beside the
+        // decodes for the per-row novelty lookups.
+        self.log_index();
+        let log_ix = &self.log_index_cache.as_ref().expect("just refreshed").1;
+        // Filter (CQ-only / new-only) and precompute distance for sorting and
+        // display. Entries stay newest-turn-first; same-slot decodes are
+        // contiguous in the list. A "CQ DX" from a station we're local to is not
+        // a CQ *we* can answer: it neither passes the filter nor gets the CQ
+        // highlight.
+        let mut items: Vec<(usize, &Decode, Option<f64>, bool, sdroxide_types::Novelty)> = self
             .digi_decodes
             .iter()
             .enumerate()
@@ -2039,12 +2072,17 @@ impl SdroxideApp {
                 if cq_only && !cq {
                     return None;
                 }
+                let novelty =
+                    log_ix.novelty(d.from.as_deref().unwrap_or(""), d.grid.as_deref(), band);
+                if new_only && !novelty.is_new() {
+                    return None;
+                }
                 let dist = (!my_grid.is_empty())
                     .then(|| {
                         d.grid.as_deref().and_then(|g| sdroxide_types::grid_distance_km(&my_grid, g))
                     })
                     .flatten();
-                Some((i, d, dist, cq))
+                Some((i, d, dist, cq, novelty))
             })
             .collect();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show_themed(ui, |ui| {
@@ -2094,10 +2132,23 @@ impl SdroxideApp {
                 });
                 ui.separator();
                 for k in gi..end {
-                    let (i, d, dist_km, cq) = items[k];
+                    let (i, d, dist_km, cq, novelty) = items[k];
                     // Decodes addressed to our own station stand out most.
                     let to_me = !my_call.is_empty() && d.to.as_deref() == Some(my_call.as_str());
                     let who = d.from.clone().unwrap_or_else(|| "?".into());
+                    // What this station would be worth working: one badge, and
+                    // a dupe fades the row back so the new ones carry the eye.
+                    let (badge, badge_col) = match novelty.highlight() {
+                        Some(sdroxide_types::Highlight::NewDxcc) => ("DXCC", crate::theme::PINK),
+                        Some(sdroxide_types::Highlight::NewDxccBand) => {
+                            ("BAND", crate::theme::YELLOW)
+                        }
+                        Some(sdroxide_types::Highlight::NewGrid) => ("GRID", crate::theme::CYAN),
+                        Some(sdroxide_types::Highlight::NewCall) => ("NEW", crate::theme::CYAN_DIM),
+                        Some(sdroxide_types::Highlight::Dupe) => ("DUPE", Color32::from_gray(85)),
+                        None => ("", Color32::TRANSPARENT),
+                    };
+                    let dupe = novelty.dupe;
                     let grid = d.grid.clone().unwrap_or_default();
                     let is_preview =
                         d.from.is_some() && preview_call.as_deref() == d.from.as_deref();
@@ -2173,6 +2224,8 @@ impl SdroxideApp {
                                 egui::Label::new(
                                     RichText::new(&who).size(15.0).strong().color(if to_me {
                                         crate::theme::YELLOW
+                                    } else if dupe {
+                                        Color32::from_gray(105)
                                     } else if cq {
                                         crate::theme::GREEN
                                     } else {
@@ -2180,6 +2233,16 @@ impl SdroxideApp {
                                     }),
                                 )
                                 .truncate(),
+                            );
+                            // What they'd be worth: new entity / band / grid /
+                            // call, or a dupe already in the log for this band.
+                            cell(
+                                ui,
+                                34.0,
+                                false,
+                                egui::Label::new(
+                                    RichText::new(badge).size(9.5).strong().color(badge_col),
+                                ),
                             );
                             // Grid.
                             cell(
@@ -2234,7 +2297,11 @@ impl SdroxideApp {
                                                 RichText::new(&d.message)
                                                     .monospace()
                                                     .size(12.5)
-                                                    .color(crate::theme::TEXT),
+                                                    .color(if dupe {
+                                                        Color32::from_gray(95)
+                                                    } else {
+                                                        crate::theme::TEXT
+                                                    }),
                                             )
                                             .truncate(),
                                         );

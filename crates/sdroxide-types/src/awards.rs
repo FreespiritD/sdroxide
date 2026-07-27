@@ -112,3 +112,211 @@ pub fn compute_awards(log: &[QsoRecord], band: Option<&str>, mode: Option<&str>)
 pub fn entity_name(call: &str) -> Option<&'static str> {
     entity::resolve_callsign(call).map(|e| e.name)
 }
+
+// ── "Is this one worth working?" — the live decode list's view of the log ──
+
+/// What a heard station would be worth working, judged against the log.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Novelty {
+    /// Their DXCC entity has never been worked, on any band.
+    pub new_dxcc: bool,
+    /// Their entity is in the log, but not from this band.
+    pub new_dxcc_band: bool,
+    /// Their grid square has never been worked.
+    pub new_grid: bool,
+    /// Their callsign has never been worked.
+    pub new_call: bool,
+    /// Their callsign is already in the log for this band — a dupe.
+    pub dupe: bool,
+}
+
+/// The single most interesting thing about a station, for a one-badge display.
+/// Ordered rarest-first: a new entity outranks a new grid outranks a new call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Highlight {
+    NewDxcc,
+    NewDxccBand,
+    NewGrid,
+    NewCall,
+    Dupe,
+}
+
+impl Novelty {
+    /// The one badge to show for this station, or `None` when there's nothing
+    /// to say (worked before, but not on this band — neither new nor a dupe).
+    pub fn highlight(self) -> Option<Highlight> {
+        if self.new_dxcc {
+            Some(Highlight::NewDxcc)
+        } else if self.new_dxcc_band {
+            Some(Highlight::NewDxccBand)
+        } else if self.new_grid {
+            Some(Highlight::NewGrid)
+        } else if self.new_call {
+            Some(Highlight::NewCall)
+        } else if self.dupe {
+            Some(Highlight::Dupe)
+        } else {
+            None
+        }
+    }
+
+    /// True when working this station would put something new in the log.
+    pub fn is_new(self) -> bool {
+        self.new_dxcc || self.new_dxcc_band || self.new_grid || self.new_call
+    }
+}
+
+/// Membership sets over the log, so the decode list can ask "is this one new?"
+/// for every row of every slot without re-walking thousands of QSOs. Built once
+/// and rebuilt when the log changes.
+#[derive(Debug, Clone, Default)]
+pub struct LogIndex {
+    calls: std::collections::HashSet<String>,
+    call_band: std::collections::HashSet<(String, String)>,
+    dxcc: std::collections::HashSet<String>,
+    dxcc_band: std::collections::HashSet<(String, String)>,
+    grids: std::collections::HashSet<String>,
+    /// Whether *any* record carries a band. An imported log without band
+    /// columns can't support per-band judgements, and claiming everything is
+    /// new-on-this-band would be worse than saying nothing.
+    has_bands: bool,
+}
+
+/// The 4-character grid a locator belongs to, uppercased.
+fn grid4(g: &str) -> Option<String> {
+    let g = g.trim();
+    (g.len() >= 4 && g.as_bytes()[0].is_ascii_alphabetic()).then(|| g[..4].to_ascii_uppercase())
+}
+
+/// The DXCC entity for a logged QSO: the resolver first, the record's own
+/// country field as a fallback (imported logs may carry one we can't resolve).
+fn record_entity(q: &QsoRecord) -> Option<String> {
+    entity_name(&q.call).map(str::to_string).or_else(|| {
+        let c = q.country.trim();
+        (!c.is_empty()).then(|| c.to_string())
+    })
+}
+
+impl LogIndex {
+    pub fn build(log: &[QsoRecord]) -> Self {
+        let mut ix = LogIndex::default();
+        for q in log {
+            let call = q.call.trim().to_ascii_uppercase();
+            if call.is_empty() {
+                continue;
+            }
+            let band = q.band.trim().to_ascii_lowercase();
+            ix.calls.insert(call.clone());
+            if !band.is_empty() {
+                ix.has_bands = true;
+                ix.call_band.insert((call, band.clone()));
+            }
+            if let Some(ent) = record_entity(q) {
+                ix.dxcc.insert(ent.clone());
+                if !band.is_empty() {
+                    ix.dxcc_band.insert((ent, band.clone()));
+                }
+            }
+            if let Some(g) = q.grid.as_deref().and_then(grid4) {
+                ix.grids.insert(g);
+            }
+        }
+        ix
+    }
+
+    /// How interesting a heard station is. `band` is the ADIF band we'd work
+    /// them on (see [`crate::adif_band`]); an empty band skips the per-band
+    /// judgements, leaving only the all-time ones.
+    pub fn novelty(&self, call: &str, grid: Option<&str>, band: &str) -> Novelty {
+        let call = call.trim().to_ascii_uppercase();
+        if call.is_empty() {
+            return Novelty::default();
+        }
+        let band = band.trim().to_ascii_lowercase();
+        let per_band = self.has_bands && !band.is_empty();
+        let (new_dxcc, new_dxcc_band) = match entity_name(&call) {
+            Some(e) if !self.dxcc.contains(e) => (true, false),
+            Some(e) => {
+                (false, per_band && !self.dxcc_band.contains(&(e.to_string(), band.clone())))
+            }
+            None => (false, false),
+        };
+        Novelty {
+            new_dxcc,
+            new_dxcc_band,
+            new_grid: grid.and_then(grid4).is_some_and(|g| !self.grids.contains(&g)),
+            new_call: !self.calls.contains(&call),
+            dupe: per_band && self.call_band.contains(&(call, band)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn qso(call: &str, band: &str, grid: Option<&str>) -> QsoRecord {
+        QsoRecord {
+            call: call.into(),
+            band: band.into(),
+            grid: grid.map(str::to_string),
+            mode: "FT8".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn novelty_ranks_entity_over_grid_over_call() {
+        let ix = LogIndex::build(&[qso("W1AW", "20m", Some("FN31"))]);
+
+        // A brand-new entity is the headline, whatever else is also new.
+        let n = ix.novelty("DL1ABC", Some("JO62"), "20m");
+        assert!(n.new_dxcc && n.new_grid && n.new_call && !n.dupe);
+        assert_eq!(n.highlight(), Some(Highlight::NewDxcc));
+
+        // Same entity, new band → the band-slot badge.
+        let n = ix.novelty("K2XYZ", Some("FN31"), "40m");
+        assert!(!n.new_dxcc && n.new_dxcc_band);
+        assert_eq!(n.highlight(), Some(Highlight::NewDxccBand));
+
+        // Same entity and band, but a grid we've never had.
+        let n = ix.novelty("K2XYZ", Some("EM48"), "20m");
+        assert_eq!(n.highlight(), Some(Highlight::NewGrid));
+
+        // Nothing new but the callsign itself.
+        let n = ix.novelty("K2XYZ", Some("FN31"), "20m");
+        assert_eq!(n.highlight(), Some(Highlight::NewCall));
+
+        // The one station we have worked, on the same band → a dupe.
+        let n = ix.novelty("W1AW", Some("FN31"), "20m");
+        assert!(!n.is_new() && n.dupe);
+        assert_eq!(n.highlight(), Some(Highlight::Dupe));
+        // …but on another band they're a new band-slot, not a dupe.
+        let n = ix.novelty("W1AW", Some("FN31"), "15m");
+        assert!(!n.dupe);
+        assert_eq!(n.highlight(), Some(Highlight::NewDxccBand));
+    }
+
+    #[test]
+    fn a_log_without_bands_makes_no_per_band_claims() {
+        // An imported log with no BAND column: every station would otherwise
+        // look like a new band-slot, which says nothing useful.
+        let ix = LogIndex::build(&[qso("W1AW", "", Some("FN31"))]);
+        let n = ix.novelty("K2XYZ", Some("FN31"), "20m");
+        assert!(!n.new_dxcc && !n.new_dxcc_band && !n.dupe);
+        assert_eq!(n.highlight(), Some(Highlight::NewCall));
+        // Re-hearing the logged station claims neither new nor dupe.
+        assert_eq!(ix.novelty("W1AW", Some("FN31"), "20m").highlight(), None);
+    }
+
+    #[test]
+    fn unresolvable_prefixes_and_missing_grids_are_quiet() {
+        let ix = LogIndex::build(&[qso("W1AW", "20m", None)]);
+        // No entity for "QQ1QQ" → no entity claim either way, but the call and
+        // grid judgements still stand.
+        let n = ix.novelty("QQ1QQ", None, "20m");
+        assert!(!n.new_dxcc && !n.new_dxcc_band && !n.new_grid && n.new_call);
+        // An empty callsign is not a station.
+        assert_eq!(ix.novelty("", None, "20m"), Novelty::default());
+    }
+}
