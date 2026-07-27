@@ -1003,6 +1003,15 @@ the map at once — it controls nothing, so it does not take the single control
 connection — but they share one feed, so changing the SDO channel changes it for
 everyone watching.
 
+> **If the browser crashes.** This view is the app's heaviest graphics
+> consumer — a depth buffer, multisampling and a few dozen draws a frame — and
+> browser WebGPU implementations vary in how well they take it. Firefox on Linux
+> has been seen to abort the whole browser process with this page open. Adding
+> `&gfx=webgl` to the URL pins the page to WebGL2, which draws the same scene and
+> only gives up multisampling and a little depth precision:
+> `http://<host>:4950/?view=solar&gfx=webgl`. `&gfx=webgpu` forces the other way.
+> Without either, the browser's own preference is used.
+
 ![The solar disk in AIA 171, with sunspot regions, a flare marker and the CME arrival banner](images/3d-sun.jpg)
 
 The Earth carries a higher-resolution version of the same Natural Earth

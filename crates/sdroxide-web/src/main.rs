@@ -32,6 +32,40 @@ mod web {
         }
     }
 
+    /// Which wgpu backend to ask the browser for.
+    ///
+    /// The default is wgpu's own: WebGPU where the browser has it, WebGL2
+    /// otherwise. `?gfx=webgl` pins it to WebGL2 and `?gfx=webgpu` to WebGPU.
+    ///
+    /// The escape hatch exists because the solar view is by far this app's
+    /// heaviest graphics consumer — depth, MSAA, a few dozen draws a frame —
+    /// and browser WebGPU implementations are not uniformly ready for that.
+    /// Firefox on Linux in particular has been seen to abort the *whole browser
+    /// process* with this page open, which is a fault no amount of care on this
+    /// side can prevent. WebGL2 draws the same scene; it loses MSAA and some
+    /// depth precision, and that is the whole difference.
+    fn web_options(search: &str) -> eframe::WebOptions {
+        use sdroxide_ui::egui_wgpu::{self, wgpu};
+
+        let backends = if search.contains("gfx=webgl") {
+            wgpu::Backends::GL
+        } else if search.contains("gfx=webgpu") {
+            wgpu::Backends::BROWSER_WEBGPU
+        } else {
+            return eframe::WebOptions::default();
+        };
+
+        let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+        setup.instance_descriptor.backends = backends;
+        eframe::WebOptions {
+            wgpu_options: egui_wgpu::WgpuConfiguration {
+                wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(setup),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
     pub fn run() {
         console_error_panic_hook::set_once();
 
@@ -53,7 +87,9 @@ mod web {
             // to the same index.html through the existing static fallback,
             // which is what lets the ☀ 3D chip open a plain relative URL.
             let location = window.location();
-            let solar = location.search().unwrap_or_default().contains("view=solar");
+            let search = location.search().unwrap_or_default();
+            let solar = search.contains("view=solar");
+            let options = web_options(&search);
 
             let ws_proto = if location.protocol().as_deref() == Ok("https:") {
                 "wss"
@@ -72,7 +108,7 @@ mod web {
                 runner
                     .start(
                         canvas,
-                        eframe::WebOptions::default(),
+                        options,
                         Box::new(move |cc| {
                             Ok(Box::new(
                                 SolarApp::new(cc, &url)
@@ -86,7 +122,7 @@ mod web {
                 runner
                     .start(
                         canvas,
-                        eframe::WebOptions::default(),
+                        options,
                         // Connect inside the creator so the socket can wake the UI
                         // (repaint) the moment a message arrives.
                         Box::new(move |cc| {
