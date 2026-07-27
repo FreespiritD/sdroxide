@@ -1,18 +1,18 @@
 // Every solid body in the scene. One pipeline, one branch on `d.params.x` —
 // the branch is uniform across a draw, so it costs nothing.
 //
-// Five bodies are drawn from real data: the Sun (live SDO imagery), the Earth
-// (the Natural Earth coastline and border masks), and the Moon, Jupiter and
-// Saturn from published spacecraft maps. Those are the ones a viewer can check
-// against a photograph they have already seen, and a procedural stand-in for
-// any of them reads as broken rather than as stylised.
+// Six bodies are drawn from real data: the Sun (live SDO imagery), the Earth
+// (the Natural Earth coastline and border masks), and the Moon, Mars, Jupiter
+// and Saturn from published spacecraft maps. Those are the ones a viewer can
+// check against a photograph they have already seen, and a procedural stand-in
+// for any of them reads as broken rather than as stylised.
 //
 // Everything else is procedural, which is a deliberate trade rather than a
 // shortcut: a map per moon would be tens of megabytes of imagery for bodies
 // that are a handful of pixels across in almost every frame. What the
-// procedural surfaces get right is what is checkable at that size — Mars's
-// caps are at its poles, Io is sulphur-yellow, Iapetus has one black
-// hemisphere — and each of them turns with the body's real rotation.
+// procedural surfaces get right is what is checkable at that size — Io is
+// sulphur-yellow, Iapetus has one black hemisphere — and each of them turns
+// with the body's real rotation.
 
 struct Globals {
     view_proj: mat4x4<f32>,
@@ -30,7 +30,7 @@ struct DrawData {
     tint: vec4<f32>,
     tint2: vec4<f32>,
     params: vec4<f32>,       // x mode, y half-angle, z alpha, w spare
-    style: vec4<f32>,        // x style, y detail or map layer, z two-tone, w spare
+    style: vec4<f32>,        // x style, y detail or map layer, z two-tone, w limb haze
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -49,6 +49,12 @@ const COAST     = vec3<f32>(0.113725, 0.611765, 0.745098); // #1d9cbe  theme::CY
 const ATMO      = vec3<f32>(0.000000, 0.815686, 0.956863); // #00d0f4  theme::CYAN
 
 const PI = 3.14159265;
+
+/// Half-width of the coastline stroke, in pixels, before its one-pixel
+/// antialiasing ramp. Deliberately thin: the coast is a *line drawing* over the
+/// land fill, and anything wider stops resolving the estuaries and islands the
+/// 1/22.75° map has in it.
+const COAST_PX = 0.6;
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let lo = c / 12.92;
@@ -132,20 +138,6 @@ fn lat_lon(body: vec3<f32>) -> vec2<f32> {
     return vec2(degrees(asin(clamp(body.z, -1.0, 1.0))), degrees(atan2(body.y, body.x)));
 }
 
-/// Signed shortest difference between two longitudes, degrees.
-fn dlon(a: f32, b: f32) -> f32 {
-    return abs(fract((a - b) / 360.0 + 0.5) - 0.5) * 360.0;
-}
-
-/// How far inside an elliptical patch a point is: 0 at the centre, 1 at the
-/// edge. Longitudes are compressed by cos(latitude) so a patch stays round on
-/// the sphere instead of fanning out towards the poles.
-fn ellipse(ll: vec2<f32>, c: vec4<f32>) -> f32 {
-    let dy = (ll.x - c.x) / c.z;
-    let dx = dlon(ll.y, c.y) * cos(radians(ll.x)) / c.w;
-    return sqrt(dx * dx + dy * dy);
-}
-
 fn sun_dir(in: VsOut) -> vec3<f32> {
     return normalize(g.sun_pos.xyz - in.world);
 }
@@ -163,14 +155,20 @@ fn shade_earth(in: VsOut, n: vec3<f32>) -> vec3<f32> {
     let day = smoothstep(-0.06, 0.16, dot(n, to_sun));
 
     let land = textureSample(land_tex, samp, in.uv).r;
-    // Coastline from the mask's gradient — one extra tap per axis, and it
-    // gives the same cyan shoreline the flat FT8 map has.
-    let t = 1.5 / vec2<f32>(textureDimensions(land_tex));
-    let lx = textureSample(land_tex, samp, in.uv + vec2(t.x, 0.0)).r
-           - textureSample(land_tex, samp, in.uv - vec2(t.x, 0.0)).r;
-    let ly = textureSample(land_tex, samp, in.uv + vec2(0.0, t.y)).r
-           - textureSample(land_tex, samp, in.uv - vec2(0.0, t.y)).r;
-    let coast = clamp((abs(lx) + abs(ly)) * 1.6, 0.0, 1.0);
+
+    // The shoreline is the ½ contour of the land-coverage field, stroked to a
+    // fixed width in *pixels*.
+    //
+    // `fwidth` is how much the field changes from one pixel to the next, so
+    // dividing the distance-from-½ by it converts that distance into pixels
+    // directly — no matter which mip is in play or how the sphere is
+    // foreshortened. That is the whole trick: a fixed offset in *texels* (which
+    // is what a gradient of neighbouring taps is) draws a hairline on a globe
+    // 40 px across and a three-texel smear once the camera is down at the
+    // surface, and it is that smear the eye reads as a thick, blurry coast.
+    // This is the same hairline at both.
+    let px = abs(land - 0.5) / max(fwidth(land), 1e-4);
+    let coast = 1.0 - smoothstep(COAST_PX, COAST_PX + 1.0, px);
 
     // The FT8 map's palette is tuned for sparse dots on a dark panel; filling a
     // whole globe with it at 1× reads as almost black, so the daylit side is
@@ -179,7 +177,7 @@ fn shade_earth(in: VsOut, n: vec3<f32>) -> vec3<f32> {
     col = col * (0.05 + 2.6 * day);
     // Night side: land stays faintly visible with a cyan glow, like a city map.
     col += srgb_to_linear(COAST) * land * (1.0 - day) * 0.045;
-    col = mix(col, srgb_to_linear(COAST) * (0.35 + 0.9 * day), coast * (0.35 + 0.55 * day));
+    col = mix(col, srgb_to_linear(COAST) * (0.35 + 0.9 * day), coast * (0.45 + 0.55 * day));
 
     // International borders, from the same Natural Earth data as the coastline
     // and drawn dimmer than it: on a globe the coast is the shape you navigate
@@ -304,51 +302,25 @@ fn shade_cloud(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>, haze: f32) -> vec3<f3
     return col * (0.02 + 1.1 * day) * (0.7 + 0.3 * pow(mu, 0.4)) + d.tint.rgb * rim * haze;
 }
 
-/// Mars: iron-oxide desert, dark albedo features, and the caps.
-fn shade_desert(in: VsOut, n: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
-    let ll = lat_lon(in.body);
-    var col = mix(d.tint2.rgb, d.tint.rgb, 0.45 + 0.55 * fbm(in.body * 6.0));
-
-    // The classical dark markings, the ones a small telescope shows.
-    var dark = array<vec4<f32>, 5>(
-        vec4(  8.0,  70.0, 14.0, 12.0),  // Syrtis Major
-        vec4(-25.0, -35.0, 16.0, 26.0),  // Mare Erythraeum
-        vec4(-20.0, 100.0, 14.0, 22.0),  // Mare Cimmerium
-        vec4( 20.0, -60.0,  9.0, 14.0),  // Acidalia Planitia
-        vec4(-15.0, 160.0, 12.0, 18.0),  // Mare Sirenum
-    );
-    let rough = (fbm(in.body * 4.0) - 0.5) * 0.5;
-    for (var i = 0; i < 5; i = i + 1) {
-        let m = smoothstep(1.0, 0.6, ellipse(ll, dark[i]) + rough);
-        col = mix(col, d.tint2.rgb * 0.55, m * 0.75);
-    }
-    // Hellas, the bright basin below Syrtis.
-    col = mix(col, d.tint.rgb * 1.25, smoothstep(1.0, 0.5, ellipse(ll, vec4(-42.0, 70.0, 9.0, 12.0))) * 0.5);
-
-    // Polar caps. Ragged edges, because they are.
-    let cap = smoothstep(0.80, 0.93, abs(in.body.z) + (fbm(in.body * 9.0) - 0.5) * 0.06);
-    col = mix(col, vec3(0.92, 0.94, 0.97), cap);
-
-    let day = daylight(n, to_sun);
-    // A thin dusty atmosphere: a faint pink limb, nothing like the Earth's.
-    let to_eye = normalize(g.camera_pos.xyz - in.world);
-    let rim = pow(1.0 - clamp(dot(n, to_eye), 0.0, 1.0), 4.0);
-    return col * (0.02 + 1.15 * day) + vec3(0.35, 0.20, 0.14) * rim * day * 0.5;
-}
-
 /// A body drawn from a real map: `d.style.y` picks the layer.
 ///
 /// Only the lighting is added here — the surface itself is a photograph, so
 /// there is nothing to invent. Gas giants get the limb darkening a deep
-/// atmosphere has; there is no second case yet, and the Moon has its own
-/// branch because regolith does not behave like anything else here.
+/// atmosphere has, and Mars gets close enough to it from its own dust; the Moon
+/// has its own branch because regolith does not behave like anything else here.
 fn shade_mapped(in: VsOut, n: vec3<f32>) -> vec3<f32> {
     let to_sun = sun_dir(in);
     let albedo = textureSample(body_maps, samp, in.uv, i32(d.style.y)).rgb;
     let day = daylight(n, to_sun);
     let to_eye = normalize(g.camera_pos.xyz - in.world);
     let mu = clamp(dot(n, to_eye), 0.0, 1.0);
-    return albedo * (0.02 + 1.15 * day) * (0.62 + 0.38 * pow(mu, 0.45));
+    var col = albedo * (0.02 + 1.15 * day) * (0.62 + 0.38 * pow(mu, 0.45));
+    // A thin dusty atmosphere, for the bodies that have one: a faint warm limb,
+    // nothing like the Earth's. `d.style.w` carries its strength, and the tint
+    // is the body's own average colour, which is what the dust suspended in it
+    // is made of.
+    let rim = pow(1.0 - mu, 4.0);
+    return col + d.tint.rgb * rim * day * d.style.w;
 }
 
 fn shade_body(in: VsOut, n: vec3<f32>) -> vec3<f32> {
@@ -359,14 +331,12 @@ fn shade_body(in: VsOut, n: vec3<f32>) -> vec3<f32> {
     } else if (style < 1.5) {
         return shade_cloud(in, n, to_sun, 0.25);
     } else if (style < 2.5) {
-        return shade_desert(in, n, to_sun);
-    } else if (style < 3.5) {
         return shade_ice_giant(in, n, to_sun);
-    } else if (style < 4.5) {
+    } else if (style < 3.5) {
         return shade_icy(in, n, to_sun);
-    } else if (style < 5.5) {
+    } else if (style < 4.5) {
         return shade_volcanic(in, n, to_sun);
-    } else if (style < 6.5) {
+    } else if (style < 5.5) {
         return shade_cloud(in, n, to_sun, 0.75);
     }
     return shade_mapped(in, n);

@@ -13,6 +13,18 @@ photograph: PNG of the same data is four times the size for no visible gain,
 and this is the one body in the view whose real surface everybody already
 knows by sight.
 
+`mars.jpg` — 2048×1024, same layout, built by `make_body_maps.py`.
+
+Source: MDIM 2.1, the USGS Viking Mars Digital Image Mosaic tied to the MOLA
+control network at 256 pixel/degree and colourised by NASA Ames, requested from
+the USGS planetary WMS (`planetarymaps.usgs.gov`, layer `MDIM21_color`) at
+4096×2048 and filtered down. USGS and NASA imagery is public domain.
+
+The request settles the projection: `SRS=EPSG:4326` with
+`BBOX=-180,-90,180,90` is the texture's own grid, so nothing is re-projected
+afterwards and Syrtis Major, Valles Marineris and Olympus Mons land at the
+longitudes `planets.rs`'s IAU rotation elements put them.
+
 `jupiter.jpg`, `saturn.jpg` — 2048×1024, same layout, built by
 `make_body_maps.py` from published Cassini map data:
 

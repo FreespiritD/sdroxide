@@ -78,18 +78,18 @@ pub const MODE_BODY: f32 = 3.0;
 /// Surface styles for [`MODE_BODY`], in step with `solar_body.wgsl`.
 pub const STYLE_CRATERED: f32 = 0.0;
 pub const STYLE_CLOUDY: f32 = 1.0;
-pub const STYLE_DESERT: f32 = 2.0;
-pub const STYLE_ICE_GIANT: f32 = 3.0;
-pub const STYLE_ICY: f32 = 4.0;
-pub const STYLE_VOLCANIC: f32 = 5.0;
-pub const STYLE_HAZE: f32 = 6.0;
+pub const STYLE_ICE_GIANT: f32 = 2.0;
+pub const STYLE_ICY: f32 = 3.0;
+pub const STYLE_VOLCANIC: f32 = 4.0;
+pub const STYLE_HAZE: f32 = 5.0;
 /// Not procedural at all: sample layer `style.y` of the body-map array.
-pub const STYLE_MAPPED: f32 = 7.0;
+pub const STYLE_MAPPED: f32 = 6.0;
 
 /// Layers of that array, in `gpu::BODY_MAPS` order.
 pub const MAP_MOON: f32 = 0.0;
-pub const MAP_JUPITER: f32 = 1.0;
-pub const MAP_SATURN: f32 = 2.0;
+pub const MAP_MARS: f32 = 1.0;
+pub const MAP_JUPITER: f32 = 2.0;
+pub const MAP_SATURN: f32 = 3.0;
 
 /// How one body is painted: which procedural surface, in what colours, and the
 /// two per-body switches that surface understands.
@@ -105,6 +105,10 @@ pub struct Look {
     detail: f32,
     /// Iapetus's dark leading hemisphere.
     two_tone: f32,
+    /// How strong a limb glow a [`STYLE_MAPPED`] body's atmosphere gives it.
+    /// Mars's dust is the only one so far; the giants' own limb darkening is
+    /// already in the map.
+    haze: f32,
 }
 
 /// The palette and surface each body type is drawn with.
@@ -120,11 +124,19 @@ fn look_of(s: sdroxide_solar::Surface) -> Look {
         second: Color32::from_rgb((second >> 16) as u8, (second >> 8) as u8, second as u8),
         detail,
         two_tone: 0.0,
+        haze: 0.0,
     };
     match s {
         S::Cratered => look(STYLE_CRATERED, 0x9a938a, 0x4a4642, 1.0),
         S::Cloudy => look(STYLE_CLOUDY, 0xe6d3a8, 0xc9ac74, 0.5),
-        S::Desert => look(STYLE_DESERT, 0xc46a42, 0x7d3f2c, 1.0),
+        // Mars, and only Mars: the USGS Viking mosaic. Syrtis Major and the
+        // caps are what any small telescope shows, so a procedural desert of
+        // noise and ellipses was always going to be compared with a photograph
+        // and lose. `base` is the map's own average pushed up in value — it is
+        // what the glow and the label take, and MDIM 2.1's honest salmon-grey
+        // is not legible against a black sky. The haze is the dust: a real,
+        // faint limb, an order thinner than the Earth's.
+        S::Desert => Look { haze: 0.35, ..look(STYLE_MAPPED, 0xc4785c, 0x7d3f2c, MAP_MARS) },
         // Both giants are drawn from Cassini's maps; `planet_look` picks which
         // layer, and this is only the fallback average colour.
         S::GasBands => look(STYLE_MAPPED, 0xd8be9c, 0x9a6945, MAP_JUPITER),
@@ -1020,7 +1032,7 @@ fn body_sphere(s: &mut Scene, (x, y, z): (V3, V3, V3), pos: V3, radius: f32, loo
         MODE_BODY,
     );
     d.tint2 = lin(look.second, 1.0);
-    d.style = [look.style, look.detail, look.two_tone, 0.0];
+    d.style = [look.style, look.detail, look.two_tone, look.haze];
     s.draws.push((Prim::Sphere, d));
 }
 

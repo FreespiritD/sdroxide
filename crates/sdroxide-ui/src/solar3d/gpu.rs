@@ -636,12 +636,19 @@ fn make_draw_bg(
 
 /// The globe's coastline and border maps.
 ///
-/// Both are equirectangular, 4320×2160 (1/12°), rasterised from Natural Earth
-/// 1:10m by `assets/earth/make_earth_maps.py` — twice the flat FT8 map's grid
-/// in each axis, because a globe you can fly right up to needs more coastline
-/// than a panel-sized rectangle does. They share the map's coordinate
-/// convention exactly (x = −180°…180°, y = +90°…−90°), so a QTH marker lands on
+/// Both are equirectangular and rasterised from Natural Earth 1:10m by
+/// `assets/earth/make_earth_maps.py`, sharing the flat FT8 map's coordinate
+/// convention exactly (x = −180°…180°, y = +90°…−90°) so a QTH marker lands on
 /// the same shoreline in both views.
+///
+/// Land is 8192×4096 (1/22.75°, ~4.9 km) and holds *coverage* rather than a
+/// 1-bit mask: the fraction of each texel that is land. The shader strokes the
+/// shoreline along that field's ½ contour, which bilinear filtering places to a
+/// fraction of a texel — so the coast stays a clean curve when the camera flies
+/// down to it, instead of the texel staircase a thresholded mask would give.
+/// Borders are 4320×2160 (1/12°): they are one-texel lines rather than a filled
+/// region, so there is no contour to sharpen and the extra grid would only cost
+/// memory.
 const LAND_PNG: &[u8] = include_bytes!("../../assets/earth/land.png");
 const BORDER_PNG: &[u8] = include_bytes!("../../assets/earth/borders.png");
 
@@ -650,35 +657,38 @@ const BORDER_PNG: &[u8] = include_bytes!("../../assets/earth/borders.png");
 /// equirectangular and public domain; see `assets/bodies/README.md` for the
 /// provenance of each.
 ///
-/// These three are the ones a viewer can *check*. Everybody has seen the Moon,
-/// Jupiter's belts and the Great Red Spot are on every poster, and Saturn is
-/// exactly as bland as it looks here — no amount of noise-and-ellipses puts
-/// Imbrium or the GRS where the eye expects them.
-const BODY_MAPS: [(&str, &[u8]); 3] = [
+/// These four are the ones a viewer can *check*. Everybody has seen the Moon,
+/// Mars's dark markings and caps are what a small telescope shows, Jupiter's
+/// belts and the Great Red Spot are on every poster, and Saturn is exactly as
+/// bland as it looks here — no amount of noise-and-ellipses puts Imbrium, Syrtis
+/// Major or the GRS where the eye expects them.
+const BODY_MAPS: [(&str, &[u8]); 4] = [
     ("moon", include_bytes!("../../assets/bodies/moon.jpg")),
+    ("mars", include_bytes!("../../assets/bodies/mars.jpg")),
     ("jupiter", include_bytes!("../../assets/bodies/jupiter.jpg")),
     ("saturn", include_bytes!("../../assets/bodies/saturn.jpg")),
 ];
 
 /// Largest edge the globe's masks are uploaded at.
 ///
-/// Native keeps the assets' full 4320: the camera can fly right down to the
-/// surface, which is what that resolution is for. The browser starts one level
-/// down. 4320×2160 R8 plus its mip chain is 12.4 MB per mask and 25 MB for the
-/// pair, which is a lot to hand a tab, and building those chains is tens of
-/// milliseconds on the page's only thread. 2160×1080 is still twice the flat
-/// FT8 map's grid in each axis. (The PNG decode itself is unchanged — that is
-/// fixed by the asset, and one asset shared by both targets is worth more than
-/// the saving.)
+/// Native keeps the land asset's full 8192: the camera can fly right down to
+/// the surface, which is what that resolution is for, and 45 MB of R8 with its
+/// mip chain is a fair price for a desktop GPU. The browser's cap puts land two
+/// levels down at 2048×1024 — 45 MB is a lot to hand a tab, building that chain
+/// is tens of milliseconds on the page's only thread, and a globe that is
+/// rarely more than a panel wide there gains nothing from the rest. The pair
+/// still costs a browser about 6 MB, which is what it cost before the land
+/// asset grew. (The PNG decode itself is unchanged — that is fixed by the
+/// asset, and one asset shared by both targets is worth more than the saving.)
 #[cfg(not(target_arch = "wasm32"))]
-const MAX_MAP_DIM: u32 = 4320;
+const MAX_MAP_DIM: u32 = 8192;
 #[cfg(target_arch = "wasm32")]
 const MAX_MAP_DIM: u32 = 2160;
 
 /// Decode one of those maps into an R8 texture with a full mip chain, with the
 /// base level no larger than `max_dim`.
 ///
-/// The mips are not optional at this resolution: 4320 texels of coastline
+/// The mips are not optional at this resolution: 8192 texels of coastline
 /// crammed into a 40-pixel globe without them is a shimmering mess, and the
 /// borders — one texel wide — would strobe in and out as the camera moves.
 /// With them, both fade out gracefully as the Earth shrinks.

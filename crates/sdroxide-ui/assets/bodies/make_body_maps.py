@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Turn the published Cassini map data into the two gas-giant textures.
+"""Turn the published spacecraft map data into the planet textures.
 
-Both come out 2048×1024 equirectangular, east longitude −180°…180° with 0° in
+All come out 2048×1024 equirectangular, east longitude −180°…180° with 0° in
 the centre and latitude +90°…−90° top to bottom — the sphere mesh's own UV
 convention, so the shader indexes them directly.
 
+    mars.jpg     MDIM 2.1, the USGS Viking mosaic tied to the MOLA control
+                 network and colourised by NASA Ames, served at exactly the
+                 grid this wants by the USGS planetary WMS. Requested at 2× and
+                 filtered down, which is what keeps the small craters from
+                 aliasing into noise.
     jupiter.jpg  PIA07782, Cassini's global map of Jupiter (Dec 2000). Already
                  a clean cylindrical map; only re-projected and resized.
     saturn.jpg   The Cassini ISS RGB global map of Saturn (2011-08-11) from the
@@ -14,8 +19,11 @@ convention, so the shader indexes them directly.
                  exactly because Saturn is zonal: whatever is at 20°N is at
                  20°N all the way round.
 
-Sources (both public domain, NASA/JPL-Caltech/Space Science Institute):
+Sources (all public domain, USGS Astrogeology and
+NASA/JPL-Caltech/Space Science Institute):
 
+    https://planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/mars/
+        mars_simp_cyl.map (WMS layer MDIM21_color)
     https://images-assets.nasa.gov/image/PIA07782/PIA07782~orig.jpg
     https://atmos.nmsu.edu/PDS/data/PDS4/co_iss_global-maps/data_derived/
         Cassini_ISS_RGB_Saturn_global_color_map_original.fits
@@ -37,6 +45,15 @@ JUPITER = "https://images-assets.nasa.gov/image/PIA07782/PIA07782~orig.jpg"
 SATURN = (
     "https://atmos.nmsu.edu/PDS/data/PDS4/co_iss_global-maps/data_derived/"
     "Cassini_ISS_RGB_Saturn_global_color_map_original.fits"
+)
+# The WMS renders whatever grid is asked for, so the projection, the longitude
+# origin and the size are all settled by the request — nothing to re-project
+# afterwards. 2× the texture, then a Lanczos step down.
+MARS = (
+    "https://planetarymaps.usgs.gov/cgi-bin/mapserv?"
+    "map=/maps/mars/mars_simp_cyl.map&SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap"
+    "&LAYERS=MDIM21_color&STYLES=&SRS=EPSG:4326&BBOX=-180,-90,180,90"
+    f"&WIDTH={W * 2}&HEIGHT={H * 2}&FORMAT=image/png"
 )
 
 
@@ -140,6 +157,21 @@ def build_saturn() -> Image.Image:
     return to_texture(rgb, median=0.70, contrast=1.35)
 
 
+def build_mars() -> Image.Image:
+    """MDIM 2.1, as the WMS renders it.
+
+    Nothing to re-project: the request already asks for −180°…180° by −90°…90°
+    on an equirectangular grid, which is the texture's layout. The only thing
+    added is the stretch — the mosaic is a calibrated albedo product and comes
+    out the colour of wet cardboard shown raw, while Mars through a telescope is
+    the butterscotch this pushes it back towards. Restrained on purpose: the
+    dark markings really are grey-blue, not black, and the caps really do blow
+    out to white.
+    """
+    src = np.asarray(Image.open(fetch("mars_mdim21.png", MARS)).convert("RGB"), dtype=np.float32) / 255.0
+    return to_texture(src, median=0.46, contrast=1.30)
+
+
 def build_jupiter() -> Image.Image:
     src = np.asarray(Image.open(fetch("jupiter.jpg", JUPITER)).convert("RGB"), dtype=np.float32) / 255.0
     # The published map stops short of both poles and pads them with a flat
@@ -153,7 +185,8 @@ def build_jupiter() -> Image.Image:
 
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
-    for name, build in (("jupiter.jpg", build_jupiter), ("saturn.jpg", build_saturn)):
+    builds = (("mars.jpg", build_mars), ("jupiter.jpg", build_jupiter), ("saturn.jpg", build_saturn))
+    for name, build in builds:
         path = os.path.join(here, name)
         build().save(path, quality=88, optimize=True)
         print(f"{name}: {os.path.getsize(path) / 1024:.0f} kB", file=sys.stderr)
