@@ -646,7 +646,7 @@ label each one on the waterfall. There are three: **CW**, **PSK31**, and
   text. Boxes fade out a few seconds after a signal stops.
 - **Click a skimmer box** to tune to that signal and switch to its mode — CW for
   a CW spot, PSK or RTTY for a digimode spot (which also opens the messaging
-  panel, [3.6](#36-psk31-and-rtty)).
+  panel, [3.7](#37-psk31-and-rtty)).
 
 **Band-aware gating.** To avoid noise and false decodes, each skimmer only runs
 where its mode is used: the CW skimmer in CW sub-bands, and the PSK and RTTY
