@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgcMode, Band, DigiConfig, Direction, Mode, NetworkConfig, NrLevel, RxId, SkimmerSettings,
-    RigctldConfig, SpectrumConfig, SstvMode, TciServerConfig, UploadTarget, Vfo,
+    RigctldConfig, SpectrumConfig, SstvMode, TciServerConfig, UploadTarget, Vfo, WsjtxConfig,
 };
 
 /// The single control vocabulary. The GUI, the WebSocket protocol, and the
@@ -128,4 +128,8 @@ pub enum Command {
     /// fldigi, N1MM, GPredict, …) connect to. The result comes back as
     /// [`crate::RadioEvent::RigctldStatus`].
     SetRigctldConfig(RigctldConfig),
+    /// Apply (and persist) the WSJT-X UDP broadcast configuration: start, retarget
+    /// or stop the datagram stream that GridTracker, JTAlert, N1MM+ and Log4OM
+    /// listen to. Output only — nothing arrives on that socket.
+    SetWsjtxConfig(WsjtxConfig),
 }

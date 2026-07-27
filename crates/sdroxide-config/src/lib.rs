@@ -258,6 +258,16 @@ pub fn save_rigctld_config(cfg: &sdroxide_types::RigctldConfig) -> Result<(), Co
     save_json("rigctld.json", cfg)
 }
 
+/// WSJT-X UDP broadcast config (where decode/QSO datagrams are sent). Owned by
+/// the engine, like the server configs above.
+pub fn load_wsjtx_config() -> sdroxide_types::WsjtxConfig {
+    load_json("wsjtx.json")
+}
+
+pub fn save_wsjtx_config(cfg: &sdroxide_types::WsjtxConfig) -> Result<(), ConfigError> {
+    save_json("wsjtx.json", cfg)
+}
+
 /// Control-input bindings: keyboard chords, panadapter mouse behaviour and the
 /// MIDI mapping. Unlike the configs above this one belongs to the *client*, not
 /// the engine — it describes the hardware on the operator's desk, so a knob

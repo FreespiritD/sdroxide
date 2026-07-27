@@ -50,8 +50,13 @@ use sdroxide_types::{
 /// shape `Command::SetNetworkConfig` carries.
 /// v15: built-in Hamlib rigctld server — `Command::SetRigctldConfig` and
 /// `ServerMsg::RigctldStatus` (both extend the postcard discriminant space).
-pub const PROTO_VERSION: u16 = 15;
-const VERSION_BYTE: u8 = 0x0F;
+/// v16: FT8 message handling and reporting. `Decode` gained `cq_dx` and
+/// `free_text`, `TranscriptLine` gained `overheard`, and `PskConfig` gained the
+/// upload fields — postcard is not self-describing, so every added field
+/// changes the layout of the messages carrying them. Also new:
+/// `Command::SetWsjtxConfig` (WSJT-X UDP broadcast).
+pub const PROTO_VERSION: u16 = 16;
+const VERSION_BYTE: u8 = 0x10;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {

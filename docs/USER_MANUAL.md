@@ -679,7 +679,7 @@ window opens the same dialog on its Spots tab). Eight tabs run across the top:
 | **Spots** | DX cluster, POTA, SOTA and PSK Reporter feeds. [5.5](#55-spots-spot-feeds) |
 | **FreeDV** | FreeDV Reporter (qso.freedv.org). [5.6](#56-freedv-freedv-reporter) |
 | **Uploads** | Callsign lookup, QSL upload, confirmation download. [5.7](#57-uploads-callsign-lookup-and-qsl-services) |
-| **Servers** | Hamlib rigctld and the built-in TCI server. [5.8](#58-servers-letting-other-programs-drive-the-radio) |
+| **Servers** | Hamlib rigctld, the built-in TCI server, and the WSJT-X UDP broadcast. [5.8](#58-servers-letting-other-programs-drive-the-radio) |
 
 Most settings take effect the moment you change them. The ones that open or
 rebind a connection — the radio itself, the spot feeds, FreeDV Reporter, and the
@@ -689,7 +689,7 @@ each section below. Nothing here needs a restart.
 Settings are written to the per-user config directory ([§11](#11-configuration-files)):
 display preferences to `config.toml`, the radio to `radio.json`, key/mouse/MIDI
 bindings to `input.json`, feeds and credentials to `net.json`, and the two
-servers to `rigctld.json` and `tciserver.json`.
+servers to `rigctld.json`, `tciserver.json` and `wsjtx.json`.
 
 ### 5.1 General: station and audio
 
@@ -1082,15 +1082,16 @@ At the bottom of the tab, **APPLY** saves everything above, and
 
 ### 5.8 Servers: letting other programs drive the radio
 
-The **Servers** tab makes sdroxide the radio for other software. Two servers
-share the tab, one above the other, and both can run at the same time.
+The **Servers** tab makes sdroxide the radio for other software. Three sections
+share the tab, one above the other, and all can run at the same time.
 
 > **Which server should I use?** rigctld carries *control only* and is understood
 > by nearly everything. The built-in TCI server additionally carries receive
 > audio, transmit audio and a wideband IQ stream, but only a handful of programs
-> speak it.
+> speak it. The WSJT-X UDP broadcast is not a control surface at all: it is how
+> loggers and mapping tools learn what you are decoding and working.
 
-Neither protocol has any authentication, which is why both default to
+Neither control protocol has any authentication, which is why both default to
 `127.0.0.1`.
 
 #### 5.8.1 Hamlib rigctld server
@@ -1190,6 +1191,28 @@ A few things worth knowing:
   IQ stream.
 - **Receive pauses while you transmit**, unless the radio is full-duplex — the
   same as any other TCI rig.
+
+#### 5.8.3 WSJT-X UDP broadcast
+
+The logging ecosystem around FT8 — **GridTracker**, **JTAlert**, **N1MM+** and
+**Log4OM** — learns what a station is doing from the datagrams WSJT-X sends on
+UDP port 2237. sdroxide sends the same ones, so those programs work with it
+unchanged: decodes as they arrive, station status (frequency, mode, who you are
+working, what you are about to transmit), and every completed QSO — as both the
+structured message and an ADIF record, so a logger can take whichever it
+prefers.
+
+- **Enable** — off by default. What you decode and who you work is broadcast
+  only when you say so.
+- **Send to** — `127.0.0.1` for clients on this machine, a LAN address for
+  another one, or a multicast group (`224.0.0.1`) to reach several at once.
+- **Port** — 2237, the port every client defaults to.
+- **Identify as** — the name clients see. It defaults to `WSJT-X` because some
+  loggers accept nothing else.
+
+This one is **output only**: nothing is read from the socket, so no program on
+it can tune or key the radio. Programs that want to *drive* sdroxide use rigctld
+or the TCI server above.
 
 ---
 
@@ -1764,6 +1787,7 @@ sdroxide stores its settings under the per-user config directory:
 | `net.json` | JSON | Network cockpit: DX cluster / POTA / SOTA / PSK / FreeDV Reporter feed settings, and callsign-lookup / eQSL / QRZ / Club Log / LoTW credentials (stored in plaintext). |
 | `tciserver.json` | JSON | Built-in TCI server: enabled, bind address, port, advertised device name, whether clients may transmit, and the client limit. |
 | `rigctld.json` | JSON | Built-in Hamlib rigctld server: enabled, bind address, port, reported rig name, whether clients may transmit, and the client limit. |
+| `wsjtx.json` | JSON | WSJT-X UDP broadcast: enabled, destination host and port, and the name clients see. |
 | `input.json` | JSON | Control inputs: keyboard bindings, panadapter mouse behaviour, mouse-button bindings, and the MIDI controller mapping. Belongs to the machine running the user interface, not the engine. |
 | `sstv_messages.json` | JSON | The overlay message stored for each of the five SSTV transmit slots. |
 | `sstv_tx/` | dir | The five SSTV transmit-image slots (`slot0.png`…`slot4.png`). |

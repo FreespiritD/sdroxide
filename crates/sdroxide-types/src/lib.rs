@@ -28,6 +28,7 @@ mod spot;
 mod sstv;
 mod state;
 mod tciserver;
+mod wsjtx;
 mod ui;
 
 pub use awards::{
@@ -72,6 +73,7 @@ pub use radio::{
     Parity, PttMethod, RadioConfig, SerialConfig, SoundFormat, StopBits, TciConfig,
 };
 pub use rigctld::RigctldConfig;
+pub use wsjtx::WsjtxConfig;
 pub use skimmer::{SkimmerKind, SkimmerSettings, SkimmerSpot};
 pub use spectrum::{SpectrumConfig, SpectrumFrame};
 pub use spot::{Spot, SpotKind};

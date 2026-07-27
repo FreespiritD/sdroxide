@@ -560,6 +560,13 @@ struct Engine {
     /// Most recent S-meter reading, so rigctld's `STRENGTH` level has a value
     /// to report between meter updates.
     last_s_dbm: f32,
+    /// WSJT-X UDP broadcast: decodes, status and logged QSOs sent out for
+    /// GridTracker, JTAlert, N1MM+ and Log4OM. Present while enabled.
+    wsjtx: Option<sdroxide_wsjtx::WsjtxUdp>,
+    wsjtx_cfg: sdroxide_types::WsjtxConfig,
+    /// When the last WSJT-X heartbeat went out (clients time a station out
+    /// without one).
+    wsjtx_beat: Instant,
     /// Built-in TCI server: third-party clients (WSJT-X, JTDX, skimmers)
     /// driving this radio. Present while enabled and successfully bound.
     tci_srv: Option<TciServerController>,
@@ -740,6 +747,9 @@ fn engine_thread(
         skim_ddc: None,
         skimmer: None,
         skim_buf: Vec::new(),
+        wsjtx: None,
+        wsjtx_cfg: sdroxide_types::WsjtxConfig::default(),
+        wsjtx_beat: Instant::now(),
         rigctld: None,
         rigctld_cfg: RigctldConfig::default(),
         rigctld_err: None,
@@ -801,6 +811,9 @@ fn engine_thread(
     // commonly already taken by a real rigctld, and it has no authentication.
     engine.rigctld_cfg = sdroxide_config::load_rigctld_config();
     engine.sync_rigctld();
+    // WSJT-X UDP broadcast is likewise off unless the operator turned it on.
+    engine.wsjtx_cfg = sdroxide_config::load_wsjtx_config();
+    engine.sync_wsjtx();
     engine.update_tuning();
 
     let mut buf = vec![Complex32::default(); 16_384];
@@ -845,6 +858,7 @@ fn engine_thread(
         engine.poll_skimmer();
         engine.poll_tci_server();
         engine.poll_rigctld();
+        engine.wsjtx_heartbeat();
         engine.poll_spots();
         // Attach (or re-attach) the configured radio on its own when the
         // front-end is only a stand-in — no trip through Settings.
@@ -1305,6 +1319,87 @@ impl Engine {
         }
     }
 
+    /// Start, retarget or stop the WSJT-X UDP broadcast to match its config.
+    fn sync_wsjtx(&mut self) {
+        let want = self.wsjtx_cfg.enabled;
+        let same = self.wsjtx.as_ref().is_some_and(|w| {
+            w.addr() == self.wsjtx_cfg.addr() && w.id() == self.wsjtx_cfg.id
+        });
+        if want && same {
+            return;
+        }
+        if let Some(w) = self.wsjtx.take() {
+            w.close(); // tell clients to drop us before the socket goes
+        }
+        if !want {
+            info!("WSJT-X UDP broadcast stopped");
+            return;
+        }
+        match sdroxide_wsjtx::WsjtxUdp::start(&self.wsjtx_cfg) {
+            Ok(w) => {
+                w.heartbeat(env!("CARGO_PKG_VERSION"));
+                w.clear(); // a fresh session starts with an empty decode window
+                self.wsjtx_beat = Instant::now();
+                self.wsjtx = Some(w);
+            }
+            Err(e) => {
+                warn!("WSJT-X UDP broadcast: {e}");
+                let _ = self.event_tx.send(RadioEvent::NetStatus(Some(format!("WSJT-X UDP: {e}"))));
+            }
+        }
+    }
+
+    /// Keep the broadcast alive: clients drop a station they stop hearing from.
+    fn wsjtx_heartbeat(&mut self) {
+        if self.wsjtx.is_some() && self.wsjtx_beat.elapsed() >= Duration::from_secs(15) {
+            self.wsjtx_beat = Instant::now();
+            if let Some(w) = &self.wsjtx {
+                w.heartbeat(env!("CARGO_PKG_VERSION"));
+            }
+        }
+    }
+
+    /// Broadcast a slot's decodes to the WSJT-X clients.
+    fn wsjtx_decodes(&self, decodes: &[sdroxide_types::Decode]) {
+        let Some(w) = &self.wsjtx else { return };
+        let mode = self.digi.as_ref().map(|d| d.mode().label().to_string()).unwrap_or_default();
+        for d in decodes {
+            w.decode(&sdroxide_wsjtx::msg::DecodeInfo {
+                new: true,
+                slot_utc: d.slot_utc,
+                snr_db: d.snr_db as i32,
+                dt: d.dt as f64,
+                audio_hz: d.audio_hz.max(0.0) as u32,
+                mode: mode.clone(),
+                message: d.message.clone(),
+            });
+        }
+    }
+
+    /// Broadcast the station's state as WSJT-X reports it.
+    fn wsjtx_status(&self, s: &sdroxide_types::DigiStatus) {
+        let Some(w) = &self.wsjtx else { return };
+        w.status(&sdroxide_wsjtx::msg::StatusInfo {
+            dial_hz: self.state.rx_freq_hz().max(0.0) as u64,
+            mode: s.mode.label().to_string(),
+            dx_call: s.dx_call.clone().unwrap_or_default(),
+            report: String::new(),
+            // "Tx enabled" is WSJT-X's auto-sequencing switch: ours is on
+            // whenever the QSO machine intends to key.
+            tx_enabled: s.tx_next,
+            transmitting: s.transmitting,
+            decoding: false,
+            rx_df_hz: s.audio_hz.max(0.0) as u32,
+            tx_df_hz: s.audio_hz.max(0.0) as u32,
+            de_call: s.config.my_call.clone(),
+            de_grid: s.config.my_grid.clone(),
+            dx_grid: s.dx_grid.clone().unwrap_or_default(),
+            tx_watchdog: false,
+            tr_period_s: if s.mode == sdroxide_types::Mode::Ft4 { 7 } else { 15 },
+            tx_message: s.tx_pending_msg.clone().unwrap_or_default(),
+        });
+    }
+
     /// Tick the FT8/FT4 controller and apply its actions (emit events, key/
     /// unkey PTT). Owned actions avoid a `&mut self.digi` / `&mut self` clash.
     fn poll_digi(&mut self) {
@@ -1315,12 +1410,17 @@ impl Engine {
             match a {
                 DigiAction::Decodes(d) => {
                     self.psk_report_decodes(&d, dial);
+                    self.wsjtx_decodes(&d);
                     let _ = self.event_tx.send(RadioEvent::Ft8Decodes(d));
                 }
                 DigiAction::Status(s) => {
+                    self.wsjtx_status(&s);
                     let _ = self.event_tx.send(RadioEvent::Ft8Status(s));
                 }
                 DigiAction::QsoLogged(r) => {
+                    if let Some(w) = &self.wsjtx {
+                        w.qso_logged(&r);
+                    }
                     let _ = self.event_tx.send(RadioEvent::Ft8QsoLogged(r));
                 }
                 DigiAction::RadeCallsign { call, snr_db, freq_hz } => {
@@ -1882,6 +1982,17 @@ impl Engine {
                 }
                 self.rigctld_cfg = cfg;
                 self.sync_rigctld();
+                return;
+            }
+
+            // WSJT-X UDP broadcast (no RadioState change → return before the
+            // State emit below).
+            SetWsjtxConfig(cfg) => {
+                if let Err(e) = sdroxide_config::save_wsjtx_config(&cfg) {
+                    warn!("saving WSJT-X UDP config: {e}");
+                }
+                self.wsjtx_cfg = cfg;
+                self.sync_wsjtx();
                 return;
             }
 

@@ -70,6 +70,10 @@ struct SettingsIo<'a> {
     /// "NET rigctl" client speaks.
     rigctld_edit: &'a mut sdroxide_types::RigctldConfig,
     rigctld_apply: &'a mut bool,
+    /// The WSJT-X UDP broadcast — decodes, status and logged QSOs for
+    /// GridTracker, JTAlert, N1MM+ and Log4OM.
+    wsjtx_edit: &'a mut sdroxide_types::WsjtxConfig,
+    wsjtx_apply: &'a mut bool,
     /// Control-input bindings, plus the row (if any) waiting to capture a
     /// keypress. Persisted on close, since a rebind has no APPLY step.
     input_edit: &'a mut sdroxide_types::InputSettings,
@@ -323,6 +327,10 @@ pub struct SdroxideApp {
     /// when the settings dialog opens.
     rigctld_edit: sdroxide_types::RigctldConfig,
     rigctld_seeded: bool,
+    // ── WSJT-X UDP broadcast (decodes / status / QSOs for the loggers) ──
+    /// UI-owned editable copy, seeded from the engine like the configs above.
+    wsjtx_edit: sdroxide_types::WsjtxConfig,
+    wsjtx_seeded: bool,
     /// Live status from `RadioEvent::RigctldStatus`. Same shape as the TCI
     /// server's, so the two share one status type.
     rigctld_status: Option<TciServerStatus>,
@@ -567,6 +575,8 @@ impl SdroxideApp {
             net_cfg_edit: net_cfg,
             rigctld_edit: sdroxide_types::RigctldConfig::default(),
             rigctld_seeded: false,
+            wsjtx_edit: sdroxide_types::WsjtxConfig::default(),
+            wsjtx_seeded: false,
             rigctld_status: None,
             tci_srv_edit: sdroxide_types::TciServerConfig::default(),
             tci_srv_seeded: false,
@@ -4047,6 +4057,10 @@ impl SdroxideApp {
                 self.rigctld_edit = cfg;
                 self.rigctld_seeded = true;
             }
+            if let Some(cfg) = self.ctrl.wsjtx_config() {
+                self.wsjtx_edit = cfg;
+                self.wsjtx_seeded = true;
+            }
             self.audio_devices_queried = true;
         }
         // Edits collected here and applied after the window closure, which
@@ -4067,6 +4081,8 @@ impl SdroxideApp {
         let mut tci_srv_apply = false;
         let mut rigctld_edit = self.rigctld_edit.clone();
         let mut rigctld_apply = false;
+        let mut wsjtx_edit = self.wsjtx_edit.clone();
+        let mut wsjtx_apply = false;
         let mut input_edit = self.input.cfg.clone();
         let mut key_capture = self.input.key_capture;
         let mut midi_learn = self.input.midi_learn;
@@ -4117,6 +4133,8 @@ impl SdroxideApp {
                         tci_srv_apply: &mut tci_srv_apply,
                         rigctld_edit: &mut rigctld_edit,
                         rigctld_apply: &mut rigctld_apply,
+                        wsjtx_edit: &mut wsjtx_edit,
+                        wsjtx_apply: &mut wsjtx_apply,
                         input_edit: &mut input_edit,
                         key_capture: &mut key_capture,
                         midi_learn: &mut midi_learn,
@@ -4168,6 +4186,11 @@ impl SdroxideApp {
         if rigctld_apply {
             // The engine persists rigctld.json when it binds (or fails to).
             cmds.push(Command::SetRigctldConfig(self.rigctld_edit.clone()));
+        }
+        self.wsjtx_edit = wsjtx_edit;
+        if wsjtx_apply {
+            // The engine persists wsjtx.json when it opens the socket.
+            cmds.push(Command::SetWsjtxConfig(self.wsjtx_edit.clone()));
         }
         if let Some((output, name)) = audio_pick {
             self.ctrl.set_audio_device(output, name);
@@ -4559,6 +4582,10 @@ impl SdroxideApp {
                     &self.tci_srv_status,
                     io.tci_srv_apply,
                 );
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+                settings_wsjtx_tab(ui, io.wsjtx_edit, self.wsjtx_seeded, io.wsjtx_apply);
             }
         }
     }
@@ -5676,6 +5703,79 @@ fn wheel_action_combo(ui: &mut egui::Ui, id: &str, act: &mut sdroxide_types::Whe
 
 /// The built-in Hamlib rigctld server: the control surface every "NET rigctl"
 /// client speaks.
+/// WSJT-X UDP broadcast: what the logging ecosystem listens for.
+fn settings_wsjtx_tab(
+    ui: &mut egui::Ui,
+    cfg: &mut sdroxide_types::WsjtxConfig,
+    seeded: bool,
+    apply: &mut bool,
+) {
+    ui.label(RichText::new("WSJT-X UDP broadcast").size(14.0).strong().color(crate::theme::CYAN));
+    ui.add_space(4.0);
+    if !seeded {
+        ui.label(
+            RichText::new(
+                "The broadcast leaves the machine the radio engine runs on, so it can only be \
+                 configured from the native app.",
+            )
+            .weak(),
+        );
+        return;
+    }
+    ui.label(
+        RichText::new(
+            "Sends decodes, station status and logged QSOs the way WSJT-X does, so GridTracker, \
+             JTAlert, N1MM+ and Log4OM work with sdroxide unchanged. Output only — nothing on \
+             this socket can touch the radio.",
+        )
+        .weak(),
+    );
+    ui.add_space(6.0);
+    ui.checkbox(&mut cfg.enabled, "Enable");
+    ui.add_space(6.0);
+    ui.add_enabled_ui(cfg.enabled, |ui| {
+        egui::Grid::new("wsjtx-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Send to");
+            ui.add(
+                egui::TextEdit::singleline(&mut cfg.host)
+                    .desired_width(160.0)
+                    .hint_text("127.0.0.1"),
+            )
+            .on_hover_text(
+                "127.0.0.1 reaches clients on this machine; a LAN address or a multicast \
+                 group (224.0.0.1) reaches others",
+            );
+            ui.end_row();
+
+            ui.label("Port");
+            ui.add(egui::DragValue::new(&mut cfg.port).range(1..=65535))
+                .on_hover_text("2237 is the port every client defaults to");
+            ui.end_row();
+
+            ui.label("Identify as");
+            ui.add(egui::TextEdit::singleline(&mut cfg.id).desired_width(160.0)).on_hover_text(
+                "The name clients see. Some loggers only accept traffic identifying itself \
+                 as WSJT-X.",
+            );
+            ui.end_row();
+        });
+    });
+
+    ui.add_space(8.0);
+    if crate::chrome::chip_accent(
+        ui,
+        false,
+        RichText::new(" APPLY ").strong(),
+        crate::theme::GREEN,
+        crate::theme::INK_ON_CYAN,
+    )
+    .on_hover_text("Persist and (re)open the broadcast socket")
+    .clicked()
+    {
+        *apply = true;
+    }
+}
+
 fn settings_rigctld_tab(
     ui: &mut egui::Ui,
     cfg: &mut sdroxide_types::RigctldConfig,

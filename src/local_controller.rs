@@ -159,6 +159,10 @@ impl RadioController for LocalController {
         Some(sdroxide_config::load_tci_server_config())
     }
 
+    fn wsjtx_config(&self) -> Option<sdroxide_types::WsjtxConfig> {
+        Some(sdroxide_config::load_wsjtx_config())
+    }
+
     fn rigctld_config(&self) -> Option<sdroxide_types::RigctldConfig> {
         Some(sdroxide_config::load_rigctld_config())
     }

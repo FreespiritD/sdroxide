@@ -164,4 +164,11 @@ pub trait RadioController {
     fn rigctld_config(&self) -> Option<crate::RigctldConfig> {
         None
     }
+
+    /// The persisted WSJT-X UDP broadcast config, or `None` where the client
+    /// can't own it (the broadcast leaves the machine the engine runs on).
+    /// Applied by sending [`Command::SetWsjtxConfig`].
+    fn wsjtx_config(&self) -> Option<crate::WsjtxConfig> {
+        None
+    }
 }

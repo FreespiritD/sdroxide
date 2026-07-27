@@ -4255,6 +4255,7 @@ dependencies = [
  "sdroxide-skimmer",
  "sdroxide-tci",
  "sdroxide-types",
+ "sdroxide-wsjtx",
  "shine-rs",
  "soapysdr",
  "thiserror 2.0.19",
@@ -4376,6 +4377,14 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "sdroxide-wsjtx"
+version = "0.6.0"
+dependencies = [
+ "sdroxide-types",
+ "tracing",
 ]
 
 [[package]]
