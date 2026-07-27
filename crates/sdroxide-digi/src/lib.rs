@@ -86,8 +86,16 @@ pub trait DigiEngine: Send {
     ///
     /// `true` means this mode is producing audio and the engine should play it
     /// instead of the demodulated signal; `false` leaves the normal audio path
-    /// alone (so an out-of-sync RADE receiver still passes the raw SSB through).
+    /// alone (so an out-of-sync RADE receiver still passes the raw SSB through,
+    /// unless [`DigiEngine::mutes_analog_audio`] says otherwise).
     fn rx_audio_out(&mut self, _out: &mut Vec<f32>) -> bool {
+        false
+    }
+
+    /// True when the mode wants the demodulated (analog) audio silenced rather
+    /// than passed through, so only what it decodes is audible. Consulted only
+    /// where [`DigiEngine::rx_audio_out`] declined — decoded audio always wins.
+    fn mutes_analog_audio(&self) -> bool {
         false
     }
 

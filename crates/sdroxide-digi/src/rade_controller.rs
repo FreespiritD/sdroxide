@@ -136,6 +136,12 @@ impl DigiEngine for RadeController {
         true
     }
 
+    /// With the panel's analog mute set, the raw signal is silenced whenever
+    /// the decoder has nothing to play — out of sync, and while transmitting.
+    fn mutes_analog_audio(&self) -> bool {
+        self.cfg.rade_mute_analog
+    }
+
     fn poll(&mut self, _now: SystemTime, dial_hz: f64) -> Vec<DigiAction> {
         let mut actions = Vec::new();
         self.dial_hz = dial_hz;

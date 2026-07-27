@@ -388,6 +388,10 @@ pub struct DigiConfig {
     /// 0.25 = default = quarter speed / 4× slower). Lower scans the text/image
     /// more slowly, giving the receiver's waterfall more lines to render it.
     pub rf_paint_speed: f32,
+    /// RADE: silence the demodulated (analog) audio, so only decoded speech is
+    /// audible. Off by default — hearing the raw signal is how the operator
+    /// tunes onto an over before the modem syncs.
+    pub rade_mute_analog: bool,
 }
 
 impl Default for DigiConfig {
@@ -413,6 +417,7 @@ impl Default for DigiConfig {
             digi_squelch: 0.35,
             sstv_tx_ppm: 0.0,
             rf_paint_speed: 0.25,
+            rade_mute_analog: false,
         }
     }
 }

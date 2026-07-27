@@ -6802,7 +6802,22 @@ impl SdroxideApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if transmitting {
                     ui.label(RichText::new("● TX").size(11.0).strong().color(crate::theme::PINK));
+                    ui.add_space(8.0);
                 }
+                // Silence the raw signal, leaving only decoded speech audible.
+                let muted = self.digi_cfg_edit.rade_mute_analog;
+                let resp =
+                    crate::chrome::chip(ui, muted, RichText::new("MUTE ANALOG").size(10.5));
+                if resp.clicked() && self.digi_cfg_seeded {
+                    self.digi_cfg_edit.rade_mute_analog = !muted;
+                    cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
+                }
+                resp.on_hover_text(
+                    "Mute the demodulated audio, so only decoded speech is heard. \
+                     The raw signal is otherwise passed through whenever the modem \
+                     has nothing to play — that hiss is how you find an over before \
+                     it syncs, so leave this off while tuning.",
+                );
             });
         });
         ui.add_space(8.0);

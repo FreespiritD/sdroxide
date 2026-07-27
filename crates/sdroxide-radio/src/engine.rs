@@ -894,12 +894,17 @@ impl Engine {
         }
         // Digital voice: play the decoded speech instead of the demodulated
         // signal. The mode declines while it is out of sync, so the operator
-        // still hears the raw audio while tuning.
+        // still hears the raw audio while tuning — unless they asked for it
+        // muted.
         if self.take_voice_audio(out_rate) {
             let rx0 = &self.state.rx[0];
             let vol = if rx0.muted { 0.0 } else { rx0.volume * rx0.volume };
             self.main_play.clear();
             self.main_play.extend(self.voice_play.iter().map(|s| s * vol));
+        } else if self.mutes_analog_audio() {
+            // Silenced in place rather than dropped: the block still has to
+            // reach the mixer to keep the output paced.
+            self.main_play.fill(0.0);
         }
 
         let sub_audio: Option<&[f32]> = match (&mut self.sub, self.state.sub_rx_enabled) {
@@ -1037,10 +1042,19 @@ impl Engine {
         if self.take_voice_audio(self.audio_out_rate) {
             self.audio_play.clear();
             self.audio_play.extend(self.voice_play.iter().map(|s| s * vol));
+        } else if self.mutes_analog_audio() {
+            self.audio_play.fill(0.0);
         }
         if let Some(mixer) = self.mixer.as_mut() {
             mixer.push(&self.audio_play, None);
         }
+    }
+
+    /// True when the active digital-voice mode wants the demodulated audio
+    /// silenced instead of passed through — asked only after
+    /// [`Engine::take_voice_audio`] declined, so decoded speech still plays.
+    fn mutes_analog_audio(&self) -> bool {
+        self.digi.as_ref().is_some_and(|d| d.mutes_analog_audio())
     }
 
     /// Pull decoded speech from a digital-voice mode into `voice_play`, at
