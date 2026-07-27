@@ -16,7 +16,7 @@ or connects to a remote sdroxide server.
 2. [Basic operation](#2-basic-operation)
 3. [Digital modes (FT8, FT4, PSK31, RTTY, Olivia, THOR, FSQ, SSTV, RF Paint)](#3-digital-modes)
 4. [Skimmers (CW, PSK, RTTY)](#4-skimmers)
-5. [Radio and audio setup](#5-radio-and-audio-setup)
+5. [Settings](#5-settings)
 6. [Solar system 3D view](#6-solar-system-3d-view)
 7. [Remote operation](#7-remote-operation)
 8. [Web operation](#8-web-operation)
@@ -156,10 +156,7 @@ labels the allocations. Zoomed out it shows coarse bands (ham, broadcast, CB,
 AM); zoomed into a ham band it splits into the CW / digital / SSB / beacon
 sub-segments. When you zoom in close (a span of ~100 kHz or less), the digital
 sub-band is broken out into the individual popular modes — **FT8, FT4, JS8,
-WSPR, QRSS, PSK, RTTY, SSTV** — each in its own colour. Because several of these
-overlap in frequency (for example WSPR and QRSS sit inside the RTTY sub-band),
-overlapping modes are drawn as **separate stacked rows** above the main strip so
-each stays readable.
+WSPR, QRSS, PSK, RTTY, SSTV, FREEDV** — each in its own colour.
 
 ### 2.4 Bands and modes
 
@@ -169,7 +166,7 @@ popup with three rows:
 - **BAND:** `160M 80M 60M 40M 30M 20M 17M 15M 12M 10M 6M 2M GEN`. Each band
   remembers your last frequency, mode, and filter.
 - **MODE:** `LSB USB CW AM SAM NFM WFM DIGU DIGL DSB SPEC`.
-- **DIGITAL:** `FT8 FT4 PSK RTTY OLIVIA THOR FSQ SSTV RFPAINT` (see
+- **DIGITAL:** `FT8 FT4 PSK RTTY OLIVIA THOR FSQ SSTV RFPAINT RADE` (see
   [Digital modes](#3-digital-modes)).
 
 ![The band and mode selector popup](images/04-band-mode-popup.jpg)
@@ -257,7 +254,7 @@ passband. The grips work on both the spectrum and the waterfall.
 
 The **waterfall colour scheme** and the **spectrum background gradient** are set
 on the **UI** tab of the Settings window (see
-[radio and audio setup](#5-radio-and-audio-setup)). The colour scheme is one of
+[§5.3](#53-ui-display-preferences)). The colour scheme is one of
 `Classic`, `Viridis`, `Gray`, `Icom`, `Neon`, `Synthwave`, `Matrix`, or `Tron`;
 the gradient fills the spectrum area from a top colour down to a bottom colour
 (default dark red → black) and can be turned off.
@@ -620,28 +617,74 @@ decode.
 
 > **Note:** the skimmers are a wideband feature and work only with true IQ/SDR
 > sources (SoapySDR, HPSDR, TCI). They are unavailable when a CAT radio is
-> feeding demodulated audio (see [radio and audio setup](#5-radio-and-audio-setup)),
+> feeding demodulated audio (see [settings](#5-settings)),
 > because that mode has only a narrow audio slice rather than a wide IQ span.
 
 ---
 
-## 5. Radio and audio setup
+## 5. Settings
 
-Open the **SETTINGS** button (System module). The **General** tab holds your
-**callsign** and **grid square** — the same values used by FT8/FT4, the SSTV
-image header, and the logbook (and also editable from the FT8/SSTV setup dialog)
-— followed by the sound devices.
+Everything that configures sdroxide lives in one window, opened with the
+**⚙ SETTINGS** button in the System module (the **⚙ SETUP** button in the SPOTS
+window opens the same dialog on its Spots tab). Eight tabs run across the top:
 
-![The Settings window, General tab, with callsign grid square and audio settings](images/settings-general.jpg)
+| Tab | What it holds |
+| --- | --- |
+| **General** | Your callsign and grid, and the sound devices. [5.1](#51-general-station-and-audio) |
+| **Radio** | Which rig sdroxide talks to, and how. [5.2](#52-radio-choosing-and-configuring-the-rig) |
+| **UI** | Frame rate, waterfall palette, spectrum background. [5.3](#53-ui-display-preferences) |
+| **Controls** | Keyboard, mouse and MIDI bindings. [5.4](#54-controls-keyboard-mouse-and-midi) |
+| **Spots** | DX cluster, POTA, SOTA and PSK Reporter feeds. [5.5](#55-spots-spot-feeds) |
+| **FreeDV** | FreeDV Reporter (qso.freedv.org). [5.6](#56-freedv-freedv-reporter) |
+| **Uploads** | Callsign lookup, QSL upload, confirmation download. [5.7](#57-uploads-callsign-lookup-and-qsl-services) |
+| **Servers** | Hamlib rigctld and the built-in TCI server. [5.8](#58-servers-letting-other-programs-drive-the-radio) |
 
-The *Your audio* section of the **General** tab selects the speakers and
-microphone sdroxide uses for you (separate from the radio-audio devices):
+Most settings take effect the moment you change them. The ones that open or
+rebind a connection — the radio itself, the spot feeds, FreeDV Reporter, and the
+two servers — have their own **APPLY** or **Apply / reconnect** button, noted in
+each section below. Nothing here needs a restart.
+
+Settings are written to the per-user config directory ([§11](#11-configuration-files)):
+display preferences to `config.toml`, the radio to `radio.json`, key/mouse/MIDI
+bindings to `input.json`, feeds and credentials to `net.json`, and the two
+servers to `rigctld.json` and `tciserver.json`.
+
+### 5.1 General: station and audio
+
+![The General tab: callsign, grid square, and your own speakers and microphone](images/settings-general.jpg)
+
+**Station** — your **Callsign** and **Grid square**. This is the identity the
+whole program uses: FT8/FT4 exchanges, the SSTV image header, the logbook, the
+DX cluster login, and FreeDV Reporter. The same pair is editable from the FT8 /
+SSTV setup dialog; there is only one copy of it.
+
+**Your audio (speakers / microphone)** — the devices sdroxide uses for *you*,
+separate from any sound card wired to a radio:
 
 - **Output** — where receive audio is played.
 - **Input** — your microphone for voice transmit.
 
-Each defaults to **System default**. These can be changed live. The equivalents
-in `config.toml` are `audio_output` and `audio_input`.
+Both default to **System default** and can be changed live. In `config.toml`
+they are `audio_output` and `audio_input`.
+
+**Radio audio (sound card)** — a third section appears below those two, but
+*only when the radio interface is CAT / Audio* ([5.2.2](#522-cat-radios-serial-control--usb-audio)):
+every other backend carries its audio in-band and needs no sound card, which is
+why the screenshot above (taken with a TCI rig) does not show it.
+
+- **From radio (RX)** — the capture device carrying the radio's receive audio.
+- **To radio (TX)** — the playback device carrying your transmit audio to the
+  radio.
+- **Apply / reconnect** — reopens the CAT rig with the chosen cards.
+
+Device names include the manufacturer, model, ALSA card id, and USB id — for
+example `C-Media Electronics Inc. USB Audio Device, USB Audio [Device · 0d8c:0012]`
+— so two identical adapters can be told apart.
+
+> **IQ needs a stereo device.** IQ format requires a two-channel capture
+> interface (I and Q). A mono USB audio adapter cannot carry IQ; if you pick one
+> for IQ, sdroxide refuses it and shows a warning banner. Use a stereo line-input
+> interface for IQ, or choose **Demod audio**.
 
 On a PipeWire system, the desktop audio server can hold a USB radio codec's
 capture device open, which intermittently blocks sdroxide from opening it (the
@@ -651,28 +694,29 @@ stop managing that card, leaving it for sdroxide. Create a drop-in such as
 `~/.config/wireplumber/wireplumber.conf.d/51-radio.conf` that disables the
 card, then restart WirePlumber. See [troubleshooting](#12-troubleshooting).
 
-### 5.1 Choosing a backend
+### 5.2 Radio: choosing and configuring the rig
 
-On the **Radio** tab, **Radio interface** selects how sdroxide talks to your
-radio:
+**Radio interface**, at the top of the tab, selects how sdroxide talks to your
+radio. Everything below the selector changes to match the choice:
 
-- **SoapySDR** — a SoapySDR device (wideband IQ). The default. See
-  [5.2](#52-soapysdr-devices).
+- **SoapySDR** — a SoapySDR device (wideband IQ). The default, and listed only
+  when SoapySDR support is compiled in. See [5.2.1](#521-soapysdr-devices).
 - **HPSDR (network)** — an OpenHPSDR (Hermes/Metis) Ethernet SDR on the LAN. See
-  [5.4](#54-openhpsdr-network-radios).
+  [5.2.3](#523-hpsdr-network-radios).
 - **CAT / Audio** — a CAT-controlled radio with audio over a USB sound card. See
-  [5.3](#53-cat-radios-serial-control--usb-audio).
+  [5.2.2](#522-cat-radios-serial-control--usb-audio).
 - **TCI (network)** — a TCI server such as ExpertSDR3 or Thetis. See
-  [5.5](#55-tci-expertsdr3--thetis).
+  [5.2.4](#524-tci-network-expertsdr3-and-thetis).
 
-The controls shown below the selector change to match the chosen interface.
+There is no auto-detect: you pick the interface, and an interface that cannot be
+opened falls back to a silent source rather than guessing at another one.
 
 > After changing the radio interface, serial port, sound format, or
 > radio-audio device, press **Apply / reconnect** at the bottom of the Radio
-> tab (or under the CAT radio-audio settings). sdroxide rebuilds the radio
-> live — no restart. If the new interface can't be opened, the previous one
-> keeps running and an error is shown; your tuning resets to the new radio's
-> default frequency, as it would on a fresh start.
+> tab (or under the CAT radio-audio settings on the General tab). sdroxide
+> rebuilds the radio live — no restart. If the new interface can't be opened,
+> the previous one keeps running and an error is shown; your tuning resets to
+> the new radio's default frequency, as it would on a fresh start.
 
 **Apply / reconnect is for *changing* the radio, not for attaching it.** If the
 radio you already configured isn't there when sdroxide starts — a network rig
@@ -681,29 +725,36 @@ afterwards — sdroxide keeps trying it in the background and attaches by itself
 retrying at first every second and then more slowly. The same happens if the
 link drops mid-session: it reconnects when the radio comes back.
 
-### 5.2 SoapySDR devices
+#### 5.2.1 SoapySDR devices
 
-With the **SoapySDR** interface, the **Radio** tab shows the controls the device
-exposes:
+![The Radio tab with the SoapySDR interface selected](images/settings-radio-soapysdr.jpg)
+
+With the **SoapySDR** interface the tab shows the controls the device itself
+exposes, and nothing it does not:
 
 - **RX gains** — one slider per gain element (dB, with the device's own limits).
+  A rig with no software-adjustable gains says so instead, as in the screenshot
+  above.
 - **TX gains** — transmit gain sliders, if the device has them.
 - **Antenna** — a drop-down when the device has more than one RX antenna.
 
-![The Radio tab with the SoapySDR interface selected](images/settings-radio-soapysdr.jpg)
+The cyan heading above the gains names the device that is *open right now*, not
+the one selected — which is why the screenshot still reads
+`TCI 127.0.0.1:50001 (192 kHz IQ)`: the interface has been switched to SoapySDR
+but **Apply / reconnect** has not been pressed yet.
 
 The device to open and the sample rate come from `config.toml`
 (`device_args`, `sample_rate`). For example, `device_args = "driver=hackrf"`;
 an empty value uses the first device found. You can also override the device on
 the command line with `--device`.
 
-### 5.3 CAT radios (serial control + USB audio)
-
-A CAT radio is configured on the **Radio** tab (with the sound card chosen on
-the **General** tab, [5.7](#57-radio-audio-devices)). The audio arrives over a
-USB sound card, separately from your computer's speakers and microphone.
+#### 5.2.2 CAT radios (serial control + USB audio)
 
 ![The Radio tab with the CAT / Audio interface selected](images/settings-radio-cat.jpg)
+
+A CAT radio is controlled over a serial port while its audio arrives over a USB
+sound card — chosen on the **General** tab ([5.1](#51-general-station-and-audio)),
+separately from your computer's own speakers and microphone.
 
 **Sound format** — how the radio's audio is interpreted:
 
@@ -713,9 +764,9 @@ USB sound card, separately from your computer's speakers and microphone.
   X6100.
 - **IQ (stereo)** — the radio sends a stereo IQ signal (I on the left channel, Q
   on the right). This gives a full panadapter but requires a **stereo** capture
-  device (see the note below).
+  device (see the note in [5.1](#51-general-station-and-audio)).
 
-**Serial (CAT) settings:**
+**Serial (CAT) settings**, in the order they appear:
 
 - **Serial port** — the radio's CAT serial port. On Linux, USB-style ports
   (`/dev/ttyACM*`, `/dev/ttyUSB*`) are listed first.
@@ -732,21 +783,25 @@ USB sound card, separately from your computer's speakers and microphone.
 - **Poll rate** — how often (Hz) sdroxide reads the rig's frequency and mode.
 - **Radio ID (hex)** — the CI-V address, for Icom and Xiegu radios.
 
-### 5.4 OpenHPSDR (network radios)
+Scroll down for **Apply / reconnect**, which reopens the rig with the new
+settings.
+
+#### 5.2.3 HPSDR (network radios)
+
+![The Radio tab with the HPSDR (network) interface selected](images/settings-radio-hpsdr.jpg)
 
 With the **HPSDR (network)** interface, sdroxide reaches an OpenHPSDR
 (Hermes/Metis-family) Ethernet SDR over the LAN — no sound card or serial port
-involved. On the **Radio** tab:
+involved:
 
-- **Discover** — scan the local network for HPSDR devices and pick one from the
-  list. Protocol 2 devices are selectable; Protocol 1-only devices (such as the
-  Hermes Lite 2) are listed greyed-out.
+- **Devices / Discover** — scan the local network for HPSDR devices and pick one
+  from the list. Protocol 2 devices are selectable; Protocol 1-only devices
+  (such as the Hermes Lite 2) are listed greyed-out.
 - **Manual IP** — connect directly to a known address (for example
-  `192.168.1.50`), skipping discovery.
+  `192.168.1.50`), skipping discovery. A manual IP overrides whatever discovery
+  found.
 - **Sample rate** — the DDC receive rate: 48, 96, 192, 384, 768, or 1536 kHz.
   Wider rates give a wider panadapter span at more CPU/network cost.
-
-![The Radio tab with the HPSDR (network) interface selected](images/settings-radio-hpsdr.jpg)
 
 Receive is wideband IQ, so the full panadapter and the skimmers work.
 
@@ -766,11 +821,13 @@ Receive is wideband IQ, so the full panadapter and the skimmers work.
 > implausible rate points at a firewall or a wrong offset. Please attach that
 > output to a bug report.
 
-### 5.5 TCI (ExpertSDR3 / Thetis)
+#### 5.2.4 TCI (network): ExpertSDR3 and Thetis
+
+![The Radio tab with the TCI (network) interface selected](images/settings-radio-tci.jpg)
 
 With the **TCI (network)** interface, sdroxide connects to a TCI server — such as
 Expert Electronics **ExpertSDR3** or **Thetis** — over a WebSocket, receiving a
-wideband IQ stream and transmitting audio back. On the **Radio** tab:
+wideband IQ stream and transmitting audio back:
 
 - **Server address** — the TCI `host:port`. The default `127.0.0.1:50001` is
   ExpertSDR3's TCI listener on the same machine; enable *TCI* in the SDR software
@@ -779,145 +836,118 @@ wideband IQ stream and transmitting audio back. On the **Radio** tab:
 - **Test connection** — verify sdroxide can reach the server and report what it
   found, without leaving the dialog.
 
-![The Radio tab with the TCI (network) interface selected](images/settings-radio-tci.jpg)
-
 Receive is wideband IQ (full panadapter and skimmers); transmit sends audio to
 the TCI server, which modulates it.
 
 > This is sdroxide acting as a TCI *client*. For the other direction — sdroxide
 > acting as the rig so WSJT-X and friends can drive it — see
-> [§ 5.6 Built-in TCI server](#56-built-in-tci-server).
+> [§ 5.8.2 Built-in TCI server](#582-built-in-tci-server).
 
-### 5.6 Built-in TCI server
-
-sdroxide also *is* a TCI server, so TCI-capable programs can use it as their
-radio: frequency and mode control, a wideband IQ stream, receive audio to
-decode, and transmit audio to put on the air. It is **on by default** and
-configured on the **Servers** tab of the Settings dialog.
-
-![The TCI server settings](images/settings-tci-server.jpg)
-
-- **Enable** — turn the whole server on or off.
-- **Listen on** — `127.0.0.1` (this machine only, the default) or `0.0.0.0`
-  (reachable from your whole network).
-- **Port** — 50001 by default, the port TCI clients expect.
-- **Device name** — what clients see in the connect handshake.
-- **Max clients** — how many programs may connect at once. They all see the same
-  radio, and the last command wins.
-- **Allow clients to transmit** — turn this off to let programs read and tune
-  but never key the transmitter.
-
-The status line under the settings shows whether the server is listening, on
-which address, and **how many clients are connected right now**. Press **APPLY**
-to save and (re)bind.
-
-Setting up WSJT-X: under *Settings → Radio*, choose the **TCI Client RX1** rig,
-put sdroxide's address in **TCI Server** (e.g. `127.0.0.1:50002`), set PTT to
-**CAT**, and tick **TCI audio** so both audio devices come over TCI. JTDX and
-MSHV are configured the same way. Verified against WSJT-X on this address.
-
-If a client won't connect, run sdroxide with
-`RUST_LOG=sdroxide_tci=debug` — the whole TCI conversation is logged in both
-directions, which is usually enough to see which command it gave up on. WSJT-X
-also records the reason in `~/.local/share/WSJT-X/wsjtx_syslog.log`
-(`handle_transceiver_failure: reason: …`).
-
-A few things worth knowing:
-
-- **Port 50001 may already be taken.** If you also run ExpertSDR3 or Thetis on
-  this machine, it owns that port and sdroxide's server can't bind — the status
-  line says so. Move sdroxide's server to another port and point your clients
-  there.
-- **No authentication.** TCI has none, which is why the default is localhost. On
-  `0.0.0.0`, anyone who can reach the port can tune and key your transmitter.
-- **The transmitter has one owner.** A second program asking to transmit while
-  another is mid-over is refused, and keying up yourself (PTT, TUNE, or a
-  digital-mode burst) always takes the transmitter back from a client.
-- **A CAT radio has no IQ to share.** On the CAT interface sdroxide only
-  receives demodulated audio, so it offers control and audio to clients but no
-  IQ stream.
-- **Receive pauses while you transmit**, unless the radio is full-duplex — the
-  same as any other TCI rig.
-
-### 5.7 Radio audio devices
-
-On the **General** tab, the *Radio audio* section selects the sound card the
-CAT radio uses:
-
-- **From radio (RX)** — the capture device carrying the radio's receive audio.
-- **To radio (TX)** — the playback device carrying your transmit audio to the
-  radio.
-
-Device names include the manufacturer, model, ALSA card id, and USB id — for
-example `C-Media Electronics Inc. USB Audio Device, USB Audio [Device · 0d8c:0012]`
-— so two identical adapters can be told apart.
-
-> **IQ needs a stereo device.** IQ format requires a two-channel capture
-> interface (I and Q). A mono USB audio adapter cannot carry IQ; if you pick one
-> for IQ, sdroxide refuses it and shows a warning banner. Use a stereo line-input
-> interface for IQ, or choose **Demod audio**.
-
-### 5.8 UI preferences
+### 5.3 UI: display preferences
 
 ![The UI tab: frame rate, scroll/spectrum speed, palette, and spectrum background](images/settings-ui.jpg)
 
-The **UI** tab holds display preferences (stored in `config.toml` under `[ui]`):
+The **UI** tab holds display preferences, stored in `config.toml` under `[ui]`:
 
 - **Screen update rate** — the GUI/spectrum frame rate (30, 60, or 90 fps).
-- **Waterfall scroll speed** and **Spectrum update speed** — how fast the
-  waterfall scrolls and how quickly the spectrum line reacts (slower = more
-  averaged/smoother).
-- **Waterfall palette** — the waterfall colour scheme (see [2.8](#28-the-display-and-fft-controls)).
-- **Spectrum background** — a vertical gradient behind the spectrum line, with a
-  top and bottom colour (default dark red → black); untick **Gradient** for a
-  plain background.
+  Higher looks smoother and costs more CPU/GPU.
+- **Waterfall scroll speed** — how fast the waterfall scrolls.
+- **Spectrum update speed** — how quickly the spectrum trace reacts; slower is
+  more averaged and smoother.
+- **Waterfall palette** — the waterfall colour scheme (see
+  [2.8](#28-the-display-and-fft-controls) and the [appendix](#waterfall-colour-schemes)).
+- **Spectrum background** — a vertical gradient behind the spectrum line, filled
+  from the **top** colour down to the **bottom** colour (default dark red →
+  black). Untick **Gradient** for a plain background.
 
-### 5.9 Control inputs: keyboard, mouse and MIDI
+### 5.4 Controls: keyboard, mouse and MIDI
 
-Everything sdroxide can be told to do is an **action** — tune, PTT, change
-band, cycle noise reduction, open the logbook — and the **Controls** tab binds
-actions to whatever you would rather press or turn than click.
+Everything sdroxide can be told to do is an **action** — tune, PTT, change band,
+cycle noise reduction, open the logbook — and the **Controls** tab binds actions
+to whatever you would rather press or turn than click. The three sections of the
+tab (keyboard, mouse, MIDI) all draw on the same list of actions.
 
-**Keyboard.** The table lists every shortcut. Click one to rebind it, then press
-the key combination you want (Esc cancels). *Add shortcut* creates a row, *✕*
-removes one, and *Restore defaults* puts back the shipped set listed in
+Actions come in two kinds, and the *Step / mode* column changes to match. A
+**continuous** action (tuning, volume, filter width) takes a *step* — the amount
+one keypress or one detent moves it — and a *down* tickbox to make that control
+move it the other way, which is how the left and right arrows share one action.
+An **accel** above zero makes a held key move further the longer you hold it. A
+**momentary** action (PTT, mute, split) is either *Hold* — asserted while the
+key is down — or *Toggle*, which flips on each press.
+
+#### 5.4.1 Keyboard
+
+![The Controls tab, Keyboard section: the shortcut table with its action, step and accel columns](images/settings-controls-keyboard.jpg)
+
+The table lists every shortcut, one per row: the key **Shortcut**, what it
+**Does**, its **Step / mode**, its **Accel**, and an **On** tickbox to disable a
+binding without deleting it. Click the shortcut chip to rebind it, then press
+the key combination you want (Esc cancels). **+ Add shortcut** creates a row,
+**✕** removes one, and **Restore defaults** puts back the shipped set listed in
 [13](#13-appendix). Shortcuts are ignored while you are typing in a text field
 or a control has keyboard focus.
 
-Actions come in two kinds. A **continuous** action (tuning, volume, filter
-width) takes a *step* — the amount one keypress moves it — and a *down*
-tickbox to make that key move it the other way, which is how the left and right
-arrows share one action. An **accel** above zero makes a held key move further
-the longer you hold it. A **momentary** action (PTT, mute, split) is either
-*Hold* — asserted while the key is down — or *Toggle*, which flips on each
-press.
-
 **Push-to-talk deserves a note.** No PTT key ships bound, on purpose: a
 transmitter keyed by accident is the worst thing this feature could do to you.
-*Bind hold-to-talk to Space* sets it up in one click. A held PTT is released
+**Bind hold-to-talk to Space** sets it up in one click. A held PTT is released
 when you let go, when the window loses focus, when a text field takes the
-keyboard, and after the **unkey a held PTT after** timeout — so alt-tabbing
-mid-over drops you back to receive rather than transmitting your office.
+keyboard, and after the **Unkey a held PTT after** timeout at the bottom of the
+section (300 s by default, 0 disables it) — so alt-tabbing mid-over drops you
+back to receive rather than transmitting your office.
 
-**Panadapter mouse.** The wheel does one thing plain and another with Shift
-held; by default that is zoom and tune, and swapping them is a single dropdown
-if you would rather scroll to tune. *Tune step* is the Hz per detent, *Zoom
-rate* scales the zoom, and *Click-tune rounding* is the step click-to-tune snaps
-to. *Left-drag tunes as well as pans* can be turned off to make left-drag pan
-only, like right-drag. The middle and extra (side) mouse buttons can carry any
-action — a side button set to hold PTT behaves like a footswitch.
+#### 5.4.2 Panadapter mouse and mouse buttons
 
-**MIDI.** Any class-compliant MIDI surface works, and they are the cheapest real
-VFO knob there is: a DJ controller's jog wheel tunes, its pads make PTT and band
-buttons, its faders make gain controls. Pick your controller under *Controller*
-(*Rescan ports* if you plugged it in after opening the dialog), then add a row
-and turn the control you want — LEARN captures it. The *Last message* line names
-whatever moved last, which is how you identify an unlabelled knob.
+![The Controls tab, mouse section: wheel actions, tuning steps, and the mouse-button bindings](images/settings-controls-mouse.jpg)
+
+**Panadapter mouse** sets what the wheel does over the spectrum:
+
+- **Wheel** and **Wheel + Shift** — the plain and shifted wheel actions; by
+  default zoom and tune. Swapping them is a single dropdown if you would rather
+  scroll to tune.
+- **Tune step** — the Hz per wheel detent.
+- **Zoom rate** — scales how far one detent zooms.
+- **Click-tune rounding** — the step click-to-tune snaps to.
+- **Invert wheel direction** — flips both wheel actions.
+- **Left-drag tunes as well as pans** — turn it off to make left-drag pan only,
+  like right-drag.
+- **Scroll a digit on the frequency readout to tune it** — the wheel over a digit
+  of the VFO readout steps that digit.
+- **Restore mouse defaults** puts the whole section back.
+
+**Mouse buttons** binds the buttons themselves. The left and right buttons are
+reserved for tuning and panning; the middle and extra (side) buttons are free, so
+**+ Add mouse button** picks a button, an action and *Hold*/*Toggle* — a side
+button held for PTT behaves like a footswitch.
+
+F1 always opens this manual, even while you are typing, so it is not rebindable.
+
+#### 5.4.3 MIDI controller
+
+![The Controls tab, MIDI section: port selection, the live message readout, and the binding table](images/settings-controls-midi.jpg)
+
+Any class-compliant MIDI surface works, and they are the cheapest real VFO knob
+there is: a DJ controller's jog wheel tunes, its pads make PTT and band buttons,
+its faders make gain controls. MIDI needs the native app — the browser client
+has no MIDI access.
+
+- **Enable** — the rest of the section stays greyed out until this is ticked.
+- **Controller** — the input port to listen to. **Rescan ports** re-enumerates
+  if you plugged the surface in after opening the dialog, and the line beside it
+  reports the connected port or the reason it failed.
+- **Feedback to** — the output port for LED/motor feedback (see below).
+- **Last message** — names whatever control moved last, which is how you identify
+  an unlabelled knob.
+
+Each row of the binding table is one control: the **Control** chip (click it,
+then move the control you want — LEARN captures it), what it **Does**, how it
+**Reads as**, its **Step / mode**, an **LED** tickbox, and **On**. **+ Add MIDI
+control** adds a row and **Clear all** empties the table.
 
 Endless "jog" encoders send a *relative step* rather than a position, in one of
 three encodings that are indistinguishable from small movements. LEARN guesses
 from the direction you turn; if the knob then tunes backwards, tick **rev**. A
-plain fader or knob that sends a position instead should be set to *Absolute*.
+plain fader or knob that sends a position instead should be set to *Absolute
+(fader)*.
 
 Tick **LED** on a binding to send the current value back to the controller, so a
 PTT button lights while you transmit and a motor fader follows the volume. Not
@@ -932,14 +962,103 @@ by itself when you plug it back in.
 > (`--connect`, [7](#7-remote-operation)). Keyboard and mouse bindings work in
 > the browser client too; MIDI needs the native app.
 
-### 5.10 Hamlib rigctld server
+### 5.5 Spots: spot feeds
+
+![The Spots tab: DX cluster login and the POTA / SOTA / PSK Reporter feeds](images/15-settings-spots.jpg)
+
+The **Spots** tab turns on the feeds that put other stations on your panadapter
+and in the SPOTS window. What the spots then do — clicking one to work it, the
+filters, the world map — is [§9.1](#91-spot-feeds-dx-cluster-pota-sota-psk-reporter).
+
+- **Operator** — shown for reference only; your callsign and grid are set once
+  on the **General** tab and used everywhere, including to log in to the DX
+  cluster.
+- **DX cluster (telnet)** — tick **Enabled**, then enter the node **Host** and
+  **Port** (commonly 7300/7373/8000). **Login call** overrides the operator
+  callsign if needed, and **Commands** (one per line, e.g. `SET/FT8`) are sent
+  after login to set node-side filters.
+- **POTA / SOTA / PSK Reporter** — tick each feed to poll it. **POTA activator
+  spots** and **SOTA spots** show current activators; **PSK Reporter (current
+  band)** shows who is being heard on the band you are on. **Max age (s)** drops
+  spots older than that many seconds.
+- **APPLY** connects or disconnects the feeds and saves the settings.
+
+FreeDV Reporter is a spot source too, but has its own tab —
+[5.6](#56-freedv-freedv-reporter).
+
+### 5.6 FreeDV: FreeDV Reporter
+
+![The FreeDV tab: FreeDV Reporter station, server and reporting settings](images/settings-freedv.jpg)
+
+[FreeDV Reporter](https://qso.freedv.org/) is where FreeDV operators announce
+where they are listening and who they are hearing; sdroxide talks to it in both
+directions. What that gets you is [§9.5](#95-freedv-reporter-qsofreedvorg); the
+tab itself is:
+
+- **Enable** — connects while ticked. You are only *shown* to others while the
+  radio is in **RADE** mode, so the site never lists you as working FreeDV when
+  you are actually on CW.
+- **Station → Message** — a free-text status shown beside your callsign.
+  **Receive only (I cannot transmit)** marks you as a listener. You are reported
+  under the callsign and grid from the **General** tab; *without both, the
+  connection is view-only — you see other stations but do not appear yourself*.
+- **Server → Host** and **Port** — the public server (`qso.freedv.org:80`) by
+  default. **TLS (wss://)** is greyed out: it is not implemented yet, and FreeDV
+  GUI uses plain `ws://` too.
+- **Reporting → Report stations I decode** sends a reception report for each
+  callsign recovered from a received End-of-Over frame. **Show other reporter
+  stations as spots** adds them to the panadapter, world map and SPOTS window
+  under the **FREEDV** filter.
+- The status lines underneath show exactly how you are being reported
+  (`OE3JJS / JN78ve — SDRoxide 0.6.0`) and whether the connection is up.
+- **APPLY** connects or disconnects and saves.
+
+### 5.7 Uploads: callsign lookup and QSL services
+
+![The Uploads tab: callsign lookup, eQSL / QRZ / Club Log upload, and LoTW confirmations](images/16-settings-uploads.jpg)
+
+The **Uploads** tab holds every online account the logbook uses. All of it is
+stored in plaintext in `net.json`. How the features behave is
+[§9.2](#92-callsign-lookup) and [§9.3](#93-uploading-qsos-eqsl-qrz-club-log-lotw);
+the fields are:
+
+- **Callsign lookup → Provider** — `QRZ.com` (needs a QRZ username and password
+  with an active XML-data subscription) or `HamQTH` (free). Fill in the pair
+  belonging to your provider: **QRZ user / QRZ pass** or **HamQTH user /
+  HamQTH pass**. **Auto-fill name/QTH/grid on spot click & QSO** looks a call up
+  by itself instead of only on the **LOOKUP** button.
+- **Upload — eQSL / QRZ / Club Log** — **eQSL user** and **pass**; the **QRZ log
+  key** (your QRZ *logbook* API key, which is not the XML-lookup login above);
+  **Club Log email**, **pass** and **key**. Tick **Auto-upload each new QSO** and
+  then the services to push to — the **eQSL / QRZ / Club Log** tickboxes on the
+  line below.
+- **Confirmations (download)** — **LoTW user** and **pass**. LoTW *upload* stays
+  manual, by design; only the download is automated.
+
+At the bottom of the tab, **APPLY** saves everything above, and
+**SYNC CONFIRMATIONS** pulls your LoTW/eQSL confirmations into the log.
+
+### 5.8 Servers: letting other programs drive the radio
+
+The **Servers** tab makes sdroxide the radio for other software. Two servers
+share the tab, one above the other, and both can run at the same time.
+
+> **Which server should I use?** rigctld carries *control only* and is understood
+> by nearly everything. The built-in TCI server additionally carries receive
+> audio, transmit audio and a wideband IQ stream, but only a handful of programs
+> speak it.
+
+Neither protocol has any authentication, which is why both default to
+`127.0.0.1`.
+
+#### 5.8.1 Hamlib rigctld server
+
+![The Servers tab, Hamlib rigctld section](images/settings-servers-hamlib.jpg)
 
 Most amateur software reaches a radio through **Hamlib**, over the network
 protocol its `rigctld` daemon speaks. sdroxide serves that protocol directly, so
 WSJT-X, fldigi, JS8Call, N1MM, Log4OM, GPredict and CQRLOG can drive it with no
 extra daemon, no serial cable and no virtual COM port pair.
-
-It is configured on the **Servers** tab, above the TCI server.
 
 - **Enable** — off by default. Port 4532 is often already held by a real
   `rigctld`, and the protocol has no authentication of any kind, so turning
@@ -979,11 +1098,56 @@ that read the mode and periodically write it back — WSJT-X does — therefore
 cannot knock a running FT8 session out of its mode: setting the mode already
 reported changes nothing.
 
-> **Which server should I use?** rigctld carries *control only* and is
-> understood by nearly everything. The built-in TCI server
-> ([5.6](#56-built-in-tci-server)) additionally carries receive audio, transmit
-> audio and a wideband IQ stream, but only a handful of programs speak it. Both
-> can run in parallel.
+#### 5.8.2 Built-in TCI server
+
+![The Servers tab, built-in TCI server section](images/settings-servers-tci.jpg)
+
+sdroxide also *is* a TCI server, so TCI-capable programs can use it as their
+radio: frequency and mode control, a wideband IQ stream, receive audio to
+decode, and transmit audio to put on the air. It is **on by default**.
+
+- **Enable** — turn the whole server on or off.
+- **Listen on** — `127.0.0.1` (this machine only, the default) or `0.0.0.0`
+  (reachable from your whole network).
+- **Port** — 50001 by default, the port TCI clients expect. The screenshot uses
+  50002 because ExpertSDR3 has 50001 on that machine.
+- **Device name** — what clients see in the connect handshake.
+- **Max clients** — how many programs may connect at once. They all see the same
+  radio, and the last command wins.
+- **Allow clients to transmit** — turn this off to let programs read and tune
+  but never key the transmitter.
+
+The green status line shows whether the server is listening, on which address,
+and **how many clients are connected right now**. Press **APPLY** to save and
+(re)bind.
+
+Setting up WSJT-X: under *Settings → Radio*, choose the **TCI Client RX1** rig,
+put sdroxide's address in **TCI Server** (e.g. `127.0.0.1:50002`), set PTT to
+**CAT**, and tick **TCI audio** so both audio devices come over TCI. JTDX and
+MSHV are configured the same way. Verified against WSJT-X on this address.
+
+If a client won't connect, run sdroxide with
+`RUST_LOG=sdroxide_tci=debug` — the whole TCI conversation is logged in both
+directions, which is usually enough to see which command it gave up on. WSJT-X
+also records the reason in `~/.local/share/WSJT-X/wsjtx_syslog.log`
+(`handle_transceiver_failure: reason: …`).
+
+A few things worth knowing:
+
+- **Port 50001 may already be taken.** If you also run ExpertSDR3 or Thetis on
+  this machine, it owns that port and sdroxide's server can't bind — the status
+  line says so. Move sdroxide's server to another port and point your clients
+  there.
+- **No authentication.** TCI has none, which is why the default is localhost. On
+  `0.0.0.0`, anyone who can reach the port can tune and key your transmitter.
+- **The transmitter has one owner.** A second program asking to transmit while
+  another is mid-over is refused, and keying up yourself (PTT, TUNE, or a
+  digital-mode burst) always takes the transmitter back from a client.
+- **A CAT radio has no IQ to share.** On the CAT interface sdroxide only
+  receives demodulated audio, so it offers control and audio to clients but no
+  IQ stream.
+- **Receive pauses while you transmit**, unless the radio is full-duplex — the
+  same as any other TCI rig.
 
 ---
 
@@ -1384,12 +1548,13 @@ authentication if it is reachable from an untrusted network.
 ## 9. Spotting, awards, and QSL upload
 
 SDR Oxide features spots you can click to work, automatic callsign lookup, 
-one-click QSO upload, and award tracking. These features are 
-configured on the **Spots**, **FreeDV** and **Uploads** tabs of the Settings
-window (the **⚙ SETTINGS** button, or the **⚙ SETUP** button in the SPOTS
-window), and surfaced by the **SPOTS** and **AWARDS** buttons in the System
-module. Your callsign and grid come from the **General** tab and are used by all
-of them.
+one-click QSO upload, and award tracking. This chapter is about what they *do*;
+the settings behind them are on the **Spots** ([§5.5](#55-spots-spot-feeds)),
+**FreeDV** ([§5.6](#56-freedv-freedv-reporter)) and **Uploads**
+([§5.7](#57-uploads-callsign-lookup-and-qsl-services)) tabs of the Settings
+window, and they are surfaced by the **SPOTS** and **AWARDS** buttons in the
+System module. Your callsign and grid come from the **General** tab and are used
+by all of them.
 
 All of this runs on the machine with the radio (the server, in remote/web mode),
 so a browser or remote client uses it too. Credentials are stored in plaintext in
@@ -1402,22 +1567,8 @@ so a browser or remote client uses it too. Credentials are stored in plaintext i
 
 ![Live spots as clickable markers on the panadapter, and the SPOTS window](images/14-spots-panel.jpg)
 
-Enable and configure the feeds on the **Spots** tab of Settings:
-
-![The Spots settings tab](images/15-settings-spots.jpg)
-
-- **Operator** — shown for reference only; your callsign and grid are set once
-  on the **General** tab and used everywhere, including to log in to the DX
-  cluster.
-- **DX cluster (telnet)** — tick **Enabled**, then enter the node **Host** and
-  **Port** (commonly 7300/7373/8000). **Login call** overrides the operator
-  callsign if needed, and **Commands** (one per line, e.g. `SET/FT8`) are sent
-  after login to set node-side filters.
-- **POTA / SOTA / PSK Reporter** — tick each feed to poll it. POTA and SOTA show
-  current activator spots; PSK Reporter shows who is being heard on your current
-  band. **Max age** drops spots older than the given number of seconds.
-- Press **APPLY** to connect/disconnect the feeds and save the settings.
-
+Enable the feeds you want — DX cluster, POTA, SOTA, PSK Reporter — on the
+**Spots** tab of Settings ([§5.5](#55-spots-spot-feeds)) and press **APPLY**.
 Spots then appear two ways:
 
 - **On the panadapter** — colour-coded, clickable boxes along the bottom of the
@@ -1439,12 +1590,10 @@ low so the signal lands in the CW passband.
 
 ### 9.2 Callsign lookup
 
-Auto-fill operator details from an online callsign database. On the **Uploads**
-tab of Settings, pick a **Provider** and enter its credentials:
-
-- **QRZ.com** — needs a QRZ username and password with an active XML-data
-  subscription.
-- **HamQTH** — free; needs a HamQTH username and password.
+Auto-fill operator details from an online callsign database — **QRZ.com** (needs
+an active XML-data subscription) or **HamQTH** (free). Pick the **Provider** and
+enter its credentials on the **Uploads** tab of Settings
+([§5.7](#57-uploads-callsign-lookup-and-qsl-services)).
 
 Tick **Auto-fill name/QTH/grid on spot click & QSO** to look a call up
 automatically when you click a spot, start an FT8 QSO, or finish typing a call in
@@ -1455,18 +1604,12 @@ zones).
 
 ### 9.3 Uploading QSOs (eQSL, QRZ, Club Log, LoTW)
 
-Configure your upload services on the **Uploads** tab:
-
-![The Uploads settings tab](images/16-settings-uploads.jpg)
-
-- **eQSL** — username and password.
-- **QRZ Logbook** — the logbook **API key** (from your QRZ logbook settings; this
-  is different from the XML-lookup login above).
-- **Club Log** — the account email, password, and an application **API key**.
-- Tick **Auto-upload each new QSO** and the target(s) to push every QSO as it is
-  logged, or upload individual QSOs from the logbook with the per-row **UP**
-  button. Each upload sets that QSO's status flag (the **↑** in the logbook), and
-  failures are reported in the SPOTS window's status line.
+Enter your eQSL, QRZ Logbook and Club Log accounts on the **Uploads** tab
+([§5.7](#57-uploads-callsign-lookup-and-qsl-services)). Then either tick
+**Auto-upload each new QSO** and the target service(s) to push every QSO as it is
+logged, or upload individual QSOs from the logbook with the per-row **UP**
+button. Each upload sets that QSO's status flag (the **↑** in the logbook), and
+failures are reported in the SPOTS window's status line.
 
 **LoTW** upload is deliberately not automated — LoTW requires a signed upload via
 ARRL's TQSL. Export your log to **ADIF** from the logbook and sign/upload it with
@@ -1504,24 +1647,11 @@ where they are listening and who they are hearing. SDRoxide talks to it in both
 directions: your station appears on the site, and everyone else's appears in
 SDRoxide as spots.
 
-Configure it on the **FreeDV** tab of Settings:
-
-- **Enable** — connects while ticked. You are only *shown* to others while the
-  radio is in **RADE** mode; in any other mode the connection stays up but your
-  station is hidden, so the site never lists you as working FreeDV when you are
-  actually on CW.
-- **Station** — you are reported under the operator callsign and grid from the
-  **General** tab, the same identity the rest of the app uses. **Message** is a
-  free-text status shown beside your callsign, and **Receive only** marks you as
-  a listener. *Without both a callsign and a grid the connection is view-only:
-  you will see other stations but will not appear yourself.*
-- **Server** — **Host** and **Port** default to the public server
-  (`qso.freedv.org:80`).
-- **Reporting** — **Report stations I decode** sends a reception report for each
-  callsign recovered from a received End-of-Over frame. **Show other reporter
-  stations as spots** adds them to the panadapter, world map and SPOTS window
-  under the **FREEDV** filter.
-- Press **APPLY** to connect/disconnect and save.
+Turn it on and point it at a server on the **FreeDV** tab of Settings
+([§5.6](#56-freedv-freedv-reporter)). You are only *shown* to others while the
+radio is in **RADE** mode; in any other mode the connection stays up but your
+station is hidden, so the site never lists you as working FreeDV when you are
+actually on CW.
 
 While the feature is on, SDRoxide reports your transmit frequency as you tune and
 your transmit/receive state as you key up, and reports your software as
@@ -1678,7 +1808,7 @@ Shortcuts are ignored while typing in a text field.
 
 These are the **defaults**. Every one of them can be rebound — and PTT, band
 changes, filter width and much else bound to keys, mouse buttons or a MIDI
-controller — on the **Controls** tab; see [5.9](#59-control-inputs-keyboard-mouse-and-midi).
+controller — on the **Controls** tab; see [5.4](#54-controls-keyboard-mouse-and-midi).
 F1 is the exception: it always opens the manual, so it is not rebindable.
 
 ### Modes
@@ -1712,4 +1842,4 @@ disabled in the selector.
 
 `Classic` (PowerSDR-style), `Viridis`, `Gray`, `Icom` (Icom-style palette,
 peaking at red with no white blow-out), `Neon`, `Synthwave`, `Matrix`, and
-`Tron`. Chosen on the **UI** tab of the Settings window ([5.8](#58-ui-preferences)).
+`Tron`. Chosen on the **UI** tab of the Settings window ([5.3](#53-ui-display-preferences)).
