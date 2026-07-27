@@ -5,8 +5,8 @@ pluggable radio backends (**SoapySDR**, **OpenHPSDR**, **TCI**, and **CAT**), an
 [egui](https://github.com/emilk/egui) GUI, and a cyberpunk theme. It runs as a **native desktop application** and, from the same
 binary, as a **server that streams the same UI to a web browser** over
 WebSocket. It includes an integrated, persistent **logbook**, full **FT8/FT4**
-digital-mode operation, and a **built-in TCI server** so third-party programs
-like WSJT-X can use it as their radio.
+digital-mode operation, and **built-in TCI and Hamlib rigctld servers** so
+third-party programs like WSJT-X can use it as their radio.
 
 <img width="2351" height="984" alt="image" src="https://github.com/user-attachments/assets/6130eb56-9486-414c-b4b8-ceeb366d812c" />
 
@@ -53,9 +53,14 @@ One binary, three ways to run it:
   as clickable panadapter markers (click to tune + pre-fill a log entry),
   QRZ/HamQTH callsign lookup, one-click upload to LoTW / eQSL / Club Log / QRZ,
   and live **DXCC / WAS / WAZ / grid** award tracking (worked vs confirmed).
+- **Control inputs** — every shortcut is rebindable, and any class-compliant
+  **MIDI controller** can drive the radio: a jog wheel as the VFO knob, pads as
+  PTT and band buttons, faders as gain controls, with LED/motor feedback. Mouse
+  buttons take bindings too (a side button held for PTT works as a footswitch),
+  and the panadapter wheel can zoom or tune.
 - **Persistence** — device, rates, gains, memories, band stacks, the FT8/FT4
-  operator profile, network/QSL credentials, and the logbook are all stored under
-  `~/.config/sdroxide/`.
+  operator profile, network/QSL credentials, control bindings, and the logbook
+  are all stored under `~/.config/sdroxide/`.
 
 ## FT8 / FT4
 
@@ -241,8 +246,8 @@ press **Apply / reconnect**:
   user manual, §5.4).
 - **CAT / Audio** — a CAT-controlled rig (Icom/CI-V, Yaesu, Xiegu) with audio
   over a USB sound card, as either demodulated mono audio or stereo IQ.
-- **TCI** — a TCI (Transceiver Control Interface) server such as ExpertSDR3 or
-  Thetis over WebSocket (default `127.0.0.1:50001`): wideband IQ receive plus
+- **TCI** — a TCI (Transceiver Control Interface) server such as ExpertSDR3 
+  over WebSocket (default `127.0.0.1:50001`): wideband IQ receive plus 
   audio transmit.
 
 The wideband-IQ backends (SoapySDR, HPSDR, TCI) drive the full panadapter, the
@@ -256,12 +261,41 @@ sdroxide is also a **TCI server**, so TCI-capable programs — WSJT-X's SunSDR
 mode control, a wideband IQ stream, receive audio to decode, and transmit audio
 to put on the air. Several clients can connect at once.
 
-It is on by default at `127.0.0.1:50001` and configured on the **TCI Server**
-tab of the Settings dialog, which also shows the live client count. TCI has no
+It is on by default at `127.0.0.1:50001` and configured on the **Servers** tab
+of the Settings dialog, which also shows the live client count. TCI has no
 authentication, so it listens on localhost only unless you change that; the
 transmitter has a single owner, and keying up locally always takes it back.
 Verified against WSJT-X (rig *TCI Client RX1*, PTT via CAT, TCI audio). See the
 user manual, §5.6.
+
+## Built-in Hamlib rigctld server
+
+Most amateur software reaches a radio through **Hamlib**, over the network
+protocol its `rigctld` daemon speaks. sdroxide serves that protocol directly, so
+**WSJT-X, fldigi, JS8Call, N1MM, Log4OM, GPredict and CQRLOG** can drive it with
+no extra daemon, no serial cable and no virtual COM port pair — frequency, mode
+and passband, PTT, VFO A/B and split, RIT/XIT, power and volume levels, the
+NB/NR/ANF/MUTE functions, and the VFO operations.
+
+It is **off by default** — port 4532 is often already held by a real `rigctld`,
+and the protocol has no authentication — and lives on the **Servers** tab next
+to the TCI server. In WSJT-X or fldigi choose the rig **Hamlib NET rigctl**
+(model 2) and point it at `127.0.0.1:4532`. Unlike TCI it carries control only,
+no audio or IQ; both servers can run at once. See the user manual, §5.10.
+
+## Control inputs
+
+Every keyboard shortcut is a rebindable **action**, and the same action list is
+reachable from mouse buttons and from a MIDI controller — the cheapest real VFO
+knob there is. Configured on the **Controls** tab; see the user manual, §5.9.
+
+Push-to-talk ships **unbound** on purpose. One click binds hold-to-talk to
+Space, and a held PTT is released on key-up, on window focus loss, on a text
+field taking the keyboard, when the controller is unplugged, and after a
+configurable timeout.
+
+Bindings are stored with the *user interface*, not the engine, so a knob plugged
+into your laptop works against a remote radio over `--connect` too.
 
 ## SoapySDR connectivity
 
@@ -354,7 +388,9 @@ sdroxide --connect 192.168.1.10:4950
 
 ## Keyboard shortcuts
 
-Active whenever a text field isn't focused.
+Active whenever a text field isn't focused. These are the **defaults** — all of
+them, plus PTT, band, mode, filter and much else, are rebindable on the
+**Controls** tab.
 
 | Key | Action |
 | --- | --- |

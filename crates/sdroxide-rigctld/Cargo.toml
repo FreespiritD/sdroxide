@@ -1,0 +1,9 @@
+[package]
+name = "sdroxide-rigctld"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sdroxide-types.workspace = true
+crossbeam-channel.workspace = true
+tracing.workspace = true

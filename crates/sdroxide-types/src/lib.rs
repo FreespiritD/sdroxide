@@ -14,12 +14,14 @@ mod controller;
 mod digi;
 mod entity;
 mod geo;
+mod input;
 mod worldmask;
 mod memory;
 mod meters;
 mod mode;
 mod netcfg;
 mod radio;
+mod rigctld;
 mod skimmer;
 mod spectrum;
 mod spot;
@@ -50,6 +52,11 @@ pub use geo::{
     distance_km, grid_bearing, grid_distance_km, grid_to_latlon, great_circle_points, is_land,
     land_cell, land_mask_dims,
 };
+pub use input::{
+    Action, ActionInput, ActionKind, BindingTuning, ButtonMode, InputSettings, KeyBinding, KeyChord,
+    MidiBinding, MidiMsg, MidiMsgKind, MidiSettings, MouseButton, MouseButtonBinding, RelativeMode,
+    WheelAction, WheelSettings,
+};
 pub use memory::{BandStackEntry, MemoryChannel};
 pub use meters::{Meters, TxMeters, TxTelemetry};
 pub use mode::{AgcMode, Mode, NrLevel};
@@ -61,6 +68,7 @@ pub use radio::{
     Backend, CatConfig, CatFamily, DigiMode, HpsdrConfig, HpsdrDevice, LineState, ModeControl,
     Parity, PttMethod, RadioConfig, SerialConfig, SoundFormat, StopBits, TciConfig,
 };
+pub use rigctld::RigctldConfig;
 pub use skimmer::{SkimmerKind, SkimmerSettings, SkimmerSpot};
 pub use spectrum::{SpectrumConfig, SpectrumFrame};
 pub use spot::{Spot, SpotKind};

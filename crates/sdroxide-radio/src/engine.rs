@@ -21,8 +21,10 @@ use sdroxide_dsp::{
     Agc, AutoNotch, DcBlock, Ddc, Demodulator, Duc, Modulator, MonoResampler, NeuralNr,
     NoiseBlanker, SpectralNr, SpectrumAnalyzer, channel_target, make_demod, make_modulator,
 };
+use sdroxide_rigctld::{RigState, RigctldController};
 use sdroxide_tci::server::{ServerRequest, TciServerController, TciStateSnapshot};
 use sdroxide_types::{
+    RigctldConfig,
     Band, BandStackEntry, Command, DeviceCaps, DigiConfig, Direction, MemoryChannel, Meters,
     Mode, NrLevel, RadioEvent, RadioState, RxId, RxState, SpectrumConfig, SpectrumFrame,
     TciServerConfig, TxMeters, Vfo,
@@ -542,6 +544,21 @@ struct Engine {
     skim_ddc: Option<Ddc>,
     skimmer: Option<SkimmerController>,
     skim_buf: Vec<Complex32>,
+    /// Built-in Hamlib rigctld server: the control-only surface every
+    /// "NET rigctl" client speaks (WSJT-X, fldigi, N1MM, Log4OM, GPredict).
+    /// Present while enabled and successfully bound.
+    rigctld: Option<RigctldController>,
+    rigctld_cfg: RigctldConfig,
+    /// Last bind failure, kept so the settings dialog can show why it is not
+    /// running — usually a real `rigctld` already holding the port.
+    rigctld_err: Option<String>,
+    /// Digest of the last state published to rigctld clients. Comparing scalars
+    /// keeps the per-tick check allocation-free; the full snapshot is only
+    /// built when something actually moved.
+    rigctld_seen: Option<RigDigest>,
+    /// Most recent S-meter reading, so rigctld's `STRENGTH` level has a value
+    /// to report between meter updates.
+    last_s_dbm: f32,
     /// Built-in TCI server: third-party clients (WSJT-X, JTDX, skimmers)
     /// driving this radio. Present while enabled and successfully bound.
     tci_srv: Option<TciServerController>,
@@ -705,6 +722,11 @@ fn engine_thread(
         skim_ddc: None,
         skimmer: None,
         skim_buf: Vec::new(),
+        rigctld: None,
+        rigctld_cfg: RigctldConfig::default(),
+        rigctld_err: None,
+        rigctld_seen: None,
+        last_s_dbm: -127.0,
         tci_srv: None,
         tci_cfg: TciServerConfig::default(),
         tci_srv_err: None,
@@ -753,6 +775,10 @@ fn engine_thread(
     // clients can connect without the operator having to arm anything.
     engine.tci_cfg = sdroxide_config::load_tci_server_config();
     engine.sync_tci_server();
+    // The rigctld server is off unless the operator turned it on: port 4532 is
+    // commonly already taken by a real rigctld, and it has no authentication.
+    engine.rigctld_cfg = sdroxide_config::load_rigctld_config();
+    engine.sync_rigctld();
     engine.update_tuning();
 
     let mut buf = vec![Complex32::default(); 16_384];
@@ -796,6 +822,7 @@ fn engine_thread(
         engine.poll_digi();
         engine.poll_skimmer();
         engine.poll_tci_server();
+        engine.poll_rigctld();
         engine.poll_spots();
 
         if engine.tx_active {
@@ -858,8 +885,66 @@ fn engine_thread(
                 })
             };
             if let Some(m) = meters {
+                engine.last_s_dbm = m.s_dbm;
                 let _ = engine.event_tx.send(RadioEvent::Meters(m));
             }
+        }
+    }
+}
+
+/// Allocation-free fingerprint of everything a rigctld client can observe.
+///
+/// Floats are compared by bit pattern rather than value so the digest derives
+/// `Eq`; an exact-equality check is what is wanted here anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RigDigest {
+    vfo_a: u64,
+    vfo_b: u64,
+    active_b: bool,
+    split: bool,
+    mode: Mode,
+    filter_lo: u32,
+    filter_hi: u32,
+    ptt: bool,
+    tune: bool,
+    rit: i32,
+    xit: i32,
+    drive: u32,
+    volume: u32,
+    mic_gain: u32,
+    band: Band,
+    muted: bool,
+    strength: i32,
+    noise_blanker: bool,
+    noise_reduction: bool,
+    auto_notch: bool,
+    ranges: (usize, usize),
+}
+
+impl RigDigest {
+    fn of(s: &RigState) -> Self {
+        RigDigest {
+            vfo_a: s.vfo_a_hz.to_bits(),
+            vfo_b: s.vfo_b_hz.to_bits(),
+            active_b: s.active_vfo == sdroxide_types::Vfo::B,
+            split: s.split,
+            mode: s.mode,
+            filter_lo: s.filter_lo.to_bits(),
+            filter_hi: s.filter_hi.to_bits(),
+            ptt: s.ptt,
+            tune: s.tune,
+            rit: s.rit_hz,
+            xit: s.xit_hz,
+            drive: s.drive.to_bits(),
+            volume: s.volume.to_bits(),
+            mic_gain: s.mic_gain.to_bits(),
+            band: s.band,
+            muted: s.muted,
+            strength: s.strength_dbm,
+            noise_blanker: s.noise_blanker,
+            noise_reduction: s.noise_reduction,
+            auto_notch: s.auto_notch,
+            ranges: (s.rx_ranges.len(), s.tx_ranges.len()),
         }
     }
 }
@@ -1731,6 +1816,17 @@ impl Engine {
                 return;
             }
 
+            // Built-in rigctld server (no RadioState change → return before
+            // the State emit below).
+            SetRigctldConfig(cfg) => {
+                if let Err(e) = sdroxide_config::save_rigctld_config(&cfg) {
+                    warn!("saving rigctld config: {e}");
+                }
+                self.rigctld_cfg = cfg;
+                self.sync_rigctld();
+                return;
+            }
+
             // Built-in TCI server (no RadioState change → return before the
             // State emit below).
             SetTciServerConfig(cfg) => {
@@ -1879,6 +1975,159 @@ impl Engine {
                     c.tap_out.clear();
                 }
             }
+        }
+    }
+
+    /// Start, stop or rebind the rigctld server to match `rigctld_cfg`.
+    fn sync_rigctld(&mut self) {
+        match (self.rigctld_cfg.enabled, self.rigctld.is_some()) {
+            (true, true) => {
+                if self.rigctld.as_ref().map(|s| s.addr()) != Some(self.rigctld_cfg.addr().as_str())
+                {
+                    // Address changed: drop first so the old port is released
+                    // before we try to take the new one.
+                    self.rigctld = None;
+                    self.start_rigctld();
+                } else if let Some(s) = self.rigctld.as_ref() {
+                    // Transmit permission and the client limit apply live.
+                    s.set_config(self.rigctld_cfg.clone());
+                    self.emit_rigctld_status();
+                }
+            }
+            (true, false) => self.start_rigctld(),
+            (false, true) => {
+                self.rigctld = None;
+                self.rigctld_seen = None;
+                info!("rigctld server stopped");
+                self.emit_rigctld_status();
+            }
+            (false, false) => self.emit_rigctld_status(),
+        }
+    }
+
+    fn start_rigctld(&mut self) {
+        self.rigctld_err = None;
+        let snap = self.rigctld_snapshot();
+        match RigctldController::start(&self.rigctld_cfg, snap.clone()) {
+            Ok(srv) => {
+                info!(addr = %self.rigctld_cfg.addr(), "rigctld server started");
+                self.rigctld = Some(srv);
+                self.rigctld_seen = Some(RigDigest::of(&snap));
+            }
+            Err(e) => {
+                // By far the most common first-run failure is a real rigctld
+                // already holding 4532, so say so rather than leaving the
+                // operator with a bare "address in use".
+                warn!("rigctld server: {e}");
+                let hint = if self.rigctld_cfg.port == 4532 {
+                    format!("{e} — a real rigctld may already own this port")
+                } else {
+                    e
+                };
+                self.rigctld_err = Some(hint);
+            }
+        }
+        self.emit_rigctld_status();
+    }
+
+    fn emit_rigctld_status(&self) {
+        let _ = self.event_tx.send(RadioEvent::RigctldStatus {
+            running: self.rigctld.is_some(),
+            addr: self
+                .rigctld
+                .as_ref()
+                .map(|s| s.addr().to_string())
+                .unwrap_or_else(|| self.rigctld_cfg.addr()),
+            clients: self.rigctld.as_ref().map(|s| s.clients()).unwrap_or(0),
+            error: self.rigctld_err.clone(),
+        });
+    }
+
+    /// The slice of state rigctld clients see.
+    fn rigctld_snapshot(&self) -> RigState {
+        let rx = &self.state.rx[0];
+        RigState {
+            vfo_a_hz: self.state.vfo_a_hz,
+            vfo_b_hz: self.state.vfo_b_hz,
+            active_vfo: self.state.active_vfo,
+            split: self.state.split,
+            mode: rx.mode,
+            filter_lo: rx.filter_lo,
+            filter_hi: rx.filter_hi,
+            ptt: self.state.tx.ptt,
+            tune: self.state.tx.tune,
+            rit_hz: self.state.rit.effective_hz() as i32,
+            xit_hz: self.state.xit.effective_hz() as i32,
+            drive: self.state.tx.drive,
+            volume: rx.volume,
+            mic_gain: self.state.tx.mic_gain,
+            band: self.state.band,
+            muted: rx.muted,
+            strength_dbm: self.last_s_dbm.round() as i32,
+            noise_blanker: self.state.noise_blanker,
+            noise_reduction: rx.noise_reduction.is_on(),
+            auto_notch: rx.auto_notch,
+            can_tx: self.caps.is_transmit_capable(),
+            rx_ranges: self.caps.freq_ranges_rx.clone(),
+            tx_ranges: self.caps.freq_ranges_tx.clone(),
+        }
+    }
+
+    /// Service the rigctld server: carry out what clients asked for and
+    /// republish the state they read.
+    fn poll_rigctld(&mut self) {
+        let Some(srv) = self.rigctld.as_ref() else { return };
+        let mut clients_changed = false;
+        for req in srv.poll() {
+            match req {
+                // Everything a client can command goes through `apply`, so the
+                // ham-band guard, frequency-range checks and the usual state
+                // broadcast to the GUI all apply unchanged.
+                sdroxide_rigctld::ServerRequest::Cmd(c) => self.apply(c),
+                sdroxide_rigctld::ServerRequest::Clients(_) => clients_changed = true,
+            }
+        }
+        if clients_changed {
+            self.emit_rigctld_status();
+        }
+        // Cheap first: the digest is all Copy scalars, so an idle radio costs
+        // a comparison rather than two Vec clones per audio block.
+        let digest = self.rigctld_digest();
+        if self.rigctld_seen != Some(digest) {
+            let snap = self.rigctld_snapshot();
+            if let Some(srv) = self.rigctld.as_ref() {
+                srv.publish_state(snap);
+            }
+            self.rigctld_seen = Some(digest);
+        }
+    }
+
+    fn rigctld_digest(&self) -> RigDigest {
+        let rx = &self.state.rx[0];
+        RigDigest {
+            vfo_a: self.state.vfo_a_hz.to_bits(),
+            vfo_b: self.state.vfo_b_hz.to_bits(),
+            active_b: self.state.active_vfo == sdroxide_types::Vfo::B,
+            split: self.state.split,
+            mode: rx.mode,
+            filter_lo: rx.filter_lo.to_bits(),
+            filter_hi: rx.filter_hi.to_bits(),
+            ptt: self.state.tx.ptt,
+            tune: self.state.tx.tune,
+            rit: self.state.rit.effective_hz() as i32,
+            xit: self.state.xit.effective_hz() as i32,
+            drive: self.state.tx.drive.to_bits(),
+            volume: rx.volume.to_bits(),
+            mic_gain: self.state.tx.mic_gain.to_bits(),
+            band: self.state.band,
+            muted: rx.muted,
+            // Quantised to whole dB: the raw reading dithers continuously, and
+            // a client can only see integers anyway.
+            strength: self.last_s_dbm.round() as i32,
+            noise_blanker: self.state.noise_blanker,
+            noise_reduction: rx.noise_reduction.is_on(),
+            auto_notch: rx.auto_notch,
+            ranges: (self.caps.freq_ranges_rx.len(), self.caps.freq_ranges_tx.len()),
         }
     }
 

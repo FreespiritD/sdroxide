@@ -21,6 +21,9 @@ remote = ["dep:ewebsock", "dep:sdroxide-proto"]
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = "0.15"
 sdroxide-config = { version = "0.6.0", path = "../sdroxide-config" }
+# MIDI control surfaces (VFO knob, PTT button, faders). Native-only: it links
+# the host MIDI stack, so it must never reach the wasm dependency path.
+sdroxide-midi = { version = "0.6.0", path = "../sdroxide-midi" }
 # Solar-system 3D view (src/solar3d): ephemeris + space-weather data, and
 # zero-copy packing of its GPU uniform/instance buffers. Native-only, like the
 # view itself.

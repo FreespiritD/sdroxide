@@ -248,6 +248,28 @@ pub fn save_tci_server_config(cfg: &sdroxide_types::TciServerConfig) -> Result<(
     save_json("tciserver.json", cfg)
 }
 
+/// Built-in Hamlib rigctld server config (the listener "NET rigctl" clients
+/// connect to). Owned by the engine, like the TCI server config above.
+pub fn load_rigctld_config() -> sdroxide_types::RigctldConfig {
+    load_json("rigctld.json")
+}
+
+pub fn save_rigctld_config(cfg: &sdroxide_types::RigctldConfig) -> Result<(), ConfigError> {
+    save_json("rigctld.json", cfg)
+}
+
+/// Control-input bindings: keyboard chords, panadapter mouse behaviour and the
+/// MIDI mapping. Unlike the configs above this one belongs to the *client*, not
+/// the engine — it describes the hardware on the operator's desk, so a knob
+/// keeps working when the UI drives a remote engine over `--connect`.
+pub fn load_input_settings() -> sdroxide_types::InputSettings {
+    load_json("input.json")
+}
+
+pub fn save_input_settings(cfg: &sdroxide_types::InputSettings) -> Result<(), ConfigError> {
+    save_json("input.json", cfg)
+}
+
 /// SSTV per-slot transmit overlay messages (one entry per image slot). The
 /// image pixels live as PNGs under [`sstv_tx_dir`]; this stores just the text
 /// that is composited over each slot's picture.

@@ -627,12 +627,29 @@ decode.
 
 ## 5. Radio and audio setup
 
-Open the **SETTINGS** button (System module). The Settings window has four
-tabs: **General**, **Radio**, **Audio**, and **UI**. The **General** tab holds
-your **callsign** and **grid square** — the same values used by FT8/FT4, the SSTV
-image header, and the logbook (and also editable from the FT8/SSTV setup dialog).
+Open the **SETTINGS** button (System module). The **General** tab holds your
+**callsign** and **grid square** — the same values used by FT8/FT4, the SSTV
+image header, and the logbook (and also editable from the FT8/SSTV setup dialog)
+— followed by the sound devices.
 
-![The Settings window, General tab, with callsign and grid square](images/settings-general.jpg)
+![The Settings window, General tab, with callsign grid square and audio settings](images/settings-general.jpg)
+
+The *Your audio* section of the **General** tab selects the speakers and
+microphone sdroxide uses for you (separate from the radio-audio devices):
+
+- **Output** — where receive audio is played.
+- **Input** — your microphone for voice transmit.
+
+Each defaults to **System default**. These can be changed live. The equivalents
+in `config.toml` are `audio_output` and `audio_input`.
+
+On a PipeWire system, the desktop audio server can hold a USB radio codec's
+capture device open, which intermittently blocks sdroxide from opening it (the
+symptom is silent receive and a "waiting for spectrum" panadapter). For a
+sound card dedicated to the radio, the reliable fix is to tell WirePlumber to
+stop managing that card, leaving it for sdroxide. Create a drop-in such as
+`~/.config/wireplumber/wireplumber.conf.d/51-radio.conf` that disables the
+card, then restart WirePlumber. See [troubleshooting](#12-troubleshooting).
 
 ### 5.1 Choosing a backend
 
@@ -676,8 +693,8 @@ the command line with `--device`.
 ### 5.3 CAT radios (serial control + USB audio)
 
 A CAT radio is configured on the **Radio** tab (with the sound card chosen on
-the **Audio** tab, [5.7](#57-radio-audio-devices)). The audio arrives over a USB
-sound card, separately from your computer's speakers and microphone.
+the **General** tab, [5.7](#57-radio-audio-devices)). The audio arrives over a
+USB sound card, separately from your computer's speakers and microphone.
 
 ![The Radio tab with the CAT / Audio interface selected](images/settings-radio-cat.jpg)
 
@@ -771,7 +788,7 @@ the TCI server, which modulates it.
 sdroxide also *is* a TCI server, so TCI-capable programs can use it as their
 radio: frequency and mode control, a wideband IQ stream, receive audio to
 decode, and transmit audio to put on the air. It is **on by default** and
-configured on the **TCI Server** tab of the Settings dialog.
+configured on the **Servers** tab of the Settings dialog.
 
 ![The TCI server settings](images/settings-tci-server.jpg)
 
@@ -819,14 +836,12 @@ A few things worth knowing:
 
 ### 5.7 Radio audio devices
 
-On the **Audio** tab, the *Radio audio* section selects the sound card the CAT
-radio uses:
+On the **General** tab, the *Radio audio* section selects the sound card the
+CAT radio uses:
 
 - **From radio (RX)** — the capture device carrying the radio's receive audio.
 - **To radio (TX)** — the playback device carrying your transmit audio to the
   radio.
-
-![The Audio tab: radio-audio devices and your own speaker/microphone](images/settings-audio.jpg)
 
 Device names include the manufacturer, model, ALSA card id, and USB id — for
 example `C-Media Electronics Inc. USB Audio Device, USB Audio [Device · 0d8c:0012]`
@@ -837,28 +852,7 @@ example `C-Media Electronics Inc. USB Audio Device, USB Audio [Device · 0d8c:00
 > for IQ, sdroxide refuses it and shows a warning banner. Use a stereo line-input
 > interface for IQ, or choose **Demod audio**.
 
-### 5.8 Your own audio devices
-
-The *Your audio* section of the **Audio** tab selects the speakers and
-microphone sdroxide uses for you (separate from the radio-audio devices):
-
-- **Output** — where receive audio is played.
-- **Input** — your microphone for voice transmit.
-
-Each defaults to **System default**. These can be changed live. The equivalents
-in `config.toml` are `audio_output` and `audio_input`.
-
-### 5.9 Linux / PipeWire note for dedicated radio sound cards
-
-On a PipeWire system, the desktop audio server can hold a USB radio codec's
-capture device open, which intermittently blocks sdroxide from opening it (the
-symptom is silent receive and a "waiting for spectrum" panadapter). For a
-sound card dedicated to the radio, the reliable fix is to tell WirePlumber to
-stop managing that card, leaving it for sdroxide. Create a drop-in such as
-`~/.config/wireplumber/wireplumber.conf.d/51-radio.conf` that disables the
-card, then restart WirePlumber. See [troubleshooting](#12-troubleshooting).
-
-### 5.10 UI preferences
+### 5.8 UI preferences
 
 ![The UI tab: frame rate, scroll/spectrum speed, palette, and spectrum background](images/settings-ui.jpg)
 
@@ -872,6 +866,119 @@ The **UI** tab holds display preferences (stored in `config.toml` under `[ui]`):
 - **Spectrum background** — a vertical gradient behind the spectrum line, with a
   top and bottom colour (default dark red → black); untick **Gradient** for a
   plain background.
+
+### 5.9 Control inputs: keyboard, mouse and MIDI
+
+Everything sdroxide can be told to do is an **action** — tune, PTT, change
+band, cycle noise reduction, open the logbook — and the **Controls** tab binds
+actions to whatever you would rather press or turn than click.
+
+**Keyboard.** The table lists every shortcut. Click one to rebind it, then press
+the key combination you want (Esc cancels). *Add shortcut* creates a row, *✕*
+removes one, and *Restore defaults* puts back the shipped set listed in
+[13](#13-appendix). Shortcuts are ignored while you are typing in a text field
+or a control has keyboard focus.
+
+Actions come in two kinds. A **continuous** action (tuning, volume, filter
+width) takes a *step* — the amount one keypress moves it — and a *down*
+tickbox to make that key move it the other way, which is how the left and right
+arrows share one action. An **accel** above zero makes a held key move further
+the longer you hold it. A **momentary** action (PTT, mute, split) is either
+*Hold* — asserted while the key is down — or *Toggle*, which flips on each
+press.
+
+**Push-to-talk deserves a note.** No PTT key ships bound, on purpose: a
+transmitter keyed by accident is the worst thing this feature could do to you.
+*Bind hold-to-talk to Space* sets it up in one click. A held PTT is released
+when you let go, when the window loses focus, when a text field takes the
+keyboard, and after the **unkey a held PTT after** timeout — so alt-tabbing
+mid-over drops you back to receive rather than transmitting your office.
+
+**Panadapter mouse.** The wheel does one thing plain and another with Shift
+held; by default that is zoom and tune, and swapping them is a single dropdown
+if you would rather scroll to tune. *Tune step* is the Hz per detent, *Zoom
+rate* scales the zoom, and *Click-tune rounding* is the step click-to-tune snaps
+to. *Left-drag tunes as well as pans* can be turned off to make left-drag pan
+only, like right-drag. The middle and extra (side) mouse buttons can carry any
+action — a side button set to hold PTT behaves like a footswitch.
+
+**MIDI.** Any class-compliant MIDI surface works, and they are the cheapest real
+VFO knob there is: a DJ controller's jog wheel tunes, its pads make PTT and band
+buttons, its faders make gain controls. Pick your controller under *Controller*
+(*Rescan ports* if you plugged it in after opening the dialog), then add a row
+and turn the control you want — LEARN captures it. The *Last message* line names
+whatever moved last, which is how you identify an unlabelled knob.
+
+Endless "jog" encoders send a *relative step* rather than a position, in one of
+three encodings that are indistinguishable from small movements. LEARN guesses
+from the direction you turn; if the knob then tunes backwards, tick **rev**. A
+plain fader or knob that sends a position instead should be set to *Absolute*.
+
+Tick **LED** on a binding to send the current value back to the controller, so a
+PTT button lights while you transmit and a motor fader follows the volume. Not
+every surface likes being written to, which is why it is off by default.
+
+A controller unplugged mid-QSO releases anything it was holding and reconnects
+by itself when you plug it back in.
+
+> **Bindings live with the client.** They are stored in `input.json` on the
+> machine running the *user interface*, not the one running the radio — so a
+> knob plugged into your laptop works just as well against a remote engine
+> (`--connect`, [7](#7-remote-operation)). Keyboard and mouse bindings work in
+> the browser client too; MIDI needs the native app.
+
+### 5.10 Hamlib rigctld server
+
+Most amateur software reaches a radio through **Hamlib**, over the network
+protocol its `rigctld` daemon speaks. sdroxide serves that protocol directly, so
+WSJT-X, fldigi, JS8Call, N1MM, Log4OM, GPredict and CQRLOG can drive it with no
+extra daemon, no serial cable and no virtual COM port pair.
+
+It is configured on the **Servers** tab, above the TCI server.
+
+- **Enable** — off by default. Port 4532 is often already held by a real
+  `rigctld`, and the protocol has no authentication of any kind, so turning
+  this on should be a decision rather than a default.
+- **Listen on** — `127.0.0.1` (this machine only) or `0.0.0.0` (your whole
+  network).
+- **Port** — 4532 by default, the port every rigctld client assumes.
+- **Rig name** — what clients see from `get_info`.
+- **Max clients** — how many programs may connect at once. They all see the same
+  radio, and the last command wins.
+- **Allow clients to transmit** — off refuses every key request *and* stops
+  advertising a transmit range, so Hamlib declines to key before it even asks.
+
+The status line shows whether the server is listening, on which address, and how
+many clients are connected. Press **APPLY** to save and (re)bind. If the bind
+fails on 4532, the usual cause is a real `rigctld` already running.
+
+Supported: frequency, mode and passband, PTT, VFO A/B and split (including split
+frequency and mode), RIT and XIT, the `RFPOWER` / `AF` / `MICGAIN` / `STRENGTH`
+levels, the `NB` / `NR` / `ANF` / `MUTE` functions, and the `XCHG` / `CPY` /
+`TOGGLE` / `BAND_UP` / `BAND_DOWN` / `TUNE` VFO operations.
+
+Setting up clients:
+
+- **WSJT-X / JTDX** — *Settings → Radio*, rig **Hamlib NET rigctl**, Network
+  Server `127.0.0.1:4532`, PTT method **CAT**, mode **Data/Pkt**. Use *Test CAT*
+  and *Test PTT*.
+- **fldigi** — *Configure → Rig control → Hamlib*, rig **NET rigctl (2)**,
+  device `127.0.0.1:4532`.
+- **GPredict** — *Interfaces → Radios*, host `127.0.0.1`, port 4532.
+- **N1MM+ / Log4OM** — pick the Hamlib/rigctld radio type and enter the same
+  host and port.
+
+sdroxide reports every digital mode (FT8, FT4, PSK, RTTY's neighbours, SSTV,
+RADE…) as Hamlib's `PKTUSB`, because that is what they are on the air. Clients
+that read the mode and periodically write it back — WSJT-X does — therefore
+cannot knock a running FT8 session out of its mode: setting the mode already
+reported changes nothing.
+
+> **Which server should I use?** rigctld carries *control only* and is
+> understood by nearly everything. The built-in TCI server
+> ([5.6](#56-built-in-tci-server)) additionally carries receive audio, transmit
+> audio and a wideband IQ stream, but only a handful of programs speak it. Both
+> can run in parallel.
 
 ---
 
@@ -1450,6 +1557,8 @@ sdroxide stores its settings under the per-user config directory:
 | `qso_log.json` | JSON | The logbook (digital and manual QSOs, with contest/QSL fields). |
 | `net.json` | JSON | Network cockpit: DX cluster / POTA / SOTA / PSK / FreeDV Reporter feed settings, and callsign-lookup / eQSL / QRZ / Club Log / LoTW credentials (stored in plaintext). |
 | `tciserver.json` | JSON | Built-in TCI server: enabled, bind address, port, advertised device name, whether clients may transmit, and the client limit. |
+| `rigctld.json` | JSON | Built-in Hamlib rigctld server: enabled, bind address, port, reported rig name, whether clients may transmit, and the client limit. |
+| `input.json` | JSON | Control inputs: keyboard bindings, panadapter mouse behaviour, mouse-button bindings, and the MIDI controller mapping. Belongs to the machine running the user interface, not the engine. |
 | `sstv_messages.json` | JSON | The overlay message stored for each of the five SSTV transmit slots. |
 | `sstv_tx/` | dir | The five SSTV transmit-image slots (`slot0.png`…`slot4.png`). |
 | `sstv_rx/` | dir | Received SSTV pictures, kept for the gallery. |
@@ -1491,14 +1600,14 @@ carry I and Q. Use a stereo line-input interface for IQ, or switch **Sound
 format** to **Demod audio**.
 
 **The CAT radio does not change mode.**
-On the **Audio/CAT** tab, set **Mode control** to **CAT**. For FT8/FT4, set
+On the **Radio** tab, set **Mode control** to **CAT**. For FT8/FT4, set
 **Digimode mode** to **USB** or **DIGI** as your rig expects. Check the serial
 port, baud, and (for Icom/Xiegu) the **Radio ID**.
 
 **Two identical USB sound cards are hard to tell apart.**
 Device names include the manufacturer, model, ALSA card id, and USB id in
 brackets (e.g. `… [Device_1 · 0d8c:0014]`), which disambiguates identical
-adapters. Re-select the intended device in the **Audio** tab if the names
+adapters. Re-select the intended device in the **General** tab if the names
 changed after an update.
 
 **A setting did not take effect.**
@@ -1521,8 +1630,14 @@ stuck, press Apply / reconnect again.
 | M | Toggle mute. |
 | N | Toggle noise blanker. |
 | F | Fit the view to the full receiver span. |
+| F1 | Open this manual (works even while typing). |
 
 Shortcuts are ignored while typing in a text field.
+
+These are the **defaults**. Every one of them can be rebound — and PTT, band
+changes, filter width and much else bound to keys, mouse buttons or a MIDI
+controller — on the **Controls** tab; see [5.9](#59-control-inputs-keyboard-mouse-and-midi).
+F1 is the exception: it always opens the manual, so it is not rebindable.
 
 ### Modes
 
@@ -1555,4 +1670,4 @@ disabled in the selector.
 
 `Classic` (PowerSDR-style), `Viridis`, `Gray`, `Icom` (Icom-style palette,
 peaking at red with no white blow-out), `Neon`, `Synthwave`, `Matrix`, and
-`Tron`. Chosen on the **UI** tab of the Settings window ([5.10](#510-ui-preferences)).
+`Tron`. Chosen on the **UI** tab of the Settings window ([5.8](#58-ui-preferences)).

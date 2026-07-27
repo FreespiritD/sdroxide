@@ -51,6 +51,10 @@ pub enum RadioEvent {
     /// bound, how many third-party clients are connected, and any bind error.
     /// Emitted on every transition, so the settings dialog never polls.
     TciServerStatus { running: bool, addr: String, clients: usize, error: Option<String> },
+    /// Built-in rigctld server status: whether the listener is up, where it is
+    /// bound, how many clients are connected, and any bind error. Emitted on
+    /// every transition, so the settings dialog never polls.
+    RigctldStatus { running: bool, addr: String, clients: usize, error: Option<String> },
 }
 
 /// Snapshot of the frontend's switchable sound devices (native clients).
@@ -151,6 +155,13 @@ pub trait RadioController {
     /// can't own it (the browser remote client — the server runs where the
     /// engine runs). Applied by sending [`Command::SetTciServerConfig`].
     fn tci_server_config(&self) -> Option<crate::TciServerConfig> {
+        None
+    }
+
+    /// The persisted built-in rigctld server config, or `None` where the client
+    /// can't own it (the browser remote client — the server runs where the
+    /// engine runs). Applied by sending [`Command::SetRigctldConfig`].
+    fn rigctld_config(&self) -> Option<crate::RigctldConfig> {
         None
     }
 }

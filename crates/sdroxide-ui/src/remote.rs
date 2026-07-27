@@ -115,6 +115,9 @@ impl RemoteController {
             ServerMsg::CallsignResult(c) => self.pending.push_back(RadioEvent::CallsignResult(c)),
             ServerMsg::Upload(r) => self.pending.push_back(RadioEvent::Upload(r)),
             ServerMsg::Confirmations(r) => self.pending.push_back(RadioEvent::Confirmations(r)),
+            ServerMsg::RigctldStatus { running, addr, clients, error } => self
+                .pending
+                .push_back(RadioEvent::RigctldStatus { running, addr, clients, error }),
             ServerMsg::TciServerStatus { running, addr, clients, error } => self
                 .pending
                 .push_back(RadioEvent::TciServerStatus { running, addr, clients, error }),

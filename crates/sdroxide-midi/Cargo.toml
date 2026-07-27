@@ -1,0 +1,13 @@
+[package]
+name = "sdroxide-midi"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sdroxide-types.workspace = true
+# Cross-platform MIDI I/O (ALSA sequencer / WinMM / CoreMIDI). Default features
+# only: `jack` stays off so no libjack is required. On Linux this resolves to
+# the same `alsa` crate cpal already pulls in, so it adds no new system library.
+midir = "0.11"
+crossbeam-channel.workspace = true
+tracing.workspace = true

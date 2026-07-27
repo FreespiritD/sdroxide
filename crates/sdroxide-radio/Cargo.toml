@@ -25,6 +25,9 @@ sdroxide-net = { version = "0.6.0", path = "../sdroxide-net" }
 # The built-in TCI server, which the engine owns and feeds. (The TCI *client*
 # in the same crate is built by the binary, not from here.)
 sdroxide-tci.workspace = true
+# The built-in rigctld server: control-only, so unlike TCI it carries no
+# streams — the engine just publishes state and drains requests.
+sdroxide-rigctld = { version = "0.6.0", path = "../sdroxide-rigctld" }
 # SSTV: encode received images to PNG for the config store, decode composed
 # TX images (PNG) back to RGB. Minimal formats to keep the build lean.
 image = { version = "0.25", default-features = false, features = ["png"] }

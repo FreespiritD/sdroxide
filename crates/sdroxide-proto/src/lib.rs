@@ -46,8 +46,10 @@ use sdroxide_types::{
 /// `freedv_reporter` field. `NetworkConfig` also lost `my_call`/`my_grid`: the
 /// operator identity is `DigiConfig`'s alone, so both ends must agree on the
 /// shape `Command::SetNetworkConfig` carries.
-pub const PROTO_VERSION: u16 = 14;
-const VERSION_BYTE: u8 = 0x0E;
+/// v15: built-in Hamlib rigctld server — `Command::SetRigctldConfig` and
+/// `ServerMsg::RigctldStatus` (both extend the postcard discriminant space).
+pub const PROTO_VERSION: u16 = 15;
+const VERSION_BYTE: u8 = 0x0F;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {
@@ -124,6 +126,9 @@ pub enum ServerMsg {
     Confirmations(Vec<QsoRecord>),
     /// Built-in TCI server status (listener up, bind address, client count).
     TciServerStatus { running: bool, addr: String, clients: usize, error: Option<String> },
+    /// Built-in rigctld server status, so the settings dialog on a remote
+    /// client can show what the engine's listener is doing.
+    RigctldStatus { running: bool, addr: String, clients: usize, error: Option<String> },
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {

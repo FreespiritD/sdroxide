@@ -2,13 +2,18 @@
 //! or click upper/lower half to increment/decrement.
 
 use eframe::egui::{self, Color32, Label, RichText, Sense, Ui};
+use sdroxide_types::WheelSettings;
 
 const DIGIT_SIZE: f32 = 40.0;
 /// Smooth-scroll points per tuning step.
 const SCROLL_STEP: f32 = 30.0;
 
 /// Shows `hz` as a 10-digit tunable readout. Returns `Some(new_hz)` on change.
-pub fn show(ui: &mut Ui, id: egui::Id, hz: f64) -> Option<f64> {
+///
+/// `wheel` supplies the operator's pointer preferences: `digit_wheel` turns the
+/// per-digit scroll stepping off for anyone who would rather scroll the page,
+/// and `invert` flips the wheel direction to match the panadapter.
+pub fn show(ui: &mut Ui, id: egui::Id, hz: f64, wheel: WheelSettings) -> Option<f64> {
     let mut freq = hz.round().max(0.0) as i64;
     let orig = freq;
 
@@ -48,7 +53,12 @@ pub fn show(ui: &mut Ui, id: egui::Id, hz: f64) -> Option<f64> {
                     resp.rect.bottom() - 1.0,
                     (2.0, Color32::from_rgb(255, 209, 66)),
                 );
-                let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+                let scroll = if wheel.digit_wheel {
+                    let s = ui.input(|i| i.smooth_scroll_delta.y);
+                    if wheel.invert { -s } else { s }
+                } else {
+                    0.0
+                };
                 let acc_id = id.with("acc").with(p);
                 let mut acc = ui.data_mut(|d| d.get_temp::<f32>(acc_id).unwrap_or(0.0));
                 acc += scroll;

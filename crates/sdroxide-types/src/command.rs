@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgcMode, Band, DigiConfig, Direction, Mode, NetworkConfig, NrLevel, RxId, SkimmerSettings,
-    SpectrumConfig, SstvMode, TciServerConfig, UploadTarget, Vfo,
+    RigctldConfig, SpectrumConfig, SstvMode, TciServerConfig, UploadTarget, Vfo,
 };
 
 /// The single control vocabulary. The GUI, the WebSocket protocol, and the
@@ -122,4 +122,10 @@ pub enum Command {
     /// or stop the listener that third-party TCI clients connect to. The result
     /// comes back as [`crate::RadioEvent::TciServerStatus`].
     SetTciServerConfig(TciServerConfig),
+
+    /// Apply (and persist) the built-in Hamlib rigctld server configuration:
+    /// bind, rebind or stop the listener that "NET rigctl" clients (WSJT-X,
+    /// fldigi, N1MM, GPredict, …) connect to. The result comes back as
+    /// [`crate::RadioEvent::RigctldStatus`].
+    SetRigctldConfig(RigctldConfig),
 }

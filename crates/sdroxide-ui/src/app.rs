@@ -26,19 +26,20 @@ const SKIMMER_FADE_SECS: f64 = 5.0;
 /// the waterfall for good.
 const FT8_LABEL_MAX_AGE_SECS: i64 = 45;
 
-/// Settings dialog tabs: the radio interface + its settings, audio devices,
-/// display/UI preferences, the network cockpit (spot feeds + uploads), and the
-/// built-in TCI server.
+/// Settings dialog tabs: General (station identity + audio devices), the radio
+/// interface and its settings, display/UI preferences, control inputs
+/// (keyboard/mouse bindings), the network cockpit (spot feeds + uploads), and
+/// the built-in TCI server.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsTab {
     General,
     Radio,
-    Audio,
     Ui,
+    Controls,
     Spots,
     FreeDv,
     Uploads,
-    TciServer,
+    Servers,
 }
 
 /// Everything the settings dialog can change, collected in one place.
@@ -64,6 +65,16 @@ struct SettingsIo<'a> {
     /// clients, as opposed to the TCI client configured on the Radio tab.
     tci_srv_edit: &'a mut sdroxide_types::TciServerConfig,
     tci_srv_apply: &'a mut bool,
+    /// The built-in Hamlib rigctld server — the control-only surface every
+    /// "NET rigctl" client speaks.
+    rigctld_edit: &'a mut sdroxide_types::RigctldConfig,
+    rigctld_apply: &'a mut bool,
+    /// Control-input bindings, plus the row (if any) waiting to capture a
+    /// keypress. Persisted on close, since a rebind has no APPLY step.
+    input_edit: &'a mut sdroxide_types::InputSettings,
+    key_capture: &'a mut Option<usize>,
+    midi_learn: &'a mut Option<crate::input::MidiLearn>,
+    midi_rescan: &'a mut bool,
     tab: &'a mut SettingsTab,
 }
 
@@ -304,6 +315,14 @@ pub struct SdroxideApp {
     /// Live server status (bound address, connected clients, bind error) from
     /// `RadioEvent::TciServerStatus`.
     tci_srv_status: Option<TciServerStatus>,
+    // ── Built-in rigctld server ──
+    /// UI-owned editable copy of the rigctld config, seeded from the controller
+    /// when the settings dialog opens.
+    rigctld_edit: sdroxide_types::RigctldConfig,
+    rigctld_seeded: bool,
+    /// Live status from `RadioEvent::RigctldStatus`. Same shape as the TCI
+    /// server's, so the two share one status type.
+    rigctld_status: Option<TciServerStatus>,
     /// Editable "extra cluster commands" (one per line), split into
     /// `net_cfg_edit.cluster.commands` on apply.
     net_cluster_cmds: String,
@@ -326,6 +345,12 @@ pub struct SdroxideApp {
     worked_entities_cache: Option<(usize, std::collections::HashSet<String>)>,
     /// F1 help: the embedded user manual with a navigation outline.
     help: crate::help::Help,
+    /// Control inputs: keyboard/mouse bindings, MIDI, and what is held right now.
+    input: crate::input::InputRuntime,
+    /// MIDI ports as `(id, name)`, enumerated when the settings dialog opens
+    /// (touching the host MIDI stack is too slow for per-frame).
+    midi_in_ports: Vec<(String, String)>,
+    midi_out_ports: Vec<(String, String)>,
     /// Solar-system 3D view, shown in its own OS window (native-only).
     #[cfg(not(target_arch = "wasm32"))]
     solar: crate::solar3d::Solar3d,
@@ -533,6 +558,9 @@ impl SdroxideApp {
             spot_kinds_shown: [true; 5],
             spot_in_view_only: false,
             net_cfg_edit: net_cfg,
+            rigctld_edit: sdroxide_types::RigctldConfig::default(),
+            rigctld_seeded: false,
+            rigctld_status: None,
             tci_srv_edit: sdroxide_types::TciServerConfig::default(),
             tci_srv_seeded: false,
             tci_srv_status: None,
@@ -546,6 +574,9 @@ impl SdroxideApp {
             awards_cache: None,
             worked_entities_cache: None,
             help: crate::help::Help::default(),
+            input: crate::input::InputRuntime::new(cc.storage, &cc.egui_ctx),
+            midi_in_ports: Vec::new(),
+            midi_out_ports: Vec::new(),
             // The GPU resources are built on first open, not here: most
             // sessions never open this window.
             #[cfg(not(target_arch = "wasm32"))]
@@ -799,6 +830,7 @@ impl SdroxideApp {
                         ui,
                         egui::Id::new("main-freq"),
                         self.state.active_freq_hz(),
+                        self.input.cfg.wheel,
                     );
                 },
             );
@@ -1818,55 +1850,63 @@ impl SdroxideApp {
         }
     }
 
-    /// Tuning and toggles from the keyboard (ignored while typing in a
-    /// text field): ←/→ ±100 Hz (Shift: ±10), ↑/↓ ±1 kHz, PgUp/PgDn
-    /// ±10 kHz, M mute, N noise blanker, F fit span.
-    fn keyboard_shortcuts(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
-        if ctx.egui_wants_keyboard_input() {
-            return;
-        }
-        use egui::Key;
-        let mut tune_step = 0.0f64;
-        ctx.input(|i| {
-            let fine = i.modifiers.shift;
-            let small = if fine { 10.0 } else { 100.0 };
-            if i.key_pressed(Key::ArrowRight) {
-                tune_step += small;
-            }
-            if i.key_pressed(Key::ArrowLeft) {
-                tune_step -= small;
-            }
-            if i.key_pressed(Key::ArrowUp) {
-                tune_step += 1_000.0;
-            }
-            if i.key_pressed(Key::ArrowDown) {
-                tune_step -= 1_000.0;
-            }
-            if i.key_pressed(Key::PageUp) {
-                tune_step += 10_000.0;
-            }
-            if i.key_pressed(Key::PageDown) {
-                tune_step -= 10_000.0;
-            }
-            if i.key_pressed(Key::M) {
-                cmds.push(Command::SetMute {
-                    rx: RxId::Main,
-                    muted: !self.state.rx[0].muted,
-                });
-            }
-            if i.key_pressed(Key::N) {
-                cmds.push(Command::SetNoiseBlanker(!self.state.noise_blanker));
-            }
-            if i.key_pressed(Key::F) {
-                self.view.fit(self.state.center_hz, self.state.sample_rate);
-            }
-        });
-        if tune_step != 0.0 {
-            cmds.push(Command::SetVfo {
-                vfo: self.state.active_vfo,
-                hz: (self.state.active_freq_hz() + tune_step).max(0.0),
-            });
-        }
+    /// Dispatch keyboard and mouse-button bindings for this frame.
+    ///
+    /// The bindings themselves live in `input.json` (see
+    /// [`crate::input::InputRuntime`]); the shipped defaults reproduce the
+    /// shortcuts that used to be hardcoded here — ←/→ ±100 Hz (Shift: ±10),
+    /// ↑/↓ ±1 kHz, PgUp/PgDn ±10 kHz, M mute, N noise blanker, F fit span.
+    fn control_inputs(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
+        // Destructured rather than borrowed field-by-field: the runtime needs
+        // `state` and the window flags mutably at the same time, and they are
+        // disjoint parts of `self`.
+        let SdroxideApp {
+            input,
+            state,
+            view,
+            help,
+            show_settings,
+            show_logbook,
+            show_spots,
+            show_memories,
+            ..
+        } = self;
+        let mut sink = crate::input::UiSink {
+            view,
+            help: &mut help.open,
+            settings: show_settings,
+            logbook: show_logbook,
+            spots: show_spots,
+            memories: show_memories,
+        };
+        input.poll_pointer_and_keys(ctx, state, &mut sink, cmds);
+        #[cfg(not(target_arch = "wasm32"))]
+        input.poll_midi(ctx, state, &mut sink, cmds);
+    }
+
+    /// De-assert every held control. Closing the window while a footswitch or
+    /// a bound key is down must not leave the transmitter keyed.
+    fn release_held_controls(&mut self, cmds: &mut Vec<Command>) {
+        let SdroxideApp {
+            input,
+            state,
+            view,
+            help,
+            show_settings,
+            show_logbook,
+            show_spots,
+            show_memories,
+            ..
+        } = self;
+        let mut sink = crate::input::UiSink {
+            view,
+            help: &mut help.open,
+            settings: show_settings,
+            logbook: show_logbook,
+            spots: show_spots,
+            memories: show_memories,
+        };
+        input.release_all(state, &mut sink, cmds);
     }
 
     /// The FT8/FT4 operating panel: decode list on the left, QSO area on the
@@ -3923,11 +3963,16 @@ impl SdroxideApp {
             self.audio_devices = self.ctrl.audio_devices();
             self.radio_cfg = self.ctrl.radio_config();
             self.serial_ports = self.ctrl.serial_ports();
+            (self.midi_in_ports, self.midi_out_ports) = self.input.midi_ports();
             // The TCI server lives with the engine, so only a native client
             // owns its config; the browser remote gets `None` and a note.
             if let Some(cfg) = self.ctrl.tci_server_config() {
                 self.tci_srv_edit = cfg;
                 self.tci_srv_seeded = true;
+            }
+            if let Some(cfg) = self.ctrl.rigctld_config() {
+                self.rigctld_edit = cfg;
+                self.rigctld_seeded = true;
             }
             self.audio_devices_queried = true;
         }
@@ -3947,6 +3992,12 @@ impl SdroxideApp {
         let mut net_sync = false;
         let mut tci_srv_edit = self.tci_srv_edit.clone();
         let mut tci_srv_apply = false;
+        let mut rigctld_edit = self.rigctld_edit.clone();
+        let mut rigctld_apply = false;
+        let mut input_edit = self.input.cfg.clone();
+        let mut key_capture = self.input.key_capture;
+        let mut midi_learn = self.input.midi_learn;
+        let mut midi_rescan = false;
 
         // The concrete interface types the user chooses between. SoapySDR only
         // appears when compiled in; there is no auto-detect (an unavailable
@@ -3986,6 +4037,12 @@ impl SdroxideApp {
                         net_sync: &mut net_sync,
                         tci_srv_edit: &mut tci_srv_edit,
                         tci_srv_apply: &mut tci_srv_apply,
+                        rigctld_edit: &mut rigctld_edit,
+                        rigctld_apply: &mut rigctld_apply,
+                        input_edit: &mut input_edit,
+                        key_capture: &mut key_capture,
+                        midi_learn: &mut midi_learn,
+                        midi_rescan: &mut midi_rescan,
                         tab: &mut tab,
                     },
                 );
@@ -4011,10 +4068,27 @@ impl SdroxideApp {
         if net_sync {
             cmds.push(Command::SyncConfirmations);
         }
+        self.input.key_capture = key_capture;
+        self.input.midi_learn = midi_learn;
+        if midi_rescan {
+            (self.midi_in_ports, self.midi_out_ports) = self.input.midi_ports();
+        }
+        if input_edit != self.input.cfg {
+            // Bindings take effect on the next frame and are written straight
+            // out — a rebind the operator can't see saved is a rebind they
+            // will make again after the next restart.
+            self.input.cfg = input_edit;
+            self.input.persist();
+        }
         self.tci_srv_edit = tci_srv_edit;
         if tci_srv_apply {
             // The engine persists tciserver.json when it binds (or fails to).
             cmds.push(Command::SetTciServerConfig(self.tci_srv_edit.clone()));
+        }
+        self.rigctld_edit = rigctld_edit;
+        if rigctld_apply {
+            // The engine persists rigctld.json when it binds (or fails to).
+            cmds.push(Command::SetRigctldConfig(self.rigctld_edit.clone()));
         }
         if let Some((output, name)) = audio_pick {
             self.ctrl.set_audio_device(output, name);
@@ -4060,25 +4134,26 @@ impl SdroxideApp {
         }
     }
 
-    /// The Settings body: a Radio tab (one interface selector drives the
-    /// interface-specific section) and an Audio tab (device selection).
+    /// The Settings body: a General tab (station identity + the sound devices)
+    /// and a Radio tab whose single interface selector drives the
+    /// interface-specific section below it.
     ///
     /// Everything the dialog changes goes out through `io`, because the window
     /// closure borrows `&self` — see [`SettingsIo`].
     fn settings_body(&self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, io: &mut SettingsIo) {
         use sdroxide_types::Backend;
 
-        // Wrapped: eight tabs no longer fit the window's width on one line.
+        // Wrapped: the tab strip no longer fits the window's width on one line.
         ui.horizontal_wrapped(|ui| {
             for (t, label) in [
                 (SettingsTab::General, "General"),
                 (SettingsTab::Radio, "Radio"),
-                (SettingsTab::Audio, "Audio"),
                 (SettingsTab::Ui, "UI"),
+                (SettingsTab::Controls, "Controls"),
                 (SettingsTab::Spots, "Spots"),
                 (SettingsTab::FreeDv, "FreeDV"),
                 (SettingsTab::Uploads, "Uploads"),
-                (SettingsTab::TciServer, "TCI Server"),
+                (SettingsTab::Servers, "Servers"),
             ] {
                 if crate::chrome::chip(ui, *io.tab == t, label).clicked() {
                     *io.tab = t;
@@ -4124,6 +4199,53 @@ impl SdroxideApp {
                     )
                     .weak(),
                 );
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                self.settings_user_audio(ui, io.audio_pick);
+                // The radio's own sound card is only used by the CAT / Audio
+                // interface; every other backend carries its audio in-band.
+                if backend == Some(Backend::Cat) {
+                    if let (Some(devs), Some(cfg)) =
+                        (self.audio_devices.as_ref(), io.radio_edit.as_mut())
+                    {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("Radio audio (sound card)").strong());
+                        egui::Grid::new("radio-audio").num_columns(2).spacing([12.0, 6.0]).show(
+                            ui,
+                            |ui| {
+                                let (ci, co) =
+                                    (cfg.radio_audio_in.clone(), cfg.radio_audio_out.clone());
+                                ui.label("From radio (RX)");
+                                device_combo(ui, "r-in", &devs.inputs, &ci, |n| {
+                                    cfg.radio_audio_in = n
+                                });
+                                ui.end_row();
+                                ui.label("To radio (TX)");
+                                device_combo(ui, "r-out", &devs.outputs, &co, |n| {
+                                    cfg.radio_audio_out = n
+                                });
+                                ui.end_row();
+                            },
+                        );
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button("Apply / reconnect")
+                                .on_hover_text(
+                                    "Reopen the CAT rig with these sound cards — no restart",
+                                )
+                                .clicked()
+                            {
+                                *io.apply_iface = true;
+                            }
+                            ui.label(
+                                RichText::new("Reconnects the radio without restarting.").weak(),
+                            );
+                        });
+                    }
+                }
             }
             SettingsTab::Radio => {
                 let Some(cfg) = io.radio_edit.as_mut() else {
@@ -4187,48 +4309,6 @@ impl SdroxideApp {
                         RichText::new("Switches the live radio without restarting.").weak(),
                     );
                 });
-            }
-            SettingsTab::Audio => {
-                self.settings_user_audio(ui, io.audio_pick);
-                // The radio's own sound card is only used by the CAT / Audio interface.
-                if backend == Some(Backend::Cat) {
-                    if let (Some(devs), Some(cfg)) =
-                        (self.audio_devices.as_ref(), io.radio_edit.as_mut())
-                    {
-                        ui.separator();
-                        ui.label(RichText::new("Radio audio (sound card)").strong());
-                        egui::Grid::new("radio-audio").num_columns(2).spacing([12.0, 6.0]).show(
-                            ui,
-                            |ui| {
-                                let (ci, co) =
-                                    (cfg.radio_audio_in.clone(), cfg.radio_audio_out.clone());
-                                ui.label("From radio (RX)");
-                                device_combo(ui, "r-in", &devs.inputs, &ci, |n| {
-                                    cfg.radio_audio_in = n
-                                });
-                                ui.end_row();
-                                ui.label("To radio (TX)");
-                                device_combo(ui, "r-out", &devs.outputs, &co, |n| {
-                                    cfg.radio_audio_out = n
-                                });
-                                ui.end_row();
-                            },
-                        );
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            if ui
-                                .button("Apply / reconnect")
-                                .on_hover_text("Reopen the CAT rig with these sound cards — no restart")
-                                .clicked()
-                            {
-                                *io.apply_iface = true;
-                            }
-                            ui.label(
-                                RichText::new("Reconnects the radio without restarting.").weak(),
-                            );
-                        });
-                    }
-                }
             }
             SettingsTab::Ui => settings_ui_tab(ui, io.ui_edit),
             SettingsTab::Spots => {
@@ -4356,13 +4436,34 @@ impl SdroxideApp {
                     io.net_apply,
                 )
             }
-            SettingsTab::TciServer => settings_tci_server_tab(
+            SettingsTab::Controls => settings_controls_tab(
                 ui,
-                io.tci_srv_edit,
-                self.tci_srv_seeded,
-                &self.tci_srv_status,
-                io.tci_srv_apply,
+                io,
+                &self.memories,
+                &self.midi_in_ports,
+                &self.midi_out_ports,
+                &self.input.midi_status(),
+                self.input.last_midi,
             ),
+            SettingsTab::Servers => {
+                settings_rigctld_tab(
+                    ui,
+                    io.rigctld_edit,
+                    self.rigctld_seeded,
+                    &self.rigctld_status,
+                    io.rigctld_apply,
+                );
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+                settings_tci_server_tab(
+                    ui,
+                    io.tci_srv_edit,
+                    self.tci_srv_seeded,
+                    &self.tci_srv_status,
+                    io.tci_srv_apply,
+                );
+            }
         }
     }
 
@@ -4961,6 +5062,655 @@ fn settings_freedv_tab(
 /// The built-in TCI *server*: this app acting as a TCI rig for third-party
 /// clients (WSJT-X's TCI rig type, JTDX, MSHV, skimmers). Distinct from the TCI
 /// *client* section on the Radio tab, which connects sdroxide to another rig.
+
+/// A dropdown over every bindable [`Action`], grouped by section. `memories`
+/// contributes one recall entry per stored channel, since those are the only
+/// actions whose parameter comes from the operator's own data.
+fn action_combo(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    action: &mut sdroxide_types::Action,
+    memories: &[MemoryChannel],
+) -> bool {
+    use sdroxide_types::Action;
+    let mut changed = false;
+    ComboBox::from_id_salt(id).width(210.0).selected_text(action.label()).show_ui(ui, |ui| {
+        let mut group = "";
+        let all = Action::all()
+            .into_iter()
+            .chain(memories.iter().map(|m| Action::MemoryRecall(m.id)));
+        for a in all {
+            if a.group() != group {
+                group = a.group();
+                ui.add_space(4.0);
+                ui.label(RichText::new(group).small().weak());
+            }
+            if ui.selectable_label(*action == a, a.label()).clicked() {
+                *action = a;
+                changed = true;
+            }
+        }
+    });
+    changed
+}
+
+/// Keyboard chords, panadapter mouse behaviour and mouse-button bindings.
+///
+/// Edits here are live and self-persisting; there is no APPLY chip, because a
+/// binding is only useful once it is already in effect.
+#[allow(clippy::too_many_arguments)]
+fn settings_controls_tab(
+    ui: &mut egui::Ui,
+    io: &mut SettingsIo,
+    memories: &[MemoryChannel],
+    midi_in: &[(String, String)],
+    midi_out: &[(String, String)],
+    midi_status: &crate::input::MidiStatusView,
+    last_midi: Option<(sdroxide_types::MidiMsg, u8)>,
+) {
+    use sdroxide_types::{
+        Action, ActionKind, ButtonMode, KeyBinding, MouseButton, MouseButtonBinding, WheelAction,
+        WheelSettings,
+    };
+    let cfg = &mut *io.input_edit;
+    let key_capture = &mut *io.key_capture;
+
+    ui.label(RichText::new("Keyboard").size(14.0).strong().color(crate::theme::CYAN));
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "Click a shortcut to rebind it, then press the key combination (Esc cancels). \
+             Bindings are ignored while you are typing in a text field.",
+        )
+        .weak(),
+    );
+    ui.add_space(6.0);
+
+    let mut remove: Option<usize> = None;
+    egui::Grid::new("keys-grid").num_columns(6).spacing([10.0, 6.0]).striped(true).show(
+        ui,
+        |ui| {
+            ui.label(RichText::new("Shortcut").small().weak());
+            ui.label(RichText::new("Does").small().weak());
+            ui.label(RichText::new("Step / mode").small().weak());
+            ui.label(RichText::new("Accel").small().weak());
+            ui.label(RichText::new("On").small().weak());
+            ui.label("");
+            ui.end_row();
+
+            for (i, b) in cfg.keys.iter_mut().enumerate() {
+                let capturing = *key_capture == Some(i);
+                let label = if capturing { "press a key…".to_string() } else { b.chord.label() };
+                if crate::chrome::chip(ui, capturing, RichText::new(label).monospace()).clicked() {
+                    *key_capture = if capturing { None } else { Some(i) };
+                }
+
+                if action_combo(ui, ("keyact", i), &mut b.action, memories) {
+                    b.tuning.step = b.action.default_step();
+                }
+
+                match b.action.kind() {
+                    ActionKind::Continuous => {
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut b.tuning.step)
+                                    .speed(1.0)
+                                    .range(0.0001..=1_000_000.0),
+                            );
+                            // The sign of `value` is the direction, so one
+                            // action can have an up key and a down key.
+                            let mut down = b.value < 0.0;
+                            if ui.checkbox(&mut down, "down").changed() {
+                                b.value = if down { -1.0 } else { 1.0 };
+                            }
+                        });
+                        ui.add(egui::DragValue::new(&mut b.tuning.accel).speed(0.05).range(0.0..=4.0));
+                    }
+                    ActionKind::Momentary => {
+                        ui.horizontal(|ui| {
+                            for m in ButtonMode::ALL {
+                                if crate::chrome::chip(ui, b.button == m, m.label()).clicked() {
+                                    b.button = m;
+                                }
+                            }
+                        });
+                        ui.label("");
+                    }
+                }
+
+                ui.checkbox(&mut b.enabled, "");
+                if ui.small_button("✕").on_hover_text("Remove this binding").clicked() {
+                    remove = Some(i);
+                }
+                ui.end_row();
+            }
+        },
+    );
+    if let Some(i) = remove {
+        cfg.keys.remove(i);
+        if *key_capture == Some(i) {
+            *key_capture = None;
+        }
+    }
+
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        if crate::chrome::chip(ui, false, "+ Add shortcut").clicked() {
+            cfg.keys.push(KeyBinding::default());
+            *key_capture = Some(cfg.keys.len() - 1);
+        }
+        if crate::chrome::chip(ui, false, "Restore defaults").clicked() {
+            cfg.keys = KeyBinding::defaults();
+            *key_capture = None;
+        }
+        // PTT ships unbound on purpose; this is the one-click opt-in.
+        let has_ptt = cfg.keys.iter().any(|b| b.action == Action::Ptt);
+        if !has_ptt
+            && crate::chrome::chip(ui, false, "Bind hold-to-talk to Space")
+                .on_hover_text("Hold Space to transmit; releasing it — or losing window focus — unkeys")
+                .clicked()
+        {
+            cfg.keys.push(KeyBinding {
+                chord: sdroxide_types::KeyChord::plain("Space"),
+                action: Action::Ptt,
+                button: ButtonMode::Momentary,
+                ..KeyBinding::default()
+            });
+        }
+    });
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Unkey a held PTT after");
+        ui.add(
+            egui::DragValue::new(&mut cfg.ptt_hold_timeout_s)
+                .speed(5.0)
+                .range(0.0..=3600.0)
+                .suffix(" s"),
+        );
+    })
+    .response
+    .on_hover_text("Backstop against a stuck key or a controller that stops reporting. 0 disables.");
+
+    ui.add_space(10.0);
+    ui.separator();
+    ui.add_space(6.0);
+    ui.label(RichText::new("Panadapter mouse").size(14.0).strong().color(crate::theme::CYAN));
+    ui.add_space(6.0);
+
+    let w = &mut cfg.wheel;
+    egui::Grid::new("mouse-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Wheel");
+        wheel_action_combo(ui, "wheel-plain", &mut w.wheel);
+        ui.end_row();
+
+        ui.label("Wheel + Shift");
+        wheel_action_combo(ui, "wheel-shift", &mut w.wheel_shift);
+        ui.end_row();
+
+        ui.label("Tune step");
+        ui.add(
+            egui::DragValue::new(&mut w.tune_step_hz).speed(10.0).range(1.0..=1e6).suffix(" Hz"),
+        );
+        ui.end_row();
+
+        ui.label("Zoom rate");
+        ui.add(egui::DragValue::new(&mut w.zoom_rate).speed(0.05).range(0.1..=5.0));
+        ui.end_row();
+
+        ui.label("Click-tune rounding");
+        ui.add(
+            egui::DragValue::new(&mut w.click_tune_step_hz)
+                .speed(1.0)
+                .range(1.0..=10_000.0)
+                .suffix(" Hz"),
+        );
+        ui.end_row();
+    });
+    ui.add_space(4.0);
+    ui.checkbox(&mut w.invert, "Invert wheel direction");
+    ui.checkbox(&mut w.drag_tunes, "Left-drag tunes as well as pans")
+        .on_hover_text("Off makes left-drag pan the view only, like right-drag.");
+    ui.checkbox(&mut w.digit_wheel, "Scroll a digit on the frequency readout to tune it");
+    if w.wheel == WheelAction::Tune && w.wheel_shift == WheelAction::Tune {
+        ui.label(
+            RichText::new("Both wheel actions are Tune — there is no way left to zoom.")
+                .color(Color32::from_rgb(230, 170, 60)),
+        );
+    }
+    ui.add_space(6.0);
+    if crate::chrome::chip(ui, false, "Restore mouse defaults").clicked() {
+        cfg.wheel = WheelSettings::default();
+    }
+
+    ui.add_space(10.0);
+    ui.separator();
+    ui.add_space(6.0);
+    ui.label(RichText::new("Mouse buttons").size(14.0).strong().color(crate::theme::CYAN));
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "The left and right buttons are reserved for tuning and panning; the middle and \
+             extra buttons are free. A side button held for PTT behaves like a footswitch.",
+        )
+        .weak(),
+    );
+    ui.add_space(6.0);
+
+    let mut remove: Option<usize> = None;
+    egui::Grid::new("mousebtn-grid").num_columns(5).spacing([10.0, 6.0]).striped(true).show(
+        ui,
+        |ui| {
+            for (i, b) in cfg.mouse_buttons.iter_mut().enumerate() {
+                ComboBox::from_id_salt(("mb", i)).width(130.0).selected_text(b.button.label())
+                    .show_ui(ui, |ui| {
+                        for m in MouseButton::ALL {
+                            if ui.selectable_label(b.button == m, m.label()).clicked() {
+                                b.button = m;
+                            }
+                        }
+                    });
+                action_combo(ui, ("mbact", i), &mut b.action, memories);
+                ui.horizontal(|ui| {
+                    for m in ButtonMode::ALL {
+                        if crate::chrome::chip(ui, b.button_mode == m, m.label()).clicked() {
+                            b.button_mode = m;
+                        }
+                    }
+                });
+                ui.checkbox(&mut b.enabled, "");
+                if ui.small_button("✕").clicked() {
+                    remove = Some(i);
+                }
+                ui.end_row();
+            }
+        },
+    );
+    if let Some(i) = remove {
+        cfg.mouse_buttons.remove(i);
+    }
+    ui.add_space(6.0);
+    if crate::chrome::chip(ui, false, "+ Add mouse button").clicked() {
+        cfg.mouse_buttons.push(MouseButtonBinding::default());
+    }
+
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new(
+            "F1 always opens this manual, even while typing, so it is not rebindable.",
+        )
+        .weak(),
+    );
+
+    ui.add_space(10.0);
+    ui.separator();
+    ui.add_space(6.0);
+    settings_midi_section(ui, cfg, io.midi_learn, io.midi_rescan, memories, midi_in, midi_out,
+        midi_status, last_midi);
+}
+
+/// MIDI control surfaces: port selection, a live message readout, and the
+/// binding table with its LEARN capture.
+#[allow(clippy::too_many_arguments)]
+fn settings_midi_section(
+    ui: &mut egui::Ui,
+    cfg: &mut sdroxide_types::InputSettings,
+    learn: &mut Option<crate::input::MidiLearn>,
+    rescan: &mut bool,
+    memories: &[MemoryChannel],
+    midi_in: &[(String, String)],
+    midi_out: &[(String, String)],
+    status: &crate::input::MidiStatusView,
+    last_midi: Option<(sdroxide_types::MidiMsg, u8)>,
+) {
+    use sdroxide_types::{ActionKind, ButtonMode, MidiBinding, RelativeMode};
+
+    ui.label(RichText::new("MIDI controller").size(14.0).strong().color(crate::theme::CYAN));
+    ui.add_space(4.0);
+    if !status.supported {
+        ui.label(
+            RichText::new(
+                "MIDI controllers need the native app — the browser client has no MIDI access.",
+            )
+            .weak(),
+        );
+        return;
+    }
+    ui.label(
+        RichText::new(
+            "Any class-compliant MIDI surface works: a DJ controller's jog wheel makes a fine              VFO knob, its pads make PTT and band buttons, its faders make gain controls.",
+        )
+        .weak(),
+    );
+    ui.add_space(6.0);
+    ui.checkbox(&mut cfg.midi.enabled, "Enable");
+    ui.add_space(6.0);
+
+    ui.add_enabled_ui(cfg.midi.enabled, |ui| {
+        egui::Grid::new("midi-ports").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Controller");
+            midi_port_combo(
+                ui,
+                "midi-in",
+                midi_in,
+                &mut cfg.midi.in_port_id,
+                &mut cfg.midi.in_port_name,
+            );
+            ui.end_row();
+
+            ui.label("Feedback to");
+            midi_port_combo(
+                ui,
+                "midi-out",
+                midi_out,
+                &mut cfg.midi.out_port_id,
+                &mut cfg.midi.out_port_name,
+            );
+            ui.end_row();
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if crate::chrome::chip(ui, false, "Rescan ports").clicked() {
+                *rescan = true;
+            }
+            if status.connected {
+                ui.label(
+                    RichText::new(format!("● {}", status.port))
+                        .color(Color32::from_rgb(90, 200, 110)),
+                );
+            } else if let Some(e) = &status.error {
+                ui.label(RichText::new(e).color(Color32::from_rgb(230, 90, 80)));
+            } else {
+                ui.label(RichText::new("Not connected.").weak());
+            }
+        });
+        ui.add_space(4.0);
+        // Naming the control that just moved is what makes an unlabelled
+        // surface bindable at all.
+        match last_midi {
+            Some((msg, v)) => {
+                ui.label(RichText::new(format!("Last message: {}  value {v}", msg.label())).weak())
+            }
+            None => ui.label(RichText::new("Move a control to see it here.").weak()),
+        };
+    });
+
+    ui.add_space(8.0);
+    let mut remove: Option<usize> = None;
+    egui::Grid::new("midi-grid").num_columns(7).spacing([10.0, 6.0]).striped(true).show(ui, |ui| {
+        ui.label(RichText::new("Control").small().weak());
+        ui.label(RichText::new("Does").small().weak());
+        ui.label(RichText::new("Reads as").small().weak());
+        ui.label(RichText::new("Step / mode").small().weak());
+        ui.label(RichText::new("LED").small().weak());
+        ui.label(RichText::new("On").small().weak());
+        ui.label("");
+        ui.end_row();
+
+        for (i, b) in cfg.midi.bindings.iter_mut().enumerate() {
+            let learning = learn.map(|l| l.row) == Some(i);
+            let label = if learning { "move it…".to_string() } else { b.msg.label() };
+            if crate::chrome::chip(ui, learning, RichText::new(label).monospace())
+                .on_hover_text("Click, then move the control you want to bind")
+                .clicked()
+            {
+                *learn = if learning { None } else { Some(crate::input::MidiLearn { row: i }) };
+            }
+
+            if action_combo(ui, ("midiact", i), &mut b.action, memories) {
+                b.tuning.step = b.action.default_step();
+            }
+
+            match b.action.kind() {
+                ActionKind::Continuous => {
+                    ComboBox::from_id_salt(("midirel", i))
+                        .width(170.0)
+                        .selected_text(b.relative.label())
+                        .show_ui(ui, |ui| {
+                            for m in RelativeMode::ALL {
+                                if ui.selectable_label(b.relative == m, m.label()).clicked() {
+                                    b.relative = m;
+                                }
+                            }
+                        });
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut b.tuning.step)
+                                .speed(1.0)
+                                .range(0.0001..=1_000_000.0),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut b.tuning.accel)
+                                .speed(0.05)
+                                .range(0.0..=4.0)
+                                .prefix("×"),
+                        )
+                        .on_hover_text("Speed sensitivity: spin faster to tune faster");
+                        // Sign/magnitude and 64-centred encoders are
+                        // indistinguishable from small movements, so a wrong
+                        // guess shows up as a knob that turns the wrong way.
+                        ui.checkbox(&mut b.tuning.invert, "rev");
+                    });
+                }
+                ActionKind::Momentary => {
+                    ui.label("");
+                    ui.horizontal(|ui| {
+                        for m in ButtonMode::ALL {
+                            if crate::chrome::chip(ui, b.button_mode == m, m.label()).clicked() {
+                                b.button_mode = m;
+                            }
+                        }
+                    });
+                }
+            }
+
+            ui.checkbox(&mut b.feedback, "")
+                .on_hover_text("Send the current value back, to light an LED or move a fader");
+            ui.checkbox(&mut b.enabled, "");
+            if ui.small_button("✕").clicked() {
+                remove = Some(i);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(i) = remove {
+        cfg.midi.bindings.remove(i);
+        if learn.map(|l| l.row) == Some(i) {
+            *learn = None;
+        }
+    }
+
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        if crate::chrome::chip(ui, false, "+ Add MIDI control").clicked() {
+            cfg.midi.bindings.push(MidiBinding::default());
+            *learn = Some(crate::input::MidiLearn { row: cfg.midi.bindings.len() - 1 });
+        }
+        if !cfg.midi.bindings.is_empty()
+            && crate::chrome::chip(ui, false, "Clear all").clicked()
+        {
+            cfg.midi.bindings.clear();
+            *learn = None;
+        }
+    });
+
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new(
+            "Endless (jog) encoders send a relative step rather than a position, in one of three              encodings that look alike from small movements. LEARN guesses from a clockwise turn;              if the knob then tunes the wrong way, tick \u{201c}rev\u{201d}.",
+        )
+        .weak(),
+    );
+}
+
+/// Port dropdown that keeps both the stable id and the human name — the id
+/// reconnects across a replug, the name is the label and the fallback.
+fn midi_port_combo(
+    ui: &mut egui::Ui,
+    id: &str,
+    ports: &[(String, String)],
+    sel_id: &mut String,
+    sel_name: &mut String,
+) {
+    let shown = if sel_name.is_empty() { "— none —" } else { sel_name.as_str() };
+    ComboBox::from_id_salt(id).width(280.0).selected_text(shown).show_ui(ui, |ui| {
+        if ui.selectable_label(sel_name.is_empty(), "— none —").clicked() {
+            sel_id.clear();
+            sel_name.clear();
+        }
+        for (pid, name) in ports {
+            if ui.selectable_label(sel_name == name, name).clicked() {
+                *sel_id = pid.clone();
+                *sel_name = name.clone();
+            }
+        }
+    });
+}
+
+/// Dropdown over [`WheelAction`].
+fn wheel_action_combo(ui: &mut egui::Ui, id: &str, act: &mut sdroxide_types::WheelAction) {
+    ComboBox::from_id_salt(id).width(130.0).selected_text(act.label()).show_ui(ui, |ui| {
+        for a in sdroxide_types::WheelAction::ALL {
+            if ui.selectable_label(*act == a, a.label()).clicked() {
+                *act = a;
+            }
+        }
+    });
+}
+
+/// The built-in Hamlib rigctld server: the control surface every "NET rigctl"
+/// client speaks.
+fn settings_rigctld_tab(
+    ui: &mut egui::Ui,
+    cfg: &mut sdroxide_types::RigctldConfig,
+    seeded: bool,
+    status: &Option<TciServerStatus>,
+    apply: &mut bool,
+) {
+    use sdroxide_types::RigctldConfig;
+
+    ui.label(
+        RichText::new("Hamlib rigctld server").size(14.0).strong().color(crate::theme::CYAN),
+    );
+    ui.add_space(4.0);
+    if !seeded {
+        ui.label(
+            RichText::new(
+                "The rigctld server runs alongside the radio engine, so it can only be \
+                 configured from the native app.",
+            )
+            .weak(),
+        );
+        return;
+    }
+    ui.add_space(2.0);
+    ui.checkbox(&mut cfg.enabled, "Enable");
+    ui.add_space(6.0);
+
+    ui.add_enabled_ui(cfg.enabled, |ui| {
+        egui::Grid::new("rigctld-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Listen on");
+            ComboBox::from_id_salt("rigctld_bind").selected_text(&cfg.bind).show_ui(ui, |ui| {
+                for b in RigctldConfig::BINDS {
+                    let label = if b == "127.0.0.1" {
+                        "127.0.0.1 (this machine)"
+                    } else {
+                        "0.0.0.0 (whole network)"
+                    };
+                    if ui.selectable_label(cfg.bind == b, label).clicked() {
+                        cfg.bind = b.to_string();
+                    }
+                }
+            });
+            ui.end_row();
+
+            ui.label("Port");
+            ui.add(egui::DragValue::new(&mut cfg.port).range(1..=65535))
+                .on_hover_text("4532 is the port every rigctld client assumes");
+            ui.end_row();
+
+            ui.label("Rig name");
+            ui.add(
+                egui::TextEdit::singleline(&mut cfg.rig_name)
+                    .desired_width(160.0)
+                    .hint_text("reported to clients"),
+            );
+            ui.end_row();
+
+            ui.label("Max clients");
+            ui.add(egui::DragValue::new(&mut cfg.max_clients).range(1..=32));
+            ui.end_row();
+        });
+        ui.add_space(4.0);
+        ui.checkbox(&mut cfg.allow_tx, "Allow clients to transmit").on_hover_text(
+            "Off refuses every key request and stops advertising a transmit range, so Hamlib \
+             itself declines to key.",
+        );
+    });
+
+    // Same hazard as TCI: the protocol has no authentication at all.
+    if cfg.enabled && cfg.is_open_to_network() {
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(
+                "⚠ rigctld has no authentication. On 0.0.0.0, anyone who can reach this port can \
+                 tune and key your transmitter.",
+            )
+            .color(Color32::from_rgb(230, 170, 60)),
+        );
+    }
+
+    ui.add_space(8.0);
+    match status {
+        Some(s) if s.running => {
+            let clients = match s.clients {
+                1 => "1 client".to_string(),
+                n => format!("{n} clients"),
+            };
+            ui.label(
+                RichText::new(format!("● Listening on {} — {clients}", s.addr))
+                    .color(Color32::from_rgb(90, 200, 110)),
+            );
+        }
+        Some(s) => match &s.error {
+            Some(e) => {
+                ui.label(RichText::new(format!("Failed: {e}")).color(Color32::from_rgb(230, 90, 80)));
+            }
+            None => {
+                ui.label(RichText::new("Not running.").weak());
+            }
+        },
+        None => {
+            ui.label(RichText::new("Status unknown — press APPLY.").weak());
+        }
+    }
+
+    ui.add_space(8.0);
+    if crate::chrome::chip_accent(
+        ui,
+        false,
+        RichText::new(" APPLY ").strong(),
+        crate::theme::GREEN,
+        crate::theme::INK_ON_CYAN,
+    )
+    .on_hover_text("Persist and (re)bind the server")
+    .clicked()
+    {
+        *apply = true;
+    }
+
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new(
+            "Lets any Hamlib-capable program drive this radio: frequency, mode, PTT, split, RIT \
+             and power. In WSJT-X, fldigi or CQRLOG choose the rig \u{201c}Hamlib NET rigctl\u{201d} \
+             (model 2) and point it at this address; in GPredict and N1MM enter the host and port \
+             directly. Unlike the TCI server it carries control only \u{2014} no audio, no IQ.",
+        )
+        .weak(),
+    );
+}
+
 fn settings_tci_server_tab(
     ui: &mut egui::Ui,
     cfg: &mut sdroxide_types::TciServerConfig,
@@ -5195,6 +5945,9 @@ impl eframe::App for SdroxideApp {
                 RadioEvent::TciServerStatus { running, addr, clients, error } => {
                     self.tci_srv_status = Some(TciServerStatus { running, addr, clients, error });
                 }
+                RadioEvent::RigctldStatus { running, addr, clients, error } => {
+                    self.rigctld_status = Some(TciServerStatus { running, addr, clients, error });
+                }
                 RadioEvent::CallsignResult(info) => self.apply_callsign(info),
                 RadioEvent::Upload(r) => self.on_upload_result(r),
                 RadioEvent::Confirmations(recs) => self.apply_confirmations(recs),
@@ -5213,7 +5966,12 @@ impl eframe::App for SdroxideApp {
         if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
             self.help.open = !self.help.open;
         }
-        self.keyboard_shortcuts(&ctx, &mut cmds);
+        self.control_inputs(&ctx, &mut cmds);
+        // Shutting down with a bound key or footswitch still held would
+        // otherwise leave the rig transmitting.
+        if ctx.input(|i| i.viewport().close_requested()) && self.input.any_held() {
+            self.release_held_controls(&mut cmds);
+        }
 
         egui::Panel::top(egui::Id::new("topbar"))
             .frame(
@@ -5342,6 +6100,7 @@ impl eframe::App for SdroxideApp {
                     &net_spots,
                     &net_alpha,
                     &mut clicked_spot,
+                    self.input.cfg.wheel,
                     wf_tuning,
                     &mut cmds,
                 );
@@ -5418,6 +6177,7 @@ impl eframe::App for SdroxideApp {
                 &net_spots,
                 &net_alpha,
                 &mut clicked_spot,
+                self.input.cfg.wheel,
                 wf_tuning,
                 &mut cmds,
             );
@@ -5501,6 +6261,8 @@ impl eframe::App for SdroxideApp {
         eframe::set_value(storage, "qso_log", &self.qso_log);
         // Same split: authoritative on native is config.toml (written on change).
         eframe::set_value(storage, "ui_settings", &self.ui_settings);
+        // Control-input bindings: authoritative on native is input.json.
+        eframe::set_value(storage, "input", &self.input.cfg);
     }
 }
 

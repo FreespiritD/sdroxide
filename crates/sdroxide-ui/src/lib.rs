@@ -10,6 +10,7 @@ pub mod chrome;
 mod colormap;
 mod download;
 mod help;
+mod input;
 #[cfg(feature = "remote")]
 mod remote;
 mod rf_paint;

@@ -42,6 +42,8 @@ sdroxide-server = { path = "crates/sdroxide-server" }
 sdroxide-config = { path = "crates/sdroxide-config" }
 sdroxide-ui = { path = "crates/sdroxide-ui" }
 sdroxide-cat = { path = "crates/sdroxide-cat" }
+sdroxide-midi = { path = "crates/sdroxide-midi" }
+sdroxide-rigctld = { path = "crates/sdroxide-rigctld" }
 sdroxide-hpsdr = { path = "crates/sdroxide-hpsdr" }
 sdroxide-tci = { path = "crates/sdroxide-tci" }
 sdroxide-net = { path = "crates/sdroxide-net" }

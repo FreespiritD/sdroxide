@@ -11,14 +11,19 @@ use eframe::egui::{
 };
 use sdroxide_types::{
     Command, Mode, RadioState, RxId, SkimmerKind, SkimmerSpot, SpectrumFrame, Spot, Vfo,
+    WheelAction, WheelSettings,
 };
 
 use crate::view::ViewState;
 use crate::waterfall_gpu::WaterfallCallback;
 
 const SCALE_H: f32 = 18.0;
-/// Tuning rounds to this step on click-tune.
+/// Tuning rounds to this step on click-tune, unless the operator has changed
+/// [`WheelSettings::click_tune_step_hz`].
 const CLICK_TUNE_STEP: f64 = 10.0;
+/// Smooth-scroll points per wheel detent, matching the frequency readout so the
+/// two feel the same under the finger.
+const SCROLL_PER_DETENT: f32 = 30.0;
 /// Pixel distance for grabbing a filter edge.
 const EDGE_GRAB_PX: f32 = 6.0;
 
@@ -514,12 +519,13 @@ pub fn show(
     net_spots: &[Spot],
     net_alpha: &[f32],
     clicked_spot: &mut Option<Spot>,
+    wheel: WheelSettings,
     wf: WfTuning,
     cmds: &mut Vec<Command>,
 ) {
     show_ext(
         ui, view, state, frame, peaks, smooth, trace, None, &[], skimmer, alpha, net_spots,
-        net_alpha, clicked_spot, wf, cmds,
+        net_alpha, clicked_spot, wheel, wf, cmds,
     );
 }
 
@@ -549,6 +555,9 @@ pub fn show_ext(
     net_spots: &[Spot],
     net_alpha: &[f32],
     clicked_spot: &mut Option<Spot>,
+    // Operator's pointer preferences: what the wheel does (plain and with
+    // Shift), whether left-drag tunes, and the click-tune rounding.
+    wheel: WheelSettings,
     wf: WfTuning,
     cmds: &mut Vec<Command>,
 ) {
@@ -737,29 +746,52 @@ pub fn show_ext(
         // Left-drag: grab the spectrum and slide it — content follows the
         // mouse, and the tuning follows the content (dragging right tunes
         // down). The view pans along so the VFO marker keeps its place.
+        // With `drag_tunes` off it pans only, like the right-drag.
         let dhz = -resp.drag_delta().x as f64 * view.span() / rect.width() as f64;
         view.view_lo_hz += dhz;
         view.view_hi_hz += dhz;
-        let hz = (state.active_freq_hz() + dhz).max(0.0);
-        match state.active_vfo {
-            Vfo::A => state.vfo_a_hz = hz, // optimistic echo
-            Vfo::B => state.vfo_b_hz = hz,
+        if wheel.drag_tunes {
+            let hz = (state.active_freq_hz() + dhz).max(0.0);
+            match state.active_vfo {
+                Vfo::A => state.vfo_a_hz = hz, // optimistic echo
+                Vfo::B => state.vfo_b_hz = hz,
+            }
+            cmds.push(Command::SetVfo { vfo: state.active_vfo, hz });
         }
-        cmds.push(Command::SetVfo { vfo: state.active_vfo, hz });
     } else {
-        // --- zoom / click-tune --------------------------------------------
+        // --- wheel (zoom or tune) / click-tune -----------------------------
         if let Some(pos) = resp.hover_pos() {
-            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+            let (scroll, shift) =
+                ui.input(|i| (i.smooth_scroll_delta.y, i.modifiers.shift));
+            let scroll = if wheel.invert { -scroll } else { scroll };
+            let act = if shift { wheel.wheel_shift } else { wheel.wheel };
             if scroll.abs() > 0.1 {
-                // Zoom around the cursor; scroll up = zoom in.
-                let factor = 0.998f64.powf(scroll as f64 * 2.0);
-                let fpos = view.x_to_freq(pos.x, &rect);
-                let lo = fpos - (fpos - view.view_lo_hz) * factor;
-                let hi = fpos + (view.view_hi_hz - fpos) * factor;
-                let min_span = (dev_span / 1024.0).max(1_000.0);
-                if hi - lo >= min_span {
-                    view.view_lo_hz = lo;
-                    view.view_hi_hz = hi;
+                match act {
+                    WheelAction::Zoom => {
+                        // Zoom around the cursor; scroll up = zoom in.
+                        let rate = wheel.zoom_rate.clamp(0.1, 5.0) as f64;
+                        let factor = 0.998f64.powf(scroll as f64 * 2.0 * rate);
+                        let fpos = view.x_to_freq(pos.x, &rect);
+                        let lo = fpos - (fpos - view.view_lo_hz) * factor;
+                        let hi = fpos + (view.view_hi_hz - fpos) * factor;
+                        let min_span = (dev_span / 1024.0).max(1_000.0);
+                        if hi - lo >= min_span {
+                            view.view_lo_hz = lo;
+                            view.view_hi_hz = hi;
+                        }
+                    }
+                    WheelAction::Tune => {
+                        // Same optimistic echo as the drag arm above, so the
+                        // readout keeps up with a fast scroll.
+                        let detents = (scroll / SCROLL_PER_DETENT) as f64;
+                        let hz = (state.active_freq_hz() + detents * wheel.tune_step_hz).max(0.0);
+                        match state.active_vfo {
+                            Vfo::A => state.vfo_a_hz = hz,
+                            Vfo::B => state.vfo_b_hz = hz,
+                        }
+                        cmds.push(Command::SetVfo { vfo: state.active_vfo, hz });
+                    }
+                    WheelAction::None => {}
                 }
             }
         }
@@ -808,7 +840,12 @@ pub fn show_ext(
                     cmds.push(Command::SetDigiAudioFreq(audio.clamp(200.0, 3500.0)));
                 } else {
                     let clicked = view.x_to_freq(pos.x, &rect);
-                    let hz = (clicked / CLICK_TUNE_STEP).round() * CLICK_TUNE_STEP;
+                    let step = if wheel.click_tune_step_hz > 0.0 {
+                        wheel.click_tune_step_hz
+                    } else {
+                        CLICK_TUNE_STEP
+                    };
+                    let hz = (clicked / step).round() * step;
                     let shift = ui.input(|i| i.modifiers.shift);
                     let vfo = if shift { Vfo::B } else { state.active_vfo };
                     cmds.push(Command::SetVfo { vfo, hz });
