@@ -65,11 +65,28 @@ pub struct PskConfig {
     pub enabled: bool,
     /// Poll interval (PSK Reporter asks for ≥ 300 s between queries).
     pub interval_secs: u32,
+    /// Upload what *we* decode as reception reports, so this station appears as
+    /// a receiver on the map. Independent of the retrieval half above.
+    pub report: bool,
+    /// Collector host. Empty falls back to the public one. The project also
+    /// runs a test collector on port 14739 that never reaches the live map.
+    pub host: String,
+    pub port: u16,
+    /// Free-text antenna description sent with the receiver record ("dipole at
+    /// 10 m", "vertical"). Optional.
+    pub antenna: String,
 }
 
 impl Default for PskConfig {
     fn default() -> Self {
-        PskConfig { enabled: false, interval_secs: 300 }
+        PskConfig {
+            enabled: false,
+            interval_secs: 300,
+            report: false,
+            host: "report.pskreporter.info".to_string(),
+            port: 4739,
+            antenna: String::new(),
+        }
     }
 }
 

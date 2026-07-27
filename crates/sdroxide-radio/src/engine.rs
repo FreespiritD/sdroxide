@@ -1279,6 +1279,32 @@ impl Engine {
         self.state.sample_rate = self.audio_bw;
     }
 
+    /// Hand a slot's decodes to PSK Reporter. Every station we can name and
+    /// place is a reception report; free text and unresolved hashed callsigns
+    /// name nobody, and our own callsign is not something we heard.
+    fn psk_report_decodes(&self, decodes: &[sdroxide_types::Decode], dial_hz: f64) {
+        let mode = self.digi.as_ref().map(|d| d.mode().label().to_string()).unwrap_or_default();
+        let my_call = self.digi_config.my_call.trim();
+        for d in decodes {
+            let Some(call) = d.from.as_deref().filter(|c| !c.is_empty()) else { continue };
+            if call.eq_ignore_ascii_case(my_call) {
+                continue;
+            }
+            let freq = dial_hz + d.audio_hz as f64;
+            if freq <= 0.0 {
+                continue;
+            }
+            self.spots.psk_report(sdroxide_net::PskReport {
+                call: call.to_string(),
+                grid: d.grid.clone().unwrap_or_default(),
+                freq_hz: freq as u32,
+                snr_db: d.snr_db.clamp(-128, 127) as i8,
+                mode: mode.clone(),
+                when_utc: d.slot_utc.max(0) as u32,
+            });
+        }
+    }
+
     /// Tick the FT8/FT4 controller and apply its actions (emit events, key/
     /// unkey PTT). Owned actions avoid a `&mut self.digi` / `&mut self` clash.
     fn poll_digi(&mut self) {
@@ -1288,6 +1314,7 @@ impl Engine {
         for a in actions {
             match a {
                 DigiAction::Decodes(d) => {
+                    self.psk_report_decodes(&d, dial);
                     let _ = self.event_tx.send(RadioEvent::Ft8Decodes(d));
                 }
                 DigiAction::Status(s) => {

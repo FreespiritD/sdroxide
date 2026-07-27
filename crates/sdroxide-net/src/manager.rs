@@ -44,6 +44,10 @@ pub struct SpotManager {
     op_call: String,
     op_grid: String,
 
+    /// PSK Reporter upload worker (what *we* hear), when reporting is on and
+    /// the operator identity is known.
+    psk_upload: Option<crate::pskupload::PskUploadHandle>,
+
     freedv: Option<ReporterHandle>,
     /// What we last told the reporter. Replayed into a freshly rebuilt session
     /// so a config change never leaves the site showing a stale frequency.
@@ -70,6 +74,7 @@ impl SpotManager {
             pota: None,
             sota: None,
             psk: None,
+            psk_upload: None,
             op_call: String::new(),
             op_grid: String::new(),
             freedv: None,
@@ -94,6 +99,7 @@ impl SpotManager {
         }
         if old.psk != self.cfg.psk {
             self.rebuild_psk();
+            self.rebuild_psk_upload();
         }
         // The reporter sends its settings at connect, so a change to them has
         // to restart the session. The status message is the one field that can
@@ -131,6 +137,8 @@ impl SpotManager {
             self.rebuild_cluster();
         }
         self.rebuild_freedv();
+        // Our callsign and grid *are* the PSK Reporter receiver record.
+        self.rebuild_psk_upload();
     }
 
     // The engine pushes these on every tick of its ~100 Hz loop, so each one
@@ -169,6 +177,14 @@ impl SpotManager {
         self.rep_visible = visible;
         if let Some(h) = &self.freedv {
             h.set_visible(visible);
+        }
+    }
+
+    /// Report a station we decoded to PSK Reporter. Batched and uploaded by
+    /// the worker; a no-op when reporting is off or we have no identity yet.
+    pub fn psk_report(&self, report: crate::pskupload::Report) {
+        if let Some(h) = &self.psk_upload {
+            h.report(report);
         }
     }
 
@@ -350,6 +366,24 @@ impl SpotManager {
                 move || pskreporter::fetch(f64::from_bits(dial.load(Ordering::Relaxed)), now_utc()),
             ));
         }
+    }
+
+    /// (Re)start the PSK Reporter upload worker. Reporting needs both halves of
+    /// the operator identity: without a callsign there is no receiver to
+    /// report, and without a grid the reports can't be placed on the map.
+    fn rebuild_psk_upload(&mut self) {
+        self.psk_upload = None; // drop flushes what's pending and stops the thread
+        if !self.cfg.psk.report || self.op_call.is_empty() || self.op_grid.is_empty() {
+            return;
+        }
+        let station = crate::pskupload::Station {
+            call: self.op_call.clone(),
+            grid: self.op_grid.clone(),
+            software: format!("sdroxide {}", env!("CARGO_PKG_VERSION")),
+            antenna: self.cfg.psk.antenna.trim().to_string(),
+        };
+        self.psk_upload =
+            Some(crate::pskupload::spawn(&self.cfg.psk, station, self.event_tx.clone(), now_utc));
     }
 
     fn rebuild_freedv(&mut self) {

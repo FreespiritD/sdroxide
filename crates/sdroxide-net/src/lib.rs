@@ -16,12 +16,14 @@ mod manager;
 mod poll;
 mod pota;
 mod pskreporter;
+mod pskupload;
 mod socketio;
 mod sota;
 mod upload;
 
 pub use event::NetEvent;
 pub use manager::SpotManager;
+pub use pskupload::Report as PskReport;
 
 // On-demand blocking helpers, exposed for tests / direct use.
 pub use freedvreporter::{ProbeStation, ProbeSummary, probe as freedv_reporter_probe};

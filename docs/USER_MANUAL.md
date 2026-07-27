@@ -304,12 +304,12 @@ press **Store** to save the current frequency and mode. Each saved row has a
 
 sdroxide has several families of digital mode. **FT8** and **FT4** are automatic,
 timeslot-based modes with QSO sequencing, a world map, and automatic logging
-(3.1–3.5). **PSK31**, **RTTY**, **Olivia**, **THOR** and **FSQ** are live keyboard
+(3.1–3.6). **PSK31**, **RTTY**, **Olivia**, **THOR** and **FSQ** are live keyboard
 modes: you tune onto a signal, read the decoded text, and type a reply that
-transmits as you go (3.6–3.7). **SSTV** is an image mode: received pictures build
-up in a gallery and you transmit composed images (3.8). **RF Paint** is a
+transmits as you go (3.7–3.8). **SSTV** is an image mode: received pictures build
+up in a gallery and you transmit composed images (3.9). **RF Paint** is a
 transmit-only mode that draws text and pictures directly onto the far station's 
-waterfall (3.9).
+waterfall (3.10).
 
 ### 3.1 Entering the mode
 
@@ -400,7 +400,20 @@ Transmission happens automatically in your chosen time slot (FT8 slots are 15 s,
 FT4 slots are 7.5 s) and goes through the normal transmit path, so the ham-band
 lockout and transmit safety still apply.
 
-### 3.5 Logging and the logbook
+### 3.5 Reporting what you hear
+
+Enable **Upload my FT8/FT4 decodes** on the Network settings tab to report every
+station you decode to [pskreporter.info](https://pskreporter.info), where your
+station then shows up as a receiver and your reports feed everyone else's
+propagation maps. Reports are batched and uploaded every five minutes (the
+interval the collector asks for), keeping the strongest report per station per
+band. The callsign and grid come from the General tab — both are required, since
+a report with no location can't be placed on the map. The optional **Antenna**
+line is shown on your station's page. The **Collector** host and port are there
+for testing: port 14739 is the project's test collector, which accepts reports
+without publishing them.
+
+### 3.6 Logging and the logbook
 
 Completed FT8/FT4 QSOs are logged automatically. Open the full logbook with the
 **LOG** button (System module).
@@ -436,7 +449,7 @@ one-click upload buttons and award tracking.
 
 The log is stored in `qso_log.json`.
 
-### 3.6 PSK31 and RTTY
+### 3.7 PSK31 and RTTY
 
 Choose **PSK** or **RTTY** from the DIGITAL row of the Band/Mode popup. As with
 FT8/FT4 the panadapter switches to a zoomed sub-band waterfall, but the lower
@@ -474,7 +487,7 @@ panel is a live **messaging area** instead of a QSO sequencer.
 signals across each band's PSK/RTTY calling sub-bands. Clicking a label from any
 mode switches to PSK or RTTY, tunes onto the signal, and opens this panel.
 
-### 3.7 Olivia, THOR and FSQ
+### 3.8 Olivia, THOR and FSQ
 
 Three more keyboard modes are on the DIGITAL row. **Olivia** and **THOR** reuse
 the same messaging panel as PSK/RTTY; each mode's submode is chosen on its setup
@@ -511,7 +524,7 @@ These three modems are native-Rust and self-contained. On-air interoperability
 with fldigi is being validated; the first release targets clean-to-moderate
 signals.
 
-### 3.8 SSTV
+### 3.9 SSTV
 
 Choose **SSTV** from the DIGITAL row to send and receive pictures. The panel has
 a received-image gallery on the left and a transmit compositor on the right, with
@@ -570,7 +583,7 @@ Band buttons tune to that band's common SSTV calling frequency (for example
 > conditions — clean signals decode well; weak or drifting signals may slant or
 > show noise (ongoing refinement).
 
-### 3.9 RF Paint (spectrum painting)
+### 3.10 RF Paint (spectrum painting)
 
 Choose **RFPAINT** from the DIGITAL row for **RF Paint** — a transmit-only mode
 that draws text and pictures **directly onto a receiver's waterfall**. There is no

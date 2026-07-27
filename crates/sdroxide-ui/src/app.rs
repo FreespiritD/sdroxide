@@ -4415,6 +4415,23 @@ impl SdroxideApp {
                 ui.checkbox(&mut io.net_edit.pota.enabled, "POTA activator spots");
                 ui.checkbox(&mut io.net_edit.sota.enabled, "SOTA spots");
                 ui.checkbox(&mut io.net_edit.psk.enabled, "PSK Reporter (current band)");
+                ui.checkbox(&mut io.net_edit.psk.report, "Upload my FT8/FT4 decodes")
+                    .on_hover_text(
+                        "Report what this station hears to pskreporter.info, so it appears \
+                         there as a receiver. Uses the callsign and grid from the General tab.",
+                    );
+                if io.net_edit.psk.report {
+                    net_row(ui, "Antenna", &mut io.net_edit.psk.antenna, 200.0);
+                    ui.horizontal(|ui| {
+                        ui.add_sized([96.0, 22.0], egui::Label::new("Collector"));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut io.net_edit.psk.host)
+                                .desired_width(140.0),
+                        );
+                        ui.add(egui::DragValue::new(&mut io.net_edit.psk.port).range(1..=65535))
+                            .on_hover_text("4739 is the live collector, 14739 the test one");
+                    });
+                }
                 ui.horizontal(|ui| {
                     ui.add_sized([96.0, 22.0], egui::Label::new("Max age (s)"));
                     let age = &mut io.net_edit.spot_max_age_secs;
