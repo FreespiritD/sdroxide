@@ -14,7 +14,7 @@ use eframe::egui::{
     RichText, Sense, Shape, Stroke, Ui, pos2, vec2,
 };
 
-use crate::theme;
+use crate::theme::{self, ThemedScroll};
 
 /// The manual source, embedded from the repository `docs/` directory.
 const MANUAL_MD: &str = include_str!("../../../docs/USER_MANUAL.md");
@@ -54,6 +54,13 @@ fn embedded_image(path: &str) -> Option<&'static [u8]> {
         "rfpaint.jpg" => &include_bytes!("../../../docs/images/rfpaint.jpg")[..],
         "sstv.jpg" => &include_bytes!("../../../docs/images/sstv.jpg")[..],
         "settings-general.jpg" => &include_bytes!("../../../docs/images/settings-general.jpg")[..],
+        "settings-controls-keyboard.jpg" => &include_bytes!("../../../docs/images/settings-controls-keyboard.jpg")[..],
+        "settings-controls-mouse.jpg" => &include_bytes!("../../../docs/images/settings-controls-mouse.jpg")[..],
+        "settings-controls-midi.jpg" => &include_bytes!("../../../docs/images/settings-controls-midi.jpg")[..],
+        "settings-servers-hamlib.jpg" => &include_bytes!("../../../docs/images/settings-servers-hamlib.jpg")[..],
+        "settings-servers-tci.jpg" => &include_bytes!("../../../docs/images/settings-servers-tci.jpg")[..],
+        "settings-freedv.jpg" => &include_bytes!("../../../docs/images/settings-freedv.jpg")[..],
+
         "settings-radio-soapysdr.jpg" => {
             &include_bytes!("../../../docs/images/settings-radio-soapysdr.jpg")[..]
         }
@@ -241,7 +248,7 @@ impl Help {
                                     egui::ScrollArea::vertical()
                                         .id_salt("help_nav")
                                         .auto_shrink([false, false])
-                                        .show(ui, |ui| {
+                                        .show_themed(ui, |ui| {
                                             ui.spacing_mut().item_spacing.y = 1.0;
                                             for entry in &self.doc.nav {
                                                 if nav_item(ui, entry, entry.slug == self.active) {
@@ -279,7 +286,7 @@ impl Help {
                             let out = egui::ScrollArea::vertical()
                                 .id_salt("help_body")
                                 .auto_shrink([false, false])
-                                .show(ui, |ui| {
+                                .show_themed(ui, |ui| {
                                     ui.set_width(ui.available_width() - 6.0);
                                     let mut heading_tops: Vec<(String, f32)> = Vec::new();
                                     for (idx, block) in self.doc.blocks.iter().enumerate() {

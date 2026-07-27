@@ -9,6 +9,7 @@ use sdroxide_types::{
     SpotKind, SstvMode, SstvStatus, UploadResult, UploadTarget, Vfo,
 };
 
+use crate::theme::ThemedScroll;
 use crate::view::ViewState;
 use crate::widgets::{freq_display, smeter, spectrum_view};
 use crate::{colormap, waterfall_gpu};
@@ -1179,7 +1180,7 @@ impl SdroxideApp {
                 award_summary(ui, "Grids", &awards.grids);
                 ui.add_space(6.0);
 
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show_themed(ui, |ui| {
                     // WAS state grid.
                     ui.label(RichText::new("Worked All States").size(12.0).strong().color(crate::theme::CYAN));
                     award_cell_grid(
@@ -2037,7 +2038,7 @@ impl SdroxideApp {
                 (i, d, dist)
             })
             .collect();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show_themed(ui, |ui| {
             let mut gi = 0;
             while gi < items.len() {
                 // A turn is one slot: group the contiguous same-slot decodes.
@@ -2551,7 +2552,7 @@ impl SdroxideApp {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .stick_to_bottom(true)
-                        .show(ui, |ui| {
+                        .show_themed(ui, |ui| {
                             let mut any = false;
                             if let Some(s) = status.as_ref() {
                                 for line in &s.transcript {
@@ -2710,7 +2711,7 @@ impl SdroxideApp {
                         .max_height((rx_h - 12.0).max(20.0))
                         .auto_shrink([false, false])
                         .stick_to_bottom(true)
-                        .show(
+                        .show_themed(
                         ui,
                         |ui| {
                             if rx_text.is_empty() {
@@ -2783,7 +2784,7 @@ impl SdroxideApp {
                             .max_height((input_h - 8.0).max(20.0))
                             .auto_shrink([false, false])
                             .stick_to_bottom(true)
-                            .show(ui, |ui| {
+                            .show_themed(ui, |ui| {
                                 ui.add(
                                     egui::TextEdit::multiline(&mut self.text_tx)
                                         .layouter(&mut layouter)
@@ -3022,7 +3023,7 @@ impl SdroxideApp {
                     .id_salt("fsq-heard")
                     .max_height(heard_h)
                     .auto_shrink([false, true])
-                    .show(ui, |ui| {
+                    .show_themed(ui, |ui| {
                         if heard.is_empty() {
                             ui.label(RichText::new("— none —").weak());
                         }
@@ -3046,7 +3047,7 @@ impl SdroxideApp {
                     .id_salt("fsq-images")
                     .max_height(images_h)
                     .auto_shrink([false, true])
-                    .show(ui, |ui| {
+                    .show_themed(ui, |ui| {
                         for tex in &self.fsq_rx_images {
                             ui.add(
                                 egui::Image::new(tex)
@@ -3077,7 +3078,7 @@ impl SdroxideApp {
                                 .id_salt("fsq-rx")
                                 .auto_shrink([false, false])
                                 .stick_to_bottom(true)
-                                .show(ui, |ui| {
+                                .show_themed(ui, |ui| {
                                     if text_rx.is_empty() && messages.is_empty() {
                                         ui.label(RichText::new("— listening —").weak());
                                     }
@@ -3193,7 +3194,7 @@ impl SdroxideApp {
                 });
                 ui.separator();
                 let mut to_delete: Option<u64> = None;
-                egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().max_height(260.0).show_themed(ui, |ui| {
                     for c in &mut self.fsq_contacts {
                         ui.horizontal(|ui| {
                             if ui.button("TO").clicked() {
@@ -3422,7 +3423,7 @@ impl SdroxideApp {
                     ui.label(RichText::new(s).size(11.0).color(Color32::from_gray(150)));
                 }
                 ui.separator();
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show_themed(ui, |ui| {
                     let mut shown = 0usize;
                     for s in &spots {
                         if !self.spot_kinds_shown[spot_kind_index(s.kind)] {
@@ -3513,7 +3514,7 @@ impl SdroxideApp {
                     self.log_entry_form(ui);
                 }
                 ui.separator();
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show_themed(ui, |ui| {
                     self.log_list(ui);
                 });
             });
@@ -3998,12 +3999,17 @@ impl SdroxideApp {
 
         let mut tab = self.settings_tab;
         let mut open = self.show_settings;
+        // The window does its own scrolling, so its bar can only be themed
+        // through the context style — lend the palette for the length of the
+        // call and hand the body back the normal one.
+        let bars = crate::theme::ScrollPalette::push(ctx);
         let resp = egui::Window::new("Settings")
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(false)
             .vscroll(true)
             .show(ctx, |ui| {
+                bars.restore(ui);
                 self.settings_body(
                     ui,
                     cmds,
@@ -4033,6 +4039,7 @@ impl SdroxideApp {
                     },
                 );
             });
+        bars.pop(ctx);
         if let Some(r) = &resp {
             crate::chrome::paint_window_border(ctx, &r.response);
         }
@@ -7021,7 +7028,7 @@ impl SdroxideApp {
                                 .id_salt("sstv-gallery")
                                 .max_height(row_h - 24.0)
                                 .auto_shrink([false, false])
-                                .show(ui, |ui| {
+                                .show_themed(ui, |ui| {
                                     ui.horizontal_wrapped(|ui| {
                                         ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
                                         for (i, r) in self.sstv.received.iter().enumerate() {

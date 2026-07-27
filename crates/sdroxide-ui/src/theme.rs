@@ -32,6 +32,13 @@ pub const CQ_BG: Color32 = Color32::from_rgb(0x24, 0x0c, 0x15);
 pub const TOME_BG: Color32 = Color32::from_rgb(0x2c, 0x24, 0x06);
 pub const ROW_BG: Color32 = Color32::from_rgb(0x0a, 0x10, 0x1b);
 pub const ROW_HOVER: Color32 = Color32::from_rgb(0x14, 0x1e, 0x2e);
+// Scrollbars: a cyan handle riding in a recessed gutter, hot pink while dragged.
+// The gutter is a touch lighter than every panel/list background it sits on, so
+// the full scroll range stays readable even when the handle is at the far end.
+pub const SCROLL_TRACK: Color32 = Color32::from_rgb(0x0e, 0x16, 0x26);
+pub const SCROLL_HANDLE: Color32 = Color32::from_rgb(0x17, 0x8e, 0xad);
+pub const SCROLL_HANDLE_HOVER: Color32 = CYAN;
+pub const SCROLL_HANDLE_DRAG: Color32 = PINK;
 
 pub fn apply(ctx: &egui::Context) {
     install_fonts(ctx);
@@ -55,6 +62,21 @@ pub fn apply(ctx: &egui::Context) {
     // instead of letting `horizontal_wrapped` wrap them.
     style.spacing.slider_width = 84.0;
     style.spacing.combo_width = 84.0;
+
+    // egui's default scrollbars float over the content as a 2 px hairline that
+    // only fades in on hover — easy to miss and hard to grab. Use solid bars of
+    // a constant width that are always fully opaque.
+    style.spacing.scroll = egui::style::ScrollStyle {
+        bar_width: 9.0,
+        handle_min_length: 24.0,
+        bar_inner_margin: 3.0,
+        bar_outer_margin: 0.0,
+        // Take the handle colour from `fg_stroke` instead of the (near-black)
+        // widget fill, so bars we don't paint by hand — combo popups, menus —
+        // still get a handle that stands out from the gutter.
+        foreground_color: true,
+        ..egui::style::ScrollStyle::solid()
+    };
 
     let v = &mut style.visuals;
     v.dark_mode = true;
@@ -107,6 +129,85 @@ pub fn apply(ctx: &egui::Context) {
     v.widgets.open.corner_radius = sharp;
 
     });
+}
+
+/// Paint the scrollbar palette into `v`: cyan handle in a recessed gutter,
+/// brightening on hover and going hot pink while dragged.
+///
+/// egui has no scrollbar colours of its own — it takes the handle colour from
+/// the widget visuals of whatever `Ui` owns the bars (with `foreground_color`,
+/// the same `fg_stroke` that colours button labels), so this can't simply live
+/// in [`apply`]. It goes in around a scroll area and comes back off its
+/// contents instead; see [`ThemedScroll`] and [`ScrollPalette`].
+fn scroll_palette(v: &mut egui::Visuals) {
+    v.extreme_bg_color = SCROLL_TRACK; // the gutter
+    v.widgets.inactive.fg_stroke.color = SCROLL_HANDLE;
+    v.widgets.hovered.fg_stroke.color = SCROLL_HANDLE_HOVER;
+    v.widgets.active.fg_stroke.color = SCROLL_HANDLE_DRAG;
+}
+
+/// `ScrollArea::show` with themed scrollbars.
+pub trait ThemedScroll {
+    /// Show the area, painting its bars in the [`scroll_palette`].
+    fn show_themed<R>(
+        self,
+        ui: &mut egui::Ui,
+        add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> egui::containers::scroll_area::ScrollAreaOutput<R>;
+}
+
+impl ThemedScroll for egui::ScrollArea {
+    fn show_themed<R>(
+        self,
+        ui: &mut egui::Ui,
+        add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> egui::containers::scroll_area::ScrollAreaOutput<R> {
+        let normal = ui.visuals().clone();
+        scroll_palette(ui.visuals_mut());
+
+        let out = self.show(ui, |ui| {
+            *ui.visuals_mut() = normal.clone();
+            add_contents(ui)
+        });
+
+        *ui.visuals_mut() = normal;
+        out
+    }
+}
+
+/// The [`scroll_palette`], lent to the context style for containers that build
+/// their own scrollbars — an [`egui::Window`] with `vscroll`, whose bars belong
+/// to a `Ui` inside egui that we never get to hold.
+///
+/// Push it before showing the container, hand the body back the normal palette
+/// with [`Self::restore`], then [`Self::pop`] it off the context again.
+#[must_use = "the palette stays in the context style until popped"]
+pub struct ScrollPalette(egui::Visuals);
+
+impl ScrollPalette {
+    pub fn push(ctx: &egui::Context) -> Self {
+        let normal = ctx.style_of(ctx.theme()).visuals.clone();
+        let mut bars = normal.clone();
+        scroll_palette(&mut bars);
+        ctx.set_visuals(bars);
+        Self(normal)
+    }
+
+    /// Give a container body the normal palette back — and the context with it,
+    /// so tooltips and dropdowns opened from the body aren't tinted either. The
+    /// bars keep the palette: their `Ui` was built (and took its copy of the
+    /// style) before this runs.
+    pub fn restore(&self, ui: &mut egui::Ui) {
+        ui.ctx().set_visuals(self.0.clone());
+        *ui.visuals_mut() = self.0.clone();
+    }
+
+    /// Take the palette off the context — a no-op once [`Self::restore`] has
+    /// run, and the way it comes back off when the container never shows a body
+    /// (a closed or collapsed window).
+    pub fn pop(self, ctx: &egui::Context) {
+        ctx.set_visuals(self.0);
+    }
 }
 
 fn install_fonts(ctx: &egui::Context) {
