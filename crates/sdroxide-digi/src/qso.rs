@@ -112,6 +112,11 @@ impl QsoMachine {
         self.dx.as_ref().map(|d| d.call.as_str())
     }
 
+    /// Our own station callsign.
+    pub fn my_call(&self) -> &str {
+        &self.cfg.my_call
+    }
+
     /// Start calling CQ.
     pub fn call_cq(&mut self) {
         self.dx = None;
@@ -389,6 +394,13 @@ impl QsoMachine {
 
     /// The message to transmit this slot, or None if we shouldn't key.
     pub fn plan_tx(&self) -> Option<String> {
+        // Nothing goes out without a station callsign: every message is built
+        // around ours, and an unconfigured station must never key. (The message
+        // packer degrades unpackable text to free text, so this is the guard
+        // that keeps a bare "CQ" off the air.)
+        if self.cfg.my_call.trim().is_empty() {
+            return None;
+        }
         let dx = self.dx.as_ref();
         let dx_call = dx.map(|d| d.call.as_str()).unwrap_or("");
         let mc = &self.cfg.my_call;
@@ -475,6 +487,7 @@ mod tests {
             grid: None,
             is_cq: msg.starts_with("CQ"),
             cq_dx: msg.starts_with("CQ DX"),
+            free_text: false,
         }
     }
 
@@ -632,6 +645,13 @@ mod tests {
         assert!(!q.on_rx(&[decode("K1ABC W9XYZ -05")], 145));
         assert_eq!(q.step(), QsoStep::Tx73);
         assert!(q.wants_tx());
+    }
+
+    #[test]
+    fn an_unconfigured_station_never_transmits() {
+        let mut q = QsoMachine::new(Mode::Ft8, DigiConfig::default());
+        q.call_cq();
+        assert_eq!(q.plan_tx(), None, "no callsign, no transmission");
     }
 
     #[test]

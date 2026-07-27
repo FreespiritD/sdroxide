@@ -35,6 +35,11 @@ pub struct Decode {
     /// [`cq_is_for_us`].
     #[serde(default)]
     pub cq_dx: bool,
+    /// True for a 13-character free-text message. It carries no addressing at
+    /// all — `to` and `from` are always `None`, however much the text may look
+    /// like an exchange.
+    #[serde(default)]
+    pub free_text: bool,
 }
 
 /// How far away a station has to be to count as DX when the DXCC entity can't
@@ -839,6 +844,7 @@ mod tests {
             grid: grid.map(|g| g.to_string()),
             is_cq: true,
             cq_dx: msg.starts_with("CQ DX"),
+            free_text: false,
         }
     }
 

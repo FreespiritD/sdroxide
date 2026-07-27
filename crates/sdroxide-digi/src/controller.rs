@@ -53,6 +53,9 @@ pub enum DigiAction {
 struct DecodeJob {
     audio: Vec<i16>,
     slot_utc: i64,
+    /// Callsigns to fold into the worker's hash table before decoding — ours
+    /// and the DX's, so a hashed `<...>` naming either resolves on first sight.
+    seed_calls: Vec<String>,
 }
 
 pub struct DigiController {
@@ -102,8 +105,9 @@ impl DigiController {
         let worker = std::thread::Builder::new()
             .name("sdroxide-ft8-decode".into())
             .spawn(move || {
-                let modem = Ft8Modem::new(worker_mode);
+                let mut modem = Ft8Modem::new(worker_mode);
                 while let Ok(job) = job_rx.recv() {
+                    modem.seed_hashes(&job.seed_calls);
                     let decodes = modem.decode_slot(&job.audio, job.slot_utc);
                     if res_tx.send((job.slot_utc, decodes)).is_err() {
                         break;
@@ -260,16 +264,19 @@ impl DigiController {
     }
 
     /// Synthesize `msg` into a 48 kHz mono burst (12 kHz GFSK, resampled).
-    fn synth_burst_48k(&mut self, msg: &str) -> Option<Vec<f32>> {
-        let burst12 = self.modem.encode_burst_12k(msg, self.audio_hz, 0.5)?;
+    /// Returns the audio and the message as the far end will read it, which is
+    /// what the transcript logs — a compound-call or over-long message is
+    /// degraded to a form FT8 can carry (see [`Ft8Modem::encode_burst_12k`]).
+    fn synth_burst_48k(&mut self, msg: &str) -> Option<(Vec<f32>, String)> {
+        let (burst12, sent) = self.modem.encode_burst_12k(msg, self.audio_hz, 0.5)?;
         // Resample 12 k → 48 k.
         match MonoResampler::new(DECODE_RATE, 48_000.0) {
             Some(mut r) => {
                 let mut out = Vec::with_capacity(burst12.len() * 4 + 2048);
                 r.push(&burst12, &mut out);
-                Some(out)
+                Some((out, sent))
             }
-            None => Some(burst12),
+            None => Some((burst12, sent)),
         }
     }
 
@@ -328,7 +335,12 @@ impl DigiController {
                 if self.slot_buf.len() >= min_samples {
                     let audio = std::mem::take(&mut self.slot_buf);
                     let slot_utc = self.scheduler.slot_start_unix(self.last_slot_idx) as i64;
-                    let _ = self.job_tx.send(DecodeJob { audio, slot_utc });
+                    let seed_calls = [self.qso.my_call(), self.qso.dx_call().unwrap_or("")]
+                        .iter()
+                        .filter(|c| !c.is_empty())
+                        .map(|c| c.to_string())
+                        .collect();
+                    let _ = self.job_tx.send(DecodeJob { audio, slot_utc, seed_calls });
                 }
             }
             self.slot_buf.clear();
@@ -354,10 +366,10 @@ impl DigiController {
             let latest = self.params.slot_s - self.params.burst_s + self.params.tx_offset_s;
             if into >= self.params.tx_offset_s && into <= latest {
                 if let Some(msg) = self.qso.plan_tx() {
-                    if let Some(samples) = self.synth_burst_48k(&msg) {
+                    if let Some((samples, sent)) = self.synth_burst_48k(&msg) {
                         self.burst = Some(BurstPlayer { samples, pos: 0 });
                         self.tx_fired_slot = idx;
-                        self.qso.record_tx(&msg);
+                        self.qso.record_tx(&sent);
                         self.status_dirty = true;
                         actions.push(DigiAction::KeyTx);
                     }

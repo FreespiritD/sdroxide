@@ -87,6 +87,7 @@ mod tests {
             grid: Some(grid.into()),
             is_cq: true,
             cq_dx: false,
+            free_text: false,
         }
     }
 

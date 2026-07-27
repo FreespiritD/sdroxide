@@ -366,6 +366,17 @@ The panel has two halves:
   `Tx RR73`, `Tx 73`, `Confirming`, `Done`), and a transcript of the exchange
   (outgoing lines in gold, incoming in green, plus the queued next message).
 
+Beyond the everyday exchange, the decode list understands the other FT8 message
+layouts: **compound and non-standard callsigns** (`DL/W1AW`, `W1AW/P`), **hashed
+callsigns** (shown as `<W1AW>` once that station has been heard, and as `<...>`
+until then), **free text** (13 characters, listed as `TEXT` since it names no
+sender), **contest exchanges** (ARRL RTTY Roundup, Field Day) and **DXpedition**
+messages. Transmitting works the same way round: a message that the standard
+layout can't carry is sent in the layout that can, and the transcript records
+what actually went on the air — addressing a compound call sends your own
+callsign hashed (`DL/W1AW <AB1CD> RR73`), which drops the signal report, and
+free text is cut to 13 characters.
+
 ### 3.4 Working stations
 
 - **Answer a call:** click **REPLY** on a decode. sdroxide adopts that station,

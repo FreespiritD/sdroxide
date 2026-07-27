@@ -2135,7 +2135,12 @@ impl SdroxideApp {
                     let (i, d, dist_km, cq, novelty) = items[k];
                     // Decodes addressed to our own station stand out most.
                     let to_me = !my_call.is_empty() && d.to.as_deref() == Some(my_call.as_str());
-                    let who = d.from.clone().unwrap_or_else(|| "?".into());
+                    // Free text names no sender, and a hashed callsign nobody
+                    // has heard yet resolves to none either — say which it is
+                    // rather than showing a bare "?".
+                    let who = d.from.clone().unwrap_or_else(|| {
+                        if d.free_text { "TEXT".into() } else { "?".into() }
+                    });
                     // What this station would be worth working: one badge, and
                     // a dupe fades the row back so the new ones carry the eye.
                     let (badge, badge_col) = match novelty.highlight() {
@@ -2224,7 +2229,7 @@ impl SdroxideApp {
                                 egui::Label::new(
                                     RichText::new(&who).size(15.0).strong().color(if to_me {
                                         crate::theme::YELLOW
-                                    } else if dupe {
+                                    } else if d.from.is_none() || dupe {
                                         Color32::from_gray(105)
                                     } else if cq {
                                         crate::theme::GREEN
