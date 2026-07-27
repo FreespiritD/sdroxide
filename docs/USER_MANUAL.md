@@ -388,8 +388,12 @@ free text is cut to 13 characters.
   when they call CQ again (or come back to you). The hold gives up after five
   minutes. A 73 / RR73 you already owe still goes out, so a finished contact is
   never dropped unlogged.
-- **Call CQ:** click **CALL CQ**. The first station that answers becomes your
-  QSO.
+- **Call CQ:** click **CALL CQ**. When several stations come back in the same
+  slot, sdroxide picks which to work first rather than taking whichever decoded
+  first: a station already worked this session goes last, among signals of
+  similar strength a new DXCC entity wins, and otherwise the strongest does —
+  it is the one most likely to complete. The others are listed in the transcript
+  ("also calling: …") so you can work them next.
 - **Set your transmit tone:** click a decode row (or click a station box on the
   waterfall) to set your transmit audio frequency to that station's frequency.
   The audio frequency is clamped to 200–3500 Hz.

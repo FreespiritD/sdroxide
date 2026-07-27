@@ -78,6 +78,10 @@ pub struct QsoMachine {
     /// whatever the sequencer had planned, then the exchange carries on from
     /// where it was.
     manual: Option<String>,
+    /// Callsigns, and the DXCC entities they were in, worked this session —
+    /// what makes one answer to our CQ worth more than another.
+    worked_calls: std::collections::HashSet<String>,
+    worked_entities: std::collections::HashSet<String>,
 }
 
 impl QsoMachine {
@@ -96,6 +100,8 @@ impl QsoMachine {
             final_msg: None,
             resend: false,
             manual: None,
+            worked_calls: std::collections::HashSet::new(),
+            worked_entities: std::collections::HashSet::new(),
         }
     }
 
@@ -249,13 +255,36 @@ impl QsoMachine {
         // A pileup can decode both their answer to us *and* other traffic from
         // them in the same slot; an answer to us always wins over "they're
         // working someone else".
+        let mut changed = false;
         let dx_call = self.dx.as_ref().map(|d| d.call.clone());
         let answered_us = dx_call.as_deref().is_some_and(|dx| {
             decodes
                 .iter()
                 .any(|d| d.from.as_deref() == Some(dx) && d.to.as_deref() == Some(my_call.as_str()))
         });
-        let mut changed = false;
+        // A CQ can be answered by several stations in one slot. Choose between
+        // them once, up front, rather than taking whichever the decoder
+        // happened to report first.
+        let answerer = (self.step == QsoStep::CallingCq && self.dx.is_none())
+            .then(|| self.pick_answerer(decodes, &my_call))
+            .flatten();
+        if let Some(pick) = &answerer {
+            let others: Vec<&str> = decodes
+                .iter()
+                .filter(|d| d.to.as_deref() == Some(my_call.as_str()))
+                .filter_map(|d| d.from.as_deref())
+                .filter(|c| !c.is_empty() && c != pick)
+                .collect();
+            if !others.is_empty() {
+                // The ones we're not taking are worth knowing about: they are
+                // still calling, and the decode list will have scrolled on.
+                self.transcript.push(TranscriptLine::note(format!(
+                    "also calling: {}",
+                    others.join(", ")
+                )));
+                changed = true;
+            }
+        }
         for d in decodes {
             let Some(from) = d.from.as_deref().filter(|f| !f.is_empty()) else { continue };
             let to_me = d.to.as_deref() == Some(my_call.as_str());
@@ -319,8 +348,8 @@ impl QsoMachine {
                 continue;
             }
 
-            // Calling CQ and someone answers → adopt them as the DX.
-            if self.step == QsoStep::CallingCq && self.dx.is_none() {
+            // Calling CQ and someone answers → adopt the best of them.
+            if self.step == QsoStep::CallingCq && self.dx.is_none() && answerer.as_deref() == Some(from) {
                 let grid = match &payload {
                     Payload::Grid(g) => Some(g.clone()),
                     _ => d.grid.clone(),
@@ -357,6 +386,31 @@ impl QsoMachine {
             changed |= self.advance(&payload, now_utc);
         }
         changed
+    }
+
+    /// Which of the stations answering our CQ to work first.
+    ///
+    /// Signal strength decides between comparable stations, but not across the
+    /// board: a station we have already worked this session goes last whatever
+    /// its signal, and among signals of similar strength (6 dB bands — the
+    /// difference between "solid" and "marginal" matters, a couple of dB does
+    /// not) a new DXCC entity is worth more than a repeat one. Beyond that the
+    /// strongest wins, because it is the one most likely to complete.
+    fn pick_answerer(&self, decodes: &[Decode], my_call: &str) -> Option<String> {
+        decodes
+            .iter()
+            .filter(|d| d.to.as_deref() == Some(my_call))
+            .filter_map(|d| {
+                let call = d.from.as_deref().filter(|f| !f.is_empty())?;
+                Some((call, d.snr_db))
+            })
+            .max_by_key(|(call, snr)| {
+                let fresh = !self.worked_calls.contains(&call.to_ascii_uppercase());
+                let new_entity = sdroxide_types::entity_name(call)
+                    .is_some_and(|e| !self.worked_entities.contains(e));
+                (fresh, snr.div_euclid(6), new_entity, *snr)
+            })
+            .map(|(call, _)| call.to_string())
     }
 
     /// Note in the transcript that the station we called is working someone
@@ -408,6 +462,10 @@ impl QsoMachine {
     /// re-send our final message for a few minutes if they didn't hear it.
     fn log_qso(&mut self, now_utc: i64) {
         if let Some(dx) = self.dx.as_ref() {
+            self.worked_calls.insert(dx.call.to_ascii_uppercase());
+            if let Some(e) = sdroxide_types::entity_name(&dx.call) {
+                self.worked_entities.insert(e.to_string());
+            }
             self.completed = Some(QsoRecord {
                 call: dx.call.clone(),
                 grid: dx.grid.clone(),
@@ -597,6 +655,65 @@ mod tests {
         assert_eq!(rec.rst_rcvd, Some(-12));
         assert!(q.on_rx(&[decode("AB1CD W9XYZ 73")], 145));
         assert!(!q.wants_tx(), "a bare 73 needs no re-send");
+    }
+
+    /// A decode addressed to us from `call` at `snr`.
+    fn answer(call: &str, snr: i16) -> Decode {
+        let mut d = decode(&format!("AB1CD {call} EM48"));
+        d.snr_db = snr;
+        d
+    }
+
+    #[test]
+    fn the_strongest_of_several_answers_is_worked_first() {
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.call_cq();
+        q.on_rx(&[answer("W9XYZ", -18), answer("K1ABC", -4), answer("G4XYZ", -21)], 100);
+        assert_eq!(q.dx_call(), Some("K1ABC"));
+        // The ones we passed over are recorded, since they're still calling.
+        let note = q.status(false).transcript.iter().find(|l| l.overheard).cloned();
+        let note = note.expect("a note listing the other callers");
+        assert!(note.text.contains("W9XYZ") && note.text.contains("G4XYZ"), "{}", note.text);
+        assert!(!note.text.contains("K1ABC"), "the station we took is not an 'also'");
+    }
+
+    #[test]
+    fn a_station_worked_this_session_waits_its_turn() {
+        // Run a full QSO with W9XYZ, then have them answer the next CQ
+        // alongside a weaker station we haven't worked.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.call_cq();
+        q.on_rx(&[answer("W9XYZ", -2)], 100);
+        q.on_rx(&[decode("AB1CD W9XYZ R-12")], 115);
+        q.note_tx_sent(130); // RR73 out → logged
+        assert!(q.take_completed().is_some());
+
+        q.call_cq();
+        q.on_rx(&[answer("W9XYZ", -2), answer("K1ABC", -20)], 145);
+        assert_eq!(q.dx_call(), Some("K1ABC"), "a dupe loses to a station not yet worked");
+    }
+
+    #[test]
+    fn a_new_entity_wins_between_comparable_signals() {
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        // Work a US station first, so "United States" is no longer new.
+        q.call_cq();
+        q.on_rx(&[answer("K1ABC", -2)], 100);
+        q.on_rx(&[decode("AB1CD K1ABC R-12")], 115);
+        q.note_tx_sent(130);
+        assert!(q.take_completed().is_some());
+
+        // Two answers within the same signal band: the new entity is worth more.
+        q.call_cq();
+        q.on_rx(&[answer("W9XYZ", -3), answer("DL1ABC", -6)], 145);
+        assert_eq!(q.dx_call(), Some("DL1ABC"));
+
+        // A much stronger signal still wins — a marginal new one that can't
+        // complete is worth less than a contact that will.
+        q.abort();
+        q.call_cq();
+        q.on_rx(&[answer("W9XYZ", 3), answer("DL1ABC", -22)], 160);
+        assert_eq!(q.dx_call(), Some("W9XYZ"));
     }
 
     #[test]
