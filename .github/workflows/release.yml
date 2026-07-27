@@ -326,8 +326,10 @@ jobs:
             # interpretation, so it is made inside the mounted image instead,
             # where it cannot enter the size calculation at all.
             size_mb=$(( $(du -sm stage-dmg | cut -f1) + 64 ))
+            # No -format here: it is only accepted together with -srcfolder or
+            # -srcdevice, and a blank sized image is read-write UDIF anyway.
             hdiutil create -volname sdroxide -fs HFS+ -size "${size_mb}m" \
-              -ov -format UDRW rw.dmg
+              -ov rw.dmg
             mnt=$(mktemp -d)
             hdiutil attach rw.dmg -mountpoint "$mnt" -nobrowse -noautoopen
             # ditto, not cp: the code signature lives in extended attributes.
