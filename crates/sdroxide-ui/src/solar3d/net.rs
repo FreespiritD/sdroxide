@@ -1,0 +1,221 @@
+//! The browser end of `/solar-ws`.
+//!
+//! Fills the very same `Arc<Mutex<SolarData>>` the native [`SolarFeed`] fills,
+//! which is why the scene, overlay and renderer need no notion of where their
+//! data came from.
+//!
+//! [`SolarFeed`]: sdroxide_solar::SolarFeed
+//!
+//! Two products arrive in their original form and are rebuilt here, using the
+//! same functions the native feed calls:
+//!
+//! * the SDO image, as the fetched JPEG → [`imagery::decode`]
+//! * satellites, as the fetched element set → [`satellites::parse_tles`]
+//!
+//! Both are markedly cheaper to ship than the decoded product, and neither is
+//! serialisable anyway. Decoding a 1024² JPEG costs a few tens of milliseconds
+//! and happens at most every ten minutes, so it runs inline rather than being
+//! worth a worker.
+
+use std::sync::{Arc, Mutex};
+
+use ewebsock::{WsMessage, WsReceiver, WsSender};
+
+use sdroxide_proto::solar::{SOLAR_PROTO_VERSION, SolarClientMsg, SolarServerMsg};
+use sdroxide_proto::{decode as proto_decode, encode};
+use sdroxide_solar::{SdoChannel, SolarData, imagery, satellites};
+
+/// Connection state, as the overlay's status line reports it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Link {
+    Connecting,
+    Up,
+    /// The socket closed or the handshake failed. The view keeps drawing
+    /// whatever it already has — the ephemeris needs no server at all — so this
+    /// is a status line, not an error screen.
+    Down(String),
+}
+
+pub struct SolarClient {
+    sender: WsSender,
+    receiver: WsReceiver,
+    pub link: Link,
+    /// The snapshot handed to `SolarUi`, filled in place as messages arrive.
+    data: Arc<Mutex<SolarData>>,
+    /// Newest decode list, for the caller's own fade bookkeeping.
+    pub decodes: Vec<sdroxide_types::Decode>,
+    pub my_grid: String,
+    pub dx_grid: Option<String>,
+    pub transmitting: bool,
+    /// Channel/resolution last requested, so a change in the UI is sent once.
+    sent_channel: Option<(u8, u16)>,
+}
+
+impl SolarClient {
+    /// `wake` is called from the socket thread whenever a message arrives —
+    /// pass `ctx.request_repaint` so a new solar image appears without waiting
+    /// for the next scheduled frame.
+    pub fn connect(url: &str, wake: impl Fn() + Send + Sync + 'static) -> Result<Self, String> {
+        // The handshake waits for `WsEvent::Opened` — see `poll`.
+        let (sender, receiver) =
+            ewebsock::connect_with_wakeup(url, ewebsock::Options::default(), wake)
+                .map_err(|e| e.to_string())?;
+        Ok(SolarClient {
+            sender,
+            receiver,
+            link: Link::Connecting,
+            data: Arc::new(Mutex::new(SolarData::default())),
+            decodes: Vec::new(),
+            my_grid: String::new(),
+            dx_grid: None,
+            transmitting: false,
+            sent_channel: None,
+        })
+    }
+
+    /// The handle to hand to `SolarUi::data`.
+    pub fn shared(&self) -> Arc<Mutex<SolarData>> {
+        Arc::clone(&self.data)
+    }
+
+    pub fn send(&mut self, msg: &SolarClientMsg) {
+        if let Ok(bytes) = encode(msg) {
+            self.sender.send(WsMessage::Binary(bytes));
+        }
+    }
+
+    /// Forward a channel or resolution change, once per change.
+    ///
+    /// Mirrors `Solar3d::ensure_feed`: the UI writes its preference into
+    /// `Solar3dView` every frame, and only a difference is worth a message.
+    pub fn sync_channel(&mut self, channel: u8, resolution: u16) {
+        // Nothing sent before the handshake completes would arrive — and worse,
+        // `sent_channel` would record it as sent. The first frames run while
+        // the socket is still connecting, so this is the normal path, not an
+        // edge case.
+        if self.link != Link::Up || self.sent_channel == Some((channel, resolution)) {
+            return;
+        }
+        let previous = self.sent_channel.replace((channel, resolution));
+        match previous {
+            Some((c, r)) => {
+                if c != channel {
+                    self.send(&SolarClientMsg::SetChannel(channel));
+                }
+                if r != resolution {
+                    self.send(&SolarClientMsg::SetResolution(resolution));
+                }
+            }
+            // First frame: the server already started its feed on the defaults,
+            // so only say something if this viewer wants something else.
+            None => {
+                if channel != 0 {
+                    self.send(&SolarClientMsg::SetChannel(channel));
+                }
+                if resolution != 1024 {
+                    self.send(&SolarClientMsg::SetResolution(resolution));
+                }
+            }
+        }
+    }
+
+    /// Drain the socket. Call once per frame.
+    pub fn poll(&mut self) {
+        while let Some(ev) = self.receiver.try_recv() {
+            match ev {
+                // The handshake has to wait for this, not go out at connect
+                // time. In the browser a `WebSocket` is still `CONNECTING` when
+                // its constructor returns, and `send` on it throws — so an
+                // eagerly-sent Hello is silently lost and the server closes the
+                // socket on its handshake timeout. Natively the socket is
+                // already open by then, which is exactly what makes the bug
+                // invisible until you run it in a browser.
+                ewebsock::WsEvent::Opened => {
+                    self.send(&SolarClientMsg::Hello { proto: SOLAR_PROTO_VERSION });
+                }
+                ewebsock::WsEvent::Message(WsMessage::Binary(bytes)) => {
+                    match proto_decode::<SolarServerMsg>(&bytes) {
+                        Ok(m) => self.apply(m),
+                        Err(e) => self.link = Link::Down(format!("bad message: {e}")),
+                    }
+                }
+                ewebsock::WsEvent::Message(_) => {}
+                ewebsock::WsEvent::Error(e) => self.link = Link::Down(e),
+                ewebsock::WsEvent::Closed => {
+                    self.link = Link::Down("connection closed".into());
+                }
+            }
+        }
+    }
+
+    fn apply(&mut self, msg: SolarServerMsg) {
+        match msg {
+            SolarServerMsg::HelloAck { proto } => {
+                self.link = if proto == SOLAR_PROTO_VERSION {
+                    Link::Up
+                } else {
+                    Link::Down(format!(
+                        "solar protocol mismatch: server {proto}, client {SOLAR_PROTO_VERSION}"
+                    ))
+                };
+            }
+            SolarServerMsg::Error(e) => self.link = Link::Down(e),
+            SolarServerMsg::Pong => {}
+            SolarServerMsg::Digi { my_grid, dx_grid, transmitting } => {
+                self.my_grid = my_grid;
+                self.dx_grid = dx_grid;
+                self.transmitting = transmitting;
+            }
+            SolarServerMsg::Decodes(d) => self.decodes = d,
+            // Decode outside the lock, exactly as the feed's worker does: a
+            // 2048² JPEG is over a hundred milliseconds, which is far too long
+            // to hold a lock the renderer takes every frame.
+            SolarServerMsg::Sun { channel, fetched_unix, jpeg } => {
+                let ch = SdoChannel::from_u8(channel);
+                if let Some(img) = imagery::decode(&jpeg, ch, fetched_unix) {
+                    let mut d = self.lock();
+                    d.sun = Some(Arc::new(img));
+                    d.sun_gen += 1;
+                }
+            }
+            SolarServerMsg::Tles { geo, text } => {
+                let sats = satellites::parse_tles(&text);
+                let mut d = self.lock();
+                if geo {
+                    d.sats_geo = sats;
+                } else {
+                    d.sats_amateur = sats;
+                }
+            }
+            SolarServerMsg::Aurora(oval) => {
+                let mut d = self.lock();
+                d.aurora = Some(Arc::new(oval));
+                d.aurora_gen += 1;
+            }
+            SolarServerMsg::Weather { weather, aurora_power, kp_forecast } => {
+                let mut d = self.lock();
+                d.weather = weather;
+                d.aurora_power = aurora_power;
+                d.kp_forecast = kp_forecast;
+            }
+            SolarServerMsg::Events { cmes, flares, regions } => {
+                let mut d = self.lock();
+                d.cmes = cmes;
+                d.flares = flares;
+                d.regions = regions;
+            }
+            SolarServerMsg::Status(v) => {
+                let mut d = self.lock();
+                // A server with a different source list than this build would
+                // otherwise shift every age readout by one column.
+                for (slot, s) in d.status.iter_mut().zip(v) {
+                    *slot = s;
+                }
+            }
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, SolarData> {
+        self.data.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}

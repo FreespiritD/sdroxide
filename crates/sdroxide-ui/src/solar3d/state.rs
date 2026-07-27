@@ -124,6 +124,10 @@ pub struct SolarUi {
     pub view: Solar3dView,
     /// Set by the child pass when the OS window's close button is hit; drained
     /// by the root pass, which then stops emitting the viewport.
+    ///
+    /// Native only: in the browser this view *is* the tab, and closing a tab is
+    /// the browser's business rather than something to route through here.
+    #[cfg(not(target_arch = "wasm32"))]
     pub close_requested: bool,
     /// Set by the overlay's ↻ button; drained by the root pass, which owns the
     /// feed handle the child pass cannot reach.
@@ -198,6 +202,7 @@ impl SolarUi {
         }
         SolarUi {
             view,
+            #[cfg(not(target_arch = "wasm32"))]
             close_requested: false,
             refresh_requested: false,
             qth_grid: String::new(),

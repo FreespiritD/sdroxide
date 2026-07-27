@@ -10,7 +10,7 @@
 //! and `linkedEvents` is null more often than not. A strict schema fails on the
 //! first record.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::helio::parse_location;
 use crate::timefmt;
@@ -31,7 +31,7 @@ pub fn flare_url(start_unix: i64, end_unix: i64) -> String {
 }
 
 /// A CME with enough information to place a cone in space.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CmeAnalysis {
     /// When the leading edge passed 21.5 solar radii — the epoch the speed is
     /// measured from, and the instant whose solar frame the direction is in.
@@ -48,7 +48,7 @@ pub struct CmeAnalysis {
     pub estimated: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CmeEvent {
     pub id: String,
     pub start_unix: i64,
@@ -60,7 +60,7 @@ pub struct CmeEvent {
     pub analysis: Option<CmeAnalysis>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FlareEvent {
     pub id: String,
     pub begin_unix: i64,

@@ -2,24 +2,27 @@
 //!
 //! Compiles native and for wasm32. All custom wgpu rendering that the browser
 //! build shares is written to WebGL2 downlevel limits (fragment-only, sampled
-//! textures + uniforms). The one exception is [`solar3d`], which is native-only
-//! and does its 3D work in an offscreen pass of its own.
+//! textures + uniforms). The one exception is [`solar3d`], which uses depth,
+//! MSAA and vertex buffers — but does so entirely inside an offscreen pass of
+//! its own, so the shared egui pass never sees them and the module runs on both
+//! targets.
 
 mod app;
 pub mod chrome;
 mod colormap;
+mod digi_map;
 mod download;
 mod help;
 mod input;
 #[cfg(feature = "remote")]
 mod remote;
 mod rf_paint;
-/// Solar-system 3D window. Native-only: it is the sole outbound network client
-/// in the UI and the sole consumer of depth/MSAA/vertex buffers.
-#[cfg(not(target_arch = "wasm32"))]
+/// Solar-system 3D view. A second OS window natively, a second browser tab on
+/// the web; the sole consumer of depth/MSAA/vertex buffers either way.
 mod solar3d;
 mod sstv;
 pub mod theme;
+mod time;
 mod view;
 mod waterfall_gpu;
 mod widgets;
@@ -27,6 +30,11 @@ mod widgets;
 pub use app::SdroxideApp;
 #[cfg(feature = "remote")]
 pub use remote::{AudioBridge, RemoteController};
+/// The solar-system view as a standalone app, for the browser tab the ☀ 3D
+/// chip opens. Natively the same view is a child viewport of the main window
+/// instead — see `solar3d::Solar3d`.
+#[cfg(feature = "remote")]
+pub use solar3d::SolarApp;
 
 /// Wgpu access must go through this re-export so every crate agrees on the
 /// wgpu version (project rule).

@@ -16,7 +16,7 @@
 //! [`AuroraOval::forecast_unix`] says what the picture is actually valid for
 //! rather than implying it is instantaneous.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::timefmt;
 
@@ -39,7 +39,7 @@ pub const NOISE_FLOOR_PCT: f64 = 1.0;
 pub const EDGE_PCT: f64 = 10.0;
 
 /// One OVATION issue: the probability of visible aurora over the whole globe.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuroraOval {
     /// When the inputs were observed.
     pub observed_unix: i64,
@@ -190,7 +190,7 @@ pub fn parse_ovation(json: &str) -> Option<AuroraOval> {
 }
 
 /// The power being deposited into each auroral zone, gigawatts.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HemisphericPower {
     pub observed_unix: i64,
     pub forecast_unix: i64,
@@ -262,7 +262,7 @@ pub fn parse_hemispheric_power(text: &str) -> Option<HemisphericPower> {
 }
 
 /// One three-hour bin of the planetary K series.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct KpPoint {
     /// Start of the bin.
     pub unix: i64,

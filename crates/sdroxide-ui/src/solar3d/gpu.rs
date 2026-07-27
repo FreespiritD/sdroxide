@@ -457,8 +457,9 @@ fn build(rs: &RenderState) -> SolarResources {
     let sprite_cap = 256;
 
     // ── Textures ────────────────────────────────────────────────────────────
-    let land = upload_map(device, &rs.queue, "solar-land-mask", LAND_PNG);
-    let border_view = upload_map(device, &rs.queue, "solar-borders", BORDER_PNG);
+    let map_dim = MAX_MAP_DIM.min(limits.max_texture_dimension_2d);
+    let land = upload_map(device, &rs.queue, "solar-land-mask", LAND_PNG, map_dim);
+    let border_view = upload_map(device, &rs.queue, "solar-borders", BORDER_PNG, map_dim);
     let body_maps = upload_body_maps(device, &rs.queue);
     let sun_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("solar-sun-tex"),
@@ -659,7 +660,23 @@ const BODY_MAPS: [(&str, &[u8]); 3] = [
     ("saturn", include_bytes!("../../assets/bodies/saturn.jpg")),
 ];
 
-/// Decode one of those maps into an R8 texture with a full mip chain.
+/// Largest edge the globe's masks are uploaded at.
+///
+/// Native keeps the assets' full 4320: the camera can fly right down to the
+/// surface, which is what that resolution is for. The browser starts one level
+/// down. 4320×2160 R8 plus its mip chain is 12.4 MB per mask and 25 MB for the
+/// pair, which is a lot to hand a tab, and building those chains is tens of
+/// milliseconds on the page's only thread. 2160×1080 is still twice the flat
+/// FT8 map's grid in each axis. (The PNG decode itself is unchanged — that is
+/// fixed by the asset, and one asset shared by both targets is worth more than
+/// the saving.)
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_MAP_DIM: u32 = 4320;
+#[cfg(target_arch = "wasm32")]
+const MAX_MAP_DIM: u32 = 2160;
+
+/// Decode one of those maps into an R8 texture with a full mip chain, with the
+/// base level no larger than `max_dim`.
 ///
 /// The mips are not optional at this resolution: 4320 texels of coastline
 /// crammed into a 40-pixel globe without them is a shimmering mess, and the
@@ -670,6 +687,7 @@ fn upload_map(
     queue: &wgpu::Queue,
     label: &str,
     png: &[u8],
+    max_dim: u32,
 ) -> wgpu::TextureView {
     // A checked-in asset failing to decode is not a reason to lose the window;
     // it costs the layer instead, and says so.
@@ -685,6 +703,20 @@ fn upload_map(
     while levels.last().is_some_and(|(w, h, _)| *w > 1 || *h > 1) {
         levels.push(halve(levels.last().expect("just checked")));
     }
+
+    // Start the chain at the first level that fits. Creating a texture wider
+    // than the device allows is a validation failure, not a soft degradation,
+    // and `Limits::downlevel_webgl2_defaults` caps 2D textures at 2048 — far
+    // below these assets. egui-wgpu asks for 8192 even on the GL backend, so in
+    // practice this only bites where the budget above is lower or a device
+    // grants less than was asked; either way, losing detail beats losing the
+    // globe.
+    let base = levels
+        .iter()
+        .position(|(w, h, _)| *w <= max_dim && *h <= max_dim)
+        .unwrap_or(levels.len() - 1);
+    let levels = &levels[base..];
+    let (w, h, _) = levels[0];
 
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),

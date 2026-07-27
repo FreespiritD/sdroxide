@@ -7,7 +7,7 @@
 //! every payload here is small — the largest is 42 kB — because these are
 //! polled far more often than the imagery.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::timefmt;
 
@@ -19,7 +19,7 @@ pub const IONOSONDE_URL: &str = "https://prop.kc2g.com/api/stations.json";
 
 /// 10.7 cm solar radio flux, the standard proxy for ionising solar output.
 /// Under about 70 is a dead band; over 150 opens the high bands.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SolarFlux {
     pub sfu: f64,
     pub observed_unix: i64,
@@ -28,7 +28,7 @@ pub struct SolarFlux {
 /// Planetary geomagnetic activity. `kp` is the quasi-logarithmic 0–9 index;
 /// `a_running` is its linear equivalent, which is the one that reads
 /// proportionally to how disturbed things are.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GeomagneticIndex {
     pub kp: f64,
     pub a_index: f64,
@@ -61,7 +61,7 @@ impl GeomagneticIndex {
 }
 
 /// The current GOES soft X-ray level, as its flare class.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct XrayLevel {
     /// e.g. `C1.1`, `M2.4`, `X1.0`.
     pub class: String,
@@ -84,7 +84,7 @@ impl XrayLevel {
 }
 
 /// One ionosonde's most recent scaling.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Ionosonde {
     pub lat: f64,
     /// Degrees east, normalised to `[-180, 180]`.
@@ -98,7 +98,7 @@ pub struct Ionosonde {
 }
 
 /// A MUF estimate for a particular place, interpolated from nearby soundings.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MufEstimate {
     /// MUF for a 3000 km path, MHz.
     pub muf_mhz: f64,
@@ -123,7 +123,7 @@ impl MufEstimate {
 }
 
 /// Everything in this module, as one snapshot.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SpaceWeather {
     pub flux: Option<SolarFlux>,
     pub geomagnetic: Option<GeomagneticIndex>,

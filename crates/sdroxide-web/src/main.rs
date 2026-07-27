@@ -5,7 +5,7 @@
 mod web {
     use eframe::wasm_bindgen::{self, JsCast, prelude::*};
     use sdroxide_proto::AudioCaps;
-    use sdroxide_ui::{AudioBridge, RemoteController, SdroxideApp};
+    use sdroxide_ui::{AudioBridge, RemoteController, SdroxideApp, SolarApp};
 
     // Implemented in assets/audio_bridge.js (loaded by index.html).
     #[wasm_bindgen(js_namespace = ["window", "sdroxideAudio"])]
@@ -44,35 +44,69 @@ mod web {
                 .dyn_into::<web_sys::HtmlCanvasElement>()
                 .expect("canvas type");
 
+            // One wasm binary serves both pages, picked by the query string.
+            // A second Trunk target would duplicate egui, eframe and wgpu — by
+            // far the largest part of the bundle — in a second download, to
+            // separate two views that share nearly all of their code.
+            //
+            // `?view=solar` also needs no server route of its own: it resolves
+            // to the same index.html through the existing static fallback,
+            // which is what lets the ☀ 3D chip open a plain relative URL.
             let location = window.location();
+            let solar = location.search().unwrap_or_default().contains("view=solar");
+
             let ws_proto = if location.protocol().as_deref() == Ok("https:") {
                 "wss"
             } else {
                 "ws"
             };
             let host = location.host().unwrap_or_else(|_| "localhost:4950".into());
-            let url = format!("{ws_proto}://{host}/ws");
 
-            eframe::WebRunner::new()
-                .start(
-                    canvas,
-                    eframe::WebOptions::default(),
-                    // Connect inside the creator so the socket can wake the UI
-                    // (repaint) the moment a message arrives.
-                    Box::new(move |cc| {
-                        let ctx = cc.egui_ctx.clone();
-                        // Deadline hint, not an immediate repaint — see the
-                        // native remote client for rationale.
-                        let ctrl =
-                            RemoteController::connect(&url, Some(Box::new(WebAudioBridge)), move || {
-                                ctx.request_repaint_after(std::time::Duration::from_millis(33))
-                            })
+            let runner = eframe::WebRunner::new();
+            let result = if solar {
+                // The map is a viewer: no audio bridge, so this tab never asks
+                // for the microphone, and its own endpoint, so it does not take
+                // the control slot the main tab holds.
+                document.set_title("sdroxide — solar system");
+                let url = format!("{ws_proto}://{host}/solar-ws");
+                runner
+                    .start(
+                        canvas,
+                        eframe::WebOptions::default(),
+                        Box::new(move |cc| {
+                            Ok(Box::new(
+                                SolarApp::new(cc, &url)
+                                    .map_err(|e| format!("solar websocket connect: {e}"))?,
+                            ))
+                        }),
+                    )
+                    .await
+            } else {
+                let url = format!("{ws_proto}://{host}/ws");
+                runner
+                    .start(
+                        canvas,
+                        eframe::WebOptions::default(),
+                        // Connect inside the creator so the socket can wake the UI
+                        // (repaint) the moment a message arrives.
+                        Box::new(move |cc| {
+                            let ctx = cc.egui_ctx.clone();
+                            // Deadline hint, not an immediate repaint — see the
+                            // native remote client for rationale.
+                            let ctrl = RemoteController::connect(
+                                &url,
+                                Some(Box::new(WebAudioBridge)),
+                                move || {
+                                    ctx.request_repaint_after(std::time::Duration::from_millis(33))
+                                },
+                            )
                             .map_err(|e| format!("websocket connect: {e}"))?;
-                        Ok(Box::new(SdroxideApp::new(cc, Box::new(ctrl))))
-                    }),
-                )
-                .await
-                .expect("eframe start");
+                            Ok(Box::new(SdroxideApp::new(cc, Box::new(ctrl))))
+                        }),
+                    )
+                    .await
+            };
+            result.expect("eframe start");
         });
     }
 }

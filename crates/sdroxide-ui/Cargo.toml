@@ -13,6 +13,12 @@ sdroxide-proto = { version = "0.6.0", path = "../sdroxide-proto", optional = tru
 # glyph rasterisation for the message overlay. Both are pure-Rust / wasm-safe.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 ab_glyph = "0.2"
+# Solar-system 3D view (src/solar3d): ephemeris, space-weather types and SGP4.
+# Portable — the crate's network/cache half is cfg'd out on wasm32, where the
+# same data arrives over the server's /solar-ws relay instead.
+sdroxide-solar = { version = "0.6.0", path = "../sdroxide-solar" }
+# Zero-copy packing of the solar view's GPU uniform/instance buffers.
+bytemuck = { version = "1", features = ["derive"] }
 
 [features]
 # WebSocket RemoteController for the browser (and native remote) client.
@@ -24,11 +30,6 @@ sdroxide-config = { version = "0.6.0", path = "../sdroxide-config" }
 # MIDI control surfaces (VFO knob, PTT button, faders). Native-only: it links
 # the host MIDI stack, so it must never reach the wasm dependency path.
 sdroxide-midi = { version = "0.6.0", path = "../sdroxide-midi" }
-# Solar-system 3D view (src/solar3d): ephemeris + space-weather data, and
-# zero-copy packing of its GPU uniform/instance buffers. Native-only, like the
-# view itself.
-sdroxide-solar = { version = "0.6.0", path = "../sdroxide-solar" }
-bytemuck = { version = "1", features = ["derive"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"

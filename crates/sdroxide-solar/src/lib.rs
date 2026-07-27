@@ -1,20 +1,24 @@
 //! Solar-system ephemeris and space-weather data for the sdroxide 3D view.
 //!
-//! Native-only: this crate opens outbound HTTPS connections and touches the
-//! filesystem, so it must never become a dependency of a wasm-targeted crate.
+//! Two halves, and the split is along the target boundary:
 //!
-//! Two halves, deliberately separable:
-//!
-//! * [`ephem`] — pure arithmetic. No I/O, no threads, fully unit-tested against
-//!   the worked examples in Meeus.
-//! * the data layer — DONKI coronal mass ejections and flares, NOAA SWPC
-//!   sunspot regions and aurora, and SDO solar imagery, fetched on a background
-//!   thread and cached to disk so the view opens instantly and survives being
-//!   offline.
+//! * **Portable** — [`ephem`] and [`planets`] (pure arithmetic, unit-tested
+//!   against the worked examples in Meeus and against JPL Horizons), the
+//!   parsers for every product, [`satellites`] SGP4 propagation, and [`data`],
+//!   the snapshot type they all fill. No I/O, no threads: this half compiles
+//!   for `wasm32-unknown-unknown`.
+//! * **Native only** — [`feed`] and [`cache`]: one background thread fetching
+//!   DONKI coronal mass ejections and flares, NOAA SWPC sunspot regions and
+//!   aurora, and SDO solar imagery over blocking HTTPS, cached to disk so the
+//!   view opens instantly and survives being offline. Both are `cfg`-gated out
+//!   of the browser build, which is fed by the server's relay instead.
 
 pub mod aurora;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod cache;
+pub mod data;
 pub mod donki;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod feed;
 pub mod ephem;
 pub mod helio;
@@ -28,13 +32,15 @@ pub mod timefmt;
 pub mod vec3;
 
 pub use aurora::{AuroraOval, HemisphericPower, KpPoint};
+pub use data::{SolarData, Source, SourceStatus};
 pub use donki::{CmeAnalysis, CmeEvent, FlareEvent};
 pub use ephem::{AU, EARTH_R, MOON_R, SUN_R, SunFrame};
 pub use imagery::{SdoChannel, SunImage};
 pub use indices::{GeomagneticIndex, MufEstimate, SolarFlux, SpaceWeather, XrayLevel};
 pub use impact::{Impact, earth_impact};
 pub use planets::{Moon, Planet, Surface};
-pub use feed::{FeedCmd, SolarData, SolarFeed, Source, SourceStatus};
+#[cfg(not(target_arch = "wasm32"))]
+pub use feed::{FeedCmd, RawUpdate, SolarFeed};
 pub use satellites::{Pass, PassSearch, SatState, Satellite};
 pub use swpc::ActiveRegion;
 pub use vec3::{Basis, Vec3, vec3};

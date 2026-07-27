@@ -13,14 +13,14 @@
 //! because it spells the hemisphere out; the numeric fields are only a
 //! fallback. Everything leaving this module is West-positive.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::helio::parse_location;
 use crate::timefmt;
 
 pub const REGIONS_URL: &str = "https://services.swpc.noaa.gov/json/solar_regions.json";
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ActiveRegion {
     /// NOAA region number, e.g. 4493.
     pub number: u32,

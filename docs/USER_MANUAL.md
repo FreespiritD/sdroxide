@@ -71,7 +71,7 @@ or connects to a remote sdroxide server.
   SDRs, a TCI server (ExpertSDR3/Thetis), or a CAT-controlled radio with audio
   over a USB sound card (demodulated audio or stereo IQ).
 - **Memory channels** and per-band memory of your last frequency/mode/filter.
-- **Solar system 3D view** (native only) — the Sun, the Earth and the Moon, the
+- **Solar system 3D view** — the Sun, the Earth and the Moon, the
   other seven planets and eighteen of their moons with their orbits, live NASA
   SDO solar imagery, sunspot regions and CME trajectory cones,
   an arrival estimate when one is headed our way, the live auroral oval standing
@@ -247,8 +247,8 @@ passband. The grips work on both the spectrum and the waterfall.
   spectrum is shown).
 - **SKIM** — opens the skimmer popup (per-skimmer on/off and squelch); lit while
   any skimmer runs. See [Skimmers](#4-skimmers).
-- **☀ 3D** — open the [solar system 3D view](#6-solar-system-3d-view) in its
-  own window. Native only; the button is absent in the browser client.
+- **☀ 3D** — open the [solar system 3D view](#6-solar-system-3d-view): a second
+  window in the native app, a second browser tab in the web client.
 
 **FFT module:**
 
@@ -989,11 +989,19 @@ reported changes nothing.
 
 ## 6. Solar system 3D view
 
-The **☀ 3D** button in the Display module opens a second window showing the
-solar system in three dimensions — the Sun, the Earth and the Moon, the other
-seven planets and eighteen of their moons — with live solar imagery, sunspot
-regions and coronal-mass-ejection trajectories. This enables operators to see if
-anything is on its way here, and when it will arrive.
+The **☀ 3D** button in the Display module opens the solar system in three
+dimensions — the Sun, the Earth and the Moon, the other seven planets and
+eighteen of their moons — with live solar imagery, sunspot regions and
+coronal-mass-ejection trajectories. This enables operators to see if anything is
+on its way here, and when it will arrive.
+
+In the native app this is a second window. In the [web client](#8-web-operation) it
+is a second browser tab, with the same controls, the same layers and the same
+QSO visualisation; there, the data below is fetched by the server and relayed to
+your browser rather than fetched by the browser itself. Several people may watch
+the map at once — it controls nothing, so it does not take the single control
+connection — but they share one feed, so changing the SDO channel changes it for
+everyone watching.
 
 ![The solar disk in AIA 171, with sunspot regions, a flare marker and the CME arrival banner](images/3d-sun.jpg)
 
@@ -1355,8 +1363,9 @@ sdroxide --server --web-root path/to/sdroxide-web/dist
 The web client mirrors the native UI: tuning, mode and band changes, the
 panadapter and waterfall, receive audio, FT8/FT4, the logbook, memories, and
 meters. Microphone transmit is supported where the browser grants microphone
-access. The [solar system 3D view](#6-solar-system-3d-view) is native-only,
-and its **☀ 3D** button does not appear in the browser client. The same
+access. The [solar system 3D view](#6-solar-system-3d-view) works too: **☀ 3D**
+opens it in a new tab, which connects to a separate read-only endpoint and so
+does not consume the single control connection. The same
 single-client and no-authentication notes as
 [remote operation](#7-remote-operation) apply — put the server behind HTTPS with
 authentication if it is reachable from an untrusted network.

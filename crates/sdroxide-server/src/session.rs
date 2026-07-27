@@ -69,15 +69,25 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>) {
     let tx_codec =
         if audio_caps.opus_encode { AudioCodec::Opus48kMono } else { AudioCodec::Pcm16_48k };
 
-    let (caps, state, memories) = {
+    let (caps, state, memories, digi) = {
         let latest = shared.latest.lock().unwrap();
-        (latest.caps.clone(), latest.state.clone(), latest.memories.clone())
+        (
+            latest.caps.clone(),
+            latest.state.clone(),
+            latest.memories.clone(),
+            latest.digi.clone(),
+        )
     };
     let ack = ServerMsg::HelloAck { proto: PROTO_VERSION, caps, state, rx_codec, tx_codec };
     if socket.send(msg(&ack)).await.is_err() {
         return;
     }
     let _ = socket.send(msg(&ServerMsg::Memories(memories))).await;
+    // The operator config, which the engine announced once at startup. Without
+    // this replay the client's callsign and grid come up empty and greyed out.
+    if let Some(d) = digi {
+        let _ = socket.send(msg(&ServerMsg::Ft8Status(d))).await;
+    }
     info!(?rx_codec, ?tx_codec, "remote client connected");
 
     // --- register lanes -----------------------------------------------

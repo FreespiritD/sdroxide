@@ -84,11 +84,6 @@ const IDLE_POLL_MS: u64 = 250;
 /// The stream counts as stalled after this long without a new frame (seconds).
 const STREAM_STALE_S: f64 = 1.0;
 
-/// A decoded station's dot fades over this many seconds since it was last
-/// heard, then expires. Shared by the flat FT8 map and the 3D globe so the two
-/// always show the same set of stations.
-const STATION_FADE_S: f64 = 120.0;
-
 /// Stable per-callsign id for the FT8 overlay boxes (keeps a station's box in
 /// place across slots).
 fn hash_call(s: &str) -> u64 {
@@ -273,9 +268,9 @@ pub struct SdroxideApp {
     digi_preview: Option<(String, (f64, f64))>,
     /// Animated centre/zoom of the FT8 world map (eased toward the fit target).
     map_view: crate::widgets::worldmap::MapView,
-    /// Per decoded grid: (freshest slot_utc, frame-time last seen). Drives the
-    /// world-map dots' 2-minute fade-out; entries older than the fade expire.
-    digi_station_seen: std::collections::HashMap<String, (i64, f64)>,
+    /// Which decoded stations are currently up, and how brightly. Shared with
+    /// the 3D globe so the flat map and the globe never disagree.
+    digi_stations: crate::digi_map::DigiStations,
     /// Location of the decode row hovered this frame, shown on the map as a
     /// bright yellow dot. Frame-scoped (set by the decode list, read by the map).
     digi_hover_ll: Option<(f64, f64)>,
@@ -544,7 +539,7 @@ impl SdroxideApp {
             digi_cfg_seeded: false,
             digi_preview: None,
             map_view: Default::default(),
-            digi_station_seen: std::collections::HashMap::new(),
+            digi_stations: Default::default(),
             digi_hover_ll: None,
             digi_sort: DecodeSort::None,
             digi_sort_desc: true,
@@ -593,22 +588,12 @@ impl SdroxideApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn digi_traffic(&self, now_t: f64) -> crate::solar3d::DigiTraffic {
         let status = self.digi_status.as_ref();
-        crate::solar3d::DigiTraffic {
-            stations: self
-                .digi_station_seen
-                .iter()
-                .filter_map(|(grid, &(_, seen))| {
-                    let (lat, lon) = sdroxide_types::grid_to_latlon(grid)?;
-                    let alpha = (1.0 - (now_t - seen) / STATION_FADE_S).clamp(0.0, 1.0) as f32;
-                    (alpha > 0.0).then_some((lat, lon, alpha))
-                })
-                .collect(),
-            dx: status
-                .and_then(|s| s.dx_grid.as_deref())
-                .and_then(sdroxide_types::grid_to_latlon),
-            preview: self.digi_preview.as_ref().map(|(_, ll)| *ll),
-            transmitting: status.is_some_and(|s| s.transmitting),
-        }
+        self.digi_stations.traffic(
+            now_t,
+            status.and_then(|s| s.dx_grid.as_deref()),
+            self.digi_preview.as_ref().map(|(_, ll)| *ll),
+            status.is_some_and(|s| s.transmitting),
+        )
     }
 
     /// The operator's grid square. Prefers the engine's copy but falls back to
@@ -904,7 +889,7 @@ impl SdroxideApp {
     /// (for SSTV, a keyboard mode, or plain SSB) doesn't carry its labels over.
     fn clear_digi_rx(&mut self) {
         self.digi_decodes.clear();
-        self.digi_station_seen.clear();
+        self.digi_stations = Default::default();
         self.digi_preview = None;
     }
 
@@ -1694,13 +1679,42 @@ impl SdroxideApp {
         }
     }
 
-    fn display_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        // The module reserves its width before the content is drawn, so the
-        // extra native-only chip has to be paid for here.
+    /// The ☀ 3D chip: the solar-system view, in whichever window the platform
+    /// gives us.
+    ///
+    /// Natively that is a second OS window this process owns, so the chip is a
+    /// toggle and lights while it is open. In the browser it is a second tab,
+    /// which the browser owns — we cannot know whether it is still open and
+    /// clicking again should give you another one, so it is a plain button.
+    /// The URL is relative so it survives any host, port or reverse proxy.
+    fn solar_button(&mut self, ui: &mut egui::Ui) {
         #[cfg(not(target_arch = "wasm32"))]
-        const DISPLAY_W: f32 = 348.0;
+        {
+            if crate::chrome::chip(ui, self.solar.open, "☀ 3D")
+                .on_hover_text(
+                    "Solar system 3D view — Sun, Earth, Moon, sunspots and CMEs (separate window)",
+                )
+                .clicked()
+            {
+                self.solar.open = !self.solar.open;
+            }
+        }
         #[cfg(target_arch = "wasm32")]
-        const DISPLAY_W: f32 = 284.0;
+        {
+            if crate::chrome::chip(ui, false, "☀ 3D")
+                .on_hover_text(
+                    "Solar system 3D view — Sun, Earth, Moon, sunspots and CMEs (new browser tab)",
+                )
+                .clicked()
+            {
+                ui.ctx().open_url(egui::OpenUrl::new_tab("?view=solar"));
+            }
+        }
+    }
+
+    fn display_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        // The module reserves its width before the content is drawn.
+        const DISPLAY_W: f32 = 348.0;
 
         crate::chrome::module(ui, "Display", DISPLAY_W, |ui| {
             if crate::chrome::chip(ui, false, "FIT")
@@ -1723,16 +1737,7 @@ impl SdroxideApp {
                 self.view.spectrum_collapsed = !self.view.spectrum_collapsed;
             }
             self.skimmer_button(ui, cmds);
-            // Opens a second OS window; not available in the browser client.
-            #[cfg(not(target_arch = "wasm32"))]
-            if crate::chrome::chip(ui, self.solar.open, "☀ 3D")
-                .on_hover_text(
-                    "Solar system 3D view — Sun, Earth, Moon, sunspots and CMEs (separate window)",
-                )
-                .clicked()
-            {
-                self.solar.open = !self.solar.open;
-            }
+            self.solar_button(ui);
             // Floor/ceiling + FFT size live in a popup off this button.
             let fft_btn = crate::chrome::chip(ui, false, "FFT")
                 .on_hover_text("Spectrum floor / ceiling and FFT size");
@@ -2406,27 +2411,8 @@ impl SdroxideApp {
         // Ages use egui frame time (monotonic, works native + wasm); each grid
         // remembers the frame it was last freshly decoded in.
         let now_t = ui.input(|i| i.time);
-        let fresh: Vec<(String, i64)> = self
-            .digi_decodes
-            .iter()
-            .filter_map(|d| d.grid.as_deref().map(|g| (g.to_string(), d.slot_utc)))
-            .collect();
-        for (grid, slot) in fresh {
-            let e = self.digi_station_seen.entry(grid).or_insert((i64::MIN, now_t));
-            if slot > e.0 {
-                *e = (slot, now_t); // refreshed → dot returns to full brightness
-            }
-        }
-        self.digi_station_seen.retain(|_, &mut (_, seen)| now_t - seen < STATION_FADE_S);
-        let stations: Vec<(f64, f64, f32)> = self
-            .digi_station_seen
-            .iter()
-            .filter_map(|(grid, &(_, seen))| {
-                let (lat, lon) = sdroxide_types::grid_to_latlon(grid)?;
-                let alpha = (1.0 - (now_t - seen) / STATION_FADE_S).clamp(0.0, 1.0) as f32;
-                Some((lat, lon, alpha))
-            })
-            .collect();
+        self.digi_stations.observe(&self.digi_decodes, now_t);
+        let stations = self.digi_stations.stations(now_t);
         // Located network spots (filtered by the shown-kind toggles), as
         // kind-coloured dots on the map.
         let spot_dots: Vec<(f64, f64, (u8, u8, u8))> = self
@@ -6308,35 +6294,7 @@ fn persist_ui_settings(_ui: &sdroxide_types::UiSettings) {
     // Written by eframe's periodic `save()` into localStorage.
 }
 
-/// Current Unix time (UTC seconds). `SystemTime` panics on wasm, so use JS.
-fn now_unix() -> i64 {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        (js_sys::Date::now() / 1000.0) as i64
-    }
-}
-
-/// Current Unix time as fractional UTC seconds (for waterfall time gridlines).
-fn now_unix_f64() -> f64 {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_sys::Date::now() / 1000.0
-    }
-}
+use crate::time::{now_unix, now_unix_f64};
 
 /// Parse `"YYYY-MM-DD"` + `"HH:MM"` (UTC) to a Unix timestamp, falling back to
 /// `fallback` if the fields don't fully parse.

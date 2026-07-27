@@ -21,9 +21,10 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 use crate::aurora::{self, AuroraOval, HemisphericPower, KpPoint};
 use crate::cache::{Cache, Validators};
+use crate::data::{SolarData, Source, SourceStatus};
 use crate::donki::{self, CmeEvent, FlareEvent};
 use crate::imagery::{self, SdoChannel, SunImage};
-use crate::indices::{self, SpaceWeather};
+use crate::indices::{self};
 use crate::satellites::{self, Satellite};
 use crate::swpc::{self, ActiveRegion};
 
@@ -36,237 +37,25 @@ const IMAGE_LIMIT: u64 = 24 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(25);
 /// Worker wake interval; individual sources have their own, longer, cadences.
 const TICK: Duration = Duration::from_secs(15);
-/// Failure backoff bounds.
-const BACKOFF_BASE: i64 = 30;
-const BACKOFF_MAX: i64 = 1800;
-
-/// The things this feed fetches, each on its own cadence.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Source {
-    Sun,
-    Cme,
-    Flare,
-    Regions,
-    /// 10.7 cm solar flux.
-    Flux,
-    /// Planetary K and A indices.
-    Kp,
-    /// Current GOES soft X-ray class.
-    Xray,
-    /// Ionosonde soundings, for the MUF estimate.
-    Muf,
-    /// CelesTrak's amateur-satellite element set.
-    Sats,
-    /// QO-100, which is absent from the amateur set (see
-    /// [`satellites::QO100_URL`]).
-    SatGeo,
-    /// The OVATION auroral-oval grid.
-    Aurora,
-    /// Auroral hemispheric power, gigawatts.
-    AuroraPower,
-    /// Three days of predicted planetary K.
-    KpForecast,
-}
-
-impl Source {
-    pub const ALL: [Source; 13] = [
-        Source::Sun,
-        Source::Cme,
-        Source::Flare,
-        Source::Regions,
-        Source::Flux,
-        Source::Kp,
-        Source::Xray,
-        Source::Muf,
-        Source::Sats,
-        Source::SatGeo,
-        Source::Aurora,
-        Source::AuroraPower,
-        Source::KpForecast,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Source::Sun => "SDO",
-            Source::Cme => "CME",
-            Source::Flare => "FLR",
-            Source::Regions => "SWPC",
-            Source::Flux => "F10.7",
-            Source::Kp => "Kp",
-            Source::Xray => "XRAY",
-            Source::Muf => "MUF",
-            Source::Sats => "TLE",
-            Source::SatGeo => "QO-100",
-            Source::Aurora => "OVATION",
-            Source::AuroraPower => "HPI",
-            Source::KpForecast => "Kp+3d",
-        }
-    }
-
-    /// Refresh cadence, seconds.
-    fn period(self) -> i64 {
-        match self {
-            Source::Sun => 600,      // browse images update every few minutes
-            Source::Cme => 1200,
-            Source::Flare => 1200,
-            Source::Regions => 3600, // a once-a-day product
-            Source::Flux => 3600,    // published a few times a day
-            Source::Kp => 900,       // three-hourly, but revised in between
-            Source::Xray => 300,     // a flare develops in minutes
-            Source::Muf => 900,      // ionosondes sound every 5-15 minutes
-            // Element sets are re-issued a few times a day; SGP4 stays accurate
-            // for far longer than that, so there is no reason to poll hard.
-            Source::Sats => 21_600,
-            Source::SatGeo => 21_600,
-            // OVATION is issued every five minutes, but the grid is 900 kB —
-            // by far the largest JSON here — and the oval does not move far in
-            // half an hour. The overlay shows what the picture is valid for, so
-            // a slow cadence costs honesty nothing.
-            Source::Aurora => 1800,
-            // The power figure is the number that says "something is
-            // happening", and it is fifteen kilobytes.
-            Source::AuroraPower => 900,
-            // Issued three times a day.
-            Source::KpForecast => 3600,
-        }
-    }
-
-    /// A fixed stagger, so several never fall due on the same tick. Constant
-    /// rather than random: reproducible, and it achieves the same thing.
-    fn stagger(self) -> i64 {
-        match self {
-            Source::Sun => 0,
-            Source::Cme => 7,
-            Source::Flare => 13,
-            Source::Regions => 23,
-            Source::Flux => 31,
-            Source::Kp => 41,
-            Source::Xray => 53,
-            Source::Muf => 61,
-            Source::Sats => 71,
-            Source::SatGeo => 83,
-            Source::Aurora => 97,
-            Source::AuroraPower => 103,
-            Source::KpForecast => 109,
-        }
-    }
-
-    fn index(self) -> usize {
-        Source::ALL.iter().position(|s| *s == self).unwrap_or(0)
-    }
-}
-
-/// Per-source freshness, so the overlay can say "cached 4 h ago" instead of
-/// presenting stale data as current.
-#[derive(Clone, Debug, Default)]
-pub struct SourceStatus {
-    pub last_ok_unix: i64,
-    pub last_error: Option<String>,
-    pub consecutive_failures: u32,
-    /// Last time a fetch was *attempted*, successful or not. Failures advance
-    /// this even though they do not advance `last_ok_unix`, so a source that is
-    /// down is not retried on every fifteen-second tick.
-    ///
-    /// `None`, not a zero sentinel: the epoch is a perfectly valid timestamp,
-    /// and conflating the two makes "never attempted" and "attempted in 1970"
-    /// indistinguishable.
-    attempt_unix: Option<i64>,
-}
-
-impl SourceStatus {
-    /// When this source may next be tried, given its cadence and any backoff.
-    fn next_due(&self, src: Source) -> Option<i64> {
-        let last = self.attempt_unix?;
-        let backoff = if self.consecutive_failures == 0 {
-            0
-        } else {
-            (BACKOFF_BASE << (self.consecutive_failures - 1).min(6)).min(BACKOFF_MAX)
-        };
-        Some(last + src.period().max(backoff) + src.stagger())
-    }
-
-    /// Whether this source should be fetched now.
-    fn is_due(&self, src: Source, now: i64) -> bool {
-        self.next_due(src).is_none_or(|due| due <= now)
-    }
-
-    fn record_ok(&mut self, now: i64) {
-        self.last_ok_unix = now;
-        self.attempt_unix = Some(now);
-        self.last_error = None;
-        self.consecutive_failures = 0;
-    }
-
-    fn record_err(&mut self, now: i64, msg: String) {
-        self.attempt_unix = Some(now);
-        self.last_error = Some(msg);
-        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-    }
-
-    /// Age of the newest successful fetch, or `None` if there has never been one.
-    pub fn age_secs(&self, now_unix: i64) -> Option<i64> {
-        (self.last_ok_unix > 0).then(|| (now_unix - self.last_ok_unix).max(0))
-    }
-}
-
-/// The snapshot the UI reads.
-#[derive(Default)]
-pub struct SolarData {
-    pub cmes: Vec<CmeEvent>,
-    pub flares: Vec<FlareEvent>,
-    pub regions: Vec<ActiveRegion>,
-    /// Shared by `Arc` so handing it to the renderer is a refcount bump, not a
-    /// copy of several megabytes.
-    pub sun: Option<Arc<SunImage>>,
-    /// Bumped on every new image, so the GPU uploads once per image.
-    pub sun_gen: u64,
-    /// The propagation numbers: flux, K/A, X-ray level and ionosonde soundings.
-    pub weather: SpaceWeather,
-    /// Amateur satellites, split by source so each refresh replaces only its
-    /// own set. Iterate with [`SolarData::satellites`].
-    pub sats_amateur: Vec<Satellite>,
-    pub sats_geo: Vec<Satellite>,
-    /// The auroral oval. Shared by `Arc` for the same reason the solar image
-    /// is: the renderer takes a handle, not a copy of the grid.
-    pub aurora: Option<Arc<AuroraOval>>,
-    /// Bumped on every new issue, so the GPU uploads once per grid.
-    pub aurora_gen: u64,
-    /// Power going into each auroral zone, gigawatts.
-    pub aurora_power: Option<HemisphericPower>,
-    /// Planetary K in three-hour bins, observed and then predicted.
-    pub kp_forecast: Vec<KpPoint>,
-    pub status: [SourceStatus; Source::ALL.len()],
-}
-
-impl SolarData {
-    pub fn status(&self, src: Source) -> &SourceStatus {
-        &self.status[src.index()]
-    }
-
-    /// True once anything at all has been loaded, from network or cache.
-    pub fn has_any(&self) -> bool {
-        self.sun.is_some()
-            || self.aurora.is_some()
-            || !self.cmes.is_empty()
-            || !self.regions.is_empty()
-    }
-
-    /// Every tracked satellite, from both element sets.
-    pub fn satellites(&self) -> impl Iterator<Item = &Satellite> {
-        self.sats_amateur.iter().chain(&self.sats_geo)
-    }
-
-    /// The newest successful fetch across every source, for a single "data as
-    /// of" readout.
-    pub fn newest_ok_unix(&self) -> i64 {
-        self.status.iter().map(|s| s.last_ok_unix).max().unwrap_or(0)
-    }
-}
 
 pub enum FeedCmd {
     RefreshAll,
     SetChannel(SdoChannel),
     SetResolution(u32),
+}
+
+/// A payload in the form it arrived in, for a relay that has to hand the same
+/// bytes to somebody else.
+///
+/// [`SolarData`] holds *decoded* products — RGBA pixels and SGP4 constants —
+/// which are both far larger than the original and not serialisable. The
+/// server's browser relay needs the original JPEG and the original element set
+/// instead, so the worker offers them here rather than making anyone re-encode
+/// or re-fetch. Only sources whose wire form is the raw bytes appear.
+pub enum RawUpdate {
+    Sun { channel: SdoChannel, fetched_unix: i64, jpeg: Vec<u8> },
+    /// An element set: `geo` distinguishes QO-100 from the amateur list.
+    Tle { geo: bool, text: String },
 }
 
 /// Handle to the worker. Dropping it stops the thread, which is what confines
@@ -284,12 +73,26 @@ impl SolarFeed {
         resolution: u32,
         wake: impl Fn() + Send + 'static,
     ) -> SolarFeed {
+        SolarFeed::start_with_raw(channel, resolution, wake, None)
+    }
+
+    /// As [`SolarFeed::start`], but also publishing raw payloads to `raw_tx`.
+    ///
+    /// The channel must be unbounded or drained promptly: the worker never
+    /// blocks on it, and a send that fails is simply dropped, so a stalled
+    /// consumer costs freshness rather than the whole feed.
+    pub fn start_with_raw(
+        channel: SdoChannel,
+        resolution: u32,
+        wake: impl Fn() + Send + 'static,
+        raw_tx: Option<Sender<RawUpdate>>,
+    ) -> SolarFeed {
         let shared = Arc::new(Mutex::new(SolarData::default()));
         let (tx, rx) = crossbeam_channel::unbounded();
         let worker_shared = Arc::clone(&shared);
         std::thread::Builder::new()
             .name("solar-feed".into())
-            .spawn(move || worker(worker_shared, rx, channel, resolution, wake))
+            .spawn(move || worker(worker_shared, rx, channel, resolution, wake, raw_tx))
             .map_err(|e| tracing::error!("could not start the solar feed thread: {e}"))
             .ok();
         SolarFeed { shared, tx }
@@ -324,7 +127,15 @@ fn worker(
     mut channel: SdoChannel,
     mut resolution: u32,
     wake: impl Fn(),
+    raw_tx: Option<Sender<RawUpdate>>,
 ) {
+    // Never blocks the fetch loop: a relay that has stopped draining costs
+    // freshness, not the feed.
+    let raw = |u: RawUpdate| {
+        if let Some(tx) = &raw_tx {
+            let _ = tx.try_send(u);
+        }
+    };
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(TIMEOUT))
         .user_agent(concat!("sdroxide/", env!("CARGO_PKG_VERSION")))
@@ -334,7 +145,7 @@ fn worker(
 
     // Publish whatever is on disk before touching the network, so the window
     // has content the moment it opens — including with no connection at all.
-    load_cached(&shared, &cache, channel, resolution);
+    load_cached(&shared, &cache, channel, resolution, &raw);
     wake();
 
     loop {
@@ -346,7 +157,7 @@ fn worker(
                 d.status(src).is_due(src, now)
             };
             if due {
-                changed |= refresh(src, &agent, &mut cache, &shared, channel, resolution);
+                changed |= refresh(src, &agent, &mut cache, &shared, channel, resolution, &raw);
             }
         }
         if changed {
@@ -368,7 +179,7 @@ fn worker(
                 channel = c;
                 // Serve the cached image for the new channel immediately, then
                 // let the normal cadence refresh it.
-                load_cached_sun(&shared, &cache, channel, resolution);
+                load_cached_sun(&shared, &cache, channel, resolution, &raw);
                 let mut d = shared.lock().unwrap_or_else(|e| e.into_inner());
                 d.status[Source::Sun.index()] = SourceStatus::default();
                 drop(d);
@@ -392,6 +203,7 @@ fn load_cached(
     cache: &Cache,
     channel: SdoChannel,
     resolution: u32,
+    raw: &dyn Fn(RawUpdate),
 ) {
     let cmes = cache.read_string("cme.json").and_then(|s| donki::parse_cmes(&s).ok());
     let flares = cache.read_string("flr.json").and_then(|s| donki::parse_flares(&s).ok());
@@ -400,8 +212,12 @@ fn load_cached(
     let kp = cache.read_string("kp.json").and_then(|s| indices::parse_kp(&s));
     let xray = cache.read_string("xray.json").and_then(|s| indices::parse_xray(&s));
     let sondes = cache.read_string("ionosondes.json").map(|s| indices::parse_ionosondes(&s));
-    let sats = cache.read_string("amateur.txt").map(|s| satellites::parse_tles(&s));
-    let sats_geo = cache.read_string("qo100.txt").map(|s| satellites::parse_tles(&s));
+    // Keep the element sets in their original form as well as parsed: a relay
+    // forwards the text, and re-serialising SGP4 constants is not possible.
+    let sats_txt = cache.read_string("amateur.txt");
+    let sats_geo_txt = cache.read_string("qo100.txt");
+    let sats = sats_txt.as_deref().map(satellites::parse_tles);
+    let sats_geo = sats_geo_txt.as_deref().map(satellites::parse_tles);
     let oval = cache.read_string("ovation.json").and_then(|s| aurora::parse_ovation(&s));
     let power = cache
         .read_string("hemipower.txt")
@@ -439,7 +255,13 @@ fn load_cached(
             d.kp_forecast = v;
         }
     }
-    load_cached_sun(shared, cache, channel, resolution);
+    if let Some(text) = sats_txt {
+        raw(RawUpdate::Tle { geo: false, text });
+    }
+    if let Some(text) = sats_geo_txt {
+        raw(RawUpdate::Tle { geo: true, text });
+    }
+    load_cached_sun(shared, cache, channel, resolution, raw);
 }
 
 fn load_cached_sun(
@@ -447,18 +269,21 @@ fn load_cached_sun(
     cache: &Cache,
     channel: SdoChannel,
     resolution: u32,
+    raw: &dyn Fn(RawUpdate),
 ) {
     let name = channel.cache_name(resolution);
+    let Some(bytes) = cache.read(&name) else { return };
+    let fetched_unix = cache.fetched_at(&channel.url(resolution));
     // Decode outside the lock: this is the expensive step.
-    let Some(img) = cache
-        .read(&name)
-        .and_then(|b| imagery::decode(&b, channel, cache.fetched_at(&channel.url(resolution))))
-    else {
+    let Some(img) = imagery::decode(&bytes, channel, fetched_unix) else {
         return;
     };
-    let mut d = shared.lock().unwrap_or_else(|e| e.into_inner());
-    d.sun = Some(Arc::new(img));
-    d.sun_gen += 1;
+    {
+        let mut d = shared.lock().unwrap_or_else(|e| e.into_inner());
+        d.sun = Some(Arc::new(img));
+        d.sun_gen += 1;
+    }
+    raw(RawUpdate::Sun { channel, fetched_unix, jpeg: bytes });
 }
 
 /// Fetch one source. Returns whether anything the UI shows changed.
@@ -469,6 +294,7 @@ fn refresh(
     shared: &Mutex<SolarData>,
     channel: SdoChannel,
     resolution: u32,
+    raw: &dyn Fn(RawUpdate),
 ) -> bool {
     let now = now_unix();
     let (url, name, limit) = match src {
@@ -518,6 +344,24 @@ fn refresh(
             };
             if ok {
                 cache.write(&name, &url, &bytes, Validators { fetched_unix: now, ..validators });
+                // Forward the original bytes for the sources whose wire form is
+                // the payload itself, before `bytes` is dropped.
+                match src {
+                    Source::Sun => raw(RawUpdate::Sun {
+                        channel,
+                        fetched_unix: now,
+                        jpeg: bytes.clone(),
+                    }),
+                    Source::Sats | Source::SatGeo => {
+                        if let Ok(text) = std::str::from_utf8(&bytes) {
+                            raw(RawUpdate::Tle {
+                                geo: src == Source::SatGeo,
+                                text: text.to_string(),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
             }
             let mut d = shared.lock().unwrap_or_else(|e| e.into_inner());
             match parsed {
@@ -663,87 +507,4 @@ fn http_get(
         .read_to_vec()
         .map_err(|e| e.to_string())?;
     Ok(Some((bytes, next)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_never_fetched_source_is_due_immediately() {
-        let s = SourceStatus::default();
-        for src in Source::ALL {
-            assert_eq!(s.next_due(src), None, "{src:?} has a due time before any attempt");
-            assert!(s.is_due(src, 0), "{src:?} not due at the epoch");
-            assert!(s.is_due(src, 1_784_937_600), "{src:?} not due now");
-        }
-    }
-
-    #[test]
-    fn a_healthy_source_waits_its_cadence() {
-        let mut s = SourceStatus::default();
-        s.record_ok(1_000_000);
-        assert_eq!(s.next_due(Source::Sun), Some(1_000_000 + 600));
-        assert_eq!(s.next_due(Source::Regions), Some(1_000_000 + 3600 + 23));
-        assert!(!s.is_due(Source::Sun, 1_000_100));
-        assert!(s.is_due(Source::Sun, 1_000_700));
-        assert_eq!(s.age_secs(1_000_100), Some(100));
-    }
-
-    /// A source that is down must back off, or a disconnected machine retries
-    /// four URLs every fifteen seconds forever.
-    #[test]
-    fn failures_back_off_and_then_level_out() {
-        let mut s = SourceStatus::default();
-        let mut prev = 0;
-        for attempt in 1..=10 {
-            s.record_err(1_000_000, "boom".into());
-            let wait = s.next_due(Source::Sun).unwrap() - 1_000_000 - Source::Sun.stagger();
-            assert!(wait >= prev, "backoff went backwards at attempt {attempt}");
-            assert!(wait <= BACKOFF_MAX, "backoff {wait} exceeded the cap");
-            prev = wait;
-        }
-        assert_eq!(prev, BACKOFF_MAX, "backoff never reached its cap");
-        assert_eq!(s.consecutive_failures, 10);
-        assert!(s.last_error.is_some());
-
-        // One success clears it.
-        s.record_ok(1_000_100);
-        assert_eq!(s.consecutive_failures, 0);
-        assert!(s.last_error.is_none());
-        assert_eq!(s.next_due(Source::Sun), Some(1_000_100 + 600));
-    }
-
-    /// With a dozen sources on a fifteen-second tick, two falling due together
-    /// means two requests in the same instant; the staggers exist to prevent it.
-    #[test]
-    fn no_two_sources_ever_fall_due_together() {
-        let mut s = SourceStatus::default();
-        s.record_ok(0);
-        let dues: Vec<i64> = Source::ALL.iter().filter_map(|src| s.next_due(*src)).collect();
-        assert_eq!(dues.len(), Source::ALL.len());
-        let unique: std::collections::HashSet<_> = dues.iter().collect();
-        assert_eq!(unique.len(), dues.len(), "sources collide: {dues:?}");
-    }
-
-    #[test]
-    fn every_source_has_a_distinct_label_and_a_sane_cadence() {
-        let labels: std::collections::HashSet<_> =
-            Source::ALL.iter().map(|s| s.label()).collect();
-        assert_eq!(labels.len(), Source::ALL.len(), "duplicate source labels");
-        for src in Source::ALL {
-            // Nothing polled more than once a minute, nothing left over a day.
-            assert!((60..=86_400).contains(&src.period()), "{src:?} period {}", src.period());
-            assert_eq!(Source::ALL[src.index()], src);
-        }
-    }
-
-    #[test]
-    fn an_empty_snapshot_reports_itself_empty() {
-        let d = SolarData::default();
-        assert!(!d.has_any());
-        assert_eq!(d.status(Source::Cme).last_ok_unix, 0);
-        assert!(d.status(Source::Sun).last_error.is_none());
-        assert_eq!(d.status(Source::Sun).age_secs(1_784_937_600), None);
-    }
 }

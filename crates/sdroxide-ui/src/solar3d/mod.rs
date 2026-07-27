@@ -1,38 +1,59 @@
 //! Solar-system 3D view: Sun, Earth and Moon with their orbits, the operator's
-//! QTH on the globe, live SDO solar imagery, and DONKI sunspot / CME data —
-//! rendered in a separate OS window.
+//! QTH on the globe, live SDO solar imagery, and DONKI sunspot / CME data.
 //!
-//! Native-only. The window is a deferred egui viewport, which becomes a real
-//! OS window on desktop (`eframe`'s `set_embed_viewports(!IS_DESKTOP)`) and
-//! would degrade to an in-page window on wasm — but the data feed and the
-//! renderer are native-only anyway, so the whole module is `cfg`-gated out of
-//! the browser build.
+//! The scene, camera, overlay and renderer are shared by both targets. What
+//! differs is only how the view is hosted and where its data comes from:
+//!
+//! * **Native** — [`Solar3d`] emits a deferred egui viewport, which desktop
+//!   eframe turns into a real second OS window, and owns a [`SolarFeed`] that
+//!   fetches from NASA and NOAA directly.
+//!   [`SolarFeed`]: sdroxide_solar::SolarFeed
+//! * **Browser** — [`SolarApp`] is the whole app of a second tab, and its data
+//!   arrives over the server's `/solar-ws` relay. There is no viewport to
+//!   manage: the browser owns the tab.
+//!
+//! Both end in the same [`overlay::ui`] call against the same [`SolarUi`], so
+//! there is one implementation of the view itself.
 //!
 //! Unlike the rest of this crate, this module is *not* written to WebGL2
-//! downlevel limits: it uses a depth buffer, MSAA and vertex buffers, all
-//! confined to an offscreen pass so the shared egui render pass is untouched.
+//! downlevel limits: it uses a depth buffer, MSAA and vertex buffers. All of it
+//! is confined to an offscreen pass, so the shared egui render pass — which on
+//! the web must stay within those limits — is untouched.
 
+#[cfg(feature = "remote")]
+mod app;
 mod camera;
 mod dotmatrix;
 mod gpu;
 mod math;
 mod mesh;
+#[cfg(feature = "remote")]
+mod net;
 mod overlay;
 mod scene;
 mod state;
 
+// Everything below is the native host's: the browser's is in `app.rs`.
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Mutex, MutexGuard};
 
+#[cfg(not(target_arch = "wasm32"))]
 use eframe::egui;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::egui_wgpu::RenderState;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::view::Solar3dView;
 
+#[cfg(feature = "remote")]
+pub use app::SolarApp;
 pub use state::DigiTraffic;
+#[cfg(not(target_arch = "wasm32"))]
 use state::SolarUi;
 
 /// Stable id of the child viewport. Not a `const` because `Id::new` hashes at
 /// runtime; it is a couple of instructions per frame.
+#[cfg(not(target_arch = "wasm32"))]
 fn viewport_id() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("sdroxide-solar3d")
 }
@@ -57,6 +78,10 @@ pub fn max_body_scale(moon_orbit_scale: f32) -> f32 {
 }
 
 /// App-side handle to the solar-system window.
+///
+/// Native only: it owns a [`sdroxide_solar::SolarFeed`] and a child viewport,
+/// neither of which the browser build has. There, [`SolarApp`] is the host.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Solar3d {
     /// Whether the window should exist this frame. Toggled by the Display-box
     /// chip and cleared when the OS window is closed.
@@ -76,6 +101,7 @@ pub struct Solar3d {
     feed_channel: (u8, u16),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Solar3d {
     pub fn new(render_state: Option<RenderState>, view: Solar3dView) -> Self {
         Solar3d {
@@ -213,8 +239,5 @@ impl Solar3d {
 /// Seconds since the Unix epoch. The ephemeris takes an explicit timestamp
 /// everywhere, so the whole scene can be scrubbed by offsetting this.
 fn wall_clock_unix() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
+    crate::time::now_unix_f64()
 }

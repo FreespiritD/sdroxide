@@ -6,6 +6,8 @@
 //!
 //! Compiles for native and `wasm32-unknown-unknown`.
 
+pub mod solar;
+
 use serde::{Deserialize, Serialize};
 
 use sdroxide_types::{

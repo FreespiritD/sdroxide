@@ -11,6 +11,7 @@
 //! the latest state/caps/memories so a new session can be greeted instantly.
 
 mod session;
+mod solar;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -23,8 +24,11 @@ use axum::routing::get;
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
+use sdroxide_proto::solar::SolarServerMsg;
 use sdroxide_proto::{AudioCodec, ServerMsg};
-use sdroxide_types::{Command, DeviceCaps, MemoryChannel, RadioEvent, RadioState, SpectrumFrame};
+use sdroxide_types::{
+    Command, DeviceCaps, DigiStatus, MemoryChannel, RadioEvent, RadioState, SpectrumFrame,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
@@ -58,6 +62,13 @@ pub(crate) struct Latest {
     pub caps: DeviceCaps,
     pub state: RadioState,
     pub memories: Vec<MemoryChannel>,
+    /// The engine announces the operator config (callsign, grid, templates)
+    /// exactly once, at startup, so the settings editors are populated before
+    /// any digital mode is selected. In server mode that happens long before
+    /// anybody connects, so it has to be kept and replayed on connect — without
+    /// it a client's callsign and grid stay empty *and disabled*, because the
+    /// editors deliberately refuse to write until they have been seeded.
+    pub digi: Option<DigiStatus>,
 }
 
 pub(crate) struct Shared {
@@ -67,6 +78,10 @@ pub(crate) struct Shared {
     pub busy: AtomicBool,
     pub mic_tx: Mutex<rtrb::Producer<f32>>,
     pub spectrum_rx: watch::Receiver<Option<SpectrumFrame>>,
+    /// The solar-system viewers on `/solar-ws`. Independent of `busy`: they
+    /// control nothing, so any number may watch alongside the one control
+    /// client. See [`solar`].
+    pub solar: solar::SolarHub,
 }
 
 /// Build a tokio runtime and serve until the process exits.
@@ -86,6 +101,7 @@ pub async fn serve(params: ServerParams) -> Result<(), ServerError> {
         busy: AtomicBool::new(false),
         mic_tx: Mutex::new(params.mic_tx),
         spectrum_rx,
+        solar: solar::SolarHub::default(),
     });
 
     {
@@ -100,6 +116,7 @@ pub async fn serve(params: ServerParams) -> Result<(), ServerError> {
 
     let mut app = Router::new()
         .route("/ws", get(session::ws_route))
+        .route("/solar-ws", get(solar::ws_route))
         .with_state(shared);
     app = add_static_routes(app, params.web_root);
 
@@ -207,6 +224,25 @@ fn pump(
 }
 
 fn handle_event(shared: &Shared, ev: RadioEvent) {
+    // Two of these also feed the globe's QSO layer. Relayed unconditionally
+    // rather than only while a map is open: `broadcast::send` with no receivers
+    // is a no-op, and keeping the cache warm means a viewer that connects
+    // mid-slot draws the current traffic instead of waiting up to 15 s for the
+    // next decode.
+    match &ev {
+        RadioEvent::Ft8Decodes(d) => {
+            shared.solar.publish(SolarServerMsg::Decodes(d.clone()));
+        }
+        RadioEvent::Ft8Status(s) => {
+            shared.solar.publish(SolarServerMsg::Digi {
+                my_grid: s.config.my_grid.clone(),
+                dx_grid: s.dx_grid.clone(),
+                transmitting: s.transmitting,
+            });
+        }
+        _ => {}
+    }
+
     let msg = {
         let mut latest = shared.latest.lock().unwrap();
         match ev {
@@ -229,7 +265,10 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             // client (its audio lives on the server host), so don't forward it.
             RadioEvent::Notice(_) => None,
             RadioEvent::Ft8Decodes(d) => Some(ServerMsg::Ft8Decodes(d)),
-            RadioEvent::Ft8Status(s) => Some(ServerMsg::Ft8Status(s)),
+            RadioEvent::Ft8Status(s) => {
+                latest.digi = Some(s.clone());
+                Some(ServerMsg::Ft8Status(s))
+            }
             RadioEvent::Ft8QsoLogged(r) => Some(ServerMsg::Ft8QsoLogged(r)),
             RadioEvent::SkimmerSpots(s) => Some(ServerMsg::SkimmerSpots(s)),
             RadioEvent::SstvLine { image_id, y, rgb } => {
