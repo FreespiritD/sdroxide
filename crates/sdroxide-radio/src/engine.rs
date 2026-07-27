@@ -545,6 +545,10 @@ struct Engine {
     skim_ddc: Option<Ddc>,
     skimmer: Option<SkimmerController>,
     skim_buf: Vec<Complex32>,
+    /// The operator's persisted skimmer preference. Distinct from
+    /// `state.skimmer`, which is the *live* setting and is forced off on an
+    /// audio-mode source — this is what a wideband source gets restored to.
+    skim_cfg: sdroxide_types::SkimmerSettings,
     /// Built-in Hamlib rigctld server: the control-only surface every
     /// "NET rigctl" client speaks (WSJT-X, fldigi, N1MM, Log4OM, GPredict).
     /// Present while enabled and successfully bound.
@@ -670,9 +674,12 @@ fn engine_thread(
             *rx = RxState::with_mode(mode);
         }
     }
-    if audio_mode {
-        state.skimmer = sdroxide_types::SkimmerSettings::OFF; // wideband-only feature
-    }
+    let skim_cfg = sdroxide_config::load_skimmer_config();
+    state.skimmer = if audio_mode {
+        sdroxide_types::SkimmerSettings::OFF // wideband-only feature
+    } else {
+        skim_cfg
+    };
 
     let cfg = SpectrumConfig::default();
     // In audio mode the analyzer FFTs the real audio at the card rate.
@@ -747,6 +754,7 @@ fn engine_thread(
         skim_ddc: None,
         skimmer: None,
         skim_buf: Vec::new(),
+        skim_cfg,
         wsjtx: None,
         wsjtx_cfg: sdroxide_types::WsjtxConfig::default(),
         wsjtx_beat: Instant::now(),
@@ -796,7 +804,7 @@ fn engine_thread(
     // If we start up already in a digital mode, spin up the controller.
     engine.sync_digi_mode();
     if !audio_mode {
-        engine.sync_skimmer(); // starts if any skimmer kind is enabled (default: all)
+        engine.sync_skimmer(); // starts if any kind is enabled in the saved config
     }
     // Start any enabled network spot feeds from the persisted config. The
     // operator identity comes from the digi config — one identity for the whole
@@ -1950,6 +1958,13 @@ impl Engine {
             // Skimmers.
             SetSkimmerConfig(cfg) => {
                 self.state.skimmer = cfg;
+                // Remember it for the next run (and for a swap back to a
+                // wideband source), before `sync_skimmer` may force the live
+                // state off on an audio-mode one.
+                self.skim_cfg = cfg;
+                if let Err(e) = sdroxide_config::save_skimmer_config(&cfg) {
+                    warn!("saving skimmer config: {e}");
+                }
                 // Start/stop the shared skim window, then hand the running
                 // worker its per-kind enables and squelches.
                 self.sync_skimmer();
@@ -2900,9 +2915,11 @@ impl Engine {
         state.gains = self.source.current_gains();
         state.tx_gains = self.source.current_tx_gains();
         state.antenna_rx = self.source.current_antenna();
-        if self.audio_mode {
-            state.skimmer = sdroxide_types::SkimmerSettings::OFF; // wideband-only feature
-        }
+        state.skimmer = if self.audio_mode {
+            sdroxide_types::SkimmerSettings::OFF // wideband-only feature
+        } else {
+            self.skim_cfg // the operator's choice survives the swap
+        };
         self.state = state;
 
         // Rebuild the device analyzer for the new rate.

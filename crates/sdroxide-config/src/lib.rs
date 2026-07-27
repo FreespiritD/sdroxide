@@ -211,6 +211,18 @@ pub fn save_digi_config(cfg: &sdroxide_types::DigiConfig) -> Result<(), ConfigEr
     save_json("digi.json", cfg)
 }
 
+/// Skimmer preferences (per-kind enable + squelch). The operator's choice, kept
+/// separate from the live `RadioState.skimmer`: a narrowband (audio-mode)
+/// source forces the skimmers off, and that must not overwrite what the
+/// operator picked for a wideband one.
+pub fn load_skimmer_config() -> sdroxide_types::SkimmerSettings {
+    load_json("skimmer.json")
+}
+
+pub fn save_skimmer_config(cfg: &sdroxide_types::SkimmerSettings) -> Result<(), ConfigError> {
+    save_json("skimmer.json", cfg)
+}
+
 /// FSQ contacts (address book for directed FSQCALL messaging).
 pub fn load_contacts() -> Vec<sdroxide_types::FsqContact> {
     load_json("contacts.json")
@@ -307,6 +319,27 @@ mod tests {
         assert_eq!(back.my_call, "AB1CD");
         assert_eq!(back.my_grid, "FN42");
         assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn skimmer_config_roundtrip_via_json() {
+        use sdroxide_types::{SkimmerKind, SkimmerSettings};
+        let mut cfg = SkimmerSettings::default();
+        cfg.set_enabled(SkimmerKind::Psk, false);
+        cfg.set_squelch_db(SkimmerKind::Cw, 12);
+        let back: SkimmerSettings = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(back, cfg);
+        assert!(!back.enabled(SkimmerKind::Psk));
+        assert_eq!(back.squelch_db(SkimmerKind::Cw), 12);
+    }
+
+    #[test]
+    fn skimmer_config_fills_missing_fields() {
+        // A file written before one of the fields existed still loads.
+        let cfg: sdroxide_types::SkimmerSettings =
+            serde_json::from_str(r#"{"enabled":[false,false,true]}"#).unwrap();
+        assert_eq!(cfg.enabled, [false, false, true]);
+        assert_eq!(cfg.squelch_db, sdroxide_types::SkimmerSettings::default().squelch_db);
     }
 
     #[test]

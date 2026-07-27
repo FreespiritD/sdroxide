@@ -46,8 +46,10 @@ impl SkimmerKind {
 }
 
 /// Which skimmers run, and how hard each squelches its own spots. Owned by the
-/// engine (it lives in [`crate::RadioState`]), edited from the SKIM popup.
+/// engine (it lives in [`crate::RadioState`]), edited from the SKIM popup and
+/// persisted across restarts (`skimmer.json`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SkimmerSettings {
     /// Per [`SkimmerKind::index`]: whether that skimmer decodes at all. A
     /// switched-off skimmer costs no DSP and emits no spots.
