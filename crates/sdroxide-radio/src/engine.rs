@@ -1394,7 +1394,7 @@ impl Engine {
             de_call: s.config.my_call.clone(),
             de_grid: s.config.my_grid.clone(),
             dx_grid: s.dx_grid.clone().unwrap_or_default(),
-            tx_watchdog: false,
+            tx_watchdog: s.tx_watchdog,
             tr_period_s: if s.mode == sdroxide_types::Mode::Ft4 { 7 } else { 15 },
             tx_message: s.tx_pending_msg.clone().unwrap_or_default(),
         });

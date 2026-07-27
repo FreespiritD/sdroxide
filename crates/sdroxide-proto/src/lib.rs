@@ -57,8 +57,10 @@ use sdroxide_types::{
 /// `Command::SetWsjtxConfig` (WSJT-X UDP broadcast).
 /// v17: manual FT8 message control — `Command::DigiSetStep` and
 /// `Command::DigiSendText` (both extend the postcard discriminant space).
-pub const PROTO_VERSION: u16 = 17;
-const VERSION_BYTE: u8 = 0x11;
+/// v18: FT8 transmit watchdog — `DigiStatus.tx_watchdog` plus `DigiConfig`'s
+/// `tx_watchdog_min` / `max_tx_repeats`, which both ends must agree on.
+pub const PROTO_VERSION: u16 = 18;
+const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {

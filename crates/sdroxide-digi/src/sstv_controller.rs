@@ -100,6 +100,7 @@ impl SstvController {
             audio_hz: 1500.0,
             tx_even: false,
             transmitting: self.keyed,
+            tx_watchdog: false,
             transcript: Vec::<TranscriptLine>::new(),
             config: self.cfg.clone(),
             text_rx: String::new(),

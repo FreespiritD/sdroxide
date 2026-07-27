@@ -82,6 +82,14 @@ pub struct QsoMachine {
     /// what makes one answer to our CQ worth more than another.
     worked_calls: std::collections::HashSet<String>,
     worked_entities: std::collections::HashSet<String>,
+    /// When something last counted as progress: a reply, or the operator doing
+    /// anything at all. 0 means "not stamped yet" — operator actions have no
+    /// clock of their own, so the next tick stamps them.
+    progress_utc: i64,
+    /// Transmissions since that moment.
+    tx_since_progress: u32,
+    /// The watchdog stopped the sequencer; cleared by the next operator action.
+    watchdog: bool,
 }
 
 impl QsoMachine {
@@ -102,6 +110,9 @@ impl QsoMachine {
             manual: None,
             worked_calls: std::collections::HashSet::new(),
             worked_entities: std::collections::HashSet::new(),
+            progress_utc: 0,
+            tx_since_progress: 0,
+            watchdog: false,
         }
     }
 
@@ -128,6 +139,22 @@ impl QsoMachine {
         &self.cfg.my_call
     }
 
+    /// Note that the sequencer got somewhere: a reply arrived, or the operator
+    /// acted. Restarts both the watchdog and the unanswered-call count.
+    ///
+    /// The timestamp is left for the next [`tick`](Self::tick) to fill in,
+    /// because operator actions arrive without a clock.
+    fn progress(&mut self) {
+        self.progress_utc = 0;
+        self.tx_since_progress = 0;
+        self.watchdog = false;
+    }
+
+    /// True when the transmit watchdog has stopped the sequencer.
+    pub fn tx_watchdog(&self) -> bool {
+        self.watchdog
+    }
+
     /// Start calling CQ.
     pub fn call_cq(&mut self) {
         self.dx = None;
@@ -135,6 +162,7 @@ impl QsoMachine {
         self.final_msg = None;
         self.resend = false;
         self.manual = None;
+        self.progress();
         self.step = QsoStep::CallingCq;
     }
 
@@ -151,6 +179,7 @@ impl QsoMachine {
             return true;
         }
         self.manual = None;
+        self.progress();
         self.step = step;
         true
     }
@@ -160,6 +189,7 @@ impl QsoMachine {
     pub fn queue_text(&mut self, text: String) {
         let text = text.trim().to_ascii_uppercase();
         self.manual = (!text.is_empty()).then_some(text);
+        self.progress();
     }
 
     /// Record a message we transmitted (called by the controller when it
@@ -185,6 +215,7 @@ impl QsoMachine {
         self.final_msg = None;
         self.resend = false;
         self.manual = None;
+        self.progress();
         self.dx = Some(Dx {
             call: from,
             grid,
@@ -232,6 +263,23 @@ impl QsoMachine {
     /// changed: gives up a stale `WaitCq`, and retires a `Confirming` contact
     /// once its re-send window elapses.
     pub fn tick(&mut self, now_utc: i64) -> bool {
+        if self.progress_utc == 0 {
+            self.progress_utc = now_utc;
+        }
+        // Transmit watchdog: nothing has come back and nobody has touched the
+        // controls for the configured span, so stop calling. The contact stays
+        // on screen — picking a message or calling CQ resumes.
+        let limit = self.cfg.tx_watchdog_min as i64 * 60;
+        if limit > 0 && !self.watchdog && self.wants_tx() && now_utc - self.progress_utc >= limit {
+            self.watchdog = true;
+            self.manual = None;
+            self.step = QsoStep::Idle;
+            self.transcript.push(TranscriptLine::note(format!(
+                "transmit watchdog: {} minutes with no progress",
+                self.cfg.tx_watchdog_min
+            )));
+            return true;
+        }
         match self.step {
             QsoStep::WaitCq | QsoStep::Confirming if now_utc >= self.deadline_utc => {
                 self.step = QsoStep::Idle;
@@ -383,6 +431,8 @@ impl QsoMachine {
                 }
             }
             self.transcript.push(TranscriptLine::rcvd(d.message.clone()));
+            self.progress();
+            self.progress_utc = now_utc;
             changed |= self.advance(&payload, now_utc);
         }
         changed
@@ -527,6 +577,21 @@ impl QsoMachine {
         if self.manual.take().is_some() {
             return;
         }
+        self.tx_since_progress += 1;
+        // Calling one station that never comes back: give up rather than call
+        // into the void all afternoon. (Repeating a CQ is exempt — that *is*
+        // the operation; the watchdog above bounds it instead.)
+        let repeats = self.cfg.max_tx_repeats;
+        if repeats > 0
+            && self.tx_since_progress >= repeats
+            && matches!(self.step, QsoStep::TxGrid | QsoStep::TxReport | QsoStep::TxRReport)
+        {
+            let call = self.dx.as_ref().map(|d| d.call.clone()).unwrap_or_default();
+            self.transcript
+                .push(TranscriptLine::note(format!("no reply from {call} after {repeats} calls")));
+            self.step = QsoStep::Idle;
+            return;
+        }
         match self.step {
             QsoStep::Tx73 | QsoStep::TxRr73 => {
                 self.final_msg = self.plan_tx();
@@ -553,6 +618,7 @@ impl QsoMachine {
             audio_hz: self.audio_hz,
             tx_even: self.tx_even,
             transmitting,
+            tx_watchdog: self.watchdog,
             transcript: self.transcript.clone(),
             config: self.cfg.clone(),
             // FT8/FT4 don't use the continuous keyboard-text fields.
@@ -868,6 +934,71 @@ mod tests {
         let mut q = QsoMachine::new(Mode::Ft8, DigiConfig::default());
         q.call_cq();
         assert_eq!(q.plan_tx(), None, "no callsign, no transmission");
+    }
+
+    #[test]
+    fn the_watchdog_stops_a_station_calling_into_an_empty_band() {
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.call_cq();
+        assert!(!q.tick(100), "the clock starts at the first tick");
+        assert!(q.wants_tx());
+        // Well inside the window nothing happens.
+        assert!(!q.tick(100 + 5 * 60));
+        // Past it the sequencer stands down and says why.
+        assert!(q.tick(100 + 6 * 60));
+        assert!(!q.wants_tx());
+        assert!(q.tx_watchdog());
+        assert_eq!(q.step(), QsoStep::Idle);
+        let note = q.status(false).transcript.pop().expect("a note");
+        assert!(note.overheard && note.text.contains("watchdog"), "{}", note.text);
+
+        // Calling CQ again clears it and restarts the clock.
+        q.call_cq();
+        assert!(!q.tx_watchdog());
+        assert!(!q.tick(100 + 7 * 60), "the window restarts from the operator's action");
+        assert!(q.wants_tx());
+    }
+
+    #[test]
+    fn a_reply_keeps_the_watchdog_at_bay() {
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100);
+        q.tick(100);
+        // They answer five minutes in: the window starts again from there.
+        q.on_rx(&[decode("AB1CD W9XYZ -13")], 100 + 5 * 60);
+        assert!(!q.tick(100 + 10 * 60), "progress reset the watchdog");
+        assert!(q.wants_tx());
+        assert!(q.tick(100 + 11 * 60 + 1), "…but it still fires when they stop replying");
+        assert!(q.tx_watchdog());
+    }
+
+    #[test]
+    fn calling_a_station_that_never_answers_gives_up() {
+        let cfg = DigiConfig { max_tx_repeats: 3, ..cfg() };
+        let mut q = QsoMachine::new(Mode::Ft8, cfg);
+        q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100);
+        for i in 0..2 {
+            q.note_tx_sent(100 + i * 15);
+            assert_eq!(q.step(), QsoStep::TxGrid, "still calling after {} sends", i + 1);
+        }
+        q.note_tx_sent(130);
+        assert_eq!(q.step(), QsoStep::Idle, "gave up after the third unanswered call");
+        assert!(!q.wants_tx());
+        let note = q.status(false).transcript.pop().expect("a note");
+        assert!(note.text.contains("W9XYZ") && note.text.contains("3 calls"), "{}", note.text);
+    }
+
+    #[test]
+    fn repeating_a_cq_is_not_an_unanswered_call() {
+        // A CQ run repeats by design; only the watchdog bounds it.
+        let cfg = DigiConfig { max_tx_repeats: 3, ..cfg() };
+        let mut q = QsoMachine::new(Mode::Ft8, cfg);
+        q.call_cq();
+        for _ in 0..10 {
+            q.note_tx_sent(100);
+        }
+        assert_eq!(q.step(), QsoStep::CallingCq);
+        assert!(q.wants_tx());
     }
 
     #[test]

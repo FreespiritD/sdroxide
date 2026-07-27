@@ -2563,6 +2563,20 @@ impl SdroxideApp {
                         if s.transmitting {
                             ui.label(RichText::new("● TX").size(13.0).strong().color(crate::theme::PINK));
                         }
+                        if s.tx_watchdog {
+                            // The sequencer stood down on its own; say so, since
+                            // an idle step alone looks like nothing happened.
+                            ui.label(
+                                RichText::new("WATCHDOG")
+                                    .size(11.0)
+                                    .strong()
+                                    .color(crate::theme::YELLOW),
+                            )
+                            .on_hover_text(
+                                "Transmitting stopped: no reply and no action for the watchdog \
+                                 period. Call CQ or pick a message to resume.",
+                            );
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 RichText::new(format!(
@@ -3416,6 +3430,32 @@ impl SdroxideApp {
                     ui.end_row();
                     ui.label("Auto-sequence");
                     changed |= ui.checkbox(&mut cfg.auto_seq, "").changed();
+                    ui.end_row();
+                    ui.label("TX watchdog");
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut cfg.tx_watchdog_min)
+                                .range(0..=60)
+                                .suffix(" min"),
+                        )
+                        .on_hover_text(
+                            "Stop transmitting after this long with no reply and no action \
+                             from you. 0 disables it.",
+                        )
+                        .changed();
+                    ui.end_row();
+                    ui.label("Give up after");
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut cfg.max_tx_repeats)
+                                .range(0..=30)
+                                .suffix(" calls"),
+                        )
+                        .on_hover_text(
+                            "Unanswered calls to one station before moving on. Calling CQ is \
+                             exempt. 0 disables it.",
+                        )
+                        .changed();
                     ui.end_row();
                 });
                 ui.separator();

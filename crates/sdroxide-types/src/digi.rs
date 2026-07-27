@@ -167,6 +167,10 @@ pub struct DigiStatus {
     pub tx_even: bool,
     /// True while a burst is currently on the air.
     pub transmitting: bool,
+    /// The transmit watchdog stopped the sequencer. Cleared by any operator
+    /// action (calling CQ, replying, picking a message).
+    #[serde(default)]
+    pub tx_watchdog: bool,
     /// The current QSO's message exchange (empty when idle).
     pub transcript: Vec<TranscriptLine>,
     /// Current engine config (so a fresh client can populate its editor).
@@ -236,6 +240,7 @@ impl DigiStatus {
             audio_hz: 1500.0,
             tx_even: config.tx_even,
             transmitting: false,
+            tx_watchdog: false,
             transcript: Vec::new(),
             config,
             text_rx: String::new(),
@@ -455,6 +460,14 @@ pub struct DigiConfig {
     /// 0.25 = default = quarter speed / 4× slower). Lower scans the text/image
     /// more slowly, giving the receiver's waterfall more lines to render it.
     pub rf_paint_speed: f32,
+    /// FT8/FT4: stop transmitting after this many minutes with no progress —
+    /// no reply, no operator action. The guard against a station left calling
+    /// into an empty band for hours. 0 disables it.
+    pub tx_watchdog_min: u32,
+    /// FT8/FT4: give up on a station after this many unanswered transmissions.
+    /// Calling CQ is exempt (repeating a CQ is the point); this counts calls to
+    /// one station that never comes back. 0 disables it.
+    pub max_tx_repeats: u32,
     /// RADE: silence the demodulated (analog) audio, so only decoded speech is
     /// audible. Off by default — hearing the raw signal is how the operator
     /// tunes onto an over before the modem syncs.
@@ -482,6 +495,8 @@ impl Default for DigiConfig {
             fsq_baud: 4.5,
             fsq_call: String::new(),
             digi_squelch: 0.35,
+            tx_watchdog_min: 6,
+            max_tx_repeats: 10,
             sstv_tx_ppm: 0.0,
             rf_paint_speed: 0.25,
             rade_mute_analog: false,

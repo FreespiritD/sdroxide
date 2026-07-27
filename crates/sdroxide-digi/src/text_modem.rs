@@ -222,6 +222,7 @@ impl TextModemController {
             audio_hz: self.audio_hz,
             tx_even: false,
             transmitting: self.keyed,
+            tx_watchdog: false,
             transcript: Vec::<TranscriptLine>::new(),
             config: self.cfg.clone(),
             text_rx: self.rx_text.clone(),

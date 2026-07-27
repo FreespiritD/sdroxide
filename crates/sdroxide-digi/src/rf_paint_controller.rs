@@ -58,6 +58,7 @@ impl RfPaintController {
             audio_hz: RF_PAINT_CENTER,
             tx_even: false,
             transmitting: self.keyed,
+            tx_watchdog: false,
             transcript: Vec::<TranscriptLine>::new(),
             config: self.cfg.clone(),
             text_rx: String::new(),

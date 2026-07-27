@@ -97,6 +97,7 @@ fn build_status(
         audio_hz: 1470.0,
         tx_even: false,
         transmitting: keyed,
+        tx_watchdog: false,
         transcript: Vec::<TranscriptLine>::new(),
         config: cfg.clone(),
         text_rx: String::new(),

@@ -333,6 +333,9 @@ Click **SETUP** in the QSO area to open the **FT8 / FT4 Setup** window:
 - **My grid** — your Maidenhead grid locator (for example `FN42`).
 - **TX period** — whether you call in the **Even** or **Odd** time slots.
 - **Auto-sequence** — advance the QSO automatically (recommended on).
+- **TX watchdog / Give up after** — how long unattended transmitting may
+  continue with no progress, and how many unanswered calls to one station are
+  worth making. Both 0 to disable.
 - **Message templates** — the CQ / Grid / Report / R+Report / RR73 / 73 lines,
   using the placeholders `{MYCALL}`, `{MYGRID}`, `{DX}`, and `{REPORT}`. The
   defaults follow standard FT8 practice; you rarely need to change them.
@@ -409,6 +412,13 @@ free text is cut to 13 characters.
   free text, so that is what the field accepts.
 - **Stop:** **STOP QSO** ends the current QSO gracefully; **STOP TX** aborts the
   current transmission immediately and un-keys.
+- **Unattended transmitting stops itself.** Two limits, both on the FT8 setup
+  window: the **TX watchdog** (6 minutes by default) stops the sequencer when
+  nothing has come back and you haven't touched anything, and **Give up after**
+  (10 calls) abandons a station that never answers. `WATCHDOG` appears on the
+  station card when the first one fires; calling CQ or picking a message clears
+  it and starts the clock again. Repeating a CQ doesn't count as an unanswered
+  call — that is what the watchdog is for. Set either to 0 to disable it.
 
 Transmission happens automatically in your chosen time slot (FT8 slots are 15 s,
 FT4 slots are 7.5 s) and goes through the normal transmit path, so the ham-band
