@@ -4,6 +4,7 @@ mod gui_main;
 mod hpsdr_source;
 mod local_controller;
 mod null_source;
+mod rtlsdr_source;
 mod server_main;
 mod tci_source;
 
@@ -455,8 +456,30 @@ fn device_filter(cli: &Cli, settings: &Settings) -> String {
     cli.device.clone().unwrap_or_else(|| settings.device_args.clone())
 }
 
-#[cfg(feature = "soapy")]
 fn probe(cli: &Cli, settings: &Settings) -> anyhow::Result<()> {
+    // RTL-SDR first, and in every build: the native driver needs no system
+    // library, so this half of `--probe` works even in the non-SoapySDR
+    // variant. It is the field-diagnosis tool for "does this machine see my
+    // dongle, and may this user have it?".
+    probe_rtlsdr();
+    probe_soapy(cli, settings)
+}
+
+fn probe_rtlsdr() {
+    let devices = sdroxide_rtlsdr::list();
+    if devices.is_empty() {
+        println!("No RTL-SDR dongles found on USB.");
+    } else {
+        println!("=== RTL-SDR (native USB driver) ===");
+        for (i, d) in devices.iter().enumerate() {
+            println!("  {}: {}  [usb {:04x}:{:04x}]", i, d.label(), d.vid, d.pid);
+        }
+    }
+    println!();
+}
+
+#[cfg(feature = "soapy")]
+fn probe_soapy(cli: &Cli, settings: &Settings) -> anyhow::Result<()> {
     let filter = device_filter(cli, settings);
     let devices = enumerate_devices(&filter).context("SoapySDR enumeration failed")?;
     if devices.is_empty() {
@@ -474,8 +497,9 @@ fn probe(cli: &Cli, settings: &Settings) -> anyhow::Result<()> {
 }
 
 #[cfg(not(feature = "soapy"))]
-fn probe(_cli: &Cli, _settings: &Settings) -> anyhow::Result<()> {
-    bail!("this build has no SoapySDR support (built with --no-default-features)")
+fn probe_soapy(_cli: &Cli, _settings: &Settings) -> anyhow::Result<()> {
+    println!("This build has no SoapySDR support (built with --no-default-features).");
+    Ok(())
 }
 
 #[cfg(feature = "soapy")]
@@ -577,6 +601,7 @@ fn open_configured_source(
         Backend::Cat => open_cat_source(radio),
         Backend::Hpsdr => open_hpsdr_source(radio, cli.freq),
         Backend::Tci => open_tci_source(radio, cli.freq),
+        Backend::RtlSdr => open_rtlsdr_source(radio, cli.freq),
         Backend::Soapy => open_soapy_source(cli, settings),
         Backend::Auto => {
             #[cfg(feature = "soapy")]
@@ -685,6 +710,55 @@ fn hpsdr_caps(board: &str, sample_rate: f64, protocol: u8, has_lna: bool) -> Dev
         freq_ranges_tx: vec![(1_800_000.0, if hermes_lite { 30_000_000.0 } else { 54_000_000.0 })],
         sample_rates: sdroxide_types::HpsdrConfig::rates_for(protocol).to_vec(),
         gains,
+        ..DeviceCaps::default()
+    }
+}
+
+/// Build the RTL-SDR source from radio.json. The dongle is picked by USB
+/// serial, or the first one found when none is configured.
+fn open_rtlsdr_source(
+    radio: &RadioConfig,
+    center_hz: f64,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let src = rtlsdr_source::RtlSdrSource::open(&radio.rtlsdr, center_hz)
+        .context("opening RTL-SDR dongle")?;
+    let caps = rtlsdr_caps(&src);
+    Ok((Box::new(src), caps))
+}
+
+/// Capabilities for an RTL-SDR: wideband IQ, receive only.
+///
+/// The frequency ranges are the interesting part. A Blog V4 upconverts HF in
+/// hardware, so it is continuous from DC. Anything else reaches HF only through
+/// direct sampling, which tops out at the ADC's Nyquist limit — leaving a gap
+/// between there and the tuner's 24 MHz floor. Overlapping or disjoint ranges
+/// are both fine: `DeviceCaps::can_rx_hz` is an `any` over the list.
+fn rtlsdr_caps(src: &rtlsdr_source::RtlSdrSource) -> DeviceCaps {
+    let rate = src.sample_rate_hz();
+    let freq_ranges_rx = if src.is_blog_v4() {
+        vec![(0.0, 1_766_000_000.0)]
+    } else if src.hf_capable() {
+        vec![(0.0, 14_400_000.0), (24_000_000.0, 1_766_000_000.0)]
+    } else {
+        vec![(24_000_000.0, 1_766_000_000.0)]
+    };
+    DeviceCaps {
+        driver: "rtlsdr".into(),
+        label: format!("{} ({}, {:.3} Msps)", src.describe(), src.tuner(), rate / 1e6),
+        rx_channels: 1,
+        tx_channels: 0,
+        audio_mode: false,
+        freq_ranges_rx,
+        sample_rates: sdroxide_types::RtlSdrConfig::SAMPLE_RATES.to_vec(),
+        gains: vec![sdroxide_types::GainElement {
+            name: sdroxide_types::RtlSdrConfig::TUNER_GAIN_ELEMENT.into(),
+            direction: sdroxide_types::Direction::Rx,
+            min_db: 0.0,
+            max_db: sdroxide_types::RtlSdrConfig::GAIN_MAX_DB,
+            // The hardware only has 29 discrete steps; a request is snapped to
+            // the nearest and reported back, so a fine slider is honest enough.
+            step_db: 0.1,
+        }],
         ..DeviceCaps::default()
     }
 }

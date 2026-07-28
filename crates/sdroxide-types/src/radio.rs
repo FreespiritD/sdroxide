@@ -18,11 +18,20 @@ pub enum Backend {
     Hpsdr,
     /// TCI (Transceiver Control Interface) over WebSocket — ExpertSDR3, Thetis, …
     Tci,
+    /// RTL2832U dongle driven directly over USB by the native driver — no
+    /// SoapySDR, no libusb, nothing to install.
+    RtlSdr,
 }
 
 impl Backend {
-    pub const ALL: [Backend; 5] =
-        [Backend::Auto, Backend::Soapy, Backend::Cat, Backend::Hpsdr, Backend::Tci];
+    pub const ALL: [Backend; 6] = [
+        Backend::Auto,
+        Backend::Soapy,
+        Backend::Cat,
+        Backend::Hpsdr,
+        Backend::Tci,
+        Backend::RtlSdr,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Backend::Auto => "Auto-detect (SoapySDR / CAT)",
@@ -30,6 +39,7 @@ impl Backend {
             Backend::Cat => "CAT / Audio",
             Backend::Hpsdr => "HPSDR (network)",
             Backend::Tci => "TCI (network)",
+            Backend::RtlSdr => "RTL-SDR (USB)",
         }
     }
 }
@@ -414,6 +424,224 @@ impl TciConfig {
     pub const IQ_RATES: [f64; 3] = [48_000.0, 96_000.0, 192_000.0];
 }
 
+/// How an RTL-SDR reaches HF. The R82xx tuner itself starts at 24 MHz, so
+/// anything below that needs help from the dongle's hardware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RtlSdrHfMode {
+    /// Tuner only — nothing below 24 MHz.
+    Off,
+    /// Use whatever this dongle has: the V4's built-in upconverter, or
+    /// direct sampling on a V3. Switched automatically at the crossover.
+    #[default]
+    Auto,
+    /// Force direct sampling on the ADC's Q branch (the V3's HF port). Has no
+    /// meaning on a Blog V4, which upconverts instead.
+    DirectQ,
+}
+
+impl RtlSdrHfMode {
+    pub const ALL: [RtlSdrHfMode; 3] =
+        [RtlSdrHfMode::Auto, RtlSdrHfMode::Off, RtlSdrHfMode::DirectQ];
+
+    /// Paired with [`RtlSdrHfMode::from_code`] so the mode can ride the
+    /// `HFMODE` pseudo-element; keep the two in step.
+    pub fn code(self) -> u8 {
+        match self {
+            RtlSdrHfMode::Off => 0,
+            RtlSdrHfMode::Auto => 1,
+            RtlSdrHfMode::DirectQ => 2,
+        }
+    }
+
+    pub fn from_code(code: u8) -> RtlSdrHfMode {
+        match code {
+            0 => RtlSdrHfMode::Off,
+            2 => RtlSdrHfMode::DirectQ,
+            _ => RtlSdrHfMode::Auto,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RtlSdrHfMode::Off => "Off (tuner only, 24 MHz up)",
+            RtlSdrHfMode::Auto => "Automatic",
+            RtlSdrHfMode::DirectQ => "Direct sampling (Q branch)",
+        }
+    }
+}
+
+/// Which automatic gain loops to enable. The tuner AGC lives in the R82xx; the
+/// RTL AGC is the demod's digital one. They are independent and can both run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RtlSdrAgc {
+    /// Manual tuner gain, no automatic loops — the setting for measurement and
+    /// for weak-signal digital modes.
+    #[default]
+    Manual,
+    Tuner,
+    Rtl,
+    Both,
+}
+
+impl RtlSdrAgc {
+    pub const ALL: [RtlSdrAgc; 4] =
+        [RtlSdrAgc::Manual, RtlSdrAgc::Tuner, RtlSdrAgc::Rtl, RtlSdrAgc::Both];
+    pub fn label(self) -> &'static str {
+        match self {
+            RtlSdrAgc::Manual => "Manual (no AGC)",
+            RtlSdrAgc::Tuner => "Tuner AGC",
+            RtlSdrAgc::Rtl => "RTL digital AGC",
+            RtlSdrAgc::Both => "Tuner + RTL AGC",
+        }
+    }
+
+    /// Whether the R82xx runs its own LNA/mixer gain loop.
+    pub fn tuner_auto(self) -> bool {
+        matches!(self, RtlSdrAgc::Tuner | RtlSdrAgc::Both)
+    }
+
+    /// Whether the demod's digital AGC runs.
+    pub fn rtl_auto(self) -> bool {
+        matches!(self, RtlSdrAgc::Rtl | RtlSdrAgc::Both)
+    }
+
+    /// AGC mode as a number, so it can ride the existing `SetGain` command on
+    /// the `AGC` pseudo-element instead of needing a new `Command` variant.
+    /// Paired with [`RtlSdrAgc::from_code`]; keep the two in step.
+    pub fn code(self) -> u8 {
+        match self {
+            RtlSdrAgc::Manual => 0,
+            RtlSdrAgc::Tuner => 1,
+            RtlSdrAgc::Rtl => 2,
+            RtlSdrAgc::Both => 3,
+        }
+    }
+
+    pub fn from_code(code: u8) -> RtlSdrAgc {
+        match code {
+            1 => RtlSdrAgc::Tuner,
+            2 => RtlSdrAgc::Rtl,
+            3 => RtlSdrAgc::Both,
+            _ => RtlSdrAgc::Manual,
+        }
+    }
+}
+
+/// RTL-SDR (RTL2832U over USB) backend configuration. Receive only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RtlSdrConfig {
+    /// USB serial of the dongle to open. `None` = the first one found. Serial
+    /// rather than an index because bus position changes on every replug, and
+    /// a persisted index would attach to the wrong dongle.
+    pub serial: Option<String>,
+    /// Sample rate in Hz. The resampler only reaches 225–300 kHz and
+    /// 900 kHz–3.2 MHz; everything between is rejected by the hardware.
+    pub sample_rate_hz: f64,
+    /// Crystal error in parts per million. Read it off the `clock error`
+    /// line that `RUST_LOG=sdroxide_rtlsdr=debug` prints once the stream runs.
+    pub ppm: i32,
+    /// Tuner gain in dB when AGC is off. Snapped to the nearest step the
+    /// hardware can actually produce.
+    pub tuner_gain_db: f64,
+    pub agc: RtlSdrAgc,
+    pub hf_mode: RtlSdrHfMode,
+    /// Bias tee: ~4.5 V DC on the antenna coax for a remote LNA. Off by
+    /// default, and turned off again on a clean shutdown — it will damage a
+    /// transceiver or anything DC-shorted on the other end of the cable.
+    pub bias_tee: bool,
+    /// Bulk transfers kept in flight (advanced). The default gives ~53 ms of
+    /// hardware-side buffering at 2.4 Msps, twice the worst-case retune stall.
+    pub transfers: u8,
+    /// Size of each bulk transfer in KiB (advanced). Must stay a multiple of
+    /// the endpoint's 512-byte packet.
+    pub transfer_kib: u16,
+}
+
+impl Default for RtlSdrConfig {
+    fn default() -> Self {
+        RtlSdrConfig {
+            serial: None,
+            sample_rate_hz: 2_400_000.0,
+            ppm: 0,
+            tuner_gain_db: 30.0,
+            agc: RtlSdrAgc::Manual,
+            hf_mode: RtlSdrHfMode::Auto,
+            bias_tee: false,
+            transfers: 16,
+            transfer_kib: 16,
+        }
+    }
+}
+
+impl RtlSdrConfig {
+    /// Gain element names the backend exposes. They live here rather than in
+    /// `sdroxide-rtlsdr` so the (wasm-safe) settings UI can address them
+    /// without depending on the native backend crate — same reason as
+    /// [`HpsdrConfig::LNA_GAIN_ELEMENT`].
+    pub const TUNER_GAIN_ELEMENT: &'static str = "TUNER";
+    pub const IF_GAIN_ELEMENT: &'static str = "IF";
+    /// Pseudo-elements carrying settings that are not gains at all.
+    ///
+    /// These ride the existing `SetGain` command so that adding this backend
+    /// needs no new `Command` variant, no `DeviceCaps` field and no engine
+    /// change for four settings only one backend has. They are deliberately
+    /// absent from `DeviceCaps::gains`, so nothing renders them as sliders —
+    /// the RTL-SDR settings panel drives them directly. The encodings live
+    /// beside the enums they carry ([`RtlSdrAgc::code`], `HfMode as u8`) so
+    /// the two ends cannot drift.
+    pub const AGC_ELEMENT: &'static str = "AGC";
+    pub const PPM_ELEMENT: &'static str = "PPM";
+    pub const HF_MODE_ELEMENT: &'static str = "HFMODE";
+    pub const BIAS_TEE_ELEMENT: &'static str = "BIASTEE";
+
+    /// Sample rates offered in the UI. All lie inside the resampler's upper
+    /// window except 250 kHz, which is in the lower one. 3.2 Msps is offered
+    /// but drops samples on most hosts.
+    pub const SAMPLE_RATES: [f64; 9] = [
+        250_000.0,
+        960_000.0,
+        1_024_000.0,
+        1_200_000.0,
+        1_536_000.0,
+        1_800_000.0,
+        2_048_000.0,
+        2_400_000.0,
+        3_200_000.0,
+    ];
+
+    /// Maximum R82xx tuner gain, in dB (the last entry of the gain table).
+    pub const GAIN_MAX_DB: f64 = 49.6;
+
+    /// Below this, HF handling kicks in: the Blog V4's upconverter reference
+    /// frequency, and equally the bottom of the R82xx's own range.
+    pub const HF_CROSSOVER_HZ: f64 = 28_800_000.0;
+}
+
+/// One RTL-SDR dongle found on the USB bus. Wasm-safe so it can cross the
+/// `RadioController` trait to the settings UI.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RtlSdrDevice {
+    /// USB serial string, when the dongle has one programmed.
+    pub serial: Option<String>,
+    /// Best available name: the USB product string, else the VID/PID table.
+    pub name: String,
+    pub vid: u16,
+    pub pid: u16,
+}
+
+impl RtlSdrDevice {
+    /// One-line label for the selection UI.
+    pub fn label(&self) -> String {
+        match &self.serial {
+            Some(s) => format!("{}  (serial {s})", self.name),
+            // Without a serial we can only ever open "the first one", so say so
+            // rather than implying this entry can be pinned.
+            None => format!("{}  [no serial — first match only]", self.name),
+        }
+    }
+}
+
 /// Persisted backend configuration (`radio.json`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -426,4 +654,5 @@ pub struct RadioConfig {
     pub cat: CatConfig,
     pub hpsdr: HpsdrConfig,
     pub tci: TciConfig,
+    pub rtlsdr: RtlSdrConfig,
 }

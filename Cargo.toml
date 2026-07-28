@@ -46,6 +46,7 @@ sdroxide-midi = { path = "crates/sdroxide-midi" }
 sdroxide-rigctld = { path = "crates/sdroxide-rigctld" }
 sdroxide-hpsdr = { path = "crates/sdroxide-hpsdr" }
 sdroxide-tci = { path = "crates/sdroxide-tci" }
+sdroxide-rtlsdr = { path = "crates/sdroxide-rtlsdr" }
 sdroxide-net = { path = "crates/sdroxide-net" }
 
 serde = { version = "1", features = ["derive"] }
@@ -59,6 +60,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 postcard = { version = "1", features = ["use-std"] }
 crossbeam-channel = "0.5"
 rtrb = "0.3"
+# Pure-Rust USB — the RTL-SDR backend's only dependency. No libusb, so it needs
+# no system library on any target and ships in every build variant.
+nusb = "0.2.5"
 
 [package]
 name = "sdroxide"
@@ -79,6 +83,7 @@ sdroxide-server.workspace = true
 sdroxide-cat.workspace = true
 sdroxide-hpsdr.workspace = true
 sdroxide-tci.workspace = true
+sdroxide-rtlsdr.workspace = true
 sdroxide-ui = { workspace = true, features = ["remote"] }
 eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11", "persistence"] }
 anyhow.workspace = true
@@ -117,6 +122,7 @@ features = ["embed-web"]
 assets = [
     ["target/release/sdroxide", "usr/bin/", "755"],
     ["packaging/linux/sdroxide.desktop", "usr/share/applications/", "644"],
+    ["packaging/linux/60-sdroxide-rtlsdr.rules", "usr/lib/udev/rules.d/", "644"],
     ["packaging/icons/sdroxide.svg", "usr/share/icons/hicolor/scalable/apps/sdroxide.svg", "644"],
     ["packaging/icons/sdroxide-16.png", "usr/share/icons/hicolor/16x16/apps/sdroxide.png", "644"],
     ["packaging/icons/sdroxide-24.png", "usr/share/icons/hicolor/24x24/apps/sdroxide.png", "644"],

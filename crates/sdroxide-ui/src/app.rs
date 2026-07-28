@@ -54,6 +54,9 @@ struct SettingsIo<'a> {
     radio_edit: &'a mut Option<sdroxide_types::RadioConfig>,
     audio_pick: &'a mut Option<(bool, Option<String>)>,
     hpsdr_discover: &'a mut bool,
+    /// Re-enumerate the USB bus for RTL-SDR dongles. Cheap and non-invasive —
+    /// no device is opened — so it cannot disturb a running stream.
+    rtlsdr_rescan: &'a mut bool,
     tci_test: &'a mut bool,
     apply_iface: &'a mut bool,
     ui_edit: &'a mut sdroxide_types::UiSettings,
@@ -247,6 +250,7 @@ pub struct SdroxideApp {
     serial_ports: Vec<String>,
     /// HPSDR devices found by the last "Discover" scan in the settings dialog.
     hpsdr_devices: Vec<sdroxide_types::HpsdrDevice>,
+    rtlsdr_devices: Vec<sdroxide_types::RtlSdrDevice>,
     /// Result of the last TCI "Test connection" (Ok summary / Err message).
     tci_test_result: Option<Result<String, String>>,
     seen_first_state: bool,
@@ -574,6 +578,7 @@ impl SdroxideApp {
             radio_cfg: None,
             serial_ports: Vec::new(),
             hpsdr_devices: Vec::new(),
+            rtlsdr_devices: Vec::new(),
             tci_test_result: None,
             seen_first_state: false,
             show_memories: false,
@@ -5274,6 +5279,7 @@ impl SdroxideApp {
         // borrows `&self` and so can't touch `&mut self.ctrl`.
         let mut audio_pick: Option<(bool, Option<String>)> = None;
         let mut hpsdr_discover = false;
+        let mut rtlsdr_rescan = false;
         let mut tci_test = false;
         let mut apply_iface = false;
         let mut radio_edit = self.radio_cfg.clone();
@@ -5305,6 +5311,9 @@ impl SdroxideApp {
         iface_opts.push(sdroxide_types::Backend::Hpsdr);
         iface_opts.push(sdroxide_types::Backend::Cat);
         iface_opts.push(sdroxide_types::Backend::Tci);
+        // Ungated, unlike SoapySDR: the RTL-SDR driver is pure Rust and needs
+        // no system library, so it is compiled into every build variant.
+        iface_opts.push(sdroxide_types::Backend::RtlSdr);
 
         let mut tab = self.settings_tab;
         let mut open = self.show_settings;
@@ -5327,6 +5336,7 @@ impl SdroxideApp {
                         radio_edit: &mut radio_edit,
                         audio_pick: &mut audio_pick,
                         hpsdr_discover: &mut hpsdr_discover,
+                        rtlsdr_rescan: &mut rtlsdr_rescan,
                         tci_test: &mut tci_test,
                         apply_iface: &mut apply_iface,
                         ui_edit: &mut ui_edit,
@@ -5407,6 +5417,11 @@ impl SdroxideApp {
             // Blocking LAN scan (~1.5 s); done after the window closure so it can
             // take `&self.ctrl`. Results feed the device dropdown next frame.
             self.hpsdr_devices = self.ctrl.discover_hpsdr();
+        }
+        if rtlsdr_rescan {
+            // USB enumeration only — no device is opened, so this is safe to
+            // press at any time, including while a dongle is streaming.
+            self.rtlsdr_devices = self.ctrl.list_rtlsdr();
         }
         if tci_test {
             // Blocking connect (~up to 3 s); after the closure so it can take
@@ -5592,6 +5607,13 @@ impl SdroxideApp {
                     Backend::Tci => {
                         settings_tci_tab(ui, io.radio_edit, io.tci_test, &self.tci_test_result)
                     }
+                    Backend::RtlSdr => settings_rtlsdr_tab(
+                        ui,
+                        &self.rtlsdr_devices,
+                        io.radio_edit,
+                        io.rtlsdr_rescan,
+                        cmds,
+                    ),
                     // Legacy configs may still carry the removed auto-detect
                     // backend; prompt the user to pick a concrete interface.
                     Backend::Auto => {
@@ -6261,6 +6283,203 @@ fn settings_hpsdr_tab(
     ui.label(
         RichText::new(
             "A manual IP overrides discovery. Press \"Apply / reconnect\" to switch without a restart.",
+        )
+        .weak(),
+    );
+}
+
+/// RTL-SDR interface: which dongle, sample rate, gain/AGC, frequency
+/// correction, HF reception and the bias tee.
+///
+/// Gain, AGC, ppm and the bias tee all apply *live* rather than waiting for
+/// Apply/reconnect — these are the controls an operator moves while listening,
+/// and dropping the stream on every nudge would make them unusable. The dongle
+/// selection and sample rate do need a reconnect, since both are fixed when
+/// the device is opened.
+fn settings_rtlsdr_tab(
+    ui: &mut egui::Ui,
+    devices: &[sdroxide_types::RtlSdrDevice],
+    radio_edit: &mut Option<sdroxide_types::RadioConfig>,
+    rescan: &mut bool,
+    cmds: &mut Vec<Command>,
+) {
+    use sdroxide_types::{RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode};
+    let Some(cfg) = radio_edit.as_mut() else {
+        ui.label("Radio configuration is only available in the native app.");
+        return;
+    };
+
+    egui::Grid::new("rtlsdr-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Dongle");
+        ui.horizontal(|ui| {
+            if ui
+                .button("Rescan")
+                .on_hover_text(
+                    "Re-list the USB bus. No device is opened, so this is safe \
+                     to press while receiving.",
+                )
+                .clicked()
+            {
+                *rescan = true;
+            }
+            let shown = cfg
+                .rtlsdr
+                .serial
+                .clone()
+                .unwrap_or_else(|| "— first one found —".into());
+            ComboBox::from_id_salt("rtlsdr_dev").width(300.0).selected_text(shown).show_ui(
+                ui,
+                |ui| {
+                    if devices.is_empty() {
+                        ui.label(RichText::new("no dongles — press Rescan").weak());
+                    }
+                    if ui
+                        .selectable_label(cfg.rtlsdr.serial.is_none(), "— first one found —")
+                        .clicked()
+                    {
+                        cfg.rtlsdr.serial = None;
+                    }
+                    for d in devices {
+                        // Only a dongle with a serial can be pinned; without
+                        // one there is nothing stable to remember, since bus
+                        // position changes on every replug.
+                        if let Some(sn) = &d.serial {
+                            let sel = cfg.rtlsdr.serial.as_deref() == Some(sn.as_str());
+                            if ui.selectable_label(sel, d.label()).clicked() {
+                                cfg.rtlsdr.serial = Some(sn.clone());
+                            }
+                        } else {
+                            ui.label(RichText::new(d.label()).weak());
+                        }
+                    }
+                },
+            );
+        });
+        ui.end_row();
+
+        ui.label("Sample rate").on_hover_text(
+            "The RTL2832U's resampler reaches 225–300 kHz and 900 kHz–3.2 MHz, \
+             nothing between. Takes effect on Apply.",
+        );
+        let shown = format!("{:.3} Msps", cfg.rtlsdr.sample_rate_hz / 1e6);
+        ComboBox::from_id_salt("rtlsdr_rate").selected_text(shown).show_ui(ui, |ui| {
+            for &r in &RtlSdrConfig::SAMPLE_RATES {
+                let sel = (cfg.rtlsdr.sample_rate_hz - r).abs() < 1.0;
+                let mut label = format!("{:.3} Msps", r / 1e6);
+                if r >= 3_200_000.0 {
+                    label.push_str("  (often drops samples)");
+                }
+                if ui.selectable_label(sel, label).clicked() {
+                    cfg.rtlsdr.sample_rate_hz = r;
+                }
+            }
+        });
+        ui.end_row();
+
+        ui.label("AGC").on_hover_text(
+            "Manual is the setting for measurement and weak-signal digital modes. \
+             The tuner and the demodulator have independent automatic loops.",
+        );
+        let mut agc = cfg.rtlsdr.agc;
+        enum_combo(ui, "rtlsdr_agc", &mut agc, &RtlSdrAgc::ALL, RtlSdrAgc::label);
+        if agc != cfg.rtlsdr.agc {
+            cfg.rtlsdr.agc = agc;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: RtlSdrConfig::AGC_ELEMENT.to_string(),
+                db: agc.code() as f64,
+            });
+        }
+        ui.end_row();
+
+        ui.label("Tuner gain").on_hover_text(
+            "Applies immediately — no reconnect. The tuner has 29 discrete steps, \
+             so the value snaps to the nearest one it can produce. Ignored while \
+             the tuner AGC is running.",
+        );
+        ui.add_enabled_ui(!cfg.rtlsdr.agc.tuner_auto(), |ui| {
+            if crate::chrome::slider(
+                ui,
+                Slider::new(&mut cfg.rtlsdr.tuner_gain_db, 0.0..=RtlSdrConfig::GAIN_MAX_DB)
+                    .step_by(0.1)
+                    .suffix(" dB"),
+            )
+            .changed()
+            {
+                cmds.push(Command::SetGain {
+                    dir: Direction::Rx,
+                    element: RtlSdrConfig::TUNER_GAIN_ELEMENT.to_string(),
+                    db: cfg.rtlsdr.tuner_gain_db,
+                });
+            }
+        });
+        ui.end_row();
+
+        ui.label("Frequency correction").on_hover_text(
+            "Crystal error in parts per million. Run with \
+             RUST_LOG=sdroxide_rtlsdr=debug and the log prints the measured \
+             clock error after about 20 seconds — that is the number to enter. \
+             Applies immediately.",
+        );
+        let mut ppm = cfg.rtlsdr.ppm;
+        if ui.add(egui::DragValue::new(&mut ppm).range(-200..=200).suffix(" ppm")).changed() {
+            cfg.rtlsdr.ppm = ppm;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: RtlSdrConfig::PPM_ELEMENT.to_string(),
+                db: ppm as f64,
+            });
+        }
+        ui.end_row();
+
+        ui.label("HF reception").on_hover_text(
+            "The tuner itself starts at 24 MHz. An RTL-SDR Blog V4 upconverts \
+             below that in hardware; other dongles reach HF only by sampling the \
+             ADC directly, through the V3's HF port. Switching modes briefly \
+             interrupts the stream.",
+        );
+        let mut hf = cfg.rtlsdr.hf_mode;
+        enum_combo(ui, "rtlsdr_hf", &mut hf, &RtlSdrHfMode::ALL, RtlSdrHfMode::label);
+        if hf != cfg.rtlsdr.hf_mode {
+            cfg.rtlsdr.hf_mode = hf;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: RtlSdrConfig::HF_MODE_ELEMENT.to_string(),
+                db: hf as u8 as f64,
+            });
+        }
+        ui.end_row();
+
+        ui.label("Bias tee");
+        let mut bias = cfg.rtlsdr.bias_tee;
+        if ui.checkbox(&mut bias, "Feed ~4.5 V DC up the coax").changed() {
+            cfg.rtlsdr.bias_tee = bias;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: RtlSdrConfig::BIAS_TEE_ELEMENT.to_string(),
+                db: if bias { 1.0 } else { 0.0 },
+            });
+        }
+        ui.end_row();
+    });
+
+    if cfg.rtlsdr.bias_tee {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(
+                "Bias tee is ON. Never connect a transceiver, a grounded antenna, \
+                 or a preamp powered from elsewhere while this is enabled — the DC \
+                 goes straight down the feedline.",
+            )
+            .color(crate::theme::YELLOW),
+        );
+    }
+
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "Receive only. The dongle and sample rate take effect on Apply; \
+             everything else applies as you change it.",
         )
         .weak(),
     );

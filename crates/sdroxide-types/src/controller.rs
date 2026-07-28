@@ -180,6 +180,15 @@ pub trait RadioController {
         Vec::new()
     }
 
+    /// List RTL-SDR dongles on the USB bus (native local client only). Fast
+    /// and non-invasive — no device is opened — so the settings UI may call it
+    /// on demand as often as the operator presses Rescan, including while a
+    /// dongle is streaming. Default empty: a browser client cannot see the
+    /// server's USB bus.
+    fn list_rtlsdr(&self) -> Vec<crate::RtlSdrDevice> {
+        Vec::new()
+    }
+
     /// Test a TCI server connection at `address` (`host:port`). Blocking — the
     /// settings UI calls this on demand (a "Test connection" button). Returns a
     /// success summary or an error message. Default: unsupported (remote client).

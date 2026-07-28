@@ -88,6 +88,9 @@ fn embedded_image(path: &str) -> Option<&'static [u8]> {
         "settings-radio-tci.jpg" => {
             &include_bytes!("../../../docs/images/settings-radio-tci.jpg")[..]
         }
+        "settings-radio-rtlsdr.jpg" => {
+            &include_bytes!("../../../docs/images/settings-radio-rtlsdr.jpg")[..]
+        }
         "3d-sun.jpg" => &include_bytes!("../../../docs/images/3d-sun.jpg")[..],
         "3d-earth.jpg" => &include_bytes!("../../../docs/images/3d-earth.jpg")[..],
         "3d-cme.jpg" => &include_bytes!("../../../docs/images/3d-cme.jpg")[..],

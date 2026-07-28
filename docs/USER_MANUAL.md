@@ -1094,6 +1094,8 @@ radio. Everything below the selector changes to match the choice:
   [5.2.2](#522-cat-radios-serial-control--usb-audio).
 - **TCI (network)** — a TCI server such as ExpertSDR3 or Thetis. See
   [5.2.4](#524-tci-network-expertsdr3-and-thetis).
+- **RTL-SDR (USB)** — an RTL2832U dongle, driven by sdroxide's own USB driver
+  with no SoapySDR involved. See [5.2.5](#525-rtl-sdr-usb-dongles).
 
 There is no auto-detect: you pick the interface, and an interface that cannot be
 opened falls back to a silent source rather than guessing at another one.
@@ -1246,6 +1248,74 @@ the TCI server, which modulates it.
 > This is sdroxide acting as a TCI *client*. For the other direction — sdroxide
 > acting as the rig so WSJT-X and friends can drive it — see
 > [§ 5.8.2 Built-in TCI server](#582-built-in-tci-server).
+
+#### 5.2.5 RTL-SDR (USB dongles)
+
+![The Radio tab with the RTL-SDR interface selected](images/settings-radio-rtlsdr.jpg)
+
+The **RTL-SDR (USB)** interface drives an RTL2832U dongle directly, using
+sdroxide's own USB driver. There is no SoapySDR and no libusb involved, so this
+works in every build — including the standard Windows `.msi` and macOS `.dmg` —
+with nothing extra to install beyond access to the device itself (see the
+README's *RTL-SDR permissions*).
+
+Supported tuners are the **R820T**, **R820T2** and **R828D**, which between them
+cover essentially every dongle still sold, including the RTL-SDR Blog V3 and V4.
+Older E4000 and FC001x sticks are not supported; sdroxide names the chip it
+found and suggests the SoapySDR backend instead.
+
+Receive only — there is no transmit path in this hardware.
+
+- **Dongle** — which stick to open, by USB serial. **Rescan** re-lists the bus;
+  it opens nothing, so it is safe to press while receiving. Dongles ship with the
+  serial `00000001` from the factory, so if you run more than one, program
+  distinct serials (with `rtl_eeprom`) before you can pin them individually.
+  Leaving this at *first one found* is fine with a single dongle.
+- **Sample rate** — the resampler reaches 225–300 kHz and 900 kHz–3.2 MHz, with
+  nothing in between; the list offers only rates the hardware produces exactly.
+  2.4 Msps is the default and the highest that runs reliably on most hosts.
+  3.2 Msps is offered but drops samples on many machines.
+- **AGC** — the tuner and the demodulator have independent automatic gain loops.
+  *Manual* (no AGC) is the right setting for measurement and for weak-signal
+  digital modes, where a gain loop pumping on a strong neighbour costs you the
+  signal you were decoding.
+- **Tuner gain** — applies immediately, no reconnect. The tuner has 29 discrete
+  steps, so the value snaps to the nearest one it can actually produce.
+- **Frequency correction** — the dongle's crystal error in parts per million.
+  You do not have to guess it: run
+
+  ```sh
+  RUST_LOG=sdroxide_rtlsdr=debug sdroxide
+  ```
+
+  and after about twenty seconds the log prints a line like
+  `clock: 2400017 sps, +7.0 ppm — set this as the ppm correction`. That is the
+  number to type in. It is measured from the dongle's own sample clock, which is
+  the same oscillator the tuner runs from, so correcting it corrects your
+  frequency readout too.
+- **HF reception** — the tuner itself starts at 24 MHz. Below that:
+  - an **RTL-SDR Blog V4** upconverts in hardware, so HF simply works and the
+    dial reads correctly with no offset to apply anywhere;
+  - other dongles reach HF only by **direct sampling** the ADC's Q branch, which
+    is what a V3's HF port is wired to. *Automatic* switches at 28.8 MHz (with
+    hysteresis, so a dial parked near the boundary does not flap); *Direct
+    sampling (Q branch)* forces it; *Off* disables HF entirely.
+
+  Switching between the tuner and direct sampling re-initialises the tuner and
+  briefly interrupts the stream.
+- **Bias tee** — feeds roughly 4.5 V DC up the antenna coax for a mast-head
+  preamplifier.
+
+> **The bias tee puts DC on the feedline.** Never enable it with a transceiver,
+> a DC-grounded antenna, or a preamplifier powered from somewhere else on the
+> other end of the cable. sdroxide turns it off again on a clean shutdown, and
+> shows a standing warning while it is on, because the setting is remembered
+> across restarts and there is otherwise nothing to tell you.
+
+If the dongle is unplugged, sdroxide notices within a few seconds and reconnects
+by itself when you plug it back in — no need to press Apply. A dongle left
+streaming by a program that was killed rather than closed is reset automatically
+on the next open, so it does not need physically replugging either.
 
 ### 5.3 UI: display preferences
 

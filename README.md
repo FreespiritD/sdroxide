@@ -259,14 +259,21 @@ other ham software). See the [User Manual](docs/USER_MANUAL.md) for setup steps.
 
 ## Radio backends
 
-sdroxide can drive four kinds of radio, selected on the **Radio** tab of the
+sdroxide can drive five kinds of radio, selected on the **Radio** tab of the
 Settings window. Backend, serial, and radio-audio changes apply live when you
 press **Apply / reconnect**. A radio that isn't there yet at startup — or that
 drops mid-session — is retried in the background and attaches by itself, so
 starting sdroxide before the rig is fine:
 
+- **RTL-SDR (USB)** — an RTL2832U dongle, driven directly over USB by a native
+  pure-Rust driver. **No SoapySDR and no libusb needed**, so it works in every
+  build including the standard `.msi` and `.dmg`. Covers the R820T, R820T2 and
+  R828D tuners, which is effectively every dongle still sold. HF works through
+  an RTL-SDR Blog V4's built-in upconverter, or on other sticks by direct
+  sampling the ADC's Q branch (the V3's HF port). Bias tee and ppm correction
+  are on the Radio tab; see "RTL-SDR permissions" under Building.
 - **SoapySDR** — any [SoapySDR](https://github.com/pothosware/SoapySDR) device
-  (wideband IQ). See below.
+  (wideband IQ) — HackRF, Airspy, PlutoSDR and friends. See below.
 - **OpenHPSDR** — Hermes/Metis-family Ethernet SDRs on the LAN (Protocol 1 and
   2). Press **Discover** to scan for devices, or enter the IP manually; pick a
   DDC sample rate (48 kHz–1536 kHz). Not yet hardware-verified — testers can run
@@ -278,9 +285,10 @@ starting sdroxide before the rig is fine:
   over WebSocket (default `127.0.0.1:50001`): wideband IQ receive plus 
   audio transmit.
 
-The wideband-IQ backends (SoapySDR, HPSDR, TCI) drive the full panadapter, the
-CW/PSK/RTTY skimmers, and internal demodulation; a CAT rig feeding demodulated
-audio shows only a narrow audio-band slice.
+The wideband-IQ backends (RTL-SDR, SoapySDR, HPSDR, TCI) drive the full
+panadapter, the CW/PSK/RTTY skimmers, and internal demodulation; a CAT rig
+feeding demodulated audio shows only a narrow audio-band slice. RTL-SDR is
+receive-only; the others can transmit.
 
 ## Built-in TCI server
 
@@ -353,9 +361,41 @@ git clone --recurse-submodules https://github.com/dividebysandwich/sdroxide
 git submodule update --init --recursive
 ```
 
-You need the SoapySDR development libraries and the driver module(s) for your
-radio installed (e.g. `soapysdr`, `soapysdr-module-hackrf`,
-`soapysdr-module-lms7` on Arch/Debian-style distros).
+For the **SoapySDR** backend you need its development libraries and the driver
+module(s) for your radio (e.g. `soapysdr`, `soapysdr-module-hackrf`,
+`soapysdr-module-lms7` on Arch/Debian-style distros). Everything else — including
+the RTL-SDR backend — needs no SDR system library at all, so
+`cargo build --release --no-default-features` gives a working binary with no
+SoapySDR installed.
+
+### RTL-SDR permissions
+
+The RTL-SDR backend talks to the dongle directly over USB, so the invoking user
+needs access to it.
+
+**Linux.** Install the packaged udev rule and replug the dongle:
+
+```sh
+sudo cp packaging/linux/60-sdroxide-rtlsdr.rules /usr/lib/udev/rules.d/
+sudo udevadm control --reload
+```
+
+The `.deb` installs this for you. If your distribution's `rtl-sdr` package is
+already installed, its rules cover the same ids and you need not do anything.
+The `dvb_usb_rtl28xxu` DVB driver does **not** need blacklisting — sdroxide
+detaches it automatically and the kernel rebinds it when the dongle is
+unplugged.
+
+**Windows.** The dongle must be bound to **WinUSB**, which you do once with
+[Zadig](https://zadig.akeo.ie/). This is the same step SDR#, gqrx and every
+libusb-based program require, so if the dongle already works with any of them
+there is nothing to do. Note that Zadig replaces the DVB driver, so the stick
+stops working as a TV tuner.
+
+**macOS.** Nothing to do.
+
+If a dongle is present but sdroxide cannot open it, `--probe` says so in words
+rather than errnos.
 
 Building RADE additionally needs **CMake**, a **C compiler**, **libclang**
 (for `bindgen`) and **autoconf / automake / libtool** — its build fetches and
