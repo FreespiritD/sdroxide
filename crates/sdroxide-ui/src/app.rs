@@ -2131,7 +2131,14 @@ impl SdroxideApp {
                 }
             }
             ui.add_space(8.0);
-            if crate::chrome::chip(ui, self.digi_cq_only, "CQ only").clicked() {
+            if crate::chrome::chip(ui, self.digi_cq_only, "CQ only")
+                .on_hover_text(
+                    "Only stations calling CQ — and only the calls you may answer: a directed \
+                     CQ (DX, EU, JA, POTA, TEST …) is listed when it names you and hidden when \
+                     it names someone else.",
+                )
+                .clicked()
+            {
                 self.digi_cq_only = !self.digi_cq_only;
             }
             if crate::chrome::chip(ui, self.digi_new_only, "New only")
@@ -2442,11 +2449,13 @@ impl SdroxideApp {
 
                     let r = inner.response.rect;
                     // Left-accent bar: gold (to us) / red (CQ) / cyan (other). Wider
-                    // for a to-us decode so it really pops.
+                    // for a to-us decode so it really pops — and for a directed CQ
+                    // (DX, EU, JA …) that names us, which is a better prospect than
+                    // a plain CQ anyone in the world is free to answer.
                     let (accent, aw) = if to_me {
                         (crate::theme::YELLOW, 4.0)
                     } else if cq {
-                        (crate::theme::PINK, 2.5)
+                        (crate::theme::PINK, if d.cq_to.is_some() { 4.0 } else { 2.5 })
                     } else {
                         (crate::theme::CYAN_DIM, 2.5)
                     };

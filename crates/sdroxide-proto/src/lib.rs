@@ -71,7 +71,9 @@ use sdroxide_types::{
 /// message, which is how a Hound learns its contact completed). Postcard is not
 /// self-describing, so both ends must agree on every one of those fields.
 /// v22: clock-offset monitoring — `DigiStatus.clock_offset_s`.
-pub const PROTO_VERSION: u16 = 22;
+/// v23: directed CQs — `Decode.cq_dx` became `Decode.cq_to`, the modifier
+/// itself (`DX`, `EU`, `JA`, `POTA`, …) rather than a single DX flag.
+pub const PROTO_VERSION: u16 = 23;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

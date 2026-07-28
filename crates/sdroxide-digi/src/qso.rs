@@ -805,7 +805,7 @@ mod tests {
             },
             grid: None,
             is_cq: msg.starts_with("CQ"),
-            cq_dx: msg.starts_with("CQ DX"),
+            cq_to: msg.split_whitespace().nth(1).filter(|t| *t == "DX").map(str::to_string),
             free_text: false,
             rr73_to: None,
         }

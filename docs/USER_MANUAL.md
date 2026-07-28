@@ -468,6 +468,15 @@ free text is cut to 13 characters.
   free text, so that is what the field accepts.
 - **Stop:** **STOP QSO** ends the current QSO gracefully; **STOP TX** aborts the
   current transmission immediately and un-keys.
+- **Directed CQs are read as directed.** `CQ DX`, `CQ EU`, `CQ JA`, `CQ POTA`,
+  `CQ TEST` — sdroxide works out whether the call names you. One that does gets
+  a thicker accent bar than a plain CQ; one aimed at somebody else is neither
+  coloured as a CQ nor listed under **CQ only**. Continents (`EU`, `NA`, `AS`…)
+  are matched against your own entity's continent, country prefixes (`JA`,
+  `DL`…) against your entity, and activity calls (`POTA`, `SOTA`, `TEST`,
+  `QRP`, `FD`, `WW`, `RU`…) are open to everyone. Anything it can't judge is
+  shown rather than hidden. You can send one too: put it in the CQ template on
+  the setup window, e.g. `CQ EU {MYCALL} {MYGRID}`.
 - **The decoder knows who you are waiting for.** Once you are working someone,
   both callsigns in their next message are already known — 58 of its 77 bits.
   sdroxide hands them to the decoder as *a-priori* bits, which recovers replies

@@ -262,9 +262,9 @@ impl Ft8Modem {
 /// carry, and report the message as the far end will read it.
 ///
 /// The ladder is: the DXpedition (Fox) layout when the text is written as one,
-/// then the standard exchange, then the non-standard-callsign layout (which can
-/// only carry `RRR` / `RR73` / `73`, so a grid or report is dropped), then 13
-/// characters of free text.
+/// then a directed CQ, then the standard exchange, then the
+/// non-standard-callsign layout (which can only carry `RRR` / `RR73` / `73`, so
+/// a grid or report is dropped), then 13 characters of free text.
 fn pack_message(text: &str) -> Option<([u8; 77], String)> {
     let text = text.trim().to_ascii_uppercase();
     let toks: Vec<&str> = text.split_whitespace().collect();
@@ -283,14 +283,24 @@ fn pack_message(text: &str) -> Option<([u8; 77], String)> {
         }
     }
 
-    // 1. The everyday message, when both calls are standard.
+    // 1. A directed CQ: "CQ EU AB1CD FN42". The modifier is not a fourth field
+    //    — "CQ EU" packs as one token — so the message is still the everyday
+    //    three, with the first of them two words long.
+    if c1 == "CQ" && toks.len() == 4 && !c2.is_empty() {
+        let directed = format!("CQ {c2}");
+        if let Some(m) = wsjt77::pack77(&directed, toks[2], toks[3]) {
+            return Some((m, format!("{directed} {} {}", toks[2], toks[3])));
+        }
+    }
+
+    // 2. The everyday message, when both calls are standard.
     if toks.len() <= 3 {
         if let Some(m) = wsjt77::pack77(c1, c2, payload) {
             return Some((m, join3(c1, c2, payload)));
         }
     }
 
-    // 2. One compound / non-standard callsign, the other one hashed. Only a
+    // 3. One compound / non-standard callsign, the other one hashed. Only a
     //    bare RRR / RR73 / 73 fits alongside it — a grid or report is lost, so
     //    the returned text says so.
     let rpt = match payload {
@@ -321,7 +331,7 @@ fn pack_message(text: &str) -> Option<([u8; 77], String)> {
         }
     }
 
-    // 3. Free text: 13 characters, from a restricted alphabet.
+    // 4. Free text: 13 characters, from a restricted alphabet.
     let free: String = text.chars().take(13).collect();
     let m = wsjt77::pack77_free_text(free.trim_end())?;
     Some((m, free.trim_end().to_string()))
@@ -400,7 +410,7 @@ fn build_decode(
         from: p.from,
         grid: p.grid,
         is_cq: p.is_cq,
-        cq_dx: p.cq_dx,
+        cq_to: p.cq_to,
         free_text: p.free_text,
         rr73_to: p.rr73_to,
     })
@@ -413,7 +423,7 @@ struct Parsed {
     from: Option<String>,
     grid: Option<String>,
     is_cq: bool,
-    cq_dx: bool,
+    cq_to: Option<String>,
     free_text: bool,
     rr73_to: Option<String>,
 }
@@ -438,13 +448,15 @@ fn parse_message(text: &str, kind: MsgKind) -> Parsed {
         return Parsed::default();
     }
 
-    // A CQ names only its sender: "CQ [DX|POTA|EU…] <from> [grid]".
+    // A CQ names only its sender: "CQ [DX|EU|JA|POTA…] <from> [grid]". Anything
+    // sitting between "CQ" and the callsign is the modifier — who the call is
+    // aimed at, or what activity it belongs to.
     if toks[0] == "CQ" {
         return Parsed {
             from: toks.iter().skip(1).find(|t| is_callish(t)).and_then(|t| call_of(t)),
             grid: toks.last().filter(|t| is_grid(t)).map(|s| s.to_string()),
             is_cq: true,
-            cq_dx: toks.get(1) == Some(&"DX"),
+            cq_to: toks.get(1).filter(|t| !is_callish(t)).map(|t| t.to_ascii_uppercase()),
             ..Default::default()
         };
     }
@@ -501,8 +513,11 @@ fn is_grid(t: &str) -> bool {
 
 fn is_callish(t: &str) -> bool {
     let t = t.strip_prefix('<').and_then(|x| x.strip_suffix('>')).unwrap_or(t);
+    // Letters *and* a digit: a numeric CQ modifier ("CQ 001") is all digits and
+    // would otherwise be read as the calling station.
     t.len() >= 3
         && t.chars().any(|c| c.is_ascii_digit())
+        && t.chars().any(|c| c.is_ascii_alphabetic())
         && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '/')
 }
 
@@ -529,7 +544,7 @@ mod tests {
         assert_eq!(p.to, None);
         assert_eq!(p.from.as_deref(), Some("AB1CD"));
         assert_eq!(p.grid.as_deref(), Some("FN42"));
-        assert!(p.is_cq && !p.cq_dx);
+        assert!(p.is_cq && p.cq_to.is_none(), "a plain CQ is aimed at nobody in particular");
 
         let p = parse_message("W9XYZ AB1CD -13", MsgKind::Standard);
         assert_eq!(p.to.as_deref(), Some("W9XYZ"));
@@ -551,7 +566,8 @@ mod tests {
         assert_eq!(p.to, None);
         assert_eq!(p.from.as_deref(), Some("AB1CD"), "the DX modifier is not the sender");
         assert_eq!(p.grid.as_deref(), Some("FN42"));
-        assert!(p.is_cq && p.cq_dx);
+        assert!(p.is_cq);
+        assert_eq!(p.cq_to.as_deref(), Some("DX"));
 
         // "RR73" is a sign-off, not a locator — it must not be read as a grid.
         let p = parse_message("AB1CD W9XYZ RR73", MsgKind::Standard);
@@ -560,6 +576,36 @@ mod tests {
         // Invalid Maidenhead fields (S..Z) aren't grids either.
         assert!(!is_grid("ZZ99"));
         assert!(is_grid("FN42"));
+    }
+
+    #[test]
+    fn every_directed_cq_names_its_target() {
+        // Continent, country prefix and activity all read the same way: the
+        // token between "CQ" and the callsign.
+        for (msg, want) in [
+            ("CQ EU AB1CD FN42", "EU"),
+            ("CQ JA AB1CD FN42", "JA"),
+            ("CQ POTA AB1CD FN42", "POTA"),
+            ("CQ TEST AB1CD FN42", "TEST"),
+            ("CQ 001 AB1CD FN42", "001"),
+        ] {
+            let p = parse_message(msg, MsgKind::Standard);
+            assert_eq!(p.cq_to.as_deref(), Some(want), "{msg}");
+            assert_eq!(p.from.as_deref(), Some("AB1CD"), "{msg}: the modifier is not the sender");
+            assert_eq!(p.grid.as_deref(), Some("FN42"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn a_directed_cq_goes_out_as_one() {
+        // "CQ EU" is a single packed token, not a fourth field, so the message
+        // still fits the everyday layout.
+        let (sent, decodes) = round_trip(Mode::Ft8, "CQ EU AB1CD FN42");
+        assert_eq!(sent, "CQ EU AB1CD FN42");
+        let d = decodes.iter().find(|d| d.is_cq).expect("decoded");
+        assert_eq!(d.message, "CQ EU AB1CD FN42");
+        assert_eq!(d.cq_to.as_deref(), Some("EU"));
+        assert_eq!(d.from.as_deref(), Some("AB1CD"));
     }
 
     #[test]

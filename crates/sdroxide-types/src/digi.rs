@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Mode;
-use crate::entity::resolve_callsign;
+use crate::entity::{resolve_callsign, resolve_prefix};
 use crate::geo::grid_distance_km;
 
 /// One decoded FT8/FT4 message from a receive slot.
@@ -30,11 +30,12 @@ pub struct Decode {
     pub grid: Option<String>,
     /// True when the message is a CQ call.
     pub is_cq: bool,
-    /// True when the CQ carried the `DX` modifier ("CQ DX AB1CD FN42") — the
-    /// caller only wants stations outside their own DXCC entity. See
-    /// [`cq_is_for_us`].
+    /// The modifier on a directed CQ, uppercased: the token between `CQ` and
+    /// the caller's callsign. `DX`, a continent (`EU`, `NA`, `AS`…), a country
+    /// prefix (`JA`, `DL`), or an activity (`POTA`, `TEST`). `None` for a plain
+    /// CQ, which is open to everyone. See [`cq_is_for_us`].
     #[serde(default)]
-    pub cq_dx: bool,
+    pub cq_to: Option<String>,
     /// True for a 13-character free-text message. It carries no addressing at
     /// all — `to` and `from` are always `None`, however much the text may look
     /// like an exchange.
@@ -54,31 +55,61 @@ pub struct Decode {
 /// be resolved from either callsign — a rough stand-in for "another country".
 const DX_FALLBACK_KM: f64 = 3000.0;
 
+/// The continent codes cty.dat uses, which are also what a `CQ EU` names.
+const CONTINENTS: [&str; 7] = ["NA", "SA", "EU", "AF", "AS", "OC", "AN"];
+
+/// CQ modifiers that name an *activity* rather than a place: anyone may answer
+/// one, wherever they are.
+///
+/// The list exists because several of these collide with real callsign
+/// prefixes — `FD` (Field Day) begins like France, `WW` (CQ WW) like the United
+/// States, `RU` (ARRL RTTY Roundup) like Russia — and reading them
+/// geographically would hide contest CQs from everybody outside one country.
+const ACTIVITY_CQ: [&str; 11] =
+    ["POTA", "SOTA", "WWFF", "IOTA", "TEST", "QRP", "FD", "WW", "RU", "SKCC", "DIG"];
+
 /// True when a decoded CQ is one *we* may answer.
 ///
-/// A plain CQ is open to everyone. "CQ DX" asks for stations outside the
-/// caller's own DXCC entity, so it only counts as a CQ for us when we really are
-/// DX for them: the UI neither colours nor lists such a call under "CQ only"
-/// when we'd just be a local answering a DX call.
+/// A plain CQ is open to everyone. A directed one names who it wants, and the
+/// UI neither colours nor lists under "CQ only" a call we would only be
+/// answering out of turn:
 ///
-/// When the entity can't be resolved on both sides we fall back to the
-/// great-circle distance between the grids, and if that is unavailable too the
-/// call is treated as open — showing a CQ we can't judge beats hiding one we
-/// could have worked.
+/// * `CQ DX` wants stations outside the caller's own DXCC entity.
+/// * `CQ EU`, `CQ NA`, … want a continent.
+/// * `CQ JA`, `CQ DL`, … want a country, named by its prefix.
+/// * `CQ POTA`, `CQ TEST`, … want a kind of contact, not a place, so they are
+///   open to anyone.
+///
+/// Every test fails *open*: when the entity can't be resolved on both sides we
+/// fall back to the great-circle distance between the grids, and where even
+/// that is unavailable the call is treated as open. Showing a CQ we can't judge
+/// beats hiding one we could have worked.
 pub fn cq_is_for_us(d: &Decode, my_call: &str, my_grid: &str) -> bool {
     if !d.is_cq {
         return false;
     }
-    if !d.cq_dx {
-        return true;
-    }
-    let Some(from) = d.from.as_deref() else { return true };
-    match (resolve_callsign(from), resolve_callsign(my_call)) {
-        // The DXCC entity is what "DX" means on HF: same entity → we're local.
-        (Some(theirs), Some(mine)) => theirs.name != mine.name,
-        _ => match d.grid.as_deref().and_then(|g| grid_distance_km(my_grid, g)) {
-            Some(km) => km >= DX_FALLBACK_KM,
-            None => true,
+    let Some(dir) = d.cq_to.as_deref() else { return true };
+    let mine = resolve_callsign(my_call);
+    match dir {
+        "DX" => {
+            let Some(from) = d.from.as_deref() else { return true };
+            match (resolve_callsign(from), mine) {
+                // The DXCC entity is what "DX" means on HF: same entity → local.
+                (Some(theirs), Some(mine)) => theirs.name != mine.name,
+                _ => match d.grid.as_deref().and_then(|g| grid_distance_km(my_grid, g)) {
+                    Some(km) => km >= DX_FALLBACK_KM,
+                    None => true,
+                },
+            }
+        }
+        c if CONTINENTS.contains(&c) => mine.is_none_or(|m| m.continent == c),
+        a if ACTIVITY_CQ.contains(&a) => true,
+        // A country prefix. It is ours when the entity it names is the entity
+        // our own callsign belongs to — "CQ JA" from anywhere is for every
+        // Japanese station, however that station's own prefix is written.
+        pfx => match (resolve_prefix(pfx), mine) {
+            (Some(wanted), Some(mine)) => wanted.name == mine.name,
+            _ => true,
         },
     }
 }
@@ -1093,7 +1124,12 @@ mod tests {
             from: Some(from.to_string()),
             grid: grid.map(|g| g.to_string()),
             is_cq: true,
-            cq_dx: msg.starts_with("CQ DX"),
+            // Whatever sits between "CQ" and the callsign is the modifier.
+            cq_to: msg
+                .split_whitespace()
+                .nth(1)
+                .filter(|t| *t != from)
+                .map(|t| t.to_ascii_uppercase()),
             free_text: false,
             rr73_to: None,
         }
@@ -1133,6 +1169,46 @@ mod tests {
         // Nor can we judge with no station callsign or grid of our own.
         let dx = cq("CQ DX W1AW FN31", "W1AW", Some("FN31"));
         assert!(cq_is_for_us(&dx, "", ""));
+    }
+
+    #[test]
+    fn a_continent_cq_is_for_that_continent() {
+        let eu = cq("CQ EU W1AW FN31", "W1AW", Some("FN31"));
+        assert!(cq_is_for_us(&eu, "DL1ABC", "JN48"), "Germany is in EU");
+        assert!(cq_is_for_us(&eu, "G0ABC", "IO91"));
+        assert!(!cq_is_for_us(&eu, "K2XYZ", "FN30"), "a US station is not EU");
+        assert!(!cq_is_for_us(&eu, "JA1XYZ", "PM95"));
+
+        let na = cq("CQ NA DL1ABC JN48", "DL1ABC", Some("JN48"));
+        assert!(cq_is_for_us(&na, "K2XYZ", "FN30"));
+        assert!(!cq_is_for_us(&na, "G0ABC", "IO91"));
+
+        // A station whose own entity we can't resolve gets shown everything.
+        assert!(cq_is_for_us(&eu, "QQ2QQ", "JN47"));
+    }
+
+    #[test]
+    fn a_country_cq_is_for_that_country() {
+        let ja = cq("CQ JA W1AW FN31", "W1AW", Some("FN31"));
+        assert!(cq_is_for_us(&ja, "JA1XYZ", "PM95"));
+        assert!(!cq_is_for_us(&ja, "K2XYZ", "FN30"));
+        assert!(!cq_is_for_us(&ja, "DL1ABC", "JN48"));
+    }
+
+    #[test]
+    fn an_activity_cq_is_open_to_everyone() {
+        // POTA, contests and the rest invite a kind of contact, not a place —
+        // including the ones whose token collides with a country prefix ("FD"
+        // starts like France, "WW" like the United States, "RU" like Russia).
+        for modifier in ["POTA", "SOTA", "TEST", "QRP", "FD", "WW", "RU"] {
+            let d = cq(&format!("CQ {modifier} W1AW FN31"), "W1AW", Some("FN31"));
+            for me in ["K2XYZ", "DL1ABC", "JA1XYZ"] {
+                assert!(cq_is_for_us(&d, me, "FN30"), "CQ {modifier} hidden from {me}");
+            }
+        }
+        // A modifier nobody recognises is shown rather than hidden.
+        let odd = cq("CQ ZZZZ W1AW FN31", "W1AW", Some("FN31"));
+        assert!(cq_is_for_us(&odd, "K2XYZ", "FN30"));
     }
 
     #[test]

@@ -53,7 +53,7 @@ pub use digi::{
     TranscriptLine, adif_band, adif_to_qso_log, clock_health, cq_is_for_us, fmt_report,
     qso_log_to_adif, qso_log_to_text, utc_ymd_hms, worked_before, ymd_hms_to_unix,
 };
-pub use entity::{EntityInfo, resolve_callsign};
+pub use entity::{EntityInfo, resolve_callsign, resolve_prefix};
 pub use geo::{
     distance_km, great_circle_points, grid_bearing, grid_distance_km, grid_to_latlon, is_land,
     land_cell, land_mask_dims,

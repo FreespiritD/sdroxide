@@ -308,7 +308,7 @@ mod tests {
             from: Some(from.into()),
             grid: None,
             is_cq: false,
-            cq_dx: false,
+            cq_to: None,
             free_text: false,
             rr73_to: None,
         }

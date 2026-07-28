@@ -177,6 +177,20 @@ pub fn resolve_callsign(call: &str) -> Option<EntityInfo> {
     cty.longest_prefix(&key).map(|p| cty.info(p))
 }
 
+/// Resolve a token meant to *be* a prefix rather than to be a callsign: an
+/// exact cty.dat prefix entry, never a longest-prefix match.
+///
+/// The distinction is what makes a directed CQ readable. "CQ JA" names Japan
+/// because `JA` is a prefix the country file lists; "CQ ZZZZ" names nothing at
+/// all, and letting it fall back to whatever one-letter prefix it happens to
+/// begin with would hide that call from everybody outside one country.
+pub fn resolve_prefix(prefix: &str) -> Option<EntityInfo> {
+    let cty = cty();
+    let up = prefix.trim().to_ascii_uppercase();
+    let bucket = cty.by_first.get(&up.as_bytes().first().copied()?)?;
+    bucket.iter().find(|p| p.key == up).map(|p| cty.info(p))
+}
+
 /// Choose the portion of a `/`-call that identifies the DXCC entity: strip pure
 /// suffixes (`/P`, `/M`, `/MM`, `/QRP`, a lone digit …), then take the shortest
 /// remaining part (the location prefix) over the operator's home call.
