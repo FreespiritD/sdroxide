@@ -24,15 +24,16 @@ pub struct HpsdrSource {
 }
 
 impl HpsdrSource {
-    /// Open a connection and start streaming at `center_hz`. `lna_gain_db` is
-    /// the initial front-end gain for boards that have a settable one.
+    /// Open a connection and start streaming at `center_hz`, taking the rate,
+    /// the initial front-end gain and the J16 accessory board from `cfg`. The
+    /// target IP is resolved by the caller, so `cfg`'s address fields are unused
+    /// here.
     pub fn open(
         ip: Ipv4Addr,
-        sample_rate_hz: f64,
+        cfg: &sdroxide_types::HpsdrConfig,
         center_hz: f64,
-        lna_gain_db: f64,
     ) -> anyhow::Result<Self> {
-        let handle = HpsdrHandle::open(ip, sample_rate_hz, lna_gain_db)?;
+        let handle = HpsdrHandle::open(ip, cfg.sample_rate_hz, cfg.lna_gain_db, cfg.filter_board)?;
         handle.set_rx_freq(center_hz);
         let label =
             format!("HPSDR {} @ {ip} ({:.3} Msps)", handle.board, handle.sample_rate_hz / 1e6);

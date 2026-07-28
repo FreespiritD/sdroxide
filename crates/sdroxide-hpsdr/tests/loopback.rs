@@ -88,6 +88,7 @@ fn p1_loopback_rx() {
         Ipv4Addr::LOCALHOST,
         48_000.0,
         sdroxide_hpsdr::LNA_GAIN_DEFAULT_DB,
+        sdroxide_types::HpsdrFilterBoard::None,
     )
     .expect("open loopback handle");
     assert_eq!(handle.protocol, 1, "detected as Protocol 1");

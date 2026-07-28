@@ -651,13 +651,8 @@ fn open_hpsdr_source(
         dev.ip.parse().with_context(|| format!("discovered HPSDR IP {:?}", dev.ip))?
     };
 
-    let src = hpsdr_source::HpsdrSource::open(
-        ip,
-        radio.hpsdr.sample_rate_hz,
-        center_hz,
-        radio.hpsdr.lna_gain_db,
-    )
-    .context("opening HPSDR device")?;
+    let src = hpsdr_source::HpsdrSource::open(ip, &radio.hpsdr, center_hz)
+        .context("opening HPSDR device")?;
     let caps = hpsdr_caps(src.board(), src.sample_rate_hz(), src.protocol(), src.has_lna_gain());
     Ok((Box::new(src), caps))
 }

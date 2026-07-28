@@ -72,8 +72,8 @@ pub use netcfg::{
     PskConfig,
 };
 pub use radio::{
-    Backend, CatConfig, CatFamily, DigiMode, HpsdrConfig, HpsdrDevice, LineState, ModeControl,
-    Parity, PttMethod, RadioConfig, SerialConfig, SoundFormat, StopBits, TciConfig,
+    Backend, CatConfig, CatFamily, DigiMode, HpsdrConfig, HpsdrDevice, HpsdrFilterBoard, LineState,
+    ModeControl, Parity, PttMethod, RadioConfig, SerialConfig, SoundFormat, StopBits, TciConfig,
 };
 pub use rifp::{
     RIFP_CALLING_HZ, RIFP_MAP_MAX_CHUNKS, RifpEncoding, RifpMeta, RifpProfile, RifpSession,

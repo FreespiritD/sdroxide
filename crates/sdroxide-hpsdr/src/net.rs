@@ -14,6 +14,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::discovery;
 use crate::{protocol1, protocol2};
+use sdroxide_types::HpsdrFilterBoard;
 
 /// Host→radio TX I/Q rate. **Both** protocols transmit at 48 kHz: Protocol 2
 /// feeds the DUC directly, and Protocol 1's EP2 stream (speaker audio + TX I/Q)
@@ -296,6 +297,8 @@ pub(crate) struct ThreadCtx {
     pub rate_hz: f64,
     /// Initial front-end LNA gain (dB) for boards that have one.
     pub lna_gain_db: f64,
+    /// Accessory board on J16, deciding how the open-collector outputs are driven.
+    pub filter_board: HpsdrFilterBoard,
     pub rx: Producer<f32>,
     pub tx: Consumer<f32>,
     pub ctrl: Receiver<Ctrl>,
@@ -339,6 +342,7 @@ impl HpsdrHandle {
         ip: Ipv4Addr,
         sample_rate_hz: f64,
         lna_gain_db: f64,
+        filter_board: HpsdrFilterBoard,
     ) -> Result<HpsdrHandle, HpsdrError> {
         tracing::info!("HPSDR: opening {ip}, requested RX rate {sample_rate_hz:.0} Hz");
         let (board, protocol) = match discovery::probe(ip, Duration::from_millis(800)) {
@@ -397,6 +401,13 @@ impl HpsdrHandle {
         if board_has_lna_gain(&board) {
             tracing::info!("HPSDR: initial {LNA_GAIN_ELEMENT} gain {lna_gain_db:+.0} dB");
         }
+        if filter_board != HpsdrFilterBoard::None {
+            tracing::info!(
+                "HPSDR: driving the J16 open-collector outputs for a {} — check nothing else \
+                 (amplifier PTT, antenna relays) is wired to those pins",
+                filter_board.label()
+            );
+        }
 
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
         socket.set_read_timeout(Some(Duration::from_millis(2)))?;
@@ -426,6 +437,7 @@ impl HpsdrHandle {
             board: board.clone(),
             rate_hz: rate,
             lna_gain_db,
+            filter_board,
             rx: rx_prod,
             tx: tx_cons,
             ctrl: ctrl_rx,

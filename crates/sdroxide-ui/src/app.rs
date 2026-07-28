@@ -6237,6 +6237,25 @@ fn settings_hpsdr_tab(
             });
         }
         ui.end_row();
+
+        ui.label("Filter board").on_hover_text(
+            "Accessory board on the Hermes-Lite 2's J16 header. Leave this at \"None\" \
+             unless a filter board is actually fitted: those seven pins are \
+             general-purpose open-collector outputs, and operators also wire them to \
+             amplifier PTT, antenna relays and transverter switching. Driving them from \
+             band data would start operating whatever is connected.",
+        );
+        ComboBox::from_id_salt("hpsdr_filter")
+            .width(220.0)
+            .selected_text(cfg.hpsdr.filter_board.label())
+            .show_ui(ui, |ui| {
+                for b in sdroxide_types::HpsdrFilterBoard::ALL {
+                    if ui.selectable_label(cfg.hpsdr.filter_board == b, b.label()).clicked() {
+                        cfg.hpsdr.filter_board = b;
+                    }
+                }
+            });
+        ui.end_row();
     });
     ui.add_space(6.0);
     ui.label(

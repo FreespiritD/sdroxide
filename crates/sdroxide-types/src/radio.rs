@@ -261,6 +261,35 @@ impl Default for CatConfig {
     }
 }
 
+/// Which accessory filter board is wired to a Hermes-Lite 2's J16 header, and
+/// therefore how its seven open-collector outputs should be driven.
+///
+/// Those pins are general-purpose openHPSDR outputs, not filter-only: operators
+/// also wire them to amplifier PTT, antenna relays and transverter switching.
+/// Driving them from band data would start operating that hardware, so the
+/// default leaves every one of them off and the operator says what is attached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum HpsdrFilterBoard {
+    /// Leave all seven outputs off — the safe default, and correct for a bare
+    /// board with nothing on J16.
+    #[default]
+    None,
+    /// N2ADR filter board: one-hot relay select, forwarded by the gateware over
+    /// I2C to the board's MCP23008.
+    N2adr,
+}
+
+impl HpsdrFilterBoard {
+    pub const ALL: [HpsdrFilterBoard; 2] = [HpsdrFilterBoard::None, HpsdrFilterBoard::N2adr];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HpsdrFilterBoard::None => "None — outputs stay off",
+            HpsdrFilterBoard::N2adr => "N2ADR filter board",
+        }
+    }
+}
+
 /// OpenHPSDR (ethernet SDR) backend configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -277,6 +306,10 @@ pub struct HpsdrConfig {
     /// Settings → Device; this is the value the rig starts at.
     #[serde(default = "HpsdrConfig::default_lna_gain_db")]
     pub lna_gain_db: f64,
+    /// Accessory board on the Hermes-Lite 2's J16 header. Defaults to `None`,
+    /// which leaves the open-collector outputs untouched.
+    #[serde(default)]
+    pub filter_board: HpsdrFilterBoard,
 }
 
 impl Default for HpsdrConfig {
@@ -286,6 +319,7 @@ impl Default for HpsdrConfig {
             selected_ip: None,
             sample_rate_hz: 1_536_000.0,
             lna_gain_db: Self::default_lna_gain_db(),
+            filter_board: HpsdrFilterBoard::None,
         }
     }
 }

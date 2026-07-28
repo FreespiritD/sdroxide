@@ -1191,12 +1191,21 @@ involved:
 - **Sample rate** — the DDC receive rate: 48, 96, 192, 384, 768, or 1536 kHz.
   Protocol 1 boards top out at 384 kHz. Wider rates give a wider panadapter span
   at more CPU/network cost.
-- **LNA gain** — the front-end gain of a Hermes Lite 2, −12 to +48 dB, applied
-  when the radio is opened. It is the only analogue gain the board has: too high
-  and the ADC clips, which smears spurious signals across the whole band; too
-  low and the receiver goes deaf. Start around +20 dB and work from there. The
-  same control appears on the **Device** tab, where moving it retunes the board
-  live without reconnecting.
+- **LNA gain** — the front-end gain of a Hermes Lite 2, −12 to +48 dB. It takes
+  effect immediately, with no reconnect, and is remembered as the level the
+  radio starts at. It is the only analogue gain the board has: too high and the
+  ADC clips, which smears spurious signals across the whole band; too low and
+  the receiver goes deaf. Start around +20 dB and work from there. The same
+  control also appears as **Gain** next to the volume slider in the main window,
+  and on the **Device** tab.
+- **Filter board** — which accessory board is fitted to the Hermes Lite 2's J16
+  header. Leave this at **None** unless one really is fitted. Those seven pins
+  are general-purpose open-collector outputs, and operators also use them for
+  amplifier PTT, antenna relays and transverter switching; driving them from
+  band data would start operating whatever is connected. With the **N2ADR filter
+  board** selected, the low-pass filter follows the band you are on (the
+  transmit band while keyed) and the board's 3 MHz receive high-pass is switched
+  in above 3 MHz.
 
 Receive is wideband IQ, so the full panadapter and the skimmers work.
 

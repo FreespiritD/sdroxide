@@ -33,6 +33,7 @@ use crate::net::{
     Ctrl, RxStats, SeqTracker, ThreadCtx, board_has_lna_gain, hex_head, lna_gain_code, push_iq,
 };
 use crate::protocol2::be24_to_f32;
+use sdroxide_types::HpsdrFilterBoard;
 
 const PORT: u16 = 1024;
 /// Samples per 512-byte OZY frame for one receiver (504 data bytes / 8).
@@ -83,9 +84,37 @@ fn i16_be(x: f32) -> [u8; 2] {
 }
 
 /// The config register (C0 address 0). rustyHPSDR sends this as frame #1 of
-/// *every* datagram: C1 = sample-rate code, C4 = duplex | receiver-count.
-fn config_cc(speed: u8, mox: u8) -> [u8; 5] {
-    [CC_CONFIG | mox, speed, 0, 0, CONFIG_C4]
+/// *every* datagram: C1 = sample-rate code, C2 = the open-collector outputs,
+/// C4 = duplex | receiver-count.
+///
+/// `oc` is the seven open-collector lines as the accessory board sees them
+/// (bit 0 = output 1). In the Hermes-Lite's 32-bit view of this register they
+/// live at bits [23:17], which is C2 bits [7:1] — hence the shift — and the
+/// gateware forwards them over I2C to a filter board's MCP23008.
+fn config_cc(speed: u8, mox: u8, oc: u8) -> [u8; 5] {
+    [CC_CONFIG | mox, speed, (oc & 0x7F) << 1, 0, CONFIG_C4]
+}
+
+/// Open-collector byte for the N2ADR filter board when tuned to `freq_hz`.
+///
+/// The board selects one-hot from its own documentation: bit 0 = 160 m LPF,
+/// 1 = 80 m, 2 = 60/40 m, 3 = 30/20 m, 4 = 17/15 m, 5 = 12/10 m, and bit 6 is a
+/// 3 MHz high-pass used on receive to keep broadcast AM out of the front end.
+/// The board switches that high-pass out itself while transmitting, so it can be
+/// asserted unconditionally above 3 MHz. Frequencies between the ham bands pick
+/// the lowest filter that still passes them, so short-wave listening is not
+/// filtered into silence.
+fn n2adr_oc(freq_hz: f64) -> u8 {
+    let lpf = match freq_hz {
+        f if f <= 2_000_000.0 => 0,
+        f if f <= 4_000_000.0 => 1,
+        f if f <= 7_300_000.0 => 2,
+        f if f <= 14_350_000.0 => 3,
+        f if f <= 21_450_000.0 => 4,
+        _ => 5,
+    };
+    let hpf = if freq_hz >= 3_000_000.0 { 1 << 6 } else { 0 };
+    (1 << lpf) | hpf
 }
 
 /// Everything the rotating register slots need. `lna_gain` is `None` on boards
@@ -95,6 +124,7 @@ struct Regs {
     rx_freq: u32,
     tx_freq: u32,
     lna_gain: Option<f64>,
+    filter_board: HpsdrFilterBoard,
     ptt: bool,
 }
 
@@ -110,6 +140,18 @@ enum Slot {
 }
 
 impl Regs {
+    /// The seven open-collector outputs for the attached accessory board, or 0
+    /// when none is configured. Follows the transmit frequency while keyed —
+    /// the low-pass filter has to match what is actually going out — and the
+    /// receive frequency otherwise.
+    fn oc(&self) -> u8 {
+        let freq = if self.ptt { self.tx_freq } else { self.rx_freq } as f64;
+        match self.filter_board {
+            HpsdrFilterBoard::None => 0,
+            HpsdrFilterBoard::N2adr => n2adr_oc(freq),
+        }
+    }
+
     /// The slots this board actually has, in rotation order.
     fn slots(&self) -> &'static [Slot] {
         if self.lna_gain.is_some() {
@@ -158,7 +200,14 @@ fn write_ozy_frame(frame: &mut [u8], cc: [u8; 5], tx_iq: &[f32]) {
 /// Build an EP2 (host→radio) datagram: frame #1 is always the config register,
 /// frame #2 carries `cc` — the next rotating register. Both frames also carry
 /// 63 TX samples.
-fn build_ep2(seq: &mut u32, speed: u8, mox: u8, cc: [u8; 5], tx_iq: &[f32]) -> [u8; DATAGRAM_LEN] {
+fn build_ep2(
+    seq: &mut u32,
+    speed: u8,
+    mox: u8,
+    oc: u8,
+    cc: [u8; 5],
+    tx_iq: &[f32],
+) -> [u8; DATAGRAM_LEN] {
     let mut d = [0u8; DATAGRAM_LEN];
     d[0] = 0xEF;
     d[1] = 0xFE;
@@ -168,7 +217,7 @@ fn build_ep2(seq: &mut u32, speed: u8, mox: u8, cc: [u8; 5], tx_iq: &[f32]) -> [
     *seq = seq.wrapping_add(1);
 
     // Frame #1: config register + TX samples 0..63.
-    write_ozy_frame(&mut d[8..520], config_cc(speed, mox), tx_iq);
+    write_ozy_frame(&mut d[8..520], config_cc(speed, mox, oc), tx_iq);
     // Frame #2: rotating register + TX samples 63..126.
     let chunk = &tx_iq[(SAMPLES_PER_FRAME * 2).min(tx_iq.len())..];
     write_ozy_frame(&mut d[520..1032], cc, chunk);
@@ -284,6 +333,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
         board,
         rate_hz,
         lna_gain_db,
+        filter_board,
         mut rx,
         mut tx,
         ctrl,
@@ -298,6 +348,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
         rx_freq: 7_100_000,
         tx_freq: 7_100_000,
         lna_gain: has_lna.then_some(lna_gain_db),
+        filter_board,
         ptt: false,
     };
 
@@ -315,7 +366,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
     // rustyHPSDR uses, so the radio begins with its rate, NCO and gain loaded.
     for _ in 0..(2 * regs.slots().len()) {
         let cc = regs.cc(rot.take(&regs));
-        let d = build_ep2(&mut out_seq, speed, 0, cc, &[]);
+        let d = build_ep2(&mut out_seq, speed, 0, regs.oc(), cc, &[]);
         let _ = socket.send_to(&d, dest);
     }
     let _ = socket.send_to(&start_command(true), dest);
@@ -486,7 +537,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
             }
             let cc = regs.cc(rot.take(&regs));
             let mox = if regs.ptt { 1 } else { 0 };
-            let d = build_ep2(&mut out_seq, speed, mox, cc, &tx_scratch);
+            let d = build_ep2(&mut out_seq, speed, mox, regs.oc(), cc, &tx_scratch);
             let _ = socket.send_to(&d, dest);
             next_ep2 += EP2_INTERVAL;
             // After a scheduler stall, resync instead of firing off the backlog
@@ -568,9 +619,15 @@ mod tests {
     #[test]
     fn ep2_datagram_shape() {
         let mut seq = 0u32;
-        let regs = Regs { rx_freq: 7_074_000, tx_freq: 7_074_000, lna_gain: None, ptt: false };
+        let regs = Regs {
+            rx_freq: 7_074_000,
+            tx_freq: 7_074_000,
+            lna_gain: None,
+            filter_board: HpsdrFilterBoard::None,
+            ptt: false,
+        };
         let mut rot = Rotation::new();
-        let d = build_ep2(&mut seq, 0, 0, regs.cc(rot.take(&regs)), &[]);
+        let d = build_ep2(&mut seq, 0, 0, regs.oc(), regs.cc(rot.take(&regs)), &[]);
         assert_eq!(d.len(), 1032);
         assert_eq!(&d[0..4], &[0xEF, 0xFE, 0x01, 0x02]);
         assert_eq!(seq, 1); // advanced
@@ -587,9 +644,15 @@ mod tests {
 
     #[test]
     fn mox_bit_rides_registers() {
-        assert_eq!(config_cc(0, 1)[0] & 1, 1);
-        assert_eq!(config_cc(0, 0)[0] & 1, 0);
-        let keyed = Regs { rx_freq: 7_000_000, tx_freq: 7_000_000, lna_gain: None, ptt: true };
+        assert_eq!(config_cc(0, 1, 0)[0] & 1, 1);
+        assert_eq!(config_cc(0, 0, 0)[0] & 1, 0);
+        let keyed = Regs {
+            rx_freq: 7_000_000,
+            tx_freq: 7_000_000,
+            lna_gain: None,
+            filter_board: HpsdrFilterBoard::None,
+            ptt: true,
+        };
         let idle = Regs { ptt: false, ..keyed };
         for slot in [Slot::TxFreq, Slot::RxFreq, Slot::Drive] {
             assert_eq!(keyed.cc(slot)[0] & 1, 1);
@@ -599,7 +662,13 @@ mod tests {
 
     #[test]
     fn lna_gain_register_encodes_hl2_range() {
-        let regs = Regs { rx_freq: 7_000_000, tx_freq: 7_000_000, lna_gain: Some(0.0), ptt: false };
+        let regs = Regs {
+            rx_freq: 7_000_000,
+            tx_freq: 7_000_000,
+            lna_gain: Some(0.0),
+            filter_board: HpsdrFilterBoard::None,
+            ptt: false,
+        };
         let cc = regs.cc(Slot::LnaGain);
         assert_eq!(cc[0], CC_HL2_GAIN);
         // 0 dB → code 12, with the "field is valid" bit set.
@@ -616,8 +685,71 @@ mod tests {
     }
 
     #[test]
+    fn n2adr_filter_selection_is_one_hot_per_band() {
+        // Bit assignment from the board's own documentation: 0 = 160 m,
+        // 1 = 80 m, 2 = 60/40 m, 3 = 30/20 m, 4 = 17/15 m, 5 = 12/10 m,
+        // 6 = the 3 MHz receive high-pass.
+        const HPF: u8 = 1 << 6;
+        assert_eq!(n2adr_oc(1_840_000.0), 1 << 0, "160 m: LPF only, no high-pass");
+        assert_eq!(n2adr_oc(3_573_000.0), (1 << 1) | HPF, "80 m");
+        assert_eq!(n2adr_oc(7_074_000.0), (1 << 2) | HPF, "40 m");
+        assert_eq!(n2adr_oc(5_357_000.0), (1 << 2) | HPF, "60 m shares the 40 m filter");
+        assert_eq!(n2adr_oc(10_136_000.0), (1 << 3) | HPF, "30 m");
+        assert_eq!(n2adr_oc(14_074_000.0), (1 << 3) | HPF, "20 m shares the 30 m filter");
+        assert_eq!(n2adr_oc(18_100_000.0), (1 << 4) | HPF, "17 m");
+        assert_eq!(n2adr_oc(21_074_000.0), (1 << 4) | HPF, "15 m shares the 17 m filter");
+        assert_eq!(n2adr_oc(24_915_000.0), (1 << 5) | HPF, "12 m");
+        assert_eq!(n2adr_oc(28_074_000.0), (1 << 5) | HPF, "10 m shares the 12 m filter");
+
+        // Exactly one low-pass relay is ever selected, and the byte always fits
+        // the seven lines the header actually has.
+        for f in [500_000.0, 1_840_000.0, 7_074_000.0, 14_074_000.0, 28_074_000.0, 50_000_000.0] {
+            let oc = n2adr_oc(f);
+            assert_eq!(oc & !HPF, (oc & !HPF).next_power_of_two(), "one-hot LPF at {f} Hz");
+            assert_eq!(oc & 0x80, 0, "only seven outputs exist");
+        }
+        // Below the high-pass corner it is left out, so broadcast-band and
+        // 160 m listening is not attenuated by it.
+        assert_eq!(n2adr_oc(600_000.0) & HPF, 0);
+        assert_eq!(n2adr_oc(3_500_000.0) & HPF, HPF);
+    }
+
+    #[test]
+    fn open_collector_bits_land_in_c2_and_are_off_without_a_board() {
+        // The seven lines sit at bits [23:17] of the register's 32-bit view,
+        // which is C2 bits [7:1].
+        assert_eq!(config_cc(3, 0, 0b0100_1000)[2], 0b1001_0000);
+        // No configured board means every output stays off.
+        let regs = Regs {
+            rx_freq: 14_074_000,
+            tx_freq: 14_074_000,
+            lna_gain: Some(20.0),
+            filter_board: HpsdrFilterBoard::None,
+            ptt: false,
+        };
+        assert_eq!(regs.oc(), 0);
+        assert_eq!(config_cc(3, 0, regs.oc())[2], 0);
+        // With a board, the filter follows the transmit frequency while keyed —
+        // the low-pass has to match what is actually going out.
+        let split = Regs {
+            rx_freq: 14_074_000,
+            tx_freq: 7_074_000,
+            filter_board: HpsdrFilterBoard::N2adr,
+            ..regs
+        };
+        assert_eq!(split.oc(), n2adr_oc(14_074_000.0), "receiving: follows RX");
+        assert_eq!(Regs { ptt: true, ..split }.oc(), n2adr_oc(7_074_000.0), "keyed: follows TX");
+    }
+
+    #[test]
     fn rotation_covers_every_slot_and_honours_urgency() {
-        let hl2 = Regs { rx_freq: 7_000_000, tx_freq: 7_000_000, lna_gain: Some(20.0), ptt: false };
+        let hl2 = Regs {
+            rx_freq: 7_000_000,
+            tx_freq: 7_000_000,
+            lna_gain: Some(20.0),
+            filter_board: HpsdrFilterBoard::None,
+            ptt: false,
+        };
         let mut rot = Rotation::new();
         // A Hermes-Lite rotation visits all four slots; a board without the gain
         // register visits three and never emits the gain slot.
