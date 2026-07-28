@@ -101,7 +101,8 @@ impl RigState {
 /// Every mode driven by the digital engine (FT8/FT4, the keyboard modems,
 /// SSTV, RF Paint, RADE) reports `PKTUSB`, because that is what they are on the
 /// air: upper sideband with data in the audio. See [`from_hamlib_mode`] for why
-/// that matters.
+/// that matters. RIFP is the exception — its CPFSK profile keys the carrier —
+/// so it reports `PKTFM`.
 pub fn to_hamlib_mode(m: Mode) -> &'static str {
     match m {
         Mode::Lsb => "LSB",
@@ -110,6 +111,8 @@ pub fn to_hamlib_mode(m: Mode) -> &'static str {
         Mode::Am => "AM",
         Mode::Sam => "SAM",
         Mode::Nfm => "FM",
+        // RIFP is data on an FM carrier, not on a sideband.
+        Mode::Rifp => "PKTFM",
         Mode::Wfm => "WFM",
         Mode::Digu => "PKTUSB",
         Mode::Digl => "PKTLSB",

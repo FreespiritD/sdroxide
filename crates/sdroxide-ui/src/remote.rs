@@ -114,6 +114,13 @@ impl RemoteController {
                 self.pending.push_back(RadioEvent::SstvImage { image_id, mode, w, h, png })
             }
             ServerMsg::SstvStatus(s) => self.pending.push_back(RadioEvent::SstvStatus(s)),
+            ServerMsg::RifpRows { image_id, y, w, h, rows } => {
+                self.pending.push_back(RadioEvent::RifpRows { image_id, y, w, h, rows })
+            }
+            ServerMsg::RifpImage { image_id, meta, png } => {
+                self.pending.push_back(RadioEvent::RifpImage { image_id, meta, png })
+            }
+            ServerMsg::RifpStatus(s) => self.pending.push_back(RadioEvent::RifpStatus(s)),
             ServerMsg::DigiImage { png } => self.pending.push_back(RadioEvent::DigiImage { png }),
             ServerMsg::HellColumns { seq, rows, cols } => {
                 self.pending.push_back(RadioEvent::HellColumns { seq, rows, cols })

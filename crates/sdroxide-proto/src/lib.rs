@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use sdroxide_types::{
     CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, MemoryChannel, Meters, QsoRecord,
-    RadioState, SkimmerSpot, SpectrumFrame, Spot, SstvMode, SstvStatus, UploadResult, VoiceStatus,
+    RadioState, RifpMeta, RifpStatus, SkimmerSpot, SpectrumFrame, Spot, SstvMode, SstvStatus,
+    UploadResult, VoiceStatus,
 };
 
 /// Bump on any incompatible change to the message enums (this includes the
@@ -76,7 +77,12 @@ use sdroxide_types::{
 /// v24: the FT8/FT4 call queue — `Command::DigiQueueAdd`/`DigiQueueRemove` and
 /// `DigiStatus.call_queue`.
 /// v25: automatic transmit-frequency choice — `DigiConfig.auto_tx_freq`.
-pub const PROTO_VERSION: u16 = 25;
+/// v26: RIFP (draft-dulaunoy-rifp-00) — `Mode::Rifp` and `Band::M70` (both
+/// appended, so no existing discriminant moves), `Command::RifpTx` /
+/// `RifpDropSession`, `ServerMsg::RifpRows` / `RifpImage` / `RifpStatus`, and
+/// `DigiConfig`'s `rifp_*` fields, which both ends must agree on because
+/// `DigiStatus` carries the config.
+pub const PROTO_VERSION: u16 = 26;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -163,6 +169,22 @@ pub enum ServerMsg {
         png: Vec<u8>,
     },
     SstvStatus(SstvStatus),
+    // RIFP image mode.
+    /// Reassembled raster rows of an incoming picture (grayscale, `w` per row).
+    RifpRows {
+        image_id: u32,
+        y: u16,
+        w: u16,
+        h: u16,
+        rows: Vec<u8>,
+    },
+    /// A completed, digest-verified picture (PNG bytes) and its manifest facts.
+    RifpImage {
+        image_id: u32,
+        meta: RifpMeta,
+        png: Vec<u8>,
+    },
+    RifpStatus(RifpStatus),
     /// FSQ image: a completed received picture (PNG bytes).
     DigiImage {
         png: Vec<u8>,
@@ -255,6 +277,48 @@ mod tests {
             }),
         ];
         for m in &sstv {
+            let bytes = encode(m).unwrap();
+            let back: ServerMsg = decode(&bytes).unwrap();
+            assert_eq!(&back, m);
+        }
+
+        // RIFP carries pixels, a manifest summary, and a per-chunk map.
+        let rifp = [
+            ServerMsg::RifpRows { image_id: 2, y: 11, w: 4, h: 20, rows: vec![9, 8, 7, 6] },
+            ServerMsg::RifpImage {
+                image_id: 2,
+                meta: RifpMeta {
+                    session: "0123456789abcdef".into(),
+                    filename: "oe1test.png".into(),
+                    sender: Some("OE1TEST".into()),
+                    hint: None,
+                    media_type: "image/png".into(),
+                    content_encoding: "identity".into(),
+                    width: 320,
+                    height: 240,
+                    bits_per_pixel: 4,
+                    encoded_size: 9_000,
+                    chunk_count: 47,
+                    chunks_first_pass: 45,
+                },
+                png: vec![0x89, 0x50, 0x4e, 0x47],
+            },
+            ServerMsg::RifpStatus(RifpStatus {
+                tx_active: true,
+                tx_progress: 0.25,
+                sessions: vec![sdroxide_types::RifpSession {
+                    session: "0123456789abcdef".into(),
+                    sender: None,
+                    have_manifest: true,
+                    have: 3,
+                    total: 47,
+                    map: vec![0b0000_0111],
+                    idle_s: 2,
+                }],
+                ..RifpStatus::default()
+            }),
+        ];
+        for m in &rifp {
             let bytes = encode(m).unwrap();
             let back: ServerMsg = decode(&bytes).unwrap();
             assert_eq!(&back, m);

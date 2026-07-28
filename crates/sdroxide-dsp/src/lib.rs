@@ -19,6 +19,7 @@ mod nr;
 mod olivia;
 mod psk;
 mod resample;
+pub mod rifp;
 mod rtty;
 mod spectrum;
 mod spectrum_paint;
@@ -44,6 +45,7 @@ pub use nr::SpectralNr;
 pub use olivia::{OliviaRx, OliviaTx};
 pub use psk::{BpskCore, PskRx, PskTx, VaricodeRx};
 pub use resample::{ComplexResampler, MonoResampler};
+pub use rifp::{RifpFrame, RifpRx, RifpTx, Tlv as RifpTlv};
 pub use rtty::{BaudotRx, RttyRx, RttyTx};
 pub use spectrum::SpectrumAnalyzer;
 pub use spectrum_paint::{

@@ -279,6 +279,13 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
                 Some(ServerMsg::SstvImage { image_id, mode, w, h, png })
             }
             RadioEvent::SstvStatus(s) => Some(ServerMsg::SstvStatus(s)),
+            RadioEvent::RifpRows { image_id, y, w, h, rows } => {
+                Some(ServerMsg::RifpRows { image_id, y, w, h, rows })
+            }
+            RadioEvent::RifpImage { image_id, meta, png } => {
+                Some(ServerMsg::RifpImage { image_id, meta, png })
+            }
+            RadioEvent::RifpStatus(s) => Some(ServerMsg::RifpStatus(s)),
             RadioEvent::DigiImage { png } => Some(ServerMsg::DigiImage { png }),
             RadioEvent::HellColumns { seq, rows, cols } => {
                 Some(ServerMsg::HellColumns { seq, rows, cols })

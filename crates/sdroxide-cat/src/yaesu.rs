@@ -22,6 +22,8 @@ fn mode_digit(m: Mode) -> char {
         Mode::Lsb => '1',
         Mode::Cw => '3',
         Mode::Nfm | Mode::Wfm => '4',
+        // RIFP keys the carrier itself: data over FM, not over a sideband.
+        Mode::Rifp => 'A',
         Mode::Am | Mode::Sam | Mode::Dsb => '5',
         Mode::Digl => '8',
         Mode::Digu

@@ -13,7 +13,8 @@ use std::time::SystemTime;
 
 use sdroxide_dsp::MonoResampler;
 use sdroxide_types::{
-    Decode, DigiConfig, DigiStatus, Mode, QsoRecord, SstvMode, SstvStatus, adif_band,
+    Decode, DigiConfig, DigiStatus, Mode, QsoRecord, RifpMeta, RifpStatus, SstvMode, SstvStatus,
+    adif_band,
 };
 
 use crate::clock::ClockMonitor;
@@ -41,6 +42,15 @@ pub enum DigiAction {
     SstvImage { image_id: u32, mode: SstvMode, w: u16, h: u16, rgb: Vec<u8> },
     /// SSTV: engine status change (tx/rx active, detected mode, progress).
     SstvStatus(SstvStatus),
+    /// RIFP: reassembled raster rows of an incoming picture — `rows` grayscale
+    /// bytes starting at row `y`, `w` per row. Only the unencoded raster can be
+    /// painted before the object is whole.
+    RifpRows { image_id: u32, y: u16, w: u16, h: u16, rows: Vec<u8> },
+    /// RIFP: a completed, digest-verified picture (raw RGB) — the engine
+    /// encodes and persists it.
+    RifpImage { image_id: u32, meta: RifpMeta, w: u16, h: u16, rgb: Vec<u8> },
+    /// RIFP: engine status change (transfer progress, sessions, counters).
+    RifpStatus(RifpStatus),
     /// FSQ image: a completed grayscale-as-RGB image — the engine encodes it.
     DigiImage { w: u16, h: u16, rgb: Vec<u8> },
     /// Hellschreiber: a run of freshly received dot columns, column-major

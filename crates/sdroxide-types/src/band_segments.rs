@@ -143,6 +143,13 @@ pub const WSPR_DIALS: &[f64] = &[
 pub const SSTV_CALLING: &[f64] =
     &[3_730_000.0, 7_171_000.0, 14_230_000.0, 21_340_000.0, 28_680_000.0];
 
+/// RIFP centre frequencies (Hz): the calling frequency the draft names, plus a
+/// spot in each segment below it where a wide channel fits (10 m FM, the 6 m
+/// and 2 m all-modes parts). These are centres, not lower edges — the CPFSK
+/// signal straddles the dial, ±12.5 kHz.
+pub const RIFP_CALLING: &[f64] =
+    &[29_600_000.0, 51_250_000.0, 144_700_000.0, crate::RIFP_CALLING_HZ];
+
 /// True where the *automatic* / beacon digital modes live and the PSK/RTTY
 /// skimmers must not run — their DSP would only produce garbage from these
 /// signals. Covers FT8 and FT4 (dial → +3 kHz), plus the WSPR window and the

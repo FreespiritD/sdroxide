@@ -302,7 +302,8 @@ pub fn mode_to_tci(mode: Mode) -> &'static str {
         Mode::Cw => "cw",
         Mode::Am => "am",
         Mode::Sam => "sam",
-        Mode::Nfm => "nfm",
+        // RIFP centres on the dial and swings ±4 kHz: FM, not a sideband.
+        Mode::Nfm | Mode::Rifp => "nfm",
         Mode::Wfm => "wfm",
         Mode::Digu
         | Mode::Ft8

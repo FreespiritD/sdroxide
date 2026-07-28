@@ -16,10 +16,14 @@ pub enum Band {
     M6,
     M2,
     Gen,
+    /// 70 cm. Appended rather than placed after [`Band::M2`] because `Band` is
+    /// postcard-encoded by declaration index and stored in band stacks and
+    /// memories; [`Band::ALL`] puts it where it belongs on screen.
+    M70,
 }
 
 impl Band {
-    pub const ALL: [Band; 13] = [
+    pub const ALL: [Band; 14] = [
         Band::M160,
         Band::M80,
         Band::M60,
@@ -32,6 +36,7 @@ impl Band {
         Band::M10,
         Band::M6,
         Band::M2,
+        Band::M70,
         Band::Gen,
     ];
 
@@ -49,6 +54,7 @@ impl Band {
             Band::M10 => "10M",
             Band::M6 => "6M",
             Band::M2 => "2M",
+            Band::M70 => "70CM",
             Band::Gen => "GEN",
         }
     }
@@ -69,6 +75,7 @@ impl Band {
             Band::M10 => Some((28_000_000.0, 29_700_000.0)),
             Band::M6 => Some((50_000_000.0, 52_000_000.0)),
             Band::M2 => Some((144_000_000.0, 146_000_000.0)),
+            Band::M70 => Some((430_000_000.0, 440_000_000.0)),
             Band::Gen => None,
         }
     }
@@ -97,6 +104,10 @@ impl Band {
             Band::M10 => (28_400_000.0, Mode::Usb),
             Band::M6 => (50_150_000.0, Mode::Usb),
             Band::M2 => (145_500_000.0, Mode::Nfm),
+            // 70 cm opens on the RIFP calling frequency: it is the band this
+            // mode is meant for, and the band stack overrides this the moment
+            // the operator tunes anywhere else.
+            Band::M70 => (crate::RIFP_CALLING_HZ, Mode::Rifp),
             Band::Gen => (7_200_000.0, Mode::Am),
         }
     }

@@ -58,7 +58,9 @@ pub fn mode_to_civ(m: Mode) -> u8 {
         | Mode::Rade => 0x01,
         Mode::Am | Mode::Sam | Mode::Dsb => 0x02,
         Mode::Cw => 0x03,
-        Mode::Nfm | Mode::Wfm => 0x05,
+        // RIFP is FSK on the carrier, so a CAT rig has to be in FM for the
+        // dial to mean what RIFP means by it.
+        Mode::Nfm | Mode::Wfm | Mode::Rifp => 0x05,
         Mode::Spec => 0x01,
     }
 }

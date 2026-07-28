@@ -38,8 +38,10 @@ One binary, three ways to run it:
   spectrum-only mode, **FT8/FT4**, the keyboard modes **PSK31**, **RTTY**,
   **Olivia**, **THOR** and **FSQ** (with directed messaging + images),
   **Hellschreiber** (all seven Feld Hell / FSK Hell variants, on a scrolling
-  raster), image **SSTV** (Scottie, Martin, Robot), and transmit-only
-  **RF Paint** (spectrum painting of text and images onto the waterfall).
+  raster), image **SSTV** (Scottie, Martin, Robot), image **RIFP**
+  (draft-dulaunoy-rifp-00 — packetised, checksummed pictures over a 4800-baud
+  CPFSK modem), and transmit-only **RF Paint** (spectrum painting of text and
+  images onto the waterfall).
 - **Receiver** — hang AGC, draggable passband filter edges (on the spectrum and
   the waterfall), noise blanker, auto-notch, **neural (RNNoise) or spectral noise
   reduction**, squelch, a second sub-receiver, RIT/XIT, VFO A/B with split,
@@ -133,6 +135,29 @@ left and a transmit compositor on the right:
   with "SDRoxide" and the version. **TX** sends; **ABORT TX** stops.
 - **Modes:** Scottie 1 / 2 / DX, Martin 1 / 2, Robot 72, Robot 36. Band buttons
   tune to that band's SSTV calling frequency (e.g. 20 m = 14.230 MHz).
+
+## RIFP
+
+Selecting **RIFP** opens the same image panel over the **Radio Image Framing
+Protocol** ([draft-dulaunoy-rifp-00](https://datatracker.ietf.org/doc/draft-dulaunoy-rifp/)):
+a picture is encoded, split into numbered chunks, and sent as CRC-protected
+frames behind a JSON manifest, with the complete object verified by CRC-32 and
+SHA-256 before it is shown. Interoperates both ways with the
+[reference implementation](https://github.com/adulau/rifp) across every encoding
+either side can produce.
+
+- **Radio profile** `rifp-cpfsk-4800`: continuous-phase binary FSK, 4800 baud,
+  ±4 kHz, sent on the carrier rather than in a sideband — **the dial is the
+  centre of the signal**. ⚠ Its ~25 kHz channel does not fit a narrow-band
+  segment; the panel warns wherever it does not, and band buttons land in the
+  segments where it does — 10 m FM, the 6 m and 2 m all-modes parts, and 70 cm,
+  where a **433.920** chip jumps to the calling frequency the draft names.
+- **Encodings:** CCITT Group 4 facsimile, PNG, JPEG, and the packed grayscale
+  raster raw / RLE8 / ZLIB — or Auto, which sends whichever comes out smallest.
+  1, 2, 4 or 8 bits per pixel, with optional dithering.
+- **Receive** shows every transfer being reassembled with a per-chunk map of
+  what has arrived, paints the raw raster row by row as it lands, and adds a
+  picture to the gallery only once its digest checks out.
 
 ## RF Paint
 
@@ -378,7 +403,7 @@ sdroxide --connect 192.168.1.10:4950
 | `--freq <HZ>` | Center frequency in Hz (default `14200000`). |
 | `--rate <HZ>` | Sample rate in Hz (default: from config). |
 | `--gain <DB>` | Overall RX gain in dB (default: hardware AGC / moderate). |
-| `--mode <MODE>` | Initial mode: `USB LSB CW AM SAM NFM WFM DIGU DIGL DSB SPEC FT8 FT4 PSK RTTY OLIVIA THOR FSQ HELL SSTV RFPAINT RADE`. |
+| `--mode <MODE>` | Initial mode: `USB LSB CW AM SAM NFM WFM DIGU DIGL DSB SPEC FT8 FT4 PSK RTTY OLIVIA THOR FSQ HELL SSTV RIFP RFPAINT RADE`. |
 | `--server` | Run as a server: HTTP web client + WebSocket streaming backend. |
 | `--connect <HOST[:PORT]>` | Connect as a native remote client to a running server. |
 | `--port <PORT>` | Server port (default: from config, `4950`). |

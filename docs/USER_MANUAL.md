@@ -14,7 +14,7 @@ or connects to a remote sdroxide server.
 
 1. [Feature overview](#1-feature-overview)
 2. [Basic operation](#2-basic-operation)
-3. [Digital modes (FT8, FT4, PSK31, RTTY, Olivia, THOR, FSQ, Hellschreiber, SSTV, RF Paint)](#3-digital-modes)
+3. [Digital modes (FT8, FT4, PSK31, RTTY, Olivia, THOR, FSQ, Hellschreiber, SSTV, RIFP, RF Paint)](#3-digital-modes)
 4. [Skimmers (CW, PSK, RTTY)](#4-skimmers)
 5. [Settings](#5-settings)
 6. [Solar system 3D view](#6-solar-system-3d-view)
@@ -39,8 +39,10 @@ or connects to a remote sdroxide server.
   the inactive VFO.
 - **All the common modes:** LSB, USB, CW, AM, SAM, NFM, WFM, DIGU, DIGL, DSB, a
   spectrum-only mode (SPEC), the automatic digital modes **FT8** and **FT4**, the
-  keyboard modes **PSK31**, **RTTY**, **Olivia**, **THOR** and **FSQ**, image
-  **SSTV**, and the transmit-only **RF Paint** (spectrum-painting) mode.
+  keyboard modes **PSK31**, **RTTY**, **Olivia**, **THOR** and **FSQ**, the image
+  modes **SSTV** and **RIFP** (draft-dulaunoy-rifp-00, a packetised image
+  protocol on its own FSK modem), and the transmit-only **RF Paint**
+  (spectrum-painting) mode.
 - **Receive controls:** AGC (Off/Slow/Med/Fast), volume, mute, squelch, an
   impulse noise blanker, an adaptive auto-notch (constant-tone canceller),
   noise reduction (neural RNNoise or spectral, three levels each), RIT, and a
@@ -160,7 +162,7 @@ labels the allocations. Zoomed out it shows coarse bands (ham, broadcast, CB,
 AM); zoomed into a ham band it splits into the CW / digital / SSB / beacon
 sub-segments. When you zoom in close (a span of ~100 kHz or less), the digital
 sub-band is broken out into the individual popular modes — **FT8, FT4, JS8,
-WSPR, QRSS, PSK, RTTY, SSTV, FREEDV** — each in its own colour.
+WSPR, QRSS, PSK, RTTY, SSTV, RIFP, FREEDV** — each in its own colour.
 
 ### 2.4 Bands and modes
 
@@ -170,7 +172,7 @@ popup with three rows:
 - **BAND:** `160M 80M 60M 40M 30M 20M 17M 15M 12M 10M 6M 2M GEN`. Each band
   remembers your last frequency, mode, and filter.
 - **MODE:** `LSB USB CW AM SAM NFM WFM DIGU DIGL DSB SPEC`.
-- **DIGITAL:** `FT8 FT4 PSK RTTY OLIVIA THOR FSQ HELL SSTV RFPAINT RADE` (see
+- **DIGITAL:** `FT8 FT4 PSK RTTY OLIVIA THOR FSQ HELL SSTV RIFP RFPAINT RADE` (see
   [Digital modes](#3-digital-modes)).
 
 ![The band and mode selector popup](images/04-band-mode-popup.jpg)
@@ -361,8 +363,11 @@ modes: you tune onto a signal, read the decoded text, and type a reply that
 transmits as you go (3.7–3.8). **Hellschreiber** is a facsimile mode with no
 decoder at all — it paints letters onto a scrolling strip and you read them by
 eye (3.9). **SSTV** is an image mode: received pictures build up in a gallery and
-you transmit composed images (3.10). **RF Paint** is a transmit-only mode that
-draws text and pictures directly onto the far station's waterfall (3.11).
+you transmit composed images (3.10). **RIFP** carries pictures as numbered,
+checksummed packets over its own FSK modem rather than as an analogue scan, and
+is the one mode here that is not single sideband (3.11). **RF Paint** is a
+transmit-only mode that draws text and pictures directly onto the far station's
+waterfall (3.12).
 
 ### 3.1 Entering the mode
 
@@ -855,7 +860,75 @@ Band buttons tune to that band's common SSTV calling frequency (for example
 > conditions — clean signals decode well; weak or drifting signals may slant or
 > show noise (ongoing refinement).
 
-### 3.11 RF Paint (spectrum painting)
+### 3.11 RIFP (Radio Image Framing Protocol)
+
+Choose **RIFP** from the DIGITAL row to send and receive pictures over
+[draft-dulaunoy-rifp-00](https://datatracker.ietf.org/doc/draft-dulaunoy-rifp/) —
+a packetised image protocol, and the only mode here that is *not* single
+sideband. Its `rifp-cpfsk-4800` radio profile keys the carrier itself:
+continuous-phase binary FSK, 4800 baud, ±4 kHz deviation, in a channel about
+25 kHz wide. **The dial is the middle of the signal, not its lower edge.**
+
+The panel is the SSTV panel — the same live picture, the same received gallery,
+the same five transmit slots with their own overlay messages — with a RIFP
+control strip in place of the SSTV mode buttons. Pictures you load are shared
+between the two modes.
+
+> ⚠ **Bandwidth.** 25 kHz does not fit in a narrow-band segment. sdroxide will
+> transmit RIFP wherever you tune it, and the panel says so in red whenever the
+> dial is somewhere the channel does not fit. The segments it treats as wide
+> enough are **10 m FM (29.510–29.700)**, the **6 m all-modes part
+> (50.5–52.0)**, the **2 m all-modes part (144.500–144.794)** — where the image
+> and facsimile modes have always lived — and **70 cm (430–440)**. The band
+> buttons in the Band/Mode popup land in each of those while staying in RIFP,
+> and the **433.920** chip jumps to the calling frequency the draft names.
+> Allocations differ by country and your own licence may be narrower than
+> 25 kHz even inside those — checking that is yours to do, not the software's.
+
+**The controls:**
+
+- **CPFSK 4800** — the radio profile. One is defined so far.
+- **Size** — the transmitted picture size (RIFP fixes none of its own).
+  Everything is time: 320×240 at 4 bits takes a couple of minutes.
+- **Encode** — how the picture becomes the object RIFP carries: **G4** (CCITT
+  Group 4 facsimile, bilevel, usually the smallest for line art), **PNG**,
+  **Zlib** or **RLE8** (compressed packed raster), **Raw** (the packed raster
+  itself), **JPEG** (lossy), or **Auto**, which tries each and sends the
+  smallest — never the lossy one unless you ask for it.
+- **Gray** — grayscale depth, 1/2/4/8 bits. RIFP's raster is grayscale by
+  definition: its manifest has no way to describe colour. **Dither** diffuses
+  the quantisation error, which is worth having below 8 bits.
+- **Repeat data** — how many times each data frame is sent. RIFP is
+  unidirectional with no repair requests, so repetition is the *only* recovery a
+  receiver gets; two is the default. **Chunk** sets the payload octets per frame
+  (192 is what the profile recommends).
+
+**Receiving:**
+
+- The **Signal** meter is a modem lock indicator, not an audio level: it rises
+  when the receiver is actually reading FSK symbols rather than noise.
+- Each transfer appears in the control strip as the sender's ID (or the start of
+  the session ID), the chunks received against the total, and a **chunk map** —
+  one lit cell per chunk that has arrived, so you can see where the holes are.
+  **✕** forgets an incomplete transfer.
+- With the **Raw** encoding the picture paints row by row as chunks land. The
+  other encodings cannot be decoded until they are whole, so they appear all at
+  once.
+- A picture is only shown after the reassembled object matches the manifest's
+  size, CRC-32 *and* SHA-256. Nothing partial or unverified reaches the gallery.
+  Enlarge a received picture to see who sent it, how it was carried, and how
+  many chunks arrived first time.
+- The counters read **frames** (valid), **bad** (failed their CRC and were not
+  recovered) and **pictures** (complete and verified).
+- Received pictures are saved as PNG under `~/.config/sdroxide/sstv_rx/`,
+  alongside the SSTV ones.
+
+**Transmitting:** identical to SSTV — pick a slot, load an image, type its
+message, press **TX**. The status line shows which frame of how many is going
+out and how long is left. Your callsign travels as the protocol's Sender ID
+extension.
+
+### 3.12 RF Paint (spectrum painting)
 
 Choose **RFPAINT** from the DIGITAL row for **RF Paint** — a transmit-only mode
 that draws text and pictures **directly onto a receiver's waterfall**. There is no
@@ -2094,7 +2167,7 @@ to anyone.
 | `--freq <HZ>` | Center frequency in Hz (default 14,200,000). |
 | `--rate <HZ>` | Sample rate in Hz (default: from config). |
 | `--gain <DB>` | Overall RX gain in dB (default: hardware AGC or a moderate value). |
-| `--mode <MODE>` | Initial mode (USB, LSB, CW, AM, SAM, NFM, WFM, DIGU, DIGL, DSB, SPEC, FT8, FT4, PSK, RTTY, OLIVIA, THOR, FSQ, SSTV, RFPAINT). |
+| `--mode <MODE>` | Initial mode (USB, LSB, CW, AM, SAM, NFM, WFM, DIGU, DIGL, DSB, SPEC, FT8, FT4, PSK, RTTY, OLIVIA, THOR, FSQ, SSTV, RIFP, RFPAINT). |
 | `--server` | Run as a server (web client + WebSocket streaming backend). |
 | `--connect <HOST[:PORT]>` | Connect as a native remote client to a running server. |
 | `--port <PORT>` | Server port (default: from config, 4950). |
@@ -2141,7 +2214,7 @@ sdroxide stores its settings under the per-user config directory:
 | `voice_names.json` | JSON | The label given to each of the ten voice-keyer slots. |
 | `voice/` | dir | The voice-keyer recordings (`slot1.wav`…`slot10.wav`), 48 kHz mono. Drop your own WAV in to replace a message. |
 | `sstv_tx/` | dir | The five SSTV transmit-image slots (`slot0.png`…`slot4.png`). |
-| `sstv_rx/` | dir | Received SSTV pictures, kept for the gallery. |
+| `sstv_rx/` | dir | Received SSTV and RIFP pictures, kept for the gallery. |
 | `solar/` | dir | Cached solar imagery and space-weather JSON for the 3D view, with an index of HTTP validators so refreshes stay cheap. Safe to delete; it is re-fetched on demand. |
 
 Every file has sensible defaults, so a missing or partial file always loads. You
@@ -2250,6 +2323,7 @@ F1 is the exception: it always opens the manual, so it is not rebindable.
 | FSQ | Fast Simple QSO — 33-tone IFK with directed (FSQCALL) messaging and images. |
 | HELL | Hellschreiber — facsimile "dot" mode read by eye, not decoded (Feld Hell, Slow, X5, X9, FSK Hell 245/105, Hell 80). |
 | SSTV | Slow-scan TV image mode (Scottie, Martin, Robot). |
+| RIFP | Radio Image Framing Protocol (draft-dulaunoy-rifp-00): packetised images over continuous-phase FSK. Centred on the dial, ~25 kHz wide — 70 cm, 2 m/6 m all-modes, or 10 m FM. |
 | RFPAINT | RF Paint — transmit-only spectrum painting of text and images onto the waterfall. |
 
 ### Bands

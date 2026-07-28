@@ -1,6 +1,7 @@
 use crate::{
     CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, MemoryChannel, Meters, QsoRecord,
-    RadioState, SkimmerSpot, SpectrumFrame, Spot, SstvMode, SstvStatus, UploadResult, VoiceStatus,
+    RadioState, RifpMeta, RifpStatus, SkimmerSpot, SpectrumFrame, Spot, SstvMode, SstvStatus,
+    UploadResult, VoiceStatus,
 };
 
 /// Events flowing engine → UI.
@@ -42,6 +43,28 @@ pub enum RadioEvent {
     },
     /// SSTV: engine status change (tx/rx active, detected mode, progress).
     SstvStatus(SstvStatus),
+    /// RIFP: freshly reassembled raster rows of an incoming picture — `rows`
+    /// grayscale bytes starting at row `y`, `w` bytes per row. Only the raster
+    /// content-encodings can be painted before the object completes; a PNG,
+    /// JPEG or facsimile object arrives as one [`RadioEvent::RifpImage`].
+    RifpRows {
+        image_id: u32,
+        y: u16,
+        /// Picture size, so a panel can size its canvas from the first row it
+        /// sees rather than waiting for the manifest to reach it too.
+        w: u16,
+        h: u16,
+        rows: Vec<u8>,
+    },
+    /// RIFP: a completed, digest-verified image (PNG bytes) plus what the
+    /// manifest said about it.
+    RifpImage {
+        image_id: u32,
+        meta: RifpMeta,
+        png: Vec<u8>,
+    },
+    /// RIFP: engine status change (transfer progress, sessions, counters).
+    RifpStatus(RifpStatus),
     /// FSQ image: a completed received picture (PNG bytes).
     DigiImage {
         png: Vec<u8>,

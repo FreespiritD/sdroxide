@@ -44,12 +44,19 @@ pub enum Mode {
     /// index and serde-serialised into stored configs, so a new variant may only
     /// go at the end. Where it *appears* is set by [`Mode::ALL`] instead.
     Hell,
+    /// RIFP (Radio Image Framing Protocol, draft-dulaunoy-rifp-00) — a
+    /// packetised image mode. Unlike every other digital mode here it is not
+    /// USB underneath: the `rifp-cpfsk-4800` profile is continuous-phase FSK
+    /// straight on the carrier, ±4 kHz at 4800 baud, so the dial *is* the
+    /// signal's centre and the channel is ~25 kHz wide. Appended for the same
+    /// reason as [`Mode::Hell`].
+    Rifp,
 }
 
 impl Mode {
     /// Every mode, in the order they cycle and appear in the picker — which is
     /// deliberately *not* the enum's declaration order (see [`Mode::Hell`]).
-    pub const ALL: [Mode; 22] = [
+    pub const ALL: [Mode; 23] = [
         Mode::Lsb,
         Mode::Usb,
         Mode::Cw,
@@ -66,6 +73,7 @@ impl Mode {
         Mode::Psk,
         Mode::Rtty,
         Mode::Sstv,
+        Mode::Rifp,
         Mode::Olivia,
         Mode::Thor,
         Mode::Fsq,
@@ -74,9 +82,11 @@ impl Mode {
         Mode::Rade,
     ];
 
-    /// The digital modes handled by a dedicated decode/encode engine over USB
-    /// (slotted FT8/FT4, the continuous keyboard modes, Hell, SSTV, RF Paint).
-    pub const DIGITAL: [Mode; 11] = [
+    /// The digital modes handled by a dedicated decode/encode engine (the
+    /// slotted FT8/FT4 modes, the continuous keyboard modes, Hell, SSTV, RIFP,
+    /// RF Paint). All are USB underneath except RIFP, which is FSK on the
+    /// carrier.
+    pub const DIGITAL: [Mode; 12] = [
         Mode::Ft8,
         Mode::Ft4,
         Mode::Psk,
@@ -86,6 +96,7 @@ impl Mode {
         Mode::Fsq,
         Mode::Hell,
         Mode::Sstv,
+        Mode::Rifp,
         Mode::RfPaint,
         Mode::Rade,
     ];
@@ -99,6 +110,7 @@ impl Mode {
                 | Mode::Psk
                 | Mode::Rtty
                 | Mode::Sstv
+                | Mode::Rifp
                 | Mode::Olivia
                 | Mode::Thor
                 | Mode::Fsq
@@ -106,6 +118,13 @@ impl Mode {
                 | Mode::RfPaint
                 | Mode::Rade
         )
+    }
+
+    /// True for the modes whose transmit waveform is not single-sideband audio
+    /// on the carrier, so the dial is the signal's centre rather than its lower
+    /// edge. Only RIFP so far: its CPFSK profile keys the carrier itself.
+    pub fn is_carrier_centered(self) -> bool {
+        matches!(self, Mode::Rifp)
     }
 
     /// True for the continuous keyboard text modes (PSK31 / RTTY / Olivia / Thor
@@ -132,6 +151,18 @@ impl Mode {
     /// skips the FT8/text-modem overlays.
     pub fn is_sstv(self) -> bool {
         matches!(self, Mode::Sstv)
+    }
+
+    /// True for the RIFP image mode. Shares SSTV's image panel (compose,
+    /// transmit, gallery) over a packetised protocol and its own modem.
+    pub fn is_rifp(self) -> bool {
+        matches!(self, Mode::Rifp)
+    }
+
+    /// True for the modes that drive the image panel — a picture compositor on
+    /// transmit, a live picture and a gallery on receive.
+    pub fn is_image(self) -> bool {
+        matches!(self, Mode::Sstv | Mode::Rifp)
     }
 
     /// True for Hellschreiber. Forks the digi panel to the scrolling raster UI:
@@ -187,6 +218,7 @@ impl Mode {
             Mode::Hell => "HELL",
             Mode::RfPaint => "RFPAINT",
             Mode::Rade => "RADE",
+            Mode::Rifp => "RIFP",
         }
     }
 
@@ -219,6 +251,10 @@ impl Mode {
             | Mode::Fsq
             | Mode::Hell
             | Mode::RfPaint => (100.0, 3300.0),
+            // RIFP is not a sideband mode: the CPFSK carrier sits *on* the
+            // dial and swings ±4 kHz, so the passband straddles it. 25 kHz is
+            // the profile's recommended occupied bandwidth.
+            Mode::Rifp => (-12_500.0, 12_500.0),
             // RADE V1's OFDM carriers sit between roughly 1060 and 1880 Hz;
             // the wider passband leaves room for the acquisition search to
             // track a signal that is off frequency.
@@ -279,6 +315,7 @@ impl Mode {
             | Mode::Fsq
             | Mode::Hell
             | Mode::RfPaint
+            | Mode::Rifp
             | Mode::Rade => &[],
         }
     }

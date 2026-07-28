@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 use sdroxide_config::BandStacks;
 use sdroxide_digi::{
     DigiAction, DigiController, DigiEngine, FsqController, HellController, RadeController,
-    RfPaintController, SstvController, TextModemController,
+    RfPaintController, RifpController, SstvController, TextModemController,
 };
 use sdroxide_dsp::{
     Agc, AutoNotch, DcBlock, Ddc, Demodulator, Duc, Modulator, MonoResampler, NeuralNr,
@@ -1524,6 +1524,20 @@ impl Engine {
                 DigiAction::SstvStatus(s) => {
                     let _ = self.event_tx.send(RadioEvent::SstvStatus(s));
                 }
+                DigiAction::RifpRows { image_id, y, w, h, rows } => {
+                    let _ = self.event_tx.send(RadioEvent::RifpRows { image_id, y, w, h, rows });
+                }
+                DigiAction::RifpImage { image_id, meta, w, h, rgb } => {
+                    // Same store as SSTV: a received picture is a received
+                    // picture, whichever mode carried it.
+                    if let Some(png) = encode_png(&rgb, w, h) {
+                        save_sstv_rx(&png);
+                        let _ = self.event_tx.send(RadioEvent::RifpImage { image_id, meta, png });
+                    }
+                }
+                DigiAction::RifpStatus(s) => {
+                    let _ = self.event_tx.send(RadioEvent::RifpStatus(s));
+                }
                 DigiAction::DigiImage { w, h, rgb } => {
                     if let Some(png) = encode_png(&rgb, w, h) {
                         let _ = self.event_tx.send(RadioEvent::DigiImage { png });
@@ -1546,6 +1560,8 @@ impl Engine {
             Box::new(RadeController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_sstv() {
             Box::new(SstvController::new(self.digi_config.clone(), tap_rate))
+        } else if mode.is_rifp() {
+            Box::new(RifpController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_rf_paint() {
             Box::new(RfPaintController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_fsq() {
@@ -1638,8 +1654,18 @@ impl Engine {
         if let Some(ca) = self.channel_analyzer.as_mut() {
             let vfo = self.state.rx_freq_hz();
             let ch_rate = self.main.as_ref().map(|c| c.channel_rate()).unwrap_or(48_000.0);
-            // Show the FT8 sub-band (dial-200 .. dial+3500 Hz) at full res.
-            let viewport = Some((vfo - 200.0, vfo + 3500.0));
+            // Show the FT8 sub-band (dial-200 .. dial+3500 Hz) at full res —
+            // except for RIFP, whose signal straddles the dial rather than
+            // sitting above it, so the window has to be symmetric and as wide
+            // as the profile's channel.
+            let viewport = if self.state.rx[0].mode.is_carrier_centered() {
+                let half = (self.state.rx[0].filter_hi - self.state.rx[0].filter_lo).abs() as f64
+                    * 0.5
+                    * 1.2;
+                Some((vfo - half, vfo + half))
+            } else {
+                Some((vfo - 200.0, vfo + 3500.0))
+            };
             return ca.make_frame(
                 vfo,
                 ch_rate,
@@ -1679,7 +1705,17 @@ impl Engine {
         let mut frame = if self.audio_mode || self.caps.tx_audio || self.channel_analyzer.is_some()
         {
             let bw = if self.audio_mode { self.audio_bw } else { 3500.0 };
-            let vp = if lsb { (dial - bw, dial) } else { (dial, dial + bw) };
+            let vp = if self.state.rx[0].mode.is_carrier_centered() {
+                // RIFP's transmitted signal straddles the dial.
+                let half = (self.state.rx[0].filter_hi - self.state.rx[0].filter_lo).abs() as f64
+                    * 0.5
+                    * 1.2;
+                (dial - half, dial + half)
+            } else if lsb {
+                (dial - bw, dial)
+            } else {
+                (dial, dial + bw)
+            };
             self.tx_analyzer.make_frame(dial, TX_MONITOR_RATE, mf, mc, DISPLAY_BINS, Some(vp))
         } else {
             // Wideband IQ: the upconverted TX sits at `tx_center_hz` in the full span.
@@ -2080,6 +2116,22 @@ impl Engine {
                     }
                 } else {
                     warn!("SSTV TX: could not decode composed image");
+                }
+            }
+            RifpTx { png } => {
+                // Same shape as SSTV: the panel composes and we hand the
+                // controller pixels. Encoding, chunking and framing are its job.
+                if let Some((rgb, w, h)) = decode_png_rgb(&png) {
+                    if let Some(d) = self.digi.as_mut() {
+                        d.set_rifp_image(rgb, w, h);
+                    }
+                } else {
+                    warn!("RIFP TX: could not decode composed image");
+                }
+            }
+            RifpDropSession(session) => {
+                if let Some(d) = self.digi.as_mut() {
+                    d.rifp_drop_session(&session);
                 }
             }
             DigiImageTx { png } => {
@@ -3873,7 +3925,9 @@ fn rig_mode_class(m: Mode) -> u8 {
         | Mode::Spec => 1,
         Mode::Am | Mode::Sam | Mode::Dsb => 2,
         Mode::Cw => 3,
-        Mode::Nfm | Mode::Wfm => 5,
+        // RIFP is data on an FM carrier, so a rig reporting plain FM is still
+        // where we left it.
+        Mode::Nfm | Mode::Wfm | Mode::Rifp => 5,
     }
 }
 

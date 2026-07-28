@@ -5,9 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::Mode;
 use crate::entity::{resolve_callsign, resolve_prefix};
 use crate::geo::grid_distance_km;
+use crate::{Mode, RifpEncoding, RifpProfile, RifpSize};
 
 /// One decoded FT8/FT4 message from a receive slot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -753,6 +753,40 @@ pub struct DigiConfig {
     /// lets those controls repaint the whole scrollback rather than only the
     /// columns that arrive after the change.
     pub hell_rx_agc: f32,
+
+    // ── RIFP (draft-dulaunoy-rifp-00) ──
+    /// RIFP radio profile — the modulation the frames ride on.
+    pub rifp_profile: RifpProfile,
+    /// How the transmitted picture is encoded into the object bytes.
+    pub rifp_encoding: RifpEncoding,
+    /// Transmitted picture size.
+    pub rifp_size: RifpSize,
+    /// Grayscale depth the picture is quantised to before encoding (1/2/4/8).
+    /// The bilevel facsimile encodings are always 1 regardless.
+    pub rifp_bits_per_pixel: u8,
+    /// Payload octets per DATA frame. The CPFSK profile recommends 192: small
+    /// chunks cost header overhead, large ones lose more to a single hit.
+    pub rifp_chunk_size: u16,
+    /// Send every DATA frame this many times. Two is the reference
+    /// implementation's default — RIFP has no repair requests, so repetition is
+    /// the only recovery there is.
+    pub rifp_data_repeats: u8,
+    /// Send the MANIFEST this many times before the data starts.
+    pub rifp_manifest_repeats: u8,
+    /// Repeat the MANIFEST every N data chunks so a receiver that tuned in late
+    /// can still reassemble. 0 disables the periodic repeat.
+    pub rifp_manifest_every: u16,
+    /// Carry the operator's callsign as the Sender ID header TLV. The draft's
+    /// privacy considerations note that a stable sender identifier is trackable;
+    /// on the amateur bands identifying is the point, so this defaults on.
+    pub rifp_send_sender_id: bool,
+    /// Short UTF-8 description carried as the Content Hint header TLV, shown by
+    /// a receiver before the picture finishes arriving. Empty sends none.
+    pub rifp_content_hint: String,
+    /// Dither the picture when quantising to fewer than 8 bits per pixel.
+    pub rifp_dither: bool,
+    /// Give up on an incomplete incoming session after this many seconds.
+    pub rifp_session_timeout_s: u32,
 }
 
 impl Default for DigiConfig {
@@ -786,6 +820,18 @@ impl Default for DigiConfig {
             rade_mute_analog: false,
             hell_variant: HellVariant::Feld,
             hell_rx_agc: 0.35,
+            rifp_profile: RifpProfile::default(),
+            rifp_encoding: RifpEncoding::default(),
+            rifp_size: RifpSize::default(),
+            rifp_bits_per_pixel: 4,
+            rifp_chunk_size: 192,
+            rifp_data_repeats: 2,
+            rifp_manifest_repeats: 3,
+            rifp_manifest_every: 8,
+            rifp_send_sender_id: true,
+            rifp_content_hint: String::new(),
+            rifp_dither: true,
+            rifp_session_timeout_s: 300,
         }
     }
 }

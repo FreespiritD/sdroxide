@@ -190,6 +190,16 @@ pub enum Command {
     DigiImageTx {
         png: Vec<u8>,
     },
+    /// RIFP: transmit a composed image (PNG bytes). The engine quantises it to
+    /// the configured grayscale depth, encodes it as the configured
+    /// content-encoding, and sends manifest + data + end frames. Keying starts
+    /// immediately; `DigiAbortTx` stops it.
+    RifpTx {
+        png: Vec<u8>,
+    },
+    /// RIFP: drop an incomplete incoming session by its 16-hex-digit ID, or
+    /// every session when the string is empty.
+    RifpDropSession(String),
 
     // Skimmers
     /// Set which skimmers (CW / PSK / RTTY) run and how hard each squelches.

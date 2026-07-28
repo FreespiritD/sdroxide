@@ -4155,10 +4155,17 @@ name = "sdroxide-digi"
 version = "0.7.0"
 dependencies = [
  "crossbeam-channel",
+ "fax",
+ "flate2",
+ "getrandom 0.3.4",
+ "image",
  "mfsk-core",
  "sdroxide-dsp",
  "sdroxide-rade",
  "sdroxide-types",
+ "serde",
+ "serde_json",
+ "sha2",
  "tracing",
 ]
 

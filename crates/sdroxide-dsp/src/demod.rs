@@ -10,6 +10,9 @@ use crate::fir::{ComplexFir, RealFir, bandpass_taps};
 
 const PASSBAND_TAPS: usize = 331;
 
+/// RIFP's passband filter is short on purpose — see [`FskDemod`].
+const RIFP_TAPS: usize = 63;
+
 pub trait Demodulator: Send {
     /// Consume channel-rate IQ, append audio samples at [`Self::audio_rate`].
     fn process(&mut self, iq: &[Complex32], out: &mut Vec<f32>);
@@ -55,6 +58,10 @@ pub fn make_demod(mode: Mode, channel_rate: f64) -> Option<Box<dyn Demodulator>>
         | Mode::Hell
         | Mode::RfPaint
         | Mode::Rade => Some(Box::new(SsbDemod::new(channel_rate, lo, hi))),
+        // RIFP is the one digital mode that is not sideband audio: its CPFSK
+        // carrier sits on the dial, so it wants a discriminator, not a
+        // sideband filter.
+        Mode::Rifp => Some(Box::new(FskDemod::new(channel_rate, lo, hi))),
         Mode::Am => Some(Box::new(AmDemod::new(channel_rate, lo, hi))),
         Mode::Sam => Some(Box::new(SamDemod::new(channel_rate, lo, hi))),
         Mode::Nfm => Some(Box::new(FmDemod::new(channel_rate, lo, hi))),
@@ -301,6 +308,86 @@ impl Demodulator for FmDemod {
 
     fn set_filter(&mut self, lo: f32, hi: f32) {
         self.fir.set_taps(bandpass_taps(PASSBAND_TAPS, lo as f64, hi as f64, self.rate));
+    }
+
+    fn audio_rate(&self) -> f64 {
+        self.rate
+    }
+
+    fn power_dbfs(&self) -> f32 {
+        self.power.dbfs()
+    }
+}
+
+/// RIFP: a wide quadrature discriminator for the `rifp-cpfsk-4800` profile.
+///
+/// Same shape as [`FmDemod`] and deliberately not the same numbers, because the
+/// output is not audio to listen to — it is the modem's symbol waveform, and
+/// every filter here is a bit-error source. Each departure was measured against
+/// the reference implementation's own transmissions:
+///
+/// * **A short, soft passband.** [`PASSBAND_TAPS`]-long brick walls are right
+///   for a sideband channel and wrong here: rectangular-NRZ CPFSK puts real
+///   energy outside its 25 kHz channel, and clipping it steeply rings for
+///   milliseconds at every symbol transition. That cost whole frames.
+/// * **A low-pass above the symbol rate, not the deviation.** The information
+///   is in the transitions; a voice-width filter would smear ten of them into
+///   one.
+/// * **A very slow DC block.** A frame is a third of a second, and its payload
+///   can be nine parts zero to one — long enough for a fast high-pass to drag
+///   the run itself onto the slicing level and start flipping bits. The carrier
+///   offset is measured over the preamble by the modem instead (see
+///   [`crate::rifp::RifpRx`]); this only keeps a static offset out of the audio
+///   path.
+pub struct FskDemod {
+    rate: f64,
+    fir: ComplexFir,
+    lpf: RealFir,
+    dc: DcBlock,
+    prev: Complex32,
+    scale: f32,
+    filtered: Vec<Complex32>,
+    raw_audio: Vec<f32>,
+    power: PowerMeter,
+}
+
+impl FskDemod {
+    pub fn new(rate: f64, lo: f32, hi: f32) -> Self {
+        FskDemod {
+            rate,
+            fir: ComplexFir::new(bandpass_taps(RIFP_TAPS, lo as f64, hi as f64, rate)),
+            lpf: RealFir::lowpass(63, 12_000.0, rate),
+            // 0.2 Hz ≈ 0.8 s, several frames long.
+            dc: DcBlock::new(0.2, rate),
+            prev: Complex32::new(1.0, 0.0),
+            scale: (rate / (std::f64::consts::TAU * crate::rifp::DEVIATION_HZ)) as f32,
+            filtered: Vec::new(),
+            raw_audio: Vec::new(),
+            power: PowerMeter::new(),
+        }
+    }
+}
+
+impl Demodulator for FskDemod {
+    fn process(&mut self, iq: &[Complex32], out: &mut Vec<f32>) {
+        self.filtered.clear();
+        self.fir.process(iq, &mut self.filtered);
+        self.power.update(&self.filtered);
+
+        self.raw_audio.clear();
+        for &z in &self.filtered {
+            let d = z * self.prev.conj();
+            self.prev = z;
+            self.raw_audio.push(self.dc.run(d.arg() * self.scale));
+        }
+        self.lpf.process(&self.raw_audio, out);
+    }
+
+    fn set_filter(&mut self, lo: f32, hi: f32) {
+        // RIFP_TAPS, not PASSBAND_TAPS: the engine calls this the moment the
+        // chain is built, so a brick wall here would undo the whole point of
+        // the short filter above.
+        self.fir.set_taps(bandpass_taps(RIFP_TAPS, lo as f64, hi as f64, self.rate));
     }
 
     fn audio_rate(&self) -> f64 {

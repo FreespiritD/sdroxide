@@ -1175,8 +1175,9 @@ mod tests {
     fn band_stepping_skips_general_coverage() {
         assert_eq!(step_band(Band::M20, true), Some(Band::M17));
         assert_eq!(step_band(Band::M20, false), Some(Band::M30));
-        // Wraps within the ham bands only.
-        assert_eq!(step_band(Band::M2, true), Some(Band::M160));
+        assert_eq!(step_band(Band::M2, true), Some(Band::M70));
+        // Wraps within the ham bands only, from the highest to the lowest.
+        assert_eq!(step_band(Band::M70, true), Some(Band::M160));
         assert_eq!(step_band(Band::Gen, true), None);
     }
 

@@ -5,8 +5,9 @@ use eframe::egui::{self, Color32, ComboBox, DragValue, RichText, Slider};
 use sdroxide_types::{
     AgcMode, AudioDevices, Band, CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, Direction,
     LookupProvider, MemoryChannel, Meters, Mode, NetworkConfig, QsoRecord, RadioController,
-    RadioEvent, RadioState, RxId, SkimmerKind, SkimmerSpot, SpectrumConfig, SpectrumFrame, Spot,
-    SpotKind, SstvMode, SstvStatus, UploadResult, UploadTarget, Vfo,
+    RadioEvent, RadioState, RifpEncoding, RifpMeta, RifpProfile, RifpSize, RifpStatus, RxId,
+    SkimmerKind, SkimmerSpot, SpectrumConfig, SpectrumFrame, Spot, SpotKind, SstvMode, SstvStatus,
+    UploadResult, UploadTarget, Vfo,
 };
 
 use crate::theme::ThemedScroll;
@@ -7308,6 +7309,15 @@ impl eframe::App for SdroxideApp {
                     }
                     self.sstv.status = s;
                 }
+                RadioEvent::RifpRows { image_id, y, w, h, rows } => {
+                    self.sstv.on_rifp_rows(image_id, y, w, h, &rows, &ctx);
+                }
+                RadioEvent::RifpImage { image_id, meta, png } => {
+                    self.sstv.on_rifp_image(image_id, meta, &png, &ctx);
+                }
+                RadioEvent::RifpStatus(s) => {
+                    self.sstv.rifp = s;
+                }
                 RadioEvent::SkimmerSpots(s) => {
                     // The engine sends the full current set each update; the
                     // stable `id` per spot lets the overlay keep each box (and
@@ -7537,8 +7547,8 @@ impl eframe::App for SdroxideApp {
                         crate::chrome::angled_frame(ui, crate::theme::PINK, |ui| {
                             if mode.is_rade() {
                                 self.rade_panel(ui, &mut cmds, panel_h);
-                            } else if mode.is_sstv() {
-                                self.sstv_panel(ui, &mut cmds);
+                            } else if mode.is_image() {
+                                self.image_panel(ui, &mut cmds, mode);
                             } else if mode.is_rf_paint() {
                                 self.rf_paint_panel(ui, &mut cmds, panel_h);
                             } else if mode.is_fsq() {
@@ -7998,6 +8008,19 @@ fn digi_dial_freqs(mode: Mode) -> &'static [(&'static str, f64)] {
         ],
         // RF Paint has no defined calling frequency — offer no band presets.
         Mode::RfPaint => &[],
+        // RIFP assigns no frequency at all: 433.92 MHz is the deployment
+        // example the draft names, and the others are the middle of the
+        // segments where a 25 kHz channel is a realistic thing to ask for
+        // (10 m FM and the 6 m all-modes part). The dial is the signal's
+        // *centre* here, not its lower edge as in every mode above.
+        Mode::Rifp => &[
+            ("10m", 29_600_000.0),
+            ("6m", 51_250_000.0),
+            // The 2 m image/facsimile corner: 144.700 is the FAX calling
+            // frequency, inside the all-modes segment.
+            ("2m", 144_700_000.0),
+            ("70cm", sdroxide_types::RIFP_CALLING_HZ),
+        ],
         // FT8 (and default).
         _ => &[
             ("160m", 1_840_000.0),
@@ -8225,13 +8248,30 @@ struct SstvSlot {
 #[allow(dead_code)] // not used on wasm
 struct SstvRecv {
     mode: Option<SstvMode>,
+    /// Where a RIFP picture came from and how it was carried, for the caption
+    /// under the enlarged view. `None` for SSTV, which carries no metadata.
+    rifp: Option<RifpMeta>,
     tex: egui::TextureHandle,
 }
 
-/// SSTV panel state: received gallery, in-progress incoming image, transmit
-/// slots, the overlay message, the current mode, and cached textures.
+/// Image-panel state, shared by SSTV and RIFP: received gallery, in-progress
+/// incoming picture, transmit slots, the overlay message, the current mode, and
+/// cached textures.
+///
+/// One workspace for both modes on purpose. The pictures an operator wants to
+/// send, the captions on them, and the pictures that came back are the same
+/// things whichever protocol carried them; only the control strip and the
+/// transmit sizing differ.
 struct SstvUi {
     tx_mode: SstvMode,
+    /// Latest RIFP engine status (transfer progress, sessions, counters).
+    rifp: RifpStatus,
+    /// Size of the picture currently arriving, so the live canvas can be built
+    /// before the whole object is in. `(0, 0)` when nothing is arriving.
+    rx_dims: (u16, u16),
+    /// Size the cached preview was composed at, so a change of transmit size
+    /// rebuilds it.
+    preview_dims: (u16, u16),
     /// Operator callsign for the transmit-image header (mirrors the digi config).
     callsign: String,
     /// Auto mode: RX auto-detects the mode; TX defaults to Martin 1 until a mode
@@ -8266,6 +8306,9 @@ impl Default for SstvUi {
     fn default() -> Self {
         SstvUi {
             tx_mode: SstvMode::Martin1,
+            rifp: RifpStatus::default(),
+            rx_dims: (0, 0),
+            preview_dims: (0, 0),
             callsign: String::new(),
             auto: true,
             slot_messages: vec![String::new(); 5],
@@ -8321,11 +8364,48 @@ impl SstvUi {
         if let Some((rgb, w, h)) = crate::sstv::decode_image(png) {
             let ci = crate::sstv::color_image(&rgb, w, h);
             let tex = ctx.load_texture("sstv_recv", ci, egui::TextureOptions::NEAREST);
-            self.received.insert(0, SstvRecv { mode: Some(mode), tex });
+            self.received.insert(0, SstvRecv { mode: Some(mode), rifp: None, tex });
             self.received.truncate(60);
         }
         self.rx_color = None;
         self.rx_tex = None;
+    }
+
+    /// RIFP: reassembled raster rows arrived — paint them into the live
+    /// picture. Only the unencoded raster gets here; everything else appears
+    /// whole in [`SstvUi::on_rifp_image`].
+    fn on_rifp_rows(&mut self, id: u32, y: u16, w: u16, h: u16, gray: &[u8], ctx: &egui::Context) {
+        if self.rx_id != id || self.rx_color.is_none() || self.rx_dims != (w, h) {
+            self.rx_id = id;
+            self.rx_dims = (w, h);
+            self.rx_color =
+                Some(crate::sstv::color_image(&vec![0u8; w as usize * h as usize * 3], w, h));
+        }
+        let Some(ci) = self.rx_color.as_mut() else { return };
+        let (wu, hu) = (w as usize, h as usize);
+        for (row, pixels) in gray.chunks_exact(wu).enumerate() {
+            let y = y as usize + row;
+            if y >= hu {
+                break;
+            }
+            for (x, &g) in pixels.iter().enumerate() {
+                ci.pixels[y * wu + x] = Color32::from_gray(g);
+            }
+        }
+        self.rx_tex = Some(ctx.load_texture("rifp_rx", ci.clone(), egui::TextureOptions::NEAREST));
+    }
+
+    /// RIFP: a complete, digest-verified picture arrived.
+    fn on_rifp_image(&mut self, _id: u32, meta: RifpMeta, png: &[u8], ctx: &egui::Context) {
+        if let Some((rgb, w, h)) = crate::sstv::decode_image(png) {
+            let ci = crate::sstv::color_image(&rgb, w, h);
+            let tex = ctx.load_texture("rifp_recv", ci, egui::TextureOptions::NEAREST);
+            self.received.insert(0, SstvRecv { mode: None, rifp: Some(meta), tex });
+            self.received.truncate(60);
+        }
+        self.rx_color = None;
+        self.rx_tex = None;
+        self.rx_dims = (0, 0);
     }
 
     /// The overlay message for the slot currently being edited.
@@ -8338,8 +8418,10 @@ impl SstvUi {
         sstv_save_messages(&self.slot_messages);
     }
 
-    /// Rebuild the transmit preview when the mode, slot, or message changed.
-    fn ensure_preview(&mut self, ctx: &egui::Context) {
+    /// Rebuild the transmit preview when the size, slot, or message changed.
+    /// `dims` is the transmitted picture size — the SSTV line format's, or the
+    /// operator's chosen RIFP size.
+    fn ensure_preview(&mut self, dims: (u16, u16), ctx: &egui::Context) {
         if !self.preview_dirty {
             return;
         }
@@ -8348,7 +8430,8 @@ impl SstvUi {
         match self.slots.get(self.selected_slot).and_then(|s| s.as_ref()) {
             Some(slot) => {
                 let (rgb, w, h) = crate::sstv::compose(
-                    self.tx_mode,
+                    dims.0,
+                    dims.1,
                     &slot.src_rgb,
                     slot.sw,
                     slot.sh,
@@ -8364,10 +8447,11 @@ impl SstvUi {
     }
 
     /// The composed PNG for the current selection, for transmit.
-    fn compose_png(&self) -> Option<Vec<u8>> {
+    fn compose_png(&self, dims: (u16, u16)) -> Option<Vec<u8>> {
         let slot = self.slots.get(self.selected_slot).and_then(|s| s.as_ref())?;
         let (rgb, w, h) = crate::sstv::compose(
-            self.tx_mode,
+            dims.0,
+            dims.1,
             &slot.src_rgb,
             slot.sw,
             slot.sh,
@@ -8392,8 +8476,12 @@ impl SstvUi {
 }
 
 impl SdroxideApp {
-    fn sstv_panel(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+    /// The image panel, shared by SSTV and RIFP: a live picture and a gallery
+    /// on the left, a transmit compositor on the right, and a control strip
+    /// that is the only part either mode owns alone.
+    fn image_panel(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, mode: Mode) {
         let ctx = ui.ctx().clone();
+        let rifp = mode.is_rifp();
         self.sstv_load_disk_once(&ctx);
         // Drain a completed file-pick (only consume the target once bytes arrive).
         let picked = self.sstv.inbox.lock().ok().and_then(|mut g| g.take());
@@ -8407,11 +8495,26 @@ impl SdroxideApp {
             self.sstv.callsign = self.digi_cfg_edit.my_call.clone();
             self.sstv.preview_dirty = true;
         }
-        self.sstv.ensure_preview(&ctx);
+        // The transmitted size: SSTV's line format fixes it, RIFP leaves it to
+        // the operator. Changing it invalidates the composed preview.
+        let dims = if rifp {
+            self.digi_cfg_edit.rifp_size.dimensions()
+        } else {
+            self.sstv.tx_mode.dimensions()
+        };
+        if self.sstv.preview_dims != dims {
+            self.sstv.preview_dims = dims;
+            self.sstv.preview_dirty = true;
+        }
+        self.sstv.ensure_preview(dims, &ctx);
         ctx.request_repaint_after(Duration::from_millis(120));
 
         let st = self.sstv.status;
-        let tx_active = st.tx_active;
+        let (signal, tx_active, progress) = if rifp {
+            (self.sstv.rifp.signal, self.sstv.rifp.tx_active, self.sstv.rifp.tx_progress)
+        } else {
+            (st.signal, st.tx_active, st.progress)
+        };
 
         // Whole-panel size. The mode/signal/slant controls sit in a boxed strip
         // on the left above LIVE + RECEIVED; the transmit compositor spans the
@@ -8447,6 +8550,10 @@ impl SdroxideApp {
                         .show(ui, |ui| {
                             ui.set_min_width(left_w - 16.0);
                             ui.set_max_width(left_w - 16.0);
+                            if rifp {
+                                self.rifp_controls(ui, cmds);
+                                return;
+                            }
 
                             // Mode selection: Auto + the per-mode chips.
                             ui.horizontal_wrapped(|ui| {
@@ -8482,10 +8589,10 @@ impl SdroxideApp {
                             // Signal meter + activity, and the TX-slant trim.
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(RichText::new("Signal").size(10.0).weak());
-                                sstv_level_bar(ui, st.signal);
+                                sstv_level_bar(ui, signal);
                                 if tx_active {
                                     ui.label(
-                                        RichText::new(format!("● TX {:.0}%", st.progress * 100.0))
+                                        RichText::new(format!("● TX {:.0}%", progress * 100.0))
                                             .size(11.0)
                                             .strong()
                                             .color(crate::theme::PINK),
@@ -8551,7 +8658,11 @@ impl SdroxideApp {
                                             .max_width(live_w - 16.0),
                                     );
                                 } else {
-                                    let msg = if st.signal > 0.0008 {
+                                    let msg = if rifp {
+                                        // RIFP only paints live from the raw
+                                        // raster; anything else appears whole.
+                                        "waiting for a picture…"
+                                    } else if signal > 0.0008 {
                                         "waiting for a signal…"
                                     } else {
                                         "no / low audio"
@@ -8819,8 +8930,12 @@ impl SdroxideApp {
                             .inner;
                         if tx.clicked() {
                             self.sstv.save_messages(); // capture any unfocused edit
-                            if let Some(png) = self.sstv.compose_png() {
-                                cmds.push(Command::SstvTx { mode: self.sstv.tx_mode, png });
+                            if let Some(png) = self.sstv.compose_png(dims) {
+                                cmds.push(if rifp {
+                                    Command::RifpTx { png }
+                                } else {
+                                    Command::SstvTx { mode: self.sstv.tx_mode, png }
+                                });
                             }
                         }
                         ui.add_space(8.0);
@@ -8861,6 +8976,33 @@ impl SdroxideApp {
                         let avail_w = ui.available_width().min(1000.0);
                         let scale = (avail_w / native.x.max(1.0)).clamp(1.0, 4.0);
                         ui.add(egui::Image::new(&r.tex).fit_to_exact_size(native * scale));
+                        // RIFP knows where a picture came from and how it was
+                        // carried; SSTV knows none of that, and says nothing.
+                        if let Some(m) = &r.rifp {
+                            ui.add_space(4.0);
+                            let from = m.sender.as_deref().unwrap_or("unidentified");
+                            ui.label(
+                                RichText::new(format!(
+                                    "{from} · {} · {}×{} {}-bit · {} / {} · {} octets in {} chunks \
+                                     ({} first pass) · session {}",
+                                    m.filename,
+                                    m.width,
+                                    m.height,
+                                    m.bits_per_pixel,
+                                    m.media_type,
+                                    m.content_encoding,
+                                    m.encoded_size,
+                                    m.chunk_count,
+                                    m.chunks_first_pass,
+                                    m.session,
+                                ))
+                                .size(10.5)
+                                .weak(),
+                            );
+                            if let Some(hint) = &m.hint {
+                                ui.label(RichText::new(hint).size(11.0).italics());
+                            }
+                        }
                     });
             } else {
                 open = false;
@@ -8868,6 +9010,236 @@ impl SdroxideApp {
             if !open {
                 self.sstv.enlarged = None;
             }
+        }
+    }
+
+    /// The RIFP half of the image panel's control strip: profile, picture size
+    /// and encoding, robustness, the transfer readout, and the sessions being
+    /// reassembled.
+    fn rifp_controls(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let st = self.sstv.rifp.clone();
+        let seeded = self.digi_cfg_seeded;
+        let mut changed = false;
+
+        ui.horizontal_wrapped(|ui| {
+            ui.add_enabled_ui(seeded, |ui| {
+                ui.label(RichText::new("RIFP").size(12.0).strong().color(crate::theme::CYAN));
+                for p in RifpProfile::ALL {
+                    let active = self.digi_cfg_edit.rifp_profile == p;
+                    if crate::chrome::chip(ui, active, p.label())
+                        .on_hover_text(format!(
+                            "{} — {:.0} baud CPFSK, ±{:.0} Hz, {:.0} kHz occupied bandwidth",
+                            p.name(),
+                            p.symbol_rate(),
+                            p.deviation_hz(),
+                            p.bandwidth_hz() / 1000.0,
+                        ))
+                        .clicked()
+                        && !active
+                    {
+                        self.digi_cfg_edit.rifp_profile = p;
+                        changed = true;
+                    }
+                }
+                ui.separator();
+                ui.label(RichText::new("Size").size(10.0).weak());
+                for s in RifpSize::ALL {
+                    let active = self.digi_cfg_edit.rifp_size == s;
+                    if crate::chrome::chip(ui, active, s.label()).clicked() && !active {
+                        self.digi_cfg_edit.rifp_size = s;
+                        self.sstv.preview_dirty = true;
+                        changed = true;
+                    }
+                }
+            });
+        });
+        ui.add_space(4.0);
+
+        // The bandwidth warning, and a jump to the calling frequency. RIFP
+        // itself is band-agnostic; what is legal is not.
+        let dial = self.state.rx_freq_hz();
+        ui.horizontal_wrapped(|ui| {
+            let profile = self.digi_cfg_edit.rifp_profile;
+            if profile.fits_at(dial) {
+                ui.label(
+                    RichText::new(format!(
+                        "{} · ~{:.0} kHz occupied · dial is the channel centre",
+                        profile.name(),
+                        profile.bandwidth_hz() / 1000.0,
+                    ))
+                    .size(10.5)
+                    .weak(),
+                );
+            } else {
+                ui.label(
+                    RichText::new(format!(
+                        "⚠ {} occupies ~{:.0} kHz — too wide for a narrow-band segment",
+                        profile.name(),
+                        profile.bandwidth_hz() / 1000.0,
+                    ))
+                    .size(10.5)
+                    .strong()
+                    .color(crate::theme::PINK),
+                )
+                .on_hover_text(format!(
+                    "RIFP assigns no frequency, and sdroxide will transmit it wherever you tune. \
+                     A {:.0} kHz channel only fits where wideband or FM operation is allowed — \
+                     {} — and not in a narrow-band segment, least of all on HF. Even inside those \
+                     your own licence conditions may be narrower. You are the operator; check \
+                     your own rules.",
+                    profile.bandwidth_hz() / 1000.0,
+                    profile.wide_segments_text(),
+                ));
+            }
+            if (dial - sdroxide_types::RIFP_CALLING_HZ).abs() > 1.0
+                && crate::chrome::chip(ui, false, "433.920")
+                    .on_hover_text("The calling frequency the draft names")
+                    .clicked()
+            {
+                cmds.push(Command::SetVfo {
+                    vfo: self.state.active_vfo,
+                    hz: sdroxide_types::RIFP_CALLING_HZ,
+                });
+            }
+        });
+        ui.add_space(5.0);
+
+        // Encoding and depth: what the picture is turned into before framing.
+        ui.horizontal_wrapped(|ui| {
+            ui.add_enabled_ui(seeded, |ui| {
+                ui.label(RichText::new("Encode").size(10.0).weak()).on_hover_text(
+                    "How the picture is encoded into the object RIFP carries. Auto tries each and \
+                 sends the smallest.",
+                );
+                for e in RifpEncoding::TX_MENU {
+                    let active = self.digi_cfg_edit.rifp_encoding == e;
+                    let hover = match e.manifest_pair() {
+                        Some((mt, ce)) => format!("{mt} / {ce}"),
+                        None => "Try every encoding, send the smallest (never lossy)".into(),
+                    };
+                    if crate::chrome::chip(ui, active, e.label()).on_hover_text(hover).clicked()
+                        && !active
+                    {
+                        self.digi_cfg_edit.rifp_encoding = e;
+                        changed = true;
+                    }
+                }
+                ui.separator();
+                ui.label(RichText::new("Gray").size(10.0).weak()).on_hover_text(
+                "Grayscale depth. RIFP's raster is grayscale by definition — colour has no place \
+                 in its manifest.",
+            );
+                for bits in [1u8, 2, 4, 8] {
+                    let active = self.digi_cfg_edit.rifp_bits_per_pixel == bits;
+                    if crate::chrome::chip(ui, active, &format!("{bits}b")).clicked() && !active {
+                        self.digi_cfg_edit.rifp_bits_per_pixel = bits;
+                        changed = true;
+                    }
+                }
+                let mut dither = self.digi_cfg_edit.rifp_dither;
+                if crate::chrome::chip(ui, dither, "Dither")
+                    .on_hover_text("Diffuse quantisation error — worth it below 8 bits")
+                    .clicked()
+                {
+                    dither = !dither;
+                    self.digi_cfg_edit.rifp_dither = dither;
+                    changed = true;
+                }
+            });
+        });
+        ui.add_space(5.0);
+
+        // Robustness: RIFP has no repair requests, so repetition is the only
+        // recovery there is.
+        ui.horizontal_wrapped(|ui| {
+            ui.add_enabled_ui(seeded, |ui| {
+                ui.label(RichText::new("Repeat data").size(10.0).weak()).on_hover_text(
+                    "Send every data frame this many times. RIFP is one-way with no repair \
+                     requests, so this is the only recovery a receiver gets.",
+                );
+                ui.spacing_mut().slider_width = 90.0;
+                changed |= ui
+                    .add(egui::Slider::new(&mut self.digi_cfg_edit.rifp_data_repeats, 1..=4))
+                    .drag_stopped();
+                ui.label(RichText::new("Chunk").size(10.0).weak())
+                    .on_hover_text("Payload octets per data frame (the profile recommends 192)");
+                changed |= ui
+                    .add(
+                        egui::Slider::new(&mut self.digi_cfg_edit.rifp_chunk_size, 32..=1024)
+                            .step_by(16.0),
+                    )
+                    .drag_stopped();
+            });
+            ui.separator();
+            if st.tx_active {
+                ui.label(
+                    RichText::new(format!(
+                        "● TX frame {}/{} · {} s left",
+                        st.tx_frame, st.tx_frames, st.tx_remaining_s
+                    ))
+                    .size(11.0)
+                    .strong()
+                    .color(crate::theme::PINK),
+                );
+            }
+            if let Some(enc) = st.tx_encoding {
+                ui.label(
+                    RichText::new(format!("sent as {} · {} octets", enc.label(), st.tx_bytes))
+                        .size(10.0)
+                        .weak(),
+                );
+            }
+        });
+        ui.add_space(5.0);
+
+        // Counters and the sessions being reassembled.
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "frames {} · bad {} · pictures {}",
+                    st.rx_frames, st.rx_bad_frames, st.rx_objects
+                ))
+                .size(10.0)
+                .weak(),
+            )
+            .on_hover_text("Valid frames, frames that failed CRC, and complete verified pictures");
+            if st.sessions.is_empty() {
+                ui.label(RichText::new("no transfer in progress").size(10.0).weak());
+            }
+            for s in &st.sessions {
+                ui.separator();
+                let from = s.sender.as_deref().unwrap_or_else(|| shorten(&s.session, 8));
+                let label = if s.total > 0 {
+                    format!("{from} {}/{}", s.have, s.total)
+                } else {
+                    format!("{from} {}", s.have)
+                };
+                let colour =
+                    if s.have_manifest { crate::theme::GREEN } else { crate::theme::YELLOW };
+                ui.label(RichText::new(label).size(10.5).strong().color(colour)).on_hover_text(
+                    if s.have_manifest {
+                        format!("session {} · idle {} s", s.session, s.idle_s)
+                    } else {
+                        format!(
+                            "session {} · chunks held, still waiting for the manifest · idle {} s",
+                            s.session, s.idle_s
+                        )
+                    },
+                );
+                rifp_chunk_map(ui, s);
+                if crate::chrome::chip(ui, false, "✕")
+                    .on_hover_text("Forget this incomplete transfer")
+                    .clicked()
+                {
+                    cmds.push(Command::RifpDropSession(s.session.clone()));
+                }
+            }
+        });
+        if let Some(err) = &st.last_error {
+            ui.label(RichText::new(err).size(10.0).color(crate::theme::YELLOW));
+        }
+        if changed && seeded {
+            cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
         }
     }
 
@@ -8896,7 +9268,7 @@ impl SdroxideApp {
         for (rgb, w, h) in sstv_load_gallery() {
             let ci = crate::sstv::color_image(&rgb, w, h);
             let tex = ctx.load_texture("sstv_recv", ci, egui::TextureOptions::NEAREST);
-            self.sstv.received.push(SstvRecv { mode: None, tex });
+            self.sstv.received.push(SstvRecv { mode: None, rifp: None, tex });
         }
     }
 }
@@ -9551,6 +9923,52 @@ fn sstv_section<R>(
 
 /// A small horizontal signal-activity meter (level ~0..1), so the operator can
 /// confirm receive audio is reaching the SSTV decoder.
+/// First `n` characters of `text` — a short label that cannot panic on a
+/// string shorter than it expects.
+fn shorten(text: &str, n: usize) -> &str {
+    match text.char_indices().nth(n) {
+        Some((end, _)) => &text[..end],
+        None => text,
+    }
+}
+
+/// One incoming RIFP transfer's chunk map: a lit cell per chunk received, dark
+/// per chunk still missing. Beyond what fits, it degrades to a plain bar — the
+/// point is to see *where* the holes are, and a thousand one-pixel cells show
+/// nothing.
+fn rifp_chunk_map(ui: &mut egui::Ui, session: &sdroxide_types::RifpSession) {
+    let cells = session.total.max(session.have) as usize;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(120.0, 10.0), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 2.0, Color32::from_gray(20));
+    let have = |i: usize| session.map.get(i / 8).is_some_and(|b| b >> (i % 8) & 1 != 0);
+    if cells > 0 && cells <= rect.width() as usize {
+        let cw = rect.width() / cells as f32;
+        for i in 0..cells {
+            if !have(i) {
+                continue;
+            }
+            let x = rect.left() + i as f32 * cw;
+            p.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(cw.max(1.0), 10.0)),
+                0.0,
+                crate::theme::GREEN,
+            );
+        }
+    } else if session.total > 0 {
+        let mut fill = rect;
+        fill.set_width(rect.width() * (session.have as f32 / session.total as f32).clamp(0.0, 1.0));
+        p.rect_filled(fill, 2.0, crate::theme::GREEN);
+    }
+    p.rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0, Color32::from_gray(60)),
+        egui::StrokeKind::Inside,
+    );
+    resp.on_hover_text("Chunks received (lit) and still missing (dark)");
+}
+
 fn sstv_level_bar(ui: &mut egui::Ui, level: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(90.0, 10.0), egui::Sense::hover());
     let p = ui.painter();

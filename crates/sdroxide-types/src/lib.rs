@@ -20,6 +20,7 @@ mod meters;
 mod mode;
 mod netcfg;
 mod radio;
+mod rifp;
 mod rigctld;
 mod skimmer;
 mod spectrum;
@@ -38,9 +39,9 @@ pub use awards::{
 };
 pub use band::Band;
 pub use band_segments::{
-    FT4_DIALS, FT8_DIALS, JS8_DIALS, PSK_RANGES, RTTY_RANGES, SSTV_CALLING, Segment, SegmentKind,
-    WSPR_DIALS, is_auto_digi, is_cw_segment, is_digi_segment, is_psk_segment, is_rtty_segment,
-    segment_kind_at,
+    FT4_DIALS, FT8_DIALS, JS8_DIALS, PSK_RANGES, RIFP_CALLING, RTTY_RANGES, SSTV_CALLING, Segment,
+    SegmentKind, WSPR_DIALS, is_auto_digi, is_cw_segment, is_digi_segment, is_psk_segment,
+    is_rtty_segment, segment_kind_at,
 };
 pub use callsign::{CallsignInfo, UploadResult, UploadTarget};
 pub use caps::{DeviceCaps, Direction, GainElement};
@@ -73,6 +74,10 @@ pub use netcfg::{
 pub use radio::{
     Backend, CatConfig, CatFamily, DigiMode, HpsdrConfig, HpsdrDevice, LineState, ModeControl,
     Parity, PttMethod, RadioConfig, SerialConfig, SoundFormat, StopBits, TciConfig,
+};
+pub use rifp::{
+    RIFP_CALLING_HZ, RIFP_MAP_MAX_CHUNKS, RifpEncoding, RifpMeta, RifpProfile, RifpSession,
+    RifpSize, RifpStatus,
 };
 pub use rigctld::RigctldConfig;
 pub use skimmer::{SkimmerKind, SkimmerSettings, SkimmerSpot};

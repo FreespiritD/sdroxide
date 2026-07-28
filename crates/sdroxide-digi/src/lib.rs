@@ -15,6 +15,8 @@ pub mod params;
 pub mod qso;
 pub mod rade_controller;
 pub mod rf_paint_controller;
+pub mod rifp_controller;
+pub mod rifp_object;
 pub mod scheduler;
 pub mod squelch;
 pub mod sstv_controller;
@@ -30,6 +32,7 @@ pub use params::{DECODE_RATE, DigiParams};
 pub use qso::QsoMachine;
 pub use rade_controller::RadeController;
 pub use rf_paint_controller::RfPaintController;
+pub use rifp_controller::RifpController;
 pub use scheduler::SlotScheduler;
 pub use sstv_controller::SstvController;
 pub use text_modem::TextModemController;
@@ -86,6 +89,12 @@ pub trait DigiEngine: Send {
     fn set_sstv_mode(&mut self, _mode: Option<SstvMode>) {}
     /// SSTV: queue a composed image (interleaved RGB) and start transmitting.
     fn set_sstv_image(&mut self, _mode: SstvMode, _rgb: Vec<u8>, _w: u16, _h: u16) {}
+    /// RIFP: queue a composed image (interleaved RGB) and start transmitting.
+    /// The controller encodes, chunks and frames it per the operator's config.
+    fn set_rifp_image(&mut self, _rgb: Vec<u8>, _w: u16, _h: u16) {}
+    /// RIFP: forget an incomplete incoming session by its 16-hex-digit ID, or
+    /// all of them when the string is empty.
+    fn rifp_drop_session(&mut self, _session: &str) {}
     /// FSQ image: queue a grayscale image (`w*h` bytes) and start transmitting.
     fn set_image(&mut self, _gray: Vec<u8>, _w: u16, _h: u16) {}
 
