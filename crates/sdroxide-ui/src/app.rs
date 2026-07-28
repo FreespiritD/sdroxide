@@ -260,6 +260,11 @@ pub struct SdroxideApp {
     /// reports back how many characters have been sent so we colour them green).
     text_tx: String,
     qso_log: Vec<QsoRecord>,
+    /// QSOs worked since this run started, which is what the FT8 panel's
+    /// "Session" readout counts. Deliberately not derived from the logbook: the
+    /// log is persisted and grows for ever, so counting it would report every
+    /// contact ever made as if it had just been worked.
+    session_qsos: usize,
     show_digi_settings: bool,
     /// UI-owned editable copy of the operator config, so typing isn't fought
     /// by the round-tripped status echo. Seeded once from the first status.
@@ -566,6 +571,7 @@ impl SdroxideApp {
             digi_status: None,
             text_tx: String::new(),
             qso_log: load_qso_log(cc.storage),
+            session_qsos: 0,
             show_digi_settings: false,
             digi_cfg_edit: sdroxide_types::DigiConfig::default(),
             sstv: SstvUi::default(),
@@ -2649,6 +2655,9 @@ impl SdroxideApp {
             .unwrap_or(false);
 
         // Header: QSO left, session log + downloads centered, SETUP right.
+        // The count is this run's; the export buttons still save the whole
+        // logbook, which is what their hover text says.
+        let session = self.session_qsos;
         let logged = self.qso_log.len();
         let row_h = 26.0;
         let (row, _) =
@@ -2675,15 +2684,24 @@ impl SdroxideApp {
             |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new(format!("Session: {logged} QSO"))
+                        RichText::new(format!("Session: {session} QSO"))
                             .size(11.0)
                             .color(Color32::from_gray(150)),
-                    );
-                    if ui.add_enabled(logged > 0, egui::Button::new("ADIF")).clicked() {
+                    )
+                    .on_hover_text("QSOs worked since sdroxide was started");
+                    if ui
+                        .add_enabled(logged > 0, egui::Button::new("ADIF"))
+                        .on_hover_text(format!("Save the whole logbook ({logged} QSO) as ADIF"))
+                        .clicked()
+                    {
                         let adif = sdroxide_types::qso_log_to_adif(&self.qso_log);
                         crate::download::save("sdroxide-log.adi", adif.as_bytes());
                     }
-                    if ui.add_enabled(logged > 0, egui::Button::new("TXT")).clicked() {
+                    if ui
+                        .add_enabled(logged > 0, egui::Button::new("TXT"))
+                        .on_hover_text(format!("Save the whole logbook ({logged} QSO) as text"))
+                        .clicked()
+                    {
                         let txt = sdroxide_types::qso_log_to_text(&self.qso_log);
                         crate::download::save("sdroxide-log.txt", txt.as_bytes());
                     }
@@ -4836,6 +4854,9 @@ impl SdroxideApp {
                             let mut rec = rec;
                             rec.id = self.next_log_id();
                             self.qso_log.push(rec);
+                            // A hand-entered contact is one worked this session
+                            // too; an ADIF import is not, and does not count.
+                            self.session_qsos += 1;
                         } else if let Some(e) = self.qso_log.iter_mut().find(|q| q.id == rec.id) {
                             *e = rec;
                         }
@@ -7185,6 +7206,7 @@ impl eframe::App for SdroxideApp {
                     let call = r.call.clone();
                     let adif = auto_upload_adif(&self.net_cfg_edit, &r);
                     self.qso_log.push(r);
+                    self.session_qsos += 1;
                     persist_qso_log(&self.qso_log);
                     // Enrich + optionally upload the freshly logged QSO.
                     self.queue_lookup(call);
