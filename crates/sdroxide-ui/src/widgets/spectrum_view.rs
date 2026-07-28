@@ -549,6 +549,7 @@ pub fn show(
         trace,
         None,
         sdroxide_types::DxpedMode::Normal,
+        false,
         &[],
         skimmer,
         alpha,
@@ -581,6 +582,9 @@ pub fn show_ext(
     // named — a Hound calling down among the Fox's signals is the single most
     // common way to be unworkable, and it is invisible without this.
     dxped: sdroxide_types::DxpedMode,
+    // FT8/FT4: the engine is choosing the transmit frequency, so clicking a
+    // station label must not drag it onto that station.
+    auto_tx_freq: bool,
     // Extra audio-offset tuning lines (Hz relative to the dial), e.g. the RTTY
     // mark/space pair. Drawn as thin amber lines to aid exact tuning.
     markers: &[f32],
@@ -841,9 +845,15 @@ pub fn show_ext(
                     let spot = &skimmer[sb.idx];
                     let spot_hz = spot.freq_hz;
                     if digi_audio_hz.is_some() {
-                        // FT8 station box: set the audio TX offset to it.
-                        let audio = (spot_hz - state.rx_freq_hz()) as f32;
-                        cmds.push(Command::SetDigiAudioFreq(audio.clamp(200.0, 3500.0)));
+                        // FT8 station box. Moving our transmit onto the station
+                        // is what Auto TX FRQ exists to avoid — they transmit in
+                        // the period opposite ours, so their frequency says
+                        // nothing about who is there when we key. With it on the
+                        // label is a label; with it off it tunes, as before.
+                        if !auto_tx_freq {
+                            let audio = (spot_hz - state.rx_freq_hz()) as f32;
+                            cmds.push(Command::SetDigiAudioFreq(audio.clamp(200.0, 3500.0)));
+                        }
                     } else {
                         // Skimmer spot: switch to the spot's mode and tune onto it.
                         match spot.kind {

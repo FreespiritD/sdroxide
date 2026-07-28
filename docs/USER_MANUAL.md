@@ -468,6 +468,17 @@ free text is cut to 13 characters.
   free text, so that is what the field accepts.
 - **Stop:** **STOP QSO** ends the current QSO gracefully; **STOP TX** aborts the
   current transmission immediately and un-keys.
+- **Auto TX FRQ picks where you transmit.** On by default (the chip above the
+  decode list, or the setup window). Answering on the frequency of the station
+  you are calling looks right and isn't: they transmit in the period opposite
+  yours, so their frequency says nothing about who is transmitting there when
+  *you* key — and whoever is will not hear you. Instead sdroxide picks the
+  quietest spot in your own transmit period, from the stations it has decoded
+  there, and moves no further than it has to. While it is on, clicking a decode
+  or a station label on the waterfall no longer drags your transmit frequency
+  onto that station; the click just selects. Turn it off to hold a frequency by
+  hand. It has no effect in DXpedition mode, where both roles have their
+  frequencies decided for them.
 - **Queue a run of stations.** The **+** button on each decode marks that
   station to be worked; mark as many as you like in one pass over a busy slot.
   They appear in a `QUEUE` strip above the transcript, next one in green, and

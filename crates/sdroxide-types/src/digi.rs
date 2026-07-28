@@ -719,6 +719,18 @@ pub struct DigiConfig {
     /// Calling CQ is exempt (repeating a CQ is the point); this counts calls to
     /// one station that never comes back. 0 disables it.
     pub max_tx_repeats: u32,
+    /// FT8/FT4: choose our transmit tone offset ourselves, rather than moving
+    /// onto whichever station we are answering.
+    ///
+    /// Answering on the DX's own frequency is the obvious thing and the wrong
+    /// one: they transmit in the opposite period to us, so their frequency
+    /// tells us nothing about who is transmitting there when *we* do — and the
+    /// station that is will not hear a word. With this on, the engine picks the
+    /// quietest spot in the period we are about to transmit in, from the
+    /// stations it has actually decoded there. Turn it off to hold a frequency
+    /// by hand. Ignored in DXpedition mode, where both roles have their
+    /// frequencies decided for them.
+    pub auto_tx_freq: bool,
     /// FT8: which side of a DXpedition pile-up to operate (see [`DxpedMode`]).
     /// Ignored in every other mode.
     pub dxped_mode: DxpedMode,
@@ -768,6 +780,7 @@ impl Default for DigiConfig {
             max_tx_repeats: 10,
             sstv_tx_ppm: 0.0,
             rf_paint_speed: 0.25,
+            auto_tx_freq: true,
             dxped_mode: DxpedMode::Normal,
             fox_slots: 3,
             rade_mute_analog: false,

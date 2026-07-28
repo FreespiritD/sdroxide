@@ -2147,6 +2147,24 @@ impl SdroxideApp {
             {
                 self.digi_new_only = !self.digi_new_only;
             }
+            // Whether the engine chooses our transmit frequency. Here rather
+            // than in the setup window because it decides what clicking a
+            // decode in this list does.
+            if self.digi_cfg_seeded {
+                let auto = self.digi_cfg_edit.auto_tx_freq;
+                if crate::chrome::chip(ui, auto, "Auto TX FRQ")
+                    .on_hover_text(
+                        "Pick our transmit frequency automatically: the quietest spot in the \
+                         period we transmit in, rather than the frequency of whoever we are \
+                         answering — they transmit in the other period, so theirs says nothing \
+                         about who is there when we key. Off holds the frequency you set.",
+                    )
+                    .clicked()
+                {
+                    self.digi_cfg_edit.auto_tx_freq = !auto;
+                    cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
+                }
+            }
         });
         ui.add_space(2.0);
         // Call of the currently previewed decode (cloned so the scroll closure
@@ -2171,6 +2189,7 @@ impl SdroxideApp {
         let mut hover_ll: Option<(f64, f64)> = None;
         let cq_only = self.digi_cq_only;
         let new_only = self.digi_new_only;
+        let auto_tx_freq = self.digi_status.as_ref().map(|s| s.config.auto_tx_freq).unwrap_or(true);
         let sort = self.digi_sort;
         let desc = self.digi_sort_desc;
         // Turn parity needs the mode's slot length (FT8 15 s, FT4 7.5 s).
@@ -2564,7 +2583,12 @@ impl SdroxideApp {
                             }
                         }
                     } else if row.clicked() {
-                        cmds.push(Command::SetDigiAudioFreq(d.audio_hz));
+                        // Moving our transmit onto theirs is exactly what Auto
+                        // TX FRQ exists to avoid, so with it on a click only
+                        // previews the station.
+                        if !auto_tx_freq {
+                            cmds.push(Command::SetDigiAudioFreq(d.audio_hz));
+                        }
                         // Preview this station's location (if it sent a grid).
                         let ll = d.grid.as_deref().and_then(sdroxide_types::grid_to_latlon);
                         new_preview = Some(ll.map(|ll| (who.clone(), ll)));
@@ -4006,6 +4030,16 @@ impl SdroxideApp {
                     ui.end_row();
                     ui.label("Auto-sequence");
                     changed |= ui.checkbox(&mut cfg.auto_seq, "").changed();
+                    ui.end_row();
+                    ui.label("Auto TX frequency");
+                    changed |= ui
+                        .checkbox(&mut cfg.auto_tx_freq, "")
+                        .on_hover_text(
+                            "Choose the transmit frequency automatically: the quietest spot in \
+                             the period you transmit in, rather than the frequency of the \
+                             station you are answering. Off holds whatever you set by hand.",
+                        )
+                        .changed();
                     ui.end_row();
                     ui.label("TX watchdog");
                     changed |= ui
@@ -7320,6 +7354,8 @@ impl eframe::App for SdroxideApp {
                     } else {
                         sdroxide_types::DxpedMode::Normal
                     },
+                    mode.is_slotted()
+                        && self.digi_status.as_ref().map(|s| s.config.auto_tx_freq).unwrap_or(true),
                     &markers,
                     &ft8_spots,
                     &ft8_alpha,

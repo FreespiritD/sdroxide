@@ -75,7 +75,8 @@ use sdroxide_types::{
 /// itself (`DX`, `EU`, `JA`, `POTA`, …) rather than a single DX flag.
 /// v24: the FT8/FT4 call queue — `Command::DigiQueueAdd`/`DigiQueueRemove` and
 /// `DigiStatus.call_queue`.
-pub const PROTO_VERSION: u16 = 24;
+/// v25: automatic transmit-frequency choice — `DigiConfig.auto_tx_freq`.
+pub const PROTO_VERSION: u16 = 25;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

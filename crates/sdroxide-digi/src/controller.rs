@@ -7,6 +7,7 @@
 //! thread, and the controller returns [`DigiAction`]s for the engine to
 //! apply (emit events, key/unkey PTT).
 
+use std::cmp::Ordering;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::SystemTime;
 
@@ -90,6 +91,11 @@ pub struct DigiController {
     /// lands in the slot *opposite* to when the DX actually transmitted — even if
     /// stations run out of the usual even/odd sequence. Pruned to recent slots.
     last_heard: std::collections::HashMap<String, i64>,
+    /// `(slot, tone offset)` of every recent decode, so we can see which part of
+    /// the band is busy *in the period we transmit in*. Pruned alongside
+    /// `last_heard`. Duplicated tones are kept: two stations on one frequency
+    /// is exactly the situation worth avoiding.
+    recent_activity: Vec<(i64, f32)>,
     // Decode worker.
     job_tx: Sender<DecodeJob>,
     res_rx: Receiver<(i64, Vec<Decode>)>,
@@ -105,6 +111,40 @@ pub struct DigiController {
 pub struct BurstPlayer {
     pub samples: Vec<f32>,
     pub pos: usize,
+}
+
+/// The stretch of the passband [`clearest_tx_hz`] will choose from, and the
+/// grid it searches on. Kept inside the usual SSB filter with room for the
+/// ~50 Hz signal at either edge.
+const TX_PICK_MIN_HZ: f32 = 400.0;
+const TX_PICK_MAX_HZ: f32 = 2600.0;
+const TX_PICK_STEP_HZ: f32 = 10.0;
+/// Separation past which a spot counts as simply clear. An FT8 signal is about
+/// 50 Hz wide, so a couple of signal-widths either side is all the room there
+/// is any point in having — beyond it, nearness to where we already are is the
+/// better tie-break.
+const CLEAR_ENOUGH_HZ: f32 = 120.0;
+
+/// Choose a transmit tone offset with the least company.
+///
+/// `busy` are the tone offsets of stations decoded in the period we are about
+/// to transmit in — the only ones we can actually collide with. The result is
+/// the spot furthest from all of them; among spots that are equally clear, the
+/// one nearest `current`, so the transmit marker doesn't wander across the band
+/// between contacts for no reason.
+fn clearest_tx_hz(busy: &[f32], current: f32) -> f32 {
+    let steps = ((TX_PICK_MAX_HZ - TX_PICK_MIN_HZ) / TX_PICK_STEP_HZ) as i32;
+    let candidates = || (0..=steps).map(|i| TX_PICK_MIN_HZ + i as f32 * TX_PICK_STEP_HZ);
+    let clearance = |hz: f32| {
+        busy.iter().map(|b| (b - hz).abs()).fold(f32::INFINITY, f32::min).min(CLEAR_ENOUGH_HZ)
+    };
+    let best = candidates().map(clearance).fold(f32::NEG_INFINITY, f32::max);
+    candidates()
+        .filter(|&hz| clearance(hz) >= best)
+        .min_by(|a, b| {
+            (a - current).abs().partial_cmp(&(b - current).abs()).unwrap_or(Ordering::Equal)
+        })
+        .unwrap_or(current)
 }
 
 impl DigiController {
@@ -148,6 +188,7 @@ impl DigiController {
             tx_even,
             tx_fired_slot: i64::MIN,
             last_heard: std::collections::HashMap::new(),
+            recent_activity: Vec::new(),
             job_tx,
             res_rx,
             _worker: worker,
@@ -201,6 +242,7 @@ impl DigiController {
     pub fn call_cq(&mut self) {
         // Call CQ in our configured period.
         self.tx_even = self.qso.status(false).tx_even;
+        self.pick_tx_freq();
         self.qso.call_cq();
         self.status_dirty = true;
     }
@@ -213,12 +255,6 @@ impl DigiController {
         audio_hz: f32,
         wait_for_cq: bool,
     ) {
-        // Answering a station means transmitting where they are — except as a
-        // Hound, whose calling frequency is deliberately away from the Fox. It
-        // stays where the operator put it until the Fox answers.
-        if !self.is_hound() {
-            self.set_audio_hz(audio_hz);
-        }
         let now = SlotScheduler::unix_now(SystemTime::now()) as i64;
         // Reply in the slot *opposite* to when the DX actually transmitted, using
         // the slot we last heard them in — so a late reply never lands in their
@@ -227,8 +263,50 @@ impl DigiController {
         let dx_slot =
             self.last_heard.get(&from).copied().unwrap_or(now - self.params.slot_s as i64);
         self.tx_even = !self.scheduler.is_even(self.scheduler.slot_index_unix(dx_slot as f64));
+        // Where to answer from. Moving onto the DX's own frequency is the
+        // obvious choice and the wrong one — see `pick_tx_freq`. A Hound is
+        // exempt twice over: its calling frequency is the operator's, and the
+        // Fox's own half of the band is out of bounds.
+        if !self.is_hound() {
+            if self.qso.status(false).config.auto_tx_freq {
+                self.pick_tx_freq();
+            } else {
+                self.set_audio_hz(audio_hz);
+            }
+        }
         self.qso.start_qso(from, grid, snr, wait_for_cq, now);
         self.status_dirty = true;
+    }
+
+    /// Move our transmit tone to the quietest part of the band *in the period
+    /// we are about to transmit in*.
+    ///
+    /// Answering on the station we are working is the natural-looking thing and
+    /// it is backwards: they transmit in the period opposite ours, so their
+    /// frequency says nothing about who is transmitting there when we do. The
+    /// stations that matter are the ones decoded in our own period — those are
+    /// the ones we would land on top of, and neither of us would be heard.
+    ///
+    /// Does nothing when the operator has turned it off, or in DXpedition mode
+    /// where both roles have their frequencies decided for them.
+    fn pick_tx_freq(&mut self) {
+        let cfg_ok = {
+            let s = self.qso.status(false);
+            s.config.auto_tx_freq && s.config.dxped_mode == sdroxide_types::DxpedMode::Normal
+        };
+        if !cfg_ok {
+            return;
+        }
+        let busy: Vec<f32> = self
+            .recent_activity
+            .iter()
+            .filter(|(slot, _)| {
+                self.scheduler.is_even(self.scheduler.slot_index_unix(*slot as f64)) == self.tx_even
+            })
+            .map(|(_, hz)| *hz)
+            .collect();
+        let hz = clearest_tx_hz(&busy, self.audio_hz);
+        self.tune_audio_hz(hz);
     }
 
     /// Pick which message goes out next (the operator's Tx1–Tx6).
@@ -399,9 +477,11 @@ impl DigiController {
                             if let Some(from) = d.from.as_deref().filter(|s| !s.is_empty()) {
                                 self.last_heard.insert(from.to_string(), slot_utc);
                             }
+                            self.recent_activity.push((slot_utc, d.audio_hz));
                         }
                         let cutoff = slot_utc - (8.0 * self.params.slot_s) as i64;
                         self.last_heard.retain(|_, &mut t| t >= cutoff);
+                        self.recent_activity.retain(|(t, _)| *t >= cutoff);
                         // What everyone else's timing says about ours.
                         if self.clock.observe(&decodes) {
                             self.status_dirty = true;
@@ -654,6 +734,42 @@ mod tests {
             actions.iter().any(|a| matches!(a, DigiAction::KeyTx)),
             "should key late in our opposite slot, got {actions:?}"
         );
+    }
+
+    #[test]
+    fn the_transmit_frequency_goes_where_our_own_period_is_quiet() {
+        // A crowded stretch below 1200 Hz and a clear one above it.
+        let busy: Vec<f32> = (0..12).map(|i| 500.0 + i as f32 * 60.0).collect();
+        let hz = clearest_tx_hz(&busy, 1500.0);
+        assert!(hz > 1220.0, "picked {hz} Hz, inside the crowd");
+        assert!(busy.iter().all(|b| (b - hz).abs() >= 60.0), "picked {hz} Hz, on top of a station");
+
+        // With the band empty it stays where it already is rather than
+        // wandering off to an arbitrary edge.
+        assert_eq!(clearest_tx_hz(&[], 1500.0), 1500.0);
+        // One station in the middle: it moves clear, but no further than it has
+        // to — a spot 120 Hz away is as good as one 900 Hz away.
+        let hz = clearest_tx_hz(&[1500.0], 1500.0);
+        assert!((hz - 1500.0).abs() >= CLEAR_ENOUGH_HZ, "{hz} is still on top of them");
+        assert!(
+            (hz - 1500.0).abs() <= CLEAR_ENOUGH_HZ + TX_PICK_STEP_HZ,
+            "{hz} is a needless jump"
+        );
+    }
+
+    #[test]
+    fn answering_a_station_does_not_move_us_onto_them() {
+        let mut c = DigiController::new(Mode::Ft8, cfg(), 12_000.0);
+        c.set_audio_hz(1500.0);
+        // Auto TX FRQ is on by default: their frequency is not ours to take.
+        c.start_qso("W9XYZ".into(), None, -10, 800.0, false);
+        assert_ne!(c.audio_hz(), 800.0);
+
+        // Turned off, the operator's own choice stands — including following
+        // the station they are answering.
+        c.set_config(DigiConfig { auto_tx_freq: false, ..cfg() });
+        c.start_qso("K1ABC".into(), None, -10, 800.0, false);
+        assert_eq!(c.audio_hz(), 800.0);
     }
 
     #[test]
