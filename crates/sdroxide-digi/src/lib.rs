@@ -6,6 +6,7 @@
 //! server-side).
 
 pub mod controller;
+pub mod fox;
 pub mod fsq_controller;
 pub mod hell_controller;
 pub mod modem;
@@ -19,6 +20,7 @@ pub mod sstv_controller;
 pub mod text_modem;
 
 pub use controller::{DigiAction, DigiController};
+pub use fox::Fox;
 pub use fsq_controller::FsqController;
 pub use hell_controller::HellController;
 pub use modem::Ft8Modem;

@@ -137,6 +137,7 @@ impl HellController {
             fsq_heard: Vec::new(),
             fsq_messages: Vec::new(),
             rade: None,
+            fox_queue: Vec::new(),
         }
     }
 }

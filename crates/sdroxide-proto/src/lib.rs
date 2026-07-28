@@ -66,7 +66,11 @@ use sdroxide_types::{
 /// `hell_variant` / `hell_rx_agc`, which both ends must agree on because
 /// `DigiStatus` carries the config. (`Mode::Hell` alone would have been
 /// compatible: it is appended to the enum, so no existing discriminant moves.)
-pub const PROTO_VERSION: u16 = 20;
+/// v21: FT8 DXpedition mode — `DigiConfig`'s `dxped_mode` / `fox_slots`,
+/// `DigiStatus.fox_queue`, and `Decode.rr73_to` (the RR73 half of a Fox
+/// message, which is how a Hound learns its contact completed). Postcard is not
+/// self-describing, so both ends must agree on every one of those fields.
+pub const PROTO_VERSION: u16 = 21;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

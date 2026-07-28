@@ -389,6 +389,9 @@ Click **SETUP** in the QSO area to open the **FT8 / FT4 Setup** window:
 - **TX watchdog / Give up after** — how long unattended transmitting may
   continue with no progress, and how many unanswered calls to one station are
   worth making. Both 0 to disable.
+- **DXpedition** — which side of an FT8 pile-up you are on: **Normal**,
+  **Hound**, or **Fox** (see [DXpedition mode](#341-dxpedition-mode-hound-and-fox)).
+  **Fox signals** sets how many stations a Fox works at once.
 - **Message templates** — the CQ / Grid / Report / R+Report / RR73 / 73 lines,
   using the placeholders `{MYCALL}`, `{MYGRID}`, `{DX}`, and `{REPORT}`. The
   defaults follow standard FT8 practice; you rarely need to change them.
@@ -476,6 +479,41 @@ free text is cut to 13 characters.
 Transmission happens automatically in your chosen time slot (FT8 slots are 15 s,
 FT4 slots are 7.5 s) and goes through the normal transmit path, so the ham-band
 lockout and transmit safety still apply.
+
+#### 3.4.1 DXpedition mode (Hound and Fox)
+
+FT8's answer to a rare-entity pile-up. One station — the **Fox** — transmits up
+to five signals at once in the low part of the passband and works a queue of
+callers; everyone calling it — the **Hounds** — calls from above 1000 Hz. That
+split is what keeps the pile-up off the one station everybody wants. Set your
+role in the FT8 setup window. It applies to FT8 only.
+
+While either role is selected the panadapter shades the two halves of the
+passband, `FOX` below 1000 Hz and `HOUNDS` above it, with the half you transmit
+in tinted more strongly.
+
+**As a Hound**, click **REPLY** on the DXpedition's decode and call from
+wherever in the calling zone you have set your transmit frequency — sdroxide
+refuses to move it down into the Fox's half, and does not follow the Fox down
+when you answer it. Three things then differ from ordinary operation:
+
+- You keep calling while the Fox works other stations, instead of standing down
+  the way you would for a station that took someone else's call.
+- When the Fox comes back to you, your transmit frequency moves *onto the Fox*
+  automatically for the rest of the contact — that is what the Fox is listening
+  for at that point.
+- The Fox's `RR73` completes and logs the contact and you send nothing further.
+  It usually arrives inside a message addressed to the next Hound
+  (`YOURCALL RR73; W9XYZ <DX1FOX> +03`), which sdroxide reads for you.
+
+**As a Fox**, **CALL CQ** starts the pile-up and **STOP QSO** stands it down.
+Callers appear in a `PILE-UP` strip above the transcript — green for the
+stations being worked, grey for those waiting — and are taken strongest and
+rarest first, with anyone already in your log going last. Each transmission
+carries as many signals as **Fox signals** allows, spaced 60 Hz apart and
+sharing the transmitter's power, so more signals means each one is weaker.
+Contacts are logged as their `RR73` goes out; where a caller is waiting, that
+`RR73` shares its signal with the report opening the next contact.
 
 ### 3.5 Reporting what you hear
 

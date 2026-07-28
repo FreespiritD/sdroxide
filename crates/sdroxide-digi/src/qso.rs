@@ -3,7 +3,11 @@
 //! decodes, it decides the next message to transmit and tracks progress
 //! through the standard exchange.
 
-use sdroxide_types::{Decode, DigiConfig, DigiStatus, Mode, QsoRecord, QsoStep, TranscriptLine};
+use sdroxide_types::{
+    Decode, DigiConfig, DigiStatus, DxpedMode, Mode, QsoRecord, QsoStep, TranscriptLine,
+};
+
+use crate::fox::{Fox, SLOT_SPACING_HZ};
 
 /// Give up waiting for a picked non-CQ station to call CQ after this long.
 const WAIT_CQ_S: i64 = 300;
@@ -13,7 +17,7 @@ const CONFIRM_S: i64 = 300;
 
 /// The payload half of a message (`<to> <from> PAYLOAD`).
 #[derive(Debug, Clone, PartialEq)]
-enum Payload {
+pub(crate) enum Payload {
     Grid(String),
     Report(i16),
     RReport(i16),
@@ -23,7 +27,7 @@ enum Payload {
     Other,
 }
 
-fn classify_payload(text: &str) -> Payload {
+pub(crate) fn classify_payload(text: &str) -> Payload {
     let toks: Vec<&str> = text.split_whitespace().collect();
     let Some(p) = toks.get(2) else { return Payload::Other };
     match *p {
@@ -52,6 +56,11 @@ fn is_grid(t: &str) -> bool {
         && b[3].is_ascii_digit()
 }
 
+/// True when this mode + config puts us on the Fox side of a pile-up.
+fn fox_role(mode: Mode, cfg: &DigiConfig) -> bool {
+    mode == Mode::Ft8 && cfg.dxped_mode == DxpedMode::Fox
+}
+
 #[derive(Debug, Clone)]
 struct Dx {
     call: String,
@@ -71,8 +80,9 @@ pub struct QsoMachine {
     tx_even: bool,
     /// The current QSO's message exchange (TX and RX lines).
     transcript: Vec<TranscriptLine>,
-    /// A QSO that just completed and should be logged.
-    completed: Option<QsoRecord>,
+    /// QSOs that just completed and should be logged. A queue rather than one
+    /// slot because a Fox can finish several contacts in a single transmission.
+    completed: std::collections::VecDeque<QsoRecord>,
     /// Deadline while in [`QsoStep::WaitCq`] / [`QsoStep::Confirming`] (Unix s).
     deadline_utc: i64,
     /// The final message (73 / RR73) we sent, re-sent while `Confirming` if the
@@ -96,11 +106,20 @@ pub struct QsoMachine {
     tx_since_progress: u32,
     /// The watchdog stopped the sequencer; cleared by the next operator action.
     watchdog: bool,
+    /// Fox (DXpedition) pile-up, present only while running that role. It takes
+    /// over receive handling and transmit planning wholesale — a Fox works a
+    /// queue, not the single contact the rest of this machine models.
+    fox: Option<Fox>,
+    /// Hound: the Fox's own tone offset, learned from the message that answered
+    /// us. A Hound calls from above 1000 Hz but finishes the contact down on the
+    /// Fox's frequency, so this is a move the controller must make for us.
+    qsy_hz: Option<f32>,
 }
 
 impl QsoMachine {
     pub fn new(mode: Mode, cfg: DigiConfig) -> Self {
         let tx_even = cfg.tx_even;
+        let fox = fox_role(mode, &cfg).then(Fox::new);
         QsoMachine {
             cfg,
             mode,
@@ -109,7 +128,7 @@ impl QsoMachine {
             audio_hz: 1500.0,
             tx_even,
             transcript: Vec::new(),
-            completed: None,
+            completed: std::collections::VecDeque::new(),
             deadline_utc: 0,
             final_msg: None,
             resend: false,
@@ -119,12 +138,32 @@ impl QsoMachine {
             progress_utc: 0,
             tx_since_progress: 0,
             watchdog: false,
+            fox,
+            qsy_hz: None,
         }
     }
 
     pub fn set_config(&mut self, cfg: DigiConfig) {
         self.tx_even = cfg.tx_even;
+        // Entering Fox mode starts an empty pile-up; leaving it discards one.
+        // Staying in it must not, or every config edit would drop the queue.
+        match (fox_role(self.mode, &cfg), self.fox.is_some()) {
+            (true, false) => self.fox = Some(Fox::new()),
+            (false, true) => self.fox = None,
+            _ => {}
+        }
         self.cfg = cfg;
+    }
+
+    /// Which side of a DXpedition pile-up we are operating. Always `Normal`
+    /// outside FT8 — the mode has no DXpedition layout to speak.
+    pub fn dxped(&self) -> DxpedMode {
+        if self.mode == Mode::Ft8 { self.cfg.dxped_mode } else { DxpedMode::Normal }
+    }
+
+    /// Hound: the Fox's tone offset to move onto, taken once.
+    pub fn take_qsy(&mut self) -> Option<f32> {
+        self.qsy_hz.take()
     }
 
     pub fn set_audio_hz(&mut self, hz: f32) {
@@ -230,7 +269,9 @@ impl QsoMachine {
             started_utc: now_utc,
             last_utc: now_utc,
         });
-        if wait_for_cq {
+        // A Hound never waits for the Fox to be free: it never is. Calling into
+        // the pile-up is exactly the operation, so start straight away.
+        if wait_for_cq && self.dxped() != DxpedMode::Hound {
             self.step = QsoStep::WaitCq;
             self.deadline_utc = now_utc + WAIT_CQ_S;
         } else {
@@ -257,6 +298,11 @@ impl QsoMachine {
     pub fn wants_tx(&self) -> bool {
         if self.manual.is_some() && !self.cfg.my_call.trim().is_empty() {
             return true; // the operator asked for this one explicitly
+        }
+        // A running Fox always has something to send — a report, an RR73, or a
+        // CQ to draw the next callers. Idle means the operator stood it down.
+        if self.fox.is_some() {
+            return self.step == QsoStep::CallingCq && !self.cfg.my_call.trim().is_empty();
         }
         match self.step {
             QsoStep::Idle | QsoStep::Done | QsoStep::WaitCq => false,
@@ -306,6 +352,16 @@ impl QsoMachine {
         if my_call.is_empty() {
             return false;
         }
+        // A Fox has no single exchange to advance: everything addressed to it is
+        // pile-up traffic, handled by the queue.
+        if let Some(fox) = self.fox.as_mut() {
+            let changed = fox.on_rx(decodes, &my_call, now_utc);
+            if changed {
+                self.progress();
+                self.progress_utc = now_utc;
+            }
+            return changed;
+        }
         // A pileup can decode both their answer to us *and* other traffic from
         // them in the same slot; an answer to us always wins over "they're
         // working someone else".
@@ -337,9 +393,24 @@ impl QsoMachine {
                 changed = true;
             }
         }
+        let hound = self.dxped() == DxpedMode::Hound;
         for d in decodes {
             let Some(from) = d.from.as_deref().filter(|f| !f.is_empty()) else { continue };
             let to_me = d.to.as_deref() == Some(my_call.as_str());
+
+            // Hound: the Fox closes our contact inside a message addressed to
+            // the *next* Hound ("<us> RR73; W9XYZ <fox> +03"), so `to` never
+            // names us. This is the only place a Hound's QSO completes.
+            if hound
+                && d.rr73_to.as_deref() == Some(my_call.as_str())
+                && self.dx.as_ref().map(|x| x.call.as_str()) == Some(from)
+                && !matches!(self.step, QsoStep::Idle | QsoStep::Confirming | QsoStep::Done)
+            {
+                self.transcript.push(TranscriptLine::rcvd(d.message.clone()));
+                self.log_qso(now_utc);
+                changed = true;
+                continue;
+            }
             // Our station answering someone else: they're in another exchange.
             let other = (!to_me && !answered_us && !d.is_cq && dx_call.as_deref() == Some(from))
                 .then(|| d.to.as_deref().filter(|t| !t.is_empty() && *t != my_call))
@@ -371,7 +442,10 @@ impl QsoMachine {
             // exchange. Only while our own exchange is still unfinished — once
             // we owe them a 73 / RR73 that message goes out regardless, so the
             // contact gets completed and logged.
-            if let Some(other) = other {
+            //
+            // A Hound is exempt: a Fox is *always* working somebody, and a Hound
+            // that stood down each time would never be answered at all.
+            if let Some(other) = other.filter(|_| !hound) {
                 if matches!(self.step, QsoStep::TxGrid | QsoStep::TxRReport) {
                     self.note_working(from, other);
                     self.step = QsoStep::WaitCq;
@@ -437,6 +511,11 @@ impl QsoMachine {
                     dx.rpt_sent = Some(d.snr_db);
                 }
             }
+            // Hound: the Fox came back to us, so finish the contact on its
+            // frequency rather than up in the calling zone where we started.
+            if hound && matches!(payload, Payload::Report(_) | Payload::RReport(_)) {
+                self.qsy_hz = Some(d.audio_hz);
+            }
             self.transcript.push(TranscriptLine::rcvd(d.message.clone()));
             self.progress();
             self.progress_utc = now_utc;
@@ -483,7 +562,17 @@ impl QsoMachine {
         true
     }
 
-    fn advance(&mut self, payload: &Payload, _now_utc: i64) -> bool {
+    fn advance(&mut self, payload: &Payload, now_utc: i64) -> bool {
+        // Hound: the Fox's RR73 ends the contact there and then. Sending a 73
+        // back would only take a slot from the pile-up — the Fox has already
+        // logged us and moved on.
+        if self.dxped() == DxpedMode::Hound
+            && self.step == QsoStep::TxRReport
+            && matches!(payload, Payload::Rrr | Payload::Rr73)
+        {
+            self.log_qso(now_utc);
+            return true;
+        }
         let prev = self.step;
         match (self.step, payload) {
             // They answered our CQ with their grid → send them a report.
@@ -523,7 +612,7 @@ impl QsoMachine {
             if let Some(e) = sdroxide_types::entity_name(&dx.call) {
                 self.worked_entities.insert(e.to_string());
             }
-            self.completed = Some(QsoRecord {
+            self.completed.push_back(QsoRecord {
                 call: dx.call.clone(),
                 grid: dx.grid.clone(),
                 rst_sent: dx.rpt_sent,
@@ -543,8 +632,44 @@ impl QsoMachine {
         self.resend = false;
     }
 
-    /// The message to transmit this slot, or None if we shouldn't key.
+    /// Everything to transmit this slot, each message with the tone offset it
+    /// goes out on. The everyday sequencer sends exactly one signal at the
+    /// operator's frequency; a Fox sends up to five, spaced 60 Hz apart.
+    pub fn plan_tx_all(&self) -> Vec<(String, f32)> {
+        if self.cfg.my_call.trim().is_empty() {
+            return Vec::new();
+        }
+        // A hand-queued message takes the slot on its own, Fox or not: the
+        // operator typed it to be heard, not to be one of five.
+        if let Some(m) = &self.manual {
+            return vec![(m.clone(), self.audio_hz)];
+        }
+        if let Some(plan) = self.fox_plan() {
+            return plan
+                .messages
+                .into_iter()
+                .enumerate()
+                .map(|(i, m)| (m, self.audio_hz + i as f32 * SLOT_SPACING_HZ))
+                .collect();
+        }
+        self.plan_tx().map(|m| vec![(m, self.audio_hz)]).unwrap_or_default()
+    }
+
+    /// This slot's Fox transmission, or `None` when we aren't a running Fox.
+    fn fox_plan(&self) -> Option<crate::fox::FoxPlan> {
+        self.fox
+            .as_ref()
+            .filter(|_| self.step == QsoStep::CallingCq && !self.cfg.my_call.trim().is_empty())
+            .map(|f| f.plan(&self.cfg))
+    }
+
+    /// The message to transmit this slot, or None if we shouldn't key. In Fox
+    /// mode this is the first of the [`plan_tx_all`](Self::plan_tx_all) signals
+    /// — what the operator's "next transmission" readout shows.
     pub fn plan_tx(&self) -> Option<String> {
+        if self.fox.is_some() && self.manual.is_none() {
+            return self.fox_plan().and_then(|p| p.messages.into_iter().next());
+        }
         // Nothing goes out without a station callsign: every message is built
         // around ours, and an unconfigured station must never key. (The message
         // packer degrades unpackable text to free text, so this is the guard
@@ -584,6 +709,19 @@ impl QsoMachine {
         if self.manual.take().is_some() {
             return;
         }
+        // A Fox commits the plan that just went out: contacts closed by an RR73
+        // are logged, and the callers it reported to are now being worked.
+        if let Some(plan) = self.fox_plan() {
+            let (cfg, mode) = (self.cfg.clone(), self.mode);
+            if let Some(fox) = self.fox.as_mut() {
+                fox.apply(&plan, &cfg, mode, now_utc);
+                while let Some(rec) = fox.take_completed() {
+                    self.completed.push_back(rec);
+                }
+            }
+            self.tx_since_progress += 1;
+            return;
+        }
         self.tx_since_progress += 1;
         // Calling one station that never comes back: give up rather than call
         // into the void all afternoon. (Repeating a CQ is exempt — that *is*
@@ -610,8 +748,9 @@ impl QsoMachine {
     }
 
     /// Take a completed QSO record for logging (fields freq_hz/band still 0).
+    /// Call until it returns `None` — a Fox can finish several at once.
     pub fn take_completed(&mut self) -> Option<QsoRecord> {
-        self.completed.take()
+        self.completed.pop_front()
     }
 
     pub fn status(&self, transmitting: bool) -> DigiStatus {
@@ -634,6 +773,7 @@ impl QsoMachine {
             fsq_heard: Vec::new(),
             fsq_messages: Vec::new(),
             rade: None,
+            fox_queue: self.fox.as_ref().map(Fox::status).unwrap_or_default(),
         }
     }
 }
@@ -666,6 +806,7 @@ mod tests {
             is_cq: msg.starts_with("CQ"),
             cq_dx: msg.starts_with("CQ DX"),
             free_text: false,
+            rr73_to: None,
         }
     }
 
@@ -1019,6 +1160,134 @@ mod tests {
         assert!(!q.tick(200)); // within the window
         assert!(q.tick(100 + WAIT_CQ_S)); // deadline reached → give up
         assert_eq!(q.step(), QsoStep::Idle);
+    }
+
+    /// A Fox's paired message: `rr73`'s contact closed, `work` being reported to.
+    fn fox_msg(rr73: &str, work: &str, fox: &str) -> Decode {
+        Decode {
+            message: format!("{rr73} RR73; {work} <{fox}> +02"),
+            to: Some(work.into()),
+            from: Some(fox.into()),
+            rr73_to: Some(rr73.into()),
+            ..decode("X Y Z")
+        }
+    }
+
+    #[test]
+    fn a_hound_moves_onto_the_fox_and_logs_on_its_rr73() {
+        let cfg = DigiConfig { dxped_mode: DxpedMode::Hound, ..cfg() };
+        let mut q = QsoMachine::new(Mode::Ft8, cfg);
+        q.start_qso("DX1FOX".into(), None, -10, false, 100);
+        assert_eq!(q.plan_tx().as_deref(), Some("DX1FOX AB1CD FN42"));
+        assert_eq!(q.take_qsy(), None, "nothing to move onto until the fox answers");
+
+        // The Fox comes back to us, from down in its own part of the band.
+        let answer = Decode { audio_hz: 750.0, ..decode("AB1CD DX1FOX -13") };
+        assert!(q.on_rx(&[answer], 115));
+        assert_eq!(q.step(), QsoStep::TxRReport);
+        assert_eq!(q.take_qsy(), Some(750.0), "finish the contact on the fox's frequency");
+        assert_eq!(q.take_qsy(), None, "the move is made once");
+        assert_eq!(q.plan_tx().as_deref(), Some("DX1FOX AB1CD R-10"));
+
+        // The Fox signs us off inside its message to the next hound: our call is
+        // nowhere in the addressing, only in the RR73 half.
+        assert!(q.on_rx(&[fox_msg("AB1CD", "W9XYZ", "DX1FOX")], 130));
+        assert_eq!(q.step(), QsoStep::Confirming);
+        assert!(!q.wants_tx(), "a hound owes the fox nothing after RR73");
+        let rec = q.take_completed().expect("logged");
+        assert_eq!(rec.call, "DX1FOX");
+        assert_eq!(rec.rst_sent, Some(-10));
+        assert_eq!(rec.rst_rcvd, Some(-13));
+    }
+
+    #[test]
+    fn a_hound_does_not_send_73_over_the_pile_up() {
+        // An ordinary answerer replies to RR73 with 73; a Hound must not — the
+        // Fox logged the contact when it sent the RR73 and is working someone
+        // else in that slot.
+        let hound = DigiConfig { dxped_mode: DxpedMode::Hound, ..cfg() };
+        let mut q = QsoMachine::new(Mode::Ft8, hound);
+        q.start_qso("DX1FOX".into(), None, -10, false, 100);
+        q.on_rx(&[decode("AB1CD DX1FOX -13")], 115);
+        assert!(q.on_rx(&[decode("AB1CD DX1FOX RR73")], 130));
+        assert_eq!(q.step(), QsoStep::Confirming);
+        assert!(q.take_completed().is_some());
+
+        // The same exchange in normal mode does owe a 73.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.start_qso("DX1FOX".into(), None, -10, false, 100);
+        q.on_rx(&[decode("AB1CD DX1FOX -13")], 115);
+        q.on_rx(&[decode("AB1CD DX1FOX RR73")], 130);
+        assert_eq!(q.step(), QsoStep::Tx73);
+    }
+
+    #[test]
+    fn a_hound_message_to_someone_else_is_not_ours_to_log() {
+        let cfg = DigiConfig { dxped_mode: DxpedMode::Hound, ..cfg() };
+        let mut q = QsoMachine::new(Mode::Ft8, cfg);
+        q.start_qso("DX1FOX".into(), None, -10, false, 100);
+        q.on_rx(&[decode("AB1CD DX1FOX -13")], 115);
+        // The Fox signs off a different hound; we keep calling.
+        assert!(!q.on_rx(&[fox_msg("K1ABC", "W9XYZ", "DX1FOX")], 130));
+        assert_eq!(q.step(), QsoStep::TxRReport);
+        assert!(q.take_completed().is_none());
+    }
+
+    #[test]
+    fn a_fox_transmits_its_pile_up_in_parallel() {
+        let cfg = DigiConfig {
+            my_call: "DX1FOX".into(),
+            my_grid: "AA00".into(),
+            dxped_mode: DxpedMode::Fox,
+            fox_slots: 2,
+            ..Default::default()
+        };
+        let mut q = QsoMachine::new(Mode::Ft8, cfg);
+        assert!(!q.wants_tx(), "a fox stands still until the operator starts it");
+
+        q.call_cq();
+        assert!(q.wants_tx());
+        assert_eq!(q.plan_tx_all(), [("CQ DX1FOX AA00".to_string(), 1500.0)]);
+
+        // Two hounds call: both get a report, on tones 60 Hz apart.
+        assert!(q.on_rx(&[decode("DX1FOX K1ABC FN42"), decode("DX1FOX W9XYZ EM48")], 100));
+        let plan = q.plan_tx_all();
+        assert_eq!(plan.len(), 2, "both slots in use: {plan:?}");
+        assert_eq!(plan[0].1, 1500.0);
+        assert_eq!(plan[1].1, 1560.0);
+        assert!(plan.iter().any(|(m, _)| m == "K1ABC DX1FOX -10"), "{plan:?}");
+        assert!(plan.iter().any(|(m, _)| m == "W9XYZ DX1FOX -10"), "{plan:?}");
+        q.note_tx_sent(115);
+
+        // K1ABC rogers → the next transmission closes it and logs the contact.
+        // W9XYZ is already being worked, so there is nobody spare to pair the
+        // RR73 with and it travels as an ordinary message.
+        assert!(q.on_rx(&[decode("DX1FOX K1ABC R-12")], 130));
+        assert_eq!(q.plan_tx().as_deref(), Some("K1ABC DX1FOX RR73"));
+        q.note_tx_sent(145);
+        let rec = q.take_completed().expect("logged when the RR73 went out");
+        assert_eq!(rec.call, "K1ABC");
+        assert_eq!(rec.rst_rcvd, Some(-12));
+        assert_eq!(rec.my_call, "DX1FOX");
+        assert!(q.status(false).fox_queue.iter().any(|c| c.call == "W9XYZ"));
+
+        // Standing the fox down stops it transmitting.
+        q.stop();
+        assert!(!q.wants_tx());
+    }
+
+    #[test]
+    fn only_ft8_has_a_fox() {
+        // FT4 has no DXpedition layout, so the role is inert there.
+        let cfg = DigiConfig {
+            my_call: "DX1FOX".into(),
+            dxped_mode: DxpedMode::Fox,
+            ..Default::default()
+        };
+        let mut q = QsoMachine::new(Mode::Ft4, cfg);
+        q.call_cq();
+        assert!(q.status(false).fox_queue.is_empty());
+        assert_eq!(q.plan_tx().as_deref(), Some("CQ DX1FOX"));
     }
 
     #[test]

@@ -162,9 +162,10 @@ impl Ft8Modem {
 /// Pack `text` into a 77-bit message, degrading to the nearest layout FT8 can
 /// carry, and report the message as the far end will read it.
 ///
-/// The ladder is: the standard exchange, then the non-standard-callsign layout
-/// (which can only carry `RRR` / `RR73` / `73`, so a grid or report is
-/// dropped), then 13 characters of free text.
+/// The ladder is: the DXpedition (Fox) layout when the text is written as one,
+/// then the standard exchange, then the non-standard-callsign layout (which can
+/// only carry `RRR` / `RR73` / `73`, so a grid or report is dropped), then 13
+/// characters of free text.
 fn pack_message(text: &str) -> Option<([u8; 77], String)> {
     let text = text.trim().to_ascii_uppercase();
     let toks: Vec<&str> = text.split_whitespace().collect();
@@ -173,6 +174,15 @@ fn pack_message(text: &str) -> Option<([u8; 77], String)> {
         toks.get(1).copied().unwrap_or(""),
         toks.get(2).copied().unwrap_or(""),
     );
+
+    // 0. DXpedition (Fox): "CALL1 RR73; CALL2 FOXCALL REPORT" closes one contact
+    //    and reports to the next in a single transmission. Only a Fox writes
+    //    this, and only ever with its own call third — the layout hashes it.
+    if c2 == "RR73;" && toks.len() == 5 {
+        if let Some((m, rpt)) = pack77_fox(c1, toks[2], toks[3], toks[4]) {
+            return Some((m, format!("{c1} RR73; {} <{}> {rpt}", toks[2], toks[3])));
+        }
+    }
 
     // 1. The everyday message, when both calls are standard.
     if toks.len() <= 3 {
@@ -218,6 +228,45 @@ fn pack_message(text: &str) -> Option<([u8; 77], String)> {
     Some((m, free.trim_end().to_string()))
 }
 
+/// Pack the DXpedition (Fox) layout — `i3=0, n3=1`:
+/// `[c28 rr73_call][c28 work_call][h10 fox_call][r5 report]`, then `n3` and
+/// `i3`. mfsk-core has no packer for it (only the unpacker), so the fields are
+/// written here; the bit positions are the ones `wsjt77::unpack77` reads back.
+///
+/// The report field is 5 bits in 2 dB steps (`report = 2·n5 − 30`), so an odd
+/// value lands on the nearest even one — that is the layout's resolution, not a
+/// rounding choice of ours. The quantised report is returned alongside the bits,
+/// because it is what the far end will read.
+fn pack77_fox(
+    rr73_call: &str,
+    work_call: &str,
+    fox_call: &str,
+    report: &str,
+) -> Option<([u8; 77], String)> {
+    let n28a = wsjt77::pack28(rr73_call)?;
+    let n28b = wsjt77::pack28(work_call)?;
+    if !wsjt77::is_standard_callsign(rr73_call) || !wsjt77::is_standard_callsign(work_call) {
+        return None;
+    }
+    let n10 = mfsk_core::msg::hash_table::ihashcall(fox_call, 10);
+    let db: i32 = report.trim_start_matches('+').parse().ok()?;
+    let n5 = ((db + 30) / 2).clamp(0, 31) as u32;
+
+    let mut msg = [0u8; 77];
+    let mut write = |start: usize, len: usize, val: u32| {
+        for i in 0..len {
+            msg[start + i] = ((val >> (len - 1 - i)) & 1) as u8;
+        }
+    };
+    write(0, 28, n28a);
+    write(28, 28, n28b);
+    write(56, 10, n10);
+    write(66, 5, n5);
+    write(71, 3, 1); // n3 = 1 (DXpedition)
+    write(74, 3, 0); // i3 = 0
+    Some((msg, sdroxide_types::fmt_report(2 * n5 as i16 - 30)))
+}
+
 /// Join up to three message tokens, dropping the empty ones.
 fn join3(a: &str, b: &str, c: &str) -> String {
     [a, b, c].iter().filter(|t| !t.is_empty()).copied().collect::<Vec<_>>().join(" ")
@@ -247,6 +296,7 @@ fn build_decode(
         is_cq: p.is_cq,
         cq_dx: p.cq_dx,
         free_text: p.free_text,
+        rr73_to: p.rr73_to,
     })
 }
 
@@ -259,6 +309,7 @@ struct Parsed {
     is_cq: bool,
     cq_dx: bool,
     free_text: bool,
+    rr73_to: Option<String>,
 }
 
 /// Pull the addressee, sender and grid out of a decoded message.
@@ -294,11 +345,13 @@ fn parse_message(text: &str, kind: MsgKind) -> Parsed {
 
     // DXpedition (Fox): "CALL1 RR73; CALL2 <fox> REPORT" — CALL1's contact is
     // finished and CALL2 is being worked, both by the (hashed) fox. Read it as
-    // the fox addressing CALL2; CALL1's RR73 is not ours to act on.
+    // the fox addressing CALL2, and carry CALL1's RR73 alongside: it is the only
+    // thing that tells a Hound its own contact just completed.
     if toks.get(1) == Some(&"RR73;") {
         return Parsed {
             to: toks.get(2).and_then(|t| call_of(t)),
             from: toks.get(3).and_then(|t| call_of(t)),
+            rr73_to: toks.first().and_then(|t| call_of(t)),
             ..Default::default()
         };
     }
@@ -452,6 +505,34 @@ mod tests {
         let p = parse_message("K1ABC RR73; W9XYZ <DX1FOX> +03", MsgKind::Fox);
         assert_eq!(p.to.as_deref(), Some("W9XYZ"));
         assert_eq!(p.from.as_deref(), Some("DX1FOX"), "the fox sent it");
+        assert_eq!(p.rr73_to.as_deref(), Some("K1ABC"), "K1ABC is the one being signed off");
+    }
+
+    #[test]
+    fn a_fox_message_round_trips() {
+        // One transmission closing K1ABC's contact and reporting to W9XYZ. The
+        // fox's own call travels as a 10-bit hash, so a receiver that has heard
+        // it resolves the name and one that hasn't sees `<...>`.
+        let mut modem = Ft8Modem::new(Mode::Ft8);
+        modem.seed_hashes(&["DX1FOX".to_string()]);
+        let (burst, sent) =
+            modem.encode_burst_12k("K1ABC RR73; W9XYZ DX1FOX +03", 1500.0, 0.5).expect("encode");
+        assert_eq!(sent, "K1ABC RR73; W9XYZ <DX1FOX> +02", "the layout carries 2 dB steps");
+
+        let mut slot = vec![0.0f32; 6_000];
+        slot.extend_from_slice(&burst);
+        slot.resize(15 * 12_000, 0.0);
+        let buf: Vec<i16> = slot.iter().map(|&s| (s * 20_000.0) as i16).collect();
+        let d = modem
+            .decode_slot(&buf, 0)
+            .into_iter()
+            .find(|d| d.message.contains("RR73;"))
+            .expect("decoded");
+        assert_eq!(d.message, "K1ABC RR73; W9XYZ <DX1FOX> +02");
+        assert_eq!(d.rr73_to.as_deref(), Some("K1ABC"));
+        assert_eq!(d.to.as_deref(), Some("W9XYZ"));
+        assert_eq!(d.from.as_deref(), Some("DX1FOX"));
+        assert!(!d.free_text);
     }
 
     #[test]

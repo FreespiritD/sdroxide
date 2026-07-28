@@ -40,6 +40,14 @@ pub struct Decode {
     /// like an exchange.
     #[serde(default)]
     pub free_text: bool,
+    /// DXpedition (Fox) layout only: the station whose contact the Fox is
+    /// closing with `RR73` ("K1ABC RR73; W9XYZ <DX1FOX> +03" → `K1ABC`).
+    ///
+    /// It rides beside `to`/`from`, which name the *other* half of that message
+    /// (the station being worked now). A Hound learns its QSO is complete from
+    /// this field and nowhere else — the RR73 addressed to it is never in `to`.
+    #[serde(default)]
+    pub rr73_to: Option<String>,
 }
 
 /// How far away a station has to be to count as DX when the DXCC entity can't
@@ -73,6 +81,60 @@ pub fn cq_is_for_us(d: &Decode, my_call: &str, my_grid: &str) -> bool {
             None => true,
         },
     }
+}
+
+/// Which side of an FT8 DXpedition-mode pile-up this station is operating.
+///
+/// DXpedition mode is FT8's answer to a rare-entity pile-up: one *Fox* works up
+/// to five *Hounds* at a time, transmitting several signals at once in the low
+/// part of the passband, always in the same (even) period. Hounds call from
+/// above 1000 Hz and, once the Fox comes back to them, move down onto the Fox's
+/// own frequency to finish. Both roles are FT8-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DxpedMode {
+    /// Ordinary FT8/FT4 operation; neither side of a DXpedition pile-up.
+    #[default]
+    Normal,
+    /// Calling a DXpedition station running Fox mode.
+    Hound,
+    /// Running the pile-up: several simultaneous signals, a queue of callers.
+    Fox,
+}
+
+/// DXpedition mode splits the passband in two: the Fox transmits its signals
+/// below this audio offset, and Hounds call above it, so the pile-up never
+/// lands on top of the one station everybody is trying to work. A Hound crosses
+/// into the Fox's half only after the Fox has answered it, to finish the
+/// contact on the Fox's own frequency.
+pub const FOX_ZONE_MAX_HZ: f32 = 1000.0;
+/// Top of the Hound calling zone — the practical upper edge of an FT8 passband.
+/// Display only; nothing refuses to transmit above it.
+pub const HOUND_ZONE_MAX_HZ: f32 = 3000.0;
+/// Most signals a Fox may transmit at once (WSJT-X's limit).
+pub const FOX_MAX_SLOTS: u8 = 5;
+
+impl DxpedMode {
+    pub const ALL: [DxpedMode; 3] = [DxpedMode::Normal, DxpedMode::Hound, DxpedMode::Fox];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DxpedMode::Normal => "Normal",
+            DxpedMode::Hound => "Hound",
+            DxpedMode::Fox => "Fox",
+        }
+    }
+}
+
+/// One station in a Fox's pile-up, for the operator's queue display.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FoxCaller {
+    pub call: String,
+    pub grid: Option<String>,
+    /// Their signal at us — the report we send them.
+    pub snr_db: i16,
+    /// True once we have sent them a report and are running their contact;
+    /// false while they are only waiting in the queue.
+    pub working: bool,
 }
 
 /// Where a QSO is in the standard FT8/FT4 exchange.
@@ -191,6 +253,10 @@ pub struct DigiStatus {
     /// RADE digital voice: modem state, when that mode is active.
     #[serde(default)]
     pub rade: Option<RadeStatus>,
+    /// Fox mode: the pile-up, callers being worked first. Empty in every other
+    /// role, so the panel showing it is its own "are we the Fox?" test.
+    #[serde(default)]
+    pub fox_queue: Vec<FoxCaller>,
 }
 
 /// Live state of the RADE V1 modem.
@@ -248,6 +314,7 @@ impl DigiStatus {
             fsq_heard: Vec::new(),
             fsq_messages: Vec::new(),
             rade: None,
+            fox_queue: Vec::new(),
         }
     }
 }
@@ -563,6 +630,13 @@ pub struct DigiConfig {
     /// Calling CQ is exempt (repeating a CQ is the point); this counts calls to
     /// one station that never comes back. 0 disables it.
     pub max_tx_repeats: u32,
+    /// FT8: which side of a DXpedition pile-up to operate (see [`DxpedMode`]).
+    /// Ignored in every other mode.
+    pub dxped_mode: DxpedMode,
+    /// Fox mode: how many signals to transmit at once (1..=5, WSJT-X's limit).
+    /// They are spaced 60 Hz apart starting at the transmit tone offset, and
+    /// share the transmitter's power between them.
+    pub fox_slots: u8,
     /// RADE: silence the demodulated (analog) audio, so only decoded speech is
     /// audible. Off by default — hearing the raw signal is how the operator
     /// tunes onto an over before the modem syncs.
@@ -605,6 +679,8 @@ impl Default for DigiConfig {
             max_tx_repeats: 10,
             sstv_tx_ppm: 0.0,
             rf_paint_speed: 0.25,
+            dxped_mode: DxpedMode::Normal,
+            fox_slots: 3,
             rade_mute_analog: false,
             hell_variant: HellVariant::Feld,
             hell_rx_agc: 0.35,
@@ -982,6 +1058,7 @@ mod tests {
             is_cq: true,
             cq_dx: msg.starts_with("CQ DX"),
             free_text: false,
+            rr73_to: None,
         }
     }
 

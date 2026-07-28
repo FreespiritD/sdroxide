@@ -154,11 +154,33 @@ impl DigiController {
     }
 
     pub fn set_config(&mut self, cfg: DigiConfig) {
+        // A Fox owns its period: it transmits in the configured one and the
+        // whole pile-up sequences off that, so nothing may flip it later.
+        if cfg.dxped_mode == sdroxide_types::DxpedMode::Fox {
+            self.tx_even = cfg.tx_even;
+        }
         self.qso.set_config(cfg);
         self.status_dirty = true;
     }
 
+    /// Set our transmit tone offset, as the operator asked.
+    ///
+    /// A Hound is held out of the Fox's half of the passband: the low end
+    /// belongs to the DXpedition's own signals, and a Hound calling down there
+    /// transmits on top of the station the whole pile-up is trying to work. The
+    /// one legitimate move into it — following the Fox once it has answered us —
+    /// goes through [`tune_audio_hz`](Self::tune_audio_hz) instead.
     pub fn set_audio_hz(&mut self, hz: f32) {
+        let hz = if self.is_hound() { hz.max(sdroxide_types::FOX_ZONE_MAX_HZ) } else { hz };
+        self.tune_audio_hz(hz);
+    }
+
+    fn is_hound(&self) -> bool {
+        self.qso.dxped() == sdroxide_types::DxpedMode::Hound
+    }
+
+    /// Move the transmit tone with no zone check — the sequencer's own moves.
+    fn tune_audio_hz(&mut self, hz: f32) {
         self.audio_hz = hz.clamp(200.0, 3500.0);
         self.qso.set_audio_hz(self.audio_hz);
         self.status_dirty = true;
@@ -183,7 +205,12 @@ impl DigiController {
         audio_hz: f32,
         wait_for_cq: bool,
     ) {
-        self.set_audio_hz(audio_hz);
+        // Answering a station means transmitting where they are — except as a
+        // Hound, whose calling frequency is deliberately away from the Fox. It
+        // stays where the operator put it until the Fox answers.
+        if !self.is_hound() {
+            self.set_audio_hz(audio_hz);
+        }
         let now = SlotScheduler::unix_now(SystemTime::now()) as i64;
         // Reply in the slot *opposite* to when the DX actually transmitted, using
         // the slot we last heard them in — so a late reply never lands in their
@@ -281,20 +308,44 @@ impl DigiController {
         self.status_dirty = true;
     }
 
-    /// Synthesize `msg` into a 48 kHz mono burst (12 kHz GFSK, resampled).
-    /// Returns the audio and the message as the far end will read it, which is
-    /// what the transcript logs — a compound-call or over-long message is
-    /// degraded to a form FT8 can carry (see [`Ft8Modem::encode_burst_12k`]).
-    fn synth_burst_48k(&mut self, msg: &str) -> Option<(Vec<f32>, String)> {
-        let (burst12, sent) = self.modem.encode_burst_12k(msg, self.audio_hz, 0.5)?;
+    /// Synthesize one slot's transmission into a 48 kHz mono burst (12 kHz
+    /// GFSK, resampled). Returns the audio and each message as the far end will
+    /// read it, which is what the transcript logs — a compound-call or over-long
+    /// message is degraded to a form FT8 can carry (see
+    /// [`Ft8Modem::encode_burst_12k`]).
+    ///
+    /// `msgs` is usually one message; a Fox transmits several at once, summed,
+    /// each on its own tone. The per-signal amplitude is divided between them so
+    /// the total stays inside the same headroom a single burst uses — five
+    /// signals at full drive would clip the transmitter, and an intermodulating
+    /// Fox is heard as splatter across the whole pile-up.
+    fn synth_burst_48k(&mut self, msgs: &[(String, f32)]) -> Option<(Vec<f32>, Vec<String>)> {
+        let amp = 0.5 / msgs.len().max(1) as f32;
+        let mut mix: Vec<f32> = Vec::new();
+        let mut sent = Vec::with_capacity(msgs.len());
+        for (msg, hz) in msgs {
+            let Some((burst12, as_sent)) = self.modem.encode_burst_12k(msg, *hz, amp) else {
+                continue;
+            };
+            if mix.len() < burst12.len() {
+                mix.resize(burst12.len(), 0.0);
+            }
+            for (m, s) in mix.iter_mut().zip(&burst12) {
+                *m += s;
+            }
+            sent.push(as_sent);
+        }
+        if mix.is_empty() {
+            return None;
+        }
         // Resample 12 k → 48 k.
         match MonoResampler::new(DECODE_RATE, 48_000.0) {
             Some(mut r) => {
-                let mut out = Vec::with_capacity(burst12.len() * 4 + 2048);
-                r.push(&burst12, &mut out);
+                let mut out = Vec::with_capacity(mix.len() * 4 + 2048);
+                r.push(&mix, &mut out);
                 Some((out, sent))
             }
-            None => Some((burst12, sent)),
+            None => Some((mix, sent)),
         }
     }
 
@@ -327,6 +378,12 @@ impl DigiController {
                         // Advance the QSO from anything addressed to us.
                         if self.qso.on_rx(&decodes, slot_utc) {
                             self.status_dirty = true;
+                        }
+                        // Hound: the Fox answered, so finish the contact on its
+                        // frequency instead of up in the calling zone. The one
+                        // move into the Fox's half that is not a mistake.
+                        if let Some(hz) = self.qso.take_qsy() {
+                            self.tune_audio_hz(hz);
                         }
                         // Keep our transmit slot opposite to the DX's most recent
                         // transmission, so replies stay out of their slot even if
@@ -383,20 +440,22 @@ impl DigiController {
             // easily rides out. (Being our opposite slot, this is never the DX's.)
             let latest = self.params.slot_s - self.params.burst_s + self.params.tx_offset_s;
             if into >= self.params.tx_offset_s && into <= latest {
-                if let Some(msg) = self.qso.plan_tx() {
-                    if let Some((samples, sent)) = self.synth_burst_48k(&msg) {
-                        self.burst = Some(BurstPlayer { samples, pos: 0 });
-                        self.tx_fired_slot = idx;
-                        self.qso.record_tx(&sent);
-                        self.status_dirty = true;
-                        actions.push(DigiAction::KeyTx);
+                let msgs = self.qso.plan_tx_all();
+                if let Some((samples, sent)) = self.synth_burst_48k(&msgs) {
+                    self.burst = Some(BurstPlayer { samples, pos: 0 });
+                    self.tx_fired_slot = idx;
+                    for m in &sent {
+                        self.qso.record_tx(m);
                     }
+                    self.status_dirty = true;
+                    actions.push(DigiAction::KeyTx);
                 }
             }
         }
 
-        // 4. Completed QSO → log it (fill freq/band from the dial).
-        if let Some(mut rec) = self.qso.take_completed() {
+        // 4. Completed QSOs → log them (fill freq/band from the dial). A Fox can
+        // finish several in one transmission, so drain rather than take one.
+        while let Some(mut rec) = self.qso.take_completed() {
             rec.freq_hz = self.dial_hz + self.audio_hz as f64;
             rec.band = adif_band(rec.freq_hz).to_string();
             actions.push(DigiAction::QsoLogged(rec));
@@ -553,6 +612,33 @@ mod tests {
             actions.iter().any(|a| matches!(a, DigiAction::KeyTx)),
             "should key late in our opposite slot, got {actions:?}"
         );
+    }
+
+    #[test]
+    fn a_hound_is_kept_out_of_the_fox_zone() {
+        use sdroxide_types::{DxpedMode, FOX_ZONE_MAX_HZ};
+        let mut c = DigiController::new(
+            Mode::Ft8,
+            DigiConfig { dxped_mode: DxpedMode::Hound, ..cfg() },
+            12_000.0,
+        );
+        // Tuning down among the Fox's own signals is refused.
+        c.set_audio_hz(600.0);
+        assert_eq!(c.audio_hz(), FOX_ZONE_MAX_HZ);
+        c.set_audio_hz(1800.0);
+        assert_eq!(c.audio_hz(), 1800.0, "the calling zone is free");
+
+        // Answering a Fox heard at 700 Hz keeps our calling frequency; only the
+        // Fox's own reply moves us down onto it.
+        c.start_qso("DX1FOX".into(), None, -10, 700.0, false);
+        assert_eq!(c.audio_hz(), 1800.0);
+        c.tune_audio_hz(700.0);
+        assert_eq!(c.audio_hz(), 700.0);
+
+        // Outside Hound mode the whole passband is the operator's.
+        let mut c = DigiController::new(Mode::Ft8, cfg(), 12_000.0);
+        c.set_audio_hz(600.0);
+        assert_eq!(c.audio_hz(), 600.0);
     }
 
     #[test]

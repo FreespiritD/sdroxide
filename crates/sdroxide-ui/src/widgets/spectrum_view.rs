@@ -548,6 +548,7 @@ pub fn show(
         smooth,
         trace,
         None,
+        sdroxide_types::DxpedMode::Normal,
         &[],
         skimmer,
         alpha,
@@ -575,6 +576,11 @@ pub fn show_ext(
     smooth: &mut SpectrumSmooth,
     trace: &mut TraceCache,
     digi_audio_hz: Option<f32>,
+    // FT8 DXpedition role. Anything but `Normal` shades the two halves of the
+    // passband the pile-up divides itself into, with the half we operate in
+    // named — a Hound calling down among the Fox's signals is the single most
+    // common way to be unworkable, and it is invisible without this.
+    dxped: sdroxide_types::DxpedMode,
     // Extra audio-offset tuning lines (Hz relative to the dial), e.g. the RTTY
     // mark/space pair. Drawn as thin amber lines to aid exact tuning.
     markers: &[f32],
@@ -1023,6 +1029,65 @@ pub fn show_ext(
             wf_rect.y_range(),
             Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 60, 60, 140)),
         );
+    }
+
+    // DXpedition zones: the Fox's half of the passband and the Hound calling
+    // zone above it, drawn under the markers so they read as background.
+    if dxped != sdroxide_types::DxpedMode::Normal {
+        let dial = state.rx_freq_hz();
+        let mine = |z: sdroxide_types::DxpedMode| z == dxped;
+        for (lo, hi, label, base, ours) in [
+            (
+                0.0,
+                sdroxide_types::FOX_ZONE_MAX_HZ as f64,
+                "FOX",
+                Color32::from_rgb(255, 120, 160),
+                mine(sdroxide_types::DxpedMode::Fox),
+            ),
+            (
+                sdroxide_types::FOX_ZONE_MAX_HZ as f64,
+                sdroxide_types::HOUND_ZONE_MAX_HZ as f64,
+                "HOUNDS",
+                Color32::from_rgb(0, 208, 244),
+                mine(sdroxide_types::DxpedMode::Hound),
+            ),
+        ] {
+            let (x0, x1) = (view.freq_to_x(dial + lo, &rect), view.freq_to_x(dial + hi, &rect));
+            if x1 <= rect.left() || x0 >= rect.right() {
+                continue;
+            }
+            let band = Rect::from_min_max(
+                pos2(x0.max(rect.left()), rect.top()),
+                pos2(x1.min(rect.right()), rect.bottom()),
+            );
+            // The half we transmit in is tinted; the other only outlined, so
+            // "where am I allowed to be" is legible at a glance.
+            let fill = if ours { 26 } else { 10 };
+            painter.rect_filled(
+                band,
+                0.0,
+                Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), fill),
+            );
+            painter.vline(
+                x1,
+                rect.y_range(),
+                Stroke::new(1.0, Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 90)),
+            );
+            if band.width() > 34.0 {
+                painter.text(
+                    pos2(band.left() + 4.0, rect.top() + 2.0),
+                    Align2::LEFT_TOP,
+                    label,
+                    FontId::proportional(9.5),
+                    Color32::from_rgba_unmultiplied(
+                        base.r(),
+                        base.g(),
+                        base.b(),
+                        if ours { 220 } else { 110 },
+                    ),
+                );
+            }
+        }
     }
 
     // Digital-mode audio TX marker (cyan) at dial + audio_hz.

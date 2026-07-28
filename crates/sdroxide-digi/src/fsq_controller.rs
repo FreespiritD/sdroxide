@@ -204,6 +204,7 @@ impl FsqController {
             fsq_heard: self.heard.clone(),
             fsq_messages: self.messages.clone(),
             rade: None,
+            fox_queue: Vec::new(),
         }
     }
 

@@ -2693,6 +2693,21 @@ impl SdroxideApp {
                                 RichText::new("● TX").size(13.0).strong().color(crate::theme::PINK),
                             );
                         }
+                        if s.config.dxped_mode != sdroxide_types::DxpedMode::Normal
+                            && s.mode == Mode::Ft8
+                        {
+                            ui.label(
+                                RichText::new(s.config.dxped_mode.label().to_uppercase())
+                                    .size(11.0)
+                                    .strong()
+                                    .color(crate::theme::PINK),
+                            )
+                            .on_hover_text(
+                                "DXpedition mode. The transmit frequency is held out of the \
+                                 Fox's half of the passband (below 1000 Hz) until the Fox \
+                                 answers.",
+                            );
+                        }
                         if s.tx_watchdog {
                             // The sequencer stood down on its own; say so, since
                             // an idle step alone looks like nothing happened.
@@ -2774,6 +2789,33 @@ impl SdroxideApp {
                 }
             }
         });
+
+        // Fox pile-up: who is being worked and who is waiting. Only a Fox has
+        // one, so its presence is the mode indicator.
+        let fox_queue = status.as_ref().map(|s| s.fox_queue.clone()).unwrap_or_default();
+        if !fox_queue.is_empty() {
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(
+                    RichText::new(format!("PILE-UP {}", fox_queue.len()))
+                        .size(9.5)
+                        .strong()
+                        .color(crate::theme::CYAN_DIM),
+                );
+                for c in &fox_queue {
+                    let col = if c.working { crate::theme::GREEN } else { Color32::from_gray(150) };
+                    ui.label(RichText::new(&c.call).size(11.5).strong().color(col)).on_hover_text(
+                        format!(
+                            "{} · {:+} dB{}",
+                            if c.working { "being worked" } else { "waiting" },
+                            c.snr_db,
+                            c.grid.as_deref().map(|g| format!(" · {g}")).unwrap_or_default(),
+                        ),
+                    );
+                }
+            });
+        }
 
         // Transcript: a red-bordered scroll box that always fills the space
         // between the station card and the action buttons (reserve the button
@@ -3869,6 +3911,43 @@ impl SdroxideApp {
                         )
                         .changed();
                     ui.end_row();
+                    ui.label("DXpedition");
+                    ui.horizontal(|ui| {
+                        for m in sdroxide_types::DxpedMode::ALL {
+                            changed |= ui
+                                .selectable_value(&mut cfg.dxped_mode, m, m.label())
+                                .on_hover_text(match m {
+                                    sdroxide_types::DxpedMode::Normal => "Ordinary FT8 operation.",
+                                    sdroxide_types::DxpedMode::Hound => {
+                                        "Calling a DXpedition running Fox mode: call from above \
+                                         1000 Hz, move down onto the Fox when it answers, and \
+                                         log on its RR73 without sending 73."
+                                    }
+                                    sdroxide_types::DxpedMode::Fox => {
+                                        "Run the pile-up: several signals at once, a queue of \
+                                         callers, worked strongest and rarest first. CALL CQ \
+                                         starts it, STOP QSO stands it down."
+                                    }
+                                })
+                                .changed();
+                        }
+                    });
+                    ui.end_row();
+                    if cfg.dxped_mode == sdroxide_types::DxpedMode::Fox {
+                        ui.label("Fox signals");
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut cfg.fox_slots)
+                                    .range(1..=sdroxide_types::FOX_MAX_SLOTS)
+                                    .suffix(" at once"),
+                            )
+                            .on_hover_text(
+                                "Simultaneous transmissions, spaced 60 Hz apart. They share the \
+                                 transmitter's power, so more signals means each is weaker.",
+                            )
+                            .changed();
+                        ui.end_row();
+                    }
                 });
                 ui.separator();
                 ui.label(
@@ -7114,6 +7193,11 @@ impl eframe::App for SdroxideApp {
                     &mut self.spec_smooth,
                     &mut self.trace_cache,
                     Some(audio_hz),
+                    if mode == Mode::Ft8 {
+                        self.digi_status.as_ref().map(|s| s.config.dxped_mode).unwrap_or_default()
+                    } else {
+                        sdroxide_types::DxpedMode::Normal
+                    },
                     &markers,
                     &ft8_spots,
                     &ft8_alpha,
