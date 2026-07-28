@@ -1103,6 +1103,7 @@ impl SdroxideApp {
             }
             if changed {
                 persist_qso_log(&self.qso_log);
+                self.log_content_changed();
             }
         }
     }
@@ -1151,11 +1152,27 @@ impl SdroxideApp {
         }
         if changed {
             persist_qso_log(&self.qso_log);
+            self.log_content_changed();
         }
         self.push_net_log(format!(
             "Confirmations: {} downloaded, {matched} newly confirmed",
             recs.len()
         ));
+    }
+
+    /// Drop everything derived from the logbook.
+    ///
+    /// The caches below key on the log's *length*, which catches a QSO being
+    /// added or deleted but not one being edited in place — and a confirmation
+    /// arriving, or a lookup filling in a grid, is exactly that. Without this
+    /// the awards tally (and the globe's heat layer, which is the same tally
+    /// placed on the Earth) would keep showing yesterday's answer until the
+    /// next QSO happened to change the length.
+    fn log_content_changed(&mut self) {
+        self.awards_cache = None;
+        self.awards_heat = None;
+        self.worked_entities_cache = None;
+        self.log_index_cache = None;
     }
 
     fn push_net_log(&mut self, line: String) {
@@ -4884,7 +4901,10 @@ impl SdroxideApp {
                             // too; an ADIF import is not, and does not count.
                             self.session_qsos += 1;
                         } else if let Some(e) = self.qso_log.iter_mut().find(|q| q.id == rec.id) {
+                            // An edit can change the call, the grid or the QSL
+                            // flags, none of which move the log's length.
                             *e = rec;
+                            self.log_content_changed();
                         }
                         persist_qso_log(&self.qso_log);
                     } else {
