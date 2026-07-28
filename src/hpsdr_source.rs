@@ -10,6 +10,11 @@ use std::time::Duration;
 use sdroxide_hpsdr::{HpsdrHandle, LNA_GAIN_ELEMENT};
 use sdroxide_radio::{Complex32, IqSource, Result};
 
+/// How long the board may deliver no I/Q at all before the connection counts as
+/// dead and the engine starts reconnecting. Comfortably longer than the few
+/// milliseconds a healthy board takes to begin streaming after the run command.
+const SILENCE_BEFORE_REOPEN: Duration = Duration::from_secs(5);
+
 pub struct HpsdrSource {
     handle: HpsdrHandle,
     center: f64,
@@ -115,6 +120,14 @@ impl IqSource for HpsdrSource {
         } else {
             Vec::new()
         }
+    }
+
+    /// A board that has stopped delivering I/Q — unplugged, rebooted, taken over
+    /// by another program, or opened with the wrong protocol because a probe was
+    /// lost — is reported as needing a reopen so the engine reconnects on its
+    /// own. Without this the operator has to press Apply again by hand.
+    fn needs_reopen(&self) -> bool {
+        self.handle.silent_for() >= SILENCE_BEFORE_REOPEN
     }
 
     fn tx_begin(&mut self, center_hz: f64, _rate: f64) -> Result<f64> {

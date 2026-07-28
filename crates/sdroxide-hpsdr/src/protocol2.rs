@@ -7,6 +7,7 @@
 //! trusting on-air behavior; see the notes on individual builders.
 
 use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
@@ -217,6 +218,8 @@ pub(crate) fn run(ctx: ThreadCtx) {
     let mut t = P2Thread {
         socket: ctx.socket,
         radio: ctx.radio,
+        opened_at: ctx.opened_at,
+        last_rx_ms: ctx.last_rx_ms,
         rate_khz: (ctx.rate_hz / 1000.0) as u16,
         rx: ctx.rx,
         tx: ctx.tx,
@@ -232,6 +235,10 @@ pub(crate) fn run(ctx: ThreadCtx) {
 struct P2Thread {
     socket: UdpSocket,
     radio: IpAddr,
+    /// Epoch and slot for the liveness clock the handle reads (see
+    /// `HpsdrHandle::silent_for`).
+    opened_at: Instant,
+    last_rx_ms: crate::net::RxClock,
     rate_khz: u16,
     rx: Producer<f32>,
     tx: Consumer<f32>,
@@ -312,7 +319,7 @@ impl P2Thread {
         let mut rx_scratch: Vec<f32> = Vec::with_capacity(512);
         let mut tx_scratch: Vec<f32> = Vec::with_capacity(DUC_SAMPLES_PER_PKT * 2);
         let mut buf = [0u8; 2048];
-        let mut stats = RxStats::new(2);
+        let mut stats = RxStats::new(2, self.rate_khz as f64 * 1000.0);
         let mut seq_in = SeqTracker::new();
         let mut logged_first_rx = false;
         let mut logged_first_tx = false;
@@ -361,6 +368,10 @@ impl P2Thread {
                         rx_scratch.clear();
                         if let Some(pairs) = decode_ddc_iq(&buf[..n], &mut rx_scratch) {
                             stats.on_iq(pairs);
+                            self.last_rx_ms.store(
+                                self.opened_at.elapsed().as_millis() as u64,
+                                Ordering::Relaxed,
+                            );
                             if !logged_first_rx {
                                 logged_first_rx = true;
                                 let declared = if n >= 16 {

@@ -294,6 +294,10 @@ impl HpsdrConfig {
     /// Range of the Hermes-Lite 2 front-end gain, in dB.
     pub const LNA_GAIN_MIN_DB: f64 = -12.0;
     pub const LNA_GAIN_MAX_DB: f64 = 48.0;
+    /// Name of the RX gain element the backend exposes for that gain. Lives here
+    /// rather than in `sdroxide-hpsdr` so the (wasm-safe) settings UI can address
+    /// the same element without depending on the native backend crate.
+    pub const LNA_GAIN_ELEMENT: &'static str = "LNA";
 
     /// Mid-scale default: sensitive enough on a quiet band without clipping the
     /// ADC on a real antenna.

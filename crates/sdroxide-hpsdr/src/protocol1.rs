@@ -26,6 +26,7 @@
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use crate::net::{
@@ -275,7 +276,18 @@ fn start_command(run: bool) -> [u8; 64] {
 
 /// Run the Protocol 1 network loop until told to shut down.
 pub(crate) fn run(ctx: ThreadCtx) {
-    let ThreadCtx { socket, radio, board, rate_hz, lna_gain_db, mut rx, mut tx, ctrl } = ctx;
+    let ThreadCtx {
+        socket,
+        radio,
+        opened_at,
+        last_rx_ms,
+        board,
+        rate_hz,
+        lna_gain_db,
+        mut rx,
+        mut tx,
+        ctrl,
+    } = ctx;
     let dest = SocketAddr::new(radio, PORT);
     let speed = speed_code(rate_hz);
     let has_lna = board_has_lna_gain(&board);
@@ -313,7 +325,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
     let mut rx_scratch: Vec<f32> = Vec::with_capacity(FLOATS_PER_DATAGRAM);
     let mut tx_scratch: Vec<f32> = Vec::with_capacity(FLOATS_PER_DATAGRAM);
     let mut next_ep2 = Instant::now();
-    let mut stats = RxStats::new(1);
+    let mut stats = RxStats::new(1, rate_hz);
     let mut seq_in = SeqTracker::new();
     let mut logged_first_rx = false;
     let mut logged_versions = false;
@@ -371,6 +383,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
                 if let Some(info) = decode_ep6(&buf[..n], &mut rx_scratch) {
                     let pairs = rx_scratch.len() / 2;
                     stats.on_iq(pairs);
+                    last_rx_ms.store(opened_at.elapsed().as_millis() as u64, Ordering::Relaxed);
                     stats.on_lost(seq_in.observe(info.seq) as u64);
                     if !logged_first_rx {
                         logged_first_rx = true;

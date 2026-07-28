@@ -2,7 +2,10 @@
 //! protocol (1 = Metis, 2 = new) runs its own blocking UDP thread; both stream
 //! RX I/Q into a ring, packetize TX I/Q from a ring, and keep the radio alive.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -30,8 +33,9 @@ pub const LNA_GAIN_MAX_DB: f64 = 48.0;
 /// LNA gain used when nothing else is configured. Mid-scale: enough sensitivity
 /// on a quiet band without clipping the ADC on a real antenna at night.
 pub const LNA_GAIN_DEFAULT_DB: f64 = 20.0;
-/// Name of the RX gain element exposed to the UI for that LNA.
-pub const LNA_GAIN_ELEMENT: &str = "LNA";
+/// Name of the RX gain element exposed to the UI for that LNA. Defined in
+/// `sdroxide-types` so the wasm-safe settings UI can name the same element.
+pub const LNA_GAIN_ELEMENT: &str = sdroxide_types::HpsdrConfig::LNA_GAIN_ELEMENT;
 
 /// Whether a board name reported by discovery is a Hermes-Lite, the only
 /// Protocol 1 family whose front-end gain this crate knows how to command
@@ -44,6 +48,21 @@ pub fn board_has_lna_gain(board: &str) -> bool {
 /// Clamp a dB value to the LNA range and encode it as the 6-bit wire value.
 pub(crate) fn lna_gain_code(db: f64) -> u8 {
     (db.clamp(LNA_GAIN_MIN_DB, LNA_GAIN_MAX_DB) - LNA_GAIN_MIN_DB).round() as u8
+}
+
+/// What each radio said the last time it answered a discovery probe, so a probe
+/// that goes unanswered can fall back to fact instead of guessing. See the
+/// `None` arm of [`HpsdrHandle::open`] for why probes get lost.
+static LAST_PROBE: Mutex<Option<HashMap<Ipv4Addr, (String, u8)>>> = Mutex::new(None);
+
+fn remember_probe(ip: Ipv4Addr, board: &str, protocol: u8) {
+    let mut g = LAST_PROBE.lock().unwrap_or_else(|e| e.into_inner());
+    g.get_or_insert_with(HashMap::new).insert(ip, (board.to_string(), protocol));
+}
+
+fn recall_probe(ip: Ipv4Addr) -> Option<(String, u8)> {
+    let g = LAST_PROBE.lock().unwrap_or_else(|e| e.into_inner());
+    g.as_ref()?.get(&ip).cloned()
 }
 
 /// Format the first `n` bytes of a datagram as spaced uppercase hex, for the
@@ -60,6 +79,12 @@ pub(crate) fn hex_head(bytes: &[u8], n: usize) -> String {
 /// bad decode offset shows up immediately as an implausible ksps figure.
 pub(crate) struct RxStats {
     proto: u8,
+    /// Nominal RX rate, so the measured long-run rate can be quoted as an error
+    /// in ppm — that number is the board's master clock measured against the
+    /// host's, and it tells you whether a tuning error scales with frequency
+    /// (a clock problem) or is a fixed offset (everything else).
+    nominal_hz: f64,
+    started: Instant,
     since: Instant,
     win_datagrams: u64,
     win_samples: u64,
@@ -73,9 +98,11 @@ pub(crate) struct RxStats {
 }
 
 impl RxStats {
-    pub(crate) fn new(proto: u8) -> Self {
+    pub(crate) fn new(proto: u8, nominal_hz: f64) -> Self {
         RxStats {
             proto,
+            nominal_hz,
+            started: Instant::now(),
             since: Instant::now(),
             win_datagrams: 0,
             win_samples: 0,
@@ -114,6 +141,25 @@ impl RxStats {
         self.total_dropped += pairs as u64;
     }
 
+    /// The board's sample clock measured against the host's, in ppm, once
+    /// enough time has passed for the figure to mean anything. The same
+    /// oscillator drives the NCO, so this is also the tuning error in ppm: a
+    /// board reading a few ppm here cannot be more than a few Hz off frequency
+    /// at HF, which rules a clock fault in or out on the spot.
+    fn clock_error(&self) -> String {
+        let dt = self.started.elapsed().as_secs_f64();
+        // Below ~20 s the host's own scheduling jitter dominates the figure.
+        if dt < 20.0 || self.total_samples == 0 || self.nominal_hz <= 0.0 {
+            return "clock: measuring".to_string();
+        }
+        let measured = self.total_samples as f64 / dt;
+        let ppm = (measured / self.nominal_hz - 1.0) * 1e6;
+        format!(
+            "clock: {measured:.0} sps, {ppm:+.0} ppm vs nominal (≈{:+.0} Hz at 14 MHz)",
+            14.0e6 * ppm / 1e6
+        )
+    }
+
     /// Emit a throughput line if the reporting interval has elapsed. Lost or
     /// dropped samples raise it to `warn`: both corrupt the audio and the
     /// waterfall, and neither is otherwise visible from the outside.
@@ -142,7 +188,7 @@ impl RxStats {
         } else {
             tracing::debug!(
                 "HPSDR P{} RX: {} datagrams, {} samples ({:.1} ksps) over {:.2}s; \
-                 {} unrecognized; totals {} datagrams / {} samples",
+                 {} unrecognized; totals {} datagrams / {} samples; {}",
                 self.proto,
                 self.win_datagrams,
                 self.win_samples,
@@ -151,6 +197,7 @@ impl RxStats {
                 self.win_other,
                 self.total_datagrams,
                 self.total_samples,
+                self.clock_error(),
             );
         }
         self.since = Instant::now();
@@ -228,11 +275,21 @@ pub(crate) enum Ctrl {
     Shutdown,
 }
 
+/// Liveness shared between a protocol thread and its handle: milliseconds since
+/// the connection opened at the moment the radio last delivered I/Q, or 0 if it
+/// never has. Written by the network thread rather than by the reader, so a long
+/// transmission — during which nothing drains the RX ring — is not mistaken for
+/// a radio that has gone away.
+pub(crate) type RxClock = Arc<AtomicU64>;
+
 /// Everything a protocol thread needs: the socket, the radio address, the rates,
 /// the RX/TX rings, and the control channel.
 pub(crate) struct ThreadCtx {
     pub socket: UdpSocket,
     pub radio: IpAddr,
+    /// Epoch for `last_rx_ms`, and the slot the thread stamps.
+    pub opened_at: Instant,
+    pub last_rx_ms: RxClock,
     /// Board name from discovery — decides which board-specific registers the
     /// Protocol 1 thread is allowed to write.
     pub board: String,
@@ -260,6 +317,15 @@ pub struct HpsdrHandle {
     pub tx_rate_hz: f64,
     /// Front-end LNA gain in dB currently commanded (Hermes-Lite 2 only).
     lna_gain_db: f64,
+    /// When the connection opened, and when the network thread last decoded I/Q
+    /// — together these tell the engine whether the radio is still there (see
+    /// [`Self::silent_for`]).
+    opened_at: Instant,
+    last_rx_ms: RxClock,
+    /// Set while keyed. A half-duplex board can legitimately stop sending I/Q
+    /// for the length of an over (an FT8 burst is 12.6 s), which must not be
+    /// read as a dead link.
+    transmitting: Arc<AtomicBool>,
 }
 
 impl HpsdrHandle {
@@ -284,16 +350,36 @@ impl HpsdrHandle {
                     dev.mac,
                     if dev.in_use { "IN USE" } else { "idle" }
                 );
+                remember_probe(ip, &dev.board, dev.protocol);
                 (dev.board, dev.protocol)
             }
-            None => {
-                tracing::warn!(
-                    "HPSDR: {ip} did not answer the discovery probe; assuming Protocol 2. \
-                     If this board is a Hermes-Lite 2 or other Protocol 1 device, RX will not \
-                     start — check the IP and that no other program holds the radio."
-                );
-                ("HPSDR".to_string(), 2)
-            }
+            // A silent probe does not mean "Protocol 2". The usual cause is a
+            // reopen while the previous handle is still streaming: the board
+            // answers discovery to whichever socket last spoke to it, and a
+            // Protocol 1 thread talks to port 1024 several hundred times a
+            // second, so the reply lands on the *old* socket and this probe
+            // times out. Guessing Protocol 2 there starts the wrong framing
+            // against a Protocol 1 board and the connection never produces I/Q.
+            None => match recall_probe(ip) {
+                Some((board, protocol)) => {
+                    tracing::warn!(
+                        "HPSDR: {ip} did not answer the discovery probe; reusing what it \
+                         reported last time — board \"{board}\", Protocol {protocol}. This is \
+                         normal when reconnecting while the previous connection is still \
+                         streaming."
+                    );
+                    (board, protocol)
+                }
+                None => {
+                    tracing::warn!(
+                        "HPSDR: {ip} did not answer the discovery probe and has never answered \
+                         one; assuming Protocol 2. If this board is a Hermes-Lite 2 or other \
+                         Protocol 1 device, RX will not start — check the IP and that no other \
+                         program holds the radio."
+                    );
+                    ("HPSDR".to_string(), 2)
+                }
+            },
         };
 
         let rate = clamp_rate(sample_rate_hz, protocol);
@@ -330,9 +416,13 @@ impl HpsdrHandle {
         );
 
         let (ctrl_tx, ctrl_rx) = crossbeam_channel::unbounded();
+        let opened_at = Instant::now();
+        let last_rx_ms: RxClock = Arc::new(AtomicU64::new(0));
         let ctx = ThreadCtx {
             socket,
             radio: IpAddr::V4(ip),
+            opened_at,
+            last_rx_ms: last_rx_ms.clone(),
             board: board.clone(),
             rate_hz: rate,
             lna_gain_db,
@@ -362,6 +452,9 @@ impl HpsdrHandle {
             sample_rate_hz: rate,
             tx_rate_hz: tx_rate,
             lna_gain_db,
+            opened_at,
+            last_rx_ms,
+            transmitting: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -396,6 +489,7 @@ impl HpsdrHandle {
     /// [`Self::tx_write`].
     pub fn tx_begin(&self, tx_freq_hz: f64) -> f64 {
         tracing::info!("HPSDR: TX begin at {tx_freq_hz:.0} Hz ({:.0} Hz I/Q)", self.tx_rate_hz);
+        self.transmitting.store(true, Ordering::Relaxed);
         let _ = self.ctrl.send(Ctrl::TxOn(tx_freq_hz));
         self.tx_rate_hz
     }
@@ -403,6 +497,7 @@ impl HpsdrHandle {
     /// Stop transmitting.
     pub fn tx_end(&self) {
         tracing::info!("HPSDR: TX end");
+        self.transmitting.store(false, Ordering::Relaxed);
         let _ = self.ctrl.send(Ctrl::TxOff);
     }
 
@@ -436,6 +531,21 @@ impl HpsdrHandle {
             }
             chunk.commit_all();
         }
+    }
+
+    /// How long the radio has gone without delivering I/Q, measured from the
+    /// last datagram the network thread decoded or — if none ever arrived —
+    /// from when the connection was opened. A connection that never starts is
+    /// the failure that matters most here (wrong protocol guessed, or the board
+    /// still held by a previous stream), so it has to age just like one that
+    /// stops. Always zero while transmitting.
+    pub fn silent_for(&self) -> Duration {
+        if self.transmitting.load(Ordering::Relaxed) {
+            return Duration::ZERO;
+        }
+        let since_open = self.opened_at.elapsed();
+        let last = Duration::from_millis(self.last_rx_ms.load(Ordering::Relaxed));
+        since_open.saturating_sub(last)
     }
 
     /// Drain interleaved I,Q floats from the RX ring into `out`. Always returns
@@ -525,7 +635,7 @@ mod tests {
     fn ring_overflow_drops_whole_datagrams() {
         // A ring with room for exactly 4 floats (rtrb rounds up to the request).
         let (mut prod, mut cons) = RingBuffer::<f32>::new(4);
-        let mut stats = RxStats::new(1);
+        let mut stats = RxStats::new(1, 384_000.0);
         push_iq(&mut prod, &[1.0, 2.0], &mut stats);
         push_iq(&mut prod, &[3.0, 4.0], &mut stats);
         // The third datagram cannot fit and is dropped whole, not truncated.
@@ -542,7 +652,7 @@ mod tests {
         // than have 4 of its floats pushed, which would leave the ring one slot
         // out of step and swap I with Q for good.
         let (mut prod, mut cons) = RingBuffer::<f32>::new(4);
-        let mut stats = RxStats::new(1);
+        let mut stats = RxStats::new(1, 384_000.0);
         push_iq(&mut prod, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &mut stats);
         assert!(cons.pop().is_err(), "nothing was pushed");
     }
@@ -574,6 +684,23 @@ mod tests {
                 pair.commit_all();
             }
         }
+    }
+
+    #[test]
+    fn a_lost_probe_falls_back_to_what_the_board_said_before() {
+        // Reconnecting while the previous stream is still running loses the
+        // discovery reply, and guessing "Protocol 2" there drives a Hermes-Lite
+        // with the wrong framing — the connection comes up and never produces
+        // I/Q, which is what made Apply/reconnect need two presses.
+        let ip: Ipv4Addr = "192.0.2.53".parse().unwrap();
+        assert_eq!(recall_probe(ip), None, "nothing known about a board never probed");
+        remember_probe(ip, "Hermes-Lite 2", 1);
+        assert_eq!(recall_probe(ip), Some(("Hermes-Lite 2".to_string(), 1)));
+        // A later probe that says something different wins.
+        remember_probe(ip, "Saturn", 2);
+        assert_eq!(recall_probe(ip), Some(("Saturn".to_string(), 2)));
+        // Other radios are unaffected.
+        assert_eq!(recall_probe("192.0.2.54".parse().unwrap()), None);
     }
 
     #[test]

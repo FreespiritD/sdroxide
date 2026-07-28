@@ -5525,6 +5525,7 @@ impl SdroxideApp {
                         &self.hpsdr_devices,
                         io.radio_edit,
                         io.hpsdr_discover,
+                        cmds,
                     ),
                     Backend::Cat => settings_cat_tab(ui, &self.serial_ports, io.radio_edit),
                     Backend::Tci => {
@@ -6082,6 +6083,7 @@ fn settings_hpsdr_tab(
     devices: &[sdroxide_types::HpsdrDevice],
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     discover: &mut bool,
+    cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::HpsdrConfig;
     let Some(cfg) = radio_edit.as_mut() else {
@@ -6149,11 +6151,14 @@ fn settings_hpsdr_tab(
         ui.end_row();
 
         ui.label("LNA gain").on_hover_text(
-            "Front-end gain of a Hermes-Lite 2, applied when the radio is opened. \
-             Too high clips the ADC and the whole band looks distorted; too low and the \
-             receiver goes deaf. Adjust it live on the Device tab.",
+            "Front-end gain of a Hermes-Lite 2. Takes effect immediately — no reconnect — \
+             and is remembered as the level the radio starts at. Too high clips the ADC and \
+             the whole band looks distorted; too low and the receiver goes deaf.",
         );
-        crate::chrome::slider(
+        // Applies live as well as being persisted: this is the gain an operator
+        // retunes per band, and making it wait for Apply/reconnect would mean
+        // dropping the stream every time they nudge it.
+        if crate::chrome::slider(
             ui,
             Slider::new(
                 &mut cfg.hpsdr.lna_gain_db,
@@ -6161,7 +6166,15 @@ fn settings_hpsdr_tab(
             )
             .step_by(1.0)
             .suffix(" dB"),
-        );
+        )
+        .changed()
+        {
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: sdroxide_types::HpsdrConfig::LNA_GAIN_ELEMENT.to_string(),
+                db: cfg.hpsdr.lna_gain_db,
+            });
+        }
         ui.end_row();
     });
     ui.add_space(6.0);
