@@ -243,12 +243,7 @@ pub fn module_bare<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -
 }
 
 /// Like [`module_bare`] but with an explicit box `height`.
-pub fn module_bare_h<R>(
-    ui: &mut Ui,
-    width: f32,
-    height: f32,
-    add: impl FnOnce(&mut Ui) -> R,
-) -> R {
+pub fn module_bare_h<R>(ui: &mut Ui, width: f32, height: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
     ui.allocate_ui_with_layout(
         egui::vec2(width, height),
         egui::Layout::top_down(egui::Align::Min),
@@ -406,8 +401,7 @@ fn chip_impl(
         } else {
             (v.bg_fill, v.bg_stroke, v.fg_stroke.color)
         };
-        ui.painter()
-            .add(Shape::convex_polygon(outline, fill, stroke));
+        ui.painter().add(Shape::convex_polygon(outline, fill, stroke));
 
         let text_pos = Pos2 {
             x: rect.center().x - galley.size().x / 2.0,

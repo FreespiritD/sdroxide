@@ -21,9 +21,20 @@ pub fn make_modulator(mode: Mode, rate: f64) -> Option<Box<dyn Modulator>> {
         // FT8/FT4 modulate as USB: the synthesized 12 kHz audio (resampled to
         // 48 k, injected as "mic") is USB-modulated exactly like a real radio.
         // PSK/RTTY, Olivia/Thor/FSQ, and SSTV ride the same USB path.
-        Mode::Lsb | Mode::Usb | Mode::Digu | Mode::Digl | Mode::Ft8 | Mode::Ft4
-        | Mode::Psk | Mode::Rtty | Mode::Sstv
-        | Mode::Olivia | Mode::Thor | Mode::Fsq | Mode::Hell | Mode::RfPaint
+        Mode::Lsb
+        | Mode::Usb
+        | Mode::Digu
+        | Mode::Digl
+        | Mode::Ft8
+        | Mode::Ft4
+        | Mode::Psk
+        | Mode::Rtty
+        | Mode::Sstv
+        | Mode::Olivia
+        | Mode::Thor
+        | Mode::Fsq
+        | Mode::Hell
+        | Mode::RfPaint
         | Mode::Rade => Some(Box::new(SsbMod::new(rate, lo, hi))),
         Mode::Am | Mode::Sam | Mode::Dsb => Some(Box::new(AmMod::new(rate))),
         Mode::Nfm => Some(Box::new(FmMod::new(rate))),
@@ -50,8 +61,7 @@ impl SsbMod {
 impl Modulator for SsbMod {
     fn process(&mut self, audio: &[f32], out: &mut Vec<Complex32>) {
         self.complex_in.clear();
-        self.complex_in
-            .extend(audio.iter().map(|&a| Complex32::new(a.clamp(-1.0, 1.0), 0.0)));
+        self.complex_in.extend(audio.iter().map(|&a| Complex32::new(a.clamp(-1.0, 1.0), 0.0)));
         let before = out.len();
         self.fir.process(&self.complex_in, out);
         // A real tone splits half its amplitude into each sideband.
@@ -78,9 +88,7 @@ impl Modulator for AmMod {
         self.filtered.clear();
         self.lpf.process(audio, &mut self.filtered);
         out.extend(
-            self.filtered
-                .iter()
-                .map(|&a| Complex32::new(0.5 * (1.0 + a.clamp(-1.0, 1.0)), 0.0)),
+            self.filtered.iter().map(|&a| Complex32::new(0.5 * (1.0 + a.clamp(-1.0, 1.0)), 0.0)),
         );
     }
 }
@@ -109,12 +117,9 @@ impl Modulator for FmMod {
         self.filtered.clear();
         self.lpf.process(audio, &mut self.filtered);
         for &a in &self.filtered {
-            self.phase = (self.phase + self.dev_step * a.clamp(-1.0, 1.0) as f64)
-                % std::f64::consts::TAU;
-            out.push(Complex32::new(
-                0.9 * self.phase.cos() as f32,
-                0.9 * self.phase.sin() as f32,
-            ));
+            self.phase =
+                (self.phase + self.dev_step * a.clamp(-1.0, 1.0) as f64) % std::f64::consts::TAU;
+            out.push(Complex32::new(0.9 * self.phase.cos() as f32, 0.9 * self.phase.sin() as f32));
         }
     }
 }

@@ -53,9 +53,16 @@ pub enum FeedCmd {
 /// instead, so the worker offers them here rather than making anyone re-encode
 /// or re-fetch. Only sources whose wire form is the raw bytes appear.
 pub enum RawUpdate {
-    Sun { channel: SdoChannel, fetched_unix: i64, jpeg: Vec<u8> },
+    Sun {
+        channel: SdoChannel,
+        fetched_unix: i64,
+        jpeg: Vec<u8>,
+    },
     /// An element set: `geo` distinguishes QO-100 from the amateur list.
-    Tle { geo: bool, text: String },
+    Tle {
+        geo: bool,
+        text: String,
+    },
 }
 
 /// Handle to the worker. Dropping it stops the thread, which is what confines
@@ -219,9 +226,8 @@ fn load_cached(
     let sats = sats_txt.as_deref().map(satellites::parse_tles);
     let sats_geo = sats_geo_txt.as_deref().map(satellites::parse_tles);
     let oval = cache.read_string("ovation.json").and_then(|s| aurora::parse_ovation(&s));
-    let power = cache
-        .read_string("hemipower.txt")
-        .and_then(|s| aurora::parse_hemispheric_power(&s));
+    let power =
+        cache.read_string("hemipower.txt").and_then(|s| aurora::parse_hemispheric_power(&s));
     let kp_forecast = cache.read_string("kpforecast.json").map(|s| aurora::parse_kp_forecast(&s));
     {
         let mut d = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -313,12 +319,14 @@ fn refresh(
         Source::Flux => (indices::FLUX_URL.to_string(), "flux.json".to_string(), JSON_LIMIT),
         Source::Kp => (indices::KP_URL.to_string(), "kp.json".to_string(), JSON_LIMIT),
         Source::Xray => (indices::XRAY_URL.to_string(), "xray.json".to_string(), JSON_LIMIT),
-        Source::Muf => (indices::IONOSONDE_URL.to_string(), "ionosondes.json".to_string(), JSON_LIMIT),
-        Source::Sats => (satellites::AMATEUR_URL.to_string(), "amateur.txt".to_string(), JSON_LIMIT),
-        Source::SatGeo => (satellites::QO100_URL.to_string(), "qo100.txt".to_string(), JSON_LIMIT),
-        Source::Aurora => {
-            (aurora::OVATION_URL.to_string(), "ovation.json".to_string(), JSON_LIMIT)
+        Source::Muf => {
+            (indices::IONOSONDE_URL.to_string(), "ionosondes.json".to_string(), JSON_LIMIT)
         }
+        Source::Sats => {
+            (satellites::AMATEUR_URL.to_string(), "amateur.txt".to_string(), JSON_LIMIT)
+        }
+        Source::SatGeo => (satellites::QO100_URL.to_string(), "qo100.txt".to_string(), JSON_LIMIT),
+        Source::Aurora => (aurora::OVATION_URL.to_string(), "ovation.json".to_string(), JSON_LIMIT),
         Source::AuroraPower => {
             (aurora::HEMI_POWER_URL.to_string(), "hemipower.txt".to_string(), JSON_LIMIT)
         }
@@ -347,11 +355,9 @@ fn refresh(
                 // Forward the original bytes for the sources whose wire form is
                 // the payload itself, before `bytes` is dropped.
                 match src {
-                    Source::Sun => raw(RawUpdate::Sun {
-                        channel,
-                        fetched_unix: now,
-                        jpeg: bytes.clone(),
-                    }),
+                    Source::Sun => {
+                        raw(RawUpdate::Sun { channel, fetched_unix: now, jpeg: bytes.clone() })
+                    }
                     Source::Sats | Source::SatGeo => {
                         if let Ok(text) = std::str::from_utf8(&bytes) {
                             raw(RawUpdate::Tle {
@@ -434,9 +440,13 @@ fn parse(src: Source, bytes: &[u8], channel: SdoChannel, now: i64) -> Parsed {
                 Source::Regions => swpc::parse_regions(text).map(Parsed::Regions),
                 // These four return an Option rather than a Result: a feed that
                 // is momentarily empty is normal, not an error.
-                Source::Flux => return indices::parse_flux(text).map_or(Parsed::None, Parsed::Flux),
+                Source::Flux => {
+                    return indices::parse_flux(text).map_or(Parsed::None, Parsed::Flux);
+                }
                 Source::Kp => return indices::parse_kp(text).map_or(Parsed::None, Parsed::Kp),
-                Source::Xray => return indices::parse_xray(text).map_or(Parsed::None, Parsed::Xray),
+                Source::Xray => {
+                    return indices::parse_xray(text).map_or(Parsed::None, Parsed::Xray);
+                }
                 Source::Muf => {
                     let v = indices::parse_ionosondes(text);
                     return if v.is_empty() { Parsed::None } else { Parsed::Ionosondes(v) };
@@ -492,19 +502,14 @@ fn http_get(
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    let header = |name: &str| {
-        resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string)
-    };
+    let header =
+        |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
     let next = Validators {
         etag: header("etag"),
         last_modified: header("last-modified"),
         fetched_unix: 0,
     };
-    let bytes = resp
-        .body_mut()
-        .with_config()
-        .limit(limit)
-        .read_to_vec()
-        .map_err(|e| e.to_string())?;
+    let bytes =
+        resp.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| e.to_string())?;
     Ok(Some((bytes, next)))
 }

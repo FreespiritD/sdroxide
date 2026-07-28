@@ -122,8 +122,7 @@ struct Cli {
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -177,11 +176,7 @@ fn main() -> anyhow::Result<()> {
         );
     }
     if let Some(target) = &cli.connect {
-        let url = if target.contains("://") {
-            target.clone()
-        } else {
-            format!("ws://{target}/ws")
-        };
+        let url = if target.contains("://") { target.clone() } else { format!("ws://{target}/ws") };
         return gui_main::run_remote(&url);
     }
 
@@ -223,10 +218,7 @@ fn tx_tune_test(
     let mut handles = sdroxide_radio::start_engine(
         source,
         caps,
-        sdroxide_radio::EngineConfig {
-            tx_ham_only: settings.tx_ham_only,
-            ..Default::default()
-        },
+        sdroxide_radio::EngineConfig { tx_ham_only: settings.tx_ham_only, ..Default::default() },
     );
     let engine_thread = handles.thread.take();
     std::thread::sleep(Duration::from_millis(400));
@@ -511,7 +503,8 @@ fn print_caps(caps: &sdroxide_types::DeviceCaps) {
         }
     }
     if !caps.sample_rates.is_empty() {
-        let list: Vec<String> = caps.sample_rates.iter().map(|r| format!("{:.3}", r / 1e6)).collect();
+        let list: Vec<String> =
+            caps.sample_rates.iter().map(|r| format!("{:.3}", r / 1e6)).collect();
         println!("  rates (Msps)  : {}", list.join(", "));
     }
     for &(lo, hi) in &caps.rate_ranges {

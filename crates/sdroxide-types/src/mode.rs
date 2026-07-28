@@ -112,10 +112,7 @@ impl Mode {
     /// / FSQ), as opposed to the slotted FT8/FT4 modes. Drives which decode
     /// engine + panel is used.
     pub fn is_text_modem(self) -> bool {
-        matches!(
-            self,
-            Mode::Psk | Mode::Rtty | Mode::Olivia | Mode::Thor | Mode::Fsq
-        )
+        matches!(self, Mode::Psk | Mode::Rtty | Mode::Olivia | Mode::Thor | Mode::Fsq)
     }
 
     /// True for the slotted FT8/FT4 modes, as opposed to the continuous
@@ -264,11 +261,9 @@ impl Mode {
                 ("500", 450.0, 950.0),
                 ("1k", 200.0, 1200.0),
             ],
-            Mode::Am | Mode::Sam => &[
-                ("6k", -3000.0, 3000.0),
-                ("10k", -5000.0, 5000.0),
-                ("16k", -8000.0, 8000.0),
-            ],
+            Mode::Am | Mode::Sam => {
+                &[("6k", -3000.0, 3000.0), ("10k", -5000.0, 5000.0), ("16k", -8000.0, 8000.0)]
+            }
             Mode::Nfm => &[("8k", -4000.0, 4000.0), ("16k", -8000.0, 8000.0)],
             Mode::Dsb => &[("5k", -2500.0, 2500.0), ("6k", -3000.0, 3000.0)],
             // Digital modes have a fixed wide passband; no presets.

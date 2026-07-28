@@ -46,11 +46,7 @@ pub fn ui(ui: &mut egui::Ui, st: &mut SolarUi) {
     let now = super::wall_clock_unix() as i64;
 
     egui::Panel::top(egui::Id::new("solar-top"))
-        .frame(
-            egui::Frame::new()
-                .fill(theme::BG_DEEP)
-                .inner_margin(egui::Margin::symmetric(8, 6)),
-        )
+        .frame(egui::Frame::new().fill(theme::BG_DEEP).inner_margin(egui::Margin::symmetric(8, 6)))
         .show(ui, |ui| {
             chrome::angled_frame(ui, theme::PINK, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
@@ -109,10 +105,7 @@ fn target_button(ui: &mut egui::Ui, st: &mut SolarUi) {
             ui.set_max_width(560.0);
             for (caption, targets) in Focus::groups() {
                 ui.label(
-                    RichText::new(caption.to_uppercase())
-                        .color(theme::CYAN_DIM)
-                        .size(9.5)
-                        .strong(),
+                    RichText::new(caption.to_uppercase()).color(theme::CYAN_DIM).size(9.5).strong(),
                 );
                 ui.horizontal_wrapped(|ui| {
                     for f in targets {
@@ -188,7 +181,9 @@ fn sun_module(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, now
                 let s = d.status(Source::Sun);
                 match (s.age_secs(now), &s.last_error) {
                     (Some(age), None) => (timefmt::age(age), theme::GREEN),
-                    (Some(age), Some(_)) => (format!("{} · offline", timefmt::age(age)), theme::YELLOW),
+                    (Some(age), Some(_)) => {
+                        (format!("{} · offline", timefmt::age(age)), theme::YELLOW)
+                    }
                     (None, Some(_)) => ("offline".to_string(), theme::PINK),
                     (None, None) => ("…".to_string(), theme::CYAN_DIM),
                 }
@@ -241,7 +236,8 @@ fn time_module(ui: &mut egui::Ui, st: &mut SolarUi) {
         if chrome::chip(ui, st.sim_offset_s == 0.0, "NOW").clicked() {
             st.sim_offset_s = 0.0;
         }
-        for (label, dt) in [("−24h", -86400.0), ("−1h", -3600.0), ("+1h", 3600.0), ("+24h", 86400.0)]
+        for (label, dt) in
+            [("−24h", -86400.0), ("−1h", -3600.0), ("+1h", 3600.0), ("+24h", 86400.0)]
         {
             if chrome::chip(ui, false, label).clicked() {
                 st.sim_offset_s += dt;
@@ -261,10 +257,7 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     interact(ui, st, &resp);
 
     let ppp = ui.ctx().pixels_per_point();
-    let px = [
-        (rect.width() * ppp).round().max(1.0),
-        (rect.height() * ppp).round().max(1.0),
-    ];
+    let px = [(rect.width() * ppp).round().max(1.0), (rect.height() * ppp).round().max(1.0)];
     let sim_now = super::wall_clock_unix() + st.sim_offset_s;
     let anim = ui.input(|i| i.time);
     advance_tour(ui, st, sim_now, anim);
@@ -315,11 +308,7 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
 }
 
 /// Project a world point into the widget. `None` when it is behind the eye.
-fn project(
-    view_proj: &[[f32; 4]; 4],
-    rect: egui::Rect,
-    world: [f32; 3],
-) -> Option<egui::Pos2> {
+fn project(view_proj: &[[f32; 4]; 4], rect: egui::Rect, world: [f32; 3]) -> Option<egui::Pos2> {
     // Column-major, so column i scales input component i.
     let mut o = [0.0f32; 4];
     for (r, out) in o.iter_mut().enumerate() {
@@ -369,16 +358,18 @@ fn draw_labels(
         }
 
         let galley = p.layout_no_wrap(l.text.clone(), font.clone(), l.color);
-        let text_rect = egui::Rect::from_min_size(
-            pos - egui::vec2(0.0, galley.size().y * 0.5),
-            galley.size(),
-        );
-        let hovered = l.click != Click::None
-            && pointer.is_some_and(|q| text_rect.expand(4.0).contains(q));
+        let text_rect =
+            egui::Rect::from_min_size(pos - egui::vec2(0.0, galley.size().y * 0.5), galley.size());
+        let hovered =
+            l.click != Click::None && pointer.is_some_and(|q| text_rect.expand(4.0).contains(q));
         if hovered {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             // A backing plate, so it reads as something you can press.
-            p.rect_filled(text_rect.expand2(egui::vec2(4.0, 2.0)), 0, theme::FILL.gamma_multiply(0.85));
+            p.rect_filled(
+                text_rect.expand2(egui::vec2(4.0, 2.0)),
+                0,
+                theme::FILL.gamma_multiply(0.85),
+            );
             if clicked {
                 hit = Some(l.click);
             }
@@ -388,7 +379,13 @@ fn draw_labels(
         // well as over empty space.
         let color = if hovered { theme::TEXT_STRONG } else { l.color };
         let shadow = egui::Color32::from_black_alpha(color.a().saturating_sub(40));
-        p.text(pos + egui::vec2(1.0, 1.0), egui::Align2::LEFT_CENTER, &l.text, font.clone(), shadow);
+        p.text(
+            pos + egui::vec2(1.0, 1.0),
+            egui::Align2::LEFT_CENTER,
+            &l.text,
+            font.clone(),
+            shadow,
+        );
         p.text(pos, egui::Align2::LEFT_CENTER, &l.text, font.clone(), color);
     }
 
@@ -576,12 +573,8 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
                                 } else {
                                     theme::TEXT
                                 };
-                                ui.label(
-                                    RichText::new(timefmt::ymd_hm(p.rise_unix)).color(color),
-                                );
-                                ui.label(
-                                    RichText::new(hhmm(p.set_unix)).color(color),
-                                );
+                                ui.label(RichText::new(timefmt::ymd_hm(p.rise_unix)).color(color));
+                                ui.label(RichText::new(hhmm(p.set_unix)).color(color));
                                 ui.label(
                                     RichText::new(format!("{} min", p.duration_s() / 60))
                                         .color(color),
@@ -616,11 +609,9 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
                     );
                     ui.add_space(4.0);
                     ui.label(
-                        RichText::new(
-                            "AOS/LOS are azimuths at the horizon. Times are UTC.",
-                        )
-                        .color(theme::LINE_LIT)
-                        .size(10.0),
+                        RichText::new("AOS/LOS are azimuths at the horizon. Times are UTC.")
+                            .color(theme::LINE_LIT)
+                            .size(10.0),
                     );
                 }
             }
@@ -770,9 +761,7 @@ fn weather_panel(
     // may be a long way off, and saying so costs one line.
     let note = st
         .qth
-        .and_then(|(lat, lon)| {
-            sdroxide_solar::indices::estimate_muf(&w.ionosondes, lat, lon, now)
-        })
+        .and_then(|(lat, lon)| sdroxide_solar::indices::estimate_muf(&w.ionosondes, lat, lon, now))
         .map(|m| {
             p.layout_no_wrap(
                 format!("{} · {:.0} km", m.confidence(), m.nearest_km),
@@ -786,8 +775,10 @@ fn weather_panel(
     let width = note.as_ref().map_or(width, |n| width.max(n.size().x + pad * 2.0));
     let height =
         rows.len() as f32 * row_h + note.as_ref().map_or(0.0, |n| n.size().y + 4.0) + pad * 2.0;
-    let panel =
-        egui::Rect::from_min_size(egui::pos2(rect.right() - width - 12.0, top), egui::vec2(width, height));
+    let panel = egui::Rect::from_min_size(
+        egui::pos2(rect.right() - width - 12.0, top),
+        egui::vec2(width, height),
+    );
     if !rect.contains_rect(panel) {
         return top;
     }
@@ -943,15 +934,11 @@ fn aurora_panel(
 
     let title = p.layout_no_wrap("AURORA".into(), small.clone(), theme::CYAN_DIM);
     let pad = 10.0;
-    let strip_w = if bins.is_empty() {
-        0.0
-    } else {
-        bins.len() as f32 * (BAR_W + BAR_GAP) - BAR_GAP
-    };
-    let width = (key_w + val_w + 18.0)
-        .max(strip_w)
-        .max(footer.as_ref().map_or(0.0, |f| f.size().x))
-        + pad * 2.0;
+    let strip_w =
+        if bins.is_empty() { 0.0 } else { bins.len() as f32 * (BAR_W + BAR_GAP) - BAR_GAP };
+    let width =
+        (key_w + val_w + 18.0).max(strip_w).max(footer.as_ref().map_or(0.0, |f| f.size().x))
+            + pad * 2.0;
     let height = title.size().y
         + 5.0
         + rows.len() as f32 * row_h
@@ -960,8 +947,10 @@ fn aurora_panel(
         + footer.as_ref().map_or(0.0, |f| f.size().y + 4.0)
         + pad * 2.0;
 
-    let panel =
-        egui::Rect::from_min_size(egui::pos2(rect.right() - width - 12.0, top), egui::vec2(width, height));
+    let panel = egui::Rect::from_min_size(
+        egui::pos2(rect.right() - width - 12.0, top),
+        egui::vec2(width, height),
+    );
     // Same rule as every other readout in this window: if it does not fit, it
     // is not drawn. A panel clipped by the viewport edge is worse than none.
     if !rect.contains_rect(panel) {
@@ -995,7 +984,10 @@ fn aurora_panel(
                 theme::LINE.gamma_multiply(0.55),
             );
             p.rect_filled(
-                egui::Rect::from_min_max(egui::pos2(x, base - h.max(1.0)), egui::pos2(x + BAR_W, base)),
+                egui::Rect::from_min_max(
+                    egui::pos2(x, base - h.max(1.0)),
+                    egui::pos2(x + BAR_W, base),
+                ),
                 0,
                 kp_color(bin.kp),
             );

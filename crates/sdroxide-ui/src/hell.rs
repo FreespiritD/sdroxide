@@ -62,17 +62,11 @@ impl Default for HellUi {
 
 /// Map one raw gray through the appearance controls.
 fn shade(v: u8, view: &crate::view::HellView) -> Color32 {
-    let x = ((v as f32 / 255.0) * view.bright)
-        .clamp(0.0, 1.0)
-        .powf(view.contrast.max(0.05));
+    let x = ((v as f32 / 255.0) * view.bright).clamp(0.0, 1.0).powf(view.contrast.max(0.05));
     let x = if view.reverse { 1.0 - x } else { x };
     // 0 = blank paper, 1 = full ink.
     let lerp = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * x) as u8;
-    Color32::from_rgb(
-        lerp(PAPER.r(), INK.r()),
-        lerp(PAPER.g(), INK.g()),
-        lerp(PAPER.b(), INK.b()),
-    )
+    Color32::from_rgb(lerp(PAPER.r(), INK.r()), lerp(PAPER.g(), INK.g()), lerp(PAPER.b(), INK.b()))
 }
 
 impl HellUi {
@@ -158,17 +152,9 @@ impl HellUi {
         let Some(tex) = self.tex.as_mut() else { return };
         let x0 = (start % RING_COLS as u64) as usize;
         let first = n.min(RING_COLS - x0);
-        tex.set_partial(
-            [x0, 0],
-            Self::patch(&self.gray, x0, first, view),
-            texture_options(),
-        );
+        tex.set_partial([x0, 0], Self::patch(&self.gray, x0, first, view), texture_options());
         if n > first {
-            tex.set_partial(
-                [0, 0],
-                Self::patch(&self.gray, 0, n - first, view),
-                texture_options(),
-            );
+            tex.set_partial([0, 0], Self::patch(&self.gray, 0, n - first, view), texture_options());
         }
     }
 
@@ -184,15 +170,7 @@ impl HellUi {
     /// Draw the strip into `rect`, newest column at the right edge.
     pub fn draw(&mut self, ui: &mut egui::Ui, rect: egui::Rect, view: &crate::view::HellView) {
         let p = ui.painter_at(rect);
-        p.rect_filled(
-            rect,
-            2.0,
-            if view.reverse {
-                Color32::from_gray(8)
-            } else {
-                PAPER
-            },
-        );
+        p.rect_filled(rect, 2.0, if view.reverse { Color32::from_gray(8) } else { PAPER });
 
         let knobs = (view.contrast, view.bright, view.reverse);
         if self.tex.is_none() || self.shade_for != knobs {
@@ -263,10 +241,7 @@ mod tests {
         assert_eq!(ui.expect, 9);
         // The skipped span is blank, not a splice of the surrounding text.
         for x in 2..7 {
-            assert!(
-                ui.gray[x * ROWS..(x + 1) * ROWS].iter().all(|&v| v == 0),
-                "column {x}"
-            );
+            assert!(ui.gray[x * ROWS..(x + 1) * ROWS].iter().all(|&v| v == 0), "column {x}");
         }
     }
 
@@ -288,10 +263,7 @@ mod tests {
         let view = HellView::default();
         let ctx = egui::Context::default();
         ui.on_columns(0, 7, &vec![255; 7], &view, &ctx);
-        assert_eq!(
-            ui.head, 0,
-            "a batch of the wrong geometry must not touch the ring"
-        );
+        assert_eq!(ui.head, 0, "a batch of the wrong geometry must not touch the ring");
     }
 
     #[test]
@@ -315,9 +287,6 @@ mod tests {
         let dark = shade(255, &view);
         view.reverse = true;
         let light = shade(255, &view);
-        assert!(
-            dark.r() < light.r(),
-            "reverse video should flip ink and paper"
-        );
+        assert!(dark.r() < light.r(), "reverse video should flip ink and paper");
     }
 }

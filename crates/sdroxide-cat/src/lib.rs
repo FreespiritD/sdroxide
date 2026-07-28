@@ -251,7 +251,8 @@ fn apply_line(port: &mut dyn serialport::SerialPort, forced: LineState, rts: boo
         LineState::High => true,
         LineState::Low => false,
     };
-    let _ = if rts { port.write_request_to_send(level) } else { port.write_data_terminal_ready(level) };
+    let _ =
+        if rts { port.write_request_to_send(level) } else { port.write_data_terminal_ready(level) };
 }
 
 fn serial_thread(
@@ -290,7 +291,9 @@ fn serial_thread(
                 warn!(path = %cfg.serial.path, "CAT open failed: {e}");
                 // Wait, but still honor a Stop.
                 match cmd_rx.recv_timeout(Duration::from_secs(2)) {
-                    Ok(CatCmd::Stop) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+                    Ok(CatCmd::Stop) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        return;
+                    }
                     _ => continue,
                 }
             }

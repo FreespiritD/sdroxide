@@ -18,8 +18,8 @@ mod notch;
 mod nr;
 mod olivia;
 mod psk;
-mod rtty;
 mod resample;
+mod rtty;
 mod spectrum;
 mod spectrum_paint;
 mod sstv;
@@ -43,8 +43,8 @@ pub use notch::AutoNotch;
 pub use nr::SpectralNr;
 pub use olivia::{OliviaRx, OliviaTx};
 pub use psk::{BpskCore, PskRx, PskTx, VaricodeRx};
-pub use rtty::{BaudotRx, RttyRx, RttyTx};
 pub use resample::{ComplexResampler, MonoResampler};
+pub use rtty::{BaudotRx, RttyRx, RttyTx};
 pub use spectrum::SpectrumAnalyzer;
 pub use spectrum_paint::{
     BAND_HI_HZ as RF_PAINT_BAND_HI, BAND_LO_HZ as RF_PAINT_BAND_LO, CENTER_HZ as RF_PAINT_CENTER,

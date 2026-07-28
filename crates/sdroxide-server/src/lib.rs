@@ -90,10 +90,7 @@ pub(crate) struct Shared {
 
 /// Build a tokio runtime and serve until the process exits.
 pub fn run_blocking(params: ServerParams) -> Result<(), ServerError> {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(serve(params))
+    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(serve(params))
 }
 
 pub async fn serve(params: ServerParams) -> Result<(), ServerError> {

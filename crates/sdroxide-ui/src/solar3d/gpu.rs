@@ -390,15 +390,7 @@ fn build(rs: &RenderState) -> SolarResources {
         sample_count,
     );
     // The blit runs inside egui's pass, which has neither depth nor MSAA.
-    let blit_pipe = make_pipe(
-        "solar-blit",
-        &blit_layout,
-        &blit_sh,
-        &[],
-        None,
-        None,
-        1,
-    );
+    let blit_pipe = make_pipe("solar-blit", &blit_layout, &blit_sh, &[], None, None, 1);
 
     // ── Static meshes ───────────────────────────────────────────────────────
     let (sv, si) = mesh::sphere();
@@ -745,8 +737,7 @@ fn upload_map(
         let mut padded = vec![0u8; (stride * lh) as usize];
         for row in 0..*lh {
             let (src, dst) = ((row * lw) as usize, (row * stride) as usize);
-            padded[dst..dst + *lw as usize]
-                .copy_from_slice(&data[src..src + *lw as usize]);
+            padded[dst..dst + *lw as usize].copy_from_slice(&data[src..src + *lw as usize]);
         }
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -812,8 +803,11 @@ fn upload_body_maps(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture
         // Every map is the same size, so a mismatched asset is dropped rather
         // than smeared across the wrong latitudes.
         if img.dimensions() != (BODY_MAP_W, BODY_MAP_H) {
-            eprintln!("sdroxide: {} is {:?}, expected {BODY_MAP_W}×{BODY_MAP_H}",
-                BODY_MAPS[layer].0, img.dimensions());
+            eprintln!(
+                "sdroxide: {} is {:?}, expected {BODY_MAP_W}×{BODY_MAP_H}",
+                BODY_MAPS[layer].0,
+                img.dimensions()
+            );
             continue;
         }
         let mut level = (BODY_MAP_W, BODY_MAP_H, img.into_raw());
@@ -884,10 +878,8 @@ fn halve((w, h, src): &(u32, u32, Vec<u8>)) -> (u32, u32, Vec<u8>) {
 impl SolarResources {
     /// Allocate (or keep) offscreen targets big enough for `size`.
     fn ensure_targets(&mut self, device: &wgpu::Device, size: (u32, u32)) {
-        let want = (
-            size.0.div_ceil(ALLOC_STEP) * ALLOC_STEP,
-            size.1.div_ceil(ALLOC_STEP) * ALLOC_STEP,
-        );
+        let want =
+            (size.0.div_ceil(ALLOC_STEP) * ALLOC_STEP, size.1.div_ceil(ALLOC_STEP) * ALLOC_STEP);
         let want = (want.0.clamp(ALLOC_STEP, self.max_dim), want.1.clamp(ALLOC_STEP, self.max_dim));
         if let Some(t) = &self.targets {
             // Keep the allocation while it fits and is not wildly oversized —
@@ -900,8 +892,7 @@ impl SolarResources {
             }
         }
 
-        let ext =
-            wgpu::Extent3d { width: want.0, height: want.1, depth_or_array_layers: 1 };
+        let ext = wgpu::Extent3d { width: want.0, height: want.1, depth_or_array_layers: 1 };
         let make = |label: &str, format, samples, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -954,7 +945,10 @@ impl SolarResources {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
-                wgpu::BindGroupEntry { binding: 2, resource: self.blit_uniform.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.blit_uniform.as_entire_binding(),
+                },
             ],
         });
 
@@ -1328,8 +1322,7 @@ mod tests {
                 naga::valid::ValidationFlags::all(),
                 naga::valid::Capabilities::empty(),
             );
-            v.validate(&module)
-                .unwrap_or_else(|e| panic!("{name} failed validation:\n{e:?}"));
+            v.validate(&module).unwrap_or_else(|e| panic!("{name} failed validation:\n{e:?}"));
         }
     }
 

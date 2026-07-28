@@ -144,7 +144,8 @@ pub enum PttMethod {
 }
 
 impl PttMethod {
-    pub const ALL: [PttMethod; 4] = [PttMethod::Cat, PttMethod::Dtr, PttMethod::Rts, PttMethod::Vox];
+    pub const ALL: [PttMethod; 4] =
+        [PttMethod::Cat, PttMethod::Dtr, PttMethod::Rts, PttMethod::Vox];
     pub fn label(self) -> &'static str {
         match self {
             PttMethod::Vox => "VOX",
@@ -289,20 +290,13 @@ impl HpsdrConfig {
 
     /// The sample rates valid for a given protocol (1 or 2).
     pub fn rates_for(protocol: u8) -> &'static [f64] {
-        if protocol == 1 {
-            &Self::P1_SAMPLE_RATES
-        } else {
-            &Self::SAMPLE_RATES
-        }
+        if protocol == 1 { &Self::P1_SAMPLE_RATES } else { &Self::SAMPLE_RATES }
     }
 
     /// Resolve the IP to connect to: manual override, else the persisted pick.
     /// `None` means "discover and use the first responder".
     pub fn target_ip(&self) -> Option<&str> {
-        self.manual_ip
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .or(self.selected_ip.as_deref())
+        self.manual_ip.as_deref().filter(|s| !s.trim().is_empty()).or(self.selected_ip.as_deref())
     }
 }
 

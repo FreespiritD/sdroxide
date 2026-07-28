@@ -35,8 +35,7 @@ impl MonoResampler {
     pub fn push(&mut self, input: &[f32], out: &mut Vec<f32>) {
         self.pending.extend_from_slice(input);
         while self.pending.len() >= CHUNK {
-            let adapter = InterleavedSlice::new(&self.pending[..CHUNK], 1, CHUNK)
-                .expect("adapter");
+            let adapter = InterleavedSlice::new(&self.pending[..CHUNK], 1, CHUNK).expect("adapter");
             let produced = self.inner.process(&adapter, None).expect("resample");
             out.extend_from_slice(&produced.take_data());
             self.pending.drain(..CHUNK);
@@ -76,14 +75,11 @@ impl ComplexResampler {
             self.pending.push(z.im);
         }
         while self.pending.len() >= CHUNK * 2 {
-            let adapter = InterleavedSlice::new(&self.pending[..CHUNK * 2], 2, CHUNK)
-                .expect("adapter");
+            let adapter =
+                InterleavedSlice::new(&self.pending[..CHUNK * 2], 2, CHUNK).expect("adapter");
             let produced = self.inner.process(&adapter, None).expect("resample");
             let data = produced.take_data();
-            out.extend(
-                data.chunks_exact(2)
-                    .map(|p| Complex32::new(p[0], p[1])),
-            );
+            out.extend(data.chunks_exact(2).map(|p| Complex32::new(p[0], p[1])));
             self.pending.drain(..CHUNK * 2);
         }
     }

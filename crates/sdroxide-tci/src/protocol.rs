@@ -172,11 +172,7 @@ pub fn modulation(rx: u32, mode: &str) -> String {
     format!("modulation:{rx},{mode};")
 }
 pub fn trx(rx: u32, on: bool, tci_source: bool) -> String {
-    if on && tci_source {
-        format!("trx:{rx},true,tci;")
-    } else {
-        format!("trx:{rx},{on};")
-    }
+    if on && tci_source { format!("trx:{rx},true,tci;") } else { format!("trx:{rx},{on};") }
 }
 pub fn iq_samplerate(hz: u32) -> String {
     format!("iq_samplerate:{hz};")

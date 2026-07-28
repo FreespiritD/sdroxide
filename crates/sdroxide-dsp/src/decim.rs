@@ -20,7 +20,9 @@ fn blackman_harris_f64(n: usize, i: usize) -> f64 {
 pub fn lowpass_taps(ntaps: usize, cutoff: f64) -> Vec<f32> {
     let center = (ntaps - 1) as f64 / 2.0;
     let mut taps: Vec<f64> = (0..ntaps)
-        .map(|i| 2.0 * cutoff * sinc(2.0 * cutoff * (i as f64 - center)) * blackman_harris_f64(ntaps, i))
+        .map(|i| {
+            2.0 * cutoff * sinc(2.0 * cutoff * (i as f64 - center)) * blackman_harris_f64(ntaps, i)
+        })
         .collect();
     let sum: f64 = taps.iter().sum();
     taps.iter_mut().for_each(|t| *t /= sum);

@@ -4,7 +4,9 @@
 
 use sdroxide_radio::crossbeam_channel::{Receiver, Sender};
 use sdroxide_radio::{AudioParams, EngineHandles, EngineSwap, MicParams, triple_buffer};
-use sdroxide_types::{AudioDevices, Command, RadioConfig, RadioController, RadioEvent, SpectrumFrame};
+use sdroxide_types::{
+    AudioDevices, Command, RadioConfig, RadioController, RadioEvent, SpectrumFrame,
+};
 use tracing::warn;
 
 pub struct LocalController {
@@ -105,9 +107,8 @@ impl RadioController for LocalController {
                 Ok((input, consumer)) => {
                     let rate = input.sample_rate;
                     self.mic_in = Some(input);
-                    let _ = self
-                        .swap_tx
-                        .send(EngineSwap::Input(Some(MicParams { consumer, rate })));
+                    let _ =
+                        self.swap_tx.send(EngineSwap::Input(Some(MicParams { consumer, rate })));
                 }
                 Err(e) => {
                     warn!("audio input {name:?}: {e}; TX carries silence");

@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgcMode, Band, DigiConfig, Direction, Mode, NetworkConfig, NrLevel, RxId, SkimmerSettings,
-    QsoStep, RigctldConfig, SpectrumConfig, SstvMode, TciServerConfig, UploadTarget, Vfo,
+    AgcMode, Band, DigiConfig, Direction, Mode, NetworkConfig, NrLevel, QsoStep, RigctldConfig,
+    RxId, SkimmerSettings, SpectrumConfig, SstvMode, TciServerConfig, UploadTarget, Vfo,
     WsjtxConfig,
 };
 
@@ -11,7 +11,10 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
     // VFO / tuning
-    SetVfo { vfo: Vfo, hz: f64 },
+    SetVfo {
+        vfo: Vfo,
+        hz: f64,
+    },
     SelectVfo(Vfo),
     SwapVfos,
     CopyAtoB,
@@ -22,22 +25,56 @@ pub enum Command {
     SetBand(Band),
 
     // Receiver settings
-    SetMode { rx: RxId, mode: Mode },
-    SetFilter { rx: RxId, lo: f32, hi: f32 },
-    SetAgc { rx: RxId, agc: AgcMode },
-    SetAgcMaxGain { rx: RxId, db: f32 },
-    SetVolume { rx: RxId, v: f32 },
-    SetMute { rx: RxId, muted: bool },
+    SetMode {
+        rx: RxId,
+        mode: Mode,
+    },
+    SetFilter {
+        rx: RxId,
+        lo: f32,
+        hi: f32,
+    },
+    SetAgc {
+        rx: RxId,
+        agc: AgcMode,
+    },
+    SetAgcMaxGain {
+        rx: RxId,
+        db: f32,
+    },
+    SetVolume {
+        rx: RxId,
+        v: f32,
+    },
+    SetMute {
+        rx: RxId,
+        muted: bool,
+    },
     /// Squelch threshold in dBFS ([`crate::SQUELCH_OPEN_DB`] = open).
-    SetSquelch { rx: RxId, db: f32 },
+    SetSquelch {
+        rx: RxId,
+        db: f32,
+    },
     SetNoiseBlanker(bool),
     /// Spectral audio noise-reduction intensity for a receiver.
-    SetNoiseReduction { rx: RxId, level: NrLevel },
+    SetNoiseReduction {
+        rx: RxId,
+        level: NrLevel,
+    },
     /// Adaptive auto-notch (constant-tone canceller) for a receiver.
-    SetAutoNotch { rx: RxId, on: bool },
+    SetAutoNotch {
+        rx: RxId,
+        on: bool,
+    },
     SetSubRx(bool),
-    SetRit { enabled: bool, hz: i32 },
-    SetXit { enabled: bool, hz: i32 },
+    SetRit {
+        enabled: bool,
+        hz: i32,
+    },
+    SetXit {
+        enabled: bool,
+        hz: i32,
+    },
     /// Start (`true`) or stop (`false`) recording the receiver audio to an MP3
     /// file. The engine names the file (date/time/frequency/mode) and stores it
     /// in the user's music directory (or the config dir as a fallback).
@@ -65,14 +102,26 @@ pub enum Command {
     /// Erase a slot's recording.
     VoiceClear(u8),
     /// Rename a slot (the label the UI and the bindings editor show).
-    VoiceRename { slot: u8, name: String },
+    VoiceRename {
+        slot: u8,
+        name: String,
+    },
 
     // Hardware
-    SetGain { dir: Direction, element: String, db: f64 },
-    SetAntenna { dir: Direction, name: String },
+    SetGain {
+        dir: Direction,
+        element: String,
+        db: f64,
+    },
+    SetAntenna {
+        dir: Direction,
+        name: String,
+    },
 
     // Memories
-    StoreMemory { name: String },
+    StoreMemory {
+        name: String,
+    },
     RecallMemory(u32),
     DeleteMemory(u32),
 
@@ -118,9 +167,14 @@ pub enum Command {
     SstvSetMode(Option<SstvMode>),
     /// SSTV: transmit a composed image (PNG bytes) in the given mode. Keying
     /// starts immediately; `DigiAbortTx` stops it.
-    SstvTx { mode: SstvMode, png: Vec<u8> },
+    SstvTx {
+        mode: SstvMode,
+        png: Vec<u8>,
+    },
     /// FSQ image: transmit a picture (PNG bytes; the engine grayscales/scales it).
-    DigiImageTx { png: Vec<u8> },
+    DigiImageTx {
+        png: Vec<u8>,
+    },
 
     // Skimmers
     /// Set which skimmers (CW / PSK / RTTY) run and how hard each squelches.
@@ -135,10 +189,16 @@ pub enum Command {
     SpotDialHint(f64),
     /// Look up a callsign via the configured provider; the result comes back as
     /// [`crate::RadioEvent::CallsignResult`].
-    LookupCallsign { call: String },
+    LookupCallsign {
+        call: String,
+    },
     /// Upload one QSO's ADIF to the given targets; each result comes back as
     /// [`crate::RadioEvent::Upload`].
-    UploadQso { qso_id: u64, adif: String, targets: Vec<UploadTarget> },
+    UploadQso {
+        qso_id: u64,
+        adif: String,
+        targets: Vec<UploadTarget>,
+    },
     /// Download QSL confirmations from LoTW/eQSL and return the parsed
     /// confirmation records as [`crate::RadioEvent::Confirmations`].
     SyncConfirmations,

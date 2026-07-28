@@ -114,11 +114,7 @@ impl HellController {
     fn clamp_audio_hz(&self, hz: f32) -> f32 {
         let half = (self.cfg.hell_variant.bandwidth_hz() * 0.5) as f32;
         let (lo, hi) = (150.0 + half, 3450.0 - half);
-        if lo >= hi {
-            (lo + hi) * 0.5
-        } else {
-            hz.clamp(lo, hi)
-        }
+        if lo >= hi { (lo + hi) * 0.5 } else { hz.clamp(lo, hi) }
     }
 
     fn build_status(&self) -> DigiStatus {
@@ -182,10 +178,9 @@ impl DigiEngine for HellController {
         let whole = self.pend.len() / HELL_ROWS;
         if whole > 0 {
             let due = whole >= FLUSH_COLS
-                || self.last_cols.is_none_or(|t| {
-                    now.duration_since(t)
-                        .is_ok_and(|d| d.as_millis() >= FLUSH_MS)
-                });
+                || self
+                    .last_cols
+                    .is_none_or(|t| now.duration_since(t).is_ok_and(|d| d.as_millis() >= FLUSH_MS));
             if due {
                 let cols: Vec<u8> = self.pend.drain(..whole * HELL_ROWS).collect();
                 actions.push(DigiAction::HellColumns {
@@ -264,8 +259,7 @@ impl DigiEngine for HellController {
         if retune {
             self.audio_hz = self.clamp_audio_hz(self.audio_hz);
             let hz = self.audio_hz as f64;
-            self.rx
-                .set_params(hz, self.cfg.hell_variant, self.cfg.hell_rx_agc);
+            self.rx.set_params(hz, self.cfg.hell_variant, self.cfg.hell_rx_agc);
             self.tx.set_params(hz, self.cfg.hell_variant);
         }
         if revariant {
@@ -282,8 +276,7 @@ impl DigiEngine for HellController {
     fn set_audio_hz(&mut self, hz: f32) {
         self.audio_hz = self.clamp_audio_hz(hz);
         let hz = self.audio_hz as f64;
-        self.rx
-            .set_params(hz, self.cfg.hell_variant, self.cfg.hell_rx_agc);
+        self.rx.set_params(hz, self.cfg.hell_variant, self.cfg.hell_rx_agc);
         self.tx.set_params(hz, self.cfg.hell_variant);
         self.status_dirty = true;
     }
@@ -297,11 +290,7 @@ impl DigiEngine for HellController {
     }
 
     fn call_cq(&mut self) {
-        let call = if self.cfg.my_call.is_empty() {
-            "NOCALL"
-        } else {
-            &self.cfg.my_call
-        };
+        let call = if self.cfg.my_call.is_empty() { "NOCALL" } else { &self.cfg.my_call };
         let cq = format!("CQ CQ CQ DE {call} {call} {call} PSE K ");
         self.set_tx_text(cq);
         self.set_tx_active(true);
@@ -333,11 +322,7 @@ mod tests {
     const BLOCK: usize = 480;
 
     fn cfg(variant: HellVariant) -> DigiConfig {
-        DigiConfig {
-            hell_variant: variant,
-            digi_squelch: 0.0,
-            ..Default::default()
-        }
+        DigiConfig { hell_variant: variant, digi_squelch: 0.0, ..Default::default() }
     }
 
     /// Loop transmit audio straight back into receive and collect the batches.
@@ -422,14 +407,8 @@ mod tests {
         assert!(c.seq > 0, "nothing was shipped before the switch");
 
         c.set_config(cfg(HellVariant::Hell80));
-        assert_eq!(
-            c.seq, 0,
-            "a new dot rate must rewind seq so the panel clears"
-        );
-        assert!(
-            c.pend.is_empty(),
-            "stale dots must not carry across a rate change"
-        );
+        assert_eq!(c.seq, 0, "a new dot rate must rewind seq so the panel clears");
+        assert!(c.pend.is_empty(), "stale dots must not carry across a rate change");
     }
 
     #[test]
@@ -439,17 +418,9 @@ mod tests {
         let mut c = HellController::new(cfg(HellVariant::X9), OUT_RATE);
         c.set_audio_hz(300.0);
         let half = (HellVariant::X9.bandwidth_hz() * 0.5) as f32;
-        assert!(
-            c.audio_hz() - half >= 149.0,
-            "low edge {} is outside",
-            c.audio_hz() - half
-        );
+        assert!(c.audio_hz() - half >= 149.0, "low edge {} is outside", c.audio_hz() - half);
         c.set_audio_hz(3400.0);
-        assert!(
-            c.audio_hz() + half <= 3451.0,
-            "high edge {} is outside",
-            c.audio_hz() + half
-        );
+        assert!(c.audio_hz() + half <= 3451.0, "high edge {} is outside", c.audio_hz() + half);
 
         // Feld Hell is narrow enough to tune freely.
         let mut c = HellController::new(cfg(HellVariant::Feld), OUT_RATE);

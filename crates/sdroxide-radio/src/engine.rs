@@ -17,17 +17,16 @@ use sdroxide_digi::{
     DigiAction, DigiController, DigiEngine, FsqController, HellController, RadeController,
     RfPaintController, SstvController, TextModemController,
 };
-use sdroxide_skimmer::{SkimmerAction, SkimmerController};
 use sdroxide_dsp::{
     Agc, AutoNotch, DcBlock, Ddc, Demodulator, Duc, Modulator, MonoResampler, NeuralNr,
     NoiseBlanker, SpectralNr, SpectrumAnalyzer, channel_target, make_demod, make_modulator,
 };
 use sdroxide_rigctld::{RigState, RigctldController};
+use sdroxide_skimmer::{SkimmerAction, SkimmerController};
 use sdroxide_tci::server::{ServerRequest, TciServerController, TciStateSnapshot};
 use sdroxide_types::{
-    RigctldConfig,
-    Band, BandStackEntry, Command, DeviceCaps, DigiConfig, Direction, MemoryChannel, Meters,
-    Mode, NrLevel, RadioEvent, RadioState, RxId, RxState, SpectrumConfig, SpectrumFrame,
+    Band, BandStackEntry, Command, DeviceCaps, DigiConfig, Direction, MemoryChannel, Meters, Mode,
+    NrLevel, RadioEvent, RadioState, RigctldConfig, RxId, RxState, SpectrumConfig, SpectrumFrame,
     TciServerConfig, TxMeters, Vfo,
 };
 
@@ -67,8 +66,7 @@ pub enum EngineSwap {
 /// knows how to build each backend); the engine calls it on [`EngineSwap::ReopenSource`].
 /// Returns an error (leaving the current source running) when the new interface
 /// can't be opened.
-pub type ReopenFn =
-    Box<dyn FnMut(f64) -> Result<(Box<dyn IqSource>, DeviceCaps), String> + Send>;
+pub type ReopenFn = Box<dyn FnMut(f64) -> Result<(Box<dyn IqSource>, DeviceCaps), String> + Send>;
 
 /// Audio sink the engine feeds with interleaved stereo frames.
 pub struct AudioParams {
@@ -218,11 +216,8 @@ impl RxChain {
         if let Some(d) = self.demod.as_mut() {
             d.set_filter(rx.filter_lo, rx.filter_hi);
         }
-        let audio_rate = self
-            .demod
-            .as_ref()
-            .map(|d| d.audio_rate())
-            .unwrap_or_else(|| self.ddc.out_rate());
+        let audio_rate =
+            self.demod.as_ref().map(|d| d.audio_rate()).unwrap_or_else(|| self.ddc.out_rate());
         self.agc = Agc::new(audio_rate);
         self.agc.set_mode(rx.agc);
         self.agc.set_max_gain_db(rx.agc_max_gain_db);
@@ -1349,7 +1344,8 @@ impl Engine {
         }
         let dial = self.state.active_freq_hz();
         let lsb = self.state.rx[0].mode.is_lower_sideband();
-        self.state.center_hz = if lsb { dial - self.audio_bw / 2.0 } else { dial + self.audio_bw / 2.0 };
+        self.state.center_hz =
+            if lsb { dial - self.audio_bw / 2.0 } else { dial + self.audio_bw / 2.0 };
         self.state.sample_rate = self.audio_bw;
     }
 
@@ -1382,9 +1378,10 @@ impl Engine {
     /// Start, retarget or stop the WSJT-X UDP broadcast to match its config.
     fn sync_wsjtx(&mut self) {
         let want = self.wsjtx_cfg.enabled;
-        let same = self.wsjtx.as_ref().is_some_and(|w| {
-            w.addr() == self.wsjtx_cfg.addr() && w.id() == self.wsjtx_cfg.id
-        });
+        let same = self
+            .wsjtx
+            .as_ref()
+            .is_some_and(|w| w.addr() == self.wsjtx_cfg.addr() && w.id() == self.wsjtx_cfg.id);
         if want && same {
             return;
         }
@@ -1489,8 +1486,7 @@ impl Engine {
                     // with the frequency we already told it we are on, so
                     // `freq_hz` is only of interest to the log line.
                     debug!(%call, snr_db, freq_hz, "RADE callsign decoded");
-                    self.spots
-                        .reporter_rx_report(call, snr_db.round().clamp(-128.0, 127.0) as i32);
+                    self.spots.reporter_rx_report(call, snr_db.round().clamp(-128.0, 127.0) as i32);
                 }
                 DigiAction::KeyTx => {
                     // Key up via the normal PTT path so the safety rails apply.
@@ -1521,9 +1517,8 @@ impl Engine {
                     let png = encode_png(&rgb, w, h);
                     if let Some(png) = png.clone() {
                         save_sstv_rx(&png);
-                        let _ = self
-                            .event_tx
-                            .send(RadioEvent::SstvImage { image_id, mode, w, h, png });
+                        let _ =
+                            self.event_tx.send(RadioEvent::SstvImage { image_id, mode, w, h, png });
                     }
                 }
                 DigiAction::SstvStatus(s) => {
@@ -1681,17 +1676,21 @@ impl Engine {
         // A `tx_audio` rig (TCI) modulates our raw audio and returns no TX IQ, so
         // voice/tune there also drive `tx_analyzer` (packed-real audio) — not the
         // wideband IQ analyzer — even though it isn't `audio_mode` or digital.
-        let mut frame = if self.audio_mode
-            || self.caps.tx_audio
-            || self.channel_analyzer.is_some()
+        let mut frame = if self.audio_mode || self.caps.tx_audio || self.channel_analyzer.is_some()
         {
             let bw = if self.audio_mode { self.audio_bw } else { 3500.0 };
             let vp = if lsb { (dial - bw, dial) } else { (dial, dial + bw) };
             self.tx_analyzer.make_frame(dial, TX_MONITOR_RATE, mf, mc, DISPLAY_BINS, Some(vp))
         } else {
             // Wideband IQ: the upconverted TX sits at `tx_center_hz` in the full span.
-            self.analyzer
-                .make_frame(self.tx_center_hz, self.state.sample_rate, mf, mc, DISPLAY_BINS, None)
+            self.analyzer.make_frame(
+                self.tx_center_hz,
+                self.state.sample_rate,
+                mf,
+                mc,
+                DISPLAY_BINS,
+                None,
+            )
         };
         // Report the real range so the panadapter's dB axis is unchanged; the
         // bins are already dimmed by the shifted window above.
@@ -1989,8 +1988,7 @@ impl Engine {
                 }
                 // The network features report the same operator identity, so a
                 // callsign or grid edit reaches them from here.
-                self.spots
-                    .set_operator(&self.digi_config.my_call, &self.digi_config.my_grid);
+                self.spots.set_operator(&self.digi_config.my_call, &self.digi_config.my_grid);
                 self.emit_digi_status();
             }
             SetDigiAudioFreq(hz) => {
@@ -2174,9 +2172,8 @@ impl Engine {
             return;
         }
         if self.mixer.is_none() {
-            let _ = self
-                .event_tx
-                .send(RadioEvent::Notice(Some("No audio output to record".into())));
+            let _ =
+                self.event_tx.send(RadioEvent::Notice(Some("No audio output to record".into())));
             return;
         }
         let dir = match sdroxide_config::recordings_dir() {
@@ -2198,9 +2195,8 @@ impl Engine {
                 self.state.recording_file = Some(name);
             }
             Err(e) => {
-                let _ = self
-                    .event_tx
-                    .send(RadioEvent::Notice(Some(format!("Recording failed: {e}"))));
+                let _ =
+                    self.event_tx.send(RadioEvent::Notice(Some(format!("Recording failed: {e}"))));
             }
         }
     }
@@ -2226,9 +2222,7 @@ impl Engine {
         let (y, mo, d, h, mi, s) = utc_civil(secs);
         let mhz = self.state.active_freq_hz() / 1_000_000.0;
         let mode = self.state.rx[0].mode.label().replace(['/', ' '], "");
-        format!(
-            "sdroxide_{y:04}-{mo:02}-{d:02}_{h:02}-{mi:02}-{s:02}Z_{mhz:.6}MHz_{mode}.mp3"
-        )
+        format!("sdroxide_{y:04}-{mo:02}-{d:02}_{h:02}-{mi:02}-{s:02}Z_{mhz:.6}MHz_{mode}.mp3")
     }
 
     /// Construct or tear down the wideband skimmer worker: it runs while at
@@ -2273,9 +2267,7 @@ impl Engine {
                     // already gated to their per-band calling sub-bands inside the
                     // digi skimmer.
                     spots.retain(|s| match s.kind {
-                        sdroxide_types::SkimmerKind::Cw => {
-                            sdroxide_types::is_cw_segment(s.freq_hz)
-                        }
+                        sdroxide_types::SkimmerKind::Cw => sdroxide_types::is_cw_segment(s.freq_hz),
                         _ => true,
                     });
                     let _ = self.event_tx.send(RadioEvent::SkimmerSpots(spots));
@@ -2290,8 +2282,7 @@ impl Engine {
     /// enable or disable the tap goes through here — two owners writing the
     /// flag directly would silently starve one of them.
     fn sync_audio_tap(&mut self) {
-        let want = self.digi.is_some()
-            || self.tci_srv.as_ref().is_some_and(|s| s.wants_audio());
+        let want = self.digi.is_some() || self.tci_srv.as_ref().is_some_and(|s| s.wants_audio());
         if let Some(c) = self.main.as_mut() {
             if c.tap_enabled != want {
                 c.tap_enabled = want;
@@ -2622,11 +2613,8 @@ impl Engine {
     /// requested — which is exactly what the `iq_samplerate` echo is for.
     fn sync_tci_iq(&mut self) {
         // Wideband only: an audio-mode source has no IQ to decimate.
-        let want = if self.audio_mode {
-            None
-        } else {
-            self.tci_srv.as_ref().and_then(|s| s.wants_iq())
-        };
+        let want =
+            if self.audio_mode { None } else { self.tci_srv.as_ref().and_then(|s| s.wants_iq()) };
         match want {
             Some(rate) => {
                 // Rebuild only when the snapped result would actually differ —
@@ -2818,15 +2806,11 @@ impl Engine {
             }
         }
 
-        let entry = self
-            .stacks
-            .get(&band)
-            .and_then(|s| s.first().copied())
-            .unwrap_or_else(|| {
-                let (freq_hz, mode) = band.default_entry();
-                let (filter_lo, filter_hi) = mode.default_filter();
-                BandStackEntry { freq_hz, mode, filter_lo, filter_hi }
-            });
+        let entry = self.stacks.get(&band).and_then(|s| s.first().copied()).unwrap_or_else(|| {
+            let (freq_hz, mode) = band.default_entry();
+            let (filter_lo, filter_hi) = mode.default_filter();
+            BandStackEntry { freq_hz, mode, filter_lo, filter_hi }
+        });
 
         self.state.band = band;
         self.apply_entry(entry);
@@ -2876,9 +2860,10 @@ impl Engine {
                     Some(RxChain::new(self.state.sample_rate, &self.state.rx[0], a.out_rate));
                 self.mixer = Some(StereoMixer::new(a.producer));
                 self.audio_out_rate = a.out_rate;
-                self.sub = self.state.sub_rx_enabled.then(|| {
-                    RxChain::new(self.state.sample_rate, &self.state.rx[1], a.out_rate)
-                });
+                self.sub = self
+                    .state
+                    .sub_rx_enabled
+                    .then(|| RxChain::new(self.state.sample_rate, &self.state.rx[1], a.out_rate));
                 self.sync_audio_tap();
                 info!(out_rate = a.out_rate, "audio output swapped");
             }
@@ -3011,13 +2996,14 @@ impl Engine {
 
         let center = self.state.active_freq_hz();
         let (tx, rx) = crossbeam_channel::bounded(1);
-        let spawned = std::thread::Builder::new().name("sdroxide-reconnect".into()).spawn(move || {
-            let opened = {
-                let mut reopen = factory.lock().unwrap_or_else(|e| e.into_inner());
-                reopen(center)
-            };
-            let _ = tx.send(opened);
-        });
+        let spawned =
+            std::thread::Builder::new().name("sdroxide-reconnect".into()).spawn(move || {
+                let opened = {
+                    let mut reopen = factory.lock().unwrap_or_else(|e| e.into_inner());
+                    reopen(center)
+                };
+                let _ = tx.send(opened);
+            });
         match spawned {
             Ok(join) => {
                 self.retry = Some(rx);
@@ -3064,7 +3050,8 @@ impl Engine {
         self.state = state;
 
         // Rebuild the device analyzer for the new rate.
-        self.analyzer = SpectrumAnalyzer::new(self.cfg.fft_size as usize, self.radio_fs, self.cfg.avg_tc);
+        self.analyzer =
+            SpectrumAnalyzer::new(self.cfg.fft_size as usize, self.radio_fs, self.cfg.avg_tc);
 
         // Drop rate-dependent / stateful DSP so it rebuilds for the new source.
         self.tx = None;
@@ -3104,8 +3091,11 @@ impl Engine {
                 self.main = None;
                 self.audio_resampler = MonoResampler::new(self.radio_fs, self.audio_out_rate);
             } else {
-                self.main =
-                    Some(RxChain::new(self.state.sample_rate, &self.state.rx[0], self.audio_out_rate));
+                self.main = Some(RxChain::new(
+                    self.state.sample_rate,
+                    &self.state.rx[0],
+                    self.audio_out_rate,
+                ));
                 self.audio_resampler = None;
             }
         } else {
@@ -3164,11 +3154,7 @@ impl Engine {
     /// the rig and a tune would go out at the (typically much lower) voice
     /// drive.
     fn tx_power_level(&self) -> f32 {
-        if self.state.tx.tune {
-            self.state.tx.tune_drive
-        } else {
-            self.state.tx.drive
-        }
+        if self.state.tx.tune { self.state.tx.tune_drive } else { self.state.tx.drive }
     }
 
     /// Reconcile the TX hardware state with `ptt || tune`, enforcing the
@@ -3842,9 +3828,8 @@ impl Engine {
                 }
             }
             Err(e) => {
-                let _ = self
-                    .event_tx
-                    .send(RadioEvent::ConnectionLost(format!("retune failed: {e}")));
+                let _ =
+                    self.event_tx.send(RadioEvent::ConnectionLost(format!("retune failed: {e}")));
             }
         }
     }
@@ -3856,8 +3841,19 @@ impl Engine {
 fn rig_mode_class(m: Mode) -> u8 {
     match m {
         Mode::Lsb | Mode::Digl => 0,
-        Mode::Usb | Mode::Digu | Mode::Ft8 | Mode::Ft4 | Mode::Psk | Mode::Rtty | Mode::Sstv
-        | Mode::Olivia | Mode::Thor | Mode::Fsq | Mode::Hell | Mode::RfPaint | Mode::Rade
+        Mode::Usb
+        | Mode::Digu
+        | Mode::Ft8
+        | Mode::Ft4
+        | Mode::Psk
+        | Mode::Rtty
+        | Mode::Sstv
+        | Mode::Olivia
+        | Mode::Thor
+        | Mode::Fsq
+        | Mode::Hell
+        | Mode::RfPaint
+        | Mode::Rade
         | Mode::Spec => 1,
         Mode::Am | Mode::Sam | Mode::Dsb => 2,
         Mode::Cw => 3,

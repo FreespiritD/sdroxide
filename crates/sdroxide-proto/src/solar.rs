@@ -36,7 +36,9 @@ pub const SOLAR_PROTO_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SolarClientMsg {
-    Hello { proto: u16 },
+    Hello {
+        proto: u16,
+    },
     /// SDO channel index, as [`sdroxide_solar::SdoChannel::to_u8`].
     SetChannel(u8),
     /// SDO image edge length in pixels.
@@ -54,7 +56,9 @@ pub enum SolarClientMsg {
 /// are up before the image lands.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SolarServerMsg {
-    HelloAck { proto: u16 },
+    HelloAck {
+        proto: u16,
+    },
     Error(String),
     Pong,
     /// Per-source freshness, in [`sdroxide_solar::Source::ALL`] order. Sent
@@ -83,7 +87,10 @@ pub enum SolarServerMsg {
     /// The OVATION grid. Already a `Vec<u8>` of percentages — 65 kB, half-hourly.
     Aurora(AuroraOval),
     /// A TLE set in its original three-line form; `geo` marks QO-100's.
-    Tles { geo: bool, text: String },
+    Tles {
+        geo: bool,
+        text: String,
+    },
     /// The operator's identity and QSO state, for the globe's QSO layer.
     ///
     /// `preview` has no equivalent here: a decode the operator has clicked but
@@ -136,11 +143,7 @@ mod tests {
                 aurora_power: None,
                 kp_forecast: Vec::new(),
             },
-            SolarServerMsg::Events {
-                cmes: Vec::new(),
-                flares: Vec::new(),
-                regions: vec![region],
-            },
+            SolarServerMsg::Events { cmes: Vec::new(), flares: Vec::new(), regions: vec![region] },
             SolarServerMsg::Sun { channel: 3, fetched_unix: 1_784_937_600, jpeg: vec![0xff, 0xd8] },
             SolarServerMsg::Aurora(oval),
             SolarServerMsg::Tles { geo: true, text: "QO-100\n1 43700U\n2 43700U\n".into() },

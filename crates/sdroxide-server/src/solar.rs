@@ -205,11 +205,7 @@ async fn session(mut socket: WebSocket, shared: Arc<Shared>) {
         },
         _ => return,
     }
-    if socket
-        .send(msg(&SolarServerMsg::HelloAck { proto: SOLAR_PROTO_VERSION }))
-        .await
-        .is_err()
-    {
+    if socket.send(msg(&SolarServerMsg::HelloAck { proto: SOLAR_PROTO_VERSION })).await.is_err() {
         return;
     }
 

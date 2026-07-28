@@ -153,12 +153,7 @@ impl Default for RadioState {
             xit: OffsetState::default(),
             // Low drive defaults: digital amplitude stays far from full
             // scale until the operator raises it deliberately.
-            tx: TxState {
-                drive: 0.1,
-                tune_drive: 0.05,
-                mic_gain: 0.5,
-                ..TxState::default()
-            },
+            tx: TxState { drive: 0.1, tune_drive: 0.05, mic_gain: 0.5, ..TxState::default() },
             band: Band::M20,
             noise_blanker: false,
             skimmer: crate::SkimmerSettings::default(),

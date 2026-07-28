@@ -135,7 +135,10 @@ fn spot_color(spot: &SkimmerSpot, hovered: bool) -> Color32 {
 fn spot_content_width(p: &egui::Painter, spot: &SkimmerSpot) -> f32 {
     let mut w = 2.0 * SPOT_PAD;
     if let Some(call) = &spot.callsign {
-        w += p.layout_no_wrap(call.clone(), FontId::monospace(SPOT_CALL_PT), Color32::WHITE).size().x;
+        w += p
+            .layout_no_wrap(call.clone(), FontId::monospace(SPOT_CALL_PT), Color32::WHITE)
+            .size()
+            .x;
     }
     w.clamp(30.0, 240.0)
 }
@@ -230,11 +233,8 @@ fn draw_spot_box(
     if callsign_only {
         if let Some(call) = &spot.callsign {
             // FT8 message text starts with "CQ" for callers; colour those green.
-            let base = if spot.text.starts_with("CQ") {
-                crate::theme::GREEN
-            } else {
-                Color32::WHITE
-            };
+            let base =
+                if spot.text.starts_with("CQ") { crate::theme::GREEN } else { Color32::WHITE };
             let cc = fade(base, alpha);
             let g = p.layout_no_wrap(call.clone(), FontId::monospace(SPOT_CALL_PT), cc);
             p.galley(pos2(rect.left() + pad, cy - g.size().y * 0.5), g, cc);
@@ -294,22 +294,25 @@ struct NetBox {
 
 fn net_spot_width(p: &egui::Painter, spot: &Spot) -> f32 {
     let mut w = 2.0 * NET_PAD;
-    w += p.layout_no_wrap(spot.call.clone(), FontId::monospace(NET_CALL_PT), Color32::WHITE).size().x;
+    w += p
+        .layout_no_wrap(spot.call.clone(), FontId::monospace(NET_CALL_PT), Color32::WHITE)
+        .size()
+        .x;
     w += 6.0
-        + p.layout_no_wrap(spot.kind.label().to_string(), FontId::monospace(NET_TAG_PT), Color32::WHITE)
-            .size()
-            .x;
+        + p.layout_no_wrap(
+            spot.kind.label().to_string(),
+            FontId::monospace(NET_TAG_PT),
+            Color32::WHITE,
+        )
+        .size()
+        .x;
     w.clamp(40.0, 220.0)
 }
 
 /// Kind tint, brightened on hover.
 fn net_spot_color(spot: &Spot, hovered: bool) -> Color32 {
     let (r, g, b) = spot.kind.color();
-    if hovered {
-        Color32::from_rgb(r, g, b)
-    } else {
-        Color32::from_rgba_unmultiplied(r, g, b, 225)
-    }
+    if hovered { Color32::from_rgb(r, g, b) } else { Color32::from_rgba_unmultiplied(r, g, b, 225) }
 }
 
 /// Lay visible network spots into bottom-anchored staggered lanes.
@@ -380,7 +383,8 @@ fn draw_net_box(p: &egui::Painter, b: &NetBox, spot: &Spot, hovered: bool, alpha
     p.galley(pos2(x, cy - g.size().y * 0.5), g.clone(), call_col);
     x += g.size().x + 6.0;
     let tag_col = fade(Color32::from_gray(180), alpha);
-    let tg = p.layout_no_wrap(spot.kind.label().to_string(), FontId::monospace(NET_TAG_PT), tag_col);
+    let tg =
+        p.layout_no_wrap(spot.kind.label().to_string(), FontId::monospace(NET_TAG_PT), tag_col);
     if x + tg.size().x <= rect.right() - NET_PAD {
         p.galley(pos2(x, cy - tg.size().y * 0.5), tg, tag_col);
     }
@@ -524,8 +528,23 @@ pub fn show(
     cmds: &mut Vec<Command>,
 ) {
     show_ext(
-        ui, view, state, frame, peaks, smooth, trace, None, &[], skimmer, alpha, net_spots,
-        net_alpha, clicked_spot, wheel, wf, cmds,
+        ui,
+        view,
+        state,
+        frame,
+        peaks,
+        smooth,
+        trace,
+        None,
+        &[],
+        skimmer,
+        alpha,
+        net_spots,
+        net_alpha,
+        clicked_spot,
+        wheel,
+        wf,
+        cmds,
     );
 }
 
@@ -597,7 +616,8 @@ pub fn show_ext(
     // Skimmer boxes are laid out up front so the click hit-test (below) and the
     // draw pass (bottom) agree on their rects. FT8 (digital) boxes fit their
     // text; CW skimmer boxes use a fixed width for their live-growing tail.
-    let spot_boxes = layout_spots(&painter, view, &rect, &wf_rect, skimmer, digi_audio_hz.is_some());
+    let spot_boxes =
+        layout_spots(&painter, view, &rect, &wf_rect, skimmer, digi_audio_hz.is_some());
     let net_boxes = layout_net_spots(&painter, view, &rect, &wf_rect, net_spots);
 
     // --- interactions -----------------------------------------------------
@@ -669,10 +689,8 @@ pub fn show_ext(
     if resp.drag_stopped() {
         // If we were measuring, freeze the span and start its fade-out.
         if let Some(start_hz) = measuring {
-            let end_hz = resp
-                .interact_pointer_pos()
-                .map(|p| view.x_to_freq(p.x, &rect))
-                .unwrap_or(start_hz);
+            let end_hz =
+                resp.interact_pointer_pos().map(|p| view.x_to_freq(p.x, &rect)).unwrap_or(start_hz);
             bw_fade = Some((start_hz, end_hz, ui.input(|i| i.time)));
         }
         edge = None;
@@ -697,9 +715,8 @@ pub fn show_ext(
     // widget drags started with the primary button.
     let sec_id = ui.id().with("sec-pan");
     let mut sec_pan: bool = ui.data(|d| d.get_temp(sec_id)).unwrap_or(false);
-    let (sec_down, press_origin, pointer_delta) = ui.input(|i| {
-        (i.pointer.secondary_down(), i.pointer.press_origin(), i.pointer.delta())
-    });
+    let (sec_down, press_origin, pointer_delta) =
+        ui.input(|i| (i.pointer.secondary_down(), i.pointer.press_origin(), i.pointer.delta()));
     let sec_pan_before = sec_pan;
     if sec_down && !sec_pan && press_origin.is_some_and(|p| rect.contains(p)) {
         sec_pan = true;
@@ -761,8 +778,7 @@ pub fn show_ext(
     } else {
         // --- wheel (zoom or tune) / click-tune -----------------------------
         if let Some(pos) = resp.hover_pos() {
-            let (scroll, shift) =
-                ui.input(|i| (i.smooth_scroll_delta.y, i.modifiers.shift));
+            let (scroll, shift) = ui.input(|i| (i.smooth_scroll_delta.y, i.modifiers.shift));
             let scroll = if wheel.invert { -scroll } else { scroll };
             let act = if shift { wheel.wheel_shift } else { wheel.wheel };
             if scroll.abs() > 0.1 {
@@ -818,7 +834,10 @@ pub fn show_ext(
                                 // CW filter (CW is USB-side, ~700 Hz passband).
                                 let (lo, hi) = Mode::Cw.default_filter();
                                 let pitch = ((lo + hi) * 0.5) as f64;
-                                cmds.push(Command::SetVfo { vfo: state.active_vfo, hz: spot_hz - pitch });
+                                cmds.push(Command::SetVfo {
+                                    vfo: state.active_vfo,
+                                    hz: spot_hz - pitch,
+                                });
                                 cmds.push(Command::SetMode { rx: RxId::Main, mode: Mode::Cw });
                             }
                             SkimmerKind::Psk | SkimmerKind::Rtty => {
@@ -829,7 +848,10 @@ pub fn show_ext(
                                     vfo: state.active_vfo,
                                     hz: spot_hz - AF,
                                 });
-                                cmds.push(Command::SetMode { rx: RxId::Main, mode: spot.kind.mode() });
+                                cmds.push(Command::SetMode {
+                                    rx: RxId::Main,
+                                    mode: spot.kind.mode(),
+                                });
                                 cmds.push(Command::SetDigiAudioFreq(AF as f32));
                             }
                         }
@@ -867,12 +889,17 @@ pub fn show_ext(
             let mut mesh = egui::epaint::Mesh::default();
             let uv = egui::epaint::WHITE_UV;
             mesh.vertices.push(egui::epaint::Vertex { pos: spec_rect.left_top(), uv, color: top });
-            mesh.vertices
-                .push(egui::epaint::Vertex { pos: spec_rect.right_top(), uv, color: top });
-            mesh.vertices
-                .push(egui::epaint::Vertex { pos: spec_rect.right_bottom(), uv, color: bottom });
-            mesh.vertices
-                .push(egui::epaint::Vertex { pos: spec_rect.left_bottom(), uv, color: bottom });
+            mesh.vertices.push(egui::epaint::Vertex { pos: spec_rect.right_top(), uv, color: top });
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: spec_rect.right_bottom(),
+                uv,
+                color: bottom,
+            });
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: spec_rect.left_bottom(),
+                uv,
+                color: bottom,
+            });
             mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
             painter.add(Shape::mesh(mesh));
         }
@@ -905,11 +932,8 @@ pub fn show_ext(
     {
         let cy = scale_rect.top() + 1.5;
         let cx = scale_rect.center().x;
-        let col = if hover_resize || resizing {
-            crate::theme::CYAN
-        } else {
-            Color32::from_gray(70)
-        };
+        let col =
+            if hover_resize || resizing { crate::theme::CYAN } else { Color32::from_gray(70) };
         for dx in [-16.0f32, 0.0, 16.0] {
             painter.line_segment(
                 [pos2(cx + dx - 6.0, cy), pos2(cx + dx + 6.0, cy)],
@@ -941,10 +965,7 @@ pub fn show_ext(
     // --- VFO markers + passband shading -----------------------------------
     let in_view = |hz: f64| (view.view_lo_hz..=view.view_hi_hz).contains(&hz);
 
-    let (x0c, x1c) = (
-        px0.clamp(rect.left(), rect.right()),
-        px1.clamp(rect.left(), rect.right()),
-    );
+    let (x0c, x1c) = (px0.clamp(rect.left(), rect.right()), px1.clamp(rect.left(), rect.right()));
     if x1c > x0c {
         // Passband shading on the spectrum strip and (fainter) on the
         // waterfall, so the filter width stays visible when collapsed.
@@ -1050,24 +1071,50 @@ pub fn show_ext(
         if state.rit.enabled {
             let dial = state.active_freq_hz();
             if in_view(dial) {
-                marker_line(&painter, &spec_rect, &wf_rect, spec_h, view.freq_to_x(dial, &rect),
-                    Color32::from_gray(150), true);
+                marker_line(
+                    &painter,
+                    &spec_rect,
+                    &wf_rect,
+                    spec_h,
+                    view.freq_to_x(dial, &rect),
+                    Color32::from_gray(150),
+                    true,
+                );
             }
-            offset_bracket(&painter, rect, view.freq_to_x(dial, &rect),
-                view.freq_to_x(state.rx_freq_hz(), &rect), top_y + row * 16.0, rit_col,
-                &format!("RIT {:+} Hz", state.rit.hz));
+            offset_bracket(
+                &painter,
+                rect,
+                view.freq_to_x(dial, &rect),
+                view.freq_to_x(state.rx_freq_hz(), &rect),
+                top_y + row * 16.0,
+                rit_col,
+                &format!("RIT {:+} Hz", state.rit.hz),
+            );
             row += 1.0;
         }
         if state.xit.enabled {
             let tx = state.tx_freq_hz();
             let base = tx - state.xit.effective_hz();
             if in_view(tx) {
-                marker_line(&painter, &spec_rect, &wf_rect, spec_h, view.freq_to_x(tx, &rect),
-                    xit_col, false);
+                marker_line(
+                    &painter,
+                    &spec_rect,
+                    &wf_rect,
+                    spec_h,
+                    view.freq_to_x(tx, &rect),
+                    xit_col,
+                    false,
+                );
             }
-            offset_bracket(&painter, rect, view.freq_to_x(base, &rect),
-                view.freq_to_x(tx, &rect), top_y + row * 16.0, xit_col,
-                &format!("XIT {:+} Hz", state.xit.hz));
+            offset_bracket(
+                &painter,
+                rect,
+                view.freq_to_x(base, &rect),
+                view.freq_to_x(tx, &rect),
+                top_y + row * 16.0,
+                xit_col,
+                &format!("XIT {:+} Hz", state.xit.hz),
+            );
         }
     }
 
@@ -1087,7 +1134,12 @@ pub fn show_ext(
         let cy = b.rect.center().y;
         // Vertical indicator over the signal centre (faint, full waterfall).
         let vcol = fade(
-            Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), if hovered { 170 } else { 90 }),
+            Color32::from_rgba_unmultiplied(
+                border.r(),
+                border.g(),
+                border.b(),
+                if hovered { 170 } else { 90 },
+            ),
             a,
         );
         painter.vline(b.sig_x, wf_rect.y_range(), Stroke::new(1.0, vcol));
@@ -1112,11 +1164,19 @@ pub fn show_ext(
         let border = net_spot_color(spot, hovered);
         let cy = b.rect.center().y;
         let vcol = fade(
-            Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), if hovered { 170 } else { 85 }),
+            Color32::from_rgba_unmultiplied(
+                border.r(),
+                border.g(),
+                border.b(),
+                if hovered { 170 } else { 85 },
+            ),
             a,
         );
         painter.vline(b.sig_x, wf_rect.y_range(), Stroke::new(1.0, vcol));
-        painter.line_segment([pos2(b.sig_x, cy), pos2(b.rect.left(), cy)], Stroke::new(1.0, fade(border, a)));
+        painter.line_segment(
+            [pos2(b.sig_x, cy), pos2(b.rect.left(), cy)],
+            Stroke::new(1.0, fade(border, a)),
+        );
         painter.circle_filled(pos2(b.sig_x, cy), 1.8, fade(border, a));
         draw_net_box(&painter, b, spot, hovered, a);
     }
@@ -1139,7 +1199,13 @@ pub fn show_ext(
                 painter.hline(wf_rect.x_range(), y, Stroke::new(1.0, grid));
                 let tod = (t as i64).rem_euclid(86_400);
                 let text = format!("{:02}:{:02}", tod / 3600, (tod % 3600) / 60);
-                label_box(&painter, pos2(wf_rect.left() + 2.0, y + 1.0), &text, Color32::from_gray(215), wf_rect);
+                label_box(
+                    &painter,
+                    pos2(wf_rect.left() + 2.0, y + 1.0),
+                    &text,
+                    Color32::from_gray(215),
+                    wf_rect,
+                );
             }
             t += 60.0;
         }
@@ -1294,7 +1360,15 @@ fn fmt_mhz(hz: f64) -> String {
 
 /// Draw `text` in a small box centred on `cx`, top at `y`, clamped to `rect`,
 /// with a background whose opacity scales with `a` (for the fade-out).
-fn faded_label(p: &egui::Painter, rect: &Rect, cx: f32, y: f32, text: &str, color: Color32, a: f32) {
+fn faded_label(
+    p: &egui::Painter,
+    rect: &Rect,
+    cx: f32,
+    y: f32,
+    text: &str,
+    color: Color32,
+    a: f32,
+) {
     let galley = p.layout_no_wrap(text.to_string(), FontId::monospace(10.5), color);
     let pad = vec2(4.0, 2.0);
     let size = galley.size() + pad * 2.0;
@@ -1322,7 +1396,15 @@ fn format_bandwidth(hz: f64) -> String {
 /// A vertical marker line across the spectrum + waterfall strips (dashed for a
 /// reference, solid for a marker); the waterfall copy is faded so it doesn't
 /// obscure the trace.
-fn marker_line(p: &egui::Painter, spec: &Rect, wf: &Rect, spec_h: f32, x: f32, color: Color32, dashed: bool) {
+fn marker_line(
+    p: &egui::Painter,
+    spec: &Rect,
+    wf: &Rect,
+    spec_h: f32,
+    x: f32,
+    color: Color32,
+    dashed: bool,
+) {
     let wf_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 150);
     let draw = |a: Pos2, b: Pos2, c: Color32| {
         if dashed {
@@ -1339,7 +1421,15 @@ fn marker_line(p: &egui::Painter, spec: &Rect, wf: &Rect, spec_h: f32, x: f32, c
 
 /// A labelled offset bracket: a horizontal line with end ticks between two x
 /// positions, plus the label just past its right end.
-fn offset_bracket(p: &egui::Painter, bounds: Rect, xf: f32, xt: f32, y: f32, color: Color32, label: &str) {
+fn offset_bracket(
+    p: &egui::Painter,
+    bounds: Rect,
+    xf: f32,
+    xt: f32,
+    y: f32,
+    color: Color32,
+    label: &str,
+) {
     let xf = xf.clamp(bounds.left(), bounds.right());
     let xt = xt.clamp(bounds.left(), bounds.right());
     let (lo, hi) = (xf.min(xt), xf.max(xt));
@@ -1466,11 +1556,8 @@ fn freq_gridlines(view: &ViewState) -> Vec<f64> {
     let span = view.span();
     let raw = span / 8.0;
     let mag = 10f64.powf(raw.log10().floor());
-    let step = [1.0, 2.0, 5.0, 10.0]
-        .iter()
-        .map(|m| m * mag)
-        .find(|&s| s >= raw)
-        .unwrap_or(mag * 10.0);
+    let step =
+        [1.0, 2.0, 5.0, 10.0].iter().map(|m| m * mag).find(|&s| s >= raw).unwrap_or(mag * 10.0);
     let mut out = Vec::new();
     let mut hz = (view.view_lo_hz / step).ceil() * step;
     while hz <= view.view_hi_hz {

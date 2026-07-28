@@ -64,9 +64,7 @@ impl SoapyDevice {
         candidates
             .into_iter()
             .filter(|&r| ok(r))
-            .min_by(|a, b| {
-                (a - requested).abs().total_cmp(&(b - requested).abs())
-            })
+            .min_by(|a, b| (a - requested).abs().total_cmp(&(b - requested).abs()))
             .unwrap_or(requested)
     }
 
@@ -103,9 +101,8 @@ impl SoapyDevice {
             let _ = self.dev.set_gain(Direction::Tx, channel, 0.0);
             for name in self.dev.list_gains(Direction::Tx, channel).unwrap_or_default() {
                 if let Ok(r) = self.dev.gain_element_range(Direction::Tx, channel, name.as_str()) {
-                    let _ = self
-                        .dev
-                        .set_gain_element(Direction::Tx, channel, name.as_str(), r.minimum);
+                    let _ =
+                        self.dev.set_gain_element(Direction::Tx, channel, name.as_str(), r.minimum);
                 }
             }
         }
@@ -369,9 +366,8 @@ fn probe_caps(dev: &soapysdr::Device) -> Result<DeviceCaps> {
     }
     let lower: Vec<String> = sensors.iter().map(|s| s.to_lowercase()).collect();
     let has_swr_sensor = lower.iter().any(|s| s.contains("swr") || s.contains("vswr"));
-    let has_fwd_power_sensor = lower
-        .iter()
-        .any(|s| s.contains("forward") || s.contains("fwd") || s.contains("tx_power"));
+    let has_fwd_power_sensor =
+        lower.iter().any(|s| s.contains("forward") || s.contains("fwd") || s.contains("tx_power"));
 
     Ok(DeviceCaps {
         driver,

@@ -78,13 +78,7 @@ fn encode_loop(
 ) {
     let cfg = ShineConfig {
         wave: ShineWave { channels: 1, samplerate: MP3_RATE },
-        mpeg: ShineMpeg {
-            mode: MODE_MONO,
-            bitr: MP3_BITRATE,
-            emph: 0,
-            copyright: 0,
-            original: 1,
-        },
+        mpeg: ShineMpeg { mode: MODE_MONO, bitr: MP3_BITRATE, emph: 0, copyright: 0, original: 1 },
     };
     let mut enc = match shine_initialise(&cfg) {
         Ok(e) => e,
@@ -172,7 +166,8 @@ mod tests {
 
     #[test]
     fn records_a_valid_mp3() {
-        let path = std::env::temp_dir().join(format!("sdroxide-rec-test-{}.mp3", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("sdroxide-rec-test-{}.mp3", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let (rec, mut prod) = Recorder::start(path.clone(), 48_000.0).expect("start recorder");
 

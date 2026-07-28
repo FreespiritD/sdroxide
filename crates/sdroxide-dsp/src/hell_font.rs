@@ -56,10 +56,7 @@ pub fn glyph(c: char) -> [u16; COLS] {
 const fn parse_font(src: &str) -> [[u16; COLS]; GLYPHS] {
     let b = src.as_bytes();
     // Each row is COLS characters plus a newline; each glyph is ROWS rows.
-    assert!(
-        b.len() == GLYPHS * ROWS * (COLS + 1),
-        "font art has the wrong length"
-    );
+    assert!(b.len() == GLYPHS * ROWS * (COLS + 1), "font art has the wrong length");
     let mut font = [[0u16; COLS]; GLYPHS];
     let mut g = 0;
     while g < GLYPHS {
@@ -311,11 +308,7 @@ mod tests {
     fn every_dot_is_inside_the_cell() {
         for (i, g) in HELL_FONT.iter().enumerate() {
             for (c, &col) in g.iter().enumerate() {
-                assert_eq!(
-                    col >> ROWS,
-                    0,
-                    "glyph {i} column {c} has dots below row {ROWS}"
-                );
+                assert_eq!(col >> ROWS, 0, "glyph {i} column {c} has dots below row {ROWS}");
             }
         }
     }

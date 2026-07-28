@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use sdroxide_types::{
     CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, MemoryChannel, Meters, QsoRecord,
-    RadioState, SkimmerSpot, Spot, SpectrumFrame, SstvMode, SstvStatus, UploadResult, VoiceStatus,
+    RadioState, SkimmerSpot, SpectrumFrame, Spot, SstvMode, SstvStatus, UploadResult, VoiceStatus,
 };
 
 /// Bump on any incompatible change to the message enums (this includes the
@@ -97,10 +97,16 @@ pub struct AudioCaps {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientMsg {
-    Hello { proto: u16, audio: AudioCaps },
+    Hello {
+        proto: u16,
+        audio: AudioCaps,
+    },
     Command(Command),
     /// 20 ms mic frame in the codec negotiated at Hello.
-    MicFrame { seq: u32, payload: Vec<u8> },
+    MicFrame {
+        seq: u32,
+        payload: Vec<u8>,
+    },
     Ping(u64),
 }
 
@@ -119,7 +125,10 @@ pub enum ServerMsg {
     Spectrum(SpectrumFrame),
     Meters(Meters),
     Memories(Vec<MemoryChannel>),
-    RxAudio { seq: u32, payload: Vec<u8> },
+    RxAudio {
+        seq: u32,
+        payload: Vec<u8>,
+    },
     Pong(u64),
     /// Another client already holds the (single) session.
     Busy,
@@ -131,16 +140,32 @@ pub enum ServerMsg {
     // Skimmers (CW etc.).
     SkimmerSpots(Vec<SkimmerSpot>),
     // SSTV image mode.
-    SstvLine { image_id: u32, y: u16, rgb: Vec<u8> },
-    SstvImage { image_id: u32, mode: SstvMode, w: u16, h: u16, png: Vec<u8> },
+    SstvLine {
+        image_id: u32,
+        y: u16,
+        rgb: Vec<u8>,
+    },
+    SstvImage {
+        image_id: u32,
+        mode: SstvMode,
+        w: u16,
+        h: u16,
+        png: Vec<u8>,
+    },
     SstvStatus(SstvStatus),
     /// FSQ image: a completed received picture (PNG bytes).
-    DigiImage { png: Vec<u8> },
+    DigiImage {
+        png: Vec<u8>,
+    },
     /// Hellschreiber: a batch of received dot columns, column-major, 0 = black.
     /// `seq` is the absolute column index so a client can detect a dropped
     /// batch — this lane drops rather than blocks when it backs up, and Hell has
     /// no framing of its own to resynchronise against.
-    HellColumns { seq: u64, rows: u8, cols: Vec<u8> },
+    HellColumns {
+        seq: u64,
+        rows: u8,
+        cols: Vec<u8>,
+    },
     /// Voice keyer: slot contents plus what is being recorded or transmitted.
     VoiceStatus(VoiceStatus),
     // Network cockpit.
@@ -150,10 +175,20 @@ pub enum ServerMsg {
     Upload(UploadResult),
     Confirmations(Vec<QsoRecord>),
     /// Built-in TCI server status (listener up, bind address, client count).
-    TciServerStatus { running: bool, addr: String, clients: usize, error: Option<String> },
+    TciServerStatus {
+        running: bool,
+        addr: String,
+        clients: usize,
+        error: Option<String>,
+    },
     /// Built-in rigctld server status, so the settings dialog on a remote
     /// client can show what the engine's listener is doing.
-    RigctldStatus { running: bool, addr: String, clients: usize, error: Option<String> },
+    RigctldStatus {
+        running: bool,
+        addr: String,
+        clients: usize,
+        error: Option<String>,
+    },
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {

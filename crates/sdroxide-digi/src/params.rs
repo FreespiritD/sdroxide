@@ -25,13 +25,9 @@ pub struct DigiParams {
 impl DigiParams {
     pub fn for_mode(mode: Mode) -> Self {
         match mode {
-            Mode::Ft4 => DigiParams {
-                mode,
-                slot_s: 7.5,
-                tx_offset_s: 0.5,
-                burst_s: 4.48,
-                decode_at_s: 6.0,
-            },
+            Mode::Ft4 => {
+                DigiParams { mode, slot_s: 7.5, tx_offset_s: 0.5, burst_s: 4.48, decode_at_s: 6.0 }
+            }
             // FT8 (and any non-FT4 digital fallback). Symbol 0 is nominally
             // 0.5 s into the slot (matches WSJT-X / mfsk-core dt reference).
             _ => DigiParams {

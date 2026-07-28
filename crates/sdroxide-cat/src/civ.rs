@@ -226,8 +226,11 @@ mod tests {
         buf.extend_from_slice(&frame(0x70, 0x03, &encode_freq(7_055_000.0))); // "reply"
         let frames = parse_frames(&mut buf);
         // Both parse; the freq one is cmd 0x03 with 5 data bytes.
-        let freqs: Vec<f64> =
-            frames.iter().filter(|f| f.cmd == 0x03 && f.data.len() >= 5).filter_map(|f| decode_freq(&f.data)).collect();
+        let freqs: Vec<f64> = frames
+            .iter()
+            .filter(|f| f.cmd == 0x03 && f.data.len() >= 5)
+            .filter_map(|f| decode_freq(&f.data))
+            .collect();
         assert_eq!(freqs, vec![7_055_000.0]);
         assert!(buf.is_empty());
     }

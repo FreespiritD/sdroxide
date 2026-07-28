@@ -10,8 +10,8 @@
 use std::collections::HashMap;
 
 use eframe::egui::{
-    self, Align, Color32, CursorIcon, FontFamily, FontId, Layout, Rect, Response,
-    RichText, Sense, Shape, Stroke, Ui, pos2, vec2,
+    self, Align, Color32, CursorIcon, FontFamily, FontId, Layout, Rect, Response, RichText, Sense,
+    Shape, Stroke, Ui, pos2, vec2,
 };
 
 use crate::theme::{self, ThemedScroll};
@@ -42,8 +42,12 @@ fn embedded_image(path: &str) -> Option<&'static [u8]> {
         "10-skimmer.png" => &include_bytes!("../../../docs/images/10-skimmer.png")[..],
         "13-web-client.png" => &include_bytes!("../../../docs/images/13-web-client.png")[..],
         "14-spots-panel.jpg" => &include_bytes!("../../../docs/images/14-spots-panel.jpg")[..],
-        "15-settings-spots.jpg" => &include_bytes!("../../../docs/images/15-settings-spots.jpg")[..],
-        "16-settings-uploads.jpg" => &include_bytes!("../../../docs/images/16-settings-uploads.jpg")[..],
+        "15-settings-spots.jpg" => {
+            &include_bytes!("../../../docs/images/15-settings-spots.jpg")[..]
+        }
+        "16-settings-uploads.jpg" => {
+            &include_bytes!("../../../docs/images/16-settings-uploads.jpg")[..]
+        }
         "17-sats-passes.jpg" => &include_bytes!("../../../docs/images/17-sats-passes.jpg")[..],
         "18-awards.jpg" => &include_bytes!("../../../docs/images/18-awards.jpg")[..],
         "bw_measurement.jpg" | "bw-measurement.jpg" => {
@@ -55,11 +59,21 @@ fn embedded_image(path: &str) -> Option<&'static [u8]> {
         "rfpaint.jpg" => &include_bytes!("../../../docs/images/rfpaint.jpg")[..],
         "sstv.jpg" => &include_bytes!("../../../docs/images/sstv.jpg")[..],
         "settings-general.jpg" => &include_bytes!("../../../docs/images/settings-general.jpg")[..],
-        "settings-controls-keyboard.jpg" => &include_bytes!("../../../docs/images/settings-controls-keyboard.jpg")[..],
-        "settings-controls-mouse.jpg" => &include_bytes!("../../../docs/images/settings-controls-mouse.jpg")[..],
-        "settings-controls-midi.jpg" => &include_bytes!("../../../docs/images/settings-controls-midi.jpg")[..],
-        "settings-servers-hamlib.jpg" => &include_bytes!("../../../docs/images/settings-servers-hamlib.jpg")[..],
-        "settings-servers-tci.jpg" => &include_bytes!("../../../docs/images/settings-servers-tci.jpg")[..],
+        "settings-controls-keyboard.jpg" => {
+            &include_bytes!("../../../docs/images/settings-controls-keyboard.jpg")[..]
+        }
+        "settings-controls-mouse.jpg" => {
+            &include_bytes!("../../../docs/images/settings-controls-mouse.jpg")[..]
+        }
+        "settings-controls-midi.jpg" => {
+            &include_bytes!("../../../docs/images/settings-controls-midi.jpg")[..]
+        }
+        "settings-servers-hamlib.jpg" => {
+            &include_bytes!("../../../docs/images/settings-servers-hamlib.jpg")[..]
+        }
+        "settings-servers-tci.jpg" => {
+            &include_bytes!("../../../docs/images/settings-servers-tci.jpg")[..]
+        }
         "settings-freedv.jpg" => &include_bytes!("../../../docs/images/settings-freedv.jpg")[..],
 
         "settings-radio-soapysdr.jpg" => {
@@ -164,7 +178,14 @@ impl Default for Help {
     fn default() -> Self {
         let doc = Doc::parse(MANUAL_MD);
         let active = doc.nav.first().map(|n| n.slug.clone()).unwrap_or_default();
-        Help { open: false, doc, textures: HashMap::new(), scroll_to: None, scroll_frames: 0, active }
+        Help {
+            open: false,
+            doc,
+            textures: HashMap::new(),
+            scroll_to: None,
+            scroll_frames: 0,
+            active,
+        }
     }
 }
 
@@ -262,8 +283,7 @@ impl Help {
                     );
 
                     // Divider between the panes.
-                    let (drect, _) =
-                        ui.allocate_exact_size(vec2(9.0, full_h), Sense::hover());
+                    let (drect, _) = ui.allocate_exact_size(vec2(9.0, full_h), Sense::hover());
                     ui.painter().vline(
                         drect.center().x,
                         drect.y_range(),
@@ -550,18 +570,15 @@ fn draw_table(
         vec![(inner / cols as f32).max(80.0); cols]
     };
 
-    egui::Frame::new()
-        .stroke(Stroke::new(1.0, theme::LINE_LIT))
-        .inner_margin(0)
-        .show(ui, |ui| {
-            ui.set_width(total);
-            // Header row.
-            table_row(ui, header, &col_w, spacing, theme::FILL, true, actions, idx);
-            for (ri, row) in rows.iter().enumerate() {
-                let fill = if ri % 2 == 0 { theme::ROW_BG } else { theme::PANEL };
-                table_row(ui, row, &col_w, spacing, fill, false, actions, idx);
-            }
-        });
+    egui::Frame::new().stroke(Stroke::new(1.0, theme::LINE_LIT)).inner_margin(0).show(ui, |ui| {
+        ui.set_width(total);
+        // Header row.
+        table_row(ui, header, &col_w, spacing, theme::FILL, true, actions, idx);
+        for (ri, row) in rows.iter().enumerate() {
+            let fill = if ri % 2 == 0 { theme::ROW_BG } else { theme::PANEL };
+            table_row(ui, row, &col_w, spacing, fill, false, actions, idx);
+        }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -636,7 +653,6 @@ fn cut_outline(rect: Rect, cut: f32) -> Vec<egui::Pos2> {
         pos2(l, b - cut),
     ]
 }
-
 
 /// An angled section header: a cut-corner bar with a yellow/black hazard tab on
 /// the left and the section title in the techno heading face. Level 1 is the
@@ -872,7 +888,13 @@ fn parse_blocks(md: &str) -> Vec<Block> {
         // Bullet list.
         if is_bullet(t) {
             let mut items = Vec::new();
-            collect_list(&lines, &mut i, |content| items.push(parse_inline(content)), is_bullet, strip_bullet);
+            collect_list(
+                &lines,
+                &mut i,
+                |content| items.push(parse_inline(content)),
+                is_bullet,
+                strip_bullet,
+            );
             blocks.push(Block::Bullets(items));
             continue;
         }
@@ -1035,7 +1057,9 @@ fn parse_inline(s: &str) -> Vec<Inline> {
         let c = chars[i];
 
         // Inline code — parsed first so its contents are never re-interpreted.
-        if c == '`' && let Some(end) = find_char(&chars, i + 1, '`') {
+        if c == '`'
+            && let Some(end) = find_char(&chars, i + 1, '`')
+        {
             flush(&mut buf, &mut out);
             out.push(Inline::Code(chars[i + 1..end].iter().collect()));
             i = end + 1;
@@ -1043,7 +1067,9 @@ fn parse_inline(s: &str) -> Vec<Inline> {
         }
 
         // Link `[text](href)`.
-        if c == '[' && let Some((text, href, next)) = parse_link(&chars, i) {
+        if c == '['
+            && let Some((text, href, next)) = parse_link(&chars, i)
+        {
             flush(&mut buf, &mut out);
             out.push(Inline::Link { text: parse_inline(&text), href });
             i = next;
@@ -1106,8 +1132,9 @@ fn find_str(chars: &[char], from: usize, target: &[char]) -> Option<usize> {
 /// The closing `_` of an emphasis span: an underscore past non-empty content
 /// (`k > from`) that is followed by a word boundary, so identifiers survive.
 fn find_underscore_close(chars: &[char], from: usize) -> Option<usize> {
-    (from + 1..chars.len())
-        .find(|&k| chars[k] == '_' && chars.get(k + 1).map(|c| !c.is_alphanumeric()).unwrap_or(true))
+    (from + 1..chars.len()).find(|&k| {
+        chars[k] == '_' && chars.get(k + 1).map(|c| !c.is_alphanumeric()).unwrap_or(true)
+    })
 }
 
 /// Parse `[text](href)` at `chars[start] == '['`, returning (text, href, index

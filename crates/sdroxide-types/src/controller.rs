@@ -1,6 +1,6 @@
 use crate::{
     CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, MemoryChannel, Meters, QsoRecord,
-    RadioState, SkimmerSpot, Spot, SpectrumFrame, SstvMode, SstvStatus, UploadResult, VoiceStatus,
+    RadioState, SkimmerSpot, SpectrumFrame, Spot, SstvMode, SstvStatus, UploadResult, VoiceStatus,
 };
 
 /// Events flowing engine → UI.
@@ -27,13 +27,25 @@ pub enum RadioEvent {
     SkimmerSpots(Vec<SkimmerSpot>),
     /// SSTV: one freshly decoded scanline `rgb` (3·width bytes) at row `y` of the
     /// image identified by `image_id`. Paints progressively.
-    SstvLine { image_id: u32, y: u16, rgb: Vec<u8> },
+    SstvLine {
+        image_id: u32,
+        y: u16,
+        rgb: Vec<u8>,
+    },
     /// SSTV: a completed image (PNG bytes) plus its identity and size.
-    SstvImage { image_id: u32, mode: SstvMode, w: u16, h: u16, png: Vec<u8> },
+    SstvImage {
+        image_id: u32,
+        mode: SstvMode,
+        w: u16,
+        h: u16,
+        png: Vec<u8>,
+    },
     /// SSTV: engine status change (tx/rx active, detected mode, progress).
     SstvStatus(SstvStatus),
     /// FSQ image: a completed received picture (PNG bytes).
-    DigiImage { png: Vec<u8> },
+    DigiImage {
+        png: Vec<u8>,
+    },
     /// Hellschreiber: a run of freshly received dot columns, batched since the
     /// last poll. `cols` is column-major (`cols[c * rows + r]`, row 0 at the
     /// top), 0 = black … 255 = white.
@@ -42,7 +54,11 @@ pub enum RadioEvent {
     /// started. Hell has no framing to resynchronise against, so the panel uses
     /// it to tell a dropped batch (leave a gap of the right width) from a
     /// restarted receiver (`seq` going backwards — clear the raster).
-    HellColumns { seq: u64, rows: u8, cols: Vec<u8> },
+    HellColumns {
+        seq: u64,
+        rows: u8,
+        cols: Vec<u8>,
+    },
     /// Voice keyer: slot contents plus what is being recorded or transmitted.
     /// Emitted on every change and, while one of the two runs, often enough for
     /// the UI to animate a position.
@@ -63,11 +79,21 @@ pub enum RadioEvent {
     /// Built-in TCI server status: whether the listener is up, where it is
     /// bound, how many third-party clients are connected, and any bind error.
     /// Emitted on every transition, so the settings dialog never polls.
-    TciServerStatus { running: bool, addr: String, clients: usize, error: Option<String> },
+    TciServerStatus {
+        running: bool,
+        addr: String,
+        clients: usize,
+        error: Option<String>,
+    },
     /// Built-in rigctld server status: whether the listener is up, where it is
     /// bound, how many clients are connected, and any bind error. Emitted on
     /// every transition, so the settings dialog never polls.
-    RigctldStatus { running: bool, addr: String, clients: usize, error: Option<String> },
+    RigctldStatus {
+        running: bool,
+        addr: String,
+        clients: usize,
+        error: Option<String>,
+    },
 }
 
 /// Snapshot of the frontend's switchable sound devices (native clients).

@@ -102,7 +102,7 @@ impl Source {
     /// Refresh cadence, seconds.
     fn period(self) -> i64 {
         match self {
-            Source::Sun => 600,      // browse images update every few minutes
+            Source::Sun => 600, // browse images update every few minutes
             Source::Cme => 1200,
             Source::Flare => 1200,
             Source::Regions => 3600, // a once-a-day product
@@ -274,8 +274,7 @@ mod tests {
 
     #[test]
     fn every_source_has_a_distinct_label_and_its_own_status_slot() {
-        let labels: std::collections::HashSet<_> =
-            Source::ALL.iter().map(|s| s.label()).collect();
+        let labels: std::collections::HashSet<_> = Source::ALL.iter().map(|s| s.label()).collect();
         assert_eq!(labels.len(), Source::ALL.len(), "duplicate source labels");
         for src in Source::ALL {
             assert_eq!(Source::ALL[src.index()], src);

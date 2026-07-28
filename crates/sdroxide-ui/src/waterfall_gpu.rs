@@ -74,7 +74,8 @@ pub fn init(rs: &RenderState) {
         })
     };
     let hist = [make_hist(0), make_hist(1)];
-    let hist_view = [hist[0].create_view(&Default::default()), hist[1].create_view(&Default::default())];
+    let hist_view =
+        [hist[0].create_view(&Default::default()), hist[1].create_view(&Default::default())];
     let lut_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("waterfall-lut"),
         size: wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },

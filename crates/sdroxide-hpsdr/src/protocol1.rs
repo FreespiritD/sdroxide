@@ -21,7 +21,7 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use crate::net::{hex_head, Ctrl, RxStats, ThreadCtx, WATCHDOG};
+use crate::net::{Ctrl, RxStats, ThreadCtx, WATCHDOG, hex_head};
 use crate::protocol2::be24_to_f32;
 
 const PORT: u16 = 1024;
@@ -289,8 +289,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
                     }
                 }
             }
-            let d =
-                build_ep2(&mut out_seq, &mut slot, speed, rx_freq, tx_freq, ptt, &tx_scratch);
+            let d = build_ep2(&mut out_seq, &mut slot, speed, rx_freq, tx_freq, ptt, &tx_scratch);
             let _ = socket.send_to(&d, dest);
             last_send = Instant::now();
         }

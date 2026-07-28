@@ -38,9 +38,9 @@ impl SpotKind {
     /// A stable per-kind RGB tint for the overlay/marker (r, g, b).
     pub fn color(self) -> (u8, u8, u8) {
         match self {
-            SpotKind::DxCluster => (120, 220, 255), // cyan
-            SpotKind::Pota => (120, 230, 140),      // green
-            SpotKind::Sota => (255, 190, 90),       // amber
+            SpotKind::DxCluster => (120, 220, 255),   // cyan
+            SpotKind::Pota => (120, 230, 140),        // green
+            SpotKind::Sota => (255, 190, 90),         // amber
             SpotKind::PskReporter => (210, 150, 255), // violet
             SpotKind::FreeDv => (255, 130, 160),      // pink
         }

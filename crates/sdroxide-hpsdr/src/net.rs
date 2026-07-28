@@ -25,12 +25,7 @@ pub(crate) const STATS_INTERVAL: Duration = Duration::from_secs(2);
 /// diagnostic logs that let a remote tester compare on-wire bytes against the
 /// OpenHPSDR spec (the wire offsets in this crate are not hardware-verified).
 pub(crate) fn hex_head(bytes: &[u8], n: usize) -> String {
-    bytes
-        .iter()
-        .take(n)
-        .map(|b| format!("{b:02X}"))
-        .collect::<Vec<_>>()
-        .join(" ")
+    bytes.iter().take(n).map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
 }
 
 /// Periodic RX throughput/health accounting for a protocol thread. Counts

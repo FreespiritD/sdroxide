@@ -722,9 +722,8 @@ impl RelativeMode {
         if values.len() < 2 {
             return RelativeMode::Absolute;
         }
-        let count = |r: std::ops::RangeInclusive<u8>| {
-            values.iter().filter(|v| r.contains(v)).count()
-        };
+        let count =
+            |r: std::ops::RangeInclusive<u8>| values.iter().filter(|v| r.contains(v)).count();
         let small_pos = count(1..=8);
         let high_wrap = count(120..=127);
         let low_neg = count(65..=72);

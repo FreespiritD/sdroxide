@@ -216,10 +216,11 @@ pub fn run_remote(url: &str) -> Result<()> {
             // far faster than the display needs to redraw, and egui takes the
             // soonest of all requested deadlines anyway — this escapes the
             // idle poll quickly without outpacing the app's frame scheduler.
-            let ctrl = sdroxide_ui::RemoteController::connect(&url, Some(Box::new(bridge)), move || {
-                ctx.request_repaint_after(std::time::Duration::from_millis(33))
-            })
-            .map_err(|e| format!("connect {url}: {e}"))?;
+            let ctrl =
+                sdroxide_ui::RemoteController::connect(&url, Some(Box::new(bridge)), move || {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(33))
+                })
+                .map_err(|e| format!("connect {url}: {e}"))?;
             Ok(Box::new(sdroxide_ui::SdroxideApp::new(cc, Box::new(ctrl))))
         }),
     )

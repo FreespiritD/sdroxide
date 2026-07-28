@@ -389,8 +389,7 @@ pub fn bodies(st: &SolarUi, unix_s: f64) -> Bodies {
             moons.push(MoonBody {
                 index,
                 info: m,
-                pos: pos
-                    + V3::from_f64(m.offset(jd)) * (exaggeration * v.moon_orbit_scale),
+                pos: pos + V3::from_f64(m.offset(jd)) * (exaggeration * v.moon_orbit_scale),
                 radius: m.radius as f32 * exaggeration,
                 parent,
             });
@@ -1083,9 +1082,8 @@ fn orbits(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
     // The Moon's path is drawn around the Earth's *current* position, so it
     // reads as a ring on the Earth rather than a smear along the Earth's orbit.
     const MOON_STEPS: usize = 128;
-    let moon_at = |jd: f64| {
-        b.earth + V3::from_f64(ephem::moon_geocentric_vec(jd)) * st.view.moon_orbit_scale
-    };
+    let moon_at =
+        |jd: f64| b.earth + V3::from_f64(ephem::moon_geocentric_vec(jd)) * st.view.moon_orbit_scale;
     let mut prev = moon_at(b.jd);
     for k in 1..=MOON_STEPS {
         let jd = b.jd + 27.321_661 * k as f64 / MOON_STEPS as f64;
@@ -1232,12 +1230,22 @@ fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, anim_t: f
 
     // The arcs need a home to start from.
     let Some(home) = st.qth else { return };
-    for (target, color, width, animated) in [
-        (st.digi.dx, theme::CYAN, 2.4, true),
-        (st.digi.preview, theme::YELLOW, 1.6, false),
-    ] {
+    for (target, color, width, animated) in
+        [(st.digi.dx, theme::CYAN, 2.4, true), (st.digi.preview, theme::YELLOW, 1.6, false)]
+    {
         let Some(dx) = target else { continue };
-        arc(s, b, &to_world, home, dx, color, width, fade, animated.then_some(anim_t), st.digi.transmitting);
+        arc(
+            s,
+            b,
+            &to_world,
+            home,
+            dx,
+            color,
+            width,
+            fade,
+            animated.then_some(anim_t),
+            st.digi.transmitting,
+        );
     }
 }
 
@@ -1302,7 +1310,12 @@ fn arc(
             }
             _ => 1.0,
         };
-        s.lines.push(seg(prev, p, width_px * pulse.min(1.9), lin(color, (0.55 * pulse).min(1.0) * fade)));
+        s.lines.push(seg(
+            prev,
+            p,
+            width_px * pulse.min(1.9),
+            lin(color, (0.55 * pulse).min(1.0) * fade),
+        ));
         prev = p;
     }
 
@@ -1310,7 +1323,12 @@ fn arc(
     // on the surface rather than floating near it.
     for (lat, lon) in [from, to] {
         let d = ephem::geodetic_to_body(lat, lon);
-        s.lines.push(seg(to_world(d, 1.0), to_world(d, 1.0 + bulge * 0.16), width_px, lin(color, 0.7 * fade)));
+        s.lines.push(seg(
+            to_world(d, 1.0),
+            to_world(d, 1.0 + bulge * 0.16),
+            width_px,
+            lin(color, 0.7 * fade),
+        ));
     }
     let _ = b;
 }
@@ -1454,7 +1472,8 @@ mod tests {
         }
 
         let b = bodies(&st, 1_784_937_600.0);
-        let jupiter = b.planets.iter().find(|p| p.planet == sdroxide_solar::Planet::Jupiter).unwrap();
+        let jupiter =
+            b.planets.iter().find(|p| p.planet == sdroxide_solar::Planet::Jupiter).unwrap();
         let radii: Vec<f32> = b
             .moons
             .iter()
@@ -1482,7 +1501,8 @@ mod tests {
         }
         // Mercury is small enough that the cap never binds: it gets the full
         // exaggeration the slider asks for.
-        let mercury = b.planets.iter().find(|p| p.planet == sdroxide_solar::Planet::Mercury).unwrap();
+        let mercury =
+            b.planets.iter().find(|p| p.planet == sdroxide_solar::Planet::Mercury).unwrap();
         assert!((mercury.exaggeration - 20.0).abs() < 0.01);
     }
 
@@ -1519,7 +1539,11 @@ mod tests {
             Camera::from_view(&close, &b, [1600.0, 900.0]).pixels_for(b.earth, b.earth_r)
         };
         for sp in s.sprites.iter().filter(|sp| sp.params[0] != SPRITE_GLOW) {
-            assert!(sp.size_px <= earth_px * 1.5 + 0.01, "marker {} px on a {earth_px} px Earth", sp.size_px);
+            assert!(
+                sp.size_px <= earth_px * 1.5 + 0.01,
+                "marker {} px on a {earth_px} px Earth",
+                sp.size_px
+            );
         }
     }
 
@@ -1589,7 +1613,8 @@ mod tests {
             assert!((0.0..1.0).contains(&inner), "inner radius {inner} out of range");
             // Scale is the length; the model matrix's first column is the
             // scaled basis vector, so its length is the cone's length.
-            let len = (d.model[0][0].powi(2) + d.model[0][1].powi(2) + d.model[0][2].powi(2)).sqrt();
+            let len =
+                (d.model[0][0].powi(2) + d.model[0][1].powi(2) + d.model[0][2].powi(2)).sqrt();
             let launch = sdroxide_solar::impact::LAUNCH_RADIUS as f32;
             assert!(len >= launch, "cone only {len} Gm long, inside the launch radius");
             assert!(
@@ -1602,7 +1627,9 @@ mod tests {
         // The older event has travelled further.
         let lens: Vec<f32> = cones
             .iter()
-            .map(|(_, d)| (d.model[0][0].powi(2) + d.model[0][1].powi(2) + d.model[0][2].powi(2)).sqrt())
+            .map(|(_, d)| {
+                (d.model[0][0].powi(2) + d.model[0][1].powi(2) + d.model[0][2].powi(2)).sqrt()
+            })
             .collect();
         assert!(lens[1] > lens[0], "the two-day-old CME should be further out");
     }

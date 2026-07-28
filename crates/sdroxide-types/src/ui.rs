@@ -52,7 +52,7 @@ impl Default for UiSettings {
             spectrum_speed: Speed::Medium,
             waterfall_palette: 0,
             spectrum_gradient: true,
-            gradient_top: [64, 0, 0], // dark red
+            gradient_top: [64, 0, 0],   // dark red
             gradient_bottom: [0, 0, 0], // black
         }
     }

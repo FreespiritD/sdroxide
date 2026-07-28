@@ -154,7 +154,10 @@ pub enum PassSearch {
     Passes(Vec<Pass>),
     /// Above the horizon for the whole search window: a geostationary bird like
     /// QO-100, which has no passes because it never sets.
-    AlwaysVisible { elevation: f64, azimuth: f64 },
+    AlwaysVisible {
+        elevation: f64,
+        azimuth: f64,
+    },
     /// Never rises during the search window — the wrong hemisphere, or an orbit
     /// whose inclination never reaches the observer's latitude.
     NeverVisible,
@@ -402,11 +405,7 @@ impl Satellite {
 /// are arcsecond-scale, far below anything this display resolves.
 fn teme_to_ecef(teme: Vec3, jd: f64) -> Vec3 {
     let g = ephem::gmst_deg(jd).to_radians();
-    vec3(
-        teme.x * g.cos() + teme.y * g.sin(),
-        -teme.x * g.sin() + teme.y * g.cos(),
-        teme.z,
-    )
+    vec3(teme.x * g.cos() + teme.y * g.sin(), -teme.x * g.sin() + teme.y * g.cos(), teme.z)
 }
 
 #[cfg(test)]

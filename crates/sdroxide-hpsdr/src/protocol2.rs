@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use rtrb::{Consumer, Producer};
 
-use crate::net::{hex_head, Ctrl, RxStats, ThreadCtx, WATCHDOG};
+use crate::net::{Ctrl, RxStats, ThreadCtx, WATCHDOG, hex_head};
 
 /// UDP ports. Host→radio use these as the *destination* port; radio→host DDC IQ
 /// arrives with a *source* port of [`port::DDC_IQ_BASE`]` + ddc_index`.
@@ -63,11 +63,7 @@ pub fn phase_word(freq_hz: f64, clock_hz: f64) -> u32 {
 /// Decode a 24-bit big-endian two's-complement sample.
 pub fn be24_to_i32(b: [u8; 3]) -> i32 {
     let u = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | (b[2] as u32);
-    if u & 0x0080_0000 != 0 {
-        (u | 0xFF00_0000) as i32
-    } else {
-        u as i32
-    }
+    if u & 0x0080_0000 != 0 { (u | 0xFF00_0000) as i32 } else { u as i32 }
 }
 
 /// Encode a 24-bit big-endian two's-complement sample.

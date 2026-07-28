@@ -79,7 +79,9 @@ pub fn compute_awards(log: &[QsoRecord], band: Option<&str>, mode: Option<&str>)
         }
 
         // WAZ: record's CQ zone, else the resolver's.
-        if let Some(z) = q.cq_zone.or_else(|| ent.map(|e| e.cq_zone)).filter(|&z| (1..=40).contains(&z)) {
+        if let Some(z) =
+            q.cq_zone.or_else(|| ent.map(|e| e.cq_zone)).filter(|&z| (1..=40).contains(&z))
+        {
             let s = a.waz.entry(z).or_default();
             s.worked = true;
             s.confirmed |= conf;

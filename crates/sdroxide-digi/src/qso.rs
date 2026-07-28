@@ -34,7 +34,9 @@ fn classify_payload(text: &str) -> Payload {
             s[1..].parse().map(Payload::RReport).unwrap_or(Payload::Other)
         }
         s if (s.starts_with('-') || s.starts_with('+')) && s[1..].parse::<i16>().is_ok() => {
-            Payload::Report(s[1..].parse::<i16>().map(|v| if s.starts_with('-') { -v } else { v }).unwrap())
+            Payload::Report(
+                s[1..].parse::<i16>().map(|v| if s.starts_with('-') { -v } else { v }).unwrap(),
+            )
         }
         s if is_grid(s) => Payload::Grid(s.to_string()),
         _ => Payload::Other,
@@ -43,7 +45,11 @@ fn classify_payload(text: &str) -> Payload {
 
 fn is_grid(t: &str) -> bool {
     let b = t.as_bytes();
-    b.len() == 4 && b[0].is_ascii_uppercase() && b[1].is_ascii_uppercase() && b[2].is_ascii_digit() && b[3].is_ascii_digit()
+    b.len() == 4
+        && b[0].is_ascii_uppercase()
+        && b[1].is_ascii_uppercase()
+        && b[2].is_ascii_digit()
+        && b[3].is_ascii_digit()
 }
 
 #[derive(Debug, Clone)]
@@ -326,10 +332,8 @@ impl QsoMachine {
             if !others.is_empty() {
                 // The ones we're not taking are worth knowing about: they are
                 // still calling, and the decode list will have scrolled on.
-                self.transcript.push(TranscriptLine::note(format!(
-                    "also calling: {}",
-                    others.join(", ")
-                )));
+                self.transcript
+                    .push(TranscriptLine::note(format!("also calling: {}", others.join(", "))));
                 changed = true;
             }
         }
@@ -397,7 +401,10 @@ impl QsoMachine {
             }
 
             // Calling CQ and someone answers → adopt the best of them.
-            if self.step == QsoStep::CallingCq && self.dx.is_none() && answerer.as_deref() == Some(from) {
+            if self.step == QsoStep::CallingCq
+                && self.dx.is_none()
+                && answerer.as_deref() == Some(from)
+            {
                 let grid = match &payload {
                     Payload::Grid(g) => Some(g.clone()),
                     _ => d.grid.clone(),
@@ -649,7 +656,11 @@ mod tests {
             to: msg.split_whitespace().next().filter(|t| *t != "CQ").map(|s| s.to_string()),
             from: {
                 let t: Vec<&str> = msg.split_whitespace().collect();
-                if t.first() == Some(&"CQ") { t.get(1).map(|s| s.to_string()) } else { t.get(1).map(|s| s.to_string()) }
+                if t.first() == Some(&"CQ") {
+                    t.get(1).map(|s| s.to_string())
+                } else {
+                    t.get(1).map(|s| s.to_string())
+                }
             },
             grid: None,
             is_cq: msg.starts_with("CQ"),

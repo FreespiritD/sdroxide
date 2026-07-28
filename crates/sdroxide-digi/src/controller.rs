@@ -189,11 +189,8 @@ impl DigiController {
         // the slot we last heard them in — so a late reply never lands in their
         // slot. Fall back to "the slot before now" only if we've no record of
         // them (which reproduces the old parity == parity(now) behaviour).
-        let dx_slot = self
-            .last_heard
-            .get(&from)
-            .copied()
-            .unwrap_or(now - self.params.slot_s as i64);
+        let dx_slot =
+            self.last_heard.get(&from).copied().unwrap_or(now - self.params.slot_s as i64);
         self.tx_even = !self.scheduler.is_even(self.scheduler.slot_index_unix(dx_slot as f64));
         self.qso.start_qso(from, grid, snr, wait_for_cq, now);
         self.status_dirty = true;

@@ -241,10 +241,12 @@ impl IqSource for SigGenSource {
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
         use std::f64::consts::TAU;
         for s in buf.iter_mut() {
-            let mut acc = Complex32::new(self.noise_amp * self.white(), self.noise_amp * self.white());
+            let mut acc =
+                Complex32::new(self.noise_amp * self.white(), self.noise_amp * self.white());
             for (i, &(offset, amp)) in self.tones.iter().enumerate() {
                 let ph = self.phases[i];
-                acc += Complex32::new((ph.cos() * amp as f64) as f32, (ph.sin() * amp as f64) as f32);
+                acc +=
+                    Complex32::new((ph.cos() * amp as f64) as f32, (ph.sin() * amp as f64) as f32);
                 self.phases[i] = (ph + TAU * offset / self.sample_rate) % TAU;
             }
             *s = acc;
@@ -254,11 +256,7 @@ impl IqSource for SigGenSource {
     }
 
     fn describe(&self) -> String {
-        format!(
-            "signal generator ({} tones, {:.3} Msps)",
-            self.tones.len(),
-            self.sample_rate / 1e6
-        )
+        format!("signal generator ({} tones, {:.3} Msps)", self.tones.len(), self.sample_rate / 1e6)
     }
 }
 

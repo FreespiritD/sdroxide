@@ -76,11 +76,7 @@ impl SpectrumAnalyzer {
 
     pub fn set_avg_tc(&mut self, tc_secs: f32, sample_rate: f64) {
         let hop_time = self.hop as f32 / sample_rate as f32;
-        self.alpha = if tc_secs <= 0.0 {
-            1.0
-        } else {
-            1.0 - (-hop_time / tc_secs).exp()
-        };
+        self.alpha = if tc_secs <= 0.0 { 1.0 } else { 1.0 - (-hop_time / tc_secs).exp() };
     }
 
     /// Consume IQ samples, running as many overlapped FFTs as fit.
@@ -94,11 +90,7 @@ impl SpectrumAnalyzer {
         self.pending.extend_from_slice(iq);
 
         while self.pending.len() >= self.fft_size {
-            for (w, (x, win)) in self
-                .work
-                .iter_mut()
-                .zip(self.pending.iter().zip(&self.window))
-            {
+            for (w, (x, win)) in self.work.iter_mut().zip(self.pending.iter().zip(&self.window)) {
                 *w = x * win;
             }
             self.fft.process_with_scratch(&mut self.work, &mut self.scratch);
@@ -159,12 +151,7 @@ impl SpectrumAnalyzer {
                 let full_lo = center_hz - span_hz / 2.0;
                 let flo = ((lo - full_lo) / span_hz).clamp(0.0, 0.998);
                 let fhi = ((hi - full_lo) / span_hz).clamp(flo + 0.002, 1.0);
-                (
-                    flo,
-                    fhi,
-                    full_lo + (flo + fhi) / 2.0 * span_hz,
-                    (fhi - flo) * span_hz,
-                )
+                (flo, fhi, full_lo + (flo + fhi) / 2.0 * span_hz, (fhi - flo) * span_hz)
             }
             _ => (0.0, 1.0, center_hz, span_hz),
         };
@@ -196,8 +183,8 @@ impl SpectrumAnalyzer {
         let mut bins = Vec::with_capacity(out_bins);
         for b in 0..out_bins {
             let lo = (lo_bin + b as f64 * bin_range / out_bins as f64) as usize;
-            let hi = ((lo_bin + (b + 1) as f64 * bin_range / out_bins as f64) as usize)
-                .clamp(lo + 1, n);
+            let hi =
+                ((lo_bin + (b + 1) as f64 * bin_range / out_bins as f64) as usize).clamp(lo + 1, n);
             let mut max_p = 0.0f32;
             for i in lo..hi.max(lo + 1).min(n) {
                 max_p = max_p.max(shifted(i));
@@ -243,12 +230,7 @@ mod tests {
 
         // DC-centered ordering: +fs/4 sits at 3/4 of the display.
         let expect = n * 3 / 4;
-        let peak_bin = db
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.total_cmp(b.1))
-            .unwrap()
-            .0;
+        let peak_bin = db.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
         assert_eq!(peak_bin, expect);
         // Full-scale coherent tone should read close to 0 dBFS.
         assert!(db[peak_bin] > -1.0 && db[peak_bin] < 1.0, "{}", db[peak_bin]);

@@ -36,7 +36,9 @@ enum MsgKind {
 
 /// Read the `i3` (bits 74–76) and `n3` (bits 71–73) message-type fields.
 fn msg_kind(bits77: &[u8; 77]) -> MsgKind {
-    let field = |start: usize| (bits77[start] & 1) << 2 | (bits77[start + 1] & 1) << 1 | (bits77[start + 2] & 1);
+    let field = |start: usize| {
+        (bits77[start] & 1) << 2 | (bits77[start + 1] & 1) << 1 | (bits77[start + 2] & 1)
+    };
     match (field(74), field(71)) {
         (0, 0) => MsgKind::FreeText,
         (0, 1) => MsgKind::Fox,
@@ -89,7 +91,13 @@ impl Ft8Modem {
             Mode::Ft4 => {
                 let depth = mfsk_core::core::pipeline::DecodeDepth::BpAllOsd;
                 mfsk_core::ft4::decode::decode_frame_with_options(
-                    audio_12k, AUDIO_MIN_HZ, AUDIO_MAX_HZ, SYNC_MIN, None, depth, MAX_CAND,
+                    audio_12k,
+                    AUDIO_MIN_HZ,
+                    AUDIO_MAX_HZ,
+                    SYNC_MIN,
+                    None,
+                    depth,
+                    MAX_CAND,
                 )
                 .into_iter()
                 .filter_map(|r| {
@@ -101,7 +109,13 @@ impl Ft8Modem {
             _ => {
                 let depth = mfsk_core::ft8::decode::DecodeDepth::BpAllOsd;
                 mfsk_core::ft8::decode::decode_frame(
-                    audio_12k, AUDIO_MIN_HZ, AUDIO_MAX_HZ, SYNC_MIN, None, depth, MAX_CAND,
+                    audio_12k,
+                    AUDIO_MIN_HZ,
+                    AUDIO_MAX_HZ,
+                    SYNC_MIN,
+                    None,
+                    depth,
+                    MAX_CAND,
                 )
                 .into_iter()
                 .filter_map(|r| {
@@ -328,7 +342,9 @@ fn is_grid(t: &str) -> bool {
 
 fn is_callish(t: &str) -> bool {
     let t = t.strip_prefix('<').and_then(|x| x.strip_suffix('>')).unwrap_or(t);
-    t.len() >= 3 && t.chars().any(|c| c.is_ascii_digit()) && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '/')
+    t.len() >= 3
+        && t.chars().any(|c| c.is_ascii_digit())
+        && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '/')
 }
 
 #[cfg(test)]

@@ -95,9 +95,7 @@ impl Focus {
             Focus::Moon => "Moon",
             Focus::EarthMoon => "Earth + Moon",
             Focus::Planet(p) => p.name(),
-            Focus::Satellite(i) => {
-                sdroxide_solar::planets::MOONS.get(i).map_or("Sun", |m| m.name)
-            }
+            Focus::Satellite(i) => sdroxide_solar::planets::MOONS.get(i).map_or("Sun", |m| m.name),
         }
     }
 

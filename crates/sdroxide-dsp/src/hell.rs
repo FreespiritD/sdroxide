@@ -170,10 +170,7 @@ impl HellTx {
             let cell = glyph(ch);
             for (c, &bits) in cell.iter().enumerate() {
                 let last = c == COLS - 1;
-                self.q.push_back(TxCol {
-                    bits,
-                    char_done: last.then_some(ci),
-                });
+                self.q.push_back(TxCol { bits, char_done: last.then_some(ci) });
             }
         }
     }
@@ -235,8 +232,7 @@ impl HellTx {
         // Echo the column that just finished, so the panel shows what went out.
         if self.echo.len() < 1 << 16 {
             for r in 0..ROWS {
-                self.echo
-                    .push(if self.cur & (1 << r) != 0 { 255 } else { 0 });
+                self.echo.push(if self.cur & (1 << r) != 0 { 255 } else { 0 });
             }
         }
         match self.q.pop_front() {
@@ -282,13 +278,8 @@ impl HellTx {
             let key = 0.5 * (1.0 - (PI * self.env).cos());
 
             let open = keyed || self.producing();
-            self.gate = (self.gate
-                + if open {
-                    self.gate_step
-                } else {
-                    -self.gate_step
-                })
-            .clamp(0.0, 1.0);
+            self.gate =
+                (self.gate + if open { self.gate_step } else { -self.gate_step }).clamp(0.0, 1.0);
             let gate = 0.5 * (1.0 - (PI * self.gate).cos());
 
             let f = if self.variant.is_fsk() {
@@ -305,11 +296,7 @@ impl HellTx {
 
             // FSK holds a constant-amplitude carrier and puts the data in the
             // frequency; OOK puts it in the envelope.
-            let amp = if self.variant.is_fsk() {
-                gate
-            } else {
-                key * gate
-            };
+            let amp = if self.variant.is_fsk() { gate } else { key * gate };
             *s = (self.ph.sin() * amp) as f32 * TX_PEAK;
         }
     }
@@ -450,10 +437,8 @@ impl HellRx {
             self.dec_n += 1;
             if self.dec_n >= self.dec {
                 let k = 1.0 / self.dec as f64;
-                self.fir_in.push(Complex32::new(
-                    (self.dec_acc.0 * k) as f32,
-                    (self.dec_acc.1 * k) as f32,
-                ));
+                self.fir_in
+                    .push(Complex32::new((self.dec_acc.0 * k) as f32, (self.dec_acc.1 * k) as f32));
                 self.dec_acc = (0.0, 0.0);
                 self.dec_n = 0;
             }
@@ -492,11 +477,7 @@ impl HellRx {
             self.slice_end = ((self.slice + 1) as f64 * self.spd).round().max(1.0) as u64;
 
             let v = if self.variant.is_fsk() {
-                let mean = if self.fsk_n > 0 {
-                    self.fsk_acc / self.fsk_n as f32
-                } else {
-                    0.0
-                };
+                let mean = if self.fsk_n > 0 { self.fsk_acc / self.fsk_n as f32 } else { 0.0 };
                 self.fsk_acc = 0.0;
                 self.fsk_n = 0;
                 // Ink is the lower tone, so a negative deviation is a lit dot.
@@ -572,10 +553,7 @@ mod tests {
         let mut block = [0.0f32; 480];
         let mut spent = 0;
         while !tx.drained() {
-            assert!(
-                spent < budget,
-                "transmitter did not drain within {budget} samples"
-            );
+            assert!(spent < budget, "transmitter did not drain within {budget} samples");
             tx.next_block(&mut block, false);
             rx.process(&block, px);
             spent += block.len();
@@ -634,10 +612,7 @@ mod tests {
             run(&mut tx, &mut rx, &mut px, dot * ROWS * 4, false);
 
             let (score, off) = best_correlation(&px, &render_columns("HELL"));
-            println!(
-                "\n{variant:?}  ({} dots, correlation {score:.3} at {off})",
-                px.len()
-            );
+            println!("\n{variant:?}  ({} dots, correlation {score:.3} at {off})", px.len());
             let cols = px.len() / ROWS;
             for r in 0..ROWS {
                 let line: String = (0..cols)
@@ -694,11 +669,7 @@ mod tests {
         assert!(
             worst > 0.80,
             "loopback correlations: {}",
-            scores
-                .iter()
-                .map(|(v, s)| format!("{v:?} {s:.3}"))
-                .collect::<Vec<_>>()
-                .join(", ")
+            scores.iter().map(|(v, s)| format!("{v:?} {s:.3}")).collect::<Vec<_>>().join(", ")
         );
     }
 
@@ -747,10 +718,7 @@ mod tests {
                 peak = peak.max(out.iter().fold(0.0f32, |a, &s| a.max(s.abs())));
             }
             assert!(peak <= TX_PEAK + 1e-4, "{variant:?}: peak {peak}");
-            assert!(
-                peak > 0.4,
-                "{variant:?}: peak {peak} — is anything being sent?"
-            );
+            assert!(peak > 0.4, "{variant:?}: peak {peak} — is anything being sent?");
         }
     }
 
@@ -772,10 +740,7 @@ mod tests {
         tx.next_block(&mut out, true);
         let tail = &out[4800..];
         let peak = tail.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
-        assert!(
-            peak > 0.4,
-            "idle FSK Hell should hold its carrier, peak {peak}"
-        );
+        assert!(peak > 0.4, "idle FSK Hell should hold its carrier, peak {peak}");
     }
 
     #[test]
@@ -859,10 +824,6 @@ mod tests {
             }
         }
         let frac = inside / total;
-        assert!(
-            frac > 0.99,
-            "only {:.3}% of the energy is in-band",
-            frac * 100.0
-        );
+        assert!(frac > 0.99, "only {:.3}% of the energy is in-band", frac * 100.0);
     }
 }

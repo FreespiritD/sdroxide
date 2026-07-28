@@ -117,7 +117,9 @@ fn parse() -> Cty {
 /// Parse one cty.dat prefix token: an optional leading `=` (exact call), the
 /// prefix/call, then optional `(cq)`, `[itu]`, `{continent}` overrides
 /// (`<lat/lon>` and `~offset~` are ignored). Returns the borrowed key slice.
-fn parse_token(tok: &'static str) -> (bool, &'static str, Option<u8>, Option<u8>, Option<&'static str>) {
+fn parse_token(
+    tok: &'static str,
+) -> (bool, &'static str, Option<u8>, Option<u8>, Option<&'static str>) {
     let exact = tok.starts_with('=');
     let body = if exact { &tok[1..] } else { tok };
     // The key is the leading run before any bracket/override char.
@@ -187,7 +189,9 @@ fn dxcc_key(call: &str) -> String {
     let mut cand: Vec<&str> = parts
         .iter()
         .copied()
-        .filter(|p| !(SUFFIXES.contains(p) || (p.len() == 1 && p.bytes().all(|b| b.is_ascii_digit()))))
+        .filter(|p| {
+            !(SUFFIXES.contains(p) || (p.len() == 1 && p.bytes().all(|b| b.is_ascii_digit())))
+        })
         .collect();
     if cand.is_empty() {
         cand = parts;

@@ -36,11 +36,7 @@ fn frac_of(dbm: f32) -> f32 {
 pub fn show(ui: &mut Ui, meters: Option<&Meters>, analog: bool) -> Response {
     // Fill whatever the (zero-padding) box hands us.
     let size = ui.available_size();
-    if analog {
-        show_analog(ui, meters, size)
-    } else {
-        show_bar(ui, meters, size)
-    }
+    if analog { show_analog(ui, meters, size) } else { show_bar(ui, meters, size) }
 }
 
 /// The RX S-unit reading (amber) and the dBm sub-reading (grey).
@@ -301,13 +297,7 @@ fn show_analog(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
                 RED,
             );
         }
-        p.text(
-            pt(r + 4.0, ang(1.0)),
-            Align2::LEFT_CENTER,
-            "dB",
-            FontId::monospace(9.0),
-            RED,
-        );
+        p.text(pt(r + 4.0, ang(1.0)), Align2::LEFT_CENTER, "dB", FontId::monospace(9.0), RED);
     } else {
         // "TX" indicator sits in the (now clear) bottom-left corner so it stays
         // out of the readout row moved up top.
@@ -339,11 +329,8 @@ fn show_analog(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
     if !secondary.is_empty() {
         // The TX power reading carries as much weight as the SWR beside it; the
         // RX dBm reading stays a small grey sub-label under its S-unit.
-        let (pt, col) = if tx.is_some() {
-            (TX_READOUT_PT, AMBER)
-        } else {
-            (11.0, Color32::from_gray(150))
-        };
+        let (pt, col) =
+            if tx.is_some() { (TX_READOUT_PT, AMBER) } else { (11.0, Color32::from_gray(150)) };
         p.text(
             pos2(rect.right() - 5.0, rect.top() + 4.0),
             Align2::RIGHT_TOP,

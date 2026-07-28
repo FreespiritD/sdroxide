@@ -277,7 +277,6 @@ pub struct QsoRecord {
 
     // Extended fields: contesting, awards, QSL status. All
     // `#[serde(default)]` via the struct attribute, so older logs still load.
-    
     /// Worked operator's name.
     pub name: String,
     /// Worked station's town / QTH.
@@ -615,7 +614,13 @@ impl Default for DigiConfig {
 
 impl DigiConfig {
     /// Fill a template's placeholders. `report` is a signed dB value.
-    pub fn fill(template: &str, my_call: &str, my_grid: &str, dx: &str, report: Option<i16>) -> String {
+    pub fn fill(
+        template: &str,
+        my_call: &str,
+        my_grid: &str,
+        dx: &str,
+        report: Option<i16>,
+    ) -> String {
         let rpt = report.map(fmt_report).unwrap_or_default();
         template
             .replace("{MYCALL}", my_call)
@@ -630,11 +635,7 @@ impl DigiConfig {
 
 /// Format an SNR as an FT8 report token: `-13`, `+02`, `+00`.
 pub fn fmt_report(db: i16) -> String {
-    if db < 0 {
-        format!("-{:02}", -db)
-    } else {
-        format!("+{:02}", db)
-    }
+    if db < 0 { format!("-{:02}", -db) } else { format!("+{:02}", db) }
 }
 
 /// Which band a frequency falls in, as an ADIF band string (e.g. "20m").
@@ -862,7 +863,8 @@ fn record_from_fields(fields: &[(String, String)]) -> QsoRecord {
     let time_on = get("TIME_ON").unwrap_or_default();
     r.start_utc = parse_adif_datetime(&date, &time_on);
     let time_off = get("TIME_OFF").unwrap_or_else(|| time_on.clone());
-    r.end_utc = if time_off.is_empty() { r.start_utc } else { parse_adif_datetime(&date, &time_off) };
+    r.end_utc =
+        if time_off.is_empty() { r.start_utc } else { parse_adif_datetime(&date, &time_off) };
     r.my_call = get("STATION_CALLSIGN")
         .or_else(|| get("OPERATOR"))
         .unwrap_or_default()
@@ -913,7 +915,11 @@ fn parse_adif_datetime(date: &str, time: &str) -> i64 {
     let mo = date[4..6].parse().unwrap_or(1);
     let d = date[6..8].parse().unwrap_or(1);
     let (h, mi, s) = if time.len() >= 6 {
-        (time[0..2].parse().unwrap_or(0), time[2..4].parse().unwrap_or(0), time[4..6].parse().unwrap_or(0))
+        (
+            time[0..2].parse().unwrap_or(0),
+            time[2..4].parse().unwrap_or(0),
+            time[4..6].parse().unwrap_or(0),
+        )
     } else if time.len() >= 4 {
         (time[0..2].parse().unwrap_or(0), time[2..4].parse().unwrap_or(0), 0)
     } else {
@@ -929,8 +935,15 @@ pub fn qso_log_to_text(records: &[QsoRecord]) -> String {
     );
     for r in records {
         let (date, time) = adif_date_time(r.start_utc);
-        let d = format!("{}-{}-{} {}:{}:{}", &date[0..4], &date[4..6], &date[6..8],
-            &time[0..2], &time[2..4], &time[4..6]);
+        let d = format!(
+            "{}-{}-{} {}:{}:{}",
+            &date[0..4],
+            &date[4..6],
+            &date[6..8],
+            &time[0..2],
+            &time[2..4],
+            &time[4..6]
+        );
         out.push_str(&format!(
             "{:19}  {:10} {:5} {:10.6}  {:4}  {:>4} {:>4}\n",
             d,

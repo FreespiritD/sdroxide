@@ -165,7 +165,8 @@ impl Settings {
 }
 
 /// Band-stack registers: up to 3 remembered (freq, mode, filter) per band.
-pub type BandStacks = std::collections::HashMap<sdroxide_types::Band, Vec<sdroxide_types::BandStackEntry>>;
+pub type BandStacks =
+    std::collections::HashMap<sdroxide_types::Band, Vec<sdroxide_types::BandStackEntry>>;
 
 fn load_json<T: serde::de::DeserializeOwned + Default>(file: &str) -> T {
     let Ok(dir) = config_dir() else { return T::default() };
@@ -346,7 +347,8 @@ mod tests {
         let mut cfg = SkimmerSettings::default();
         cfg.set_enabled(SkimmerKind::Psk, false);
         cfg.set_squelch_db(SkimmerKind::Cw, 12);
-        let back: SkimmerSettings = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        let back: SkimmerSettings =
+            serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(back, cfg);
         assert!(!back.enabled(SkimmerKind::Psk));
         assert_eq!(back.squelch_db(SkimmerKind::Cw), 12);
@@ -367,7 +369,12 @@ mod tests {
         let mut stacks = BandStacks::default();
         stacks.insert(
             Band::M40,
-            vec![BandStackEntry { freq_hz: 7_100_000.0, mode: Mode::Lsb, filter_lo: -2850.0, filter_hi: -150.0 }],
+            vec![BandStackEntry {
+                freq_hz: 7_100_000.0,
+                mode: Mode::Lsb,
+                filter_lo: -2850.0,
+                filter_hi: -150.0,
+            }],
         );
         let text = serde_json::to_string(&stacks).unwrap();
         let back: BandStacks = serde_json::from_str(&text).unwrap();

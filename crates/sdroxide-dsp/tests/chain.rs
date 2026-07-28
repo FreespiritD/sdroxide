@@ -20,10 +20,7 @@ fn tone(rate: f64, freq: f64, amp: f32, n: usize) -> Vec<C32> {
 
 /// Mean instantaneous frequency from the phase slope.
 fn mean_freq(x: &[C32], rate: f64) -> f64 {
-    let sum: f64 = x
-        .windows(2)
-        .map(|w| (w[1] * w[0].conj()).arg() as f64)
-        .sum();
+    let sum: f64 = x.windows(2).map(|w| (w[1] * w[0].conj()).arg() as f64).sum();
     sum / (x.len() - 1) as f64 * rate / std::f64::consts::TAU
 }
 
@@ -120,9 +117,7 @@ fn agc_levels_weak_and_strong_signals() {
         let tail_start = n * 3 / 4;
         for start in (0..n).step_by(512) {
             let mut block: Vec<f32> = (start..(start + 512).min(n))
-                .map(|i| {
-                    amp * (std::f64::consts::TAU * 1000.0 * i as f64 / rate).sin() as f32
-                })
+                .map(|i| amp * (std::f64::consts::TAU * 1000.0 * i as f64 / rate).sin() as f32)
                 .collect();
             agc.process(&mut block);
             if start >= tail_start {
@@ -170,8 +165,7 @@ fn wfm_demod_recovers_tone_without_dc() {
     assert!(mean.abs() < 0.02, "residual DC {mean}");
 
     let wanted = goertzel(tail, 1_000.0, demod.audio_rate());
-    let total: f64 =
-        tail.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>() / tail.len() as f64;
+    let total: f64 = tail.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>() / tail.len() as f64;
     assert!(wanted > 0.5 * total, "wanted {wanted}, total {total}");
     // Never anywhere near clipping despite 80% deviation.
     let peak = tail.iter().fold(0.0f32, |a, &v| a.max(v.abs()));
@@ -223,8 +217,7 @@ fn ssb_tx_rx_loopback() {
     }
     let tail = &rx_audio[rx_audio.len() / 2..];
     let wanted = goertzel(tail, 1_500.0, rate);
-    let total: f64 =
-        tail.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>() / tail.len() as f64;
+    let total: f64 = tail.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>() / tail.len() as f64;
     assert!(wanted > 0.5 * total, "loopback wanted {wanted}, total {total}");
     assert!(total > 0.01, "loopback too quiet: {total}");
 }

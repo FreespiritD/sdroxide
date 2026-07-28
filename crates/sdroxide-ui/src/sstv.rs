@@ -131,7 +131,18 @@ fn draw_header(img: &mut [u8], w: usize, h: usize, callsign: &str) {
         // Right: program name + version.
         let brand = format!("SDRoxide v{}", env!("CARGO_PKG_VERSION"));
         let tw = text_width(&brand, &font, scale);
-        draw_text(img, w, h, w as f32 - tw - 4.0, baseline, &brand, &font, scale, (235, 235, 235), 1.0);
+        draw_text(
+            img,
+            w,
+            h,
+            w as f32 - tw - 4.0,
+            baseline,
+            &brand,
+            &font,
+            scale,
+            (235, 235, 235),
+            1.0,
+        );
     }
 }
 
