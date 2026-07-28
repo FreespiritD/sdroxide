@@ -14,8 +14,8 @@ use tracing::{debug, info, warn};
 
 use sdroxide_config::BandStacks;
 use sdroxide_digi::{
-    DigiAction, DigiController, DigiEngine, FsqController, RadeController, RfPaintController,
-    SstvController, TextModemController,
+    DigiAction, DigiController, DigiEngine, FsqController, HellController, RadeController,
+    RfPaintController, SstvController, TextModemController,
 };
 use sdroxide_skimmer::{SkimmerAction, SkimmerController};
 use sdroxide_dsp::{
@@ -1534,6 +1534,12 @@ impl Engine {
                         let _ = self.event_tx.send(RadioEvent::DigiImage { png });
                     }
                 }
+                // Forwarded verbatim — no encoding. A Hell column is fourteen
+                // bytes and they arrive continuously; compressing them would
+                // cost more than it saved.
+                DigiAction::HellColumns { seq, rows, cols } => {
+                    let _ = self.event_tx.send(RadioEvent::HellColumns { seq, rows, cols });
+                }
             }
         }
     }
@@ -1549,6 +1555,10 @@ impl Engine {
             Box::new(RfPaintController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_fsq() {
             Box::new(FsqController::new(self.digi_config.clone(), tap_rate))
+        } else if mode.is_hell() {
+            // Ahead of `is_text_modem`, which Hell is deliberately not a member
+            // of: it types like a keyboard mode but has nothing to decode.
+            Box::new(HellController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_text_modem() {
             Box::new(TextModemController::new(mode, self.digi_config.clone(), tap_rate))
         } else {
@@ -3847,7 +3857,8 @@ fn rig_mode_class(m: Mode) -> u8 {
     match m {
         Mode::Lsb | Mode::Digl => 0,
         Mode::Usb | Mode::Digu | Mode::Ft8 | Mode::Ft4 | Mode::Psk | Mode::Rtty | Mode::Sstv
-        | Mode::Olivia | Mode::Thor | Mode::Fsq | Mode::RfPaint | Mode::Rade | Mode::Spec => 1,
+        | Mode::Olivia | Mode::Thor | Mode::Fsq | Mode::Hell | Mode::RfPaint | Mode::Rade
+        | Mode::Spec => 1,
         Mode::Am | Mode::Sam | Mode::Dsb => 2,
         Mode::Cw => 3,
         Mode::Nfm | Mode::Wfm => 5,

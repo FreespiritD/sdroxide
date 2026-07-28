@@ -62,7 +62,11 @@ use sdroxide_types::{
 /// v19: voice keyer — `Command::VoiceRecord`/`VoicePlay`/`VoicePreview`/
 /// `VoiceClear`/`VoiceRename` and `ServerMsg::VoiceStatus` (both extend the
 /// postcard discriminant space).
-pub const PROTO_VERSION: u16 = 19;
+/// v20: Hellschreiber — `ServerMsg::HellColumns` plus `DigiConfig`'s
+/// `hell_variant` / `hell_rx_agc`, which both ends must agree on because
+/// `DigiStatus` carries the config. (`Mode::Hell` alone would have been
+/// compatible: it is appended to the enum, so no existing discriminant moves.)
+pub const PROTO_VERSION: u16 = 20;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -132,6 +136,11 @@ pub enum ServerMsg {
     SstvStatus(SstvStatus),
     /// FSQ image: a completed received picture (PNG bytes).
     DigiImage { png: Vec<u8> },
+    /// Hellschreiber: a batch of received dot columns, column-major, 0 = black.
+    /// `seq` is the absolute column index so a client can detect a dropped
+    /// batch — this lane drops rather than blocks when it backs up, and Hell has
+    /// no framing of its own to resynchronise against.
+    HellColumns { seq: u64, rows: u8, cols: Vec<u8> },
     /// Voice keyer: slot contents plus what is being recorded or transmitted.
     VoiceStatus(VoiceStatus),
     // Network cockpit.

@@ -416,6 +416,102 @@ impl ThorMode {
     }
 }
 
+/// Hellschreiber variant. Feld Hell is the classic on/off-keyed facsimile mode;
+/// X5 and X9 speed it up, Slow Hell crawls for weak signals, and the FSK
+/// variants keep the carrier up and shift it instead of keying it.
+///
+/// Rates follow fldigi's `feldcolumnrate` (character columns per second); every
+/// variant scans 14 dot rows per column and 7 columns per character cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum HellVariant {
+    #[default]
+    Feld,
+    Slow,
+    X5,
+    X9,
+    Fsk245,
+    Fsk105,
+    Hell80,
+}
+
+impl HellVariant {
+    /// Dot rows scanned per character column.
+    pub const ROWS: usize = 14;
+    /// Columns per character cell; the last is the inter-character gap.
+    pub const CELL_COLS: usize = 7;
+
+    pub const ALL: [HellVariant; 7] = [
+        HellVariant::Feld,
+        HellVariant::Slow,
+        HellVariant::X5,
+        HellVariant::X9,
+        HellVariant::Fsk245,
+        HellVariant::Fsk105,
+        HellVariant::Hell80,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HellVariant::Feld => "FELD",
+            HellVariant::Slow => "SLOW",
+            HellVariant::X5 => "X5",
+            HellVariant::X9 => "X9",
+            HellVariant::Fsk245 => "FSK245",
+            HellVariant::Fsk105 => "FSK105",
+            HellVariant::Hell80 => "HELL80",
+        }
+    }
+
+    /// Character columns per second (fldigi's `feldcolumnrate`).
+    pub fn column_rate(self) -> f64 {
+        match self {
+            HellVariant::Feld => 17.5,
+            HellVariant::Slow => 2.1875,
+            HellVariant::X5 => 87.5,
+            HellVariant::X9 => 157.5,
+            HellVariant::Fsk245 => 17.5,
+            HellVariant::Fsk105 => 17.5,
+            HellVariant::Hell80 => 35.0,
+        }
+    }
+
+    /// Dots (transmitted pixels) per second — 14 rows in every column.
+    pub fn pixel_rate(self) -> f64 {
+        self.column_rate() * Self::ROWS as f64
+    }
+
+    /// Characters per second — 2.5 for classic Feld Hell.
+    pub fn chars_per_sec(self) -> f64 {
+        self.column_rate() / Self::CELL_COLS as f64
+    }
+
+    /// **Peak-to-peak** FSK shift in Hz; 0 for the on/off-keyed variants.
+    ///
+    /// This is fldigi's `hell_bandwidth`, which it applies as `tone ± value/2` —
+    /// so it is the full shift, not the deviation.
+    pub fn shift_hz(self) -> f64 {
+        match self {
+            HellVariant::Fsk245 => 122.5,
+            HellVariant::Fsk105 => 55.0,
+            HellVariant::Hell80 => 300.0,
+            _ => 0.0,
+        }
+    }
+
+    /// True for the frequency-shifted variants (continuous carrier); false for
+    /// the on/off-keyed ones.
+    pub fn is_fsk(self) -> bool {
+        self.shift_hz() > 0.0
+    }
+
+    /// Nominal occupied bandwidth in Hz — fldigi's receive-filter width. Drives
+    /// the receive filter, the waterfall markers, and the audio-centre clamp.
+    pub fn bandwidth_hz(self) -> f64 {
+        let raw = if self.is_fsk() { 4.0 * self.shift_hz() } else { 1.2 * self.pixel_rate() };
+        5.0 * (raw / 5.0).round()
+    }
+}
+
 /// echoed to clients in [`DigiStatus`]. `#[serde(default)]` so an older
 /// `digi.json` without the newer fields still loads.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -472,6 +568,17 @@ pub struct DigiConfig {
     /// audible. Off by default — hearing the raw signal is how the operator
     /// tunes onto an over before the modem syncs.
     pub rade_mute_analog: bool,
+    /// Hellschreiber variant (Feld Hell / Slow / X5 / X9 / the FSK variants).
+    pub hell_variant: HellVariant,
+    /// Hellschreiber receive AGC speed: 0 = off (an absolute scale, meaningful
+    /// because the digi tap is already post-AGC) … 1 = fast. Normalises the
+    /// raster so a weak signal still paints legibly.
+    ///
+    /// Contrast, brightness and reverse video are deliberately *not* here: the
+    /// panel keeps its own copy of the raw grays, so shading them client-side
+    /// lets those controls repaint the whole scrollback rather than only the
+    /// columns that arrive after the change.
+    pub hell_rx_agc: f32,
 }
 
 impl Default for DigiConfig {
@@ -500,6 +607,8 @@ impl Default for DigiConfig {
             sstv_tx_ppm: 0.0,
             rf_paint_speed: 0.25,
             rade_mute_analog: false,
+            hell_variant: HellVariant::Feld,
+            hell_rx_agc: 0.35,
         }
     }
 }

@@ -12,6 +12,7 @@ pub mod chrome;
 mod colormap;
 mod digi_map;
 mod download;
+mod hell;
 mod help;
 mod input;
 #[cfg(feature = "remote")]

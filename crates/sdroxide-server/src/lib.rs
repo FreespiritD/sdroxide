@@ -283,6 +283,9 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             }
             RadioEvent::SstvStatus(s) => Some(ServerMsg::SstvStatus(s)),
             RadioEvent::DigiImage { png } => Some(ServerMsg::DigiImage { png }),
+            RadioEvent::HellColumns { seq, rows, cols } => {
+                Some(ServerMsg::HellColumns { seq, rows, cols })
+            }
             RadioEvent::VoiceStatus(v) => {
                 latest.voice = Some(v.clone());
                 Some(ServerMsg::VoiceStatus(v))

@@ -36,9 +36,10 @@ One binary, three ways to run it:
   when zoomed out and CW/digital/SSB sub-segments when zoomed into a ham band.
 - **Modes** — SSB (USB/LSB), CW, AM, SAM, NFM, WFM, DSB, DIGU/DIGL, a
   spectrum-only mode, **FT8/FT4**, the keyboard modes **PSK31**, **RTTY**,
-  **Olivia**, **THOR** and **FSQ** (with directed messaging + images), image
-  **SSTV** (Scottie, Martin, Robot), and transmit-only **RF Paint** (spectrum
-  painting of text and images onto the waterfall).
+  **Olivia**, **THOR** and **FSQ** (with directed messaging + images),
+  **Hellschreiber** (all seven Feld Hell / FSK Hell variants, on a scrolling
+  raster), image **SSTV** (Scottie, Martin, Robot), and transmit-only
+  **RF Paint** (spectrum painting of text and images onto the waterfall).
 - **Receiver** — hang AGC, draggable passband filter edges (on the spectrum and
   the waterfall), noise blanker, auto-notch, **neural (RNNoise) or spectral noise
   reduction**, squelch, a second sub-receiver, RIT/XIT, VFO A/B with split,
@@ -377,7 +378,7 @@ sdroxide --connect 192.168.1.10:4950
 | `--freq <HZ>` | Center frequency in Hz (default `14200000`). |
 | `--rate <HZ>` | Sample rate in Hz (default: from config). |
 | `--gain <DB>` | Overall RX gain in dB (default: hardware AGC / moderate). |
-| `--mode <MODE>` | Initial mode: `USB LSB CW AM SAM NFM WFM DIGU DIGL DSB SPEC FT8 FT4 PSK RTTY OLIVIA THOR FSQ SSTV RFPAINT RADE`. |
+| `--mode <MODE>` | Initial mode: `USB LSB CW AM SAM NFM WFM DIGU DIGL DSB SPEC FT8 FT4 PSK RTTY OLIVIA THOR FSQ HELL SSTV RFPAINT RADE`. |
 | `--server` | Run as a server: HTTP web client + WebSocket streaming backend. |
 | `--connect <HOST[:PORT]>` | Connect as a native remote client to a running server. |
 | `--port <PORT>` | Server port (default: from config, `4950`). |

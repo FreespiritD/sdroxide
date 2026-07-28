@@ -14,7 +14,7 @@ or connects to a remote sdroxide server.
 
 1. [Feature overview](#1-feature-overview)
 2. [Basic operation](#2-basic-operation)
-3. [Digital modes (FT8, FT4, PSK31, RTTY, Olivia, THOR, FSQ, SSTV, RF Paint)](#3-digital-modes)
+3. [Digital modes (FT8, FT4, PSK31, RTTY, Olivia, THOR, FSQ, Hellschreiber, SSTV, RF Paint)](#3-digital-modes)
 4. [Skimmers (CW, PSK, RTTY)](#4-skimmers)
 5. [Settings](#5-settings)
 6. [Solar system 3D view](#6-solar-system-3d-view)
@@ -169,7 +169,7 @@ popup with three rows:
 - **BAND:** `160M 80M 60M 40M 30M 20M 17M 15M 12M 10M 6M 2M GEN`. Each band
   remembers your last frequency, mode, and filter.
 - **MODE:** `LSB USB CW AM SAM NFM WFM DIGU DIGL DSB SPEC`.
-- **DIGITAL:** `FT8 FT4 PSK RTTY OLIVIA THOR FSQ SSTV RFPAINT RADE` (see
+- **DIGITAL:** `FT8 FT4 PSK RTTY OLIVIA THOR FSQ HELL SSTV RFPAINT RADE` (see
   [Digital modes](#3-digital-modes)).
 
 ![The band and mode selector popup](images/04-band-mode-popup.jpg)
@@ -351,10 +351,11 @@ sdroxide has several families of digital mode. **FT8** and **FT4** are automatic
 timeslot-based modes with QSO sequencing, a world map, and automatic logging
 (3.1–3.6). **PSK31**, **RTTY**, **Olivia**, **THOR** and **FSQ** are live keyboard
 modes: you tune onto a signal, read the decoded text, and type a reply that
-transmits as you go (3.7–3.8). **SSTV** is an image mode: received pictures build
-up in a gallery and you transmit composed images (3.9). **RF Paint** is a
-transmit-only mode that draws text and pictures directly onto the far station's 
-waterfall (3.10).
+transmits as you go (3.7–3.8). **Hellschreiber** is a facsimile mode with no
+decoder at all — it paints letters onto a scrolling strip and you read them by
+eye (3.9). **SSTV** is an image mode: received pictures build up in a gallery and
+you transmit composed images (3.10). **RF Paint** is a transmit-only mode that
+draws text and pictures directly onto the far station's waterfall (3.11).
 
 ### 3.1 Entering the mode
 
@@ -593,7 +594,102 @@ These three modems are native-Rust and self-contained. On-air interoperability
 with fldigi is being validated; the first release targets clean-to-moderate
 signals.
 
-### 3.9 SSTV
+### 3.9 Hellschreiber
+
+Choose **HELL** from the DIGITAL row for **Hellschreiber** — the oldest digital
+mode still in regular amateur use, and the only one you read with your eyes
+instead of a decoder.
+
+Hell does not send characters. It sends *pictures* of characters: the
+transmitter scans a 7-column by 14-row dot matrix per letter, top to bottom then
+left to right, switching the carrier on and off as it goes. The receiver simply
+free-runs at the same dot rate and paints whatever it hears onto a scrolling
+strip. There is no synchronisation, no framing and no error correction — which is
+exactly why Hell stays readable in conditions that break real decoders. A burst of
+noise smudges a few dots instead of corrupting a whole character, and your eye
+does the rest.
+
+![The Hellschreiber panel: the scrolling receive raster above the transmit box](images/hellschreiber.jpg)
+
+**Reading the strip.** Received text scrolls in from the right. Because nothing
+synchronises the vertical position, a character can straddle the top and bottom
+of the strip — so, like fldigi, sdroxide draws **every column twice, stacked**.
+Whatever the alignment happens to be, one complete legible copy of the text is
+always on screen. That is what the **2ROW** button controls; turn it off for a
+single-height strip and drag the raster up or down to line the text up yourself.
+
+**Panel controls.** The header carries the audio-tone readout with **−**/**+**
+nudges, the variant buttons, and the decode squelch. Below that:
+
+- **Contrast** — hardens or softens the dots. It redraws the entire scrollback,
+  not just what arrives next, so you can rescue text that has already gone by.
+- **Width** — `1×` to `4×` screen pixels per received column. Square dots would
+  fit only about eighteen characters across the panel; the default `2×` shows
+  around sixty.
+- **2ROW** — the doubled display described above (on by default).
+- **REV** — reverse video: light dots on dark paper instead of the classic look.
+- **CLEAR RX** — wipe the strip.
+
+**Transmitting** works like the other keyboard modes: type in the box and press
+**TX**. Characters already sent turn green. **CALL CQ** loads a CQ using your
+callsign, and **CLEAR** empties the buffer and stops. While TX is held with
+nothing to send, Hell transmits blank paper rather than dropping the carrier,
+which is how it holds a channel between overs — so press **TX** again to release.
+Your own transmission is painted onto the same strip as it goes out, which is the
+only confirmation Hell offers that your timing and font are right.
+
+**Variants.** Seven, matching fldigi's set:
+
+| Variant | Speed | Bandwidth | Keying |
+| --- | --- | --- | --- |
+| **FELD** | 2.5 char/s | 295 Hz | on/off keyed |
+| **SLOW** | 0.3 char/s | 35 Hz | on/off keyed |
+| **X5** | 12.5 char/s | 1470 Hz | on/off keyed |
+| **X9** | 22.5 char/s | 2645 Hz | on/off keyed |
+| **FSK245** | 2.5 char/s | 490 Hz | frequency-shifted |
+| **FSK105** | 2.5 char/s | 220 Hz | frequency-shifted |
+| **HELL80** | 5 char/s | 1200 Hz | frequency-shifted |
+
+**FELD** (classic Feld Hell) is what essentially all on-air activity uses; the
+others are worth knowing about but you will rarely meet them. **SLOW** trades
+speed for a 35 Hz bandwidth that survives conditions nothing else will. **X5** and
+**X9** are fast but wide — X9 occupies nearly the whole SSB passband, so the tune
+control clamps it near the middle where it fits. The **FSK** variants keep the
+carrier up and shift it instead of keying it, which suits a linear amplifier
+better and gives a noticeably cleaner raster.
+
+Hell transmits on **USB**. The band buttons are preset from the
+[hellschreiber.com](https://www.hellschreiber.com/hellschreiber-frequencies.htm)
+narrow-band digimode band plan (18 March 2019), using its *common calling and
+operating* frequencies:
+
+| Band | Preset | Band | Preset |
+| --- | --- | --- | --- |
+| 160 m | 1.840 | 17 m | 18.104 |
+| 80 m | 3.574 | 15 m | 21.063 |
+| 60 m | 5.3515 | 12 m | 24.924 |
+| 40 m | 7.040 | 10 m | 28.063 |
+| 30 m | 10.144 | 6 m | 50.286 |
+| 20 m | 14.073 | | |
+
+**These are IARU Region 1 values** where that band plan splits by region, matching
+the Region 1 band edges sdroxide uses elsewhere; Region 2 and 3 differ on 160 m
+and 80 m in particular. Bands quoted as a range use its low edge, so tune *up*
+from the preset to find activity. 6 m is not in that band plan and comes from the
+[Feld Hell Club](https://sites.google.com/site/feldhellclub/Home/frequencies).
+
+On 15 m and 10 m the presets are 21.063 and 28.063 rather than the 21.074 /
+28.074 the band plan names as calling frequencies, because those two sit squarely
+in the FT8 sub-band — and fall outside the operating ranges the same table lists
+beside them.
+
+Hell is a "fuzzy mode" (J2B), so it may be sent in either the CW or the phone
+segments; band plans are recommendations, and listening before you key matters
+more here than the numbers do. Check them against a current plan for your region.
+
+---
+
+### 3.10 SSTV
 
 Choose **SSTV** from the DIGITAL row to send and receive pictures. The panel has
 a received-image gallery on the left and a transmit compositor on the right, with
@@ -652,7 +748,7 @@ Band buttons tune to that band's common SSTV calling frequency (for example
 > conditions — clean signals decode well; weak or drifting signals may slant or
 > show noise (ongoing refinement).
 
-### 3.10 RF Paint (spectrum painting)
+### 3.11 RF Paint (spectrum painting)
 
 Choose **RFPAINT** from the DIGITAL row for **RF Paint** — a transmit-only mode
 that draws text and pictures **directly onto a receiver's waterfall**. There is no
@@ -1975,6 +2071,7 @@ F1 is the exception: it always opens the manual, so it is not rebindable.
 | OLIVIA | Robust MFSK keyboard mode (selectable tones/bandwidth). |
 | THOR | DominoEX-family IFK keyboard mode with FEC (THOR4…THOR32). |
 | FSQ | Fast Simple QSO — 33-tone IFK with directed (FSQCALL) messaging and images. |
+| HELL | Hellschreiber — facsimile "dot" mode read by eye, not decoded (Feld Hell, Slow, X5, X9, FSK Hell 245/105, Hell 80). |
 | SSTV | Slow-scan TV image mode (Scottie, Martin, Robot). |
 | RFPAINT | RF Paint — transmit-only spectrum painting of text and images onto the waterfall. |
 

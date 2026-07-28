@@ -34,6 +34,15 @@ pub enum RadioEvent {
     SstvStatus(SstvStatus),
     /// FSQ image: a completed received picture (PNG bytes).
     DigiImage { png: Vec<u8> },
+    /// Hellschreiber: a run of freshly received dot columns, batched since the
+    /// last poll. `cols` is column-major (`cols[c * rows + r]`, row 0 at the
+    /// top), 0 = black … 255 = white.
+    ///
+    /// `seq` is the absolute index of the first column since the receiver
+    /// started. Hell has no framing to resynchronise against, so the panel uses
+    /// it to tell a dropped batch (leave a gap of the right width) from a
+    /// restarted receiver (`seq` going backwards — clear the raster).
+    HellColumns { seq: u64, rows: u8, cols: Vec<u8> },
     /// Voice keyer: slot contents plus what is being recorded or transmitted.
     /// Emitted on every change and, while one of the two runs, often enough for
     /// the UI to animate a position.

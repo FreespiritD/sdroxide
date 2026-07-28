@@ -115,6 +115,9 @@ impl RemoteController {
             }
             ServerMsg::SstvStatus(s) => self.pending.push_back(RadioEvent::SstvStatus(s)),
             ServerMsg::DigiImage { png } => self.pending.push_back(RadioEvent::DigiImage { png }),
+            ServerMsg::HellColumns { seq, rows, cols } => {
+                self.pending.push_back(RadioEvent::HellColumns { seq, rows, cols })
+            }
             ServerMsg::VoiceStatus(v) => {
                 self.voice_recording = v.recording.is_some();
                 self.pending.push_back(RadioEvent::VoiceStatus(v));

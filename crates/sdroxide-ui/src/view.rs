@@ -36,6 +36,10 @@ pub struct ViewState {
     /// Render the S-meter as an analog needle instrument instead of the bar.
     /// Toggled by clicking the meter.
     pub smeter_analog: bool,
+    /// Hellschreiber raster appearance. Client-side rather than in `DigiConfig`
+    /// because the panel keeps the raw grays: changing contrast repaints the
+    /// whole scrollback, which engine-side shading could never do.
+    pub hell: HellView,
     /// Solar-system 3D window: open state, camera and layer selection. The
     /// window itself is native-only, but this rides in `ViewState` on both
     /// targets so the persisted blob stays identical across builds.
@@ -71,6 +75,40 @@ pub mod solar_layer {
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS,
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS | AURORA,
     ];
+}
+
+/// Persisted appearance of the Hellschreiber receive raster.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HellView {
+    /// Gamma applied to the received grays. Higher is harder/more contrasty.
+    pub contrast: f32,
+    /// Linear gain applied before the gamma.
+    pub bright: f32,
+    /// Reverse video: light dots on dark paper instead of the fldigi look.
+    pub reverse: bool,
+    /// Screen pixels per received column. Square dots would fit only ~18
+    /// characters across a wide panel, so the horizontal scale is independent.
+    pub col_px: f32,
+    /// Draw every column twice, stacked. Hell's vertical phase free-runs, so
+    /// this is what guarantees one complete legible copy is always on screen.
+    pub doubled: bool,
+    /// Vertical alignment, 0..1, when `doubled` is off and the operator lines
+    /// the text up by hand.
+    pub valign: f32,
+}
+
+impl Default for HellView {
+    fn default() -> Self {
+        HellView {
+            contrast: 1.6,
+            bright: 1.0,
+            reverse: false,
+            col_px: 2.0,
+            doubled: true,
+            valign: 0.0,
+        }
+    }
 }
 
 /// Persisted state of the solar-system 3D window.
@@ -148,6 +186,7 @@ impl Default for ViewState {
             sstv_tx_fraction: 0.38,
             sstv_gallery_fraction: 0.4,
             smeter_analog: false,
+            hell: HellView::default(),
             solar3d: Solar3dView::default(),
         }
     }

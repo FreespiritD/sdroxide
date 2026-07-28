@@ -49,7 +49,7 @@ pub use contacts::FsqContact;
 pub use command::Command;
 pub use controller::{AudioDevices, RadioController, RadioEvent};
 pub use digi::{
-    Decode, DigiConfig, DigiStatus, FsqMsg, QsoRecord, QsoStep, RadeStatus, ThorMode,
+    Decode, DigiConfig, DigiStatus, FsqMsg, HellVariant, QsoRecord, QsoStep, RadeStatus, ThorMode,
     TranscriptLine, adif_band, adif_to_qso_log, cq_is_for_us, fmt_report, qso_log_to_adif,
     qso_log_to_text, utc_ymd_hms, worked_before, ymd_hms_to_unix,
 };

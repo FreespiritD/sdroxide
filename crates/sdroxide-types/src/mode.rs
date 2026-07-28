@@ -36,10 +36,20 @@ pub enum Mode {
     /// FreeDV RADE V1 (Radio Autoencoder) digital voice — USB underneath, a
     /// neural codec over an OFDM waveform occupying ~1000–1900 Hz of audio.
     Rade,
+    /// Hellschreiber — USB underneath, a facsimile mode that paints a 7×14 dot
+    /// matrix per character straight onto the channel. No sync, no framing, no
+    /// decoder: the receiver free-runs and the operator's eye reads the raster.
+    ///
+    /// Appended last on purpose. `Mode` is postcard-encoded by declaration
+    /// index and serde-serialised into stored configs, so a new variant may only
+    /// go at the end. Where it *appears* is set by [`Mode::ALL`] instead.
+    Hell,
 }
 
 impl Mode {
-    pub const ALL: [Mode; 21] = [
+    /// Every mode, in the order they cycle and appear in the picker — which is
+    /// deliberately *not* the enum's declaration order (see [`Mode::Hell`]).
+    pub const ALL: [Mode; 22] = [
         Mode::Lsb,
         Mode::Usb,
         Mode::Cw,
@@ -59,13 +69,14 @@ impl Mode {
         Mode::Olivia,
         Mode::Thor,
         Mode::Fsq,
+        Mode::Hell,
         Mode::RfPaint,
         Mode::Rade,
     ];
 
     /// The digital modes handled by a dedicated decode/encode engine over USB
-    /// (slotted FT8/FT4, the continuous keyboard modes, SSTV, and RF Paint).
-    pub const DIGITAL: [Mode; 10] = [
+    /// (slotted FT8/FT4, the continuous keyboard modes, Hell, SSTV, RF Paint).
+    pub const DIGITAL: [Mode; 11] = [
         Mode::Ft8,
         Mode::Ft4,
         Mode::Psk,
@@ -73,6 +84,7 @@ impl Mode {
         Mode::Olivia,
         Mode::Thor,
         Mode::Fsq,
+        Mode::Hell,
         Mode::Sstv,
         Mode::RfPaint,
         Mode::Rade,
@@ -90,6 +102,7 @@ impl Mode {
                 | Mode::Olivia
                 | Mode::Thor
                 | Mode::Fsq
+                | Mode::Hell
                 | Mode::RfPaint
                 | Mode::Rade
         )
@@ -122,6 +135,13 @@ impl Mode {
     /// skips the FT8/text-modem overlays.
     pub fn is_sstv(self) -> bool {
         matches!(self, Mode::Sstv)
+    }
+
+    /// True for Hellschreiber. Forks the digi panel to the scrolling raster UI:
+    /// unlike the keyboard modems there is nothing to decode into text, so it
+    /// gets its own controller and panel rather than joining `is_text_modem`.
+    pub fn is_hell(self) -> bool {
+        matches!(self, Mode::Hell)
     }
 
     /// True for the RF Paint (Spectrum Painting) mode. Forks the digi panel to
@@ -167,6 +187,7 @@ impl Mode {
             Mode::Olivia => "OLIVIA",
             Mode::Thor => "THOR",
             Mode::Fsq => "FSQ",
+            Mode::Hell => "HELL",
             Mode::RfPaint => "RFPAINT",
             Mode::Rade => "RADE",
         }
@@ -188,8 +209,9 @@ impl Mode {
             Mode::Dsb => (-2850.0, 2850.0),
             Mode::Spec => (-5000.0, 5000.0),
             // FT8/FT4 occupy the whole USB audio passband (tones 0..~3500 Hz).
-            // PSK/RTTY/Olivia/Thor/FSQ do the same (the modem filters narrowly
-            // around audio_hz). SSTV occupies the full USB audio passband.
+            // PSK/RTTY/Olivia/Thor/FSQ/Hell do the same (the modem filters
+            // narrowly around audio_hz — and Hell X9 needs nearly all of it).
+            // SSTV occupies the full USB audio passband.
             Mode::Ft8
             | Mode::Ft4
             | Mode::Psk
@@ -198,6 +220,7 @@ impl Mode {
             | Mode::Olivia
             | Mode::Thor
             | Mode::Fsq
+            | Mode::Hell
             | Mode::RfPaint => (100.0, 3300.0),
             // RADE V1's OFDM carriers sit between roughly 1060 and 1880 Hz;
             // the wider passband leaves room for the acquisition search to
@@ -259,6 +282,7 @@ impl Mode {
             | Mode::Olivia
             | Mode::Thor
             | Mode::Fsq
+            | Mode::Hell
             | Mode::RfPaint
             | Mode::Rade => &[],
         }

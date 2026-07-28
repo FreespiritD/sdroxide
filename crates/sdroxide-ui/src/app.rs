@@ -266,6 +266,8 @@ pub struct SdroxideApp {
     sstv: SstvUi,
     /// RF Paint (Spectrum Painting) panel state (text/image + previews).
     rf_paint: RfPaintUi,
+    /// Hellschreiber receive raster (scrollback ring + texture).
+    hell: crate::hell::HellUi,
     /// FSQ directed-message target callsign ("" = broadcast/ALLCALL).
     fsq_target: String,
     /// FSQ contacts (address book), native-persisted in `contacts.json`.
@@ -560,6 +562,7 @@ impl SdroxideApp {
             digi_cfg_edit: sdroxide_types::DigiConfig::default(),
             sstv: SstvUi::default(),
             rf_paint: RfPaintUi::default(),
+            hell: Default::default(),
             fsq_target: String::new(),
             fsq_contacts: fsq_load_contacts(),
             fsq_new_contact: String::new(),
@@ -926,6 +929,9 @@ impl SdroxideApp {
         self.digi_decodes.clear();
         self.digi_stations = Default::default();
         self.digi_preview = None;
+        // The Hell raster is a continuous strip with no frame boundary, so
+        // leaving it up across a mode change would splice unrelated text.
+        self.hell.clear();
     }
 
     /// Reuse the skimmer overlay to mark FT8/FT4 stations: one box per decoded
@@ -3055,6 +3061,223 @@ impl SdroxideApp {
         ui.add_space(bottom_pad);
     }
 
+    /// Hellschreiber panel: the scrolling receive raster on top, then a
+    /// streaming TX input (already-sent characters green) and controls.
+    ///
+    /// Laid out like [`Self::text_modem_panel`] — Hell types the same way — but
+    /// where that shows decoded text this shows the raster, because Hell carries
+    /// pictures of letters rather than letters.
+    fn hell_panel(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, panel_h: f32) {
+        let content_bottom = ui.cursor().top() + panel_h - 40.0;
+        let status = self.digi_status.clone();
+        let audio_hz = status.as_ref().map(|s| s.audio_hz).unwrap_or(1500.0);
+        let sent = status.as_ref().map(|s| s.tx_sent).unwrap_or(0);
+        let tx_on = status.as_ref().map(|s| s.tx_next).unwrap_or(false);
+        let transmitting = status.as_ref().map(|s| s.transmitting).unwrap_or(false);
+        let my_call = status.as_ref().map(|s| s.config.my_call.clone()).unwrap_or_default();
+        let variant = status.as_ref().map(|s| s.config.hell_variant).unwrap_or_default();
+
+        // Header: mode + tuning readout / nudges, variant chips, TX indicator.
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("HELL").size(11.0).strong().color(crate::theme::CYAN));
+            ui.label(
+                RichText::new(format!("{audio_hz:.0} Hz")).size(11.0).color(Color32::from_gray(150)),
+            );
+            if crate::chrome::chip(ui, false, "−").on_hover_text("Tune down 10 Hz").clicked() {
+                cmds.push(Command::SetDigiAudioFreq(audio_hz - 10.0));
+            }
+            if crate::chrome::chip(ui, false, "+").on_hover_text("Tune up 10 Hz").clicked() {
+                cmds.push(Command::SetDigiAudioFreq(audio_hz + 10.0));
+            }
+            self.hell_params_row(ui, cmds);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if transmitting {
+                    ui.label(RichText::new("● TX").size(11.0).strong().color(crate::theme::PINK));
+                }
+                self.digi_squelch_slider(ui, cmds);
+            });
+        });
+        ui.add_space(4.0);
+
+        // Raster appearance + scale. All client-side, so none of it round-trips
+        // through the engine.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let v = &mut self.view.hell;
+            ui.label(RichText::new("Contrast").size(10.5).color(crate::theme::CYAN_DIM));
+            ui.spacing_mut().slider_width = 70.0;
+            ui.add(egui::Slider::new(&mut v.contrast, 0.4..=3.0).show_value(false))
+                .on_hover_text("Harder or softer dots — redraws the whole strip");
+            ui.add_space(6.0);
+            ui.label(RichText::new("Width").size(10.5).color(crate::theme::CYAN_DIM));
+            for px in [1.0f32, 2.0, 3.0, 4.0] {
+                let sel = (v.col_px - px).abs() < 0.01;
+                if ui.selectable_label(sel, format!("{px:.0}×")).clicked() {
+                    v.col_px = px;
+                }
+            }
+            ui.add_space(6.0);
+            if crate::chrome::chip(ui, v.doubled, " 2ROW ")
+                .on_hover_text(
+                    "Draw every column twice, stacked. Hell has no vertical sync, so this \
+                     keeps one complete copy of the text readable whatever the phase.",
+                )
+                .clicked()
+            {
+                v.doubled = !v.doubled;
+            }
+            if crate::chrome::chip(ui, v.reverse, " REV ")
+                .on_hover_text("Reverse video — light dots on dark paper")
+                .clicked()
+            {
+                v.reverse = !v.reverse;
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if crate::chrome::chip(ui, false, " CLEAR RX ").clicked() {
+                    self.hell.clear();
+                }
+                ui.label(
+                    RichText::new(format!("{:.1} char/s", variant.chars_per_sec()))
+                        .size(10.5)
+                        .color(Color32::from_gray(120)),
+                );
+            });
+        });
+        ui.add_space(4.0);
+
+        // Reserve the input + button rows at the bottom; the raster gets the rest.
+        let btn_h = 32.0;
+        let input_h = 56.0;
+        let gap = 5.0;
+        let bottom_pad = 12.0;
+        let rx_h = (content_bottom - ui.cursor().top() - btn_h - input_h - 2.0 * gap - bottom_pad)
+            .max(28.0);
+
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), rx_h),
+            egui::Sense::click_and_drag(),
+        );
+        // Dragging lines the text up by hand when the doubled view is off.
+        if resp.dragged() && !self.view.hell.doubled {
+            let d = resp.drag_delta().y / rect.height().max(1.0);
+            self.view.hell.valign = (self.view.hell.valign - d).rem_euclid(1.0);
+        }
+        if resp.hovered() && !self.view.hell.doubled {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+        self.hell.draw(ui, rect, &self.view.hell);
+        ui.add_space(gap);
+
+        // TX input: already-sent characters coloured green, exactly as the
+        // keyboard modes do it.
+        let prev = self.text_tx.clone();
+        let sent = sent.min(prev.chars().count());
+        let prefix: String = prev.chars().take(sent).collect();
+        let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+            let text = buf.as_str();
+            let sent_byte = text.char_indices().nth(sent).map(|(i, _)| i).unwrap_or(text.len());
+            let mut job = egui::text::LayoutJob::default();
+            job.wrap.max_width = wrap;
+            let mono = egui::FontId::monospace(13.0);
+            if sent_byte > 0 {
+                job.append(
+                    &text[..sent_byte],
+                    0.0,
+                    egui::TextFormat {
+                        font_id: mono.clone(),
+                        color: crate::theme::GREEN,
+                        ..Default::default()
+                    },
+                );
+            }
+            if sent_byte < text.len() {
+                job.append(
+                    &text[sent_byte..],
+                    0.0,
+                    egui::TextFormat {
+                        font_id: mono.clone(),
+                        color: crate::theme::TEXT_STRONG,
+                        ..Default::default()
+                    },
+                );
+            }
+            ui.fonts_mut(|f| f.layout_job(job))
+        };
+        let resp = ui
+            .allocate_ui(egui::vec2(ui.available_width(), input_h), |ui| {
+                egui::Frame::new()
+                    .fill(crate::theme::ROW_BG)
+                    .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP))
+                    .inner_margin(egui::Margin::symmetric(6, 4))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.set_min_height(ui.available_height());
+                        egui::ScrollArea::vertical()
+                            .id_salt("hell-tx")
+                            .max_height((input_h - 8.0).max(20.0))
+                            .auto_shrink([false, false])
+                            .stick_to_bottom(true)
+                            .show_themed(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut self.text_tx)
+                                        .layouter(&mut layouter)
+                                        .frame(egui::Frame::NONE)
+                                        .desired_width(f32::INFINITY)
+                                        .hint_text("Type here to transmit…"),
+                                )
+                            })
+                            .inner
+                    })
+                    .inner
+            })
+            .inner;
+        if resp.changed() {
+            if !self.text_tx.starts_with(&prefix) {
+                self.text_tx = prev;
+            }
+            cmds.push(Command::DigiTxText(self.text_tx.clone()));
+        }
+        ui.add_space(gap);
+
+        ui.horizontal(|ui| {
+            let label = if tx_on { "  TX ON  " } else { "   TX   " };
+            if crate::chrome::chip_accent(
+                ui,
+                tx_on,
+                RichText::new(label).size(14.0).strong(),
+                crate::theme::PINK,
+                Color32::WHITE,
+            )
+            .on_hover_text("Hold the channel: idle sends blank paper, so the strip keeps scrolling")
+            .clicked()
+            {
+                cmds.push(Command::DigiTxActive(!tx_on));
+            }
+            if crate::chrome::chip_accent(
+                ui,
+                false,
+                RichText::new(" CALL CQ ").size(13.0).strong(),
+                crate::theme::GREEN,
+                crate::theme::INK_ON_CYAN,
+            )
+            .clicked()
+            {
+                let call = if my_call.is_empty() { "NOCALL".to_string() } else { my_call.clone() };
+                let cq = format!("CQ CQ CQ DE {call} {call} {call} PSE K ");
+                cmds.push(Command::DigiAbortTx);
+                self.text_tx = cq.clone();
+                cmds.push(Command::DigiTxText(cq));
+                cmds.push(Command::DigiTxActive(true));
+            }
+            if crate::chrome::chip(ui, false, " CLEAR ").clicked() {
+                self.text_tx.clear();
+                cmds.push(Command::DigiAbortTx);
+                cmds.push(Command::DigiTxText(String::new()));
+            }
+        });
+        ui.add_space(bottom_pad);
+    }
+
     /// Mode-specific parameter buttons for the continuous keyboard modes, shown
     /// inline in the panel header next to the tune buttons (moved here from the
     /// setup dialog). Edits the UI-owned config copy and pushes it on change.
@@ -3432,6 +3655,39 @@ impl SdroxideApp {
         self.fsq_show_contacts = open;
     }
 
+    /// Hellschreiber variant chips, shown inline in the Hell panel header next
+    /// to the tune buttons.
+    ///
+    /// The variant lives in `DigiConfig` (the engine has to know the dot rate);
+    /// contrast and reverse video live in `ViewState`, so moving them repaints
+    /// the whole scrollback rather than just what arrives next.
+    fn hell_params_row(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.label(RichText::new("Mode").size(10.5).strong().color(crate::theme::CYAN_DIM));
+            let cfg = &mut self.digi_cfg_edit;
+            let mut changed = false;
+            for v in sdroxide_types::HellVariant::ALL {
+                let sel = cfg.hell_variant == v;
+                let hint = format!(
+                    "{} — {:.1} char/s, {:.0} Hz wide, {}",
+                    v.label(),
+                    v.chars_per_sec(),
+                    v.bandwidth_hz(),
+                    if v.is_fsk() { "frequency-shifted" } else { "on/off keyed" }
+                );
+                if ui.selectable_label(sel, v.label()).on_hover_text(hint).clicked() && !sel {
+                    cfg.hell_variant = v;
+                    changed = true;
+                }
+            }
+            if changed {
+                cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
+            }
+        });
+    }
+
     /// Own-call / grid / message-template editor (and RTTY parameters).
     fn digi_settings_window(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
         let mut open = self.show_digi_settings;
@@ -3439,7 +3695,7 @@ impl SdroxideApp {
         // Per-mode parameters (RTTY/Olivia/THOR/FSQ) now live in each panel's
         // header, so this dialog only carries the shared identity + FT8/FT4
         // message templates.
-        let title = if mode.is_text_modem() {
+        let title = if mode.is_text_modem() || mode.is_hell() {
             format!("{} Setup", mode.label())
         } else {
             "FT8 / FT4 Setup".to_string()
@@ -6499,6 +6755,9 @@ impl eframe::App for SdroxideApp {
                         self.fsq_rx_images.truncate(30);
                     }
                 }
+                RadioEvent::HellColumns { seq, rows, cols } => {
+                    self.hell.on_columns(seq, rows, &cols, &self.view.hell, &ctx);
+                }
                 RadioEvent::SstvStatus(s) => {
                     // Adopt a *newly* detected RX mode for the next transmit, but
                     // don't re-apply a steady detection every frame — that would
@@ -6646,6 +6905,11 @@ impl eframe::App for SdroxideApp {
                 let baud = self.digi_status.as_ref().map(|s| s.config.fsq_baud).unwrap_or(4.5);
                 let bw = 33.0 * baud;
                 vec![audio_hz - bw / 2.0, audio_hz + bw / 2.0]
+            } else if mode == Mode::Hell {
+                let v =
+                    self.digi_status.as_ref().map(|s| s.config.hell_variant).unwrap_or_default();
+                let bw = v.bandwidth_hz() as f32;
+                vec![audio_hz - bw / 2.0, audio_hz + bw / 2.0]
             } else if mode == Mode::RfPaint {
                 // The painting band edges (300..3300 Hz).
                 vec![300.0, 3300.0]
@@ -6735,6 +6999,8 @@ impl eframe::App for SdroxideApp {
                                 self.rf_paint_panel(ui, &mut cmds, panel_h);
                             } else if mode.is_fsq() {
                                 self.fsq_panel(ui, &mut cmds, panel_h);
+                            } else if mode.is_hell() {
+                                self.hell_panel(ui, &mut cmds, panel_h);
                             } else if is_text {
                                 self.text_modem_panel(ui, &mut cmds, panel_h);
                             } else {
@@ -7137,6 +7403,30 @@ fn digi_dial_freqs(mode: Mode) -> &'static [(&'static str, f64)] {
             ("17m", 18_104_000.0),
             ("15m", 21_105_000.0),
             ("10m", 28_105_000.0),
+        ],
+        // Hellschreiber (USB dial), from hellschreiber.com's narrow-band digimode
+        // band plan of 18 March 2019 — its "common calling & operating" column,
+        // taking IARU Region 1 where that column is split, to match the Region 1
+        // defaults `Band::edges` already uses.
+        //
+        // Two deliberate departures, on 15 m and 10 m: that table's own calling
+        // frequencies there (21074 / 28074) fall *outside* the operating ranges
+        // it lists in the same cell, and both sit exactly on the FT8 sub-band.
+        // The range starts are used instead — internally consistent, clear of
+        // FT8, and what the Feld Hell Club lists. 6 m is not in that table at
+        // all, so it keeps the club's figure.
+        Mode::Hell => &[
+            ("160m", 1_840_000.0),
+            ("80m", 3_574_000.0),
+            ("60m", 5_351_500.0),
+            ("40m", 7_040_000.0),
+            ("30m", 10_144_000.0),
+            ("20m", 14_073_000.0),
+            ("17m", 18_104_000.0),
+            ("15m", 21_063_000.0),
+            ("12m", 24_924_000.0),
+            ("10m", 28_063_000.0),
+            ("6m", 50_286_000.0),
         ],
         // RF Paint has no defined calling frequency — offer no band presets.
         Mode::RfPaint => &[],

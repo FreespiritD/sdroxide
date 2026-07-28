@@ -53,6 +53,7 @@ pub fn mode_to_civ(m: Mode) -> u8 {
         | Mode::Olivia
         | Mode::Thor
         | Mode::Fsq
+        | Mode::Hell
         | Mode::RfPaint
         | Mode::Rade => 0x01,
         Mode::Am | Mode::Sam | Mode::Dsb => 0x02,

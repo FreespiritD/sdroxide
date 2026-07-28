@@ -316,6 +316,7 @@ pub fn mode_to_tci(mode: Mode) -> &'static str {
         | Mode::Olivia
         | Mode::Thor
         | Mode::Fsq
+        | Mode::Hell
         | Mode::Rade => "digu",
         Mode::Digl => "digl",
         Mode::Dsb => "dsb",

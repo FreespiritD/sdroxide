@@ -7,6 +7,7 @@
 
 pub mod controller;
 pub mod fsq_controller;
+pub mod hell_controller;
 pub mod modem;
 pub mod params;
 pub mod qso;
@@ -19,6 +20,7 @@ pub mod text_modem;
 
 pub use controller::{DigiAction, DigiController};
 pub use fsq_controller::FsqController;
+pub use hell_controller::HellController;
 pub use rade_controller::RadeController;
 pub use rf_paint_controller::RfPaintController;
 pub use sstv_controller::SstvController;

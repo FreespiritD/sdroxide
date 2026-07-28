@@ -41,6 +41,14 @@ pub enum DigiAction {
     SstvStatus(SstvStatus),
     /// FSQ image: a completed grayscale-as-RGB image — the engine encodes it.
     DigiImage { w: u16, h: u16, rgb: Vec<u8> },
+    /// Hellschreiber: a run of freshly received dot columns, column-major
+    /// (`cols[c * rows + r]`, row 0 at the top), 0 = black … 255 = white.
+    ///
+    /// Batched rather than one action per column: X9 makes 157 columns a second
+    /// and each is only fourteen bytes, so per-column messages would be mostly
+    /// framing. `seq` is the absolute column index, which is how the panel tells
+    /// a dropped batch (leave a gap) from a restarted receiver (clear).
+    HellColumns { seq: u64, rows: u8, cols: Vec<u8> },
     /// RADE: a remote station's callsign, recovered from its End-of-Over frame,
     /// with the SNR at the end of the over and the dial it was heard on.
     ///
