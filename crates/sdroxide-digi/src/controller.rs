@@ -244,6 +244,18 @@ impl DigiController {
         self.status_dirty = true;
     }
 
+    /// Mark a station to work when the sequencer is next free.
+    pub fn queue_add(&mut self, entry: sdroxide_types::QueuedCall) {
+        self.qso.queue_add(entry);
+        self.status_dirty = true;
+    }
+
+    /// Drop a station from the call queue; an empty callsign clears it.
+    pub fn queue_remove(&mut self, call: &str) {
+        self.qso.queue_remove(call);
+        self.status_dirty = true;
+    }
+
     pub fn stop_qso(&mut self) {
         self.qso.stop();
         self.status_dirty = true;
@@ -367,6 +379,13 @@ impl DigiController {
         // 0. Advance QSO timeouts (WaitCq give-up, Confirming retire).
         if self.qso.tick(SlotScheduler::unix_now(now) as i64) {
             self.status_dirty = true;
+        }
+
+        // 0b. Free, with stations marked: take the next one. This is what makes
+        // the queue hands-off — every contact ending, however it ends, walks the
+        // sequencer on to the station the operator marked next.
+        if let Some(next) = self.qso.take_next_queued() {
+            self.start_qso(next.call, next.grid, next.snr_db, next.audio_hz, next.wait_for_cq);
         }
 
         // 1. Drain finished decodes from the worker.
@@ -553,6 +572,12 @@ impl crate::DigiEngine for DigiController {
     }
     fn send_text(&mut self, text: String) {
         DigiController::send_text(self, text)
+    }
+    fn queue_add(&mut self, entry: sdroxide_types::QueuedCall) {
+        DigiController::queue_add(self, entry)
+    }
+    fn queue_remove(&mut self, call: &str) {
+        DigiController::queue_remove(self, call)
     }
 }
 

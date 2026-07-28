@@ -2016,6 +2016,22 @@ impl Engine {
                     d.send_text(text);
                 }
             }
+            DigiQueueAdd { from, grid, snr, audio_hz, wait_for_cq } => {
+                if let Some(d) = self.digi.as_mut() {
+                    d.queue_add(sdroxide_types::QueuedCall {
+                        call: from,
+                        grid,
+                        snr_db: snr,
+                        audio_hz,
+                        wait_for_cq,
+                    });
+                }
+            }
+            DigiQueueRemove(call) => {
+                if let Some(d) = self.digi.as_mut() {
+                    d.queue_remove(&call);
+                }
+            }
             DigiStopQso => {
                 if let Some(d) = self.digi.as_mut() {
                     d.stop_qso();

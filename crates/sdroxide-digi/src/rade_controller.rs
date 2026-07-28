@@ -106,6 +106,7 @@ fn build_status(
         fsq_messages: Vec::new(),
         rade,
         fox_queue: Vec::new(),
+        call_queue: Vec::new(),
         clock_offset_s: None,
     }
 }

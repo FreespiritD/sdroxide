@@ -156,6 +156,22 @@ impl DxpedMode {
     }
 }
 
+/// A station the operator has marked to be called, holding everything the
+/// sequencer needs to open the contact without hearing them again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueuedCall {
+    pub call: String,
+    pub grid: Option<String>,
+    /// Their signal when we queued them — the report we open with.
+    pub snr_db: i16,
+    /// Their tone offset, so we answer where they were transmitting.
+    pub audio_hz: f32,
+    /// Hold silently until they call CQ (or call us) rather than opening on
+    /// them. Decided when they were queued, exactly as the reply button decides
+    /// it: a station mid-exchange with someone else is not free yet.
+    pub wait_for_cq: bool,
+}
+
 /// One station in a Fox's pile-up, for the operator's queue display.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FoxCaller {
@@ -314,6 +330,10 @@ pub struct DigiStatus {
     /// role, so the panel showing it is its own "are we the Fox?" test.
     #[serde(default)]
     pub fox_queue: Vec<FoxCaller>,
+    /// Stations the operator has marked to work, in the order they will be
+    /// taken. The sequencer starts the next one as soon as it is free.
+    #[serde(default)]
+    pub call_queue: Vec<QueuedCall>,
     /// How far our slot timing sits from the stations we are hearing, in
     /// seconds. Positive means our clock runs ahead of theirs — we transmit
     /// early and everyone else appears late to us. `None` until enough decodes
@@ -382,6 +402,7 @@ impl DigiStatus {
             fsq_messages: Vec::new(),
             rade: None,
             fox_queue: Vec::new(),
+            call_queue: Vec::new(),
             clock_offset_s: None,
         }
     }

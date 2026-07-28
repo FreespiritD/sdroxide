@@ -73,7 +73,9 @@ use sdroxide_types::{
 /// v22: clock-offset monitoring — `DigiStatus.clock_offset_s`.
 /// v23: directed CQs — `Decode.cq_dx` became `Decode.cq_to`, the modifier
 /// itself (`DX`, `EU`, `JA`, `POTA`, …) rather than a single DX flag.
-pub const PROTO_VERSION: u16 = 23;
+/// v24: the FT8/FT4 call queue — `Command::DigiQueueAdd`/`DigiQueueRemove` and
+/// `DigiStatus.call_queue`.
+pub const PROTO_VERSION: u16 = 24;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

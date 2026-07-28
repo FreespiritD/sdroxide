@@ -2158,6 +2158,12 @@ impl SdroxideApp {
         // Own callsign, to spotlight decodes addressed to us.
         let my_call =
             self.digi_status.as_ref().map(|s| s.config.my_call.clone()).unwrap_or_default();
+        // Stations already marked to work, so their queue button reads as set.
+        let queued_calls: Vec<String> = self
+            .digi_status
+            .as_ref()
+            .map(|s| s.call_queue.iter().map(|q| q.call.clone()).collect())
+            .unwrap_or_default();
         // Staged preview change: `None` = no click this frame; `Some(v)` =
         // replace the preview with `v` (`Some(None)` clears it).
         let mut new_preview: Option<Option<(String, (f64, f64))>> = None;
@@ -2278,7 +2284,12 @@ impl SdroxideApp {
                     let grid = d.grid.clone().unwrap_or_default();
                     let is_preview =
                         d.from.is_some() && preview_call.as_deref() == d.from.as_deref();
+                    let queued = d
+                        .from
+                        .as_deref()
+                        .is_some_and(|f| queued_calls.iter().any(|q| q.eq_ignore_ascii_case(f)));
                     let mut reply = false;
+                    let mut queue = false;
                     // Left edge of the REPLY button, so the row-body click area can
                     // exclude it (otherwise the full-row interaction below sits on
                     // top of the button and swallows its clicks).
@@ -2405,7 +2416,8 @@ impl SdroxideApp {
                                         .color(crate::theme::YELLOW),
                                     ),
                                 );
-                                // Message fills the remaining width; REPLY pinned right.
+                                // Message fills the remaining width; REPLY and the
+                                // queue button pinned right.
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
@@ -2423,7 +2435,23 @@ impl SdroxideApp {
                                             crate::theme::INK_ON_CYAN,
                                         );
                                         reply = resp.clicked();
-                                        reply_left = Some(resp.rect.left());
+                                        // Mark for later. Pressing it again drops
+                                        // the station, so one button both queues
+                                        // and un-queues.
+                                        let qresp = crate::chrome::chip(
+                                            ui,
+                                            queued,
+                                            RichText::new(if queued { "＋" } else { "+" })
+                                                .size(12.0)
+                                                .strong(),
+                                        )
+                                        .on_hover_text(if queued {
+                                            "Queued — click to remove"
+                                        } else {
+                                            "Work this station after the current one"
+                                        });
+                                        queue = qresp.clicked();
+                                        reply_left = Some(resp.rect.left().min(qresp.rect.left()));
                                         ui.with_layout(
                                             egui::Layout::left_to_right(egui::Align::Center),
                                             |ui| {
@@ -2519,6 +2547,22 @@ impl SdroxideApp {
                         // Starting a QSO promotes the station to the active DX
                         // marker; drop the faint preview so they don't overlap.
                         new_preview = Some(None);
+                    } else if queue {
+                        if let Some(from) = &d.from {
+                            if queued {
+                                cmds.push(Command::DigiQueueRemove(from.clone()));
+                            } else {
+                                cmds.push(Command::DigiQueueAdd {
+                                    from: from.clone(),
+                                    grid: d.grid.clone(),
+                                    snr: d.snr_db,
+                                    audio_hz: d.audio_hz,
+                                    // Same judgement the reply button makes: a
+                                    // station mid-exchange is not free yet.
+                                    wait_for_cq: !d.is_cq && !to_me,
+                                });
+                            }
+                        }
                     } else if row.clicked() {
                         cmds.push(Command::SetDigiAudioFreq(d.audio_hz));
                         // Preview this station's location (if it sent a grid).
@@ -2856,6 +2900,41 @@ impl SdroxideApp {
                             c.grid.as_deref().map(|g| format!(" · {g}")).unwrap_or_default(),
                         ),
                     );
+                }
+            });
+        }
+
+        // The call queue: stations marked to be worked, in the order they will
+        // be taken. Clicking one drops it; CLEAR empties the lot.
+        let call_queue = status.as_ref().map(|s| s.call_queue.clone()).unwrap_or_default();
+        if !call_queue.is_empty() {
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(
+                    RichText::new(format!("QUEUE {}", call_queue.len()))
+                        .size(9.5)
+                        .strong()
+                        .color(crate::theme::CYAN_DIM),
+                );
+                for (i, q) in call_queue.iter().enumerate() {
+                    // The one going next is the one worth reading first.
+                    let col = if i == 0 { crate::theme::GREEN } else { Color32::from_gray(150) };
+                    if crate::chrome::chip(ui, false, RichText::new(&q.call).size(11.5).color(col))
+                        .on_hover_text(format!(
+                            "{} · {:+} dB · {:.0} Hz{}\nClick to remove",
+                            if i == 0 { "next" } else { "waiting" },
+                            q.snr_db,
+                            q.audio_hz,
+                            q.grid.as_deref().map(|g| format!(" · {g}")).unwrap_or_default(),
+                        ))
+                        .clicked()
+                    {
+                        cmds.push(Command::DigiQueueRemove(q.call.clone()));
+                    }
+                }
+                if crate::chrome::chip(ui, false, RichText::new("CLEAR").size(10.0)).clicked() {
+                    cmds.push(Command::DigiQueueRemove(String::new()));
                 }
             });
         }

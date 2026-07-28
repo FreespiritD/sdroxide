@@ -4,7 +4,7 @@
 //! through the standard exchange.
 
 use sdroxide_types::{
-    Decode, DigiConfig, DigiStatus, DxpedMode, Mode, QsoRecord, QsoStep, TranscriptLine,
+    Decode, DigiConfig, DigiStatus, DxpedMode, Mode, QsoRecord, QsoStep, QueuedCall, TranscriptLine,
 };
 
 use crate::fox::{Fox, SLOT_SPACING_HZ};
@@ -114,6 +114,8 @@ pub struct QsoMachine {
     /// us. A Hound calls from above 1000 Hz but finishes the contact down on the
     /// Fox's frequency, so this is a move the controller must make for us.
     qsy_hz: Option<f32>,
+    /// Stations the operator marked to work, in the order they will be taken.
+    queue: std::collections::VecDeque<QueuedCall>,
 }
 
 impl QsoMachine {
@@ -140,6 +142,7 @@ impl QsoMachine {
             watchdog: false,
             fox,
             qsy_hz: None,
+            queue: std::collections::VecDeque::new(),
         }
     }
 
@@ -164,6 +167,50 @@ impl QsoMachine {
     /// Hound: the Fox's tone offset to move onto, taken once.
     pub fn take_qsy(&mut self) -> Option<f32> {
         self.qsy_hz.take()
+    }
+
+    /// Mark a station to work. Queueing one already in the queue moves it to
+    /// the end — a second press is a re-ordering, not a duplicate.
+    pub fn queue_add(&mut self, entry: QueuedCall) {
+        self.queue.retain(|q| !q.call.eq_ignore_ascii_case(&entry.call));
+        self.queue.push_back(entry);
+    }
+
+    /// Drop a station from the queue; an empty callsign clears it.
+    pub fn queue_remove(&mut self, call: &str) {
+        if call.trim().is_empty() {
+            self.queue.clear();
+        } else {
+            self.queue.retain(|q| !q.call.eq_ignore_ascii_case(call.trim()));
+        }
+    }
+
+    /// The next queued station to call, once the sequencer has finished with
+    /// the last one. Taking it removes it from the queue, so the caller must
+    /// actually start the contact.
+    ///
+    /// Returns `None` while anything is in progress — and while the transmit
+    /// watchdog is up, because the watchdog exists to stop an unattended
+    /// station transmitting and marching down a queue would defeat it.
+    pub fn take_next_queued(&mut self) -> Option<QueuedCall> {
+        self.is_free().then(|| self.queue.pop_front()).flatten()
+    }
+
+    /// True when nothing is in progress and the queue may take the sequencer.
+    fn is_free(&self) -> bool {
+        if self.manual.is_some() || self.watchdog || self.fox.is_some() {
+            return false;
+        }
+        match self.step {
+            QsoStep::Idle | QsoStep::Done => true,
+            // Calling into an empty band: a station we marked is a better use
+            // of the slot. Once someone answers, `dx` is set and we are busy.
+            QsoStep::CallingCq => self.dx.is_none(),
+            // Logged already; only the re-send window holds the contact open,
+            // and an unclaimed re-send is not worth delaying the next contact.
+            QsoStep::Confirming => !self.resend,
+            _ => false,
+        }
     }
 
     pub fn set_audio_hz(&mut self, hz: f32) {
@@ -261,6 +308,8 @@ impl QsoMachine {
         self.resend = false;
         self.manual = None;
         self.progress();
+        // Working them now settles whatever the queue had them down for.
+        self.queue.retain(|q| !q.call.eq_ignore_ascii_case(&from));
         self.dx = Some(Dx {
             call: from,
             grid,
@@ -774,6 +823,7 @@ impl QsoMachine {
             fsq_messages: Vec::new(),
             rade: None,
             fox_queue: self.fox.as_ref().map(Fox::status).unwrap_or_default(),
+            call_queue: self.queue.iter().cloned().collect(),
             clock_offset_s: None,
         }
     }
@@ -1289,6 +1339,100 @@ mod tests {
         q.call_cq();
         assert!(q.status(false).fox_queue.is_empty());
         assert_eq!(q.plan_tx().as_deref(), Some("CQ DX1FOX"));
+    }
+
+    fn queued(call: &str) -> QueuedCall {
+        QueuedCall {
+            call: call.into(),
+            grid: None,
+            snr_db: -10,
+            audio_hz: 1500.0,
+            wait_for_cq: false,
+        }
+    }
+
+    #[test]
+    fn the_queue_is_taken_in_order_as_the_sequencer_frees_up() {
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.queue_add(queued("W9XYZ"));
+        q.queue_add(queued("K1ABC"));
+        assert_eq!(q.take_next_queued().map(|e| e.call), Some("W9XYZ".into()));
+
+        // Mid-contact the queue waits its turn.
+        q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100);
+        assert!(q.take_next_queued().is_none(), "a contact in progress holds the queue");
+        q.on_rx(&[decode("AB1CD W9XYZ -13")], 115);
+        assert!(q.take_next_queued().is_none());
+
+        // The contact completes → the next station is taken straight away,
+        // without waiting out the re-send window.
+        q.on_rx(&[decode("AB1CD W9XYZ RR73")], 130);
+        q.note_tx_sent(145);
+        assert_eq!(q.step(), QsoStep::Confirming);
+        assert_eq!(q.take_next_queued().map(|e| e.call), Some("K1ABC".into()));
+        assert!(q.take_next_queued().is_none(), "and the queue is now empty");
+    }
+
+    #[test]
+    fn queueing_the_same_station_twice_reorders_rather_than_duplicates() {
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.queue_add(queued("W9XYZ"));
+        q.queue_add(queued("K1ABC"));
+        q.queue_add(queued("W9XYZ"));
+        let calls: Vec<String> = q.status(false).call_queue.into_iter().map(|e| e.call).collect();
+        assert_eq!(calls, ["K1ABC", "W9XYZ"]);
+
+        q.queue_remove("k1abc");
+        assert_eq!(q.status(false).call_queue.len(), 1, "removal ignores case");
+        q.queue_remove("");
+        assert!(q.status(false).call_queue.is_empty(), "an empty callsign clears the queue");
+    }
+
+    #[test]
+    fn working_a_station_settles_its_queue_entry() {
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.queue_add(queued("W9XYZ"));
+        q.queue_add(queued("K1ABC"));
+        // The operator replies to W9XYZ by hand instead of waiting their turn.
+        q.start_qso("W9XYZ".into(), None, -10, false, 100);
+        let calls: Vec<String> = q.status(false).call_queue.into_iter().map(|e| e.call).collect();
+        assert_eq!(calls, ["K1ABC"], "no second go at the station we just started");
+    }
+
+    #[test]
+    fn a_queued_station_takes_over_from_an_unanswered_cq() {
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.call_cq();
+        q.queue_add(queued("W9XYZ"));
+        assert_eq!(
+            q.take_next_queued().map(|e| e.call),
+            Some("W9XYZ".into()),
+            "a marked station beats calling into an empty band"
+        );
+
+        // But not once somebody has answered the CQ.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.call_cq();
+        q.on_rx(&[decode("AB1CD K1ABC EM48")], 100);
+        q.queue_add(queued("W9XYZ"));
+        assert!(q.take_next_queued().is_none());
+    }
+
+    #[test]
+    fn the_watchdog_stops_the_queue_too() {
+        // The watchdog exists to stop an unattended station transmitting;
+        // marching on down a queue would defeat it.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.call_cq();
+        q.tick(100);
+        assert!(q.tick(100 + 6 * 60));
+        assert!(q.tx_watchdog());
+        q.queue_add(queued("W9XYZ"));
+        assert!(q.take_next_queued().is_none());
+
+        // Any operator action clears it and the queue runs again.
+        q.call_cq();
+        assert_eq!(q.take_next_queued().map(|e| e.call), Some("W9XYZ".into()));
     }
 
     #[test]

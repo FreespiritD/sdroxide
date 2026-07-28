@@ -153,6 +153,21 @@ pub enum Command {
     /// FT8/FT4: send this message verbatim in the next transmit slot, then
     /// carry on with the exchange. Empty text cancels one queued but unsent.
     DigiSendText(String),
+    /// FT8/FT4: mark a station to work. Queued stations are taken in order, the
+    /// next one starting as soon as the sequencer is free — so a run of callers
+    /// can be marked in one pass over a busy slot and then worked hands-off.
+    /// Adding a station already queued moves it to the end.
+    DigiQueueAdd {
+        from: String,
+        grid: Option<String>,
+        snr: i16,
+        audio_hz: f32,
+        /// Hold until they call CQ, as [`Command::DigiStartQso`] does.
+        #[serde(default)]
+        wait_for_cq: bool,
+    },
+    /// FT8/FT4: drop a station from the call queue. An empty callsign clears it.
+    DigiQueueRemove(String),
     /// Gracefully stop the QSO sequence (finish the current burst, then idle).
     DigiStopQso,
     /// Abort any in-progress transmission immediately.

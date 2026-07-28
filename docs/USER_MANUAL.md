@@ -468,6 +468,14 @@ free text is cut to 13 characters.
   free text, so that is what the field accepts.
 - **Stop:** **STOP QSO** ends the current QSO gracefully; **STOP TX** aborts the
   current transmission immediately and un-keys.
+- **Queue a run of stations.** The **+** button on each decode marks that
+  station to be worked; mark as many as you like in one pass over a busy slot.
+  They appear in a `QUEUE` strip above the transcript, next one in green, and
+  the sequencer starts each in turn as soon as it is free — after a contact
+  completes, after it gives up on a station that never answers, or in place of
+  a CQ nobody is answering. Click a queued call to drop it, or **CLEAR** to
+  empty the queue. The transmit watchdog still stops the run: it exists to stop
+  an unattended station transmitting, and the queue does not override it.
 - **Directed CQs are read as directed.** `CQ DX`, `CQ EU`, `CQ JA`, `CQ POTA`,
   `CQ TEST` — sdroxide works out whether the call names you. One that does gets
   a thicker accent bar than a plain CQ; one aimed at somebody else is neither
