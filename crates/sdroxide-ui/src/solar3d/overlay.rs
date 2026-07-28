@@ -67,6 +67,7 @@ pub fn ui(ui: &mut egui::Ui, st: &mut SolarUi) {
                         sun_module(ui, st, data, now);
                         scale_module(ui, st);
                         time_module(ui, st);
+                        activity_module(ui, st);
                     },
                 );
             });
@@ -255,6 +256,96 @@ fn time_module(ui: &mut egui::Ui, st: &mut SolarUi) {
     });
 }
 
+/// The FT8/FT4 activity time-lapse: where in the last hour the globe's arcs
+/// are being replayed from, how long a trail they leave, and how fast the
+/// replay runs.
+fn activity_module(ui: &mut egui::Ui, st: &mut SolarUi) {
+    chrome::module(ui, "Activity", 430.0, |ui| {
+        let hour = crate::digi_map::HISTORY_S as f64;
+        if chrome::chip(ui, st.lapse_live() && !st.lapse_playing, "LIVE")
+            .on_hover_text("Follow the band as it happens")
+            .clicked()
+        {
+            st.lapse_playing = false;
+            st.set_lapse_back(0.0);
+        }
+        if chrome::chip_accent(
+            ui,
+            st.lapse_playing,
+            if st.lapse_playing { "⏸ REPLAY" } else { "▶ REPLAY" },
+            theme::CYAN,
+            theme::INK_ON_CYAN,
+        )
+        .on_hover_text("Replay the last hour of decodes, over and over")
+        .clicked()
+        {
+            st.lapse_playing = !st.lapse_playing;
+            // Starting from the present would replay nothing, so a replay
+            // begun while live starts at the top of the hour.
+            if st.lapse_playing && st.lapse_live() {
+                st.set_lapse_back(hour);
+            }
+        }
+
+        // The head, as minutes ago. Dragging it is also how you stop the
+        // replay running away from where you wanted to look.
+        let mut back_min = (st.lapse_back_s / 60.0) as f32;
+        let resp = ui.add(
+            egui::DragValue::new(&mut back_min)
+                .speed(0.5)
+                .range(0.0..=(hour / 60.0))
+                .suffix(" min ago"),
+        );
+        if resp.on_hover_text("Where in the last hour the globe is showing").changed() {
+            st.set_lapse_back(back_min as f64 * 60.0);
+            st.lapse_playing = false;
+        }
+
+        ui.label(RichText::new("trail").color(theme::CYAN_DIM).size(10.0));
+        ui.add(
+            egui::DragValue::new(&mut st.view.lapse_trail_min)
+                .speed(0.25)
+                .range(0.5..=(hour / 60.0))
+                .suffix(" min"),
+        )
+        .on_hover_text("How long a decode's arc stays on the globe behind the head");
+
+        ui.label(RichText::new("speed").color(theme::CYAN_DIM).size(10.0));
+        ui.add(
+            egui::DragValue::new(&mut st.view.lapse_speed)
+                .speed(1.0)
+                .range(1.0..=600.0)
+                .suffix("×"),
+        )
+        .on_hover_text("How much faster than real time the replay runs");
+
+        let hits = st.digi.history.len();
+        let (text, color) = if !st.layer(layer::QSO) {
+            ("QSO layer off".to_string(), theme::YELLOW)
+        } else if hits == 0 {
+            ("no decodes yet".to_string(), theme::CYAN_DIM)
+        } else if st.lapse_live() {
+            (format!("{hits} in the hour"), theme::GREEN)
+        } else {
+            (format!("−{:.0} min", st.lapse_back_s / 60.0), theme::CYAN)
+        };
+        ui.label(RichText::new(text).color(color).size(10.5));
+    });
+}
+
+/// Step the activity replay head, at `speed` × real time, looping round the
+/// hour. Looping and not stopping at the present on purpose: the point of a
+/// replay is to watch the opening come and go more than once.
+fn advance_lapse(ui: &egui::Ui, st: &mut SolarUi, dt: f32) {
+    if !st.lapse_playing {
+        return;
+    }
+    let step = dt.max(0.0) as f64 * st.view.lapse_speed.clamp(1.0, 600.0) as f64;
+    let back = st.lapse_back_s - step;
+    st.set_lapse_back(if back <= 0.0 { crate::digi_map::HISTORY_S as f64 } else { back });
+    ui.ctx().request_repaint();
+}
+
 /// The 3D scene: mouse interaction, the wgpu paint callback, then the readouts
 /// painted over it.
 fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
@@ -269,7 +360,13 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     let px = [(rect.width() * ppp).round().max(1.0), (rect.height() * ppp).round().max(1.0)];
     let sim_now = super::wall_clock_unix() + st.sim_offset_s;
     let anim = ui.input(|i| i.time);
-    advance_tour(ui, st, sim_now, anim);
+    // One elapsed-time step for everything animated off the wall clock, so the
+    // tour and the activity replay cannot disagree about how long a frame was.
+    let dt =
+        if st.last_frame_time <= 0.0 { 1.0 / 60.0 } else { (anim - st.last_frame_time) as f32 };
+    st.last_frame_time = anim;
+    advance_tour(ui, st, sim_now, dt);
+    advance_lapse(ui, st, dt);
     reframe(st, sim_now);
     let mut scene = super::scene::build(st, data, sim_now, px, anim as f32);
     // Labels and pick targets are egui's business, not the GPU's, so they come
@@ -1181,10 +1278,7 @@ fn sun_elevation_azimuth(lat: f64, lon: f64, slat: f64, slon: f64) -> (f64, f64)
 
 /// Fly the AUTO tour, using real elapsed time so the pacing is frame-rate
 /// independent.
-fn advance_tour(ui: &egui::Ui, st: &mut SolarUi, sim_now: f64, frame_time: f64) {
-    let dt = (frame_time - st.last_frame_time) as f32;
-    let first_frame = st.last_frame_time <= 0.0;
-    st.last_frame_time = frame_time;
+fn advance_tour(ui: &egui::Ui, st: &mut SolarUi, sim_now: f64, dt: f32) {
     if !st.view.auto {
         // Hand the pivot back to the focus chips.
         st.focus_override = None;
@@ -1202,7 +1296,7 @@ fn advance_tour(ui: &egui::Ui, st: &mut SolarUi, sim_now: f64, frame_time: f64) 
     // `Tour` is `Copy`, so step a local and write it back rather than fighting
     // the borrow of `st.view` inside it.
     let mut tour = st.tour;
-    let pivot = tour.step(&mut st.view, &b, if first_frame { 1.0 / 60.0 } else { dt }, qso);
+    let pivot = tour.step(&mut st.view, &b, dt, qso);
     st.tour = tour;
     st.focus_override = Some(pivot);
     ui.ctx().request_repaint();

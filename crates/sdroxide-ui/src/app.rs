@@ -2751,7 +2751,7 @@ impl SdroxideApp {
         // Ages use egui frame time (monotonic, works native + wasm); each grid
         // remembers the frame it was last freshly decoded in.
         let now_t = ui.input(|i| i.time);
-        self.digi_stations.observe(&self.digi_decodes, now_t);
+        self.digi_stations.observe(&self.digi_decodes, now_t, now_unix());
         let stations = self.digi_stations.stations(now_t);
         // Located network spots (filtered by the shown-kind toggles), as
         // kind-coloured dots on the map.

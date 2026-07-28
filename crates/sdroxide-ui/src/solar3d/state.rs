@@ -145,6 +145,12 @@ pub struct SolarUi {
     pub data: Option<Arc<Mutex<SolarData>>>,
     /// FT8/FT4 traffic to plot on the globe.
     pub digi: DigiTraffic,
+    /// Where the activity time-lapse's replay head sits, in seconds before now.
+    /// Zero is live, which is where it starts every run: a globe that came back
+    /// up showing forty minutes ago would read as a stalled feed.
+    pub lapse_back_s: f64,
+    /// Whether the replay head is sweeping forward on its own.
+    pub lapse_playing: bool,
     /// Satellite whose pass table is open, by catalogue number.
     pub selected_sat: Option<u64>,
     /// Cached pass prediction: which satellite, from what QTH, computed when,
@@ -188,6 +194,11 @@ pub struct DigiTraffic {
     pub preview: Option<(f64, f64)>,
     /// True while transmitting, which animates the arc.
     pub transmitting: bool,
+    /// The last hour of located decodes, oldest first — what the activity
+    /// time-lapse replays. Shared rather than copied: republishing a few
+    /// thousand of these every frame is the one part of this that would cost
+    /// anything.
+    pub history: std::sync::Arc<Vec<crate::digi_map::DigiHit>>,
 }
 
 impl SolarUi {
@@ -208,6 +219,8 @@ impl SolarUi {
             sim_offset_s: 0.0,
             data: None,
             digi: DigiTraffic::default(),
+            lapse_back_s: 0.0,
+            lapse_playing: false,
             selected_sat: None,
             sat_passes: None,
             focus_override: None,
@@ -240,6 +253,32 @@ impl SolarUi {
         }
         self.view.focus = f.to_u8();
         self.view.auto = false;
+    }
+
+    /// True when the activity replay head is at the present moment, which is
+    /// where it stays unless the operator winds it back.
+    pub fn lapse_live(&self) -> bool {
+        self.lapse_back_s <= 0.0
+    }
+
+    /// Wall clock the replay head is showing, given the scene's timestamp.
+    ///
+    /// It is offset from the scene's own clock rather than from the real one,
+    /// so scrubbing the whole scene with the Time chips carries the replay with
+    /// it instead of leaving the traffic behind at a Sun that has moved.
+    pub fn lapse_head(&self, sim_now: f64) -> f64 {
+        sim_now - self.lapse_back_s.max(0.0)
+    }
+
+    /// How long a decode's arc stays on the globe behind the head, in seconds.
+    pub fn lapse_trail_s(&self) -> f64 {
+        (self.view.lapse_trail_min as f64 * 60.0).clamp(30.0, crate::digi_map::HISTORY_S as f64)
+    }
+
+    /// Park the replay head `back_s` seconds before now, clamped to the hour of
+    /// history that exists.
+    pub fn set_lapse_back(&mut self, back_s: f64) {
+        self.lapse_back_s = back_s.clamp(0.0, crate::digi_map::HISTORY_S as f64);
     }
 
     pub fn layer(&self, bit: u32) -> bool {

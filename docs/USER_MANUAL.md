@@ -1679,12 +1679,36 @@ week-old one is not, which is why the age is on display.
 
 **The QSO layer** puts your FT8/FT4 traffic on the globe. Every station decoded
 in the last two minutes is a white dot that fades as it ages — the same set the
-flat map in the FT8 panel shows, so the two never disagree. The station you are
-working is joined to your QTH by a cyan arc, and a decode you have clicked but
-not yet answered by a yellow one. The arcs are true great circles lifted off the
-surface, bowing further out the longer the path: an antipodal contact springs
-well clear of the planet, which is the only way both ends stay visible at once
-on a sphere. While you transmit, a bright pulse runs along the arc.
+flat map in the FT8 panel shows, so the two never disagree. Behind them, every
+decode of the last hour is an arc from your QTH to the station that sent it,
+cyan when it is fresh and cooling to violet as it ages out of the trail, with a
+spark running the newest ones in the direction the signal travelled. That is the
+band's shape over the last hour, drawn: which paths were open, and when they
+opened.
+
+The station you are working is joined to your QTH by a heavy cyan beam with a
+ring on each end and a pulse running the path — outwards to them while you
+transmit, back to you the rest of the time — so the QSO in progress is
+unmistakable among an hour of traffic. A decode you have clicked but not yet
+answered gets a thin yellow arc. All of them are true great circles lifted off
+the surface, bowing further out the longer the path: an antipodal contact
+springs well clear of the planet, which is the only way both ends stay visible
+at once on a sphere.
+
+**Activity** — the controls for that hour of traffic:
+
+| Control | What it does |
+| --- | --- |
+| `LIVE` | Follow the band as it happens (where it starts every session). |
+| `▶ REPLAY` | Sweep the replay head from an hour ago to now, over and over, at the chosen speed. |
+| `min ago` | Park the head anywhere in the last hour by hand. Dragging it stops a running replay. |
+| `trail` | How long a decode's arc stays on the globe behind the head (default 10 minutes). |
+| `speed` | How many times real time the replay runs at (default 60×, so the hour takes a minute). |
+
+Wound back off `LIVE`, the white "decoded just now" dots go away: what is on the
+globe then is the hour being replayed, not the present, and the two are not
+mixed. The history is kept only while sdroxide runs, so a fresh start begins
+with an empty hour that fills as the decodes come in.
 
 **Sun** — which SDO product wraps the Sun:
 

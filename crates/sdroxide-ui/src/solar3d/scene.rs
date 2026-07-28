@@ -486,7 +486,7 @@ pub fn build(
     }
     markers(&mut s, st, &b, &cam);
     if st.layer(layer::QSO) {
-        digi_traffic(&mut s, st, &b, &cam, anim_t);
+        digi_traffic(&mut s, st, &b, &cam, unix_s, anim_t);
     }
     if let Some(d) = data {
         let now = unix_s as i64;
@@ -1197,13 +1197,33 @@ fn seg(a: V3, b: V3, width_px: f32, color: [f32; 4]) -> LineInst {
     LineInst { a: a.arr(), width_px, b: b.arr(), _pad: 0.0, color }
 }
 
-/// Decoded FT8/FT4 stations, and the path to the one being worked.
+/// The most history arcs the time-lapse draws at once.
 ///
-/// The flat map in the FT8 panel draws the same information as a great-circle
-/// line across a rectangle; here the path is the *actual* great circle, lifted
-/// off the surface so it arcs through space between the two stations instead of
+/// An hour of a busy 20 m evening is a few thousand decodes. Past a couple of
+/// hundred arcs the globe is a ball of wool in which nothing can be read, so
+/// the newest win — the trail is already a fade, and this is where it ends.
+const MAX_LAPSE_ARCS: usize = 160;
+/// Segments per history arc. The contact being worked gets the full [`arc`];
+/// these are many and short-lived, so they trade smoothness for count.
+const LAPSE_ARC_STEPS: usize = 28;
+/// History arcs bow lower than the active one, so the QSO in progress stands
+/// clear of the traffic behind it instead of being one strand among many.
+const LAPSE_BULGE: f32 = 0.7;
+
+/// Decoded FT8/FT4 stations, the last hour of them, and the path to the one
+/// being worked.
+///
+/// The flat map in the FT8 panel draws the live set as a great-circle line
+/// across a rectangle; here the path is the *actual* great circle, lifted off
+/// the surface so it arcs through space between the two stations instead of
 /// disappearing round the back of the globe.
-fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, anim_t: f32) {
+///
+/// The globe also draws what the panel map has no room for: every decode of the
+/// last hour, as an arc that fades out behind a replay head the operator can
+/// park anywhere in that hour (see [`SolarUi::lapse_head`]). Live, the head sits
+/// at now and the trail is simply "recent activity"; wound back, the same
+/// machinery is a time-lapse of the band.
+fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, now: f64, anim_t: f32) {
     let earth_px = cam.pixels_for(b.earth, b.earth_r);
     // Below this the Earth is too small for a point on its surface to mean
     // anything, same threshold the QTH marker uses.
@@ -1216,22 +1236,31 @@ fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, anim_t: f
         b.earth + (ex * v.x as f32 + ey * v.y as f32 + ez * v.z as f32) * (b.earth_r * lift)
     };
 
-    for (lat, lon, age) in &st.digi.stations {
-        if *age <= 0.0 {
-            continue;
+    // The live dots are a statement about *now*, so they are drawn only while
+    // the replay head is at now. Wound back, the history below is the whole
+    // picture and a set of dots from the present would contradict it.
+    if st.lapse_live() {
+        for (lat, lon, age) in &st.digi.stations {
+            if *age <= 0.0 {
+                continue;
+            }
+            s.sprites.push(SpriteInst {
+                center: to_world(ephem::geodetic_to_body(*lat, *lon), 1.015).arr(),
+                size_px: (4.0 + 3.0 * age).min(earth_px * 0.9),
+                color: lin(theme::TEXT_STRONG, 0.85 * age * fade),
+                params: [SPRITE_DOT, 0.0, 0.0, 0.0],
+            });
         }
-        s.sprites.push(SpriteInst {
-            center: to_world(ephem::geodetic_to_body(*lat, *lon), 1.015).arr(),
-            size_px: (4.0 + 3.0 * age).min(earth_px * 0.9),
-            color: lin(theme::TEXT_STRONG, 0.85 * age * fade),
-            params: [SPRITE_DOT, 0.0, 0.0, 0.0],
-        });
     }
 
     // The arcs need a home to start from.
     let Some(home) = st.qth else { return };
-    for (target, color, width, animated) in
-        [(st.digi.dx, theme::CYAN, 2.4, true), (st.digi.preview, theme::YELLOW, 1.6, false)]
+
+    lapse_arcs(s, st, &to_world, home, earth_px, fade, now, anim_t);
+
+    // The contact being worked, and the decode clicked but not yet answered.
+    for (target, color, width, active) in
+        [(st.digi.dx, theme::CYAN, 5.2, true), (st.digi.preview, theme::YELLOW, 1.6, false)]
     {
         let Some(dx) = target else { continue };
         arc(
@@ -1243,10 +1272,94 @@ fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, anim_t: f
             color,
             width,
             fade,
-            animated.then_some(anim_t),
+            active.then_some(anim_t),
             st.digi.transmitting,
         );
     }
+}
+
+/// The last hour of decodes as fading arcs, newest first.
+///
+/// Walking the history backwards is what makes the cap honest: what gets
+/// dropped when a band is wide open is the oldest, faintest end of the trail,
+/// which is the part already on its way out.
+#[allow(clippy::too_many_arguments)]
+fn lapse_arcs(
+    s: &mut Scene,
+    st: &SolarUi,
+    to_world: &impl Fn(sdroxide_solar::Vec3, f32) -> V3,
+    home: (f64, f64),
+    earth_px: f32,
+    fade: f32,
+    now: f64,
+    anim_t: f32,
+) {
+    let head = st.lapse_head(now);
+    let trail = st.lapse_trail_s();
+    let mut drawn = 0usize;
+    for hit in st.digi.history.iter().rev() {
+        let age = head - hit.slot_utc as f64;
+        if age < 0.0 {
+            continue; // not yet decoded, as far as the replay head is concerned
+        }
+        if age > trail {
+            break; // ordered, so everything further back is older still
+        }
+        let k = (1.0 - age / trail) as f32; // 1 at the head, 0 at the tail
+        let alpha = k * k * fade;
+        // Fresh traffic arrives cyan and cools to a dim violet as it ages out,
+        // so "this minute" and "half an hour ago" are told apart by colour and
+        // not only by how faint they are.
+        let color = mix(LAPSE_OLD, theme::CYAN, k);
+
+        let Some(pts) =
+            arc_points(to_world, home, (hit.lat, hit.lon), LAPSE_ARC_STEPS, LAPSE_BULGE)
+        else {
+            continue;
+        };
+        // A spark runs the newest arcs from the station to us — the direction
+        // the signal travelled. Only the freshest quarter of the trail gets
+        // one, or every arc on the globe twinkles at once and none of it reads.
+        let spark = ((k - 0.75) * 4.0).clamp(0.0, 1.0);
+        // Offset per station so they do not march in lockstep.
+        let jitter = (hit.slot_utc.rem_euclid(37) as f32) / 37.0;
+        let sh = 1.0 - (anim_t * 0.4 + jitter).fract();
+        for w in 0..pts.len() - 1 {
+            let mid = (w as f32 + 0.5) / (pts.len() - 1) as f32;
+            let d = (mid - sh).abs();
+            let bright = 1.0 + 3.0 * spark * (-d * d * 260.0).exp();
+            s.lines.push(seg(
+                pts[w],
+                pts[w + 1],
+                1.1 * bright.min(2.6),
+                lin(color, (alpha * bright).min(1.0)),
+            ));
+        }
+        // The station itself, so a trail that has faded to a thread still says
+        // where it lands. Lifted clear of the surface like the live dots, or it
+        // z-fights with the globe it sits on.
+        s.sprites.push(SpriteInst {
+            center: to_world(ephem::geodetic_to_body(hit.lat, hit.lon), 1.015).arr(),
+            size_px: (2.4 + 2.0 * k).min(earth_px * 0.6),
+            color: lin(color, (0.9 * alpha).min(1.0)),
+            params: [SPRITE_DOT, 0.0, 0.0, 0.0],
+        });
+
+        drawn += 1;
+        if drawn >= MAX_LAPSE_ARCS {
+            break;
+        }
+    }
+}
+
+/// What a decode's arc has cooled to at the tail of the trail.
+const LAPSE_OLD: Color32 = Color32::from_rgb(0x5a, 0x3c, 0xa8);
+
+/// Blend two palette colours in sRGB, `t` = 1 giving `b`.
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let c = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    Color32::from_rgb(c(a.r(), b.r()), c(a.g(), b.g()), c(a.b(), b.b()))
 }
 
 /// How far an arc spanning `omega` radians bows off the surface, as a fraction
@@ -1262,7 +1375,47 @@ pub fn arc_bulge(omega: f64) -> f32 {
     0.06 + 0.42 * (omega / std::f64::consts::PI) as f32
 }
 
+/// Sample the great-circle arc `from`→`to`, bowed `bulge_scale` × the standard
+/// lift off the surface. Both ends land on the ground. `None` when the two
+/// points are the same place, which has no arc.
+fn arc_points(
+    to_world: &impl Fn(sdroxide_solar::Vec3, f32) -> V3,
+    from: (f64, f64),
+    to: (f64, f64),
+    steps: usize,
+    bulge_scale: f32,
+) -> Option<Vec<V3>> {
+    let a = ephem::geodetic_to_body(from.0, from.1);
+    let c = ephem::geodetic_to_body(to.0, to.1);
+    let omega = a.dot(c).clamp(-1.0, 1.0).acos();
+    if omega < 1e-4 {
+        return None;
+    }
+    let bulge = arc_bulge(omega) * bulge_scale;
+    Some(
+        (0..=steps)
+            .map(|k| {
+                let t = k as f64 / steps as f64;
+                // Spherical interpolation, so the path is the true great circle
+                // rather than a chord through the planet.
+                let s0 = ((1.0 - t) * omega).sin() / omega.sin();
+                let s1 = (t * omega).sin() / omega.sin();
+                let dir = a * s0 + c * s1;
+                let lift = 1.0 + bulge * (std::f64::consts::PI * t).sin() as f32;
+                to_world(dir.normalize(), lift)
+            })
+            .collect(),
+    )
+}
+
 /// A great-circle arc between two points on the globe, bowed out into space.
+///
+/// With `anim` set this is the contact being worked, and it is drawn to be
+/// unmistakable among an hour of traffic: a wide soft halo under a bright core,
+/// a pulse running the path end to end, and rings on both stations. The pulse
+/// runs whichever way the traffic is going — out to them while transmitting,
+/// back to us the rest of the time — and hits far harder on transmit, which is
+/// the one moment the operator wants to see at a glance from across the room.
 #[allow(clippy::too_many_arguments)]
 fn arc(
     s: &mut Scene,
@@ -1277,46 +1430,59 @@ fn arc(
     transmitting: bool,
 ) {
     const STEPS: usize = 96;
-    let a = ephem::geodetic_to_body(from.0, from.1);
-    let c = ephem::geodetic_to_body(to.0, to.1);
-    let omega = a.dot(c).clamp(-1.0, 1.0).acos();
-    if omega < 1e-4 {
-        return;
-    }
-    let bulge = arc_bulge(omega);
+    let Some(pts) = arc_points(to_world, from, to, STEPS, 1.0) else { return };
+    let bulge = arc_bulge({
+        let a = ephem::geodetic_to_body(from.0, from.1);
+        let c = ephem::geodetic_to_body(to.0, to.1);
+        a.dot(c).clamp(-1.0, 1.0).acos()
+    });
 
-    let point = |t: f64| {
-        // Spherical interpolation, so the path is the true great circle rather
-        // than a chord through the planet.
-        let s0 = ((1.0 - t) * omega).sin() / omega.sin();
-        let s1 = (t * omega).sin() / omega.sin();
-        let dir = a * s0 + c * s1;
-        let lift = 1.0 + bulge * (std::f64::consts::PI * t).sin() as f32;
-        to_world(dir.normalize(), lift)
+    // Where the pulse's head is on the path this frame, and how hard it hits.
+    let (head, gain, width_gain) = match anim {
+        // Transmitting: a fast, near-white surge running home → them.
+        Some(t0) if transmitting => ((t0 * 0.55).fract(), 5.0, 3.4),
+        // Receiving: a slower swell coming the other way, them → home.
+        Some(t0) => (1.0 - (t0 * 0.28).fract(), 2.6, 2.2),
+        None => (f32::NAN, 0.0, 1.0),
+    };
+    let pulse_at = |mid: f32| {
+        if gain <= 0.0 {
+            return 1.0;
+        }
+        let d = (mid - head).abs().min(1.0 - (mid - head).abs());
+        1.0 + gain * (-d * d * 160.0).exp()
     };
 
-    let mut prev = point(0.0);
-    for k in 1..=STEPS {
-        let t = k as f64 / STEPS as f64;
-        let p = point(t);
-        let mid = (k as f32 - 0.5) / STEPS as f32;
-        // A travelling bright band along the path while transmitting, the same
-        // cue the flat FT8 map uses for an outgoing transmission.
-        let pulse = match anim {
-            Some(t0) if transmitting => {
-                let head = (t0 * 0.55).fract();
-                let d = (mid - head).abs().min(1.0 - (mid - head).abs());
-                1.0 + 2.6 * (-d * d * 220.0).exp()
-            }
-            _ => 1.0,
+    // A wide, dim halo under the core, so the active path reads as a beam
+    // rather than as one more thread in the web.
+    if anim.is_some() {
+        for w in 0..STEPS {
+            let mid = (w as f32 + 0.5) / STEPS as f32;
+            s.lines.push(seg(
+                pts[w],
+                pts[w + 1],
+                width_px * 2.6,
+                lin(color, (0.12 * pulse_at(mid)).min(0.5) * fade),
+            ));
+        }
+    }
+
+    for w in 0..STEPS {
+        let mid = (w as f32 + 0.5) / STEPS as f32;
+        let pulse = pulse_at(mid);
+        // The crest goes white-hot: colour alone cannot get brighter than the
+        // arc already is, so the pulse borrows the one thing that can.
+        let c = if anim.is_some() {
+            mix(color, theme::TEXT_STRONG, (pulse - 1.0) * 0.4)
+        } else {
+            color
         };
         s.lines.push(seg(
-            prev,
-            p,
-            width_px * pulse.min(1.9),
-            lin(color, (0.55 * pulse).min(1.0) * fade),
+            pts[w],
+            pts[w + 1],
+            width_px * pulse.min(width_gain),
+            lin(c, (0.62 * pulse).min(1.0) * fade),
         ));
-        prev = p;
     }
 
     // Anchor ticks: a short radial stub at each end, so the arc visibly lands
@@ -1329,6 +1495,28 @@ fn arc(
             width_px,
             lin(color, 0.7 * fade),
         ));
+    }
+
+    if anim.is_some() {
+        // The pulse's head as a glow travelling the path, and a ring on each
+        // station: the endpoints of the QSO in progress, not merely of a line.
+        let k = ((head.clamp(0.0, 1.0) * STEPS as f32) as usize).min(STEPS);
+        s.sprites.push(SpriteInst {
+            center: pts[k].arr(),
+            size_px: 18.0,
+            color: lin(mix(color, theme::TEXT_STRONG, 0.5), 0.85 * fade),
+            params: [SPRITE_GLOW, 0.0, 0.0, 0.0],
+        });
+        // A slow breath on the rings, in step with the pulse's period.
+        let beat = 1.0 + 0.25 * (anim.unwrap_or(0.0) * 3.0).sin();
+        for (lat, lon) in [from, to] {
+            s.sprites.push(SpriteInst {
+                center: to_world(ephem::geodetic_to_body(lat, lon), 1.02).arr(),
+                size_px: 15.0 * beat,
+                color: lin(color, 0.9 * fade),
+                params: [SPRITE_RING, 0.0, 0.0, 0.0],
+            });
+        }
     }
     let _ = b;
 }
@@ -1657,7 +1845,20 @@ mod tests {
             dx,
             preview: None,
             transmitting: false,
+            ..Default::default()
         };
+        st
+    }
+
+    /// The same view with an hour of decode history behind it: three stations
+    /// at 0, 10 and 50 minutes before `now`.
+    fn earth_view_with_history(now: i64) -> SolarUi {
+        let mut st = earth_view_with_traffic(None);
+        st.digi.history = std::sync::Arc::new(vec![
+            crate::digi_map::DigiHit { lat: 40.7, lon: -74.0, slot_utc: now - 50 * 60 },
+            crate::digi_map::DigiHit { lat: -33.9, lon: 151.2, slot_utc: now - 10 * 60 },
+            crate::digi_map::DigiHit { lat: 35.7, lon: 139.7, slot_utc: now },
+        ]);
         st
     }
 
@@ -1724,6 +1925,104 @@ mod tests {
         let s = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
         // Only the sub-solar dot is left.
         assert_eq!(s.sprites.iter().filter(|sp| sp.params[0] == SPRITE_DOT).count(), 1);
+    }
+
+    /// The contact being worked has to win against an hour of traffic behind
+    /// it, or the operator cannot find their own QSO on the globe.
+    #[test]
+    fn the_active_arc_is_drawn_far_heavier_than_a_history_arc() {
+        let now = 1_784_937_600i64;
+        let quiet = build(&earth_view_with_history(now), None, now as f64, [1600.0, 900.0], 0.0);
+        let mut st = earth_view_with_history(now);
+        st.digi.dx = Some((35.7, 139.7));
+        let s = build(&st, None, now as f64, [1600.0, 900.0], 0.0);
+
+        let widest = s.lines.iter().map(|l| l.width_px).fold(0.0f32, f32::max);
+        let history_max = 1.1 * 2.6; // a history arc at the peak of its spark
+        assert!(widest > 2.0 * history_max, "the active arc is only {widest} px wide");
+        // …and it carries a glow head and a ring on each of the two stations.
+        let count =
+            |s: &Scene, kind: f32| s.sprites.iter().filter(|sp| sp.params[0] == kind).count();
+        assert_eq!(count(&s, SPRITE_GLOW), count(&quiet, SPRITE_GLOW) + 1);
+        assert_eq!(count(&s, SPRITE_RING), count(&quiet, SPRITE_RING) + 2);
+    }
+
+    /// The pulse is a travelling band, so the arc's brightest segment has to
+    /// move along it as time passes — and transmitting has to hit harder than
+    /// receiving, which is the whole point of the cue.
+    #[test]
+    fn the_active_arc_pulse_travels_and_transmitting_hits_hardest() {
+        let now = 1_784_937_600.0;
+        // Widest line and where it is, over the lines the active arc added.
+        let crest = |tx: bool, t: f32| {
+            let mut st = earth_view_with_traffic(Some((35.7, 139.7)));
+            st.digi.transmitting = tx;
+            let plain = build(&earth_view_with_traffic(None), None, now, [1600.0, 900.0], t);
+            let s = build(&st, None, now, [1600.0, 900.0], t);
+            s.lines[plain.lines.len()..]
+                .iter()
+                .enumerate()
+                .map(|(i, l)| (i, l.width_px))
+                .fold((0, 0.0f32), |a, b| if b.1 > a.1 { b } else { a })
+        };
+
+        let (_, tx_w) = crest(true, 0.0);
+        let (_, rx_w) = crest(false, 0.0);
+        assert!(tx_w > rx_w, "transmit pulse {tx_w} px is no wider than receive's {rx_w}");
+        // Both are heavier than the old flat 2.4 px line this replaced.
+        assert!(rx_w > 4.0, "even the receive arc should be a beam, not a hair: {rx_w} px");
+
+        assert_ne!(crest(true, 0.0).0, crest(true, 0.5).0, "the pulse did not move");
+    }
+
+    /// The last hour, replayed: what the head is parked over decides which
+    /// decodes are on the globe at all.
+    #[test]
+    fn the_time_lapse_shows_the_hour_around_its_replay_head() {
+        let now = 1_784_937_600i64;
+        let mut st = earth_view_with_history(now);
+        st.view.lapse_trail_min = 15.0;
+        // The same view with nothing in the history, as the line-count baseline.
+        let base = {
+            let mut b = earth_view_with_history(now);
+            b.digi.history = Default::default();
+            build(&b, None, now as f64, [1600.0, 900.0], 0.0).lines.len()
+        };
+        let arcs =
+            |st: &SolarUi| build(st, None, now as f64, [1600.0, 900.0], 0.0).lines.len() - base;
+
+        // Live: the decodes from now and ten minutes ago are inside a 15-minute
+        // trail; the one from fifty minutes ago is not.
+        assert_eq!(arcs(&st), 2 * LAPSE_ARC_STEPS);
+
+        // Wound back fifty minutes, only the oldest is at the head.
+        st.set_lapse_back(50.0 * 60.0);
+        assert_eq!(arcs(&st), LAPSE_ARC_STEPS);
+
+        // A decode the head has not reached yet is not on the globe at all.
+        st.set_lapse_back(55.0 * 60.0);
+        assert_eq!(arcs(&st), 0);
+    }
+
+    /// Wound back, "now" is not what is being shown, so the live dots — which
+    /// are a statement about the present — have to go.
+    #[test]
+    fn winding_the_replay_back_drops_the_live_dots() {
+        let now = 1_784_937_600i64;
+        let mut st = earth_view_with_history(now);
+        let dots = |st: &SolarUi| {
+            build(st, None, now as f64, [1600.0, 900.0], 0.0)
+                .sprites
+                .iter()
+                .filter(|sp| sp.params[0] == SPRITE_DOT)
+                .count()
+        };
+        // Three live stations, two history hits inside the trail, the sub-solar dot.
+        assert_eq!(dots(&st), 3 + 2 + 1);
+        st.set_lapse_back(10.0 * 60.0);
+        // The live three are gone; the head sits on the ten-minute-old decode,
+        // with the one from fifty minutes ago still outside the trail.
+        assert_eq!(dots(&st), 1 + 1);
     }
 
     /// A synthetic oval: a solid band from 60° to 75° in both hemispheres, so

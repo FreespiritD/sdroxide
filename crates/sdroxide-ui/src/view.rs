@@ -148,6 +148,11 @@ pub struct Solar3dView {
     pub cme_window_h: f32,
     /// Show every satellite in the element set rather than the curated few.
     pub all_satellites: bool,
+    /// Activity time-lapse: how long an FT8/FT4 decode's arc stays on the
+    /// globe behind the replay head, in minutes.
+    pub lapse_trail_min: f32,
+    /// How many times real time the activity replay runs at.
+    pub lapse_speed: f32,
 }
 
 impl Default for Solar3dView {
@@ -169,6 +174,11 @@ impl Default for Solar3dView {
             layers: solar_layer::ALL,
             cme_window_h: 72.0,
             all_satellites: false,
+            // Ten minutes of trail is about forty FT8 slots: enough for the
+            // band's shape to show, short enough that one opening does not
+            // smear into the next.
+            lapse_trail_min: 10.0,
+            lapse_speed: 60.0,
         }
     }
 }
