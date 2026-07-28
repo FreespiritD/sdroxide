@@ -182,6 +182,21 @@ enum DecodeSort {
     Distance,
 }
 
+/// One decode as the list draws it: the entry itself, plus everything the row
+/// needs resolved once up front — how far away they are, whether this is a CQ
+/// *we* may answer, what working them would be worth against the log, and
+/// whether the message names our own station.
+#[derive(Clone, Copy)]
+struct DecodeRow<'a> {
+    /// Index into `digi_decodes`, so rows keep their identity after sorting.
+    idx: usize,
+    d: &'a Decode,
+    dist_km: Option<f64>,
+    cq: bool,
+    novelty: sdroxide_types::Novelty,
+    to_me: bool,
+}
+
 pub struct SdroxideApp {
     ctrl: Box<dyn RadioController>,
     caps: Option<DeviceCaps>,
@@ -2255,51 +2270,56 @@ impl SdroxideApp {
         // contiguous in the list. A "CQ DX" from a station we're local to is not
         // a CQ *we* can answer: it neither passes the filter nor gets the CQ
         // highlight.
-        let mut items: Vec<(usize, &Decode, Option<f64>, bool, sdroxide_types::Novelty)> = self
+        let mut items: Vec<DecodeRow> = self
             .digi_decodes
             .iter()
             .enumerate()
             .filter_map(|(i, d)| {
+                // A message addressed to our own station survives every filter.
+                // It is the one decode in the list we owe an answer to, and
+                // hiding it behind "CQ only" — a station calling us back is not
+                // calling CQ — leaves no REPLY button anywhere to answer from.
+                let to_me = !my_call.is_empty() && d.to.as_deref() == Some(my_call.as_str());
                 let cq = sdroxide_types::cq_is_for_us(d, &my_call, &my_grid);
-                if cq_only && !cq {
+                if cq_only && !cq && !to_me {
                     return None;
                 }
                 let novelty =
                     log_ix.novelty(d.from.as_deref().unwrap_or(""), d.grid.as_deref(), band);
-                if new_only && !novelty.is_new() {
+                if new_only && !novelty.is_new() && !to_me {
                     return None;
                 }
-                let dist = (!my_grid.is_empty())
+                let dist_km = (!my_grid.is_empty())
                     .then(|| {
                         d.grid
                             .as_deref()
                             .and_then(|g| sdroxide_types::grid_distance_km(&my_grid, g))
                     })
                     .flatten();
-                Some((i, d, dist, cq, novelty))
+                Some(DecodeRow { idx: i, d, dist_km, cq, novelty, to_me })
             })
             .collect();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show_themed(ui, |ui| {
             let mut gi = 0;
             while gi < items.len() {
                 // A turn is one slot: group the contiguous same-slot decodes.
-                let slot = items[gi].1.slot_utc;
+                let slot = items[gi].d.slot_utc;
                 let mut end = gi;
-                while end < items.len() && items[end].1.slot_utc == slot {
+                while end < items.len() && items[end].d.slot_utc == slot {
                     end += 1;
                 }
                 match sort {
                     DecodeSort::None => {}
                     DecodeSort::Signal => items[gi..end].sort_by(|a, b| {
-                        let o = a.1.snr_db.cmp(&b.1.snr_db);
+                        let o = a.d.snr_db.cmp(&b.d.snr_db);
                         if desc { o.reverse() } else { o }
                     }),
                     DecodeSort::Distance => items[gi..end].sort_by(|a, b| {
                         // Decodes without a grid always sort last (push them to the
                         // far end of whichever direction is active).
                         let sentinel = if desc { f64::NEG_INFINITY } else { f64::INFINITY };
-                        let ka = a.2.unwrap_or(sentinel);
-                        let kb = b.2.unwrap_or(sentinel);
+                        let ka = a.dist_km.unwrap_or(sentinel);
+                        let kb = b.dist_km.unwrap_or(sentinel);
                         let o = ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal);
                         if desc { o.reverse() } else { o }
                     }),
@@ -2326,9 +2346,7 @@ impl SdroxideApp {
                 });
                 ui.separator();
                 for k in gi..end {
-                    let (i, d, dist_km, cq, novelty) = items[k];
-                    // Decodes addressed to our own station stand out most.
-                    let to_me = !my_call.is_empty() && d.to.as_deref() == Some(my_call.as_str());
+                    let DecodeRow { idx: i, d, dist_km, cq, novelty, to_me } = items[k];
                     // Free text names no sender, and a hashed callsign nobody
                     // has heard yet resolves to none either — say which it is
                     // rather than showing a bare "?".

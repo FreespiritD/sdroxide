@@ -14,6 +14,10 @@ const WAIT_CQ_S: i64 = 300;
 /// Keep a finished contact live this long to re-send the final message if the
 /// DX repeats theirs (they didn't hear our 73 / RR73).
 const CONFIRM_S: i64 = 300;
+/// How long a call addressed to us is remembered, for deciding where a reply
+/// the operator picks by hand opens. Long enough to cover a station calling
+/// while we were busy elsewhere, short enough never to speak for a stale one.
+const RECENT_CALL_S: i64 = 300;
 
 /// The payload half of a message (`<to> <from> PAYLOAD`).
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +49,29 @@ pub(crate) fn classify_payload(text: &str) -> Payload {
         s if is_grid(s) => Payload::Grid(s.to_string()),
         _ => Payload::Other,
     }
+}
+
+/// Where our reply to `payload` belongs in the exchange — the message that
+/// answers what they just sent us. `None` when nothing is owed: a bare 73
+/// closes a contact rather than asking for anything.
+fn reply_step(payload: &Payload) -> Option<QsoStep> {
+    match payload {
+        // They called us, with a grid or without one → send them a report.
+        Payload::Grid(_) | Payload::Other => Some(QsoStep::TxReport),
+        Payload::Report(_) => Some(QsoStep::TxRReport),
+        Payload::RReport(_) => Some(QsoStep::TxRr73),
+        Payload::Rrr | Payload::Rr73 => Some(QsoStep::Tx73),
+        Payload::B73 => None,
+    }
+}
+
+/// True when this decode is a station *calling* us: addressed to our station,
+/// and not the tail of a contact already finished. A 73 or an RR73 is somebody
+/// signing off, not somebody asking to be worked.
+fn is_call_to_us(d: &Decode, my_call: &str) -> bool {
+    d.to.as_deref() == Some(my_call)
+        && d.from.as_deref().is_some_and(|f| !f.is_empty())
+        && !matches!(classify_payload(&d.message), Payload::B73 | Payload::Rrr | Payload::Rr73)
 }
 
 fn is_grid(t: &str) -> bool {
@@ -116,6 +143,11 @@ pub struct QsoMachine {
     qsy_hz: Option<f32>,
     /// Stations the operator marked to work, in the order they will be taken.
     queue: std::collections::VecDeque<QueuedCall>,
+    /// What each station lately sent *us*, and when. This is what says where a
+    /// contact stands when the operator picks one to answer by hand: somebody
+    /// who called us with a report wants our R+report back, and opening with
+    /// our grid would ask again for the report they already sent.
+    called_us: std::collections::HashMap<String, (i64, Payload)>,
 }
 
 impl QsoMachine {
@@ -143,6 +175,7 @@ impl QsoMachine {
             fox,
             qsy_hz: None,
             queue: std::collections::VecDeque::new(),
+            called_us: std::collections::HashMap::new(),
         }
     }
 
@@ -293,8 +326,12 @@ impl QsoMachine {
     /// Engage a decoded station. `snr` is their signal at us — the report we'll
     /// send. When `wait_for_cq` we hold in [`QsoStep::WaitCq`] (the operator
     /// picked a station that isn't calling CQ and isn't calling us) and only
-    /// start transmitting once they call CQ or address us; otherwise we reply
-    /// with our grid right away.
+    /// start transmitting once they call CQ or address us; otherwise we start
+    /// replying right away.
+    ///
+    /// A station that has recently called *us* is answered from where their
+    /// exchange stands rather than from the top — somebody repeating
+    /// `<us> <them> -19` at us is owed our R+report, not our grid.
     pub fn start_qso(
         &mut self,
         from: String,
@@ -310,11 +347,23 @@ impl QsoMachine {
         self.progress();
         // Working them now settles whatever the queue had them down for.
         self.queue.retain(|q| !q.call.eq_ignore_ascii_case(&from));
+        // What they last sent us, if they have been calling recently: it decides
+        // both the opening message and the report we already hold from them.
+        // Anything older is a contact of its own and speaks for nothing here.
+        let heard = self
+            .called_us
+            .get(&from.to_ascii_uppercase())
+            .filter(|(t, _)| now_utc - *t <= RECENT_CALL_S)
+            .map(|(_, p)| p.clone());
+        let rpt_rcvd = match heard {
+            Some(Payload::Report(r) | Payload::RReport(r)) => Some(r),
+            _ => None,
+        };
         self.dx = Some(Dx {
             call: from,
             grid,
             rpt_sent: Some(snr),
-            rpt_rcvd: None,
+            rpt_rcvd,
             started_utc: now_utc,
             last_utc: now_utc,
         });
@@ -324,7 +373,7 @@ impl QsoMachine {
             self.step = QsoStep::WaitCq;
             self.deadline_utc = now_utc + WAIT_CQ_S;
         } else {
-            self.step = QsoStep::TxGrid;
+            self.step = heard.as_ref().and_then(reply_step).unwrap_or(QsoStep::TxGrid);
         }
     }
 
@@ -411,6 +460,19 @@ impl QsoMachine {
             }
             return changed;
         }
+        // Remember who has been calling us and what they sent, whether or not
+        // it touches the contact in hand. A station calling while we are busy
+        // elsewhere — or stood down — is one the operator may pick later, and
+        // this is the only record of where their exchange had got to.
+        for d in decodes {
+            if let Some(from) = d.from.as_deref().filter(|_| is_call_to_us(d, &my_call)) {
+                self.called_us
+                    .insert(from.to_ascii_uppercase(), (now_utc, classify_payload(&d.message)));
+            }
+        }
+        // Housekeeping only — `start_qso` checks the age itself, since a silent
+        // band means no decodes and so no chance to run this.
+        self.called_us.retain(|_, (t, _)| now_utc - *t <= RECENT_CALL_S);
         // A pileup can decode both their answer to us *and* other traffic from
         // them in the same slot; an answer to us always wins over "they're
         // working someone else".
@@ -430,9 +492,9 @@ impl QsoMachine {
         if let Some(pick) = &answerer {
             let others: Vec<&str> = decodes
                 .iter()
-                .filter(|d| d.to.as_deref() == Some(my_call.as_str()))
+                .filter(|d| is_call_to_us(d, &my_call))
                 .filter_map(|d| d.from.as_deref())
-                .filter(|c| !c.is_empty() && c != pick)
+                .filter(|c| c != pick)
                 .collect();
             if !others.is_empty() {
                 // The ones we're not taking are worth knowing about: they are
@@ -542,6 +604,15 @@ impl QsoMachine {
                 });
                 self.transcript.push(TranscriptLine::rcvd(d.message.clone()));
                 changed |= self.advance(&payload, now_utc);
+                // Whatever they sent, we are working them now. An answer we
+                // could not parse is still an answer, and staying in `CallingCq`
+                // would leave them adopted but never replied to — and, because
+                // the pick above only runs while `dx` is none, would wedge the
+                // CQ run so nobody else could be taken either.
+                if self.step == QsoStep::CallingCq {
+                    self.step = QsoStep::TxReport;
+                    changed = true;
+                }
                 continue;
             }
 
@@ -584,7 +655,7 @@ impl QsoMachine {
     fn pick_answerer(&self, decodes: &[Decode], my_call: &str) -> Option<String> {
         decodes
             .iter()
-            .filter(|d| d.to.as_deref() == Some(my_call))
+            .filter(|d| is_call_to_us(d, my_call))
             .filter_map(|d| {
                 let call = d.from.as_deref().filter(|f| !f.is_empty())?;
                 Some((call, d.snr_db))
@@ -626,6 +697,20 @@ impl QsoMachine {
         match (self.step, payload) {
             // They answered our CQ with their grid → send them a report.
             (QsoStep::CallingCq, Payload::Grid(_)) => self.step = QsoStep::TxReport,
+            // They answered our CQ with a report instead of a grid — plenty of
+            // stations skip the grid message, and one that already knows our
+            // grid always will. That makes us the answering side: roger what
+            // they sent and reply with R+report.
+            (QsoStep::CallingCq, Payload::Report(r)) => {
+                self.set_rcvd(*r);
+                self.step = QsoStep::TxRReport;
+            }
+            // …or with R+report, so they have us a message further on than we
+            // thought (our report reached them; their reply to it didn't).
+            (QsoStep::CallingCq, Payload::RReport(r)) => {
+                self.set_rcvd(*r);
+                self.step = QsoStep::TxRr73;
+            }
             // (Answerer) they sent us a report → send R+report.
             (QsoStep::TxGrid, Payload::Report(r)) => {
                 self.set_rcvd(*r);
@@ -931,6 +1016,88 @@ mod tests {
         let mut d = decode(&format!("AB1CD {call} EM48"));
         d.snr_db = snr;
         d
+    }
+
+    #[test]
+    fn an_answer_with_a_report_instead_of_a_grid_is_worked() {
+        // Plenty of stations answer a CQ with a report rather than their grid.
+        // That must not leave us calling CQ over the top of them.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.call_cq();
+        assert!(q.on_rx(&[decode("AB1CD W9XYZ -19")], 100));
+        assert_eq!(q.dx_call(), Some("W9XYZ"));
+        assert_eq!(q.step(), QsoStep::TxRReport, "still calling CQ at them");
+        assert_eq!(q.plan_tx().as_deref(), Some("W9XYZ AB1CD R-10"));
+
+        // From there it is the ordinary answering side: their roger ends it.
+        assert!(q.on_rx(&[decode("AB1CD W9XYZ RR73")], 115));
+        assert_eq!(q.step(), QsoStep::Tx73);
+        q.note_tx_sent(130);
+        let rec = q.take_completed().expect("logged");
+        assert_eq!(rec.rst_sent, Some(-10));
+        assert_eq!(rec.rst_rcvd, Some(-19), "the report they opened with is the one logged");
+    }
+
+    #[test]
+    fn an_answer_we_cannot_read_still_starts_the_exchange() {
+        // Free text, a bare call, a message the packer mangled — whatever it
+        // says, somebody addressed us, so send them a report.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.call_cq();
+        assert!(q.on_rx(&[decode("AB1CD W9XYZ HI")], 100));
+        assert_eq!(q.step(), QsoStep::TxReport);
+        assert_eq!(q.plan_tx().as_deref(), Some("W9XYZ AB1CD -10"));
+    }
+
+    #[test]
+    fn a_signing_off_station_is_not_a_caller() {
+        // A late 73 from the contact we just finished is not somebody asking to
+        // be worked: adopting it would wedge the CQ run against everyone else.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.call_cq();
+        assert!(!q.on_rx(&[decode("AB1CD W9XYZ 73")], 100));
+        assert_eq!(q.dx_call(), None);
+        assert_eq!(q.step(), QsoStep::CallingCq);
+
+        // The real caller in the next slot is taken as usual.
+        assert!(q.on_rx(&[decode("AB1CD K1ABC EM48")], 115));
+        assert_eq!(q.dx_call(), Some("K1ABC"));
+    }
+
+    #[test]
+    fn replying_to_a_station_that_called_us_picks_up_where_they_are() {
+        // Stood down (STOP QSO), with W9XYZ still calling us. Answering them by
+        // hand must send what they are waiting for, not start from our grid.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.stop();
+        assert!(!q.on_rx(&[decode("AB1CD W9XYZ -19")], 100));
+        q.start_qso("W9XYZ".into(), None, -10, false, 115);
+        assert_eq!(q.step(), QsoStep::TxRReport);
+        assert_eq!(q.plan_tx().as_deref(), Some("W9XYZ AB1CD R-10"));
+        q.on_rx(&[decode("AB1CD W9XYZ RR73")], 130);
+        q.note_tx_sent(145);
+        assert_eq!(q.take_completed().and_then(|r| r.rst_rcvd), Some(-19));
+
+        // Someone calling us with their grid is owed a report, likewise.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.on_rx(&[decode("AB1CD K1ABC EM48")], 100);
+        q.start_qso("K1ABC".into(), None, -10, false, 115);
+        assert_eq!(q.plan_tx().as_deref(), Some("K1ABC AB1CD -10"));
+
+        // A station we have not heard from is called from the top, as before.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.start_qso("G4XYZ".into(), None, -10, false, 100);
+        assert_eq!(q.plan_tx().as_deref(), Some("G4XYZ AB1CD FN42"));
+    }
+
+    #[test]
+    fn a_stale_call_does_not_speak_for_a_new_contact() {
+        // Answering them ten minutes on is a fresh contact: what they sent back
+        // then says nothing about it.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.on_rx(&[decode("AB1CD W9XYZ -19")], 100);
+        q.start_qso("W9XYZ".into(), None, -10, false, 100 + RECENT_CALL_S + 15);
+        assert_eq!(q.plan_tx().as_deref(), Some("W9XYZ AB1CD FN42"));
     }
 
     #[test]

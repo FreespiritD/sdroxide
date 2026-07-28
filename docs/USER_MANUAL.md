@@ -419,6 +419,9 @@ The panel has two halves:
   never worked) or **DUPE** (already in the log for this band — the row fades
   back). The **New only** filter keeps just the rows that would put something new
   in the log.
+  Neither filter ever hides a message addressed to your own station: a station
+  calling you is not calling CQ, and may well be a dupe, but it is the one row
+  in the list you owe an answer to.
 - **QSO** (right) — a world map (your location, the station you are working, and
   a transmit indicator), a station card showing the current step
   (`Idle`, `Wait CQ`, `Calling CQ`, `Tx Grid`, `Tx Report`, `Tx R+Report`,
@@ -439,7 +442,12 @@ free text is cut to 13 characters.
 ### 3.4 Working stations
 
 - **Answer a call:** click **REPLY** on a decode. sdroxide adopts that station,
-  picks the opposite time slot, and runs the exchange automatically.
+  picks the opposite time slot, and runs the exchange automatically. If they
+  have been calling *you*, the reply opens where their exchange actually stands
+  rather than at the top: somebody repeating `<you> <them> -19` gets your
+  R+report back, not your grid, and the report they sent is already in the log
+  entry. So a station who calls again after you pressed **STOP QSO** — or who
+  called while you were busy with someone else — is answered with one press.
 - **Losing a pile-up:** if the station you called comes back to someone else
   instead, sdroxide stops calling and holds at `Wait CQ` rather than doubling
   into their QSO. The transcript shows a pink line — *"W9XYZ is working K1ABC"* —
@@ -452,7 +460,12 @@ free text is cut to 13 characters.
   first: a station already worked this session goes last, among signals of
   similar strength a new DXCC entity wins, and otherwise the strongest does —
   it is the one most likely to complete. The others are listed in the transcript
-  ("also calling: …") so you can work them next.
+  ("also calling: …") so you can work them next. An answer that isn't a grid is
+  still an answer: a station that comes back with a signal report (many do, and
+  one that already knows your grid always will) puts you on the answering side
+  of the exchange — R+report next — instead of leaving you calling CQ over the
+  top of them. A late 73 from the contact you just finished is not a caller and
+  is not adopted as one.
 - **Set your transmit tone:** click a decode row (or click a station box on the
   waterfall) to set your transmit audio frequency to that station's frequency.
   The audio frequency is clamped to 200–3500 Hz.
