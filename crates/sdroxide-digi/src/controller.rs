@@ -15,6 +15,7 @@ use sdroxide_types::{
     Decode, DigiConfig, DigiStatus, Mode, QsoRecord, SstvMode, SstvStatus, adif_band,
 };
 
+use crate::clock::ClockMonitor;
 use crate::modem::Ft8Modem;
 use crate::params::{DECODE_RATE, DigiParams};
 use crate::qso::QsoMachine;
@@ -93,6 +94,8 @@ pub struct DigiController {
     // TX burst playback.
     burst: Option<BurstPlayer>,
     status_dirty: bool,
+    /// What the decoders' `dt` values say about our own slot timing.
+    clock: ClockMonitor,
 }
 
 /// Metered playback of a synthesized TX burst (48 kHz mono).
@@ -146,6 +149,7 @@ impl DigiController {
             _worker: worker,
             burst: None,
             status_dirty: true,
+            clock: ClockMonitor::new(),
         }
     }
 
@@ -375,6 +379,10 @@ impl DigiController {
                         }
                         let cutoff = slot_utc - (8.0 * self.params.slot_s) as i64;
                         self.last_heard.retain(|_, &mut t| t >= cutoff);
+                        // What everyone else's timing says about ours.
+                        if self.clock.observe(&decodes) {
+                            self.status_dirty = true;
+                        }
                         // Advance the QSO from anything addressed to us.
                         if self.qso.on_rx(&decodes, slot_utc) {
                             self.status_dirty = true;
@@ -474,6 +482,7 @@ impl DigiController {
     pub fn status(&self) -> DigiStatus {
         let mut s = self.qso.status(self.tx_burst_active());
         s.audio_hz = self.audio_hz;
+        s.clock_offset_s = self.clock.offset_s();
         s
     }
 }

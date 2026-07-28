@@ -5,6 +5,7 @@
 //! binary — the wasm remote client links none of it (all decode/encode runs
 //! server-side).
 
+pub mod clock;
 pub mod controller;
 pub mod fox;
 pub mod fsq_controller;
@@ -19,6 +20,7 @@ pub mod squelch;
 pub mod sstv_controller;
 pub mod text_modem;
 
+pub use clock::ClockMonitor;
 pub use controller::{DigiAction, DigiController};
 pub use fox::Fox;
 pub use fsq_controller::FsqController;

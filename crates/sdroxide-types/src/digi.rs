@@ -137,6 +137,32 @@ pub struct FoxCaller {
     pub working: bool,
 }
 
+/// How workable a station's clock offset is.
+///
+/// FT8 and FT4 depend on both ends agreeing where a slot begins. Being a little
+/// out costs nothing; being a lot out is the commonest reason a station calls
+/// all evening and nobody ever comes back, because its transmissions land
+/// outside the window everyone else's decoder searches. The thresholds follow
+/// WSJT-X's practical guidance rather than any hard decoder limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockHealth {
+    /// Well inside tolerance.
+    Good,
+    /// Still decodable, but worth fixing — FT4's slot is half as long, so this
+    /// hurts there first.
+    Marginal,
+    /// Far enough out that stations will fail to decode us.
+    Bad,
+}
+
+pub fn clock_health(offset_s: f32) -> ClockHealth {
+    match offset_s.abs() {
+        d if d < 0.5 => ClockHealth::Good,
+        d if d < 1.5 => ClockHealth::Marginal,
+        _ => ClockHealth::Bad,
+    }
+}
+
 /// Where a QSO is in the standard FT8/FT4 exchange.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QsoStep {
@@ -257,6 +283,16 @@ pub struct DigiStatus {
     /// role, so the panel showing it is its own "are we the Fox?" test.
     #[serde(default)]
     pub fox_queue: Vec<FoxCaller>,
+    /// How far our slot timing sits from the stations we are hearing, in
+    /// seconds. Positive means our clock runs ahead of theirs — we transmit
+    /// early and everyone else appears late to us. `None` until enough decodes
+    /// have arrived to say. See [`clock_health`].
+    ///
+    /// It measures the whole receive path, not the system clock alone: a slow
+    /// audio or network chain adds to it the same way a fast clock does. Either
+    /// way it is the offset stations on the air actually see.
+    #[serde(default)]
+    pub clock_offset_s: Option<f32>,
 }
 
 /// Live state of the RADE V1 modem.
@@ -315,6 +351,7 @@ impl DigiStatus {
             fsq_messages: Vec::new(),
             rade: None,
             fox_queue: Vec::new(),
+            clock_offset_s: None,
         }
     }
 }
@@ -1096,6 +1133,17 @@ mod tests {
         // Nor can we judge with no station callsign or grid of our own.
         let dx = cq("CQ DX W1AW FN31", "W1AW", Some("FN31"));
         assert!(cq_is_for_us(&dx, "", ""));
+    }
+
+    #[test]
+    fn clock_health_is_symmetric_about_zero() {
+        assert_eq!(clock_health(0.0), ClockHealth::Good);
+        assert_eq!(clock_health(0.49), ClockHealth::Good);
+        // Early and late are equally unworkable.
+        assert_eq!(clock_health(0.9), ClockHealth::Marginal);
+        assert_eq!(clock_health(-0.9), ClockHealth::Marginal);
+        assert_eq!(clock_health(2.0), ClockHealth::Bad);
+        assert_eq!(clock_health(-2.0), ClockHealth::Bad);
     }
 
     #[test]

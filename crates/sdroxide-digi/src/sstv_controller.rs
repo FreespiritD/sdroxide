@@ -109,6 +109,7 @@ impl SstvController {
             fsq_messages: Vec::new(),
             rade: None,
             fox_queue: Vec::new(),
+            clock_offset_s: None,
         }
     }
 }

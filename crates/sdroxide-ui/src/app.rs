@@ -2732,6 +2732,40 @@ impl SdroxideApp {
                                 .size(11.0)
                                 .color(Color32::from_gray(140)),
                             );
+                            // What everyone else's timing says about ours. A
+                            // clock far enough out that nobody can decode us
+                            // looks exactly like a dead band from this side, so
+                            // it is worth a permanent readout.
+                            if let Some(off) = s.clock_offset_s {
+                                use sdroxide_types::ClockHealth::*;
+                                let health = sdroxide_types::clock_health(off);
+                                let col = match health {
+                                    Good => Color32::from_gray(140),
+                                    Marginal => crate::theme::YELLOW,
+                                    Bad => crate::theme::PINK,
+                                };
+                                let txt = RichText::new(format!("DT {off:+.1} s")).size(11.0);
+                                ui.label(if health == Good {
+                                    txt.color(col)
+                                } else {
+                                    txt.strong().color(col)
+                                })
+                                .on_hover_text(format!(
+                                    "Your slot timing against the stations you are hearing.\n\
+                                     {}\n\nIt covers the whole receive path, so a slow audio or \
+                                     network chain counts the same as a wrong clock. Under 0.5 s \
+                                     is comfortable.",
+                                    match health {
+                                        Good => "Well inside tolerance.".to_string(),
+                                        _ => format!(
+                                            "You transmit {:.1} s {} everyone else — the usual \
+                                             reason calls go unanswered. Sync your computer clock.",
+                                            off.abs(),
+                                            if off > 0.0 { "before" } else { "after" },
+                                        ),
+                                    }
+                                ));
+                            }
                         });
                     });
                     match &s.dx_call {

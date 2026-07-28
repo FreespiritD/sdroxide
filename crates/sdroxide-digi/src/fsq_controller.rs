@@ -205,6 +205,7 @@ impl FsqController {
             fsq_messages: self.messages.clone(),
             rade: None,
             fox_queue: Vec::new(),
+            clock_offset_s: None,
         }
     }
 

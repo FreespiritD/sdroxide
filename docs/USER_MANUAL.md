@@ -468,6 +468,14 @@ free text is cut to 13 characters.
   free text, so that is what the field accepts.
 - **Stop:** **STOP QSO** ends the current QSO gracefully; **STOP TX** aborts the
   current transmission immediately and un-keys.
+- **Watch your clock.** The station card shows `DT` — how far your slot timing
+  sits from the stations you are hearing, taken from the decodes themselves. It
+  stays grey while you are inside half a second, turns amber past that and pink
+  past 1.5 s. FT8 and FT4 need both ends to agree where a slot begins, and a
+  clock far enough out that nobody can decode you looks exactly like a dead band
+  from your side, so this is the first thing to check when nobody answers.
+  Positive means you transmit early. The figure covers the whole receive path,
+  so a slow audio or network chain counts the same as a wrong clock.
 - **Unattended transmitting stops itself.** Two limits, both on the FT8 setup
   window: the **TX watchdog** (6 minutes by default) stops the sequencer when
   nothing has come back and you haven't touched anything, and **Give up after**

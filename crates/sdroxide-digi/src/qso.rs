@@ -774,6 +774,7 @@ impl QsoMachine {
             fsq_messages: Vec::new(),
             rade: None,
             fox_queue: self.fox.as_ref().map(Fox::status).unwrap_or_default(),
+            clock_offset_s: None,
         }
     }
 }

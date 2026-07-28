@@ -70,7 +70,8 @@ use sdroxide_types::{
 /// `DigiStatus.fox_queue`, and `Decode.rr73_to` (the RR73 half of a Fox
 /// message, which is how a Hound learns its contact completed). Postcard is not
 /// self-describing, so both ends must agree on every one of those fields.
-pub const PROTO_VERSION: u16 = 21;
+/// v22: clock-offset monitoring — `DigiStatus.clock_offset_s`.
+pub const PROTO_VERSION: u16 = 22;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
