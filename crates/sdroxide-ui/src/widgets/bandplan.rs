@@ -283,7 +283,9 @@ fn draw_seg(
     }
 }
 
-/// Draw the bandplan strip over the bottom of the waterfall rect.
+/// Draw the bandplan strip along the oldest edge of the waterfall rect — its
+/// bottom normally, its top when the waterfall is flipped — so the strip never
+/// covers the newest rows.
 pub fn overlay(p: &Painter, view: &ViewState, wf: &Rect) {
     let span = view.span();
     if span <= 0.0 || wf.height() < 24.0 {
@@ -301,12 +303,16 @@ pub fn overlay(p: &Painter, view: &ViewState, wf: &Rect) {
     let n_digi = digi_rows.len().min(MAX_DIGI_ROWS).min(fit);
 
     let total_h = base_h + n_digi as f32 * digi_h;
-    let base_top = wf.bottom() - base_h;
-    let strip_top = wf.bottom() - total_h;
+    // The allocation row sits outermost, on the waterfall's oldest edge, with
+    // the digi rows stacked inwards from it.
+    let flip = view.waterfall_flip;
+    let base_top = if flip { wf.top() } else { wf.bottom() - base_h };
+    let (strip_top, strip_bottom) =
+        if flip { (wf.top(), wf.top() + total_h) } else { (wf.bottom() - total_h, wf.bottom()) };
 
     // Subtle base so the strip reads as one band even between segments.
     p.rect_filled(
-        Rect::from_min_max(pos2(wf.left(), strip_top), wf.max),
+        Rect::from_min_max(pos2(wf.left(), strip_top), pos2(wf.right(), strip_bottom)),
         0.0,
         Color32::from_rgba_unmultiplied(0, 0, 0, 80),
     );
@@ -317,14 +323,22 @@ pub fn overlay(p: &Painter, view: &ViewState, wf: &Rect) {
         draw_seg(p, view, wf, seg.lo, seg.hi, seg.kind.color(), seg.label, base_top, base_h, 10.5);
     }
 
-    // Digi-mode rows stacked above the allocation row.
+    // Digi-mode rows stacked inwards from the allocation row.
     for (i, row) in digi_rows.iter().take(n_digi).enumerate() {
-        let row_top = base_top - (i as f32 + 1.0) * digi_h;
+        let row_top = if flip {
+            base_top + base_h + i as f32 * digi_h
+        } else {
+            base_top - (i as f32 + 1.0) * digi_h
+        };
         for d in row {
             draw_seg(p, view, wf, d.lo, d.hi, d.color, d.label, row_top, digi_h, 9.5);
         }
     }
 
-    // Top border of the strip.
-    p.hline(wf.x_range(), strip_top, Stroke::new(1.0, theme::LINE_LIT));
+    // Border along the strip's inner edge.
+    p.hline(
+        wf.x_range(),
+        if flip { strip_bottom } else { strip_top },
+        Stroke::new(1.0, theme::LINE_LIT),
+    );
 }

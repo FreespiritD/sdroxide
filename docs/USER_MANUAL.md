@@ -154,7 +154,8 @@ The smaller grey number below the readout is the *inactive* VFO's frequency.
 
 ![Tuning on the panadapter, showing the VFO marker and filter passband](images/03-panadapter-tuning.png)
 
-**Band-plan strip.** A colour-coded strip along the bottom of the waterfall
+**Band-plan strip.** A colour-coded strip along the bottom of the waterfall (its
+top when the waterfall is flipped — see [§2.8](#28-the-display-and-fft-controls))
 labels the allocations. Zoomed out it shows coarse bands (ham, broadcast, CB,
 AM); zoomed into a ham band it splits into the CW / digital / SSB / beacon
 sub-segments. When you zoom in close (a span of ~100 kHz or less), the digital
@@ -254,6 +255,12 @@ passband. The grips work on both the spectrum and the waterfall.
 
 - **floor** / **ceil** — the waterfall's dB range.
 - **FFT** size — `2048`, `4096`, `8192`, `16384`, or `32768`.
+- **FLIP** — scroll the waterfall *upwards* (keyboard shortcut **V**). The
+  newest line is drawn at the bottom and history flows up off the top, the way
+  several other SDR programs draw it. The minute gridlines, the skimmer / FT8
+  boxes, the cluster-spot boxes and the band-plan strip all follow the flip, so
+  the fresh decodes stay next to the fresh signals and nothing covers the newest
+  lines. The setting is remembered between sessions.
 
 The **waterfall colour scheme** and the **spectrum background gradient** are set
 on the **UI** tab of the Settings window (see
@@ -2042,6 +2049,7 @@ stuck, press Apply / reconnect again.
 | M | Toggle mute. |
 | N | Toggle noise blanker. |
 | F | Fit the view to the full receiver span. |
+| V | Flip the waterfall (scroll upwards). |
 | 1 – 9, 0 (numpad) | Transmit voice-keyer slots 1–10 (nothing if the slot is empty). |
 | − (numpad) | Stop a voice-keyer message. |
 | F1 | Open this manual (works even while typing). |

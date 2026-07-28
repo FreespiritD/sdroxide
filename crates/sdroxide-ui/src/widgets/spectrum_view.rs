@@ -101,7 +101,7 @@ const SPOT_MSG_PT: f32 = 12.5;
 const SPOT_PAD: f32 = 5.0;
 /// Vertical gap between staggered lanes.
 const SPOT_LANE_GAP: f32 = 3.0;
-/// Gap from the top of the waterfall to the first lane.
+/// Gap from the newest edge of the waterfall to the first lane.
 const SPOT_TOP_MARGIN: f32 = 4.0;
 /// Minimum horizontal gap between two boxes sharing a lane.
 const SPOT_H_GAP: f32 = 6.0;
@@ -190,7 +190,14 @@ fn layout_spots(
             lane_right.push(0.0);
         }
         lane_right[lane] = foot_right;
-        let top = wf_rect.top() + SPOT_TOP_MARGIN + lane as f32 * (SPOT_BOX_H + SPOT_LANE_GAP);
+        // Lanes stack away from the newest row, so the boxes sit with the fresh
+        // signals they label whichever way the waterfall scrolls.
+        let lane_off = SPOT_TOP_MARGIN + lane as f32 * (SPOT_BOX_H + SPOT_LANE_GAP);
+        let top = if view.waterfall_flip {
+            wf_rect.bottom() - lane_off - SPOT_BOX_H
+        } else {
+            wf_rect.top() + lane_off
+        };
         out.push(SpotBox {
             rect: Rect::from_min_size(pos2(box_left, top), vec2(box_w, SPOT_BOX_H)),
             sig_x: xc,
@@ -273,8 +280,9 @@ fn draw_spot_box(
 }
 
 // --- network spot markers (DX cluster / POTA / SOTA / PSK Reporter) --------
-// Rendered bottom-anchored (lanes grow upward from the waterfall floor) so they
-// stay clear of the top-anchored skimmer / FT8 boxes.
+// Anchored at the oldest edge of the waterfall (its floor, or its top when the
+// waterfall is flipped) so they stay clear of the skimmer / FT8 boxes, which
+// hug the newest edge.
 const NET_BOX_H: f32 = 18.0;
 const NET_CALL_PT: f32 = 12.5;
 const NET_TAG_PT: f32 = 9.5;
@@ -351,10 +359,14 @@ fn layout_net_spots(
             lane_right.push(0.0);
         }
         lane_right[lane] = foot_right;
-        let top = wf_rect.bottom()
-            - NET_BOTTOM_MARGIN
-            - NET_BOX_H
-            - lane as f32 * (NET_BOX_H + NET_LANE_GAP);
+        // Anchored at the *oldest* edge, opposite the skimmer boxes, so the two
+        // sets never collide — which end that is depends on the flip.
+        let lane_off = NET_BOTTOM_MARGIN + lane as f32 * (NET_BOX_H + NET_LANE_GAP);
+        let top = if view.waterfall_flip {
+            wf_rect.top() + lane_off
+        } else {
+            wf_rect.bottom() - lane_off - NET_BOX_H
+        };
         out.push(NetBox {
             rect: Rect::from_min_size(pos2(box_left, top), vec2(box_w, NET_BOX_H)),
             sig_x: xc,
@@ -956,6 +968,7 @@ pub fn show_ext(
             rows_visible: wf_rect.height(),
             lut: wf.palette,
             rows_to_write: wf.rows_to_write,
+            flip: view.waterfall_flip,
         },
     ));
 
@@ -1182,9 +1195,10 @@ pub fn show_ext(
     }
 
     // --- 60-second time gridlines on the waterfall ------------------------
-    // The newest row (top of the waterfall) is "now"; rows below are older at
-    // `rows_per_sec` rows/second (≈ 1 row per pixel). Draw a faint gray line at
-    // each whole UTC minute that falls in the visible window, labelled HH:MM.
+    // The newest row (top of the waterfall, or its bottom when flipped) is
+    // "now"; rows away from it are older at `rows_per_sec` rows/second (≈ 1 row
+    // per pixel). Draw a faint gray line at each whole UTC minute that falls in
+    // the visible window, labelled HH:MM.
     let rows_per_sec = wf.rows_per_sec as f64;
     if rows_per_sec > 0.01 && wf_rect.height() > 4.0 {
         let secs_per_px = 1.0 / rows_per_sec;
@@ -1194,7 +1208,12 @@ pub fn show_ext(
         let grid = Color32::from_rgba_unmultiplied(200, 205, 215, 60);
         let mut t = (oldest / 60.0).ceil() * 60.0; // first minute boundary ≥ oldest
         while t <= now {
-            let y = wf_rect.top() + ((now - t) * rows_per_sec) as f32;
+            let age_px = ((now - t) * rows_per_sec) as f32;
+            let y = if view.waterfall_flip {
+                wf_rect.bottom() - age_px
+            } else {
+                wf_rect.top() + age_px
+            };
             if (wf_rect.top()..=wf_rect.bottom()).contains(&y) {
                 painter.hline(wf_rect.x_range(), y, Stroke::new(1.0, grid));
                 let tod = (t as i64).rem_euclid(86_400);

@@ -18,6 +18,10 @@ pub struct ViewState {
     /// Hide the spectrum line, showing only the waterfall (and, in FT8/FT4,
     /// giving the freed height to the operating panel).
     pub spectrum_collapsed: bool,
+    /// Scroll the waterfall upwards: the newest row sits at the *bottom* and
+    /// history flows up and off the top, the way several other SDR programs
+    /// draw it. Affects the time gridlines and the spot lanes too.
+    pub waterfall_flip: bool,
     /// Fraction of the FT8/FT4 layout height used by the operating panel (the
     /// decode list + QSO area); the rest is the waterfall. User-draggable.
     pub digi_panel_fraction: f32,
@@ -180,6 +184,7 @@ impl Default for ViewState {
             spectrum_fraction: 0.35,
             peak_hold: false,
             spectrum_collapsed: false,
+            waterfall_flip: false,
             digi_panel_fraction: 0.46,
             digi_split_fraction: 0.52,
             digi_map_fraction: 0.6,

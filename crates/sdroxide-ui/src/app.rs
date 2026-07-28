@@ -1898,6 +1898,17 @@ impl SdroxideApp {
                             }
                         }
                     });
+                    ui.label(
+                        RichText::new("WATERFALL").color(crate::theme::CYAN_DIM).size(9.5).strong(),
+                    );
+                    if crate::chrome::chip(ui, self.view.waterfall_flip, "FLIP")
+                        .on_hover_text(
+                            "Scroll the waterfall upwards — newest row at the bottom (V)",
+                        )
+                        .clicked()
+                    {
+                        self.view.waterfall_flip = !self.view.waterfall_flip;
+                    }
                 });
             if let Some(r) = &fft_resp {
                 crate::chrome::paint_popup_cut_border(ui.ctx(), &r.response, alpha);

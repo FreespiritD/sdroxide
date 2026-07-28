@@ -336,6 +336,7 @@ pub(crate) fn apply_action(
         }
         PeakHold => ui.view.peak_hold = !ui.view.peak_hold,
         SpectrumCollapse => ui.view.spectrum_collapsed = !ui.view.spectrum_collapsed,
+        WaterfallFlip => ui.view.waterfall_flip = !ui.view.waterfall_flip,
         ToggleHelp => *ui.help = !*ui.help,
         ToggleSettings => *ui.settings = !*ui.settings,
         ToggleLogbook => *ui.logbook = !*ui.logbook,
@@ -926,6 +927,7 @@ fn indicator(act: Action, state: &RadioState, view: &ViewState) -> Option<u8> {
         RecordToggle => on(state.recording),
         PeakHold => on(view.peak_hold),
         SpectrumCollapse => on(view.spectrum_collapsed),
+        WaterfallFlip => on(view.waterfall_flip),
         VfoSelect(v) => on(state.active_vfo == v),
         Volume => frac(state.rx[0].volume),
         SubVolume => frac(state.rx[1].volume),

@@ -14,6 +14,9 @@ pub const TEX_W: u32 = 2048;
 /// History rows (scrollback depth).
 pub const TEX_H: u32 = 2048;
 
+/// Padded to 32 bytes: a uniform-address-space struct is rounded up to a
+/// multiple of 16, so the buffer has to be that big even though five floats
+/// are used.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Uniforms {
@@ -21,6 +24,8 @@ struct Uniforms {
     vscale: f32,
     u_lo: f32,
     u_hi: f32,
+    flip: f32,
+    _pad: [f32; 3],
 }
 
 pub struct WaterfallResources {
@@ -343,6 +348,8 @@ pub struct WaterfallCallback {
     /// wall-clock time × the scroll rate, so the waterfall and the time
     /// gridlines advance together regardless of the actual frame cadence.
     pub rows_to_write: u32,
+    /// Draw the newest row at the bottom, scrolling upwards.
+    pub flip: bool,
 }
 
 impl CallbackTrait for WaterfallCallback {
@@ -491,8 +498,10 @@ impl CallbackTrait for WaterfallCallback {
             vscale: (self.rows_visible / TEX_H as f32).min(1.0),
             u_lo: self.u_lo,
             u_hi: self.u_hi,
+            flip: if self.flip { 1.0 } else { 0.0 },
+            _pad: [0.0; 3],
         };
-        let bytes: [u8; 16] = unsafe { std::mem::transmute(u) };
+        let bytes: [u8; 32] = unsafe { std::mem::transmute(u) };
         queue.write_buffer(&r.uniforms, 0, &bytes);
         Vec::new()
     }
