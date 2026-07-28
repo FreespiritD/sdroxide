@@ -1564,11 +1564,14 @@ the QSO ends the camera rejoins the tour at whichever viewpoint is nearest.
 Switching the `QSO` layer off leaves AUTO on its normal loop.
 
 **Layers** — `ORBITS` (orbital paths, sampled from the real ephemeris, so they
-are the true eccentric orbits), `PLANETS`, `CME`, `SPOTS`, `FLARES`, `GRID` (the
-solar rotation axis, equator and heliographic parallels), `LABELS`, `STARS`,
+are the true eccentric orbits), `PLANETS`, `CME`, `SPOTS`, `FLARES`, `LABELS`,
 `QSO`, `SATS`, `AURORA` and `AWARDS`. All but `AWARDS` are on to begin with —
 that one puts a marker on all three hundred-odd DXCC entities, so it waits until
 you ask for it.
+
+The star field and the heliographic graticule (the solar rotation axis, equator
+and parallels) have no chips: they are the backdrop and the coordinate frame
+everything else is read against, and are always drawn.
 
 **The PLANETS layer** adds the rest of the solar system: the seven other
 planets, eighteen major moons, and Saturn's and Uranus's rings. Names are shown

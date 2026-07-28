@@ -56,8 +56,13 @@ pub mod solar_layer {
     pub const CME: u32 = 1 << 1;
     pub const SPOTS: u32 = 1 << 2;
     pub const FLARES: u32 = 1 << 3;
+    /// Retired: the heliographic graticule and the star field are always drawn
+    /// now, and nothing reads these two bits any more. They are kept so the
+    /// other layers stay on the bit positions everyone's settings file already
+    /// uses, and so the historical [`PREVIOUS_ALL`] masks still match.
     pub const GRID: u32 = 1 << 4;
     pub const LABELS: u32 = 1 << 5;
+    /// Retired — see [`GRID`].
     pub const STARS: u32 = 1 << 6;
     /// Decoded FT8/FT4 stations and the arc to the station being worked.
     pub const QSO: u32 = 1 << 7;

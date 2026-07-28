@@ -11,7 +11,11 @@ use crate::theme;
 use crate::view::solar_layer as layer;
 
 /// Layer chips, in bar order.
-const LAYERS: [(u32, &str, &str); 12] = [
+///
+/// The star field and the heliographic graticule are not among them: they are
+/// the backdrop and the coordinate frame everything else is read against, so
+/// they are always drawn rather than being switches.
+const LAYERS: [(u32, &str, &str); 10] = [
     (layer::ORBITS, "ORBITS", "Orbital paths"),
     (
         layer::PLANETS,
@@ -23,9 +27,7 @@ const LAYERS: [(u32, &str, &str); 12] = [
     (layer::CME, "CME", "Coronal mass ejection trajectory cones"),
     (layer::SPOTS, "SPOTS", "Sunspot active regions"),
     (layer::FLARES, "FLARES", "Solar flare source locations"),
-    (layer::GRID, "GRID", "Ecliptic plane and heliographic graticule"),
     (layer::LABELS, "LABELS", "Body and region labels"),
-    (layer::STARS, "STARS", "Background star field"),
     (layer::QSO, "QSO", "Decoded FT8/FT4 stations and the path to the station being worked"),
     (layer::SATS, "SATS", "Amateur-radio satellites, their orbits and elevation from your QTH"),
     (

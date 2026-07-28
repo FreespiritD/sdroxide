@@ -474,7 +474,10 @@ pub fn build(
             // the procedural surface is what shows offline.
             misc: [anim_t, if sun_img.is_some() { 1.0 } else { 0.0 }, 0.0, 0.0],
         },
-        draw_stars: st.layer(layer::STARS),
+        // The star field and the graticule below are not layers any more: they
+        // are the backdrop and the coordinate frame the rest is read against,
+        // and a scene without them reads as broken rather than as uncluttered.
+        draw_stars: true,
         ..Default::default()
     };
 
@@ -482,9 +485,7 @@ pub fn build(
     if st.layer(layer::ORBITS) {
         orbits(&mut s, st, &b, &cam);
     }
-    if st.layer(layer::GRID) {
-        grid(&mut s, &b);
-    }
+    grid(&mut s, &b);
     markers(&mut s, st, &b, &cam);
     if st.layer(layer::AWARDS) {
         award_heat(&mut s, st, &b, &cam, anim_t);
@@ -1807,13 +1808,24 @@ mod tests {
         }
     }
 
+    /// With every switchable layer off, what is left is what is not a layer:
+    /// the three near bodies, the star field, and the graticule the scene is
+    /// read against.
     #[test]
     fn layers_actually_remove_geometry() {
         let mut st = ui();
         st.view.layers = 0;
         let s = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
-        assert!(s.lines.is_empty(), "layers off but {} lines drawn", s.lines.len());
         assert_eq!(s.draws.len(), 3, "the Sun, the Earth and the Moon are not a layer");
+        assert!(s.draw_stars, "the star field is the backdrop, not a layer");
+
+        // Only the graticule's lines survive; switching a layer back on adds to
+        // them, which is what makes this a real check that the rest went away.
+        let grid_lines = s.lines.len();
+        assert!(grid_lines > 0, "the graticule is always drawn");
+        st.view.layers = layer::ORBITS;
+        let with_orbits = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        assert!(with_orbits.lines.len() > grid_lines, "ORBITS added nothing");
     }
 
     #[test]
