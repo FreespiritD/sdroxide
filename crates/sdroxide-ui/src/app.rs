@@ -4,10 +4,10 @@ use std::time::Duration;
 use eframe::egui::{self, Color32, ComboBox, DragValue, RichText, Slider};
 use sdroxide_types::{
     AgcMode, AudioDevices, Band, CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, Direction,
-    LookupProvider, MemoryChannel, Meters, Mode, NetworkConfig, QsoRecord, RadioController,
-    RadioEvent, RadioState, RifpEncoding, RifpMeta, RifpProfile, RifpSize, RifpStatus, RxId,
-    SkimmerKind, SkimmerSpot, SpectrumConfig, SpectrumFrame, Spot, SpotKind, SstvMode, SstvStatus,
-    UploadResult, UploadTarget, Vfo,
+    GainElement, LookupProvider, MemoryChannel, Meters, Mode, NetworkConfig, QsoRecord,
+    RadioController, RadioEvent, RadioState, RifpEncoding, RifpMeta, RifpProfile, RifpSize,
+    RifpStatus, RxId, SkimmerKind, SkimmerSpot, SpectrumConfig, SpectrumFrame, Spot, SpotKind,
+    SstvMode, SstvStatus, UploadResult, UploadTarget, Vfo,
 };
 
 use crate::theme::ThemedScroll;
@@ -1563,10 +1563,21 @@ impl SdroxideApp {
     /// underneath. Bare and tall, like the VFO/RIT box — replaces the separate
     /// Receiver and Filter boxes.
     fn rx_filter_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        crate::chrome::module_bare_h(ui, 356.0, crate::chrome::MODULE_TALL_H, |ui| {
+        // The device's front-end RX gain, if it has one the software can set —
+        // the Hermes-Lite 2's LNA, a SoapySDR device's first RX stage. A rig
+        // with none (a CAT radio on a sound card) gets no slider and no extra
+        // module width, so nothing moves for the people who can't use it.
+        let rx_gains: Vec<GainElement> = self
+            .caps
+            .as_ref()
+            .map(|c| c.gains.iter().filter(|g| g.direction == Direction::Rx).cloned().collect())
+            .unwrap_or_default();
+        let rx_gain = rx_gains.first().cloned();
+        let width = if rx_gain.is_some() { 506.0 } else { 356.0 };
+        crate::chrome::module_bare_h(ui, width, crate::chrome::MODULE_TALL_H, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
-                // Receiver: volume, AGC, mute.
+                // Receiver: volume, RF gain, AGC, mute.
                 ui.horizontal(|ui| {
                     let mut vol = self.state.rx[0].volume;
                     ui.label("Vol");
@@ -1575,6 +1586,56 @@ impl SdroxideApp {
                     {
                         self.state.rx[0].volume = vol; // optimistic echo
                         cmds.push(Command::SetVolume { rx: RxId::Main, v: vol });
+                    }
+                    if let Some(g) = &rx_gain {
+                        let mut hint = format!(
+                            "Front-end RX gain ({}). Too much clips the receiver's ADC and \
+                             smears spurious signals across the band; too little and it goes deaf.",
+                            g.name
+                        );
+                        if rx_gains.len() > 1 {
+                            hint.push_str(&format!(
+                                "\n\nThis rig has {} RX gain stages — the rest are in \
+                                 Settings → Device.",
+                                rx_gains.len()
+                            ));
+                        }
+                        ui.label("Gain").on_hover_text(&hint);
+                        let mut db = self
+                            .state
+                            .gains
+                            .iter()
+                            .find(|(n, _)| *n == g.name)
+                            .map(|(_, d)| *d)
+                            .unwrap_or(g.min_db);
+                        let step = if g.step_db > 0.0 { g.step_db } else { 1.0 };
+                        // Narrower rail than Vol: this one carries a dB readout,
+                        // and the module has to stay inside one wrapped row.
+                        let resp = ui
+                            .scope(|ui| {
+                                ui.spacing_mut().slider_width = 76.0;
+                                crate::chrome::slider(
+                                    ui,
+                                    Slider::new(&mut db, g.min_db..=g.max_db)
+                                        .step_by(step)
+                                        .suffix(" dB"),
+                                )
+                            })
+                            .inner
+                            .on_hover_text(&hint);
+                        if resp.changed() {
+                            // Optimistic echo so the knob tracks the drag instead
+                            // of snapping back until the engine answers.
+                            match self.state.gains.iter_mut().find(|(n, _)| *n == g.name) {
+                                Some((_, d)) => *d = db,
+                                None => self.state.gains.push((g.name.clone(), db)),
+                            }
+                            cmds.push(Command::SetGain {
+                                dir: Direction::Rx,
+                                element: g.name.clone(),
+                                db,
+                            });
+                        }
                     }
                     let agc = self.state.rx[0].agc;
                     ComboBox::from_id_salt("agc")
