@@ -2737,9 +2737,15 @@ impl SdroxideApp {
         let stations = self.digi_stations.stations(now_t);
         // Located network spots (filtered by the shown-kind toggles), as
         // kind-coloured dots on the map.
+        //
+        // FreeDV Reporter is excluded whatever its toggle says: it lists every
+        // station currently *connected*, hundreds of them, which buries the
+        // decoded FT8 stations this map exists to show. The panadapter overlay
+        // and the SPOTS window still carry them.
         let spot_dots: Vec<(f64, f64, (u8, u8, u8))> = self
             .spots
             .iter()
+            .filter(|s| s.kind != SpotKind::FreeDv)
             .filter(|s| self.spot_kinds_shown[spot_kind_index(s.kind)])
             .filter_map(|s| s.loc.map(|(lat, lon)| (lat, lon, s.kind.color())))
             .collect();
