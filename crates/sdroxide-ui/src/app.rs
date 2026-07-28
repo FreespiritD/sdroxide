@@ -920,13 +920,13 @@ impl SdroxideApp {
     }
 
     /// The S-meter in a label-less box, always pinned top-right. Clicking it
-    /// toggles between the bar and analog-needle styles.
+    /// cycles the needle / bar / trace faces.
     fn smeter_module(&mut self, ui: &mut egui::Ui) {
         crate::chrome::module_bare_flush_h(ui, 250.0, crate::chrome::MODULE_TALL_H, |ui| {
-            let resp = smeter::show(ui, self.meters.as_ref(), self.view.smeter_analog)
-                .on_hover_text("Click to switch bar / analog meter");
+            let resp = smeter::show(ui, self.meters.as_ref(), self.view.smeter_style)
+                .on_hover_text("Click to cycle meter face: needle / bar / trace");
             if resp.clicked() {
-                self.view.smeter_analog = !self.view.smeter_analog;
+                self.view.smeter_style = self.view.smeter_style.next();
             }
         });
     }
@@ -6322,11 +6322,7 @@ fn settings_rtlsdr_tab(
             {
                 *rescan = true;
             }
-            let shown = cfg
-                .rtlsdr
-                .serial
-                .clone()
-                .unwrap_or_else(|| "— first one found —".into());
+            let shown = cfg.rtlsdr.serial.clone().unwrap_or_else(|| "— first one found —".into());
             ComboBox::from_id_salt("rtlsdr_dev").width(300.0).selected_text(shown).show_ui(
                 ui,
                 |ui| {

@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::widgets::smeter::SmeterStyle;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ViewState {
@@ -37,9 +39,11 @@ pub struct ViewState {
     /// Fraction of the SSTV receive side given to the RECEIVED gallery; the rest
     /// is the LIVE image. User-draggable.
     pub sstv_gallery_fraction: f32,
-    /// Render the S-meter as an analog needle instrument instead of the bar.
-    /// Toggled by clicking the meter.
-    pub smeter_analog: bool,
+    /// Which S-meter face is shown — needle (the default), bar or trace.
+    /// Cycled by clicking the meter. Replaces an older `smeter_analog` bool,
+    /// which a stored blob may still carry; serde drops it and everyone lands
+    /// back on the default face.
+    pub smeter_style: SmeterStyle,
     /// Hellschreiber raster appearance. Client-side rather than in `DigiConfig`
     /// because the panel keeps the raw grays: changing contrast repaints the
     /// whole scrollback, which engine-side shading could never do.
@@ -212,7 +216,7 @@ impl Default for ViewState {
             digi_map_fraction: 0.6,
             sstv_tx_fraction: 0.38,
             sstv_gallery_fraction: 0.4,
-            smeter_analog: false,
+            smeter_style: SmeterStyle::default(),
             hell: HellView::default(),
             solar3d: Solar3dView::default(),
         }

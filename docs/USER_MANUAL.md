@@ -278,10 +278,24 @@ dragging the frequency-scale strip between them.
 
 ### 2.9 The S-meter
 
-The **S-meter** reads S0 (−127 dBm) through S9 (−73 dBm) and beyond, with the
-bar turning red past S9. It shows the S-unit (for example `S9+20`) and the level
-in dBm. On transmit it is replaced by a transmit meter showing power, SWR, and
-ALC as the rig reports them.
+The **S-meter** reads S0 (−127 dBm) through S9 (−73 dBm) and beyond, turning red
+past S9. It shows the S-unit (for example `S9+20`) and the level in dBm.
+
+Clicking the meter cycles three faces:
+
+- **Needle** (the default) — an analog moving-coil instrument. The needle has a
+  little inertia, so it swings into a reading and settles the way a real
+  movement does.
+- **Bar** — a horizontal gradient bar with a graduated scale beneath it and a
+  peak-hold marker that falls back after a moment.
+- **Trace** — the last fifteen seconds plotted as a scrolling graph, which is
+  the one to watch for fading and QSB.
+
+On transmit all three switch to a transmit meter. Where the rig reports SWR it
+becomes the headline reading, on a logarithmic scale with 1:1 at the left stop,
+3:1 at mid-scale and everything past 3:1 in red; forward power (or ALC, on a rig
+with no wattmeter) is shown alongside. Rigs with no SWR bridge fall back to a
+drive/ALC scale.
 
 ### 2.10 Transmit
 

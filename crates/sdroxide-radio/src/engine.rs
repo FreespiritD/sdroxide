@@ -37,6 +37,12 @@ use crate::{Complex32, ControlUpdate, IqSource};
 /// Number of bins in emitted display frames (matches the waterfall texture width).
 pub const DISPLAY_BINS: usize = 2048;
 
+/// How often S-meter / TX telemetry is emitted. 30 Hz matches the default
+/// spectrum rate, so the meter moves as smoothly as the panadapter does; the
+/// payload is a handful of floats, so the extra traffic is immaterial even over
+/// the remote-client WebSocket.
+const METER_INTERVAL: Duration = Duration::from_millis(33);
+
 pub struct EngineHandles {
     pub cmd_tx: Sender<Command>,
     pub event_rx: Receiver<RadioEvent>,
@@ -941,7 +947,7 @@ fn engine_thread(
             spec_in.write(engine.make_spectrum_frame());
         }
         if now >= next_meters {
-            next_meters = now + Duration::from_millis(100);
+            next_meters = now + METER_INTERVAL;
             let meters = if engine.tx_active {
                 let alc = engine.tx.as_ref().map(|t| t.alc_peak).unwrap_or(0.0);
                 // CAT/TCI rigs report real forward power / SWR; HackRF and other
