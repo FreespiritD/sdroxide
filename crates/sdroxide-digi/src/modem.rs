@@ -50,6 +50,68 @@ fn msg_kind(bits77: &[u8; 77]) -> MsgKind {
     }
 }
 
+/// What we already know about the message we are hoping to decode.
+///
+/// Every message that advances a QSO is addressed to us, and once we are
+/// working someone it comes from them as well — so 58 of the 77 bits are known
+/// before the signal arrives. Handing them to the decoder as *a-priori* bits
+/// lets the LDPC stage treat them as given instead of solving for them, which
+/// is worth several dB on the one message we most want to hear.
+///
+/// It cannot mislead us: mfsk-core only attempts the AP decode after an
+/// ordinary one has already failed, and the result still has to pass CRC-14. A
+/// stale or wrong hint costs the attempt and nothing else.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ApHints {
+    /// Our own callsign — the addressee of everything we are waiting for.
+    pub my_call: String,
+    /// The station we are working, if any.
+    pub dx_call: Option<String>,
+}
+
+impl ApHints {
+    /// The callsigns to seed the hash table with, so a hashed `<...>` naming
+    /// either of them resolves on first sight.
+    pub fn calls(&self) -> Vec<String> {
+        [Some(self.my_call.as_str()), self.dx_call.as_deref()]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// `(call1, call2)` for the message layout: `<to> <from> …`, so our call is
+    /// first and the station we're working second. `None` when we don't even
+    /// know our own callsign, which is the only case with nothing to say.
+    fn calls_for_hint(&self) -> Option<(&str, Option<&str>)> {
+        let me = self.my_call.trim();
+        if me.is_empty() {
+            return None;
+        }
+        Some((me, self.dx_call.as_deref().map(str::trim).filter(|c| !c.is_empty())))
+    }
+
+    fn ft8(&self) -> Option<mfsk_core::ft8::decode::ApHint> {
+        let (me, dx) = self.calls_for_hint()?;
+        let h = mfsk_core::ft8::decode::ApHint::new().with_call1(me);
+        Some(match dx {
+            Some(dx) => h.with_call2(dx),
+            None => h,
+        })
+    }
+
+    fn ft4(&self) -> Option<mfsk_core::msg::ApHint> {
+        let (me, dx) = self.calls_for_hint()?;
+        let h = mfsk_core::msg::ApHint::new().with_call1(me);
+        Some(match dx {
+            Some(dx) => h.with_call2(dx),
+            None => h,
+        })
+    }
+}
+
 /// Encode/decode engine for one digital mode.
 pub struct Ft8Modem {
     mode: Mode,
@@ -82,12 +144,23 @@ impl Ft8Modem {
     /// to our stable [`Decode`] inside its own arm — the only place that
     /// reads raw mfsk-core fields.
     ///
+    /// `ap` is what we already know about the message we are waiting for (see
+    /// [`ApHints`]); `listening_hz` is where we are tuned, which is the only
+    /// place FT4's a-priori pass can search. The FT8 pass applies the hint
+    /// across the whole band, so it ignores `listening_hz`.
+    ///
     /// Takes `&mut self` because every callsign heard is folded into the hash
     /// table, which is what lets a later `<...>` message name a real station.
-    pub fn decode_slot(&mut self, audio_12k: &[i16], slot_utc: i64) -> Vec<Decode> {
+    pub fn decode_slot(
+        &mut self,
+        audio_12k: &[i16],
+        slot_utc: i64,
+        ap: &ApHints,
+        listening_hz: f32,
+    ) -> Vec<Decode> {
         let mode = self.mode;
         let ht = &self.hashes;
-        let decodes: Vec<Decode> = match mode {
+        let mut decodes: Vec<Decode> = match mode {
             Mode::Ft4 => {
                 let depth = mfsk_core::core::pipeline::DecodeDepth::BpAllOsd;
                 mfsk_core::ft4::decode::decode_frame_with_options(
@@ -108,7 +181,10 @@ impl Ft8Modem {
             }
             _ => {
                 let depth = mfsk_core::ft8::decode::DecodeDepth::BpAllOsd;
-                mfsk_core::ft8::decode::decode_frame(
+                // With no hint this is bit-for-bit the plain `decode_frame`;
+                // with one, every candidate that fails an ordinary decode gets a
+                // second attempt with our two callsigns' bits locked.
+                mfsk_core::ft8::decode::decode_frame_with_ap(
                     audio_12k,
                     AUDIO_MIN_HZ,
                     AUDIO_MAX_HZ,
@@ -116,6 +192,7 @@ impl Ft8Modem {
                     None,
                     depth,
                     MAX_CAND,
+                    ap.ft8().as_ref(),
                 )
                 .into_iter()
                 .filter_map(|r| {
@@ -124,6 +201,28 @@ impl Ft8Modem {
                 .collect()
             }
         };
+        // FT4 has no wide-band a-priori pass, only a targeted one. Aim it where
+        // we are listening — in a QSO that is the station whose reply the hint
+        // describes — and keep whatever it finds that the wide pass missed.
+        if mode == Mode::Ft4 {
+            if let Some(hint) = ap.ft4() {
+                let extra = mfsk_core::ft4::decode::decode_sniper_ap(
+                    audio_12k,
+                    listening_hz,
+                    MAX_CAND,
+                    mfsk_core::core::equalize::EqMode::Off,
+                    Some(&hint),
+                )
+                .into_iter()
+                .filter_map(|r| {
+                    let bits: [u8; 77] = r.message77().try_into().ok()?;
+                    build_decode(&bits, r.snr_db, r.dt_sec, r.freq_hz, slot_utc, ht)
+                })
+                .filter(|d| !decodes.iter().any(|o| same_signal(o, d)))
+                .collect::<Vec<_>>();
+                decodes.extend(extra);
+            }
+        }
         // Remember who we heard, for the next slot's hashed messages.
         for d in &decodes {
             for call in [d.to.as_deref(), d.from.as_deref()].into_iter().flatten() {
@@ -265,6 +364,13 @@ fn pack77_fox(
     write(71, 3, 1); // n3 = 1 (DXpedition)
     write(74, 3, 0); // i3 = 0
     Some((msg, sdroxide_types::fmt_report(2 * n5 as i16 - 30)))
+}
+
+/// True when two decodes are the same transmission seen by two passes: same
+/// text from the same place in the passband. The tolerance is a few Hz, so two
+/// stations sending identical text at different offsets stay distinct.
+fn same_signal(a: &Decode, b: &Decode) -> bool {
+    a.message == b.message && (a.audio_hz - b.audio_hz).abs() < 5.0
 }
 
 /// Join up to three message tokens, dropping the empty ones.
@@ -414,7 +520,7 @@ mod tests {
         slot.extend_from_slice(&burst);
         slot.resize((slot_s * 12_000.0) as usize, 0.0);
         let i16buf: Vec<i16> = slot.iter().map(|&s| (s * 20_000.0) as i16).collect();
-        (sent, modem.decode_slot(&i16buf, 0))
+        (sent, modem.decode_slot(&i16buf, 0, &ApHints::default(), 1500.0))
     }
 
     #[test]
@@ -524,7 +630,7 @@ mod tests {
         slot.resize(15 * 12_000, 0.0);
         let buf: Vec<i16> = slot.iter().map(|&s| (s * 20_000.0) as i16).collect();
         let d = modem
-            .decode_slot(&buf, 0)
+            .decode_slot(&buf, 0, &ApHints::default(), 1500.0)
             .into_iter()
             .find(|d| d.message.contains("RR73;"))
             .expect("decoded");
@@ -554,6 +660,63 @@ mod tests {
             "got {:?}",
             decodes.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn a_priori_hints_name_the_message_we_are_waiting_for() {
+        // Our call is the addressee, the DX's the sender: "AB1CD W9XYZ R-13".
+        let ap = ApHints { my_call: "AB1CD".into(), dx_call: Some("W9XYZ".into()) };
+        let h = ap.ft8().expect("a hint");
+        assert_eq!(h.call1.as_deref(), Some("AB1CD"));
+        assert_eq!(h.call2.as_deref(), Some("W9XYZ"));
+        assert_eq!(ap.calls(), ["AB1CD", "W9XYZ"]);
+
+        // Calling CQ we still know the addressee — anyone answering names us.
+        let ap = ApHints { my_call: "AB1CD".into(), dx_call: None };
+        let h = ap.ft8().expect("a hint");
+        assert_eq!(h.call1.as_deref(), Some("AB1CD"));
+        assert_eq!(h.call2, None);
+
+        // An unconfigured station knows nothing to hint with.
+        assert!(ApHints::default().ft8().is_none());
+        assert!(ApHints::default().ft4().is_none());
+        assert!(ApHints { my_call: "  ".into(), dx_call: Some("W9XYZ".into()) }.ft8().is_none());
+    }
+
+    #[test]
+    fn an_a_priori_hint_only_ever_adds_decodes() {
+        // The hint is a fallback: mfsk-core attempts it only where an ordinary
+        // decode has already failed, and the result still has to pass CRC-14.
+        // So at any noise level the hinted pass finds everything the plain one
+        // does — which is what makes it safe to leave on all the time.
+        let ap = ApHints { my_call: "AB1CD".into(), dx_call: Some("W9XYZ".into()) };
+        let mut rng: u32 = 0x1234_5678;
+        let mut noise = || {
+            // xorshift32, so the comparison runs on identical audio each time.
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            (rng as i32 as f32) / (i32::MAX as f32)
+        };
+        for &level in &[0.05f32, 0.2, 0.5] {
+            let modem = Ft8Modem::new(Mode::Ft8);
+            let (burst, _) = modem.encode_burst_12k("AB1CD W9XYZ -13", 1500.0, 0.5).unwrap();
+            let mut slot = vec![0.0f32; 6_000];
+            slot.extend_from_slice(&burst);
+            slot.resize(15 * 12_000, 0.0);
+            let buf: Vec<i16> =
+                slot.iter().map(|&s| ((s + level * noise()) * 12_000.0) as i16).collect();
+
+            let plain = Ft8Modem::new(Mode::Ft8).decode_slot(&buf, 0, &ApHints::default(), 1500.0);
+            let hinted = Ft8Modem::new(Mode::Ft8).decode_slot(&buf, 0, &ap, 1500.0);
+            for d in &plain {
+                assert!(
+                    hinted.iter().any(|h| h.message == d.message),
+                    "noise {level}: the hinted pass lost {:?}",
+                    d.message
+                );
+            }
+        }
     }
 
     #[test]
@@ -594,7 +757,7 @@ mod tests {
         slot.resize(15 * 12_000, 0.0);
         let buf: Vec<i16> = slot.iter().map(|&s| (s * 20_000.0) as i16).collect();
         let d = modem
-            .decode_slot(&buf, 0)
+            .decode_slot(&buf, 0, &ApHints::default(), 1500.0)
             .into_iter()
             .find(|d| d.message.contains("DL/W1AW"))
             .expect("decoded");

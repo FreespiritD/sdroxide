@@ -468,6 +468,12 @@ free text is cut to 13 characters.
   free text, so that is what the field accepts.
 - **Stop:** **STOP QSO** ends the current QSO gracefully; **STOP TX** aborts the
   current transmission immediately and un-keys.
+- **The decoder knows who you are waiting for.** Once you are working someone,
+  both callsigns in their next message are already known — 58 of its 77 bits.
+  sdroxide hands them to the decoder as *a-priori* bits, which recovers replies
+  a few dB weaker than a blind decode manages. It runs only where an ordinary
+  decode has already failed and the result still has to pass its checksum, so it
+  can add decodes but never invent one. Nothing to switch on.
 - **Watch your clock.** The station card shows `DT` — how far your slot timing
   sits from the stations you are hearing, taken from the decodes themselves. It
   stays grey while you are inside half a second, turns amber past that and pink

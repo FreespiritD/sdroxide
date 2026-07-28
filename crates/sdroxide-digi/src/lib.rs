@@ -25,7 +25,7 @@ pub use controller::{DigiAction, DigiController};
 pub use fox::Fox;
 pub use fsq_controller::FsqController;
 pub use hell_controller::HellController;
-pub use modem::Ft8Modem;
+pub use modem::{ApHints, Ft8Modem};
 pub use params::{DECODE_RATE, DigiParams};
 pub use qso::QsoMachine;
 pub use rade_controller::RadeController;

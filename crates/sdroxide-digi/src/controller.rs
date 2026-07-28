@@ -16,7 +16,7 @@ use sdroxide_types::{
 };
 
 use crate::clock::ClockMonitor;
-use crate::modem::Ft8Modem;
+use crate::modem::{ApHints, Ft8Modem};
 use crate::params::{DECODE_RATE, DigiParams};
 use crate::qso::QsoMachine;
 use crate::scheduler::SlotScheduler;
@@ -62,9 +62,12 @@ pub enum DigiAction {
 struct DecodeJob {
     audio: Vec<i16>,
     slot_utc: i64,
-    /// Callsigns to fold into the worker's hash table before decoding — ours
-    /// and the DX's, so a hashed `<...>` naming either resolves on first sight.
-    seed_calls: Vec<String>,
+    /// Our callsign and the DX's. They seed the worker's hash table, so a hashed
+    /// `<...>` naming either resolves on first sight, and they bias the decoder
+    /// towards the message we are actually waiting for (see [`ApHints`]).
+    ap: ApHints,
+    /// Where we are listening, for FT4's targeted a-priori pass.
+    audio_hz: f32,
 }
 
 pub struct DigiController {
@@ -118,8 +121,9 @@ impl DigiController {
             .spawn(move || {
                 let mut modem = Ft8Modem::new(worker_mode);
                 while let Ok(job) = job_rx.recv() {
-                    modem.seed_hashes(&job.seed_calls);
-                    let decodes = modem.decode_slot(&job.audio, job.slot_utc);
+                    modem.seed_hashes(&job.ap.calls());
+                    let decodes =
+                        modem.decode_slot(&job.audio, job.slot_utc, &job.ap, job.audio_hz);
                     if res_tx.send((job.slot_utc, decodes)).is_err() {
                         break;
                     }
@@ -418,12 +422,16 @@ impl DigiController {
                 if self.slot_buf.len() >= min_samples {
                     let audio = std::mem::take(&mut self.slot_buf);
                     let slot_utc = self.scheduler.slot_start_unix(self.last_slot_idx) as i64;
-                    let seed_calls = [self.qso.my_call(), self.qso.dx_call().unwrap_or("")]
-                        .iter()
-                        .filter(|c| !c.is_empty())
-                        .map(|c| c.to_string())
-                        .collect();
-                    let _ = self.job_tx.send(DecodeJob { audio, slot_utc, seed_calls });
+                    let ap = ApHints {
+                        my_call: self.qso.my_call().to_string(),
+                        dx_call: self.qso.dx_call().map(str::to_string),
+                    };
+                    let _ = self.job_tx.send(DecodeJob {
+                        audio,
+                        slot_utc,
+                        ap,
+                        audio_hz: self.audio_hz,
+                    });
                 }
             }
             self.slot_buf.clear();
