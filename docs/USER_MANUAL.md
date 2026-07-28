@@ -468,6 +468,13 @@ free text is cut to 13 characters.
   free text, so that is what the field accepts.
 - **Stop:** **STOP QSO** ends the current QSO gracefully; **STOP TX** aborts the
   current transmission immediately and un-keys.
+- **The list says where the band is open.** Each decode carries its continent
+  in its own colour, resolved from the callsign — so which way the band is
+  running is legible down the column without reading a single callsign. Hover a
+  row for the rest: DXCC entity, CQ and ITU zone, grid, distance and beam
+  heading from your own grid, whether the station is new or already in your log
+  and on which band, who a directed CQ is aimed at, and the raw signal report,
+  frequency and DT.
 - **Auto TX FRQ picks where you transmit.** On by default (the chip above the
   decode list, or the setup window). Answering on the frequency of the station
   you are calling looks right and isn't: they transmit in the period opposite

@@ -40,6 +40,22 @@ pub const SCROLL_HANDLE: Color32 = Color32::from_rgb(0x17, 0x8e, 0xad);
 pub const SCROLL_HANDLE_HOVER: Color32 = CYAN;
 pub const SCROLL_HANDLE_DRAG: Color32 = PINK;
 
+/// A colour per continent, so a list of decodes reads as a map at a glance —
+/// which way the band is open is visible before a single callsign is read.
+/// Anything unrecognised comes back grey.
+pub fn continent_color(code: &str) -> Color32 {
+    match code {
+        "EU" => Color32::from_rgb(0x7c, 0xa8, 0xff),
+        "NA" => Color32::from_rgb(0x46, 0xe0, 0x7d),
+        "SA" => Color32::from_rgb(0xff, 0xa5, 0x3f),
+        "AS" => Color32::from_rgb(0xff, 0x7a, 0xd9),
+        "AF" => Color32::from_rgb(0xff, 0xd2, 0x3f),
+        "OC" => Color32::from_rgb(0x3f, 0xe0, 0xd8),
+        "AN" => Color32::from_rgb(0xd0, 0xe4, 0xf4),
+        _ => Color32::from_gray(110),
+    }
+}
+
 pub fn apply(ctx: &egui::Context) {
     install_fonts(ctx);
 

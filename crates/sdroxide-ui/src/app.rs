@@ -2301,6 +2301,10 @@ impl SdroxideApp {
                     };
                     let dupe = novelty.dupe;
                     let grid = d.grid.clone().unwrap_or_default();
+                    // Where in the world they are, from the callsign alone —
+                    // most decodes carry no grid, and the entity always knows.
+                    let entity = d.from.as_deref().and_then(sdroxide_types::resolve_callsign);
+                    let continent = entity.map(|e| e.continent).unwrap_or("");
                     let is_preview =
                         d.from.is_some() && preview_call.as_deref() == d.from.as_deref();
                     let queued = d
@@ -2405,6 +2409,24 @@ impl SdroxideApp {
                                     false,
                                     egui::Label::new(
                                         RichText::new(badge).size(9.5).strong().color(badge_col),
+                                    ),
+                                );
+                                // Continent — the band's opening, readable down
+                                // the column without reading a single callsign.
+                                cell(
+                                    ui,
+                                    24.0,
+                                    false,
+                                    egui::Label::new(
+                                        RichText::new(continent)
+                                            .monospace()
+                                            .size(11.0)
+                                            .strong()
+                                            .color(if dupe {
+                                                Color32::from_gray(85)
+                                            } else {
+                                                crate::theme::continent_color(continent)
+                                            }),
                                     ),
                                 );
                                 // Grid.
@@ -2522,6 +2544,12 @@ impl SdroxideApp {
                         egui::Rect::from_min_max(r.left_top(), egui::pos2(body_right, r.bottom()));
                     let row =
                         ui.interact(body_rect, ui.id().with(("dec", i)), egui::Sense::click());
+                    // Everything already resolved about this station, gathered
+                    // where there is room to say it: the row itself has to fit
+                    // twenty of these on screen.
+                    let row = row.on_hover_ui(|ui| {
+                        station_card(ui, d, entity, dist_km, &my_grid, novelty, band, queued, cq);
+                    });
                     if is_preview {
                         // Amber outline ties this row to its faint map marker.
                         ui.painter().rect_stroke(
@@ -7909,6 +7937,116 @@ fn pick_levels(bins: &[u8], db_floor: f32, db_ceil: f32) -> Option<(f32, f32)> {
         ceil = (floor + 10.0).min(20.0);
     }
     Some((floor, ceil))
+}
+
+/// The hover card behind a decode row: everything the entity file, the log and
+/// the operator's own grid already know about this station, said in full.
+///
+/// The row can only afford a callsign, a grid and two numbers; all of this is
+/// resolved for it anyway, so the card costs nothing but the space to show it.
+#[allow(clippy::too_many_arguments)]
+fn station_card(
+    ui: &mut egui::Ui,
+    d: &Decode,
+    entity: Option<sdroxide_types::EntityInfo>,
+    dist_km: Option<f64>,
+    my_grid: &str,
+    novelty: sdroxide_types::Novelty,
+    band: &str,
+    queued: bool,
+    cq_for_us: bool,
+) {
+    ui.set_max_width(300.0);
+    let dim = Color32::from_gray(140);
+    match d.from.as_deref() {
+        Some(call) => {
+            ui.label(RichText::new(call).size(16.0).strong().color(crate::theme::TEXT_STRONG));
+        }
+        None if d.free_text => {
+            ui.label(RichText::new("free text").size(13.0).italics().color(dim));
+        }
+        // A hashed callsign nobody on this receiver has heard in full yet.
+        None => {
+            ui.label(RichText::new("hashed callsign, not yet heard in full").size(13.0).color(dim));
+        }
+    }
+
+    match entity {
+        Some(e) => {
+            ui.label(
+                RichText::new(e.name)
+                    .size(13.0)
+                    .strong()
+                    .color(crate::theme::continent_color(e.continent)),
+            );
+            ui.label(
+                RichText::new(format!(
+                    "{} · CQ zone {} · ITU zone {}",
+                    e.continent, e.cq_zone, e.itu_zone
+                ))
+                .size(11.5)
+                .color(dim),
+            );
+        }
+        None if d.from.is_some() => {
+            ui.label(RichText::new("entity unknown").size(11.5).color(dim));
+        }
+        None => {}
+    }
+
+    // Where they are, from their grid: distance and the beam heading to point.
+    if let Some(g) = d.grid.as_deref() {
+        let bearing =
+            (!my_grid.is_empty()).then(|| sdroxide_types::grid_bearing(my_grid, g)).flatten();
+        let mut line = g.to_string();
+        if let Some(km) = dist_km {
+            line.push_str(&format!(" · {km:.0} km"));
+        }
+        if let Some(b) = bearing {
+            line.push_str(&format!(" · {b:.0}°"));
+        }
+        ui.label(RichText::new(line).size(12.0).color(crate::theme::YELLOW));
+    }
+
+    ui.separator();
+    // Worked before? The one thing that decides whether this decode is worth
+    // acting on, spelled out rather than compressed into a four-letter badge.
+    let band_label = if band.is_empty() { "this band".to_string() } else { band.to_string() };
+    let (worked, col) = if novelty.new_dxcc {
+        ("New entity — never worked, on any band".to_string(), crate::theme::PINK)
+    } else if novelty.new_dxcc_band {
+        (format!("New entity on {band_label}"), crate::theme::YELLOW)
+    } else if novelty.new_grid {
+        ("New grid square".to_string(), crate::theme::CYAN)
+    } else if novelty.new_call {
+        ("Not worked before".to_string(), crate::theme::CYAN_DIM)
+    } else if novelty.dupe {
+        (format!("Worked before on {band_label}"), Color32::from_gray(130))
+    } else {
+        ("Worked before, but not on this band".to_string(), Color32::from_gray(150))
+    };
+    ui.label(RichText::new(worked).size(12.0).color(col));
+
+    if let Some(target) = d.cq_to.as_deref() {
+        ui.label(
+            RichText::new(if cq_for_us {
+                format!("Calling CQ {target} — that includes you")
+            } else {
+                format!("Calling CQ {target} — not aimed at you")
+            })
+            .size(11.5)
+            .color(if cq_for_us { crate::theme::GREEN } else { dim }),
+        );
+    }
+    if queued {
+        ui.label(RichText::new("In the call queue").size(11.5).color(crate::theme::GREEN));
+    }
+    ui.label(
+        RichText::new(format!("{:+} dB · {:.0} Hz · DT {:+.1} s", d.snr_db, d.audio_hz, d.dt))
+            .size(11.0)
+            .monospace()
+            .color(dim),
+    );
 }
 
 /// Colour a decode's SNR: green for strong, cyan mid, dimmed for weak.
