@@ -36,7 +36,16 @@ const LAYERS: [(u32, &str, &str); 11] = [
     ),
 ];
 
+/// How often the view redraws when nothing is happening to it.
+///
+/// This is a clock, not a document: the Earth turns, the terminator moves, the
+/// Moon goes round and the QSO arcs follow the contacts. It has to keep running
+/// whether or not the pointer is over it and whether or not the window has
+/// focus — a frozen orrery in the corner of the screen is worse than none.
+const IDLE_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+
 pub fn ui(ui: &mut egui::Ui, st: &mut SolarUi) {
+    ui.ctx().request_repaint_after(IDLE_FRAME);
     // Take a snapshot of the feed's data for this frame. Cloning the `Arc`
     // first means the guard's lifetime is not tied to `st`, which is borrowed
     // mutably by every module below.
