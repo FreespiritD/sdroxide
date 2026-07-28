@@ -369,6 +369,10 @@ pub struct SdroxideApp {
     awards_band: String,
     /// Cached award tally, keyed by (log length, band filter).
     awards_cache: Option<(usize, String, sdroxide_types::Awards)>,
+    /// The same tally placed on the globe for the 3D view's award layer, keyed
+    /// the same way. Shared rather than copied: it is three hundred entities
+    /// and the window republishes it every frame.
+    awards_heat: Option<(usize, String, Arc<Vec<sdroxide_types::EntitySlot>>)>,
     /// Cached set of worked DXCC entity names, keyed by log length (for the
     /// "new entity" spot badge).
     worked_entities_cache: Option<(usize, std::collections::HashSet<String>)>,
@@ -618,6 +622,7 @@ impl SdroxideApp {
             show_awards: false,
             awards_band: String::new(),
             awards_cache: None,
+            awards_heat: None,
             worked_entities_cache: None,
             log_index_cache: None,
             help: crate::help::Help::default(),
@@ -1196,6 +1201,27 @@ impl SdroxideApp {
             let awards = sdroxide_types::compute_awards(&self.qso_log, filter, None);
             self.awards_cache = Some((len, band, awards));
         }
+    }
+
+    /// Award coverage placed on the globe, for the 3D view's award layer. Built
+    /// from the same tally the dashboard shows and cached the same way, so the
+    /// two can never tell different stories about the same log.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn award_heat(&mut self) -> Arc<Vec<sdroxide_types::EntitySlot>> {
+        let len = self.qso_log.len();
+        let band = self.awards_band.clone();
+        let stale =
+            self.awards_heat.as_ref().map(|(l, b, _)| *l != len || *b != band).unwrap_or(true);
+        if stale {
+            self.ensure_awards();
+            let slots = self
+                .awards_cache
+                .as_ref()
+                .map(|(_, _, a)| sdroxide_types::entity_coverage(a))
+                .unwrap_or_default();
+            self.awards_heat = Some((len, band, Arc::new(slots)));
+        }
+        Arc::clone(&self.awards_heat.as_ref().expect("just filled").2)
     }
 
     /// The awards dashboard: DXCC / WAS / WAZ / grid counts (worked vs
@@ -7537,7 +7563,10 @@ impl eframe::App for SdroxideApp {
         {
             let grid = self.my_grid();
             let traffic = self.digi_traffic(ctx.input(|i| i.time));
-            self.solar.viewport(&ctx, &grid, traffic);
+            // Only while the window is open: walking the whole logbook is not
+            // free, and the closed window has nothing to paint it on.
+            let awards = if self.solar.open { self.award_heat() } else { Default::default() };
+            self.solar.viewport(&ctx, &grid, traffic, awards);
             self.view.solar3d = self.solar.persisted();
         }
 

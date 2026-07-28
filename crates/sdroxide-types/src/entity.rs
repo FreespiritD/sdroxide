@@ -22,6 +22,18 @@ pub struct EntityInfo {
     pub continent: &'static str,
 }
 
+/// A DXCC entity as the country file lists it: its name, and where on the
+/// planet it is. The position is the entity's nominal centre — good enough to
+/// put a marker on a globe, and the only thing it is ever used for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EntityPlace {
+    pub name: &'static str,
+    pub lat: f64,
+    pub lon: f64,
+    pub cq_zone: u8,
+    pub continent: &'static str,
+}
+
 struct Pfx {
     key: &'static str,
     ent: usize,
@@ -33,6 +45,8 @@ struct Pfx {
 struct Cty {
     /// Entity display names, indexed by `Pfx::ent`.
     entities: Vec<&'static str>,
+    /// The same entities, placed — parallel to `entities`.
+    places: Vec<EntityPlace>,
     /// Prefixes bucketed by first byte, each bucket sorted longest-first.
     by_first: HashMap<u8, Vec<Pfx>>,
     /// Exact full-call overrides (the `=CALL` entries).
@@ -46,6 +60,7 @@ fn cty() -> &'static Cty {
 
 fn parse() -> Cty {
     let mut entities: Vec<&'static str> = Vec::new();
+    let mut places: Vec<EntityPlace> = Vec::new();
     let mut by_first: HashMap<u8, Vec<Pfx>> = HashMap::new();
     let mut exact: HashMap<&'static str, Pfx> = HashMap::new();
 
@@ -67,8 +82,13 @@ fn parse() -> Cty {
         let cq: u8 = fields[1].trim().parse().unwrap_or(0);
         let itu: u8 = fields[2].trim().parse().unwrap_or(0);
         let cont = fields[3].trim();
+        // cty.dat's longitude is west-positive, the opposite of every other
+        // longitude in this program.
+        let lat: f64 = fields[4].trim().parse().unwrap_or(0.0);
+        let lon: f64 = fields[5].trim().parse().map(|w: f64| -w).unwrap_or(0.0);
         let ent_idx = entities.len();
         entities.push(name);
+        places.push(EntityPlace { name, lat, lon, cq_zone: cq, continent: cont });
         // Parse the comma-separated prefix list from the continuation lines
         // in place (each token borrows the 'static file) until one ends ';'.
         i += 1;
@@ -111,7 +131,14 @@ fn parse() -> Cty {
     for v in by_first.values_mut() {
         v.sort_by(|a, b| b.key.len().cmp(&a.key.len()));
     }
-    Cty { entities, by_first, exact }
+    Cty { entities, places, by_first, exact }
+}
+
+/// Every DXCC entity in the country file, placed. The list a "what have I not
+/// worked yet" view has to be drawn against: only knowing the whole target set
+/// makes the gaps in a log visible.
+pub fn all_entities() -> &'static [EntityPlace] {
+    &cty().places
 }
 
 /// Parse one cty.dat prefix token: an optional leading `=` (exact call), the
@@ -242,6 +269,25 @@ mod tests {
         assert_eq!(resolve_callsign("DL/W1AW").unwrap().name, "Fed. Rep. of Germany");
         // Pure suffixes are ignored.
         assert_eq!(resolve_callsign("G0ABC/P").unwrap().name, "England");
+    }
+
+    /// The placed list is what the award heat map is drawn from, so it has to
+    /// cover the whole country file and land in the right hemispheres.
+    #[test]
+    fn every_entity_is_placed() {
+        let all = all_entities();
+        assert!(all.len() > 300, "only {} entities in the country file", all.len());
+        for e in all {
+            assert!((-90.0..=90.0).contains(&e.lat), "{} at latitude {}", e.name, e.lat);
+            assert!((-180.0..=180.0).contains(&e.lon), "{} at longitude {}", e.name, e.lon);
+        }
+        let find = |name: &str| all.iter().find(|e| e.name == name).expect(name);
+        // cty.dat stores west-positive longitudes; ours are east-positive, so
+        // getting this backwards would put every American entity in Asia.
+        let de = find("Fed. Rep. of Germany");
+        assert!(de.lat > 45.0 && de.lon > 5.0 && de.lon < 20.0, "Germany at {},{}", de.lat, de.lon);
+        let us = find("United States");
+        assert!(us.lon < -60.0 && us.lon > -130.0, "the USA at longitude {}", us.lon);
     }
 
     #[test]

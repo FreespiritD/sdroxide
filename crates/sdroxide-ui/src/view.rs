@@ -67,6 +67,13 @@ pub mod solar_layer {
     pub const AURORA: u32 = 1 << 9;
     /// The other planets, their moons and their ring systems.
     pub const PLANETS: u32 = 1 << 10;
+    /// Award coverage: which DXCC entities are still missing from the log.
+    ///
+    /// Deliberately absent from [`ALL`], and so off until it is asked for: it
+    /// puts a marker on all three hundred-odd DXCC entities, which is a study
+    /// aid rather than something to leave switched on over the orrery.
+    pub const AWARDS: u32 = 1 << 11;
+    /// Every layer that is on by default.
     pub const ALL: u32 =
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS | AURORA | PLANETS;
     /// Values `ALL` has had in earlier versions. A stored mask equal to one of

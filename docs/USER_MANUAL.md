@@ -1566,7 +1566,9 @@ Switching the `QSO` layer off leaves AUTO on its normal loop.
 **Layers** — `ORBITS` (orbital paths, sampled from the real ephemeris, so they
 are the true eccentric orbits), `PLANETS`, `CME`, `SPOTS`, `FLARES`, `GRID` (the
 solar rotation axis, equator and heliographic parallels), `LABELS`, `STARS`,
-`QSO`, `SATS` and `AURORA`.
+`QSO`, `SATS`, `AURORA` and `AWARDS`. All but `AWARDS` are on to begin with —
+that one puts a marker on all three hundred-odd DXCC entities, so it waits until
+you ask for it.
 
 **The PLANETS layer** adds the rest of the solar system: the seven other
 planets, eighteen major moons, and Saturn's and Uranus's rings. Names are shown
@@ -1709,6 +1711,21 @@ Wound back off `LIVE`, the white "decoded just now" dots go away: what is on the
 globe then is the hour being replayed, not the present, and the two are not
 mixed. The history is kept only while sdroxide runs, so a fresh start begins
 with an empty hour that fills as the decodes come in.
+
+**The AWARDS layer** paints your logbook's DXCC coverage on the Earth as a map
+of what is *missing*. Every entity in the bundled country file gets a marker at
+its nominal centre: orange and slowly breathing where you have never worked it,
+amber where you have worked it but no QSL has come back, and a dim green dot
+once one has. The gaps are what stands out — an evening's chase has somewhere to
+aim. A key in the bottom-right corner counts the three states.
+
+It follows the band filter in the **AWARDS** window
+([§9.4](#94-award-tracking)), so setting that to `20m` repaints the globe as
+"what am I still missing on twenty". The layer needs the Earth to fill a fair
+part of the view before it draws — three hundred markers on a planet a few
+pixels across is noise, not information — and it is off by default. In the
+browser tab it is absent entirely: the logbook lives in the main window, and the
+relay carries live data rather than your records.
 
 **Sun** — which SDO product wraps the Sun:
 
@@ -2001,6 +2018,23 @@ though a lookup adds exact zones and state. A QSO counts as *confirmed* once any
 of LoTW, eQSL or a paper card is received for it. The same entity resolution
 flags **new** DXCC entities in the SPOTS list, so you can spot an all-time-new
 one at a glance.
+
+**Nothing here is ever reset**, and there is no control to reset it: the tally is
+recomputed from the logbook every time it is shown, so it is only ever a
+statement about the log as it stands. Delete a QSO and the entity it brought in
+goes with it; import an ADIF and its entities appear. There is no per-year or
+per-season rollover either — DXCC, WAS, WAZ and grids are all-time awards. The
+band filter is the only thing that narrows what is counted, and it is a view, not
+a state.
+
+**On the globe** — the 3D view's `AWARDS` layer
+([§6](#6-solar-system-3d-view)) paints the same tally on the Earth as a "what am
+I still missing" heat map: every DXCC entity in the country file gets a marker at
+its nominal centre, orange and breathing where you have never worked it, amber
+where you have but it is unconfirmed, and a dim green dot once a QSL has come
+back. A key in the bottom-right corner gives the counts. It follows the same band
+filter as this window, so switching to `20m` here repaints the globe as "what is
+missing on twenty".
 
 ### 9.5 FreeDV Reporter (qso.freedv.org)
 

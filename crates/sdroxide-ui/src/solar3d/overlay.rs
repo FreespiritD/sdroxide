@@ -11,7 +11,7 @@ use crate::theme;
 use crate::view::solar_layer as layer;
 
 /// Layer chips, in bar order.
-const LAYERS: [(u32, &str, &str); 11] = [
+const LAYERS: [(u32, &str, &str); 12] = [
     (layer::ORBITS, "ORBITS", "Orbital paths"),
     (
         layer::PLANETS,
@@ -33,6 +33,14 @@ const LAYERS: [(u32, &str, &str); 11] = [
         "AURORA",
         "The auroral oval from NOAA's OVATION model, drawn as emission shells at their real \
          altitudes, with the equatorward edge of the 10 % contour marked on the surface",
+    ),
+    (
+        layer::AWARDS,
+        "AWARDS",
+        "Award coverage: every DXCC entity painted by what your logbook is still missing. \
+         Orange burns where you have never worked the entity, amber where you have but it is \
+         unconfirmed, dim green where a QSL has come back. Follows the band filter in the \
+         AWARDS window.",
     ),
 ];
 
@@ -154,6 +162,12 @@ fn target_button(ui: &mut egui::Ui, st: &mut SolarUi) {
 fn layers_module(ui: &mut egui::Ui, st: &mut SolarUi) {
     chrome::module(ui, "Layers", 594.0, |ui| {
         for (bit, label, hint) in LAYERS {
+            // The award layer has nothing to paint without a logbook to paint
+            // it from — the browser tab has none — and a chip that provably
+            // does nothing is worse than no chip.
+            if bit == layer::AWARDS && st.awards.is_empty() {
+                continue;
+            }
             if chrome::chip(ui, st.layer(bit), label).on_hover_text(hint).clicked() {
                 st.toggle_layer(bit);
             }
@@ -399,6 +413,7 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     let below = weather_panel(ui, st, data, rect, sim_now as i64);
     aurora_panel(ui, st, data, rect, below, sim_now as i64);
     info_card(ui, st, data, rect, sim_now);
+    award_panel(ui, st, rect);
     impact_banner(ui, data, rect, sim_now as i64);
     pass_window(ui, st, data, sim_now);
 
@@ -1188,6 +1203,57 @@ fn info_card(
     for g in galleys {
         let dy = g.size().y + 2.0;
         ui.painter().galley(egui::pos2(card.left() + 10.0, y), g, theme::TEXT);
+        y += dy;
+    }
+}
+
+/// The award layer's key, bottom right: what each colour on the globe means,
+/// and how many entities are in each state.
+///
+/// A heat map with no legend is decoration. This one is small, and it only
+/// exists while the layer it explains is switched on.
+fn award_panel(ui: &egui::Ui, st: &SolarUi, rect: egui::Rect) {
+    if !st.layer(layer::AWARDS) || st.awards.is_empty() {
+        return;
+    }
+    let (missing, worked, confirmed) = sdroxide_types::coverage_counts(&st.awards);
+    let rows = [
+        ("missing", missing, egui::Color32::from_rgb(0xff, 0x5a, 0x28)),
+        ("worked", worked, theme::YELLOW),
+        ("confirmed", confirmed, theme::GREEN),
+    ];
+
+    let p = ui.painter();
+    let font = egui::FontId::proportional(11.5);
+    let cap = egui::FontId::proportional(9.5);
+    let galleys: Vec<_> = rows
+        .iter()
+        .map(|(label, n, _)| p.layout_no_wrap(format!("{label}  {n}"), font.clone(), theme::TEXT))
+        .collect();
+    let title = p.layout_no_wrap("DXCC COVERAGE".into(), cap, theme::CYAN_DIM);
+
+    const SWATCH: f32 = 9.0;
+    let w = galleys.iter().map(|g| g.size().x).fold(title.size().x, f32::max) + SWATCH + 26.0;
+    let h = galleys.iter().map(|g| g.size().y + 3.0).sum::<f32>() + title.size().y + 18.0;
+    let panel = egui::Rect::from_min_size(
+        egui::pos2(rect.right() - w - 12.0, rect.bottom() - h - 12.0),
+        egui::vec2(w, h),
+    );
+    if !rect.contains_rect(panel) {
+        return; // too small a window to be worth crowding
+    }
+    p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
+    chrome::paint_cut_border(p, panel, theme::LINE_LIT, egui::Color32::TRANSPARENT);
+
+    let mut y = panel.top() + 7.0;
+    let x = panel.left() + 10.0;
+    let title_h = title.size().y;
+    p.galley(egui::pos2(x, y), title, theme::CYAN_DIM);
+    y += title_h + 4.0;
+    for (g, (_, _, color)) in galleys.into_iter().zip(rows) {
+        let dy = g.size().y + 3.0;
+        p.circle_filled(egui::pos2(x + SWATCH * 0.5, y + g.size().y * 0.5), SWATCH * 0.42, color);
+        p.galley(egui::pos2(x + SWATCH + 8.0, y), g, theme::TEXT);
         y += dy;
     }
 }

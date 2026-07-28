@@ -5,6 +5,7 @@
 
 use eframe::egui::Color32;
 use sdroxide_solar::{AuroraOval, SolarData, aurora, ephem};
+use sdroxide_types::Coverage;
 
 use super::camera::Camera;
 use super::math::{M4, V3, v3};
@@ -485,6 +486,9 @@ pub fn build(
         grid(&mut s, &b);
     }
     markers(&mut s, st, &b, &cam);
+    if st.layer(layer::AWARDS) {
+        award_heat(&mut s, st, &b, &cam, anim_t);
+    }
     if st.layer(layer::QSO) {
         digi_traffic(&mut s, st, &b, &cam, unix_s, anim_t);
     }
@@ -1355,6 +1359,74 @@ fn lapse_arcs(
 /// What a decode's arc has cooled to at the tail of the trail.
 const LAPSE_OLD: Color32 = Color32::from_rgb(0x5a, 0x3c, 0xa8);
 
+/// Award coverage: every DXCC entity, painted by what the logbook is missing.
+///
+/// A heat map of absence. An entity never worked burns orange-red and breathes;
+/// one worked but unconfirmed is a quiet amber ring; a confirmed one is a dim
+/// green dot that stays out of the way. Read from orbit, the hot patches are
+/// where the log has holes — which is the question this layer answers, and the
+/// reason the confirmed ones are drawn faintest rather than brightest.
+///
+/// The positions are cty.dat's nominal entity centres, so this is "the entity
+/// is around there", not a border map. For an award chase that is exactly the
+/// resolution wanted: the target is the entity, not a spot inside it.
+fn award_heat(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, anim_t: f32) {
+    if st.awards.is_empty() {
+        return;
+    }
+    let earth_px = cam.pixels_for(b.earth, b.earth_r);
+    // A marker per entity only means something once the Earth is big enough to
+    // place them on — and there are three hundred of them, so this layer needs
+    // more room than a single QTH ring does before it is worth drawing.
+    let fade = ((earth_px - 40.0) / 120.0).clamp(0.0, 1.0);
+    if fade <= 0.0 {
+        return;
+    }
+    let (ex, ey, ez) = b.earth_basis;
+    let on_earth = |lat: f64, lon: f64, lift: f32| {
+        let d = ephem::geodetic_to_body(lat, lon);
+        b.earth + (ex * d.x as f32 + ey * d.y as f32 + ez * d.z as f32) * (b.earth_r * lift)
+    };
+    // One slow breath across the whole layer, so the missing entities read as
+    // live heat rather than as a static scatter of dots.
+    let beat = 1.0 + 0.18 * (anim_t * 1.6).sin();
+
+    for slot in st.awards.iter() {
+        let (color, size, glow) = match slot.coverage {
+            Coverage::Missing => (AWARD_MISSING, 7.0 * beat, Some(22.0 * beat)),
+            Coverage::Worked => (theme::YELLOW, 5.0, None),
+            Coverage::Confirmed => (theme::GREEN, 3.5, None),
+        };
+        let alpha = match slot.coverage {
+            Coverage::Missing => 0.95,
+            Coverage::Worked => 0.7,
+            Coverage::Confirmed => 0.45,
+        };
+        if let Some(g) = glow {
+            s.sprites.push(SpriteInst {
+                center: on_earth(slot.lat, slot.lon, 1.01).arr(),
+                size_px: g.min(earth_px * 0.5),
+                color: lin(color, 0.3 * fade),
+                params: [SPRITE_GLOW, 0.0, 0.0, 0.0],
+            });
+        }
+        s.sprites.push(SpriteInst {
+            center: on_earth(slot.lat, slot.lon, 1.012).arr(),
+            size_px: size.min(earth_px * 0.25),
+            color: lin(color, alpha * fade),
+            params: [
+                if slot.coverage == Coverage::Confirmed { SPRITE_DOT } else { SPRITE_RING },
+                0.0,
+                0.0,
+                0.0,
+            ],
+        });
+    }
+}
+
+/// The heat of an entity that has never been worked.
+const AWARD_MISSING: Color32 = Color32::from_rgb(0xff, 0x5a, 0x28);
+
 /// Blend two palette colours in sRGB, `t` = 1 giving `b`.
 fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
@@ -2023,6 +2095,76 @@ mod tests {
         // The live three are gone; the head sits on the ten-minute-old decode,
         // with the one from fifty minutes ago still outside the trail.
         assert_eq!(dots(&st), 1 + 1);
+    }
+
+    /// The award layer is a map of what is *missing*, so an unworked entity has
+    /// to be the loudest thing on it and a confirmed one the quietest.
+    #[test]
+    fn the_award_layer_burns_hottest_where_the_log_has_holes() {
+        let now = 1_784_937_600.0;
+        let mut st = ui();
+        st.view.focus = Focus::Earth.to_u8();
+        st.view.dist = 0.06; // close enough for a per-entity marker to mean something
+        st.view.layers |= layer::AWARDS;
+        let slot = |name, lat, lon, coverage| sdroxide_types::EntitySlot {
+            name,
+            lat,
+            lon,
+            continent: "EU",
+            coverage,
+        };
+        st.awards = std::sync::Arc::new(vec![
+            slot("Mongolia", 46.0, 104.0, Coverage::Missing),
+            slot("Fed. Rep. of Germany", 51.0, 10.0, Coverage::Worked),
+            slot("Japan", 36.0, 138.0, Coverage::Confirmed),
+        ]);
+
+        let s = build(&st, None, now, [1600.0, 900.0], 0.0);
+        // The missing one gets a glow the others do not.
+        let glows = s.sprites.iter().filter(|sp| sp.params[0] == SPRITE_GLOW).count();
+        let quiet = {
+            let mut st = ui();
+            st.view.focus = Focus::Earth.to_u8();
+            st.view.dist = 0.06;
+            build(&st, None, now, [1600.0, 900.0], 0.0)
+        };
+        let base_glows = quiet.sprites.iter().filter(|sp| sp.params[0] == SPRITE_GLOW).count();
+        assert_eq!(glows, base_glows + 1, "only the missing entity should glow");
+
+        // Three markers, and the missing one is the biggest.
+        let added = &s.sprites[quiet.sprites.len()..];
+        assert_eq!(added.len() - 1, 3, "one marker per entity, plus the glow");
+        // Emitted in list order: the missing entity's glow, then a marker each.
+        let sizes: Vec<f32> = added.iter().skip(1).map(|sp| sp.size_px).collect();
+        assert!(
+            sizes[0] > sizes[1] && sizes[1] > sizes[2],
+            "sizes do not rank missing > worked > confirmed: {sizes:?}"
+        );
+
+        // …and switching the layer off takes all of it away again.
+        st.view.layers &= !layer::AWARDS;
+        let off = build(&st, None, now, [1600.0, 900.0], 0.0);
+        assert_eq!(off.sprites.len(), quiet.sprites.len());
+    }
+
+    /// Three hundred markers on a globe a few pixels across is noise, so the
+    /// layer waits until the Earth is worth painting them on.
+    #[test]
+    fn the_award_layer_stays_off_a_distant_earth() {
+        let mut st = ui();
+        st.view.layers |= layer::AWARDS;
+        st.awards = std::sync::Arc::new(vec![sdroxide_types::EntitySlot {
+            name: "Mongolia",
+            lat: 46.0,
+            lon: 104.0,
+            continent: "AS",
+            coverage: Coverage::Missing,
+        }]);
+        // The default view frames the whole Earth orbit: the planet is a dot.
+        let far = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        st.awards = Default::default();
+        let none = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        assert_eq!(far.sprites.len(), none.sprites.len());
     }
 
     /// A synthetic oval: a solid band from 60° to 75° in both hemispheres, so

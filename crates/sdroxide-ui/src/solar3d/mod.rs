@@ -128,8 +128,15 @@ impl Solar3d {
     }
 
     /// Emit the window for this frame (or not, when closed). Call once per root
-    /// pass, after the main UI. `grid` is the operator's Maidenhead locator.
-    pub fn viewport(&mut self, ctx: &egui::Context, grid: &str, traffic: DigiTraffic) {
+    /// pass, after the main UI. `grid` is the operator's Maidenhead locator and
+    /// `awards` the log's DXCC coverage for the "what is still missing" layer.
+    pub fn viewport(
+        &mut self,
+        ctx: &egui::Context,
+        grid: &str,
+        traffic: DigiTraffic,
+        awards: Arc<Vec<sdroxide_types::EntitySlot>>,
+    ) {
         if !self.open {
             // Dropping the feed disconnects the worker's channel, which is how
             // it learns to stop. Closing the window therefore ends all network
@@ -155,6 +162,7 @@ impl Solar3d {
             let mut st = self.lock();
             st.set_qth(grid);
             st.digi = traffic;
+            st.awards = awards;
         }
 
         let state = Arc::clone(&self.state);

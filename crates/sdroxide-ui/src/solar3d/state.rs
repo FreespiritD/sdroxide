@@ -145,6 +145,13 @@ pub struct SolarUi {
     pub data: Option<Arc<Mutex<SolarData>>>,
     /// FT8/FT4 traffic to plot on the globe.
     pub digi: DigiTraffic,
+    /// Award coverage to paint: every DXCC entity, placed, and how far along it
+    /// is in the logbook. Republished by the host whenever the log changes.
+    ///
+    /// Empty in the browser tab: the logbook lives in the main window, and the
+    /// `/solar-ws` relay carries live data rather than the operator's records.
+    /// The layer chip goes away with it rather than pretending to paint.
+    pub awards: std::sync::Arc<Vec<sdroxide_types::EntitySlot>>,
     /// Where the activity time-lapse's replay head sits, in seconds before now.
     /// Zero is live, which is where it starts every run: a globe that came back
     /// up showing forty minutes ago would read as a stalled feed.
@@ -219,6 +226,7 @@ impl SolarUi {
             sim_offset_s: 0.0,
             data: None,
             digi: DigiTraffic::default(),
+            awards: Default::default(),
             lapse_back_s: 0.0,
             lapse_playing: false,
             selected_sat: None,
