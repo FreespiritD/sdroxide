@@ -272,15 +272,35 @@ pub struct HpsdrConfig {
     pub selected_ip: Option<String>,
     /// DDC sample rate in Hz (48k, 96k, 192k, 384k, 768k, 1536k).
     pub sample_rate_hz: f64,
+    /// Front-end LNA gain in dB applied when the radio is opened, on boards
+    /// that have one (Hermes-Lite 2: −12…+48 dB). Adjust it live in
+    /// Settings → Device; this is the value the rig starts at.
+    #[serde(default = "HpsdrConfig::default_lna_gain_db")]
+    pub lna_gain_db: f64,
 }
 
 impl Default for HpsdrConfig {
     fn default() -> Self {
-        HpsdrConfig { manual_ip: None, selected_ip: None, sample_rate_hz: 1_536_000.0 }
+        HpsdrConfig {
+            manual_ip: None,
+            selected_ip: None,
+            sample_rate_hz: 1_536_000.0,
+            lna_gain_db: Self::default_lna_gain_db(),
+        }
     }
 }
 
 impl HpsdrConfig {
+    /// Range of the Hermes-Lite 2 front-end gain, in dB.
+    pub const LNA_GAIN_MIN_DB: f64 = -12.0;
+    pub const LNA_GAIN_MAX_DB: f64 = 48.0;
+
+    /// Mid-scale default: sensitive enough on a quiet band without clipping the
+    /// ADC on a real antenna.
+    pub fn default_lna_gain_db() -> f64 {
+        20.0
+    }
+
     /// Supported DDC sample rates (Hz) for Protocol 2 boards.
     pub const SAMPLE_RATES: [f64; 6] =
         [48_000.0, 96_000.0, 192_000.0, 384_000.0, 768_000.0, 1_536_000.0];

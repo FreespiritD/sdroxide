@@ -6010,7 +6010,7 @@ fn settings_hpsdr_tab(
                         ui.label(RichText::new("no devices — press Discover").weak());
                     }
                     for d in devices {
-                        // Only Protocol 2 devices are selectable; P1 (e.g. HL2) is shown but greyed.
+                        // Both protocols are drivable; anything else is greyed out.
                         if d.supported() {
                             let sel = cfg.hpsdr.selected_ip.as_deref() == Some(d.ip.as_str());
                             if ui.selectable_label(sel, d.label()).clicked() {
@@ -6054,6 +6054,22 @@ fn settings_hpsdr_tab(
                 }
             }
         });
+        ui.end_row();
+
+        ui.label("LNA gain").on_hover_text(
+            "Front-end gain of a Hermes-Lite 2, applied when the radio is opened. \
+             Too high clips the ADC and the whole band looks distorted; too low and the \
+             receiver goes deaf. Adjust it live on the Device tab.",
+        );
+        crate::chrome::slider(
+            ui,
+            Slider::new(
+                &mut cfg.hpsdr.lna_gain_db,
+                HpsdrConfig::LNA_GAIN_MIN_DB..=HpsdrConfig::LNA_GAIN_MAX_DB,
+            )
+            .step_by(1.0)
+            .suffix(" dB"),
+        );
         ui.end_row();
     });
     ui.add_space(6.0);

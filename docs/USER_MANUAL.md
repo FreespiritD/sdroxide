@@ -1096,13 +1096,21 @@ With the **HPSDR (network)** interface, sdroxide reaches an OpenHPSDR
 involved:
 
 - **Devices / Discover** — scan the local network for HPSDR devices and pick one
-  from the list. Protocol 2 devices are selectable; Protocol 1-only devices
-  (such as the Hermes Lite 2) are listed greyed-out.
+  from the list. Both protocols are driven: Protocol 1 (the Metis framing used
+  by the Hermes Lite 2 and the older Metis/Hermes boards) and Protocol 2. Which
+  one a board speaks is detected when the connection opens.
 - **Manual IP** — connect directly to a known address (for example
   `192.168.1.50`), skipping discovery. A manual IP overrides whatever discovery
   found.
 - **Sample rate** — the DDC receive rate: 48, 96, 192, 384, 768, or 1536 kHz.
-  Wider rates give a wider panadapter span at more CPU/network cost.
+  Protocol 1 boards top out at 384 kHz. Wider rates give a wider panadapter span
+  at more CPU/network cost.
+- **LNA gain** — the front-end gain of a Hermes Lite 2, −12 to +48 dB, applied
+  when the radio is opened. It is the only analogue gain the board has: too high
+  and the ADC clips, which smears spurious signals across the whole band; too
+  low and the receiver goes deaf. Start around +20 dB and work from there. The
+  same control appears on the **Device** tab, where moving it retunes the board
+  live without reconnecting.
 
 Receive is wideband IQ, so the full panadapter and the skimmers work.
 

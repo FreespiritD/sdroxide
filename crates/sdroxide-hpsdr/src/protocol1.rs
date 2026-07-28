@@ -7,29 +7,44 @@
 //! (C0..C4) + 504 bytes of data (63 samples × 8 bytes for one receiver).
 //!
 //! - RX (endpoint 6, radio→host): each sample is I (24-bit signed big-endian) +
-//!   Q (24-bit) + mic (16-bit) = 8 bytes.
+//!   Q (24-bit) + mic (16-bit) = 8 bytes. EP6 arrives at the DDC rate.
 //! - TX (endpoint 2, host→radio): each sample is L + R audio (16-bit) + TX I +
 //!   TX Q (16-bit signed) = 8 bytes. We send zero audio and the modulator's I/Q.
+//!   EP2 is a **fixed 48 kHz** stream in both directions of the protocol —
+//!   the radio drains it at 48 ksps whatever the DDC rate is, so it must be
+//!   paced by the clock, not by how fast EP6 comes back.
 //!
 //! The C0..C4 registers are round-robined on outgoing frames. C0 bit 0 is MOX
 //! (PTT); C0 bits 7..1 are the register address. Frequencies are the actual
 //! value in **Hz** (32-bit big-endian in C1..C4), not a phase word.
 //!
+//! Incoming EP6 frames carry C&C the other way: C0 bits 2..0 are the hardware
+//! PTT/dash/dot lines and bits 7..3 select which sensor set C1..C4 hold.
+//!
 //! Offsets follow the g0orx/rustyHPSDR reference and the OpenHPSDR/Hermes-Lite 2
 //! protocol docs; verify against hardware before trusting on-air behavior.
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use crate::net::{Ctrl, RxStats, ThreadCtx, WATCHDOG, hex_head};
+use crate::net::{
+    Ctrl, RxStats, SeqTracker, ThreadCtx, board_has_lna_gain, hex_head, lna_gain_code, push_iq,
+};
 use crate::protocol2::be24_to_f32;
 
 const PORT: u16 = 1024;
 /// Samples per 512-byte OZY frame for one receiver (504 data bytes / 8).
 const SAMPLES_PER_FRAME: usize = 63;
+/// Sample-pairs carried by one datagram (two frames).
+const SAMPLES_PER_DATAGRAM: usize = SAMPLES_PER_FRAME * 2;
 /// Two frames per datagram → 126 sample-pairs = 252 interleaved floats.
-const FLOATS_PER_DATAGRAM: usize = SAMPLES_PER_FRAME * 2 * 2;
+const FLOATS_PER_DATAGRAM: usize = SAMPLES_PER_DATAGRAM * 2;
 const DATAGRAM_LEN: usize = 8 + 2 * 512;
+
+/// EP2 is a fixed 48 kHz stream, so one datagram is due every
+/// 126 / 48000 s = 2.625 ms no matter what the DDC rate is.
+const EP2_INTERVAL: Duration = Duration::from_nanos(2_625_000);
 
 /// C0 register bytes (address already shifted into bits 7..1; OR in the MOX
 /// bit 0). Values confirmed against the rustyHPSDR reference.
@@ -37,6 +52,13 @@ const CC_CONFIG: u8 = 0x00; // frame #1 of every datagram: C1[1:0]=rate, C4=dupl
 const CC_TX_FREQ: u8 = 0x02; // C1..C4 = TX NCO frequency (Hz)
 const CC_RX1_FREQ: u8 = 0x04; // C1..C4 = RX1 NCO frequency (Hz)
 const CC_DRIVE: u8 = 0x12; // C1 = TX drive level 0..255
+/// Register 0x0A. On a Hermes-Lite 2 its C4 is the AD9866 front-end gain:
+/// bit 6 marks the field valid, bits 5..0 are `dB + 12` (so 0 = −12 dB,
+/// 60 = +48 dB). Other Protocol 1 boards use this register for Alex and
+/// attenuator settings, so it is only ever sent to a Hermes-Lite.
+const CC_HL2_GAIN: u8 = 0x14;
+/// C4 bit that tells a Hermes-Lite the gain field below it is meaningful.
+const HL2_GAIN_VALID: u8 = 0x40;
 
 /// Fixed TX drive; the engine already scales the I/Q amplitude in software.
 const TX_DRIVE: u8 = 255;
@@ -65,13 +87,49 @@ fn config_cc(speed: u8, mox: u8) -> [u8; 5] {
     [CC_CONFIG | mox, speed, 0, 0, CONFIG_C4]
 }
 
-/// The rotating register (frame #2 of each datagram): TX freq → RX1 freq →
-/// drive, advancing one slot per datagram.
-fn rotating_cc(slot: u8, rx_freq: u32, tx_freq: u32, mox: u8) -> [u8; 5] {
-    match slot % 3 {
-        0 => freq_cc(CC_TX_FREQ, tx_freq, mox),
-        1 => freq_cc(CC_RX1_FREQ, rx_freq, mox),
-        _ => [CC_DRIVE | mox, TX_DRIVE, 0, 0, 0],
+/// Everything the rotating register slots need. `lna_gain` is `None` on boards
+/// whose register 0x14 we must not touch.
+#[derive(Clone, Copy)]
+struct Regs {
+    rx_freq: u32,
+    tx_freq: u32,
+    lna_gain: Option<f64>,
+    ptt: bool,
+}
+
+/// Rotating-register slots, sent one per datagram in frame #2. At the EP2 rate
+/// a full rotation takes ~10 ms, so a changed value is also queued as urgent
+/// (see [`Rotation::urge`]) rather than waiting its turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slot {
+    TxFreq,
+    RxFreq,
+    Drive,
+    LnaGain,
+}
+
+impl Regs {
+    /// The slots this board actually has, in rotation order.
+    fn slots(&self) -> &'static [Slot] {
+        if self.lna_gain.is_some() {
+            &[Slot::TxFreq, Slot::RxFreq, Slot::Drive, Slot::LnaGain]
+        } else {
+            &[Slot::TxFreq, Slot::RxFreq, Slot::Drive]
+        }
+    }
+
+    /// Encode one slot as its five C&C bytes, with the MOX bit riding along.
+    fn cc(&self, slot: Slot) -> [u8; 5] {
+        let mox = if self.ptt { 1 } else { 0 };
+        match slot {
+            Slot::TxFreq => freq_cc(CC_TX_FREQ, self.tx_freq, mox),
+            Slot::RxFreq => freq_cc(CC_RX1_FREQ, self.rx_freq, mox),
+            Slot::Drive => [CC_DRIVE | mox, TX_DRIVE, 0, 0, 0],
+            Slot::LnaGain => {
+                let code = lna_gain_code(self.lna_gain.unwrap_or(0.0));
+                [CC_HL2_GAIN | mox, 0, 0, 0, HL2_GAIN_VALID | code]
+            }
+        }
     }
 }
 
@@ -97,17 +155,9 @@ fn write_ozy_frame(frame: &mut [u8], cc: [u8; 5], tx_iq: &[f32]) {
 }
 
 /// Build an EP2 (host→radio) datagram: frame #1 is always the config register,
-/// frame #2 is the rotating register. Both frames also carry 63 TX samples.
-fn build_ep2(
-    seq: &mut u32,
-    slot: &mut u8,
-    speed: u8,
-    rx_freq: u32,
-    tx_freq: u32,
-    ptt: bool,
-    tx_iq: &[f32],
-) -> [u8; DATAGRAM_LEN] {
-    let mox = if ptt { 1 } else { 0 };
+/// frame #2 carries `cc` — the next rotating register. Both frames also carry
+/// 63 TX samples.
+fn build_ep2(seq: &mut u32, speed: u8, mox: u8, cc: [u8; 5], tx_iq: &[f32]) -> [u8; DATAGRAM_LEN] {
     let mut d = [0u8; DATAGRAM_LEN];
     d[0] = 0xEF;
     d[1] = 0xFE;
@@ -119,24 +169,88 @@ fn build_ep2(
     // Frame #1: config register + TX samples 0..63.
     write_ozy_frame(&mut d[8..520], config_cc(speed, mox), tx_iq);
     // Frame #2: rotating register + TX samples 63..126.
-    let cc = rotating_cc(*slot, rx_freq, tx_freq, mox);
-    *slot = slot.wrapping_add(1);
     let chunk = &tx_iq[(SAMPLES_PER_FRAME * 2).min(tx_iq.len())..];
     write_ozy_frame(&mut d[520..1032], cc, chunk);
     d
 }
 
-/// Decode an EP6 (radio→host) datagram, appending interleaved I,Q floats.
-/// Returns false if the datagram is not a valid EP6 frame.
-fn decode_ep6(d: &[u8], out: &mut Vec<f32>) -> bool {
-    if d.len() < DATAGRAM_LEN || d[0] != 0xEF || d[1] != 0xFE || d[2] != 0x01 || d[3] != 0x06 {
-        return false;
+/// Picks which rotating register frame #2 carries. Values the operator just
+/// changed jump the queue: at 381 datagrams/s a plain round-robin would take up
+/// to ~10 ms to reach the radio, which is felt as lag on the tuning knob.
+struct Rotation {
+    next: usize,
+    urgent: VecDeque<Slot>,
+}
+
+impl Rotation {
+    fn new() -> Self {
+        Rotation { next: 0, urgent: VecDeque::new() }
     }
+
+    /// Send `slot` on the next datagram (de-duplicated: a knob being turned
+    /// queues the same slot over and over).
+    fn urge(&mut self, slot: Slot) {
+        if !self.urgent.contains(&slot) {
+            self.urgent.push_back(slot);
+        }
+    }
+
+    fn take(&mut self, regs: &Regs) -> Slot {
+        if let Some(s) = self.urgent.pop_front() {
+            return s;
+        }
+        let slots = regs.slots();
+        let s = slots[self.next % slots.len()];
+        self.next = self.next.wrapping_add(1);
+        s
+    }
+}
+
+/// What an EP6 datagram told us besides I/Q.
+struct Ep6Info {
+    /// Datagram sequence number, for loss detection.
+    seq: u32,
+    /// The radio's own PTT line (hardware PTT, foot switch, mic button).
+    ptt: bool,
+    /// ADC clipped since the last report — the front-end gain is too high.
+    adc_overload: bool,
+    /// `(C1, C2, C3, C4)` of a status-set-0 frame: the firmware/gateware
+    /// version bytes. Their exact meaning is board-specific, so they are logged
+    /// raw rather than interpreted.
+    versions: Option<(u8, u8, u8, u8)>,
+}
+
+/// Decode the five C&C bytes at the head of a radio→host frame. C0 bits 2..0
+/// are the PTT/dash/dot lines; bits 7..3 select which sensor set C1..C4 carry.
+/// Only set 0 is interpreted here — it holds the ADC-overload flag and the
+/// version bytes, the two things a bring-up log needs. The power and voltage
+/// sets are board-specific and left to the caller's raw logging.
+fn decode_ep6_status(cc: &[u8], info: &mut Ep6Info) {
+    info.ptt |= cc[0] & 0x01 != 0;
+    if (cc[0] >> 3) & 0x1F == 0 {
+        info.adc_overload |= cc[1] & 0x01 != 0;
+        info.versions = Some((cc[1], cc[2], cc[3], cc[4]));
+    }
+}
+
+/// Decode an EP6 (radio→host) datagram, appending interleaved I,Q floats.
+/// Returns `None` if the datagram is not a valid EP6 frame.
+fn decode_ep6(d: &[u8], out: &mut Vec<f32>) -> Option<Ep6Info> {
+    if d.len() < DATAGRAM_LEN || d[0] != 0xEF || d[1] != 0xFE || d[2] != 0x01 || d[3] != 0x06 {
+        return None;
+    }
+    let mut info = Ep6Info {
+        seq: u32::from_be_bytes([d[4], d[5], d[6], d[7]]),
+        ptt: false,
+        adc_overload: false,
+        versions: None,
+    };
     for f in 0..2 {
         let frame = &d[8 + f * 512..8 + f * 512 + 512];
         if frame[0] != 0x7F || frame[1] != 0x7F || frame[2] != 0x7F {
             continue;
         }
+        decode_ep6_status(&frame[3..8], &mut info);
         for s in 0..SAMPLES_PER_FRAME {
             let base = 8 + s * 8;
             let i = be24_to_f32([frame[base], frame[base + 1], frame[base + 2]]);
@@ -145,7 +259,7 @@ fn decode_ep6(d: &[u8], out: &mut Vec<f32>) -> bool {
             out.push(q);
         }
     }
-    true
+    Some(info)
 }
 
 /// Metis start/stop command: `0xEF 0xFE 0x04 <run>` padded to 64 bytes. `run`
@@ -161,38 +275,52 @@ fn start_command(run: bool) -> [u8; 64] {
 
 /// Run the Protocol 1 network loop until told to shut down.
 pub(crate) fn run(ctx: ThreadCtx) {
-    let ThreadCtx { socket, radio, rate_hz, mut rx, mut tx, ctrl } = ctx;
+    let ThreadCtx { socket, radio, board, rate_hz, lna_gain_db, mut rx, mut tx, ctrl } = ctx;
     let dest = SocketAddr::new(radio, PORT);
     let speed = speed_code(rate_hz);
+    let has_lna = board_has_lna_gain(&board);
 
     let mut out_seq: u32 = 0;
-    let mut slot: u8 = 0;
-    let mut rx_freq: u32 = 7_100_000;
-    let mut tx_freq: u32 = 7_100_000;
-    let mut ptt = false;
+    let mut rot = Rotation::new();
+    let mut regs = Regs {
+        rx_freq: 7_100_000,
+        tx_freq: 7_100_000,
+        lna_gain: has_lna.then_some(lna_gain_db),
+        ptt: false,
+    };
 
     tracing::info!(
-        "HPSDR P1: stream starting to {dest} at {rate_hz:.0} Hz (speed code {speed}); \
-         priming registers then sending run command"
+        "HPSDR P1: stream starting to {dest} at {rate_hz:.0} Hz (speed code {speed}), \
+         EP2 at 48000 Hz; {}; priming registers then sending run command",
+        match regs.lna_gain {
+            Some(g) => format!("LNA gain {g:+.0} dB"),
+            None => format!("board \"{board}\" has no LNA gain register we can drive"),
+        }
     );
 
-    // Prime the config/frequency registers (a couple of full rotations), then
-    // start the EP6 I/Q stream — the order rustyHPSDR uses so the radio begins
-    // with the correct sample rate and NCO already loaded.
-    for _ in 0..6 {
-        let d = build_ep2(&mut out_seq, &mut slot, speed, rx_freq, tx_freq, ptt, &[]);
+    // Prime the registers — two full rotations so every slot lands, including
+    // the front-end gain — then start the EP6 I/Q stream. That order is the one
+    // rustyHPSDR uses, so the radio begins with its rate, NCO and gain loaded.
+    for _ in 0..(2 * regs.slots().len()) {
+        let cc = regs.cc(rot.take(&regs));
+        let d = build_ep2(&mut out_seq, speed, 0, cc, &[]);
         let _ = socket.send_to(&d, dest);
     }
     let _ = socket.send_to(&start_command(true), dest);
-    tracing::debug!("HPSDR P1: sent 6 priming EP2 datagrams + run command; awaiting EP6 stream");
+    tracing::debug!("HPSDR P1: sent priming EP2 datagrams + run command; awaiting EP6 stream");
 
     let mut buf = [0u8; 2048];
     let mut rx_scratch: Vec<f32> = Vec::with_capacity(FLOATS_PER_DATAGRAM);
     let mut tx_scratch: Vec<f32> = Vec::with_capacity(FLOATS_PER_DATAGRAM);
-    let mut last_send = Instant::now();
+    let mut next_ep2 = Instant::now();
     let mut stats = RxStats::new(1);
+    let mut seq_in = SeqTracker::new();
     let mut logged_first_rx = false;
+    let mut logged_versions = false;
     let mut warned_no_rx = false;
+    let mut radio_ptt = false;
+    let mut overloads: u64 = 0;
+    let mut last_overload_warn: Option<Instant> = None;
     let started = Instant::now();
 
     loop {
@@ -200,16 +328,32 @@ pub(crate) fn run(ctx: ThreadCtx) {
         while let Ok(msg) = ctrl.try_recv() {
             match msg {
                 Ctrl::RxFreq(hz) => {
-                    rx_freq = hz.max(0.0) as u32;
-                    tracing::debug!("HPSDR P1: RX NCO -> {rx_freq} Hz");
+                    regs.rx_freq = hz.max(0.0) as u32;
+                    rot.urge(Slot::RxFreq);
+                    tracing::debug!("HPSDR P1: RX NCO -> {} Hz", regs.rx_freq);
+                }
+                Ctrl::RxGain(db) => {
+                    if has_lna {
+                        regs.lna_gain = Some(db);
+                        rot.urge(Slot::LnaGain);
+                        tracing::debug!(
+                            "HPSDR P1: LNA gain -> {db:+.0} dB (code {})",
+                            lna_gain_code(db)
+                        );
+                    }
                 }
                 Ctrl::TxOn(hz) => {
-                    tx_freq = hz.max(0.0) as u32;
-                    ptt = true;
-                    tracing::info!("HPSDR P1: MOX on, TX NCO {tx_freq} Hz");
+                    regs.tx_freq = hz.max(0.0) as u32;
+                    regs.ptt = true;
+                    rot.urge(Slot::TxFreq);
+                    tracing::info!("HPSDR P1: MOX on, TX NCO {} Hz", regs.tx_freq);
                 }
                 Ctrl::TxOff => {
-                    ptt = false;
+                    regs.ptt = false;
+                    // Drop whatever the modulator left queued: it belongs to the
+                    // transmission that just ended, and playing it out at the
+                    // start of the next one would key up with a stale tail.
+                    while tx.pop().is_ok() {}
                     tracing::info!("HPSDR P1: MOX off");
                 }
                 Ctrl::Shutdown => {
@@ -221,14 +365,13 @@ pub(crate) fn run(ctx: ThreadCtx) {
         }
 
         // 2) One inbound datagram (EP6 RX I/Q).
-        let mut got_ep6 = false;
         match socket.recv_from(&mut buf) {
             Ok((n, _src)) => {
                 rx_scratch.clear();
-                if decode_ep6(&buf[..n], &mut rx_scratch) {
-                    got_ep6 = true;
+                if let Some(info) = decode_ep6(&buf[..n], &mut rx_scratch) {
                     let pairs = rx_scratch.len() / 2;
                     stats.on_iq(pairs);
+                    stats.on_lost(seq_in.observe(info.seq) as u64);
                     if !logged_first_rx {
                         logged_first_rx = true;
                         tracing::info!(
@@ -237,9 +380,40 @@ pub(crate) fn run(ctx: ThreadCtx) {
                             hex_head(&buf[..n], 8)
                         );
                     }
-                    for &s in &rx_scratch {
-                        let _ = rx.push(s);
+                    if let Some((c1, c2, c3, c4)) = info.versions
+                        && !logged_versions
+                    {
+                        logged_versions = true;
+                        tracing::info!(
+                            "HPSDR P1: radio status set 0 — C1 {c1:02X} C2 {c2:02X} \
+                             C3 {c3:02X} C4 {c4:02X} (firmware/gateware version bytes)"
+                        );
                     }
+                    if info.ptt != radio_ptt {
+                        radio_ptt = info.ptt;
+                        tracing::info!(
+                            "HPSDR P1: radio reports PTT {}",
+                            if radio_ptt { "closed" } else { "open" }
+                        );
+                    }
+                    // An overloaded ADC is the classic "the signal looks weird"
+                    // fault: everything intermodulates and the noise floor
+                    // jumps. Rate-limit the warning, it can fire every datagram.
+                    if info.adc_overload {
+                        overloads += 1;
+                        if last_overload_warn.is_none_or(|t| t.elapsed() >= Duration::from_secs(5))
+                        {
+                            last_overload_warn = Some(Instant::now());
+                            tracing::warn!(
+                                "HPSDR P1: ADC OVERLOAD reported by the radio ({overloads} so \
+                                 far). The front end is clipping — lower the {} gain in \
+                                 Settings → Device (currently {:+.0} dB).",
+                                crate::net::LNA_GAIN_ELEMENT,
+                                regs.lna_gain.unwrap_or(0.0),
+                            );
+                        }
+                    }
+                    push_iq(&mut rx, &rx_scratch, &mut stats);
                 } else {
                     stats.on_other();
                     if n >= 4 && buf[0] == 0xEF && buf[1] == 0xFE {
@@ -277,21 +451,36 @@ pub(crate) fn run(ctx: ThreadCtx) {
         }
         stats.tick();
 
-        // 3) Send one EP2 per received EP6 (paces TX to the sample rate); also on
-        //    a keep-alive tick so C&C keeps flowing when idle.
-        if got_ep6 || last_send.elapsed() >= WATCHDOG {
+        // 3) EP2 on its own 48 kHz clock — one datagram per 126 TX samples,
+        //    independent of the DDC rate. Pacing it off EP6 instead (which
+        //    arrives eight times as fast at 384 kHz) overruns the radio's TX
+        //    FIFO and plays the modulator's audio out at the wrong speed.
+        let now = Instant::now();
+        if now >= next_ep2 {
             tx_scratch.clear();
-            if ptt {
+            if regs.ptt {
+                // Whole I/Q pairs only, taken atomically: consuming an odd
+                // number of floats would leave the ring one slot out of step and
+                // swap I with Q from the next datagram on, inverting the
+                // transmitted sideband for the rest of the over.
                 while tx_scratch.len() < FLOATS_PER_DATAGRAM {
-                    match tx.pop() {
-                        Ok(v) => tx_scratch.push(v),
-                        Err(_) => break,
-                    }
+                    let Ok(pair) = tx.read_chunk(2) else { break };
+                    let (a, b) = pair.as_slices();
+                    tx_scratch.extend_from_slice(a);
+                    tx_scratch.extend_from_slice(b);
+                    pair.commit_all();
                 }
             }
-            let d = build_ep2(&mut out_seq, &mut slot, speed, rx_freq, tx_freq, ptt, &tx_scratch);
+            let cc = regs.cc(rot.take(&regs));
+            let mox = if regs.ptt { 1 } else { 0 };
+            let d = build_ep2(&mut out_seq, speed, mox, cc, &tx_scratch);
             let _ = socket.send_to(&d, dest);
-            last_send = Instant::now();
+            next_ep2 += EP2_INTERVAL;
+            // After a scheduler stall, resync instead of firing off the backlog
+            // in a burst the radio's FIFO would only drop.
+            if next_ep2 + EP2_INTERVAL < now {
+                next_ep2 = now + EP2_INTERVAL;
+            }
         }
     }
 }
@@ -335,22 +524,43 @@ mod tests {
             frame[11..14].copy_from_slice(&f32_to_be24(-0.25));
         }
         let mut out = Vec::new();
-        assert!(decode_ep6(&d, &mut out));
+        let info = decode_ep6(&d, &mut out).expect("valid EP6");
         // 2 frames × 63 samples × 2 floats.
         assert_eq!(out.len(), FLOATS_PER_DATAGRAM);
         assert!((out[0] - 0.5).abs() < 1e-4);
         assert!((out[1] + 0.25).abs() < 1e-4);
+        // All-zero C&C: no PTT, no overload, and status set 0 was seen.
+        assert!(!info.ptt);
+        assert!(!info.adc_overload);
+        assert_eq!(info.versions, Some((0, 0, 0, 0)));
+    }
+
+    #[test]
+    fn ep6_status_bits() {
+        let mut info = Ep6Info { seq: 0, ptt: false, adc_overload: false, versions: None };
+        // Status set 0, PTT closed, ADC overloaded, versions in C2..C4.
+        decode_ep6_status(&[0x01, 0x01, 0x11, 0x22, 0x33], &mut info);
+        assert!(info.ptt);
+        assert!(info.adc_overload);
+        assert_eq!(info.versions, Some((0x01, 0x11, 0x22, 0x33)));
+
+        // A different status set carries power/voltage, not versions: the
+        // overload flag and version bytes must not be read out of it.
+        let mut other = Ep6Info { seq: 0, ptt: false, adc_overload: false, versions: None };
+        decode_ep6_status(&[0x08, 0xFF, 0xFF, 0xFF, 0xFF], &mut other);
+        assert!(!other.adc_overload);
+        assert_eq!(other.versions, None);
     }
 
     #[test]
     fn ep2_datagram_shape() {
         let mut seq = 0u32;
-        let mut slot = 0u8;
-        let d = build_ep2(&mut seq, &mut slot, 0, 7_074_000, 7_074_000, false, &[]);
+        let regs = Regs { rx_freq: 7_074_000, tx_freq: 7_074_000, lna_gain: None, ptt: false };
+        let mut rot = Rotation::new();
+        let d = build_ep2(&mut seq, 0, 0, regs.cc(rot.take(&regs)), &[]);
         assert_eq!(d.len(), 1032);
         assert_eq!(&d[0..4], &[0xEF, 0xFE, 0x01, 0x02]);
         assert_eq!(seq, 1); // advanced
-        assert_eq!(slot, 1); // one rotating slot consumed per datagram
         // Both frames start with the OZY sync.
         assert_eq!(&d[8..11], &[0x7F, 0x7F, 0x7F]);
         assert_eq!(&d[520..523], &[0x7F, 0x7F, 0x7F]);
@@ -366,7 +576,50 @@ mod tests {
     fn mox_bit_rides_registers() {
         assert_eq!(config_cc(0, 1)[0] & 1, 1);
         assert_eq!(config_cc(0, 0)[0] & 1, 0);
-        assert_eq!(rotating_cc(0, 7_000_000, 7_000_000, 1)[0] & 1, 1);
-        assert_eq!(rotating_cc(2, 7_000_000, 7_000_000, 0)[0] & 1, 0);
+        let keyed = Regs { rx_freq: 7_000_000, tx_freq: 7_000_000, lna_gain: None, ptt: true };
+        let idle = Regs { ptt: false, ..keyed };
+        for slot in [Slot::TxFreq, Slot::RxFreq, Slot::Drive] {
+            assert_eq!(keyed.cc(slot)[0] & 1, 1);
+            assert_eq!(idle.cc(slot)[0] & 1, 0);
+        }
+    }
+
+    #[test]
+    fn lna_gain_register_encodes_hl2_range() {
+        let regs = Regs { rx_freq: 7_000_000, tx_freq: 7_000_000, lna_gain: Some(0.0), ptt: false };
+        let cc = regs.cc(Slot::LnaGain);
+        assert_eq!(cc[0], CC_HL2_GAIN);
+        // 0 dB → code 12, with the "field is valid" bit set.
+        assert_eq!(cc[4], HL2_GAIN_VALID | 12);
+        // The rails: −12 dB → 0, +48 dB → 60, and both are clamped beyond that.
+        assert_eq!(Regs { lna_gain: Some(-12.0), ..regs }.cc(Slot::LnaGain)[4], HL2_GAIN_VALID);
+        assert_eq!(Regs { lna_gain: Some(48.0), ..regs }.cc(Slot::LnaGain)[4], HL2_GAIN_VALID | 60);
+        assert_eq!(Regs { lna_gain: Some(-40.0), ..regs }.cc(Slot::LnaGain)[4], HL2_GAIN_VALID);
+        assert_eq!(Regs { lna_gain: Some(99.0), ..regs }.cc(Slot::LnaGain)[4], HL2_GAIN_VALID | 60);
+        // The gain code never runs into the valid bit.
+        for db in [-12.0, 0.0, 20.0, 48.0] {
+            assert_eq!(lna_gain_code(db) & HL2_GAIN_VALID, 0);
+        }
+    }
+
+    #[test]
+    fn rotation_covers_every_slot_and_honours_urgency() {
+        let hl2 = Regs { rx_freq: 7_000_000, tx_freq: 7_000_000, lna_gain: Some(20.0), ptt: false };
+        let mut rot = Rotation::new();
+        // A Hermes-Lite rotation visits all four slots; a board without the gain
+        // register visits three and never emits the gain slot.
+        let seen: Vec<Slot> = (0..4).map(|_| rot.take(&hl2)).collect();
+        assert!(seen.contains(&Slot::LnaGain));
+        let plain = Regs { lna_gain: None, ..hl2 };
+        let mut rot = Rotation::new();
+        for _ in 0..9 {
+            assert_ne!(rot.take(&plain), Slot::LnaGain);
+        }
+        // An urgent slot jumps the queue, and repeats collapse to one entry.
+        let mut rot = Rotation::new();
+        rot.urge(Slot::RxFreq);
+        rot.urge(Slot::RxFreq);
+        assert_eq!(rot.take(&hl2), Slot::RxFreq);
+        assert_ne!(rot.take(&hl2), Slot::RxFreq);
     }
 }

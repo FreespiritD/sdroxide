@@ -12,14 +12,39 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use crate::discovery;
 use crate::{protocol1, protocol2};
 
-/// Host→radio TX I/Q rate for Protocol 2 (the engine's modulator is native
-/// 48 kHz, fed straight to the DUC). Protocol 1 transmits at the DDC rate.
+/// Host→radio TX I/Q rate. **Both** protocols transmit at 48 kHz: Protocol 2
+/// feeds the DUC directly, and Protocol 1's EP2 stream (speaker audio + TX I/Q)
+/// is fixed at 48 kHz by the spec regardless of the RX/DDC rate — the radio
+/// drains it at 48 ksps no matter how fast EP6 comes back.
 pub const TX_RATE_HZ: u32 = 48_000;
 /// Resend keep-alive/high-priority state at least this often so the radio's
 /// watchdog does not stop the stream.
 pub(crate) const WATCHDOG: Duration = Duration::from_millis(50);
 /// How often a protocol thread emits an RX throughput line (`RUST_LOG=…=debug`).
 pub(crate) const STATS_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Front-end LNA gain range of the Hermes-Lite 2 (the AD9866's LNA/PGA), in dB.
+/// The wire value is `dB + 12`, so 0..=60 spans this range in 1 dB steps.
+pub const LNA_GAIN_MIN_DB: f64 = -12.0;
+pub const LNA_GAIN_MAX_DB: f64 = 48.0;
+/// LNA gain used when nothing else is configured. Mid-scale: enough sensitivity
+/// on a quiet band without clipping the ADC on a real antenna at night.
+pub const LNA_GAIN_DEFAULT_DB: f64 = 20.0;
+/// Name of the RX gain element exposed to the UI for that LNA.
+pub const LNA_GAIN_ELEMENT: &str = "LNA";
+
+/// Whether a board name reported by discovery is a Hermes-Lite, the only
+/// Protocol 1 family whose front-end gain this crate knows how to command
+/// (register `0x14`, C4). Other P1 boards use that register for Alex/attenuator
+/// settings, so we must not write it there.
+pub fn board_has_lna_gain(board: &str) -> bool {
+    board.starts_with("Hermes-Lite")
+}
+
+/// Clamp a dB value to the LNA range and encode it as the 6-bit wire value.
+pub(crate) fn lna_gain_code(db: f64) -> u8 {
+    (db.clamp(LNA_GAIN_MIN_DB, LNA_GAIN_MAX_DB) - LNA_GAIN_MIN_DB).round() as u8
+}
 
 /// Format the first `n` bytes of a datagram as spaced uppercase hex, for the
 /// diagnostic logs that let a remote tester compare on-wire bytes against the
@@ -39,8 +64,12 @@ pub(crate) struct RxStats {
     win_datagrams: u64,
     win_samples: u64,
     win_other: u64,
+    win_lost: u64,
+    win_dropped: u64,
     total_datagrams: u64,
     total_samples: u64,
+    total_lost: u64,
+    total_dropped: u64,
 }
 
 impl RxStats {
@@ -51,8 +80,12 @@ impl RxStats {
             win_datagrams: 0,
             win_samples: 0,
             win_other: 0,
+            win_lost: 0,
+            win_dropped: 0,
             total_datagrams: 0,
             total_samples: 0,
+            total_lost: 0,
+            total_dropped: 0,
         }
     }
 
@@ -69,30 +102,112 @@ impl RxStats {
         self.win_other += 1;
     }
 
-    /// Emit a throughput line if the reporting interval has elapsed.
+    /// Record `n` datagrams the radio sent that never arrived (sequence gap).
+    pub(crate) fn on_lost(&mut self, n: u64) {
+        self.win_lost += n;
+        self.total_lost += n;
+    }
+
+    /// Record `pairs` complex samples discarded because the RX ring was full.
+    pub(crate) fn on_dropped(&mut self, pairs: usize) {
+        self.win_dropped += pairs as u64;
+        self.total_dropped += pairs as u64;
+    }
+
+    /// Emit a throughput line if the reporting interval has elapsed. Lost or
+    /// dropped samples raise it to `warn`: both corrupt the audio and the
+    /// waterfall, and neither is otherwise visible from the outside.
     pub(crate) fn tick(&mut self) {
         let dt = self.since.elapsed();
         if dt < STATS_INTERVAL {
             return;
         }
         let ksps = self.win_samples as f64 / dt.as_secs_f64() / 1000.0;
-        tracing::debug!(
-            "HPSDR P{} RX: {} datagrams, {} samples ({:.1} ksps) over {:.2}s; \
-             {} unrecognized; totals {} datagrams / {} samples",
-            self.proto,
-            self.win_datagrams,
-            self.win_samples,
-            ksps,
-            dt.as_secs_f64(),
-            self.win_other,
-            self.total_datagrams,
-            self.total_samples,
-        );
+        if self.win_lost > 0 || self.win_dropped > 0 {
+            tracing::warn!(
+                "HPSDR P{} RX: {} datagrams, {} samples ({:.1} ksps) over {:.2}s; \
+                 {} datagram(s) LOST on the network, {} sample(s) DROPPED (RX ring full — \
+                 the DSP thread is not keeping up; try a lower sample rate); \
+                 totals {} lost / {} dropped",
+                self.proto,
+                self.win_datagrams,
+                self.win_samples,
+                ksps,
+                dt.as_secs_f64(),
+                self.win_lost,
+                self.win_dropped,
+                self.total_lost,
+                self.total_dropped,
+            );
+        } else {
+            tracing::debug!(
+                "HPSDR P{} RX: {} datagrams, {} samples ({:.1} ksps) over {:.2}s; \
+                 {} unrecognized; totals {} datagrams / {} samples",
+                self.proto,
+                self.win_datagrams,
+                self.win_samples,
+                ksps,
+                dt.as_secs_f64(),
+                self.win_other,
+                self.total_datagrams,
+                self.total_samples,
+            );
+        }
         self.since = Instant::now();
         self.win_datagrams = 0;
         self.win_samples = 0;
         self.win_other = 0;
+        self.win_lost = 0;
+        self.win_dropped = 0;
     }
+}
+
+/// Follows a radio→host datagram sequence counter and reports how many
+/// datagrams went missing. UDP loss on a busy 100 Mbit link is the usual cause
+/// of a stream that runs at the right rate but sounds torn up, and nothing else
+/// in the pipeline can tell a gap from real signal.
+pub(crate) struct SeqTracker {
+    next: Option<u32>,
+}
+
+impl SeqTracker {
+    pub(crate) fn new() -> Self {
+        SeqTracker { next: None }
+    }
+
+    /// Feed the sequence number of a freshly received datagram; returns the
+    /// number of datagrams missing before it. A backwards or wildly forward jump
+    /// (radio restarted its counter, or a reordered datagram) resynchronizes
+    /// silently rather than reporting a nonsense gap.
+    pub(crate) fn observe(&mut self, seq: u32) -> u32 {
+        let lost = match self.next {
+            None => 0,
+            Some(expected) => {
+                let gap = seq.wrapping_sub(expected);
+                if gap > u32::MAX / 2 { 0 } else { gap }
+            }
+        };
+        self.next = Some(seq.wrapping_add(1));
+        lost
+    }
+}
+
+/// Push one datagram's interleaved I/Q into the RX ring, keeping I and Q
+/// paired: if the ring cannot take the whole datagram, the datagram is dropped
+/// whole. Pushing what fits would leave the ring one float out of step, which
+/// swaps I with Q for the rest of the session — a mirrored, unusable spectrum
+/// that looks like a protocol bug rather than the buffer overrun it is.
+pub(crate) fn push_iq(rx: &mut Producer<f32>, iq: &[f32], stats: &mut RxStats) {
+    // A chunk write is all-or-nothing, so the ring can never end up holding a
+    // partial datagram however the timing falls.
+    let Ok(mut chunk) = rx.write_chunk(iq.len()) else {
+        stats.on_dropped(iq.len() / 2);
+        return;
+    };
+    let (head, tail) = chunk.as_mut_slices();
+    head.copy_from_slice(&iq[..head.len()]);
+    tail.copy_from_slice(&iq[head.len()..]);
+    chunk.commit_all();
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -106,6 +221,8 @@ pub enum HpsdrError {
 /// Control messages from the [`HpsdrHandle`] to its network thread.
 pub(crate) enum Ctrl {
     RxFreq(f64),
+    /// Front-end LNA gain in dB (Hermes-Lite 2 only; ignored elsewhere).
+    RxGain(f64),
     TxOn(f64),
     TxOff,
     Shutdown,
@@ -116,7 +233,12 @@ pub(crate) enum Ctrl {
 pub(crate) struct ThreadCtx {
     pub socket: UdpSocket,
     pub radio: IpAddr,
+    /// Board name from discovery — decides which board-specific registers the
+    /// Protocol 1 thread is allowed to write.
+    pub board: String,
     pub rate_hz: f64,
+    /// Initial front-end LNA gain (dB) for boards that have one.
+    pub lna_gain_db: f64,
     pub rx: Producer<f32>,
     pub tx: Consumer<f32>,
     pub ctrl: Receiver<Ctrl>,
@@ -136,14 +258,22 @@ pub struct HpsdrHandle {
     pub sample_rate_hz: f64,
     /// Actual TX I/Q rate in Hz.
     pub tx_rate_hz: f64,
+    /// Front-end LNA gain in dB currently commanded (Hermes-Lite 2 only).
+    lna_gain_db: f64,
 }
 
 impl HpsdrHandle {
     /// Open a connection to `ip`, auto-detecting the protocol from a discovery
     /// probe (both P1 and P2 requests are sent), configuring the RX at
     /// `sample_rate_hz`, and starting the stream. A manual IP that does not
-    /// answer the probe is still tried as Protocol 2.
-    pub fn open(ip: Ipv4Addr, sample_rate_hz: f64) -> Result<HpsdrHandle, HpsdrError> {
+    /// answer the probe is still tried as Protocol 2. `lna_gain_db` is the
+    /// initial front-end gain for boards that have a settable one (see
+    /// [`board_has_lna_gain`]); it is ignored on boards that do not.
+    pub fn open(
+        ip: Ipv4Addr,
+        sample_rate_hz: f64,
+        lna_gain_db: f64,
+    ) -> Result<HpsdrHandle, HpsdrError> {
         tracing::info!("HPSDR: opening {ip}, requested RX rate {sample_rate_hz:.0} Hz");
         let (board, protocol) = match discovery::probe(ip, Duration::from_millis(800)) {
             Some(dev) => {
@@ -173,9 +303,14 @@ impl HpsdrHandle {
                  rate {rate:.0} Hz"
             );
         }
-        // Protocol 1 sends TX I/Q inside the RX frame stream at the DDC rate;
-        // Protocol 2 has a dedicated 48 kHz DUC.
-        let tx_rate = if protocol == 1 { rate } else { TX_RATE_HZ as f64 };
+        // Both protocols take TX I/Q at 48 kHz: Protocol 2 through the DUC, and
+        // Protocol 1 through the EP2 frames, whose sample rate is fixed at
+        // 48 kHz regardless of the RX rate.
+        let tx_rate = TX_RATE_HZ as f64;
+        let lna_gain_db = lna_gain_db.clamp(LNA_GAIN_MIN_DB, LNA_GAIN_MAX_DB);
+        if board_has_lna_gain(&board) {
+            tracing::info!("HPSDR: initial {LNA_GAIN_ELEMENT} gain {lna_gain_db:+.0} dB");
+        }
 
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
         socket.set_read_timeout(Some(Duration::from_millis(2)))?;
@@ -198,7 +333,9 @@ impl HpsdrHandle {
         let ctx = ThreadCtx {
             socket,
             radio: IpAddr::V4(ip),
+            board: board.clone(),
             rate_hz: rate,
+            lna_gain_db,
             rx: rx_prod,
             tx: tx_cons,
             ctrl: ctrl_rx,
@@ -224,6 +361,7 @@ impl HpsdrHandle {
             protocol,
             sample_rate_hz: rate,
             tx_rate_hz: tx_rate,
+            lna_gain_db,
         })
     }
 
@@ -231,6 +369,27 @@ impl HpsdrHandle {
     pub fn set_rx_freq(&self, hz: f64) {
         tracing::debug!("HPSDR: set RX freq {hz:.0} Hz");
         let _ = self.ctrl.send(Ctrl::RxFreq(hz));
+    }
+
+    /// Whether this board has a front-end gain this crate can command.
+    pub fn has_lna_gain(&self) -> bool {
+        board_has_lna_gain(&self.board)
+    }
+
+    /// The front-end LNA gain currently commanded, in dB.
+    pub fn lna_gain_db(&self) -> f64 {
+        self.lna_gain_db
+    }
+
+    /// Set the front-end LNA gain in dB. No-op on boards without one.
+    pub fn set_lna_gain_db(&mut self, db: f64) {
+        if !self.has_lna_gain() {
+            return;
+        }
+        let db = db.clamp(LNA_GAIN_MIN_DB, LNA_GAIN_MAX_DB);
+        self.lna_gain_db = db;
+        tracing::debug!("HPSDR: set {LNA_GAIN_ELEMENT} gain {db:+.0} dB");
+        let _ = self.ctrl.send(Ctrl::RxGain(db));
     }
 
     /// Begin transmitting at `tx_freq_hz`; returns the TX I/Q rate to feed
@@ -249,23 +408,33 @@ impl HpsdrHandle {
 
     /// Push interleaved I,Q TX samples (at [`Self::tx_rate_hz`]). Blocks briefly
     /// when the ring is full (pacing the caller); drops if the thread stalls.
+    ///
+    /// Writes go in whole I/Q pairs, so the ring always holds an even number of
+    /// floats. Giving up mid-pair would put every later sample one slot out of
+    /// step — the network thread would read each Q as an I, transmitting the
+    /// wrong sideband for the rest of the over.
     pub fn tx_write(&mut self, iq: &[f32]) {
-        for &v in iq {
-            let mut val = v;
+        for pair in iq.chunks_exact(2) {
             let mut tries = 0u32;
-            loop {
-                match self.tx.push(val) {
-                    Ok(()) => break,
-                    Err(rtrb::PushError::Full(x)) => {
+            let mut chunk = loop {
+                match self.tx.write_chunk(2) {
+                    Ok(c) => break c,
+                    Err(_) => {
                         if tries > 2000 {
                             return; // network thread stalled — drop rather than hang
                         }
                         tries += 1;
-                        val = x;
                         std::thread::sleep(Duration::from_micros(100));
                     }
                 }
+            };
+            // The pair may straddle the ring's wrap point, so it arrives as two
+            // slices; together they are always exactly the two slots.
+            let (head, tail) = chunk.as_mut_slices();
+            for (slot, &v) in head.iter_mut().chain(tail.iter_mut()).zip(pair) {
+                *slot = v;
             }
+            chunk.commit_all();
         }
     }
 
@@ -304,4 +473,113 @@ fn clamp_rate(hz: f64, protocol: u8) -> f64 {
         .copied()
         .min_by(|a, b| (a - hz).abs().partial_cmp(&(b - hz).abs()).unwrap())
         .unwrap_or(1_536_000.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lna_gain_wire_codes() {
+        // The Hermes-Lite wire value is dB + 12, clamped to the 6-bit field.
+        assert_eq!(lna_gain_code(-12.0), 0);
+        assert_eq!(lna_gain_code(0.0), 12);
+        assert_eq!(lna_gain_code(48.0), 60);
+        assert_eq!(lna_gain_code(-100.0), 0);
+        assert_eq!(lna_gain_code(100.0), 60);
+        // Never overflows into the "field is valid" bit (0x40) above it.
+        for db in [-12.0, -0.5, 20.0, 47.4, 48.0] {
+            assert!(lna_gain_code(db) < 0x40, "{db} dB");
+        }
+    }
+
+    #[test]
+    fn only_hermes_lite_gets_the_gain_register() {
+        assert!(board_has_lna_gain("Hermes-Lite 2"));
+        assert!(!board_has_lna_gain("Hermes"));
+        assert!(!board_has_lna_gain("Hermes2"));
+        assert!(!board_has_lna_gain("Orion2"));
+        assert!(!board_has_lna_gain("Saturn"));
+    }
+
+    #[test]
+    fn sequence_gaps_are_counted_and_wrap_cleanly() {
+        let mut s = SeqTracker::new();
+        assert_eq!(s.observe(100), 0); // first datagram: nothing to compare
+        assert_eq!(s.observe(101), 0);
+        assert_eq!(s.observe(105), 3); // 102, 103, 104 never arrived
+        assert_eq!(s.observe(106), 0);
+        // Wrapping the counter is not a 4-billion-datagram gap.
+        let mut s = SeqTracker::new();
+        assert_eq!(s.observe(u32::MAX), 0);
+        assert_eq!(s.observe(0), 0);
+        // A datagram arriving late (or the radio restarting its count)
+        // resynchronizes silently rather than reporting a nonsense gap.
+        let mut s = SeqTracker::new();
+        assert_eq!(s.observe(500), 0);
+        assert_eq!(s.observe(400), 0);
+        assert_eq!(s.observe(401), 0);
+    }
+
+    #[test]
+    fn ring_overflow_drops_whole_datagrams() {
+        // A ring with room for exactly 4 floats (rtrb rounds up to the request).
+        let (mut prod, mut cons) = RingBuffer::<f32>::new(4);
+        let mut stats = RxStats::new(1);
+        push_iq(&mut prod, &[1.0, 2.0], &mut stats);
+        push_iq(&mut prod, &[3.0, 4.0], &mut stats);
+        // The third datagram cannot fit and is dropped whole, not truncated.
+        push_iq(&mut prod, &[5.0, 6.0], &mut stats);
+        let got: Vec<f32> = std::iter::from_fn(|| cons.pop().ok()).collect();
+        assert_eq!(got, vec![1.0, 2.0, 3.0, 4.0]);
+        // Alignment survived: every I landed on an even index.
+        assert_eq!(got.len() % 2, 0);
+    }
+
+    #[test]
+    fn partial_datagrams_never_split_a_pair() {
+        // Room for 4 floats, then a 6-float datagram: it must be dropped rather
+        // than have 4 of its floats pushed, which would leave the ring one slot
+        // out of step and swap I with Q for good.
+        let (mut prod, mut cons) = RingBuffer::<f32>::new(4);
+        let mut stats = RxStats::new(1);
+        push_iq(&mut prod, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &mut stats);
+        assert!(cons.pop().is_err(), "nothing was pushed");
+    }
+
+    #[test]
+    fn tx_ring_stays_pair_aligned_when_it_wraps() {
+        // Write and drain repeatedly so the pairs straddle the ring's wrap
+        // point, which is where a two-slice chunk write could go wrong.
+        let (mut prod, mut cons) = RingBuffer::<f32>::new(6);
+        let mut next = 0.0f32;
+        for _ in 0..10 {
+            for _ in 0..2 {
+                let mut chunk = prod.write_chunk(2).expect("room for one pair");
+                let (head, tail) = chunk.as_mut_slices();
+                for (slot, v) in head.iter_mut().chain(tail.iter_mut()).zip([next, next + 1.0]) {
+                    *slot = v;
+                }
+                chunk.commit_all();
+                next += 2.0;
+            }
+            // Drain the same way the network thread does: whole pairs only.
+            while let Ok(pair) = cons.read_chunk(2) {
+                let (a, b) = pair.as_slices();
+                let got: Vec<f32> = a.iter().chain(b).copied().collect();
+                assert_eq!(got.len(), 2);
+                // I is always even, Q always odd: the pairing never slipped.
+                assert_eq!(got[0] as i32 % 2, 0, "I at {got:?}");
+                assert_eq!(got[1] as i32 % 2, 1, "Q at {got:?}");
+                pair.commit_all();
+            }
+        }
+    }
+
+    #[test]
+    fn tx_rate_is_48k_for_both_protocols() {
+        // Protocol 1's EP2 stream is 48 kHz regardless of the DDC rate, so the
+        // modulator must never be told to produce at the RX rate.
+        assert_eq!(TX_RATE_HZ, 48_000);
+    }
 }

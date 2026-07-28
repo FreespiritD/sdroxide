@@ -634,9 +634,9 @@ fn open_cat_source(radio: &RadioConfig) -> anyhow::Result<(Box<dyn IqSource>, De
     Ok((Box::new(src), caps))
 }
 
-/// Build the HPSDR (ethernet SDR, Protocol 2) source from radio.json. The target
-/// IP is the manual override, else the persisted selection, else the first
-/// Protocol-2 device found by a discovery scan.
+/// Build the HPSDR (ethernet SDR) source from radio.json. The target IP is the
+/// manual override, else the persisted selection, else the first device found by
+/// a discovery scan; the protocol is detected when the connection opens.
 fn open_hpsdr_source(
     radio: &RadioConfig,
     center_hz: f64,
@@ -646,32 +646,50 @@ fn open_hpsdr_source(
     } else {
         let found = sdroxide_hpsdr::discover_default();
         let dev = found.iter().find(|d| d.supported()).ok_or_else(|| {
-            anyhow::anyhow!(
-                "no HPSDR (Protocol 2) device found on the network — enter a target IP in Settings"
-            )
+            anyhow::anyhow!("no HPSDR device found on the network — enter a target IP in Settings")
         })?;
         dev.ip.parse().with_context(|| format!("discovered HPSDR IP {:?}", dev.ip))?
     };
 
-    let src = hpsdr_source::HpsdrSource::open(ip, radio.hpsdr.sample_rate_hz, center_hz)
-        .context("opening HPSDR device")?;
-    let caps = hpsdr_caps(src.board(), src.sample_rate_hz(), src.protocol());
+    let src = hpsdr_source::HpsdrSource::open(
+        ip,
+        radio.hpsdr.sample_rate_hz,
+        center_hz,
+        radio.hpsdr.lna_gain_db,
+    )
+    .context("opening HPSDR device")?;
+    let caps = hpsdr_caps(src.board(), src.sample_rate_hz(), src.protocol(), src.has_lna_gain());
     Ok((Box::new(src), caps))
 }
 
 /// Capabilities for an HPSDR board: wideband IQ (not `audio_mode`), TX-capable,
-/// half-duplex, HF+6m coverage. The board enforces its own limits. Protocol 1
-/// boards top out at 384 kHz.
-fn hpsdr_caps(board: &str, sample_rate: f64, protocol: u8) -> DeviceCaps {
+/// half-duplex. The board enforces its own limits. Protocol 1 boards top out at
+/// 384 kHz, and a Hermes-Lite 2 samples at 76.8 MHz, so its Nyquist limit is
+/// 38.4 MHz — tuning past that on one only aliases.
+fn hpsdr_caps(board: &str, sample_rate: f64, protocol: u8, has_lna: bool) -> DeviceCaps {
+    let hermes_lite = sdroxide_hpsdr::board_has_lna_gain(board);
+    let nyquist = if hermes_lite { 38_400_000.0 } else { 61_440_000.0 };
+    let gains = if has_lna {
+        vec![sdroxide_types::GainElement {
+            name: sdroxide_hpsdr::LNA_GAIN_ELEMENT.into(),
+            direction: sdroxide_types::Direction::Rx,
+            min_db: sdroxide_hpsdr::LNA_GAIN_MIN_DB,
+            max_db: sdroxide_hpsdr::LNA_GAIN_MAX_DB,
+            step_db: 1.0,
+        }]
+    } else {
+        Vec::new()
+    };
     DeviceCaps {
         driver: "hpsdr".into(),
         label: format!("{board} (HPSDR P{protocol}, {:.3} Msps)", sample_rate / 1e6),
         rx_channels: 1,
         tx_channels: 1,
         audio_mode: false,
-        freq_ranges_rx: vec![(0.0, 61_440_000.0)],
-        freq_ranges_tx: vec![(1_800_000.0, 54_000_000.0)],
+        freq_ranges_rx: vec![(0.0, nyquist)],
+        freq_ranges_tx: vec![(1_800_000.0, if hermes_lite { 30_000_000.0 } else { 54_000_000.0 })],
         sample_rates: sdroxide_types::HpsdrConfig::rates_for(protocol).to_vec(),
+        gains,
         ..DeviceCaps::default()
     }
 }

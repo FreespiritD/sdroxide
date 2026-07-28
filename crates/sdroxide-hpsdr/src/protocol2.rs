@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use rtrb::{Consumer, Producer};
 
-use crate::net::{Ctrl, RxStats, ThreadCtx, WATCHDOG, hex_head};
+use crate::net::{Ctrl, RxStats, SeqTracker, ThreadCtx, WATCHDOG, hex_head, push_iq};
 
 /// UDP ports. Host→radio use these as the *destination* port; radio→host DDC IQ
 /// arrives with a *source* port of [`port::DDC_IQ_BASE`]` + ddc_index`.
@@ -313,6 +313,7 @@ impl P2Thread {
         let mut tx_scratch: Vec<f32> = Vec::with_capacity(DUC_SAMPLES_PER_PKT * 2);
         let mut buf = [0u8; 2048];
         let mut stats = RxStats::new(2);
+        let mut seq_in = SeqTracker::new();
         let mut logged_first_rx = false;
         let mut logged_first_tx = false;
         let mut warned_no_rx = false;
@@ -327,6 +328,9 @@ impl P2Thread {
                         freq_changed = true;
                         tracing::debug!("HPSDR P2: RX NCO -> {hz:.0} Hz");
                     }
+                    // Protocol 2 boards have no front-end gain register this
+                    // crate drives; the DDC command carries no gain field.
+                    Ctrl::RxGain(_) => {}
                     Ctrl::TxOn(hz) => {
                         self.tx_freq = hz;
                         self.ptt = true;
@@ -371,9 +375,15 @@ impl P2Thread {
                                     hex_head(&buf[..n], 16)
                                 );
                             }
-                            for &s in &rx_scratch {
-                                let _ = self.rx.push(s);
+                            // Only DDC0 is enabled, so one sequence counter
+                            // covers the whole stream. A datagram from another
+                            // DDC would carry its own counter — track just
+                            // DDC0's rather than report phantom gaps.
+                            if p == port::DDC_IQ_BASE && n >= 4 {
+                                let seq = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+                                stats.on_lost(seq_in.observe(seq) as u64);
                             }
+                            push_iq(&mut self.rx, &rx_scratch, &mut stats);
                         } else {
                             stats.on_other();
                             tracing::trace!(
