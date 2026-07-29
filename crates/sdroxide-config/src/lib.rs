@@ -104,9 +104,35 @@ pub fn image_rx_dir(kind: &str) -> Result<PathBuf, ConfigError> {
     Ok(dir)
 }
 
-/// Directory for received weather-fax charts (`~/.config/sdroxide/wefax_rx`).
+/// Directory for received weather-fax charts, created on demand: the user's
+/// pictures directory (`<Pictures>/sdroxide/wefax`), or the config directory
+/// (`~/.config/sdroxide/wefax_rx`) when the platform exposes no pictures folder.
+///
+/// Charts go where pictures go, unlike every other store here, because that is
+/// what they are for. A weather chart is printed, mailed, dropped into a
+/// passage plan or opened next to a routing program — all of which happen
+/// outside this program, in a file manager, and none of which anyone will do
+/// from a hidden directory under `~/.config`.
 pub fn wefax_rx_dir() -> Result<PathBuf, ConfigError> {
-    image_rx_dir("wefax")
+    let dir = match directories::UserDirs::new()
+        .and_then(|u| u.picture_dir().map(std::path::Path::to_path_buf))
+    {
+        Some(pictures) => pictures.join("sdroxide").join("wefax"),
+        None => config_dir()?.join("wefax_rx"),
+    };
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Where charts were kept before they moved to the pictures directory.
+///
+/// Read-only and never created: the gallery lists it alongside the current
+/// store so an existing collection does not appear to have been lost. `None`
+/// when it is the current store anyway, or when there is no config directory.
+pub fn wefax_legacy_rx_dir() -> Option<PathBuf> {
+    let old = config_dir().ok()?.join("wefax_rx");
+    let current = wefax_rx_dir().ok()?;
+    (old != current && old.is_dir()).then_some(old)
 }
 
 /// Directory for the operator's transmit-image slots

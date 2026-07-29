@@ -1659,7 +1659,7 @@ impl Engine {
                     // art in one channel, and tripling it to RGB would treble
                     // a two-megapixel PNG for nothing.
                     if let Some(png) = encode_png_gray(&gray, w, h) {
-                        save_image_rx("wefax", &png);
+                        save_wefax_rx(&png, dial);
                         let _ = self.event_tx.send(RadioEvent::WefaxImage { image_id, w, h, png });
                     }
                 }
@@ -4141,6 +4141,38 @@ fn save_image_rx(kind: &str, png: &[u8]) {
     let path = dir.join(format!("{kind}-{ts}.png"));
     if let Err(e) = std::fs::write(&path, png) {
         warn!("saving {kind} image {}: {e}", path.display());
+    }
+}
+
+/// Persist a received weather chart under the pictures directory, named for
+/// when it was received and the dial it came in on.
+///
+/// Its own store and its own naming rather than `save_image_rx`'s: charts live
+/// where the operator's other pictures live, and the name is the only thing
+/// that will ever say which of a station's dozen daily products this one is.
+/// The name is built by `sdroxide-types` so that the panel — which has to label
+/// charts it reads back off disk — reads exactly what is written here.
+fn save_wefax_rx(png: &[u8], dial_hz: f64) {
+    let dir = match sdroxide_config::wefax_rx_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("wefax chart dir: {e}");
+            return;
+        }
+    };
+    let unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let meta = sdroxide_types::WefaxChartMeta {
+        unix,
+        // A dial of zero means nothing is tuned, which is not a frequency worth
+        // recording — better an unlabelled chart than a mislabelled one.
+        dial_hz: (dial_hz > 0.0).then_some(dial_hz),
+    };
+    let path = dir.join(meta.file_name());
+    if let Err(e) = std::fs::write(&path, png) {
+        warn!("saving wefax chart {}: {e}", path.display());
     }
 }
 

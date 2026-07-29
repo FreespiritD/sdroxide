@@ -998,7 +998,7 @@ back.
 
 ![The weather-fax panel: a chart arriving, the station picker, and the gallery](images/wefax.jpg)
 
-**Finding a signal.** The **📡 STATIONS** button lists the schedules — DWD
+**Finding a signal.** The **STATIONS** button lists the schedules — DWD
 Pinneberg, Northwood, the US Coast Guard transmitters, Halifax, Tokyo, the two
 Australian ones — and picking a frequency tunes the dial. Note that the
 frequencies in every published schedule are the **assigned carrier**, and USB
@@ -1052,12 +1052,41 @@ anonymous chart into "this came 900 km across the North Sea" — and it makes th
 propagation obvious when a station you can hear all night in winter vanishes at
 noon.
 
-**The picture and the gallery.** The chart paints line by line as it arrives and
-follows the newest rows down. Completed charts are written as grayscale PNG to
-`~/.config/sdroxide/wefax_rx/` — a separate store from the SSTV gallery, because
-a fifteen-minute chart every half hour would bury a session's pictures — and the
-strip on the right shows the recent ones. Click one to open it full size, which
-you will need to: the fronts and isobars are unreadable at thumbnail scale.
+**The picture.** The chart paints line by line as it arrives, in a view you can
+scroll and zoom while it is still coming in — a chart takes a quarter of an
+hour, and there is no reason to wait for the bottom of it before reading the
+top. The **VIEW** controls decide how it is shown:
+
+- **FIT** scales it to the panel width, **WHOLE** shrinks it until all of it is
+  in view at once, and **50% / 1:1 / 2×** are fixed magnifications. At 1:1 one
+  screen pixel is one fax pixel, which is what you want for reading small print
+  on a chart.
+- **HEIGHT** stretches the picture vertically, ×0.25 to ×4. A chart that comes
+  out squashed or stretched is being decoded at the wrong line rate — this makes
+  it readable, and the LPM chips fix it properly.
+- **FOLLOW** keeps the newest lines in sight. Scrolling up turns it off so you
+  can read what has already arrived without the view snapping back every half
+  second; scrolling back to the bottom turns it on again.
+
+**The gallery.** Completed charts are written as grayscale PNG to
+`~/Pictures/sdroxide/wefax/` — with your pictures rather than in a hidden config
+directory, because a weather chart usually gets printed, mailed or opened next
+to a routing program, and all of that happens in a file manager. Each is named
+for when it was received and what it was tuned to:
+
+```
+wefax-20260729-141530Z-7878.1kHz-DWD.png
+```
+
+that is, UTC date and time, the dial frequency, and the station's callsign when
+the dial is on a published schedule. The strip on the right of the panel lists
+them newest first, each labelled with its date, time and station; click one to
+open it full size, which you will need to — the fronts and isobars are
+unreadable at thumbnail scale — and **◀ NEWER** / **OLDER ▶** step through the
+rest without closing the window. **PATH** copies the directory.
+
+Charts saved by earlier versions in `~/.config/sdroxide/wefax_rx/` are still
+listed alongside the new ones, so nothing you have already received disappears.
 
 ### 3.13 JS8
 
@@ -2695,11 +2724,17 @@ sdroxide stores its settings under the per-user config directory:
 | `voice/` | dir | The voice-keyer recordings (`slot1.wav`…`slot10.wav`), 48 kHz mono. Drop your own WAV in to replace a message. |
 | `sstv_tx/` | dir | The five SSTV transmit-image slots (`slot0.png`…`slot4.png`). |
 | `sstv_rx/` | dir | Received SSTV and RIFP pictures, kept for the gallery. |
-| `wefax_rx/` | dir | Received weather-fax charts, as grayscale PNG. Kept apart from `sstv_rx/` so a quarter-hour chart every half hour does not bury a session's pictures. |
+| `wefax_rx/` | dir | Weather-fax charts received by an earlier version. Charts now go to `~/Pictures/sdroxide/wefax/`, but this is still read so an existing collection stays in the gallery. |
 | `solar/` | dir | Cached solar imagery, space-weather JSON and subscribed element-set listings for the 3D view, with an index of HTTP validators so refreshes stay cheap. Safe to delete; it is re-fetched on demand. |
 
 Every file has sensible defaults, so a missing or partial file always loads. You
 normally edit these through the GUI rather than by hand.
+
+Two things are kept outside the config directory, because they are things you
+will want to open in an ordinary file manager rather than program state:
+audio recordings go to `<Music>/sdroxide/`, and received weather-fax charts to
+`<Pictures>/sdroxide/wefax/`. Where the platform exposes no such folder, both
+fall back to the config directory.
 
 ---
 

@@ -201,6 +201,134 @@ pub const WEFAX_STATIONS: &[WefaxStation] = &[
     },
 ];
 
+/// What a saved chart's file name records: when it finished, and the dial it
+/// was received on.
+///
+/// The file name is the whole of a chart's metadata, deliberately. A grey PNG
+/// of a weather map says nothing about where it came from, and a gallery of
+/// unlabelled grey rectangles is close to useless — one station sends a dozen
+/// different products a day on the same frequency, and telling a surface
+/// analysis from a wave-height forecast at thumbnail size is not realistic.
+/// Putting it in the name rather than a sidecar means the charts stay
+/// self-describing in a file manager, which is where most of them will be
+/// looked at.
+///
+/// The written form is `wefax-YYYYMMDD-HHMMSSZ-<dial>kHz-<call>.png`, UTC
+/// throughout because every fax schedule in the world is published in it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WefaxChartMeta {
+    /// Unix seconds (UTC) at which the chart was saved.
+    pub unix: i64,
+    /// The **dial** frequency it was received on, Hz — not the published
+    /// carrier, which sits 1.9 kHz above it. `None` for a chart saved before
+    /// the name carried one.
+    pub dial_hz: Option<f64>,
+}
+
+impl WefaxChartMeta {
+    /// The file name to save this chart under.
+    pub fn file_name(&self) -> String {
+        let (y, mo, d, h, mi, s) = crate::utc_ymd_hms(self.unix);
+        let mut name = format!("wefax-{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}Z");
+        if let Some(hz) = self.dial_hz {
+            name.push_str(&format!("-{:.1}kHz", hz / 1000.0));
+            // The callsign of the station, when the dial is on a published one.
+            // Cosmetic — parsing re-derives it from the frequency — but it is
+            // what makes a directory listing readable.
+            if let Some(call) =
+                WefaxStation::at_dial(hz).and_then(|(s, _)| s.name.split_whitespace().next())
+            {
+                name.push('-');
+                name.push_str(call);
+            }
+        }
+        name.push_str(".png");
+        name
+    }
+
+    /// Read back what [`file_name`](Self::file_name) wrote.
+    ///
+    /// Also accepts the older `wefax-<unix millis>.png`, so charts saved before
+    /// the name carried a date still sort and label correctly rather than
+    /// dropping out of the gallery.
+    pub fn from_file_name(name: &str) -> Option<Self> {
+        let stem = match name.rfind('.') {
+            Some(i) if name[i..].eq_ignore_ascii_case(".png") => &name[..i],
+            _ => return None,
+        };
+        let rest = stem.strip_prefix("wefax-")?;
+        let mut parts = rest.split('-');
+        let date = parts.next()?;
+        if !date.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let Some(time) = parts.next() else {
+            // The old form: milliseconds and nothing else.
+            let ms: i64 = date.parse().ok()?;
+            return Some(WefaxChartMeta { unix: ms / 1000, dial_hz: None });
+        };
+        if date.len() != 8 {
+            return None;
+        }
+        let time = time.strip_suffix('Z').unwrap_or(time);
+        if time.len() != 6 || !time.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let y: i64 = date[0..4].parse().ok()?;
+        let mo: u32 = date[4..6].parse().ok()?;
+        let d: u32 = date[6..8].parse().ok()?;
+        let h: u32 = time[0..2].parse().ok()?;
+        let mi: u32 = time[2..4].parse().ok()?;
+        let s: u32 = time[4..6].parse().ok()?;
+        if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || s > 59 {
+            return None;
+        }
+        // Anything after the frequency is the station callsign, which is only
+        // there to be read; the frequency is what it was derived from.
+        let dial_hz = parts
+            .next()
+            .and_then(|f| f.strip_suffix("kHz"))
+            .and_then(|f| f.parse::<f64>().ok())
+            .filter(|k| k.is_finite() && *k > 0.0)
+            .map(|k| k * 1000.0);
+        Some(WefaxChartMeta { unix: crate::ymd_hms_to_unix(y, mo, d, h, mi, s), dial_hz })
+    }
+
+    /// `2026-07-29 14:15Z` — date and time to the minute, for a gallery label.
+    pub fn when_label(&self) -> String {
+        let (y, mo, d, h, mi, _) = crate::utc_ymd_hms(self.unix);
+        format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}Z")
+    }
+
+    /// The same to the second, for a tooltip or a window title.
+    pub fn when_full(&self) -> String {
+        let (y, mo, d, h, mi, s) = crate::utc_ymd_hms(self.unix);
+        format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}Z")
+    }
+
+    /// Where it came from: the station and its published carrier when the dial
+    /// lands on a known schedule, else the dial frequency itself.
+    ///
+    /// Naming the *published* carrier rather than the dial is deliberate — that
+    /// is the number the schedules print and the one an operator would go
+    /// looking for the chart under.
+    pub fn where_label(&self) -> Option<String> {
+        let hz = self.dial_hz?;
+        Some(match WefaxStation::at_dial(hz) {
+            Some((s, carrier)) => format!("{} · {carrier:.1} kHz", s.name),
+            None => format!("{:.1} kHz dial", hz / 1000.0),
+        })
+    }
+
+    /// A one-line description: when, and where from.
+    pub fn label(&self) -> String {
+        match self.where_label() {
+            Some(w) => format!("{}  ·  {w}", self.when_label()),
+            None => self.when_label(),
+        }
+    }
+}
+
 /// What the fax receiver is doing, for the panel.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WefaxStatus {
@@ -244,6 +372,7 @@ impl Default for WefaxStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ymd_hms_to_unix;
 
     /// These have to agree with `sdroxide_dsp::wefax`, which owns the real
     /// arithmetic; the DSP crate has the same assertion against its own copy.
@@ -321,6 +450,87 @@ mod tests {
         all.sort_by(f64::total_cmp);
         all.dedup();
         assert_eq!(all.len(), n, "two stations share a frequency");
+    }
+
+    /// The file name is the only place a chart's date and frequency are
+    /// recorded, so writing and reading it back has to be exact.
+    #[test]
+    fn a_chart_name_round_trips_its_date_and_dial() {
+        // 2026-07-29 14:15:30 UTC, on DWD Pinneberg's 7880 kHz.
+        let unix = ymd_hms_to_unix(2026, 7, 29, 14, 15, 30);
+        let m = WefaxChartMeta { unix, dial_hz: Some(7_878_100.0) };
+        let name = m.file_name();
+        assert_eq!(name, "wefax-20260729-141530Z-7878.1kHz-DWD.png");
+        let back = WefaxChartMeta::from_file_name(&name).expect("parses");
+        assert_eq!(back.unix, unix);
+        assert_eq!(back.dial_hz, Some(7_878_100.0));
+        // Names sort chronologically, which is what the gallery's fallback
+        // ordering relies on.
+        let later = WefaxChartMeta { unix: unix + 3600, dial_hz: Some(7_878_100.0) };
+        assert!(later.file_name() > name);
+
+        // A dial off any schedule still round-trips; only the callsign goes.
+        let m = WefaxChartMeta { unix, dial_hz: Some(9_123_400.0) };
+        assert_eq!(m.file_name(), "wefax-20260729-141530Z-9123.4kHz.png");
+        assert_eq!(WefaxChartMeta::from_file_name(&m.file_name()), Some(m));
+
+        // And so does one saved with no idea what it was tuned to.
+        let m = WefaxChartMeta { unix, dial_hz: None };
+        assert_eq!(m.file_name(), "wefax-20260729-141530Z.png");
+        assert_eq!(WefaxChartMeta::from_file_name(&m.file_name()), Some(m));
+    }
+
+    /// Charts saved before the name carried a date must keep working — they are
+    /// on disk in people's config directories and dropping them from the
+    /// gallery would look like data loss.
+    #[test]
+    fn the_old_millisecond_names_still_parse() {
+        let m = WefaxChartMeta::from_file_name("wefax-1753795200000.png").expect("legacy name");
+        assert_eq!(m.unix, 1_753_795_200);
+        assert_eq!(m.dial_hz, None);
+        assert_eq!(m.when_label(), "2025-07-29 13:20Z");
+    }
+
+    /// Anything that is not one of ours is refused rather than labelled with a
+    /// date invented out of whatever the name happened to contain.
+    #[test]
+    fn foreign_names_are_refused() {
+        for bad in [
+            "holiday.png",
+            "wefax.png",
+            "wefax-.png",
+            "wefax-20260729-141530Z-7878.1kHz-DWD.jpg",
+            "wefax-2026072-141530Z.png",  // short date
+            "wefax-20260729-1415Z.png",   // short time
+            "wefax-20261329-141530Z.png", // month 13
+            "wefax-20260729-991530Z.png", // hour 99
+            "sstv-20260729-141530Z.png",
+        ] {
+            assert_eq!(WefaxChartMeta::from_file_name(bad), None, "{bad} should not parse");
+        }
+        // An extension in caps is still a PNG.
+        assert!(WefaxChartMeta::from_file_name("wefax-20260729-141530Z.PNG").is_some());
+    }
+
+    /// The gallery label names the station and the *published* carrier, because
+    /// that is the number the schedules print — the dial is 1.9 kHz below it and
+    /// would be unrecognisable to anyone comparing against a schedule.
+    #[test]
+    fn the_label_names_the_station_and_its_published_carrier() {
+        let unix = ymd_hms_to_unix(2026, 7, 29, 14, 15, 30);
+        let m = WefaxChartMeta { unix, dial_hz: Some(7_878_100.0) };
+        assert_eq!(m.when_label(), "2026-07-29 14:15Z");
+        assert_eq!(m.when_full(), "2026-07-29 14:15:30Z");
+        let w = m.where_label().expect("on a schedule");
+        assert!(w.starts_with("DWD Pinneberg"), "{w}");
+        assert!(w.contains("7880.0 kHz"), "{w}");
+        assert!(m.label().contains("14:15Z"));
+
+        // Off-schedule says what it was tuned to and claims nothing more.
+        let m = WefaxChartMeta { unix, dial_hz: Some(9_123_400.0) };
+        assert_eq!(m.where_label().as_deref(), Some("9123.4 kHz dial"));
+        // With no frequency at all there is nothing to say.
+        assert_eq!(WefaxChartMeta { unix, dial_hz: None }.where_label(), None);
     }
 
     #[test]
