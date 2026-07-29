@@ -544,38 +544,69 @@ fn satellites(
         b.earth + V3::from_f64(dir) * (b.earth_r * radii as f32)
     };
 
-    for sat in data.satellites().filter(|s| show_all || s.popular) {
+    for sat in data.satellites() {
+        // A search match is drawn whether or not it otherwise would be: looking
+        // for a satellite that is not on screen is the main reason to search.
+        let hit = st.sat_search_hit(&sat.name, sat.norad_id);
+        if !(show_all || sat.popular || hit) {
+            continue;
+        }
         let Some(state) = sat.at(unix_s) else { continue };
         let pos = place(state.dir_ecliptic, state.radii);
 
         // Geostationary orbits read differently from low ones — one is a fixed
         // relay, the other a pass you have to catch — so they are coloured apart.
         let geo = sat.period_min > 1300.0;
-        let color = if geo { theme::GREEN } else { theme::CYAN_DIM };
+        // A match is pulled out of that scheme entirely rather than merely
+        // brightened: against ninety cyan dots, "a bit lighter" is not findable,
+        // and yellow is the one accent nothing else in this layer uses.
+        let color = match (hit, geo) {
+            (true, _) => theme::YELLOW,
+            (false, true) => theme::GREEN,
+            (false, false) => theme::CYAN_DIM,
+        };
+        let ringed = sat.popular || hit;
 
         s.sprites.push(SpriteInst {
             center: pos.arr(),
-            size_px: if sat.popular { 7.0 } else { 4.0 },
-            color: lin(color, (if sat.popular { 0.95 } else { 0.5 }) * fade),
+            size_px: if hit {
+                10.0
+            } else if sat.popular {
+                7.0
+            } else {
+                4.0
+            },
+            color: lin(color, (if ringed { 0.95 } else { 0.5 }) * fade),
             params: [SPRITE_DOT, 0.0, 0.0, 0.0],
         });
 
         // Orbit rings only for the ringed set: ninety of them at once is noise.
-        // A pasted element set and a subscription with orbits on both land here;
-        // a ninety-satellite group without does not.
-        if sat.popular {
+        // A pasted element set, a subscription with orbits on, and a search
+        // match all land here; a ninety-satellite group without does not.
+        if ringed {
             let path = sat.orbit(unix_s, 96);
+            let (w_px, alpha) = if hit { (2.4, 0.9) } else { (1.3, 0.4) };
             for w in path.windows(2) {
                 s.lines.push(seg(
                     place(w[0].0, w[0].1),
                     place(w[1].0, w[1].1),
-                    1.3,
-                    lin(color, 0.4 * fade),
+                    w_px,
+                    lin(color, alpha * fade),
                 ));
             }
         }
 
-        if st.layer(layer::LABELS) && sat.popular && earth_px > 24.0 {
+        // A match is labelled even with the LABELS layer off and even when it
+        // is not one of the curated few — the name is what was searched for, so
+        // withholding it would defeat the search. The floor is lower than the
+        // ordinary one but not absent: on an Earth twelve pixels across there
+        // is nothing for a label to point at.
+        let labelled = if hit {
+            earth_px > 12.0
+        } else {
+            st.layer(layer::LABELS) && sat.popular && earth_px > 24.0
+        };
+        if labelled {
             // The elevation is what decides whether it is workable right now,
             // so it goes in the label rather than a separate panel.
             let text = match st.qth {
@@ -592,7 +623,7 @@ fn satellites(
             s.labels.push(Label {
                 world: pos.arr(),
                 text,
-                color: lin_color(color, 0.9 * fade),
+                color: lin_color(color, (if hit { 1.0 } else { 0.9 }) * fade),
                 offset: [9.0, -7.0],
                 click: Click::Sat(sat.norad_id),
             });

@@ -166,6 +166,12 @@ pub struct SolarUi {
     /// Empty in the browser tab, which has no settings dialog of its own — the
     /// built-in table shows through there.
     pub sat_cfg: std::sync::Arc<sdroxide_types::SatConfig>,
+    /// What has been typed into the satellite search box.
+    ///
+    /// Matching satellites are drawn with their orbit and label whether or not
+    /// they would otherwise be — searching for a satellite that is not on
+    /// screen is the main reason to search at all.
+    pub sat_search: String,
     /// Satellite whose pass table is open, by catalogue number.
     pub selected_sat: Option<u64>,
     /// Cached pass prediction: which satellite, from what QTH, computed when,
@@ -182,6 +188,17 @@ pub struct SolarUi {
     /// Set when the target changes, so the next frame — which has the bodies
     /// placed already — can pull the camera in to frame whatever was picked.
     pub retarget: bool,
+}
+
+/// ASCII-case-insensitive substring test.
+///
+/// Allocation-free because this runs once per satellite per frame, and the
+/// alternative — uppercasing both sides — is two `String`s ninety times at
+/// sixty frames a second. Satellite designators are ASCII, so folding only
+/// ASCII case loses nothing.
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let (h, n) = (haystack.as_bytes(), needle.as_bytes());
+    !n.is_empty() && h.len() >= n.len() && h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
 }
 
 /// A cached pass prediction for one satellite.
@@ -237,6 +254,7 @@ impl SolarUi {
             awards: Default::default(),
             lapse_back_s: 0.0,
             lapse_playing: false,
+            sat_search: String::new(),
             sat_cfg: Default::default(),
             selected_sat: None,
             sat_passes: None,
@@ -298,6 +316,20 @@ impl SolarUi {
         self.lapse_back_s = back_s.clamp(0.0, crate::digi_map::HISTORY_S as f64);
     }
 
+    /// Whether a satellite matches what is in the search box.
+    ///
+    /// Case-insensitive substring on the name, and on the catalogue number as
+    /// text so `25544` finds the ISS. An empty box matches *nothing* rather
+    /// than everything: this drives a highlight, and highlighting all ninety
+    /// would be the same as highlighting none.
+    pub fn sat_search_hit(&self, name: &str, norad_id: u64) -> bool {
+        let q = self.sat_search.trim();
+        if q.is_empty() {
+            return false;
+        }
+        contains_ignore_ascii_case(name, q) || contains_ignore_ascii_case(&norad_id.to_string(), q)
+    }
+
     pub fn layer(&self, bit: u32) -> bool {
         self.view.layers & bit != 0
     }
@@ -352,6 +384,37 @@ mod tests {
             assert_eq!(sdroxide_solar::planets::MOONS[*i].parent, sdroxide_solar::Planet::Jupiter);
         }
         assert_eq!(after[0].label(), "Io");
+    }
+
+    /// The search has to find a satellite by any part of its designator or by
+    /// its catalogue number, and an empty box has to match nothing.
+    #[test]
+    fn the_search_matches_names_and_catalogue_numbers() {
+        let mut st = SolarUi::new(Solar3dView::default());
+        // Nothing typed: nothing highlighted, or every satellite would be.
+        assert!(!st.sat_search_hit("ISS", 25544));
+        st.sat_search = "   ".into();
+        assert!(!st.sat_search_hit("ISS", 25544));
+
+        st.sat_search = "iss".into();
+        assert!(st.sat_search_hit("ISS", 25544));
+        assert!(!st.sat_search_hit("AO-73", 39444));
+        // Substrings anywhere, in either case.
+        st.sat_search = "o-7".into();
+        assert!(st.sat_search_hit("AO-73", 39444));
+        assert!(st.sat_search_hit("ao-7", 7530));
+        assert!(!st.sat_search_hit("RS-44", 44909));
+        // ...and by catalogue number, which is how you find one whose
+        // designator you cannot remember.
+        st.sat_search = "25544".into();
+        assert!(st.sat_search_hit("ISS", 25544));
+        assert!(!st.sat_search_hit("ISS", 25545));
+        // Surrounding whitespace is not part of the query.
+        st.sat_search = "  QO-100 ".into();
+        assert!(st.sat_search_hit("QO-100", 43700));
+        // A query longer than the name cannot match it.
+        st.sat_search = "QO-100-AND-MORE".into();
+        assert!(!st.sat_search_hit("QO-100", 43700));
     }
 
     #[test]

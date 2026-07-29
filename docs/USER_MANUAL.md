@@ -2082,6 +2082,17 @@ With `LABELS` on, each of the curated satellites is named with **its elevation
 from your QTH right now** — a number means it is above your horizon and
 workable, `▼` means it is not.
 
+**Finding one by name.** The search box under the clock takes a designator or a
+catalogue number — `AO-73`, `o-7`, `25544` — and matches are pulled out of the
+crowd in yellow, with their orbit ring and their name, whether or not they were
+being drawn a moment ago. That is the point of it: a satellite outside the
+curated set has no label at all until `ALL SATS` is on, and then there are
+ninety unlabelled dots. Matching is case-insensitive and on any part of the
+name, so a partial designator is enough. The line underneath says how many of
+the tracked satellites matched; **Enter** on a single match opens its pass
+table, and **✕** clears the box. The search only appears while the `SATS` layer
+is on.
+
 ![Aurora and satellite visualization and pass table](images/17-sats-passes.jpg)
 
 **Click a satellite's label** for its pass table:

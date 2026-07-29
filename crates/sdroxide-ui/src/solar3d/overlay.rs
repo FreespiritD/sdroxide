@@ -411,7 +411,8 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     // Only if a label did not already take it: a name sits on top of its own
     // body, and clicking the text should not be ambiguous.
     pick_bodies(ui, st, rect, &view_proj, &picks, &resp, took_click);
-    clock(ui, rect, sim_now, st.sim_offset_s != 0.0);
+    let clock_rect = clock(ui, rect, sim_now, st.sim_offset_s != 0.0);
+    sat_search(ui, st, data, rect, clock_rect);
     let below = weather_panel(ui, st, data, rect, sim_now as i64);
     aurora_panel(ui, st, data, rect, below, sim_now as i64);
     info_card(ui, st, data, rect, sim_now);
@@ -842,7 +843,7 @@ fn hhmm(unix: i64) -> String {
 /// UTC because everything else in the window is: the ephemeris, the DONKI
 /// timestamps, the arrival estimates and the FT8 slot boundaries. A local-time
 /// clock here would be the only thing on screen in a different frame.
-fn clock(ui: &egui::Ui, rect: egui::Rect, sim_now: f64, scrubbed: bool) {
+fn clock(ui: &egui::Ui, rect: egui::Rect, sim_now: f64, scrubbed: bool) -> Option<egui::Rect> {
     use super::dotmatrix;
 
     let (_, _, _, h, m, s) = sdroxide_types::utc_ymd_hms(sim_now as i64);
@@ -861,7 +862,7 @@ fn clock(ui: &egui::Ui, rect: egui::Rect, sim_now: f64, scrubbed: bool) {
         egui::vec2(size.x, size.y + label_size.y + 6.0) + pad * 2.0,
     );
     if !rect.contains_rect(panel) {
-        return;
+        return None;
     }
 
     ui.painter().rect_filled(panel, 0, theme::BG_DEEP.gamma_multiply(0.72));
@@ -885,6 +886,107 @@ fn clock(ui: &egui::Ui, rect: egui::Rect, sim_now: f64, scrubbed: bool) {
         on.gamma_multiply(0.6),
         egui::Color32::TRANSPARENT,
     );
+    Some(panel)
+}
+
+/// The satellite search box, under the clock.
+///
+/// Ninety satellites is far too many to find one by reading labels, and the
+/// ones that are not in the curated set have no label at all until `ALL SATS`
+/// is on — at which point there are ninety unlabelled dots. Typing a designator
+/// pulls that satellite out of the crowd with its orbit and its name, whether
+/// or not it was being drawn a moment ago.
+///
+/// Hidden when the satellite layer is off, because a search that highlights
+/// things nothing is drawing would look broken.
+fn sat_search(
+    ui: &egui::Ui,
+    st: &mut SolarUi,
+    data: Option<&SolarData>,
+    rect: egui::Rect,
+    clock_rect: Option<egui::Rect>,
+) {
+    let Some(clock_rect) = clock_rect else { return };
+    if !st.layer(layer::SATS) {
+        // Leaving text behind in a hidden box would keep highlighting after the
+        // layer came back, with nothing on screen to say why.
+        st.sat_search.clear();
+        return;
+    }
+
+    let width = clock_rect.width().max(210.0);
+    let area = egui::Rect::from_min_size(
+        clock_rect.left_bottom() + egui::vec2(0.0, 6.0),
+        egui::vec2(width, 30.0),
+    );
+    if !rect.contains_rect(area) {
+        return;
+    }
+
+    // Matches are counted from the same predicate the scene highlights with, so
+    // "3 of 94" can never disagree with what is lit up.
+    let (hits, total) = match data {
+        Some(d) => d.satellites().fold((0usize, 0usize), |(h, n), sat| {
+            (h + st.sat_search_hit(&sat.name, sat.norad_id) as usize, n + 1)
+        }),
+        None => (0, 0),
+    };
+    let query = st.sat_search.trim().to_string();
+    let mut clear = false;
+    let mut open: Option<u64> = None;
+
+    egui::Area::new(egui::Id::new("solar-sat-search"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(area.min)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(theme::BG_DEEP.gamma_multiply(0.72))
+                .inner_margin(egui::Margin::symmetric(8, 5))
+                .show(ui, |ui| {
+                    ui.set_width(width - 16.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 5.0;
+                        ui.label(RichText::new("⌕").color(theme::CYAN_DIM).size(14.0));
+                        let edit = ui.add(
+                            egui::TextEdit::singleline(&mut st.sat_search)
+                                .desired_width(width - 62.0)
+                                .hint_text("satellite")
+                                .text_color(theme::TEXT_STRONG),
+                        );
+                        // Enter on a single match opens its pass table, which is
+                        // what you were looking the satellite up for.
+                        if edit.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            && hits == 1
+                        {
+                            open = data.and_then(|d| {
+                                d.satellites()
+                                    .find(|s| st.sat_search_hit(&s.name, s.norad_id))
+                                    .map(|s| s.norad_id)
+                            });
+                        }
+                        if !query.is_empty()
+                            && ui.button("✕").on_hover_text("Clear the search").clicked()
+                        {
+                            clear = true;
+                        }
+                    });
+                    if !query.is_empty() {
+                        let (text, colour) = match hits {
+                            0 => ("no match".to_string(), theme::PINK),
+                            n => (format!("{n} of {total} tracked"), theme::YELLOW),
+                        };
+                        ui.label(RichText::new(text).color(colour).size(10.0));
+                    }
+                });
+        });
+
+    if clear {
+        st.sat_search.clear();
+    }
+    if let Some(id) = open {
+        st.selected_sat = Some(id);
+    }
 }
 
 /// The propagation numbers, top right: MUF at the QTH, K and A, the 10.7 cm
