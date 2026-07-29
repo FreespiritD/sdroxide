@@ -68,7 +68,10 @@ pub use input::{
     KeyChord, MidiBinding, MidiMsg, MidiMsgKind, MidiSettings, MouseButton, MouseButtonBinding,
     RelativeMode, WheelAction, WheelSettings,
 };
-pub use js8::{Js8FrameInfo, Js8FrameKind, Js8Heard, Js8Msg, Js8Speed, Js8Status};
+pub use js8::{
+    HB_BAND_HI_HZ, HB_BAND_LO_HZ, HB_SLOT_HZ, Js8FrameInfo, Js8FrameKind, Js8Heard, Js8Msg,
+    Js8Speed, Js8Status,
+};
 pub use memory::{BandStackEntry, MemoryChannel};
 pub use meters::{Meters, TxMeters, TxTelemetry};
 pub use mode::{AgcMode, Mode, NrLevel};

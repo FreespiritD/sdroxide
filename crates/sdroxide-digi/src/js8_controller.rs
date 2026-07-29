@@ -25,7 +25,8 @@ use std::time::SystemTime;
 
 use sdroxide_dsp::MonoResampler;
 use sdroxide_types::{
-    DigiConfig, DigiStatus, Js8Heard, Js8Msg, Js8Speed, Js8Status, Mode, QsoStep,
+    DigiConfig, DigiStatus, HB_BAND_HI_HZ, HB_BAND_LO_HZ, HB_SLOT_HZ, Js8Heard, Js8Msg, Js8Speed,
+    Js8Status, Mode, QsoStep,
 };
 
 use crate::DigiEngine;
@@ -60,6 +61,51 @@ const HB_ACK_COOLDOWN_S: i64 = 15 * 60;
 /// Stations remembered for the acknowledgement cooldown.
 const HB_ACK_CAP: usize = 200;
 
+/// How long a decode keeps its slot marked busy when choosing where to beacon.
+///
+/// Upstream's figure (`mainwindow.cpp`, `isFreqOffsetFree`: activity older than
+/// thirty seconds does not count). Two JS8 slots at Normal, so a station that
+/// transmitted in either of the last two slots still holds its frequency —
+/// which is the property that matters, and why
+/// [`Js8Controller::activity_window_s`] stretches it at Slow rather than using
+/// this number flat.
+const ACTIVITY_WINDOW_S: i64 = 30;
+
+/// Decodes remembered for that judgement. A busy slot decodes a couple of dozen
+/// signals; this is well clear of any real band and stops a pathological one
+/// growing the list without bound.
+const ACTIVITY_CAP_DECODES: usize = 500;
+
+/// Where a queued frame goes out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TxBand {
+    /// The operator's working frequency.
+    Working,
+    /// A free slot in the heartbeat sub-band. Resolved when the frame is
+    /// actually sent rather than when it is queued, so the choice is made
+    /// against the band as it is at that moment — a beacon can sit behind a
+    /// long message for minutes, by which time a slot picked at queue time
+    /// would be somebody else's.
+    Beacon,
+}
+
+/// A frame waiting for its slot, and where it is going.
+#[derive(Debug, Clone, Copy)]
+struct TxFrame {
+    payload: Js8Payload,
+    band: TxBand,
+}
+
+impl TxFrame {
+    fn working(payload: Js8Payload) -> Self {
+        TxFrame { payload, band: TxBand::Working }
+    }
+
+    fn beacon(payload: Js8Payload) -> Self {
+        TxFrame { payload, band: TxBand::Beacon }
+    }
+}
+
 /// Work handed to the decode thread.
 struct DecodeJob {
     audio: Vec<i16>,
@@ -89,7 +135,7 @@ pub struct Js8Controller {
     messages: Vec<Js8Msg>,
 
     /// Frames still to go out, one per slot.
-    tx_frames: VecDeque<Js8Payload>,
+    tx_frames: VecDeque<TxFrame>,
     tx_total: u8,
     tx_fired_slot: i64,
     burst: Option<BurstPlayer>,
@@ -106,6 +152,11 @@ pub struct Js8Controller {
     hb_countdown_s: Option<u32>,
     /// When each station's heartbeat was last acknowledged, for the cooldown.
     hb_acked: HashMap<String, i64>,
+    /// Where the last beacon went out, for the panel.
+    hb_hz: Option<f32>,
+    /// Recently decoded signals as `(audio Hz, slot)`, which is all the band
+    /// occupancy choosing a beacon slot needs.
+    activity: Vec<(f32, i64)>,
     clock: ClockMonitor,
     status_dirty: bool,
 }
@@ -164,6 +215,8 @@ impl Js8Controller {
             hb_count: 0,
             hb_countdown_s: None,
             hb_acked: HashMap::new(),
+            hb_hz: None,
+            activity: Vec::new(),
             clock: ClockMonitor::default(),
             status_dirty: true,
             cfg,
@@ -197,7 +250,7 @@ impl Js8Controller {
 
     /// Queue the frames for a message, replacing anything already waiting.
     fn queue_frames(&mut self, frames: Vec<Js8Payload>) {
-        self.tx_frames = frames.into();
+        self.tx_frames = frames.into_iter().map(TxFrame::working).collect();
         self.tx_total = self.tx_frames.len().min(255) as u8;
         self.status_dirty = true;
     }
@@ -392,7 +445,7 @@ impl Js8Controller {
             let hb =
                 Compound::heartbeat(&self.my_call(), (!grid.is_empty()).then_some(grid.as_str()));
             if let Some(p) = hb.pack() {
-                self.tx_frames.push_back(Self::single(p));
+                self.tx_frames.push_back(TxFrame::beacon(Self::single(p)));
                 self.tx_total = self.tx_total.saturating_add(1);
             }
         }
@@ -403,6 +456,80 @@ impl Js8Controller {
             self.hb_countdown_s = Some(left);
             self.status_dirty = true;
         }
+    }
+
+    /// A clear slot in the heartbeat sub-band to beacon in.
+    ///
+    /// Heartbeats have a home — [`HB_BAND_LO_HZ`]–[`HB_BAND_HI_HZ`] on a
+    /// [`HB_SLOT_HZ`] grid — so that a station watching for beacons knows where
+    /// to look, and so that an unattended transmitter does not land on somebody
+    /// else's conversation. A slot is busy when anything was decoded within one
+    /// signal width of it in the last [`ACTIVITY_WINDOW_S`] seconds.
+    ///
+    /// Two deliberate differences from upstream's `findFreeFreqOffset`, which
+    /// draws ten random offsets and takes the first free one:
+    ///
+    /// * The grid is enumerated rather than sampled, so a free slot is never
+    ///   missed the way ten random draws can miss the only one left.
+    /// * When nothing is free, upstream falls back to the bottom of the band —
+    ///   where every station in that position piles up together. This takes the
+    ///   slot that has been quiet longest instead, which is the same answer when
+    ///   the band is empty and a better one when it is not.
+    ///
+    /// The clearance is this speed's own bandwidth rather than upstream's fixed
+    /// 50 Hz: Fast is 80 Hz wide and would otherwise be placed half on top of a
+    /// signal it had just measured as far enough away.
+    /// How far back band activity counts, in seconds.
+    ///
+    /// [`ACTIVITY_WINDOW_S`] is upstream's flat thirty, which is two slots at
+    /// Normal but less than one at Slow — where it would forget a station
+    /// between its transmissions and beacon straight on top of it. Two slots is
+    /// the floor whatever the speed.
+    fn activity_window_s(&self) -> i64 {
+        ACTIVITY_WINDOW_S.max(2 * self.params.slot_s as i64)
+    }
+
+    fn free_beacon_hz(&self, unix_now: i64, slot_idx: i64) -> f32 {
+        let bw = self.speed.bandwidth_hz().max(HB_SLOT_HZ);
+        // Stop where the signal still fits inside the sub-band. For Normal —
+        // 50 Hz wide, on a 50 Hz grid — that is upstream's ten slots exactly.
+        let top = (HB_BAND_HI_HZ - bw).max(HB_BAND_LO_HZ);
+        let n = ((top - HB_BAND_LO_HZ) / HB_SLOT_HZ) as usize + 1;
+        let slots: Vec<f32> = (0..n).map(|i| HB_BAND_LO_HZ + i as f32 * HB_SLOT_HZ).collect();
+
+        // The most recent activity within a signal width of each slot.
+        let last_at = |f: f32| {
+            self.activity
+                .iter()
+                .filter(|(hz, _)| (hz - f).abs() < bw)
+                .map(|&(_, t)| t)
+                .max()
+                .unwrap_or(i64::MIN)
+        };
+        // Saturating: a slot nothing has ever been heard on reports `i64::MIN`,
+        // and the plain subtraction overflows on it.
+        let window = self.activity_window_s();
+        let free: Vec<f32> = slots
+            .iter()
+            .copied()
+            .filter(|&f| unix_now.saturating_sub(last_at(f)) >= window)
+            .collect();
+        if !free.is_empty() {
+            // Among the free ones, spread stations out: two hearing the same
+            // quiet band must not both choose its bottom slot.
+            return free[self.beacon_pick(slot_idx, free.len())];
+        }
+        slots.into_iter().min_by_key(|&f| last_at(f)).unwrap_or(HB_BAND_LO_HZ)
+    }
+
+    /// Which of `n` free slots to take. Hashed rather than random so a run is
+    /// reproducible, and keyed on the callsign so two stations differ.
+    fn beacon_pick(&self, slot_idx: i64, n: usize) -> usize {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.my_call().hash(&mut h);
+        slot_idx.hash(&mut h);
+        (h.finish() % n as u64) as usize
     }
 
     /// One slot of jitter on a quarter of beacons.
@@ -484,8 +611,8 @@ impl Js8Controller {
         Directed::unpack(&self.frames_for_text(text)[0])
     }
 
-    fn synth_burst_48k(&self, payload: Js8Payload) -> Option<BurstPlayer> {
-        let audio = modem::encode_frame_12k(self.speed, payload, self.audio_hz, 0.5);
+    fn synth_burst_48k(&self, payload: Js8Payload, hz: f32) -> Option<BurstPlayer> {
+        let audio = modem::encode_frame_12k(self.speed, payload, hz, 0.5);
         let mut rs = MonoResampler::new(DECODE_RATE, OUT_RATE)?;
         let mut out = Vec::new();
         rs.push(&audio, &mut out);
@@ -611,6 +738,17 @@ impl DigiEngine for Js8Controller {
             if decodes.is_empty() {
                 continue;
             }
+            // Band occupancy, for choosing where to beacon. Every decode
+            // counts, not only the ones whose callsign we recovered: a signal
+            // holds its frequency whether or not we know who it is.
+            let window = self.activity_window_s();
+            self.activity.retain(|&(_, t)| slot_utc - t < window);
+            self.activity.extend(decodes.iter().map(|d| (d.audio_hz, slot_utc)));
+            if self.activity.len() > ACTIVITY_CAP_DECODES {
+                let drop = self.activity.len() - ACTIVITY_CAP_DECODES;
+                self.activity.drain(..drop);
+            }
+
             let mut shared = Vec::new();
             for d in &decodes {
                 if let Some(msg) = self.assembler.push(d, slot_utc) {
@@ -625,11 +763,19 @@ impl DigiEngine for Js8Controller {
                     if let Some(reply) = auto_reply(&msg, &self.station(), policy) {
                         // A grid or a status line does not fit in the directed
                         // frame, so an answer can be several frames long.
+                        // An acknowledgement is a beacon too: it belongs in
+                        // the sub-band, where the station it answers is
+                        // listening.
+                        let beacon = intent(&msg) == Js8Intent::Heartbeat;
                         for f in self.frames_for_reply(reply) {
-                            self.tx_frames.push_back(f);
+                            self.tx_frames.push_back(if beacon {
+                                TxFrame::beacon(f)
+                            } else {
+                                TxFrame::working(f)
+                            });
                             self.tx_total = self.tx_total.saturating_add(1);
                         }
-                        if intent(&msg) == Js8Intent::Heartbeat {
+                        if beacon {
                             self.note_hb_ack(&msg.from, unix_now);
                         }
                     }
@@ -693,8 +839,20 @@ impl DigiEngine for Js8Controller {
             let into = self.scheduler.secs_into_slot(now);
             let latest = self.params.slot_s - self.params.burst_s + self.params.tx_offset_s;
             if into >= self.params.tx_offset_s && into <= latest {
-                if let Some(payload) = self.tx_frames.pop_front() {
-                    if let Some(b) = self.synth_burst_48k(payload) {
+                if let Some(frame) = self.tx_frames.pop_front() {
+                    // A beacon moves to the sub-band unless the operator asked
+                    // for it to stay put; everything else goes out where they
+                    // are working.
+                    let hz = match frame.band {
+                        TxBand::Beacon if !self.cfg.js8_hb_anywhere => {
+                            self.free_beacon_hz(unix_now, idx)
+                        }
+                        _ => self.audio_hz,
+                    };
+                    if let Some(b) = self.synth_burst_48k(frame.payload, hz) {
+                        if frame.band == TxBand::Beacon {
+                            self.hb_hz = Some(hz);
+                        }
                         self.burst = Some(b);
                         self.keyed = true;
                         self.tx_fired_slot = idx;
@@ -800,7 +958,9 @@ impl DigiEngine for Js8Controller {
             return;
         }
         if let Some(p) = self.heartbeat_for(&text) {
-            self.queue_frames(vec![p]);
+            self.tx_frames = VecDeque::from([TxFrame::beacon(p)]);
+            self.tx_total = 1;
+            self.status_dirty = true;
             return;
         }
         self.queue_frames(self.frames_for_text(&text));
@@ -836,6 +996,7 @@ impl DigiEngine for Js8Controller {
                 tx_frames_pending: self.tx_frames.len().min(255) as u8,
                 tx_frames_total: self.tx_total,
                 next_hb_in_s: self.hb_countdown_s,
+                hb_hz: self.hb_hz,
             }),
             fox_queue: Vec::new(),
             call_queue: Vec::new(),
@@ -953,9 +1114,9 @@ mod tests {
         let mut c = Js8Controller::new(cfg(), 48_000.0);
         c.call_cq();
         assert_eq!(c.tx_frames.len(), 1);
-        let flags = Js8Flags(c.tx_frames[0].frame_type);
+        let flags = Js8Flags(c.tx_frames[0].payload.frame_type);
         assert!(flags.is_first() && flags.is_last());
-        let cq = Compound::unpack(&c.tx_frames[0]).expect("a compound frame");
+        let cq = Compound::unpack(&c.tx_frames[0].payload).expect("a compound frame");
         assert!(cq.is_cq());
         assert_eq!(cq.call, "N0JDS");
     }
@@ -1188,7 +1349,8 @@ mod tests {
         for typed in ["@ALLCALL HB", "HB", "hb", "HEARTBEAT"] {
             c.send_text(typed.into());
             assert_eq!(c.tx_frames.len(), 1, "{typed:?}");
-            let hb = Compound::unpack(&c.tx_frames[0]).unwrap_or_else(|| panic!("{typed:?}"));
+            let hb =
+                Compound::unpack(&c.tx_frames[0].payload).unwrap_or_else(|| panic!("{typed:?}"));
             assert_eq!(hb.call, "N0JDS", "{typed:?}");
             assert!(!hb.is_cq(), "{typed:?} came out as a CQ");
             assert_eq!(hb.grid().as_deref(), Some("FN42"), "{typed:?}");
@@ -1254,7 +1416,7 @@ mod tests {
         assert!(c.tx_frames.is_empty());
         c.tick_heartbeat(c.next_hb_unix);
         assert_eq!(c.tx_frames.len(), 1, "the beacon never fired");
-        let hb = Compound::unpack(&c.tx_frames[0]).expect("a heartbeat frame");
+        let hb = Compound::unpack(&c.tx_frames[0].payload).expect("a heartbeat frame");
         assert_eq!(hb.call, "N0JDS");
         assert_eq!(hb.grid().as_deref(), Some("FN42"));
         assert!(!hb.is_cq());
@@ -1312,6 +1474,120 @@ mod tests {
         // Nor does it acknowledge one.
         c.cfg.js8_hb_ack = true;
         assert!(!c.hb_ack_allowed(&heartbeat_from("KN4CRD", -7), t0));
+    }
+
+    #[test]
+    fn a_beacon_lands_in_the_heartbeat_sub_band() {
+        let c = Js8Controller::new(cfg(), 48_000.0);
+        // Every slot index has to land on the grid, inside the band, with room
+        // for the whole signal.
+        for idx in 0..40 {
+            let f = c.free_beacon_hz(1_700_000_000, idx);
+            assert!((HB_BAND_LO_HZ..=HB_BAND_HI_HZ).contains(&f), "{f} Hz is outside the sub-band");
+            assert!(f + c.speed.bandwidth_hz() <= HB_BAND_HI_HZ, "{f} Hz spills past the top");
+            assert_eq!((f - HB_BAND_LO_HZ) % HB_SLOT_HZ, 0.0, "{f} Hz is off the grid");
+        }
+        // Normal is 50 Hz wide on a 50 Hz grid, so this is upstream's ten
+        // slots exactly: 500, 550, … 950.
+        let seen: std::collections::BTreeSet<i32> =
+            (0..400).map(|i| c.free_beacon_hz(1_700_000_000, i) as i32).collect();
+        assert_eq!(seen.len(), 10, "the quiet band was not spread across: {seen:?}");
+        assert_eq!(*seen.first().expect("nonempty"), 500);
+        assert_eq!(*seen.last().expect("nonempty"), 950);
+    }
+
+    #[test]
+    fn a_beacon_avoids_a_slot_somebody_is_using() {
+        let mut c = Js8Controller::new(cfg(), 48_000.0);
+        let now = 1_700_000_000;
+        // Everything busy but the two slots around 800 Hz.
+        c.activity = (0..10)
+            .map(|i| HB_BAND_LO_HZ + i as f32 * HB_SLOT_HZ)
+            .filter(|f| !(775.0..=825.0).contains(f))
+            .map(|f| (f, now))
+            .collect();
+        for idx in 0..40 {
+            let f = c.free_beacon_hz(now, idx);
+            assert_eq!(f, 800.0, "landed on a busy slot at index {idx}");
+        }
+        // Activity that has gone quiet stops holding its slot.
+        let seen: std::collections::BTreeSet<i32> =
+            (0..400).map(|i| c.free_beacon_hz(now + c.activity_window_s(), i) as i32).collect();
+        assert_eq!(seen.len(), 10, "a stale decode still held its frequency");
+    }
+
+    #[test]
+    fn slow_remembers_a_station_between_its_transmissions() {
+        // Upstream's flat thirty seconds is two slots at Normal but less than
+        // one at Slow, where it would forget a station between transmissions
+        // and beacon straight on top of it.
+        let normal = Js8Controller::new(cfg(), 48_000.0);
+        assert_eq!(normal.activity_window_s(), ACTIVITY_WINDOW_S, "Normal is upstream's number");
+
+        let mut slow =
+            Js8Controller::new(DigiConfig { js8_speed: Js8Speed::Slow, ..cfg() }, 48_000.0);
+        assert!(slow.activity_window_s() >= 60, "a Slow slot outlives the window");
+        let now = 1_700_000_000;
+        // A station that transmitted one Slow slot ago still holds its slot.
+        slow.activity = vec![(700.0, now - 30)];
+        for idx in 0..40 {
+            let f = slow.free_beacon_hz(now, idx);
+            assert!((f - 700.0).abs() >= HB_SLOT_HZ, "{f} Hz landed on a station heard 30 s ago");
+        }
+    }
+
+    #[test]
+    fn a_full_sub_band_takes_the_slot_that_has_been_quiet_longest() {
+        // Upstream falls back to the bottom of the band, where every station in
+        // this position piles up together. The stalest slot is a better answer
+        // and the same one when the band is empty.
+        let mut c = Js8Controller::new(cfg(), 48_000.0);
+        let now = 1_700_000_000;
+        c.activity =
+            (0..10).map(|i| (HB_BAND_LO_HZ + i as f32 * HB_SLOT_HZ, now - i as i64)).collect();
+        assert_eq!(c.free_beacon_hz(now, 0), 950.0, "did not take the stalest slot");
+    }
+
+    #[test]
+    fn a_wide_speed_keeps_its_whole_signal_clear() {
+        // Fast is 80 Hz wide. Upstream measures clearance at a fixed 50 Hz and
+        // would place it half on top of a signal it had just cleared.
+        let mut c = Js8Controller::new(DigiConfig { js8_speed: Js8Speed::Fast, ..cfg() }, 48_000.0);
+        let now = 1_700_000_000;
+        c.activity = vec![(600.0, now)];
+        for idx in 0..40 {
+            let f = c.free_beacon_hz(now, idx);
+            assert!((f - 600.0).abs() >= 80.0, "{f} Hz sits within 80 Hz of a live signal");
+            assert!(f + 80.0 <= HB_BAND_HI_HZ, "{f} Hz spills past the top of the band");
+        }
+    }
+
+    #[test]
+    fn two_stations_do_not_choose_the_same_quiet_slot_every_time() {
+        let mine = Js8Controller::new(cfg(), 48_000.0);
+        let theirs = Js8Controller::new(DigiConfig { my_call: "KN4CRD".into(), ..cfg() }, 48_000.0);
+        let now = 1_700_000_000;
+        let same = (0..40)
+            .filter(|&i| mine.free_beacon_hz(now, i) == theirs.free_beacon_hz(now, i))
+            .count();
+        assert!(same < 30, "two stations picked the same slot {same}/40 times");
+    }
+
+    #[test]
+    fn a_beacon_goes_to_the_sub_band_and_a_message_does_not() {
+        // The queue has to remember which is which: a heartbeat moves, and the
+        // sentence the operator typed stays where they are working.
+        let mut c = Js8Controller::new(cfg(), 48_000.0);
+        c.send_text("HB".into());
+        assert_eq!(c.tx_frames[0].band, TxBand::Beacon);
+        c.send_text("KN4CRD GOOD EVENING".into());
+        assert!(c.tx_frames.iter().all(|f| f.band == TxBand::Working));
+        c.abort_tx();
+
+        // …and the operator can pin beacons to the working frequency.
+        c.cfg.js8_hb_anywhere = true;
+        c.send_text("HB".into());
+        assert_eq!(c.tx_frames[0].band, TxBand::Beacon, "still tagged, resolved at transmit");
     }
 
     #[test]

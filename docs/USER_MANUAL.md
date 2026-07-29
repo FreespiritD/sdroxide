@@ -1220,6 +1220,23 @@ beacon at all, and cannot acknowledge one: it is the local and VHF speed, and an
 unattended transmitter there spends a lot of a small band to reach nobody far
 away.
 
+**Where beacons go.** Not on your working frequency. Heartbeats and their
+acknowledgements move to a free slot in the **500–1000 Hz sub-band**, the same
+convention JS8Call follows: it is where stations watching for beacons look, and
+it keeps an unattended transmitter off somebody else's QSO. The slot is chosen
+at the moment the beacon goes out — a beacon can wait behind a long message for
+minutes, and a frequency picked when it was queued would be somebody else's by
+then. A slot counts as taken if anything was decoded within one signal width of
+it in the last half-minute (longer at Slow, whose transmissions are longer than
+that), and if the whole sub-band is busy the beacon takes whichever slot has
+been quiet longest.
+
+So a beacon appears on the waterfall somewhere other than your transmit marker.
+The panel header says where the last one went — `HB 750 Hz` beside the
+countdown — so you can tell your own beacon from a stranger's. If you would
+rather keep everything you transmit in one place, ⚙ SETUP → *Beacon frequency*
+→ **Working freq** switches it off.
+
 Relayed messages and stored-message requests are decoded and shown, but this
 station will not act on them — forwarding traffic on someone else's behalf is a
 decision for the operator.

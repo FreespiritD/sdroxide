@@ -774,6 +774,14 @@ pub struct DigiConfig {
     /// band heartbeats exist to keep quiet. The engine rate-limits it besides.
     #[serde(default)]
     pub js8_hb_ack: bool,
+    /// JS8: beacon on the working frequency instead of moving to a free slot in
+    /// the 500–1000 Hz heartbeat sub-band.
+    ///
+    /// Off by default, so heartbeats go where the band convention says they
+    /// go — a beacon on top of somebody's QSO is exactly what the sub-band
+    /// exists to prevent. Upstream calls the same switch "heartbeat anywhere".
+    #[serde(default)]
+    pub js8_hb_anywhere: bool,
     /// JS8: forget an incomplete multi-frame message after this many seconds.
     #[serde(default = "js8_default_timeout")]
     pub js8_assembly_timeout_s: u32,
@@ -878,6 +886,7 @@ impl Default for DigiConfig {
             js8_auto_reply: true,
             js8_heartbeat_min: 0,
             js8_hb_ack: false,
+            js8_hb_anywhere: false,
             js8_assembly_timeout_s: 300,
             js8_call: String::new(),
             js8_status: String::new(),

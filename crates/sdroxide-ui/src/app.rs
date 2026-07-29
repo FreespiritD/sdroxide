@@ -4357,6 +4357,21 @@ impl SdroxideApp {
                 )
                 .on_hover_text("Until the next heartbeat");
             }
+            // Beacons do not go out on the working frequency, so the waterfall
+            // shows a burst where the panel's marker is not. Saying where it
+            // went is the difference between that reading as a bug and as the
+            // sub-band convention working.
+            if let Some(hz) = js8.hb_hz {
+                ui.label(
+                    RichText::new(format!("HB {hz:.0} Hz")).monospace().color(crate::theme::GREEN),
+                )
+                .on_hover_text(format!(
+                    "The last beacon went out at {hz:.0} Hz — a free slot in the {:.0}–{:.0} Hz \
+                     heartbeat sub-band, chosen so it lands clear of the signals being decoded.",
+                    sdroxide_types::HB_BAND_LO_HZ,
+                    sdroxide_types::HB_BAND_HI_HZ,
+                ));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Every setting this mode has — callsign, groups, auto-reply,
                 // the beacon interval, the status message — lives in that
@@ -5473,6 +5488,37 @@ impl SdroxideApp {
                             .size(10.5)
                             .weak(),
                         );
+                        ui.end_row();
+                        ui.label("Beacon frequency");
+                        ui.horizontal(|ui| {
+                            let sub_band = !cfg.js8_hb_anywhere;
+                            if crate::chrome::chip(ui, sub_band, "500–1000 Hz")
+                                .on_hover_text(
+                                    "Move each beacon to a free slot in the heartbeat sub-band, \
+                                     the way JS8Call does: it is where stations watching for \
+                                     beacons look, and it keeps an unattended transmitter off \
+                                     somebody else's QSO. The slot is chosen when the beacon \
+                                     actually goes out, clear of everything being decoded.",
+                                )
+                                .clicked()
+                                && !sub_band
+                            {
+                                cfg.js8_hb_anywhere = false;
+                                changed = true;
+                            }
+                            if crate::chrome::chip(ui, !sub_band, "Working freq")
+                                .on_hover_text(
+                                    "Beacon where you are working instead. Against the band \
+                                     convention, but it keeps everything you transmit in one \
+                                     place.",
+                                )
+                                .clicked()
+                                && sub_band
+                            {
+                                cfg.js8_hb_anywhere = true;
+                                changed = true;
+                            }
+                        });
                         ui.end_row();
                         ui.label("Heartbeat reply");
                         ui.add_enabled_ui(cfg.js8_auto_reply && !turbo, |ui| {

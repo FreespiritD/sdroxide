@@ -91,7 +91,14 @@ use sdroxide_types::{
 /// transmit-queue progress. No message enum gained a variant, but postcard is
 /// not self-describing and the added struct fields change the layout of every
 /// message carrying `DigiConfig` or `DigiStatus`.
-pub const PROTO_VERSION: u16 = 28;
+/// v29: JS8 beaconing — `DigiConfig`'s `js8_hb_ack` (answer a heard heartbeat
+/// with a signal report) and `js8_hb_anywhere` (beacon on the working frequency
+/// instead of the 500–1000 Hz sub-band), plus `Js8Status.hb_hz`, the frequency
+/// the last beacon actually went out on. `Js8Status.next_hb_in_s` is now
+/// populated rather than always `None`, which is a behaviour change but not a
+/// layout one. Both ends must agree on the three added fields, postcard being
+/// what it is.
+pub const PROTO_VERSION: u16 = 29;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

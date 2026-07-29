@@ -109,6 +109,18 @@ impl Js8Speed {
     }
 }
 
+/// Bottom of the heartbeat sub-band, in Hz above the dial.
+///
+/// Heartbeats have a home so that a station watching for beacons knows where to
+/// look, and so that an unattended transmitter does not land on a conversation.
+/// JS8Call picks a free slot in 500–1000 Hz for every heartbeat and heartbeat
+/// acknowledgement (`mainwindow.cpp`, `findFreeFreqOffset(500, 1000, 50)`).
+pub const HB_BAND_LO_HZ: f32 = 500.0;
+/// Top of the heartbeat sub-band, in Hz above the dial.
+pub const HB_BAND_HI_HZ: f32 = 1000.0;
+/// Spacing of the slots the sub-band is divided into.
+pub const HB_SLOT_HZ: f32 = 50.0;
+
 /// Which JS8 frame layout a decode came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Js8FrameKind {
@@ -196,6 +208,12 @@ pub struct Js8Status {
     pub tx_frames_total: u8,
     /// Seconds until the next automatic heartbeat, when one is scheduled.
     pub next_hb_in_s: Option<u32>,
+    /// Audio frequency the last beacon actually went out on, which is not the
+    /// working frequency: heartbeats and their acknowledgements move to a free
+    /// slot in the sub-band. Shown so an operator watching the waterfall can
+    /// tell their own beacon from a stranger's.
+    #[serde(default)]
+    pub hb_hz: Option<f32>,
 }
 
 #[cfg(test)]
