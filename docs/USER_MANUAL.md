@@ -1168,10 +1168,15 @@ it is copying, **STATUS?** for its status message, **HW CPY?** for "how do you
 copy me", and **RR** / **73** to acknowledge and sign off. **CQ** calls
 generally, **HB** sends a single heartbeat.
 
-A message that reads as `CALLSIGN COMMAND` — typed, drafted or from a button —
-goes out as a JS8 *directed* frame, so the station at the other end sees a
-command it can act on rather than a line of text that merely looks like one.
-Anything else is sent as free text, split across as many frames as it needs.
+Anything addressed to a callsign — typed, drafted or from a button — goes out
+as a JS8 *directed* frame, so the station at the other end sees a message meant
+for them rather than words that happen to name them. When the message opens
+with a command the mode knows, that command travels in the frame too; when it
+carries more than the frame can hold (a grid, a status line, a sentence) the
+rest follows as free text. The framing is byte-identical to JS8Call's own,
+which is what the tests check it against. Relay and message-store commands are
+the exception: this station does not act on them, so it does not originate them
+either, and they go out as ordinary text.
 
 **On the map.** Heard stations appear on the 3D globe (**3D** in the DISPLAY
 row) exactly as FT8 decodes do, and the station the composer is aimed at gets
@@ -1182,8 +1187,10 @@ time, and their grid is shown greyed to mark it as looked up rather than heard.
 Because JS8 beacons every ten or fifteen minutes rather than every slot, a
 station stays lit far longer here than in FT8.
 
-**Answering automatically.** In ⚙ SETUP, *Auto-reply* answers SNR?, GRID? and
-STATUS? queries addressed to you or to @ALLCALL. This is what makes a JS8
+**Answering automatically.** In ⚙ SETUP, *Auto-reply* answers SNR?, GRID?,
+STATUS? and HEARING? queries addressed to you or to @ALLCALL — with the answer,
+not just the acknowledgement: a report rides in the frame itself, and a grid or
+a status line follows it as text. This is what makes a JS8
 station worth leaving switched on, and it is on by default. It never answers
 another station's traffic, never answers itself, and never answers an
 announcement — only a direct question.

@@ -33,7 +33,7 @@ use crate::clock::ClockMonitor;
 use crate::controller::{BurstPlayer, DigiAction};
 use crate::js8::assembler::Js8Assembler;
 use crate::js8::decode::{Js8Decode, Js8Depth, decode_slot_for};
-use crate::js8::directed::{ReplyPolicy, StationInfo, auto_reply};
+use crate::js8::directed::{Js8Reply, ReplyPolicy, StationInfo, auto_reply};
 use crate::js8::frame::{self, Compound, DIRECTED_CMDS, Directed, Js8Flags};
 use crate::js8::message::Js8Payload;
 use crate::js8::modem::{self, DECODE_RATE};
@@ -181,7 +181,7 @@ impl Js8Controller {
     /// The heartbeat someone asked for by typing it.
     ///
     /// A heartbeat is a *compound* frame, not a directed command — there is no
-    /// ` HB` in the command table — so [`Js8Controller::directed_for`] cannot
+    /// ` HB` in the command table — so [`Js8Controller::directed_head`] cannot
     /// produce one and the panel's HB button would otherwise put the literal
     /// text "@ALLCALL HB" on the air.
     fn heartbeat_for(&self, text: &str) -> Option<Js8Payload> {
@@ -200,55 +200,113 @@ impl Js8Controller {
             .map(Self::single)
     }
 
-    /// A directed command typed into the composer, if that is what this is.
+    /// The directed frame a message opens with, and how much text it ate.
     ///
-    /// `"KN4CRD SNR? "` is a question JS8 has a frame for; `"KN4CRD HELLO"` is
-    /// conversation. Only the first becomes a directed frame — the receiving
-    /// station then sees a command it can act on rather than a line of text
-    /// that merely reads like one. Everything the command table does not
-    /// recognise falls through to plain data frames, which is what keeps
-    /// rag-chew (most of JS8) working exactly as before.
-    fn directed_for(&self, text: &str) -> Option<Js8Payload> {
-        let up = text.trim().to_ascii_uppercase();
+    /// Anything addressed to a callsign gets one: `"KN4CRD SNR?"` because JS8
+    /// has a frame for that question, and `"KN4CRD HELLO"` because the frame is
+    /// also what tells KN4CRD the words are meant for *them* — free text is
+    /// command 31. A message with no addressee has nothing to direct and gets
+    /// none, which is most of what an operator types.
+    ///
+    /// The frame swallows the command and, for the two report commands, its
+    /// number; whatever follows is the caller's to send as text. That is
+    /// upstream's split too (`varicode.cpp`, `packDirectedMessage` returns the
+    /// matched length and `buildMessageFrames` passes the remainder on), and it
+    /// is why the number pattern there is guarded by a lookbehind on `SNR`: no
+    /// other command has anywhere to put one.
+    fn directed_head(&self, up: &str) -> Option<(Directed, usize)> {
         let (to, rest) = up.split_once(char::is_whitespace)?;
-        if !addressable(to) {
+        let from = self.my_call();
+        // Upstream refuses a message addressed to the sender: that is not a
+        // directed command, it is someone typing their own callsign.
+        if !addressable(to) || to.eq_ignore_ascii_case(&from) {
             return None;
         }
-        let rest = rest.trim();
+        let trimmed = rest.trim_start();
+        let cmd_at = up.len() - trimmed.len();
         // Longest match wins, or " HW CPY?" would be read as no command at all
         // and " QUERY MSGS" as " QUERY".
-        let (cmd_text, code) = DIRECTED_CMDS
+        let named = DIRECTED_CMDS
             .iter()
             .map(|(t, c)| (t.trim_start(), c))
-            .filter(|(t, _)| !t.is_empty())
-            .filter(|(t, _)| rest == *t || rest.strip_prefix(t).is_some_and(|r| r.starts_with(' ')))
-            .max_by_key(|(t, _)| t.len())?;
-        // What follows a command can only be its number: the frame has six bits
-        // for it and nowhere to put words.
-        let tail = rest[cmd_text.len()..].trim();
-        let num = if tail.is_empty() { None } else { Some(tail.parse::<i32>().ok()?) };
+            .filter(|(t, c)| !t.is_empty() && !CHECKSUMMED_CMDS.contains(c))
+            .filter(|(t, _)| {
+                trimmed == *t || trimmed.strip_prefix(t).is_some_and(|r| r.starts_with(' '))
+            })
+            .max_by_key(|(t, _)| t.len());
+
+        // No named command: this is text addressed to a station, which JS8 has
+        // its own command code for. Worth sending as one rather than as bare
+        // text — it is what tells the station at the other end the words are
+        // meant for *them*, and it is what upstream sends (`varicode.cpp`,
+        // `optional_cmd_pattern` ends in `[?> ]`, so a plain space matches).
+        let (cmd_text, code) = named.unwrap_or(("", &FREE_TEXT_CMD));
+        let mut used = cmd_at + cmd_text.len();
+
+        // Only the report commands have a number field. For everything else the
+        // digits are text, and swallowing them here would lose them.
+        if frame::SNR_CMDS.contains(code) {
+            let tail = &up[used..];
+            let spaced = tail.strip_prefix(' ').unwrap_or(tail);
+            if let Some((num, len)) = leading_num(spaced) {
+                used = up.len() - spaced.len() + len;
+                return Some((self.directed_to(to, *code, Some(num)), used));
+            }
+        }
+        Some((self.directed_to(to, *code, None), used))
+    }
+
+    fn directed_to(&self, to: &str, cmd: i8, num: Option<i32>) -> Directed {
         let from = self.my_call();
         Directed {
             portable_from: from.ends_with("/P"),
             portable_to: to.ends_with("/P"),
             from,
             to: to.to_string(),
-            cmd: *code,
+            cmd,
             num,
         }
-        .pack()
-        .map(Self::single)
     }
 
-    /// Split text into as many frames as it needs.
+    /// The frames a message becomes: a directed command when it opens with one,
+    /// then as many data frames as the rest of the text needs.
     ///
-    /// The first frame is flagged FIRST and the last LAST; a message short
-    /// enough for one frame gets both, which is how a receiver tells a complete
-    /// message from the opening of a longer one.
+    /// A grid, a status line, a list of stations heard — none of them fit in a
+    /// directed frame, which has room for a command and a six-bit number. They
+    /// ride behind it as free text, and the receiving assembler stitches the
+    /// two halves back into one message.
     fn frames_for_text(&self, text: &str) -> Vec<Js8Payload> {
+        let up = text.trim().to_ascii_uppercase();
+        if let Some((directed, used)) = self.directed_head(&up)
+            && let Some(head) = directed.pack()
+        {
+            let mut out = vec![head];
+            // The space between the command and its text belongs to neither:
+            // upstream strips it (`buildMessageFrames` lstrips the remainder of
+            // every buffered command, and every entry in the table contains a
+            // space, so that is all of them). Sending it costs a character of
+            // an already small frame.
+            out.extend(self.data_frames(up[used..].trim_start()));
+            return Self::flag_sequence(out);
+        }
+        Self::flag_sequence(self.data_frames(&up))
+    }
+
+    /// The frames an auto-reply becomes.
+    fn frames_for_reply(&self, reply: Js8Reply) -> Vec<Js8Payload> {
+        let Some(head) = reply.directed.pack() else { return Vec::new() };
+        let mut out = vec![head];
+        if let Some(body) = reply.body.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+            out.extend(self.data_frames(&body.to_ascii_uppercase()));
+        }
+        Self::flag_sequence(out)
+    }
+
+    /// Split text across as many data frames as it needs, unflagged.
+    fn data_frames(&self, text: &str) -> Vec<Js8Payload> {
         let mut out = Vec::new();
-        let mut rest = text.trim().to_ascii_uppercase();
-        while !rest.is_empty() && out.len() < 32 {
+        let mut rest = text.to_ascii_uppercase();
+        while !rest.trim().is_empty() && out.len() < 32 {
             let Some((payload, used)) = frame::pack_data(&rest) else { break };
             if used == 0 {
                 break;
@@ -256,7 +314,7 @@ impl Js8Controller {
             out.push(payload);
             rest = rest[used.min(rest.len())..].to_string();
         }
-        Self::flag_sequence(out)
+        out
     }
 
     /// Stamp FIRST on the opening frame and LAST on the closing one.
@@ -308,9 +366,10 @@ impl Js8Controller {
         self.heard.truncate(HEARD_CAP);
     }
 
+    /// The directed frame a message would send, for the tests.
     #[cfg(test)]
     fn directed_sent(&self, text: &str) -> Option<Directed> {
-        Directed::unpack(&self.directed_for(text)?)
+        Directed::unpack(&self.frames_for_text(text)[0])
     }
 
     fn synth_burst_48k(&self, payload: Js8Payload) -> Option<BurstPlayer> {
@@ -320,6 +379,40 @@ impl Js8Controller {
         rs.push(&audio, &mut out);
         Some(BurstPlayer { samples: out, pos: 0 })
     }
+}
+
+/// The command code for text addressed to a station — `" "`, `varicode.cpp`'s
+/// catch-all. The frame says who the words are for and carries none of them.
+const FREE_TEXT_CMD: i8 = 31;
+
+/// Commands whose text upstream follows with a checksum
+/// (`varicode.cpp`, `checksum_cmds`): relay, the message store, the query
+/// family and ` CMD`.
+///
+/// This station decodes those and displays them but never acts on them — see
+/// [`crate::js8::directed`] — so it has no business originating one either. A
+/// buffered command with no checksum is worse than plain text: the station at
+/// the other end would file it. They go out as text addressed to the station
+/// instead, which reads the same to a human and asks nothing of their software.
+const CHECKSUMMED_CMDS: &[i8] = &[5, 9, 10, 11, 12, 13, 24];
+
+/// The report at the head of `s`, and how many characters it took.
+///
+/// Upstream's `optional_num_pattern` is `[-+]?(?:3[01]|[0-2]?[0-9])`, anchored
+/// where the command ended — so two digits only when they read 0–31. "SNR 99"
+/// therefore sends 9 as the report and leaves the second 9 as text, which looks
+/// like an accident until you realise it is what every JS8Call transmits.
+fn leading_num(s: &str) -> Option<(i32, usize)> {
+    let b = s.as_bytes();
+    let sign = usize::from(matches!(b.first(), Some(b'-' | b'+')));
+    let digits = b[sign..].iter().take(2).take_while(|c| c.is_ascii_digit()).count();
+    let take = match digits {
+        2 if s[sign..sign + 2].parse::<i32>().is_ok_and(|v| v <= 31) => 2,
+        1 | 2 => 1,
+        _ => return None,
+    };
+    let end = sign + take;
+    Some((s[..end].parse().ok()?, end))
 }
 
 /// True for something that can be the *to* of a directed frame: a group, or a
@@ -418,8 +511,10 @@ impl DigiEngine for Js8Controller {
                         &self.station(),
                         ReplyPolicy { auto_reply: self.cfg.js8_auto_reply },
                     ) {
-                        if let Some(p) = reply.pack() {
-                            self.tx_frames.push_back(Self::single(p));
+                        // A grid or a status line does not fit in the directed
+                        // frame, so an answer can be several frames long.
+                        for f in self.frames_for_reply(reply) {
+                            self.tx_frames.push_back(f);
                             self.tx_total = self.tx_total.saturating_add(1);
                         }
                     }
@@ -596,15 +691,15 @@ impl DigiEngine for Js8Controller {
 
     /// Queue a message.
     ///
-    /// `"HB"` becomes a heartbeat and `"CALL CMD"` a directed command, both one
-    /// self-contained frame. Anything else — which is most of what an operator
-    /// types — goes out as text, split across as many frames as it needs.
+    /// `"HB"` becomes a heartbeat, one self-contained frame. Everything else
+    /// goes through [`Js8Controller::frames_for_text`]: a directed command when
+    /// the message opens with one, then text for whatever follows.
     fn send_text(&mut self, text: String) {
         if text.trim().is_empty() {
             self.abort_tx();
             return;
         }
-        if let Some(p) = self.heartbeat_for(&text).or_else(|| self.directed_for(&text)) {
+        if let Some(p) = self.heartbeat_for(&text) {
             self.queue_frames(vec![p]);
             return;
         }
@@ -660,6 +755,26 @@ mod tests {
             js8_speed: Js8Speed::Normal,
             ..Default::default()
         }
+    }
+
+    /// What a receiver makes of a frame sequence — the only measure of whether
+    /// what we transmitted actually said anything.
+    fn reassemble(frames: &[Js8Payload]) -> String {
+        let mut a = Js8Assembler::new("KN4CRD");
+        let mut out = None;
+        for (i, f) in frames.iter().enumerate() {
+            let d = Js8Decode {
+                payload: *f,
+                audio_hz: 1500.0,
+                dt_sec: 0.0,
+                snr_db: 0.0,
+                sync_score: 3.0,
+                hard_errors: 0,
+                speed: Js8Speed::Normal,
+            };
+            out = a.push(&d, 1000 + i as i64 * 15);
+        }
+        out.map(|m| m.text).unwrap_or_default()
     }
 
     #[test]
@@ -772,8 +887,8 @@ mod tests {
             ("KN4CRD HW CPY?", "KN4CRD", " HW CPY?", None),
             ("KN4CRD 73", "KN4CRD", " 73", None),
             ("@ALLCALL HEARING?", "@ALLCALL", " HEARING?", None),
-            // The long spelling has to beat the short one it starts with.
-            ("KN4CRD QUERY MSGS", "KN4CRD", " QUERY MSGS", None),
+            // A shorthand renders as the command it stands for.
+            ("KN4CRD ?", "KN4CRD", " SNR?", None),
         ] {
             let d = c.directed_sent(typed).unwrap_or_else(|| panic!("{typed:?} was not directed"));
             assert_eq!(d.from, "N0JDS", "{typed:?}");
@@ -783,22 +898,185 @@ mod tests {
         }
     }
 
+    /// The transmit framing, against JS8Call's own encoder.
+    ///
+    /// Expected values produced by linking upstream `varicode.cpp` and calling
+    /// `Varicode::buildMessageFrames("N0JDS", "FN42", "", <text>, false, false,
+    /// JS8CallNormal, nullptr)` at the commit in `vendor/js8call/PROVENANCE.md`
+    /// — the same technique as `tests/js8_varicode_vectors`, and the only way
+    /// to know our frames are the ones every other station sends rather than
+    /// merely ones our own decoder happens to read back. The trailing number is
+    /// upstream's `TransmissionType`: 1 = first, 2 = last, 3 = both, 0 = middle,
+    /// which is exactly what [`Js8Controller::flag_sequence`] stamps.
+    #[test]
+    fn the_frames_we_transmit_are_the_frames_js8call_transmits() {
+        let c = Js8Controller::new(cfg(), 48_000.0);
+        for (typed, want) in [
+            ("KN4CRD GRID FN42", &["VlCZhHSNwyy0/1", "uskC++++++++/2"][..]),
+            ("KN4CRD STATUS PORTABLE ON A HILL", &["VlCZhHSNwyS0/1", "-mvbbTyi3+++/2"][..]),
+            (
+                "KN4CRD HEARING VK3ABC G0ABC",
+                &["VlCZhHSNwyW0/1", "ikGAVd55AdvV/0", "tG++++++++++/2"][..],
+            ),
+            ("KN4CRD SNR -12", &["VlCZhHSNwzaJ/3"][..]),
+            ("KN4CRD SNR?", &["VlCZhHSNwy00/3"][..]),
+            ("KN4CRD HW CPY?", &["VlCZhHSNwzC0/3"][..]),
+            // Upstream's number pattern is `[-+]?(?:3[01]|[0-2]?[0-9])`, so it
+            // takes one 9 as the report and leaves the other as text.
+            ("KN4CRD SNR 99", &["VlCZhHSNwzae/1", "y8++++++++++/2"][..]),
+            // Text addressed to a station is command 31, not a bare data frame:
+            // that is what tells them the words are meant for them.
+            ("KN4CRD HELLO THERE", &["VlCZhHSNwzy0/1", "tYuNz6V+++++/2"][..]),
+        ] {
+            let got: Vec<String> = c
+                .frames_for_text(typed)
+                .iter()
+                .map(|p| format!("{}/{}", p.to_chars(), p.frame_type))
+                .collect();
+            assert_eq!(got, want, "{typed:?}");
+        }
+    }
+
+    /// Relay, the message store and the query family carry a checksum upstream
+    /// appends after the text. This station does not act on any of them, so it
+    /// does not originate one either — a buffered command with no checksum is
+    /// worse than plain text, because the far end would file it.
+    #[test]
+    fn commands_this_station_does_not_implement_go_out_as_text() {
+        let c = Js8Controller::new(cfg(), 48_000.0);
+        for typed in ["KN4CRD QUERY CALL VK3ABC", "KN4CRD MSG TO: VK3ABC HI", "KN4CRD CMD OFF"] {
+            let frames = c.frames_for_text(typed);
+            let d = Directed::unpack(&frames[0]).unwrap_or_else(|| panic!("{typed:?}"));
+            assert_eq!(d.cmd, FREE_TEXT_CMD, "{typed:?} claimed a command we cannot complete");
+            assert_eq!(d.to, "KN4CRD", "{typed:?}");
+            // The words still go out; only the machine-readable claim does not.
+            let text = reassemble(&frames);
+            assert!(text.contains("VK3ABC") || text.contains("OFF"), "{typed:?} lost its text");
+        }
+    }
+
     #[test]
     fn conversation_is_not_mistaken_for_a_command() {
-        // The whole point of JS8 is the rag-chew. Anything the command table
-        // does not recognise — and anything addressed to a word rather than a
-        // callsign — has to stay text.
+        // A message with no addressee is text and nothing else — there is no
+        // station to direct it at.
         let c = Js8Controller::new(cfg(), 48_000.0);
         for typed in [
-            "KN4CRD HELLO THERE",
-            "HELLO 73",           // a sentence, not a station called HELLO
-            "GOOD MORNING ALL",   // no addressee at all
-            "KN4CRD GRID FN42",   // ` GRID` carries a locator, not a number
-            "KN4CRD MSG CALL ME", // ` MSG` carries text the frame cannot hold
-            "73",                 // no addressee
-            "KN4CRD SNRX?",       // near-miss on a real command
+            "HELLO 73",         // a sentence, not a station called HELLO
+            "GOOD MORNING ALL", // no addressee at all
+            "73",               // no addressee
+            "N0JDS SNR?",       // our own callsign: not a directed command
         ] {
-            assert!(c.directed_for(typed).is_none(), "{typed:?} became a directed frame");
+            let up = typed.to_ascii_uppercase();
+            assert!(c.directed_head(&up).is_none(), "{typed:?} became a directed frame");
+        }
+        // And a near-miss on a real command is carried as the words someone
+        // typed, not as the command it nearly was.
+        let frames = c.frames_for_text("KN4CRD SNRX?");
+        let d = Directed::unpack(&frames[0]).expect("addressed to KN4CRD");
+        assert_eq!(d.cmd, FREE_TEXT_CMD);
+        assert!(reassemble(&frames).contains("SNRX?"));
+    }
+
+    /// The half of a reply a directed frame cannot hold.
+    ///
+    /// A grid, a status line or a list of stations heard is text, and the frame
+    /// has room for a command and a six-bit number. Upstream sends the command
+    /// and then the words; so must we, or the station transmits a bare " GRID"
+    /// and answers nothing.
+    #[test]
+    fn a_command_that_carries_text_sends_the_text_too() {
+        let c = Js8Controller::new(cfg(), 48_000.0);
+        for (typed, cmd, expect) in [
+            ("KN4CRD GRID FN42", " GRID", "FN42"),
+            ("KN4CRD STATUS PORTABLE ON A HILL", " STATUS", "PORTABLE ON A HILL"),
+            ("KN4CRD INFO 100W DIPOLE", " INFO", "100W DIPOLE"),
+        ] {
+            let frames = c.frames_for_text(typed);
+            assert!(frames.len() >= 2, "{typed:?} produced {} frame(s)", frames.len());
+            let d = Directed::unpack(&frames[0]).unwrap_or_else(|| panic!("{typed:?}"));
+            assert_eq!(frame::cmd_text(d.cmd), Some(cmd), "{typed:?}");
+            assert_eq!(d.num, None, "{typed:?} put its text in the number field");
+            assert!(reassemble(&frames).contains(expect), "{typed:?} lost its text");
+        }
+        // Longest match wins: " STATUS?" is a question, " STATUS" an answer.
+        let q = c.frames_for_text("KN4CRD STATUS?");
+        assert_eq!(
+            frame::cmd_text(Directed::unpack(&q[0]).expect("directed").cmd),
+            Some(" STATUS?")
+        );
+        assert_eq!(q.len(), 1, "a question needs nothing after it");
+    }
+
+    /// Only ` SNR` and ` HEARTBEAT SNR` have a number field. For anything else
+    /// the digits are text, and swallowing them here would lose them.
+    #[test]
+    fn only_the_report_commands_swallow_a_number() {
+        let c = Js8Controller::new(cfg(), 48_000.0);
+        for (typed, num) in [
+            ("KN4CRD SNR -12", Some(-12)),
+            ("KN4CRD SNR +15", Some(15)),
+            ("KN4CRD SNR 05", Some(5)),
+            ("KN4CRD SNR 31", Some(31)),
+        ] {
+            let frames = c.frames_for_text(typed);
+            assert_eq!(frames.len(), 1, "{typed:?} sent text it did not need");
+            assert_eq!(Directed::unpack(&frames[0]).and_then(|d| d.num), num, "{typed:?}");
+        }
+        // A grid is not a number, and must survive as text.
+        let frames = c.frames_for_text("KN4CRD GRID 42");
+        assert_eq!(Directed::unpack(&frames[0]).and_then(|d| d.num), None);
+        assert!(reassemble(&frames).contains("42"), "the text was swallowed");
+    }
+
+    #[test]
+    fn an_auto_reply_puts_its_answer_on_the_air() {
+        // The regression this exists for: `auto_reply` used to return the
+        // command alone, so an answer to GRID? / STATUS? / HEARING? went out as
+        // a bare command with the answer left behind.
+        let mut c = Js8Controller::new(cfg(), 48_000.0);
+        c.cfg.js8_status = "PORTABLE".into();
+        c.note_heard("VK3ABC", None, -3, 1400.0, 1000);
+        for (cmd, want_cmd, want_text) in [
+            ("GRID?", " GRID", Some("FN42")),
+            ("STATUS?", " STATUS", Some("PORTABLE")),
+            ("HEARING?", " HEARING", Some("VK3ABC")),
+            ("SNR?", " SNR", None),
+        ] {
+            let msg = Js8Msg {
+                from: "KN4CRD".into(),
+                to: "N0JDS".into(),
+                text: String::new(),
+                cmd: Some(cmd.into()),
+                snr_db: -7,
+                audio_hz: 1500.0,
+                first_slot_utc: 1000,
+                last_slot_utc: 1000,
+                frames: 1,
+                complete: true,
+                to_me: true,
+            };
+            let reply = auto_reply(&msg, &c.station(), ReplyPolicy::default())
+                .unwrap_or_else(|| panic!("{cmd} went unanswered"));
+            let frames = c.frames_for_reply(reply);
+            let d = Directed::unpack(&frames[0]).unwrap_or_else(|| panic!("{cmd}"));
+            assert_eq!(frame::cmd_text(d.cmd), Some(want_cmd), "{cmd}");
+            assert_eq!(d.to, "KN4CRD", "{cmd}");
+            match want_text {
+                Some(t) => {
+                    assert!(frames.len() >= 2, "{cmd} answered in one frame with no room for {t}");
+                    assert!(reassemble(&frames).contains(t), "{cmd} lost its answer");
+                }
+                // A report rides in the frame's number field; a second frame to
+                // say it again would double the transmission.
+                None => {
+                    assert_eq!(frames.len(), 1, "{cmd} sent text it did not need");
+                    assert_eq!(d.num, Some(-7));
+                }
+            }
+            // Whatever its length, the sequence has to be closed at both ends
+            // or the receiver never completes the message.
+            assert!(Js8Flags(frames[0].frame_type).is_first(), "{cmd}");
+            assert!(Js8Flags(frames[frames.len() - 1].frame_type).is_last(), "{cmd}");
         }
     }
 

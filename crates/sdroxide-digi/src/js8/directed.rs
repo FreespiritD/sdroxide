@@ -56,6 +56,21 @@ pub struct StationInfo {
     pub hearing: Vec<String>,
 }
 
+/// A reply, ready to be framed.
+///
+/// Two parts, because a directed frame has room for a command and a six-bit
+/// number and nothing else. ` SNR` fits its answer in that number; a grid, a
+/// status line or a list of stations heard does not, and has to follow as free
+/// text in data frames — which is exactly what JS8Call does
+/// (`varicode.cpp`, `buildMessageFrames`: the directed pack consumes
+/// `CALLSIGN CMD` and the rest of the line goes on to the data path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Js8Reply {
+    pub directed: Directed,
+    /// Text the command cannot carry itself, or `None` when it can.
+    pub body: Option<String>,
+}
+
 /// Policy switches, straight from the operator's settings.
 #[derive(Debug, Clone, Copy)]
 pub struct ReplyPolicy {
@@ -87,9 +102,10 @@ pub fn intent(msg: &Js8Msg) -> Js8Intent {
 
 /// The reply this message deserves, if any.
 ///
-/// Returns the directed frame to transmit. `None` means "say nothing", which is
-/// the answer for the large majority of received traffic.
-pub fn auto_reply(msg: &Js8Msg, me: &StationInfo, policy: ReplyPolicy) -> Option<Directed> {
+/// Returns the directed frame to transmit and, when the command cannot carry
+/// its own answer, the text that has to follow it. `None` means "say nothing",
+/// which is the answer for the large majority of received traffic.
+pub fn auto_reply(msg: &Js8Msg, me: &StationInfo, policy: ReplyPolicy) -> Option<Js8Reply> {
     if !policy.auto_reply || me.call.is_empty() {
         return None;
     }
@@ -108,8 +124,11 @@ pub fn auto_reply(msg: &Js8Msg, me: &StationInfo, policy: ReplyPolicy) -> Option
         return None;
     }
 
+    // `body` is what the frame cannot say by itself. A signal report rides in
+    // the directed frame's number field, so it has none; everything else is
+    // text that must follow.
     let (cmd_text, body) = match intent(msg) {
-        Js8Intent::SnrQuery => (" SNR", Some(msg.snr_db.to_string())),
+        Js8Intent::SnrQuery => (" SNR", None),
         Js8Intent::GridQuery => (" GRID", Some(me.grid.clone())),
         Js8Intent::StatusQuery => (" STATUS", Some(me.status.clone())),
         Js8Intent::HearingQuery => (" HEARING", Some(me.hearing.join(" "))),
@@ -129,21 +148,25 @@ pub fn auto_reply(msg: &Js8Msg, me: &StationInfo, policy: ReplyPolicy) -> Option
 
     // An empty answer is worse than none — it says "I am here" while answering
     // nothing, and costs a full transmission to do it.
+    let body = body.map(|b| b.trim().to_string());
     if body.as_deref().is_some_and(str::is_empty) {
         return None;
     }
 
-    Some(Directed {
-        from: me.call.clone(),
-        to: msg.from.clone(),
-        cmd,
-        num: if matches!(intent(msg), Js8Intent::SnrQuery) {
-            Some(i32::from(msg.snr_db))
-        } else {
-            None
+    Some(Js8Reply {
+        directed: Directed {
+            from: me.call.clone(),
+            to: msg.from.clone(),
+            cmd,
+            num: if matches!(intent(msg), Js8Intent::SnrQuery) {
+                Some(i32::from(msg.snr_db))
+            } else {
+                None
+            },
+            portable_from: false,
+            portable_to: false,
         },
-        portable_from: false,
-        portable_to: false,
+        body,
     })
 }
 
@@ -184,10 +207,34 @@ mod tests {
             let m = query("KN4CRD", "N0JDS", cmd, true);
             let r = auto_reply(&m, &me(), ReplyPolicy::default())
                 .unwrap_or_else(|| panic!("{cmd} went unanswered"));
-            assert_eq!(r.to, "KN4CRD");
-            assert_eq!(r.from, "N0JDS");
-            assert_eq!(super::super::frame::cmd_text(r.cmd), Some(expect));
+            assert_eq!(r.directed.to, "KN4CRD");
+            assert_eq!(r.directed.from, "N0JDS");
+            assert_eq!(super::super::frame::cmd_text(r.directed.cmd), Some(expect));
         }
+    }
+
+    /// The answer has to actually leave the station. A directed frame holds a
+    /// command and a six-bit number and nothing else, so every reply whose
+    /// content is *text* has to carry that text alongside — otherwise the
+    /// station transmits a bare " GRID" and says nothing at all.
+    #[test]
+    fn an_answer_made_of_text_carries_it_alongside_the_command() {
+        for (cmd, expect) in [("GRID?", "FN42"), ("STATUS?", "IDLE"), ("HEARING?", "KN4CRD VK3ABC")]
+        {
+            let m = query("KN4CRD", "N0JDS", cmd, true);
+            let r = auto_reply(&m, &me(), ReplyPolicy::default()).expect("answered");
+            assert_eq!(r.body.as_deref(), Some(expect), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn a_report_needs_no_text_because_the_frame_carries_it() {
+        // ` SNR` puts its value in the directed frame's number field. Sending
+        // it as text as well would double the transmission to say it twice.
+        let m = query("KN4CRD", "N0JDS", "SNR?", true);
+        let r = auto_reply(&m, &me(), ReplyPolicy::default()).expect("answered");
+        assert_eq!(r.body, None);
+        assert_eq!(r.directed.num, Some(-7));
     }
 
     #[test]
@@ -259,13 +306,6 @@ mod tests {
         let mut m = query("KN4CRD", "N0JDS", "SNR?", true);
         m.complete = false;
         assert!(auto_reply(&m, &me(), ReplyPolicy::default()).is_none());
-    }
-
-    #[test]
-    fn an_snr_reply_carries_the_report_we_measured() {
-        let m = query("KN4CRD", "N0JDS", "SNR?", true);
-        let r = auto_reply(&m, &me(), ReplyPolicy::default()).expect("answered");
-        assert_eq!(r.num, Some(-7));
     }
 
     #[test]
