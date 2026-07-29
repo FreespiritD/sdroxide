@@ -8,9 +8,11 @@ WebSocket. It includes an integrated, persistent **logbook**, full **FT8/FT4**
 digital-mode operation, and **built-in TCI and Hamlib rigctld servers** so
 third-party programs like WSJT-X can use it as their radio.
 
-<img width="2351" height="984" alt="image" src="https://github.com/user-attachments/assets/6130eb56-9486-414c-b4b8-ceeb366d812c" />
+<img width="1496" height="933" alt="image" src="https://github.com/user-attachments/assets/9d88118c-0efe-45c5-9918-8ee2bb91b700" />
 
-<img width="2422" height="984" alt="image" src="https://github.com/user-attachments/assets/2b502c2b-f37c-43be-9eb9-e55eaea04419" />
+<img width="1496" height="933" alt="image" src="https://github.com/user-attachments/assets/902a73ff-c8bf-43cd-9fc3-884d40ce4b04" />
+
+<img width="1682" height="1212" alt="image" src="https://github.com/user-attachments/assets/aa08f5d3-ec62-4d91-9dd0-13bde1b0ae43" />
 
 
 
@@ -70,8 +72,6 @@ One binary, three ways to run it:
   are all stored under `~/.config/sdroxide/`.
 
 ## FT8 / FT4
-
-<img width="1683" height="933" alt="image" src="https://github.com/user-attachments/assets/02a4b70d-7590-4a71-aacb-56814132b691" />
 
 Selecting FT8 or FT4 switches the panadapter to a zoomed sub-band waterfall with
 a decode list and an auto-sequencing QSO panel:
