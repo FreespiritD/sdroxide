@@ -220,7 +220,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
         radio: ctx.radio,
         opened_at: ctx.opened_at,
         last_rx_ms: ctx.last_rx_ms,
-        swap_iq: ctx.swap_iq,
+        invert_spectrum: ctx.invert_spectrum,
         rate_khz: (ctx.rate_hz / 1000.0) as u16,
         rx: ctx.rx,
         tx: ctx.tx,
@@ -240,8 +240,8 @@ struct P2Thread {
     /// `HpsdrHandle::silent_for`).
     opened_at: Instant,
     last_rx_ms: crate::net::RxClock,
-    /// Conjugate I/Q both ways (see `HpsdrConfig::swap_iq`).
-    swap_iq: bool,
+    /// Conjugate I/Q both ways (see `HpsdrConfig::invert_spectrum`).
+    invert_spectrum: bool,
     rate_khz: u16,
     rx: Producer<f32>,
     tx: Consumer<f32>,
@@ -370,7 +370,7 @@ impl P2Thread {
                     if (port::DDC_IQ_BASE..port::DDC_IQ_BASE + 8).contains(&p) {
                         rx_scratch.clear();
                         if let Some(pairs) = decode_ddc_iq(&buf[..n], &mut rx_scratch) {
-                            if self.swap_iq {
+                            if self.invert_spectrum {
                                 crate::protocol1::conjugate(&mut rx_scratch);
                             }
                             stats.on_iq(pairs);
@@ -442,7 +442,7 @@ impl P2Thread {
                 while let Ok(v) = self.tx.pop() {
                     tx_scratch.push(v);
                     if tx_scratch.len() >= DUC_SAMPLES_PER_PKT * 2 {
-                        if self.swap_iq {
+                        if self.invert_spectrum {
                             crate::protocol1::conjugate(&mut tx_scratch);
                         }
                         let seq = next_seq(&mut self.seq.tx_iq);

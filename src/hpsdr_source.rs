@@ -38,7 +38,7 @@ impl HpsdrSource {
             cfg.sample_rate_hz,
             cfg.lna_gain_db,
             cfg.filter_board,
-            cfg.swap_iq,
+            cfg.invert_spectrum,
         )?;
         handle.set_rx_freq(center_hz);
         let label =

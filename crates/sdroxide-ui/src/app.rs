@@ -7101,12 +7101,12 @@ fn settings_hpsdr_tab(
         ui.end_row();
 
         ui.label("Invert spectrum");
-        ui.checkbox(&mut cfg.hpsdr.swap_iq, "Swap I/Q").on_hover_text(
-            "Mirror the board's spectrum about the tuned frequency. Turn this on if \
-             signals show up on the wrong side of the dial and nothing decodes — \
-             SSB comes out on the wrong sideband and FT8 produces no decodes at all, \
-             even though the waterfall looks full of signals. It applies to transmit \
-             as well, so both directions stay on the same sideband.",
+        ui.checkbox(&mut cfg.hpsdr.invert_spectrum, "Swap I/Q").on_hover_text(
+            "Mirror the board's spectrum about the tuned frequency, on transmit as well \
+             as receive. On by default: a Hermes-Lite 2 needs it. Turn it off only if \
+             signals show up on the wrong side of the dial and nothing decodes — the \
+             giveaway is a waterfall full of convincing traces while SSB lands on the \
+             wrong sideband and FT8 returns no decodes at all.",
         );
         ui.end_row();
     });

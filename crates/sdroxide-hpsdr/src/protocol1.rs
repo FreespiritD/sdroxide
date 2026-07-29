@@ -343,7 +343,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
         rate_hz,
         lna_gain_db,
         filter_board,
-        swap_iq,
+        invert_spectrum,
         mut rx,
         mut tx,
         ctrl,
@@ -442,7 +442,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
             Ok((n, _src)) => {
                 rx_scratch.clear();
                 if let Some(info) = decode_ep6(&buf[..n], &mut rx_scratch) {
-                    if swap_iq {
+                    if invert_spectrum {
                         conjugate(&mut rx_scratch);
                     }
                     let pairs = rx_scratch.len() / 2;

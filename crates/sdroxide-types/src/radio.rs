@@ -321,12 +321,20 @@ pub struct HpsdrConfig {
     #[serde(default)]
     pub filter_board: HpsdrFilterBoard,
     /// Conjugate the board's I/Q, mirroring the spectrum about the tuned
-    /// frequency. Set this when signals appear on the wrong side of the dial and
-    /// nothing demodulates: it means the board's DDC uses the opposite sign
-    /// convention from the engine. Applied to transmit as well, so the two
-    /// directions cannot disagree about which sideband they are on.
-    #[serde(default)]
-    pub swap_iq: bool,
+    /// frequency, on transmit as well as receive so the two directions cannot
+    /// disagree about which sideband they are on.
+    ///
+    /// **On by default**: a Hermes-Lite 2 needs it — verified on air, where
+    /// without it FT8 produces no decodes at all and SSB comes out on the wrong
+    /// sideband. A board that turns out not to need it can turn it off.
+    ///
+    /// Deliberately *not* named `swap_iq`, which is what the one release that
+    /// defaulted it to off called it. Ignoring that older key is the migration:
+    /// whether an operator had found the setting and switched it on, or had it
+    /// saved as off without ever knowing it existed, they all land on the value
+    /// that works.
+    #[serde(default = "HpsdrConfig::default_invert_spectrum")]
+    pub invert_spectrum: bool,
 }
 
 impl Default for HpsdrConfig {
@@ -337,7 +345,7 @@ impl Default for HpsdrConfig {
             sample_rate_hz: 1_536_000.0,
             lna_gain_db: Self::default_lna_gain_db(),
             filter_board: HpsdrFilterBoard::None,
-            swap_iq: false,
+            invert_spectrum: Self::default_invert_spectrum(),
         }
     }
 }
@@ -355,6 +363,12 @@ impl HpsdrConfig {
     /// ADC on a real antenna.
     pub fn default_lna_gain_db() -> f64 {
         20.0
+    }
+
+    /// Hermes-Lite 2 boards deliver a conjugated stream, so inversion is the
+    /// working default. See [`HpsdrConfig::invert_spectrum`].
+    pub fn default_invert_spectrum() -> bool {
+        true
     }
 
     /// Supported DDC sample rates (Hz) for Protocol 2 boards.
@@ -663,4 +677,47 @@ pub struct RadioConfig {
     pub hpsdr: HpsdrConfig,
     pub tci: TciConfig,
     pub rtlsdr: RtlSdrConfig,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every way an existing `radio.json` can arrive has to land on the working
+    /// sideband. The one release that shipped this setting called it `swap_iq`
+    /// and defaulted it to off, which is the broken value — so that key is
+    /// deliberately not read any more, and neither an operator who found the
+    /// checkbox nor one who never knew it existed ends up inverted the wrong way.
+    #[test]
+    fn spectrum_inversion_survives_every_old_config_shape() {
+        let cases = [
+            // Written before the setting existed at all.
+            r#"{"sample_rate_hz": 384000.0}"#,
+            // The old key, left at its (broken) default by someone who never
+            // opened the HPSDR settings.
+            r#"{"sample_rate_hz": 384000.0, "swap_iq": false}"#,
+            // The old key, switched on by an operator who diagnosed it.
+            r#"{"sample_rate_hz": 384000.0, "swap_iq": true}"#,
+            // A completely empty object.
+            r#"{}"#,
+        ];
+        for json in cases {
+            let cfg: HpsdrConfig = serde_json::from_str(json).expect("parses");
+            assert!(cfg.invert_spectrum, "inverted after loading {json}");
+        }
+        // A fresh install gets it too.
+        assert!(HpsdrConfig::default().invert_spectrum);
+        // And an operator who turns it off is still obeyed on the next load.
+        let off: HpsdrConfig =
+            serde_json::from_str(r#"{"invert_spectrum": false}"#).expect("parses");
+        assert!(!off.invert_spectrum);
+    }
+
+    #[test]
+    fn hpsdr_defaults_round_trip() {
+        let cfg = HpsdrConfig::default();
+        let back: HpsdrConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(cfg, back);
+    }
 }
