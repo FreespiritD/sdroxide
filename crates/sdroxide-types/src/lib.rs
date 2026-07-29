@@ -85,8 +85,8 @@ pub use rifp::{
 };
 pub use rigctld::RigctldConfig;
 pub use satcfg::{
-    CELESTRAK_GROUPS, CustomTle, Passband, SatConfig, SatFreqs, SatLink, TleSubscription,
-    fmt_mhz as fmt_sat_mhz, parse_tle_block,
+    CELESTRAK_GROUPS, CelestrakGroup, CustomTle, OrbitRings, Passband, SatConfig, SatFreqs,
+    SatLink, TleSubscription, fmt_mhz as fmt_sat_mhz, parse_tle_block,
 };
 pub use skimmer::{SkimmerKind, SkimmerSettings, SkimmerSpot};
 pub use spectrum::{SpectrumConfig, SpectrumFrame};

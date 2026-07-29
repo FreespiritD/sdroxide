@@ -1816,9 +1816,23 @@ Each row has:
 - a **tick** to track it or park it,
 - a **name** (yours, for the row — the satellite names come from the listing),
 - the **URL**, which must be `https://`,
-- **Orbits** — draw an orbit ring and a label for every satellite in the
-  listing. Leave it off for a whole group: ninety rings at once is unreadable,
-  and the satellites still appear as dots either way.
+- **Orbits** — which satellites in the listing get an orbit ring and a label.
+  Three positions, because there are three useful answers:
+
+  | | |
+  | --- | --- |
+  | **none** | Plain dots, visible only under `ALL SATS`. It really does mean none: the curated few are not exempt. |
+  | **curated** | Rings and labels only for the satellites in sdroxide's own curated list — QO-100, the ISS, AO-7, FO-29, SO-50, AO-73, JO-97, RS-44, XW-3 and IO-117. |
+  | **all** | Everything in the listing. |
+
+  A whole group wants **curated**: ninety rings at once is unreadable, and none
+  at all leaves ninety anonymous dots. A short listing like the ISS wants
+  **all**.
+
+  That curated list is ten *amateur* satellites, so for a weather, GNSS or
+  launch-window listing the middle position would behave exactly like **none**.
+  It is greyed out on those once a fetch has shown the listing contains none of
+  them — the position is not hidden, so you can see why it is unavailable.
 - a **filter** — catalogue numbers to keep, comma separated. Empty tracks
   everything the listing carries. This is what turns CelesTrak's fifty-satellite
   weather group into just the three NOAA APT birds.
@@ -1844,12 +1858,10 @@ The two default ones are added the first time this version runs and then left
 alone: unsubscribing sticks, and if you have already customised one — renamed
 it, turned its orbit rings on — your version is kept rather than replaced.
 
-Subscribing to a group does **not** put ninety orbit rings on the globe. The
-curated satellites the view is built around keep their rings and labels whatever
-a subscription says; everything else in a group is a dot behind `ALL SATS`,
-exactly as the amateur set behaved when it was built in. Ticking **Orbits** on a
-subscription is what rings the rest of it, which is worth doing for a short
-listing like the ISS and not for a group.
+Subscribing to a group does **not** put ninety orbit rings on the globe: both
+default subscriptions arrive on the **Orbits** setting that suits them, so the
+amateur group shows the curated few with rings and labels and everything else as
+dots behind `ALL SATS` — exactly as it behaved when it was built in.
 
 Subscriptions refresh **while the 3D view is open**, which is the same rule the
 rest of that window's network activity follows ([6](#6-solar-system-3d-view)).

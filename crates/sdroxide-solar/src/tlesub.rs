@@ -33,6 +33,12 @@ pub struct SubStatus {
     pub fetched_unix: i64,
     /// How many satellites it yielded after the filter.
     pub count: usize,
+    /// How many of those are in the tracker's built-in curated list.
+    ///
+    /// Zero for every listing that is not the amateur group — that list is ten
+    /// amateur satellites — which is what lets the settings dialog grey out an
+    /// orbit-ring position that would do nothing here.
+    pub curated: usize,
     /// Why the last attempt failed, if it did. A failure does not clear
     /// `count`: the cached listing is still what is being tracked.
     pub error: Option<String>,
@@ -72,29 +78,43 @@ pub fn cached_text(cache: &Cache, sub: &TleSubscription) -> Option<String> {
 /// Status of a subscription from the cache alone, so the settings dialog can
 /// report on one without opening a socket.
 pub fn cached_status(cache: &Cache, sub: &TleSubscription) -> SubStatus {
+    let sats = cached(cache, sub);
     SubStatus {
         url: sub.url.clone(),
         fetched_unix: cache.fetched_at(&sub.url),
-        count: cached(cache, sub).len(),
+        count: sats.len(),
+        curated: curated_count(&sats),
         error: None,
     }
+}
+
+/// How many of these are in [`crate::satellites::POPULAR`].
+///
+/// Counted from the catalogue numbers rather than from `popular`, which the
+/// subscription's own setting has already overwritten by this point.
+fn curated_count(sats: &[Satellite]) -> usize {
+    sats.iter()
+        .filter(|s| crate::satellites::POPULAR.iter().any(|(id, _)| *id == s.norad_id))
+        .count()
 }
 
 /// Parse a fetched listing into the satellites this subscription wants.
 ///
 /// Everything that comes through is flagged [`Satellite::custom`] — it is here
-/// because the operator asked for it — and `popular` follows the
-/// subscription's own orbit-ring setting, which is what decides whether the
-/// scene draws a ring and a label for it.
+/// because the operator asked for it — and `popular`, which is what decides
+/// whether the scene draws a ring and a label, comes from the subscription's
+/// orbit-ring setting.
+///
+/// `parse_subscribed_tles` has already set `popular` from
+/// [`crate::satellites::POPULAR`], which is what [`OrbitRings::Curated`] keeps.
+/// The setting is otherwise the last word: with it on `None`, nothing from this
+/// listing is ringed, including the curated few. Anything else would leave part
+/// of the listing lit up with no control that turns it off.
 fn parse(sub: &TleSubscription, text: &str) -> Vec<Satellite> {
     let mut v = crate::satellites::parse_subscribed_tles(text);
     v.retain(|s| sub.wants(s.norad_id));
     for s in &mut v {
-        // Or-ed, not assigned: the curated few in [`crate::satellites::POPULAR`]
-        // keep their orbit rings and labels whatever the subscription says.
-        // Turning rings off for a ninety-satellite group must not also turn
-        // them off for the ten the view is built around.
-        s.popular |= sub.orbits;
+        s.popular = sub.orbits.rings(s.popular);
     }
     v
 }
@@ -121,6 +141,7 @@ pub fn refresh(
             let sats = cached(cache, sub);
             status.fetched_unix = now_unix;
             status.count = sats.len();
+            status.curated = curated_count(&sats);
             (sats, status)
         }
         Ok(Some((bytes, validators))) => {
@@ -131,6 +152,7 @@ pub fn refresh(
                     let sats = cached(cache, sub);
                     status.fetched_unix = cache.fetched_at(&url);
                     status.count = sats.len();
+                    status.curated = curated_count(&sats);
                     return (sats, status);
                 }
             };
@@ -143,6 +165,7 @@ pub fn refresh(
                 let old = cached(cache, sub);
                 status.fetched_unix = cache.fetched_at(&url);
                 status.count = old.len();
+                status.curated = curated_count(&old);
                 return (old, status);
             }
             cache.write(
@@ -153,6 +176,7 @@ pub fn refresh(
             );
             status.fetched_unix = now_unix;
             status.count = sats.len();
+            status.curated = curated_count(&sats);
             (sats, status)
         }
         Err(e) => {
@@ -161,6 +185,7 @@ pub fn refresh(
             status.error = Some(e);
             status.fetched_unix = cache.fetched_at(&url);
             status.count = sats.len();
+            status.curated = curated_count(&sats);
             (sats, status)
         }
     }
@@ -206,29 +231,41 @@ mod tests {
         TleSubscription::new("Test", "https://example.invalid/tle.txt")
     }
 
-    /// A group subscription tracks the whole listing, but only the curated few
-    /// are ringed and labelled — ninety rings at once is unreadable, and the
-    /// rest stay dots behind ALL SATS exactly as they did when the amateur set
-    /// was a fixed source.
+    /// A group subscription tracks the whole listing, and the orbit-ring
+    /// setting decides how much of it is drawn with a ring and a label. All
+    /// three positions have to do what they say — the middle one exists because
+    /// ninety rings is unreadable and none at all leaves ninety anonymous dots.
     #[test]
-    fn a_subscription_tracks_everything_in_the_listing_by_default() {
-        let v = parse(&sub(), AMATEUR);
+    fn the_orbit_setting_decides_which_of_a_listing_is_ringed() {
+        use sdroxide_types::OrbitRings;
+
+        let mut s = sub();
+        s.orbits = OrbitRings::Curated;
+        let v = parse(&s, AMATEUR);
         assert!(v.len() > 80, "only {} satellites", v.len());
-        // Operator-supplied, so they are visible without ALL SATS...
-        assert!(v.iter().all(|s| s.custom));
-        // ...and only the curated few are ringed and labelled, because ninety
-        // rings is unreadable. That the ISS keeps its ring with the
-        // subscription's own setting off is the whole point of the or.
-        assert!(v.iter().any(|s| s.popular), "the curated satellites lost their rings");
-        assert!(v.iter().filter(|s| s.popular).count() < 15, "too many were ringed");
-        assert!(v.iter().find(|s| s.norad_id == 25544).is_some_and(|s| s.popular));
+        assert!(v.iter().all(|x| x.custom), "a subscribed satellite is operator-supplied");
+        let curated = v.iter().filter(|x| x.popular).count();
+        assert!((1..15).contains(&curated), "{curated} ringed, expected the curated handful");
+        assert!(v.iter().find(|x| x.norad_id == 25544).is_some_and(|x| x.popular), "no ISS ring");
+
+        // Off means off — including for the curated few. Leaving them lit with
+        // no control that turns them off is the bug this position exists for.
+        s.orbits = OrbitRings::None;
+        let v = parse(&s, AMATEUR);
+        assert!(v.iter().all(|x| !x.popular), "something stayed ringed with orbits off");
+        assert!(v.iter().all(|x| x.custom), "they are still tracked, just not ringed");
+
+        // All means all.
+        s.orbits = OrbitRings::All;
+        let v = parse(&s, AMATEUR);
+        assert!(v.iter().all(|x| x.popular));
     }
 
     #[test]
     fn a_filter_narrows_it_to_the_listed_catalogue_numbers() {
         let mut s = sub();
         s.only = vec![25544, 43700];
-        s.orbits = true;
+        s.orbits = sdroxide_types::OrbitRings::All;
         let v = parse(&s, AMATEUR);
         assert_eq!(v.len(), 2, "the filter let something else through");
         let mut ids: Vec<u64> = v.iter().map(|s| s.norad_id).collect();
@@ -257,6 +294,23 @@ mod tests {
         s.set_only_text("   ");
         assert!(s.only.is_empty());
         assert!(s.wants(1) && s.wants(2));
+    }
+
+    /// The curated position only means something for a listing that contains
+    /// curated satellites — ten amateur ones — and the settings dialog greys it
+    /// out on the strength of this count, so it has to be right.
+    #[test]
+    fn the_curated_count_is_what_makes_that_position_meaningful() {
+        let sats = crate::satellites::parse_subscribed_tles(AMATEUR);
+        let n = curated_count(&sats);
+        // The amateur group carries the curated set, bar any that have decayed
+        // out of it.
+        assert!((5..=crate::satellites::POPULAR.len()).contains(&n), "{n} curated in the group");
+        // A listing with none of them counts zero, which is what greys the
+        // position out.
+        let none: Vec<_> = sats.into_iter().filter(|s| !s.popular).collect();
+        assert_eq!(curated_count(&none), 0);
+        assert_eq!(curated_count(&[]), 0);
     }
 
     #[test]
@@ -315,10 +369,14 @@ mod tests {
         // fresh install would quietly track a different set of satellites.
         let amateur = CELESTRAK_GROUPS.iter().find(|g| g.name == "Amateur radio").unwrap();
         assert_eq!(amateur.url, crate::satellites::AMATEUR_URL);
-        assert!(!amateur.orbits, "ninety orbit rings at once is unreadable");
+        assert_eq!(
+            amateur.orbits,
+            sdroxide_types::OrbitRings::Curated,
+            "ninety rings is unreadable and none leaves ninety anonymous dots"
+        );
         // The ISS is one satellite, so it is worth a ring and a label.
         let iss = CELESTRAK_GROUPS.iter().find(|g| g.name == "ISS").unwrap();
         assert!(iss.url.contains("CATNR=25544"));
-        assert!(iss.orbits);
+        assert_eq!(iss.orbits, sdroxide_types::OrbitRings::All);
     }
 }

@@ -74,6 +74,9 @@ struct SubStatusView {
     url: String,
     fetched_unix: i64,
     count: usize,
+    /// How many of the listing's satellites are in the built-in curated list.
+    /// Zero for everything that is not the amateur group.
+    curated: usize,
     error: Option<String>,
 }
 
@@ -6119,6 +6122,7 @@ impl SdroxideApp {
                     url: s.url,
                     fetched_unix: s.fetched_unix,
                     count: s.count,
+                    curated: s.curated,
                     error: s.error,
                 })
                 .collect();
@@ -7604,6 +7608,7 @@ fn settings_tle_subscriptions(ui: &mut egui::Ui, io: &mut SettingsIo) {
 
     let mut remove = None;
     for (i, sub) in io.sat_edit.subs.iter_mut().enumerate() {
+        let st = io.sat_subs.iter().find(|s| s.url.trim() == sub.url.trim());
         ui.push_id(("tle-sub", i), |ui| {
             ui.horizontal(|ui| {
                 ui.checkbox(&mut sub.enabled, "").on_hover_text("Fetch and track this listing");
@@ -7623,10 +7628,34 @@ fn settings_tle_subscriptions(ui: &mut egui::Ui, io: &mut SettingsIo) {
             });
             ui.horizontal(|ui| {
                 ui.add_space(24.0);
-                ui.checkbox(&mut sub.orbits, "Orbits").on_hover_text(
-                    "Draw an orbit ring and a label for every satellite in this listing. Leave \
-                     off for a whole group — ninety rings at once is unreadable.",
-                );
+                ui.label(RichText::new("Orbits").color(theme::CYAN_DIM).size(9.5).strong())
+                    .on_hover_text(
+                        "Which satellites in this listing get an orbit ring and a label. A whole \
+                         group wants \"curated\": ninety rings at once is unreadable, and none \
+                         at all leaves ninety anonymous dots.",
+                    );
+                // The middle position keys off sdroxide's own curated list,
+                // which is ten *amateur* satellites — so for a weather or GNSS
+                // listing it would behave exactly like "none". Greyed out once
+                // a fetch has proved this listing has none of them, rather than
+                // left as a chip that quietly does nothing.
+                let no_curated = st.is_some_and(|s| s.fetched_unix > 0 && s.curated == 0);
+                for o in sdroxide_types::OrbitRings::ALL {
+                    let dead = o == sdroxide_types::OrbitRings::Curated && no_curated;
+                    let resp = ui
+                        .add_enabled_ui(!dead, |ui| {
+                            crate::chrome::chip(ui, sub.orbits == o, o.label())
+                        })
+                        .inner;
+                    let hint = if dead {
+                        "Nothing in this listing is in sdroxide's curated list — that list is                          ten amateur satellites, so this would behave exactly like \"none\"."
+                    } else {
+                        o.hint()
+                    };
+                    if resp.on_hover_text(hint).clicked() && !dead {
+                        sub.orbits = o;
+                    }
+                }
                 let mut only = sub.only_text();
                 let resp = ui
                     .add(
@@ -7644,7 +7673,6 @@ fn settings_tle_subscriptions(ui: &mut egui::Ui, io: &mut SettingsIo) {
 
                 // Status: what the last fetch actually did. Matched by URL
                 // rather than by position — the two lists are edited apart.
-                let st = io.sat_subs.iter().find(|s| s.url.trim() == sub.url.trim());
                 let (text, color) = match (sub.problem(), st) {
                     (Some(p), _) => (p.to_string(), theme::PINK),
                     (None, None) => ("not fetched yet".to_string(), theme::LINE_LIT),

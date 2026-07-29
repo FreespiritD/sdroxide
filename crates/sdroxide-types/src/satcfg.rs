@@ -257,6 +257,95 @@ impl CustomTle {
     }
 }
 
+/// Which satellites in a listing get an orbit ring and a label.
+///
+/// Three states rather than two, because there genuinely are three useful
+/// answers and a plain on/off switch hid the middle one: with it off, the
+/// handful of satellites in the tracker's own curated list kept their rings
+/// anyway, which made the switch look broken. Now that behaviour is a position
+/// on the control rather than something happening behind it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub enum OrbitRings {
+    /// None of them. Plain dots, and only visible at all under `ALL SATS`.
+    None,
+    /// The ones in the tracker's built-in curated list — the handful the view
+    /// is built around. The right answer for a whole group: ninety rings at
+    /// once is unreadable, but no rings at all leaves ninety anonymous dots.
+    ///
+    /// That list is ten *amateur* satellites, so for a weather, GNSS or
+    /// launch-window listing this position behaves exactly like
+    /// [`OrbitRings::None`]. The settings dialog greys it out once a fetch has
+    /// shown that a listing contains none of them, rather than leaving a chip
+    /// that quietly does nothing.
+    #[default]
+    Curated,
+    /// Every satellite in the listing. Only sensible for a short one.
+    All,
+}
+
+impl OrbitRings {
+    pub const ALL: [OrbitRings; 3] = [OrbitRings::None, OrbitRings::Curated, OrbitRings::All];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            OrbitRings::None => "none",
+            OrbitRings::Curated => "curated",
+            OrbitRings::All => "all",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            OrbitRings::None => "No orbit rings or labels from this listing at all",
+            OrbitRings::Curated => {
+                "Rings and labels only for the satellites in sdroxide's own curated list — ten \
+                 amateur ones, so this does nothing for a listing without any of them"
+            }
+            OrbitRings::All => {
+                "Rings and labels for every satellite in the listing. Unreadable for a whole \
+                 group; right for a short one."
+            }
+        }
+    }
+
+    /// Whether a satellite gets a ring, given whether the built-in curated list
+    /// has it.
+    pub fn rings(self, curated: bool) -> bool {
+        match self {
+            OrbitRings::None => false,
+            OrbitRings::Curated => curated,
+            OrbitRings::All => true,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OrbitRings {
+    /// Also accepts the boolean this used to be, so an existing
+    /// `satellites.json` loads rather than failing and taking the operator's
+    /// pasted element sets and frequency entries down with it.
+    ///
+    /// `true` ringed everything, so it becomes [`OrbitRings::All`]. `false`
+    /// still left the curated few ringed, so it becomes [`OrbitRings::Curated`]
+    /// — which is what those files actually meant, whatever they said.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Legacy(bool),
+            Tag(String),
+        }
+        Ok(match Wire::deserialize(d)? {
+            Wire::Legacy(true) => OrbitRings::All,
+            Wire::Legacy(false) => OrbitRings::Curated,
+            Wire::Tag(t) if t == "None" => OrbitRings::None,
+            Wire::Tag(t) if t == "All" => OrbitRings::All,
+            // Anything unrecognised — a hand-edited file, or a value from a
+            // future version — lands on the default rather than failing.
+            Wire::Tag(_) => OrbitRings::Curated,
+        })
+    }
+}
+
 /// An element-set listing fetched from a URL and kept up to date.
 ///
 /// Pasted elements go stale — SGP4 is worth little on a fortnight-old TLE — so
@@ -272,11 +361,8 @@ pub struct TleSubscription {
     pub name: String,
     pub url: String,
     pub enabled: bool,
-    /// Draw orbit rings and labels for these, as for the curated set.
-    ///
-    /// Off by default: a group endpoint can be ninety satellites, and ninety
-    /// rings at once is unreadable. Worth turning on for a short listing.
-    pub orbits: bool,
+    /// Which of these get an orbit ring and a label.
+    pub orbits: OrbitRings,
     /// Keep only these catalogue numbers. Empty keeps everything the listing
     /// has, which is the point of subscribing to a group.
     pub only: Vec<u64>,
@@ -288,7 +374,7 @@ impl TleSubscription {
             name: name.trim().to_string(),
             url: url.trim().to_string(),
             enabled: true,
-            orbits: false,
+            orbits: OrbitRings::default(),
             only: Vec::new(),
         }
     }
@@ -346,9 +432,8 @@ pub struct CelestrakGroup {
     /// tracker used to fetch unconditionally, so a fresh install still shows
     /// them without the operator having to go and ask for them.
     pub default_on: bool,
-    /// Orbit rings and labels on by default. Only for a listing short enough
-    /// that ringing all of it is readable.
-    pub orbits: bool,
+    /// Which satellites in the listing start out ringed and labelled.
+    pub orbits: OrbitRings,
 }
 
 /// CelesTrak group listings worth offering as one-click subscriptions.
@@ -362,58 +447,58 @@ pub const CELESTRAK_GROUPS: &[CelestrakGroup] = &[
         url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=tle",
         hint: "Every amateur-radio satellite. The curated few keep their orbit rings and                labels; the rest are dots unless ALL SATS is on.",
         default_on: true,
-        // Ninety rings at once is unreadable — the curated ten get theirs from
-        // the built-in list regardless of this.
-        orbits: false,
+        // Ninety rings at once is unreadable, and no rings at all leaves ninety
+        // anonymous dots — so the curated few, which is the middle position.
+        orbits: OrbitRings::Curated,
     },
     CelestrakGroup {
         name: "ISS",
         url: "https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=tle",
         hint: "The ISS on its own, from its own element set — fresher than the copy in the                amateur group, and it keeps working if you unsubscribe from that.",
         default_on: true,
-        orbits: true,
+        orbits: OrbitRings::All,
     },
     CelestrakGroup {
         name: "Weather",
         url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle",
         hint: "The NOAA APT and Meteor LRPT birds on 137 MHz",
         default_on: false,
-        orbits: false,
+        orbits: OrbitRings::Curated,
     },
     CelestrakGroup {
         name: "CubeSats",
         url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=cubesat&FORMAT=tle",
         hint: "Everything cubesat-sized, including amateur payloads too new for the amateur group",
         default_on: false,
-        orbits: false,
+        orbits: OrbitRings::Curated,
     },
     CelestrakGroup {
         name: "Space stations",
         url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle",
         hint: "The ISS, Tiangong and the vehicles docked with them",
         default_on: false,
-        orbits: false,
+        orbits: OrbitRings::Curated,
     },
     CelestrakGroup {
         name: "Last 30 days' launches",
         url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=last-30-days&FORMAT=tle",
         hint: "Anything launched in the last month — where a brand-new amateur satellite shows                up first",
         default_on: false,
-        orbits: false,
+        orbits: OrbitRings::Curated,
     },
     CelestrakGroup {
         name: "Geostationary",
         url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=geo&FORMAT=tle",
         hint: "The geostationary belt, QO-100 among it",
         default_on: false,
-        orbits: false,
+        orbits: OrbitRings::Curated,
     },
     CelestrakGroup {
         name: "GNSS",
         url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=gnss&FORMAT=tle",
         hint: "GPS, Galileo, GLONASS and BeiDou",
         default_on: false,
-        orbits: false,
+        orbits: OrbitRings::Curated,
     },
 ];
 
@@ -716,6 +801,48 @@ ISS (ZARYA)
 
     /// A fresh install has to come up tracking the amateur satellites and the
     /// ISS, because that is what it did before they became subscriptions.
+    /// The setting used to be a plain `bool`, and a config written then has to
+    /// keep loading — failing the field would take the operator's pasted
+    /// element sets and frequency entries down with the whole file.
+    #[test]
+    fn a_config_written_when_orbits_was_a_boolean_still_loads() {
+        let old = r#"{"subs":[
+            {"name":"a","url":"https://x/1","enabled":true,"orbits":true,"only":[]},
+            {"name":"b","url":"https://x/2","enabled":true,"orbits":false,"only":[]}
+        ]}"#;
+        let cfg: SatConfig = serde_json::from_str(old).expect("an old config must still load");
+        // `true` ringed everything...
+        assert_eq!(cfg.subs[0].orbits, OrbitRings::All);
+        // ...and `false` still left the curated few ringed, which is what that
+        // file meant whatever it said.
+        assert_eq!(cfg.subs[1].orbits, OrbitRings::Curated);
+
+        // A value from a newer version, or a hand-edited one, lands on the
+        // default rather than failing the file.
+        let odd: SatConfig = serde_json::from_str(
+            r#"{"subs":[{"name":"a","url":"https://x","orbits":"Surprise"}]}"#,
+        )
+        .expect("an unknown value must not fail the file");
+        assert_eq!(odd.subs[0].orbits, OrbitRings::Curated);
+    }
+
+    /// What each position of the orbit-ring control does, given whether the
+    /// built-in curated list has the satellite.
+    #[test]
+    fn the_orbit_positions_do_what_they_say() {
+        assert!(!OrbitRings::None.rings(true), "off must be off even for a curated satellite");
+        assert!(!OrbitRings::None.rings(false));
+        assert!(OrbitRings::Curated.rings(true));
+        assert!(!OrbitRings::Curated.rings(false));
+        assert!(OrbitRings::All.rings(true));
+        assert!(OrbitRings::All.rings(false));
+        // Distinct labels, or the three chips would not be tellable apart.
+        let labels: std::collections::HashSet<_> =
+            OrbitRings::ALL.iter().map(|o| o.label()).collect();
+        assert_eq!(labels.len(), 3);
+        assert!(OrbitRings::ALL.iter().all(|o| !o.hint().is_empty()));
+    }
+
     #[test]
     fn a_fresh_config_is_seeded_with_the_amateur_satellites_and_the_iss() {
         let mut cfg = SatConfig::default();
@@ -725,9 +852,10 @@ ISS (ZARYA)
         assert_eq!(names, vec!["Amateur radio", "ISS"]);
         assert!(cfg.subs.iter().all(|s| s.enabled), "the defaults must be on");
         assert!(cfg.live_subs().count() == 2);
-        // The ISS is one satellite and gets a ring; the amateur group does not.
-        assert!(!cfg.subs[0].orbits);
-        assert!(cfg.subs[1].orbits);
+        // The ISS is one satellite, so all of it is ringed; the amateur group
+        // shows only the curated few.
+        assert_eq!(cfg.subs[0].orbits, OrbitRings::Curated);
+        assert_eq!(cfg.subs[1].orbits, OrbitRings::All);
     }
 
     /// Seeding happens once. An operator who unsubscribes must not find the
@@ -751,12 +879,16 @@ ISS (ZARYA)
         // of it rather than gaining a second.
         let mut mine = SatConfig::default();
         let mut sub = TleSubscription::new("My amateur list", CELESTRAK_GROUPS[0].url);
-        sub.orbits = true;
+        sub.orbits = OrbitRings::All;
         mine.subs.push(sub);
         mine.seed_defaults();
         assert_eq!(mine.subs.len(), 2, "{:?}", mine.subs);
         assert_eq!(mine.subs[0].name, "My amateur list");
-        assert!(mine.subs[0].orbits, "the operator's own settings were overwritten");
+        assert_eq!(
+            mine.subs[0].orbits,
+            OrbitRings::All,
+            "the operator's own settings were overwritten"
+        );
     }
 
     #[test]
