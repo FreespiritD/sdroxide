@@ -1862,6 +1862,8 @@ into `satellites.json`. The 3D view picks changes up on its next frame.
 
 #### 5.9.1 Subscriptions
 
+![The TLE subscriptions management](images/settings-tle1.jpg)
+
 A two-line element set is only good for a few days: SGP4 accuracy decays
 quickly, and sdroxide refuses to propagate elements more than a fortnight past
 their epoch at all. So anything you mean to *keep* tracking wants a
@@ -1927,6 +1929,8 @@ are cached on disk, so they survive a restart and keep working offline.
 
 #### 5.9.2 Pasted element sets
 
+![The manual TLE input area](images/settings-tle2.jpg)
+
 For a one-off, paste the two- or three-line set straight into the box and press
 **+ Add pasted**. Both forms are understood, several at once are fine, and
 pasting a set for a satellite already listed *refreshes* that entry rather than
@@ -1945,6 +1949,8 @@ subscribed element set for the same satellite, so this is how you put a fresher
 ISS TLE in front of the one CelesTrak served this morning.
 
 #### 5.9.3 Frequencies
+
+![The TLE frequency management](images/settings-tle3.jpg)
 
 These are the rows the pass table shows underneath a pass
 ([6](#6-solar-system-3d-view)). Give a catalogue number and press **+
