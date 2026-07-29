@@ -208,12 +208,22 @@ impl FecCodec for Ldpc174_87 {
         }
 
         let iters = if opts.bp_max_iter == 0 { DEFAULT_BP_ITERS } else { opts.bp_max_iter };
-        let r = bp_decode(&fixed, iters, opts.verify_info)?;
-        Some(FecResult {
-            info: r.info.to_vec(),
-            hard_errors: r.hard_errors,
-            iterations: r.iterations,
-        })
+        if let Some(r) = bp_decode(&fixed, iters, opts.verify_info) {
+            return Some(FecResult {
+                info: r.info.to_vec(),
+                hard_errors: r.hard_errors,
+                iterations: r.iterations,
+            });
+        }
+        // Belief propagation failed. Ordered statistics attacks the same
+        // codeword from the other end — trust the most confident bits and
+        // re-derive the rest — and catches frames whose errors sit where BP
+        // cannot iterate its way out of.
+        if opts.osd_depth == 0 {
+            return None;
+        }
+        let r = super::osd::osd_decode(&fixed, opts.osd_depth as u8, opts.verify_info)?;
+        Some(FecResult { info: r.info.to_vec(), hard_errors: r.hard_errors, iterations: iters })
     }
 }
 

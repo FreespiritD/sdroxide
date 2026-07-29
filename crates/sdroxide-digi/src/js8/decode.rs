@@ -460,6 +460,50 @@ mod tests {
     }
 
     #[test]
+    fn noise_alone_produces_no_decodes_with_osd_either() {
+        // The one that matters most. Ordered-statistics decoding re-encodes an
+        // information set, so it *always* produces a structurally valid
+        // codeword — it cannot fail the way belief propagation does. Only the
+        // CRC and the hard-error ceiling stand between it and a fabricated
+        // callsign on screen, so this has to be checked separately rather than
+        // assumed to follow from the BP case.
+        let mut false_decodes = 0;
+        for seed in 0..50u64 {
+            for speed in Js8Speed::ALL {
+                let mut rng = Xorshift(seed * 2_654_435_761 | 1);
+                let pcm: Vec<i16> =
+                    (0..slot_samples(speed)).map(|_| (rng.noise() * 8_000.0) as i16).collect();
+                false_decodes += decode_slot_for(speed, &pcm, Js8Depth::BpOsd).len();
+            }
+        }
+        assert_eq!(false_decodes, 0, "{false_decodes} decodes invented from pure noise");
+    }
+
+    #[test]
+    fn osd_never_costs_a_decode_that_belief_propagation_found() {
+        // It is a fallback: it runs only where BP gave up, so it can only add.
+        // It did not, once — selecting among CRC-gated candidates let an
+        // impostor outrank the true codeword. See `js8::osd`.
+        for speed in [Js8Speed::Normal, Js8Speed::Slow] {
+            for amp in [0.5f32, 0.2, 0.1] {
+                let audio = slot(speed, "KM4ACKtestin", 4, 1500.0, 0.0, amp, 0.25, 17);
+                let bp = decode_slot_for(speed, &audio, Js8Depth::Bp);
+                let osd = decode_slot_for(speed, &audio, Js8Depth::BpOsd);
+                assert!(
+                    osd.len() >= bp.len(),
+                    "{} amp {amp}: osd {} < bp {}",
+                    speed.label(),
+                    osd.len(),
+                    bp.len()
+                );
+                if let Some(d) = bp.first() {
+                    assert_eq!(osd[0].payload, d.payload, "osd changed a good decode");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn silence_produces_no_decodes() {
         for speed in Js8Speed::ALL {
             let pcm = vec![0i16; slot_samples(speed)];

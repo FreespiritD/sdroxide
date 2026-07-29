@@ -102,7 +102,12 @@ impl Js8Controller {
             .name("sdroxide-js8-decode".into())
             .spawn(move || {
                 while let Ok(job) = job_rx.recv() {
-                    let decodes = decode_slot_for(job.speed, &job.audio, Js8Depth::Bp);
+                    // Ordered statistics runs only where belief propagation
+                    // gave up, and measurably costs nothing: a busy Normal
+                    // slot decodes in ~20 ms either way, because the sync gate
+                    // turns most candidates away long before the FEC. There is
+                    // no reason to make an operator opt into it.
+                    let decodes = decode_slot_for(job.speed, &job.audio, Js8Depth::BpOsd);
                     if res_tx.send((job.slot_utc, decodes)).is_err() {
                         break;
                     }

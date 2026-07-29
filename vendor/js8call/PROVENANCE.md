@@ -248,6 +248,32 @@ past 10704 then shifts, corrupting roughly 96 % of the dictionary. The generator
 now asserts that each entry's stated index equals its position, which turns that
 into a build failure instead of garbled text on the air.
 
+## Ordered-statistics decoding
+
+`js8::osd` is a port of `lib/ft8/osd174.f90`, used as the fallback where belief
+propagation fails. Measured against JS8Call over identical files (noise 0.25,
+six seeds per point, signal amplitude swept):
+
+| Speed | amp | BP only | BP + OSD | JS8Call |
+|---|---|---|---|---|
+| Normal | 0.013 | 6/6 | 6/6 | 4/6 |
+| Normal | 0.011 | 1/6 | **3/6** | 1/6 |
+| Slow | 0.009 | 3/6 | **4/6** | 2/6 |
+| Slow | 0.008 | 0/6 | **1/6** | 0/6 |
+
+Never worse anywhere, and 200 slots of pure noise across all four speeds still
+produce zero decodes with it enabled. Cost on a busy Normal slot is ~20 ms
+against 15 000 ms of audio — the sync-quality gate turns most candidates away
+before the FEC runs — so it is on by default rather than an option.
+
+**One trap, worth recording.** The first implementation CRC-gated every
+candidate and kept the best survivor. An order-2 search generates 3 829
+candidates; against a 12-bit CRC the chance that at least one wrong codeword
+passes is about 61%, and any impostor closer to the received word than the true
+codeword wins. That made OSD *remove* decodes BP had already found — 6/6 became
+5/6, 3/6 became 0/6. Upstream selects by soft distance alone and checks the CRC
+once, on the winner; so do we, with a hard-error ceiling as a second net.
+
 ## Regenerating any of this
 
 None of the generators run during a normal build — their output is committed, so

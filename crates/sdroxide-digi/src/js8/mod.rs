@@ -33,5 +33,6 @@ pub mod ldpc;
 pub mod ldpc_tables;
 pub mod message;
 pub mod modem;
+pub mod osd;
 pub mod protocol;
 pub mod varicode;
