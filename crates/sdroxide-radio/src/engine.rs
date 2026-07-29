@@ -1971,6 +1971,10 @@ impl Engine {
                 }
                 self.update_tuning();
             }
+            SetSubRxFreq(hz) => {
+                self.state.sub_rx_hz = self.clamp_to_passband(hz);
+                self.update_tuning();
+            }
             SetRit { enabled, hz } => {
                 self.state.rit = sdroxide_types::OffsetState { enabled, hz };
                 self.update_tuning();
@@ -3078,8 +3082,55 @@ impl Engine {
         let _ = self.event_tx.send(RadioEvent::Memories(self.memories.clone()));
     }
 
+    /// The frequency window the receivers can reach: the device passband. Both
+    /// DDCs tap the same IQ stream, so anything outside it simply isn't there.
+    fn passband(&self) -> (f64, f64) {
+        let half = self.state.sample_rate / 2.0;
+        (self.state.center_hz - half, self.state.center_hz + half)
+    }
+
+    fn clamp_to_passband(&self, hz: f64) -> f64 {
+        let (lo, hi) = self.passband();
+        hz.clamp(lo, hi)
+    }
+
+    /// Park the sub receiver on the inactive VFO when it has never been placed
+    /// (zero), or when its frequency has fallen outside the device passband —
+    /// a band change, a retune, or a sample-rate change moving the hardware out
+    /// from under it. Without this the sub's DDC would sit at an offset beyond
+    /// the IQ it is fed and the operator would hear silence with no indication
+    /// why.
+    ///
+    /// The inactive VFO is the seed (rather than the dial) because that is
+    /// where the sub used to live unconditionally, so switching it on for the
+    /// first time still lands where it always did.
+    fn reseat_sub_freq(&mut self) {
+        // Nothing to park while the sub is off — and inventing a frequency for
+        // it then would consume the "never placed" zero during startup, so the
+        // operator's first SUB would land on a stale dial instead of on the
+        // VFO they had just set up as the other place to listen.
+        if !self.state.sub_rx_enabled {
+            return;
+        }
+        let (lo, hi) = self.passband();
+        if self.state.sub_rx_hz > 0.0 && (lo..=hi).contains(&self.state.sub_rx_hz) {
+            return;
+        }
+        let inactive = match self.state.active_vfo {
+            Vfo::A => self.state.vfo_b_hz,
+            Vfo::B => self.state.vfo_a_hz,
+        };
+        // The inactive VFO can be off-passband too (split across bands): fall
+        // back to the dial, which is in range by construction.
+        self.state.sub_rx_hz = if (lo..=hi).contains(&inactive) {
+            inactive
+        } else {
+            self.state.rx_freq_hz().clamp(lo, hi)
+        };
+    }
+
     /// Point the main-RX DDC at the active VFO (+RIT) and the sub-RX DDC at
-    /// the inactive VFO.
+    /// its own parked frequency.
     /// Swap the audio output sink at runtime (frontend changed sound devices).
     /// Rebuilds the RX chains for the new device rate; the digi tap and DDC
     /// offsets are re-armed on the fresh chains.
@@ -3365,11 +3416,8 @@ impl Engine {
             return;
         }
         let main_offset = self.state.rx_freq_hz() - self.state.center_hz;
-        let inactive = match self.state.active_vfo {
-            Vfo::A => self.state.vfo_b_hz,
-            Vfo::B => self.state.vfo_a_hz,
-        };
-        let sub_offset = inactive - self.state.center_hz;
+        self.reseat_sub_freq();
+        let sub_offset = self.state.sub_rx_hz - self.state.center_hz;
         if let Some(c) = self.main.as_mut() {
             c.set_offset_hz(main_offset);
         }

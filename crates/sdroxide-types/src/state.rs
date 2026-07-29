@@ -113,6 +113,17 @@ pub struct RadioState {
     /// Indexed by [`RxId::index`]: main, sub.
     pub rx: [RxState; 2],
     pub sub_rx_enabled: bool,
+    /// Where the sub receiver listens. Independent of A/B: the sub is a second
+    /// receiver, not a second view of a VFO, so swapping VFOs or retuning the
+    /// dial leaves it where the operator parked it — including across switching
+    /// the sub off and back on.
+    ///
+    /// Zero means "never placed". The engine parks it on the inactive VFO then,
+    /// and again whenever a band change moves the hardware out from under it:
+    /// the sub is a DDC on the same IQ as the main receiver, so a frequency
+    /// outside the device passband is one it cannot hear.
+    #[serde(default)]
+    pub sub_rx_hz: f64,
 
     pub rit: OffsetState,
     pub xit: OffsetState,
@@ -163,6 +174,7 @@ impl Default for RadioState {
             sample_rate: 1_536_000.0,
             rx: [RxState::with_mode(mode), RxState::with_mode(mode)],
             sub_rx_enabled: false,
+            sub_rx_hz: 0.0, // never placed; the engine parks it on first use
             rit: OffsetState::default(),
             xit: OffsetState::default(),
             // Low drive defaults: digital amplitude stays far from full

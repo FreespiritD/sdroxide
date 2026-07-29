@@ -895,6 +895,12 @@ impl SdroxideApp {
             self.smeter_module(ui);
             self.vfo_rit_module(ui, cmds);
             self.rx_filter_module(ui, cmds);
+            // Only while the sub is running: the module appearing is itself the
+            // confirmation that SUB took effect, and it costs a wrapped row of
+            // top bar that operators who never use it should not have to pay.
+            if self.state.sub_rx_enabled {
+                self.sub_rx_module(ui, cmds);
+            }
             if self.caps.as_ref().is_some_and(|c| c.is_transmit_capable()) {
                 self.tx_module(ui, cmds);
             }
@@ -1564,7 +1570,11 @@ impl SdroxideApp {
                         cmds.push(Command::SetSplit(!self.state.split));
                     }
                     if crate::chrome::chip(ui, self.state.sub_rx_enabled, "SUB")
-                        .on_hover_text("Sub receiver on the inactive VFO (right ear)")
+                        .on_hover_text(
+                            "Second receiver, in the right ear. It tunes independently of \
+                             A/B — its controls appear in the SUB module, and its passband \
+                             on the waterfall.",
+                        )
                         .clicked()
                     {
                         cmds.push(Command::SetSubRx(!self.state.sub_rx_enabled));
@@ -1897,6 +1907,155 @@ impl SdroxideApp {
                             self.state.rx[0].wfm_stereo = !want; // optimistic echo
                             cmds.push(Command::SetWfmStereo { rx: RxId::Main, on: !want });
                         }
+                    }
+                });
+            });
+        });
+    }
+
+    /// The sub receiver's own controls, shown only while it is running. The sub
+    /// has a frequency, a mode and a filter of its own — none of which the main
+    /// receiver's controls can reach — so without this module it is a second
+    /// receiver that can only be switched on and off.
+    fn sub_rx_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        // The sub tunes anywhere inside the device passband and nowhere outside
+        // it: both receivers are DDCs on the same IQ stream.
+        let half = self.state.sample_rate / 2.0;
+        let (dev_lo, dev_hi) = (self.state.center_hz - half, self.state.center_hz + half);
+        // Field height, and the height every row is told to be. egui sizes a
+        // horizontal row from `interact_size.y` and then grows it as taller
+        // widgets land in it — which drops everything added after the first
+        // chip a few pixels below everything added before it. Starting the row
+        // at the height its tallest widget will be leaves nothing to grow.
+        const FIELD_H: f32 = 22.0;
+        crate::chrome::module_bare_h(ui, 404.0, crate::chrome::MODULE_TALL_H, |ui| {
+            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
+                ui.spacing_mut().interact_size.y = FIELD_H;
+                // Frequency, mode, and the two moves worth a single click:
+                // send the sub to the dial, or bring the dial to the sub.
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("SUB")
+                            .color(crate::widgets::spectrum_view::SUB_COLOR)
+                            .size(11.0)
+                            .strong(),
+                    );
+                    let mut hz = self.state.sub_rx_hz;
+                    let resp = ui
+                        .add_sized(
+                            [116.0, FIELD_H],
+                            DragValue::new(&mut hz)
+                                .speed(10.0)
+                                .range(dev_lo..=dev_hi)
+                                // Typed and shown in MHz — the unit the operator
+                                // reads a frequency in — while the drag step
+                                // stays in Hz so it tunes like a dial.
+                                .custom_formatter(|v, _| format!("{:.6}", v / 1e6))
+                                .custom_parser(|s| s.trim().parse::<f64>().ok().map(|m| m * 1e6))
+                                .suffix(" MHz"),
+                        )
+                        .on_hover_text(
+                            "Where the sub receiver listens. Shift-click the waterfall, or \
+                             drag inside the sub's passband, to move it.",
+                        );
+                    if resp.changed() {
+                        self.state.sub_rx_hz = hz; // optimistic echo
+                        cmds.push(Command::SetSubRxFreq(hz));
+                    }
+                    let mode = self.state.rx[1].mode;
+                    ComboBox::from_id_salt("sub-mode")
+                        .selected_text(mode.label())
+                        .width(74.0)
+                        .show_ui(ui, |ui| {
+                            // Audio modes only. The digital modes are wired to
+                            // the main receiver alone (one decoder, one TX), and
+                            // SPEC produces no audio at all — a sub receiver you
+                            // cannot hear is a trap, not a setting.
+                            for m in [
+                                Mode::Lsb,
+                                Mode::Usb,
+                                Mode::Cw,
+                                Mode::Am,
+                                Mode::Sam,
+                                Mode::Nfm,
+                                Mode::Wfm,
+                                Mode::Digu,
+                                Mode::Digl,
+                                Mode::Dsb,
+                            ] {
+                                if ui.selectable_label(mode == m, m.label()).clicked() {
+                                    cmds.push(Command::SetMode { rx: RxId::Sub, mode: m });
+                                }
+                            }
+                        });
+                    if crate::chrome::chip(ui, false, "←DIAL")
+                        .on_hover_text("Move the sub receiver to the main dial")
+                        .clicked()
+                    {
+                        cmds.push(Command::SetSubRxFreq(self.state.rx_freq_hz()));
+                    }
+                    if crate::chrome::chip(ui, false, "DIAL←")
+                        .on_hover_text("Move the main dial to the sub receiver")
+                        .clicked()
+                    {
+                        cmds.push(Command::SetVfo {
+                            vfo: self.state.active_vfo,
+                            hz: self.state.sub_rx_hz,
+                        });
+                    }
+                });
+                // Filter, level, mute.
+                ui.horizontal(|ui| {
+                    let rx1 = self.state.rx[1];
+                    let max = rx1.mode.max_filter_hz();
+                    ui.label("Filter").on_hover_text("Sub receiver passband edges, in Hz");
+                    let mut lo = rx1.filter_lo;
+                    let mut hi = rx1.filter_hi;
+                    let changed = ui
+                        .add_sized(
+                            [70.0, FIELD_H],
+                            DragValue::new(&mut lo).speed(10).range(-max..=max),
+                        )
+                        .changed()
+                        | ui.add_sized(
+                            [70.0, FIELD_H],
+                            DragValue::new(&mut hi).speed(10).range(-max..=max),
+                        )
+                        .changed();
+                    if changed {
+                        // Same 50 Hz floor the waterfall grips enforce, so the
+                        // passband can't be dragged shut from either route.
+                        let (lo, hi) = (lo.min(hi - 50.0), hi.max(lo + 50.0));
+                        (self.state.rx[1].filter_lo, self.state.rx[1].filter_hi) = (lo, hi);
+                        cmds.push(Command::SetFilter { rx: RxId::Sub, lo, hi });
+                    }
+                    let mut vol = rx1.volume;
+                    ui.label("Vol").on_hover_text("Sub receiver level (it plays in the right ear)");
+                    if ui
+                        .scope(|ui| {
+                            ui.spacing_mut().slider_width = 64.0;
+                            crate::chrome::slider(
+                                ui,
+                                Slider::new(&mut vol, 0.0..=1.0).show_value(false),
+                            )
+                        })
+                        .inner
+                        .changed()
+                    {
+                        self.state.rx[1].volume = vol; // optimistic echo
+                        cmds.push(Command::SetVolume { rx: RxId::Sub, v: vol });
+                    }
+                    if crate::chrome::chip_accent(
+                        ui,
+                        rx1.muted,
+                        "MUTE",
+                        crate::theme::PINK,
+                        Color32::WHITE,
+                    )
+                    .clicked()
+                    {
+                        cmds.push(Command::SetMute { rx: RxId::Sub, muted: !rx1.muted });
                     }
                 });
             });

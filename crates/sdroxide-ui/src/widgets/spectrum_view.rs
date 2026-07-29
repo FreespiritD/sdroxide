@@ -1,6 +1,8 @@
 //! The panadapter: spectrum line + frequency scale + GPU waterfall, with
-//! drag-pan, wheel-zoom (around the cursor), click-to-tune (shift-click
-//! tunes VFO B), draggable passband filter edges, and a shift+drag bandwidth
+//! drag-pan, wheel-zoom (around the cursor), click-to-tune (shift-click places
+//! the second receiver — the sub when it is running, VFO B otherwise),
+//! draggable passband filter edges for both receivers, a sub-receiver that
+//! tunes by dragging inside its own passband, and a shift+drag bandwidth
 //! measurement ruler.
 
 use std::sync::Arc;
@@ -26,6 +28,14 @@ const CLICK_TUNE_STEP: f64 = 10.0;
 const SCROLL_PER_DETENT: f32 = 30.0;
 /// Pixel distance for grabbing a filter edge.
 const EDGE_GRAB_PX: f32 = 6.0;
+/// Pixel distance for grabbing the sub receiver's tuning line — its passband is
+/// grabbable in full, but in SSB the line sits outside it.
+const MARKER_GRAB_PX: f32 = 5.0;
+/// The sub receiver's colour, on the panadapter and on its control module.
+/// Deliberately nothing like the main receiver's red, the amber VFO/RTTY
+/// markers, or the cyan the digital modes use: two receivers on one waterfall
+/// are only readable if telling them apart never needs a second look.
+pub const SUB_COLOR: Color32 = Color32::from_rgb(185, 130, 255);
 
 /// Per-frame display tuning from the app. Both the waterfall advance and the
 /// time gridlines are driven by the same wall-clock so they scroll in lockstep
@@ -622,6 +632,10 @@ pub fn show_ext(
     // only the zoomed viewport).
     let dev_center = state.center_hz;
     let dev_span = state.sample_rate;
+    // Both receivers are DDCs on this one IQ stream, so nothing outside these
+    // edges can be tuned — the sub gets clamped to them.
+    let dev_lo = dev_center - dev_span / 2.0;
+    let dev_hi = dev_center + dev_span / 2.0;
     if view.is_unset() {
         view.fit(dev_center, dev_span);
     }
@@ -647,27 +661,64 @@ pub fn show_ext(
     // wins and only moves the edge. Otherwise: left-drag pans the view AND
     // drags the tuning with it; right-drag pans the view only.
     let vfo_hz = state.rx_freq_hz();
+    let sub_hz = state.sub_rx_hz;
+    let sub_on = state.sub_rx_enabled;
     let px0 = view.freq_to_x(vfo_hz + state.rx[0].filter_lo as f64, &rect);
     let px1 = view.freq_to_x(vfo_hz + state.rx[0].filter_hi as f64, &rect);
+    let spx0 = view.freq_to_x(sub_hz + state.rx[1].filter_lo as f64, &rect);
+    let spx1 = view.freq_to_x(sub_hz + state.rx[1].filter_hi as f64, &rect);
+    let sub_marker_x = view.freq_to_x(sub_hz, &rect);
 
-    let edge_at = |p: egui::Pos2| -> Option<u8> {
+    // Which passband edge the pointer can grab: the receiver it belongs to, and
+    // whether it is the high edge.
+    let edge_at = |p: egui::Pos2| -> Option<(RxId, bool)> {
         // Grabbable in either the spectrum or the waterfall strip, so the edges
         // can still be dragged when the spectrum line is collapsed.
         if !(spec_rect.contains(p) || wf_rect.contains(p)) {
             return None;
         }
-        if (p.x - px0).abs() < EDGE_GRAB_PX {
-            Some(0u8)
-        } else if (p.x - px1).abs() < EDGE_GRAB_PX {
-            Some(1u8)
-        } else {
-            None
+        // Nearest edge wins, and the sub's edges break a tie (they come last):
+        // where the two passbands overlap, the pointer means the receiver the
+        // operator just parked there, not the one they have been on all along.
+        let mut best = None;
+        let mut best_d = EDGE_GRAB_PX;
+        for (x, rx, hi) in [
+            (px0, RxId::Main, false),
+            (px1, RxId::Main, true),
+            (spx0, RxId::Sub, false),
+            (spx1, RxId::Sub, true),
+        ] {
+            if rx == RxId::Sub && !sub_on {
+                continue;
+            }
+            let d = (p.x - x).abs();
+            if d <= best_d {
+                best_d = d;
+                best = Some((rx, hi));
+            }
         }
+        best
+    };
+
+    // Dragging inside a receiver's passband tunes that receiver. The main one
+    // needs no special case — a left-drag anywhere already slides the spectrum
+    // and takes the dial with it — so this only has to claim the sub's, plus
+    // its tuning line, which in SSB sits outside the passband it opens onto.
+    let sub_grab_at = |p: egui::Pos2| -> bool {
+        if !sub_on || !(spec_rect.contains(p) || wf_rect.contains(p)) {
+            return false;
+        }
+        (spx0.min(spx1)..=spx0.max(spx1)).contains(&p.x)
+            || (p.x - sub_marker_x).abs() < MARKER_GRAB_PX
     };
 
     let edge_id = ui.id().with("pb-edge");
-    let mut edge: Option<u8> = ui.data(|d| d.get_temp(edge_id)).unwrap_or(None);
+    let mut edge: Option<(RxId, bool)> = ui.data(|d| d.get_temp(edge_id)).unwrap_or(None);
     let hover_edge = resp.hover_pos().and_then(edge_at);
+
+    let sub_drag_id = ui.id().with("sub-drag");
+    let mut sub_drag: bool = ui.data(|d| d.get_temp(sub_drag_id)).unwrap_or(false);
+    let hover_sub = resp.hover_pos().map(sub_grab_at).unwrap_or(false) && hover_edge.is_none();
 
     // The frequency-scale strip doubles as the spectrum/waterfall resize grip:
     // a vertical drag there changes the spectrum height.
@@ -694,15 +745,20 @@ pub fn show_ext(
             // and cancels any lingering fade from a previous measurement.
             measuring = origin.map(|p| view.x_to_freq(p.x, &rect));
             edge = None;
+            sub_drag = false;
             resizing = false;
             bw_fade = None;
         } else {
             edge = origin.and_then(edge_at);
-            resizing = edge.is_none() && origin.map(|p| scale_rect.contains(p)).unwrap_or(false);
+            sub_drag = edge.is_none() && origin.map(sub_grab_at).unwrap_or(false);
+            resizing = edge.is_none()
+                && !sub_drag
+                && origin.map(|p| scale_rect.contains(p)).unwrap_or(false);
             measuring = None;
         }
         ui.data_mut(|d| {
             d.insert_temp(edge_id, edge);
+            d.insert_temp(sub_drag_id, sub_drag);
             d.insert_temp(resize_id, resizing);
             d.insert_temp(measure_id, measuring);
             d.insert_temp(fade_id, bw_fade);
@@ -716,10 +772,12 @@ pub fn show_ext(
             bw_fade = Some((start_hz, end_hz, ui.input(|i| i.time)));
         }
         edge = None;
+        sub_drag = false;
         resizing = false;
         measuring = None;
         ui.data_mut(|d| {
             d.insert_temp(edge_id, edge);
+            d.insert_temp(sub_drag_id, sub_drag);
             d.insert_temp(resize_id, resizing);
             d.insert_temp(measure_id, measuring);
             d.insert_temp(fade_id, bw_fade);
@@ -729,6 +787,10 @@ pub fn show_ext(
         ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
     } else if hover_edge.is_some() || edge.is_some() {
         ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+    } else if sub_drag {
+        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+    } else if hover_sub {
+        ui.ctx().set_cursor_icon(CursorIcon::Grab);
     } else if hover_resize || resizing {
         ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
     }
@@ -760,22 +822,39 @@ pub fn show_ext(
             view.spectrum_fraction = ((p.y - rect.top()) / usable).clamp(0.10, 0.85);
             view.spectrum_collapsed = false; // dragging it open implies visible
         }
-    } else if let (Some(e), true) = (edge, resp.dragged_by(egui::PointerButton::Primary)) {
-        // Filter edge drag — exclusive, never pans.
+    } else if let (Some((rx, is_hi)), true) = (edge, resp.dragged_by(egui::PointerButton::Primary))
+    {
+        // Filter edge drag — exclusive, never pans. Edges are relative to the
+        // receiver they belong to, so the sub's grips measure from where the
+        // sub sits, not from the dial.
         if let Some(p) = resp.interact_pointer_pos() {
-            let rel = view.x_to_freq(p.x, &rect) - vfo_hz;
-            let max_hz = state.rx[0].mode.max_filter_hz() as f64;
-            let rx0 = &mut state.rx[0];
-            let (mut lo, mut hi) = (rx0.filter_lo as f64, rx0.filter_hi as f64);
-            if e == 0 {
-                lo = rel.clamp(-max_hz, hi - 50.0);
-            } else {
+            let anchor = if rx == RxId::Main { vfo_hz } else { sub_hz };
+            let rel = view.x_to_freq(p.x, &rect) - anchor;
+            let r = &mut state.rx[rx.index()];
+            let max_hz = r.mode.max_filter_hz() as f64;
+            let (mut lo, mut hi) = (r.filter_lo as f64, r.filter_hi as f64);
+            if is_hi {
                 hi = rel.clamp(lo + 50.0, max_hz);
+            } else {
+                lo = rel.clamp(-max_hz, hi - 50.0);
             }
             // Optimistic echo so the grip tracks the pointer exactly.
-            (rx0.filter_lo, rx0.filter_hi) = (lo as f32, hi as f32);
-            cmds.push(Command::SetFilter { rx: RxId::Main, lo: lo as f32, hi: hi as f32 });
+            (r.filter_lo, r.filter_hi) = (lo as f32, hi as f32);
+            cmds.push(Command::SetFilter { rx, lo: lo as f32, hi: hi as f32 });
         }
+    } else if sub_drag && resp.dragged_by(egui::PointerButton::Primary) {
+        // Sub-receiver tuning drag — exclusive, never pans, and clamped to the
+        // device passband because that is all its DDC can reach.
+        //
+        // By the pointer's *delta*, not its absolute position: the grab is the
+        // whole passband, so snapping the receiver's centre onto the pointer
+        // would jump it by half a filter width the moment the drag began.
+        // The sub follows the pointer rather than the grab-the-content sense a
+        // pan has — the operator has hold of the receiver itself.
+        let dhz = resp.drag_delta().x as f64 * view.span() / rect.width() as f64;
+        let hz = (state.sub_rx_hz + dhz).clamp(dev_lo, dev_hi);
+        state.sub_rx_hz = hz; // optimistic echo, as for the filter grips
+        cmds.push(Command::SetSubRxFreq(hz));
     } else if sec_pan {
         // Right-drag: pan only, grab-the-content semantics.
         let dhz = -pointer_delta.x as f64 * view.span() / rect.width() as f64;
@@ -835,7 +914,41 @@ pub fn show_ext(
         }
         if resp.clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
-                if let Some(nb) = net_boxes.iter().find(|b| b.rect.contains(pos)) {
+                let step = if wheel.click_tune_step_hz > 0.0 {
+                    wheel.click_tune_step_hz
+                } else {
+                    CLICK_TUNE_STEP
+                };
+                if ui.input(|i| i.modifiers.shift) {
+                    // Shift-click places the *second* receiver: the sub when it
+                    // is running, VFO B otherwise — what this gesture meant
+                    // before the sub had a frequency of its own.
+                    //
+                    // Taken ahead of the spot boxes and the digital-mode branch
+                    // so it means the same thing everywhere on the panadapter.
+                    // That matters most in FT8, where a plain click moves the
+                    // transmit offset instead of tuning: without this there
+                    // would be no way to park the sub on a signal at all.
+                    let hz = net_boxes
+                        .iter()
+                        .find(|b| b.rect.contains(pos))
+                        .map(|b| net_spots[b.idx].freq_hz)
+                        .or_else(|| {
+                            spot_boxes
+                                .iter()
+                                .find(|b| b.rect.contains(pos))
+                                .map(|b| skimmer[b.idx].freq_hz)
+                        })
+                        .unwrap_or_else(|| (view.x_to_freq(pos.x, &rect) / step).round() * step);
+                    if state.sub_rx_enabled {
+                        let hz = hz.clamp(dev_lo, dev_hi);
+                        state.sub_rx_hz = hz; // optimistic echo
+                        cmds.push(Command::SetSubRxFreq(hz));
+                    } else {
+                        state.vfo_b_hz = hz;
+                        cmds.push(Command::SetVfo { vfo: Vfo::B, hz });
+                    }
+                } else if let Some(nb) = net_boxes.iter().find(|b| b.rect.contains(pos)) {
                     // Network spot: tune + set mode, and hand the spot back so the
                     // app can pre-fill a log entry (and optionally look it up).
                     let spot = &net_spots[nb.idx];
@@ -889,16 +1002,8 @@ pub fn show_ext(
                     let audio = (view.x_to_freq(pos.x, &rect) - state.rx_freq_hz()) as f32;
                     cmds.push(Command::SetDigiAudioFreq(audio.clamp(200.0, 3500.0)));
                 } else {
-                    let clicked = view.x_to_freq(pos.x, &rect);
-                    let step = if wheel.click_tune_step_hz > 0.0 {
-                        wheel.click_tune_step_hz
-                    } else {
-                        CLICK_TUNE_STEP
-                    };
-                    let hz = (clicked / step).round() * step;
-                    let shift = ui.input(|i| i.modifiers.shift);
-                    let vfo = if shift { Vfo::B } else { state.active_vfo };
-                    cmds.push(Command::SetVfo { vfo, hz });
+                    let hz = (view.x_to_freq(pos.x, &rect) / step).round() * step;
+                    cmds.push(Command::SetVfo { vfo: state.active_vfo, hz });
                 }
             }
         }
@@ -910,6 +1015,9 @@ pub fn show_ext(
     let vfo_hz = state.rx_freq_hz();
     let px0 = view.freq_to_x(vfo_hz + state.rx[0].filter_lo as f64, &rect);
     let px1 = view.freq_to_x(vfo_hz + state.rx[0].filter_hi as f64, &rect);
+    let sub_hz = state.sub_rx_hz;
+    let spx0 = view.freq_to_x(sub_hz + state.rx[1].filter_lo as f64, &rect);
+    let spx1 = view.freq_to_x(sub_hz + state.rx[1].filter_hi as f64, &rect);
 
     if spec_h > 1.0 {
         // Optional vertical background gradient behind the grid and trace.
@@ -1013,7 +1121,7 @@ pub fn show_ext(
     }
     // Edge grips (brighter when grabbable). Drawn on both strips so the
     // filter edges remain visible with the spectrum line collapsed.
-    for (x, e) in [(px0, 0u8), (px1, 1u8)] {
+    for (x, e) in [(px0, (RxId::Main, false)), (px1, (RxId::Main, true))] {
         if rect.x_range().contains(x) {
             let hot = hover_edge == Some(e) || edge == Some(e);
             let w = if hot { 2.0 } else { 1.0 };
@@ -1039,6 +1147,78 @@ pub fn show_ext(
             wf_rect.y_range(),
             Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 60, 60, 140)),
         );
+    }
+
+    // --- sub receiver ------------------------------------------------------
+    // Drawn with the same vocabulary as the main receiver — passband wash, edge
+    // grips, tuning line — so a second receiver reads as a receiver and not as
+    // one more annotation. Only its colour differs.
+    if sub_on {
+        let (c_r, c_g, c_b) = (SUB_COLOR.r(), SUB_COLOR.g(), SUB_COLOR.b());
+        let (sx0c, sx1c) =
+            (spx0.clamp(rect.left(), rect.right()), spx1.clamp(rect.left(), rect.right()));
+        if sx1c > sx0c {
+            if spec_h > 1.0 {
+                painter.rect_filled(
+                    Rect::from_min_max(pos2(sx0c, spec_rect.top()), pos2(sx1c, spec_rect.bottom())),
+                    0.0,
+                    Color32::from_rgba_unmultiplied(c_r, c_g, c_b, 30),
+                );
+            }
+            painter.rect_filled(
+                Rect::from_min_max(pos2(sx0c, wf_rect.top()), pos2(sx1c, wf_rect.bottom())),
+                0.0,
+                Color32::from_rgba_unmultiplied(c_r, c_g, c_b, 20),
+            );
+        }
+        for (x, e) in [(spx0, (RxId::Sub, false)), (spx1, (RxId::Sub, true))] {
+            if rect.x_range().contains(x) {
+                let hot = hover_edge == Some(e) || edge == Some(e);
+                let w = if hot { 2.0 } else { 1.0 };
+                if spec_h > 1.0 {
+                    let color = if hot {
+                        SUB_COLOR
+                    } else {
+                        Color32::from_rgba_unmultiplied(c_r, c_g, c_b, 110)
+                    };
+                    painter.vline(x, spec_rect.y_range(), Stroke::new(w, color));
+                }
+                painter.vline(
+                    x,
+                    wf_rect.y_range(),
+                    Stroke::new(
+                        w,
+                        Color32::from_rgba_unmultiplied(c_r, c_g, c_b, if hot { 200 } else { 90 }),
+                    ),
+                );
+            }
+        }
+        if in_view(sub_hz) {
+            let x = view.freq_to_x(sub_hz, &rect);
+            // The tuning line thickens under the pointer so the operator can
+            // see they have hold of it before they start dragging.
+            let w = if hover_sub || sub_drag { 2.5 } else { 1.5 };
+            painter.vline(x, spec_rect.y_range(), Stroke::new(w, SUB_COLOR));
+            painter.vline(
+                x,
+                wf_rect.y_range(),
+                Stroke::new(w, Color32::from_rgba_unmultiplied(c_r, c_g, c_b, 170)),
+            );
+            // "SUB" tag on the waterfall, on whichever side of the line has
+            // room — at the band edge it would otherwise be clipped away.
+            let (anchor, tx) = if x > rect.right() - 34.0 {
+                (Align2::RIGHT_TOP, x - 3.0)
+            } else {
+                (Align2::LEFT_TOP, x + 3.0)
+            };
+            painter.text(
+                pos2(tx, wf_rect.top() + 2.0),
+                anchor,
+                "SUB",
+                FontId::proportional(9.5),
+                SUB_COLOR,
+            );
+        }
     }
 
     // DXpedition zones: the Fox's half of the passband and the Hound calling
@@ -1127,18 +1307,17 @@ pub fn show_ext(
             );
         }
     }
-    // Inactive VFO marker (sub-RX listens here when enabled).
+    // Inactive VFO marker — where a split transmit goes, nothing more. The sub
+    // receiver used to be pinned here and is drawn separately now that it has a
+    // frequency of its own, so this stays quiet: it is a reference line, not a
+    // receiver.
     let inactive_hz = match state.active_vfo {
         Vfo::A => state.vfo_b_hz,
         Vfo::B => state.vfo_a_hz,
     };
     if in_view(inactive_hz) {
         let x = view.freq_to_x(inactive_hz, &rect);
-        let color = if state.sub_rx_enabled {
-            Color32::from_rgb(255, 170, 40)
-        } else {
-            Color32::from_rgba_unmultiplied(255, 170, 40, 90)
-        };
+        let color = Color32::from_rgba_unmultiplied(255, 170, 40, 90);
         painter.vline(x, spec_rect.y_range(), Stroke::new(1.0, color));
         painter.vline(
             x,
@@ -1306,20 +1485,27 @@ pub fn show_ext(
     }
 
     // --- cursor readouts (hover) ------------------------------------------
-    // A hovered filter edge shows its offset from the VFO; otherwise hovering
-    // the spectrum/waterfall shows a faint crosshair + the frequency a click
-    // would tune to. Suppressed while dragging (pan/edge/resize).
+    // A hovered filter edge shows its offset from its own receiver's centre;
+    // otherwise hovering the spectrum/waterfall shows a faint crosshair + the
+    // frequency a click would tune to. Suppressed while dragging.
     if let Some(p) = hover_pos {
-        if let Some(e) = hover_edge {
+        if let Some((rx, is_hi)) = hover_edge {
             // Item 7: filter edge offset from the VFO.
-            let off = if e == 0 { state.rx[0].filter_lo } else { state.rx[0].filter_hi };
-            let edge_x = if e == 0 { px0 } else { px1 };
+            let r = &state.rx[rx.index()];
+            let off = if is_hi { r.filter_hi } else { r.filter_lo };
+            let edge_x = match (rx, is_hi) {
+                (RxId::Main, false) => px0,
+                (RxId::Main, true) => px1,
+                (RxId::Sub, false) => spx0,
+                (RxId::Sub, true) => spx1,
+            };
             let ytop = if spec_h > 1.0 { spec_rect.top() } else { wf_rect.top() };
+            let tint = if rx == RxId::Main { Color32::from_rgb(255, 190, 120) } else { SUB_COLOR };
             label_box(
                 &painter,
                 pos2(edge_x + 7.0, ytop + 3.0),
                 &format!("{:+} Hz", off.round() as i64),
-                Color32::from_rgb(255, 190, 120),
+                tint,
                 rect,
             );
         } else if (spec_rect.contains(p) || wf_rect.contains(p))

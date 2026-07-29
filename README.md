@@ -481,7 +481,8 @@ them, plus PTT, band, mode, filter and much else, are rebindable on the
 | Action | Result |
 | --- | --- |
 | Left-click | Tune the active VFO to that frequency. In FT8/FT4, sets the TX audio offset instead. |
-| **Shift** + left-click | Tune VFO B (sub-receiver) to that frequency. |
+| **Shift** + left-click | Place the second receiver: the sub-receiver when SUB is on, VFO B otherwise. Works over a spot box and in FT8/FT4 too. |
+| Drag inside the sub-receiver's passband | Tune the sub-receiver (violet, when SUB is on) instead of panning. |
 | Left-drag | Grab and slide the spectrum — pans the view and tunes along with it. |
 | Right-drag | Pan the view only (no tuning). |
 | Scroll wheel | Zoom in/out around the cursor. |

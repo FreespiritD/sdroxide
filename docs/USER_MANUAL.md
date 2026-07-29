@@ -35,8 +35,8 @@ or connects to a remote sdroxide server.
 - **Panadapter and waterfall** with click/drag tuning, scroll-to-zoom, a
   draggable filter passband, a colour-coded band-plan strip, and eight
   selectable waterfall colour schemes (including an Icom-style palette).
-- **Dual VFO (A/B)** with split operation, VFO swap/copy, and a sub-receiver on
-  the inactive VFO.
+- **Dual VFO (A/B)** with split operation, VFO swap/copy, and an independently
+  tunable sub-receiver with its own mode and filter.
 - **All the common modes:** LSB, USB, CW, AM, SAM, NFM, WFM, DIGU, DIGL, DSB, a
   spectrum-only mode (SPEC), the automatic digital modes **FT8** and **FT4**, the
   keyboard modes **PSK31**, **RTTY**, **Olivia**, **THOR** and **FSQ**, the image
@@ -134,7 +134,10 @@ The smaller grey number below the readout is the *inactive* VFO's frequency.
 - **Scroll the wheel** to zoom in and out around the cursor.
 - Press **F** to reset the view to the full receiver span.
 - **Left-click** tunes the active VFO to the clicked frequency. **Shift+click**
-  tunes VFO B instead.
+  places the *second* receiver: the sub-receiver when SUB is on, VFO B otherwise.
+  Unlike a plain click, it means the same thing everywhere — over a spot box it
+  takes the spot's frequency, and in FT8/FT4 it still tunes rather than moving
+  the transmit offset.
 - **Left-drag** grabs the spectrum and slides it (the tuning moves with the
   content).
 - **Right-drag** pans the view only, without changing tuning.
@@ -187,8 +190,29 @@ The **VFO** module has:
 - **Swap VFOs** — exchange A and B.
 - **Copy A to B** — copy the active VFO to the other.
 - **SPLIT** — transmit on one VFO and receive on the other.
-- **SUB** — enable a second receiver on the inactive VFO (routed to the right
-  ear). The inactive VFO's marker on the panadapter brightens when SUB is on.
+- **SUB** — enable a second receiver, routed to the right ear.
+
+The sub-receiver tunes **independently of A/B**: swapping VFOs or turning the
+dial leaves it where you parked it. Switching it on reveals a **SUB module** in
+the top bar with everything it has of its own:
+
+- **Frequency** — type it in MHz, or drag the field to tune in 10 Hz steps.
+- **←DIAL** / **DIAL←** — send the sub to the main dial, or bring the main dial
+  to whatever the sub has found.
+- **Mode** and **Filter** — the sub demodulates independently of the main
+  receiver, so you can listen to CW on one and SSB on the other. (Audio modes
+  only: the digital modes decode on the main receiver.)
+- **Vol** / **MUTE** — the sub's own level in the right ear.
+
+On the panadapter the sub is drawn in **violet**, with the same passband wash,
+draggable filter edges and tuning line the main receiver has, labelled `SUB`.
+**Drag inside its passband** (or on its tuning line) to tune it — that drag moves
+the sub instead of panning the view, so each receiver is tuned by dragging its
+own filter area. **Shift+click** anywhere sends the sub straight there.
+
+Both receivers are tuned by DDCs on the same IQ stream, so the sub can reach
+anything inside the receiver's span and nothing outside it. A band change that
+moves the hardware out from under the sub re-parks it on the inactive VFO.
 
 ### 2.6 RIT and XIT
 

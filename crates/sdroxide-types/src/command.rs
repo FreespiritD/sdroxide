@@ -67,6 +67,10 @@ pub enum Command {
         on: bool,
     },
     SetSubRx(bool),
+    /// Park the sub receiver on an absolute frequency. The engine clamps it to
+    /// the device passband — the sub is a DDC on the same IQ stream as the main
+    /// receiver, so it can only reach what the hardware is already receiving.
+    SetSubRxFreq(f64),
     SetRit {
         enabled: bool,
         hz: i32,
