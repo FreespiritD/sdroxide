@@ -90,6 +90,25 @@ pub fn sstv_rx_dir() -> Result<PathBuf, ConfigError> {
     Ok(dir)
 }
 
+/// Directory for a mode's received pictures (`~/.config/sdroxide/<kind>_rx`),
+/// created on demand.
+///
+/// One store per mode rather than one for everything: an SSTV picture and a
+/// weather chart are browsed for entirely different reasons, and a
+/// fifteen-minute chart arriving every half hour would bury a session's SSTV.
+pub fn image_rx_dir(kind: &str) -> Result<PathBuf, ConfigError> {
+    // The caller's `kind` is a literal today, but it ends up in a path.
+    let safe: String = kind.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    let dir = config_dir()?.join(format!("{}_rx", if safe.is_empty() { "image" } else { &safe }));
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Directory for received weather-fax charts (`~/.config/sdroxide/wefax_rx`).
+pub fn wefax_rx_dir() -> Result<PathBuf, ConfigError> {
+    image_rx_dir("wefax")
+}
+
 /// Directory for the operator's transmit-image slots
 /// (`~/.config/sdroxide/sstv_tx`), created on demand.
 pub fn sstv_tx_dir() -> Result<PathBuf, ConfigError> {

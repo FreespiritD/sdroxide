@@ -51,12 +51,17 @@ pub enum Mode {
     /// signal's centre and the channel is ~25 kHz wide. Appended for the same
     /// reason as [`Mode::Hell`].
     Rifp,
+    /// HF weather facsimile (WEFAX / radiofax) — USB underneath, an FM
+    /// subcarrier carrying a continuous raster. Receive only: the charts are
+    /// broadcast by meteorological services, and an amateur station has nothing
+    /// to send back. Appended for the same reason as [`Mode::Hell`].
+    Wefax,
 }
 
 impl Mode {
     /// Every mode, in the order they cycle and appear in the picker — which is
     /// deliberately *not* the enum's declaration order (see [`Mode::Hell`]).
-    pub const ALL: [Mode; 23] = [
+    pub const ALL: [Mode; 24] = [
         Mode::Lsb,
         Mode::Usb,
         Mode::Cw,
@@ -74,6 +79,7 @@ impl Mode {
         Mode::Rtty,
         Mode::Sstv,
         Mode::Rifp,
+        Mode::Wefax,
         Mode::Olivia,
         Mode::Thor,
         Mode::Fsq,
@@ -86,7 +92,7 @@ impl Mode {
     /// slotted FT8/FT4 modes, the continuous keyboard modes, Hell, SSTV, RIFP,
     /// RF Paint). All are USB underneath except RIFP, which is FSK on the
     /// carrier.
-    pub const DIGITAL: [Mode; 12] = [
+    pub const DIGITAL: [Mode; 13] = [
         Mode::Ft8,
         Mode::Ft4,
         Mode::Psk,
@@ -97,6 +103,7 @@ impl Mode {
         Mode::Hell,
         Mode::Sstv,
         Mode::Rifp,
+        Mode::Wefax,
         Mode::RfPaint,
         Mode::Rade,
     ];
@@ -117,6 +124,7 @@ impl Mode {
                 | Mode::Hell
                 | Mode::RfPaint
                 | Mode::Rade
+                | Mode::Wefax
         )
     }
 
@@ -163,6 +171,20 @@ impl Mode {
     /// transmit, a live picture and a gallery on receive.
     pub fn is_image(self) -> bool {
         matches!(self, Mode::Sstv | Mode::Rifp)
+    }
+
+    /// True for HF weather fax. Its own panel rather than the image one: there
+    /// is nothing to compose and nothing to transmit, and what it needs instead
+    /// — line rate, index of cooperation, phasing and slant — has no counterpart
+    /// in SSTV.
+    pub fn is_wefax(self) -> bool {
+        matches!(self, Mode::Wefax)
+    }
+
+    /// True for the receive-only modes, so the UI can leave the transmit
+    /// controls out rather than showing ones that refuse.
+    pub fn is_rx_only(self) -> bool {
+        matches!(self, Mode::Wefax)
     }
 
     /// True for Hellschreiber. Forks the digi panel to the scrolling raster UI:
@@ -219,6 +241,7 @@ impl Mode {
             Mode::RfPaint => "RFPAINT",
             Mode::Rade => "RADE",
             Mode::Rifp => "RIFP",
+            Mode::Wefax => "WEFAX",
         }
     }
 
@@ -251,6 +274,10 @@ impl Mode {
             | Mode::Fsq
             | Mode::Hell
             | Mode::RfPaint => (100.0, 3300.0),
+            // The fax subcarrier is 1900 Hz ± 400; the wider passband leaves
+            // room for a receiver tuned a few hundred hertz off, which is the
+            // normal state of affairs on a chart found by ear.
+            Mode::Wefax => (500.0, 3300.0),
             // RIFP is not a sideband mode: the CPFSK carrier sits *on* the
             // dial and swings ±4 kHz, so the passband straddles it. 25 kHz is
             // the profile's recommended occupied bandwidth.
@@ -316,6 +343,7 @@ impl Mode {
             | Mode::Hell
             | Mode::RfPaint
             | Mode::Rifp
+            | Mode::Wefax
             | Mode::Rade => &[],
         }
     }

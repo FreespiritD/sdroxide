@@ -50,6 +50,7 @@ pub fn mode_to_civ(m: Mode) -> u8 {
         | Mode::Psk
         | Mode::Rtty
         | Mode::Sstv
+        | Mode::Wefax
         | Mode::Olivia
         | Mode::Thor
         | Mode::Fsq

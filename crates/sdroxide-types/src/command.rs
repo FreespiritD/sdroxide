@@ -186,6 +186,14 @@ pub enum Command {
         mode: SstvMode,
         png: Vec<u8>,
     },
+    /// Weather fax: begin a picture now, without waiting for a start tone.
+    /// The usual way to catch a chart that was already running when you tuned.
+    WefaxStart,
+    /// Weather fax: end the picture in progress, keeping what has arrived.
+    WefaxStop,
+    /// Weather fax: shift the line alignment by whole pixels. Positive moves
+    /// the picture right.
+    WefaxNudge(i32),
     /// FSQ image: transmit a picture (PNG bytes; the engine grayscales/scales it).
     DigiImageTx {
         png: Vec<u8>,

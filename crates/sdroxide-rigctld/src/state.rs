@@ -123,6 +123,7 @@ pub fn to_hamlib_mode(m: Mode) -> &'static str {
         | Mode::Ft4
         | Mode::Psk
         | Mode::Sstv
+        | Mode::Wefax
         | Mode::Olivia
         | Mode::Thor
         | Mode::Fsq

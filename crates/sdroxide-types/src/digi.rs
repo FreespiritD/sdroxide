@@ -761,6 +761,16 @@ pub struct DigiConfig {
     pub rifp_encoding: RifpEncoding,
     /// Transmitted picture size.
     pub rifp_size: RifpSize,
+    /// Weather fax: scan rate, index of cooperation, and whether the start and
+    /// stop tones drive the receiver on their own.
+    pub wefax_lpm: crate::WefaxLpm,
+    pub wefax_ioc: crate::WefaxIoc,
+    pub wefax_auto_start: bool,
+    pub wefax_auto_stop: bool,
+    /// Sample-clock trim in parts per million. A sound card a hundred ppm off
+    /// walks a quarter-hour chart most of a line sideways, which is the one
+    /// setting a fax operator always ends up touching.
+    pub wefax_slant_ppm: f32,
     /// Grayscale depth the picture is quantised to before encoding (1/2/4/8).
     /// The bilevel facsimile encodings are always 1 regardless.
     pub rifp_bits_per_pixel: u8,
@@ -823,6 +833,11 @@ impl Default for DigiConfig {
             rifp_profile: RifpProfile::default(),
             rifp_encoding: RifpEncoding::default(),
             rifp_size: RifpSize::default(),
+            wefax_lpm: crate::WefaxLpm::default(),
+            wefax_ioc: crate::WefaxIoc::default(),
+            wefax_auto_start: true,
+            wefax_auto_stop: true,
+            wefax_slant_ppm: 0.0,
             rifp_bits_per_pixel: 4,
             rifp_chunk_size: 192,
             rifp_data_repeats: 2,

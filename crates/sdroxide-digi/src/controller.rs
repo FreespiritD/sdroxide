@@ -42,6 +42,14 @@ pub enum DigiAction {
     SstvImage { image_id: u32, mode: SstvMode, w: u16, h: u16, rgb: Vec<u8> },
     /// SSTV: engine status change (tx/rx active, detected mode, progress).
     SstvStatus(SstvStatus),
+    /// Weather fax: a freshly decoded scan line, one byte per pixel.
+    WefaxLine { image_id: u32, y: u16, gray: Vec<u8> },
+    /// Weather fax: a finished chart (grayscale) — the engine encodes and
+    /// persists it. Unlike SSTV the height is not known in advance: it is
+    /// however many lines arrived before the stop tone.
+    WefaxImage { image_id: u32, w: u16, h: u16, gray: Vec<u8> },
+    /// Weather fax: receiver status (tuning, phasing, line count).
+    WefaxStatus(sdroxide_types::WefaxStatus),
     /// RIFP: reassembled raster rows of an incoming picture — `rows` grayscale
     /// bytes starting at row `y`, `w` per row. Only the unencoded raster can be
     /// painted before the object is whole.

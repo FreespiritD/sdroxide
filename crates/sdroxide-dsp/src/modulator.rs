@@ -30,6 +30,7 @@ pub fn make_modulator(mode: Mode, rate: f64) -> Option<Box<dyn Modulator>> {
         | Mode::Psk
         | Mode::Rtty
         | Mode::Sstv
+        | Mode::Wefax
         | Mode::Olivia
         | Mode::Thor
         | Mode::Fsq

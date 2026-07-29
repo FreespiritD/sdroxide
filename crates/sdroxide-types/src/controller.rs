@@ -43,6 +43,22 @@ pub enum RadioEvent {
     },
     /// SSTV: engine status change (tx/rx active, detected mode, progress).
     SstvStatus(SstvStatus),
+    /// Weather fax: one freshly decoded scan line, one byte per pixel.
+    WefaxLine {
+        image_id: u32,
+        y: u16,
+        gray: Vec<u8>,
+    },
+    /// Weather fax: a completed chart (PNG bytes). The height is however many
+    /// lines arrived before the stop tone, so it is carried rather than implied.
+    WefaxImage {
+        image_id: u32,
+        w: u16,
+        h: u16,
+        png: Vec<u8>,
+    },
+    /// Weather fax: receiver status (tuning, phasing, line count).
+    WefaxStatus(crate::WefaxStatus),
     /// RIFP: freshly reassembled raster rows of an incoming picture — `rows`
     /// grayscale bytes starting at row `y`, `w` bytes per row. Only the raster
     /// content-encodings can be painted before the object completes; a PNG,

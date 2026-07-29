@@ -31,6 +31,7 @@ mod state;
 mod tciserver;
 mod ui;
 mod voice;
+mod wefax;
 mod worldmask;
 mod wsjtx;
 
@@ -95,4 +96,5 @@ pub use state::{OffsetState, RadioState, RxId, RxState, SQUELCH_OPEN_DB, TxState
 pub use tciserver::TciServerConfig;
 pub use ui::{Speed, UiSettings};
 pub use voice::{VOICE_MAX_LEN_S, VOICE_SLOTS, VoiceSlotInfo, VoiceStatus, slot_label};
+pub use wefax::{WEFAX_STATIONS, WefaxIoc, WefaxLpm, WefaxStation, WefaxStatus};
 pub use wsjtx::WsjtxConfig;

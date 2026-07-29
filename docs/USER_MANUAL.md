@@ -14,7 +14,7 @@ or connects to a remote sdroxide server.
 
 1. [Feature overview](#1-feature-overview)
 2. [Basic operation](#2-basic-operation)
-3. [Digital modes (FT8, FT4, PSK31, RTTY, Olivia, THOR, FSQ, Hellschreiber, SSTV, RIFP, RF Paint)](#3-digital-modes)
+3. [Digital modes (FT8, FT4, PSK31, RTTY, Olivia, THOR, FSQ, Hellschreiber, SSTV, RIFP, weather fax, RF Paint)](#3-digital-modes)
 4. [Skimmers (CW, PSK, RTTY)](#4-skimmers)
 5. [Settings](#5-settings)
 6. [Solar system 3D view](#6-solar-system-3d-view)
@@ -40,7 +40,7 @@ or connects to a remote sdroxide server.
 - **All the common modes:** LSB, USB, CW, AM, SAM, NFM, WFM, DIGU, DIGL, DSB, a
   spectrum-only mode (SPEC), the automatic digital modes **FT8** and **FT4**, the
   keyboard modes **PSK31**, **RTTY**, **Olivia**, **THOR** and **FSQ**, the image
-  modes **SSTV** and **RIFP** (draft-dulaunoy-rifp-00, a packetised image
+  modes **SSTV**, **weather fax** and **RIFP** (draft-dulaunoy-rifp-00, a packetised image
   protocol on its own FSK modem), and the transmit-only **RF Paint**
   (spectrum-painting) mode.
 - **Receive controls:** AGC (Off/Slow/Med/Fast), volume, mute, squelch, an
@@ -988,7 +988,68 @@ message, press **TX**. The status line shows which frame of how many is going
 out and how long is left. Your callsign travels as the protocol's Sender ID
 extension.
 
-### 3.12 RF Paint (spectrum painting)
+### 3.12 Weather fax (WEFAX / radiofax)
+
+Choose **WEFAX** from the DIGITAL row to receive the weather charts the
+meteorological services broadcast on short wave — surface analyses, wave
+heights, ice edges, satellite composites. It is **receive only**: these are
+commercial and military transmitters, and an amateur station has nothing to send
+back.
+
+**Finding a signal.** The **📡 STATIONS** chip lists the schedules — DWD
+Pinneberg, Northwood, the US Coast Guard transmitters, Halifax, Tokyo, the two
+Australian ones — and picking a frequency tunes the dial. Note that the
+frequencies in every published schedule are the **assigned carrier**, and USB
+reception needs the dial **1.9 kHz below** it: 7880 kHz is tuned at 7878.1. The
+picker does that subtraction for you, which is worth knowing because getting it
+wrong is the commonest reason a chart comes out as a blank page.
+
+Schedules change and stations close, so treat the list as where to start looking
+rather than as a timetable.
+
+**Tuning.** The `+0 Hz` readout beside the START button is the subcarrier's
+offset from where it should be. Tune for roughly zero, green: a fax subcarrier
+runs 1500 Hz for black to 2300 Hz for white, and a receiver a few hundred hertz
+off clips the picture to solid black or solid white. You will hear the signal as
+a warbling two-tone note.
+
+**Starting and stopping.** A transmission opens with a five-second start tone
+and closes with a stop tone, and with **AUTO START** and **AUTO STOP** on
+sdroxide uses both — leave the mode running and charts appear on their own.
+Since a chart takes a quarter of an hour, though, you will usually have tuned to
+one already in progress: press **START** to begin recording mid-chart, and
+**STOP** to end it and save. Turn **AUTO STOP** off to record straight through a
+station sending several charts back to back.
+
+**Geometry.** Nothing in the signal states the line rate, so:
+
+- **LPM** — lines per minute. **120** is what essentially every weather service
+  uses; the others are there for the occasional 60 or 240 LPM transmission.
+- **IOC** — index of cooperation, which fixes the line length: 576 gives 1809
+  pixels per line and is what charts use, 288 gives 904. The start tone
+  announces this one (300 Hz for 576, 675 Hz for 288), so with AUTO START on it
+  is chosen for you.
+
+**Straightening the picture.** Two controls, and both are normal to need:
+
+- **PHASE** ◀ ▶ shifts the picture sideways in 10- or 100-pixel steps. A chart
+  begins with about thirty seconds of phasing signal that tells sdroxide where a
+  line starts; if you tuned in after that went by, the chart arrives cut
+  vertically and wrapped, and this is what puts it back together.
+- **SLANT** trims the sample clock in parts per million. If the chart leans to
+  the left, increase it; to the right, decrease it. A sound card a hundred ppm
+  off — well within tolerance — walks a fifteen-minute chart most of a line
+  sideways, so this is the setting every fax operator ends up with a value for.
+  Once you have found yours it is remembered.
+
+**The picture and the gallery.** The chart paints line by line as it arrives and
+follows the newest rows down. Completed charts are written as grayscale PNG to
+`~/.config/sdroxide/wefax_rx/` — a separate store from the SSTV gallery, because
+a fifteen-minute chart every half hour would bury a session's pictures — and the
+strip on the right shows the recent ones. Click one to open it full size, which
+you will need to: the fronts and isobars are unreadable at thumbnail scale.
+
+### 3.13 RF Paint (spectrum painting)
 
 Choose **RFPAINT** from the DIGITAL row for **RF Paint** — a transmit-only mode
 that draws text and pictures **directly onto a receiver's waterfall**. There is no
@@ -2430,7 +2491,7 @@ to anyone.
 | `--freq <HZ>` | Center frequency in Hz (default 14,200,000). |
 | `--rate <HZ>` | Sample rate in Hz (default: from config). |
 | `--gain <DB>` | Overall RX gain in dB (default: hardware AGC or a moderate value). |
-| `--mode <MODE>` | Initial mode (USB, LSB, CW, AM, SAM, NFM, WFM, DIGU, DIGL, DSB, SPEC, FT8, FT4, PSK, RTTY, OLIVIA, THOR, FSQ, SSTV, RIFP, RFPAINT). |
+| `--mode <MODE>` | Initial mode (USB, LSB, CW, AM, SAM, NFM, WFM, DIGU, DIGL, DSB, SPEC, FT8, FT4, PSK, RTTY, OLIVIA, THOR, FSQ, SSTV, RIFP, WEFAX, RFPAINT, RADE). |
 | `--server` | Run as a server (web client + WebSocket streaming backend). |
 | `--connect <HOST[:PORT]>` | Connect as a native remote client to a running server. |
 | `--port <PORT>` | Server port (default: from config, 4950). |
@@ -2514,6 +2575,7 @@ sdroxide stores its settings under the per-user config directory:
 | `voice/` | dir | The voice-keyer recordings (`slot1.wav`…`slot10.wav`), 48 kHz mono. Drop your own WAV in to replace a message. |
 | `sstv_tx/` | dir | The five SSTV transmit-image slots (`slot0.png`…`slot4.png`). |
 | `sstv_rx/` | dir | Received SSTV and RIFP pictures, kept for the gallery. |
+| `wefax_rx/` | dir | Received weather-fax charts, as grayscale PNG. Kept apart from `sstv_rx/` so a quarter-hour chart every half hour does not bury a session's pictures. |
 | `solar/` | dir | Cached solar imagery, space-weather JSON and subscribed element-set listings for the 3D view, with an index of HTTP validators so refreshes stay cheap. Safe to delete; it is re-fetched on demand. |
 
 Every file has sensible defaults, so a missing or partial file always loads. You

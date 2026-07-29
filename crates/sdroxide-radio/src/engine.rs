@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 use sdroxide_config::BandStacks;
 use sdroxide_digi::{
     DigiAction, DigiController, DigiEngine, FsqController, HellController, RadeController,
-    RfPaintController, RifpController, SstvController, TextModemController,
+    RfPaintController, RifpController, SstvController, TextModemController, WefaxController,
 };
 use sdroxide_dsp::{
     Agc, AutoNotch, DcBlock, Ddc, Demodulator, Duc, Modulator, MonoResampler, NeuralNr,
@@ -1644,6 +1644,21 @@ impl Engine {
                 DigiAction::SstvStatus(s) => {
                     let _ = self.event_tx.send(RadioEvent::SstvStatus(s));
                 }
+                DigiAction::WefaxLine { image_id, y, gray } => {
+                    let _ = self.event_tx.send(RadioEvent::WefaxLine { image_id, y, gray });
+                }
+                DigiAction::WefaxImage { image_id, w, h, gray } => {
+                    // Grayscale all the way to disk: a weather chart is line
+                    // art in one channel, and tripling it to RGB would treble
+                    // a two-megapixel PNG for nothing.
+                    if let Some(png) = encode_png_gray(&gray, w, h) {
+                        save_image_rx("wefax", &png);
+                        let _ = self.event_tx.send(RadioEvent::WefaxImage { image_id, w, h, png });
+                    }
+                }
+                DigiAction::WefaxStatus(s) => {
+                    let _ = self.event_tx.send(RadioEvent::WefaxStatus(s));
+                }
                 DigiAction::RifpRows { image_id, y, w, h, rows } => {
                     let _ = self.event_tx.send(RadioEvent::RifpRows { image_id, y, w, h, rows });
                 }
@@ -1680,6 +1695,8 @@ impl Engine {
             Box::new(RadeController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_sstv() {
             Box::new(SstvController::new(self.digi_config.clone(), tap_rate))
+        } else if mode.is_wefax() {
+            Box::new(WefaxController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_rifp() {
             Box::new(RifpController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_rf_paint() {
@@ -2226,6 +2243,21 @@ impl Engine {
             SstvSetMode(mode) => {
                 if let Some(d) = self.digi.as_mut() {
                     d.set_sstv_mode(mode);
+                }
+            }
+            WefaxStart => {
+                if let Some(d) = self.digi.as_mut() {
+                    d.wefax_start();
+                }
+            }
+            WefaxStop => {
+                if let Some(d) = self.digi.as_mut() {
+                    d.wefax_stop();
+                }
+            }
+            WefaxNudge(px) => {
+                if let Some(d) = self.digi.as_mut() {
+                    d.wefax_nudge(px);
                 }
             }
             SstvTx { mode, png } => {
@@ -4038,6 +4070,7 @@ fn rig_mode_class(m: Mode) -> u8 {
         | Mode::Psk
         | Mode::Rtty
         | Mode::Sstv
+        | Mode::Wefax
         | Mode::Olivia
         | Mode::Thor
         | Mode::Fsq
@@ -4070,10 +4103,20 @@ fn decode_png_rgb(png: &[u8]) -> Option<(Vec<u8>, u16, u16)> {
 
 /// Persist a received SSTV image (PNG) under the config `sstv_rx` directory.
 fn save_sstv_rx(png: &[u8]) {
-    let dir = match sdroxide_config::sstv_rx_dir() {
+    save_image_rx("sstv", png);
+}
+
+/// Persist a received picture under the store its mode keeps.
+///
+/// `kind` is both the directory (`<kind>_rx`) and the file-name prefix, so a
+/// weather chart and an SSTV picture never land in the same gallery — they are
+/// browsed for completely different reasons and a fifteen-minute chart would
+/// bury a session's SSTV.
+fn save_image_rx(kind: &str, png: &[u8]) {
+    let dir = match sdroxide_config::image_rx_dir(kind) {
         Ok(d) => d,
         Err(e) => {
-            warn!("sstv_rx dir: {e}");
+            warn!("{kind}_rx dir: {e}");
             return;
         }
     };
@@ -4081,10 +4124,18 @@ fn save_sstv_rx(png: &[u8]) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let path = dir.join(format!("sstv-{ts}.png"));
+    let path = dir.join(format!("{kind}-{ts}.png"));
     if let Err(e) = std::fs::write(&path, png) {
-        warn!("saving SSTV image {}: {e}", path.display());
+        warn!("saving {kind} image {}: {e}", path.display());
     }
+}
+
+/// Encode a single-channel raster as a grayscale PNG.
+fn encode_png_gray(gray: &[u8], w: u16, h: u16) -> Option<Vec<u8>> {
+    let img = image::GrayImage::from_raw(w as u32, h as u32, gray.to_vec())?;
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageLuma8(img).write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    Some(buf.into_inner())
 }
 
 #[cfg(test)]

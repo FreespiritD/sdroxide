@@ -26,6 +26,7 @@ pub mod theme;
 mod time;
 mod view;
 mod waterfall_gpu;
+mod wefax;
 mod widgets;
 
 pub use app::SdroxideApp;

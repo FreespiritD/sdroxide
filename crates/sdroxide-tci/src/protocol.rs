@@ -298,7 +298,7 @@ pub fn parse_status(text: &str) -> Vec<(String, String)> {
 pub fn mode_to_tci(mode: Mode) -> &'static str {
     match mode {
         Mode::Lsb => "lsb",
-        Mode::Usb | Mode::Sstv | Mode::RfPaint => "usb",
+        Mode::Usb | Mode::Sstv | Mode::Wefax | Mode::RfPaint => "usb",
         Mode::Cw => "cw",
         Mode::Am => "am",
         Mode::Sam => "sam",

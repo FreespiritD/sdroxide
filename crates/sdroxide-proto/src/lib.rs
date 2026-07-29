@@ -173,6 +173,19 @@ pub enum ServerMsg {
         png: Vec<u8>,
     },
     SstvStatus(SstvStatus),
+    // Weather fax (receive only).
+    WefaxLine {
+        image_id: u32,
+        y: u16,
+        gray: Vec<u8>,
+    },
+    WefaxImage {
+        image_id: u32,
+        w: u16,
+        h: u16,
+        png: Vec<u8>,
+    },
+    WefaxStatus(sdroxide_types::WefaxStatus),
     // RIFP image mode.
     /// Reassembled raster rows of an incoming picture (grayscale, `w` per row).
     RifpRows {

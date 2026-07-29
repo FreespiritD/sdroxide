@@ -21,6 +21,7 @@ pub mod scheduler;
 pub mod squelch;
 pub mod sstv_controller;
 pub mod text_modem;
+pub mod wefax_controller;
 
 pub use clock::ClockMonitor;
 pub use controller::{DigiAction, DigiController};
@@ -36,6 +37,7 @@ pub use rifp_controller::RifpController;
 pub use scheduler::SlotScheduler;
 pub use sstv_controller::SstvController;
 pub use text_modem::TextModemController;
+pub use wefax_controller::WefaxController;
 
 use std::time::SystemTime;
 
@@ -89,6 +91,18 @@ pub trait DigiEngine: Send {
     fn set_sstv_mode(&mut self, _mode: Option<SstvMode>) {}
     /// SSTV: queue a composed image (interleaved RGB) and start transmitting.
     fn set_sstv_image(&mut self, _mode: SstvMode, _rgb: Vec<u8>, _w: u16, _h: u16) {}
+
+    /// Weather fax: begin a picture now rather than waiting for a start tone.
+    /// The usual way to catch a chart already under way, which on a
+    /// fifteen-minute transmission is most of the time.
+    fn wefax_start(&mut self) {}
+
+    /// Weather fax: end the picture in progress, keeping what has arrived.
+    fn wefax_stop(&mut self) {}
+
+    /// Weather fax: shift the line alignment by whole pixels, to straighten a
+    /// chart whose phasing pulse was missed.
+    fn wefax_nudge(&mut self, _pixels: i32) {}
     /// RIFP: queue a composed image (interleaved RGB) and start transmitting.
     /// The controller encodes, chunks and frames it per the operator's config.
     fn set_rifp_image(&mut self, _rgb: Vec<u8>, _w: u16, _h: u16) {}

@@ -25,6 +25,7 @@ mod spectrum;
 mod spectrum_paint;
 mod sstv;
 mod thor;
+pub mod wefax;
 mod window;
 
 pub use agc::Agc;
@@ -54,6 +55,7 @@ pub use spectrum_paint::{
 };
 pub use sstv::{SstvEvent, SstvRx, SstvTx};
 pub use thor::{ThorRx, ThorTx};
+pub use wefax::{Ioc as WefaxIoc, Lpm as WefaxLpm, WefaxEvent, WefaxRx};
 pub use window::blackman_harris;
 
 pub type Complex32 = num_complex::Complex<f32>;

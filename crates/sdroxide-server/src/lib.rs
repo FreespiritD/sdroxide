@@ -279,6 +279,13 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
                 Some(ServerMsg::SstvImage { image_id, mode, w, h, png })
             }
             RadioEvent::SstvStatus(s) => Some(ServerMsg::SstvStatus(s)),
+            RadioEvent::WefaxLine { image_id, y, gray } => {
+                Some(ServerMsg::WefaxLine { image_id, y, gray })
+            }
+            RadioEvent::WefaxImage { image_id, w, h, png } => {
+                Some(ServerMsg::WefaxImage { image_id, w, h, png })
+            }
+            RadioEvent::WefaxStatus(s) => Some(ServerMsg::WefaxStatus(s)),
             RadioEvent::RifpRows { image_id, y, w, h, rows } => {
                 Some(ServerMsg::RifpRows { image_id, y, w, h, rows })
             }
