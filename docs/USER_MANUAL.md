@@ -1355,7 +1355,10 @@ The **UI** tab holds display preferences, stored in `config.toml` under `[ui]`:
 
 - **Screen update rate** — the GUI/spectrum frame rate (30, 60, or 90 fps).
   Higher looks smoother and costs more CPU/GPU.
-- **Waterfall scroll speed** — how fast the waterfall scrolls.
+- **Waterfall scroll speed** — how fast the waterfall scrolls: **Slow** (5
+  rows/s), **Medium** (28) or **Fast** (56). Fast trades screen time for
+  vertical resolution, which is what you want when a CW or FT8 trace is smearing
+  into the row above it; Slow keeps several minutes of band on screen at once.
 - **Spectrum update speed** — how quickly the spectrum trace reacts; slower is
   more averaged and smoother.
 - **Waterfall palette** — the waterfall colour scheme (see
