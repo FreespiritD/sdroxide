@@ -137,7 +137,7 @@ mod tests {
             SolarServerMsg::HelloAck { proto: SOLAR_PROTO_VERSION },
             SolarServerMsg::Error("no feed".into()),
             SolarServerMsg::Pong,
-            SolarServerMsg::Status(vec![SourceStatus::default(); 13]),
+            SolarServerMsg::Status(vec![SourceStatus::default(); 12]),
             SolarServerMsg::Weather {
                 weather: SpaceWeather::default(),
                 aurora_power: None,
@@ -176,7 +176,7 @@ mod tests {
     /// its own array from a stale constant would silently mis-attribute ages.
     #[test]
     fn the_status_vector_matches_the_source_list() {
-        let m = SolarServerMsg::Status(vec![SourceStatus::default(); 13]);
+        let m = SolarServerMsg::Status(vec![SourceStatus::default(); 12]);
         let SolarServerMsg::Status(v) = &m else { unreachable!() };
         assert_eq!(v.len(), sdroxide_solar::Source::ALL.len());
     }

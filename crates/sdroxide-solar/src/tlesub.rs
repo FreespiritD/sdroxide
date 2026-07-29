@@ -61,6 +61,14 @@ pub fn cached(cache: &Cache, sub: &TleSubscription) -> Vec<Satellite> {
     }
 }
 
+/// A subscription's cached listing, exactly as it was fetched.
+///
+/// For the browser relay, which forwards the original text rather than the
+/// parsed SGP4 constants — those cannot be serialised.
+pub fn cached_text(cache: &Cache, sub: &TleSubscription) -> Option<String> {
+    cache.read_string(&cache_name(&sub.url))
+}
+
 /// Status of a subscription from the cache alone, so the settings dialog can
 /// report on one without opening a socket.
 pub fn cached_status(cache: &Cache, sub: &TleSubscription) -> SubStatus {
@@ -79,10 +87,14 @@ pub fn cached_status(cache: &Cache, sub: &TleSubscription) -> SubStatus {
 /// subscription's own orbit-ring setting, which is what decides whether the
 /// scene draws a ring and a label for it.
 fn parse(sub: &TleSubscription, text: &str) -> Vec<Satellite> {
-    let mut v = crate::satellites::parse_custom_tles(text);
+    let mut v = crate::satellites::parse_subscribed_tles(text);
     v.retain(|s| sub.wants(s.norad_id));
     for s in &mut v {
-        s.popular = sub.orbits;
+        // Or-ed, not assigned: the curated few in [`crate::satellites::POPULAR`]
+        // keep their orbit rings and labels whatever the subscription says.
+        // Turning rings off for a ninety-satellite group must not also turn
+        // them off for the ten the view is built around.
+        s.popular |= sub.orbits;
     }
     v
 }
@@ -194,14 +206,22 @@ mod tests {
         TleSubscription::new("Test", "https://example.invalid/tle.txt")
     }
 
+    /// A group subscription tracks the whole listing, but only the curated few
+    /// are ringed and labelled — ninety rings at once is unreadable, and the
+    /// rest stay dots behind ALL SATS exactly as they did when the amateur set
+    /// was a fixed source.
     #[test]
     fn a_subscription_tracks_everything_in_the_listing_by_default() {
         let v = parse(&sub(), AMATEUR);
         assert!(v.len() > 80, "only {} satellites", v.len());
         // Operator-supplied, so they are visible without ALL SATS...
         assert!(v.iter().all(|s| s.custom));
-        // ...but not ringed and labelled, because ninety rings is unreadable.
-        assert!(v.iter().all(|s| !s.popular));
+        // ...and only the curated few are ringed and labelled, because ninety
+        // rings is unreadable. That the ISS keeps its ring with the
+        // subscription's own setting off is the whole point of the or.
+        assert!(v.iter().any(|s| s.popular), "the curated satellites lost their rings");
+        assert!(v.iter().filter(|s| s.popular).count() < 15, "too many were ringed");
+        assert!(v.iter().find(|s| s.norad_id == 25544).is_some_and(|s| s.popular));
     }
 
     #[test]
@@ -265,22 +285,40 @@ mod tests {
     }
 
     /// Every offered group has to be a fetchable https URL with a distinct
-    /// address, and none of them may duplicate the amateur set the tracker
-    /// already fetches on its own.
+    /// address, and the two that are on by default have to be the ones the
+    /// tracker used to fetch by itself — otherwise a fresh install comes up
+    /// with an empty sky.
     #[test]
     fn the_offered_celestrak_groups_are_usable() {
         use sdroxide_types::CELESTRAK_GROUPS;
         let mut urls: Vec<&str> = Vec::new();
-        for (name, url, hint) in CELESTRAK_GROUPS {
-            assert!(!name.is_empty() && !hint.is_empty(), "{name} is missing its text");
-            assert_eq!(TleSubscription::new(name, url).problem(), None, "{name}: {url}");
-            assert!(!url.contains("GROUP=amateur"), "{name} duplicates the built-in fetch");
-            assert_ne!(*url, crate::satellites::AMATEUR_URL);
-            urls.push(url);
+        for g in CELESTRAK_GROUPS {
+            assert!(!g.name.is_empty() && !g.hint.is_empty(), "{} is missing its text", g.name);
+            assert_eq!(
+                TleSubscription::new(g.name, g.url).problem(),
+                None,
+                "{}: {}",
+                g.name,
+                g.url
+            );
+            urls.push(g.url);
         }
         let n = urls.len();
         urls.sort_unstable();
         urls.dedup();
         assert_eq!(urls.len(), n, "two groups share a URL");
+
+        let on: Vec<&str> =
+            CELESTRAK_GROUPS.iter().filter(|g| g.default_on).map(|g| g.name).collect();
+        assert_eq!(on, vec!["Amateur radio", "ISS"]);
+        // The amateur one has to be the listing the tracker used to fetch, or a
+        // fresh install would quietly track a different set of satellites.
+        let amateur = CELESTRAK_GROUPS.iter().find(|g| g.name == "Amateur radio").unwrap();
+        assert_eq!(amateur.url, crate::satellites::AMATEUR_URL);
+        assert!(!amateur.orbits, "ninety orbit rings at once is unreadable");
+        // The ISS is one satellite, so it is worth a ring and a label.
+        let iss = CELESTRAK_GROUPS.iter().find(|g| g.name == "ISS").unwrap();
+        assert!(iss.url.contains("CATNR=25544"));
+        assert!(iss.orbits);
     }
 }

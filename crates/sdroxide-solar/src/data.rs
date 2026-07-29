@@ -41,10 +41,13 @@ pub enum Source {
     Xray,
     /// Ionosonde soundings, for the MUF estimate.
     Muf,
-    /// CelesTrak's amateur-satellite element set.
-    Sats,
     /// QO-100, which is absent from the amateur set (see
     /// [`crate::satellites::QO100_URL`]).
+    ///
+    /// The only element set still fetched as a fixed source. The amateur group
+    /// used to be one too and is now a subscription like any other, so that the
+    /// operator can switch it off, filter it, or point it somewhere else —
+    /// see [`sdroxide_types::CELESTRAK_GROUPS`].
     SatGeo,
     /// The OVATION auroral-oval grid.
     Aurora,
@@ -55,7 +58,7 @@ pub enum Source {
 }
 
 impl Source {
-    pub const ALL: [Source; 13] = [
+    pub const ALL: [Source; 12] = [
         Source::Sun,
         Source::Cme,
         Source::Flare,
@@ -64,7 +67,6 @@ impl Source {
         Source::Kp,
         Source::Xray,
         Source::Muf,
-        Source::Sats,
         Source::SatGeo,
         Source::Aurora,
         Source::AuroraPower,
@@ -81,7 +83,6 @@ impl Source {
             Source::Kp => "Kp",
             Source::Xray => "XRAY",
             Source::Muf => "MUF",
-            Source::Sats => "TLE",
             Source::SatGeo => "QO-100",
             Source::Aurora => "OVATION",
             Source::AuroraPower => "HPI",
@@ -97,6 +98,14 @@ impl Source {
 /// Fetch scheduling. Only the thing doing the fetching schedules, so this is
 /// the native feed's policy and none of it reaches the browser, which is handed
 /// finished data and just reads the freshness alongside it.
+/// How often an element-set listing is refetched, seconds.
+///
+/// Shared by the geostationary source and by every subscribed listing: TLEs are
+/// reissued a few times a day at most and SGP4 stays accurate for far longer, so
+/// polling harder buys nothing.
+#[cfg(not(target_arch = "wasm32"))]
+pub const TLE_PERIOD_S: i64 = 21_600;
+
 #[cfg(not(target_arch = "wasm32"))]
 impl Source {
     /// Refresh cadence, seconds.
@@ -112,8 +121,9 @@ impl Source {
             Source::Muf => 900,      // ionosondes sound every 5-15 minutes
             // Element sets are re-issued a few times a day; SGP4 stays accurate
             // for far longer than that, so there is no reason to poll hard.
-            Source::Sats => 21_600,
-            Source::SatGeo => 21_600,
+            // [`TLE_PERIOD_S`] is the same figure for the subscribed listings,
+            // which are not `Source`s.
+            Source::SatGeo => TLE_PERIOD_S,
             // OVATION is issued every five minutes, but the grid is 900 kB —
             // by far the largest JSON here — and the oval does not move far in
             // half an hour. The overlay shows what the picture is valid for, so
@@ -139,7 +149,6 @@ impl Source {
             Source::Kp => 41,
             Source::Xray => 53,
             Source::Muf => 61,
-            Source::Sats => 71,
             Source::SatGeo => 83,
             Source::Aurora => 97,
             Source::AuroraPower => 103,

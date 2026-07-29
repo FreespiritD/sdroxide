@@ -544,14 +544,9 @@ fn satellites(
         b.earth + V3::from_f64(dir) * (b.earth_r * radii as f32)
     };
 
-    for sat in data.satellites().filter(|s| show_all || s.popular || s.custom) {
+    for sat in data.satellites().filter(|s| show_all || s.popular) {
         let Some(state) = sat.at(unix_s) else { continue };
         let pos = place(state.dir_ecliptic, state.radii);
-
-        // The operator's own element sets get the full treatment — marker, ring
-        // and label — for the same reason the curated ones do: someone who
-        // pasted a TLE in wants to see that satellite, not find it among ninety.
-        let featured = sat.popular || sat.custom;
 
         // Geostationary orbits read differently from low ones — one is a fixed
         // relay, the other a pass you have to catch — so they are coloured apart.
@@ -560,13 +555,15 @@ fn satellites(
 
         s.sprites.push(SpriteInst {
             center: pos.arr(),
-            size_px: if featured { 7.0 } else { 4.0 },
-            color: lin(color, (if featured { 0.95 } else { 0.5 }) * fade),
+            size_px: if sat.popular { 7.0 } else { 4.0 },
+            color: lin(color, (if sat.popular { 0.95 } else { 0.5 }) * fade),
             params: [SPRITE_DOT, 0.0, 0.0, 0.0],
         });
 
-        // Orbit rings only for the featured set: ninety of them at once is noise.
-        if featured {
+        // Orbit rings only for the ringed set: ninety of them at once is noise.
+        // A pasted element set and a subscription with orbits on both land here;
+        // a ninety-satellite group without does not.
+        if sat.popular {
             let path = sat.orbit(unix_s, 96);
             for w in path.windows(2) {
                 s.lines.push(seg(
@@ -578,7 +575,7 @@ fn satellites(
             }
         }
 
-        if st.layer(layer::LABELS) && featured && earth_px > 24.0 {
+        if st.layer(layer::LABELS) && sat.popular && earth_px > 24.0 {
             // The elevation is what decides whether it is workable right now,
             // so it goes in the label rather than a separate panel.
             let text = match st.qth {

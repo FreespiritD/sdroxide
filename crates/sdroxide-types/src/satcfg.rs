@@ -337,41 +337,84 @@ impl TleSubscription {
     }
 }
 
+/// One of the element-set listings offered as a one-click subscription.
+pub struct CelestrakGroup {
+    pub name: &'static str,
+    pub url: &'static str,
+    pub hint: &'static str,
+    /// Subscribed on first run. The amateur satellites and the ISS are what the
+    /// tracker used to fetch unconditionally, so a fresh install still shows
+    /// them without the operator having to go and ask for them.
+    pub default_on: bool,
+    /// Orbit rings and labels on by default. Only for a listing short enough
+    /// that ringing all of it is readable.
+    pub orbits: bool,
+}
+
 /// CelesTrak group listings worth offering as one-click subscriptions.
 ///
-/// The amateur group is deliberately absent: the tracker already fetches it on
-/// its own, and subscribing to it again would only fetch the same file twice.
-pub const CELESTRAK_GROUPS: &[(&str, &str, &str)] = &[
-    (
-        "Weather",
-        "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle",
-        "The NOAA APT and Meteor LRPT birds on 137 MHz",
-    ),
-    (
-        "CubeSats",
-        "https://celestrak.org/NORAD/elements/gp.php?GROUP=cubesat&FORMAT=tle",
-        "Everything cubesat-sized, including amateur payloads too new for the amateur group",
-    ),
-    (
-        "Space stations",
-        "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle",
-        "The ISS, Tiangong and the vehicles docked with them",
-    ),
-    (
-        "Last 30 days' launches",
-        "https://celestrak.org/NORAD/elements/gp.php?GROUP=last-30-days&FORMAT=tle",
-        "Anything launched in the last month — where a brand-new amateur satellite shows up first",
-    ),
-    (
-        "Geostationary",
-        "https://celestrak.org/NORAD/elements/gp.php?GROUP=geo&FORMAT=tle",
-        "The geostationary belt, QO-100 among it",
-    ),
-    (
-        "GNSS",
-        "https://celestrak.org/NORAD/elements/gp.php?GROUP=gnss&FORMAT=tle",
-        "GPS, Galileo, GLONASS and BeiDou",
-    ),
+/// The first two are what the tracker used to fetch on its own. They are
+/// subscriptions like any other now, which is what makes them switchable,
+/// filterable and refreshable rather than simply always on.
+pub const CELESTRAK_GROUPS: &[CelestrakGroup] = &[
+    CelestrakGroup {
+        name: "Amateur radio",
+        url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=tle",
+        hint: "Every amateur-radio satellite. The curated few keep their orbit rings and                labels; the rest are dots unless ALL SATS is on.",
+        default_on: true,
+        // Ninety rings at once is unreadable — the curated ten get theirs from
+        // the built-in list regardless of this.
+        orbits: false,
+    },
+    CelestrakGroup {
+        name: "ISS",
+        url: "https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=tle",
+        hint: "The ISS on its own, from its own element set — fresher than the copy in the                amateur group, and it keeps working if you unsubscribe from that.",
+        default_on: true,
+        orbits: true,
+    },
+    CelestrakGroup {
+        name: "Weather",
+        url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle",
+        hint: "The NOAA APT and Meteor LRPT birds on 137 MHz",
+        default_on: false,
+        orbits: false,
+    },
+    CelestrakGroup {
+        name: "CubeSats",
+        url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=cubesat&FORMAT=tle",
+        hint: "Everything cubesat-sized, including amateur payloads too new for the amateur group",
+        default_on: false,
+        orbits: false,
+    },
+    CelestrakGroup {
+        name: "Space stations",
+        url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle",
+        hint: "The ISS, Tiangong and the vehicles docked with them",
+        default_on: false,
+        orbits: false,
+    },
+    CelestrakGroup {
+        name: "Last 30 days' launches",
+        url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=last-30-days&FORMAT=tle",
+        hint: "Anything launched in the last month — where a brand-new amateur satellite shows                up first",
+        default_on: false,
+        orbits: false,
+    },
+    CelestrakGroup {
+        name: "Geostationary",
+        url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=geo&FORMAT=tle",
+        hint: "The geostationary belt, QO-100 among it",
+        default_on: false,
+        orbits: false,
+    },
+    CelestrakGroup {
+        name: "GNSS",
+        url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=gnss&FORMAT=tle",
+        hint: "GPS, Galileo, GLONASS and BeiDou",
+        default_on: false,
+        orbits: false,
+    },
 ];
 
 /// The operator's satellite additions, persisted as `satellites.json`.
@@ -385,6 +428,13 @@ pub struct SatConfig {
     /// Frequency entries that override the built-in table for their catalogue
     /// number, or add one for a satellite the table does not know.
     pub freqs: Vec<SatFreqs>,
+    /// Whether the default subscriptions have been added.
+    ///
+    /// A one-shot marker rather than a `Default` for `subs`, because serde's
+    /// per-field defaults would re-add them to any config written before they
+    /// existed *and* to one where the operator has deliberately removed them.
+    /// This way they arrive exactly once, and unsubscribing sticks.
+    pub seeded: bool,
 }
 
 impl SatConfig {
@@ -437,6 +487,30 @@ impl SatConfig {
             .filter(|t| t.enabled && t.is_valid())
             .filter_map(|t| t.norad_id())
             .collect()
+    }
+
+    /// Add the subscriptions a fresh install starts with, once.
+    ///
+    /// Returns whether anything changed, so the caller knows to write the file
+    /// back. Existing URLs are left alone: an operator who has already
+    /// subscribed to the amateur group — or switched its orbit rings on — keeps
+    /// their version of it.
+    pub fn seed_defaults(&mut self) -> bool {
+        if self.seeded {
+            return false;
+        }
+        self.seeded = true;
+        let mut added = false;
+        for g in CELESTRAK_GROUPS.iter().filter(|g| g.default_on) {
+            if self.has_sub(g.url) {
+                continue;
+            }
+            let mut sub = TleSubscription::new(g.name, g.url);
+            sub.orbits = g.orbits;
+            self.subs.push(sub);
+            added = true;
+        }
+        added
     }
 
     /// The subscriptions worth fetching.
@@ -640,12 +714,58 @@ ISS (ZARYA)
         assert!(!SatLink::down("b", "CW", Passband::at(29.5)).is_empty());
     }
 
+    /// A fresh install has to come up tracking the amateur satellites and the
+    /// ISS, because that is what it did before they became subscriptions.
+    #[test]
+    fn a_fresh_config_is_seeded_with_the_amateur_satellites_and_the_iss() {
+        let mut cfg = SatConfig::default();
+        assert!(cfg.subs.is_empty() && !cfg.seeded);
+        assert!(cfg.seed_defaults());
+        let names: Vec<&str> = cfg.subs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["Amateur radio", "ISS"]);
+        assert!(cfg.subs.iter().all(|s| s.enabled), "the defaults must be on");
+        assert!(cfg.live_subs().count() == 2);
+        // The ISS is one satellite and gets a ring; the amateur group does not.
+        assert!(!cfg.subs[0].orbits);
+        assert!(cfg.subs[1].orbits);
+    }
+
+    /// Seeding happens once. An operator who unsubscribes must not find the
+    /// subscription back on the next start — that would make the switch useless.
+    #[test]
+    fn seeding_happens_once_and_unsubscribing_sticks() {
+        let mut cfg = SatConfig::default();
+        cfg.seed_defaults();
+        cfg.subs.clear();
+        assert!(!cfg.seed_defaults(), "the defaults came back");
+        assert!(cfg.subs.is_empty());
+
+        // A config written before the defaults existed is seeded on the way in,
+        // rather than coming up with an empty sky.
+        let mut old: SatConfig = serde_json::from_str(r#"{"freqs":[]}"#).unwrap();
+        assert!(!old.seeded);
+        assert!(old.seed_defaults());
+        assert_eq!(old.subs.len(), 2);
+
+        // ...and one that already has the amateur group keeps its own version
+        // of it rather than gaining a second.
+        let mut mine = SatConfig::default();
+        let mut sub = TleSubscription::new("My amateur list", CELESTRAK_GROUPS[0].url);
+        sub.orbits = true;
+        mine.subs.push(sub);
+        mine.seed_defaults();
+        assert_eq!(mine.subs.len(), 2, "{:?}", mine.subs);
+        assert_eq!(mine.subs[0].name, "My amateur list");
+        assert!(mine.subs[0].orbits, "the operator's own settings were overwritten");
+    }
+
     #[test]
     fn the_whole_config_round_trips_through_json() {
         let mut cfg = SatConfig {
             tles: parse_tle_block(ISS),
-            subs: vec![TleSubscription::new("Weather", CELESTRAK_GROUPS[0].1)],
+            subs: vec![TleSubscription::new("Weather", CELESTRAK_GROUPS[2].url)],
             freqs: Vec::new(),
+            seeded: true,
         };
         cfg.subs[0].only = vec![25338, 33591];
         cfg.freqs_for_mut(25544, "ISS").links.push(

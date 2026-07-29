@@ -339,7 +339,18 @@ pub fn save_sstv_messages(messages: &[String]) -> Result<(), ConfigError> {
 /// to track and where they have found the transponders, so it stays with the UI
 /// rather than with the engine.
 pub fn load_sat_config() -> sdroxide_types::SatConfig {
-    load_json("satellites.json")
+    let mut cfg: sdroxide_types::SatConfig = load_json("satellites.json");
+    // The amateur satellites and the ISS used to be fetched unconditionally.
+    // They are subscriptions now, so a config that predates them — or a fresh
+    // install with no file at all — has to be given them once, or the sky comes
+    // up empty. Written back immediately so the seeding happens exactly once
+    // and unsubscribing sticks.
+    if cfg.seed_defaults() {
+        if let Err(e) = save_sat_config(&cfg) {
+            warn!("could not write the seeded satellite subscriptions: {e}");
+        }
+    }
+    cfg
 }
 
 pub fn save_sat_config(cfg: &sdroxide_types::SatConfig) -> Result<(), ConfigError> {

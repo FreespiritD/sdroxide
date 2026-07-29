@@ -1790,12 +1790,15 @@ or the TCI server above.
 
 ### 5.9 TLE: satellites and their frequencies
 
-The satellite tracker in the 3D view ([6](#6-solar-system-3d-view)) fetches
-CelesTrak's *amateur* element set on its own, and carries a built-in table of
-published transponder and beacon frequencies. The **TLE** tab is for everything
-that covers: a weather satellite, a cubesat too new to be in the amateur group,
-a fresher element set than the one that arrived, or a frequency the built-in
-table has wrong.
+The **TLE** tab decides which satellites the tracker in the 3D view
+([6](#6-solar-system-3d-view)) follows, and what frequencies it shows for them.
+
+Out of the box it follows the **amateur radio** group and the **ISS**. Both are
+ordinary subscriptions, so unlike earlier versions they can be switched off,
+filtered, given orbit rings or pointed somewhere else — and anything else worth
+tracking can be added beside them: a weather satellite, a cubesat too new to be
+in the amateur group, a fresher element set than the one that arrived, or a
+frequency the built-in table has wrong.
 
 Everything on this tab is saved the moment you change it — there is no APPLY —
 into `satellites.json`. The 3D view picks changes up on its next frame.
@@ -1823,10 +1826,30 @@ Each row has:
 The status beside each row is what the last fetch actually did: how many
 satellites it yielded and how old the listing is, or why it failed.
 
-The **CelesTrak groups** chips below add the common listings in one click —
-weather, cubesats, space stations, the last thirty days' launches, the
-geostationary belt and GNSS. The amateur group is deliberately absent: the
-tracker already fetches it.
+The **CelesTrak groups** chips below add the common listings in one click. A lit
+chip means you are already subscribed:
+
+| Chip | What it is |
+| --- | --- |
+| **Amateur radio** | Every amateur satellite. **On by default** — this is what the tracker used to fetch unconditionally. |
+| **ISS** | The ISS on its own, from its own element set. **On by default**: fresher than the copy inside the amateur group, and it keeps working if you unsubscribe from that. |
+| **Weather** | The NOAA APT and Meteor LRPT birds on 137 MHz |
+| **CubeSats** | Everything cubesat-sized, including amateur payloads too new for the amateur group |
+| **Space stations** | The ISS, Tiangong and the vehicles docked with them |
+| **Last 30 days' launches** | Where a brand-new amateur satellite turns up first |
+| **Geostationary** | The geostationary belt, QO-100 among it |
+| **GNSS** | GPS, Galileo, GLONASS and BeiDou |
+
+The two default ones are added the first time this version runs and then left
+alone: unsubscribing sticks, and if you have already customised one — renamed
+it, turned its orbit rings on — your version is kept rather than replaced.
+
+Subscribing to a group does **not** put ninety orbit rings on the globe. The
+curated satellites the view is built around keep their rings and labels whatever
+a subscription says; everything else in a group is a dot behind `ALL SATS`,
+exactly as the amateur set behaved when it was built in. Ticking **Orbits** on a
+subscription is what rings the rest of it, which is worth doing for a short
+listing like the ISS and not for a group.
 
 Subscriptions refresh **while the 3D view is open**, which is the same rule the
 rest of that window's network activity follows ([6](#6-solar-system-3d-view)).
@@ -1847,10 +1870,10 @@ format is column-addressed and a misaligned paste is otherwise invisible). A
 malformed entry says what is wrong with it instead of quietly never appearing in
 the sky.
 
-Pasted satellites are always drawn with their orbit ring and label: pasting a
-TLE by hand is a clear enough statement of interest. They also **override** a
-fetched element set for the same satellite, so this is how you put a fresher ISS
-TLE in front of the one CelesTrak served this morning.
+Pasted satellites are always drawn with their orbit ring and label: typing a TLE
+in by hand is a clear enough statement of interest. They also **override** a
+subscribed element set for the same satellite, so this is how you put a fresher
+ISS TLE in front of the one CelesTrak served this morning.
 
 #### 5.9.3 Frequencies
 
@@ -2043,16 +2066,17 @@ seem to disagree.
 propagated with SGP4 from CelesTrak element sets. Ten popular ones are drawn by
 default with their orbit rings — QO-100, the ISS, AO-7, FO-29, SO-50, AO-73,
 JO-97, RS-44, XW-3 and IO-117. Geostationary orbits are green, low ones cyan.
-`ALL SATS` in the Sun module adds every satellite in the amateur element set as a
-plain dot; the orbit rings stay on the curated few, because ninety rings at once
-is unreadable.
+`ALL SATS` in the Sun module adds every satellite in the subscribed listings as
+a plain dot; the orbit rings stay on the curated few, because ninety rings at
+once is unreadable.
 
-Satellites you add yourself in the **TLE** settings tab
-([5.9](#59-tle-satellites-and-their-frequencies)) are drawn too, without needing
-`ALL SATS`, and they override a fetched element set for the same satellite. That
-tab is also where a subscribed listing — the NOAA weather birds, say — is kept
-up to date; those fetches happen while this window is open, like every other
-fetch it makes.
+Which satellites arrive at all is set in the **TLE** settings tab
+([5.9](#59-tle-satellites-and-their-frequencies)) — the amateur group and the
+ISS are subscribed by default, and you can add the weather birds, the cubesats
+or your own element sets beside them. A set you paste in there is always drawn
+with its ring and label, and overrides a fetched one for the same satellite.
+Those fetches happen while this window is open, like every other fetch it
+makes.
 
 With `LABELS` on, each of the curated satellites is named with **its elevation
 from your QTH right now** — a number means it is above your horizon and
@@ -2225,7 +2249,7 @@ means no request is ever made. Three hosts are contacted:
 | `services.swpc.noaa.gov` | Sunspot regions, planetary K/A, 10.7 cm flux, GOES X-ray level (NOAA SWPC) | 5–60 min |
 | `services.swpc.noaa.gov` | The OVATION auroral oval grid, auroral hemispheric power, and the three-day planetary K forecast | 15–60 min |
 | `prop.kc2g.com` | Ionosonde soundings for the MUF estimate (GIRO network, aggregated by KC2G) | 15 min |
-| `celestrak.org` | Orbital element sets for the amateur satellites, and any listing you subscribe to | 6 h |
+| `celestrak.org` | Orbital element sets: the listings you subscribe to (the amateur group and the ISS by default), plus QO-100 | 6 h |
 
 Everything fetched is cached under `solar/` in the config directory and is
 loaded *before* the first network request, so the window opens instantly with

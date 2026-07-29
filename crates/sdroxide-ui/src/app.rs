@@ -7694,11 +7694,13 @@ fn settings_tle_subscriptions(ui: &mut egui::Ui, io: &mut SettingsIo) {
     ui.add_space(6.0);
     ui.label(RichText::new("CelesTrak groups").color(theme::CYAN_DIM).size(10.0).strong());
     ui.horizontal_wrapped(|ui| {
-        for (name, url, hint) in sdroxide_types::CELESTRAK_GROUPS {
-            let have = io.sat_edit.has_sub(url);
-            if crate::chrome::chip(ui, have, *name).on_hover_text(*hint).clicked() && !have {
-                io.sat_edit.subs.push(sdroxide_types::TleSubscription::new(name, url));
-                io.sat_ui.note = format!("Subscribed to {name}. Press UPDATE NOW to fetch it.");
+        for g in sdroxide_types::CELESTRAK_GROUPS {
+            let have = io.sat_edit.has_sub(g.url);
+            if crate::chrome::chip(ui, have, g.name).on_hover_text(g.hint).clicked() && !have {
+                let mut sub = sdroxide_types::TleSubscription::new(g.name, g.url);
+                sub.orbits = g.orbits;
+                io.sat_edit.subs.push(sub);
+                io.sat_ui.note = format!("Subscribed to {}. Press UPDATE NOW to fetch it.", g.name);
             }
         }
     });

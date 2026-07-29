@@ -21,7 +21,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 use crate::aurora::{self, AuroraOval, HemisphericPower, KpPoint};
 use crate::cache::{Cache, Validators};
-use crate::data::{SolarData, Source, SourceStatus};
+use crate::data::{SolarData, Source, SourceStatus, TLE_PERIOD_S};
 use crate::donki::{self, CmeEvent, FlareEvent};
 use crate::imagery::{self, SdoChannel, SunImage};
 use crate::indices::{self};
@@ -177,8 +177,8 @@ fn worker(
         // Subscriptions ride the element-set cadence: TLEs are reissued a few
         // times a day at most, and a fresher fetch would buy nothing.
         if !subs.is_empty() && now >= subs_due_unix {
-            subs_due_unix = now + Source::Sats.period();
-            let mut sats = satellites::parse_custom_tles(&pasted_text);
+            subs_due_unix = now + TLE_PERIOD_S;
+            let mut sats = satellites::parse_pasted_tles(&pasted_text);
             let mut status = Vec::with_capacity(subs.len());
             for sub in subs.iter() {
                 let (v, st) = crate::tlesub::refresh(&agent, &mut cache, sub, now);
@@ -189,6 +189,7 @@ fn worker(
             d.sats_custom = dedup_by_norad(sats);
             d.tle_subs = status;
             drop(d);
+            raw(RawUpdate::Tle { geo: false, text: subscribed_tle_text(&cache, &subs) });
             changed = true;
         }
         for src in Source::ALL {
@@ -243,13 +244,11 @@ fn worker(
                 // operator has had for weeks should not blank the sky while a
                 // fetch it does not need runs.
                 publish_custom(&shared, &cache, &pasted_text, &subs);
+                raw(RawUpdate::Tle { geo: false, text: subscribed_tle_text(&cache, &subs) });
                 // ...then let the next loop pass decide whether to refetch,
                 // from when each listing was last actually fetched.
-                subs_due_unix = subs
-                    .iter()
-                    .map(|s| cache.fetched_at(&s.url) + Source::Sats.period())
-                    .min()
-                    .unwrap_or(0);
+                subs_due_unix =
+                    subs.iter().map(|s| cache.fetched_at(&s.url) + TLE_PERIOD_S).min().unwrap_or(0);
                 wake();
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -270,7 +269,7 @@ fn publish_custom(
     pasted_text: &str,
     subs: &[sdroxide_types::TleSubscription],
 ) {
-    let mut sats = satellites::parse_custom_tles(pasted_text);
+    let mut sats = satellites::parse_pasted_tles(pasted_text);
     for sub in subs {
         sats.extend(crate::tlesub::cached(cache, sub));
     }
@@ -278,6 +277,24 @@ fn publish_custom(
     let mut d = shared.lock().unwrap_or_else(|e| e.into_inner());
     d.sats_custom = dedup_by_norad(sats);
     d.tle_subs = status;
+}
+
+/// Every subscribed listing's cached text, concatenated, for the browser relay.
+///
+/// The browser has no subscription machinery — it is fed decoded products over
+/// the WebSocket — so it gets the union as one element-set listing and puts it
+/// where the amateur group used to go. Concatenating three-line listings is
+/// valid, and [`satellites::parse_tles`] drops the duplicates that overlapping
+/// groups produce.
+fn subscribed_tle_text(cache: &Cache, subs: &[sdroxide_types::TleSubscription]) -> String {
+    let mut out = String::new();
+    for sub in subs {
+        if let Some(text) = crate::tlesub::cached_text(cache, sub) {
+            out.push_str(text.trim_end());
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Keep the first entry for each catalogue number.
@@ -305,11 +322,9 @@ fn load_cached(
     let kp = cache.read_string("kp.json").and_then(|s| indices::parse_kp(&s));
     let xray = cache.read_string("xray.json").and_then(|s| indices::parse_xray(&s));
     let sondes = cache.read_string("ionosondes.json").map(|s| indices::parse_ionosondes(&s));
-    // Keep the element sets in their original form as well as parsed: a relay
+    // Keep the element set in its original form as well as parsed: a relay
     // forwards the text, and re-serialising SGP4 constants is not possible.
-    let sats_txt = cache.read_string("amateur.txt");
     let sats_geo_txt = cache.read_string("qo100.txt");
-    let sats = sats_txt.as_deref().map(satellites::parse_tles);
     let sats_geo = sats_geo_txt.as_deref().map(satellites::parse_tles);
     let oval = cache.read_string("ovation.json").and_then(|s| aurora::parse_ovation(&s));
     let power =
@@ -332,9 +347,6 @@ fn load_cached(
         if let Some(v) = sondes {
             d.weather.ionosondes = v;
         }
-        if let Some(v) = sats {
-            d.sats_amateur = v;
-        }
         if let Some(v) = sats_geo {
             d.sats_geo = v;
         }
@@ -346,9 +358,6 @@ fn load_cached(
         if let Some(v) = kp_forecast {
             d.kp_forecast = v;
         }
-    }
-    if let Some(text) = sats_txt {
-        raw(RawUpdate::Tle { geo: false, text });
     }
     if let Some(text) = sats_geo_txt {
         raw(RawUpdate::Tle { geo: true, text });
@@ -408,9 +417,6 @@ fn refresh(
         Source::Muf => {
             (indices::IONOSONDE_URL.to_string(), "ionosondes.json".to_string(), JSON_LIMIT)
         }
-        Source::Sats => {
-            (satellites::AMATEUR_URL.to_string(), "amateur.txt".to_string(), JSON_LIMIT)
-        }
         Source::SatGeo => (satellites::QO100_URL.to_string(), "qo100.txt".to_string(), JSON_LIMIT),
         Source::Aurora => (aurora::OVATION_URL.to_string(), "ovation.json".to_string(), JSON_LIMIT),
         Source::AuroraPower => {
@@ -444,12 +450,9 @@ fn refresh(
                     Source::Sun => {
                         raw(RawUpdate::Sun { channel, fetched_unix: now, jpeg: bytes.clone() })
                     }
-                    Source::Sats | Source::SatGeo => {
+                    Source::SatGeo => {
                         if let Ok(text) = std::str::from_utf8(&bytes) {
-                            raw(RawUpdate::Tle {
-                                geo: src == Source::SatGeo,
-                                text: text.to_string(),
-                            });
+                            raw(RawUpdate::Tle { geo: true, text: text.to_string() });
                         }
                     }
                     _ => {}
@@ -468,7 +471,6 @@ fn refresh(
                 Parsed::Kp(v) => d.weather.geomagnetic = Some(v),
                 Parsed::Xray(v) => d.weather.xray = Some(v),
                 Parsed::Ionosondes(v) => d.weather.ionosondes = v,
-                Parsed::Sats(v) => d.sats_amateur = v,
                 Parsed::SatGeo(v) => d.sats_geo = v,
                 Parsed::Aurora(v) => {
                     d.aurora = Some(Arc::new(v));
@@ -504,7 +506,6 @@ enum Parsed {
     Kp(indices::GeomagneticIndex),
     Xray(indices::XrayLevel),
     Ionosondes(Vec<indices::Ionosonde>),
-    Sats(Vec<Satellite>),
     SatGeo(Vec<Satellite>),
     Aurora(AuroraOval),
     AuroraPower(HemisphericPower),
@@ -537,13 +538,9 @@ fn parse(src: Source, bytes: &[u8], channel: SdoChannel, now: i64) -> Parsed {
                     let v = indices::parse_ionosondes(text);
                     return if v.is_empty() { Parsed::None } else { Parsed::Ionosondes(v) };
                 }
-                Source::Sats | Source::SatGeo => {
+                Source::SatGeo => {
                     let v = satellites::parse_tles(text);
-                    return match (v.is_empty(), src) {
-                        (true, _) => Parsed::None,
-                        (false, Source::SatGeo) => Parsed::SatGeo(v),
-                        (false, _) => Parsed::Sats(v),
-                    };
+                    return if v.is_empty() { Parsed::None } else { Parsed::SatGeo(v) };
                 }
                 Source::Aurora => {
                     return aurora::parse_ovation(text).map_or(Parsed::None, Parsed::Aurora);

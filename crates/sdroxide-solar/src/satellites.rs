@@ -310,12 +310,27 @@ fn short_name(raw: &str, norad_id: u64) -> String {
     raw.split('&').next().unwrap_or(raw).trim().to_string()
 }
 
-/// Parse the operator's own element sets.
+/// Parse element sets the operator pasted in by hand.
 ///
-/// Same parser, but every satellite comes back flagged [`Satellite::custom`]:
-/// they are drawn and labelled like the curated ones, because pasting a TLE in
-/// by hand is a stronger statement of interest than any built-in list.
-pub fn parse_custom_tles(text: &str) -> Vec<Satellite> {
+/// Every satellite comes back flagged [`Satellite::custom`] *and* popular: they
+/// are drawn and labelled like the curated ones, because typing a TLE in by
+/// hand is a stronger statement of interest than any built-in list.
+pub fn parse_pasted_tles(text: &str) -> Vec<Satellite> {
+    let mut v = parse_subscribed_tles(text);
+    for s in &mut v {
+        s.popular = true;
+    }
+    v
+}
+
+/// Parse element sets from a subscribed listing.
+///
+/// Flagged [`Satellite::custom`] — the operator asked for this listing — but
+/// `popular` is left as the built-in curated list set it. A group endpoint is
+/// ninety satellites, and drawing ninety rings and labels because the operator
+/// subscribed to one listing would make the view unreadable. The subscription's
+/// own orbit-ring switch is what raises it.
+pub fn parse_subscribed_tles(text: &str) -> Vec<Satellite> {
     let mut v = parse_tles(text);
     for s in &mut v {
         s.custom = true;
@@ -327,8 +342,18 @@ pub fn parse_custom_tles(text: &str) -> Vec<Satellite> {
 ///
 /// Elements that SGP4 rejects are skipped rather than failing the batch: a
 /// decayed or malformed entry should not cost the other ninety.
+///
+/// Repeated catalogue numbers keep the **first** entry. A single CelesTrak
+/// group never repeats one, but several concatenated do — the stations group
+/// and the cubesat group share plenty with the amateur one — and a duplicate
+/// would be a second marker drawn a few metres from the first.
 pub fn parse_tles(text: &str) -> Vec<Satellite> {
-    let elements = match sgp4::parse_3les(text) {
+    // Blank lines are fatal to a three-line parser, which counts rather than
+    // looks. They turn up wherever two listings have been concatenated — which
+    // is exactly what the subscribed groups are handed over as — so they are
+    // dropped here rather than costing the whole batch.
+    let text: String = text.lines().filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n");
+    let elements = match sgp4::parse_3les(&text) {
         Ok(e) => e,
         Err(e) => {
             tracing::warn!("satellite element set did not parse: {e}");
@@ -354,7 +379,12 @@ pub fn parse_tles(text: &str) -> Vec<Satellite> {
                 constants,
             })
         })
-        .collect()
+        .fold(Vec::new(), |mut acc, s: Satellite| {
+            if !acc.iter().any(|e: &Satellite| e.norad_id == s.norad_id) {
+                acc.push(s);
+            }
+            acc
+        })
 }
 
 /// Elements older than this are not worth propagating: SGP4 accuracy decays
@@ -435,6 +465,19 @@ mod tests {
 
     /// Just after the fixture epochs, so nothing is stale.
     const NOW: f64 = 1_784_937_600.0; // 2026-07-25T00:00Z
+
+    /// Concatenated listings overlap; the first entry for a catalogue number
+    /// wins and the rest are dropped, or the sky would have two of everything.
+    #[test]
+    fn a_repeated_catalogue_number_is_kept_only_once() {
+        let one = parse_tles(AMATEUR);
+        let twice = parse_tles(&format!("{AMATEUR}\n\n{AMATEUR}"));
+        assert_eq!(twice.len(), one.len(), "concatenating a listing with itself duplicated it");
+        // ...and the survivors are the same satellites, in the same order.
+        let a: Vec<u64> = one.iter().map(|s| s.norad_id).collect();
+        let b: Vec<u64> = twice.iter().map(|s| s.norad_id).collect();
+        assert_eq!(a, b);
+    }
 
     #[test]
     fn parses_the_celestrak_amateur_set() {
