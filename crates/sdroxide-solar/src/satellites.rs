@@ -62,6 +62,10 @@ pub struct Satellite {
     pub period_min: f64,
     /// Whether this one is in [`POPULAR`].
     pub popular: bool,
+    /// Whether the operator supplied the element set themselves. Custom
+    /// satellites are drawn like the curated ones — someone who pasted a TLE in
+    /// by hand wants to see that satellite, not a dot among ninety others.
+    pub custom: bool,
     constants: sgp4::Constants,
 }
 
@@ -306,6 +310,19 @@ fn short_name(raw: &str, norad_id: u64) -> String {
     raw.split('&').next().unwrap_or(raw).trim().to_string()
 }
 
+/// Parse the operator's own element sets.
+///
+/// Same parser, but every satellite comes back flagged [`Satellite::custom`]:
+/// they are drawn and labelled like the curated ones, because pasting a TLE in
+/// by hand is a stronger statement of interest than any built-in list.
+pub fn parse_custom_tles(text: &str) -> Vec<Satellite> {
+    let mut v = parse_tles(text);
+    for s in &mut v {
+        s.custom = true;
+    }
+    v
+}
+
 /// Parse a CelesTrak 3-line element listing.
 ///
 /// Elements that SGP4 rejects are skipped rather than failing the batch: a
@@ -333,6 +350,7 @@ pub fn parse_tles(text: &str) -> Vec<Satellite> {
                 epoch_unix: el.datetime.and_utc().timestamp(),
                 period_min,
                 popular: POPULAR.iter().any(|(n, _)| *n == el.norad_id),
+                custom: false,
                 constants,
             })
         })

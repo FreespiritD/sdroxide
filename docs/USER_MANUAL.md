@@ -1043,7 +1043,7 @@ decode.
 
 Everything that configures sdroxide lives in one window, opened with the
 **⚙ SETTINGS** button in the System module (the **⚙ SETUP** button in the SPOTS
-window opens the same dialog on its Spots tab). Eight tabs run across the top:
+window opens the same dialog on its Spots tab). Nine tabs run across the top:
 
 | Tab | What it holds |
 | --- | --- |
@@ -1055,6 +1055,7 @@ window opens the same dialog on its Spots tab). Eight tabs run across the top:
 | **FreeDV** | FreeDV Reporter (qso.freedv.org). [5.6](#56-freedv-freedv-reporter) |
 | **Uploads** | Callsign lookup, QSL upload, confirmation download. [5.7](#57-uploads-callsign-lookup-and-qsl-services) |
 | **Servers** | Hamlib rigctld, the built-in TCI server, and the WSJT-X UDP broadcast. [5.8](#58-servers-letting-other-programs-drive-the-radio) |
+| **TLE** | Satellites to track beyond the amateur set, and their frequencies. [5.9](#59-tle-satellites-and-their-frequencies) |
 
 Most settings take effect the moment you change them. The ones that open or
 rebind a connection — the radio itself, the spot feeds, FreeDV Reporter, and the
@@ -1063,8 +1064,9 @@ each section below. Nothing here needs a restart.
 
 Settings are written to the per-user config directory ([§11](#11-configuration-files)):
 display preferences to `config.toml`, the radio to `radio.json`, key/mouse/MIDI
-bindings to `input.json`, feeds and credentials to `net.json`, and the two
-servers to `rigctld.json`, `tciserver.json` and `wsjtx.json`.
+bindings to `input.json`, feeds and credentials to `net.json`, the two servers
+to `rigctld.json`, `tciserver.json` and `wsjtx.json`, and the satellite
+additions to `satellites.json`.
 
 ### 5.1 General: station and audio
 
@@ -1685,6 +1687,88 @@ This one is **output only**: nothing is read from the socket, so no program on
 it can tune or key the radio. Programs that want to *drive* sdroxide use rigctld
 or the TCI server above.
 
+### 5.9 TLE: satellites and their frequencies
+
+The satellite tracker in the 3D view ([6](#6-solar-system-3d-view)) fetches
+CelesTrak's *amateur* element set on its own, and carries a built-in table of
+published transponder and beacon frequencies. The **TLE** tab is for everything
+that covers: a weather satellite, a cubesat too new to be in the amateur group,
+a fresher element set than the one that arrived, or a frequency the built-in
+table has wrong.
+
+Everything on this tab is saved the moment you change it — there is no APPLY —
+into `satellites.json`. The 3D view picks changes up on its next frame.
+
+#### 5.9.1 Subscriptions
+
+A two-line element set is only good for a few days: SGP4 accuracy decays
+quickly, and sdroxide refuses to propagate elements more than a fortnight past
+their epoch at all. So anything you mean to *keep* tracking wants a
+**subscription** — a URL serving an element-set listing, refetched on the same
+six-hourly cadence as the amateur set.
+
+Each row has:
+
+- a **tick** to track it or park it,
+- a **name** (yours, for the row — the satellite names come from the listing),
+- the **URL**, which must be `https://`,
+- **Orbits** — draw an orbit ring and a label for every satellite in the
+  listing. Leave it off for a whole group: ninety rings at once is unreadable,
+  and the satellites still appear as dots either way.
+- a **filter** — catalogue numbers to keep, comma separated. Empty tracks
+  everything the listing carries. This is what turns CelesTrak's fifty-satellite
+  weather group into just the three NOAA APT birds.
+
+The status beside each row is what the last fetch actually did: how many
+satellites it yielded and how old the listing is, or why it failed.
+
+The **CelesTrak groups** chips below add the common listings in one click —
+weather, cubesats, space stations, the last thirty days' launches, the
+geostationary belt and GNSS. The amateur group is deliberately absent: the
+tracker already fetches it.
+
+Subscriptions refresh **while the 3D view is open**, which is the same rule the
+rest of that window's network activity follows ([6](#6-solar-system-3d-view)).
+**UPDATE NOW** fetches them all immediately without opening it. Fetched listings
+are cached on disk, so they survive a restart and keep working offline.
+
+#### 5.9.2 Pasted element sets
+
+For a one-off, paste the two- or three-line set straight into the box and press
+**+ Add pasted**. Both forms are understood, several at once are fine, and
+pasting a set for a satellite already listed *refreshes* that entry rather than
+adding a second one.
+
+Each row shows its catalogue number and how old the elements are — green while
+they are fresh, amber past three days, red once they are too stale to propagate.
+Press **✎** to see and correct the two lines (in a monospace font, because the
+format is column-addressed and a misaligned paste is otherwise invisible). A
+malformed entry says what is wrong with it instead of quietly never appearing in
+the sky.
+
+Pasted satellites are always drawn with their orbit ring and label: pasting a
+TLE by hand is a clear enough statement of interest. They also **override** a
+fetched element set for the same satellite, so this is how you put a fresher ISS
+TLE in front of the one CelesTrak served this morning.
+
+#### 5.9.3 Frequencies
+
+These are the rows the pass table shows underneath a pass
+([6](#6-solar-system-3d-view)). Give a catalogue number and press **+
+Satellite**: if the built-in table knows it, the entry starts as a copy of it,
+so correcting one frequency does not mean retyping the beacon and the
+transponder as well.
+
+Each link is a row: what it is, the downlink, the uplink, the mode, and a note
+for anything you have to know before keying up. A frequency is either one number
+(`145.800`) or a transponder passband written `145.950-145.970`. Leave a
+direction blank for a beacon.
+
+An entry here **replaces** the built-in one for that catalogue number outright
+rather than merging with it — which is why a new one starts from a copy. Delete
+every link in an entry and it disappears, and the built-in table shows through
+again.
+
 ---
 
 ## 6. Solar system 3D view
@@ -1855,6 +1939,13 @@ JO-97, RS-44, XW-3 and IO-117. Geostationary orbits are green, low ones cyan.
 plain dot; the orbit rings stay on the curated few, because ninety rings at once
 is unreadable.
 
+Satellites you add yourself in the **TLE** settings tab
+([5.9](#59-tle-satellites-and-their-frequencies)) are drawn too, without needing
+`ALL SATS`, and they override a fetched element set for the same satellite. That
+tab is also where a subscribed listing — the NOAA weather birds, say — is kept
+up to date; those fetches happen while this window is open, like every other
+fetch it makes.
+
 With `LABELS` on, each of the curated satellites is named with **its elevation
 from your QTH right now** — a number means it is above your horizon and
 workable, `▼` means it is not.
@@ -1899,8 +1990,9 @@ pass, upwards on the way in and downwards on the way out.
 The built-in list covers the satellites drawn by default plus a few more, and it
 is reference data transcribed from the AMSAT list rather than anything derived
 from the element set — transponders do get switched and schedules do change. Add
-your own or correct a wrong one in the **TLE** settings tab, where your entries
-override the built-in table.
+your own or correct a wrong one in the **TLE** settings tab
+([5.9](#59-tle-satellites-and-their-frequencies)), where your entries override
+the built-in table.
 
 **The QSO layer** puts your FT8/FT4 traffic on the globe. Every station decoded
 in the last two minutes is a white dot that fades as it ages — the same set the
@@ -2025,7 +2117,7 @@ means no request is ever made. Three hosts are contacted:
 | `services.swpc.noaa.gov` | Sunspot regions, planetary K/A, 10.7 cm flux, GOES X-ray level (NOAA SWPC) | 5–60 min |
 | `services.swpc.noaa.gov` | The OVATION auroral oval grid, auroral hemispheric power, and the three-day planetary K forecast | 15–60 min |
 | `prop.kc2g.com` | Ionosonde soundings for the MUF estimate (GIRO network, aggregated by KC2G) | 15 min |
-| `celestrak.org` | Orbital element sets for the amateur satellites | 6 h |
+| `celestrak.org` | Orbital element sets for the amateur satellites, and any listing you subscribe to | 6 h |
 
 Everything fetched is cached under `solar/` in the config directory and is
 loaded *before* the first network request, so the window opens instantly with
@@ -2344,12 +2436,13 @@ sdroxide stores its settings under the per-user config directory:
 | `wsjtx.json` | JSON | WSJT-X UDP broadcast: enabled, destination host and port, and the name clients see. |
 | `skimmer.json` | JSON | Skimmers: which of CW / PSK / RTTY run, and each one's spot squelch in dB. Restored at startup; a narrowband (audio-mode) radio still forces them off without disturbing what you picked. |
 | `input.json` | JSON | Control inputs: keyboard bindings, panadapter mouse behaviour, mouse-button bindings, and the MIDI controller mapping. Belongs to the machine running the user interface, not the engine. |
+| `satellites.json` | JSON | Satellite additions for the 3D tracker: subscribed element-set listings, element sets pasted in by hand, and frequency entries that override the built-in table. Belongs to the user interface, like `input.json`. |
 | `sstv_messages.json` | JSON | The overlay message stored for each of the five SSTV transmit slots. |
 | `voice_names.json` | JSON | The label given to each of the ten voice-keyer slots. |
 | `voice/` | dir | The voice-keyer recordings (`slot1.wav`…`slot10.wav`), 48 kHz mono. Drop your own WAV in to replace a message. |
 | `sstv_tx/` | dir | The five SSTV transmit-image slots (`slot0.png`…`slot4.png`). |
 | `sstv_rx/` | dir | Received SSTV and RIFP pictures, kept for the gallery. |
-| `solar/` | dir | Cached solar imagery and space-weather JSON for the 3D view, with an index of HTTP validators so refreshes stay cheap. Safe to delete; it is re-fetched on demand. |
+| `solar/` | dir | Cached solar imagery, space-weather JSON and subscribed element-set listings for the 3D view, with an index of HTTP validators so refreshes stay cheap. Safe to delete; it is re-fetched on demand. |
 
 Every file has sensible defaults, so a missing or partial file always loads. You
 normally edit these through the GUI rather than by hand.

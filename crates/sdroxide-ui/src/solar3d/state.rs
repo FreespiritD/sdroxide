@@ -158,6 +158,14 @@ pub struct SolarUi {
     pub lapse_back_s: f64,
     /// Whether the replay head is sweeping forward on its own.
     pub lapse_playing: bool,
+    /// The operator's satellite additions: their own element sets (already
+    /// pushed into the feed) and the frequency entries that override the
+    /// built-in table in the pass window. Republished by the host whenever the
+    /// settings dialog changes them.
+    ///
+    /// Empty in the browser tab, which has no settings dialog of its own — the
+    /// built-in table shows through there.
+    pub sat_cfg: std::sync::Arc<sdroxide_types::SatConfig>,
     /// Satellite whose pass table is open, by catalogue number.
     pub selected_sat: Option<u64>,
     /// Cached pass prediction: which satellite, from what QTH, computed when,
@@ -229,6 +237,7 @@ impl SolarUi {
             awards: Default::default(),
             lapse_back_s: 0.0,
             lapse_playing: false,
+            sat_cfg: Default::default(),
             selected_sat: None,
             sat_passes: None,
             focus_override: None,

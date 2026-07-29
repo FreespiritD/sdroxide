@@ -42,6 +42,15 @@ pub enum FeedCmd {
     RefreshAll,
     SetChannel(SdoChannel),
     SetResolution(u32),
+    /// Replace the operator's own element sets, as one three-line listing.
+    ///
+    /// Whole-set replacement rather than add/remove, because the settings
+    /// dialog owns the list: sending what it now holds cannot drift out of step
+    /// with it the way an incremental protocol can.
+    SetCustomTles(String),
+    /// Replace the subscribed element-set listings. Cached bodies are published
+    /// at once and refetched on the element-set cadence.
+    SetTleSubs(Vec<sdroxide_types::TleSubscription>),
 }
 
 /// A payload in the form it arrived in, for a relay that has to hand the same
@@ -121,7 +130,7 @@ impl SolarFeed {
     }
 }
 
-fn now_unix() -> i64 {
+pub(crate) fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -149,6 +158,13 @@ fn worker(
         .build()
         .into();
     let mut cache = Cache::open();
+    // The operator's pasted sets and their subscriptions, kept apart so a
+    // refresh of one does not disturb the other. The pasted ones are held as
+    // the text they arrived as: a `Satellite` owns SGP4 constants and cannot be
+    // cloned, and re-parsing a handful of them is nothing next to a fetch.
+    let mut pasted_text = String::new();
+    let mut subs: Vec<sdroxide_types::TleSubscription> = Vec::new();
+    let mut subs_due_unix: i64 = 0;
 
     // Publish whatever is on disk before touching the network, so the window
     // has content the moment it opens — including with no connection at all.
@@ -158,6 +174,23 @@ fn worker(
     loop {
         let now = now_unix();
         let mut changed = false;
+        // Subscriptions ride the element-set cadence: TLEs are reissued a few
+        // times a day at most, and a fresher fetch would buy nothing.
+        if !subs.is_empty() && now >= subs_due_unix {
+            subs_due_unix = now + Source::Sats.period();
+            let mut sats = satellites::parse_custom_tles(&pasted_text);
+            let mut status = Vec::with_capacity(subs.len());
+            for sub in subs.iter() {
+                let (v, st) = crate::tlesub::refresh(&agent, &mut cache, sub, now);
+                sats.extend(v);
+                status.push(st);
+            }
+            let mut d = shared.lock().unwrap_or_else(|e| e.into_inner());
+            d.sats_custom = dedup_by_norad(sats);
+            d.tle_subs = status;
+            drop(d);
+            changed = true;
+        }
         for src in Source::ALL {
             let due = {
                 let d = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -197,12 +230,65 @@ fn worker(
                 let mut d = shared.lock().unwrap_or_else(|e| e.into_inner());
                 d.status[Source::Sun.index()] = SourceStatus::default();
             }
+            Ok(FeedCmd::SetCustomTles(text)) => {
+                // Parse outside the lock; SGP4 constants for a long list are
+                // not free, and the UI reads this mutex every frame.
+                pasted_text = text;
+                publish_custom(&shared, &cache, &pasted_text, &subs);
+                wake();
+            }
+            Ok(FeedCmd::SetTleSubs(v)) => {
+                subs = v.into_iter().filter(|s| s.enabled && s.is_valid()).collect();
+                // Serve the cached listings straight away — a subscription the
+                // operator has had for weeks should not blank the sky while a
+                // fetch it does not need runs.
+                publish_custom(&shared, &cache, &pasted_text, &subs);
+                // ...then let the next loop pass decide whether to refetch,
+                // from when each listing was last actually fetched.
+                subs_due_unix = subs
+                    .iter()
+                    .map(|s| cache.fetched_at(&s.url) + Source::Sats.period())
+                    .min()
+                    .unwrap_or(0);
+                wake();
+            }
             Err(RecvTimeoutError::Timeout) => {}
             // The handle was dropped: the window closed, so stop fetching.
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
     tracing::debug!("solar feed thread stopped");
+}
+
+/// Publish the pasted sets plus whatever the subscriptions have on disk.
+///
+/// No network: this is the startup and settings-change path, and it must stay
+/// usable with no connection at all.
+fn publish_custom(
+    shared: &Mutex<SolarData>,
+    cache: &Cache,
+    pasted_text: &str,
+    subs: &[sdroxide_types::TleSubscription],
+) {
+    let mut sats = satellites::parse_custom_tles(pasted_text);
+    for sub in subs {
+        sats.extend(crate::tlesub::cached(cache, sub));
+    }
+    let status = subs.iter().map(|s| crate::tlesub::cached_status(cache, s)).collect();
+    let mut d = shared.lock().unwrap_or_else(|e| e.into_inner());
+    d.sats_custom = dedup_by_norad(sats);
+    d.tle_subs = status;
+}
+
+/// Keep the first entry for each catalogue number.
+///
+/// Subscriptions overlap — the stations group and the cubesat group both carry
+/// plenty of the same satellites — and a duplicate would be a second marker
+/// drawn a few metres from the first. Pasted sets are put in first, so they win.
+fn dedup_by_norad(mut sats: Vec<Satellite>) -> Vec<Satellite> {
+    let mut seen = std::collections::HashSet::new();
+    sats.retain(|s| seen.insert(s.norad_id));
+    sats
 }
 
 fn load_cached(
@@ -481,7 +567,7 @@ fn parse(src: Source, bytes: &[u8], channel: SdoChannel, now: i64) -> Parsed {
 }
 
 /// Conditional GET. `Ok(None)` means 304 Not Modified.
-fn http_get(
+pub(crate) fn http_get(
     agent: &ureq::Agent,
     url: &str,
     validators: &Validators,

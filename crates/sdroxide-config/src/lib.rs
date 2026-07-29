@@ -313,6 +313,20 @@ pub fn save_sstv_messages(messages: &[String]) -> Result<(), ConfigError> {
     save_json("sstv_messages.json", &messages)
 }
 
+/// The operator's satellite additions: element sets pasted in by hand, and
+/// frequency entries that override or extend the built-in table.
+///
+/// A client-side file like `input.json`: it describes what this operator wants
+/// to track and where they have found the transponders, so it stays with the UI
+/// rather than with the engine.
+pub fn load_sat_config() -> sdroxide_types::SatConfig {
+    load_json("satellites.json")
+}
+
+pub fn save_sat_config(cfg: &sdroxide_types::SatConfig) -> Result<(), ConfigError> {
+    save_json("satellites.json", cfg)
+}
+
 /// Voice-keyer slot labels (one entry per slot). The recordings themselves are
 /// WAV files under [`voice_dir`]; this stores only what each slot is called.
 pub fn load_voice_names() -> Vec<String> {

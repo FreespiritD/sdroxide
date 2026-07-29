@@ -22,6 +22,7 @@ mod netcfg;
 mod radio;
 mod rifp;
 mod rigctld;
+mod satcfg;
 mod skimmer;
 mod spectrum;
 mod spot;
@@ -81,6 +82,10 @@ pub use rifp::{
     RifpSize, RifpStatus,
 };
 pub use rigctld::RigctldConfig;
+pub use satcfg::{
+    CELESTRAK_GROUPS, CustomTle, Passband, SatConfig, SatFreqs, SatLink, TleSubscription,
+    fmt_mhz as fmt_sat_mhz, parse_tle_block,
+};
 pub use skimmer::{SkimmerKind, SkimmerSettings, SkimmerSpot};
 pub use spectrum::{SpectrumConfig, SpectrumFrame};
 pub use spot::{Spot, SpotKind};

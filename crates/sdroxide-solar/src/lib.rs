@@ -30,6 +30,8 @@ pub mod satellites;
 pub mod satfreq;
 pub mod swpc;
 pub mod timefmt;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tlesub;
 pub mod vec3;
 
 pub use aurora::{AuroraOval, HemisphericPower, KpPoint};
@@ -45,4 +47,6 @@ pub use planets::{Moon, Planet, Surface};
 pub use satellites::{Pass, PassSearch, SatState, Satellite};
 pub use satfreq::{Passband, SatFreqs, SatLink};
 pub use swpc::ActiveRegion;
+#[cfg(not(target_arch = "wasm32"))]
+pub use tlesub::SubStatus;
 pub use vec3::{Basis, Vec3, vec3};

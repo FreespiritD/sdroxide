@@ -100,7 +100,7 @@ impl Source {
 #[cfg(not(target_arch = "wasm32"))]
 impl Source {
     /// Refresh cadence, seconds.
-    fn period(self) -> i64 {
+    pub(crate) fn period(self) -> i64 {
         match self {
             Source::Sun => 600, // browse images update every few minutes
             Source::Cme => 1200,
@@ -222,6 +222,14 @@ pub struct SolarData {
     /// own set. Iterate with [`SolarData::satellites`].
     pub sats_amateur: Vec<Satellite>,
     pub sats_geo: Vec<Satellite>,
+    /// Element sets the operator supplied themselves: pasted in, or fetched
+    /// from a subscribed listing. Never replaced by one of the built-in
+    /// sources — they are driven from the settings dialog.
+    pub sats_custom: Vec<Satellite>,
+    /// What each TLE subscription's last fetch did, in the order the settings
+    /// dialog holds them. Empty when nothing is subscribed.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub tle_subs: Vec<crate::tlesub::SubStatus>,
     /// The auroral oval. Shared by `Arc` for the same reason the solar image
     /// is: the renderer takes a handle, not a copy of the grid.
     pub aurora: Option<Arc<AuroraOval>>,
@@ -247,9 +255,19 @@ impl SolarData {
             || !self.regions.is_empty()
     }
 
-    /// Every tracked satellite, from both element sets.
+    /// Every tracked satellite, from all three element sets.
+    ///
+    /// The operator's own entries lead and shadow a fetched one for the same
+    /// catalogue number: pasting in a fresher TLE for a satellite that is
+    /// already in the amateur group has to replace it rather than put a second
+    /// marker a few kilometres away from the first.
     pub fn satellites(&self) -> impl Iterator<Item = &Satellite> {
-        self.sats_amateur.iter().chain(&self.sats_geo)
+        self.sats_custom.iter().chain(
+            self.sats_amateur
+                .iter()
+                .chain(&self.sats_geo)
+                .filter(|s| !self.sats_custom.iter().any(|c| c.norad_id == s.norad_id)),
+        )
     }
 
     /// The newest successful fetch across every source, for a single "data as

@@ -739,7 +739,13 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
                 }
             }
 
-            freq_table(ui, id, &cache.name);
+            // The operator's own entry wins over the built-in table: they have
+            // either corrected it or added a satellite it never knew about.
+            let (freqs, mine) = match st.sat_cfg.freqs_for(id) {
+                Some(f) => (Some(f), true),
+                None => (sdroxide_solar::satfreq::builtin_for(id), false),
+            };
+            freq_table(ui, freqs, mine, &cache.name);
         });
     if !open {
         st.selected_sat = None;
@@ -751,11 +757,16 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
 /// Knowing when a bird comes over is only half of working it; the other half is
 /// what to tune to, and that is a table an operator would otherwise have open
 /// in a browser next to the radio.
-fn freq_table(ui: &mut egui::Ui, norad_id: u64, tracked_name: &str) {
-    let Some(freqs) = sdroxide_solar::satfreq::builtin_for(norad_id) else {
+fn freq_table(
+    ui: &mut egui::Ui,
+    freqs: Option<&sdroxide_solar::SatFreqs>,
+    mine: bool,
+    tracked_name: &str,
+) {
+    let Some(freqs) = freqs.filter(|f| f.usable_links().next().is_some()) else {
         ui.add_space(6.0);
         ui.label(
-            RichText::new("No frequencies on file for this one — add them under Settings ▸ TLE.")
+            RichText::new("No frequencies on file for this one — add them in Settings ▸ TLE.")
                 .color(theme::LINE_LIT)
                 .size(10.0),
         );
@@ -765,11 +776,12 @@ fn freq_table(ui: &mut egui::Ui, norad_id: u64, tracked_name: &str) {
     ui.add_space(8.0);
     ui.separator();
     ui.add_space(4.0);
-    ui.label(RichText::new("FREQUENCIES").color(theme::CYAN_DIM).size(9.5).strong());
+    let heading = if mine { "FREQUENCIES  ·  YOURS" } else { "FREQUENCIES" };
+    ui.label(RichText::new(heading).color(theme::CYAN_DIM).size(9.5).strong());
     // The published designator can differ from what the element set calls it;
     // showing it means a table entry keyed to the wrong catalogue number is
     // visible rather than quietly presenting the wrong satellite's frequencies.
-    if !freqs.name.eq_ignore_ascii_case(tracked_name) {
+    if !freqs.name.trim().is_empty() && !freqs.name.eq_ignore_ascii_case(tracked_name) {
         ui.label(
             RichText::new(format!("published as {}", freqs.name)).color(theme::LINE_LIT).size(10.0),
         );

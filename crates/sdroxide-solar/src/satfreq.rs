@@ -10,163 +10,13 @@
 //! Frequencies move. Transponders get switched to a different mode, FM birds
 //! are put into schedule-only operation, and a bird that has been quiet for a
 //! year comes back on a different passband. Nothing here is authoritative
-//! against the satellite itself, which is why [`crate::satfreq`] is only half
-//! the story — the operator can add and correct entries of their own, and those
-//! win over anything in this file.
+//! against the satellite itself, which is why this table is only half the
+//! story: the operator can add and correct entries of their own in
+//! [`sdroxide_types::SatConfig`], and those win over anything in this file.
 
 use std::sync::OnceLock;
 
-use serde::{Deserialize, Serialize};
-
-/// A passband, or a single frequency when `lo == hi`.
-///
-/// Megahertz rather than hertz because that is how every published satellite
-/// frequency is written, and rounding a 10.489 GHz downlink into an integer
-/// number of hertz would invent precision the source never had.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Passband {
-    pub lo_mhz: f64,
-    pub hi_mhz: f64,
-}
-
-impl Passband {
-    pub const fn at(mhz: f64) -> Passband {
-        Passband { lo_mhz: mhz, hi_mhz: mhz }
-    }
-
-    pub const fn range(lo_mhz: f64, hi_mhz: f64) -> Passband {
-        Passband { lo_mhz, hi_mhz }
-    }
-
-    /// True for a single frequency rather than a transponder passband.
-    pub fn is_point(&self) -> bool {
-        (self.hi_mhz - self.lo_mhz).abs() < 1e-9
-    }
-
-    /// Passband width in kilohertz — zero for a single frequency.
-    pub fn width_khz(&self) -> f64 {
-        (self.hi_mhz - self.lo_mhz).abs() * 1000.0
-    }
-
-    /// Middle of the passband, which is where a transponder is normally netted.
-    pub fn centre_mhz(&self) -> f64 {
-        0.5 * (self.lo_mhz + self.hi_mhz)
-    }
-}
-
-impl std::fmt::Display for Passband {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_point() {
-            write!(f, "{}", fmt_mhz(self.lo_mhz))
-        } else {
-            write!(f, "{}–{}", fmt_mhz(self.lo_mhz), fmt_mhz(self.hi_mhz))
-        }
-    }
-}
-
-/// Format a frequency in MHz at the precision it was published to.
-///
-/// Most satellite frequencies land on a kilohertz; the NOAA APT downlinks are
-/// on a quarter of one. Printing everything to four decimals would put a
-/// meaningless trailing zero on almost every row.
-pub fn fmt_mhz(mhz: f64) -> String {
-    if (mhz * 1000.0 - (mhz * 1000.0).round()).abs() < 1e-6 {
-        format!("{mhz:.3}")
-    } else {
-        format!("{mhz:.4}")
-    }
-}
-
-/// One radio link on a satellite: a transponder, a repeater, a beacon or a
-/// telemetry downlink.
-///
-/// Both `uplink` and `downlink` are optional because plenty of links have only
-/// one: a CW beacon transmits and never listens, and there is no such thing as
-/// a satellite that listens and never transmits.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SatLink {
-    /// What the link is for — "V/U linear transponder", "FM voice", "APRS
-    /// digipeater", "CW beacon".
-    pub label: String,
-    /// Emission the link carries — "SSB/CW", "FM", "BPSK 1k2", "DVB-S2".
-    pub mode: String,
-    pub uplink: Option<Passband>,
-    pub downlink: Option<Passband>,
-    /// Anything an operator has to know before keying up: a CTCSS tone, an
-    /// inverting transponder, a duty schedule.
-    pub note: String,
-}
-
-impl Default for SatLink {
-    fn default() -> Self {
-        SatLink {
-            label: String::new(),
-            mode: String::new(),
-            uplink: None,
-            downlink: None,
-            note: String::new(),
-        }
-    }
-}
-
-impl SatLink {
-    /// A downlink-only link (beacon, telemetry, APT).
-    pub fn down(label: &str, mode: &str, down: Passband) -> SatLink {
-        SatLink {
-            label: label.into(),
-            mode: mode.into(),
-            downlink: Some(down),
-            ..Default::default()
-        }
-    }
-
-    /// A two-way link.
-    pub fn duplex(label: &str, mode: &str, up: Passband, down: Passband) -> SatLink {
-        SatLink {
-            label: label.into(),
-            mode: mode.into(),
-            uplink: Some(up),
-            downlink: Some(down),
-            ..Default::default()
-        }
-    }
-
-    pub fn note(mut self, note: &str) -> SatLink {
-        self.note = note.into();
-        self
-    }
-
-    /// True when neither direction has a frequency — an entry the operator
-    /// started and never filled in, which is not worth a row in the table.
-    pub fn is_empty(&self) -> bool {
-        self.uplink.is_none() && self.downlink.is_none()
-    }
-}
-
-/// Every published link for one satellite.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SatFreqs {
-    pub norad_id: u64,
-    /// The designator the frequencies were published under. Shown when it
-    /// differs from the name the element set carries, so a table entry that has
-    /// drifted onto the wrong catalogue number is visible rather than silent.
-    pub name: String,
-    pub links: Vec<SatLink>,
-}
-
-impl Default for SatFreqs {
-    fn default() -> Self {
-        SatFreqs { norad_id: 0, name: String::new(), links: Vec::new() }
-    }
-}
-
-impl SatFreqs {
-    fn new(norad_id: u64, name: &str, links: Vec<SatLink>) -> SatFreqs {
-        SatFreqs { norad_id, name: name.into(), links }
-    }
-}
+pub use sdroxide_types::{Passband, SatFreqs, SatLink, fmt_sat_mhz as fmt_mhz};
 
 /// The built-in table, built once and shared.
 pub fn builtin() -> &'static [SatFreqs] {
@@ -460,23 +310,5 @@ mod tests {
         for (id, name) in crate::satellites::POPULAR {
             assert!(builtin_for(*id).is_some(), "{name} ({id}) has no frequencies");
         }
-    }
-
-    #[test]
-    fn frequencies_print_at_the_precision_they_were_published_to() {
-        assert_eq!(fmt_mhz(145.8), "145.800");
-        assert_eq!(fmt_mhz(137.9125), "137.9125");
-        assert_eq!(fmt_mhz(10489.55), "10489.550");
-        assert_eq!(Passband::at(436.795).to_string(), "436.795");
-        assert_eq!(Passband::range(145.95, 145.97).to_string(), "145.950–145.970");
-        assert!((Passband::range(145.95, 145.97).centre_mhz() - 145.96).abs() < 1e-9);
-        assert!(Passband::at(1.0).is_point());
-        assert!(!Passband::range(1.0, 2.0).is_point());
-    }
-
-    #[test]
-    fn an_unfilled_link_is_empty() {
-        assert!(SatLink::default().is_empty());
-        assert!(!SatLink::down("b", "CW", Passband::at(29.5)).is_empty());
     }
 }

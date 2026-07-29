@@ -42,6 +42,39 @@ enum SettingsTab {
     FreeDv,
     Uploads,
     Servers,
+    Tle,
+}
+
+/// Transient state of the TLE tab — what is in the paste box, which rows are
+/// unfolded. Not persisted: none of it is a setting, it is where the operator
+/// happens to be in the dialog.
+#[derive(Default)]
+struct SatEditState {
+    /// The "paste element sets here" box.
+    paste: String,
+    /// Catalogue number and name for a new frequency entry.
+    new_freq_id: String,
+    new_freq_name: String,
+    /// Index of the pasted element set whose two lines are shown for editing.
+    open_tle: Option<usize>,
+    /// Index of the frequency entry whose links are shown for editing.
+    open_freq: Option<usize>,
+    /// What the last add attempt did, good or bad, so a paste that yielded
+    /// nothing says so instead of appearing to have been ignored.
+    note: String,
+}
+
+/// One subscription's fetch state, in a form both targets have.
+///
+/// The native type lives in `sdroxide-solar`, which the browser build does not
+/// compile the fetching half of; copying the three fields the dialog shows
+/// keeps the tab itself target-agnostic.
+#[derive(Clone, Default)]
+struct SubStatusView {
+    url: String,
+    fetched_unix: i64,
+    count: usize,
+    error: Option<String>,
 }
 
 /// Everything the settings dialog can change, collected in one place.
@@ -84,6 +117,15 @@ struct SettingsIo<'a> {
     key_capture: &'a mut Option<usize>,
     midi_learn: &'a mut Option<crate::input::MidiLearn>,
     midi_rescan: &'a mut bool,
+    /// The operator's satellite additions, and the transient state of the
+    /// dialog that edits them. Persisted on change, like the input bindings:
+    /// there is no APPLY step to hang it off.
+    sat_edit: &'a mut sdroxide_types::SatConfig,
+    sat_ui: &'a mut SatEditState,
+    sat_subs: &'a [SubStatusView],
+    /// Fetch every subscription now. Blocking, so it is done after the window
+    /// closure the way the HPSDR scan is.
+    sat_sub_refresh: &'a mut bool,
     tab: &'a mut SettingsTab,
 }
 
@@ -410,6 +452,16 @@ pub struct SdroxideApp {
     /// Solar-system 3D view, shown in its own OS window (native-only).
     #[cfg(not(target_arch = "wasm32"))]
     solar: crate::solar3d::Solar3d,
+    /// The operator's satellite additions: element sets they pasted in or
+    /// subscribed to, and their frequency corrections. Shared by `Arc` because
+    /// the solar window's render closure takes a handle it outlives any borrow
+    /// of; replaced wholesale on every edit rather than mutated in place.
+    sat_cfg: std::sync::Arc<sdroxide_types::SatConfig>,
+    /// The settings dialog's working copy, its transient state, and what each
+    /// subscription's last fetch did. All seeded when the dialog opens.
+    sat_cfg_edit: sdroxide_types::SatConfig,
+    sat_ui: SatEditState,
+    sat_sub_status: Vec<SubStatusView>,
 }
 
 /// Editable text fields for a manual logbook entry (new or edit). Kept as
@@ -654,6 +706,10 @@ impl SdroxideApp {
             // sessions never open this window.
             #[cfg(not(target_arch = "wasm32"))]
             solar: crate::solar3d::Solar3d::new(cc.wgpu_render_state.clone(), solar3d_view),
+            sat_cfg: std::sync::Arc::new(load_sat_config()),
+            sat_cfg_edit: Default::default(),
+            sat_ui: Default::default(),
+            sat_sub_status: Vec::new(),
         }
     }
 
@@ -5293,6 +5349,12 @@ impl SdroxideApp {
                 self.wsjtx_edit = cfg;
                 self.wsjtx_seeded = true;
             }
+            // The satellite config is the client's own, so it comes from the
+            // live copy rather than from the engine. Subscription status is
+            // read from the disk cache, which is the only source that has an
+            // answer when the solar window has never been opened.
+            self.sat_cfg_edit = (*self.sat_cfg).clone();
+            self.refresh_sat_sub_status();
             self.audio_devices_queried = true;
         }
         // Edits collected here and applied after the window closure, which
@@ -5320,6 +5382,10 @@ impl SdroxideApp {
         let mut key_capture = self.input.key_capture;
         let mut midi_learn = self.input.midi_learn;
         let mut midi_rescan = false;
+        let mut sat_edit = self.sat_cfg_edit.clone();
+        let mut sat_ui = std::mem::take(&mut self.sat_ui);
+        let mut sat_sub_refresh = false;
+        let sat_subs = self.sat_sub_views();
 
         // The concrete interface types the user chooses between. SoapySDR only
         // appears when compiled in; there is no auto-detect (an unavailable
@@ -5376,6 +5442,10 @@ impl SdroxideApp {
                         key_capture: &mut key_capture,
                         midi_learn: &mut midi_learn,
                         midi_rescan: &mut midi_rescan,
+                        sat_edit: &mut sat_edit,
+                        sat_ui: &mut sat_ui,
+                        sat_subs: &sat_subs,
+                        sat_sub_refresh: &mut sat_sub_refresh,
                         tab: &mut tab,
                     },
                 );
@@ -5428,6 +5498,22 @@ impl SdroxideApp {
         if wsjtx_apply {
             // The engine persists wsjtx.json when it opens the socket.
             cmds.push(Command::SetWsjtxConfig(self.wsjtx_edit.clone()));
+        }
+        self.sat_ui = sat_ui;
+        if sat_edit != self.sat_cfg_edit {
+            // Written straight out, like the input bindings: there is no APPLY
+            // step here, and a satellite the operator cannot see saved is one
+            // they will add again after the next restart. The solar window
+            // picks the new `Arc` up on its next frame.
+            self.sat_cfg_edit = sat_edit;
+            self.sat_cfg_edit.prune();
+            self.sat_cfg = std::sync::Arc::new(self.sat_cfg_edit.clone());
+            persist_sat_config(&self.sat_cfg_edit);
+        }
+        if sat_sub_refresh {
+            // Blocking: one HTTPS round trip per subscription. After the window
+            // closure, the way the HPSDR scan is.
+            self.refresh_sat_subs_now();
         }
         if let Some((output, name)) = audio_pick {
             self.ctrl.set_audio_device(output, name);
@@ -5498,6 +5584,7 @@ impl SdroxideApp {
                 (SettingsTab::FreeDv, "FreeDV"),
                 (SettingsTab::Uploads, "Uploads"),
                 (SettingsTab::Servers, "Servers"),
+                (SettingsTab::Tle, "TLE"),
             ] {
                 if crate::chrome::chip(ui, *io.tab == t, label).clicked() {
                     *io.tab = t;
@@ -5833,8 +5920,63 @@ impl SdroxideApp {
                 ui.add_space(8.0);
                 settings_wsjtx_tab(ui, io.wsjtx_edit, self.wsjtx_seeded, io.wsjtx_apply);
             }
+            SettingsTab::Tle => settings_tle_tab(ui, io),
         }
     }
+
+    /// Subscription status for the settings dialog.
+    ///
+    /// The live feed is preferred — it has the result of the fetch it just did
+    /// — but it only exists while the solar window is open, so the disk cache
+    /// answers for the far more common case of the dialog being opened with the
+    /// window shut.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn refresh_sat_sub_status(&mut self) {
+        let live = self.solar.tle_sub_status();
+        let subs: Vec<_> = self.sat_cfg.subs.clone();
+        self.sat_sub_status =
+            if live.is_empty() { sdroxide_solar::tlesub::status_all(&subs) } else { live }
+                .into_iter()
+                .map(|s| SubStatusView {
+                    url: s.url,
+                    fetched_unix: s.fetched_unix,
+                    count: s.count,
+                    error: s.error,
+                })
+                .collect();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn refresh_sat_sub_status(&mut self) {}
+
+    fn sat_sub_views(&self) -> Vec<SubStatusView> {
+        self.sat_sub_status.clone()
+    }
+
+    /// Fetch every enabled subscription now, from the settings dialog's UPDATE
+    /// NOW button. Blocking — up to one HTTPS round trip per subscription.
+    ///
+    /// The solar window's feed shares the same disk cache, so a listing fetched
+    /// here is what it serves next time it looks, without a second request.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn refresh_sat_subs_now(&mut self) {
+        let subs: Vec<_> = self.sat_cfg_edit.subs.clone();
+        let done = sdroxide_solar::tlesub::refresh_all(&subs);
+        let failed = done.iter().filter(|s| s.error.is_some()).count();
+        let total: usize = done.iter().map(|s| s.count).sum();
+        self.sat_ui.note = match (done.len(), failed) {
+            (0, _) => "No enabled subscriptions to update.".to_string(),
+            (n, 0) => format!("Updated {n} subscription(s): {total} satellites."),
+            (n, f) => format!("Updated {} of {n}; {f} failed — see the rows above.", n - f),
+        };
+        self.refresh_sat_sub_status();
+        // The window's feed is told to re-read the cache rather than being left
+        // on what it loaded at open time.
+        self.solar.reload_tle_subs();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn refresh_sat_subs_now(&mut self) {}
 
     /// The user's own speakers / microphone (applied live).
     fn settings_user_audio(
@@ -7216,6 +7358,518 @@ fn wheel_action_combo(ui: &mut egui::Ui, id: &str, act: &mut sdroxide_types::Whe
 /// The built-in Hamlib rigctld server: the control surface every "NET rigctl"
 /// client speaks.
 /// WSJT-X UDP broadcast: what the logging ecosystem listens for.
+/// The TLE tab: which satellites the tracker follows, and what they are on.
+///
+/// Three sections, in the order an operator gets to them: subscriptions (the
+/// answer for anything they mean to keep tracking, because a TLE goes stale in
+/// days), element sets pasted in by hand (the answer for a one-off), and the
+/// frequency table the pass window shows.
+fn settings_tle_tab(ui: &mut egui::Ui, io: &mut SettingsIo) {
+    use crate::theme;
+
+    ui.label(
+        RichText::new("Satellites: element sets and frequencies")
+            .size(14.0)
+            .strong()
+            .color(theme::CYAN),
+    );
+    ui.add_space(4.0);
+    if cfg!(target_arch = "wasm32") {
+        ui.label(
+            RichText::new(
+                "The tracker runs in the native app; this tab configures it there. The solar \
+                 view in the browser is fed by the server's relay.",
+            )
+            .weak(),
+        );
+        return;
+    }
+    ui.label(
+        RichText::new(
+            "The tracker already fetches CelesTrak's amateur group on its own. This is for \
+             everything else: the NOAA weather birds, a cubesat too new to be in the group, or \
+             a fresher element set than the one that arrived.",
+        )
+        .weak(),
+    );
+    if !io.sat_ui.note.is_empty() {
+        ui.add_space(4.0);
+        ui.label(RichText::new(&io.sat_ui.note).color(theme::YELLOW).size(11.0));
+    }
+
+    ui.add_space(10.0);
+    settings_tle_subscriptions(ui, io);
+    ui.add_space(12.0);
+    ui.separator();
+    ui.add_space(8.0);
+    settings_tle_pasted(ui, io);
+    ui.add_space(12.0);
+    ui.separator();
+    ui.add_space(8.0);
+    settings_tle_freqs(ui, io);
+}
+
+/// Subscribed element-set listings, and the one-click CelesTrak groups.
+fn settings_tle_subscriptions(ui: &mut egui::Ui, io: &mut SettingsIo) {
+    use crate::theme;
+
+    ui.label(RichText::new("Subscriptions").strong());
+    ui.label(
+        RichText::new(
+            "Listings fetched and kept current, on the same six-hourly cadence as the amateur \
+             set. Refreshed while the solar window is open, and by UPDATE NOW here.",
+        )
+        .weak()
+        .size(11.0),
+    );
+    ui.add_space(6.0);
+
+    let mut remove = None;
+    for (i, sub) in io.sat_edit.subs.iter_mut().enumerate() {
+        ui.push_id(("tle-sub", i), |ui| {
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut sub.enabled, "").on_hover_text("Fetch and track this listing");
+                ui.add(
+                    egui::TextEdit::singleline(&mut sub.name)
+                        .desired_width(120.0)
+                        .hint_text("name"),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut sub.url)
+                        .desired_width(300.0)
+                        .hint_text("https://…"),
+                );
+                if ui.button("✕").on_hover_text("Remove this subscription").clicked() {
+                    remove = Some(i);
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.add_space(24.0);
+                ui.checkbox(&mut sub.orbits, "Orbits").on_hover_text(
+                    "Draw an orbit ring and a label for every satellite in this listing. Leave \
+                     off for a whole group — ninety rings at once is unreadable.",
+                );
+                let mut only = sub.only_text();
+                let resp = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut only)
+                            .desired_width(180.0)
+                            .hint_text("all satellites"),
+                    )
+                    .on_hover_text(
+                        "Catalogue numbers to keep, comma separated. Empty tracks everything the \
+                         listing carries.",
+                    );
+                if resp.changed() {
+                    sub.set_only_text(&only);
+                }
+
+                // Status: what the last fetch actually did. Matched by URL
+                // rather than by position — the two lists are edited apart.
+                let st = io.sat_subs.iter().find(|s| s.url.trim() == sub.url.trim());
+                let (text, color) = match (sub.problem(), st) {
+                    (Some(p), _) => (p.to_string(), theme::PINK),
+                    (None, None) => ("not fetched yet".to_string(), theme::LINE_LIT),
+                    (None, Some(s)) => match &s.error {
+                        Some(e) => (e.clone(), theme::PINK),
+                        None if s.fetched_unix == 0 => {
+                            ("not fetched yet".to_string(), theme::LINE_LIT)
+                        }
+                        None => (
+                            format!(
+                                "{} satellites · {} old",
+                                s.count,
+                                sdroxide_solar::timefmt::age(now_unix() - s.fetched_unix)
+                            ),
+                            theme::GREEN,
+                        ),
+                    },
+                };
+                ui.label(RichText::new(text).color(color).size(10.5));
+            });
+        });
+        ui.add_space(2.0);
+    }
+    if let Some(i) = remove {
+        io.sat_edit.subs.remove(i);
+    }
+
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("+ Subscription").clicked() {
+            io.sat_edit.subs.push(sdroxide_types::TleSubscription::new("New", ""));
+        }
+        if crate::chrome::chip_accent(
+            ui,
+            false,
+            RichText::new(" UPDATE NOW ").strong(),
+            theme::GREEN,
+            theme::INK_ON_CYAN,
+        )
+        .on_hover_text("Fetch every enabled subscription now")
+        .clicked()
+        {
+            *io.sat_sub_refresh = true;
+        }
+    });
+
+    ui.add_space(6.0);
+    ui.label(RichText::new("CelesTrak groups").color(theme::CYAN_DIM).size(10.0).strong());
+    ui.horizontal_wrapped(|ui| {
+        for (name, url, hint) in sdroxide_types::CELESTRAK_GROUPS {
+            let have = io.sat_edit.has_sub(url);
+            if crate::chrome::chip(ui, have, *name).on_hover_text(*hint).clicked() && !have {
+                io.sat_edit.subs.push(sdroxide_types::TleSubscription::new(name, url));
+                io.sat_ui.note = format!("Subscribed to {name}. Press UPDATE NOW to fetch it.");
+            }
+        }
+    });
+}
+
+/// Element sets pasted in by hand.
+fn settings_tle_pasted(ui: &mut egui::Ui, io: &mut SettingsIo) {
+    use crate::theme;
+
+    ui.label(RichText::new("Pasted element sets").strong());
+    ui.label(
+        RichText::new(
+            "For a one-off. These do not update themselves, and SGP4 stops propagating an \
+             element set once it is a fortnight past its epoch — subscribe instead for anything \
+             you mean to keep.",
+        )
+        .weak()
+        .size(11.0),
+    );
+    ui.add_space(6.0);
+
+    let now = now_unix();
+    let mut remove = None;
+    for (i, t) in io.sat_edit.tles.iter_mut().enumerate() {
+        ui.push_id(("tle-set", i), |ui| {
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut t.enabled, "").on_hover_text("Track this one");
+                ui.add(
+                    egui::TextEdit::singleline(&mut t.name).desired_width(180.0).hint_text("name"),
+                );
+                match t.problem() {
+                    Some(p) => {
+                        ui.label(RichText::new(p).color(theme::PINK).size(10.5));
+                    }
+                    None => {
+                        let age = tle_epoch_age(t, now);
+                        let (text, color) = match age {
+                            // Past where SGP4 is worth anything, which is the
+                            // whole reason a paste is a stopgap.
+                            Some(a) if a > 14 * 86_400 => (
+                                format!(
+                                    "NORAD {} · {} old — too stale to propagate",
+                                    t.norad_id().unwrap_or(0),
+                                    sdroxide_solar::timefmt::age(a)
+                                ),
+                                theme::PINK,
+                            ),
+                            Some(a) if a > 3 * 86_400 => (
+                                format!(
+                                    "NORAD {} · {} old",
+                                    t.norad_id().unwrap_or(0),
+                                    sdroxide_solar::timefmt::age(a)
+                                ),
+                                theme::YELLOW,
+                            ),
+                            Some(a) => (
+                                format!(
+                                    "NORAD {} · {} old",
+                                    t.norad_id().unwrap_or(0),
+                                    sdroxide_solar::timefmt::age(a)
+                                ),
+                                theme::GREEN,
+                            ),
+                            None => {
+                                (format!("NORAD {}", t.norad_id().unwrap_or(0)), theme::LINE_LIT)
+                            }
+                        };
+                        ui.label(RichText::new(text).color(color).size(10.5));
+                    }
+                }
+                if ui.button("✎").on_hover_text("Show the two element lines").clicked() {
+                    io.sat_ui.open_tle = (io.sat_ui.open_tle != Some(i)).then_some(i);
+                }
+                if ui.button("✕").on_hover_text("Remove").clicked() {
+                    remove = Some(i);
+                }
+            });
+            if io.sat_ui.open_tle == Some(i) {
+                // Monospace: the format is column-addressed, so a proportional
+                // font makes a misaligned paste impossible to see.
+                for line in [&mut t.line1, &mut t.line2] {
+                    ui.add(
+                        egui::TextEdit::singleline(line)
+                            .desired_width(560.0)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                }
+            }
+        });
+    }
+    if let Some(i) = remove {
+        io.sat_edit.tles.remove(i);
+        io.sat_ui.open_tle = None;
+    }
+
+    ui.add_space(6.0);
+    ui.add(
+        egui::TextEdit::multiline(&mut io.sat_ui.paste)
+            .desired_rows(3)
+            .desired_width(600.0)
+            .font(egui::TextStyle::Monospace)
+            .hint_text("Paste two- or three-line element sets here"),
+    );
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        if ui.button("+ Add pasted").clicked() {
+            let found = sdroxide_types::parse_tle_block(&io.sat_ui.paste);
+            io.sat_ui.note =
+                match found.len() {
+                    0 => "Nothing in the paste box looked like an element set.".to_string(),
+                    n => {
+                        // Replace rather than duplicate: pasting a fresher set for
+                        // a satellite already listed is the common case, and a
+                        // second entry for the same catalogue number would leave
+                        // whichever came first winning at random.
+                        let mut replaced = 0;
+                        for t in found {
+                            match io.sat_edit.tles.iter().position(|e| {
+                                e.norad_id().is_some() && e.norad_id() == t.norad_id()
+                            }) {
+                                Some(k) => {
+                                    // Keep the operator's own name and their
+                                    // enabled/disabled choice; take the elements.
+                                    io.sat_edit.tles[k].line1 = t.line1;
+                                    io.sat_edit.tles[k].line2 = t.line2;
+                                    replaced += 1;
+                                }
+                                None => io.sat_edit.tles.push(t),
+                            }
+                        }
+                        io.sat_ui.paste.clear();
+                        match replaced {
+                            0 => format!("Added {n} element set(s)."),
+                            r => format!("Added {} and refreshed {r} element set(s).", n - r),
+                        }
+                    }
+                };
+        }
+        if ui.button("Clear box").clicked() {
+            io.sat_ui.paste.clear();
+        }
+    });
+}
+
+/// Age of a pasted element set, in seconds, from the epoch in columns 19–32 of
+/// line 1.
+///
+/// Its own parse rather than SGP4's, because this has to work on an entry the
+/// propagator would reject — the whole point is to say *why* it is being
+/// rejected.
+fn tle_epoch_age(t: &sdroxide_types::CustomTle, now_unix: i64) -> Option<i64> {
+    let l1 = t.line1.as_bytes();
+    if l1.len() < 32 {
+        return None;
+    }
+    let field = std::str::from_utf8(&l1[18..32]).ok()?.trim();
+    let yy: i64 = field.get(..2)?.parse().ok()?;
+    let doy: f64 = field.get(2..)?.parse().ok()?;
+    // Two-digit years: 57–99 are 1957 onwards, 00–56 are 2000 onwards. That is
+    // the convention the format itself carries.
+    let year = if yy < 57 { 2000 + yy } else { 1900 + yy };
+    let jan1 = sdroxide_types::ymd_hms_to_unix(year, 1, 1, 0, 0, 0);
+    Some(now_unix - (jan1 + ((doy - 1.0) * 86_400.0) as i64))
+}
+
+/// The frequency table the pass window shows: the operator's entries, which
+/// override the built-in one satellite for satellite.
+fn settings_tle_freqs(ui: &mut egui::Ui, io: &mut SettingsIo) {
+    use crate::theme;
+
+    ui.label(RichText::new("Frequencies").strong());
+    ui.label(
+        RichText::new(
+            "Shown under the pass table in the solar window. An entry here replaces the \
+             built-in one for that catalogue number outright, so start from a copy of it unless \
+             you mean to drop the rest.",
+        )
+        .weak()
+        .size(11.0),
+    );
+    ui.add_space(6.0);
+
+    let mut remove = None;
+    for (i, f) in io.sat_edit.freqs.iter_mut().enumerate() {
+        ui.push_id(("sat-freq", i), |ui| {
+            ui.horizontal(|ui| {
+                let open = io.sat_ui.open_freq == Some(i);
+                if ui.button(if open { "▼" } else { "▶" }).clicked() {
+                    io.sat_ui.open_freq = (!open).then_some(i);
+                }
+                ui.label(RichText::new(format!("NORAD {}", f.norad_id)).color(theme::CYAN_DIM));
+                ui.add(
+                    egui::TextEdit::singleline(&mut f.name).desired_width(180.0).hint_text("name"),
+                );
+                ui.label(
+                    RichText::new(format!("{} link(s)", f.links.len()))
+                        .color(theme::LINE_LIT)
+                        .size(10.5),
+                );
+                if ui.button("✕").on_hover_text("Remove this satellite's entry").clicked() {
+                    remove = Some(i);
+                }
+            });
+            if io.sat_ui.open_freq != Some(i) {
+                return;
+            }
+            let mut drop_link = None;
+            egui::Grid::new("sat-links").num_columns(6).spacing([8.0, 4.0]).show(ui, |ui| {
+                for h in ["LINK", "DOWNLINK", "UPLINK", "MODE", "NOTE", ""] {
+                    ui.label(RichText::new(h).color(theme::CYAN_DIM).size(9.5).strong());
+                }
+                ui.end_row();
+                for (k, l) in f.links.iter_mut().enumerate() {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut l.label)
+                            .desired_width(120.0)
+                            .hint_text("FM repeater"),
+                    );
+                    freq_box(ui, (k, "down"), &mut l.downlink, "145.800");
+                    freq_box(ui, (k, "up"), &mut l.uplink, "435.250");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut l.mode).desired_width(90.0).hint_text("FM"),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut l.note)
+                            .desired_width(180.0)
+                            .hint_text("CTCSS 67.0 Hz"),
+                    );
+                    if ui.button("✕").clicked() {
+                        drop_link = Some(k);
+                    }
+                    ui.end_row();
+                }
+            });
+            if let Some(k) = drop_link {
+                f.links.remove(k);
+            }
+            ui.horizontal(|ui| {
+                if ui.button("+ Link").clicked() {
+                    f.links.push(Default::default());
+                }
+                // The built-in row is almost always what you want to start
+                // from: correcting one frequency should not mean retyping the
+                // beacon, the telemetry and the transponder as well.
+                if let Some(b) = sdroxide_solar::satfreq::builtin_for(f.norad_id) {
+                    if ui
+                        .button("Copy built-in")
+                        .on_hover_text(format!(
+                            "Replace these links with the built-in ones for {}",
+                            b.name
+                        ))
+                        .clicked()
+                    {
+                        f.links = b.links.clone();
+                        if f.name.trim().is_empty() {
+                            f.name = b.name.clone();
+                        }
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(
+                    "A frequency is either one number (145.800) or a transponder passband \
+                     written 145.950-145.970. Leave a direction blank for a beacon.",
+                )
+                .weak()
+                .size(10.0),
+            );
+        });
+        ui.add_space(2.0);
+    }
+    if let Some(i) = remove {
+        io.sat_edit.freqs.remove(i);
+        io.sat_ui.open_freq = None;
+    }
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut io.sat_ui.new_freq_id)
+                .desired_width(80.0)
+                .hint_text("NORAD"),
+        );
+        ui.add(
+            egui::TextEdit::singleline(&mut io.sat_ui.new_freq_name)
+                .desired_width(160.0)
+                .hint_text("name"),
+        );
+        if ui.button("+ Satellite").clicked() {
+            match io.sat_ui.new_freq_id.trim().parse::<u64>() {
+                Ok(id) if id > 0 => {
+                    let name = io.sat_ui.new_freq_name.trim().to_string();
+                    let existed = io.sat_edit.freqs_for(id).is_some();
+                    let entry = io.sat_edit.freqs_for_mut(id, &name);
+                    // Seed from the built-in table when there is one: an entry
+                    // that starts empty shadows it, which reads as the
+                    // frequencies having been deleted.
+                    if !existed {
+                        if let Some(b) = sdroxide_solar::satfreq::builtin_for(id) {
+                            entry.links = b.links.clone();
+                            if entry.name.trim().is_empty() {
+                                entry.name = b.name.clone();
+                            }
+                        } else {
+                            entry.links.push(Default::default());
+                        }
+                    }
+                    io.sat_ui.open_freq = io.sat_edit.freqs.iter().position(|f| f.norad_id == id);
+                    io.sat_ui.new_freq_id.clear();
+                    io.sat_ui.new_freq_name.clear();
+                    io.sat_ui.note.clear();
+                }
+                _ => {
+                    io.sat_ui.note =
+                        "A frequency entry needs the satellite's NORAD catalogue number."
+                            .to_string()
+                }
+            }
+        }
+    });
+}
+
+/// A frequency box that edits an optional passband in place.
+///
+/// Kept as text only while it is being typed into: parsing on every keystroke
+/// would fight a half-typed "145." by turning it into 145.000 under the cursor.
+fn freq_box(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    band: &mut Option<sdroxide_types::Passband>,
+    hint: &str,
+) {
+    let id = ui.id().with(("freqbox", salt));
+    let mut text = ui
+        .data_mut(|d| d.get_temp::<String>(id))
+        .unwrap_or_else(|| band.map(|b| b.to_string()).unwrap_or_default());
+    let resp = ui.add(egui::TextEdit::singleline(&mut text).desired_width(110.0).hint_text(hint));
+    if resp.changed() {
+        *band = sdroxide_types::Passband::parse(&text);
+        ui.data_mut(|d| d.insert_temp(id, text));
+    } else if resp.lost_focus() {
+        // Drop the in-progress text so the box re-derives from what was
+        // actually stored — a half-typed "145." must not keep showing as if it
+        // were a frequency the table holds.
+        ui.data_mut(|d| d.remove_temp::<String>(id));
+    }
+}
+
 fn settings_wsjtx_tab(
     ui: &mut egui::Ui,
     cfg: &mut sdroxide_types::WsjtxConfig,
@@ -7942,7 +8596,7 @@ impl eframe::App for SdroxideApp {
             // Only while the window is open: walking the whole logbook is not
             // free, and the closed window has nothing to paint it on.
             let awards = if self.solar.open { self.award_heat() } else { Default::default() };
-            self.solar.viewport(&ctx, &grid, traffic, awards);
+            self.solar.viewport(&ctx, &grid, traffic, awards, std::sync::Arc::clone(&self.sat_cfg));
             self.view.solar3d = self.solar.persisted();
         }
 
@@ -8049,6 +8703,27 @@ fn persist_ui_settings(ui: &sdroxide_types::UiSettings) {
 fn persist_ui_settings(_ui: &sdroxide_types::UiSettings) {
     // Written by eframe's periodic `save()` into localStorage.
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_sat_config() -> sdroxide_types::SatConfig {
+    sdroxide_config::load_sat_config()
+}
+/// The browser tab has no satellite tracker of its own — the solar view there
+/// is fed by the server's relay — so there is nothing to configure and nothing
+/// to load.
+#[cfg(target_arch = "wasm32")]
+fn load_sat_config() -> sdroxide_types::SatConfig {
+    Default::default()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn persist_sat_config(cfg: &sdroxide_types::SatConfig) {
+    if let Err(e) = sdroxide_config::save_sat_config(cfg) {
+        eprintln!("failed to save the satellite config: {e}");
+    }
+}
+#[cfg(target_arch = "wasm32")]
+fn persist_sat_config(_cfg: &sdroxide_types::SatConfig) {}
 
 use crate::time::{now_unix, now_unix_f64};
 
