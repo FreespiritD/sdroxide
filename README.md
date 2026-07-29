@@ -1,20 +1,25 @@
-# sdroxide
+# SDR Oxide
 
 A PowerSDR/Thetis-style software-defined-radio transceiver client in Rust, with
 pluggable radio backends (**SoapySDR**, **OpenHPSDR**, **TCI**, and **CAT**), an
 [egui](https://github.com/emilk/egui) GUI, and a cyberpunk theme. It runs as a **native desktop application** and, from the same
 binary, as a **server that streams the same UI to a web browser** over
-WebSocket. It includes an integrated, persistent **logbook**, full **FT8/FT4**
-digital-mode operation, and **built-in TCI and Hamlib rigctld servers** so
-third-party programs like WSJT-X can use it as their radio.
+WebSocket. It includes an integrated, persistent **logbook**, many digital modes like **FT8/FT4**
+built-in, and **TCI and Hamlib rigctld servers** so third-party programs like WSJT-X can use it as their radio.
+
+<hr/>
 
 <img width="1496" height="933" alt="image" src="https://github.com/user-attachments/assets/9d88118c-0efe-45c5-9918-8ee2bb91b700" />
 
-<img width="1496" height="933" alt="image" src="https://github.com/user-attachments/assets/902a73ff-c8bf-43cd-9fc3-884d40ce4b04" />
+<hr/>
 
 <img width="1682" height="1212" alt="image" src="https://github.com/user-attachments/assets/aa08f5d3-ec62-4d91-9dd0-13bde1b0ae43" />
 
+<hr/>
 
+<img width="1496" height="933" alt="image" src="https://github.com/user-attachments/assets/902a73ff-c8bf-43cd-9fc3-884d40ce4b04" />
+
+<hr/>
 
 > ## [User Manual](docs/USER_MANUAL.md)
 
