@@ -45,6 +45,10 @@ pub struct ViewState {
     /// Fraction of the SSTV receive side given to the RECEIVED gallery; the rest
     /// is the LIVE image. User-draggable.
     pub sstv_gallery_fraction: f32,
+    /// Fraction of the WEFAX panel width given to the SAVED gallery; the rest is
+    /// the chart itself. User-draggable.
+    #[serde(default = "wefax_gallery_default")]
+    pub wefax_gallery_fraction: f32,
     /// Which S-meter face is shown — needle (the default), bar or trace.
     /// Cycled by clicking the meter. Replaces an older `smeter_analog` bool,
     /// which a stored blob may still carry; serde drops it and everyone lands
@@ -223,6 +227,7 @@ impl Default for ViewState {
             digi_map_fraction: 0.6,
             sstv_tx_fraction: 0.38,
             sstv_gallery_fraction: 0.4,
+            wefax_gallery_fraction: wefax_gallery_default(),
             smeter_style: SmeterStyle::default(),
             hell: HellView::default(),
             solar3d: Solar3dView::default(),
@@ -278,4 +283,10 @@ impl ViewState {
 /// Default for [`ViewState::js8_split_fraction`].
 fn js8_split_default() -> f32 {
     0.46
+}
+
+/// Default for [`ViewState::wefax_gallery_fraction`] — the fixed width the
+/// gallery had before the divider was draggable.
+fn wefax_gallery_default() -> f32 {
+    0.18
 }

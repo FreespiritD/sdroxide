@@ -2563,27 +2563,11 @@ impl SdroxideApp {
                 },
             );
             // Draggable vertical divider between the decode table and the QSO area.
-            let (hrect, hresp) = ui
-                .allocate_exact_size(egui::vec2(handle_w, avail.y), egui::Sense::click_and_drag());
-            if hresp.hovered() || hresp.dragged() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-            }
+            let hresp = crate::chrome::split_handle(ui, egui::vec2(handle_w, avail.y), None);
             if hresp.dragged() {
                 let d = hresp.drag_delta().x / avail.x.max(1.0);
                 self.view.digi_split_fraction =
                     (self.view.digi_split_fraction + d).clamp(0.28, 0.72);
-            }
-            {
-                let p = ui.painter_at(hrect);
-                let hot = hresp.hovered() || hresp.dragged();
-                let col = if hot { crate::theme::CYAN } else { Color32::from_gray(70) };
-                let (cx, cy) = (hrect.center().x, hrect.center().y);
-                for dy in [-16.0f32, 0.0, 16.0] {
-                    p.line_segment(
-                        [egui::pos2(cx, cy + dy - 6.0), egui::pos2(cx, cy + dy + 6.0)],
-                        egui::Stroke::new(2.0, col),
-                    );
-                }
             }
             ui.vertical(|ui| {
                 self.qso_area(ui, cmds);
@@ -3350,29 +3334,15 @@ impl SdroxideApp {
                 map_budget,
             );
             // Draggable border between the map and the QSO form below it.
-            let (hrect, hresp) = ui.allocate_exact_size(
+            let hresp = crate::chrome::split_handle(
+                ui,
                 egui::vec2(ui.available_width(), map_handle_h),
-                egui::Sense::click_and_drag(),
+                None,
             );
-            if hresp.hovered() || hresp.dragged() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-            }
             if hresp.dragged() {
                 // 1:1 with the cursor: a drag of `dy` px moves the map edge `dy` px.
                 let df = hresp.drag_delta().y / (map_hi - map_lo).max(1.0);
                 self.view.digi_map_fraction = (self.view.digi_map_fraction + df).clamp(0.0, 1.0);
-            }
-            {
-                let p = ui.painter_at(hrect);
-                let hot = hresp.hovered() || hresp.dragged();
-                let col = if hot { crate::theme::CYAN } else { Color32::from_gray(70) };
-                let (cx, cy) = (hrect.center().x, hrect.center().y);
-                for dx in [-16.0f32, 0.0, 16.0] {
-                    p.line_segment(
-                        [egui::pos2(cx + dx - 6.0, cy), egui::pos2(cx + dx + 6.0, cy)],
-                        egui::Stroke::new(2.0, col),
-                    );
-                }
             }
         }
         // Station card.
@@ -4421,14 +4391,10 @@ impl SdroxideApp {
             });
 
             // ── The drag handle ─────────────────────────────────────────────
-            let (rect, resp) =
-                ui.allocate_exact_size(egui::vec2(7.0, avail_h), egui::Sense::click_and_drag());
+            let resp = crate::chrome::split_handle(ui, egui::vec2(7.0, avail_h), None);
             if resp.dragged() {
                 let dx = resp.drag_delta().x;
                 self.view.js8_split_fraction = ((left_w + dx) / total_w).clamp(0.22, 0.72);
-            }
-            if resp.hovered() || resp.dragged() {
-                ui.painter().rect_filled(rect, 0.0, crate::theme::CYAN_DIM);
             }
 
             // ── Right: the conversation ─────────────────────────────────────
@@ -9824,30 +9790,16 @@ impl eframe::App for SdroxideApp {
                 );
             });
             // Resize handle between the waterfall and the FT8/FT4 panel.
-            let (hrect, hresp) =
-                ui.allocate_exact_size(egui::vec2(width, handle_h), egui::Sense::click_and_drag());
-            if hresp.hovered() || hresp.dragged() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-            }
+            let hresp = crate::chrome::split_handle(
+                ui,
+                egui::vec2(width, handle_h),
+                Some(crate::theme::PANEL),
+            );
             if hresp.dragged() {
                 // Drag down shrinks the panel (waterfall grows), drag up grows it.
                 let d = hresp.drag_delta().y / total;
                 self.view.digi_panel_fraction =
                     (self.view.digi_panel_fraction - d).clamp(0.2, 0.82);
-            }
-            {
-                let p = ui.painter_at(hrect);
-                let hot = hresp.hovered() || hresp.dragged();
-                p.rect_filled(hrect, 0.0, crate::theme::PANEL);
-                let col = if hot { crate::theme::CYAN } else { Color32::from_gray(70) };
-                let cx = hrect.center().x;
-                let cy = hrect.center().y;
-                for dx in [-16.0f32, 0.0, 16.0] {
-                    p.line_segment(
-                        [egui::pos2(cx + dx - 6.0, cy), egui::pos2(cx + dx + 6.0, cy)],
-                        egui::Stroke::new(2.0, col),
-                    );
-                }
             }
             ui.allocate_ui(egui::vec2(width, panel_h), |ui| {
                 egui::Frame::new()
@@ -11038,30 +10990,13 @@ impl SdroxideApp {
                             });
                         });
                         // Draggable vertical divider between LIVE and RECEIVED.
-                        let (hrect, hresp) = ui.allocate_exact_size(
-                            egui::vec2(handle_w, row_h),
-                            egui::Sense::click_and_drag(),
-                        );
-                        if hresp.hovered() || hresp.dragged() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                        }
+                        let hresp =
+                            crate::chrome::split_handle(ui, egui::vec2(handle_w, row_h), None);
                         if hresp.dragged() {
                             // Dragging right shrinks the gallery (grows LIVE).
                             let d = hresp.drag_delta().x / left_w.max(1.0);
                             self.view.sstv_gallery_fraction =
                                 (self.view.sstv_gallery_fraction - d).clamp(0.2, 0.6);
-                        }
-                        {
-                            let p = ui.painter_at(hrect);
-                            let hot = hresp.hovered() || hresp.dragged();
-                            let col = if hot { crate::theme::CYAN } else { Color32::from_gray(70) };
-                            let (cx, cy) = (hrect.center().x, hrect.center().y);
-                            for dy in [-16.0f32, 0.0, 16.0] {
-                                p.line_segment(
-                                    [egui::pos2(cx, cy + dy - 6.0), egui::pos2(cx, cy + dy + 6.0)],
-                                    egui::Stroke::new(2.0, col),
-                                );
-                            }
                         }
 
                         // RECEIVED: narrow multi-column gallery of decoded pictures.
@@ -11104,27 +11039,11 @@ impl SdroxideApp {
 
             // Draggable vertical divider between the receive side and the
             // TRANSMIT (send) column — mirrors the FT8 decode/QSO splitter.
-            let (hrect, hresp) =
-                ui.allocate_exact_size(egui::vec2(handle_w, full_h), egui::Sense::click_and_drag());
-            if hresp.hovered() || hresp.dragged() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-            }
+            let hresp = crate::chrome::split_handle(ui, egui::vec2(handle_w, full_h), None);
             if hresp.dragged() {
                 // Dragging right shrinks the TX column (grows the receive side).
                 let d = hresp.drag_delta().x / avail.x.max(1.0);
                 self.view.sstv_tx_fraction = (self.view.sstv_tx_fraction - d).clamp(0.22, 0.6);
-            }
-            {
-                let p = ui.painter_at(hrect);
-                let hot = hresp.hovered() || hresp.dragged();
-                let col = if hot { crate::theme::CYAN } else { Color32::from_gray(70) };
-                let (cx, cy) = (hrect.center().x, hrect.center().y);
-                for dy in [-16.0f32, 0.0, 16.0] {
-                    p.line_segment(
-                        [egui::pos2(cx, cy + dy - 6.0), egui::pos2(cx, cy + dy + 6.0)],
-                        egui::Stroke::new(2.0, col),
-                    );
-                }
             }
 
             // ── RIGHT: transmit compositor, full height ──
@@ -12062,10 +11981,19 @@ impl SdroxideApp {
         // Height from what is actually left rather than a fixed subtraction, so
         // the control rows wrapping in a narrow window shortens the picture
         // instead of pushing it out of the panel.
-        let gallery_w = (ui.available_width() * 0.18).clamp(150.0, 300.0);
         let avail_h = ui.available_height().max(80.0).min(panel_h);
+        let handle_w = 7.0;
         ui.horizontal_top(|ui| {
-            let img_w = (ui.available_width() - gallery_w - 12.0).max(120.0);
+            // The gallery takes a user-draggable fraction of the width, the
+            // chart the rest; each keeps enough to stay useful. The strip is
+            // worth widening to read the labels that tell a morning's
+            // identical-looking surface analyses apart, and worth shrinking
+            // back out of the way while a chart is being read at 1:1.
+            let total_w = ui.available_width();
+            let gap = ui.spacing().item_spacing.x;
+            let gallery_w = (total_w * self.view.wefax_gallery_fraction)
+                .clamp(120.0, (total_w - handle_w - 2.0 * gap - 200.0).max(120.0));
+            let img_w = (total_w - gallery_w - handle_w - 2.0 * gap).max(120.0);
             // Both columns are explicitly top-down: `allocate_ui` inherits the
             // surrounding layout, which is the horizontal one that puts the two
             // columns side by side, and a gallery laid out left-to-right walks
@@ -12134,6 +12062,15 @@ impl SdroxideApp {
                     }
                 },
             );
+
+            // Draggable vertical divider between the chart and the gallery.
+            let hresp = crate::chrome::split_handle(ui, egui::vec2(handle_w, avail_h), None);
+            if hresp.dragged() {
+                // Dragging right shrinks the gallery (grows the chart).
+                let d = hresp.drag_delta().x / total_w.max(1.0);
+                self.view.wefax_gallery_fraction =
+                    (self.view.wefax_gallery_fraction - d).clamp(0.1, 0.5);
+            }
 
             ui.allocate_ui_with_layout(
                 egui::vec2(gallery_w, avail_h),
