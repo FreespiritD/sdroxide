@@ -189,9 +189,9 @@ impl R82xx {
     /// Read-modify-write against the shadow, since the part cannot be read
     /// back register by register.
     fn write_reg_mask(&mut self, dev: &Rtl2832, reg: u8, val: u8, mask: u8) -> Result<()> {
-        let cur = Self::shadow_index(reg)
-            .map(|i| self.regs[i])
-            .ok_or_else(|| Error::Unsupported(format!("R82xx register {reg:#04x} is not shadowed")))?;
+        let cur = Self::shadow_index(reg).map(|i| self.regs[i]).ok_or_else(|| {
+            Error::Unsupported(format!("R82xx register {reg:#04x} is not shadowed"))
+        })?;
         self.write_reg(dev, reg, (cur & !mask) | (val & mask))
     }
 
@@ -500,9 +500,7 @@ impl R82xx {
         // Notches are OFF inside the band they protect against and ON outside
         // it — so tuning *to* broadcast FM or DAB does not notch out the very
         // thing being received.
-        let open_d = if hz <= 2.2e6
-            || (85e6..=112e6).contains(&hz)
-            || (172e6..=242e6).contains(&hz)
+        let open_d = if hz <= 2.2e6 || (85e6..=112e6).contains(&hz) || (172e6..=242e6).contains(&hz)
         {
             0x00
         } else {

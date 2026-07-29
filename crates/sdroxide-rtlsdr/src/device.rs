@@ -12,7 +12,10 @@ use sdroxide_types::{RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode};
 use crate::error::{Error, Result};
 use crate::regs;
 use crate::rtl2832::{DirectSampling, Rtl2832};
-use crate::tuner::{self, r82xx::{GainSetting, R82xx}};
+use crate::tuner::{
+    self,
+    r82xx::{GainSetting, R82xx},
+};
 use crate::usb::UsbDev;
 
 /// Frequency below which the tuner cannot reach and HF handling takes over.
@@ -66,11 +69,8 @@ impl Device {
         // the tuner. What must happen here is the low-IF configuration.
         rtl.configure_for_r82xx()?;
 
-        let label = format!(
-            "{usb_label} ({}{})",
-            chip.name(),
-            if is_blog_v4 { ", Blog V4" } else { "" }
-        );
+        let label =
+            format!("{usb_label} ({}{})", chip.name(), if is_blog_v4 { ", Blog V4" } else { "" });
 
         let mut dev = Device {
             rtl,
@@ -335,5 +335,4 @@ impl Device {
     pub fn gains_db(&self) -> Vec<f64> {
         R82xx::gains_db().collect()
     }
-
 }

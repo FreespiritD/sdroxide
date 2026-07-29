@@ -395,10 +395,7 @@ mod tests {
             let (p, _c) = ring_for(rate);
             let cap = p.buffer().capacity();
             assert_eq!(cap % 2, 0, "odd ring capacity at {rate}");
-            assert!(
-                cap as f64 >= rate,
-                "ring holds {cap} floats, less than 0.5 s of {rate} sps"
-            );
+            assert!(cap as f64 >= rate, "ring holds {cap} floats, less than 0.5 s of {rate} sps");
         }
     }
 

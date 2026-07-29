@@ -320,6 +320,13 @@ pub struct HpsdrConfig {
     /// which leaves the open-collector outputs untouched.
     #[serde(default)]
     pub filter_board: HpsdrFilterBoard,
+    /// Conjugate the board's I/Q, mirroring the spectrum about the tuned
+    /// frequency. Set this when signals appear on the wrong side of the dial and
+    /// nothing demodulates: it means the board's DDC uses the opposite sign
+    /// convention from the engine. Applied to transmit as well, so the two
+    /// directions cannot disagree about which sideband they are on.
+    #[serde(default)]
+    pub swap_iq: bool,
 }
 
 impl Default for HpsdrConfig {
@@ -330,6 +337,7 @@ impl Default for HpsdrConfig {
             sample_rate_hz: 1_536_000.0,
             lna_gain_db: Self::default_lna_gain_db(),
             filter_board: HpsdrFilterBoard::None,
+            swap_iq: false,
         }
     }
 }

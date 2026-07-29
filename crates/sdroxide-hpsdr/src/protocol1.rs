@@ -176,6 +176,15 @@ impl Regs {
     }
 }
 
+/// Conjugate interleaved I/Q in place — negate every Q — which mirrors the
+/// spectrum about the tuned frequency. Applied to receive and transmit alike so
+/// the two directions cannot end up on opposite sidebands.
+pub(crate) fn conjugate(iq: &mut [f32]) {
+    for q in iq.iter_mut().skip(1).step_by(2) {
+        *q = -*q;
+    }
+}
+
 fn freq_cc(addr: u8, freq: u32, mox: u8) -> [u8; 5] {
     let f = freq.to_be_bytes();
     [addr | mox, f[0], f[1], f[2], f[3]]
@@ -334,6 +343,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
         rate_hz,
         lna_gain_db,
         filter_board,
+        swap_iq,
         mut rx,
         mut tx,
         ctrl,
@@ -432,6 +442,9 @@ pub(crate) fn run(ctx: ThreadCtx) {
             Ok((n, _src)) => {
                 rx_scratch.clear();
                 if let Some(info) = decode_ep6(&buf[..n], &mut rx_scratch) {
+                    if swap_iq {
+                        conjugate(&mut rx_scratch);
+                    }
                     let pairs = rx_scratch.len() / 2;
                     stats.on_iq(pairs);
                     last_rx_ms.store(opened_at.elapsed().as_millis() as u64, Ordering::Relaxed);
@@ -682,6 +695,21 @@ mod tests {
         for db in [-12.0, 0.0, 20.0, 48.0] {
             assert_eq!(lna_gain_code(db) & HL2_GAIN_VALID, 0);
         }
+    }
+
+    #[test]
+    fn conjugation_negates_only_q() {
+        let mut iq = [1.0f32, 2.0, -3.0, 4.0, 5.0, -6.0];
+        conjugate(&mut iq);
+        assert_eq!(iq, [1.0, -2.0, -3.0, -4.0, 5.0, 6.0]);
+        // Applying it twice is the identity, so RX and TX cannot drift apart.
+        conjugate(&mut iq);
+        assert_eq!(iq, [1.0, 2.0, -3.0, 4.0, 5.0, -6.0]);
+        // An odd tail (never produced by the pair-safe paths) is left alone
+        // rather than panicking.
+        let mut odd = [1.0f32, 2.0, 3.0];
+        conjugate(&mut odd);
+        assert_eq!(odd, [1.0, -2.0, 3.0]);
     }
 
     #[test]

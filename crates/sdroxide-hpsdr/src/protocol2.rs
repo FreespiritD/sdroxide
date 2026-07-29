@@ -220,6 +220,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
         radio: ctx.radio,
         opened_at: ctx.opened_at,
         last_rx_ms: ctx.last_rx_ms,
+        swap_iq: ctx.swap_iq,
         rate_khz: (ctx.rate_hz / 1000.0) as u16,
         rx: ctx.rx,
         tx: ctx.tx,
@@ -239,6 +240,8 @@ struct P2Thread {
     /// `HpsdrHandle::silent_for`).
     opened_at: Instant,
     last_rx_ms: crate::net::RxClock,
+    /// Conjugate I/Q both ways (see `HpsdrConfig::swap_iq`).
+    swap_iq: bool,
     rate_khz: u16,
     rx: Producer<f32>,
     tx: Consumer<f32>,
@@ -367,6 +370,9 @@ impl P2Thread {
                     if (port::DDC_IQ_BASE..port::DDC_IQ_BASE + 8).contains(&p) {
                         rx_scratch.clear();
                         if let Some(pairs) = decode_ddc_iq(&buf[..n], &mut rx_scratch) {
+                            if self.swap_iq {
+                                crate::protocol1::conjugate(&mut rx_scratch);
+                            }
                             stats.on_iq(pairs);
                             self.last_rx_ms.store(
                                 self.opened_at.elapsed().as_millis() as u64,
@@ -436,6 +442,9 @@ impl P2Thread {
                 while let Ok(v) = self.tx.pop() {
                     tx_scratch.push(v);
                     if tx_scratch.len() >= DUC_SAMPLES_PER_PKT * 2 {
+                        if self.swap_iq {
+                            crate::protocol1::conjugate(&mut tx_scratch);
+                        }
                         let seq = next_seq(&mut self.seq.tx_iq);
                         let pkt = duc_iq_packet(seq, &tx_scratch);
                         if !logged_first_tx {

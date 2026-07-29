@@ -133,7 +133,11 @@ fn main() {
     let rms = (sum_sq / (total.max(1) * 2) as f64).sqrt();
     println!();
     println!("  streamed {total} complex samples in {secs:.2} s");
-    println!("  measured {:.1} ksps (nominal {:.1})", total as f64 / secs / 1e3, handle.sample_rate_hz / 1e3);
+    println!(
+        "  measured {:.1} ksps (nominal {:.1})",
+        total as f64 / secs / 1e3,
+        handle.sample_rate_hz / 1e3
+    );
     println!("  peak |sample| {peak:.4}, rms {rms:.4}");
     if total == 0 {
         println!("  NO SAMPLES — the device opened but never delivered anything.");

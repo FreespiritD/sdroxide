@@ -299,6 +299,8 @@ pub(crate) struct ThreadCtx {
     pub lna_gain_db: f64,
     /// Accessory board on J16, deciding how the open-collector outputs are driven.
     pub filter_board: HpsdrFilterBoard,
+    /// Conjugate I/Q in both directions (see `HpsdrConfig::swap_iq`).
+    pub swap_iq: bool,
     pub rx: Producer<f32>,
     pub tx: Consumer<f32>,
     pub ctrl: Receiver<Ctrl>,
@@ -343,6 +345,7 @@ impl HpsdrHandle {
         sample_rate_hz: f64,
         lna_gain_db: f64,
         filter_board: HpsdrFilterBoard,
+        swap_iq: bool,
     ) -> Result<HpsdrHandle, HpsdrError> {
         tracing::info!("HPSDR: opening {ip}, requested RX rate {sample_rate_hz:.0} Hz");
         let (board, protocol) = match discovery::probe(ip, Duration::from_millis(800)) {
@@ -401,6 +404,9 @@ impl HpsdrHandle {
         if board_has_lna_gain(&board) {
             tracing::info!("HPSDR: initial {LNA_GAIN_ELEMENT} gain {lna_gain_db:+.0} dB");
         }
+        if swap_iq {
+            tracing::info!("HPSDR: I/Q conjugated in both directions (spectrum inverted)");
+        }
         if filter_board != HpsdrFilterBoard::None {
             tracing::info!(
                 "HPSDR: driving the J16 open-collector outputs for a {} — check nothing else \
@@ -438,6 +444,7 @@ impl HpsdrHandle {
             rate_hz: rate,
             lna_gain_db,
             filter_board,
+            swap_iq,
             rx: rx_prod,
             tx: tx_cons,
             ctrl: ctrl_rx,

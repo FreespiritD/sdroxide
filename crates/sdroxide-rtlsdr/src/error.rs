@@ -71,11 +71,13 @@ impl Error {
             // On Windows the dongle must be bound to WinUSB before anything can
             // claim it; unbound, the open fails as unsupported or not-found
             // rather than as a permission problem.
-            ErrorKind::Unsupported | ErrorKind::NotFound if cfg!(windows) => Error::Access(format!(
-                "{what} is not bound to WinUSB — run Zadig and select the \
+            ErrorKind::Unsupported | ErrorKind::NotFound if cfg!(windows) => {
+                Error::Access(format!(
+                    "{what} is not bound to WinUSB — run Zadig and select the \
                  WinUSB driver for this device (it stops working as a TV tuner \
                  afterwards)"
-            )),
+                ))
+            }
             ErrorKind::Disconnected => {
                 Error::NotFound(format!("{what} was unplugged while opening it"))
             }

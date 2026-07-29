@@ -118,8 +118,7 @@ impl IqSource for RtlSdrSource {
                 self.handle.set_ppm(db.round().clamp(-1000.0, 1000.0) as i32);
             }
             RtlSdrConfig::HF_MODE_ELEMENT => {
-                self.handle
-                    .set_hf_mode(RtlSdrHfMode::from_code(db.round().clamp(0.0, 2.0) as u8));
+                self.handle.set_hf_mode(RtlSdrHfMode::from_code(db.round().clamp(0.0, 2.0) as u8));
             }
             RtlSdrConfig::BIAS_TEE_ELEMENT => {
                 self.bias_tee = db >= 0.5;
@@ -149,8 +148,7 @@ impl IqSource for RtlSdrSource {
     /// setting is persisted, so it survives a restart with nothing else to
     /// indicate it.
     fn open_status(&self) -> Option<String> {
-        self.bias_tee.then(|| {
-            format!("{}: bias tee is ON — ~4.5 V DC on the antenna coax", self.label)
-        })
+        self.bias_tee
+            .then(|| format!("{}: bias tee is ON — ~4.5 V DC on the antenna coax", self.label))
     }
 }

@@ -33,7 +33,13 @@ impl HpsdrSource {
         cfg: &sdroxide_types::HpsdrConfig,
         center_hz: f64,
     ) -> anyhow::Result<Self> {
-        let handle = HpsdrHandle::open(ip, cfg.sample_rate_hz, cfg.lna_gain_db, cfg.filter_board)?;
+        let handle = HpsdrHandle::open(
+            ip,
+            cfg.sample_rate_hz,
+            cfg.lna_gain_db,
+            cfg.filter_board,
+            cfg.swap_iq,
+        )?;
         handle.set_rx_freq(center_hz);
         let label =
             format!("HPSDR {} @ {ip} ({:.3} Msps)", handle.board, handle.sample_rate_hz / 1e6);

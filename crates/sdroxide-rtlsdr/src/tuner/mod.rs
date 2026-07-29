@@ -10,7 +10,7 @@ pub mod tables;
 
 use crate::error::{Error, Result};
 use crate::rtl2832::Rtl2832;
-use r82xx::{Chip, R82xx, R820T_I2C_ADDR, R828D_I2C_ADDR, R82XX_CHECK_VAL};
+use r82xx::{Chip, R82XX_CHECK_VAL, R82xx, R820T_I2C_ADDR, R828D_I2C_ADDR};
 
 /// Identify the tuner behind the demodulator's I2C repeater.
 ///
@@ -60,10 +60,6 @@ pub fn probe(dev: &Rtl2832) -> Result<Chip> {
 pub fn open(dev: &Rtl2832, chip: Chip, is_blog_v4: bool, ppm: i32) -> Result<R82xx> {
     let mut tuner = R82xx::new(chip, is_blog_v4, ppm);
     tuner.init(dev)?;
-    tracing::info!(
-        "tuner: {}{}",
-        tuner.name(),
-        if is_blog_v4 { " (RTL-SDR Blog V4)" } else { "" }
-    );
+    tracing::info!("tuner: {}{}", tuner.name(), if is_blog_v4 { " (RTL-SDR Blog V4)" } else { "" });
     Ok(tuner)
 }

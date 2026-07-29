@@ -45,8 +45,8 @@ pub const R82XX_IF_FREQ: f64 = 3_570_000.0;
 /// completeness and is not offered in the UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(dead_code)] // `I` is the other ADC branch. No dongle wires its HF
-                    // port to it, so it is never selected, but the register
-                    // encoding is only comprehensible as a pair.
+// port to it, so it is never selected, but the register
+// encoding is only comprehensible as a pair.
 pub enum DirectSampling {
     #[default]
     Off,
@@ -104,11 +104,8 @@ impl Rtl2832 {
     // ---- demodulator register access ------------------------------------
 
     pub fn demod_read_reg(&self, page: u8, addr: u16, len: u16) -> Result<u16> {
-        let data = self.usb.read_array_raw(
-            regs::demod_value(addr),
-            regs::demod_read_index(page),
-            len,
-        )?;
+        let data =
+            self.usb.read_array_raw(regs::demod_value(addr), regs::demod_read_index(page), len)?;
         Ok(regs::decode_reg(&data))
     }
 

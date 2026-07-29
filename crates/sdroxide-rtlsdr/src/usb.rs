@@ -202,7 +202,8 @@ impl UsbDev {
         // dongle out of several, so treat it the same way `list` does.
         let want = serial.map(str::trim).filter(|s| !s.is_empty() && *s != GENERIC_SERIAL);
         let devices = nusb::list_devices().wait()?;
-        let mut candidates = devices.filter(|d| known_name(d.vendor_id(), d.product_id()).is_some());
+        let mut candidates =
+            devices.filter(|d| known_name(d.vendor_id(), d.product_id()).is_some());
 
         let info = match want {
             Some(s) => candidates.find(|d| d.serial_number() == Some(s)).ok_or_else(|| {
@@ -212,9 +213,9 @@ impl UsbDev {
                      first one found"
                 ))
             })?,
-            None => candidates.next().ok_or_else(|| {
-                Error::NotFound("no RTL-SDR dongle found on USB".to_string())
-            })?,
+            None => candidates
+                .next()
+                .ok_or_else(|| Error::NotFound("no RTL-SDR dongle found on USB".to_string()))?,
         };
 
         let table = known_name(info.vendor_id(), info.product_id()).unwrap_or("RTL2832U");
@@ -468,8 +469,7 @@ mod tests {
         d[4..6].copy_from_slice(&pid.to_le_bytes());
         d[6] = 0xa5;
         for s in strings {
-            let utf16: Vec<u8> =
-                s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+            let utf16: Vec<u8> = s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
             d.push(utf16.len() as u8 + 2);
             d.push(0x03);
             d.extend_from_slice(&utf16);

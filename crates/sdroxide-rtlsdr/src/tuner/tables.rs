@@ -30,8 +30,8 @@ pub const INIT_ARRAY: [u8; NUM_REGS] = [
 /// One entry of the tracking-filter / mux table, selected by LO frequency.
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)] // the 20 pF and 10 pF caps belong to crystal-load modes
-                    // rtlsdr never selects; kept so the table matches upstream
-                    // row for row and can be diffed against it.
+// rtlsdr never selects; kept so the table matches upstream
+// row for row and can be diffed against it.
 pub struct FreqRange {
     /// Lower bound of the range, in MHz.
     pub freq_mhz: u32,
@@ -46,27 +46,195 @@ pub struct FreqRange {
 /// The tracking-filter table. 21 entries — note the 450 MHz and 650 MHz rows,
 /// which are easy to miss when reading the upstream source by eye.
 pub const FREQ_RANGES: [FreqRange; 21] = [
-    FreqRange { freq_mhz: 0, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0xdf, xtal_cap20p: 0x02, xtal_cap10p: 0x01, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 50, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0xbe, xtal_cap20p: 0x02, xtal_cap10p: 0x01, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 55, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0x8b, xtal_cap20p: 0x02, xtal_cap10p: 0x01, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 60, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0x7b, xtal_cap20p: 0x02, xtal_cap10p: 0x01, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 65, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0x69, xtal_cap20p: 0x02, xtal_cap10p: 0x01, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 70, open_d: 0x08, rf_mux_ploy: 0x02, tf_c: 0x58, xtal_cap20p: 0x02, xtal_cap10p: 0x01, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 75, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x44, xtal_cap20p: 0x02, xtal_cap10p: 0x01, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 80, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x44, xtal_cap20p: 0x02, xtal_cap10p: 0x01, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 90, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x34, xtal_cap20p: 0x01, xtal_cap10p: 0x01, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 100, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x34, xtal_cap20p: 0x01, xtal_cap10p: 0x01, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 110, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x24, xtal_cap20p: 0x01, xtal_cap10p: 0x01, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 120, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x24, xtal_cap20p: 0x01, xtal_cap10p: 0x01, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 140, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x14, xtal_cap20p: 0x01, xtal_cap10p: 0x01, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 180, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x13, xtal_cap20p: 0x00, xtal_cap10p: 0x00, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 220, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x13, xtal_cap20p: 0x00, xtal_cap10p: 0x00, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 250, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x11, xtal_cap20p: 0x00, xtal_cap10p: 0x00, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 280, open_d: 0x00, rf_mux_ploy: 0x02, tf_c: 0x00, xtal_cap20p: 0x00, xtal_cap10p: 0x00, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 310, open_d: 0x00, rf_mux_ploy: 0x41, tf_c: 0x00, xtal_cap20p: 0x00, xtal_cap10p: 0x00, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 450, open_d: 0x00, rf_mux_ploy: 0x41, tf_c: 0x00, xtal_cap20p: 0x00, xtal_cap10p: 0x00, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 588, open_d: 0x00, rf_mux_ploy: 0x40, tf_c: 0x00, xtal_cap20p: 0x00, xtal_cap10p: 0x00, xtal_cap0p: 0x00 },
-    FreqRange { freq_mhz: 650, open_d: 0x00, rf_mux_ploy: 0x40, tf_c: 0x00, xtal_cap20p: 0x00, xtal_cap10p: 0x00, xtal_cap0p: 0x00 },
+    FreqRange {
+        freq_mhz: 0,
+        open_d: 0x08,
+        rf_mux_ploy: 0x02,
+        tf_c: 0xdf,
+        xtal_cap20p: 0x02,
+        xtal_cap10p: 0x01,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 50,
+        open_d: 0x08,
+        rf_mux_ploy: 0x02,
+        tf_c: 0xbe,
+        xtal_cap20p: 0x02,
+        xtal_cap10p: 0x01,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 55,
+        open_d: 0x08,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x8b,
+        xtal_cap20p: 0x02,
+        xtal_cap10p: 0x01,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 60,
+        open_d: 0x08,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x7b,
+        xtal_cap20p: 0x02,
+        xtal_cap10p: 0x01,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 65,
+        open_d: 0x08,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x69,
+        xtal_cap20p: 0x02,
+        xtal_cap10p: 0x01,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 70,
+        open_d: 0x08,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x58,
+        xtal_cap20p: 0x02,
+        xtal_cap10p: 0x01,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 75,
+        open_d: 0x00,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x44,
+        xtal_cap20p: 0x02,
+        xtal_cap10p: 0x01,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 80,
+        open_d: 0x00,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x44,
+        xtal_cap20p: 0x02,
+        xtal_cap10p: 0x01,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 90,
+        open_d: 0x00,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x34,
+        xtal_cap20p: 0x01,
+        xtal_cap10p: 0x01,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 100,
+        open_d: 0x00,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x34,
+        xtal_cap20p: 0x01,
+        xtal_cap10p: 0x01,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 110,
+        open_d: 0x00,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x24,
+        xtal_cap20p: 0x01,
+        xtal_cap10p: 0x01,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 120,
+        open_d: 0x00,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x24,
+        xtal_cap20p: 0x01,
+        xtal_cap10p: 0x01,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 140,
+        open_d: 0x00,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x14,
+        xtal_cap20p: 0x01,
+        xtal_cap10p: 0x01,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 180,
+        open_d: 0x00,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x13,
+        xtal_cap20p: 0x00,
+        xtal_cap10p: 0x00,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 220,
+        open_d: 0x00,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x13,
+        xtal_cap20p: 0x00,
+        xtal_cap10p: 0x00,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 250,
+        open_d: 0x00,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x11,
+        xtal_cap20p: 0x00,
+        xtal_cap10p: 0x00,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 280,
+        open_d: 0x00,
+        rf_mux_ploy: 0x02,
+        tf_c: 0x00,
+        xtal_cap20p: 0x00,
+        xtal_cap10p: 0x00,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 310,
+        open_d: 0x00,
+        rf_mux_ploy: 0x41,
+        tf_c: 0x00,
+        xtal_cap20p: 0x00,
+        xtal_cap10p: 0x00,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 450,
+        open_d: 0x00,
+        rf_mux_ploy: 0x41,
+        tf_c: 0x00,
+        xtal_cap20p: 0x00,
+        xtal_cap10p: 0x00,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 588,
+        open_d: 0x00,
+        rf_mux_ploy: 0x40,
+        tf_c: 0x00,
+        xtal_cap20p: 0x00,
+        xtal_cap10p: 0x00,
+        xtal_cap0p: 0x00,
+    },
+    FreqRange {
+        freq_mhz: 650,
+        open_d: 0x00,
+        rf_mux_ploy: 0x40,
+        tf_c: 0x00,
+        xtal_cap20p: 0x00,
+        xtal_cap10p: 0x00,
+        xtal_cap0p: 0x00,
+    },
 ];
 
 /// The tracking-filter entry for an LO frequency.
@@ -81,37 +249,34 @@ pub fn freq_range_for(lo_hz: f64) -> &'static FreqRange {
 
 /// Incremental LNA gain per index step, in tenths of a dB. Measured, not
 /// computed — the steps are famously non-monotonic.
-pub const LNA_GAIN_STEPS: [i32; 16] =
-    [0, 9, 13, 40, 38, 13, 31, 22, 26, 31, 26, 14, 19, 5, 35, 13];
+pub const LNA_GAIN_STEPS: [i32; 16] = [0, 9, 13, 40, 38, 13, 31, 22, 26, 31, 26, 14, 19, 5, 35, 13];
 
 /// Incremental mixer gain per index step, in tenths of a dB. The last step is
 /// negative on real silicon; that is not a typo.
-pub const MIXER_GAIN_STEPS: [i32; 16] =
-    [0, 5, 10, 10, 19, 9, 10, 25, 17, 10, 8, 16, 13, 6, 3, -8];
+pub const MIXER_GAIN_STEPS: [i32; 16] = [0, 5, 10, 10, 19, 9, 10, 25, 17, 10, 8, 16, 13, 6, 3, -8];
 
 /// The gain values the LNA/mixer walk can actually reach, in tenths of a dB.
 /// From `librtlsdr.c`'s `r82xx_gains`. A requested gain is snapped to the
 /// nearest of these before being applied, and the snapped value is what gets
 /// reported back so the UI slider settles somewhere real.
 pub const GAINS_TENTH_DB: [i32; 29] = [
-    0, 9, 14, 27, 37, 77, 87, 125, 144, 157, 166, 197, 207, 229, 254, 280, 297, 328, 338, 364,
-    372, 386, 402, 421, 434, 439, 445, 480, 496,
+    0, 9, 14, 27, 37, 77, 87, 125, 144, 157, 166, 197, 207, 229, 254, 280, 297, 328, 338, 364, 372,
+    386, 402, 421, 434, 439, 445, 480, 496,
 ];
 
 /// Snap a gain in dB to the nearest value the hardware can produce, returning
 /// tenths of a dB.
 pub fn snap_gain_tenth_db(db: f64) -> i32 {
     let want = (db * 10.0).round() as i32;
-    *GAINS_TENTH_DB
-        .iter()
-        .min_by_key(|g| (*g - want).abs())
-        .expect("the gain table is never empty")
+    *GAINS_TENTH_DB.iter().min_by_key(|g| (*g - want).abs()).expect("the gain table is never empty")
 }
 
 /// IF low-pass filter corners, in Hz, for the narrow-bandwidth branch of
 /// `set_bandwidth`.
-pub const IF_LOW_PASS_BW: [i32; 10] =
-    [1_700_000, 1_600_000, 1_550_000, 1_450_000, 1_200_000, 900_000, 700_000, 550_000, 450_000, 350_000];
+pub const IF_LOW_PASS_BW: [i32; 10] = [
+    1_700_000, 1_600_000, 1_550_000, 1_450_000, 1_200_000, 900_000, 700_000, 550_000, 450_000,
+    350_000,
+];
 
 /// High-pass corner contributions used by the same branch.
 pub const FILT_HP_BW1: i32 = 350_000;

@@ -31,7 +31,7 @@ mod stream;
 mod tuner;
 mod usb;
 
+pub use device::Device;
 pub use error::{Error, Result};
 pub use handle::RtlSdrHandle;
 pub use usb::{Eeprom, list, parse_eeprom};
-pub use device::Device;

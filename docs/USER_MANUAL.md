@@ -1384,6 +1384,12 @@ involved:
   the receiver goes deaf. Start around +20 dB and work from there. The same
   control also appears as **Gain** next to the volume slider in the main window,
   and on the **Device** tab.
+- **Invert spectrum (Swap I/Q)** — mirrors the board's spectrum about the tuned
+  frequency. Turn this on if signals appear on the wrong side of the dial and
+  nothing decodes: the giveaway is a waterfall full of convincing-looking traces
+  while SSB comes out on the wrong sideband and FT8 returns no decodes at all
+  (or a handful of CQs from callsigns that don't match their grid). It applies
+  to transmit as well, so both directions stay on the same sideband.
 - **Filter board** — which accessory board is fitted to the Hermes Lite 2's J16
   header. Leave this at **None** unless one really is fitted. Those seven pins
   are general-purpose open-collector outputs, and operators also use them for
