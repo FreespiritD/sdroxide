@@ -1804,6 +1804,13 @@ Sun with a soft terminator. Your QTH is the green ring and the yellow dot is the
 point the Sun is directly overhead; both appear once you zoom in far enough for
 a point on the surface to mean anything.
 
+The coastlines and borders keep a **faint glow of their own on the night side**,
+fading in across the terminator the way city lights do. It is deliberately
+subtle — the terminator is still the most obvious thing on the globe — but it
+means the dark hemisphere stays a map rather than a slab, which matters because
+almost everything worth looking at happens there: the far end of a grey-line
+QSO, the auroral oval, a satellite footprint crossing at 3 a.m.
+
 ![The Earth with the FT8 coastlines, the QTH ring and the sub-solar point](images/3d-earth.jpg)
 
 **Mouse:**
