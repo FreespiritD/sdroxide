@@ -97,6 +97,16 @@ impl Js8Speed {
     pub fn burst_s(self) -> f64 {
         79.0 / f64::from(self.tone_spacing_hz())
     }
+
+    /// Whether this speed may beacon — send heartbeats, and acknowledge them.
+    ///
+    /// Turbo may not. It is the local and VHF speed, 160 Hz wide and six
+    /// seconds a slot, and an unattended beacon there costs a great deal of a
+    /// small band to reach nobody far away. Upstream draws the line in the
+    /// same place (`mainwindow.cpp`, `canCurrentModeSendHeartbeat`).
+    pub fn allows_heartbeat(self) -> bool {
+        !matches!(self, Js8Speed::Turbo)
+    }
 }
 
 /// Which JS8 frame layout a decode came from.

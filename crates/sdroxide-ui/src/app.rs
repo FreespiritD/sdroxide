@@ -4327,7 +4327,45 @@ impl SdroxideApp {
                 cmds.push(Command::SetDigiAudioFreq((audio_hz + 10.0).clamp(200.0, 3500.0)));
             }
             self.digi_freq_chip(ui, cmds);
+            // Beacon state. An unattended transmitter must say so where the
+            // operator is already looking, and say when it will key next — a
+            // countdown is the difference between "armed" and "hung".
+            let hb_min = self.digi_cfg_edit.js8_heartbeat_min;
+            // Lit by what the engine is *doing*, not by what is configured: at
+            // Turbo the interval is set and nothing beacons, and a chip that
+            // claimed otherwise would be the one place this must not be wrong.
+            let hb_on = crate::chrome::chip(ui, js8.next_hb_in_s.is_some(), "HB AUTO")
+                .on_hover_text(match js8.next_hb_in_s {
+                    Some(_) => format!("Beaconing every {hb_min} min — click to stop"),
+                    None if js8.speed == Js8Speed::Turbo => {
+                        "Turbo does not beacon — it is the local and VHF speed".to_string()
+                    }
+                    None => "Beacon your callsign and grid every 15 minutes".to_string(),
+                })
+                .clicked();
+            if hb_on {
+                // Off if it was on; otherwise the interval most of the band
+                // uses, which SETUP can then change.
+                self.digi_cfg_edit.js8_heartbeat_min = if hb_min > 0 { 0 } else { 15 };
+                cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
+            }
+            if let Some(left) = js8.next_hb_in_s {
+                ui.label(
+                    RichText::new(format!("{}:{:02}", left / 60, left % 60))
+                        .monospace()
+                        .color(crate::theme::CYAN_DIM),
+                )
+                .on_hover_text("Until the next heartbeat");
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Every setting this mode has — callsign, groups, auto-reply,
+                // the beacon interval, the status message — lives in that
+                // window, and the JS8 panel is the only one with no other way
+                // in: FT8 reaches it from the QSO area, and the keyboard modes
+                // keep their parameters in the header instead.
+                if crate::chrome::chip(ui, self.show_digi_settings, "⚙ SETUP").clicked() {
+                    self.show_digi_settings = !self.show_digi_settings;
+                }
                 if transmitting {
                     ui.label(RichText::new("● TX").color(crate::theme::PINK).strong());
                 }
@@ -5388,24 +5426,70 @@ impl SdroxideApp {
                     }
                     ui.end_row();
                     if mode.is_js8() {
+                        let turbo = cfg.js8_speed == sdroxide_types::Js8Speed::Turbo;
                         ui.label("Auto-reply");
                         changed |= ui
                             .checkbox(&mut cfg.js8_auto_reply, "Answer SNR? / GRID? / STATUS?")
+                            .on_hover_text(
+                                "Answer a direct question addressed to you or to @ALLCALL, with \
+                                 the answer rather than an acknowledgement. Never answers another \
+                                 station's traffic, and never answers itself.",
+                            )
                             .changed();
                         ui.end_row();
                         ui.label("Heartbeat");
                         ui.horizontal(|ui| {
+                            // The intervals JS8Call offers, plus off. A beacon
+                            // is a commitment of air time, so the choice is a
+                            // few sensible ones rather than a free number.
+                            for (mins, label) in [
+                                (0u32, "Off"),
+                                (10, "10 min"),
+                                (15, "15 min"),
+                                (30, "30 min"),
+                                (60, "60 min"),
+                            ] {
+                                if crate::chrome::chip(ui, cfg.js8_heartbeat_min == mins, label)
+                                    .clicked()
+                                    && cfg.js8_heartbeat_min != mins
+                                {
+                                    cfg.js8_heartbeat_min = mins;
+                                    changed = true;
+                                }
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("");
+                        // Off by default and worth saying why: a beacon that
+                        // switches itself on is an on-air behaviour the
+                        // operator never chose.
+                        ui.label(
+                            RichText::new(if turbo {
+                                "Turbo does not beacon — it is the local and VHF speed."
+                            } else {
+                                "Sends your callsign and grid so others know you are receivable. \
+                                 The first goes out one interval from now, not immediately."
+                            })
+                            .size(10.5)
+                            .weak(),
+                        );
+                        ui.end_row();
+                        ui.label("Heartbeat reply");
+                        ui.add_enabled_ui(cfg.js8_auto_reply && !turbo, |ui| {
                             changed |= ui
-                                .add(
-                                    egui::DragValue::new(&mut cfg.js8_heartbeat_min)
-                                        .range(0..=60)
-                                        .suffix(" min"),
+                                .checkbox(
+                                    &mut cfg.js8_hb_ack,
+                                    "Answer heartbeats with a signal report",
+                                )
+                                .on_hover_text(
+                                    "Tell a station that beaconed how well you copied them. Off \
+                                     by default: a busy band carries a heartbeat every slot, and \
+                                     answering all of them would flood exactly the band \
+                                     heartbeats exist to keep quiet. Rate-limited to one answer \
+                                     per station every 15 minutes, and never while a message is \
+                                     still arriving or while you have something queued to send.",
                                 )
                                 .changed();
-                            // Off by default and worth saying why: a beacon that
-                            // switches itself on is an on-air behaviour the
-                            // operator never chose.
-                            ui.label(RichText::new("0 = off").weak());
                         });
                         ui.end_row();
                         ui.label("Status message");

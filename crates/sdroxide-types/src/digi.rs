@@ -765,6 +765,15 @@ pub struct DigiConfig {
     /// consented to.
     #[serde(default)]
     pub js8_heartbeat_min: u32,
+    /// JS8: answer a heard heartbeat with a signal report, so the station
+    /// beaconing learns who is copying them.
+    ///
+    /// Off by default, as upstream has it. This is the one auto-reply that
+    /// answers something nobody asked: a busy band carries a heartbeat every
+    /// slot, and a station that answered all of them would flood exactly the
+    /// band heartbeats exist to keep quiet. The engine rate-limits it besides.
+    #[serde(default)]
+    pub js8_hb_ack: bool,
     /// JS8: forget an incomplete multi-frame message after this many seconds.
     #[serde(default = "js8_default_timeout")]
     pub js8_assembly_timeout_s: u32,
@@ -868,6 +877,7 @@ impl Default for DigiConfig {
             js8_speed: crate::Js8Speed::Normal,
             js8_auto_reply: true,
             js8_heartbeat_min: 0,
+            js8_hb_ack: false,
             js8_assembly_timeout_s: 300,
             js8_call: String::new(),
             js8_status: String::new(),

@@ -19,7 +19,7 @@
 //! which is what stops the station keying twice in a slot or interrupting the
 //! operator mid-message.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::SystemTime;
 
@@ -33,7 +33,7 @@ use crate::clock::ClockMonitor;
 use crate::controller::{BurstPlayer, DigiAction};
 use crate::js8::assembler::Js8Assembler;
 use crate::js8::decode::{Js8Decode, Js8Depth, decode_slot_for};
-use crate::js8::directed::{Js8Reply, ReplyPolicy, StationInfo, auto_reply};
+use crate::js8::directed::{Js8Intent, Js8Reply, ReplyPolicy, StationInfo, auto_reply, intent};
 use crate::js8::frame::{self, Compound, DIRECTED_CMDS, Directed, Js8Flags};
 use crate::js8::message::Js8Payload;
 use crate::js8::modem::{self, DECODE_RATE};
@@ -48,6 +48,17 @@ const ACTIVITY_CAP: usize = 200;
 const MSG_CAP: usize = 200;
 /// Stations kept in the heard list.
 const HEARD_CAP: usize = 50;
+
+/// Least time between two acknowledgements of the same station's heartbeats.
+///
+/// Upstream's guard against being spammed by `@ALLCALL` traffic is fifteen
+/// minutes (`mainwindow.cpp`, `m_txAllcallCommandCache`), and a heartbeat is an
+/// `@ALLCALL`. A station beaconing every ten minutes therefore gets an answer
+/// from us roughly every other beacon rather than every one.
+const HB_ACK_COOLDOWN_S: i64 = 15 * 60;
+
+/// Stations remembered for the acknowledgement cooldown.
+const HB_ACK_CAP: usize = 200;
 
 /// Work handed to the decode thread.
 struct DecodeJob {
@@ -84,7 +95,17 @@ pub struct Js8Controller {
     burst: Option<BurstPlayer>,
     keyed: bool,
 
-    last_hb_unix: i64,
+    /// Unix time the next automatic heartbeat is due, or 0 when none is
+    /// scheduled (heartbeats off, no callsign, or a speed that may not beacon).
+    next_hb_unix: i64,
+    /// How many automatic heartbeats this session has sent, which is what makes
+    /// the jitter below differ from one to the next.
+    hb_count: u32,
+    /// Seconds until the next heartbeat, as the panel shows it. Kept rather
+    /// than computed in `status()`, which has no clock.
+    hb_countdown_s: Option<u32>,
+    /// When each station's heartbeat was last acknowledged, for the cooldown.
+    hb_acked: HashMap<String, i64>,
     clock: ClockMonitor,
     status_dirty: bool,
 }
@@ -139,7 +160,10 @@ impl Js8Controller {
             tx_fired_slot: i64::MIN,
             burst: None,
             keyed: false,
-            last_hb_unix: 0,
+            next_hb_unix: 0,
+            hb_count: 0,
+            hb_countdown_s: None,
+            hb_acked: HashMap::new(),
             clock: ClockMonitor::default(),
             status_dirty: true,
             cfg,
@@ -339,6 +363,94 @@ impl Js8Controller {
         payload
     }
 
+    // ── Heartbeats ──────────────────────────────────────────────────────────
+
+    /// Beacon on the interval the operator set, if they set one.
+    ///
+    /// The first one is a whole interval away rather than immediate: switching
+    /// a beacon on should not key the radio the same second, and upstream
+    /// starts its clock the same way (`on_hbMacroButton_toggled` schedules the
+    /// first at `now + interval`). Turning the interval back to zero — or
+    /// changing to a speed that may not beacon — unschedules, so switching it
+    /// on again starts a fresh interval rather than firing immediately.
+    fn tick_heartbeat(&mut self, unix_now: i64) {
+        let every = i64::from(self.cfg.js8_heartbeat_min) * 60;
+        if every <= 0 || self.my_call().is_empty() || !self.speed.allows_heartbeat() {
+            if self.next_hb_unix != 0 {
+                self.next_hb_unix = 0;
+                self.hb_countdown_s = None;
+                self.status_dirty = true;
+            }
+            return;
+        }
+        if self.next_hb_unix == 0 {
+            self.next_hb_unix = unix_now + every + self.hb_jitter_s();
+        } else if unix_now >= self.next_hb_unix {
+            self.next_hb_unix = unix_now + every + self.hb_jitter_s();
+            self.hb_count = self.hb_count.wrapping_add(1);
+            let grid = self.cfg.my_grid.to_uppercase();
+            let hb =
+                Compound::heartbeat(&self.my_call(), (!grid.is_empty()).then_some(grid.as_str()));
+            if let Some(p) = hb.pack() {
+                self.tx_frames.push_back(Self::single(p));
+                self.tx_total = self.tx_total.saturating_add(1);
+            }
+        }
+        // The panel shows this ticking down, so a change of one second is a
+        // change worth publishing — but only one per second, not one per poll.
+        let left = (self.next_hb_unix - unix_now).max(0) as u32;
+        if self.hb_countdown_s != Some(left) {
+            self.hb_countdown_s = Some(left);
+            self.status_dirty = true;
+        }
+    }
+
+    /// One slot of jitter on a quarter of beacons.
+    ///
+    /// Without it, stations that share an interval and started together stay
+    /// together, colliding every time. Upstream rolls a die for the same reason
+    /// (`scheduleHeartbeat`: "25% of the time, switch intervals"); this hashes
+    /// the callsign and the beacon number instead, so two stations differ but a
+    /// single station's run is reproducible and the tests are not flaky.
+    fn hb_jitter_s(&self) -> i64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.my_call().hash(&mut h);
+        self.hb_count.hash(&mut h);
+        if h.finish().is_multiple_of(4) { self.params.slot_s as i64 } else { 0 }
+    }
+
+    /// Whether *this* heartbeat may be acknowledged right now.
+    ///
+    /// Every rule is upstream's, and every one exists to stop the station
+    /// answering more than it should:
+    ///
+    /// * The operator has to have asked for it, and the speed has to allow
+    ///   beaconing at all.
+    /// * Not while a multi-frame message is still arriving — the acknowledgement
+    ///   would be interleaved with someone's sentence
+    ///   (`mainwindow.cpp`: "do not process HB activity if buffer is not empty").
+    /// * Not while we already have something to send. Ours would join the back
+    ///   of that queue and go out minutes later carrying a stale report, which
+    ///   is upstream's reason for pausing acknowledgements during a QSO.
+    /// * At most one per station per [`HB_ACK_COOLDOWN_S`]. A busy band carries
+    ///   a heartbeat every slot; a station that answered all of them is the
+    ///   flood heartbeats exist to avoid.
+    fn hb_ack_allowed(&self, msg: &Js8Msg, unix_now: i64) -> bool {
+        self.cfg.js8_hb_ack
+            && self.speed.allows_heartbeat()
+            && !self.assembler.has_partials()
+            && self.tx_frames.is_empty()
+            && self.hb_acked.get(&msg.from).is_none_or(|&t| unix_now - t >= HB_ACK_COOLDOWN_S)
+    }
+
+    fn note_hb_ack(&mut self, call: &str, unix_now: i64) {
+        if self.hb_acked.len() >= HB_ACK_CAP {
+            self.hb_acked.retain(|_, &mut t| unix_now - t < HB_ACK_COOLDOWN_S);
+        }
+        self.hb_acked.insert(call.to_string(), unix_now);
+    }
+
     fn note_heard(&mut self, call: &str, grid: Option<String>, snr: i16, hz: f32, utc: i64) {
         if call.is_empty() {
             return;
@@ -506,16 +618,19 @@ impl DigiEngine for Js8Controller {
                     self.note_heard(&msg.from, grid, msg.snr_db, msg.audio_hz, msg.last_slot_utc);
                     // Answer before storing, so a reply is queued even if the
                     // conversation list is already full.
-                    if let Some(reply) = auto_reply(
-                        &msg,
-                        &self.station(),
-                        ReplyPolicy { auto_reply: self.cfg.js8_auto_reply },
-                    ) {
+                    let policy = ReplyPolicy {
+                        auto_reply: self.cfg.js8_auto_reply,
+                        hb_ack: self.hb_ack_allowed(&msg, unix_now),
+                    };
+                    if let Some(reply) = auto_reply(&msg, &self.station(), policy) {
                         // A grid or a status line does not fit in the directed
                         // frame, so an answer can be several frames long.
                         for f in self.frames_for_reply(reply) {
                             self.tx_frames.push_back(f);
                             self.tx_total = self.tx_total.saturating_add(1);
+                        }
+                        if intent(&msg) == Js8Intent::Heartbeat {
+                            self.note_hb_ack(&msg.from, unix_now);
                         }
                     }
                     self.messages.push(msg);
@@ -571,22 +686,7 @@ impl DigiEngine for Js8Controller {
         }
 
         // 3. Periodic heartbeat, if the operator asked for one.
-        if self.cfg.js8_heartbeat_min > 0 && !self.my_call().is_empty() {
-            let every = i64::from(self.cfg.js8_heartbeat_min) * 60;
-            if unix_now - self.last_hb_unix >= every {
-                self.last_hb_unix = unix_now;
-                let grid = self.cfg.my_grid.to_uppercase();
-                let hb = Compound::heartbeat(
-                    &self.my_call(),
-                    (!grid.is_empty()).then_some(grid.as_str()),
-                );
-                if let Some(p) = hb.pack() {
-                    self.tx_frames.push_back(Self::single(p));
-                    self.tx_total = self.tx_total.saturating_add(1);
-                    self.status_dirty = true;
-                }
-            }
-        }
+        self.tick_heartbeat(unix_now);
 
         // 4. Transmit one frame per slot, inside the window where it still fits.
         if self.burst.is_none() && idx != self.tx_fired_slot && !self.tx_frames.is_empty() {
@@ -735,7 +835,7 @@ impl DigiEngine for Js8Controller {
                 messages: self.messages.clone(),
                 tx_frames_pending: self.tx_frames.len().min(255) as u8,
                 tx_frames_total: self.tx_total,
-                next_hb_in_s: None,
+                next_hb_in_s: self.hb_countdown_s,
             }),
             fox_queue: Vec::new(),
             call_queue: Vec::new(),
@@ -1120,6 +1220,166 @@ mod tests {
         // Prose that opens like a locator is still prose.
         assert_eq!(grid_of(&hb("FN42 AND MORE", "SNR")), None);
         assert_eq!(grid_of(&hb("HELLO", "HB")), None);
+    }
+
+    /// A heartbeat message, as the assembler hands one over.
+    fn heartbeat_from(call: &str, snr: i16) -> Js8Msg {
+        Js8Msg {
+            from: call.into(),
+            to: "@ALLCALL".into(),
+            text: "EM73".into(),
+            cmd: Some("HB".into()),
+            snr_db: snr,
+            audio_hz: 1500.0,
+            first_slot_utc: 1000,
+            last_slot_utc: 1000,
+            frames: 1,
+            complete: true,
+            to_me: true,
+        }
+    }
+
+    #[test]
+    fn switching_the_beacon_on_does_not_key_the_radio_immediately() {
+        // The first beacon is a whole interval away. Anything else means
+        // choosing an interval transmits before the operator can change it.
+        let mut c = Js8Controller::new(DigiConfig { js8_heartbeat_min: 10, ..cfg() }, 48_000.0);
+        let t0 = 1_700_000_000;
+        c.tick_heartbeat(t0);
+        assert!(c.tx_frames.is_empty(), "beaconed the moment it was enabled");
+        assert!(c.next_hb_unix >= t0 + 600, "scheduled sooner than the interval");
+
+        // …and nothing goes out until it is due.
+        c.tick_heartbeat(t0 + 599);
+        assert!(c.tx_frames.is_empty());
+        c.tick_heartbeat(c.next_hb_unix);
+        assert_eq!(c.tx_frames.len(), 1, "the beacon never fired");
+        let hb = Compound::unpack(&c.tx_frames[0]).expect("a heartbeat frame");
+        assert_eq!(hb.call, "N0JDS");
+        assert_eq!(hb.grid().as_deref(), Some("FN42"));
+        assert!(!hb.is_cq());
+    }
+
+    #[test]
+    fn the_countdown_the_panel_shows_tracks_the_next_beacon() {
+        let mut c = Js8Controller::new(DigiConfig { js8_heartbeat_min: 10, ..cfg() }, 48_000.0);
+        let t0 = 1_700_000_000;
+        c.tick_heartbeat(t0);
+        let first = c.hb_countdown_s.expect("scheduled");
+        c.tick_heartbeat(t0 + 60);
+        assert_eq!(c.hb_countdown_s, Some(first - 60));
+
+        // Zero means off, and the panel has nothing to count down to.
+        c.cfg.js8_heartbeat_min = 0;
+        c.tick_heartbeat(t0 + 61);
+        assert_eq!(c.hb_countdown_s, None);
+        assert_eq!(c.next_hb_unix, 0, "a stale schedule would fire on re-enabling");
+    }
+
+    #[test]
+    fn beacons_do_not_all_land_in_the_same_slot() {
+        // Stations that share an interval and started together would otherwise
+        // collide on every beacon, which is why upstream jitters too.
+        let jitters = |call: &str| {
+            let mut c = Js8Controller::new(DigiConfig { my_call: call.into(), ..cfg() }, 48_000.0);
+            (0..24)
+                .map(|i| {
+                    c.hb_count = i;
+                    c.hb_jitter_s()
+                })
+                .collect::<Vec<_>>()
+        };
+        let mine = jitters("N0JDS");
+        assert!(mine.iter().any(|&j| j > 0), "every beacon landed on the same phase");
+        assert!(mine.contains(&0), "every beacon was pushed late");
+        assert!(mine.iter().all(|&j| j == 0 || j == 15), "jitter is one slot or none: {mine:?}");
+        assert_ne!(mine, jitters("KN4CRD"), "two stations jitter identically");
+    }
+
+    #[test]
+    fn turbo_does_not_beacon_at_all() {
+        // 160 Hz and six seconds a slot, for local and VHF work: an unattended
+        // beacon there costs a lot of a small band to reach nobody far away.
+        let mut c = Js8Controller::new(
+            DigiConfig { js8_heartbeat_min: 10, js8_speed: Js8Speed::Turbo, ..cfg() },
+            48_000.0,
+        );
+        let t0 = 1_700_000_000;
+        c.tick_heartbeat(t0);
+        c.tick_heartbeat(t0 + 6000);
+        assert!(c.tx_frames.is_empty(), "Turbo beaconed");
+        assert_eq!(c.hb_countdown_s, None);
+        // Nor does it acknowledge one.
+        c.cfg.js8_hb_ack = true;
+        assert!(!c.hb_ack_allowed(&heartbeat_from("KN4CRD", -7), t0));
+    }
+
+    #[test]
+    fn a_heartbeat_is_acknowledged_once_and_then_not_again_for_a_while() {
+        let mut c = Js8Controller::new(DigiConfig { js8_hb_ack: true, ..cfg() }, 48_000.0);
+        let t0 = 1_700_000_000;
+        let msg = heartbeat_from("KN4CRD", -7);
+        assert!(c.hb_ack_allowed(&msg, t0));
+        c.note_hb_ack("KN4CRD", t0);
+        assert!(!c.hb_ack_allowed(&msg, t0 + HB_ACK_COOLDOWN_S - 1), "answered twice in a row");
+        assert!(c.hb_ack_allowed(&msg, t0 + HB_ACK_COOLDOWN_S));
+        // The cooldown is per station, not a global gag.
+        assert!(c.hb_ack_allowed(&heartbeat_from("VK3ABC", -3), t0 + 1));
+    }
+
+    #[test]
+    fn acknowledging_waits_for_a_clear_moment() {
+        let mut c = Js8Controller::new(DigiConfig { js8_hb_ack: true, ..cfg() }, 48_000.0);
+        let t0 = 1_700_000_000;
+        let msg = heartbeat_from("KN4CRD", -7);
+        assert!(c.hb_ack_allowed(&msg, t0));
+
+        // Not while we already have something to send: ours would join the back
+        // of that queue and go out carrying a stale report.
+        c.send_text("KN4CRD A LONG MESSAGE THAT TAKES SEVERAL FRAMES TO GET OUT".into());
+        assert!(!c.hb_ack_allowed(&msg, t0));
+        c.abort_tx();
+
+        // Nor part-way through somebody else's message.
+        let (f, _) = crate::js8::frame::pack_data("HELLO ").expect("packs");
+        c.assembler.push(
+            &Js8Decode {
+                payload: Js8Payload { bits: f.bits, frame_type: Js8Flags::FIRST },
+                audio_hz: 2000.0,
+                dt_sec: 0.0,
+                snr_db: -5.0,
+                sync_score: 3.0,
+                hard_errors: 0,
+                speed: Js8Speed::Normal,
+            },
+            t0,
+        );
+        assert!(!c.hb_ack_allowed(&msg, t0), "keyed up mid-message");
+    }
+
+    #[test]
+    fn the_acknowledgement_carries_the_report_and_nothing_else() {
+        let mut c = Js8Controller::new(DigiConfig { js8_hb_ack: true, ..cfg() }, 48_000.0);
+        let msg = heartbeat_from("KN4CRD", -11);
+        let policy = ReplyPolicy { auto_reply: true, hb_ack: true };
+        let reply = auto_reply(&msg, &c.station(), policy).expect("acknowledged");
+        let frames = c.frames_for_reply(reply);
+        assert_eq!(frames.len(), 1, "an acknowledgement is one frame");
+        let d = Directed::unpack(&frames[0]).expect("a directed frame");
+        assert_eq!(frame::cmd_text(d.cmd), Some(" HEARTBEAT SNR"));
+        assert_eq!(d.to, "KN4CRD");
+        assert_eq!(d.from, "N0JDS");
+        assert_eq!(d.num, Some(-11));
+        assert!(Js8Flags(frames[0].frame_type).is_first());
+        assert!(Js8Flags(frames[0].frame_type).is_last());
+        c.abort_tx();
+    }
+
+    #[test]
+    fn acknowledging_is_off_until_the_operator_asks_for_it() {
+        let c = Js8Controller::new(cfg(), 48_000.0);
+        assert!(!c.cfg.js8_hb_ack, "a station must not start beaconing back unasked");
+        assert!(!c.hb_ack_allowed(&heartbeat_from("KN4CRD", -7), 1_700_000_000));
     }
 
     #[test]

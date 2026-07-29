@@ -1190,15 +1190,35 @@ station stays lit far longer here than in FT8.
 **Answering automatically.** In ⚙ SETUP, *Auto-reply* answers SNR?, GRID?,
 STATUS? and HEARING? queries addressed to you or to @ALLCALL — with the answer,
 not just the acknowledgement: a report rides in the frame itself, and a grid or
-a status line follows it as text. This is what makes a JS8
-station worth leaving switched on, and it is on by default. It never answers
-another station's traffic, never answers itself, and never answers an
-announcement — only a direct question.
+a status line follows it as text. This is what makes a JS8 station worth leaving
+switched on, and it is on by default. It never answers another station's
+traffic, and never answers itself.
 
-*Heartbeat* transmits your callsign and grid every N minutes so others know you
-are receivable. It is **off** by default and you have to set the interval
-yourself: an unattended beacon is something you should choose, not something a
-mode switches on for you.
+*Heartbeat reply* answers a heard heartbeat with a signal report, so the station
+beaconing learns who copied them and how well. It is **off** by default, and
+deliberately hedged about: a busy band carries a heartbeat every slot, and a
+station that answered all of them would flood exactly the band heartbeats exist
+to keep quiet. So it answers a given station at most once every 15 minutes,
+never while a multi-frame message is still arriving, and never while you have
+something of your own queued to send — an answer that waited behind a long
+message would carry a stale report anyway. A CQ is never answered automatically
+at all: it asks for a contact, and starting one is your decision.
+
+**Beaconing.** *Heartbeat* transmits your callsign and grid on an interval so
+others know you are receivable — off, 10, 15, 30 or 60 minutes, the choices
+JS8Call offers. It is **off** by default: an unattended beacon is something you
+should choose, not something a mode switches on for you. **HB AUTO** in the
+panel header turns it on and off without opening SETUP, and the countdown beside
+it says when the next one goes out — a transmitter that keys itself should say
+so where you are already looking.
+
+The first heartbeat is a whole interval away rather than immediate, so choosing
+an interval never keys the radio before you can change your mind. Each one is
+scheduled with up to a slot of jitter, because stations that share an interval
+and started together would otherwise collide on every beacon. Turbo does not
+beacon at all, and cannot acknowledge one: it is the local and VHF speed, and an
+unattended transmitter there spends a lot of a small band to reach nobody far
+away.
 
 Relayed messages and stored-message requests are decoded and shown, but this
 station will not act on them — forwarding traffic on someone else's behalf is a

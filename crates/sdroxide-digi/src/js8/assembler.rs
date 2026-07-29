@@ -236,6 +236,14 @@ impl Js8Assembler {
             .collect()
     }
 
+    /// True while any station's multi-frame message is still coming in.
+    ///
+    /// What the heartbeat acknowledgement checks before transmitting: keying up
+    /// mid-message would interleave our frame with someone's sentence.
+    pub fn has_partials(&self) -> bool {
+        !self.partials.is_empty()
+    }
+
     /// Messages still arriving, for a live view of partial text.
     pub fn in_progress(&self) -> Vec<Js8Msg> {
         self.partials

@@ -10,6 +10,10 @@
 //!   it.
 //! * Only the commands upstream marks auto-repliable (`autoreply_cmds`) are
 //!   answered at all. Everything else is displayed and left to the operator.
+//! * A heartbeat is answered with a report only when the operator switched
+//!   that on, and then only as often as the caller allows. A CQ is never
+//!   answered: it asks for a contact, not a report, and starting one is the
+//!   operator's decision.
 //! * We never answer ourselves. One misconfiguration — an operator's own
 //!   callsign arriving via a relay, or a loopback — would otherwise become a
 //!   two-station beacon with no off switch.
@@ -71,18 +75,27 @@ pub struct Js8Reply {
     pub body: Option<String>,
 }
 
-/// Policy switches, straight from the operator's settings.
+/// Policy switches for one received message.
 #[derive(Debug, Clone, Copy)]
 pub struct ReplyPolicy {
     /// Master switch. Off means this module never produces a transmission.
     pub auto_reply: bool,
+    /// Whether *this* heartbeat may be acknowledged.
+    ///
+    /// Not simply the operator's setting: acknowledging is rate-limited per
+    /// station, suspended while a multi-frame message is still arriving, and
+    /// unavailable at Turbo — all of which need a clock and the engine's state,
+    /// so the caller decides and passes the answer in. Keeping it out of here
+    /// is what lets this module stay a pure function of the message.
+    pub hb_ack: bool,
 }
 
 impl Default for ReplyPolicy {
     fn default() -> Self {
-        // Answering queries is the useful default and is what makes a JS8
-        // station worth leaving on; beaconing is not, and lives elsewhere.
-        ReplyPolicy { auto_reply: true }
+        // Answering questions is the useful default and is what makes a JS8
+        // station worth leaving on. Answering announcements is not: see
+        // [`DigiConfig::js8_hb_ack`](sdroxide_types::DigiConfig::js8_hb_ack).
+        ReplyPolicy { auto_reply: true, hb_ack: false }
     }
 }
 
@@ -124,6 +137,28 @@ pub fn auto_reply(msg: &Js8Msg, me: &StationInfo, policy: ReplyPolicy) -> Option
         return None;
     }
 
+    // A heartbeat is an announcement, not a question — but the mode's whole
+    // point is that a beacon gets a report back, so the sender learns who is
+    // copying them. It has a switch of its own because answering every one of
+    // them would flood the band; `hb_ack` is the caller's verdict for this
+    // message, rate limit and all.
+    if intent(msg) == Js8Intent::Heartbeat {
+        if !policy.hb_ack {
+            return None;
+        }
+        return Some(Js8Reply {
+            directed: Directed {
+                from: me.call.clone(),
+                to: msg.from.clone(),
+                cmd: cmd_code(" HEARTBEAT SNR")?,
+                num: Some(i32::from(msg.snr_db)),
+                portable_from: false,
+                portable_to: false,
+            },
+            body: None,
+        });
+    }
+
     // `body` is what the frame cannot say by itself. A signal report rides in
     // the directed frame's number field, so it has none; everything else is
     // text that must follow.
@@ -132,9 +167,9 @@ pub fn auto_reply(msg: &Js8Msg, me: &StationInfo, policy: ReplyPolicy) -> Option
         Js8Intent::GridQuery => (" GRID", Some(me.grid.clone())),
         Js8Intent::StatusQuery => (" STATUS", Some(me.status.clone())),
         Js8Intent::HearingQuery => (" HEARING", Some(me.hearing.join(" "))),
-        // A heartbeat or CQ is an announcement, not a question. Answering every
-        // one would flood the band, which is precisely what heartbeats exist to
-        // avoid.
+        // A CQ is an announcement too, but unlike a heartbeat it is asking for
+        // a contact rather than a report — answering it automatically would
+        // start a QSO the operator did not agree to have.
         _ => return None,
     };
 
@@ -262,7 +297,7 @@ mod tests {
     #[test]
     fn auto_reply_is_off_when_the_operator_turned_it_off() {
         let m = query("KN4CRD", "N0JDS", "SNR?", true);
-        assert!(auto_reply(&m, &me(), ReplyPolicy { auto_reply: false }).is_none());
+        assert!(auto_reply(&m, &me(), ReplyPolicy { auto_reply: false, hb_ack: false }).is_none());
     }
 
     #[test]
@@ -274,13 +309,50 @@ mod tests {
     }
 
     #[test]
-    fn announcements_are_not_answered() {
-        // Heartbeats and CQs are announcements. Replying to every one would
-        // flood exactly the band heartbeats exist to keep quiet.
+    fn announcements_are_not_answered_by_default() {
+        // Replying to every heartbeat would flood exactly the band they exist
+        // to keep quiet, so acknowledging is off until the operator says so.
         for cmd in ["HB", "CQ"] {
             let m = query("KN4CRD", "@ALLCALL", cmd, true);
             assert!(auto_reply(&m, &me(), ReplyPolicy::default()).is_none(), "{cmd}");
         }
+    }
+
+    #[test]
+    fn a_heartbeat_is_acknowledged_with_a_report_when_that_is_switched_on() {
+        // What the acknowledgement is *for*: the station beaconing learns who
+        // copied them, and how well.
+        let m = query("KN4CRD", "@ALLCALL", "HB", true);
+        let policy = ReplyPolicy { hb_ack: true, ..ReplyPolicy::default() };
+        let r = auto_reply(&m, &me(), policy).expect("acknowledged");
+        assert_eq!(super::super::frame::cmd_text(r.directed.cmd), Some(" HEARTBEAT SNR"));
+        assert_eq!(r.directed.to, "KN4CRD");
+        assert_eq!(r.directed.num, Some(-7), "the report is the point of the reply");
+        assert_eq!(r.body, None, "the frame carries the report itself");
+    }
+
+    #[test]
+    fn a_cq_is_never_acknowledged_however_the_switches_are_set() {
+        // A CQ asks for a contact. Answering one automatically starts a QSO
+        // the operator did not agree to have.
+        let m = query("KN4CRD", "@ALLCALL", "CQ", true);
+        let policy = ReplyPolicy { auto_reply: true, hb_ack: true };
+        assert!(auto_reply(&m, &me(), policy).is_none());
+    }
+
+    #[test]
+    fn acknowledging_still_obeys_every_other_rule() {
+        let policy = ReplyPolicy { auto_reply: true, hb_ack: true };
+        // Our own heartbeat back through a relay or a loopback: the failure
+        // mode is two stations beaconing at each other forever.
+        let mine = query("N0JDS", "@ALLCALL", "HB", true);
+        assert!(auto_reply(&mine, &me(), policy).is_none());
+        // Auto-reply off is off, whatever the heartbeat switch says.
+        let m = query("KN4CRD", "@ALLCALL", "HB", true);
+        assert!(auto_reply(&m, &me(), ReplyPolicy { auto_reply: false, hb_ack: true }).is_none());
+        // And a station with no callsign may not transmit at all.
+        let anon = StationInfo { call: String::new(), ..me() };
+        assert!(auto_reply(&m, &anon, policy).is_none());
     }
 
     #[test]
