@@ -29,7 +29,7 @@ mod window;
 
 pub use agc::Agc;
 pub use ddc::Ddc;
-pub use decim::{FirDecim, HalfbandDecim, lowpass_taps};
+pub use decim::{FirDecim, HalfbandDecim, RealFirDecim, lowpass_taps};
 pub use demod::{DcBlock, Demodulator, channel_target, make_demod};
 pub use fir::{ComplexFir, RealFir, bandpass_taps};
 pub use fsq::{FsqRx, FsqTx};
@@ -44,7 +44,7 @@ pub use notch::AutoNotch;
 pub use nr::SpectralNr;
 pub use olivia::{OliviaRx, OliviaTx};
 pub use psk::{BpskCore, PskRx, PskTx, VaricodeRx};
-pub use resample::{ComplexResampler, MonoResampler};
+pub use resample::{ComplexResampler, MonoResampler, StereoResampler};
 pub use rifp::{RifpFrame, RifpRx, RifpTx, Tlv as RifpTlv};
 pub use rtty::{BaudotRx, RttyRx, RttyTx};
 pub use spectrum::SpectrumAnalyzer;

@@ -234,6 +234,22 @@ dial + XIT — so you can see at a glance how far RX and TX are shifted.
   with **AI Med**. (NR affects only what you hear; the FT8/FT4/PSK/RTTY decoders
   still receive the untouched signal, and a steady unmodulated carrier — a
   heterodyne — is treated as noise and suppressed.)
+- **ST** (WFM only) — broadcast **stereo**. It lights when the station's 19 kHz
+  stereo pilot is locked, and needs nothing from you: mono and stereo stations
+  are handled automatically, at the same volume, so there is no jump when one
+  hands over to the other. Click it to force mono.
+
+  On a weak station sdroxide blends back toward mono by itself. That is not a
+  compromise — the difference channel is recovered from a 38 kHz subcarrier,
+  high on FM's noise slope, so it carries roughly 20 dB more hiss than the
+  mono sum. Clean mono beats noisy stereo, and the blend is gradual enough that
+  you will not hear it switch. Forcing mono is still worth doing on a marginal
+  signal you want to listen to for a long time.
+
+  Two things turn stereo off on purpose: switching on the **sub receiver**,
+  which claims the right ear for itself, and switching on **NR** or **ANC**,
+  which delay the audio in a way the stereo matrix cannot survive. Neither buys
+  anything on a broadcast signal.
 
 **The receive filter** is set by dragging the passband edges directly on the
 panadapter: two vertical grip lines mark the filter's low and high edges (they
@@ -2404,7 +2420,7 @@ F1 is the exception: it always opens the manual, so it is not rebindable.
 | CW | Morse (continuous wave). |
 | AM | Amplitude modulation. |
 | SAM | Synchronous AM. |
-| NFM / WFM | Narrow / wide FM. |
+| NFM / WFM | Narrow / wide FM. WFM decodes broadcast stereo automatically. |
 | DIGU / DIGL | Data over USB / LSB (general digital). |
 | DSB | Double sideband. |
 | SPEC | Spectrum only (no demodulation). |

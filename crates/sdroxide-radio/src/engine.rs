@@ -19,7 +19,8 @@ use sdroxide_digi::{
 };
 use sdroxide_dsp::{
     Agc, AutoNotch, DcBlock, Ddc, Demodulator, Duc, Modulator, MonoResampler, NeuralNr,
-    NoiseBlanker, SpectralNr, SpectrumAnalyzer, channel_target, make_demod, make_modulator,
+    NoiseBlanker, SpectralNr, SpectrumAnalyzer, StereoResampler, channel_target, make_demod,
+    make_modulator,
 };
 use sdroxide_rigctld::{RigState, RigctldController};
 use sdroxide_skimmer::{SkimmerAction, SkimmerController};
@@ -138,6 +139,18 @@ pub fn start(source: Box<dyn IqSource>, caps: DeviceCaps, cfg: EngineConfig) -> 
     EngineHandles { cmd_tx, event_rx, spectrum_out, swap_tx, thread: Some(thread) }
 }
 
+/// Whether a receiver's demod may decode stereo right now.
+///
+/// Noise reduction and the auto-notch disqualify it: `SpectralNr` carries a
+/// fixed one-frame latency and `NeuralNr` a full RNNoise frame, and both would
+/// run on the sum only. An 8–10 ms delay on one side of `L = M±S` is three
+/// cycles of phase error at 1 kHz — the matrix would collapse into a comb
+/// filter with a randomly wandering image. They are HF speech tools that buy
+/// nothing on a broadcast signal, so stereo simply yields to them.
+fn stereo_allowed(rx: &RxState) -> bool {
+    rx.wfm_stereo && !rx.auto_notch && !rx.noise_reduction.is_on()
+}
+
 /// One receiver: DDC → demod → AGC → volume → resample to the device rate.
 struct RxChain {
     in_rate: f64,
@@ -165,6 +178,16 @@ struct RxChain {
     channel_buf: Vec<Complex32>,
     audio_buf: Vec<f32>,
     out_buf: Vec<f32>,
+    /// WFM stereo difference channel (L−R)/2 at the demod rate, empty when the
+    /// demod is mono. See [`RxChain::run`].
+    side_buf: Vec<f32>,
+    /// L/R interleaved for the stereo resampler, and the right channel it
+    /// yields. Both stay empty on the mono path.
+    lr_buf: Vec<f32>,
+    lr_out: Vec<f32>,
+    out_buf_r: Vec<f32>,
+    /// Resamples L and R together so the two can't drift a sample apart.
+    stereo_rs: Option<StereoResampler>,
 }
 
 impl RxChain {
@@ -189,6 +212,11 @@ impl RxChain {
             channel_buf: Vec::new(),
             audio_buf: Vec::new(),
             out_buf: Vec::new(),
+            side_buf: Vec::new(),
+            lr_buf: Vec::new(),
+            lr_out: Vec::new(),
+            out_buf_r: Vec::new(),
+            stereo_rs: None,
         };
         chain.build_for_mode(rx);
         chain
@@ -221,6 +249,7 @@ impl RxChain {
         self.demod = make_demod(rx.mode, self.ddc.out_rate());
         if let Some(d) = self.demod.as_mut() {
             d.set_filter(rx.filter_lo, rx.filter_hi);
+            d.set_stereo_enabled(stereo_allowed(rx));
         }
         let audio_rate =
             self.demod.as_ref().map(|d| d.audio_rate()).unwrap_or_else(|| self.ddc.out_rate());
@@ -228,6 +257,7 @@ impl RxChain {
         self.agc.set_mode(rx.agc);
         self.agc.set_max_gain_db(rx.agc_max_gain_db);
         self.resampler = MonoResampler::new(audio_rate, self.out_rate);
+        self.stereo_rs = StereoResampler::new(audio_rate, self.out_rate);
     }
 
     fn set_offset_hz(&mut self, hz: f64) {
@@ -235,20 +265,33 @@ impl RxChain {
         self.ddc.set_offset_hz(hz);
     }
 
-    /// Process a device-rate block; the returned slice is audio at
-    /// `out_rate` (empty when this chain produces no audio, e.g. SPEC).
-    fn run(&mut self, iq: &[Complex32], rx: &RxState) -> &[f32] {
+    /// Process a device-rate block. The first slice is audio at `out_rate`
+    /// (empty when this chain produces no audio, e.g. SPEC); the second is the
+    /// right channel, present only while WFM stereo is actually being decoded —
+    /// otherwise the caller plays the first slice in both ears.
+    fn run(&mut self, iq: &[Complex32], rx: &RxState) -> (&[f32], Option<&[f32]>) {
         self.out_buf.clear();
-        let Some(demod) = self.demod.as_mut() else {
-            return &self.out_buf;
-        };
+        self.out_buf_r.clear();
+        if self.demod.is_none() {
+            return (&self.out_buf, None);
+        }
+        let demod = self.demod.as_mut().expect("checked above");
 
         self.channel_buf.clear();
         self.ddc.process(iq, &mut self.channel_buf);
 
         self.audio_buf.clear();
+        self.side_buf.clear();
         demod.process(&self.channel_buf, &mut self.audio_buf);
-        self.agc.process(&mut self.audio_buf);
+        demod.set_stereo_enabled(stereo_allowed(rx));
+        let stereo = demod.take_side(&mut self.side_buf);
+        if stereo {
+            // One gain trajectory and one lookahead delay across both channels:
+            // levelling them separately would pump the stereo image.
+            self.agc.process_pair(&mut self.audio_buf, &mut self.side_buf);
+        } else {
+            self.agc.process(&mut self.audio_buf);
+        }
 
         // Tap the clean, post-AGC audio before volume/mute/squelch AND before
         // noise reduction so the FT8/FT4 decoder always sees the raw signal.
@@ -305,35 +348,79 @@ impl RxChain {
         let open = demod.power_dbfs() >= rx.squelch_db;
         let sq_target = if open { 1.0 } else { 0.0 };
         let vol = if rx.muted { 0.0 } else { rx.volume * rx.volume };
-        for s in &mut self.audio_buf {
-            self.sq_gain += (sq_target - self.sq_gain) * 0.002;
-            *s *= vol * self.sq_gain;
+        if stereo {
+            // A single loop over both: `sq_gain` advances per *sample*, so
+            // gating the two channels in separate passes would run the gate
+            // twice as fast and hand them different gains.
+            for (m, sd) in self.audio_buf.iter_mut().zip(self.side_buf.iter_mut()) {
+                self.sq_gain += (sq_target - self.sq_gain) * 0.002;
+                let g = vol * self.sq_gain;
+                *m *= g;
+                *sd *= g;
+            }
+        } else {
+            for s in &mut self.audio_buf {
+                self.sq_gain += (sq_target - self.sq_gain) * 0.002;
+                *s *= vol * self.sq_gain;
+            }
         }
 
-        match &mut self.resampler {
-            Some(r) => r.push(&self.audio_buf, &mut self.out_buf),
-            None => self.out_buf.extend_from_slice(&self.audio_buf),
+        if !stereo {
+            match &mut self.resampler {
+                Some(r) => r.push(&self.audio_buf, &mut self.out_buf),
+                None => self.out_buf.extend_from_slice(&self.audio_buf),
+            }
+            // Clamp after resampling so interpolation overshoot can't escape.
+            for s in &mut self.out_buf {
+                *s = s.clamp(-1.0, 1.0);
+            }
+            return (&self.out_buf, None);
         }
-        // Clamp after resampling so interpolation overshoot can't escape.
-        for s in &mut self.out_buf {
-            *s = s.clamp(-1.0, 1.0);
+
+        // Matrix last: everything upstream ran on the sum, which is what the
+        // taps, the recorder downmix and the remote stream all want.
+        self.lr_buf.clear();
+        self.lr_buf.reserve(self.audio_buf.len() * 2);
+        for (&m, &sd) in self.audio_buf.iter().zip(self.side_buf.iter()) {
+            self.lr_buf.push(m + sd);
+            self.lr_buf.push(m - sd);
         }
-        &self.out_buf
+        let lr: &[f32] = match &mut self.stereo_rs {
+            Some(r) => {
+                self.lr_out.clear();
+                r.push(&self.lr_buf, &mut self.lr_out);
+                &self.lr_out
+            }
+            None => &self.lr_buf,
+        };
+        self.out_buf.reserve(lr.len() / 2);
+        self.out_buf_r.reserve(lr.len() / 2);
+        for f in lr.chunks_exact(2) {
+            self.out_buf.push(f[0].clamp(-1.0, 1.0));
+            self.out_buf_r.push(f[1].clamp(-1.0, 1.0));
+        }
+        (&self.out_buf, Some(&self.out_buf_r))
     }
 
     fn power_dbfs(&self) -> Option<f32> {
         self.demod.as_ref().map(|d| d.power_dbfs())
     }
+
+    fn stereo_locked(&self) -> bool {
+        self.demod.as_ref().is_some_and(|d| d.stereo_locked())
+    }
 }
 
-/// Interleaves main/sub audio into the stereo ring. When the sub receiver is
-/// active, main goes left and sub right; otherwise main goes to both ears.
+/// Interleaves two mono streams into the stereo ring. The second is whichever
+/// source has claimed the right ear — the sub receiver, or the right channel of
+/// a WFM stereo broadcast; with neither, the first goes to both ears.
 struct StereoMixer {
     out: rtrb::Producer<f32>,
     main_q: Vec<f32>,
     sub_q: Vec<f32>,
     dropped: u64,
-    /// When recording, a mono downmix of each output sample is pushed here.
+    /// When recording, a copy of each interleaved L/R output frame is pushed
+    /// here.
     rec_tap: Option<rtrb::Producer<f32>>,
 }
 
@@ -346,9 +433,9 @@ impl StereoMixer {
         StereoMixer { out, main_q: Vec::new(), sub_q: Vec::new(), dropped: 0, rec_tap: None }
     }
 
-    fn push(&mut self, main: &[f32], sub: Option<&[f32]>) {
-        self.main_q.extend_from_slice(main);
-        let dual = match sub {
+    fn push(&mut self, left: &[f32], right: Option<&[f32]>) {
+        self.main_q.extend_from_slice(left);
+        let dual = match right {
             Some(s) => {
                 self.sub_q.extend_from_slice(s);
                 true
@@ -367,7 +454,9 @@ impl StereoMixer {
                 for i in 0..n {
                     let l = self.main_q[i];
                     let r = if dual { self.sub_q[i] } else { l };
-                    let _ = rec.push(0.5 * (l + r)); // drop if the recorder stalls
+                    // Interleaved L/R, the same frames the speakers get.
+                    let _ = rec.push(l); // drop if the recorder stalls
+                    let _ = rec.push(r);
                 }
             }
             if self.out.slots() >= n * 2 {
@@ -626,6 +715,9 @@ struct Engine {
     /// The main chain's audio for this block, copied out so the borrow of the
     /// chain ends before a digital-voice mode gets the chance to replace it.
     main_play: Vec<f32>,
+    /// Right channel of the main chain, non-empty only while WFM stereo is
+    /// decoding and the sub receiver is off.
+    main_play_r: Vec<f32>,
     /// True while the current over is fed by a TCI client's audio stream.
     tci_tx: bool,
     /// Consecutive short TX blocks this over, for the dead-client unkey.
@@ -813,6 +905,7 @@ fn engine_thread(
         voice_buf: Vec::new(),
         voice_play: Vec::new(),
         main_play: Vec::new(),
+        main_play_r: Vec::new(),
         tci_tx: false,
         tci_tx_starved: 0,
         tci_last_snap: None,
@@ -962,12 +1055,15 @@ fn engine_thread(
                     s_dbm: -127.0,
                     adc_peak_dbfs: 0.0,
                     tx: Some(TxMeters { fwd_w: tele.fwd_w, swr: tele.swr, alc }),
+                    stereo: false,
                 })
             } else {
+                let stereo = engine.main.as_ref().is_some_and(|c| c.stereo_locked());
                 engine.main.as_ref().and_then(|c| c.power_dbfs()).map(|p| Meters {
                     s_dbm: p + engine.cal_offset_db,
                     adc_peak_dbfs: 0.0,
                     tx: None,
+                    stereo,
                 })
             };
             if let Some(m) = meters {
@@ -1062,8 +1158,12 @@ impl Engine {
         // this audio wholesale, and deciding that needs the digi engine, which
         // would otherwise be borrowed against the chain.
         self.main_play.clear();
-        let audio = main.run(iq, &self.state.rx[0]);
+        self.main_play_r.clear();
+        let (audio, right) = main.run(iq, &self.state.rx[0]);
         self.main_play.extend_from_slice(audio);
+        if let Some(r) = right {
+            self.main_play_r.extend_from_slice(r);
+        }
 
         // Feed the digital-mode decoder from the clean tap (not the mixed,
         // possibly-muted output).
@@ -1082,29 +1182,40 @@ impl Engine {
         if self.take_preview_audio(out_rate, block) {
             self.main_play.clear();
             self.main_play.extend_from_slice(&self.voice_prev_out);
+            self.main_play_r.clear();
         } else if self.take_voice_audio(out_rate) {
             let rx0 = &self.state.rx[0];
             let vol = if rx0.muted { 0.0 } else { rx0.volume * rx0.volume };
             self.main_play.clear();
             self.main_play.extend(self.voice_play.iter().map(|s| s * vol));
+            self.main_play_r.clear();
         } else if self.mutes_analog_audio() {
             // Silenced in place rather than dropped: the block still has to
             // reach the mixer to keep the output paced.
             self.main_play.fill(0.0);
+            self.main_play_r.fill(0.0);
         }
 
         let sub_audio: Option<&[f32]> = match (&mut self.sub, self.state.sub_rx_enabled) {
             (Some(sub), true) => {
                 // A silent sub (SPEC) degrades to mono rather than stalling.
                 let has_audio = sub.demod.is_some();
-                let a = sub.run(iq, &self.state.rx[1]);
+                let (a, _) = sub.run(iq, &self.state.rx[1]);
                 has_audio.then_some(a)
             }
             _ => None,
         };
 
+        // Both want the right ear. The sub receiver wins: switching it on is an
+        // explicit request for that ear, whereas WFM stereo is automatic — so
+        // the broadcast falls back to its mono sum until the sub is switched off.
+        let right: Option<&[f32]> = match sub_audio {
+            Some(a) => Some(a),
+            None if !self.main_play_r.is_empty() => Some(&self.main_play_r),
+            None => None,
+        };
         if let Some(mixer) = self.mixer.as_mut() {
-            mixer.push(&self.main_play, sub_audio);
+            mixer.push(&self.main_play, right);
         }
         // Feed the high-resolution channel spectrum from the DDC output.
         if let (Some(ca), Some(main)) = (self.channel_analyzer.as_mut(), self.main.as_ref()) {
@@ -1806,6 +1917,7 @@ impl Engine {
             SetNoiseBlanker(on) => self.state.noise_blanker = on,
             SetNoiseReduction { rx, level } => self.state.rx[rx.index()].noise_reduction = level,
             SetAutoNotch { rx, on } => self.state.rx[rx.index()].auto_notch = on,
+            SetWfmStereo { rx, on } => self.state.rx[rx.index()].wfm_stereo = on,
             SetRecording(on) => {
                 if on {
                     self.start_recording();
@@ -3968,5 +4080,97 @@ fn save_sstv_rx(png: &[u8]) {
     let path = dir.join(format!("sstv-{ts}.png"));
     if let Err(e) = std::fs::write(&path, png) {
         warn!("saving SSTV image {}: {e}", path.display());
+    }
+}
+
+#[cfg(test)]
+mod stereo_tests {
+    use super::*;
+
+    /// Device-rate IQ carrying an FM stereo multiplex, hard-panned left.
+    fn wfm_stereo_iq(dev_rate: f64, secs: f64) -> Vec<Complex32> {
+        let n = (dev_rate * secs) as usize;
+        let mut phase = 0.0f64;
+        (0..n)
+            .map(|i| {
+                let t = i as f64 / dev_rate;
+                let (l, r) = (0.8 * (std::f64::consts::TAU * 1_000.0 * t).sin(), 0.0);
+                let (m, s) = ((l + r) / 2.0, (l - r) / 2.0);
+                // Sine phase, as the broadcast standard specifies.
+                let mpx = 0.9 * (m + s * (std::f64::consts::TAU * 38_000.0 * t).sin())
+                    + 0.1 * (std::f64::consts::TAU * 19_000.0 * t).sin();
+                phase += std::f64::consts::TAU * 75_000.0 * mpx / dev_rate;
+                Complex32::new(phase.cos() as f32, phase.sin() as f32)
+            })
+            .collect()
+    }
+
+    fn goertzel(x: &[f32], freq: f64, rate: f64) -> f64 {
+        let w = std::f64::consts::TAU * freq / rate;
+        let coeff = 2.0 * w.cos();
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        for &v in x {
+            let s0 = v as f64 + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        (s1 * s1 + s2 * s2 - coeff * s1 * s2) / (x.len() as f64 * x.len() as f64 / 4.0)
+    }
+
+    /// The whole receive chain, not just the demodulator: DDC, AGC, squelch,
+    /// volume, the L/R matrix and the stereo resampler, exactly as the engine
+    /// runs them.
+    #[test]
+    fn rx_chain_delivers_separated_stereo() {
+        let dev_rate = 1_536_000.0;
+        let out_rate = 48_000.0;
+        let mut rx = RxState::with_mode(Mode::Wfm);
+        rx.volume = 1.0;
+        let mut chain = RxChain::new(dev_rate, &rx, out_rate);
+
+        let iq = wfm_stereo_iq(dev_rate, 6.0);
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        for block in iq.chunks(16_384) {
+            let (l, r) = chain.run(block, &rx);
+            // Once stereo is up the chain must deliver both ears every block.
+            if let Some(r) = r {
+                assert_eq!(l.len(), r.len(), "L/R block lengths diverged");
+                left.extend_from_slice(l);
+                right.extend_from_slice(r);
+            }
+        }
+        assert!(chain.stereo_locked(), "pilot never locked through the chain");
+        assert!(!left.is_empty(), "chain never produced a stereo block");
+
+        let tail = left.len() * 3 / 4;
+        let pl = goertzel(&left[tail..], 1_000.0, out_rate);
+        let pr = goertzel(&right[tail..], 1_000.0, out_rate);
+        let sep = 10.0 * (pl / pr.max(1e-30)).log10();
+        assert!(sep >= 20.0, "separation only {sep:.1} dB out of the full chain");
+    }
+
+    /// Noise reduction and the auto-notch delay the sum by a whole frame; the
+    /// matrix cannot survive that, so the chain must fall back to mono.
+    #[test]
+    fn noise_reduction_forces_mono() {
+        let dev_rate = 1_536_000.0;
+        let mut rx = RxState::with_mode(Mode::Wfm);
+        rx.volume = 1.0;
+        let mut chain = RxChain::new(dev_rate, &rx, 48_000.0);
+        let iq = wfm_stereo_iq(dev_rate, 3.0);
+        for block in iq.chunks(16_384) {
+            let _ = chain.run(block, &rx);
+        }
+        assert!(chain.stereo_locked());
+
+        // The fade is deliberate (200 ms), so what matters is that it *reaches*
+        // mono and stays there, not that it switches on the first block.
+        rx.noise_reduction = NrLevel::Medium;
+        let mut last_stereo = true;
+        for block in iq.chunks(16_384) {
+            let (_, r) = chain.run(block, &rx);
+            last_stereo = r.is_some();
+        }
+        assert!(!last_stereo, "still decoding stereo after NR had been on for 3 s");
     }
 }

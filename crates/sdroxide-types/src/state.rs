@@ -59,6 +59,9 @@ pub struct RxState {
     pub noise_reduction: NrLevel,
     /// Adaptive auto-notch (ANC): cancel constant tone elements in the audio.
     pub auto_notch: bool,
+    /// Allow WFM broadcast stereo when the 19 kHz pilot locks. Ignored in every
+    /// other mode.
+    pub wfm_stereo: bool,
 }
 
 impl RxState {
@@ -75,6 +78,7 @@ impl RxState {
             squelch_db: SQUELCH_OPEN_DB,
             noise_reduction: NrLevel::Off,
             auto_notch: false,
+            wfm_stereo: true,
         }
     }
 }

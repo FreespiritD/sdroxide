@@ -34,7 +34,8 @@ One binary, three ways to run it:
 - **Bandplan overlay** — a colour-coded strip along the bottom of the waterfall
   that labels allocations (ham bands, broadcast, CB, AM); it shows coarse bands
   when zoomed out and CW/digital/SSB sub-segments when zoomed into a ham band.
-- **Modes** — SSB (USB/LSB), CW, AM, SAM, NFM, WFM, DSB, DIGU/DIGL, a
+- **Modes** — SSB (USB/LSB), CW, AM, SAM, NFM, WFM (with broadcast
+  pilot-tone **stereo**), DSB, DIGU/DIGL, a
   spectrum-only mode, **FT8/FT4**, the keyboard modes **PSK31**, **RTTY**,
   **Olivia**, **THOR** and **FSQ** (with directed messaging + images),
   **Hellschreiber** (all seven Feld Hell / FSK Hell variants, on a scrolling

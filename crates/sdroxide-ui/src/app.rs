@@ -1728,6 +1728,26 @@ impl SdroxideApp {
                         self.state.rx[0].noise_reduction = next; // optimistic echo
                         cmds.push(Command::SetNoiseReduction { rx: RxId::Main, level: next });
                     }
+                    // WFM broadcast stereo: lit while a 19 kHz pilot is locked,
+                    // click to force mono. Only WFM has a pilot to find.
+                    if self.state.rx[0].mode == Mode::Wfm {
+                        let want = self.state.rx[0].wfm_stereo;
+                        let locked = self.meters.as_ref().is_some_and(|m| m.stereo);
+                        let hover = if !want {
+                            "WFM stereo forced off — click for automatic stereo"
+                        } else if locked {
+                            "WFM stereo: pilot locked. Click to force mono"
+                        } else {
+                            "WFM stereo: automatic, no pilot on this station"
+                        };
+                        if crate::chrome::chip(ui, want && locked, "ST")
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            self.state.rx[0].wfm_stereo = !want; // optimistic echo
+                            cmds.push(Command::SetWfmStereo { rx: RxId::Main, on: !want });
+                        }
+                    }
                 });
             });
         });

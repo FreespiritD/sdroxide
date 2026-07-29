@@ -82,7 +82,11 @@ use sdroxide_types::{
 /// `RifpDropSession`, `ServerMsg::RifpRows` / `RifpImage` / `RifpStatus`, and
 /// `DigiConfig`'s `rifp_*` fields, which both ends must agree on because
 /// `DigiStatus` carries the config.
-pub const PROTO_VERSION: u16 = 26;
+/// v27: WFM broadcast stereo — `RxState.wfm_stereo`, `Meters.stereo` and
+/// `Command::SetWfmStereo`. The command is appended so no existing discriminant
+/// moves, but postcard is not self-describing, so the two added struct fields
+/// change the layout of every message carrying `RadioState` or `Meters`.
+pub const PROTO_VERSION: u16 = 27;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

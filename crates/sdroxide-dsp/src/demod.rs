@@ -6,6 +6,7 @@
 use sdroxide_types::Mode;
 
 use crate::Complex32;
+use crate::decim::RealFirDecim;
 use crate::fir::{ComplexFir, RealFir, bandpass_taps};
 
 const PASSBAND_TAPS: usize = 331;
@@ -15,6 +16,9 @@ const RIFP_TAPS: usize = 63;
 
 pub trait Demodulator: Send {
     /// Consume channel-rate IQ, append audio samples at [`Self::audio_rate`].
+    ///
+    /// For a stereo-capable demod this is the *sum* channel — see
+    /// [`Self::take_side`].
     fn process(&mut self, iq: &[Complex32], out: &mut Vec<f32>);
     fn set_filter(&mut self, lo_hz: f32, hi_hz: f32);
     /// Rate of the produced audio (equals the channel rate except WFM,
@@ -22,6 +26,33 @@ pub trait Demodulator: Send {
     fn audio_rate(&self) -> f64;
     /// Post-filter, pre-AGC signal power (dBFS) for the S-meter.
     fn power_dbfs(&self) -> f32;
+
+    /// Append the stereo *difference* (L−R)/2 matching one-for-one the samples
+    /// the last [`Self::process`] call appended, and report whether this demod
+    /// produced any. `false` (the default) means mono: `out` is untouched and
+    /// the caller should play the sum in both ears.
+    ///
+    /// Sum and difference rather than L/R because everything between here and
+    /// the speakers is single-channel: the caller runs its mono processing on
+    /// the sum — which is common-mode, so it lands equally in both ears — and
+    /// matrixes to `L = M+S`, `R = M−S` at the very end.
+    fn take_side(&mut self, _out: &mut Vec<f32>) -> bool {
+        false
+    }
+
+    /// Whether a stereo pilot is currently locked (drives the UI indicator).
+    fn stereo_locked(&self) -> bool {
+        false
+    }
+
+    /// Operator override: `false` forces mono regardless of the pilot.
+    fn set_stereo_enabled(&mut self, _on: bool) {}
+
+    /// How much of the difference channel is currently mixed in (0 = mono,
+    /// 1 = full stereo). Diagnostic; the blend is driven by pilot SNR.
+    fn stereo_blend(&self) -> f32 {
+        0.0
+    }
 }
 
 /// The channel rate a mode's demodulator wants from the DDC.
@@ -399,28 +430,68 @@ impl Demodulator for FskDemod {
     }
 }
 
-/// WFM broadcast: wide discriminator at the ~256 kHz channel rate, ±75 kHz
-/// deviation, DC blocked (off-tune offset), 50 µs de-emphasis, sharp 15 kHz
-/// low-pass (pilot/subcarrier rejection), then decimate by 4. Mono.
+/// WFM broadcast with pilot-tone stereo.
+///
+/// Wide discriminator at the ~256 kHz channel rate, ±75 kHz deviation, DC
+/// blocked (off-tune offset). What comes out is the full stereo multiplex:
+///
+/// ```text
+/// mpx(t) = 0.9·[ M(t) + S(t)·cos ω₃₈t ] + 0.1·cos ω₁₉t
+/// M = (L+R)/2      S = (L−R)/2
+/// ```
+///
+/// A PLL locks the 19 kHz pilot; doubling its phase regenerates the suppressed
+/// 38 kHz subcarrier, and multiplying the composite by `2·cos 2θ` brings the
+/// difference signal down to baseband. Both M and S then pass through identical
+/// decimating 15 kHz low-passes (same length, so their group delays match —
+/// a differential delay between them would smear the stereo image), get 50 µs
+/// de-emphasis each, and come out at rate/4.
+///
+/// De-emphasis deliberately happens *after* the split, not on the composite:
+/// a 50 µs pole is −15 dB at 19 kHz and −22 dB at 38 kHz with heavy phase
+/// shift, which would bury the pilot and smear the DSB sidebands. Because
+/// every stage is LTI, moving it leaves the mono result unchanged.
+///
+/// The caller gets M from `process` and S from [`Demodulator::take_side`].
 pub struct WfmDemod {
     rate: f64,
     fir: ComplexFir,
-    lpf: RealFir,
+    /// 15 kHz anti-alias + subcarrier rejection, decimating by 4. Two
+    /// instances of the *same* filter so M and S stay time-aligned.
+    lpf_m: RealFirDecim,
+    lpf_s: RealFirDecim,
     dc: DcBlock,
     prev: Complex32,
     scale: f32,
-    deemph_state: f32,
+    deemph_m: f32,
+    deemph_s: f32,
     deemph_alpha: f32,
-    decim_phase: usize,
+    stereo: Option<PilotPll>,
+    /// Operator override; `false` forces mono.
+    stereo_enabled: bool,
     filtered: Vec<Complex32>,
-    raw_audio: Vec<f32>,
-    lp_audio: Vec<f32>,
+    mpx: Vec<f32>,
+    side_mix: Vec<f32>,
+    side_out: Vec<f32>,
     power: PowerMeter,
 }
 
 /// Leave headroom below full scale: broadcast processing regularly pushes
 /// peaks to (and past) nominal deviation.
 const WFM_HEADROOM: f32 = 0.7;
+
+/// Taps for the 15 kHz low-pass. Rejection is not the binding constraint —
+/// even 255 taps put the 19 kHz pilot 111 dB down and the 23–53 kHz images
+/// further still. 383 buys *passband* flatness instead (−0.8 dB at 14 kHz
+/// rather than −1.8 dB) and holds the 15→18 kHz transition at the lower channel
+/// rates. Decimating by 4 computes only every fourth output, so two of these
+/// still cost less than the single non-decimating 255-tap filter they replace
+/// (49 vs 65 MMAC/s).
+const WFM_LPF_TAPS: usize = 383;
+
+/// Below this channel rate the 53 kHz composite does not survive the DDC, so
+/// stereo is not attempted at all.
+const WFM_STEREO_MIN_RATE: f64 = 150_000.0;
 
 impl WfmDemod {
     pub fn new(rate: f64) -> Self {
@@ -429,18 +500,20 @@ impl WfmDemod {
             rate,
             // Fewer taps: the passband is nearly the whole channel.
             fir: ComplexFir::new(bandpass_taps(63, -bw, bw, rate)),
-            // 255 taps → transition ≈ 8 kHz at 256 k: the 19 kHz pilot and
-            // 38 kHz subcarrier are gone before decimation.
-            lpf: RealFir::lowpass(255, 15_000.0, rate),
+            lpf_m: RealFirDecim::new(WFM_LPF_TAPS, 15_000.0, rate, 4),
+            lpf_s: RealFirDecim::new(WFM_LPF_TAPS, 15_000.0, rate, 4),
             dc: DcBlock::new(5.0, rate),
             prev: Complex32::new(1.0, 0.0),
             scale: (rate / (std::f64::consts::TAU * 75_000.0)) as f32,
-            deemph_state: 0.0,
+            deemph_m: 0.0,
+            deemph_s: 0.0,
             deemph_alpha: 1.0 - (-1.0 / (rate * 50e-6)).exp() as f32,
-            decim_phase: 0,
+            stereo: (rate >= WFM_STEREO_MIN_RATE).then(|| PilotPll::new(rate)),
+            stereo_enabled: true,
             filtered: Vec::new(),
-            raw_audio: Vec::new(),
-            lp_audio: Vec::new(),
+            mpx: Vec::new(),
+            side_mix: Vec::new(),
+            side_out: Vec::new(),
             power: PowerMeter::new(),
         }
     }
@@ -452,24 +525,73 @@ impl Demodulator for WfmDemod {
         self.fir.process(iq, &mut self.filtered);
         self.power.update(&self.filtered);
 
-        self.raw_audio.clear();
+        // Discriminator → the composite multiplex, still full-bandwidth.
+        self.mpx.clear();
         for &z in &self.filtered {
             let d = z * self.prev.conj();
             self.prev = z;
-            let audio = self.dc.run(d.arg() * self.scale) * WFM_HEADROOM;
-            self.deemph_state += self.deemph_alpha * (audio - self.deemph_state);
-            self.raw_audio.push(self.deemph_state);
+            self.mpx.push(self.dc.run(d.arg() * self.scale) * WFM_HEADROOM);
         }
 
-        self.lp_audio.clear();
-        self.lpf.process(&self.raw_audio, &mut self.lp_audio);
-        // Decimate by 4, phase-continuous across blocks.
-        let mut i = self.decim_phase;
-        while i < self.lp_audio.len() {
-            out.push(self.lp_audio[i]);
-            i += 4;
+        // Pilot PLL, on the raw composite — it has to see the pilot before
+        // de-emphasis buries it. Tracked even while the operator has stereo
+        // switched off, so the indicator stays honest and re-enabling is
+        // instant rather than waiting for a fresh lock.
+        self.side_out.clear();
+        let want_stereo = self.stereo_enabled;
+        if let Some(pll) = self.stereo.as_mut() {
+            self.side_mix.clear();
+            pll.run(&self.mpx, &mut self.side_mix, want_stereo);
         }
-        self.decim_phase = i - self.lp_audio.len();
+
+        // De-emphasis ahead of the low-pass rather than after it. Both are LTI
+        // so the order does not change the result, but running the one-pole at
+        // the full channel rate is what keeps it an accurate 50 µs curve out to
+        // 15 kHz — at the decimated rate it would read ~0.8 dB high up there.
+        for s in &mut self.mpx {
+            self.deemph_m += self.deemph_alpha * (*s - self.deemph_m);
+            *s = self.deemph_m;
+        }
+        self.lpf_m.process(&self.mpx, out);
+
+        // The side path runs unconditionally: it must stay in lockstep with the
+        // sum path (equal sample counts, matched filter history), and every
+        // reason to go mono — lost lock, low SNR, the operator's override — is
+        // folded into the blend instead. Nothing here is ever hard-gated, so
+        // each of those transitions is a 200 ms fade rather than a step.
+        if let Some(pll) = self.stereo.as_ref() {
+            for s in &mut self.side_mix {
+                self.deemph_s += self.deemph_alpha * (*s - self.deemph_s);
+                *s = self.deemph_s;
+            }
+            self.lpf_s.process(&self.side_mix, &mut self.side_out);
+            let blend = pll.blend();
+            for s in &mut self.side_out {
+                *s *= blend;
+            }
+        }
+    }
+
+    fn take_side(&mut self, out: &mut Vec<f32>) -> bool {
+        // Below this the difference is inaudible and the caller is better off
+        // on its mono path — which also spares it the second resampler.
+        if self.side_out.is_empty() || self.stereo_blend() <= 1e-4 {
+            return false;
+        }
+        out.extend_from_slice(&self.side_out);
+        true
+    }
+
+    fn stereo_locked(&self) -> bool {
+        self.stereo.as_ref().is_some_and(|p| p.locked())
+    }
+
+    fn stereo_blend(&self) -> f32 {
+        self.stereo.as_ref().map(|p| p.blend()).unwrap_or(0.0)
+    }
+
+    fn set_stereo_enabled(&mut self, on: bool) {
+        self.stereo_enabled = on;
     }
 
     fn set_filter(&mut self, _lo: f32, _hi: f32) {
@@ -482,5 +604,214 @@ impl Demodulator for WfmDemod {
 
     fn power_dbfs(&self) -> f32 {
         self.power.dbfs()
+    }
+}
+
+/// Second-order PLL on the 19 kHz stereo pilot, plus the lock detector and
+/// noise-driven stereo blend that ride on it.
+///
+/// Unlike [`SamDemod`]'s carrier loop, the phase detector cannot work on the
+/// instantaneous sample: the pilot is only ~10 % of peak deviation sitting
+/// underneath full-level program material, so the mixed product is low-passed
+/// first and the error is taken from the average.
+struct PilotPll {
+    phase: f64,
+    /// Tracked offset from nominal, in rad/sample.
+    freq: f64,
+    nominal: f64,
+    alpha: f64,
+    beta: f64,
+    max_freq: f64,
+    /// One-pole smoothing of the mixed pilot product, inside the loop.
+    lp_alpha: f32,
+    i_lp: f32,
+    q_lp: f32,
+    /// Much narrower one-poles on the same mixer output, outside the loop and
+    /// used *only* for lock detection and the SNR estimate. See
+    /// [`PilotPll::meas_alpha`].
+    i_m: f32,
+    q_m: f32,
+    meas_alpha: f32,
+    /// Mean square of the narrow quadrature arm: noise beside the pilot, and
+    /// the SNR reference the blend rides on.
+    q_var: f32,
+    var_alpha: f32,
+    locked: bool,
+    /// Samples the lock condition has held (either direction).
+    hold: u32,
+    lock_hold: u32,
+    unlock_hold: u32,
+    blend: f32,
+    blend_alpha: f32,
+}
+
+/// Coherent amplitude of a nominal 10 %-injection pilot, in the demodulator's
+/// deviation-normalized units: `0.1 · WFM_HEADROOM / 2` ≈ 0.035. Because FM is
+/// constant-envelope and the discriminator is normalized to *deviation* rather
+/// than to RF level, this figure does not move with signal strength or gain —
+/// so an absolute threshold is legitimate.
+///
+/// Compared against the *signed* narrow estimate `i_m`, never against a
+/// magnitude: `|i_lp|` sits around 0.015 on pure noise, above any threshold low
+/// enough to catch an under-injected station, whereas the signed average lands
+/// near zero on noise. That is what keeps a dead frequency from reading
+/// "stereo".
+const PILOT_LOCK_ON: f32 = 0.015;
+const PILOT_LOCK_OFF: f32 = 0.010;
+
+/// Pilot SNR (dB) for full stereo, and the point below which it is pure mono.
+///
+/// A blend is not optional. The difference channel is recovered from 38 kHz,
+/// high on FM's triangular noise slope, so it carries roughly 20 dB more noise
+/// than the sum does; without this, every distant station would be hissy stereo
+/// instead of clean mono.
+///
+/// The metric is `10·log10(i_m²/q_var)`, whose scale is particular to this
+/// implementation, so the bounds come from a measured C/N sweep — against
+/// *dense* broadcast-like programme, which is the case that matters: a single
+/// test tone flatters any pilot-SNR estimate, and calibrating on one is how the
+/// first version of this ended up reading the music instead of the noise and
+/// forcing every real station to mono.
+///
+/// | C/N | blend | separation |
+/// |----:|------:|-----------:|
+/// | ≥20 dB | 1.00 | 31–33 dB |
+/// | 15 dB | 0.88 | 22 dB |
+/// | 12 dB | 0.59 | 11 dB |
+/// | 10 dB | 0.00 | mono |
+///
+/// Consistent to within a few tenths across 1.536 / 2.4 / 3.2 Msps.
+const BLEND_FULL_DB: f32 = 34.0;
+const BLEND_NONE_DB: f32 = 22.0;
+
+impl PilotPll {
+    fn new(rate: f64) -> Self {
+        // Narrow loop (ζ = 0.707, wn = 20 Hz): the pilot is a stable tone, so
+        // there is nothing to gain from tracking fast, and a tight loop keeps
+        // program material out of the phase estimate.
+        let wn = std::f64::consts::TAU * 20.0 / rate;
+        let rate32 = rate as f32;
+        PilotPll {
+            phase: 0.0,
+            freq: 0.0,
+            nominal: std::f64::consts::TAU * 19_000.0 / rate,
+            alpha: 2.0 * 0.707 * wn,
+            beta: wn * wn,
+            max_freq: std::f64::consts::TAU * 200.0 / rate,
+            lp_alpha: 1.0 - (-std::f32::consts::TAU * 150.0 / rate32).exp(),
+            i_lp: 0.0,
+            q_lp: 0.0,
+            i_m: 0.0,
+            q_m: 0.0,
+            // 15 Hz. The loop filter cannot double as the measurement filter:
+            // at 150 Hz it only buries programme leakage (which starts 4 kHz out)
+            // by ~28 dB, and programme components in the composite run ~17 dB
+            // *larger* than the pilot — so the "noise" estimate ends up measuring
+            // the music. At 15 Hz that leakage is ~46 dB down and the estimate
+            // is about the signal again.
+            meas_alpha: 1.0 - (-std::f32::consts::TAU * 15.0 / rate32).exp(),
+            q_var: 1e-12,
+            // Slow: this is averaging a noise power, not tracking a signal.
+            var_alpha: 1.0 - (-1.0 / (rate32 * 0.200)).exp(),
+            locked: false,
+            hold: 0,
+            lock_hold: (rate * 0.050) as u32,
+            unlock_hold: (rate * 0.200) as u32,
+            blend: 0.0,
+            blend_alpha: 1.0 - (-1.0 / (rate32 * 0.200)).exp(),
+        }
+    }
+
+    /// Track the pilot across `mpx` and append `mpx · 2·cos 2θ` — the composite
+    /// with the difference channel mixed down to baseband — to `out`.
+    fn run(&mut self, mpx: &[f32], out: &mut Vec<f32>, enabled: bool) {
+        out.reserve(mpx.len());
+        for &x in mpx {
+            // This sample's phase, captured before the loop advances it — the
+            // subcarrier below must use the same instant the mixer does. At
+            // 38 kHz one sample of skew is over 50° of phase error, which shows
+            // up directly as a `cos φ` collapse in channel separation.
+            let theta = self.phase;
+
+            // Mix to DC. The input is real, so this also produces an image at
+            // +19 kHz; the loop filter is what removes it.
+            let (sin, cos) = theta.sin_cos();
+            let i = x * cos as f32;
+            let q = -x * sin as f32;
+            self.i_lp += self.lp_alpha * (i - self.i_lp);
+            self.q_lp += self.lp_alpha * (q - self.q_lp);
+
+            // Four-quadrant, unlike `SamDemod`'s `.abs()` on the in-phase arm.
+            // SAM needs that to stay indifferent to a carrier phase flip; the
+            // pilot is a real, positive, un-suppressed tone, and folding the
+            // quadrants here would create a second stable lock point at π. A
+            // settled flip would be harmless (2(θ+π) ≡ 2θ), but noise-driven
+            // slewing between the two rotates the subcarrier through a full
+            // turn and audibly swirls the stereo image.
+            let err = (self.q_lp as f64).atan2(self.i_lp as f64);
+            self.freq = (self.freq + self.beta * err).clamp(-self.max_freq, self.max_freq);
+            self.phase += self.nominal + self.freq + self.alpha * err;
+            self.phase %= std::f64::consts::TAU;
+
+            // Narrow measurement arms, outside the loop. `i_m` settles at the
+            // pilot's coherent amplitude (+0.035 on a nominal station, ~0 on
+            // noise, which is what distinguishes a station from a dead
+            // frequency); `q_m` holds what is left beside it, which is noise.
+            self.i_m += self.meas_alpha * (i - self.i_m);
+            self.q_m += self.meas_alpha * (q - self.q_m);
+            self.q_var += self.var_alpha * (self.q_m * self.q_m - self.q_var);
+
+            // Regenerate the suppressed subcarrier as the pilot's second
+            // harmonic. The broadcast standard is written in *sine* phase —
+            // `0.9[M + S·sin 2ω_p t] + 0.1·sin ω_p t` — while this loop settles
+            // with `cos θ` aligned to the pilot, i.e. `cos θ = sin ω_p t`. So
+            // `sin 2ω_p t = 2·(cos θ)(−sin θ) = −sin 2θ`, and the wanted
+            // multiplier is `2·sin 2ω_p t = −4 sin θ cos θ`.
+            //
+            // `cos 2θ` would be a quarter turn away and null the difference
+            // channel outright: the programme vanishes and only noise survives
+            // the mix, which sounds like stereo hiss over mono music. A test
+            // signal built in cosine phase throughout is self-consistent and
+            // will not catch it — see `stereo_mpx_iq` in tests/chain.rs.
+            //
+            // Doubling also removes the half-turn ambiguity: `2(θ+π) ≡ 2θ`, so
+            // an inverted lock cannot swap L and R.
+            out.push(x * (-4.0 * sin * cos) as f32);
+        }
+        self.update_lock(mpx.len(), enabled);
+    }
+
+    fn update_lock(&mut self, n: usize, enabled: bool) {
+        let amp = self.i_m;
+        let want = if self.locked { amp > PILOT_LOCK_OFF } else { amp > PILOT_LOCK_ON };
+        if want == self.locked {
+            self.hold = 0;
+        } else {
+            self.hold = self.hold.saturating_add(n as u32);
+            let need = if self.locked { self.unlock_hold } else { self.lock_hold };
+            if self.hold >= need {
+                self.locked = want;
+                self.hold = 0;
+            }
+        }
+
+        let snr_db = 10.0 * ((amp * amp) / self.q_var.max(1e-20)).max(1e-20).log10();
+        let target = if self.locked && enabled {
+            ((snr_db - BLEND_NONE_DB) / (BLEND_FULL_DB - BLEND_NONE_DB)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        // Smoothed per block rather than per sample: the blend only has to move
+        // as fast as fading does.
+        let a = 1.0 - (1.0 - self.blend_alpha).powi(n as i32);
+        self.blend += a * (target - self.blend);
+    }
+
+    fn locked(&self) -> bool {
+        self.locked
+    }
+
+    fn blend(&self) -> f32 {
+        self.blend
     }
 }

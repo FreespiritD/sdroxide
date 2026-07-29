@@ -242,4 +242,14 @@ pub enum Command {
     /// or stop the datagram stream that GridTracker, JTAlert, N1MM+ and Log4OM
     /// listen to. Output only — nothing arrives on that socket.
     SetWsjtxConfig(WsjtxConfig),
+
+    /// Allow WFM broadcast stereo on a receiver. `false` forces mono even when
+    /// the 19 kHz pilot is locked — worth having for a noisy station, since the
+    /// difference channel carries far more noise than the sum. No effect on any
+    /// other mode. Appended rather than filed next to the other per-RX audio
+    /// commands: postcard numbers variants by position.
+    SetWfmStereo {
+        rx: RxId,
+        on: bool,
+    },
 }
