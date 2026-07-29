@@ -1880,6 +1880,28 @@ Predictions come from SGP4 on the current element set, and the window shows how
 old those elements are. A day-old TLE is good to a second or so on rise time; a
 week-old one is not, which is why the age is on display.
 
+Below the pass table is the satellite's **frequency list** — what to actually
+tune to once it comes over the horizon:
+
+| Column | Meaning |
+| --- | --- |
+| `LINK` | What the link is: a linear transponder, an FM repeater, a beacon, a telemetry or APRS downlink |
+| `DOWNLINK` | Where to listen, in MHz. A transponder shows its whole passband |
+| `UPLINK` | Where to transmit, in MHz. `—` for a beacon, which only transmits |
+| `MODE` | The emission: `SSB/CW`, `FM`, `BPSK 1k2`, `DVB-S2`, … |
+
+Anything you have to know before keying up — a CTCSS tone, an inverting
+transponder, a bird that only runs to a schedule — is spelled out under the
+table and repeated as a tooltip on the link name. Remember that these are the
+nominal frequencies: Doppler moves a LEO downlink by several kilohertz across a
+pass, upwards on the way in and downwards on the way out.
+
+The built-in list covers the satellites drawn by default plus a few more, and it
+is reference data transcribed from the AMSAT list rather than anything derived
+from the element set — transponders do get switched and schedules do change. Add
+your own or correct a wrong one in the **TLE** settings tab, where your entries
+override the built-in table.
+
 **The QSO layer** puts your FT8/FT4 traffic on the globe. Every station decoded
 in the last two minutes is a white dot that fades as it ages — the same set the
 flat map in the FT8 panel shows, so the two never disagree. Behind them, every

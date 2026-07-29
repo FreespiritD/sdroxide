@@ -738,10 +738,85 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
                     );
                 }
             }
+
+            freq_table(ui, id, &cache.name);
         });
     if !open {
         st.selected_sat = None;
     }
+}
+
+/// The satellite's published frequencies, under the pass table.
+///
+/// Knowing when a bird comes over is only half of working it; the other half is
+/// what to tune to, and that is a table an operator would otherwise have open
+/// in a browser next to the radio.
+fn freq_table(ui: &mut egui::Ui, norad_id: u64, tracked_name: &str) {
+    let Some(freqs) = sdroxide_solar::satfreq::builtin_for(norad_id) else {
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new("No frequencies on file for this one — add them under Settings ▸ TLE.")
+                .color(theme::LINE_LIT)
+                .size(10.0),
+        );
+        return;
+    };
+
+    ui.add_space(8.0);
+    ui.separator();
+    ui.add_space(4.0);
+    ui.label(RichText::new("FREQUENCIES").color(theme::CYAN_DIM).size(9.5).strong());
+    // The published designator can differ from what the element set calls it;
+    // showing it means a table entry keyed to the wrong catalogue number is
+    // visible rather than quietly presenting the wrong satellite's frequencies.
+    if !freqs.name.eq_ignore_ascii_case(tracked_name) {
+        ui.label(
+            RichText::new(format!("published as {}", freqs.name)).color(theme::LINE_LIT).size(10.0),
+        );
+    }
+    ui.add_space(2.0);
+
+    egui::Grid::new("solar-freq-grid").num_columns(4).spacing([14.0, 3.0]).show(ui, |ui| {
+        for h in ["LINK", "DOWNLINK (MHz)", "UPLINK (MHz)", "MODE"] {
+            ui.label(RichText::new(h).color(theme::CYAN_DIM).size(9.5).strong());
+        }
+        ui.end_row();
+        for l in freqs.links.iter().filter(|l| !l.is_empty()) {
+            let mut label = RichText::new(&l.label).color(theme::TEXT);
+            if !l.note.is_empty() {
+                label = label.color(theme::TEXT_STRONG);
+            }
+            let resp = ui.label(label);
+            if !l.note.is_empty() {
+                resp.on_hover_text(&l.note);
+            }
+            // The downlink is what gets tuned first, so it leads.
+            ui.label(
+                RichText::new(l.downlink.map_or_else(|| "—".into(), |b| b.to_string()))
+                    .color(theme::GREEN),
+            );
+            ui.label(
+                RichText::new(l.uplink.map_or_else(|| "—".into(), |b| b.to_string()))
+                    .color(theme::YELLOW),
+            );
+            ui.label(RichText::new(&l.mode).color(theme::TEXT));
+            ui.end_row();
+        }
+    });
+
+    // Everything an operator has to know before keying up sits in the notes, so
+    // they go on screen rather than only in a tooltip.
+    for l in freqs.links.iter().filter(|l| !l.note.is_empty() && !l.is_empty()) {
+        ui.label(
+            RichText::new(format!("{} — {}", l.label, l.note)).color(theme::LINE_LIT).size(10.0),
+        );
+    }
+    ui.add_space(2.0);
+    ui.label(
+        RichText::new("Doppler shifts these by a few kHz across a LEO pass.")
+            .color(theme::LINE_LIT)
+            .size(10.0),
+    );
 }
 
 /// `HH:MM` — the date is already on the start column.
