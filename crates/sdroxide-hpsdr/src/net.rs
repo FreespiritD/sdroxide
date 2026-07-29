@@ -66,6 +66,39 @@ fn recall_probe(ip: Ipv4Addr) -> Option<(String, u8)> {
     g.as_ref()?.get(&ip).cloned()
 }
 
+/// Which connection currently owns each radio.
+///
+/// Apply/reconnect builds the replacement connection *before* releasing the old
+/// one — that ordering is deliberate, so a configuration that cannot be opened
+/// leaves the working radio running. For a single-client board like a Metis or
+/// Hermes-Lite it means the two overlap: the new connection sends its run
+/// command and the board re-targets its stream to the new socket, and only then
+/// does the old connection get dropped. If that departing connection sends the
+/// protocol's "stop streaming" command on its way out, it switches the radio off
+/// underneath the connection that just replaced it — the stream never starts,
+/// and the operator has to quit and relaunch.
+///
+/// So each connection takes a ticket when it opens, and only the holder of the
+/// newest ticket for that radio is allowed to stop the stream.
+static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
+static CURRENT_CONNECTION: Mutex<Option<HashMap<IpAddr, u64>>> = Mutex::new(None);
+
+/// Register a newly opened connection as the owner of `radio`, returning its
+/// ticket. Any connection opened earlier is superseded from this moment.
+fn claim_connection(radio: IpAddr) -> u64 {
+    let id = NEXT_CONNECTION.fetch_add(1, Ordering::Relaxed);
+    let mut g = CURRENT_CONNECTION.lock().unwrap_or_else(|e| e.into_inner());
+    g.get_or_insert_with(HashMap::new).insert(radio, id);
+    id
+}
+
+/// Whether `id` still owns `radio` — i.e. whether this connection may tell the
+/// radio to stop streaming.
+pub(crate) fn owns_connection(radio: IpAddr, id: u64) -> bool {
+    let g = CURRENT_CONNECTION.lock().unwrap_or_else(|e| e.into_inner());
+    g.as_ref().and_then(|m| m.get(&radio)).copied() == Some(id)
+}
+
 /// Format the first `n` bytes of a datagram as spaced uppercase hex, for the
 /// diagnostic logs that let a remote tester compare on-wire bytes against the
 /// OpenHPSDR spec (the wire offsets in this crate are not hardware-verified).
@@ -291,6 +324,8 @@ pub(crate) struct ThreadCtx {
     /// Epoch for `last_rx_ms`, and the slot the thread stamps.
     pub opened_at: Instant,
     pub last_rx_ms: RxClock,
+    /// This connection's ownership ticket (see [`owns_connection`]).
+    pub conn_id: u64,
     /// Board name from discovery — decides which board-specific registers the
     /// Protocol 1 thread is allowed to write.
     pub board: String,
@@ -440,11 +475,17 @@ impl HpsdrHandle {
         let (ctrl_tx, ctrl_rx) = crossbeam_channel::unbounded();
         let opened_at = Instant::now();
         let last_rx_ms: RxClock = Arc::new(AtomicU64::new(0));
+        // Take ownership of the radio before the thread starts. Whatever
+        // connection was driving it is superseded from here, so when the engine
+        // drops it a moment from now it will leave the stream alone.
+        let conn_id = claim_connection(IpAddr::V4(ip));
         let ctx = ThreadCtx {
             socket,
             radio: IpAddr::V4(ip),
             opened_at,
             last_rx_ms: last_rx_ms.clone(),
+            conn_id,
+
             board: board.clone(),
             rate_hz: rate,
             lna_gain_db,
@@ -708,6 +749,33 @@ mod tests {
                 pair.commit_all();
             }
         }
+    }
+
+    #[test]
+    fn only_the_newest_connection_may_stop_a_radio() {
+        // Reproduces the Apply/reconnect ordering: the replacement connection
+        // opens while the old one is still live, and only then is the old one
+        // dropped. If the departing connection were allowed to send the stop
+        // command it would switch the radio off underneath its successor —
+        // which is what left the board dead until sdroxide was restarted.
+        let radio: IpAddr = "192.0.2.53".parse().unwrap();
+        let first = claim_connection(radio);
+        assert!(owns_connection(radio, first), "the only connection owns the radio");
+
+        let second = claim_connection(radio);
+        assert_ne!(first, second, "each connection gets its own ticket");
+        assert!(!owns_connection(radio, first), "the superseded connection must stay quiet");
+        assert!(owns_connection(radio, second), "the replacement owns the radio");
+
+        // A second radio is tracked independently, so reconnecting one does not
+        // silence the other.
+        let other: IpAddr = "192.0.2.54".parse().unwrap();
+        let other_id = claim_connection(other);
+        assert!(owns_connection(other, other_id));
+        assert!(owns_connection(radio, second), "unrelated radio left alone");
+        // An unknown ticket never owns anything.
+        assert!(!owns_connection(radio, u64::MAX));
+        assert!(!owns_connection("192.0.2.99".parse().unwrap(), second));
     }
 
     #[test]

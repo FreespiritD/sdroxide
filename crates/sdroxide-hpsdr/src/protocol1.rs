@@ -25,7 +25,7 @@
 //! protocol docs; verify against hardware before trusting on-air behavior.
 
 use std::collections::VecDeque;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -332,6 +332,23 @@ fn start_command(run: bool) -> [u8; 64] {
     c
 }
 
+/// Leave the stream in the right state on the way out. A connection that has
+/// been superseded — Apply/reconnect opened a replacement while this one was
+/// still running — must not send the stop command: the radio is already
+/// streaming to its successor, and stopping it here is what used to leave the
+/// board dead until sdroxide was restarted.
+fn stop_stream(socket: &UdpSocket, dest: SocketAddr, radio: IpAddr, conn_id: u64, why: &str) {
+    if crate::net::owns_connection(radio, conn_id) {
+        tracing::info!("HPSDR P1: {why}; stopping the radio's stream");
+        let _ = socket.send_to(&start_command(false), dest);
+    } else {
+        tracing::info!(
+            "HPSDR P1: {why}; another connection has taken over this radio, leaving its \
+             stream running"
+        );
+    }
+}
+
 /// Run the Protocol 1 network loop until told to shut down.
 pub(crate) fn run(ctx: ThreadCtx) {
     let ThreadCtx {
@@ -339,6 +356,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
         radio,
         opened_at,
         last_rx_ms,
+        conn_id,
         board,
         rate_hz,
         lna_gain_db,
@@ -430,8 +448,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
                     tracing::info!("HPSDR P1: MOX off");
                 }
                 Ctrl::Shutdown => {
-                    tracing::info!("HPSDR P1: shutdown requested; stopping stream");
-                    let _ = socket.send_to(&start_command(false), dest);
+                    stop_stream(&socket, dest, radio, conn_id, "shutdown requested");
                     return;
                 }
             }
@@ -510,8 +527,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(e) => {
-                tracing::warn!("HPSDR P1 recv error: {e}; stopping");
-                let _ = socket.send_to(&start_command(false), dest);
+                stop_stream(&socket, dest, radio, conn_id, &format!("recv error: {e}"));
                 return;
             }
         }

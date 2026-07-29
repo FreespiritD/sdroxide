@@ -220,6 +220,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
         radio: ctx.radio,
         opened_at: ctx.opened_at,
         last_rx_ms: ctx.last_rx_ms,
+        conn_id: ctx.conn_id,
         invert_spectrum: ctx.invert_spectrum,
         rate_khz: (ctx.rate_hz / 1000.0) as u16,
         rx: ctx.rx,
@@ -240,6 +241,8 @@ struct P2Thread {
     /// `HpsdrHandle::silent_for`).
     opened_at: Instant,
     last_rx_ms: crate::net::RxClock,
+    /// This connection's ownership ticket (see `net::owns_connection`).
+    conn_id: u64,
     /// Conjugate I/Q both ways (see `HpsdrConfig::invert_spectrum`).
     invert_spectrum: bool,
     rate_khz: u16,
@@ -289,6 +292,20 @@ impl P2Thread {
         let pkt = duc_command_packet(seq);
         tracing::debug!("HPSDR P2: DUC command seq {seq} -> port {}", port::DUC_COMMAND);
         let _ = self.socket.send_to(&pkt, self.dest(port::DUC_COMMAND));
+    }
+
+    /// See `protocol1::stop_stream`: a superseded connection leaves the radio
+    /// streaming to whichever connection replaced it.
+    fn stop_stream(&mut self, why: &str) {
+        if crate::net::owns_connection(self.radio, self.conn_id) {
+            tracing::info!("HPSDR P2: {why}; stopping the radio's stream");
+            self.send_general(false);
+        } else {
+            tracing::info!(
+                "HPSDR P2: {why}; another connection has taken over this radio, leaving its \
+                 stream running"
+            );
+        }
     }
 
     fn send_general(&mut self, run: bool) {
@@ -354,8 +371,7 @@ impl P2Thread {
                         tracing::info!("HPSDR P2: MOX off");
                     }
                     Ctrl::Shutdown => {
-                        tracing::info!("HPSDR P2: shutdown requested; stopping stream");
-                        self.send_general(false);
+                        self.stop_stream("shutdown requested");
                         return;
                     }
                 }
@@ -419,8 +435,7 @@ impl P2Thread {
                     if e.kind() == std::io::ErrorKind::WouldBlock
                         || e.kind() == std::io::ErrorKind::TimedOut => {}
                 Err(e) => {
-                    tracing::warn!("HPSDR P2 recv error: {e}; stopping");
-                    self.send_general(false);
+                    self.stop_stream(&format!("recv error: {e}"));
                     return;
                 }
             }
