@@ -4225,133 +4225,178 @@ impl SdroxideApp {
             }
 
             // ── Right: the conversation ─────────────────────────────────────
+            //
+            // Laid out bottom-up so the controls claim their real height and
+            // the conversation takes whatever is left. Reserving a guessed
+            // number of pixels for them instead clips the bottom row as soon as
+            // a chip is added or the theme's spacing changes.
             ui.vertical(|ui| {
-                let compose_h = 52.0;
-                egui::ScrollArea::vertical()
-                    .id_salt("js8-convo")
-                    .max_height((avail_h - compose_h).max(40.0))
-                    .stick_to_bottom(true)
-                    .auto_shrink([false, false])
-                    .show_themed(ui, |ui| {
-                        if js8.messages.is_empty() {
-                            ui.label(RichText::new("— no messages —").weak());
-                        }
-                        for m in &js8.messages {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
-                                let (_, _, _, h, mi, _) =
-                                    sdroxide_types::utc_ymd_hms(m.last_slot_utc);
-                                ui.label(
-                                    RichText::new(format!("{h:02}:{mi:02}")).monospace().weak(),
-                                );
-                                if m.to_me {
-                                    ui.label(RichText::new("★").color(crate::theme::YELLOW));
+                ui.set_height(avail_h);
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    // First declared is lowest in a bottom-up layout, so this
+                    // is the gap between the controls and the panel edge.
+                    // Without it they sit flush against the frame.
+                    ui.add_space(8.0);
+                    self.js8_compose(ui, cmds, &js8);
+                    ui.add_space(4.0);
+                    // Back to normal order for the scrolling part.
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("js8-convo")
+                            .stick_to_bottom(true)
+                            .auto_shrink([false, false])
+                            .show_themed(ui, |ui| {
+                                if js8.messages.is_empty() {
+                                    ui.label(RichText::new("— no messages —").weak());
                                 }
-                                let who = if m.from.is_empty() { "…" } else { &m.from };
-                                ui.label(
-                                    RichText::new(format!("{who}:")).monospace().strong().color(
+                                for m in &js8.messages {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 4.0;
+                                        let (_, _, _, h, mi, _) =
+                                            sdroxide_types::utc_ymd_hms(m.last_slot_utc);
+                                        ui.label(
+                                            RichText::new(format!("{h:02}:{mi:02}"))
+                                                .monospace()
+                                                .weak(),
+                                        );
                                         if m.to_me {
-                                            crate::theme::CYAN
-                                        } else {
-                                            crate::theme::CYAN_DIM
-                                        },
-                                    ),
-                                );
-                                if let Some(c) = &m.cmd {
-                                    ui.label(
-                                        RichText::new(c).monospace().color(crate::theme::PINK),
-                                    );
-                                }
-                                let body = RichText::new(&m.text).monospace();
-                                // An incomplete message is still arriving; greying
-                                // it stops a half-sentence reading as the whole one.
-                                ui.label(if m.complete { body } else { body.weak() });
-                                if !m.complete {
-                                    ui.label(
-                                        RichText::new(format!("… ({} frames)", m.frames)).weak(),
-                                    );
+                                            ui.label(
+                                                RichText::new("★").color(crate::theme::YELLOW),
+                                            );
+                                        }
+                                        let who = if m.from.is_empty() { "…" } else { &m.from };
+                                        ui.label(
+                                            RichText::new(format!("{who}:"))
+                                                .monospace()
+                                                .strong()
+                                                .color(if m.to_me {
+                                                    crate::theme::CYAN
+                                                } else {
+                                                    crate::theme::CYAN_DIM
+                                                }),
+                                        );
+                                        if let Some(c) = &m.cmd {
+                                            ui.label(
+                                                RichText::new(c)
+                                                    .monospace()
+                                                    .color(crate::theme::PINK),
+                                            );
+                                        }
+                                        let body = RichText::new(&m.text).monospace();
+                                        // An incomplete message is still arriving; greying
+                                        // it stops a half-sentence reading as the whole one.
+                                        ui.label(if m.complete { body } else { body.weak() });
+                                        if !m.complete {
+                                            ui.label(
+                                                RichText::new(format!("… ({} frames)", m.frames))
+                                                    .weak(),
+                                            );
+                                        }
+                                    });
                                 }
                             });
-                        }
-                    });
-
-                ui.add_space(2.0);
-                // ── Compose ─────────────────────────────────────────────────
-                let target = if self.js8_target.is_empty() {
-                    "@ALLCALL".to_string()
-                } else {
-                    self.js8_target.clone()
-                };
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!("{target}:"))
-                            .monospace()
-                            .color(crate::theme::CYAN_DIM),
-                    );
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.text_tx)
-                            .desired_width((ui.available_width() - 110.0).max(60.0))
-                            .hint_text("Message…"),
-                    );
-                    let send = crate::chrome::chip_accent(
-                        ui,
-                        false,
-                        " SEND ",
-                        crate::theme::PINK,
-                        crate::theme::INK_ON_CYAN,
-                    )
-                    .clicked()
-                        || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                    // Before pressing send, say how long it will take. JS8's
-                    // most surprising property to a new operator is that a
-                    // sentence can occupy a minute of air time.
-                    if !self.text_tx.trim().is_empty() {
-                        let frames = js8_frame_estimate(&self.text_tx);
-                        ui.label(
-                            RichText::new(format!(
-                                "{frames}f · {:.0}s",
-                                f64::from(frames) * js8.speed.slot_s()
-                            ))
-                            .monospace()
-                            .weak(),
-                        );
-                    }
-                    if send && !self.text_tx.trim().is_empty() {
-                        let body = self.text_tx.trim();
-                        let full = if self.js8_target.is_empty() {
-                            body.to_string()
-                        } else {
-                            format!("{} {body}", self.js8_target)
-                        };
-                        cmds.push(Command::DigiSendText(full));
-                        self.text_tx.clear();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if crate::chrome::chip(ui, false, " CQ ").clicked() {
-                        cmds.push(Command::DigiCallCq);
-                    }
-                    // The queries a station may be asked. Each addresses the
-                    // selected station, so they are inert with nobody selected.
-                    let has_target = !self.js8_target.is_empty();
-                    for q in ["SNR?", "GRID?", "HEARING?", "STATUS?"] {
-                        if crate::chrome::chip(ui, false, q).clicked() && has_target {
-                            cmds.push(Command::DigiSendText(format!("{} {q}", self.js8_target)));
-                        }
-                    }
-                    if crate::chrome::chip(ui, false, " HB ").clicked() {
-                        cmds.push(Command::DigiSendText("@ALLCALL HB".into()));
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if crate::chrome::chip(ui, false, " STOP TX ").clicked() {
-                            cmds.push(Command::DigiAbortTx);
-                        }
-                        if has_target && crate::chrome::chip(ui, false, " CLEAR TO ").clicked() {
-                            self.js8_target.clear();
-                        }
                     });
                 });
             });
+        });
+    }
+
+    /// The two rows under the JS8 conversation: the actions, and the composer.
+    ///
+    /// **Declared bottom-first.** The caller lays this out with
+    /// [`egui::Layout::bottom_up`] so the controls claim their true height and
+    /// the conversation gets the remainder, which means the first row written
+    /// here is the one that appears lowest.
+    fn js8_compose(
+        &mut self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<Command>,
+        js8: &sdroxide_types::Js8Status,
+    ) {
+        let has_target = !self.js8_target.is_empty();
+
+        // Actions — the lower of the two rows. Wrapped, because the right
+        // column can be dragged narrow and a chip that does not fit must move
+        // to the next line rather than be clipped off the edge.
+        ui.horizontal_wrapped(|ui| {
+            if crate::chrome::chip(ui, false, " CQ ").clicked() {
+                cmds.push(Command::DigiCallCq);
+            }
+            if crate::chrome::chip(ui, false, " HB ").clicked() {
+                cmds.push(Command::DigiSendText("@ALLCALL HB".into()));
+            }
+            // The queries address whichever station is selected. Shown greyed
+            // rather than hidden when there is none: a row that changes shape
+            // as you click around is hard to aim at, and chips that only exist
+            // sometimes are chips nobody discovers.
+            ui.add_enabled_ui(has_target, |ui| {
+                for q in ["SNR?", "GRID?", "HEARING?", "STATUS?"] {
+                    if crate::chrome::chip(ui, false, q).clicked() {
+                        cmds.push(Command::DigiSendText(format!("{} {q}", self.js8_target)));
+                    }
+                }
+            });
+            if has_target && crate::chrome::chip(ui, false, " CLEAR TO ").clicked() {
+                self.js8_target.clear();
+            }
+        });
+
+        // The gap between the two rows. In a bottom-up layout this space sits
+        // above what was just written, so it separates the actions from the
+        // composer rather than pushing them into the panel edge.
+        ui.add_space(6.0);
+
+        // Compose. The buttons are declared right-to-left first so they always
+        // get their width, and the text box takes whatever is left over.
+        let target = if has_target { self.js8_target.clone() } else { "@ALLCALL".to_string() };
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{target}:")).monospace().color(crate::theme::CYAN_DIM));
+            let mut send = false;
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Stop lives next to send: they are the two things you reach
+                // for in a hurry, and a long message takes minutes to drain.
+                if crate::chrome::chip(ui, false, " STOP ").clicked() {
+                    cmds.push(Command::DigiAbortTx);
+                }
+                send = crate::chrome::chip_accent(
+                    ui,
+                    false,
+                    " SEND ",
+                    crate::theme::PINK,
+                    crate::theme::INK_ON_CYAN,
+                )
+                .clicked();
+                // Before pressing send, say how long it will take. JS8's most
+                // surprising property to a new operator is that a sentence can
+                // occupy a minute of air time.
+                if !self.text_tx.trim().is_empty() {
+                    let frames = js8_frame_estimate(&self.text_tx);
+                    ui.label(
+                        RichText::new(format!(
+                            "{frames}f · {:.0}s",
+                            f64::from(frames) * js8.speed.slot_s()
+                        ))
+                        .monospace()
+                        .weak(),
+                    );
+                }
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.text_tx)
+                        .desired_width(ui.available_width().max(60.0))
+                        .hint_text("Message…"),
+                );
+                send |= resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            });
+            if send && !self.text_tx.trim().is_empty() {
+                let body = self.text_tx.trim();
+                let full = if has_target {
+                    format!("{} {body}", self.js8_target)
+                } else {
+                    body.to_string()
+                };
+                cmds.push(Command::DigiSendText(full));
+                self.text_tx.clear();
+            }
         });
     }
 
