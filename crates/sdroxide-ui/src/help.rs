@@ -58,6 +58,7 @@ fn embedded_image(path: &str) -> Option<&'static [u8]> {
         "hellschreiber.jpg" => &include_bytes!("../../../docs/images/hellschreiber.jpg")[..],
         "rfpaint.jpg" => &include_bytes!("../../../docs/images/rfpaint.jpg")[..],
         "sstv.jpg" => &include_bytes!("../../../docs/images/sstv.jpg")[..],
+        "wefax.jpg" => &include_bytes!("../../../docs/images/wefax.jpg")[..],
         "settings-general.jpg" => &include_bytes!("../../../docs/images/settings-general.jpg")[..],
         "settings-controls-keyboard.jpg" => {
             &include_bytes!("../../../docs/images/settings-controls-keyboard.jpg")[..]

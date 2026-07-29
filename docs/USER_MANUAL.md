@@ -996,6 +996,8 @@ heights, ice edges, satellite composites. It is **receive only**: these are
 commercial and military transmitters, and an amateur station has nothing to send
 back.
 
+![The weather-fax panel: a chart arriving, the station picker, and the gallery](images/wefax.jpg)
+
 **Finding a signal.** The **📡 STATIONS** chip lists the schedules — DWD
 Pinneberg, Northwood, the US Coast Guard transmitters, Halifax, Tokyo, the two
 Australian ones — and picking a frequency tunes the dial. Note that the
@@ -1041,6 +1043,14 @@ station sending several charts back to back.
   off — well within tolerance — walks a fifteen-minute chart most of a line
   sideways, so this is the setting every fax operator ends up with a value for.
   Once you have found yours it is remembered.
+
+**On the globe.** While you are tuned to a station in the list, the 3D solar
+view ([6](#6-solar-system-3d-view)) draws the path from your QTH to that
+transmitter, exactly as it draws the station you are working in FT8. Weather fax
+carries no callsign and no grid square, so this is the only thing that turns an
+anonymous chart into "this came 900 km across the North Sea" — and it makes the
+propagation obvious when a station you can hear all night in winter vanishes at
+noon.
 
 **The picture and the gallery.** The chart paints line by line as it arrives and
 follows the newest rows down. Completed charts are written as grayscale PNG to

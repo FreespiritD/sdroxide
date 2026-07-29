@@ -95,12 +95,39 @@ pub struct WefaxStation {
     pub name: &'static str,
     /// Assigned carrier frequencies in kHz, as published.
     pub carriers_khz: &'static [f64],
+    /// Where the transmitter is, degrees north and east.
+    ///
+    /// Good to a few tens of kilometres, which is all a path drawn across a
+    /// globe can show. Several of these are transmitter parks some way from the
+    /// place the station is named after — Northwood's aerials are not in
+    /// Northwood — and none of that is visible at this scale.
+    pub lat: f64,
+    pub lon: f64,
 }
 
 impl WefaxStation {
     /// The USB dial for a published carrier frequency, in Hz.
     pub fn dial_hz(carrier_khz: f64) -> f64 {
         carrier_khz * 1000.0 - 1900.0
+    }
+
+    /// How far a dial may be from a published one and still count as being on
+    /// that station, in Hz.
+    ///
+    /// Generous, because a fax operator tunes by ear and by the subcarrier
+    /// readout rather than to the hertz, and being a hundred hertz off is the
+    /// normal state of a chart that is decoding perfectly well.
+    pub const NEAR_HZ: f64 = 200.0;
+
+    /// The station a dial frequency is sitting on, and the published carrier it
+    /// matched.
+    pub fn at_dial(dial_hz: f64) -> Option<(&'static WefaxStation, f64)> {
+        WEFAX_STATIONS.iter().find_map(|s| {
+            s.carriers_khz
+                .iter()
+                .find(|&&f| (WefaxStation::dial_hz(f) - dial_hz).abs() < WefaxStation::NEAR_HZ)
+                .map(|&f| (s, f))
+        })
     }
 }
 
@@ -112,27 +139,65 @@ impl WefaxStation {
 /// sends charts at 120 LPM and IOC 576, which is why the panel does not carry a
 /// per-station geometry.
 pub const WEFAX_STATIONS: &[WefaxStation] = &[
-    WefaxStation { name: "DWD Pinneberg (Germany)", carriers_khz: &[3855.0, 7880.0, 13882.5] },
-    WefaxStation { name: "GYA Northwood (UK)", carriers_khz: &[2618.5, 4610.0, 8040.0, 11086.5] },
-    WefaxStation { name: "NMF Boston (USCG)", carriers_khz: &[4235.0, 6340.5, 9110.0, 12750.0] },
-    WefaxStation { name: "NMG New Orleans (USCG)", carriers_khz: &[4317.9, 8503.9, 12789.9] },
+    WefaxStation {
+        name: "DWD Pinneberg (Germany)",
+        carriers_khz: &[3855.0, 7880.0, 13882.5],
+        lat: 53.66,
+        lon: 9.80,
+    },
+    WefaxStation {
+        name: "GYA Northwood (UK)",
+        carriers_khz: &[2618.5, 4610.0, 8040.0, 11086.5],
+        lat: 51.60,
+        lon: -0.42,
+    },
+    WefaxStation {
+        name: "NMF Boston (USCG)",
+        carriers_khz: &[4235.0, 6340.5, 9110.0, 12750.0],
+        lat: 41.72,
+        lon: -70.50,
+    },
+    WefaxStation {
+        name: "NMG New Orleans (USCG)",
+        carriers_khz: &[4317.9, 8503.9, 12789.9],
+        lat: 29.88,
+        lon: -89.94,
+    },
     WefaxStation {
         name: "NMC Point Reyes (USCG)",
         carriers_khz: &[4346.0, 8682.0, 12786.0, 17151.2],
+        lat: 38.10,
+        lon: -122.87,
     },
-    WefaxStation { name: "NOJ Kodiak (USCG)", carriers_khz: &[2054.0, 4298.0, 8459.0, 12412.5] },
+    WefaxStation {
+        name: "NOJ Kodiak (USCG)",
+        carriers_khz: &[2054.0, 4298.0, 8459.0, 12412.5],
+        lat: 57.75,
+        lon: -152.48,
+    },
     WefaxStation {
         name: "CFH Halifax (Canada)",
         carriers_khz: &[4271.0, 6496.4, 10536.0, 13510.0],
+        lat: 44.97,
+        lon: -63.35,
     },
-    WefaxStation { name: "JMH Tokyo (Japan)", carriers_khz: &[3622.5, 7795.0, 13988.5] },
+    WefaxStation {
+        name: "JMH Tokyo (Japan)",
+        carriers_khz: &[3622.5, 7795.0, 13988.5],
+        lat: 35.68,
+        lon: 139.76,
+    },
     WefaxStation {
         name: "VMC Charleville (Australia)",
         carriers_khz: &[2628.0, 5100.0, 11030.0, 13920.0, 20469.0],
+        lat: -26.40,
+        lon: 146.25,
     },
     WefaxStation {
         name: "VMW Wiluna (Australia)",
         carriers_khz: &[5755.0, 7535.0, 10555.0, 15615.0, 18060.0],
+        lat: -26.63,
+        lon: 120.22,
     },
 ];
 
@@ -203,8 +268,33 @@ mod tests {
         assert_eq!(WefaxStation::dial_hz(13882.5), 13_880_600.0);
     }
 
-    /// Every station has to be usable: a name, at least one frequency, and all
-    /// of them on short wave where a fax transmitter can actually be.
+    /// A dial lands on the station whose carrier it is under, and nowhere else.
+    #[test]
+    fn a_dial_frequency_finds_the_station_it_is_tuned_to() {
+        // DWD's 7880 kHz carrier is tuned at 7878.1 kHz.
+        let (s, carrier) = WefaxStation::at_dial(7_878_100.0).expect("on DWD");
+        assert!(s.name.starts_with("DWD"));
+        assert_eq!(carrier, 7880.0);
+        // A little off still counts — nobody tunes a fax to the hertz.
+        assert!(WefaxStation::at_dial(7_878_000.0).is_some());
+        // A long way off does not.
+        assert!(WefaxStation::at_dial(7_878_100.0 + 1000.0).is_none());
+        assert!(WefaxStation::at_dial(14_074_000.0).is_none());
+        // Every published carrier of every station is findable from its dial,
+        // which is what the station picker relies on to light the right chip.
+        for st in WEFAX_STATIONS {
+            for &f in st.carriers_khz {
+                let (found, c) = WefaxStation::at_dial(WefaxStation::dial_hz(f))
+                    .unwrap_or_else(|| panic!("{} {f} kHz is not findable", st.name));
+                assert_eq!(found.name, st.name);
+                assert_eq!(c, f);
+            }
+        }
+    }
+
+    /// Every station has to be usable: a name, at least one frequency, a
+    /// plausible place on the Earth, and all of them on short wave where a fax
+    /// transmitter can actually be.
     #[test]
     fn every_station_is_complete_and_on_short_wave() {
         assert!(WEFAX_STATIONS.len() >= 8);
@@ -212,6 +302,11 @@ mod tests {
         for s in WEFAX_STATIONS {
             assert!(!s.name.is_empty());
             assert!(!s.carriers_khz.is_empty(), "{} has no frequencies", s.name);
+            assert!((-90.0..=90.0).contains(&s.lat), "{}: latitude {}", s.name, s.lat);
+            assert!((-180.0..=180.0).contains(&s.lon), "{}: longitude {}", s.name, s.lon);
+            // Nothing at (0, 0), which is what an unfilled coordinate looks
+            // like and is in the Gulf of Guinea.
+            assert!(s.lat.abs() + s.lon.abs() > 1.0, "{} has no location", s.name);
             for &f in s.carriers_khz {
                 assert!((2000.0..=25_000.0).contains(&f), "{}: {f} kHz", s.name);
                 // The dial has to stay positive and below the carrier.

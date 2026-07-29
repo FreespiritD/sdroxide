@@ -730,12 +730,21 @@ impl SdroxideApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn digi_traffic(&self, now_t: f64) -> crate::solar3d::DigiTraffic {
         let status = self.digi_status.as_ref();
-        self.digi_stations.traffic(
+        let mut traffic = self.digi_stations.traffic(
             now_t,
             status.and_then(|s| s.dx_grid.as_deref()),
             self.digi_preview.as_ref().map(|(_, ll)| *ll),
             status.is_some_and(|s| s.transmitting),
-        )
+        );
+        // Weather fax has no callsign and no grid to place a station by, but it
+        // does have a transmitter with a known location — so the chart being
+        // received gets the same path across the globe a QSO would, which turns
+        // an anonymous picture into "this came 900 km over the North Sea".
+        if self.state.rx[0].mode.is_wefax() {
+            traffic.dx = sdroxide_types::WefaxStation::at_dial(self.state.rx_freq_hz())
+                .map(|(st, _)| (st.lat, st.lon));
+        }
+        traffic
     }
 
     /// The operator's grid square. Prefers the engine's copy but falls back to
@@ -10909,12 +10918,7 @@ impl SdroxideApp {
         use sdroxide_types::{WEFAX_STATIONS, WefaxStation};
         let dial = self.state.active_freq_hz();
         // The station we are on, if any, so the chip reads as a position.
-        let here = WEFAX_STATIONS.iter().find_map(|s| {
-            s.carriers_khz
-                .iter()
-                .find(|&&f| (WefaxStation::dial_hz(f) - dial).abs() < 200.0)
-                .map(|&f| (s, f))
-        });
+        let here = WefaxStation::at_dial(dial);
         let face = match &here {
             Some((s, f)) => {
                 format!("📡 {} · {:.1}", s.name.split_whitespace().next().unwrap_or(""), f)
@@ -10937,7 +10941,7 @@ impl SdroxideApp {
                     ui.horizontal_wrapped(|ui| {
                         for &f in s.carriers_khz {
                             let d = WefaxStation::dial_hz(f);
-                            let on = (d - dial).abs() < 200.0;
+                            let on = (d - dial).abs() < WefaxStation::NEAR_HZ;
                             if crate::chrome::chip(ui, on, format!("{f:.1}"))
                                 .on_hover_text(format!(
                                     "Published carrier {f:.1} kHz → dial {:.1} kHz USB",
