@@ -12,6 +12,9 @@ pub fn run(
     source: Box<dyn IqSource>,
     caps: DeviceCaps,
     settings: &Settings,
+    // Whether the engine refuses to key outside the amateur bands. Resolved in
+    // `main` from `config.toml` and the `--oob-tx` flag.
+    tx_ham_only: bool,
     initial_mode: Option<Mode>,
     reopen: Option<ReopenFn>,
 ) -> Result<()> {
@@ -48,7 +51,7 @@ pub fn run(
         mic: mic_params,
         cal_offset_db: settings.cal_offset_db as f32,
         initial_mode,
-        tx_ham_only: settings.tx_ham_only,
+        tx_ham_only,
         reopen,
     };
     let mut handles = start_engine(source, caps, cfg);

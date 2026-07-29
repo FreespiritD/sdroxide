@@ -788,6 +788,9 @@ fn engine_thread(
     state.gains = source.current_gains();
     state.tx_gains = source.current_tx_gains();
     state.antenna_rx = source.current_antenna();
+    // Published so every UI attached to this engine — including a remote one
+    // started by somebody else — can warn about it.
+    state.oob_tx = !engine_cfg.tx_ham_only;
     if let Some(mode) = engine_cfg.initial_mode {
         for rx in &mut state.rx {
             *rx = RxState::with_mode(mode);
@@ -3375,7 +3378,8 @@ impl Engine {
             }
             if self.tx_ham_only && Band::containing(txf) == Band::Gen {
                 return deny(
-                    "outside amateur bands (tx_ham_only is set in config.toml)",
+                    "outside amateur bands (set tx_ham_only = false in config.toml, or pass \
+                     --oob-tx, if you are licensed to transmit here)",
                     &mut self.state,
                 );
             }

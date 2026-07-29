@@ -462,6 +462,10 @@ pub struct SdroxideApp {
     sat_cfg_edit: sdroxide_types::SatConfig,
     sat_ui: SatEditState,
     sat_sub_status: Vec<SubStatusView>,
+    /// Whether the operator has dismissed the out-of-band transmit warning
+    /// this session. Never persisted: `--oob-tx` has to be passed again on the
+    /// next launch, so the warning has to be acknowledged again too.
+    oob_tx_ack: bool,
 }
 
 /// Editable text fields for a manual logbook entry (new or edit). Kept as
@@ -710,6 +714,7 @@ impl SdroxideApp {
             sat_cfg_edit: Default::default(),
             sat_ui: Default::default(),
             sat_sub_status: Vec::new(),
+            oob_tx_ack: false,
         }
     }
 
@@ -1320,6 +1325,77 @@ impl SdroxideApp {
 
     /// The awards dashboard: DXCC / WAS / WAZ / grid counts (worked vs
     /// confirmed) with a band filter, plus the WAS state grid and WAZ zone grid.
+    /// The out-of-band transmit warning.
+    ///
+    /// Modal and dismissed by hand, because the band-edge lockout is the last
+    /// thing between a mistyped frequency and an out-of-band transmission, and
+    /// an operator who does not know it is off is exactly the operator who will
+    /// find out the expensive way. Dismissing it is a one-shot acknowledgement,
+    /// not a preference: it comes back next launch, because the flag has to be
+    /// passed again next launch.
+    ///
+    /// Driven off the *engine's* state rather than off this process's arguments
+    /// so a remote client is warned too — the licence at risk belongs to
+    /// whoever is at the controls, who need not be whoever started the engine.
+    fn oob_tx_window(&mut self, ctx: &egui::Context) {
+        if !self.state.oob_tx || self.oob_tx_ack {
+            return;
+        }
+        let mut dismissed = false;
+        let resp = egui::Window::new("⚠  TRANSMIT LOCKOUT DISABLED")
+            .frame(crate::chrome::window_frame())
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(430.0);
+                ui.label(
+                    RichText::new(
+                        "This engine was started with --oob-tx. The amateur-band lockout is \
+                         off: it will key the transmitter on any frequency the hardware \
+                         supports.",
+                    )
+                    .color(crate::theme::TEXT_STRONG)
+                    .size(13.0),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "Transmitting outside your licence is an offence in every country that \
+                         issues one. Only continue if you are authorised to use the frequencies \
+                         you are about to key on — a MARS/CAP or commercial licence, an \
+                         experimental permit, or a dummy load.",
+                    )
+                    .color(crate::theme::TEXT),
+                );
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if crate::chrome::chip_accent(
+                        ui,
+                        false,
+                        RichText::new("  I UNDERSTAND  ").strong(),
+                        crate::theme::PINK,
+                        crate::theme::TEXT_STRONG,
+                    )
+                    .clicked()
+                    {
+                        dismissed = true;
+                    }
+                    ui.label(
+                        RichText::new("Restart without --oob-tx to put the lockout back.")
+                            .color(crate::theme::LINE_LIT)
+                            .size(10.5),
+                    );
+                });
+            });
+        if let Some(r) = &resp {
+            crate::chrome::paint_window_border(ctx, &r.response);
+        }
+        if dismissed {
+            self.oob_tx_ack = true;
+        }
+    }
+
     fn awards_window(&mut self, ctx: &egui::Context) {
         if !self.show_awards {
             return;
@@ -8589,6 +8665,8 @@ impl eframe::App for SdroxideApp {
         self.spots_window(&ctx, &mut cmds);
         self.awards_window(&ctx);
         self.help.ui(&ctx);
+        // Last, so it lands on top of everything else that opened this frame.
+        self.oob_tx_window(&ctx);
         #[cfg(not(target_arch = "wasm32"))]
         {
             let grid = self.my_grid();

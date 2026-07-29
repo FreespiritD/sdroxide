@@ -325,7 +325,9 @@ On a TX-capable rig the **Transmit** module appears:
 
 > **Transmit safety:** by default sdroxide refuses to transmit outside the
 > amateur bands (`tx_ham_only`). Transmit hardware gains start at minimum and
-> the tune drive defaults low. Raise drive deliberately.
+> the tune drive defaults low. Raise drive deliberately. The band lockout can
+> only be lifted from the command line, one run at a time, with `--oob-tx`
+> ([10](#transmitting-outside-the-amateur-bands---oob-tx)).
 
 On a rig with its own power control (TCI), Drive and Tune command the rig's
 output power directly — and both sliders adopt the rig's current settings when
@@ -2412,10 +2414,45 @@ to anyone.
 | `--width <CHARS>` | Console spectrum width in characters (default 100). |
 | `--freedv-reporter-probe <SECS>` | Connect to FreeDV Reporter read-only for SECS seconds and print what arrives. Uses the server's view role, so nothing is reported and you do not appear on the site. Needs no radio. |
 | `--freedv-reporter-host <HOST[:PORT]>` | FreeDV Reporter host for the probe (default `qso.freedv.org`). |
+| `--oob-tx` | Allow transmit on **any** frequency the hardware supports, not just the amateur bands. See below. |
 
 **Testing without a radio:** `--siggen` (built-in signal generator), `--file`
 (replay an IQ recording), `--probe` (list SoapySDR devices), and `--console`
 (a text-mode waterfall) are handy for trying things out.
+
+### Transmitting outside the amateur bands: `--oob-tx`
+
+sdroxide refuses to key up outside the amateur allocations. That lockout is the
+last thing standing between a mistyped frequency and an out-of-band
+transmission, so it is on by default and there is no button in the interface to
+turn it off.
+
+`--oob-tx` lifts it **for that run only**. It overrides `tx_ham_only` in
+`config.toml` and cannot be saved, so lifting the lockout is a deliberate act
+every single time sdroxide starts:
+
+```sh
+sdroxide --oob-tx
+```
+
+A warning appears in the middle of the window on startup and stays there until
+you dismiss it by hand. It comes back on the next launch, because the flag has
+to be passed again on the next launch.
+
+The flag can only ever *loosen* the lockout, never tighten it: without it,
+sdroxide behaves exactly as it always has.
+
+> **This is for licensed out-of-band use** — MARS/CAP, a commercial or
+> experimental licence, a service-monitor or dummy-load bench — where you are
+> authorised to use the frequencies you are about to key on. Transmitting
+> outside your licence is an offence in every country that issues one, and the
+> penalty for interfering with aeronautical, maritime or emergency traffic is
+> not a fine.
+
+Running `--server --oob-tx` lifts the lockout for **every** client that
+connects, local or remote, and each of them gets the warning: the licence at
+risk belongs to whoever is at the controls, who need not be whoever started the
+engine.
 
 ---
 

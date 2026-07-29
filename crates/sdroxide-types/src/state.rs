@@ -139,6 +139,16 @@ pub struct RadioState {
     /// when not recording.
     #[serde(default)]
     pub recording_file: Option<String>,
+    /// The engine will key outside the amateur bands.
+    ///
+    /// Set by the `--oob-tx` command-line flag, never by anything in the UI:
+    /// it is a deliberate act at launch, not a setting to be toggled by
+    /// accident. Published here rather than kept in the binary so a *remote*
+    /// client is warned too — the operator sitting at the UI is the one whose
+    /// licence is on the line, and they may not be the one who started the
+    /// engine.
+    #[serde(default)]
+    pub oob_tx: bool,
 }
 
 impl Default for RadioState {
@@ -167,6 +177,7 @@ impl Default for RadioState {
             antenna_tx: String::new(),
             recording: false,
             recording_file: None,
+            oob_tx: false,
         }
     }
 }

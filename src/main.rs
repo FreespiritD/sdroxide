@@ -118,6 +118,29 @@ struct Cli {
     /// Console spectrum width in characters
     #[arg(long, default_value_t = 100)]
     width: usize,
+
+    /// Allow transmit on any frequency the hardware supports, not just the
+    /// amateur bands
+    ///
+    /// Overrides `tx_ham_only` in config.toml for this run only, and puts a
+    /// warning on screen that has to be dismissed by hand. For licensed
+    /// out-of-band use — MARS/CAP, a commercial or experimental licence, a
+    /// dummy load — where transmitting outside the amateur allocations is
+    /// something you are authorised to do. Everywhere else it is an offence,
+    /// and the band edges are the last thing standing between a mistyped
+    /// frequency and an interference complaint.
+    #[arg(long)]
+    oob_tx: bool,
+}
+
+impl Cli {
+    /// Whether the engine should refuse to key outside the amateur bands.
+    ///
+    /// The flag can only ever *loosen* the config, never tighten it: a build
+    /// without it behaves exactly as before.
+    fn tx_ham_only(&self, settings: &Settings) -> bool {
+        settings.tx_ham_only && !self.oob_tx
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -149,15 +172,15 @@ fn main() -> anyhow::Result<()> {
 
     if let Some(secs) = cli.tx_tune {
         let (source, caps) = open_source(&cli, &settings)?;
-        return tx_tune_test(source, caps, &settings, secs.clamp(0.2, 10.0));
+        return tx_tune_test(source, caps, cli.tx_ham_only(&settings), secs.clamp(0.2, 10.0));
     }
     if let Some(secs) = cli.ft8_cq {
         let (source, caps) = open_source(&cli, &settings)?;
-        return ft8_cq_test(source, caps, &settings, secs.clamp(16.0, 60.0));
+        return ft8_cq_test(source, caps, cli.tx_ham_only(&settings), secs.clamp(16.0, 60.0));
     }
     if let Some(secs) = cli.rade_rx {
         let (source, caps) = open_source(&cli, &settings)?;
-        return rade_rx_test(source, caps, &settings, secs.clamp(2.0, 120.0));
+        return rade_rx_test(source, caps, cli.tx_ham_only(&settings), secs.clamp(2.0, 120.0));
     }
     // Before any radio setup: the probe talks to the network and nothing else.
     if let Some(secs) = cli.freedv_reporter_probe {
@@ -170,6 +193,7 @@ fn main() -> anyhow::Result<()> {
             source,
             caps,
             &settings,
+            cli.tx_ham_only(&settings),
             cli.mode,
             port,
             cli.web_root.clone(),
@@ -182,7 +206,14 @@ fn main() -> anyhow::Result<()> {
     }
 
     let (source, caps) = open_source(&cli, &settings)?;
-    gui_main::run(source, caps, &settings, cli.mode, Some(reopen_factory(&cli)))
+    gui_main::run(
+        source,
+        caps,
+        &settings,
+        cli.tx_ham_only(&settings),
+        cli.mode,
+        Some(reopen_factory(&cli)),
+    )
 }
 
 /// Factory the engine calls to rebuild the interface at runtime: when the
@@ -210,7 +241,7 @@ fn reopen_factory(cli: &Cli) -> sdroxide_radio::ReopenFn {
 fn tx_tune_test(
     source: Box<dyn IqSource>,
     caps: sdroxide_types::DeviceCaps,
-    settings: &Settings,
+    tx_ham_only: bool,
     secs: f64,
 ) -> anyhow::Result<()> {
     use sdroxide_types::{Command, RadioEvent};
@@ -219,7 +250,7 @@ fn tx_tune_test(
     let mut handles = sdroxide_radio::start_engine(
         source,
         caps,
-        sdroxide_radio::EngineConfig { tx_ham_only: settings.tx_ham_only, ..Default::default() },
+        sdroxide_radio::EngineConfig { tx_ham_only, ..Default::default() },
     );
     let engine_thread = handles.thread.take();
     std::thread::sleep(Duration::from_millis(400));
@@ -260,7 +291,7 @@ fn tx_tune_test(
 fn ft8_cq_test(
     source: Box<dyn IqSource>,
     caps: sdroxide_types::DeviceCaps,
-    settings: &Settings,
+    tx_ham_only: bool,
     secs: f64,
 ) -> anyhow::Result<()> {
     use sdroxide_types::{Command, DigiConfig, Mode, RadioEvent, RxId};
@@ -270,7 +301,7 @@ fn ft8_cq_test(
         source,
         caps,
         sdroxide_radio::EngineConfig {
-            tx_ham_only: settings.tx_ham_only,
+            tx_ham_only,
             initial_mode: Some(Mode::Ft8),
             ..Default::default()
         },
@@ -384,7 +415,7 @@ fn freedv_reporter_probe(host_arg: &str, secs: f64) -> anyhow::Result<()> {
 fn rade_rx_test(
     source: Box<dyn IqSource>,
     caps: sdroxide_types::DeviceCaps,
-    settings: &Settings,
+    tx_ham_only: bool,
     secs: f64,
 ) -> anyhow::Result<()> {
     use sdroxide_types::{Command, Mode, RadioEvent, RxId};
@@ -398,7 +429,7 @@ fn rade_rx_test(
         source,
         caps,
         sdroxide_radio::EngineConfig {
-            tx_ham_only: settings.tx_ham_only,
+            tx_ham_only,
             initial_mode: Some(Mode::Rade),
             audio: Some(sdroxide_radio::AudioParams { producer, out_rate: 48_000.0 }),
             ..Default::default()
@@ -823,5 +854,40 @@ fn synthetic_caps(label: &str) -> DeviceCaps {
         tx_channels: 0,
         freq_ranges_rx: vec![(0.0, 6e9)],
         ..DeviceCaps::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cli(oob: bool) -> Cli {
+        let mut c = Cli::parse_from(["sdroxide"]);
+        c.oob_tx = oob;
+        c
+    }
+
+    /// `--oob-tx` may only ever *loosen* the lockout. A build that never passes
+    /// it has to behave exactly as it did before the flag existed, and no
+    /// combination of flags may turn the lockout on when the config has turned
+    /// it off — that would be a surprise in the dangerous direction.
+    #[test]
+    fn the_flag_only_ever_loosens_the_band_lockout() {
+        let locked = Settings { tx_ham_only: true, ..Settings::default() };
+        let open = Settings { tx_ham_only: false, ..Settings::default() };
+
+        assert!(cli(false).tx_ham_only(&locked), "the default must keep the lockout");
+        assert!(!cli(true).tx_ham_only(&locked), "--oob-tx must lift it");
+        // Already unlocked in the config: the flag changes nothing either way.
+        assert!(!cli(false).tx_ham_only(&open));
+        assert!(!cli(true).tx_ham_only(&open));
+    }
+
+    /// The flag is opt-in on the command line and nowhere else.
+    #[test]
+    fn the_flag_is_off_unless_asked_for() {
+        assert!(!Cli::parse_from(["sdroxide"]).oob_tx);
+        assert!(Cli::parse_from(["sdroxide", "--oob-tx"]).oob_tx);
+        assert!(Settings::default().tx_ham_only, "the shipped default is locked");
     }
 }
