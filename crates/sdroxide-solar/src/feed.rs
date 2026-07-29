@@ -21,6 +21,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 use crate::aurora::{self, AuroraOval, HemisphericPower, KpPoint};
 use crate::cache::{Cache, Validators};
+use crate::clouds;
 use crate::data::{SolarData, Source, SourceStatus, TLE_PERIOD_S};
 use crate::donki::{self, CmeEvent, FlareEvent};
 use crate::imagery::{self, SdoChannel, SunImage};
@@ -33,6 +34,10 @@ const WINDOW_DAYS: i64 = 30;
 /// Body size caps. The 4096 solar images are ~2 MB; the rest are far smaller.
 const JSON_LIMIT: u64 = 16 * 1024 * 1024;
 const IMAGE_LIMIT: u64 = 24 * 1024 * 1024;
+/// The cloud mosaics are 280 kB each at the size asked for. This leaves room
+/// for the service to change its mind about the encoding without leaving room
+/// for a runaway body.
+const CLOUD_LIMIT: u64 = 8 * 1024 * 1024;
 /// How long a request may take in total.
 const TIMEOUT: Duration = Duration::from_secs(25);
 /// Worker wake interval; individual sources have their own, longer, cadences.
@@ -71,6 +76,15 @@ pub enum RawUpdate {
     Tle {
         geo: bool,
         text: String,
+    },
+    /// One channel of the cloud mosaic, as the PNG it arrived as. The decoded
+    /// field is a megabyte of planes; the picture it came from is a quarter of
+    /// that, and the receiver has the same decoder.
+    Clouds {
+        band: clouds::Band,
+        frame_unix: i64,
+        fetched_unix: i64,
+        png: Vec<u8>,
     },
 }
 
@@ -362,7 +376,41 @@ fn load_cached(
     if let Some(text) = sats_geo_txt {
         raw(RawUpdate::Tle { geo: true, text });
     }
+    load_cached_clouds(shared, cache, raw);
     load_cached_sun(shared, cache, channel, resolution, raw);
+}
+
+/// Put yesterday's weather on the globe before today's is asked for.
+///
+/// Stale cloud is worth showing — the overlay says how old it is — because the
+/// alternative is a bare planet for the first few seconds of every launch, and
+/// for the whole session when there is no network.
+fn load_cached_clouds(shared: &Mutex<SolarData>, cache: &Cache, raw: &dyn Fn(RawUpdate)) {
+    let mut any = false;
+    for band in [clouds::Band::Longwave, clouds::Band::Visible] {
+        let Some(bytes) = cache.read(band.cache_name()) else { continue };
+        let fetched_unix = cache.fetched_at(&band.url());
+        // The header that carried the frame's own hour is long gone, so it is
+        // assumed — see `assumed_frame_unix`, which never guesses newer.
+        let frame_unix = clouds::assumed_frame_unix(fetched_unix);
+        // Decoding and the background estimate both happen out here, before the
+        // lock: this is the expensive step.
+        let Some(plane) = clouds::parse_plane(band, &bytes, frame_unix, fetched_unix) else {
+            continue;
+        };
+        {
+            let mut d = shared.lock().unwrap_or_else(|e| e.into_inner());
+            match band {
+                clouds::Band::Longwave => d.cloud_ir = Some(Arc::new(plane)),
+                clouds::Band::Visible => d.cloud_vis = Some(Arc::new(plane)),
+            }
+        }
+        raw(RawUpdate::Clouds { band, frame_unix, fetched_unix, png: bytes });
+        any = true;
+    }
+    if any {
+        shared.lock().unwrap_or_else(|e| e.into_inner()).rebuild_clouds();
+    }
 }
 
 fn load_cached_sun(
@@ -425,6 +473,16 @@ fn refresh(
         Source::KpForecast => {
             (aurora::KP_FORECAST_URL.to_string(), "kpforecast.json".to_string(), JSON_LIMIT)
         }
+        Source::Clouds => (
+            clouds::Band::Longwave.url(),
+            clouds::Band::Longwave.cache_name().to_string(),
+            CLOUD_LIMIT,
+        ),
+        Source::CloudsVis => (
+            clouds::Band::Visible.url(),
+            clouds::Band::Visible.cache_name().to_string(),
+            CLOUD_LIMIT,
+        ),
     };
 
     match http_get(agent, &url, &cache.validators(&url), limit) {
@@ -435,9 +493,13 @@ fn refresh(
             d.status[src.index()].record_ok(now);
             false
         }
-        Ok(Some((bytes, validators))) => {
+        Ok(Some((bytes, validators, warning))) => {
+            // What hour the picture is of, where the source says so. Only the
+            // cloud mosaic does; for everything else the fetch time is the
+            // observation time to within its own cadence.
+            let frame_unix = warning.as_deref().and_then(clouds::frame_unix).unwrap_or(now);
             // Parse and decode before taking the lock.
-            let parsed = parse(src, &bytes, channel, now);
+            let parsed = parse(src, &bytes, channel, now, frame_unix);
             let ok = match &parsed {
                 Parsed::None => false,
                 _ => true,
@@ -455,6 +517,18 @@ fn refresh(
                             raw(RawUpdate::Tle { geo: true, text: text.to_string() });
                         }
                     }
+                    Source::Clouds => raw(RawUpdate::Clouds {
+                        band: clouds::Band::Longwave,
+                        frame_unix,
+                        fetched_unix: now,
+                        png: bytes.clone(),
+                    }),
+                    Source::CloudsVis => raw(RawUpdate::Clouds {
+                        band: clouds::Band::Visible,
+                        frame_unix,
+                        fetched_unix: now,
+                        png: bytes.clone(),
+                    }),
                     _ => {}
                 }
             }
@@ -478,6 +552,13 @@ fn refresh(
                 }
                 Parsed::AuroraPower(v) => d.aurora_power = Some(v),
                 Parsed::KpForecast(v) => d.kp_forecast = v,
+                Parsed::Cloud(plane) => {
+                    match plane.band {
+                        clouds::Band::Longwave => d.cloud_ir = Some(Arc::new(plane)),
+                        clouds::Band::Visible => d.cloud_vis = Some(Arc::new(plane)),
+                    }
+                    d.rebuild_clouds();
+                }
                 Parsed::None => {
                     d.status[src.index()]
                         .record_err(now, format!("{} returned unusable data", src.label()));
@@ -510,15 +591,21 @@ enum Parsed {
     Aurora(AuroraOval),
     AuroraPower(HemisphericPower),
     KpForecast(Vec<KpPoint>),
+    Cloud(clouds::Plane),
     None,
 }
 
-fn parse(src: Source, bytes: &[u8], channel: SdoChannel, now: i64) -> Parsed {
+fn parse(src: Source, bytes: &[u8], channel: SdoChannel, now: i64, frame_unix: i64) -> Parsed {
     match src {
         Source::Sun => match imagery::decode(bytes, channel, now) {
             Some(img) => Parsed::Sun(img),
             None => Parsed::None,
         },
+        Source::Clouds | Source::CloudsVis => {
+            let band =
+                if src == Source::Clouds { clouds::Band::Longwave } else { clouds::Band::Visible };
+            clouds::parse_plane(band, bytes, frame_unix, now).map_or(Parsed::None, Parsed::Cloud)
+        }
         _ => {
             let Ok(text) = std::str::from_utf8(bytes) else { return Parsed::None };
             let parsed = match src {
@@ -553,7 +640,7 @@ fn parse(src: Source, bytes: &[u8], channel: SdoChannel, now: i64) -> Parsed {
                     let v = aurora::parse_kp_forecast(text);
                     return if v.is_empty() { Parsed::None } else { Parsed::KpForecast(v) };
                 }
-                Source::Sun => unreachable!(),
+                Source::Sun | Source::Clouds | Source::CloudsVis => unreachable!(),
             };
             parsed.unwrap_or_else(|e| {
                 tracing::warn!("solar feed: {} parse failed: {e}", src.label());
@@ -564,12 +651,17 @@ fn parse(src: Source, bytes: &[u8], channel: SdoChannel, now: i64) -> Parsed {
 }
 
 /// Conditional GET. `Ok(None)` means 304 Not Modified.
+///
+/// The third member of the tuple is the response's `Warning` header, which is
+/// where GeoServer puts the timestamp of the frame it decided to serve — the
+/// only place the cloud mosaic says what hour it is a picture of. Everything
+/// else ignores it.
 pub(crate) fn http_get(
     agent: &ureq::Agent,
     url: &str,
     validators: &Validators,
     limit: u64,
-) -> Result<Option<(Vec<u8>, Validators)>, String> {
+) -> Result<Option<(Vec<u8>, Validators, Option<String>)>, String> {
     let mut req = agent.get(url);
     if let Some(etag) = &validators.etag {
         req = req.header("If-None-Match", etag);
@@ -592,7 +684,8 @@ pub(crate) fn http_get(
         last_modified: header("last-modified"),
         fetched_unix: 0,
     };
+    let warning = header("warning");
     let bytes =
         resp.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| e.to_string())?;
-    Ok(Some((bytes, next)))
+    Ok(Some((bytes, next, warning)))
 }

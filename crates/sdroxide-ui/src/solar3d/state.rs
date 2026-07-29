@@ -334,8 +334,20 @@ impl SolarUi {
         self.view.layers & bit != 0
     }
 
-    pub fn toggle_layer(&mut self, bit: u32) {
-        self.view.layers ^= bit;
+    /// Turn every bit in `mask` on or off together.
+    ///
+    /// One chip may stand for more than one layer — `SUN OBS` is the sunspots
+    /// and the flares — and XOR is the wrong operator for that. A mask holding
+    /// only one of a pair, which any settings file written before the two chips
+    /// merged may well hold, would flip to holding only the *other* one. A chip
+    /// like that is lit when any of its bits are set, so clicking it has to mean
+    /// "all of you, off".
+    pub fn set_layers(&mut self, mask: u32, on: bool) {
+        if on {
+            self.view.layers |= mask;
+        } else {
+            self.view.layers &= !mask;
+        }
     }
 }
 

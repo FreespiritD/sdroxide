@@ -18,6 +18,14 @@ use crate::view::solar_layer as layer;
 const LAYERS: [(u32, &str, &str); 10] = [
     (layer::ORBITS, "ORBITS", "Orbital paths"),
     (
+        layer::CLOUDS,
+        "CLOUDS",
+        "Cloud cover from NOAA's global geostationary mosaic, drawn as a depth of air \
+         rather than a picture stuck on the surface: infrared says how cold each cloud \
+         top is, and that is how high it stands. Thunderstorms flash inside the towers \
+         they build.",
+    ),
+    (
         layer::PLANETS,
         "PLANETS",
         "The other seven planets, eighteen of their moons, and Saturn's and Uranus's rings. \
@@ -25,8 +33,12 @@ const LAYERS: [(u32, &str, &str); 10] = [
          fitted to JPL Horizons.",
     ),
     (layer::CME, "CME", "Coronal mass ejection trajectory cones"),
-    (layer::SPOTS, "SPOTS", "Sunspot active regions"),
-    (layer::FLARES, "FLARES", "Solar flare source locations"),
+    (
+        layer::SUN_OBS,
+        "SUN OBS",
+        "Solar observations on the Sun's disk: sunspot active regions, and where the \
+         flares came from",
+    ),
     (layer::LABELS, "LABELS", "Body and region labels"),
     (layer::QSO, "QSO", "Decoded FT8/FT4 stations and the path to the station being worked"),
     (layer::SATS, "SATS", "Amateur-radio satellites, their orbits and elevation from your QTH"),
@@ -162,7 +174,10 @@ fn target_button(ui: &mut egui::Ui, st: &mut SolarUi) {
 }
 
 fn layers_module(ui: &mut egui::Ui, st: &mut SolarUi) {
-    chrome::module(ui, "Layers", 594.0, |ui| {
+    // Wide enough for the nine chips that show without a logbook. AWARDS, which
+    // only appears once there is a log to colour, spills past the edge — it
+    // always has.
+    chrome::module(ui, "Layers", 610.0, |ui| {
         for (bit, label, hint) in LAYERS {
             // The award layer has nothing to paint without a logbook to paint
             // it from — the browser tab has none — and a chip that provably
@@ -170,8 +185,11 @@ fn layers_module(ui: &mut egui::Ui, st: &mut SolarUi) {
             if bit == layer::AWARDS && st.awards.is_empty() {
                 continue;
             }
-            if chrome::chip(ui, st.layer(bit), label).on_hover_text(hint).clicked() {
-                st.toggle_layer(bit);
+            // `layer` is already "any of these bits", so a chip standing for a
+            // pair lights when either half is on and clears both when clicked.
+            let on = st.layer(bit);
+            if chrome::chip(ui, on, label).on_hover_text(hint).clicked() {
+                st.set_layers(bit, !on);
             }
         }
     });
@@ -391,9 +409,16 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     let picks = std::mem::take(&mut scene.picks);
     let view_proj = scene.globals.view_proj;
 
-    let (sun_img, sun_gen, aurora, aurora_gen) = match data {
-        Some(d) => (d.sun.clone(), d.sun_gen, d.aurora.clone(), d.aurora_gen),
-        None => (None, 0, None, 0),
+    let (sun_img, sun_gen, aurora, aurora_gen, clouds, clouds_gen) = match data {
+        Some(d) => (
+            d.sun.clone(),
+            d.sun_gen,
+            d.aurora.clone(),
+            d.aurora_gen,
+            d.clouds.clone(),
+            d.clouds_gen,
+        ),
+        None => (None, 0, None, 0, None, 0),
     };
     ui.painter().add(crate::egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -404,6 +429,8 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
             sun_gen,
             aurora,
             aurora_gen,
+            clouds,
+            clouds_gen,
         },
     ));
 
@@ -417,6 +444,7 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     aurora_panel(ui, st, data, rect, below, sim_now as i64);
     info_card(ui, st, data, rect, sim_now);
     award_panel(ui, st, rect);
+    clouds_note(ui, st, data, rect, sim_now as i64);
     impact_banner(ui, data, rect, sim_now as i64);
     pass_window(ui, st, data, sim_now);
 
@@ -1451,6 +1479,45 @@ fn award_panel(ui: &egui::Ui, st: &SolarUi, rect: egui::Rect) {
 
 /// The banner that justifies the whole window: a CME whose cone contains the
 /// Earth, with an arrival estimate.
+/// One line saying what the cloud deck is, and what about it is not measured.
+///
+/// The hour it shows is the hour the mosaic is *of*, which is over an hour
+/// behind the clock — the same discipline the aurora footer keeps, and for the
+/// same reason: a picture presented as current when it is not is worse than no
+/// picture. And it says the lightning is simulated, which is not optional. The
+/// storms are real and come out of the imagery; the individual flashes are
+/// invented, and a globe that flickers with plausible-looking strikes has to
+/// admit that rather than let anyone read them as strikes.
+fn clouds_note(ui: &egui::Ui, st: &SolarUi, data: Option<&SolarData>, rect: egui::Rect, now: i64) {
+    if !st.layer(layer::CLOUDS) {
+        return;
+    }
+    let Some(field) = data.and_then(|d| d.clouds.as_ref()) else { return };
+
+    let channels = if field.has_visible { "IR+VIS" } else { "IR only" };
+    let storms = match field.cells.len() {
+        0 => "no deep convection".to_string(),
+        1 => "1 storm".to_string(),
+        n => format!("{n} storms"),
+    };
+    let text = format!(
+        "CLOUDS  {}  ·  {} old  ·  {channels}  ·  {storms}  ·  lightning simulated",
+        timefmt::ymd_hm(field.frame_unix),
+        timefmt::age((now - field.frame_unix).max(0)),
+    );
+
+    let p = ui.painter();
+    let galley = p.layout_no_wrap(text, egui::FontId::proportional(10.5), theme::LINE_LIT);
+    if galley.size().x > rect.width() - 40.0 {
+        return;
+    }
+    p.galley(
+        egui::pos2(rect.left() + 14.0, rect.bottom() - galley.size().y - 8.0),
+        galley,
+        theme::LINE_LIT,
+    );
+}
+
 fn impact_banner(ui: &egui::Ui, data: Option<&SolarData>, rect: egui::Rect, now: i64) {
     let Some(d) = data else { return };
     // The soonest arrival that has not already happened.

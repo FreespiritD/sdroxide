@@ -4,7 +4,7 @@
 //! geometry can be reasoned about (and unit-tested) without a GPU.
 
 use eframe::egui::Color32;
-use sdroxide_solar::{AuroraOval, SolarData, aurora, ephem};
+use sdroxide_solar::{AuroraOval, CloudField, SolarData, aurora, clouds, ephem};
 use sdroxide_types::Coverage;
 
 use super::camera::Camera;
@@ -32,6 +32,37 @@ pub struct Globals {
     /// x = seconds (animation phase), y = photo/procedural blend for the Sun,
     /// z, w = spare.
     pub misc: [f32; 4],
+}
+
+/// How many lightning flashes may be alight at once.
+///
+/// Across sixty-odd storms flashing at up to four a second, with a tail a third
+/// of a second long, the world average is a couple of dozen — but on a globe
+/// only a handful are ever far enough apart to be told from one another, and a
+/// fixed-size uniform is what keeps this out of a storage buffer the WebGL2
+/// path would not have. The brightest eight win.
+pub const MAX_FLASHES: usize = 8;
+
+/// The lightning alight this instant, as the shaders see it.
+///
+/// A scene-level block rather than per-draw: every shell of the deck has to be
+/// lit by the same flashes, and copying them into twenty-two `DrawData`s would
+/// be the same bytes written twenty-two times.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Flashes {
+    /// xyz = world position inside the tower, w = brightness now. A `w` of zero
+    /// is an unused slot and contributes nothing, so the shader can loop over
+    /// all of them in uniform control flow at a fixed cost.
+    pub items: [[f32; 4]; MAX_FLASHES],
+    /// x = how far the light reaches, in world units. y, z, w spare.
+    pub reach: [f32; 4],
+}
+
+impl Default for Flashes {
+    fn default() -> Self {
+        Flashes { items: [[0.0; 4]; MAX_FLASHES], reach: [1.0, 0.0, 0.0, 0.0] }
+    }
 }
 
 /// Per-draw constants. 192 bytes, uploaded at a dynamic offset.
@@ -223,6 +254,11 @@ pub enum Prim {
     Aurora,
     /// A flat annulus: a planet's ring system.
     Ring,
+    /// The sphere mesh again, as one slice through the cloud deck.
+    Cloud,
+    /// One sphere at the top of the troposphere, with the deck marched through
+    /// it in the fragment shader instead of sliced.
+    CloudVolume,
 }
 
 /// A text label anchored to a point in the scene.
@@ -275,6 +311,8 @@ pub struct Scene {
     /// The star field is a static buffer on the GPU, so it is a flag here
     /// rather than 1500 instances rebuilt every frame.
     pub draw_stars: bool,
+    /// The lightning alight this instant. Shared by every cloud draw.
+    pub flashes: Flashes,
 }
 
 impl Default for Globals {
@@ -503,6 +541,17 @@ pub fn build(
         }
         if st.layer(layer::CME) {
             cones(&mut s, st, &d.cmes, now);
+        }
+        // Before the aurora, and it matters: the deck occludes and the oval
+        // adds, so drawing the oval second puts its glow over the weather —
+        // which is the way round every photograph from orbit has it.
+        if let Some(field) = &d.clouds
+            && st.layer(layer::CLOUDS)
+        {
+            let fade = cloud_deck(&mut s, st, &b, &cam, field);
+            if fade > 0.0 {
+                s.flashes = lightning(&b, &field.cells, unix_s, fade);
+            }
         }
         if let Some(oval) = &d.aurora
             && st.layer(layer::AURORA)
@@ -751,6 +800,229 @@ fn aurora_edge(s: &mut Scene, b: &Bodies, oval: &AuroraOval, fade: f32) {
             ));
         }
     }
+}
+
+// ── Clouds ──────────────────────────────────────────────────────────────────
+//
+// Same argument as the aurora, one atmosphere lower down. Weather is a depth of
+// air, not a picture stuck on a sphere, and the infrared mosaic hands over the
+// one number that makes that drawable: how cold each cloud top is, and so how
+// high it stands. A thunderhead towers here because it really is fifteen
+// kilometres tall.
+//
+// Two ways to draw it, because they fail differently. The shell stack slices
+// the troposphere into concentric spheres and is cheap and predictable. The
+// volume path marches the slab per pixel and is what makes a flash glow
+// *through* a storm instead of merely brightening its outside. See
+// `shaders/solar_cloud.wgsl` and `shaders/solar_cloud_march.wgsl`.
+
+/// The band of air the weather lives in, kilometres. Marine stratus sits a few
+/// hundred metres up; a tropical anvil stops at the tropopause, which is where
+/// [`clouds::TOP_MAX_KM`] stops too.
+const CLOUD_BOTTOM_KM: f32 = 0.5;
+const CLOUD_TOP_KM: f32 = clouds::TOP_MAX_KM;
+/// Earth mean radius, kilometres — see [`AURORA_EARTH_R_KM`]. Altitudes are
+/// fractions of the radius the globe is *drawn* at, so the deck stays glued to
+/// the surface at any setting of the exaggeration slider.
+const CLOUD_EARTH_R_KM: f32 = 6371.0;
+/// How much the deck's thickness is exaggerated.
+///
+/// The one deliberate lie in this layer, and it is unavoidable: eighteen
+/// kilometres on a six-thousand-kilometre planet is a quarter of one per cent
+/// of the radius, which is a hairline at any zoom short of skimming the surface
+/// — and a hairline cannot be volumetric. Six times over is enough for a storm
+/// to stand up out of the deck and still shallow enough that nobody would mistake
+/// the result for a mountain range.
+const CLOUD_LIFT: f32 = 6.0;
+
+/// How many shells to slice the deck into, given how big the Earth is on screen.
+///
+/// Lower than the aurora's counts at every step, because the aurora covers a
+/// tenth of the planet and leaves the rest early, while cloud covers most of it
+/// and every shell pays for nearly every pixel it crosses.
+pub fn cloud_shell_count(earth_px: f32) -> usize {
+    match earth_px {
+        px if px >= 420.0 => 18,
+        px if px >= 160.0 => 12,
+        px if px >= 50.0 => 7,
+        _ => 4,
+    }
+}
+
+/// Altitude of cloud shell `k` of `n`, kilometres.
+///
+/// Packed towards the bottom, where nearly all the world's cloud is: spacing
+/// them evenly would spend half of them on the thin air above the anvils.
+fn cloud_altitude_km(k: usize, n: usize) -> f32 {
+    let t = if n <= 1 { 0.0 } else { k as f32 / (n - 1) as f32 };
+    CLOUD_BOTTOM_KM + (CLOUD_TOP_KM - CLOUD_BOTTOM_KM) * t.powf(1.7)
+}
+
+/// Radius of a point at altitude `alt_km`, as a multiple of the Earth's own.
+fn cloud_radius(alt_km: f32) -> f32 {
+    1.0 + alt_km * CLOUD_LIFT / CLOUD_EARTH_R_KM
+}
+
+/// The cloud deck, one way or the other.
+///
+/// Returns how strongly it was drawn, so the lightning can be skipped entirely
+/// when there is no deck for it to be inside.
+fn cloud_deck(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, field: &CloudField) -> f32 {
+    let earth_px = cam.pixels_for(b.earth, b.earth_r);
+    // Later than the aurora's threshold. The oval is a shape, legible at a few
+    // pixels across; a cloud deck at that size is a grey wash that only makes
+    // the planet harder to read.
+    let fade = ((earth_px - 6.0) / 24.0).clamp(0.0, 1.0);
+    if fade <= 0.0 || field.is_empty() {
+        return 0.0;
+    }
+
+    let (ex, ey, ez) = b.earth_basis;
+    let basis = M4::from_basis(ex, ey, ez, V3::ZERO, 1.0).cols;
+    let draw = |prim: Prim, alt: f32, slab: f32, extra: f32| {
+        (
+            prim,
+            DrawData {
+                model: M4::from_basis(ex, ey, ez, b.earth, b.earth_r * cloud_radius(alt)).cols,
+                basis,
+                tint: [1.0; 4],
+                tint2: [0.0; 4],
+                params: [alt, slab, fade, extra],
+                style: [CLOUD_LIFT, CLOUD_BOTTOM_KM, CLOUD_TOP_KM, b.earth_r],
+            },
+        )
+    };
+
+    if st.view.cloud_march {
+        // One sphere at the top of the slab; the shader owns everything under
+        // it. `extra` is the step budget, which has to follow the on-screen
+        // size or a globe filling a 4K window costs forty texture taps in every
+        // one of eight million pixels.
+        let steps = (10.0 + 30.0 * ((earth_px - 60.0) / 500.0).clamp(0.0, 1.0)).round();
+        s.draws.push(draw(Prim::CloudVolume, CLOUD_TOP_KM, CLOUD_TOP_KM - CLOUD_BOTTOM_KM, steps));
+        return fade;
+    }
+
+    // Bottom-up, so the premultiplied "over" blend composites back to front for
+    // the near hemisphere — the far one is behind the opaque planet and never
+    // reaches the blender. Getting this backwards puts the deck's underside on
+    // top of its anvils.
+    let n = cloud_shell_count(earth_px);
+    for k in 0..n {
+        let alt = cloud_altitude_km(k, n);
+        // The slab of air this shell stands for, as with the aurora: it is what
+        // keeps the deck's total opacity independent of how many were drawn.
+        let lo = if k == 0 { alt } else { cloud_altitude_km(k - 1, n) };
+        let hi = if k + 1 == n { alt } else { cloud_altitude_km(k + 1, n) };
+        s.draws.push(draw(Prim::Cloud, alt, ((hi - lo) * 0.5).max(0.05), 0.0));
+    }
+    fade
+}
+
+/// The lightning alight at `unix_s`.
+///
+/// A pure function of the clock, with no state carried between frames. Two
+/// things fall out of that. Scrubbing time backwards replays the same storm
+/// rather than a fresh one, which is what the time chips promise; and the whole
+/// model is testable, because the same instant always gives the same answer.
+///
+/// What is real here and what is not: [`clouds::ConvCell`] — where the storms
+/// are, how big, how tall, and how often each should flash — is measured, out
+/// of the infrared mosaic. The individual strokes are invented. No free
+/// worldwide feed of real strikes exists, so the honest thing is to drive
+/// synthetic flashes from real convection and say so.
+fn lightning(b: &Bodies, cells: &[clouds::ConvCell], unix_s: f64, fade: f32) -> Flashes {
+    /// How long one stroke stays visible. Real return strokes are under a
+    /// millisecond; what the eye keeps is the afterglow through the cloud.
+    const DECAY_S: f64 = 0.055;
+    /// Nothing is worth carrying past this, and bounding it is what lets only
+    /// two scheduling slots be examined per storm.
+    const LIFE_S: f64 = 0.34;
+
+    let mut out = Flashes {
+        // Light dies off over roughly the size of the storm lighting it.
+        reach: [b.earth_r * 0.035, 0.0, 0.0, 0.0],
+        ..Default::default()
+    };
+    let mut lit: Vec<([f32; 4], f32)> = Vec::new();
+
+    for (i, c) in cells.iter().enumerate() {
+        if c.flash_rate <= 0.0 {
+            continue;
+        }
+        let period = 1.0 / c.flash_rate as f64;
+        let slot = (unix_s / period).floor() as i64;
+        // The slot before this one as well, or a flash that began just before a
+        // boundary would be cut off at it.
+        for k in [slot, slot - 1] {
+            let h = hash2(i as u64, k as u64);
+            // Fire somewhere inside the slot rather than on its edge: a storm
+            // that ticked like a metronome would read as an animation, and real
+            // flashes arrive in ragged bursts.
+            let start = k as f64 * period + (h[0] as f64) * period;
+            let age = unix_s - start;
+            if !(0.0..LIFE_S).contains(&age) {
+                continue;
+            }
+            // Most flashes are one stroke; a third of them flicker two or three
+            // times over a tenth of a second, which is the thing that makes
+            // lightning read as lightning rather than as a blinking light.
+            let strokes = if h[1] < 0.68 {
+                1
+            } else if h[1] < 0.92 {
+                2
+            } else {
+                3
+            };
+            let mut bright = 0.0f32;
+            for stroke in 0..strokes {
+                let dt = age - stroke as f64 * (0.04 + 0.05 * h[2] as f64);
+                if dt >= 0.0 {
+                    bright += (-dt / DECAY_S).exp() as f32;
+                }
+            }
+            bright *= fade * (0.55 + 0.45 * h[3]);
+            if bright < 0.02 {
+                continue;
+            }
+            // Scattered across the storm, not all on its centre.
+            let lat = c.lat + (h[4] - 0.5) * 2.0 * c.radius_deg * 0.7;
+            let lon = c.lon + (h[5] - 0.5) * 2.0 * c.radius_deg * 0.7;
+            // Half way up the tower. Above it the anvil lights from below and
+            // under it the deck lights from above, which is what a storm seen
+            // from orbit actually does.
+            let alt = c.top_km * 0.5;
+            let dir = b.surface_dir(lat as f64, lon as f64);
+            let p = b.earth + dir * (b.earth_r * cloud_radius(alt));
+            lit.push(([p.x, p.y, p.z, bright], bright));
+        }
+    }
+
+    // Only the brightest few survive; the rest are already too faint to tell
+    // apart on a globe.
+    lit.sort_by(|a, b| b.1.total_cmp(&a.1));
+    for (slot, (item, _)) in out.items.iter_mut().zip(&lit) {
+        *slot = *item;
+    }
+    out
+}
+
+/// Six independent values in 0..1 from two integers.
+///
+/// Deliberately not an RNG: there is no state to advance, so the same storm and
+/// the same slot always give the same flash however the frames fall.
+fn hash2(a: u64, k: u64) -> [f32; 6] {
+    let mut x = a.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ k.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let mut out = [0.0f32; 6];
+    for o in &mut out {
+        x ^= x >> 30;
+        x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x ^= x >> 27;
+        x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+        x ^= x >> 31;
+        *o = (x >> 40) as f32 / 16_777_216.0;
+    }
+    out
 }
 
 /// A body is named while it is small enough on screen to need naming, and the
@@ -2371,5 +2643,271 @@ mod tests {
         // Roughly isotropic: no hemisphere should hold more than 60%.
         let up = a.iter().filter(|s| s.center[2] > 0.0).count();
         assert!((600..900).contains(&up), "{up}/1500 stars in the +Z hemisphere");
+    }
+
+    // ── Clouds ──────────────────────────────────────────────────────────────
+
+    /// A synthetic field: an overcast band across the tropics with one deep
+    /// convective cell in it, so these tests assert against a shape they know.
+    fn test_field() -> CloudField {
+        let n = clouds::GRID_W * clouds::GRID_H;
+        let mut opacity = vec![0u8; n];
+        let mut top = vec![0u8; n];
+        for row in 0..clouds::GRID_H {
+            let lat = clouds::row_lat(row);
+            if lat.abs() > 25.0 {
+                continue;
+            }
+            for col in 0..clouds::GRID_W {
+                let i = row * clouds::GRID_W + col;
+                opacity[i] = 200;
+                // A tall tower over the Congo, a flat deck everywhere else.
+                let lon = clouds::col_lon(col);
+                let tall = (lat - 0.0).abs() < 5.0 && (lon - 20.0).abs() < 5.0;
+                top[i] = if tall { 240 } else { 60 };
+            }
+        }
+        CloudField {
+            frame_unix: 1_784_937_600,
+            opacity,
+            top,
+            cells: vec![clouds::ConvCell {
+                lat: 0.0,
+                lon: 20.0,
+                radius_deg: 4.0,
+                top_km: 16.0,
+                flash_rate: 2.0,
+            }],
+            has_visible: true,
+        }
+    }
+
+    fn earth_view_with_clouds(field: Option<CloudField>) -> (SolarUi, SolarData) {
+        let mut st = ui();
+        st.view.focus = Focus::Earth.to_u8();
+        st.view.dist = 0.5;
+        let mut data = SolarData::default();
+        data.clouds = field.map(std::sync::Arc::new);
+        (st, data)
+    }
+
+    /// The deck is a stack of slices through the troposphere, and every one of
+    /// them has to sit in the band the weather is actually in — ordered, tiling
+    /// it, and glued to the surface.
+    ///
+    /// The loop over `body_scale` is the one that matters. Altitudes are stored
+    /// as fractions of the radius the globe is *drawn* at, so the deck has to
+    /// stay attached at any setting of the exaggeration slider; expressing them
+    /// in absolute units instead would leave the clouds buried inside a
+    /// twenty-times Earth and orbiting a life-size one.
+    #[test]
+    fn the_deck_is_a_stack_of_slices_through_the_troposphere() {
+        for scale in [1.0f32, 20.0, 60.0] {
+            let (mut st, data) = earth_view_with_clouds(Some(test_field()));
+            st.view.body_scale = scale;
+            let s = build(&st, Some(&data), 1_784_937_600.0, [1600.0, 900.0], 0.0);
+            let deck: Vec<_> =
+                s.draws.iter().filter(|(p, _)| *p == Prim::Cloud).map(|(_, d)| *d).collect();
+            assert!(deck.len() >= 4, "only {} shells at scale {scale}", deck.len());
+
+            let mut last = 0.0f32;
+            let mut spanned = 0.0f32;
+            for d in &deck {
+                let alt = d.params[0];
+                let slab = d.params[1];
+                assert!(
+                    (CLOUD_BOTTOM_KM..=CLOUD_TOP_KM).contains(&alt),
+                    "a shell at {alt} km is outside the troposphere"
+                );
+                assert!(alt >= last, "shells are not ordered bottom-up: {alt} after {last}");
+                assert!(slab > 0.0, "a shell standing for no air at all");
+                last = alt;
+                spanned += slab;
+
+                // Radius relative to the globe: a hair above the surface, and
+                // never so far off it that the deck reads as a separate shell.
+                let r = v3(d.model[0][0], d.model[0][1], d.model[0][2]).len();
+                let earth_r = ephem::EARTH_R as f32 * scale;
+                let rel = r / earth_r;
+                assert!(
+                    (1.0..=1.02).contains(&rel),
+                    "shell at {rel}× the Earth's radius at scale {scale}"
+                );
+            }
+            // The slabs have to add up to the band, or the deck's opacity would
+            // depend on how many shells the frame happened to spend.
+            let band = CLOUD_TOP_KM - CLOUD_BOTTOM_KM;
+            assert!(
+                (spanned - band).abs() < band * 0.35,
+                "slabs sum to {spanned} km against a {band} km band"
+            );
+        }
+    }
+
+    #[test]
+    fn the_clouds_layer_removes_the_deck_entirely() {
+        let (mut st, data) = earth_view_with_clouds(Some(test_field()));
+        st.view.layers &= !layer::CLOUDS;
+        let s = build(&st, Some(&data), 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        assert!(s.draws.iter().all(|(p, _)| !matches!(p, Prim::Cloud | Prim::CloudVolume)));
+        assert_eq!(s.flashes, Flashes::default(), "lightning without a cloud layer");
+    }
+
+    /// No field, no deck. Drawing a clear sky before the first mosaic lands
+    /// would be a claim about the weather rather than an absence of one.
+    #[test]
+    fn no_mosaic_draws_no_weather() {
+        let (st, data) = earth_view_with_clouds(None);
+        let s = build(&st, Some(&data), 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        assert!(s.draws.iter().all(|(p, _)| !matches!(p, Prim::Cloud | Prim::CloudVolume)));
+    }
+
+    /// The volume switch replaces the whole stack with a single draw.
+    #[test]
+    fn the_volume_switch_swaps_the_stack_for_one_march() {
+        let (mut st, data) = earth_view_with_clouds(Some(test_field()));
+        st.view.cloud_march = true;
+        let s = build(&st, Some(&data), 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        let marches: Vec<_> =
+            s.draws.iter().filter(|(p, _)| *p == Prim::CloudVolume).map(|(_, d)| *d).collect();
+        assert_eq!(marches.len(), 1);
+        assert!(s.draws.iter().all(|(p, _)| *p != Prim::Cloud));
+        // The step budget has to be a usable number of steps, and within the
+        // ceiling the shader's loop is bounded by.
+        let steps = marches[0].params[3];
+        assert!((4.0..=40.0).contains(&steps), "step budget {steps}");
+    }
+
+    /// Cloud is under the aurora, and the aurora only adds light — so the deck
+    /// has to be composited first or the oval ends up behind the weather.
+    #[test]
+    fn the_deck_is_drawn_under_the_aurora() {
+        let mut st = ui();
+        st.view.focus = Focus::Earth.to_u8();
+        st.view.dist = 0.5;
+        let mut data = SolarData::default();
+        data.clouds = Some(std::sync::Arc::new(test_field()));
+        data.aurora = Some(std::sync::Arc::new(test_oval()));
+        let s = build(&st, Some(&data), 1_784_937_600.0, [1600.0, 900.0], 0.0);
+
+        let last_cloud = s.draws.iter().rposition(|(p, _)| *p == Prim::Cloud).expect("no deck");
+        let first_aurora = s.draws.iter().position(|(p, _)| *p == Prim::Aurora).expect("no oval");
+        assert!(last_cloud < first_aurora, "the aurora was drawn under the clouds");
+        // Each run stays contiguous, or the draw loop rebinds a pipeline per
+        // shell instead of once per stack.
+        let first_cloud = s.draws.iter().position(|(p, _)| *p == Prim::Cloud).expect("no deck");
+        assert!(s.draws[first_cloud..=last_cloud].iter().all(|(p, _)| *p == Prim::Cloud));
+    }
+
+    /// A cloud deck on a twenty-pixel Earth is a grey wash that only makes the
+    /// planet harder to read, so it fades out before it gets there.
+    #[test]
+    fn the_deck_fades_out_with_a_distant_earth() {
+        let mut st = ui();
+        st.view.focus = Focus::Sun.to_u8();
+        let mut data = SolarData::default();
+        data.clouds = Some(std::sync::Arc::new(test_field()));
+        let s = build(&st, Some(&data), 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        assert!(s.draws.iter().all(|(p, _)| !matches!(p, Prim::Cloud | Prim::CloudVolume)));
+        assert_eq!(s.flashes, Flashes::default());
+    }
+
+    /// Lightning is a function of the clock and nothing else.
+    ///
+    /// This is what lets the time chips scrub backwards and replay the same
+    /// storm rather than a fresh one, and it is what makes the model testable at
+    /// all. A frame counter or an RNG would give a different answer every time
+    /// the same instant was drawn.
+    #[test]
+    fn lightning_is_a_function_of_the_clock() {
+        let (st, data) = earth_view_with_clouds(Some(test_field()));
+        let at = |t: f64| build(&st, Some(&data), t, [1600.0, 900.0], 0.0).flashes;
+
+        let a = at(1_784_937_600.0);
+        assert_eq!(a, at(1_784_937_600.0), "the same instant gave two different storms");
+
+        // Over a minute at two flashes a second something has to strike, and the
+        // picture has to change as the clock runs.
+        let mut lit_frames = 0;
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..600 {
+            let f = at(1_784_937_600.0 + i as f64 * 0.1);
+            let lit = f.items.iter().filter(|s| s[3] > 0.0).count();
+            assert!(lit <= MAX_FLASHES, "{lit} flashes at once");
+            if lit > 0 {
+                lit_frames += 1;
+                seen.insert(f.items[0][3].to_bits());
+            }
+        }
+        assert!(lit_frames > 20, "only {lit_frames}/600 frames had any lightning");
+        assert!(seen.len() > 10, "the flashes never changed brightness");
+    }
+
+    /// A flash is inside the cloud that is making it: within the slab, and near
+    /// enough to the storm the field put there.
+    #[test]
+    fn lightning_strikes_inside_the_storm_that_made_it() {
+        let (st, data) = earth_view_with_clouds(Some(test_field()));
+        let b = bodies(&st, 1_784_937_600.0);
+        let cell = data.clouds.as_ref().expect("field").cells[0];
+        let want = b.surface_dir(cell.lat as f64, cell.lon as f64);
+
+        let mut checked = 0;
+        for i in 0..600 {
+            let f = build(&st, Some(&data), 1_784_937_600.0 + i as f64 * 0.1, [1600.0, 900.0], 0.0)
+                .flashes;
+            for item in f.items.iter().filter(|s| s[3] > 0.0) {
+                let p = v3(item[0], item[1], item[2]) - b.earth;
+                let rel = p.len() / b.earth_r;
+                let top = 1.0 + CLOUD_TOP_KM * CLOUD_LIFT / CLOUD_EARTH_R_KM;
+                assert!((1.0..=top).contains(&rel), "a flash at {rel}× the Earth's radius");
+                // Within the storm's own footprint, generously: the jitter is
+                // 70% of its radius and the tower leans nowhere.
+                let cos = p.normalize().dot(want);
+                let limit = (cell.radius_deg * 1.2).to_radians().cos();
+                assert!(cos > limit, "a flash {:.1}° from its storm", cos.acos().to_degrees());
+                checked += 1;
+            }
+        }
+        assert!(checked > 20, "only {checked} flashes to check");
+    }
+
+    /// A storm that is not working does not flash. The rate comes out of the
+    /// imagery, so a zero there has to mean silence rather than a default.
+    #[test]
+    fn a_quiet_cell_never_flashes() {
+        let mut field = test_field();
+        field.cells[0].flash_rate = 0.0;
+        let (st, data) = earth_view_with_clouds(Some(field));
+        for i in 0..200 {
+            let f =
+                build(&st, Some(&data), 1_784_937_600.0 + i as f64 * 0.05, [1600.0, 900.0], 0.0)
+                    .flashes;
+            assert!(f.items.iter().all(|s| s[3] == 0.0), "a cell with no rate flashed");
+        }
+    }
+
+    /// The flash block is a uniform, so its size is a contract with the shaders.
+    #[test]
+    fn the_flash_block_is_the_size_the_shaders_expect() {
+        assert_eq!(std::mem::size_of::<Flashes>(), 16 * (MAX_FLASHES + 1));
+        assert_eq!(std::mem::size_of::<Flashes>() % 16, 0);
+    }
+
+    /// `SUN OBS` is one chip standing for two layers, so it has to gate both —
+    /// and a mask that a settings file left with only one of them set must read
+    /// as lit and clear to nothing, not flip to the other one. That is the bug
+    /// an XOR toggle would have.
+    #[test]
+    fn the_sun_observation_chip_covers_both_of_its_layers() {
+        assert_eq!(layer::SUN_OBS, layer::SPOTS | layer::FLARES);
+
+        let mut st = ui();
+        st.view.layers = layer::SPOTS;
+        assert!(st.layer(layer::SUN_OBS), "half a pair should still light the chip");
+        st.set_layers(layer::SUN_OBS, false);
+        assert!(!st.layer(layer::SPOTS) && !st.layer(layer::FLARES), "one click left half on");
+        st.set_layers(layer::SUN_OBS, true);
+        assert!(st.layer(layer::SPOTS) && st.layer(layer::FLARES), "the next click left half off");
     }
 }

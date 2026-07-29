@@ -136,6 +136,17 @@ impl Solar3d {
         v
     }
 
+    /// Whether the clouds are marched rather than sliced. Lives here rather than
+    /// in `UiSettings` because it rides `Solar3dView`, which is the state the
+    /// browser tab persists too — the same switch has to reach both.
+    pub fn cloud_march(&self) -> bool {
+        self.lock().view.cloud_march
+    }
+
+    pub fn set_cloud_march(&self, on: bool) {
+        self.lock().view.cloud_march = on;
+    }
+
     /// Emit the window for this frame (or not, when closed). Call once per root
     /// pass, after the main UI. `grid` is the operator's Maidenhead locator and
     /// `awards` the log's DXCC coverage for the "what is still missing" layer.

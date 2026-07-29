@@ -144,7 +144,7 @@ pub fn refresh(
             status.curated = curated_count(&sats);
             (sats, status)
         }
-        Ok(Some((bytes, validators))) => {
+        Ok(Some((bytes, validators, _))) => {
             let text = match String::from_utf8(bytes) {
                 Ok(t) => t,
                 Err(_) => {

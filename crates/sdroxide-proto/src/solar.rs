@@ -32,7 +32,7 @@ use sdroxide_types::Decode;
 
 /// Bump on any incompatible change to the two enums below. Independent of
 /// [`crate::PROTO_VERSION`]: the two protocols share a transport and nothing else.
-pub const SOLAR_PROTO_VERSION: u16 = 1;
+pub const SOLAR_PROTO_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SolarClientMsg {
@@ -103,6 +103,18 @@ pub enum SolarServerMsg {
     /// Fresh decodes. The viewer does its own fade bookkeeping, so this is the
     /// same list the flat map sees and the two agree on which stations are up.
     Decodes(Vec<Decode>),
+    /// One channel of the cloud mosaic, as the PNG that was fetched — 280 kB
+    /// every ten minutes, against roughly a megabyte for the decoded planes.
+    /// The receiver runs `clouds::parse_plane` on it, which is the same code
+    /// the native feed runs.
+    Clouds {
+        /// `true` for the longwave infrared channel, `false` for the visible.
+        infrared: bool,
+        /// The hour the picture is *of*, not when it was fetched.
+        frame_unix: i64,
+        fetched_unix: i64,
+        png: Vec<u8>,
+    },
 }
 
 #[cfg(test)]
@@ -137,7 +149,7 @@ mod tests {
             SolarServerMsg::HelloAck { proto: SOLAR_PROTO_VERSION },
             SolarServerMsg::Error("no feed".into()),
             SolarServerMsg::Pong,
-            SolarServerMsg::Status(vec![SourceStatus::default(); 12]),
+            SolarServerMsg::Status(vec![SourceStatus::default(); 14]),
             SolarServerMsg::Weather {
                 weather: SpaceWeather::default(),
                 aurora_power: None,
@@ -153,6 +165,12 @@ mod tests {
                 transmitting: true,
             },
             SolarServerMsg::Decodes(Vec::new()),
+            SolarServerMsg::Clouds {
+                infrared: true,
+                frame_unix: 1_785_348_000,
+                fetched_unix: 1_785_352_493,
+                png: vec![0x89, b'P', b'N', b'G'],
+            },
         ];
         for m in server {
             let bytes = encode(&m).expect("encode");
@@ -176,7 +194,7 @@ mod tests {
     /// its own array from a stale constant would silently mis-attribute ages.
     #[test]
     fn the_status_vector_matches_the_source_list() {
-        let m = SolarServerMsg::Status(vec![SourceStatus::default(); 12]);
+        let m = SolarServerMsg::Status(vec![SourceStatus::default(); 14]);
         let SolarServerMsg::Status(v) = &m else { unreachable!() };
         assert_eq!(v.len(), sdroxide_solar::Source::ALL.len());
     }

@@ -16,6 +16,7 @@
 pub mod aurora;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cache;
+pub mod clouds;
 pub mod data;
 pub mod donki;
 pub mod ephem;
@@ -35,6 +36,7 @@ pub mod tlesub;
 pub mod vec3;
 
 pub use aurora::{AuroraOval, HemisphericPower, KpPoint};
+pub use clouds::{Band, CloudField, ConvCell};
 pub use data::{SolarData, Source, SourceStatus};
 pub use donki::{CmeAnalysis, CmeEvent, FlareEvent};
 pub use ephem::{AU, EARTH_R, MOON_R, SUN_R, SunFrame};

@@ -1332,7 +1332,7 @@ window opens the same dialog on its Spots tab). Nine tabs run across the top:
 | --- | --- |
 | **General** | Your callsign and grid, and the sound devices. [5.1](#51-general-station-and-audio) |
 | **Radio** | Which rig sdroxide talks to, and how. [5.2](#52-radio-choosing-and-configuring-the-rig) |
-| **UI** | Frame rate, waterfall palette, spectrum background. [5.3](#53-ui-display-preferences) |
+| **UI** | Frame rate, waterfall palette, spectrum background, 3D cloud rendering. [5.3](#53-ui-display-preferences) |
 | **Controls** | Keyboard, mouse and MIDI bindings. [5.4](#54-controls-keyboard-mouse-and-midi) |
 | **Spots** | DX cluster, POTA, SOTA and PSK Reporter feeds. [5.5](#55-spots-spot-feeds) |
 | **FreeDV** | FreeDV Reporter (qso.freedv.org). [5.6](#56-freedv-freedv-reporter) |
@@ -1658,6 +1658,16 @@ The **UI** tab holds display preferences, stored in `config.toml` under `[ui]`:
 - **Spectrum background** — a vertical gradient behind the spectrum line, filled
   from the **top** colour down to the **bottom** colour (default dark red →
   black). Untick **Gradient** for a plain background.
+
+Under **3D view**:
+
+- **Cloud rendering** — how the `CLOUDS` layer of the solar-system window
+  ([6](#6-solar-system-3d-view)) draws the weather. **Layered** stacks
+  slices through the troposphere and is the cheap option. **Volumetric** walks a
+  ray through it instead, so the Sun casts the cloud tops onto the deck below and
+  lightning glows out *through* the storm making it rather than only brightening
+  its outside — at several times the cost per pixel. Both draw the same weather;
+  this only chooses how much the GPU spends on the light in it.
 
 ### 5.4 Controls: keyboard, mouse and MIDI
 
@@ -2184,10 +2194,15 @@ the QSO ends the camera rejoins the tour at whichever viewpoint is nearest.
 Switching the `QSO` layer off leaves AUTO on its normal loop.
 
 **Layers** — `ORBITS` (orbital paths, sampled from the real ephemeris, so they
-are the true eccentric orbits), `PLANETS`, `CME`, `SPOTS`, `FLARES`, `LABELS`,
+are the true eccentric orbits), `CLOUDS`, `PLANETS`, `CME`, `SUN OBS`, `LABELS`,
 `QSO`, `SATS`, `AURORA` and `AWARDS`. All but `AWARDS` are on to begin with —
 that one puts a marker on all three hundred-odd DXCC entities, so it waits until
 you ask for it.
+
+`SUN OBS` is solar *observations* on the Sun's disk: the sunspot active regions
+and the flare source locations, which used to be two buttons and are one idea.
+The name also settles a collision — everywhere else in this manual, **SPOTS**
+means the DX cluster.
 
 The star field and the heliographic graticule (the solar rotation axis, equator
 and parallels) have no buttons: they are the backdrop and the coordinate frame
@@ -2217,6 +2232,71 @@ sulphur yellows, Iapetus its black leading hemisphere. Radii are exaggerated by
 the **body** scale like the Earth's, but capped so that no planet ever outgrows
 the Sun; each planet's moons are scaled by the same factor as the planet, so a
 moon at six planet radii is drawn at six planet radii.
+
+**The CLOUDS layer** puts the weather on the globe, live, from NOAA/NESDIS's
+Global Mosaic of Geostationary Satellite Imagery — GOES-East and GOES-West, both
+Meteosats and Himawari, stitched into one picture of the planet every hour.
+
+Like the aurora it is drawn as a depth of air rather than as a picture stuck on
+a sphere, and for the same reason: that is what it is. What makes that possible
+is the infrared channel. Brightness in the infrared is cloud-top *temperature*,
+and temperature is *altitude* — so the renderer is handed a height field taken
+from measurement, and a thunderhead stands fifteen kilometres tall over the
+stratus beside it because it really does. The Sun lights the tops and they shade
+their own undersides, which is what makes a deck read as three-dimensional
+rather than as fog, and the limb shows the deck standing off the surface because
+a grazing line of sight crosses a great deal more of it.
+
+Two channels are fetched. Infrared is the backbone and works in the dark.
+Visible is a correction on the sunlit half only: low warm cloud is nearly
+invisible to infrared — the top of a marine stratus deck is within a few kelvin
+of the sea under it — and obvious in visible light, so where the Sun is up that
+channel fills in what the first cannot see.
+
+**What is real and what is not.** The cloud field is measured. The
+*lightning is simulated* — and the readout along the bottom of the window says
+so, because a globe that flickers with plausible-looking strikes must not be
+read as showing strikes. What comes from the data is where the thunderstorms
+are, how large, how tall, and how often each should flash: cold-top area is the
+oldest satellite proxy there is for flash rate and a good one. What is invented
+is which millisecond a given stroke fires. No free worldwide feed of individual
+strikes exists to use instead. The flashes light the cloud from inside rather
+than being drawn as marks on it, so an anvil goes bright from below.
+
+Four honest limits, all of them stated in the readout or visible in the
+picture:
+
+* **Nothing is known above about 73°.** A ring of geostationary satellites
+  cannot see the poles, so the layer fades out towards them rather than guessing.
+  The aurora owns those latitudes anyway.
+* **The picture is an hour or more old.** The mosaics are published hourly and
+  run about an hour and a quarter behind the clock. The readout gives the hour
+  the picture is *of*, never the moment it was fetched.
+* **Cloud-top height is a fit, not a retrieval.** The mosaic is a rendered
+  image rather than a calibrated field, so the brightness-to-temperature ramp is
+  a fit to the standard infrared enhancement. The shapes are exactly what the
+  satellites saw; the heights are the right heights to within a kilometre or two.
+* **A cloud field is a difference.** Cloud is measured as brightness above a
+  locally estimated clear-sky background — which is what stops the cold winter
+  hemisphere and the polar night being read as an overcast, and what makes the
+  deserts come out clear. The cost is at the other end: an overcast broader than
+  the window used to estimate it sets its own background and reads thinner than
+  it is.
+
+The vertical scale is exaggerated about six times. Eighteen kilometres on a
+six-thousand-kilometre planet is a quarter of one per cent of the radius, and a
+hairline cannot be volumetric; six times over is enough for a storm to stand up
+out of the deck and shallow enough that nobody would mistake the result for a
+mountain range. Altitudes are fractions of the radius the globe is *drawn* at,
+so the deck stays glued to the surface at any setting of the **body** scale.
+
+**Cloud rendering** on the UI settings tab
+([5.3](#53-ui-display-preferences)) chooses how the deck
+is drawn. *Layered* stacks slices through the troposphere and is the cheap
+option. *Volumetric* walks a ray through it instead, so the Sun casts the cloud
+tops onto the deck below and a flash glows out *through* the storm making it
+rather than only brightening its outside — at several times the cost per pixel.
+Both draw the same weather.
 
 **The AURORA layer** puts the auroral oval on the globe, live, from NOAA's
 OVATION model — a 1°×1° grid of the probability of seeing aurora, issued every
@@ -2458,7 +2538,7 @@ about ±6 hours; treat this the same way.
 **Where the data comes from.** This is the only part of sdroxide that makes
 outbound internet connections, and it only does so **while this window is
 open** — closing it stops the background fetcher entirely, and never opening it
-means no request is ever made. Three hosts are contacted:
+means no request is ever made. Five hosts are contacted:
 
 | Host | Data | Refresh |
 | --- | --- | --- |
@@ -2466,6 +2546,7 @@ means no request is ever made. Three hosts are contacted:
 | `kauai.ccmc.gsfc.nasa.gov` | CMEs and solar flares ([NASA CCMC DONKI](https://ccmc.gsfc.nasa.gov/tools/DONKI/)) | 20 min |
 | `services.swpc.noaa.gov` | Sunspot regions, planetary K/A, 10.7 cm flux, GOES X-ray level (NOAA SWPC) | 5–60 min |
 | `services.swpc.noaa.gov` | The OVATION auroral oval grid, auroral hemispheric power, and the three-day planetary K forecast | 15–60 min |
+| `nowcoast.noaa.gov` | Global infrared and visible cloud mosaics (NOAA/NESDIS GMGSI, served by nowCOAST) | 10 min |
 | `prop.kc2g.com` | Ionosonde soundings for the MUF estimate (GIRO network, aggregated by KC2G) | 15 min |
 | `celestrak.org` | Orbital element sets: the listings you subscribe to (the amateur group and the ISS by default), plus QO-100 | 6 h |
 
@@ -2491,8 +2572,9 @@ fitted, and cones are coloured cyan through pink with increasing speed.
 
 *Credits: solar imagery courtesy of NASA/SDO and the AIA and HMI science teams;
 CME and flare data from NASA CCMC's DONKI; sunspot regions, geomagnetic indices,
-solar flux, X-ray data and the OVATION aurora model from NOAA SWPC; ionosonde
-soundings from the GIRO
+solar flux, X-ray data and the OVATION aurora model from NOAA SWPC; cloud
+imagery from NOAA/NESDIS's Global Mosaic of Geostationary Satellite Imagery,
+served by NOAA nowCOAST; ionosonde soundings from the GIRO
 network via [prop.kc2g.com](https://prop.kc2g.com/); satellite element sets from
 [CelesTrak](https://celestrak.org/), propagated with SGP4. Planetary positions
 from JPL's approximate element set, moon orbits fitted to JPL Horizons, and body

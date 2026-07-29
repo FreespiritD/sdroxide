@@ -129,6 +129,12 @@ struct SettingsIo<'a> {
     /// Fetch every subscription now. Blocking, so it is done after the window
     /// closure the way the HPSDR scan is.
     sat_sub_refresh: &'a mut bool,
+    /// How the 3D view draws its cloud deck: `Some(true)` marches the volume,
+    /// `Some(false)` stacks shells through it. `None` where there is no 3D view
+    /// to set it for — the browser client, whose solar view is a separate tab
+    /// with its own settings — because a switch that provably does nothing is
+    /// worse than no switch.
+    solar_cloud_march: Option<&'a mut bool>,
     tab: &'a mut SettingsTab,
 }
 
@@ -6633,6 +6639,11 @@ impl SdroxideApp {
 
         let mut tab = self.settings_tab;
         let mut open = self.show_settings;
+        // The 3D window owns the live copy of its own settings — `view.solar3d`
+        // is only the snapshot persisted from it — so this is read out of the
+        // window here and handed back to it below, the way `ui_edit` is.
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut solar_cloud_march = self.solar.cloud_march();
         // The window does its own scrolling, so its bar can only be themed
         // through the context style — lend the palette for the length of the
         // call and hand the body back the normal one.
@@ -6676,6 +6687,10 @@ impl SdroxideApp {
                         sat_ui: &mut sat_ui,
                         sat_subs: &sat_subs,
                         sat_sub_refresh: &mut sat_sub_refresh,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        solar_cloud_march: Some(&mut solar_cloud_march),
+                        #[cfg(target_arch = "wasm32")]
+                        solar_cloud_march: None,
                         tab: &mut tab,
                     },
                 );
@@ -6686,6 +6701,10 @@ impl SdroxideApp {
         }
         self.show_settings = open;
         self.settings_tab = tab;
+        #[cfg(not(target_arch = "wasm32"))]
+        if solar_cloud_march != self.solar.cloud_march() {
+            self.solar.set_cloud_march(solar_cloud_march);
+        }
         // Persist net-config edits (kept across frames) and apply on demand.
         self.net_cfg_edit = net_edit;
         self.net_cluster_cmds = net_cmds;
@@ -6975,7 +6994,7 @@ impl SdroxideApp {
                     ui.label(RichText::new("Switches the live radio without restarting.").weak());
                 });
             }
-            SettingsTab::Ui => settings_ui_tab(ui, io.ui_edit),
+            SettingsTab::Ui => settings_ui_tab(ui, io.ui_edit, io.solar_cloud_march.as_deref_mut()),
             SettingsTab::Spots => {
                 operator_identity_note(ui, io.digi_edit, io.digi_seeded);
 
@@ -7358,7 +7377,11 @@ fn net_secret(ui: &mut egui::Ui, label: &str, val: &mut String, w: f32) {
     });
 }
 
-fn settings_ui_tab(ui: &mut egui::Ui, cfg: &mut sdroxide_types::UiSettings) {
+fn settings_ui_tab(
+    ui: &mut egui::Ui,
+    cfg: &mut sdroxide_types::UiSettings,
+    cloud_march: Option<&mut bool>,
+) {
     use sdroxide_types::{Speed, UiSettings};
     ui.label(RichText::new("Display").size(14.0).strong().color(crate::theme::CYAN));
     ui.add_space(6.0);
@@ -7410,6 +7433,32 @@ fn settings_ui_tab(ui: &mut egui::Ui, cfg: &mut sdroxide_types::UiSettings) {
              sets how quickly the trace reacts (slower = smoother/more averaged). The \
              background gradient fills the spectrum area from the top colour down to \
              the bottom colour.",
+        )
+        .weak(),
+    );
+
+    let Some(cloud_march) = cloud_march else { return };
+    ui.add_space(14.0);
+    ui.label(RichText::new("3D view").size(14.0).strong().color(crate::theme::CYAN));
+    ui.add_space(6.0);
+    egui::Grid::new("ui-grid-3d").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+        ui.label("Cloud rendering");
+        ComboBox::from_id_salt("ui-cloud-march")
+            .selected_text(if *cloud_march { "Volumetric" } else { "Layered" })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(cloud_march, false, "Layered");
+                ui.selectable_value(cloud_march, true, "Volumetric");
+            });
+        ui.end_row();
+    });
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new(
+            "How the CLOUDS layer in the 3D view draws the weather. Layered stacks \
+             slices through the troposphere and is the cheap option. Volumetric walks \
+             a ray through it instead, so the Sun casts the cloud tops onto the deck \
+             below and lightning glows out through the storm making it rather than \
+             only brightening its outside — at several times the cost per pixel.",
         )
         .weak(),
     );

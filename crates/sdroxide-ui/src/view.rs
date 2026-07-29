@@ -86,24 +86,43 @@ pub mod solar_layer {
     pub const AURORA: u32 = 1 << 9;
     /// The other planets, their moons and their ring systems.
     pub const PLANETS: u32 = 1 << 10;
+    /// Cloud cover and the lightning inside it.
+    pub const CLOUDS: u32 = 1 << 12;
     /// Award coverage: which DXCC entities are still missing from the log.
     ///
     /// Deliberately absent from [`ALL`], and so off until it is asked for: it
     /// puts a marker on all three hundred-odd DXCC entities, which is a study
     /// aid rather than something to leave switched on over the orrery.
     pub const AWARDS: u32 = 1 << 11;
+    /// Sunspot regions and flare sources together, as the `SUN OBS` chip shows
+    /// them. Not a layer: [`SPOTS`] and [`FLARES`] are still drawn and tested
+    /// separately, and both bits keep their positions so every settings file
+    /// already written still means what it meant. This is only the pair of them
+    /// that one button stands for.
+    pub const SUN_OBS: u32 = SPOTS | FLARES;
     /// Every layer that is on by default.
-    pub const ALL: u32 =
-        ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS | AURORA | PLANETS;
+    pub const ALL: u32 = ORBITS
+        | CME
+        | SPOTS
+        | FLARES
+        | GRID
+        | LABELS
+        | STARS
+        | QSO
+        | SATS
+        | AURORA
+        | PLANETS
+        | CLOUDS;
     /// Values `ALL` has had in earlier versions. A stored mask equal to one of
     /// these was "everything" when it was written, so it is upgraded rather
     /// than leaving newly added layers silently switched off.
     #[allow(dead_code)]
-    pub const PREVIOUS_ALL: [u32; 4] = [
+    pub const PREVIOUS_ALL: [u32; 5] = [
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS,
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO,
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS,
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS | AURORA,
+        ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS | AURORA | PLANETS,
     ];
 }
 
@@ -170,6 +189,11 @@ pub struct Solar3dView {
     pub sun_scale: f32,
     /// Layer visibility bits — see [`solar_layer`].
     pub layers: u32,
+    /// Draw the clouds by marching the volume instead of stacking shells.
+    /// Truer light — a flash glows *through* a tower rather than merely
+    /// brightening it — at several times the cost per pixel, so the cheap path
+    /// is the default and this is the switch for people whose GPU can spare it.
+    pub cloud_march: bool,
     /// How far back CMEs are kept on screen, in hours.
     pub cme_window_h: f32,
     /// Show every satellite in the element set rather than the curated few.
@@ -198,6 +222,7 @@ impl Default for Solar3dView {
             moon_orbit_scale: 1.0,
             sun_scale: 1.0,
             layers: solar_layer::ALL,
+            cloud_march: false,
             cme_window_h: 72.0,
             all_satellites: false,
             // Ten minutes of trail is about forty FT8 slots: enough for the
