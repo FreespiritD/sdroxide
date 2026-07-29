@@ -415,6 +415,32 @@ band chips appears in the Band/Mode popup. Click one to jump the dial to the
 standard calling frequency for that band; a chip highlights when the dial is
 already on it.
 
+#### Bands with more than one agreed frequency
+
+Most modes have one agreed frequency per band, and the band chips above are all
+you need. Some have several — and where they do, a **⇵** chip appears in that
+mode's operating panel listing them:
+
+| Mode | Where it happens |
+| --- | --- |
+| FT8 | The DXpedition (Fox/Hound) window on every HF band, and 6 m's second frequency at 50.323 |
+| PSK31 | The 40 m region split: 7.040 in Region 1, 7.070 in Regions 2 and 3 |
+| RTTY | The DX calling spots (3.590, 14.083) and the Region 2 slot at 7.080 |
+| SSTV | The move-up-when-busy secondaries — a picture takes two minutes, so one frequency per band is occupied most of the time |
+
+The chip's face is the frequency you are on when the dial is already sitting on
+one of them, and reads **⇵ FREQ** when it is not. Clicking a frequency moves the
+**dial**; where you sit inside the audio passband is a separate control and is
+left alone.
+
+An entry shown in **amber** is one the IARU Region 1 band plan does not put
+narrow data on. That is not a mistake in the list: the WSJT-X DXpedition
+frequencies and the FSQCall set are global conventions built around the Region 2
+band plan, and a few of them land in Region 1's CW or phone segments (1.845,
+3.567 and 24.911 for FT8). The DX will be there and so will everyone chasing it
+— but check your own band plan before you key, because sdroxide will not stop
+you.
+
 ### 3.2 One-time setup: your callsign and grid
 
 Click **SETUP** in the QSO area to open the **FT8 / FT4 Setup** window:
@@ -459,7 +485,9 @@ The panel has two halves:
   Neither filter ever hides a message addressed to your own station: a station
   calling you is not calling CQ, and may well be a dupe, but it is the one row
   in the list you owe an answer to.
-- **QSO** (right) — a world map (your location, the station you are working, and
+- **QSO** (right) — a **⇵** frequency chip when the band has more than one
+  agreed frequency for the mode ([3.1](#31-entering-the-mode)), a world map
+  (your location, the station you are working, and
   a transmit indicator), a station card showing the current step
   (`Idle`, `Wait CQ`, `Calling CQ`, `Tx Grid`, `Tx Report`, `Tx R+Report`,
   `Tx RR73`, `Tx 73`, `Confirming`, `Done`), and a transcript of the exchange

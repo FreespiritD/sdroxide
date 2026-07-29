@@ -40,9 +40,10 @@ pub use awards::{
 };
 pub use band::Band;
 pub use band_segments::{
-    FT4_DIALS, FT8_DIALS, JS8_DIALS, PSK_RANGES, RIFP_CALLING, RTTY_RANGES, SSTV_CALLING, Segment,
-    SegmentKind, WSPR_DIALS, is_auto_digi, is_cw_segment, is_digi_segment, is_psk_segment,
-    is_rtty_segment, segment_kind_at,
+    DigiChannel, FSQ_DIALS, FT4_DIALS, FT8_DIALS, FT8_DXPED_DIALS, JS8_DIALS, PSK_DIALS,
+    PSK_RANGES, RIFP_CALLING, RTTY_DIALS, RTTY_RANGES, SSTV_CALLING, Segment, SegmentKind,
+    WSPR_DIALS, digi_channels, digi_channels_in, is_auto_digi, is_cw_segment, is_digi_segment,
+    is_psk_segment, is_rtty_segment, segment_kind_at,
 };
 pub use callsign::{CallsignInfo, UploadResult, UploadTarget};
 pub use caps::{DeviceCaps, Direction, GainElement};

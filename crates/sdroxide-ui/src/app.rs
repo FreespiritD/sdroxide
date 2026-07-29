@@ -2375,6 +2375,92 @@ impl SdroxideApp {
         });
     }
 
+    /// The band's other conventional frequencies for this mode, as a chip that
+    /// opens a picker.
+    ///
+    /// Only appears where there is actually a choice. Most modes have one
+    /// agreed frequency per band and the chip would be a button that does
+    /// nothing; the ones that have several — FT8's DXpedition window, PSK and
+    /// RTTY's region split, SSTV's move-up-when-busy convention — are exactly
+    /// the ones where an operator otherwise has to go and look the number up.
+    ///
+    /// The dial is what moves. These are dial frequencies, and the audio
+    /// offset within the passband is a separate control that must not be
+    /// disturbed by changing band segment.
+    fn digi_freq_chip(&self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let mode = self.state.rx[0].mode;
+        let dial = self.state.active_freq_hz();
+        let band = sdroxide_types::Band::containing(dial);
+        let channels = sdroxide_types::digi_channels_in(mode, band);
+        if channels.len() < 2 {
+            return;
+        }
+        // "On" when the dial is already sitting on one of them, so the chip
+        // doubles as a readout of whether you are where the mode expects.
+        let here = channels.iter().find(|c| (c.dial_hz - dial).abs() < 1.0);
+        let face = match here {
+            Some(c) => format!("⇵ {:.3}", c.dial_hz / 1e6),
+            None => "⇵ FREQ".to_string(),
+        };
+        let btn = crate::chrome::chip(ui, here.is_some(), RichText::new(face).size(11.0))
+            .on_hover_text(format!(
+                "The {} frequencies agreed for {} on {}",
+                channels.len(),
+                mode.label(),
+                band.label()
+            ));
+
+        let mut pick = None;
+        let resp = egui::Popup::from_toggle_button_response(&btn)
+            .frame(crate::chrome::window_frame())
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+            .show(|ui| {
+                ui.set_max_width(300.0);
+                ui.label(
+                    RichText::new(format!("{} · {}", mode.label(), band.label()))
+                        .color(crate::theme::CYAN_DIM)
+                        .size(9.5)
+                        .strong(),
+                );
+                ui.add_space(2.0);
+                for c in &channels {
+                    let on = here.map(|h| h.dial_hz) == Some(c.dial_hz);
+                    let mut text = format!("{:.3} MHz", c.dial_hz / 1e6);
+                    if !c.note.is_empty() {
+                        text.push_str(&format!("   {}", c.note));
+                    }
+                    let mut rich = RichText::new(text).size(12.0);
+                    if c.outside_r1_data_segment(mode) {
+                        rich = rich.color(crate::theme::YELLOW);
+                    }
+                    let row = ui.selectable_label(on, rich);
+                    if c.outside_r1_data_segment(mode) {
+                        row.clone().on_hover_text(
+                            "A global convention that the IARU Region 1 band plan does not put \
+                             narrow data on — check your own band plan before transmitting here.",
+                        );
+                    }
+                    if row.clicked() {
+                        pick = Some(c.dial_hz);
+                    }
+                }
+                if channels.iter().any(|c| c.outside_r1_data_segment(mode)) {
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new("Amber: outside the Region 1 data segment.")
+                            .color(crate::theme::LINE_LIT)
+                            .size(10.0),
+                    );
+                }
+            });
+        if let Some(r) = &resp {
+            crate::chrome::paint_popup_cut_border(ui.ctx(), &r.response, 1.0);
+        }
+        if let Some(hz) = pick {
+            cmds.push(Command::SetVfo { vfo: self.state.active_vfo, hz });
+        }
+    }
+
     /// Touch-friendly decode list with a per-row REPLY button. Clicking a
     /// row moves the TX audio frequency to that signal; REPLY starts a QSO.
     fn decode_list(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
@@ -2955,6 +3041,7 @@ impl SdroxideApp {
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
             |ui| {
                 ui.label(RichText::new("QSO").size(9.5).strong().color(crate::theme::CYAN_DIM));
+                self.digi_freq_chip(ui, cmds);
             },
         );
         ui.scope_builder(
@@ -3489,6 +3576,7 @@ impl SdroxideApp {
             if crate::chrome::chip(ui, false, "+").on_hover_text("Tune up 10 Hz").clicked() {
                 cmds.push(Command::SetDigiAudioFreq((audio_hz + 10.0).clamp(200.0, 3500.0)));
             }
+            self.digi_freq_chip(ui, cmds);
             // Mode parameters inline next to the tune buttons (RTTY shift/baud,
             // Olivia tones/bandwidth, THOR submode) — no separate setup dialog.
             self.text_modem_params_row(ui, cmds);
@@ -3697,6 +3785,7 @@ impl SdroxideApp {
             if crate::chrome::chip(ui, false, "+").on_hover_text("Tune up 10 Hz").clicked() {
                 cmds.push(Command::SetDigiAudioFreq(audio_hz + 10.0));
             }
+            self.digi_freq_chip(ui, cmds);
             self.hell_params_row(ui, cmds);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if transmitting {
@@ -4032,6 +4121,7 @@ impl SdroxideApp {
             if crate::chrome::chip(ui, false, "+").clicked() {
                 cmds.push(Command::SetDigiAudioFreq((audio_hz + 10.0).clamp(200.0, 3500.0)));
             }
+            self.digi_freq_chip(ui, cmds);
             // Mode settings inline next to the tune buttons (moved here from the
             // setup dialog): the FSQ speed and the directed-message callsign.
             self.fsq_params_row(ui, cmds);
@@ -9644,6 +9734,7 @@ impl SdroxideApp {
                                         .strong()
                                         .color(crate::theme::CYAN),
                                 );
+                                self.digi_freq_chip(ui, cmds);
                                 let auto_label = if self.sstv.auto {
                                     format!("Auto ({})", self.sstv.tx_mode.label())
                                 } else {
@@ -10103,8 +10194,11 @@ impl SdroxideApp {
         let mut changed = false;
 
         ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("RIFP").size(12.0).strong().color(crate::theme::CYAN));
+            // Outside the enabled scope: which frequency to sit on has nothing
+            // to do with whether the operator's digi config has loaded yet.
+            self.digi_freq_chip(ui, cmds);
             ui.add_enabled_ui(seeded, |ui| {
-                ui.label(RichText::new("RIFP").size(12.0).strong().color(crate::theme::CYAN));
                 for p in RifpProfile::ALL {
                     let active = self.digi_cfg_edit.rifp_profile == p;
                     if crate::chrome::chip(ui, active, p.label())
