@@ -39,7 +39,6 @@ pub struct DigiHit {
 
 /// Grid square → (newest slot seen, frame time it was seen at), plus the last
 /// hour of located decodes.
-#[derive(Default)]
 pub struct DigiStations {
     seen: HashMap<String, (i64, f64)>,
     /// Oldest first. Behind an `Arc` because every frame republishes it into
@@ -48,9 +47,33 @@ pub struct DigiStations {
     /// The (grid, slot) pairs already in `history`, so a decode that stays in
     /// the caller's rolling list for many frames is recorded exactly once.
     recorded: HashSet<(String, i64)>,
+    /// How long a station stays lit after it was last heard.
+    fade_s: f64,
+}
+
+impl Default for DigiStations {
+    fn default() -> Self {
+        DigiStations {
+            seen: HashMap::new(),
+            history: Arc::new(Vec::new()),
+            recorded: HashSet::new(),
+            fade_s: STATION_FADE_S,
+        }
+    }
 }
 
 impl DigiStations {
+    /// Set how long a station stays lit after it was last heard.
+    ///
+    /// FT8 fills every slot, so [`STATION_FADE_S`] of silence means gone. JS8
+    /// is deliberately sparse — the mode's own convention is a heartbeat every
+    /// ten or fifteen minutes — and a map that emptied between them would be
+    /// blank almost all the time, which reads as the feature not working rather
+    /// than as the band being quiet.
+    pub fn set_fade_s(&mut self, seconds: f64) {
+        self.fade_s = seconds.max(1.0);
+    }
+
     /// Fold in this frame's decode list and drop anything that has expired.
     /// `now_utc` is the wall clock, which only the history uses.
     ///
@@ -80,7 +103,8 @@ impl DigiStations {
                 fresh.push(DigiHit { lat, lon, slot_utc: d.slot_utc });
             }
         }
-        self.seen.retain(|_, &mut (_, seen)| now_t - seen < STATION_FADE_S);
+        let fade = self.fade_s;
+        self.seen.retain(|_, &mut (_, seen)| now_t - seen < fade);
 
         let expired = self.history.first().is_some_and(|h| h.slot_utc <= cutoff);
         if !fresh.is_empty() || expired {
@@ -110,7 +134,7 @@ impl DigiStations {
             .iter()
             .filter_map(|(grid, &(_, seen))| {
                 let (lat, lon) = sdroxide_types::grid_to_latlon(grid)?;
-                let alpha = (1.0 - (now_t - seen) / STATION_FADE_S).clamp(0.0, 1.0) as f32;
+                let alpha = (1.0 - (now_t - seen) / self.fade_s).clamp(0.0, 1.0) as f32;
                 (alpha > 0.0).then_some((lat, lon, alpha))
             })
             .collect()
@@ -251,6 +275,20 @@ mod tests {
         assert!(s.history().is_empty());
         // The live dots are unaffected: those are frame-time bookkeeping.
         assert_eq!(s.stations(0.0).len(), 2);
+    }
+
+    /// JS8 hears a station every ten or fifteen minutes, not every slot, so it
+    /// widens the window rather than watching the map empty between beacons.
+    #[test]
+    fn a_widened_fade_keeps_a_station_lit_past_the_default() {
+        let mut s = DigiStations::default();
+        s.set_fade_s(900.0);
+        observe(&mut s, &[decode("FN42", 100)], 0.0);
+        assert!(s.stations(STATION_FADE_S + 1.0).len() == 1, "gone at the default fade");
+        let half = s.stations(450.0);
+        assert!((half[0].2 - 0.5).abs() < 1e-6, "half-way fade was {}", half[0].2);
+        observe(&mut s, &[], 901.0);
+        assert!(s.stations(901.0).is_empty(), "it still has to expire eventually");
     }
 
     #[test]

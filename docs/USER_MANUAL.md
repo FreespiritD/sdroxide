@@ -1134,19 +1134,53 @@ Both stations must be on the same speed — they are different waveforms, not
 different settings, and a NORMAL station cannot hear a TURBO one. Normal is
 what you want unless you have agreed otherwise.
 
-**The panel.** Stations heard are listed on the left with their report,
-frequency and grid; click one to address it. The conversation is on the right,
-newest at the bottom, with anything addressed to you marked ★. A message still
-arriving is shown greyed with a frame count, because a half-received sentence
-should not read like a complete one.
+![The JS8 panel: stations heard on the left, the conversation on the right](images/js8call.jpg)
+
+**The panel.** Stations heard are listed on the left in the same rows the FT8
+decode list uses — report, frequency, callsign, what they would be worth
+(DXCC / BAND / GRID / NEW / DUPE), continent, grid, distance, and the last thing
+they said — so a band you have learned to read in FT8 reads the same way here.
+Hovering a row brings up the full station card: entity, zones, bearing, and
+whether you have worked them before. A row addressed to you is boxed in gold; a
+heartbeat or a CQ, which are invitations, get the red CQ background.
+
+The conversation is on the right, newest at the bottom, with anything addressed
+to you marked ★. A message still arriving is shown greyed with a frame count,
+because a half-received sentence should not read like a complete one.
+
+**Replying.** Clicking a message — or a station's **REPLY** button — aims the
+composer at that station and drafts the reply the exchange expects. A heartbeat
+or a CQ is asking "can anyone hear me?", so it drafts a signal report; `SNR?`,
+`GRID?`, `STATUS?` and `HEARING?` draft their answers; `HW CPY?` drafts a
+report; `RR` and `QSL` draft `73`; `AGN?` puts back the last thing you sent. It
+is only ever a draft — it lands in the text box and you are free to rewrite it,
+because most of JS8 is conversation and there is no standard answer to "good
+evening from Vienna". Free text drafts nothing and only selects the station.
+Clicking a row rather than its REPLY button selects without touching what you
+have already typed.
 
 **Sending.** Type in the box and press Enter. Beside the send button is an
 estimate — `3f · 45s` — of how many frames the message needs and how long it
 will be on the air. Watch that number before you press send; it is the thing
 newcomers to JS8 find most surprising. With a station selected, the query buttons
 ask it directly: **SNR?** for a signal report, **GRID?**, **HEARING?** for what
-it is copying, **STATUS?** for its status message. **CQ** calls generally,
-**HB** sends a single heartbeat.
+it is copying, **STATUS?** for its status message, **HW CPY?** for "how do you
+copy me", and **RR** / **73** to acknowledge and sign off. **CQ** calls
+generally, **HB** sends a single heartbeat.
+
+A message that reads as `CALLSIGN COMMAND` — typed, drafted or from a button —
+goes out as a JS8 *directed* frame, so the station at the other end sees a
+command it can act on rather than a line of text that merely looks like one.
+Anything else is sent as free text, split across as many frames as it needs.
+
+**On the map.** Heard stations appear on the 3D globe (**3D** in the DISPLAY
+row) exactly as FT8 decodes do, and the station the composer is aimed at gets
+the contact arc from your QTH. Most JS8 traffic carries no locator — only
+heartbeats, CQs and `GRID` replies do — so if callsign lookup is configured
+(⚙ SETTINGS → Network → Uploads) the rest are resolved through it, one at a
+time, and their grid is shown greyed to mark it as looked up rather than heard.
+Because JS8 beacons every ten or fifteen minutes rather than every slot, a
+station stays lit far longer here than in FT8.
 
 **Answering automatically.** In ⚙ SETUP, *Auto-reply* answers SNR?, GRID? and
 STATUS? queries addressed to you or to @ALLCALL. This is what makes a JS8

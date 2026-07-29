@@ -34,7 +34,7 @@ use crate::controller::{BurstPlayer, DigiAction};
 use crate::js8::assembler::Js8Assembler;
 use crate::js8::decode::{Js8Decode, Js8Depth, decode_slot_for};
 use crate::js8::directed::{ReplyPolicy, StationInfo, auto_reply};
-use crate::js8::frame::{self, Compound, Js8Flags};
+use crate::js8::frame::{self, Compound, DIRECTED_CMDS, Directed, Js8Flags};
 use crate::js8::message::Js8Payload;
 use crate::js8::modem::{self, DECODE_RATE};
 use crate::params::DigiParams;
@@ -178,6 +178,68 @@ impl Js8Controller {
         self.status_dirty = true;
     }
 
+    /// The heartbeat someone asked for by typing it.
+    ///
+    /// A heartbeat is a *compound* frame, not a directed command — there is no
+    /// ` HB` in the command table — so [`Js8Controller::directed_for`] cannot
+    /// produce one and the panel's HB button would otherwise put the literal
+    /// text "@ALLCALL HB" on the air.
+    fn heartbeat_for(&self, text: &str) -> Option<Js8Payload> {
+        let t = text.trim().to_ascii_uppercase();
+        let body = t.strip_prefix("@ALLCALL").map(str::trim).unwrap_or(t.as_str());
+        if !matches!(body, "HB" | "HEARTBEAT") {
+            return None;
+        }
+        let call = self.my_call();
+        if call.is_empty() {
+            return None;
+        }
+        let grid = self.cfg.my_grid.to_ascii_uppercase();
+        Compound::heartbeat(&call, (!grid.is_empty()).then_some(grid.as_str()))
+            .pack()
+            .map(Self::single)
+    }
+
+    /// A directed command typed into the composer, if that is what this is.
+    ///
+    /// `"KN4CRD SNR? "` is a question JS8 has a frame for; `"KN4CRD HELLO"` is
+    /// conversation. Only the first becomes a directed frame — the receiving
+    /// station then sees a command it can act on rather than a line of text
+    /// that merely reads like one. Everything the command table does not
+    /// recognise falls through to plain data frames, which is what keeps
+    /// rag-chew (most of JS8) working exactly as before.
+    fn directed_for(&self, text: &str) -> Option<Js8Payload> {
+        let up = text.trim().to_ascii_uppercase();
+        let (to, rest) = up.split_once(char::is_whitespace)?;
+        if !addressable(to) {
+            return None;
+        }
+        let rest = rest.trim();
+        // Longest match wins, or " HW CPY?" would be read as no command at all
+        // and " QUERY MSGS" as " QUERY".
+        let (cmd_text, code) = DIRECTED_CMDS
+            .iter()
+            .map(|(t, c)| (t.trim_start(), c))
+            .filter(|(t, _)| !t.is_empty())
+            .filter(|(t, _)| rest == *t || rest.strip_prefix(t).is_some_and(|r| r.starts_with(' ')))
+            .max_by_key(|(t, _)| t.len())?;
+        // What follows a command can only be its number: the frame has six bits
+        // for it and nowhere to put words.
+        let tail = rest[cmd_text.len()..].trim();
+        let num = if tail.is_empty() { None } else { Some(tail.parse::<i32>().ok()?) };
+        let from = self.my_call();
+        Directed {
+            portable_from: from.ends_with("/P"),
+            portable_to: to.ends_with("/P"),
+            from,
+            to: to.to_string(),
+            cmd: *code,
+            num,
+        }
+        .pack()
+        .map(Self::single)
+    }
+
     /// Split text into as many frames as it needs.
     ///
     /// The first frame is flagged FIRST and the last LAST; a message short
@@ -246,6 +308,11 @@ impl Js8Controller {
         self.heard.truncate(HEARD_CAP);
     }
 
+    #[cfg(test)]
+    fn directed_sent(&self, text: &str) -> Option<Directed> {
+        Directed::unpack(&self.directed_for(text)?)
+    }
+
     fn synth_burst_48k(&self, payload: Js8Payload) -> Option<BurstPlayer> {
         let audio = modem::encode_frame_12k(self.speed, payload, self.audio_hz, 0.5);
         let mut rs = MonoResampler::new(DECODE_RATE, OUT_RATE)?;
@@ -253,6 +320,60 @@ impl Js8Controller {
         rs.push(&audio, &mut out);
         Some(BurstPlayer { samples: out, pos: 0 })
     }
+}
+
+/// True for something that can be the *to* of a directed frame: a group, or a
+/// token shaped like a callsign.
+///
+/// The digit test is what keeps an ordinary sentence out of the directed path.
+/// "HELLO 73" would otherwise pack — `pack_callsign` accepts any token that
+/// fits its six-character pattern — and go out addressed to a station called
+/// HELLO instead of as the words someone typed.
+fn addressable(token: &str) -> bool {
+    if token.starts_with('@') {
+        return true;
+    }
+    let core = token.strip_suffix("/P").unwrap_or(token);
+    (2..=10).contains(&core.len())
+        && core.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'/')
+        && core.bytes().any(|c| c.is_ascii_digit())
+        && core.bytes().any(|c| c.is_ascii_alphabetic())
+}
+
+/// A Maidenhead locator of exactly four or six characters.
+///
+/// Stricter than [`sdroxide_types::grid_to_latlon`], which reads the first four
+/// characters and ignores whatever follows — so "FN42 HELLO" passes there and
+/// would be stored as a grid.
+fn is_grid(s: &str) -> bool {
+    let b = s.as_bytes();
+    matches!(b.len(), 4 | 6)
+        && b[0].is_ascii_uppercase()
+        && b[1].is_ascii_uppercase()
+        && b[2].is_ascii_digit()
+        && b[3].is_ascii_digit()
+        && (b.len() == 4 || (b[4].is_ascii_alphabetic() && b[5].is_ascii_alphabetic()))
+        && sdroxide_types::grid_to_latlon(s).is_some()
+}
+
+/// The locator a message carries, if it carries one.
+///
+/// A heartbeat or CQ packs its grid into the frame and the assembler leaves it
+/// at the head of the message text; a ` GRID` reply says the same thing
+/// explicitly. Nothing else is trusted: free text that happens to read like a
+/// locator is prose, and placing a station on the map from it would be a guess.
+fn grid_of(msg: &Js8Msg) -> Option<String> {
+    if !matches!(msg.cmd.as_deref(), Some("HB" | "CQ" | "GRID")) {
+        return None;
+    }
+    // The grid is the *head* of the text; a multi-frame CQ appends its free
+    // text straight onto it, sometimes without a space in between.
+    let t = msg.text.trim_start().to_ascii_uppercase();
+    [6usize, 4].into_iter().find_map(|n| {
+        let head = t.get(..n)?;
+        let ends_here = !t.as_bytes().get(n).is_some_and(u8::is_ascii_alphanumeric);
+        (ends_here && is_grid(head)).then(|| head.to_string())
+    })
 }
 
 impl DigiEngine for Js8Controller {
@@ -288,7 +409,8 @@ impl DigiEngine for Js8Controller {
             let mut shared = Vec::new();
             for d in &decodes {
                 if let Some(msg) = self.assembler.push(d, slot_utc) {
-                    self.note_heard(&msg.from, None, msg.snr_db, msg.audio_hz, msg.last_slot_utc);
+                    let grid = grid_of(&msg);
+                    self.note_heard(&msg.from, grid, msg.snr_db, msg.audio_hz, msg.last_slot_utc);
                     // Answer before storing, so a reply is queued even if the
                     // conversation list is already full.
                     if let Some(reply) = auto_reply(
@@ -472,10 +594,18 @@ impl DigiEngine for Js8Controller {
         }
     }
 
-    /// Queue a message. `"CALL text"` addresses it; bare text is undirected.
+    /// Queue a message.
+    ///
+    /// `"HB"` becomes a heartbeat and `"CALL CMD"` a directed command, both one
+    /// self-contained frame. Anything else — which is most of what an operator
+    /// types — goes out as text, split across as many frames as it needs.
     fn send_text(&mut self, text: String) {
         if text.trim().is_empty() {
             self.abort_tx();
+            return;
+        }
+        if let Some(p) = self.heartbeat_for(&text).or_else(|| self.directed_for(&text)) {
+            self.queue_frames(vec![p]);
             return;
         }
         self.queue_frames(self.frames_for_text(&text));
@@ -630,6 +760,88 @@ mod tests {
         c.set_config(DigiConfig { js8_speed: Js8Speed::Turbo, ..cfg() });
         assert_eq!(c.params.slot_s, 6.0);
         assert_eq!(c.status().js8.expect("js8 status").speed, Js8Speed::Turbo);
+    }
+
+    #[test]
+    fn a_typed_command_goes_out_as_a_directed_frame() {
+        let c = Js8Controller::new(cfg(), 48_000.0);
+        for (typed, to, cmd, num) in [
+            ("KN4CRD SNR?", "KN4CRD", " SNR?", None),
+            ("kn4crd snr?", "KN4CRD", " SNR?", None),
+            ("KN4CRD SNR -12", "KN4CRD", " SNR", Some(-12)),
+            ("KN4CRD HW CPY?", "KN4CRD", " HW CPY?", None),
+            ("KN4CRD 73", "KN4CRD", " 73", None),
+            ("@ALLCALL HEARING?", "@ALLCALL", " HEARING?", None),
+            // The long spelling has to beat the short one it starts with.
+            ("KN4CRD QUERY MSGS", "KN4CRD", " QUERY MSGS", None),
+        ] {
+            let d = c.directed_sent(typed).unwrap_or_else(|| panic!("{typed:?} was not directed"));
+            assert_eq!(d.from, "N0JDS", "{typed:?}");
+            assert_eq!(d.to, to, "{typed:?}");
+            assert_eq!(frame::cmd_text(d.cmd), Some(cmd), "{typed:?}");
+            assert_eq!(d.num, num, "{typed:?}");
+        }
+    }
+
+    #[test]
+    fn conversation_is_not_mistaken_for_a_command() {
+        // The whole point of JS8 is the rag-chew. Anything the command table
+        // does not recognise — and anything addressed to a word rather than a
+        // callsign — has to stay text.
+        let c = Js8Controller::new(cfg(), 48_000.0);
+        for typed in [
+            "KN4CRD HELLO THERE",
+            "HELLO 73",           // a sentence, not a station called HELLO
+            "GOOD MORNING ALL",   // no addressee at all
+            "KN4CRD GRID FN42",   // ` GRID` carries a locator, not a number
+            "KN4CRD MSG CALL ME", // ` MSG` carries text the frame cannot hold
+            "73",                 // no addressee
+            "KN4CRD SNRX?",       // near-miss on a real command
+        ] {
+            assert!(c.directed_for(typed).is_none(), "{typed:?} became a directed frame");
+        }
+    }
+
+    #[test]
+    fn a_typed_heartbeat_becomes_a_heartbeat_frame() {
+        // There is no ` HB` in the command table, so without this the panel's
+        // HB button puts the literal text "@ALLCALL HB" on the air.
+        let mut c = Js8Controller::new(cfg(), 48_000.0);
+        for typed in ["@ALLCALL HB", "HB", "hb", "HEARTBEAT"] {
+            c.send_text(typed.into());
+            assert_eq!(c.tx_frames.len(), 1, "{typed:?}");
+            let hb = Compound::unpack(&c.tx_frames[0]).unwrap_or_else(|| panic!("{typed:?}"));
+            assert_eq!(hb.call, "N0JDS", "{typed:?}");
+            assert!(!hb.is_cq(), "{typed:?} came out as a CQ");
+            assert_eq!(hb.grid().as_deref(), Some("FN42"), "{typed:?}");
+        }
+    }
+
+    #[test]
+    fn a_station_that_sent_a_grid_is_remembered_with_it() {
+        let hb = |text: &str, cmd: &str| Js8Msg {
+            from: "KN4CRD".into(),
+            to: "@ALLCALL".into(),
+            text: text.into(),
+            cmd: Some(cmd.into()),
+            snr_db: -5,
+            audio_hz: 1500.0,
+            first_slot_utc: 1000,
+            last_slot_utc: 1000,
+            frames: 1,
+            complete: true,
+            to_me: true,
+        };
+        assert_eq!(grid_of(&hb("EM73", "HB")).as_deref(), Some("EM73"));
+        assert_eq!(grid_of(&hb("QF22", "CQ")).as_deref(), Some("QF22"));
+        assert_eq!(grid_of(&hb("FN42AB", "GRID")).as_deref(), Some("FN42AB"));
+        // A CQ's free text is appended straight onto the grid, so the head has
+        // to end where the locator does.
+        assert_eq!(grid_of(&hb("EM73 CQ CQ CQ", "CQ")).as_deref(), Some("EM73"));
+        assert_eq!(grid_of(&hb("EM73HELLO", "CQ")), None);
+        // Prose that opens like a locator is still prose.
+        assert_eq!(grid_of(&hb("FN42 AND MORE", "SNR")), None);
+        assert_eq!(grid_of(&hb("HELLO", "HB")), None);
     }
 
     #[test]

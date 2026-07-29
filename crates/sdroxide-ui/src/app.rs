@@ -343,8 +343,19 @@ pub struct SdroxideApp {
     hell: crate::hell::HellUi,
     /// FSQ directed-message target callsign ("" = broadcast/ALLCALL).
     fsq_target: String,
-    /// JS8: the `To:` callsign the composer addresses.
+    /// JS8: the `To:` callsign the composer addresses. Also what the globe
+    /// draws the QSO arc to, JS8 having no QSO sequencer to ask instead.
     js8_target: String,
+    /// JS8: callsigns a locator has already been requested for this session,
+    /// successful or not. Every lookup is an HTTP round trip on its own thread,
+    /// and a busy band puts fifty stations in the heard list.
+    js8_looked_up: std::collections::HashSet<String>,
+    /// JS8: frame time of the last locator lookup, so they go out one at a time
+    /// rather than fifty at once the moment the panel opens.
+    js8_lookup_at: f64,
+    /// JS8: the last message we transmitted. What `AGN?` — "say again" — is
+    /// asking for, and the one reply the operator cannot retype from memory.
+    js8_last_sent: String,
     /// FSQ contacts (address book), native-persisted in `contacts.json`.
     fsq_contacts: Vec<sdroxide_types::FsqContact>,
     /// FSQ "add contact" input field.
@@ -429,6 +440,11 @@ pub struct SdroxideApp {
     adif_import_inbox: Arc<Mutex<Option<String>>>,
     /// Callsigns queued for lookup, drained into commands each frame.
     pending_lookups: Vec<String>,
+    /// Everything callsign lookup has resolved this session, by callsign. Kept
+    /// because a JS8 station's locator usually never arrives on the air —
+    /// only heartbeats and CQs carry one — so the map has nothing else to
+    /// place the rest of the conversation by.
+    callsign_cache: std::collections::HashMap<String, CallsignInfo>,
     /// QSO uploads queued (id, single-record ADIF, targets), drained to commands.
     pending_uploads: Vec<(u64, String, Vec<UploadTarget>)>,
     /// Awards dashboard open state + band filter ("" = all bands).
@@ -667,6 +683,9 @@ impl SdroxideApp {
             hell: Default::default(),
             fsq_target: String::new(),
             js8_target: String::new(),
+            js8_looked_up: Default::default(),
+            js8_lookup_at: 0.0,
+            js8_last_sent: String::new(),
             fsq_contacts: fsq_load_contacts(),
             fsq_new_contact: String::new(),
             fsq_show_contacts: false,
@@ -703,6 +722,7 @@ impl SdroxideApp {
             net_log: Vec::new(),
             adif_import_inbox: Arc::new(Mutex::new(None)),
             pending_lookups: Vec::new(),
+            callsign_cache: Default::default(),
             pending_uploads: Vec::new(),
             show_awards: false,
             awards_band: String::new(),
@@ -742,6 +762,18 @@ impl SdroxideApp {
             self.digi_preview.as_ref().map(|(_, ll)| *ll),
             status.is_some_and(|s| s.transmitting),
         );
+        // JS8 has no QSO sequencer to ask for `dx_grid`, because a chat has no
+        // Tx1–Tx6 to be part-way through. What an operator means by "in a QSO"
+        // there is the station the composer is aimed at, so that is what gets
+        // the arc — highlighted exactly as an FT8 contact in progress is.
+        if self.state.rx[0].mode.is_js8() {
+            let heard =
+                status.and_then(|s| s.js8.as_ref()).map(|j| j.heard.as_slice()).unwrap_or(&[]);
+            traffic.dx = self
+                .js8_grid_for(&self.js8_target, heard)
+                .as_deref()
+                .and_then(sdroxide_types::grid_to_latlon);
+        }
         // Weather fax has no callsign and no grid to place a station by, but it
         // does have a transmitter with a known location — so the chart being
         // received gets the same path across the globe a QSO would, which turns
@@ -756,7 +788,6 @@ impl SdroxideApp {
     /// The operator's grid square. Prefers the engine's copy but falls back to
     /// the UI's edit buffer: `digi_status` only arrives once the engine sends
     /// its first `DigiStatus`, and never at all in sessions with no digi engine.
-    #[cfg(not(target_arch = "wasm32"))]
     fn my_grid(&self) -> String {
         self.digi_status
             .as_ref()
@@ -1139,15 +1170,20 @@ impl SdroxideApp {
     }
 
     /// Queue an auto-lookup if a provider + auto-lookup are configured.
-    fn queue_lookup(&mut self, call: String) {
+    ///
+    /// Returns whether one was actually queued, so a caller that rations
+    /// lookups can tell "asked" from "lookup is switched off" and not burn its
+    /// one-per-interval budget on a request that never left.
+    fn queue_lookup(&mut self, call: String) -> bool {
         let call = call.trim().to_string();
         if call.is_empty()
             || !self.net_cfg_edit.auto_lookup
             || self.net_cfg_edit.lookup_provider == LookupProvider::None
         {
-            return;
+            return false;
         }
         self.pending_lookups.push(call);
+        true
     }
 
     /// Merge a callsign-lookup result into the open log entry and, if none
@@ -1165,6 +1201,9 @@ impl SdroxideApp {
             summary.push_str(&format!(" ({c})"));
         }
         self.push_net_log(summary);
+        // Keep the whole record: the JS8 map places stations by the grid in it,
+        // and that station may never have a log entry to merge into.
+        self.callsign_cache.insert(info.call.to_ascii_uppercase(), info.clone());
 
         // 1) The open entry form, if it's for this call.
         if let Some(f) = self.log_edit.as_mut() {
@@ -2892,23 +2931,7 @@ impl SdroxideApp {
                                      w: f32,
                                      align_right: bool,
                                      lbl: egui::Label| {
-                                        // Reserve the column width *exactly*: a plain
-                                        // allocate_ui shrinks to its content, so a short
-                                        // callsign would collapse the column and shift
-                                        // the grid + message out of alignment.
-                                        let (rect, _) = ui.allocate_exact_size(
-                                            egui::vec2(w, ch),
-                                            egui::Sense::hover(),
-                                        );
-                                        let layout = if align_right {
-                                            egui::Layout::right_to_left(egui::Align::Center)
-                                        } else {
-                                            egui::Layout::left_to_right(egui::Align::Center)
-                                        };
-                                        let mut child = ui.new_child(
-                                            egui::UiBuilder::new().max_rect(rect).layout(layout),
-                                        );
-                                        child.add(lbl);
+                                        row_cell(ui, w, ch, align_right, lbl)
                                     };
                                 // SNR.
                                 cell(
@@ -4327,6 +4350,11 @@ impl SdroxideApp {
         });
         ui.add_space(4.0);
 
+        // Locate the heard stations and hand them to the maps. Done before the
+        // list is drawn so a row and its dot on the globe agree this frame.
+        let now_t = ui.input(|i| i.time);
+        self.js8_observe(&js8.heard, now_t);
+
         let avail_h = (content_bottom - ui.cursor().top()).max(80.0);
         let total_w = ui.available_width();
         let left_w = (total_w * self.view.js8_split_fraction).clamp(160.0, total_w - 200.0);
@@ -4336,40 +4364,7 @@ impl SdroxideApp {
             ui.vertical(|ui| {
                 ui.set_width(left_w);
                 ui.label(RichText::new("HEARD").size(10.5).strong().color(crate::theme::CYAN_DIM));
-                egui::ScrollArea::vertical()
-                    .id_salt("js8-heard")
-                    .max_height(avail_h - 18.0)
-                    .auto_shrink([false, false])
-                    .show_themed(ui, |ui| {
-                        if js8.heard.is_empty() {
-                            ui.label(RichText::new("— nothing heard yet —").weak());
-                        }
-                        for h in &js8.heard {
-                            let selected = self.js8_target.eq_ignore_ascii_case(&h.call);
-                            let row = ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(format!("{:+03}", h.snr_db))
-                                        .monospace()
-                                        .color(snr_color(h.snr_db)),
-                                );
-                                ui.label(
-                                    RichText::new(format!("{:>5.0}", h.audio_hz))
-                                        .monospace()
-                                        .weak(),
-                                );
-                                ui.label(RichText::new(&h.call).monospace().strong().color(
-                                    if selected { crate::theme::PINK } else { crate::theme::CYAN },
-                                ));
-                                if let Some(g) = &h.grid {
-                                    ui.label(RichText::new(g).monospace().weak());
-                                }
-                            });
-                            // Clicking a station addresses the composer at it.
-                            if row.response.interact(egui::Sense::click()).clicked() {
-                                self.js8_target = h.call.clone();
-                            }
-                        }
-                    });
+                self.js8_heard_list(ui, &js8, avail_h - 18.0, left_w);
             });
 
             // ── The drag handle ─────────────────────────────────────────────
@@ -4400,64 +4395,531 @@ impl SdroxideApp {
                     ui.add_space(4.0);
                     // Back to normal order for the scrolling part.
                     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                        egui::ScrollArea::vertical()
-                            .id_salt("js8-convo")
-                            .stick_to_bottom(true)
-                            .auto_shrink([false, false])
-                            .show_themed(ui, |ui| {
-                                if js8.messages.is_empty() {
-                                    ui.label(RichText::new("— no messages —").weak());
-                                }
-                                for m in &js8.messages {
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 4.0;
-                                        let (_, _, _, h, mi, _) =
-                                            sdroxide_types::utc_ymd_hms(m.last_slot_utc);
-                                        ui.label(
-                                            RichText::new(format!("{h:02}:{mi:02}"))
-                                                .monospace()
-                                                .weak(),
-                                        );
-                                        if m.to_me {
-                                            ui.label(
-                                                RichText::new("★").color(crate::theme::YELLOW),
-                                            );
-                                        }
-                                        let who = if m.from.is_empty() { "…" } else { &m.from };
-                                        ui.label(
-                                            RichText::new(format!("{who}:"))
-                                                .monospace()
-                                                .strong()
-                                                .color(if m.to_me {
-                                                    crate::theme::CYAN
-                                                } else {
-                                                    crate::theme::CYAN_DIM
-                                                }),
-                                        );
-                                        if let Some(c) = &m.cmd {
-                                            ui.label(
-                                                RichText::new(c)
-                                                    .monospace()
-                                                    .color(crate::theme::PINK),
-                                            );
-                                        }
-                                        let body = RichText::new(&m.text).monospace();
-                                        // An incomplete message is still arriving; greying
-                                        // it stops a half-sentence reading as the whole one.
-                                        ui.label(if m.complete { body } else { body.weak() });
-                                        if !m.complete {
-                                            ui.label(
-                                                RichText::new(format!("… ({} frames)", m.frames))
-                                                    .weak(),
-                                            );
-                                        }
-                                    });
-                                }
-                            });
+                        self.js8_conversation(ui, &js8);
                     });
                 });
             });
         });
+    }
+
+    // ── JS8: locating stations ──────────────────────────────────────────────
+
+    /// Where a JS8 station is, if anything knows.
+    ///
+    /// On-air first — a heartbeat, a CQ or a ` GRID` reply carries a real
+    /// locator — then whatever callsign lookup resolved. Most JS8 traffic
+    /// carries no grid at all, which is the whole reason the lookup path is
+    /// here: without it the map would show only the stations that happened to
+    /// beacon while we were listening.
+    fn js8_grid_for(&self, call: &str, heard: &[sdroxide_types::Js8Heard]) -> Option<String> {
+        if call.is_empty() {
+            return None;
+        }
+        heard
+            .iter()
+            .find(|h| h.call.eq_ignore_ascii_case(call))
+            .and_then(|h| h.grid.clone())
+            .or_else(|| {
+                self.callsign_cache.get(&call.to_ascii_uppercase()).and_then(|i| i.grid.clone())
+            })
+            .filter(|g| sdroxide_types::grid_to_latlon(g).is_some())
+    }
+
+    /// Feed the heard list to the maps, and ask the lookup service where the
+    /// stations that never sent a locator actually are.
+    ///
+    /// The flat map and the globe both draw [`crate::digi_map::DigiStations`],
+    /// which speaks in [`Decode`]s — so the heard stations are handed over in
+    /// that shape rather than teaching the map a second kind of station.
+    fn js8_observe(&mut self, heard: &[sdroxide_types::Js8Heard], now_t: f64) {
+        // JS8's own convention is a heartbeat every ten or fifteen minutes, so
+        // FT8's two-minute fade would leave the map blank between them.
+        self.digi_stations.set_fade_s(JS8_STATION_FADE_S);
+        let located: Vec<Decode> = heard
+            .iter()
+            .filter_map(|h| {
+                let grid = self.js8_grid_for(&h.call, heard)?;
+                Some(Decode {
+                    slot_utc: h.last_utc,
+                    snr_db: h.snr_db,
+                    dt: 0.0,
+                    audio_hz: h.audio_hz,
+                    message: String::new(),
+                    to: None,
+                    from: Some(h.call.clone()),
+                    grid: Some(grid),
+                    is_cq: false,
+                    cq_to: None,
+                    rr73_to: None,
+                    free_text: false,
+                })
+            })
+            .collect();
+        self.digi_stations.observe(&located, now_t, now_unix());
+
+        // One lookup at a time. Each is an HTTP round trip on a thread of its
+        // own, and a busy band puts fifty stations in this list at once.
+        if now_t - self.js8_lookup_at < JS8_LOOKUP_INTERVAL_S {
+            return;
+        }
+        let next = heard.iter().map(|h| h.call.to_ascii_uppercase()).find(|c| {
+            !c.is_empty()
+                && !c.starts_with('@')
+                && !self.js8_looked_up.contains(c)
+                && self.js8_grid_for(c, heard).is_none()
+        });
+        if let Some(call) = next {
+            // Only spend the interval on a request that actually left: with no
+            // provider configured this must stay ready for the moment one is.
+            if self.queue_lookup(call.clone()) {
+                self.js8_looked_up.insert(call);
+                self.js8_lookup_at = now_t;
+            }
+        }
+    }
+
+    // ── JS8: the heard list ─────────────────────────────────────────────────
+
+    /// Who is on the band, as the same styled rows the FT8 decode list uses.
+    ///
+    /// Deliberately the same shape — signal, frequency, callsign, what they'd
+    /// be worth, where they are, and a REPLY button — because it is the same
+    /// judgement being made, and an operator who has learned to read one list
+    /// should not have to learn a second.
+    fn js8_heard_list(
+        &mut self,
+        ui: &mut egui::Ui,
+        js8: &sdroxide_types::Js8Status,
+        max_h: f32,
+        col_w: f32,
+    ) {
+        let my_grid = self.my_grid();
+        let dial_hz = self.state.active_freq_hz();
+        let band = if dial_hz > 0.0 { sdroxide_types::adif_band(dial_hz) } else { "" };
+        self.log_index();
+        // The last thing each station said: what the row shows, and what the
+        // REPLY button drafts an answer to.
+        let last_msg: std::collections::HashMap<&str, &sdroxide_types::Js8Msg> = js8
+            .messages
+            .iter()
+            .filter(|m| !m.from.is_empty())
+            .map(|m| (m.from.as_str(), m))
+            .collect();
+        let me = self.js8_me(js8);
+        // Dropping the last three columns is what keeps the row readable when
+        // the split is dragged narrow; the message then gets the space instead.
+        let wide = col_w > 430.0;
+
+        // Staged, because the row closures borrow `self` immutably.
+        let mut pick: Option<(String, Option<String>)> = None;
+
+        egui::ScrollArea::vertical()
+            .id_salt("js8-heard")
+            .max_height(max_h)
+            .auto_shrink([false, false])
+            .show_themed(ui, |ui| {
+                if js8.heard.is_empty() {
+                    ui.label(RichText::new("— nothing heard yet —").weak());
+                }
+                for (i, h) in js8.heard.iter().enumerate() {
+                    let msg = last_msg.get(h.call.as_str()).copied();
+                    let to_me = msg.is_some_and(js8_personally_addressed);
+                    // A heartbeat or a CQ is an invitation, which is what FT8's
+                    // red CQ row means too.
+                    let calling =
+                        msg.is_some_and(|m| matches!(m.cmd.as_deref(), Some("CQ") | Some("HB")));
+                    let selected = self.js8_target.eq_ignore_ascii_case(&h.call);
+                    let grid = self.js8_grid_for(&h.call, &js8.heard);
+                    let dist_km = (!my_grid.is_empty())
+                        .then(|| {
+                            grid.as_deref()
+                                .and_then(|g| sdroxide_types::grid_distance_km(&my_grid, g))
+                        })
+                        .flatten();
+                    let entity = sdroxide_types::resolve_callsign(&h.call);
+                    let continent = entity.map(|e| e.continent).unwrap_or("");
+                    let novelty = self.log_index_cache.as_ref().expect("just refreshed").1.novelty(
+                        &h.call,
+                        grid.as_deref(),
+                        band,
+                    );
+                    let (badge, badge_col) = match novelty.highlight() {
+                        Some(sdroxide_types::Highlight::NewDxcc) => ("DXCC", crate::theme::PINK),
+                        Some(sdroxide_types::Highlight::NewDxccBand) => {
+                            ("BAND", crate::theme::YELLOW)
+                        }
+                        Some(sdroxide_types::Highlight::NewGrid) => ("GRID", crate::theme::CYAN),
+                        Some(sdroxide_types::Highlight::NewCall) => ("NEW", crate::theme::CYAN_DIM),
+                        Some(sdroxide_types::Highlight::Dupe) => ("DUPE", Color32::from_gray(85)),
+                        None => ("", Color32::TRANSPARENT),
+                    };
+                    let dupe = novelty.dupe;
+                    // A grid nobody sent is a guess from the callsign database,
+                    // and the row says so rather than passing it off as heard.
+                    let looked_up = grid.is_some() && h.grid.is_none();
+                    let mut reply = false;
+                    let mut reply_left: Option<f32> = None;
+
+                    let inner = egui::Frame::new()
+                        .fill(if to_me {
+                            crate::theme::TOME_BG
+                        } else if calling {
+                            crate::theme::CQ_BG
+                        } else {
+                            crate::theme::ROW_BG
+                        })
+                        .inner_margin(egui::Margin { left: 11, right: 6, top: 6, bottom: 6 })
+                        .show(ui, |ui| {
+                            let ch = 22.0;
+                            ui.horizontal(|ui| {
+                                ui.set_min_height(ch);
+                                ui.spacing_mut().item_spacing.x = 7.0;
+                                row_cell(
+                                    ui,
+                                    28.0,
+                                    ch,
+                                    true,
+                                    egui::Label::new(
+                                        RichText::new(format!("{:+}", h.snr_db))
+                                            .monospace()
+                                            .size(13.0)
+                                            .color(snr_color(h.snr_db)),
+                                    ),
+                                );
+                                row_cell(
+                                    ui,
+                                    40.0,
+                                    ch,
+                                    true,
+                                    egui::Label::new(
+                                        RichText::new(format!("{:.0}", h.audio_hz))
+                                            .monospace()
+                                            .size(12.0)
+                                            .color(Color32::from_gray(120)),
+                                    ),
+                                );
+                                row_cell(
+                                    ui,
+                                    92.0,
+                                    ch,
+                                    false,
+                                    egui::Label::new(
+                                        RichText::new(&h.call).size(15.0).strong().color(
+                                            if to_me {
+                                                crate::theme::YELLOW
+                                            } else if dupe {
+                                                Color32::from_gray(105)
+                                            } else if calling {
+                                                crate::theme::GREEN
+                                            } else {
+                                                crate::theme::TEXT_STRONG
+                                            },
+                                        ),
+                                    )
+                                    .truncate(),
+                                );
+                                row_cell(
+                                    ui,
+                                    34.0,
+                                    ch,
+                                    false,
+                                    egui::Label::new(
+                                        RichText::new(badge).size(9.5).strong().color(badge_col),
+                                    ),
+                                );
+                                if wide {
+                                    row_cell(
+                                        ui,
+                                        24.0,
+                                        ch,
+                                        false,
+                                        egui::Label::new(
+                                            RichText::new(continent)
+                                                .monospace()
+                                                .size(11.0)
+                                                .strong()
+                                                .color(if dupe {
+                                                    Color32::from_gray(85)
+                                                } else {
+                                                    crate::theme::continent_color(continent)
+                                                }),
+                                        ),
+                                    );
+                                    row_cell(
+                                        ui,
+                                        50.0,
+                                        ch,
+                                        false,
+                                        egui::Label::new(
+                                            RichText::new(grid.clone().unwrap_or_default())
+                                                .monospace()
+                                                .size(12.0)
+                                                // Dimmer for a grid the database
+                                                // supplied rather than the air.
+                                                .color(if looked_up {
+                                                    Color32::from_gray(110)
+                                                } else {
+                                                    crate::theme::CYAN_DIM
+                                                }),
+                                        ),
+                                    );
+                                    row_cell(
+                                        ui,
+                                        58.0,
+                                        ch,
+                                        true,
+                                        egui::Label::new(
+                                            RichText::new(
+                                                dist_km
+                                                    .map(|km| format!("{km:.0} km"))
+                                                    .unwrap_or_default(),
+                                            )
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(crate::theme::YELLOW),
+                                        ),
+                                    );
+                                }
+                                // What they last said fills the rest, with the
+                                // REPLY button pinned right.
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let resp = crate::chrome::chip_accent(
+                                            ui,
+                                            false,
+                                            RichText::new("REPLY").size(12.0).strong(),
+                                            if to_me {
+                                                crate::theme::YELLOW
+                                            } else if calling {
+                                                crate::theme::GREEN
+                                            } else {
+                                                crate::theme::CYAN
+                                            },
+                                            crate::theme::INK_ON_CYAN,
+                                        );
+                                        reply = resp.clicked();
+                                        reply_left = Some(resp.rect.left());
+                                        ui.with_layout(
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                let said =
+                                                    msg.map(js8_msg_summary).unwrap_or_default();
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(said)
+                                                            .monospace()
+                                                            .size(12.5)
+                                                            .color(if dupe {
+                                                                Color32::from_gray(95)
+                                                            } else {
+                                                                crate::theme::TEXT
+                                                            }),
+                                                    )
+                                                    .truncate(),
+                                                );
+                                            },
+                                        );
+                                    },
+                                );
+                            });
+                        });
+
+                    let r = inner.response.rect;
+                    let (accent, aw) = if to_me {
+                        (crate::theme::YELLOW, 4.0)
+                    } else if calling {
+                        (crate::theme::PINK, 2.5)
+                    } else {
+                        (crate::theme::CYAN_DIM, 2.5)
+                    };
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_max(
+                            r.left_top(),
+                            egui::pos2(r.left() + aw, r.bottom()),
+                        ),
+                        0.0,
+                        accent,
+                    );
+                    let body_right = reply_left.map(|x| x - 2.0).unwrap_or(r.right());
+                    let body =
+                        egui::Rect::from_min_max(r.left_top(), egui::pos2(body_right, r.bottom()));
+                    let row = ui
+                        .interact(body, ui.id().with(("js8h", i)), egui::Sense::click())
+                        .on_hover_ui(|ui| {
+                            let d = js8_station_decode(h, grid.clone(), msg);
+                            station_card(
+                                ui, &d, entity, dist_km, &my_grid, novelty, band, false, calling,
+                            );
+                        });
+                    if selected {
+                        // The composer is aimed here: the same amber outline the
+                        // FT8 list uses for the decode it is previewing.
+                        ui.painter().rect_stroke(
+                            r,
+                            0.0,
+                            egui::Stroke::new(1.4, crate::theme::YELLOW),
+                            egui::StrokeKind::Inside,
+                        );
+                    } else if row.hovered() {
+                        ui.painter().rect_stroke(
+                            r,
+                            0.0,
+                            egui::Stroke::new(1.0, crate::theme::CYAN_DIM),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    // REPLY drafts the answer this exchange expects; a plain
+                    // click only aims the composer, so it never overwrites a
+                    // half-typed sentence.
+                    if reply {
+                        pick = Some((
+                            h.call.clone(),
+                            msg.and_then(|m| js8_reply_for(m, &me)).or(Some(String::new())),
+                        ));
+                    } else if row.clicked() {
+                        pick = Some((h.call.clone(), None));
+                    }
+                    ui.add_space(3.0);
+                }
+            });
+
+        if let Some((call, draft)) = pick {
+            self.js8_select(&call, draft, &js8.heard);
+        }
+    }
+
+    /// The conversation: every reassembled transmission, newest at the bottom.
+    ///
+    /// Rows are clickable — that is where a heartbeat, a CQ or a `HW CPY?`
+    /// turns into the reply it expects.
+    fn js8_conversation(&mut self, ui: &mut egui::Ui, js8: &sdroxide_types::Js8Status) {
+        let me = self.js8_me(js8);
+        let mut pick: Option<(String, Option<String>)> = None;
+        egui::ScrollArea::vertical()
+            .id_salt("js8-convo")
+            .stick_to_bottom(true)
+            .auto_shrink([false, false])
+            .show_themed(ui, |ui| {
+                if js8.messages.is_empty() {
+                    ui.label(RichText::new("— no messages —").weak());
+                }
+                for (i, m) in js8.messages.iter().enumerate() {
+                    let selected =
+                        !m.from.is_empty() && self.js8_target.eq_ignore_ascii_case(&m.from);
+                    let to_me = js8_personally_addressed(m);
+                    let inner = egui::Frame::new()
+                        .fill(if to_me { crate::theme::TOME_BG } else { crate::theme::ROW_BG })
+                        .inner_margin(egui::Margin { left: 8, right: 5, top: 3, bottom: 3 })
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.set_min_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                let (_, _, _, h, mi, _) =
+                                    sdroxide_types::utc_ymd_hms(m.last_slot_utc);
+                                ui.label(
+                                    RichText::new(format!("{h:02}:{mi:02}")).monospace().weak(),
+                                );
+                                if to_me {
+                                    ui.label(RichText::new("★").color(crate::theme::YELLOW));
+                                }
+                                let who = if m.from.is_empty() { "…" } else { &m.from };
+                                ui.label(
+                                    RichText::new(format!("{who}:")).monospace().strong().color(
+                                        if to_me {
+                                            crate::theme::CYAN
+                                        } else {
+                                            crate::theme::CYAN_DIM
+                                        },
+                                    ),
+                                );
+                                if let Some(c) = &m.cmd {
+                                    ui.label(
+                                        RichText::new(c).monospace().color(crate::theme::PINK),
+                                    );
+                                }
+                                let body = RichText::new(&m.text).monospace();
+                                // An incomplete message is still arriving; greying
+                                // it stops a half-sentence reading as the whole one.
+                                ui.label(if m.complete { body } else { body.weak() });
+                                if !m.complete {
+                                    ui.label(
+                                        RichText::new(format!("… ({} frames)", m.frames)).weak(),
+                                    );
+                                }
+                            });
+                        });
+
+                    let r = inner.response.rect;
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_max(
+                            r.left_top(),
+                            egui::pos2(r.left() + if to_me { 3.0 } else { 2.0 }, r.bottom()),
+                        ),
+                        0.0,
+                        if to_me { crate::theme::YELLOW } else { crate::theme::CYAN_DIM },
+                    );
+                    let mut row = ui.interact(r, ui.id().with(("js8m", i)), egui::Sense::click());
+                    // Drafted only for the row under the cursor: the log holds
+                    // two hundred of these and every draft is an allocation.
+                    if !m.from.is_empty() && (row.hovered() || row.clicked()) {
+                        let draft = js8_reply_for(m, &me);
+                        row = row.on_hover_text(match &draft {
+                            Some(d) => format!("Reply to {}: “{d}”", m.from),
+                            None => format!("Address the composer at {}", m.from),
+                        });
+                        if row.clicked() {
+                            pick = Some((m.from.clone(), draft));
+                        }
+                    }
+                    if selected || row.hovered() {
+                        ui.painter().rect_stroke(
+                            r,
+                            0.0,
+                            egui::Stroke::new(
+                                1.0,
+                                if selected {
+                                    crate::theme::YELLOW
+                                } else {
+                                    crate::theme::CYAN_DIM
+                                },
+                            ),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    ui.add_space(2.0);
+                }
+            });
+        if let Some((call, draft)) = pick {
+            self.js8_select(&call, draft, &js8.heard);
+        }
+    }
+
+    /// Facts about our own station the reply drafts may quote.
+    fn js8_me(&self, js8: &sdroxide_types::Js8Status) -> Js8Me {
+        let cfg = self.digi_status.as_ref().map(|s| &s.config).unwrap_or(&self.digi_cfg_edit);
+        Js8Me {
+            grid: cfg.my_grid.to_uppercase(),
+            status: cfg.js8_status.clone(),
+            hearing: js8.heard.iter().take(4).map(|h| h.call.clone()).collect(),
+            last_sent: self.js8_last_sent.clone(),
+        }
+    }
+
+    /// Aim the composer at a station, optionally with a draft in it, and put
+    /// them on the map as the preview marker.
+    fn js8_select(
+        &mut self,
+        call: &str,
+        draft: Option<String>,
+        heard: &[sdroxide_types::Js8Heard],
+    ) {
+        self.js8_target = call.to_string();
+        if let Some(d) = draft {
+            self.text_tx = d;
+        }
+        let ll = self.js8_grid_for(call, heard).as_deref().and_then(sdroxide_types::grid_to_latlon);
+        self.digi_preview = ll.map(|ll| (call.to_string(), ll));
     }
 
     /// The two rows under the JS8 conversation: the actions, and the composer.
@@ -4489,9 +4951,21 @@ impl SdroxideApp {
             // as you click around is hard to aim at, and chips that only exist
             // sometimes are chips nobody discovers.
             ui.add_enabled_ui(has_target, |ui| {
-                for q in ["SNR?", "GRID?", "HEARING?", "STATUS?"] {
+                for q in ["SNR?", "GRID?", "HEARING?", "STATUS?", "HW CPY?"] {
                     if crate::chrome::chip(ui, false, q).clicked() {
-                        cmds.push(Command::DigiSendText(format!("{} {q}", self.js8_target)));
+                        let full = format!("{} {q}", self.js8_target);
+                        self.js8_last_sent = full.clone();
+                        cmds.push(Command::DigiSendText(full));
+                    }
+                }
+                // The two that close a contact. Worth a button of their own:
+                // they are the most-typed things on the band, and typing them
+                // is the one moment an operator is not watching the panel.
+                for q in ["RR", "73"] {
+                    if crate::chrome::chip(ui, false, q).clicked() {
+                        let full = format!("{} {q}", self.js8_target);
+                        self.js8_last_sent = full.clone();
+                        cmds.push(Command::DigiSendText(full));
                     }
                 }
             });
@@ -4553,6 +5027,8 @@ impl SdroxideApp {
                 } else {
                     body.to_string()
                 };
+                // Kept so `AGN?` — "say again" — has something to draft from.
+                self.js8_last_sent = full.clone();
                 cmds.push(Command::DigiSendText(full));
                 self.text_tx.clear();
             }
@@ -9926,6 +10402,22 @@ fn station_card(
     );
 }
 
+/// One fixed-width column of a station row, shared by the FT8 decode list and
+/// the JS8 heard list so the two line up field for field.
+///
+/// The width is *reserved*, not requested: a plain `allocate_ui` shrinks to its
+/// content, so a short callsign would collapse the column and shift everything
+/// after it out of alignment down the list.
+fn row_cell(ui: &mut egui::Ui, w: f32, h: f32, align_right: bool, lbl: egui::Label) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+    let layout = if align_right {
+        egui::Layout::right_to_left(egui::Align::Center)
+    } else {
+        egui::Layout::left_to_right(egui::Align::Center)
+    };
+    ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout)).add(lbl);
+}
+
 /// Colour a decode's SNR: green for strong, cyan mid, dimmed for weak.
 fn snr_color(snr_db: i16) -> Color32 {
     if snr_db >= 0 {
@@ -12392,6 +12884,116 @@ fn js8_frame_estimate(text: &str) -> u8 {
     (n.div_ceil(PER_FRAME).max(1)).min(255) as u8
 }
 
+/// How long a JS8 station stays lit on the maps after it was last heard.
+///
+/// The mode's own convention is a heartbeat every ten or fifteen minutes, so
+/// FT8's two-minute fade would leave the map blank between them.
+const JS8_STATION_FADE_S: f64 = 900.0;
+
+/// Least time between two locator lookups driven by the JS8 heard list.
+const JS8_LOOKUP_INTERVAL_S: f64 = 1.5;
+
+/// True when a message was aimed at *us* — our callsign, or a group we joined —
+/// as opposed to at the whole band.
+///
+/// `@ALLCALL` reaches us and the assembler marks it `to_me` accordingly, but a
+/// heartbeat is not addressed to anyone in particular: colouring every one of
+/// them gold would leave nothing for a real call to stand out against.
+fn js8_personally_addressed(m: &sdroxide_types::Js8Msg) -> bool {
+    m.to_me && !m.to.eq_ignore_ascii_case("@ALLCALL")
+}
+
+/// What the composer can quote about our own station when it drafts a reply.
+struct Js8Me {
+    grid: String,
+    status: String,
+    /// Callsigns heard recently, most recent first — the answer to `HEARING?`.
+    hearing: Vec<String>,
+    /// The last thing we transmitted, which is what `AGN?` is asking for.
+    last_sent: String,
+}
+
+/// One heard station as a [`Decode`], so the FT8 hover card can describe it
+/// without learning a second station type.
+fn js8_station_decode(
+    h: &sdroxide_types::Js8Heard,
+    grid: Option<String>,
+    msg: Option<&sdroxide_types::Js8Msg>,
+) -> Decode {
+    Decode {
+        slot_utc: h.last_utc,
+        snr_db: h.snr_db,
+        dt: 0.0,
+        audio_hz: h.audio_hz,
+        message: msg.map(js8_msg_summary).unwrap_or_default(),
+        to: msg.map(|m| m.to.clone()).filter(|t| !t.is_empty()),
+        from: Some(h.call.clone()),
+        grid,
+        is_cq: msg.is_some_and(|m| m.cmd.as_deref() == Some("CQ")),
+        cq_to: None,
+        rr73_to: None,
+        free_text: false,
+    }
+}
+
+/// A heard station's last transmission on one line: the command, then the text.
+fn js8_msg_summary(m: &sdroxide_types::Js8Msg) -> String {
+    let mut s = String::new();
+    if let Some(c) = &m.cmd {
+        s.push_str(c);
+    }
+    let text = m.text.trim();
+    if !text.is_empty() {
+        if !s.is_empty() {
+            s.push(' ');
+        }
+        s.push_str(text);
+    }
+    if !m.complete {
+        s.push('…');
+    }
+    s
+}
+
+fn non_empty(s: &str) -> Option<&str> {
+    let t = s.trim();
+    (!t.is_empty()).then_some(t)
+}
+
+/// The reply a standard JS8 exchange expects to this message, if there is one.
+///
+/// JS8 carries a conversation, so this only ever *offers*: it fills the
+/// composer and the operator is free to rewrite it before pressing send. What
+/// it encodes is the handful of turns that are the same in every contact — a
+/// heartbeat or a CQ is asking "can anyone hear me?" and wants a report back, a
+/// question wants its answer, `HW CPY?` wants a report — so the routine part is
+/// one click and everything else is still a text box.
+///
+/// `None` means "nothing standard to say", which is the answer for free text
+/// and therefore for most of a rag-chew. The caller still selects the station,
+/// so the composer is aimed at them with nothing typed in it.
+fn js8_reply_for(msg: &sdroxide_types::Js8Msg, me: &Js8Me) -> Option<String> {
+    let snr = msg.snr_db;
+    Some(match msg.cmd.as_deref()? {
+        // A heartbeat is answered with a heartbeat report, which is a distinct
+        // command from a plain report: it says "this is an answer to your
+        // beacon", not "we are in a QSO".
+        "HB" => format!("HEARTBEAT SNR {snr}"),
+        "CQ" | "SNR?" | "HW CPY?" | "HEARTBEAT SNR" => format!("SNR {snr}"),
+        "GRID?" => format!("GRID {}", non_empty(&me.grid)?),
+        "STATUS?" | "INFO?" => format!("STATUS {}", non_empty(&me.status)?),
+        "HEARING?" => format!("HEARING {}", non_empty(&me.hearing.join(" "))?),
+        // They answered us. Acknowledge, and from here it is a conversation.
+        "SNR" | "GRID" | "STATUS" | "INFO" | "HEARING" | "FB" | "ACK" => "RR".into(),
+        "QSL?" => "QSL".into(),
+        "QSL" | "RR" => "73".into(),
+        "73" | "SK" => "73".into(),
+        // "Say again" wants the same words back, not a new sentence.
+        "AGN?" => non_empty(&me.last_sent)?.to_string(),
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod js8_panel_tests {
     use super::js8_frame_estimate;
@@ -12417,6 +13019,125 @@ mod js8_panel_tests {
         // render "0f · 0s" if that ever changed.
         assert_eq!(js8_frame_estimate(""), 1);
         assert_eq!(js8_frame_estimate("   "), 1);
+    }
+
+    use super::{Js8Me, js8_msg_summary, js8_personally_addressed, js8_reply_for};
+    use sdroxide_types::Js8Msg;
+
+    fn me() -> Js8Me {
+        Js8Me {
+            grid: "FN42".into(),
+            status: "PORTABLE".into(),
+            hearing: vec!["KN4CRD".into(), "VK3ABC".into()],
+            last_sent: "KN4CRD HELLO FROM THE HILLS".into(),
+        }
+    }
+
+    fn msg(cmd: Option<&str>, to: &str) -> Js8Msg {
+        Js8Msg {
+            from: "KN4CRD".into(),
+            to: to.into(),
+            text: String::new(),
+            cmd: cmd.map(str::to_string),
+            snr_db: -12,
+            audio_hz: 1500.0,
+            first_slot_utc: 1000,
+            last_slot_utc: 1000,
+            frames: 1,
+            complete: true,
+            to_me: true,
+        }
+    }
+
+    #[test]
+    fn an_announcement_drafts_the_report_it_is_asking_for() {
+        // A heartbeat and a CQ are both "can anyone hear me?"; JS8's answer is
+        // a signal report, and a heartbeat gets the report command that says
+        // "this answers your beacon".
+        assert_eq!(
+            js8_reply_for(&msg(Some("HB"), "@ALLCALL"), &me()).as_deref(),
+            Some("HEARTBEAT SNR -12")
+        );
+        assert_eq!(js8_reply_for(&msg(Some("CQ"), "@ALLCALL"), &me()).as_deref(), Some("SNR -12"));
+        assert_eq!(
+            js8_reply_for(&msg(Some("HW CPY?"), "N0JDS"), &me()).as_deref(),
+            Some("SNR -12")
+        );
+    }
+
+    #[test]
+    fn a_question_drafts_its_answer() {
+        for (cmd, want) in [
+            ("SNR?", "SNR -12"),
+            ("GRID?", "GRID FN42"),
+            ("STATUS?", "STATUS PORTABLE"),
+            ("HEARING?", "HEARING KN4CRD VK3ABC"),
+            // "Say again" wants the same words back, not a new sentence.
+            ("AGN?", "KN4CRD HELLO FROM THE HILLS"),
+        ] {
+            assert_eq!(
+                js8_reply_for(&msg(Some(cmd), "N0JDS"), &me()).as_deref(),
+                Some(want),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_contact_winds_itself_down() {
+        for (cmd, want) in
+            [("SNR", "RR"), ("QSL?", "QSL"), ("RR", "73"), ("73", "73"), ("SK", "73")]
+        {
+            assert_eq!(
+                js8_reply_for(&msg(Some(cmd), "N0JDS"), &me()).as_deref(),
+                Some(want),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn free_text_drafts_nothing_so_the_composer_is_left_alone() {
+        // The point of JS8 is the rag-chew: there is no standard answer to
+        // "GOOD MORNING FROM VIENNA", and guessing one would be in the way.
+        assert_eq!(js8_reply_for(&msg(None, "N0JDS"), &me()), None);
+        // Nor to traffic this station deliberately does not handle.
+        for cmd in [">", "MSG TO:", "QUERY MSGS", "YES", "NO"] {
+            assert_eq!(js8_reply_for(&msg(Some(cmd), "N0JDS"), &me()), None, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn a_draft_is_dropped_rather_than_sent_empty() {
+        // "GRID" with no grid says "I am here" and answers nothing, at the cost
+        // of a full transmission.
+        let blank = Js8Me { grid: String::new(), status: String::new(), ..me() };
+        assert_eq!(js8_reply_for(&msg(Some("GRID?"), "N0JDS"), &blank), None);
+        assert_eq!(js8_reply_for(&msg(Some("STATUS?"), "N0JDS"), &blank), None);
+        let deaf = Js8Me { hearing: Vec::new(), last_sent: String::new(), ..me() };
+        assert_eq!(js8_reply_for(&msg(Some("HEARING?"), "N0JDS"), &deaf), None);
+        assert_eq!(js8_reply_for(&msg(Some("AGN?"), "N0JDS"), &deaf), None);
+    }
+
+    #[test]
+    fn a_broadcast_is_not_a_message_addressed_to_us() {
+        // Every heartbeat on the band is `to_me`; colouring them all gold would
+        // leave nothing for a station actually calling us to stand out against.
+        assert!(!js8_personally_addressed(&msg(Some("HB"), "@ALLCALL")));
+        assert!(js8_personally_addressed(&msg(Some("SNR?"), "N0JDS")));
+        assert!(js8_personally_addressed(&msg(Some("STATUS?"), "@JS8NET")));
+    }
+
+    #[test]
+    fn a_stations_last_word_reads_as_one_line() {
+        let mut m = msg(Some("HB"), "@ALLCALL");
+        m.text = "EM73".into();
+        assert_eq!(js8_msg_summary(&m), "HB EM73");
+        m.cmd = None;
+        assert_eq!(js8_msg_summary(&m), "EM73");
+        // Still arriving, and the row has to say so.
+        m.complete = false;
+        assert_eq!(js8_msg_summary(&m), "EM73…");
     }
 }
 
