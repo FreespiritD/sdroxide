@@ -166,7 +166,7 @@ WSPR, QRSS, PSK, RTTY, SSTV, RIFP, FREEDV** — each in its own colour.
 
 ### 2.4 Bands and modes
 
-Click the **Band / Mode** chip (which reads, for example, `20M · USB`) to open a
+Click the **Band / Mode** button (which reads, for example, `20M · USB`) to open a
 popup with three rows:
 
 - **BAND:** `160M 80M 60M 40M 30M 20M 17M 15M 12M 10M 6M 2M GEN`. Each band
@@ -183,7 +183,7 @@ See the [appendix](#13-appendix) for what each mode is.
 
 The **VFO** module has:
 
-- **A / B** select chips in the Frequency module (the active VFO is highlighted).
+- **A / B** select buttons in the Frequency module (the active VFO is highlighted).
 - **Swap VFOs** — exchange A and B.
 - **Copy A to B** — copy the active VFO to the other.
 - **SPLIT** — transmit on one VFO and receive on the other.
@@ -369,7 +369,7 @@ External programs can trigger the keyer too: with the built-in Hamlib server
 running ([5.8](#58-servers-letting-other-programs-drive-the-radio)),
 `\send_voice_mem <1–10>` plays a slot and `\stop_voice_mem` stops it.
 
-> **Where it works.** The keyer is available in every voice mode and in
+> **NOTE:** The keyer is available in every voice mode and in
 > **RADE** digital voice, where the message is fed to the codec exactly as a
 > live over would be. The other digital modes generate their own transmit
 > audio, so the button is hidden there (and the window closes if you switch
@@ -411,14 +411,14 @@ draggable divider sets how much height the panel gets.
 ![The FT8 operating panel](images/07-ft8-panel.png)
 
 While in a digital mode a **FT8 FREQUENCIES** (or **FT4 FREQUENCIES**) row of
-band chips appears in the Band/Mode popup. Click one to jump the dial to the
-standard calling frequency for that band; a chip highlights when the dial is
+band buttons appears in the Band/Mode popup. Click one to jump the dial to the
+standard calling frequency for that band; a button highlights when the dial is
 already on it.
 
 #### Bands with more than one agreed frequency
 
-Most modes have one agreed frequency per band, and the band chips above are all
-you need. Some have several — and where they do, a **⇵** chip appears in that
+Most modes have one agreed frequency per band, and the band buttons above are all
+you need. Some have several — and where they do, a **⇵** button appears in that
 mode's operating panel listing them:
 
 | Mode | Where it happens |
@@ -428,7 +428,7 @@ mode's operating panel listing them:
 | RTTY | The DX calling spots (3.590, 14.083) and the Region 2 slot at 7.080 |
 | SSTV | The move-up-when-busy secondaries — a picture takes two minutes, so one frequency per band is occupied most of the time |
 
-The chip's face is the frequency you are on when the dial is already sitting on
+The button's face is the frequency you are on when the dial is already sitting on
 one of them, and reads **⇵ FREQ** when it is not. Clicking a frequency moves the
 **dial**; where you sit inside the audio passband is a separate control and is
 left alone.
@@ -485,7 +485,7 @@ The panel has two halves:
   Neither filter ever hides a message addressed to your own station: a station
   calling you is not calling CQ, and may well be a dupe, but it is the one row
   in the list you owe an answer to.
-- **QSO** (right) — a **⇵** frequency chip when the band has more than one
+- **QSO** (right) — a **⇵** frequency button when the band has more than one
   agreed frequency for the mode ([3.1](#31-entering-the-mode)), a world map
   (your location, the station you are working, and
   a transmit indicator), a station card showing the current step
@@ -553,7 +553,7 @@ free text is cut to 13 characters.
   heading from your own grid, whether the station is new or already in your log
   and on which band, who a directed CQ is aimed at, and the raw signal report,
   frequency and DT.
-- **Auto TX FRQ picks where you transmit.** On by default (the chip above the
+- **Auto TX FRQ picks where you transmit.** On by default (the button above the
   decode list, or the setup window). Answering on the frequency of the station
   you are calling looks right and isn't: they transmit in the period opposite
   yours, so their frequency says nothing about who is transmitting there when
@@ -941,7 +941,7 @@ between the two modes.
 > (50.5–52.0)**, the **2 m all-modes part (144.500–144.794)** — where the image
 > and facsimile modes have always lived — and **70 cm (430–440)**. The band
 > buttons in the Band/Mode popup land in each of those while staying in RIFP,
-> and the **433.920** chip jumps to the calling frequency the draft names.
+> and the **433.920** button jumps to the calling frequency the draft names.
 > Allocations differ by country and your own licence may be narrower than
 > 25 kHz even inside those — checking that is yours to do, not the software's.
 
@@ -998,7 +998,7 @@ back.
 
 ![The weather-fax panel: a chart arriving, the station picker, and the gallery](images/wefax.jpg)
 
-**Finding a signal.** The **📡 STATIONS** chip lists the schedules — DWD
+**Finding a signal.** The **📡 STATIONS** button lists the schedules — DWD
 Pinneberg, Northwood, the US Coast Guard transmitters, Halifax, Tokyo, the two
 Australian ones — and picking a frequency tunes the dial. Note that the
 frequencies in every published schedule are the **assigned carrier**, and USB
@@ -1059,7 +1059,58 @@ a fifteen-minute chart every half hour would bury a session's pictures — and t
 strip on the right shows the recent ones. Click one to open it full size, which
 you will need to: the fronts and isobars are unreadable at thumbnail scale.
 
-### 3.13 RF Paint (spectrum painting)
+### 3.13 JS8
+
+Choose **JS8** from the DIGITAL row. JS8 uses FT8's waveform — the same eight
+tones in the same 79-symbol frame — but carries a conversation instead of a
+contest exchange: free text, questions you can ask another station, and a
+periodic "I am here" heartbeat. Because it is slotted like FT8 it decodes far
+below the noise floor, and because it is a conversation it is slow. A sentence
+takes about a minute. That is the trade.
+
+**Speeds.** Four of them, on buttons in the panel header:
+
+| Speed | Slot | Width | Use |
+|---|---|---|---|
+| NORMAL | 15 s | 50 Hz | The band convention; nearly all traffic |
+| FAST | 10 s | 80 Hz | Good conditions, shorter waits |
+| TURBO | 6 s | 160 Hz | Local and VHF work |
+| SLOW | 30 s | 25 Hz | The weak-signal end |
+
+Both stations must be on the same speed — they are different waveforms, not
+different settings, and a NORMAL station cannot hear a TURBO one. Normal is
+what you want unless you have agreed otherwise.
+
+**The panel.** Stations heard are listed on the left with their report,
+frequency and grid; click one to address it. The conversation is on the right,
+newest at the bottom, with anything addressed to you marked ★. A message still
+arriving is shown greyed with a frame count, because a half-received sentence
+should not read like a complete one.
+
+**Sending.** Type in the box and press Enter. Beside the send button is an
+estimate — `3f · 45s` — of how many frames the message needs and how long it
+will be on the air. Watch that number before you press send; it is the thing
+newcomers to JS8 find most surprising. With a station selected, the query buttons
+ask it directly: **SNR?** for a signal report, **GRID?**, **HEARING?** for what
+it is copying, **STATUS?** for its status message. **CQ** calls generally,
+**HB** sends a single heartbeat.
+
+**Answering automatically.** In ⚙ SETUP, *Auto-reply* answers SNR?, GRID? and
+STATUS? queries addressed to you or to @ALLCALL. This is what makes a JS8
+station worth leaving switched on, and it is on by default. It never answers
+another station's traffic, never answers itself, and never answers an
+announcement — only a direct question.
+
+*Heartbeat* transmits your callsign and grid every N minutes so others know you
+are receivable. It is **off** by default and you have to set the interval
+yourself: an unattended beacon is something you should choose, not something a
+mode switches on for you.
+
+Relayed messages and stored-message requests are decoded and shown, but this
+station will not act on them — forwarding traffic on someone else's behalf is a
+decision for the operator.
+
+### 3.14 RF Paint (spectrum painting)
 
 Choose **RFPAINT** from the DIGITAL row for **RF Paint** — a transmit-only mode
 that draws text and pictures **directly onto a receiver's waterfall**. There is no
@@ -1108,9 +1159,9 @@ label each one on the waterfall. There are three: **CW**, **PSK31**, and
 ![The skimmer labelling signals on the waterfall](images/10-skimmer.png)
 
 - The **SKIM** button in the Display module opens the skimmer popup: one row per
-  skimmer (**CW**, **PSK**, **RTTY**), each with an on/off chip and its own
+  skimmer (**CW**, **PSK**, **RTTY**), each with an on/off button and its own
   **squelch** — the minimum SNR (dB) a decoded signal must reach before it earns
-  a box. The SKIM chip stays lit while any skimmer runs, and a skimmer you switch
+  a box. The SKIM button stays lit while any skimmer runs, and a skimmer you switch
   off stops decoding entirely (it costs no CPU) and its boxes disappear. Like the
   band/mode popup, this one fades away by itself after a few seconds; keep the
   pointer on it to hold it open.
@@ -1394,7 +1445,7 @@ README's *RTL-SDR permissions*).
 
 Supported tuners are the **R820T**, **R820T2** and **R828D**, which between them
 cover essentially every dongle still sold, including the RTL-SDR Blog V3 and V4.
-Older E4000 and FC001x sticks are not supported; sdroxide names the chip it
+Older E4000 and FC001x sticks are not supported; sdroxide names the button it
 found and suggests the SoapySDR backend instead.
 
 Receive only — there is no transmit path in this hardware.
@@ -1491,7 +1542,7 @@ key is down — or *Toggle*, which flips on each press.
 
 The table lists every shortcut, one per row: the key **Shortcut**, what it
 **Does**, its **Step / mode**, its **Accel**, and an **On** tickbox to disable a
-binding without deleting it. Click the shortcut chip to rebind it, then press
+binding without deleting it. Click the shortcut button to rebind it, then press
 the key combination you want (Esc cancels). **+ Add shortcut** creates a row,
 **✕** removes one, and **Restore defaults** puts back the shipped set listed in
 [13](#13-appendix). Shortcuts are ignored while you are typing in a text field
@@ -1551,7 +1602,7 @@ has no MIDI access.
 - **Last message** — names whatever control moved last, which is how you identify
   an unlabelled knob.
 
-Each row of the binding table is one control: the **Control** chip (click it,
+Each row of the binding table is one control: the **Control** button (click it,
 then move the control you want — LEARN captures it), what it **Does**, how it
 **Reads as**, its **Step / mode**, an **LED** tickbox, and **On**. **+ Add MIDI
 control** adds a row and **Clear all** empties the table.
@@ -1840,10 +1891,10 @@ Each row has:
 The status beside each row is what the last fetch actually did: how many
 satellites it yielded and how old the listing is, or why it failed.
 
-The **CelesTrak groups** chips below add the common listings in one click. A lit
-chip means you are already subscribed:
+The **CelesTrak groups** buttons below add the common listings in one click. A lit
+button means you are already subscribed:
 
-| Chip | What it is |
+| button | What it is |
 | --- | --- |
 | **Amateur radio** | Every amateur satellite. **On by default** — this is what the tracker used to fetch unconditionally. |
 | **ISS** | The ISS on its own, from its own element set. **On by default**: fresher than the copy inside the amateur group, and it keeps working if you unsubscribe from that. |
@@ -1995,7 +2046,7 @@ that one puts a marker on all three hundred-odd DXCC entities, so it waits until
 you ask for it.
 
 The star field and the heliographic graticule (the solar rotation axis, equator
-and parallels) have no chips: they are the backdrop and the coordinate frame
+and parallels) have no buttons: they are the backdrop and the coordinate frame
 everything else is read against, and are always drawn.
 
 **The PLANETS layer** adds the rest of the solar system: the seven other
@@ -2199,7 +2250,7 @@ relay carries live data rather than your records.
 
 **Sun** — which SDO product wraps the Sun:
 
-| Chip | Product |
+| Button | Product |
 | --- | --- |
 | `HMI` | HMI continuum — white light. **This is the one that shows sunspots.** |
 | `193` | AIA 193 Å — corona and coronal holes |
@@ -2208,7 +2259,7 @@ relay carries live data rather than your records.
 | `211` | AIA 211 Å — active-region corona |
 | `MIX` | The 211/193/171 composite |
 
-`↻` fetches everything again immediately. Next to the chips is the age of the
+`↻` fetches everything again immediately. Next to the buttons is the age of the
 solar image — green when it is current, yellow when the last fetch failed and
 you are seeing a cached picture, pink when there is nothing at all. It always
 tells you what you are actually looking at; a cached image is never presented as
@@ -2227,7 +2278,7 @@ size, so nothing is ever invisible however you set these.
 all, forwards and backwards.
 
 **Clock** — a UTC time readout sits in the top-left corner. Scrubbing the time 
-with the `±6h`/`±24h` chips turns it yellow and relabels it `SIM`, denoting  
+with the `±6h`/`±24h` buttons turns it yellow and relabels it `SIM`, denoting  
 that the time displayed is not the current real time.
 
 **Propagation panel** — top right, the numbers worth checking before you call CQ:
@@ -2734,6 +2785,7 @@ F1 is the exception: it always opens the manual, so it is not rebindable.
 | DSB | Double sideband. |
 | SPEC | Spectrum only (no demodulation). |
 | FT8 / FT4 | Automatic digital modes with decoding, QSO sequencing, and logging. |
+| JS8 | JS8 — conversational messaging on FT8's waveform. Four speeds (Normal 15 s / Fast 10 s / Turbo 6 s / Slow 30 s); directed queries, heartbeats and multi-frame free text. |
 | PSK | PSK31 keyboard mode (BPSK31 / varicode). |
 | RTTY | RTTY keyboard mode (Baudot; selectable shift and baud). |
 | OLIVIA | Robust MFSK keyboard mode (selectable tones/bandwidth). |

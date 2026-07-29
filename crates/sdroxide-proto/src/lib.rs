@@ -86,7 +86,12 @@ use sdroxide_types::{
 /// `Command::SetWfmStereo`. The command is appended so no existing discriminant
 /// moves, but postcard is not self-describing, so the two added struct fields
 /// change the layout of every message carrying `RadioState` or `Meters`.
-pub const PROTO_VERSION: u16 = 27;
+/// v28: JS8 — `Mode::Js8`, the `js8_*` fields on `DigiConfig`, and
+/// `DigiStatus.js8` carrying the heard list, the reassembled conversation and
+/// transmit-queue progress. No message enum gained a variant, but postcard is
+/// not self-describing and the added struct fields change the layout of every
+/// message carrying `DigiConfig` or `DigiStatus`.
+pub const PROTO_VERSION: u16 = 28;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

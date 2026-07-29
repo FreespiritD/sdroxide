@@ -36,7 +36,9 @@ One binary, three ways to run it:
   when zoomed out and CW/digital/SSB sub-segments when zoomed into a ham band.
 - **Modes** — SSB (USB/LSB), CW, AM, SAM, NFM, WFM (with broadcast
   pilot-tone **stereo**), DSB, DIGU/DIGL, a
-  spectrum-only mode, **FT8/FT4**, the keyboard modes **PSK31**, **RTTY**,
+  spectrum-only mode, **FT8/FT4**, **JS8** (all four speeds, with directed
+  messaging, heartbeats and multi-frame free text), the keyboard modes
+  **PSK31**, **RTTY**,
   **Olivia**, **THOR** and **FSQ** (with directed messaging + images),
   **Hellschreiber** (all seven Feld Hell / FSK Hell variants, on a scrolling
   raster), image **SSTV** (Scottie, Martin, Robot), image **RIFP**

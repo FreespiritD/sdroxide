@@ -1,15 +1,20 @@
-//! FT8/FT4 digital-mode engine for sdroxide.
+//! Digital-mode engines for sdroxide: the slotted FT8/FT4 and JS8 modes, the
+//! keyboard modems, and the image and voice modes.
 //!
-//! **Licensing:** this crate links `mfsk-core` (GPL-3.0-or-later); it is the
-//! only crate in the workspace that does. It is used only in the native
-//! binary — the wasm remote client links none of it (all decode/encode runs
-//! server-side).
+//! **Licensing:** this crate links `mfsk-core` (GPL-3.0-or-later) and carries
+//! the JS8 protocol tables transcribed from JS8Call (also GPL-3.0-or-later).
+//! It is the only crate in the workspace that does either, and it is used only
+//! in the native binary — the wasm remote client links none of it (all
+//! decode/encode runs server-side). Keep it that way: `sdroxide-types` and
+//! `sdroxide-dsp` are deliberately free of both.
 
 pub mod clock;
 pub mod controller;
 pub mod fox;
 pub mod fsq_controller;
 pub mod hell_controller;
+pub mod js8;
+pub mod js8_controller;
 pub mod modem;
 pub mod params;
 pub mod qso;
@@ -28,6 +33,7 @@ pub use controller::{DigiAction, DigiController};
 pub use fox::Fox;
 pub use fsq_controller::FsqController;
 pub use hell_controller::HellController;
+pub use js8_controller::Js8Controller;
 pub use modem::{ApHints, Ft8Modem};
 pub use params::{DECODE_RATE, DigiParams};
 pub use qso::QsoMachine;
@@ -144,4 +150,63 @@ pub trait DigiEngine: Send {
 
     /// Microphone audio at 48 kHz, delivered only while [`DigiEngine::wants_mic`].
     fn on_tx_mic(&mut self, _mic_48k: &[f32]) {}
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use sdroxide_types::Js8Speed;
+
+    /// Mirrors `Engine::make_digi`'s predicate chain. Kept here so the ordering
+    /// can be exercised without standing up an engine.
+    fn pick(mode: Mode) -> &'static str {
+        if mode.is_rade() {
+            "rade"
+        } else if mode.is_sstv() {
+            "sstv"
+        } else if mode.is_wefax() {
+            "wefax"
+        } else if mode.is_rifp() {
+            "rifp"
+        } else if mode.is_rf_paint() {
+            "rfpaint"
+        } else if mode.is_fsq() {
+            "fsq"
+        } else if mode.is_hell() {
+            "hell"
+        } else if mode.is_text_modem() {
+            "text"
+        } else if mode.is_js8() {
+            "js8"
+        } else {
+            "ft8"
+        }
+    }
+
+    #[test]
+    fn every_digital_mode_reaches_its_own_controller() {
+        // The dangerous case is JS8: it is slotted like FT8, so a missing
+        // branch hands it an FT8 decoder and nothing downstream notices — no
+        // error, no log line, just a receiver listening for another protocol.
+        assert_eq!(pick(Mode::Js8), "js8");
+        assert_eq!(pick(Mode::Ft8), "ft8");
+        assert_eq!(pick(Mode::Ft4), "ft8");
+        assert_eq!(pick(Mode::Fsq), "fsq");
+        assert_eq!(pick(Mode::Hell), "hell");
+        assert_eq!(pick(Mode::Psk), "text");
+        assert_eq!(pick(Mode::Rade), "rade");
+        assert_eq!(pick(Mode::Wefax), "wefax");
+    }
+
+    #[test]
+    fn a_js8_controller_reports_js8_at_every_speed() {
+        for speed in Js8Speed::ALL {
+            let cfg = DigiConfig { js8_speed: speed, ..Default::default() };
+            let c = Js8Controller::new(cfg, 48_000.0);
+            assert_eq!(c.mode(), Mode::Js8, "{}", speed.label());
+            let s = c.status();
+            assert_eq!(s.mode, Mode::Js8);
+            assert_eq!(s.js8.expect("js8 status").speed, speed);
+        }
+    }
 }

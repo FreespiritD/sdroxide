@@ -307,6 +307,7 @@ pub fn mode_to_tci(mode: Mode) -> &'static str {
         Mode::Wfm => "wfm",
         Mode::Digu
         | Mode::Ft8
+        | Mode::Js8
         | Mode::Ft4
         | Mode::Psk
         | Mode::Rtty

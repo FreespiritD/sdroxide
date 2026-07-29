@@ -56,12 +56,17 @@ pub enum Mode {
     /// broadcast by meteorological services, and an amateur station has nothing
     /// to send back. Appended for the same reason as [`Mode::Hell`].
     Wefax,
+    /// JS8 — the keyboard/messaging mode built on FT8's 8-FSK waveform. Slotted
+    /// like FT8 but conversational rather than a contest exchange: free text,
+    /// directed commands and heartbeats, at one of four speeds chosen in setup.
+    /// Appended for the same reason as [`Mode::Hell`].
+    Js8,
 }
 
 impl Mode {
     /// Every mode, in the order they cycle and appear in the picker — which is
     /// deliberately *not* the enum's declaration order (see [`Mode::Hell`]).
-    pub const ALL: [Mode; 24] = [
+    pub const ALL: [Mode; 25] = [
         Mode::Lsb,
         Mode::Usb,
         Mode::Cw,
@@ -75,6 +80,7 @@ impl Mode {
         Mode::Spec,
         Mode::Ft8,
         Mode::Ft4,
+        Mode::Js8,
         Mode::Psk,
         Mode::Rtty,
         Mode::Sstv,
@@ -92,9 +98,10 @@ impl Mode {
     /// slotted FT8/FT4 modes, the continuous keyboard modes, Hell, SSTV, RIFP,
     /// RF Paint). All are USB underneath except RIFP, which is FSK on the
     /// carrier.
-    pub const DIGITAL: [Mode; 13] = [
+    pub const DIGITAL: [Mode; 14] = [
         Mode::Ft8,
         Mode::Ft4,
+        Mode::Js8,
         Mode::Psk,
         Mode::Rtty,
         Mode::Olivia,
@@ -114,6 +121,7 @@ impl Mode {
             self,
             Mode::Ft8
                 | Mode::Ft4
+                | Mode::Js8
                 | Mode::Psk
                 | Mode::Rtty
                 | Mode::Sstv
@@ -146,7 +154,14 @@ impl Mode {
     /// keyboard modems and the image modes. Drives the decode-list / callsign
     /// overlays that only make sense for a slot-based decoder.
     pub fn is_slotted(self) -> bool {
-        matches!(self, Mode::Ft8 | Mode::Ft4)
+        matches!(self, Mode::Ft8 | Mode::Ft4 | Mode::Js8)
+    }
+
+    /// True for JS8. Forks the digi panel to the conversation UI and uses its
+    /// own controller: it is slotted like FT8 but carries a chat rather than a
+    /// contest exchange, so the Tx1–Tx6 sequencer has nothing to say about it.
+    pub fn is_js8(self) -> bool {
+        matches!(self, Mode::Js8)
     }
 
     /// True for the FSQ mode (adds a directed-message / contacts / image layer
@@ -242,6 +257,7 @@ impl Mode {
             Mode::Rade => "RADE",
             Mode::Rifp => "RIFP",
             Mode::Wefax => "WEFAX",
+            Mode::Js8 => "JS8",
         }
     }
 
@@ -266,6 +282,7 @@ impl Mode {
             // SSTV occupies the full USB audio passband.
             Mode::Ft8
             | Mode::Ft4
+            | Mode::Js8
             | Mode::Psk
             | Mode::Rtty
             | Mode::Sstv
@@ -334,6 +351,7 @@ impl Mode {
             | Mode::Spec
             | Mode::Ft8
             | Mode::Ft4
+            | Mode::Js8
             | Mode::Psk
             | Mode::Rtty
             | Mode::Sstv

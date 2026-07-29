@@ -14,8 +14,9 @@ use tracing::{debug, info, warn};
 
 use sdroxide_config::BandStacks;
 use sdroxide_digi::{
-    DigiAction, DigiController, DigiEngine, FsqController, HellController, RadeController,
-    RfPaintController, RifpController, SstvController, TextModemController, WefaxController,
+    DigiAction, DigiController, DigiEngine, FsqController, HellController, Js8Controller,
+    RadeController, RfPaintController, RifpController, SstvController, TextModemController,
+    WefaxController,
 };
 use sdroxide_dsp::{
     Agc, AutoNotch, DcBlock, Ddc, Demodulator, Duc, Modulator, MonoResampler, NeuralNr,
@@ -1572,7 +1573,13 @@ impl Engine {
             de_grid: s.config.my_grid.clone(),
             dx_grid: s.dx_grid.clone().unwrap_or_default(),
             tx_watchdog: s.tx_watchdog,
-            tr_period_s: if s.mode == sdroxide_types::Mode::Ft4 { 7 } else { 15 },
+            // JS8's period is a runtime setting rather than implied by the
+            // mode, so it has to come from the status rather than a constant.
+            tr_period_s: match s.mode {
+                sdroxide_types::Mode::Ft4 => 7,
+                sdroxide_types::Mode::Js8 => s.js8.as_ref().map_or(15, |j| j.speed.slot_s() as u32),
+                _ => 15,
+            },
             tx_message: s.tx_pending_msg.clone().unwrap_or_default(),
         });
     }
@@ -1709,6 +1716,12 @@ impl Engine {
             Box::new(HellController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_text_modem() {
             Box::new(TextModemController::new(mode, self.digi_config.clone(), tap_rate))
+        } else if mode.is_js8() {
+            // Ahead of the fall-through, which is FT8's: JS8 is slotted too, so
+            // nothing further down would notice it had been handed the wrong
+            // protocol. `make_digi_builds_a_js8_controller_for_js8` guards the
+            // ordering.
+            Box::new(Js8Controller::new(self.digi_config.clone(), tap_rate))
         } else {
             Box::new(DigiController::new(mode, self.digi_config.clone(), tap_rate))
         }
@@ -4067,6 +4080,7 @@ fn rig_mode_class(m: Mode) -> u8 {
         | Mode::Digu
         | Mode::Ft8
         | Mode::Ft4
+        | Mode::Js8
         | Mode::Psk
         | Mode::Rtty
         | Mode::Sstv

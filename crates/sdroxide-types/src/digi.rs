@@ -326,6 +326,11 @@ pub struct DigiStatus {
     /// RADE digital voice: modem state, when that mode is active.
     #[serde(default)]
     pub rade: Option<RadeStatus>,
+    /// JS8: heard list, reassembled conversation and transmit-queue progress.
+    /// `None` in every other mode, so the panel that renders it is its own
+    /// "are we in JS8?" test.
+    #[serde(default)]
+    pub js8: Option<crate::Js8Status>,
     /// Fox mode: the pile-up, callers being worked first. Empty in every other
     /// role, so the panel showing it is its own "are we the Fox?" test.
     #[serde(default)]
@@ -401,6 +406,7 @@ impl DigiStatus {
             fsq_heard: Vec::new(),
             fsq_messages: Vec::new(),
             rade: None,
+            js8: None,
             fox_queue: Vec::new(),
             call_queue: Vec::new(),
             clock_offset_s: None,
@@ -742,6 +748,37 @@ pub struct DigiConfig {
     /// audible. Off by default — hearing the raw signal is how the operator
     /// tunes onto an over before the modem syncs.
     pub rade_mute_analog: bool,
+
+    /// JS8: transmission speed. Normal is the band convention; Fast and Turbo
+    /// trade sensitivity for latency, Slow the reverse. Changing it restarts
+    /// the decoder, since every speed is a different waveform.
+    #[serde(default)]
+    pub js8_speed: crate::Js8Speed,
+    /// JS8: answer SNR? / GRID? / HEARING? / STATUS? addressed to us or to
+    /// @ALLCALL. What makes a station worth leaving switched on.
+    #[serde(default = "yes")]
+    pub js8_auto_reply: bool,
+    /// JS8: send an automatic heartbeat every N minutes; 0 disables it.
+    ///
+    /// Off by default, deliberately. An automatic beacon that switches itself
+    /// on when the operator picks a mode is an on-air behaviour nobody
+    /// consented to.
+    #[serde(default)]
+    pub js8_heartbeat_min: u32,
+    /// JS8: forget an incomplete multi-frame message after this many seconds.
+    #[serde(default = "js8_default_timeout")]
+    pub js8_assembly_timeout_s: u32,
+    /// JS8: station callsign, falling back to `my_call` when empty. Mirrors
+    /// `fsq_call`.
+    #[serde(default)]
+    pub js8_call: String,
+    /// JS8: free-text status sent in reply to ` STATUS?`.
+    #[serde(default)]
+    pub js8_status: String,
+    /// JS8: groups this station belongs to, so directed traffic to them counts
+    /// as addressed to us.
+    #[serde(default)]
+    pub js8_groups: Vec<String>,
     /// Hellschreiber variant (Feld Hell / Slow / X5 / X9 / the FSK variants).
     pub hell_variant: HellVariant,
     /// Hellschreiber receive AGC speed: 0 = off (an absolute scale, meaningful
@@ -828,6 +865,13 @@ impl Default for DigiConfig {
             dxped_mode: DxpedMode::Normal,
             fox_slots: 3,
             rade_mute_analog: false,
+            js8_speed: crate::Js8Speed::Normal,
+            js8_auto_reply: true,
+            js8_heartbeat_min: 0,
+            js8_assembly_timeout_s: 300,
+            js8_call: String::new(),
+            js8_status: String::new(),
+            js8_groups: Vec::new(),
             hell_variant: HellVariant::Feld,
             hell_rx_agc: 0.35,
             rifp_profile: RifpProfile::default(),
@@ -1399,4 +1443,14 @@ mod tests {
         // A known civil date: 2021-01-01 00:01:00 UTC.
         assert_eq!(ymd_hms_to_unix(2021, 1, 1, 0, 1, 0), 1_609_459_260);
     }
+}
+
+/// `#[serde(default)]` helper: a bool that defaults to true.
+fn yes() -> bool {
+    true
+}
+
+/// `#[serde(default)]` helper for [`DigiConfig::js8_assembly_timeout_s`].
+fn js8_default_timeout() -> u32 {
+    300
 }

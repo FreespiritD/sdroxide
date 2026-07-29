@@ -28,6 +28,7 @@ fn mode_digit(m: Mode) -> char {
         Mode::Digl => '8',
         Mode::Digu
         | Mode::Ft8
+        | Mode::Js8
         | Mode::Ft4
         | Mode::Psk
         | Mode::Rtty

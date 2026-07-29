@@ -152,11 +152,12 @@ pub const RIFP_CALLING: &[f64] =
 
 /// True where the *automatic* / beacon digital modes live and the PSK/RTTY
 /// skimmers must not run — their DSP would only produce garbage from these
-/// signals. Covers FT8 and FT4 (dial → +3 kHz), plus the WSPR window and the
-/// QRSS/MEPT beacons just below it (~1000–1700 Hz above the WSPR dial).
+/// signals. Covers FT8, FT4 and JS8 (dial → +3 kHz), plus the WSPR window and
+/// the QRSS/MEPT beacons just below it (~1000–1700 Hz above the WSPR dial).
 pub fn is_auto_digi(hz: f64) -> bool {
     FT8_DIALS.iter().any(|&f| (f - 100.0..=f + 3100.0).contains(&hz))
         || FT4_DIALS.iter().any(|&f| (f - 100.0..=f + 3100.0).contains(&hz))
+        || JS8_DIALS.iter().any(|&f| (f - 100.0..=f + 3100.0).contains(&hz))
         || WSPR_DIALS.iter().any(|&f| {
             // Dial reference, plus the QRSS + WSPR beacon window above it.
             (f - 100.0..=f + 400.0).contains(&hz) || (f + 1000.0..=f + 1700.0).contains(&hz)
@@ -336,6 +337,7 @@ pub fn digi_channels(mode: crate::Mode) -> Vec<DigiChannel> {
     };
 
     let mut v = match mode {
+        Mode::Js8 => plain(JS8_DIALS),
         Mode::Ft8 => {
             let mut v = plain(FT8_DIALS);
             v.extend(
@@ -538,6 +540,27 @@ mod tests {
     fn segments_sorted_and_non_overlapping() {
         for w in SEGMENTS.windows(2) {
             assert!(w[0].hi <= w[1].lo, "overlap: {:?} then {:?}", w[0], w[1]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod js8_tests {
+    use super::*;
+
+    #[test]
+    fn js8_has_conventional_channels() {
+        let ch = digi_channels(crate::Mode::Js8);
+        assert_eq!(ch.len(), JS8_DIALS.len());
+        assert!(ch.iter().any(|c| c.dial_hz == 14_078_000.0), "20 m JS8 missing");
+    }
+
+    #[test]
+    fn the_js8_subbands_are_off_limits_to_the_skimmers() {
+        // Pre-existing gap: the PSK and RTTY skimmers were running across the
+        // JS8 sub-bands, where their DSP can only produce garbage.
+        for &dial in JS8_DIALS {
+            assert!(is_auto_digi(dial + 1500.0), "{dial} + 1500 Hz should be off limits");
         }
     }
 }

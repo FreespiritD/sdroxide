@@ -15,6 +15,7 @@ mod digi;
 mod entity;
 mod geo;
 mod input;
+mod js8;
 mod memory;
 mod meters;
 mod mode;
@@ -67,6 +68,7 @@ pub use input::{
     KeyChord, MidiBinding, MidiMsg, MidiMsgKind, MidiSettings, MouseButton, MouseButtonBinding,
     RelativeMode, WheelAction, WheelSettings,
 };
+pub use js8::{Js8FrameInfo, Js8FrameKind, Js8Heard, Js8Msg, Js8Speed, Js8Status};
 pub use memory::{BandStackEntry, MemoryChannel};
 pub use meters::{Meters, TxMeters, TxTelemetry};
 pub use mode::{AgcMode, Mode, NrLevel};

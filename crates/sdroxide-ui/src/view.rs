@@ -30,6 +30,12 @@ pub struct ViewState {
     /// Fraction of the FT8/FT4 panel width used by the decode table; the rest is
     /// the map/QSO area. User-draggable.
     pub digi_split_fraction: f32,
+    /// Fraction of the JS8 panel width given to the activity list; the rest is
+    /// the conversation. Separate from [`ViewState::digi_split_fraction`]
+    /// because the two panels want different balances — JS8's right column is a
+    /// chat log, FT8's is a map and a station card.
+    #[serde(default = "js8_split_default")]
+    pub js8_split_fraction: f32,
     /// Fraction of the QSO area's height given to the world map; the rest is the
     /// station card + transcript + buttons. User-draggable.
     pub digi_map_fraction: f32,
@@ -213,6 +219,7 @@ impl Default for ViewState {
             waterfall_flip: false,
             digi_panel_fraction: 0.46,
             digi_split_fraction: 0.52,
+            js8_split_fraction: js8_split_default(),
             digi_map_fraction: 0.6,
             sstv_tx_fraction: 0.38,
             sstv_gallery_fraction: 0.4,
@@ -266,4 +273,9 @@ impl ViewState {
         let frac = ((x - rect.left()) / rect.width()) as f64;
         self.view_lo_hz + frac * self.span()
     }
+}
+
+/// Default for [`ViewState::js8_split_fraction`].
+fn js8_split_default() -> f32 {
+    0.46
 }

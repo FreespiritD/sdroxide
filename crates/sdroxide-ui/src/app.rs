@@ -343,6 +343,8 @@ pub struct SdroxideApp {
     hell: crate::hell::HellUi,
     /// FSQ directed-message target callsign ("" = broadcast/ALLCALL).
     fsq_target: String,
+    /// JS8: the `To:` callsign the composer addresses.
+    js8_target: String,
     /// FSQ contacts (address book), native-persisted in `contacts.json`.
     fsq_contacts: Vec<sdroxide_types::FsqContact>,
     /// FSQ "add contact" input field.
@@ -664,6 +666,7 @@ impl SdroxideApp {
             rf_paint: RfPaintUi::default(),
             hell: Default::default(),
             fsq_target: String::new(),
+            js8_target: String::new(),
             fsq_contacts: fsq_load_contacts(),
             fsq_new_contact: String::new(),
             fsq_show_contacts: false,
@@ -2576,8 +2579,10 @@ impl SdroxideApp {
         let auto_tx_freq = self.digi_status.as_ref().map(|s| s.config.auto_tx_freq).unwrap_or(true);
         let sort = self.digi_sort;
         let desc = self.digi_sort_desc;
-        // Turn parity needs the mode's slot length (FT8 15 s, FT4 7.5 s).
-        let period = if self.state.rx[0].mode == Mode::Ft4 { 7.5 } else { 15.0 };
+        // Turn parity needs the mode's slot length (FT8 15 s, FT4 7.5 s). JS8's
+        // is an operator setting rather than implied by the mode, so it comes
+        // from the status — otherwise Turbo draws one turn header per 2.5 turns.
+        let period = self.slot_period_s();
         // The band we'd log a contact on, for the "is this one new?" judgement.
         let dial_hz = self.state.active_freq_hz();
         let band = if dial_hz > 0.0 { sdroxide_types::adif_band(dial_hz) } else { "" };
@@ -4107,6 +4112,249 @@ impl SdroxideApp {
     /// list, a directed compose row (To: + message), and a contacts book.
     /// `panel_h` is the real bounded height (the frame reports an unbounded
     /// `available_height`).
+    /// The JS8 panel: what is on the band, and the conversation.
+    ///
+    /// Shaped like the FT8 panel — an activity list on the left, a draggable
+    /// split, a working area on the right — but the right-hand side is a chat
+    /// log rather than a QSO sequencer, because that is what JS8 carries.
+    fn js8_panel(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, panel_h: f32) {
+        use sdroxide_types::Js8Speed;
+
+        let content_bottom = ui.cursor().top() + panel_h - 26.0;
+        let status = self.digi_status.clone();
+        let audio_hz = status.as_ref().map(|s| s.audio_hz).unwrap_or(1500.0);
+        let transmitting = status.as_ref().map(|s| s.transmitting).unwrap_or(false);
+        let js8 = status.as_ref().and_then(|s| s.js8.clone()).unwrap_or_default();
+
+        // ── Header: speed, tuning, queue depth ──────────────────────────────
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("JS8").size(11.0).strong().color(crate::theme::CYAN));
+            for speed in Js8Speed::ALL {
+                if crate::chrome::chip(ui, js8.speed == speed, speed.label()).clicked()
+                    && js8.speed != speed
+                {
+                    self.digi_cfg_edit.js8_speed = speed;
+                    cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
+                }
+            }
+            ui.label(RichText::new(format!("{audio_hz:.0} Hz")).monospace());
+            if crate::chrome::chip(ui, false, "−").clicked() {
+                cmds.push(Command::SetDigiAudioFreq((audio_hz - 10.0).clamp(200.0, 3500.0)));
+            }
+            if crate::chrome::chip(ui, false, "+").clicked() {
+                cmds.push(Command::SetDigiAudioFreq((audio_hz + 10.0).clamp(200.0, 3500.0)));
+            }
+            self.digi_freq_chip(ui, cmds);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if transmitting {
+                    ui.label(RichText::new("● TX").color(crate::theme::PINK).strong());
+                }
+                // A long message takes minutes, not seconds. Saying so while it
+                // is going out is the difference between "stuck" and "working".
+                if js8.tx_frames_total > 0 {
+                    let left = f64::from(js8.tx_frames_pending) * js8.speed.slot_s();
+                    ui.label(
+                        RichText::new(format!(
+                            "{}/{} frames · {left:.0}s",
+                            js8.tx_frames_total - js8.tx_frames_pending,
+                            js8.tx_frames_total
+                        ))
+                        .monospace()
+                        .color(crate::theme::YELLOW),
+                    );
+                }
+                self.digi_squelch_slider(ui, cmds);
+            });
+        });
+        ui.add_space(4.0);
+
+        let avail_h = (content_bottom - ui.cursor().top()).max(80.0);
+        let total_w = ui.available_width();
+        let left_w = (total_w * self.view.js8_split_fraction).clamp(160.0, total_w - 200.0);
+
+        ui.horizontal_top(|ui| {
+            // ── Left: who is on the band ────────────────────────────────────
+            ui.vertical(|ui| {
+                ui.set_width(left_w);
+                ui.label(RichText::new("HEARD").size(10.5).strong().color(crate::theme::CYAN_DIM));
+                egui::ScrollArea::vertical()
+                    .id_salt("js8-heard")
+                    .max_height(avail_h - 18.0)
+                    .auto_shrink([false, false])
+                    .show_themed(ui, |ui| {
+                        if js8.heard.is_empty() {
+                            ui.label(RichText::new("— nothing heard yet —").weak());
+                        }
+                        for h in &js8.heard {
+                            let selected = self.js8_target.eq_ignore_ascii_case(&h.call);
+                            let row = ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("{:+03}", h.snr_db))
+                                        .monospace()
+                                        .color(snr_color(h.snr_db)),
+                                );
+                                ui.label(
+                                    RichText::new(format!("{:>5.0}", h.audio_hz))
+                                        .monospace()
+                                        .weak(),
+                                );
+                                ui.label(RichText::new(&h.call).monospace().strong().color(
+                                    if selected { crate::theme::PINK } else { crate::theme::CYAN },
+                                ));
+                                if let Some(g) = &h.grid {
+                                    ui.label(RichText::new(g).monospace().weak());
+                                }
+                            });
+                            // Clicking a station addresses the composer at it.
+                            if row.response.interact(egui::Sense::click()).clicked() {
+                                self.js8_target = h.call.clone();
+                            }
+                        }
+                    });
+            });
+
+            // ── The drag handle ─────────────────────────────────────────────
+            let (rect, resp) =
+                ui.allocate_exact_size(egui::vec2(7.0, avail_h), egui::Sense::click_and_drag());
+            if resp.dragged() {
+                let dx = resp.drag_delta().x;
+                self.view.js8_split_fraction = ((left_w + dx) / total_w).clamp(0.22, 0.72);
+            }
+            if resp.hovered() || resp.dragged() {
+                ui.painter().rect_filled(rect, 0.0, crate::theme::CYAN_DIM);
+            }
+
+            // ── Right: the conversation ─────────────────────────────────────
+            ui.vertical(|ui| {
+                let compose_h = 52.0;
+                egui::ScrollArea::vertical()
+                    .id_salt("js8-convo")
+                    .max_height((avail_h - compose_h).max(40.0))
+                    .stick_to_bottom(true)
+                    .auto_shrink([false, false])
+                    .show_themed(ui, |ui| {
+                        if js8.messages.is_empty() {
+                            ui.label(RichText::new("— no messages —").weak());
+                        }
+                        for m in &js8.messages {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                let (_, _, _, h, mi, _) =
+                                    sdroxide_types::utc_ymd_hms(m.last_slot_utc);
+                                ui.label(
+                                    RichText::new(format!("{h:02}:{mi:02}")).monospace().weak(),
+                                );
+                                if m.to_me {
+                                    ui.label(RichText::new("★").color(crate::theme::YELLOW));
+                                }
+                                let who = if m.from.is_empty() { "…" } else { &m.from };
+                                ui.label(
+                                    RichText::new(format!("{who}:")).monospace().strong().color(
+                                        if m.to_me {
+                                            crate::theme::CYAN
+                                        } else {
+                                            crate::theme::CYAN_DIM
+                                        },
+                                    ),
+                                );
+                                if let Some(c) = &m.cmd {
+                                    ui.label(
+                                        RichText::new(c).monospace().color(crate::theme::PINK),
+                                    );
+                                }
+                                let body = RichText::new(&m.text).monospace();
+                                // An incomplete message is still arriving; greying
+                                // it stops a half-sentence reading as the whole one.
+                                ui.label(if m.complete { body } else { body.weak() });
+                                if !m.complete {
+                                    ui.label(
+                                        RichText::new(format!("… ({} frames)", m.frames)).weak(),
+                                    );
+                                }
+                            });
+                        }
+                    });
+
+                ui.add_space(2.0);
+                // ── Compose ─────────────────────────────────────────────────
+                let target = if self.js8_target.is_empty() {
+                    "@ALLCALL".to_string()
+                } else {
+                    self.js8_target.clone()
+                };
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("{target}:"))
+                            .monospace()
+                            .color(crate::theme::CYAN_DIM),
+                    );
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.text_tx)
+                            .desired_width((ui.available_width() - 110.0).max(60.0))
+                            .hint_text("Message…"),
+                    );
+                    let send = crate::chrome::chip_accent(
+                        ui,
+                        false,
+                        " SEND ",
+                        crate::theme::PINK,
+                        crate::theme::INK_ON_CYAN,
+                    )
+                    .clicked()
+                        || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                    // Before pressing send, say how long it will take. JS8's
+                    // most surprising property to a new operator is that a
+                    // sentence can occupy a minute of air time.
+                    if !self.text_tx.trim().is_empty() {
+                        let frames = js8_frame_estimate(&self.text_tx);
+                        ui.label(
+                            RichText::new(format!(
+                                "{frames}f · {:.0}s",
+                                f64::from(frames) * js8.speed.slot_s()
+                            ))
+                            .monospace()
+                            .weak(),
+                        );
+                    }
+                    if send && !self.text_tx.trim().is_empty() {
+                        let body = self.text_tx.trim();
+                        let full = if self.js8_target.is_empty() {
+                            body.to_string()
+                        } else {
+                            format!("{} {body}", self.js8_target)
+                        };
+                        cmds.push(Command::DigiSendText(full));
+                        self.text_tx.clear();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if crate::chrome::chip(ui, false, " CQ ").clicked() {
+                        cmds.push(Command::DigiCallCq);
+                    }
+                    // The queries a station may be asked. Each addresses the
+                    // selected station, so they are inert with nobody selected.
+                    let has_target = !self.js8_target.is_empty();
+                    for q in ["SNR?", "GRID?", "HEARING?", "STATUS?"] {
+                        if crate::chrome::chip(ui, false, q).clicked() && has_target {
+                            cmds.push(Command::DigiSendText(format!("{} {q}", self.js8_target)));
+                        }
+                    }
+                    if crate::chrome::chip(ui, false, " HB ").clicked() {
+                        cmds.push(Command::DigiSendText("@ALLCALL HB".into()));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if crate::chrome::chip(ui, false, " STOP TX ").clicked() {
+                            cmds.push(Command::DigiAbortTx);
+                        }
+                        if has_target && crate::chrome::chip(ui, false, " CLEAR TO ").clicked() {
+                            self.js8_target.clear();
+                        }
+                    });
+                });
+            });
+        });
+    }
+
     fn fsq_panel(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, panel_h: f32) {
         let content_bottom = ui.cursor().top() + panel_h - 26.0;
         let status = self.digi_status.clone();
@@ -4432,7 +4680,7 @@ impl SdroxideApp {
         // Per-mode parameters (RTTY/Olivia/THOR/FSQ) now live in each panel's
         // header, so this dialog only carries the shared identity + FT8/FT4
         // message templates.
-        let title = if mode.is_text_modem() || mode.is_hell() {
+        let title = if mode.is_text_modem() || mode.is_hell() || mode.is_js8() {
             format!("{} Setup", mode.label())
         } else {
             "FT8 / FT4 Setup".to_string()
@@ -4459,6 +4707,31 @@ impl SdroxideApp {
                         changed = true;
                     }
                     ui.end_row();
+                    if mode.is_js8() {
+                        ui.label("Auto-reply");
+                        changed |= ui
+                            .checkbox(&mut cfg.js8_auto_reply, "Answer SNR? / GRID? / STATUS?")
+                            .changed();
+                        ui.end_row();
+                        ui.label("Heartbeat");
+                        ui.horizontal(|ui| {
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut cfg.js8_heartbeat_min)
+                                        .range(0..=60)
+                                        .suffix(" min"),
+                                )
+                                .changed();
+                            // Off by default and worth saying why: a beacon that
+                            // switches itself on is an on-air behaviour the
+                            // operator never chose.
+                            ui.label(RichText::new("0 = off").weak());
+                        });
+                        ui.end_row();
+                        ui.label("Status message");
+                        changed |= ui.text_edit_singleline(&mut cfg.js8_status).changed();
+                        ui.end_row();
+                    }
                     ui.label("TX period");
                     ui.horizontal(|ui| {
                         changed |= ui.selectable_value(&mut cfg.tx_even, true, "Even").changed();
@@ -8650,6 +8923,15 @@ impl eframe::App for SdroxideApp {
                     self.digi_status.as_ref().map(|s| s.config.thor_mode.baud()).unwrap_or(15.625);
                 let bw = 18.0 * baud;
                 vec![audio_hz - bw / 2.0, audio_hz + bw / 2.0]
+            } else if mode == Mode::Js8 {
+                // Worth showing: Turbo's 160 Hz footprint against Slow's 25 Hz
+                // is what decides whether a frequency is actually free.
+                let bw = self
+                    .digi_status
+                    .as_ref()
+                    .and_then(|s| s.js8.as_ref())
+                    .map_or(50.0, |j| j.speed.bandwidth_hz());
+                vec![audio_hz, audio_hz + bw]
             } else if mode == Mode::Fsq {
                 let baud = self.digi_status.as_ref().map(|s| s.config.fsq_baud).unwrap_or(4.5);
                 let bw = 33.0 * baud;
@@ -8761,6 +9043,8 @@ impl eframe::App for SdroxideApp {
                                 self.hell_panel(ui, &mut cmds, panel_h);
                             } else if is_text {
                                 self.text_modem_panel(ui, &mut cmds, panel_h);
+                            } else if mode.is_js8() {
+                                self.js8_panel(ui, &mut cmds, panel_h);
                             } else {
                                 self.digi_panel(ui, &mut cmds);
                             }
@@ -9131,6 +9415,18 @@ fn digi_freq_for_band(mode: Mode, band: Band) -> Option<f64> {
 
 fn digi_dial_freqs(mode: Mode) -> &'static [(&'static str, f64)] {
     match mode {
+        // JS8 conventional dials; signals sit in the ~3 kHz above each.
+        Mode::Js8 => &[
+            ("160m", 1_842_000.0),
+            ("80m", 3_578_000.0),
+            ("40m", 7_078_000.0),
+            ("30m", 10_130_000.0),
+            ("20m", 14_078_000.0),
+            ("17m", 18_104_000.0),
+            ("15m", 21_078_000.0),
+            ("12m", 24_922_000.0),
+            ("10m", 28_078_000.0),
+        ],
         // PSK31 activity centres (USB dial; signals sit ~1 kHz above).
         Mode::Psk => &[
             ("80m", 3_580_000.0),
@@ -11591,4 +11887,66 @@ fn sstv_level_bar(ui: &mut egui::Ui, level: f32) {
         egui::Stroke::new(1.0, Color32::from_gray(60)),
         egui::StrokeKind::Inside,
     );
+}
+
+/// Roughly how many JS8 frames a message will take.
+///
+/// The panel shows this before the operator presses send, because JS8's most
+/// surprising property to someone new is that a sentence can occupy a minute of
+/// air time. It is an estimate: the real encoder chooses per frame between
+/// Huffman and dictionary compression, so the true count is often lower. Being
+/// pessimistic here is the right way round — a message that finishes early is a
+/// pleasant surprise, one that runs long is not.
+fn js8_frame_estimate(text: &str) -> u8 {
+    const PER_FRAME: usize = 13;
+    let n = text.trim().len();
+    (n.div_ceil(PER_FRAME).max(1)).min(255) as u8
+}
+
+#[cfg(test)]
+mod js8_panel_tests {
+    use super::js8_frame_estimate;
+
+    #[test]
+    fn short_messages_take_one_frame() {
+        assert_eq!(js8_frame_estimate("HELLO"), 1);
+        assert_eq!(js8_frame_estimate("HI"), 1);
+    }
+
+    #[test]
+    fn the_estimate_grows_with_the_message() {
+        let short = js8_frame_estimate("HELLO WORLD");
+        let long = js8_frame_estimate(
+            "HELLO WORLD THIS IS A CONSIDERABLY LONGER MESSAGE THAT WILL SPAN SEVERAL FRAMES",
+        );
+        assert!(long > short, "{long} should exceed {short}");
+    }
+
+    #[test]
+    fn an_empty_message_still_reads_as_one_frame_not_zero() {
+        // The label is only shown for non-empty input, but a zero here would
+        // render "0f · 0s" if that ever changed.
+        assert_eq!(js8_frame_estimate(""), 1);
+        assert_eq!(js8_frame_estimate("   "), 1);
+    }
+}
+
+impl SdroxideApp {
+    /// The slot length of the current mode, in seconds.
+    ///
+    /// FT8 and FT4 have theirs fixed by the mode; JS8's is an operator setting,
+    /// so it has to come from the engine's status. The decode list groups rows
+    /// into turns by this, and getting it wrong for JS8 Turbo would draw one
+    /// "EVEN/ODD" header per two and a half turns.
+    fn slot_period_s(&self) -> f64 {
+        match self.state.rx[0].mode {
+            Mode::Ft4 => 7.5,
+            Mode::Js8 => self
+                .digi_status
+                .as_ref()
+                .and_then(|s| s.js8.as_ref())
+                .map_or(15.0, |j| j.speed.slot_s()),
+            _ => 15.0,
+        }
+    }
 }
