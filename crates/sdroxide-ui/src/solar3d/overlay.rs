@@ -974,7 +974,10 @@ fn sat_search(
                     ui.set_width(width - 16.0);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 5.0;
-                        ui.label(RichText::new("⌕").color(theme::CYAN_DIM).size(14.0));
+                        // 🔍 and × over ⌕ and ✕: the latter pair is in none of
+                        // the bundled faces — not Chakra Petch, not egui's
+                        // Ubuntu/Noto Emoji fallbacks — so both drew as tofu.
+                        ui.label(RichText::new("🔍").color(theme::CYAN_DIM).size(12.0));
                         let edit = ui.add(
                             egui::TextEdit::singleline(&mut st.sat_search)
                                 .desired_width(width - 62.0)
@@ -994,7 +997,7 @@ fn sat_search(
                             });
                         }
                         if !query.is_empty()
-                            && ui.button("✕").on_hover_text("Clear the search").clicked()
+                            && ui.button("×").on_hover_text("Clear the search").clicked()
                         {
                             clear = true;
                         }
