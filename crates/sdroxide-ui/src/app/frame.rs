@@ -1,0 +1,650 @@
+//! The per-frame loop: drain what the engine sent, then lay the window out.
+//!
+//! [`eframe::App::update`] is the one entry point the framework calls, and
+//! everything else in [`crate::app`] hangs off it. Event handling comes first
+//! so the frame draws the newest state, and the repaint request at the end is
+//! what keeps the app idling instead of spinning when no stream is flowing.
+
+use std::time::Duration;
+
+use eframe::egui::{self, Color32, RichText};
+use sdroxide_types::{Command, Mode, RadioEvent, SpectrumConfig, Spot};
+
+use crate::time::now_unix;
+use crate::widgets::spectrum_view;
+
+use crate::app::SdroxideApp;
+use crate::app::net::auto_upload_adif;
+use crate::app::persist::persist_qso_log;
+use crate::app::settings::servers::TciServerStatus;
+use crate::app::spectrum::CFG_DEBOUNCE_S;
+
+/// Repaint-poll cadence when no spectrum stream is flowing (startup, connection
+/// lost, stalled stream) — the app truly idles between these wakes.
+const IDLE_POLL_MS: u64 = 250;
+
+/// The stream counts as stalled after this long without a new frame (seconds).
+const STREAM_STALE_S: f64 = 1.0;
+
+impl eframe::App for SdroxideApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let now = ctx.input(|i| i.time);
+        while let Some(ev) = self.ctrl.poll_event() {
+            match ev {
+                RadioEvent::Capabilities(c) => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
+                        "sdroxide — {}",
+                        c.label
+                    )));
+                    self.caps = Some(c);
+                }
+                RadioEvent::State(s) => {
+                    let prev_vfo = self.state.active_freq_hz();
+                    let prev_mode = self.state.rx[0].mode;
+                    self.state = s;
+                    if self.state.rx[0].mode != prev_mode {
+                        self.clear_digi_rx();
+                    }
+                    self.recenter_if_tuned_away(prev_vfo);
+                }
+                RadioEvent::Spectrum(f) => {
+                    self.frame = Some(std::sync::Arc::new(f));
+                    self.last_spectrum_at = now;
+                }
+                RadioEvent::Meters(m) => self.meters = Some(m),
+                RadioEvent::Memories(m) => self.memories = m,
+                RadioEvent::ConnectionLost(e) => self.error = Some(e),
+                RadioEvent::Notice(n) => self.radio_notice = n,
+                RadioEvent::Ft8Decodes(d) => {
+                    // Prepend newest-slot decodes; keep a rolling window.
+                    for dec in d.into_iter().rev() {
+                        self.digi_decodes.insert(0, dec);
+                    }
+                    self.digi_decodes.truncate(200);
+                }
+                RadioEvent::Ft8Status(s) => {
+                    // Seed the editable config from the engine's persisted
+                    // value once (later edits are UI-owned so typing sticks).
+                    if !self.digi_cfg_seeded {
+                        self.digi_cfg_edit = s.config.clone();
+                        self.digi_cfg_seeded = true;
+                    }
+                    self.digi_status = Some(s);
+                }
+                RadioEvent::Ft8QsoLogged(mut r) => {
+                    r.id = self.next_log_id();
+                    let call = r.call.clone();
+                    let adif = auto_upload_adif(&self.net_cfg_edit, &r);
+                    self.qso_log.push(r);
+                    self.session_qsos += 1;
+                    persist_qso_log(&self.qso_log);
+                    // Enrich + optionally upload the freshly logged QSO.
+                    self.queue_lookup(call);
+                    if let Some((qso_id, adif, targets)) = adif {
+                        self.pending_uploads.push((qso_id, adif, targets));
+                    }
+                }
+                RadioEvent::SstvLine { image_id, y, rgb } => {
+                    self.sstv.on_line(image_id, y, &rgb, &ctx);
+                }
+                RadioEvent::SstvImage { image_id, mode, w, h, png } => {
+                    self.sstv.on_image(image_id, mode, w, h, &png, &ctx);
+                }
+                RadioEvent::DigiImage { png } => {
+                    if let Some((rgb, w, h)) = crate::sstv::decode_image(&png) {
+                        let ci = crate::sstv::color_image(&rgb, w, h);
+                        let tex = ctx.load_texture("fsq_rx", ci, egui::TextureOptions::LINEAR);
+                        self.fsq_rx_images.insert(0, tex);
+                        self.fsq_rx_images.truncate(30);
+                    }
+                }
+                RadioEvent::HellColumns { seq, rows, cols } => {
+                    self.hell.on_columns(seq, rows, &cols, &self.view.hell, &ctx);
+                }
+                RadioEvent::WefaxLine { image_id, y, gray } => {
+                    self.wefax.push_line(image_id, y, &gray);
+                }
+                RadioEvent::WefaxImage { png, .. } => {
+                    // The engine has already written the file; the gallery entry
+                    // is named by the same rule against the same clock and dial,
+                    // so it carries the date and station the file on disk does.
+                    // A remote client, which has no file, gets the label anyway.
+                    let dial = self.state.rx_freq_hz();
+                    let name = sdroxide_types::WefaxChartMeta {
+                        unix: crate::time::now_unix(),
+                        dial_hz: (dial > 0.0).then_some(dial),
+                    }
+                    .file_name();
+                    self.wefax.add_chart(&ctx, &name, &png);
+                    self.wefax.clear_live();
+                }
+                RadioEvent::WefaxStatus(s) => self.wefax.status = s,
+                RadioEvent::SstvStatus(s) => {
+                    // Adopt a *newly* detected RX mode for the next transmit, but
+                    // don't re-apply a steady detection every frame — that would
+                    // fight the operator's manual mode selection.
+                    if s.detected != self.sstv.last_detected {
+                        if let Some(m) = s.detected {
+                            self.sstv.tx_mode = m;
+                            self.sstv.preview_dirty = true;
+                        }
+                        self.sstv.last_detected = s.detected;
+                    }
+                    self.sstv.status = s;
+                }
+                RadioEvent::RifpRows { image_id, y, w, h, rows } => {
+                    self.sstv.on_rifp_rows(image_id, y, w, h, &rows, &ctx);
+                }
+                RadioEvent::RifpImage { image_id, meta, png } => {
+                    self.sstv.on_rifp_image(image_id, meta, &png, &ctx);
+                }
+                RadioEvent::RifpStatus(s) => {
+                    self.sstv.rifp = s;
+                }
+                RadioEvent::SkimmerSpots(s) => {
+                    // The engine sends the full current set each update; the
+                    // stable `id` per spot lets the overlay keep each box (and
+                    // its scroll) in place across updates.
+                    for spot in &s {
+                        // Remember when each spot last keyed, and seed newly
+                        // seen ones to now, so alpha starts solid and fades.
+                        let e = self.skimmer_active_at.entry(spot.id).or_insert(now);
+                        if spot.active {
+                            *e = now;
+                        }
+                    }
+                    // Forget timings for spots the engine has dropped.
+                    let live: std::collections::HashSet<u64> = s.iter().map(|x| x.id).collect();
+                    self.skimmer_active_at.retain(|id, _| live.contains(id));
+                    self.skimmer_spots = s;
+                }
+                RadioEvent::Spots(s) => self.spots = s,
+                RadioEvent::NetStatus(s) => self.net_status = s,
+                RadioEvent::TciServerStatus { running, addr, clients, error } => {
+                    self.tci_srv_status = Some(TciServerStatus { running, addr, clients, error });
+                }
+                RadioEvent::RigctldStatus { running, addr, clients, error } => {
+                    self.rigctld_status = Some(TciServerStatus { running, addr, clients, error });
+                }
+                RadioEvent::VoiceStatus(v) => self.voice = v,
+                RadioEvent::CallsignResult(info) => self.apply_callsign(info),
+                RadioEvent::Upload(r) => self.on_upload_result(r),
+                RadioEvent::Confirmations(recs) => self.apply_confirmations(recs),
+            }
+        }
+        // A switched-off skimmer stops emitting, so its last boxes would sit on
+        // the waterfall until something else replaced them; drop them per kind.
+        if !self.skimmer_spots.is_empty() {
+            self.skimmer_spots.retain(|s| self.state.skimmer.enabled(s.kind));
+        }
+        self.poll_adif_import();
+
+        let mut cmds = Vec::new();
+        // F1 toggles the manual — handled here (not in `keyboard_shortcuts`) so
+        // it works even while a text field has focus.
+        if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+            self.help.open = !self.help.open;
+        }
+        // An open manual takes the scrolling keys before the bindings run, so
+        // reading it never tunes the radio at the same time.
+        self.help.grab_keys(&ctx);
+        self.control_inputs(&ctx, &mut cmds);
+        // Shutting down with a bound key or footswitch still held would
+        // otherwise leave the rig transmitting.
+        if ctx.input(|i| i.viewport().close_requested()) && self.input.any_held() {
+            self.release_held_controls(&mut cmds);
+        }
+
+        egui::Panel::top(egui::Id::new("topbar"))
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::BG_DEEP)
+                    .inner_margin(egui::Margin::symmetric(8, 6)),
+            )
+            .show(ui, |ui| {
+                crate::chrome::angled_frame(ui, crate::theme::PINK, |ui| {
+                    self.top_bar(ui, &mut cmds);
+                });
+            });
+        // A persistent radio-audio warning (input unavailable / mono-for-IQ)
+        // rides above the panadapter with a dismiss button, so a silent RX
+        // failure is explained rather than reading as "waiting for spectrum".
+        if let Some(notice) = self.radio_notice.clone() {
+            egui::Frame::new()
+                .fill(Color32::from_rgb(60, 45, 10))
+                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(210, 160, 40)))
+                .inner_margin(egui::Margin::symmetric(8, 5))
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new("⚠").size(15.0).color(Color32::from_rgb(255, 190, 70)),
+                        );
+                        ui.label(
+                            RichText::new(notice)
+                                .size(13.0)
+                                .color(Color32::from_rgb(240, 220, 180)),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("Dismiss").clicked() {
+                                self.radio_notice = None;
+                            }
+                        });
+                    });
+                });
+        }
+        // Network-spot overlay (shared by voice + digital panadapter paths). A
+        // clicked spot is captured here and pre-filled into a log entry below.
+        // The broadcast stations are refreshed first, before anything reads
+        // them: the overlay here, the SPOTS list and the world map all do.
+        self.refresh_broadcast_spots(now_unix());
+        let (net_spots, net_alpha) = self.net_overlay(now_unix());
+        let mut clicked_spot: Option<Spot> = None;
+        // Remaining space: the panadapter (+ FT8/FT4 operating panel).
+        if let Some(err) = self.error.clone() {
+            ui.centered_and_justified(|ui| {
+                ui.label(RichText::new(err).size(18.0).color(Color32::RED));
+            });
+        } else if self.state.rx[0].mode.is_digital() {
+            // Remember the voice-mode view once, so leaving FT8 can restore it
+            // instead of leaving the panadapter zoomed to the sub-band.
+            if self.pre_digi_view.is_none() {
+                self.pre_digi_view = Some((self.view.view_lo_hz, self.view.view_hi_hz));
+            }
+            // Lock the view to the digital sub-band (audio 0..3.5 kHz above dial).
+            let dial = self.state.rx_freq_hz();
+            if self.state.rx[0].mode.is_rf_paint() {
+                // Zoom tight onto the 300..3300 Hz painting band so incoming
+                // pictures are large enough to read on the waterfall.
+                self.view.view_lo_hz = dial + 150.0;
+                self.view.view_hi_hz = dial + 3450.0;
+            } else {
+                self.view.view_lo_hz = dial - 200.0;
+                self.view.view_hi_hz = dial + 3500.0;
+            }
+            let audio_hz = self.digi_status.as_ref().map(|s| s.audio_hz).unwrap_or(1500.0);
+            let mode = self.state.rx[0].mode;
+            let is_text = mode.is_text_modem();
+            // RTTY shows mark/space tuning lines; Olivia the tone-bank edges;
+            // PSK just the centre marker.
+            let markers: Vec<f32> = if mode == Mode::Rtty {
+                let sh = self.digi_status.as_ref().map(|s| s.config.rtty_shift_hz).unwrap_or(170.0);
+                vec![audio_hz - sh / 2.0, audio_hz + sh / 2.0]
+            } else if mode == Mode::Olivia {
+                let bw = self.digi_status.as_ref().map(|s| s.config.olivia_bw_hz).unwrap_or(1000.0);
+                vec![audio_hz - bw / 2.0, audio_hz + bw / 2.0]
+            } else if mode == Mode::Thor {
+                let baud =
+                    self.digi_status.as_ref().map(|s| s.config.thor_mode.baud()).unwrap_or(15.625);
+                let bw = 18.0 * baud;
+                vec![audio_hz - bw / 2.0, audio_hz + bw / 2.0]
+            } else if mode == Mode::Js8 {
+                // Worth showing: Turbo's 160 Hz footprint against Slow's 25 Hz
+                // is what decides whether a frequency is actually free.
+                let bw = self
+                    .digi_status
+                    .as_ref()
+                    .and_then(|s| s.js8.as_ref())
+                    .map_or(50.0, |j| j.speed.bandwidth_hz());
+                vec![audio_hz, audio_hz + bw]
+            } else if mode == Mode::Fsq {
+                let baud = self.digi_status.as_ref().map(|s| s.config.fsq_baud).unwrap_or(4.5);
+                let bw = 33.0 * baud;
+                vec![audio_hz - bw / 2.0, audio_hz + bw / 2.0]
+            } else if mode == Mode::Hell {
+                let v =
+                    self.digi_status.as_ref().map(|s| s.config.hell_variant).unwrap_or_default();
+                let bw = v.bandwidth_hz() as f32;
+                vec![audio_hz - bw / 2.0, audio_hz + bw / 2.0]
+            } else if mode == Mode::RfPaint {
+                // The painting band edges (300..3300 Hz).
+                vec![300.0, 3300.0]
+            } else if mode == Mode::Rade {
+                // The RADE V1 OFDM carriers, so the operator can see whether the
+                // signal is sitting inside the modem's window.
+                vec![1062.0, 1876.0]
+            } else {
+                Vec::new()
+            };
+            // FT8 station callsign boxes (built before the &mut self borrows).
+            // Only the slotted modes have them — SSTV / RF Paint share the digi
+            // path but must not inherit FT8's overlay.
+            let (ft8_spots, ft8_alpha) =
+                if mode.is_slotted() { self.ft8_overlay() } else { (Vec::new(), Vec::new()) };
+
+            let frame = self.frame.take();
+            // Manual vertical split with a draggable divider: the operating
+            // panel gets `digi_panel_fraction` of the height, the waterfall the
+            // rest. A thin handle between them resizes the split.
+            let total = ui.available_height();
+            let width = ui.available_width();
+            let handle_h = 7.0;
+            let panel_h =
+                (total * self.view.digi_panel_fraction).clamp(190.0, (total - 140.0).max(190.0));
+            let wf_h = (total - panel_h - handle_h).max(80.0);
+
+            let wf_tuning = self.wf_tick(frame.is_some());
+            ui.allocate_ui(egui::vec2(width, wf_h), |ui| {
+                spectrum_view::show_ext(
+                    ui,
+                    &mut self.view,
+                    &mut self.state,
+                    frame.as_ref(),
+                    &mut self.peaks,
+                    &mut self.spec_smooth,
+                    &mut self.trace_cache,
+                    Some(audio_hz),
+                    if mode == Mode::Ft8 {
+                        self.digi_status.as_ref().map(|s| s.config.dxped_mode).unwrap_or_default()
+                    } else {
+                        sdroxide_types::DxpedMode::Normal
+                    },
+                    mode.is_slotted()
+                        && self.digi_status.as_ref().map(|s| s.config.auto_tx_freq).unwrap_or(true),
+                    &markers,
+                    &ft8_spots,
+                    &ft8_alpha,
+                    &net_spots,
+                    &net_alpha,
+                    &mut clicked_spot,
+                    self.input.cfg.wheel,
+                    wf_tuning,
+                    &mut cmds,
+                );
+            });
+            // Resize handle between the waterfall and the FT8/FT4 panel.
+            let hresp = crate::chrome::split_handle(
+                ui,
+                egui::vec2(width, handle_h),
+                Some(crate::theme::PANEL),
+            );
+            if hresp.dragged() {
+                // Drag down shrinks the panel (waterfall grows), drag up grows it.
+                let d = hresp.drag_delta().y / total;
+                self.view.digi_panel_fraction =
+                    (self.view.digi_panel_fraction - d).clamp(0.2, 0.82);
+            }
+            ui.allocate_ui(egui::vec2(width, panel_h), |ui| {
+                egui::Frame::new()
+                    .fill(crate::theme::BG_DEEP)
+                    .inner_margin(egui::Margin { left: 0, right: 0, top: 6, bottom: 0 })
+                    .show(ui, |ui| {
+                        crate::chrome::angled_frame(ui, crate::theme::PINK, |ui| {
+                            if mode.is_rade() {
+                                self.rade_panel(ui, &mut cmds, panel_h);
+                            } else if mode.is_wefax() {
+                                self.wefax_panel(ui, &mut cmds, panel_h);
+                            } else if mode.is_image() {
+                                self.image_panel(ui, &mut cmds, mode);
+                            } else if mode.is_rf_paint() {
+                                self.rf_paint_panel(ui, &mut cmds, panel_h);
+                            } else if mode.is_fsq() {
+                                self.fsq_panel(ui, &mut cmds, panel_h);
+                            } else if mode.is_hell() {
+                                self.hell_panel(ui, &mut cmds, panel_h);
+                            } else if is_text {
+                                self.text_modem_panel(ui, &mut cmds, panel_h);
+                            } else if mode.is_js8() {
+                                self.js8_panel(ui, &mut cmds, panel_h);
+                            } else {
+                                self.digi_panel(ui, &mut cmds);
+                            }
+                        });
+                    });
+            });
+            self.frame = frame;
+        } else {
+            // Restore the pre-FT8 view span once, on the first voice frame
+            // after leaving a digital mode.
+            if let Some((lo, hi)) = self.pre_digi_view.take() {
+                self.view.view_lo_hz = lo;
+                self.view.view_hi_hz = hi;
+            }
+            let (cw_spots, cw_alpha) = self.cw_overlay(now);
+            let frame = self.frame.take();
+            let wf_tuning = self.wf_tick(frame.is_some());
+            spectrum_view::show(
+                ui,
+                &mut self.view,
+                &mut self.state,
+                frame.as_ref(),
+                &mut self.peaks,
+                &mut self.spec_smooth,
+                &mut self.trace_cache,
+                &cw_spots,
+                &cw_alpha,
+                &net_spots,
+                &net_alpha,
+                &mut clicked_spot,
+                self.input.cfg.wheel,
+                wf_tuning,
+                &mut cmds,
+            );
+            self.frame = frame;
+        }
+        // A spot clicked on the panadapter: pre-fill a log entry (tuning + mode
+        // were already issued inside the widget).
+        if let Some(spot) = clicked_spot {
+            self.prefill_from_spot(&spot);
+        }
+
+        self.memories_window(&ctx, &mut cmds);
+        self.voice_window(&ctx, &mut cmds);
+        self.settings_window(&ctx, &mut cmds);
+        self.digi_settings_window(&ctx, &mut cmds);
+        self.logbook_window(&ctx);
+        self.spots_window(&ctx, &mut cmds);
+        self.awards_window(&ctx);
+        self.help.ui(&ctx);
+        // Last, so it lands on top of everything else that opened this frame.
+        self.oob_tx_window(&ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let grid = self.my_grid();
+            let traffic = self.digi_traffic(ctx.input(|i| i.time));
+            // Only while the window is open: walking the whole logbook is not
+            // free, and the closed window has nothing to paint it on.
+            let awards = if self.solar.open { self.award_heat() } else { Default::default() };
+            self.solar.viewport(&ctx, &grid, traffic, awards, std::sync::Arc::clone(&self.sat_cfg));
+            self.view.solar3d = self.solar.persisted();
+        }
+
+        // Debounced spectrum-config updates with pan hysteresis.
+        let now = ctx.input(|i| i.time);
+        if !self.cfg_still_good() {
+            let ideal = self.desired_spectrum_cfg();
+            if self.desired_cfg != Some(ideal) {
+                self.desired_cfg = Some(ideal);
+                self.desired_at = now;
+            }
+            if self.sent_cfg.is_none() || now - self.desired_at >= CFG_DEBOUNCE_S {
+                self.sent_cfg = Some(ideal);
+                cmds.push(Command::SetSpectrumCfg(ideal));
+            }
+        }
+
+        // Flush queued lookups / uploads accumulated during window rendering.
+        for call in std::mem::take(&mut self.pending_lookups) {
+            cmds.push(Command::LookupCallsign { call });
+        }
+        for (qso_id, adif, targets) in std::mem::take(&mut self.pending_uploads) {
+            cmds.push(Command::UploadQso { qso_id, adif, targets });
+        }
+
+        for c in cmds {
+            self.ctrl.send(c);
+        }
+
+        // Data-driven repaint: redraw immediately when data is already waiting
+        // (arrived while this frame was being built — checked after the drain,
+        // so this can't busy-loop), otherwise wake at the next expected
+        // spectrum frame, or idle-poll when nothing is streaming. User input
+        // wakes eframe by itself, so interactivity is unaffected.
+        if self.ctrl.wants_repaint_soon() {
+            ctx.request_repaint();
+        } else {
+            let fps = self
+                .sent_cfg
+                .or(self.desired_cfg)
+                .map(|c| c.fps)
+                .unwrap_or(SpectrumConfig::default().fps)
+                .max(1) as u64;
+            let streaming = self.frame.is_some()
+                && self.error.is_none()
+                && now - self.last_spectrum_at < STREAM_STALE_S;
+            // Floor division keeps the poll period <= the stream period, so no
+            // frame is ever skipped (the spectrum buffer is latest-wins).
+            let wait_ms = if streaming { 1000 / fps } else { IDLE_POLL_MS };
+            ctx.request_repaint_after(Duration::from_millis(wait_ms));
+        }
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, "view", &self.view);
+        // On wasm this is the logbook's persistence; on native it's a harmless
+        // backup (the authoritative copy is written to the config dir on change).
+        eframe::set_value(storage, "qso_log", &self.qso_log);
+        // Same split: authoritative on native is config.toml (written on change).
+        eframe::set_value(storage, "ui_settings", &self.ui_settings);
+        // Control-input bindings: authoritative on native is input.json.
+        eframe::set_value(storage, "input", &self.input.cfg);
+    }
+}
+
+impl SdroxideApp {
+    /// The awards dashboard: DXCC / WAS / WAZ / grid counts (worked vs
+    /// confirmed) with a band filter, plus the WAS state grid and WAZ zone grid.
+    /// The out-of-band transmit warning.
+    ///
+    /// Modal and dismissed by hand, because the band-edge lockout is the last
+    /// thing between a mistyped frequency and an out-of-band transmission, and
+    /// an operator who does not know it is off is exactly the operator who will
+    /// find out the expensive way. Dismissing it is a one-shot acknowledgement,
+    /// not a preference: it comes back next launch, because the flag has to be
+    /// passed again next launch.
+    ///
+    /// Driven off the *engine's* state rather than off this process's arguments
+    /// so a remote client is warned too — the licence at risk belongs to
+    /// whoever is at the controls, who need not be whoever started the engine.
+    fn oob_tx_window(&mut self, ctx: &egui::Context) {
+        if !self.state.oob_tx || self.oob_tx_ack {
+            return;
+        }
+        let mut dismissed = false;
+        let resp = egui::Window::new("⚠  TRANSMIT LOCKOUT DISABLED")
+            .frame(crate::chrome::window_frame())
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(430.0);
+                ui.label(
+                    RichText::new(
+                        "This engine was started with --oob-tx. The amateur-band lockout is \
+                         off: it will key the transmitter on any frequency the hardware \
+                         supports.",
+                    )
+                    .color(crate::theme::TEXT_STRONG)
+                    .size(13.0),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "Transmitting outside your licence is an offence in every country that \
+                         issues one. Only continue if you are authorised to use the frequencies \
+                         you are about to key on — a MARS/CAP or commercial licence, an \
+                         experimental permit, or a dummy load.",
+                    )
+                    .color(crate::theme::TEXT),
+                );
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if crate::chrome::chip_accent(
+                        ui,
+                        false,
+                        RichText::new("  I UNDERSTAND  ").strong(),
+                        crate::theme::PINK,
+                        crate::theme::TEXT_STRONG,
+                    )
+                    .clicked()
+                    {
+                        dismissed = true;
+                    }
+                    ui.label(
+                        RichText::new("Restart without --oob-tx to put the lockout back.")
+                            .color(crate::theme::LINE_LIT)
+                            .size(10.5),
+                    );
+                });
+            });
+        if let Some(r) = &resp {
+            crate::chrome::paint_window_border(ctx, &r.response);
+        }
+        if dismissed {
+            self.oob_tx_ack = true;
+        }
+    }
+
+    /// Dispatch keyboard and mouse-button bindings for this frame.
+    ///
+    /// The bindings themselves live in `input.json` (see
+    /// [`crate::input::InputRuntime`]); the shipped defaults reproduce the
+    /// shortcuts that used to be hardcoded here — ←/→ ±100 Hz (Shift: ±10),
+    /// ↑/↓ ±1 kHz, PgUp/PgDn ±10 kHz, M mute, N noise blanker, F fit span.
+    fn control_inputs(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
+        // Destructured rather than borrowed field-by-field: the runtime needs
+        // `state` and the window flags mutably at the same time, and they are
+        // disjoint parts of `self`.
+        let SdroxideApp {
+            input,
+            state,
+            view,
+            help,
+            show_settings,
+            show_logbook,
+            show_spots,
+            show_memories,
+            show_voice,
+            ..
+        } = self;
+        let mut sink = crate::input::UiSink {
+            view,
+            help: &mut help.open,
+            settings: show_settings,
+            logbook: show_logbook,
+            spots: show_spots,
+            memories: show_memories,
+            voice: show_voice,
+        };
+        input.poll_pointer_and_keys(ctx, state, &mut sink, cmds);
+        #[cfg(not(target_arch = "wasm32"))]
+        input.poll_midi(ctx, state, &mut sink, cmds);
+    }
+
+    /// De-assert every held control. Closing the window while a footswitch or
+    /// a bound key is down must not leave the transmitter keyed.
+    fn release_held_controls(&mut self, cmds: &mut Vec<Command>) {
+        let SdroxideApp {
+            input,
+            state,
+            view,
+            help,
+            show_settings,
+            show_logbook,
+            show_spots,
+            show_memories,
+            show_voice,
+            ..
+        } = self;
+        let mut sink = crate::input::UiSink {
+            view,
+            help: &mut help.open,
+            settings: show_settings,
+            logbook: show_logbook,
+            spots: show_spots,
+            memories: show_memories,
+            voice: show_voice,
+        };
+        input.release_all(state, &mut sink, cmds);
+    }
+}

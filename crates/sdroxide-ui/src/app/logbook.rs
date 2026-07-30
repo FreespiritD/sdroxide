@@ -1,0 +1,743 @@
+//! The logbook: the QSO list, the entry form, and the caches over the log.
+//!
+//! [`LogEditForm`] holds a new or edited entry as text so partial input never
+//! fights the operator; it is parsed into a [`QsoRecord`] on save. The awards
+//! and worked-entity tallies are cached by log length, because the decode list
+//! asks them what would be new on every row of every slot.
+
+use eframe::egui::{self, Color32, RichText};
+use sdroxide_types::{LookupProvider, QsoRecord};
+
+use crate::theme::ThemedScroll;
+use crate::time::now_unix;
+
+use crate::app::SdroxideApp;
+use crate::app::net::configured_upload_targets;
+use crate::app::persist::persist_qso_log;
+use crate::app::util::{date_str, parse_utc, time_str};
+
+/// Editable text fields for a manual logbook entry (new or edit). Kept as
+/// strings so partial input doesn't fight the user; parsed on save. On edit,
+/// `base` holds the original record so fields not shown in the form (QSL flags,
+/// resolved DXCC/zones, …) survive a save.
+#[derive(Default)]
+pub(in crate::app) struct LogEditForm {
+    /// 0 = new entry; otherwise the id of the record being edited.
+    pub(in crate::app) id: u64,
+    /// Timestamp fallback if the date/time fields don't parse.
+    pub(in crate::app) seed_utc: i64,
+    /// Original record (edit) or default (new); preserves untouched fields.
+    pub(in crate::app) base: QsoRecord,
+    pub(in crate::app) call: String,
+    pub(in crate::app) grid: String,
+    pub(in crate::app) freq_mhz: String,
+    pub(in crate::app) mode: String,
+    pub(in crate::app) rst_sent: String,
+    pub(in crate::app) rst_rcvd: String,
+    pub(in crate::app) date: String,
+    pub(in crate::app) time: String,
+    pub(in crate::app) name: String,
+    pub(in crate::app) qth: String,
+    pub(in crate::app) state: String,
+    pub(in crate::app) country: String,
+    pub(in crate::app) tx_pwr: String,
+    pub(in crate::app) contest_id: String,
+    pub(in crate::app) srx: String,
+    pub(in crate::app) stx: String,
+    pub(in crate::app) comment: String,
+}
+
+impl LogEditForm {
+    /// A blank new entry seeded with the current time, band, and mode.
+    pub(in crate::app) fn new_entry(now: i64, freq_hz: f64, mode: &str) -> LogEditForm {
+        let (y, mo, d, h, mi, _) = sdroxide_types::utc_ymd_hms(now);
+        LogEditForm {
+            id: 0,
+            seed_utc: now,
+            freq_mhz: if freq_hz > 0.0 { format!("{:.4}", freq_hz / 1e6) } else { String::new() },
+            mode: mode.to_string(),
+            date: format!("{y:04}-{mo:02}-{d:02}"),
+            time: format!("{h:02}:{mi:02}"),
+            ..Default::default()
+        }
+    }
+
+    pub(in crate::app) fn from_record(r: &QsoRecord) -> LogEditForm {
+        let (y, mo, d, h, mi, _) = sdroxide_types::utc_ymd_hms(r.start_utc);
+        LogEditForm {
+            id: r.id,
+            seed_utc: r.start_utc,
+            base: r.clone(),
+            call: r.call.clone(),
+            grid: r.grid.clone().unwrap_or_default(),
+            freq_mhz: if r.freq_hz > 0.0 {
+                format!("{:.4}", r.freq_hz / 1e6)
+            } else {
+                String::new()
+            },
+            mode: r.mode.clone(),
+            rst_sent: r.rst_sent.map(|v| v.to_string()).unwrap_or_default(),
+            rst_rcvd: r.rst_rcvd.map(|v| v.to_string()).unwrap_or_default(),
+            date: format!("{y:04}-{mo:02}-{d:02}"),
+            time: format!("{h:02}:{mi:02}"),
+            name: r.name.clone(),
+            qth: r.qth.clone(),
+            state: r.state.clone(),
+            country: r.country.clone(),
+            tx_pwr: r.tx_pwr.map(|v| v.to_string()).unwrap_or_default(),
+            contest_id: r.contest_id.clone(),
+            srx: r.srx.map(|v| v.to_string()).unwrap_or_default(),
+            stx: r.stx.map(|v| v.to_string()).unwrap_or_default(),
+            comment: r.comment.clone(),
+        }
+    }
+
+    /// Parse into a record, or `None` if the callsign is empty. Starts from
+    /// `base` so unshown fields are preserved across an edit.
+    pub(in crate::app) fn to_record(&self, my_call: &str, my_grid: &str) -> Option<QsoRecord> {
+        let call = self.call.trim().to_uppercase();
+        if call.is_empty() {
+            return None;
+        }
+        let freq_hz = self.freq_mhz.trim().parse::<f64>().ok().map(|m| m * 1e6).unwrap_or(0.0);
+        let band = if freq_hz > 0.0 {
+            sdroxide_types::adif_band(freq_hz).to_string()
+        } else {
+            String::new()
+        };
+        let start = parse_utc(&self.date, &self.time, self.seed_utc);
+        let mode = {
+            let m = self.mode.trim().to_uppercase();
+            if m.is_empty() { "SSB".into() } else { m }
+        };
+        let mut rec = self.base.clone();
+        rec.id = self.id;
+        rec.call = call;
+        rec.grid = {
+            let g = self.grid.trim();
+            (!g.is_empty()).then(|| g.to_uppercase())
+        };
+        rec.rst_sent = self.rst_sent.trim().parse().ok();
+        rec.rst_rcvd = self.rst_rcvd.trim().parse().ok();
+        rec.freq_hz = freq_hz;
+        rec.mode = mode;
+        rec.band = band;
+        rec.start_utc = start;
+        rec.end_utc = if rec.end_utc > start { rec.end_utc } else { start };
+        rec.my_call = my_call.to_string();
+        rec.my_grid = my_grid.to_string();
+        rec.name = self.name.trim().to_string();
+        rec.qth = self.qth.trim().to_string();
+        rec.state = self.state.trim().to_uppercase();
+        rec.country = self.country.trim().to_string();
+        rec.tx_pwr = self.tx_pwr.trim().parse().ok();
+        rec.contest_id = self.contest_id.trim().to_uppercase();
+        rec.srx = self.srx.trim().parse().ok();
+        rec.stx = self.stx.trim().parse().ok();
+        rec.comment = self.comment.trim().to_string();
+        Some(rec)
+    }
+}
+
+impl SdroxideApp {
+    /// The operator's grid square. Prefers the engine's copy but falls back to
+    /// the UI's edit buffer: `digi_status` only arrives once the engine sends
+    /// its first `DigiStatus`, and never at all in sessions with no digi engine.
+    pub(in crate::app) fn my_grid(&self) -> String {
+        self.digi_status
+            .as_ref()
+            .map(|s| s.config.my_grid.clone())
+            .filter(|g| !g.is_empty())
+            .unwrap_or_else(|| self.digi_cfg_edit.my_grid.clone())
+    }
+
+    /// Next free logbook id.
+    pub(in crate::app) fn next_log_id(&self) -> u64 {
+        self.qso_log.iter().map(|q| q.id).max().unwrap_or(0) + 1
+    }
+
+    /// Match downloaded QSL confirmations against the log by call + band (and,
+    /// when both have one, mode) within a day, and OR the confirmation flags
+    /// onto the local record.
+    pub(in crate::app) fn apply_confirmations(&mut self, recs: Vec<QsoRecord>) {
+        let mut matched = 0usize;
+        let mut changed = false;
+        for c in &recs {
+            if c.call.trim().is_empty() {
+                continue;
+            }
+            if let Some(local) = self.qso_log.iter_mut().find(|q| {
+                q.call.eq_ignore_ascii_case(&c.call)
+                    && q.band.eq_ignore_ascii_case(&c.band)
+                    && (c.mode.is_empty() || q.mode.eq_ignore_ascii_case(&c.mode))
+                    && (q.start_utc - c.start_utc).abs() < 86_400
+            }) {
+                let before = (local.lotw_rcvd, local.eqsl_rcvd, local.qsl_rcvd);
+                local.lotw_rcvd |= c.lotw_rcvd;
+                local.eqsl_rcvd |= c.eqsl_rcvd;
+                local.qsl_rcvd |= c.qsl_rcvd;
+                if before != (local.lotw_rcvd, local.eqsl_rcvd, local.qsl_rcvd) {
+                    changed = true;
+                    matched += 1;
+                }
+            }
+        }
+        if changed {
+            persist_qso_log(&self.qso_log);
+            self.log_content_changed();
+        }
+        self.push_net_log(format!(
+            "Confirmations: {} downloaded, {matched} newly confirmed",
+            recs.len()
+        ));
+    }
+
+    /// Drop everything derived from the logbook.
+    ///
+    /// The caches below key on the log's *length*, which catches a QSO being
+    /// added or deleted but not one being edited in place — and a confirmation
+    /// arriving, or a lookup filling in a grid, is exactly that. Without this
+    /// the awards tally (and the globe's heat layer, which is the same tally
+    /// placed on the Earth) would keep showing yesterday's answer until the
+    /// next QSO happened to change the length.
+    pub(in crate::app) fn log_content_changed(&mut self) {
+        self.awards_cache = None;
+        self.awards_heat = None;
+        self.worked_entities_cache = None;
+        self.log_index_cache = None;
+    }
+
+    /// The set of worked DXCC entity names (cached; recomputed when the log
+    /// length changes). Used to flag "new entity" spots.
+    pub(in crate::app) fn worked_entities(&mut self) -> &std::collections::HashSet<String> {
+        let len = self.qso_log.len();
+        let stale = self.worked_entities_cache.as_ref().map(|(l, _)| *l != len).unwrap_or(true);
+        if stale {
+            let set: std::collections::HashSet<String> = self
+                .qso_log
+                .iter()
+                .filter_map(|q| sdroxide_types::entity_name(&q.call).map(str::to_string))
+                .collect();
+            self.worked_entities_cache = Some((len, set));
+        }
+        &self.worked_entities_cache.as_ref().unwrap().1
+    }
+
+    /// Membership sets over the log (cached; rebuilt when the log length
+    /// changes), so every decode row can be judged new-or-dupe for free.
+    pub(in crate::app) fn log_index(&mut self) -> &sdroxide_types::LogIndex {
+        let len = self.qso_log.len();
+        if self.log_index_cache.as_ref().map(|(l, _)| *l != len).unwrap_or(true) {
+            self.log_index_cache = Some((len, sdroxide_types::LogIndex::build(&self.qso_log)));
+        }
+        &self.log_index_cache.as_ref().unwrap().1
+    }
+
+    /// The logbook overlay: a session-grouped list of all QSOs (digital and
+    /// manual), with add / edit / delete and ADIF/TXT export.
+    pub(in crate::app) fn logbook_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_logbook;
+        let resp = egui::Window::new("LOGBOOK")
+            .open(&mut open)
+            .frame(crate::chrome::window_frame())
+            .resizable(true)
+            .default_width(720.0)
+            .default_height(560.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let adding = self.log_edit.as_ref().is_some_and(|f| f.id == 0);
+                    if crate::chrome::chip(ui, adding, "+ NEW ENTRY").clicked() {
+                        let freq = self.state.rx_freq_hz();
+                        let mode = self.state.rx[0].mode.label();
+                        self.log_edit = Some(LogEditForm::new_entry(now_unix(), freq, mode));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let have = !self.qso_log.is_empty();
+                        ui.add_enabled_ui(have, |ui| {
+                            if crate::chrome::chip(ui, false, "TXT").clicked() {
+                                let txt = sdroxide_types::qso_log_to_text(&self.qso_log);
+                                crate::download::save("sdroxide-log.txt", txt.as_bytes());
+                            }
+                            if crate::chrome::chip(ui, false, "ADIF").clicked() {
+                                let adif = sdroxide_types::qso_log_to_adif(&self.qso_log);
+                                crate::download::save("sdroxide-log.adi", adif.as_bytes());
+                            }
+                        });
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if crate::chrome::chip(ui, false, "IMPORT")
+                            .on_hover_text("Import QSOs from an ADIF (.adi) file")
+                            .clicked()
+                        {
+                            crate::download::load_text(
+                                "ADIF",
+                                "adi",
+                                self.adif_import_inbox.clone(),
+                            );
+                        }
+                        ui.label(
+                            RichText::new(format!("{} QSO", self.qso_log.len()))
+                                .size(11.0)
+                                .color(Color32::from_gray(150)),
+                        );
+                    });
+                });
+                if self.log_edit.is_some() {
+                    ui.add_space(4.0);
+                    self.log_entry_form(ui);
+                }
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show_themed(ui, |ui| {
+                    self.log_list(ui);
+                });
+            });
+        if let Some(r) = &resp {
+            crate::chrome::paint_window_border(ctx, &r.response);
+        }
+        self.show_logbook = open;
+    }
+
+    /// The new/edit entry form (shown inside the logbook when active).
+    fn log_entry_form(&mut self, ui: &mut egui::Ui) {
+        if self.log_edit.is_none() {
+            return;
+        }
+        let mut action = 0u8; // 1 = save, 2 = cancel
+        let mut set_now = false;
+        // "Worked before" (same call + band) — computed before the mutable
+        // borrow of the form below, against the current log.
+        let (dupe, dupe_band) = {
+            let f = self.log_edit.as_ref().unwrap();
+            let freq_hz = f.freq_mhz.trim().parse::<f64>().ok().map(|m| m * 1e6).unwrap_or(0.0);
+            let band = if freq_hz > 0.0 {
+                sdroxide_types::adif_band(freq_hz).to_string()
+            } else {
+                String::new()
+            };
+            let dupe = !band.is_empty()
+                && !f.call.trim().is_empty()
+                && sdroxide_types::worked_before(&self.qso_log, f.call.trim(), &band, "", f.id);
+            (dupe, band)
+        };
+        let auto_lookup = self.net_cfg_edit.auto_lookup;
+        let has_provider = self.net_cfg_edit.lookup_provider != LookupProvider::None;
+        let mut lookup_call: Option<String> = None;
+        {
+            let f = self.log_edit.as_mut().unwrap();
+            egui::Frame::new()
+                .fill(crate::theme::ROW_BG)
+                .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP))
+                .inner_margin(egui::Margin::same(9))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(if f.id == 0 { "NEW QSO" } else { "EDIT QSO" })
+                                .size(11.0)
+                                .strong()
+                                .color(crate::theme::CYAN),
+                        );
+                        if dupe {
+                            ui.label(
+                                RichText::new(format!("⚠ WORKED BEFORE ({dupe_band})"))
+                                    .size(11.0)
+                                    .strong()
+                                    .color(crate::theme::PINK),
+                            );
+                        }
+                    });
+                    ui.add_space(4.0);
+                    // Horizontal rows (not a Grid) so each field keeps its
+                    // explicit width — a Grid redistributes column widths and
+                    // squashes the narrow-looking ones.
+                    let lbl = |ui: &mut egui::Ui, text: &str| {
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(72.0, 24.0), egui::Sense::hover());
+                        ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        )
+                        .label(text);
+                    };
+                    let field = |ui: &mut egui::Ui, w: f32, s: &mut String| {
+                        ui.add(egui::TextEdit::singleline(s).desired_width(w));
+                    };
+                    ui.horizontal(|ui| {
+                        lbl(ui, "Call");
+                        let cr =
+                            ui.add(egui::TextEdit::singleline(&mut f.call).desired_width(150.0));
+                        if has_provider
+                            && crate::chrome::chip(ui, false, "LOOKUP")
+                                .on_hover_text("Look up name / QTH / grid")
+                                .clicked()
+                            && !f.call.trim().is_empty()
+                        {
+                            lookup_call = Some(f.call.trim().to_string());
+                        }
+                        lbl(ui, "Grid");
+                        field(ui, 110.0, &mut f.grid);
+                        // Auto-lookup when the call field loses focus.
+                        if cr.lost_focus()
+                            && auto_lookup
+                            && has_provider
+                            && !f.call.trim().is_empty()
+                        {
+                            lookup_call = Some(f.call.trim().to_string());
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        lbl(ui, "Freq MHz");
+                        field(ui, 150.0, &mut f.freq_mhz);
+                        lbl(ui, "Mode");
+                        field(ui, 120.0, &mut f.mode);
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        lbl(ui, "RST sent");
+                        field(ui, 150.0, &mut f.rst_sent);
+                        lbl(ui, "RST rcvd");
+                        field(ui, 120.0, &mut f.rst_rcvd);
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        lbl(ui, "Name");
+                        field(ui, 150.0, &mut f.name);
+                        lbl(ui, "QTH");
+                        field(ui, 120.0, &mut f.qth);
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        lbl(ui, "State");
+                        field(ui, 150.0, &mut f.state);
+                        lbl(ui, "Country");
+                        field(ui, 120.0, &mut f.country);
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        lbl(ui, "Date UTC");
+                        field(ui, 150.0, &mut f.date);
+                        lbl(ui, "Time");
+                        field(ui, 90.0, &mut f.time);
+                        if crate::chrome::chip(ui, false, "NOW").clicked() {
+                            set_now = true;
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        lbl(ui, "Pwr W");
+                        field(ui, 60.0, &mut f.tx_pwr);
+                        lbl(ui, "Contest");
+                        field(ui, 96.0, &mut f.contest_id);
+                        lbl(ui, "S# sent");
+                        field(ui, 56.0, &mut f.stx);
+                        lbl(ui, "S# rcvd");
+                        field(ui, 56.0, &mut f.srx);
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        lbl(ui, "Comment");
+                        field(ui, 500.0, &mut f.comment);
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if crate::chrome::chip_accent(
+                            ui,
+                            false,
+                            RichText::new(" SAVE ").strong(),
+                            crate::theme::GREEN,
+                            crate::theme::INK_ON_CYAN,
+                        )
+                        .clicked()
+                        {
+                            action = 1;
+                        }
+                        if crate::chrome::chip(ui, false, "CANCEL").clicked() {
+                            action = 2;
+                        }
+                    });
+                });
+            if set_now {
+                let (y, mo, d, h, mi, _) = sdroxide_types::utc_ymd_hms(now_unix());
+                f.date = format!("{y:04}-{mo:02}-{d:02}");
+                f.time = format!("{h:02}:{mi:02}");
+            }
+        }
+        if let Some(c) = lookup_call {
+            self.pending_lookups.push(c);
+        }
+        match action {
+            1 => {
+                let (mc, mg) =
+                    (self.digi_cfg_edit.my_call.clone(), self.digi_cfg_edit.my_grid.clone());
+                if let Some(f) = self.log_edit.take() {
+                    if let Some(rec) = f.to_record(&mc, &mg) {
+                        if rec.id == 0 {
+                            let mut rec = rec;
+                            rec.id = self.next_log_id();
+                            self.qso_log.push(rec);
+                            // A hand-entered contact is one worked this session
+                            // too; an ADIF import is not, and does not count.
+                            self.session_qsos += 1;
+                        } else if let Some(e) = self.qso_log.iter_mut().find(|q| q.id == rec.id) {
+                            // An edit can change the call, the grid or the QSL
+                            // flags, none of which move the log's length.
+                            *e = rec;
+                            self.log_content_changed();
+                        }
+                        persist_qso_log(&self.qso_log);
+                    } else {
+                        // Empty callsign — keep the form open for correction.
+                        self.log_edit = Some(f);
+                    }
+                }
+            }
+            2 => self.log_edit = None,
+            _ => {}
+        }
+    }
+
+    /// The QSO list, grouped into daily sessions (newest first).
+    fn log_list(&mut self, ui: &mut egui::Ui) {
+        if self.qso_log.is_empty() {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("no QSOs yet — run FT8/FT4 or add a manual entry")
+                    .color(Color32::from_gray(120)),
+            );
+            return;
+        }
+        let mut order: Vec<usize> = (0..self.qso_log.len()).collect();
+        order.sort_by(|&a, &b| self.qso_log[b].start_utc.cmp(&self.qso_log[a].start_utc));
+
+        let mut to_edit: Option<u64> = None;
+        let mut to_delete: Option<u64> = None;
+        let mut to_upload: Option<u64> = None;
+        // Which targets have credentials, so the per-QSO upload button is only
+        // offered when it can do something.
+        let up_targets = configured_upload_targets(&self.net_cfg_edit);
+
+        let mut i = 0;
+        while i < order.len() {
+            let day = date_str(self.qso_log[order[i]].start_utc);
+            let mut j = i;
+            while j < order.len() && date_str(self.qso_log[order[j]].start_utc) == day {
+                j += 1;
+            }
+            let group = &order[i..j];
+            let newest = self.qso_log[group[0]].start_utc;
+            let oldest = self.qso_log[group[group.len() - 1]].start_utc;
+            // Session header.
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&day).size(12.0).strong().color(crate::theme::CYAN));
+                ui.label(
+                    RichText::new(format!(
+                        "{}–{} UTC · {} QSO",
+                        time_str(oldest),
+                        time_str(newest),
+                        group.len()
+                    ))
+                    .size(10.5)
+                    .color(Color32::from_gray(130)),
+                );
+            });
+            ui.add_space(2.0);
+            for &idx in group {
+                let r = &self.qso_log[idx];
+                let inner = egui::Frame::new()
+                    .fill(crate::theme::ROW_BG)
+                    .inner_margin(egui::Margin { left: 10, right: 6, top: 5, bottom: 5 })
+                    .show(ui, |ui| {
+                        ui.set_min_height(22.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            let col = |ui: &mut egui::Ui, w: f32, lbl: egui::Label| {
+                                let (rect, _) = ui
+                                    .allocate_exact_size(egui::vec2(w, 20.0), egui::Sense::hover());
+                                let mut c = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(rect)
+                                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                                );
+                                c.add(lbl);
+                            };
+                            let gray = Color32::from_gray(150);
+                            col(
+                                ui,
+                                40.0,
+                                egui::Label::new(
+                                    RichText::new(time_str(r.start_utc))
+                                        .monospace()
+                                        .size(12.0)
+                                        .color(gray),
+                                ),
+                            );
+                            col(
+                                ui,
+                                92.0,
+                                egui::Label::new(
+                                    RichText::new(&r.call)
+                                        .size(14.0)
+                                        .strong()
+                                        .color(crate::theme::TEXT_STRONG),
+                                )
+                                .truncate(),
+                            );
+                            col(
+                                ui,
+                                42.0,
+                                egui::Label::new(
+                                    RichText::new(&r.band).monospace().size(11.5).color(gray),
+                                ),
+                            );
+                            col(
+                                ui,
+                                48.0,
+                                egui::Label::new(
+                                    RichText::new(&r.mode).monospace().size(11.5).color(gray),
+                                ),
+                            );
+                            let rst = format!(
+                                "{}/{}",
+                                r.rst_sent.map(|v| v.to_string()).unwrap_or_else(|| "–".into()),
+                                r.rst_rcvd.map(|v| v.to_string()).unwrap_or_else(|| "–".into()),
+                            );
+                            col(
+                                ui,
+                                72.0,
+                                egui::Label::new(
+                                    RichText::new(rst).monospace().size(11.5).color(gray),
+                                ),
+                            );
+                            col(
+                                ui,
+                                48.0,
+                                egui::Label::new(
+                                    RichText::new(r.grid.as_deref().unwrap_or(""))
+                                        .monospace()
+                                        .size(11.5)
+                                        .color(crate::theme::CYAN_DIM),
+                                ),
+                            );
+                            // QSL / confirmation status: green ✓ when confirmed,
+                            // dim ↑ when uploaded-but-unconfirmed, else blank.
+                            let (qsl_txt, qsl_col) = if r.is_confirmed() {
+                                ("✓", crate::theme::GREEN)
+                            } else if r.lotw_sent || r.eqsl_sent || r.qrz_sent || r.clublog_sent {
+                                ("↑", Color32::from_gray(140))
+                            } else {
+                                ("", gray)
+                            };
+                            let mut qsl_tip = String::new();
+                            for (on, name) in [
+                                (r.lotw_rcvd, "LoTW ✓"),
+                                (r.eqsl_rcvd, "eQSL ✓"),
+                                (r.qsl_rcvd, "card ✓"),
+                                (r.lotw_sent, "LoTW ↑"),
+                                (r.eqsl_sent, "eQSL ↑"),
+                                (r.qrz_sent, "QRZ ↑"),
+                                (r.clublog_sent, "Club Log ↑"),
+                            ] {
+                                if on {
+                                    if !qsl_tip.is_empty() {
+                                        qsl_tip.push_str(", ");
+                                    }
+                                    qsl_tip.push_str(name);
+                                }
+                            }
+                            {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(16.0, 20.0),
+                                    egui::Sense::hover(),
+                                );
+                                let mut c = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(rect)
+                                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                                );
+                                let resp = c.add(egui::Label::new(
+                                    RichText::new(qsl_txt).size(13.0).strong().color(qsl_col),
+                                ));
+                                if !qsl_tip.is_empty() {
+                                    resp.on_hover_text(qsl_tip);
+                                }
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if crate::chrome::chip_accent(
+                                        ui,
+                                        false,
+                                        RichText::new("DEL").size(11.0),
+                                        crate::theme::PINK,
+                                        Color32::WHITE,
+                                    )
+                                    .on_hover_text("Delete this entry")
+                                    .clicked()
+                                    {
+                                        to_delete = Some(r.id);
+                                    }
+                                    if crate::chrome::chip(
+                                        ui,
+                                        false,
+                                        RichText::new("EDIT").size(11.0),
+                                    )
+                                    .clicked()
+                                    {
+                                        to_edit = Some(r.id);
+                                    }
+                                    if !up_targets.is_empty()
+                                        && crate::chrome::chip(
+                                            ui,
+                                            false,
+                                            RichText::new("UP").size(11.0),
+                                        )
+                                        .on_hover_text("Upload this QSO to configured logs")
+                                        .clicked()
+                                    {
+                                        to_upload = Some(r.id);
+                                    }
+                                    if !r.comment.is_empty() {
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(&r.comment)
+                                                    .size(11.5)
+                                                    .color(Color32::from_gray(120)),
+                                            )
+                                            .truncate(),
+                                        );
+                                    }
+                                },
+                            );
+                        });
+                    });
+                let rr = inner.response.rect;
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(
+                        rr.left_top(),
+                        egui::pos2(rr.left() + 2.0, rr.bottom()),
+                    ),
+                    0.0,
+                    crate::theme::CYAN_DIM,
+                );
+                ui.add_space(2.0);
+            }
+            i = j;
+        }
+
+        if let Some(id) = to_delete {
+            self.qso_log.retain(|q| q.id != id);
+            persist_qso_log(&self.qso_log);
+        } else if let Some(id) = to_edit {
+            if let Some(r) = self.qso_log.iter().find(|q| q.id == id) {
+                self.log_edit = Some(LogEditForm::from_record(r));
+            }
+        } else if let Some(id) = to_upload {
+            if let Some(r) = self.qso_log.iter().find(|q| q.id == id) {
+                let adif = sdroxide_types::qso_log_to_adif(std::slice::from_ref(r));
+                self.pending_uploads.push((id, adif, up_targets));
+            }
+        }
+    }
+}

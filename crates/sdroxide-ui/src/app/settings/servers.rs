@@ -1,0 +1,350 @@
+//! The Servers tab: the three interfaces this app offers to other software.
+//!
+//! Hamlib rigctld and the TCI server are control surfaces third-party clients
+//! connect to; the WSJT-X UDP broadcast is one-way, feeding decodes, status
+//! and logged QSOs to GridTracker, JTAlert, N1MM+ and Log4OM. All three are
+//! bound by the engine, which is also what persists their configuration and
+//! reports back whether the bind succeeded.
+
+use eframe::egui::{self, Color32, ComboBox, RichText};
+
+/// Live status of the built-in TCI server, from `RadioEvent::TciServerStatus`.
+#[derive(Clone, PartialEq)]
+pub(in crate::app) struct TciServerStatus {
+    pub(in crate::app) running: bool,
+    pub(in crate::app) addr: String,
+    pub(in crate::app) clients: usize,
+    pub(in crate::app) error: Option<String>,
+}
+
+pub(in crate::app) fn settings_wsjtx_tab(
+    ui: &mut egui::Ui,
+    cfg: &mut sdroxide_types::WsjtxConfig,
+    seeded: bool,
+    apply: &mut bool,
+) {
+    ui.label(RichText::new("WSJT-X UDP broadcast").size(14.0).strong().color(crate::theme::CYAN));
+    ui.add_space(4.0);
+    if !seeded {
+        ui.label(
+            RichText::new(
+                "The broadcast leaves the machine the radio engine runs on, so it can only be \
+                 configured from the native app.",
+            )
+            .weak(),
+        );
+        return;
+    }
+    ui.label(
+        RichText::new(
+            "Sends decodes, station status and logged QSOs the way WSJT-X does, so GridTracker, \
+             JTAlert, N1MM+ and Log4OM work with sdroxide unchanged. Output only — nothing on \
+             this socket can touch the radio.",
+        )
+        .weak(),
+    );
+    ui.add_space(6.0);
+    ui.checkbox(&mut cfg.enabled, "Enable");
+    ui.add_space(6.0);
+    ui.add_enabled_ui(cfg.enabled, |ui| {
+        egui::Grid::new("wsjtx-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Send to");
+            ui.add(
+                egui::TextEdit::singleline(&mut cfg.host)
+                    .desired_width(160.0)
+                    .hint_text("127.0.0.1"),
+            )
+            .on_hover_text(
+                "127.0.0.1 reaches clients on this machine; a LAN address or a multicast \
+                 group (224.0.0.1) reaches others",
+            );
+            ui.end_row();
+
+            ui.label("Port");
+            ui.add(egui::DragValue::new(&mut cfg.port).range(1..=65535))
+                .on_hover_text("2237 is the port every client defaults to");
+            ui.end_row();
+
+            ui.label("Identify as");
+            ui.add(egui::TextEdit::singleline(&mut cfg.id).desired_width(160.0)).on_hover_text(
+                "The name clients see. Some loggers only accept traffic identifying itself \
+                 as WSJT-X.",
+            );
+            ui.end_row();
+        });
+    });
+
+    ui.add_space(8.0);
+    if crate::chrome::chip_accent(
+        ui,
+        false,
+        RichText::new(" APPLY ").strong(),
+        crate::theme::GREEN,
+        crate::theme::INK_ON_CYAN,
+    )
+    .on_hover_text("Persist and (re)open the broadcast socket")
+    .clicked()
+    {
+        *apply = true;
+    }
+}
+
+pub(in crate::app) fn settings_rigctld_tab(
+    ui: &mut egui::Ui,
+    cfg: &mut sdroxide_types::RigctldConfig,
+    seeded: bool,
+    status: &Option<TciServerStatus>,
+    apply: &mut bool,
+) {
+    use sdroxide_types::RigctldConfig;
+
+    ui.label(RichText::new("Hamlib rigctld server").size(14.0).strong().color(crate::theme::CYAN));
+    ui.add_space(4.0);
+    if !seeded {
+        ui.label(
+            RichText::new(
+                "The rigctld server runs alongside the radio engine, so it can only be \
+                 configured from the native app.",
+            )
+            .weak(),
+        );
+        return;
+    }
+    ui.add_space(2.0);
+    ui.checkbox(&mut cfg.enabled, "Enable");
+    ui.add_space(6.0);
+
+    ui.add_enabled_ui(cfg.enabled, |ui| {
+        egui::Grid::new("rigctld-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Listen on");
+            ComboBox::from_id_salt("rigctld_bind").selected_text(&cfg.bind).show_ui(ui, |ui| {
+                for b in RigctldConfig::BINDS {
+                    let label = if b == "127.0.0.1" {
+                        "127.0.0.1 (this machine)"
+                    } else {
+                        "0.0.0.0 (whole network)"
+                    };
+                    if ui.selectable_label(cfg.bind == b, label).clicked() {
+                        cfg.bind = b.to_string();
+                    }
+                }
+            });
+            ui.end_row();
+
+            ui.label("Port");
+            ui.add(egui::DragValue::new(&mut cfg.port).range(1..=65535))
+                .on_hover_text("4532 is the port every rigctld client assumes");
+            ui.end_row();
+
+            ui.label("Rig name");
+            ui.add(
+                egui::TextEdit::singleline(&mut cfg.rig_name)
+                    .desired_width(160.0)
+                    .hint_text("reported to clients"),
+            );
+            ui.end_row();
+
+            ui.label("Max clients");
+            ui.add(egui::DragValue::new(&mut cfg.max_clients).range(1..=32));
+            ui.end_row();
+        });
+        ui.add_space(4.0);
+        ui.checkbox(&mut cfg.allow_tx, "Allow clients to transmit").on_hover_text(
+            "Off refuses every key request and stops advertising a transmit range, so Hamlib \
+             itself declines to key.",
+        );
+    });
+
+    // Same hazard as TCI: the protocol has no authentication at all.
+    if cfg.enabled && cfg.is_open_to_network() {
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(
+                "⚠ rigctld has no authentication. On 0.0.0.0, anyone who can reach this port can \
+                 tune and key your transmitter.",
+            )
+            .color(Color32::from_rgb(230, 170, 60)),
+        );
+    }
+
+    ui.add_space(8.0);
+    match status {
+        Some(s) if s.running => {
+            let clients = match s.clients {
+                1 => "1 client".to_string(),
+                n => format!("{n} clients"),
+            };
+            ui.label(
+                RichText::new(format!("● Listening on {} — {clients}", s.addr))
+                    .color(Color32::from_rgb(90, 200, 110)),
+            );
+        }
+        Some(s) => match &s.error {
+            Some(e) => {
+                ui.label(
+                    RichText::new(format!("Failed: {e}")).color(Color32::from_rgb(230, 90, 80)),
+                );
+            }
+            None => {
+                ui.label(RichText::new("Not running.").weak());
+            }
+        },
+        None => {
+            ui.label(RichText::new("Status unknown — press APPLY.").weak());
+        }
+    }
+
+    ui.add_space(8.0);
+    if crate::chrome::chip_accent(
+        ui,
+        false,
+        RichText::new(" APPLY ").strong(),
+        crate::theme::GREEN,
+        crate::theme::INK_ON_CYAN,
+    )
+    .on_hover_text("Persist and (re)bind the server")
+    .clicked()
+    {
+        *apply = true;
+    }
+
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new(
+            "Lets any Hamlib-capable program drive this radio: frequency, mode, PTT, split, RIT \
+             and power. In WSJT-X, fldigi or CQRLOG choose the rig \u{201c}Hamlib NET rigctl\u{201d} \
+             (model 2) and point it at this address; in GPredict and N1MM enter the host and port \
+             directly. Unlike the TCI server it carries control only \u{2014} no audio, no IQ.",
+        )
+        .weak(),
+    );
+}
+
+pub(in crate::app) fn settings_tci_server_tab(
+    ui: &mut egui::Ui,
+    cfg: &mut sdroxide_types::TciServerConfig,
+    seeded: bool,
+    status: &Option<TciServerStatus>,
+    apply: &mut bool,
+) {
+    use sdroxide_types::TciServerConfig;
+
+    if !seeded {
+        ui.label(
+            RichText::new(
+                "The TCI server runs alongside the radio engine, so it can only be \
+                           configured from the native app.",
+            )
+            .weak(),
+        );
+        return;
+    }
+
+    ui.label(RichText::new("Built-in TCI server").size(14.0).strong().color(crate::theme::CYAN));
+    ui.add_space(6.0);
+    ui.checkbox(&mut cfg.enabled, "Enable");
+    ui.add_space(6.0);
+
+    ui.add_enabled_ui(cfg.enabled, |ui| {
+        egui::Grid::new("tci-srv-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Listen on");
+            ComboBox::from_id_salt("tci_srv_bind").selected_text(&cfg.bind).show_ui(ui, |ui| {
+                for b in TciServerConfig::BINDS {
+                    let label = if b == "127.0.0.1" {
+                        "127.0.0.1 (this machine)"
+                    } else {
+                        "0.0.0.0 (whole network)"
+                    };
+                    if ui.selectable_label(cfg.bind == b, label).clicked() {
+                        cfg.bind = b.to_string();
+                    }
+                }
+            });
+            ui.end_row();
+
+            ui.label("Port");
+            ui.add(egui::DragValue::new(&mut cfg.port).range(1..=65535));
+            ui.end_row();
+
+            ui.label("Device name");
+            ui.add(
+                egui::TextEdit::singleline(&mut cfg.device_name)
+                    .desired_width(160.0)
+                    .hint_text("reported to clients"),
+            );
+            ui.end_row();
+
+            ui.label("Max clients");
+            ui.add(egui::DragValue::new(&mut cfg.max_clients).range(1..=32));
+            ui.end_row();
+        });
+        ui.add_space(4.0);
+        ui.checkbox(&mut cfg.allow_tx, "Allow clients to transmit").on_hover_text(
+            "Off leaves control and the receive streams working, but every key request \
+             is refused.",
+        );
+    });
+
+    // Security: TCI has no authentication at all, so binding wide open hands
+    // the transmitter to anyone who can reach the port.
+    if cfg.enabled && cfg.is_open_to_network() {
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(
+                "⚠ TCI has no authentication. On 0.0.0.0, anyone who can reach this port can \
+                 tune and key your transmitter.",
+            )
+            .color(Color32::from_rgb(230, 170, 60)),
+        );
+    }
+
+    ui.add_space(8.0);
+    match status {
+        Some(s) if s.running => {
+            let clients = match s.clients {
+                1 => "1 client".to_string(),
+                n => format!("{n} clients"),
+            };
+            ui.label(
+                RichText::new(format!("● Listening on {} — {clients}", s.addr))
+                    .color(Color32::from_rgb(90, 200, 110)),
+            );
+        }
+        Some(s) => match &s.error {
+            Some(e) => {
+                let msg = RichText::new(format!("Failed: {e}"));
+                ui.label(msg.color(Color32::from_rgb(230, 90, 80)));
+            }
+            None => {
+                ui.label(RichText::new("Not running.").weak());
+            }
+        },
+        None => {
+            ui.label(RichText::new("Status unknown — press APPLY.").weak());
+        }
+    }
+
+    ui.add_space(8.0);
+    if crate::chrome::chip_accent(
+        ui,
+        false,
+        RichText::new(" APPLY ").strong(),
+        crate::theme::GREEN,
+        crate::theme::INK_ON_CYAN,
+    )
+    .on_hover_text("Persist and (re)bind the server")
+    .clicked()
+    {
+        *apply = true;
+    }
+
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new(
+            "Lets TCI-capable programs drive this radio: frequency and mode control, wideband IQ, \
+             receive audio, and transmit audio. In WSJT-X choose the SunSDR (TCI) rig type, point \
+             it at this address, and set PTT to TCI.",
+        )
+        .weak(),
+    );
+}

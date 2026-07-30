@@ -1,0 +1,690 @@
+//! The weather-fax panel: the chart being painted, and the gallery of saved
+//! ones.
+//!
+//! Like SSTV, a fax arrives one line at a time over several minutes, so what
+//! the panel shows is a texture being written to rather than a finished image.
+//! The station chip tunes the well-known schedules without leaving the panel.
+
+use std::time::Duration;
+
+use eframe::egui::{self, RichText};
+use sdroxide_types::Command;
+
+use crate::app::SdroxideApp;
+
+impl SdroxideApp {
+    /// The RF Paint (Spectrum Painting) operating panel: a text-paint area and an
+    /// image-paint area side by side, each with a scrolling preview waterfall and
+    /// a transmit button. Transmit rides the ordinary image-transmit command
+    /// (`DigiImageTx`); the `RfPaintController` turns the bitmap into tones.
+    /// FreeDV RADE V1 digital voice.
+    ///
+    /// There is no text or image to show and no tone offset to tune: the whole
+    /// operating surface is "am I locked to the far end, how good is the link,
+    /// and am I talking".
+    /// The weather-fax panel: the chart as it arrives, the controls that decide
+    /// its geometry, and the gallery of ones already saved.
+    ///
+    /// Receive only, so there is no transmit half — the space goes to the
+    /// picture instead, which is the whole point of the mode.
+    pub(in crate::app) fn wefax_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<Command>,
+        panel_h: f32,
+    ) {
+        use crate::theme;
+
+        let st = self.wefax.status;
+        let ctx = ui.ctx().clone();
+        self.wefax_load_disk_once(&ctx);
+        // A chart arrives at two lines a second; there is no need to chase it
+        // any faster than the eye can follow.
+        ctx.request_repaint_after(Duration::from_millis(200));
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("WEFAX").size(12.0).strong().color(theme::CYAN));
+            self.wefax_station_chip(ui, cmds);
+
+            // START / STOP. Starting by hand is the normal way in: a chart runs
+            // for a quarter of an hour and you will almost always have tuned to
+            // it after the start tone went by.
+            let (face, hint) = if st.receiving {
+                (" ■ STOP ", "End the chart now and save what has arrived")
+            } else {
+                (" ● START ", "Start a chart now, without waiting for a start tone")
+            };
+            if crate::chrome::chip_accent(
+                ui,
+                st.receiving,
+                RichText::new(face).strong(),
+                if st.receiving { theme::PINK } else { theme::GREEN },
+                theme::INK_ON_CYAN,
+            )
+            .on_hover_text(hint)
+            .clicked()
+            {
+                cmds.push(if st.receiving { Command::WefaxStop } else { Command::WefaxStart });
+            }
+
+            // What the receiver is making of the signal.
+            let (text, colour) = if st.phasing {
+                ("phasing…".to_string(), theme::YELLOW)
+            } else if st.receiving {
+                (format!("{} lines", st.lines), theme::GREEN)
+            } else if self.wefax.has_live() {
+                (format!("{} lines held", self.wefax.live_size().1), theme::CYAN_DIM)
+            } else {
+                ("listening".to_string(), theme::LINE_LIT)
+            };
+            ui.label(RichText::new(text).color(colour).size(11.0));
+
+            // The tuning readout. A correctly tuned receiver puts the
+            // subcarrier's excursions around 1900 Hz; several hundred hertz off
+            // and the picture is all black or all white.
+            let off = st.subcarrier_hz - 1900.0;
+            ui.label(
+                RichText::new(format!("{:+.0} Hz", off))
+                    .color(if off.abs() < 120.0 { theme::GREEN } else { theme::YELLOW })
+                    .size(11.0)
+                    .monospace(),
+            )
+            .on_hover_text(
+                "Subcarrier offset from 1900 Hz. Tune for roughly zero: the fax carrier is \
+                 1500 Hz black to 2300 Hz white, and a receiver a few hundred hertz off clips \
+                 the picture to solid black or solid white.",
+            );
+            self.digi_squelch_slider(ui, cmds);
+        });
+
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let seeded = self.digi_cfg_seeded;
+            let mut changed = false;
+
+            ui.label(RichText::new("LPM").color(theme::CYAN_DIM).size(9.5).strong());
+            for l in sdroxide_types::WefaxLpm::ALL {
+                let on = self.digi_cfg_edit.wefax_lpm == l;
+                if crate::chrome::chip(ui, on, l.label()).clicked() && !on {
+                    self.digi_cfg_edit.wefax_lpm = l;
+                    changed = true;
+                }
+            }
+            ui.add_space(8.0);
+            ui.label(RichText::new("IOC").color(theme::CYAN_DIM).size(9.5).strong());
+            for i in sdroxide_types::WefaxIoc::ALL {
+                let on = self.digi_cfg_edit.wefax_ioc == i;
+                if crate::chrome::chip(ui, on, i.value().to_string())
+                    .on_hover_text(format!("{} pixels per line", i.width()))
+                    .clicked()
+                    && !on
+                {
+                    self.digi_cfg_edit.wefax_ioc = i;
+                    changed = true;
+                }
+            }
+
+            ui.add_space(8.0);
+            let auto_start = self.digi_cfg_edit.wefax_auto_start;
+            if crate::chrome::chip(ui, auto_start, "AUTO START")
+                .on_hover_text(
+                    "Begin a chart when the 300 Hz (IOC 576) or 675 Hz start tone is heard",
+                )
+                .clicked()
+            {
+                self.digi_cfg_edit.wefax_auto_start = !auto_start;
+                changed = true;
+            }
+            let auto_stop = self.digi_cfg_edit.wefax_auto_stop;
+            if crate::chrome::chip(ui, auto_stop, "AUTO STOP")
+                .on_hover_text(
+                    "End it on the 450 Hz stop tone. Turn off to keep recording through a \
+                     station that sends several charts back to back.",
+                )
+                .clicked()
+            {
+                self.digi_cfg_edit.wefax_auto_stop = !auto_stop;
+                changed = true;
+            }
+
+            ui.add_space(8.0);
+            // Phase nudge: for a chart whose phasing pulse was missed, which is
+            // every chart you tune into halfway through.
+            ui.label(RichText::new("PHASE").color(theme::CYAN_DIM).size(9.5).strong());
+            for (face, px) in [("⏪", -100), ("◀", -10), ("▶", 10), ("⏩", 100)] {
+                if crate::chrome::chip(ui, false, face)
+                    .on_hover_text(format!("Shift the picture {px} pixels"))
+                    .clicked()
+                {
+                    cmds.push(Command::WefaxNudge(px));
+                }
+            }
+
+            ui.add_space(8.0);
+            ui.label(RichText::new("SLANT").color(theme::CYAN_DIM).size(9.5).strong());
+            let mut ppm = self.digi_cfg_edit.wefax_slant_ppm;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut ppm)
+                        .speed(0.5)
+                        .range(-500.0..=500.0)
+                        .suffix(" ppm")
+                        .fixed_decimals(1),
+                )
+                .on_hover_text(
+                    "Sample-clock trim. If the chart leans to the left, increase this; to the \
+                     right, decrease it. A sound card a hundred ppm off walks a quarter-hour \
+                     chart most of a line sideways.",
+                )
+                .changed()
+            {
+                self.digi_cfg_edit.wefax_slant_ppm = ppm;
+                changed = true;
+            }
+
+            // How the chart in progress is displayed. Nothing here touches the
+            // decoder — a chart takes a quarter of an hour, and waiting for it
+            // to finish before being allowed to look at the top of it is the
+            // single most irritating thing about receiving fax.
+            ui.add_space(8.0);
+            ui.label(RichText::new("VIEW").color(theme::CYAN_DIM).size(9.5).strong());
+            use crate::wefax::Zoom;
+            let zoom = self.wefax.zoom;
+            for (face, z, hint) in [
+                ("FIT", Zoom::FitWidth, "Scale the chart to the panel width"),
+                ("WHOLE", Zoom::Whole, "Shrink the chart until all of it is in view at once"),
+                ("50%", Zoom::Fixed(0.5), "Half size"),
+                ("1:1", Zoom::Fixed(1.0), "One screen pixel per fax pixel — scroll for detail"),
+                ("2×", Zoom::Fixed(2.0), "Twice size; scroll to move around the chart"),
+            ] {
+                if crate::chrome::chip(ui, zoom == z, face).on_hover_text(hint).clicked() {
+                    self.wefax.zoom = z;
+                }
+            }
+
+            // Vertical stretch. A chart comes out the wrong shape when the line
+            // rate is not what the station is actually sending — 90 taken for
+            // 120 makes it a third too tall — and this pulls it back while the
+            // operator works out which rate that is.
+            ui.label(RichText::new("HEIGHT").color(theme::CYAN_DIM).size(9.5).strong());
+            let mut aspect = self.wefax.aspect;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut aspect)
+                        .speed(0.01)
+                        .range(crate::wefax::MIN_ASPECT..=crate::wefax::MAX_ASPECT)
+                        .prefix("×")
+                        .fixed_decimals(2),
+                )
+                .on_hover_text(
+                    "Stretch the picture vertically. A chart that came out squashed or stretched \
+                     is usually being decoded at the wrong line rate — this makes it readable, \
+                     and the LPM chips fix it properly. Double-click to type a value.",
+                )
+                .changed()
+            {
+                self.wefax.aspect = aspect;
+            }
+            if (aspect - 1.0).abs() > 0.001
+                && crate::chrome::chip(ui, false, "RESET")
+                    .on_hover_text("Back to the picture's own proportions")
+                    .clicked()
+            {
+                self.wefax.aspect = 1.0;
+            }
+
+            let follow = self.wefax.follow;
+            if crate::chrome::chip(ui, follow, "FOLLOW")
+                .on_hover_text(
+                    "Keep the newest lines in view. Scrolling up turns this off so you can read \
+                     what has already arrived; scrolling back to the bottom turns it on again.",
+                )
+                .clicked()
+            {
+                self.wefax.follow = !follow;
+            }
+
+            if changed && seeded {
+                cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
+            }
+        });
+
+        ui.add_space(6.0);
+
+        // The picture. Everything left of the gallery strip, scrollable, with
+        // the newest rows kept in view while a chart is being received.
+        //
+        // Height from what is actually left rather than a fixed subtraction, so
+        // the control rows wrapping in a narrow window shortens the picture
+        // instead of pushing it out of the panel.
+        let avail_h = ui.available_height().max(80.0).min(panel_h);
+        let handle_w = 7.0;
+        ui.horizontal_top(|ui| {
+            // The gallery takes a user-draggable fraction of the width, the
+            // chart the rest; each keeps enough to stay useful. The strip is
+            // worth widening to read the labels that tell a morning's
+            // identical-looking surface analyses apart, and worth shrinking
+            // back out of the way while a chart is being read at 1:1.
+            let total_w = ui.available_width();
+            let gap = ui.spacing().item_spacing.x;
+            let gallery_w = (total_w * self.view.wefax_gallery_fraction)
+                .clamp(120.0, (total_w - handle_w - 2.0 * gap - 200.0).max(120.0));
+            let img_w = (total_w - gallery_w - handle_w - 2.0 * gap).max(120.0);
+            // Both columns are explicitly top-down: `allocate_ui` inherits the
+            // surrounding layout, which is the horizontal one that puts the two
+            // columns side by side, and a gallery laid out left-to-right walks
+            // its thumbnails off the edge of the window.
+            ui.allocate_ui_with_layout(
+                egui::vec2(img_w, avail_h),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    let receiving = st.receiving;
+                    let (w, h) = self.wefax.live_size();
+                    // Cloned rather than borrowed: the follow flag is updated from
+                    // the scroll position afterwards, which needs the state back.
+                    let tex = self.wefax.live_texture(&ctx).cloned();
+                    match tex {
+                        Some(tex) => {
+                            // The scroll area's own width, less the bar it will
+                            // put down the side, is what the picture has to fit
+                            // into; using the column width would leave a chart
+                            // fitted "to the width" a scrollbar too wide.
+                            let bar = ui.spacing().scroll.bar_width + 4.0;
+                            let view = (img_w - bar, avail_h - bar);
+                            let size = crate::wefax::live_size(
+                                self.wefax.zoom,
+                                self.wefax.aspect,
+                                view,
+                                (w, h),
+                            );
+                            let out = egui::ScrollArea::both()
+                                .id_salt("wefax-live")
+                                .auto_shrink([false, false])
+                                // Follow the newest rows only while the operator is
+                                // at the bottom. Sticking regardless would snap the
+                                // view back every time a line arrived, which is
+                                // exactly what makes a chart unreadable until it has
+                                // finished.
+                                .stick_to_bottom(receiving && self.wefax.follow)
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::Image::new(&tex)
+                                            .fit_to_exact_size(egui::vec2(size.0, size.1))
+                                            // The size above already carries the
+                                            // aspect the operator asked for;
+                                            // preserving the texture's own would
+                                            // undo the stretch control.
+                                            .maintain_aspect_ratio(false),
+                                    );
+                                });
+                            // Where they left the view decides whether we keep
+                            // following: at the bottom means "show me the new
+                            // lines", anywhere else means "I am reading".
+                            let slack = (out.content_size.y - out.inner_rect.height()).max(0.0);
+                            self.wefax.follow = out.state.offset.y >= slack - 8.0;
+                        }
+                        None => {
+                            ui.centered_and_justified(|ui| {
+                                ui.label(
+                                    RichText::new(
+                                        "Tune a fax schedule in USB and wait for a start tone, or \
+                                     press START to begin mid-chart.",
+                                    )
+                                    .color(theme::LINE_LIT)
+                                    .size(11.5),
+                                );
+                            });
+                        }
+                    }
+                },
+            );
+
+            // Draggable vertical divider between the chart and the gallery.
+            let hresp = crate::chrome::split_handle(ui, egui::vec2(handle_w, avail_h), None);
+            if hresp.dragged() {
+                // Dragging right shrinks the gallery (grows the chart).
+                let d = hresp.drag_delta().x / total_w.max(1.0);
+                self.view.wefax_gallery_fraction =
+                    (self.view.wefax_gallery_fraction - d).clamp(0.1, 0.5);
+            }
+
+            ui.allocate_ui_with_layout(
+                egui::vec2(gallery_w, avail_h),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_max_width(gallery_w);
+                    self.wefax_gallery(ui, gallery_w);
+                },
+            );
+        });
+
+        self.wefax_viewer(&ctx);
+    }
+
+    /// The gallery of saved charts: a thumbnail per chart, labelled with when it
+    /// was received and which station it came from, and clickable to open it
+    /// full size.
+    ///
+    /// The labels are the point. A quarter of a station's daily output is
+    /// surface analyses that look identical at thumbnail size, and picking out
+    /// "yesterday's 06Z from Pinneberg" without a date on it means opening them
+    /// one at a time.
+    fn wefax_gallery(&mut self, ui: &mut egui::Ui, width: f32) {
+        use crate::theme;
+
+        let dir = self.wefax.dir.clone();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("SAVED").color(theme::CYAN_DIM).size(9.5).strong());
+            let n = self.wefax.gallery.len() + self.wefax.disk_extra;
+            if n > 0 {
+                ui.label(RichText::new(format!("{n}")).color(theme::LINE_LIT).size(9.5));
+            }
+            if !dir.is_empty()
+                && crate::chrome::chip(ui, false, RichText::new("PATH").size(9.5))
+                    .on_hover_text(format!("Charts are saved in\n{dir}\n\nClick to copy the path"))
+                    .clicked()
+            {
+                ui.ctx().copy_text(dir.clone());
+            }
+        });
+
+        if self.wefax.gallery.is_empty() {
+            ui.label(
+                RichText::new(if dir.is_empty() {
+                    "Finished charts collect here.".to_string()
+                } else {
+                    format!("Finished charts are saved in {dir} and collect here.")
+                })
+                .color(theme::LINE_LIT)
+                .size(10.0),
+            );
+            return;
+        }
+
+        let thumb_w = (width - 20.0).max(60.0);
+        // A chart is about three times wider than it is tall, so a thumbnail
+        // that keeps its shape is roughly a third of its width; charts cut short
+        // are shorter still and simply take less room.
+        let thumb_h = thumb_w * 0.36;
+        let mut open = None;
+        egui::ScrollArea::vertical().id_salt("wefax-gallery").auto_shrink([false, false]).show(
+            ui,
+            |ui| {
+                for (i, c) in self.wefax.gallery.iter().enumerate() {
+                    let selected = self.wefax.viewing == Some(i);
+                    // The whole card — picture and label together — is the
+                    // target, so a click near the date is not a miss.
+                    let card = ui.scope_builder(
+                        egui::UiBuilder::new().sense(egui::Sense::click()),
+                        |ui| {
+                            ui.set_width(thumb_w);
+                            ui.add(
+                                egui::Image::new(&c.texture)
+                                    .fit_to_exact_size(egui::vec2(thumb_w, thumb_h))
+                                    .maintain_aspect_ratio(true),
+                            );
+                            match c.meta {
+                                Some(m) => {
+                                    ui.label(
+                                        RichText::new(m.when_label())
+                                            .color(if selected { theme::CYAN } else { theme::TEXT })
+                                            .size(10.0)
+                                            .monospace(),
+                                    );
+                                    // A chart saved before the name carried a
+                                    // frequency has nothing to say about where
+                                    // it came from; its size is at least true.
+                                    ui.label(
+                                        RichText::new(m.where_label().unwrap_or_else(|| {
+                                            format!("{} × {}", c.size.0, c.size.1)
+                                        }))
+                                        .color(theme::CYAN_DIM)
+                                        .size(9.5),
+                                    );
+                                }
+                                // Something in the directory that this program
+                                // did not name: show what there is rather than
+                                // inventing a date for it.
+                                None => {
+                                    ui.label(RichText::new(&c.name).color(theme::TEXT).size(9.5));
+                                }
+                            }
+                        },
+                    );
+                    let resp = card.response;
+                    if selected || resp.hovered() {
+                        ui.painter().rect_stroke(
+                            resp.rect.expand(2.0),
+                            2.0,
+                            egui::Stroke::new(
+                                1.0,
+                                if selected { theme::CYAN } else { theme::LINE_LIT },
+                            ),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    if resp
+                        .on_hover_text(format!(
+                            "{}\n{} × {} pixels\n{}",
+                            c.meta.map_or_else(|| c.name.clone(), |m| m.when_full()),
+                            c.size.0,
+                            c.size.1,
+                            c.name
+                        ))
+                        .clicked()
+                    {
+                        open = Some(i);
+                    }
+                    ui.add_space(6.0);
+                }
+                // Charts beyond the ones held as textures are still on disk;
+                // saying so stops the gallery looking like it lost them.
+                if self.wefax.disk_extra > 0 {
+                    ui.label(
+                        RichText::new(format!("+{} older on disk", self.wefax.disk_extra))
+                            .color(theme::LINE_LIT)
+                            .size(9.5),
+                    );
+                }
+            },
+        );
+        if open.is_some() {
+            self.wefax.viewing = open;
+        }
+    }
+
+    /// The radiofax schedules, as a chip that opens a station picker.
+    ///
+    /// These transmitters are not on any band plan and their frequencies are
+    /// not the kind anyone remembers, so without this the mode starts with a
+    /// trip to a web page. Picking one tunes the **dial**, which is 1.9 kHz
+    /// below the published carrier — the subtraction that otherwise produces a
+    /// blank page and no clue why.
+    fn wefax_station_chip(&self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        use sdroxide_types::{WEFAX_STATIONS, WefaxStation};
+        let dial = self.state.active_freq_hz();
+        // The station we are on, if any, so the chip reads as a position.
+        let here = WefaxStation::at_dial(dial);
+        // No emoji in the face: the default fonts have no radio-mast glyph and
+        // it comes out as an empty box.
+        let face = match &here {
+            Some((s, f)) => {
+                format!("{} · {:.1}", s.name.split_whitespace().next().unwrap_or(""), f)
+            }
+            None => "STATIONS".to_string(),
+        };
+        let btn = crate::chrome::chip(ui, here.is_some(), RichText::new(face).size(11.0))
+            .on_hover_text("Broadcast radiofax schedules — picking one tunes the dial");
+
+        let mut pick = None;
+        let resp = egui::Popup::from_toggle_button_response(&btn)
+            .frame(crate::chrome::window_frame())
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+            .show(|ui| {
+                ui.set_max_width(420.0);
+                for s in WEFAX_STATIONS {
+                    ui.label(
+                        RichText::new(s.name).color(crate::theme::CYAN_DIM).size(10.0).strong(),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        for &f in s.carriers_khz {
+                            let d = WefaxStation::dial_hz(f);
+                            let on = (d - dial).abs() < WefaxStation::NEAR_HZ;
+                            if crate::chrome::chip(ui, on, format!("{f:.1}"))
+                                .on_hover_text(format!(
+                                    "Published carrier {f:.1} kHz → dial {:.1} kHz USB",
+                                    d / 1000.0
+                                ))
+                                .clicked()
+                            {
+                                pick = Some(d);
+                            }
+                        }
+                    });
+                    ui.add_space(2.0);
+                }
+                ui.label(
+                    RichText::new(
+                        "Frequencies are the published carrier; the dial goes 1.9 kHz below it, \
+                         which is done for you. Schedules change and stations close — treat this \
+                         as where to start looking, not a timetable.",
+                    )
+                    .color(crate::theme::LINE_LIT)
+                    .size(10.0),
+                );
+            });
+        if let Some(r) = &resp {
+            crate::chrome::paint_popup_cut_border(ui.ctx(), &r.response, 1.0);
+        }
+        if let Some(hz) = pick {
+            cmds.push(Command::SetVfo { vfo: self.state.active_vfo, hz });
+        }
+    }
+
+    /// A saved chart, full size, in its own window.
+    ///
+    /// A weather chart is unreadable at gallery size — the whole value of it is
+    /// the fronts and the isobars — so opening one properly is not optional.
+    /// Stepping between charts from inside the window matters for the same
+    /// reason: comparing this run against the last one is most of what the
+    /// charts are for.
+    fn wefax_viewer(&mut self, ctx: &egui::Context) {
+        let Some(i) = self.wefax.viewing else { return };
+        let n = self.wefax.gallery.len();
+        let Some(chart) = self.wefax.gallery.get(i) else {
+            self.wefax.viewing = None;
+            return;
+        };
+        let (name, size, tex) = (chart.name.clone(), chart.size, chart.texture.clone());
+        let title = chart.title();
+        let mut open = true;
+        let mut step = 0i32;
+        let resp = egui::Window::new(format!("{title}  ·  {}×{}", size.0, size.1))
+            .id(egui::Id::new("wefax-viewer"))
+            .open(&mut open)
+            .frame(crate::chrome::window_frame())
+            .default_size([900.0, 640.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    // Newer is up the list, older is down it.
+                    if crate::chrome::chip(ui, false, "◀ NEWER")
+                        .on_hover_text("The chart received after this one")
+                        .clicked()
+                    {
+                        step = -1;
+                    }
+                    ui.label(
+                        RichText::new(format!("{} of {n}", i + 1))
+                            .color(crate::theme::CYAN_DIM)
+                            .size(10.0),
+                    );
+                    if crate::chrome::chip(ui, false, "OLDER ▶")
+                        .on_hover_text("The chart received before this one")
+                        .clicked()
+                    {
+                        step = 1;
+                    }
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(&name).color(crate::theme::LINE_LIT).size(10.0))
+                        .on_hover_text("The file this chart was saved as");
+                });
+                ui.add_space(4.0);
+                egui::ScrollArea::both()
+                    .id_salt("wefax-viewer-scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add(egui::Image::new(&tex).maintain_aspect_ratio(true));
+                    });
+            });
+        if let Some(r) = &resp {
+            crate::chrome::paint_window_border(ctx, &r.response);
+        }
+        if step != 0 && n > 0 {
+            self.wefax.viewing = Some((i as i32 + step).clamp(0, n as i32 - 1) as usize);
+        }
+        if !open {
+            self.wefax.viewing = None;
+        }
+    }
+
+    /// Load previously saved charts into the gallery, once per session.
+    ///
+    /// Reads the legacy config-directory store as well as the pictures one, so
+    /// a collection saved before charts moved to `<Pictures>/sdroxide/wefax`
+    /// still shows up rather than looking as though it had been thrown away.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wefax_load_disk_once(&mut self, ctx: &egui::Context) {
+        if self.wefax.loaded_disk {
+            return;
+        }
+        self.wefax.loaded_disk = true;
+        let Ok(dir) = sdroxide_config::wefax_rx_dir() else { return };
+        self.wefax.dir = dir.display().to_string();
+
+        // Newest first, and only the most recent few: a chart is two megapixels
+        // as a texture, and a season of them would be gigabytes of VRAM.
+        const KEEP: usize = 24;
+        let mut files: Vec<(i64, std::path::PathBuf)> = Vec::new();
+        let dirs = std::iter::once(dir).chain(sdroxide_config::wefax_legacy_rx_dir());
+        for d in dirs {
+            let Ok(entries) = std::fs::read_dir(&d) else { continue };
+            files.extend(
+                entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("png")))
+                    .map(|p| {
+                        // Order by the timestamp the name carries; a file this
+                        // program did not write has none, and sorts oldest.
+                        let when = p
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .and_then(sdroxide_types::WefaxChartMeta::from_file_name)
+                            .map_or(0, |m| m.unix);
+                        (when, p)
+                    }),
+            );
+        }
+        files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+        self.wefax.disk_extra = files.len().saturating_sub(KEEP);
+        for (_, path) in files.iter().take(KEEP) {
+            let Ok(bytes) = std::fs::read(path) else { continue };
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            self.wefax.add_chart(ctx, &name, &bytes);
+        }
+        // `add_chart` prepends, so reading newest-first leaves the list oldest
+        // first; sorting puts it back the way the gallery is browsed.
+        self.wefax.sort_gallery();
+        // Nothing is open yet — `add_chart` shifted the viewer index for each
+        // chart it prepended, and there was no chart to shift.
+        self.wefax.viewing = None;
+    }
+
+    /// The browser tab has no config directory to read a gallery out of; the
+    /// charts it receives this session are all it shows.
+    #[cfg(target_arch = "wasm32")]
+    fn wefax_load_disk_once(&mut self, _ctx: &egui::Context) {
+        self.wefax.loaded_disk = true;
+    }
+}

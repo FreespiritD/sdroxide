@@ -1,0 +1,360 @@
+//! The FSQ panel: directed messages, the contact list, and image transfer.
+//!
+//! FSQ addresses stations by callsign rather than by frequency, so the panel
+//! is a message view with a target field; an empty target is ALLCALL. The
+//! contact list is the operator's own address book, persisted beside the rest
+//! of the configuration.
+
+use eframe::egui::{self, RichText};
+use sdroxide_types::Command;
+
+use crate::theme::ThemedScroll;
+
+use crate::app::SdroxideApp;
+use crate::app::panels::widgets::pick_image;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::app) fn fsq_load_contacts() -> Vec<sdroxide_types::FsqContact> {
+    sdroxide_config::load_contacts()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(in crate::app) fn fsq_load_contacts() -> Vec<sdroxide_types::FsqContact> {
+    Vec::new()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn fsq_save_contacts(contacts: &[sdroxide_types::FsqContact]) {
+    let _ = sdroxide_config::save_contacts(contacts);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn fsq_save_contacts(_contacts: &[sdroxide_types::FsqContact]) {}
+
+impl SdroxideApp {
+    /// FSQ mode settings (speed + directed-message callsign), shown inline in the
+    /// FSQ panel header next to the tune buttons.
+    fn fsq_params_row(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let cfg = &mut self.digi_cfg_edit;
+        let mut changed = false;
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.label(RichText::new("Speed").size(10.5).strong().color(crate::theme::CYAN_DIM));
+            for b in [2.0f32, 3.0, 4.5, 6.0] {
+                let sel = (cfg.fsq_baud - b).abs() < 0.05;
+                let lbl =
+                    if (b - 4.5).abs() < 0.05 { "4.5".to_string() } else { format!("{b:.0}") };
+                if ui.selectable_label(sel, lbl).clicked() {
+                    cfg.fsq_baud = b;
+                    changed = true;
+                }
+            }
+            ui.add_space(8.0);
+            ui.label(RichText::new("Call").size(10.5).strong().color(crate::theme::CYAN_DIM));
+            if ui
+                .add(egui::TextEdit::singleline(&mut cfg.fsq_call).desired_width(76.0))
+                .on_hover_text(
+                    "Callsign for directed (FSQCALL) messages; defaults to your callsign",
+                )
+                .changed()
+            {
+                cfg.fsq_call = cfg.fsq_call.to_uppercase();
+                changed = true;
+            }
+        });
+        if changed {
+            cmds.push(Command::SetDigiConfig(cfg.clone()));
+        }
+    }
+
+    pub(in crate::app) fn fsq_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<Command>,
+        panel_h: f32,
+    ) {
+        let content_bottom = ui.cursor().top() + panel_h - 26.0;
+        let status = self.digi_status.clone();
+        let audio_hz = status.as_ref().map(|s| s.audio_hz).unwrap_or(1500.0);
+        let transmitting = status.as_ref().map(|s| s.transmitting).unwrap_or(false);
+        let text_rx = status.as_ref().map(|s| s.text_rx.clone()).unwrap_or_default();
+        let heard = status.as_ref().map(|s| s.fsq_heard.clone()).unwrap_or_default();
+        let messages = status.as_ref().map(|s| s.fsq_messages.clone()).unwrap_or_default();
+        let my_call = {
+            let c = &self.digi_cfg_edit;
+            if !c.fsq_call.is_empty() { c.fsq_call.clone() } else { c.my_call.clone() }
+        };
+
+        // A picked image → transmit (the engine grayscales/scales it).
+        if let Some(bytes) = self.fsq_img_inbox.lock().ok().and_then(|mut g| g.take()) {
+            cmds.push(Command::DigiAbortTx);
+            cmds.push(Command::DigiImageTx { png: bytes });
+        }
+
+        // Header row. Label matches the RTTY/PSK panels (11 pt cyan).
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("FSQ").size(11.0).strong().color(crate::theme::CYAN));
+            ui.label(RichText::new(format!("{audio_hz:.0} Hz")).monospace());
+            if crate::chrome::chip(ui, false, "−").clicked() {
+                cmds.push(Command::SetDigiAudioFreq((audio_hz - 10.0).clamp(200.0, 3500.0)));
+            }
+            if crate::chrome::chip(ui, false, "+").clicked() {
+                cmds.push(Command::SetDigiAudioFreq((audio_hz + 10.0).clamp(200.0, 3500.0)));
+            }
+            self.digi_freq_chip(ui, cmds);
+            // Mode settings inline next to the tune buttons (moved here from the
+            // setup dialog): the FSQ speed and the directed-message callsign.
+            self.fsq_params_row(ui, cmds);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if transmitting {
+                    ui.label(RichText::new("● TX").color(crate::theme::PINK).strong());
+                }
+                if crate::chrome::chip(ui, self.fsq_show_contacts, "CONTACTS").clicked() {
+                    self.fsq_show_contacts = !self.fsq_show_contacts;
+                }
+                self.digi_squelch_slider(ui, cmds);
+            });
+        });
+        ui.add_space(4.0);
+        // Everything below fits inside the (bounded) panel height. The left
+        // column scrolls as a unit; the right column pins its compose controls to
+        // the bottom so they're never clipped on a short panel.
+        let avail_h = (content_bottom - ui.cursor().top()).max(80.0);
+        ui.horizontal_top(|ui| {
+            // ── Left: heard list + image, each in its own bounded scroll so the
+            // heard list scrolls internally instead of pushing the ALLCALL/IMAGE
+            // controls off-panel. Fixed room is reserved for the labels/buttons
+            // between them; the split never overflows the column height. ──
+            ui.vertical(|ui| {
+                ui.set_width(150.0);
+                let fixed_h = 96.0; // HEARD/IMAGE labels + ALLCALL + Send + separator
+                let scrollable = (avail_h - fixed_h).max(44.0);
+                let heard_h = scrollable * 0.62;
+                let images_h = scrollable - heard_h;
+
+                ui.label(RichText::new("HEARD").size(10.5).strong().color(crate::theme::CYAN_DIM));
+                egui::ScrollArea::vertical()
+                    .id_salt("fsq-heard")
+                    .max_height(heard_h)
+                    .auto_shrink([false, true])
+                    .show_themed(ui, |ui| {
+                        if heard.is_empty() {
+                            ui.label(RichText::new("— none —").weak());
+                        }
+                        for call in &heard {
+                            let sel = self.fsq_target.eq_ignore_ascii_case(call);
+                            if ui.selectable_label(sel, RichText::new(call).monospace()).clicked() {
+                                self.fsq_target = call.clone();
+                            }
+                        }
+                    });
+                ui.add_space(4.0);
+                if crate::chrome::chip(ui, self.fsq_target.is_empty(), "ALLCALL").clicked() {
+                    self.fsq_target.clear();
+                }
+                ui.separator();
+                ui.label(RichText::new("IMAGE").size(10.5).strong().color(crate::theme::CYAN_DIM));
+                if crate::chrome::chip(ui, false, "Send image…").clicked() {
+                    pick_image(self.fsq_img_inbox.clone());
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt("fsq-images")
+                    .max_height(images_h)
+                    .auto_shrink([false, true])
+                    .show_themed(ui, |ui| {
+                        for tex in &self.fsq_rx_images {
+                            ui.add(
+                                egui::Image::new(tex)
+                                    .fit_to_exact_size(egui::vec2(140.0, 105.0))
+                                    .corner_radius(2.0),
+                            );
+                            ui.add_space(3.0);
+                        }
+                    });
+            });
+
+            ui.separator();
+
+            // ── Right: RX stream (fills) + compose controls (pinned bottom) ──
+            ui.vertical(|ui| {
+                // Two control rows (To:/message/SEND, then CQ/? /CLEAR) + gaps.
+                let controls_h = 74.0;
+                let rx_h = (avail_h - controls_h).max(24.0);
+                ui.allocate_ui(egui::vec2(ui.available_width(), rx_h), |ui| {
+                    egui::Frame::new()
+                        .fill(crate::theme::ROW_BG)
+                        .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP))
+                        .inner_margin(6.0)
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.set_min_height(ui.available_height());
+                            egui::ScrollArea::vertical()
+                                .id_salt("fsq-rx")
+                                .auto_shrink([false, false])
+                                .stick_to_bottom(true)
+                                .show_themed(ui, |ui| {
+                                    if text_rx.is_empty() && messages.is_empty() {
+                                        ui.label(RichText::new("— listening —").weak());
+                                    }
+                                    for m in messages.iter().filter(|m| m.to_me && !m.to.is_empty())
+                                    {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "★ {} → {}: {}",
+                                                m.from, m.to, m.text
+                                            ))
+                                            .color(crate::theme::CYAN)
+                                            .monospace(),
+                                        );
+                                    }
+                                    ui.label(
+                                        RichText::new(&text_rx)
+                                            .monospace()
+                                            .color(crate::theme::GREEN),
+                                    );
+                                });
+                        });
+                });
+                ui.add_space(4.0);
+                let tgt = if self.fsq_target.is_empty() {
+                    "ALLCALL".to_string()
+                } else {
+                    self.fsq_target.clone()
+                };
+                // Row 1: To: target + message input + SEND.
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("{tgt}:")).monospace().color(crate::theme::CYAN_DIM),
+                    );
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.text_tx)
+                            .desired_width((ui.available_width() - 62.0).max(60.0))
+                            .hint_text("Message…"),
+                    );
+                    let send = crate::chrome::chip_accent(
+                        ui,
+                        false,
+                        " SEND ",
+                        crate::theme::PINK,
+                        crate::theme::INK_ON_CYAN,
+                    )
+                    .clicked()
+                        || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                    if send && !self.text_tx.trim().is_empty() {
+                        let call = if my_call.is_empty() { "NOCALL" } else { &my_call };
+                        let body = self.text_tx.trim();
+                        let full = if self.fsq_target.is_empty() {
+                            format!("{call}: {body}\n")
+                        } else {
+                            format!("{call}:{} {body}\n", self.fsq_target)
+                        };
+                        cmds.push(Command::DigiAbortTx);
+                        cmds.push(Command::DigiTxText(full));
+                        cmds.push(Command::DigiTxActive(true));
+                        self.text_tx.clear();
+                    }
+                });
+                // Row 2: CQ / ? heard / CLEAR.
+                ui.horizontal(|ui| {
+                    if crate::chrome::chip(ui, false, " CALL CQ ").clicked() {
+                        cmds.push(Command::DigiCallCq);
+                    }
+                    if !self.fsq_target.is_empty()
+                        && crate::chrome::chip(ui, false, " ? heard ").clicked()
+                    {
+                        let call = if my_call.is_empty() { "NOCALL" } else { &my_call };
+                        let full = format!("{call}:{}?\n", self.fsq_target);
+                        cmds.push(Command::DigiAbortTx);
+                        cmds.push(Command::DigiTxText(full));
+                        cmds.push(Command::DigiTxActive(true));
+                    }
+                    if crate::chrome::chip(ui, false, " CLEAR ").clicked() {
+                        self.text_tx.clear();
+                        cmds.push(Command::DigiAbortTx);
+                    }
+                });
+            });
+        });
+
+        self.fsq_contacts_window(ui.ctx());
+    }
+
+    /// Editable FSQ contacts book (add / select-as-target / delete).
+    fn fsq_contacts_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.fsq_show_contacts;
+        let mut changed = false;
+        let mut set_target: Option<String> = None;
+        egui::Window::new("FSQ Contacts")
+            .open(&mut open)
+            .frame(crate::chrome::window_frame())
+            .resizable(false)
+            .default_width(320.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.fsq_new_contact)
+                            .desired_width(140.0)
+                            .hint_text("callsign"),
+                    );
+                    let can_add = !self.fsq_new_contact.trim().is_empty();
+                    if ui.add_enabled(can_add, egui::Button::new("Add")).clicked() {
+                        let id = self.fsq_contacts.iter().map(|c| c.id).max().unwrap_or(0) + 1;
+                        self.fsq_contacts.push(sdroxide_types::FsqContact {
+                            id,
+                            call: self.fsq_new_contact.trim().to_uppercase(),
+                            name: String::new(),
+                            note: String::new(),
+                        });
+                        self.fsq_new_contact.clear();
+                        changed = true;
+                    }
+                });
+                ui.separator();
+                let mut to_delete: Option<u64> = None;
+                egui::ScrollArea::vertical().max_height(260.0).show_themed(ui, |ui| {
+                    for c in &mut self.fsq_contacts {
+                        ui.horizontal(|ui| {
+                            if ui.button("TO").clicked() {
+                                set_target = Some(c.call.clone());
+                            }
+                            ui.label(RichText::new(&c.call).monospace().strong());
+                            if ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut c.name)
+                                        .hint_text("name")
+                                        .desired_width(120.0),
+                                )
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                            if crate::chrome::chip_accent(
+                                ui,
+                                false,
+                                "DEL",
+                                crate::theme::PINK,
+                                crate::theme::INK_ON_CYAN,
+                            )
+                            .clicked()
+                            {
+                                to_delete = Some(c.id);
+                            }
+                        });
+                    }
+                });
+                if let Some(id) = to_delete {
+                    self.fsq_contacts.retain(|c| c.id != id);
+                    changed = true;
+                }
+            });
+        if let Some(t) = set_target {
+            self.fsq_target = t;
+            self.fsq_show_contacts = false;
+        }
+        if changed {
+            fsq_save_contacts(&self.fsq_contacts);
+        }
+        self.fsq_show_contacts = open;
+    }
+}
