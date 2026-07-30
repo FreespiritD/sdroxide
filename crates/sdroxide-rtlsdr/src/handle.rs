@@ -335,14 +335,30 @@ impl RtlSdrHandle {
     pub fn set_bias_tee(&self, on: bool) {
         self.send(Ctrl::BiasTee(on));
     }
-}
 
-impl Drop for RtlSdrHandle {
-    fn drop(&mut self) {
+    /// Stop the stream thread and let the dongle go, without dropping the
+    /// handle.
+    ///
+    /// The engine needs this before it can build a replacement front-end: the
+    /// USB interface is claimed exclusively and a second claim is refused even
+    /// from this same process, so a dongle that has not let go is a dongle that
+    /// cannot be reopened. Blocks until the thread has closed the device.
+    ///
+    /// Afterwards the handle is inert rather than invalid: [`Self::rx_read`]
+    /// drains what is left in the ring and then returns nothing, control
+    /// messages go nowhere, and [`Self::is_alive`] is false — which is what
+    /// makes `RtlSdrSource::needs_reopen` true. Idempotent.
+    pub fn release(&mut self) {
         let _ = self.ctrl.send(Ctrl::Shutdown);
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
+    }
+}
+
+impl Drop for RtlSdrHandle {
+    fn drop(&mut self) {
+        self.release();
     }
 }
 

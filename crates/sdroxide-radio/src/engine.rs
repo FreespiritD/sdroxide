@@ -3194,15 +3194,21 @@ impl Engine {
     }
 
     /// Rebuild the IQ front-end at runtime (backend / CAT audio / HPSDR-TCI
-    /// address changed). Opens the new source first via the [`ReopenFn`] factory
-    /// and only swaps on success, so a bad config leaves the current interface
-    /// running with an on-screen error instead of going dark.
+    /// address changed). Opens the new source via the [`ReopenFn`] factory and
+    /// only swaps on success, so a bad config leaves the current interface
+    /// running with an on-screen error instead of going dark — for every source
+    /// that can coexist with its own replacement. One that cannot (see
+    /// [`IqSource::release`]) is stood down first and takes the failure case
+    /// with it: it goes dark, and [`Engine::poll_reconnect`] picks it up.
     fn reopen_source(&mut self) {
         let center = self.state.active_freq_hz();
         let Some(factory) = self.reopen.clone() else {
             warn!("runtime interface switching unavailable in this build");
             return;
         };
+        // Before the factory runs, not after it fails: an exclusively-claimed
+        // device is the one thing standing between itself and its replacement.
+        self.source.release();
         // A background attempt may hold the factory; the operator's own change
         // wins as soon as that one finishes.
         let opened = {
@@ -3291,6 +3297,12 @@ impl Engine {
             Some(at) if now < at => return,
             Some(_) => {}
         }
+
+        // Same reason as in `reopen_source`, and it matters most here: a dongle
+        // that has stopped delivering without dying still holds its USB
+        // interface, so every attempt to replace it would be refused as busy
+        // and the stream could never recover on its own.
+        self.source.release();
 
         let center = self.state.active_freq_hz();
         let (tx, rx) = crossbeam_channel::bounded(1);

@@ -143,6 +143,13 @@ impl IqSource for RtlSdrSource {
         !self.handle.is_alive() || self.handle.silent_for() >= SILENCE_BEFORE_REOPEN
     }
 
+    /// Hand the dongle back before the engine opens its replacement. Without
+    /// this, changing anything in Settings → Radio on a running RTL-SDR fails
+    /// with "held by another program" — the other program being us.
+    fn release(&mut self) {
+        self.handle.release();
+    }
+
     /// Surface what an operator needs to know but cannot see. A bias tee
     /// putting DC on the feedline is worth a standing on-screen reminder — the
     /// setting is persisted, so it survives a restart with nothing else to

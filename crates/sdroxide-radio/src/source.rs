@@ -165,6 +165,30 @@ pub trait IqSource: Send {
     fn needs_reopen(&self) -> bool {
         false
     }
+
+    /// Give up any hardware held exclusively, ahead of the engine building this
+    /// front-end's replacement.
+    ///
+    /// A USB dongle is claimed by exactly one handle at a time, and the kernel
+    /// does not care that the second claim comes from the same process: opening
+    /// the replacement while the outgoing source still holds the interface
+    /// fails as "device busy", which reaches the operator as the rather
+    /// alarming claim that another program has taken their radio. Pressing
+    /// Apply in Settings → Radio with an RTL-SDR running did exactly that. So
+    /// the engine tells the outgoing source to stand down first.
+    ///
+    /// Called only on the reopen paths, where the source is on its way out
+    /// regardless. Implementations must be idempotent, and must leave the
+    /// source inert but still callable — `read` delivering nothing rather than
+    /// panicking — and reporting [`IqSource::needs_reopen`], so that a reopen
+    /// which then fails leaves the engine retrying in the background rather
+    /// than holding a corpse it will never replace.
+    ///
+    /// Default: nothing to release. That is right for file, signal-generator
+    /// and network sources, and it is the better behaviour where it applies —
+    /// a replacement built alongside the source it replaces means a bad new
+    /// config leaves the working interface on air.
+    fn release(&mut self) {}
 }
 
 /// Paces reads so a non-hardware source delivers samples in real time.
