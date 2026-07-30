@@ -440,8 +440,8 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     pick_bodies(ui, st, rect, &view_proj, &picks, &resp, took_click);
     let clock_rect = clock(ui, rect, sim_now, st.sim_offset_s != 0.0);
     sat_search(ui, st, data, rect, clock_rect);
-    let below = weather_panel(ui, st, data, rect, sim_now as i64);
-    aurora_panel(ui, st, data, rect, below, sim_now as i64);
+    let below = aurora_panel(ui, st, data, rect, rect.top() + 12.0, sim_now as i64);
+    weather_panel(ui, st, data, rect, below, sim_now as i64);
     info_card(ui, st, data, rect, sim_now);
     award_panel(ui, st, rect);
     clouds_note(ui, st, data, rect, sim_now as i64);
@@ -1060,20 +1060,17 @@ fn sat_search(
     }
 }
 
-/// The propagation numbers, top right: MUF at the QTH, K and A, the 10.7 cm
-/// flux and the current GOES X-ray level.
-///
-/// Returns the y coordinate the next panel down the right-hand edge should
-/// start at, so the aurora panel stacks under it whether or not this one drew.
+/// The propagation numbers, down the right-hand edge under the aurora: MUF at
+/// the QTH, K and A, the 10.7 cm flux and the current GOES X-ray level.
 fn weather_panel(
     ui: &egui::Ui,
     st: &SolarUi,
     data: Option<&SolarData>,
     rect: egui::Rect,
+    top: f32,
     now: i64,
-) -> f32 {
-    let top = rect.top() + 12.0;
-    let Some(d) = data else { return top };
+) {
+    let Some(d) = data else { return };
     let w = &d.weather;
 
     // (label, value, colour). Colours say what the number means for the bands,
@@ -1121,7 +1118,7 @@ fn weather_panel(
         ));
     }
     if rows.is_empty() {
-        return top;
+        return;
     }
 
     let font = egui::FontId::proportional(12.0);
@@ -1163,7 +1160,7 @@ fn weather_panel(
         egui::vec2(width, height),
     );
     if !rect.contains_rect(panel) {
-        return top;
+        return;
     }
 
     p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
@@ -1177,15 +1174,18 @@ fn weather_panel(
     if let Some(n) = note {
         p.galley(egui::pos2(panel.left() + pad, y + 2.0), n, theme::LINE_LIT);
     }
-    panel.bottom() + 8.0
 }
 
-/// Aurora, under the propagation numbers: how much power is going into each
-/// oval, how far towards the equator it reaches, whether it is over your head,
-/// and what the planetary K forecast says about tonight.
+/// Aurora, top right: how much power is going into each oval, how far towards
+/// the equator it reaches, whether it is over your head, and what the planetary
+/// K forecast says about tonight.
 ///
 /// The colours here mean the same thing they do everywhere else in the window —
 /// green quiet, yellow worth watching, pink a storm.
+///
+/// Returns the y coordinate the next panel down the right-hand edge should
+/// start at, so the propagation numbers stack under it whether or not this one
+/// drew.
 fn aurora_panel(
     ui: &egui::Ui,
     st: &SolarUi,
@@ -1193,14 +1193,14 @@ fn aurora_panel(
     rect: egui::Rect,
     top: f32,
     now: i64,
-) {
+) -> f32 {
     use sdroxide_solar::{HemisphericPower, aurora};
 
-    let Some(d) = data else { return };
+    let Some(d) = data else { return top };
     // Nothing to say until one of the three aurora feeds has landed. Drawing an
     // empty box would imply the aurora had been measured and found absent.
     if d.aurora.is_none() && d.aurora_power.is_none() && d.kp_forecast.is_empty() {
-        return;
+        return top;
     }
     let kp_color = |kp: f64| match kp {
         k if k >= 5.0 => theme::PINK,
@@ -1277,7 +1277,7 @@ fn aurora_panel(
         ));
     }
     if rows.is_empty() {
-        return;
+        return top;
     }
 
     // The forecast strip: one bar per three-hour bin over the next day. Eight
@@ -1337,7 +1337,7 @@ fn aurora_panel(
     // Same rule as every other readout in this window: if it does not fit, it
     // is not drawn. A panel clipped by the viewport edge is worse than none.
     if !rect.contains_rect(panel) {
-        return;
+        return top;
     }
 
     p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
@@ -1401,6 +1401,7 @@ fn aurora_panel(
     if let Some(f) = footer {
         p.galley(egui::pos2(panel.left() + pad, y + 2.0), f, theme::LINE_LIT);
     }
+    panel.bottom() + 8.0
 }
 
 /// Bottom-left readout: where the Sun is, where it is over the operator, and
