@@ -1754,6 +1754,8 @@ reserved for tuning and panning; the middle and extra (side) buttons are free, s
 button held for PTT behaves like a footswitch.
 
 F1 always opens this manual, even while you are typing, so it is not rebindable.
+While the manual is open, the arrow, Page and Home/End keys scroll it instead of
+running whatever you have bound them to.
 
 #### 5.4.3 MIDI controller
 
@@ -3099,6 +3101,12 @@ stuck, press Apply / reconnect again.
 | F1 | Open this manual (works even while typing). |
 
 Shortcuts are ignored while typing in a text field.
+
+While this manual is open it takes the scrolling keys for itself, so reading it
+never tunes the radio at the same time: Up / Down scroll a few lines, Page Up /
+Page Down scroll a screen, Home / End jump to the ends, and Left / Right step to
+the previous / next section in the CONTENTS outline. Esc or F1 closes it and the
+keys go back to tuning.
 
 These are the **defaults**. Every one of them can be rebound — and PTT, band
 changes, filter width and much else bound to keys, mouse buttons or a MIDI

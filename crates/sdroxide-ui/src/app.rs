@@ -9849,6 +9849,9 @@ impl eframe::App for SdroxideApp {
         if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
             self.help.open = !self.help.open;
         }
+        // An open manual takes the scrolling keys before the bindings run, so
+        // reading it never tunes the radio at the same time.
+        self.help.grab_keys(&ctx);
         self.control_inputs(&ctx, &mut cmds);
         // Shutting down with a bound key or footswitch still held would
         // otherwise leave the rig transmitting.
