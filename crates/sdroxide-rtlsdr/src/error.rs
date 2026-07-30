@@ -81,6 +81,15 @@ impl Error {
             ErrorKind::Disconnected => {
                 Error::NotFound(format!("{what} was unplugged while opening it"))
             }
+            // macOS passes unrecognised IOKit failures through as a bare hex
+            // `IOReturn`, and the one that actually shows up here —
+            // kIOReturnNoResources, 0xe00002be, from claiming an interface on a
+            // device that is mid-hotplug — tells an operator nothing. Both
+            // remedies are physical.
+            ErrorKind::Other if cfg!(target_os = "macos") => Error::Access(format!(
+                "cannot open {what}: {e} — quit any other SDR software holding \
+                 the dongle, then unplug it and plug it back in"
+            )),
             _ => Error::Access(format!("cannot open {what}: {e}")),
         }
     }

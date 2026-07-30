@@ -174,7 +174,28 @@ pub fn list() -> Vec<RtlSdrDevice> {
 /// physically replugging, so [`UsbDev::open`] does this once before claiming.
 ///
 /// Unsupported on Windows, where it is a no-op rather than an error.
+///
+/// # Never on macOS
+///
+/// A reset lowers to `USBDeviceReEnumerate` there, which is not a port reset at
+/// all but a *synthetic unplug*: IOKit terminates the `IOUSBDevice` and every
+/// interface nub hanging off it, then enumerates the stick again from scratch.
+/// The handle we hold — and the interface services we are about to claim
+/// through — are dead by the time the call returns, so the claim that follows
+/// fails with `kIOReturnNoResources`, which reaches the user as the memorable
+/// "failed to open interface (error 0xe00002be)". libusb reports this by
+/// failing `libusb_reset_device` with `NOT_FOUND` so the caller knows it must
+/// re-open; nusb returns `Ok`, so there is no failure to react to.
+///
+/// Skipped rather than followed by a re-open, because there is nothing left for
+/// it to fix: the armed-endpoint state above is a usbfs quirk — IOKit closes
+/// the user client when a process dies, which aborts the pipes — and
+/// [`crate::rtl2832::Rtl2832::reset_buffer`] re-arms EPA at every stream start
+/// on all platforms anyway. librtlsdr never resets here either.
 fn reset_device(device: &nusb::Device, label: &str) {
+    if cfg!(target_os = "macos") {
+        return;
+    }
     match device.reset().wait() {
         Ok(()) => tracing::debug!("reset {label} before claiming it"),
         // Not fatal: the device may well be in a perfectly good state, and the
