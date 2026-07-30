@@ -222,6 +222,11 @@ pub struct DigiTraffic {
     pub stations: Vec<(f64, f64, f32)>,
     /// The station currently being worked.
     pub dx: Option<(f64, f64)>,
+    /// A name for the `dx` end, when it is a named transmitter rather than a
+    /// callsign the operator can already read off the panel — a weather-fax
+    /// station or a broadcast station. `None` leaves the arc unlabelled, which
+    /// is right for a QSO: the call is on screen twice already.
+    pub dx_label: Option<String>,
     /// A decode the operator has clicked but not yet answered.
     pub preview: Option<(f64, f64)>,
     /// True while transmitting, which animates the arc.

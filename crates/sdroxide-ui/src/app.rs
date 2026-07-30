@@ -135,6 +135,11 @@ struct SettingsIo<'a> {
     /// with its own settings — because a switch that provably does nothing is
     /// worse than no switch.
     solar_cloud_march: Option<&'a mut bool>,
+    /// Reload the broadcast station list from disk, and restore the bundled one
+    /// over the top of it. Both act on a file rather than on an edit buffer, so
+    /// they are done after the window closure like the HPSDR scan.
+    bc_reload: &'a mut bool,
+    bc_restore: &'a mut bool,
     tab: &'a mut SettingsTab,
 }
 
@@ -214,7 +219,9 @@ fn auto_upload_adif(
     Some((rec.id, sdroxide_types::qso_log_to_adif(std::slice::from_ref(rec)), targets))
 }
 
-/// Index of a spot kind into the app's `spot_kinds_shown` filter array.
+/// Index of a spot kind into the app's `spot_kinds_shown` filter array. Must
+/// stay in lockstep with the chip order in [`App::spots_window`], which indexes
+/// the array positionally.
 fn spot_kind_index(kind: SpotKind) -> usize {
     match kind {
         SpotKind::DxCluster => 0,
@@ -222,8 +229,12 @@ fn spot_kind_index(kind: SpotKind) -> usize {
         SpotKind::Sota => 2,
         SpotKind::PskReporter => 3,
         SpotKind::FreeDv => 4,
+        SpotKind::Broadcast => 5,
     }
 }
+
+/// Number of spot-kind filter chips, i.e. the width of `spot_kinds_shown`.
+const SPOT_KINDS: usize = 6;
 
 /// How the FT8/FT4 decode list orders the stations within each turn.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -408,10 +419,22 @@ pub struct SdroxideApp {
     /// Spots window open state.
     show_spots: bool,
     /// Which spot kinds are shown on the overlay/list (DX, POTA, SOTA, PSK,
-    /// FREEDV) — indexed by [`spot_kind_index`].
-    spot_kinds_shown: [bool; 5],
+    /// FREEDV, BC) — indexed by [`spot_kind_index`].
+    spot_kinds_shown: [bool; SPOT_KINDS],
     /// Show only spots that fall inside the current panadapter view span.
     spot_in_view_only: bool,
+    /// Fuzzy search query for the spot list. Narrows the list in the SPOTS
+    /// window only — the waterfall labels are positioned by frequency, so
+    /// reordering them by match quality would mean nothing.
+    spot_search: String,
+    /// The bundled/user broadcast station table, loaded once at startup.
+    broadcast: Vec<sdroxide_types::BroadcastStation>,
+    /// The subset of `broadcast` on air right now, as spots. Rebuilt when the
+    /// UTC minute rolls over — the finest granularity a schedule changes at —
+    /// rather than every frame.
+    broadcast_spots: Vec<Spot>,
+    /// The UTC minute `broadcast_spots` was built for.
+    broadcast_minute: i64,
     /// UI-owned editable copy of the network config (edited in the Settings
     /// dialog's Spots / FreeDV / Uploads tabs). Carries no operator identity —
     /// that comes from the digi config, edited on the General tab.
@@ -713,8 +736,12 @@ impl SdroxideApp {
             spots: Vec::new(),
             net_status: None,
             show_spots: false,
-            spot_kinds_shown: [true; 5],
+            spot_kinds_shown: [true; SPOT_KINDS],
             spot_in_view_only: false,
+            spot_search: String::new(),
+            broadcast: load_broadcast_stations(),
+            broadcast_spots: Vec::new(),
+            broadcast_minute: -1,
             net_cfg_edit: net_cfg,
             rigctld_edit: sdroxide_types::RigctldConfig::default(),
             rigctld_seeded: false,
@@ -784,9 +811,32 @@ impl SdroxideApp {
         // does have a transmitter with a known location — so the chart being
         // received gets the same path across the globe a QSO would, which turns
         // an anonymous picture into "this came 900 km over the North Sea".
-        if self.state.rx[0].mode.is_wefax() {
-            traffic.dx = sdroxide_types::WefaxStation::at_dial(self.state.rx_freq_hz())
-                .map(|(st, _)| (st.lat, st.lon));
+        if self.state.rx[0].mode.is_wefax()
+            && let Some((st, _)) = sdroxide_types::WefaxStation::at_dial(self.state.rx_freq_hz())
+        {
+            traffic.dx = Some((st.lat, st.lon));
+            traffic.dx_label = Some(st.name.to_string());
+        }
+        // A broadcast station is the same case again: no callsign, but a known
+        // transmitter site, so tuning one draws the path the signal actually
+        // travelled. Only when nothing else has claimed the arc — a QSO in
+        // progress outranks whatever the dial happens to be sitting on — and
+        // deliberately not gated on AM, because plenty of shortwave listening is
+        // done in ECSS on one sideband.
+        if traffic.dx.is_none()
+            && let Some((st, lat, lon)) = sdroxide_types::broadcast::at_dial(
+                &self.broadcast,
+                self.state.rx_freq_hz(),
+                now_unix(),
+            )
+            .and_then(|st| Some((st, st.lat?, st.lon?)))
+        {
+            traffic.dx = Some((lat, lon));
+            traffic.dx_label = Some(if st.site.is_empty() {
+                st.name.clone()
+            } else {
+                format!("{} · {}", st.name, st.site)
+            });
         }
         traffic
     }
@@ -1130,28 +1180,80 @@ impl SdroxideApp {
         (spots, alpha)
     }
 
+    /// Whether a spot passes the operator's filters.
+    ///
+    /// The single place that decides this. The waterfall overlay, the SPOTS list
+    /// and the world-map dots all go through here, so switching a category off
+    /// cannot take effect in one view and be forgotten in another.
+    ///
+    /// The search query is deliberately *not* part of this: it narrows the list
+    /// in the SPOTS window only. See [`App::spot_search`].
+    fn spot_visible(&self, s: &Spot) -> bool {
+        if !self.spot_kinds_shown[spot_kind_index(s.kind)] {
+            return false;
+        }
+        if self.spot_in_view_only
+            && !(self.view.view_lo_hz..=self.view.view_hi_hz).contains(&s.freq_hz)
+        {
+            return false;
+        }
+        true
+    }
+
+    /// Rebuild the on-air broadcast station list if the UTC minute has rolled
+    /// over since it was last built. Cheap enough to call every frame.
+    fn refresh_broadcast_spots(&mut self, now_utc: i64) {
+        let minute = now_utc.div_euclid(60);
+        if minute == self.broadcast_minute {
+            return;
+        }
+        self.broadcast_minute = minute;
+        self.broadcast_spots = sdroxide_types::broadcast::on_air(&self.broadcast, now_utc);
+    }
+
+    /// Live network spots and the on-air broadcast stations, unfiltered.
+    fn all_spots(&self) -> impl Iterator<Item = &Spot> {
+        self.spots.iter().chain(self.broadcast_spots.iter())
+    }
+
+    /// The same two sets as one owned list in frequency order, for the SPOTS
+    /// window. `self.spots` arrives sorted from the feed manager, but the
+    /// broadcast stations have to be merged into that order.
+    fn merged_spots(&self) -> Vec<Spot> {
+        let mut all: Vec<Spot> = self.all_spots().cloned().collect();
+        all.sort_by(|a, b| a.freq_hz.total_cmp(&b.freq_hz));
+        all
+    }
+
     /// The network-spot overlay: the currently-shown spots (filtered by kind and,
     /// optionally, to the panadapter view span) plus a parallel age-fade alpha.
     /// Newest spots are solid; they dim over the last quarter of their lifetime.
+    ///
+    /// Runs every frame, so it clones only what survives the filters rather than
+    /// building a merged list first — the layout pass sorts by screen position
+    /// itself, so the output need not be in frequency order.
     fn net_overlay(&self, now_utc: i64) -> (Vec<Spot>, Vec<f32>) {
         let max_age = self.net_cfg_edit.spot_max_age_secs.max(60) as i64;
-        let (lo, hi) = (self.view.view_lo_hz, self.view.view_hi_hz);
         let mut spots = Vec::new();
         let mut alpha = Vec::new();
-        for s in &self.spots {
-            if !self.spot_kinds_shown[spot_kind_index(s.kind)] {
+        for s in self.all_spots() {
+            if !self.spot_visible(s) {
                 continue;
             }
-            if self.spot_in_view_only && !(lo..=hi).contains(&s.freq_hz) {
-                continue;
-            }
-            let age = (now_utc - s.when_utc).max(0);
-            let a = if age > max_age {
-                continue;
-            } else if age as f64 > max_age as f64 * 0.75 {
-                (1.0 - (age as f64 - max_age as f64 * 0.75) / (max_age as f64 * 0.25)) as f32
-            } else {
+            // A scheduled broadcast station has no age: the fade and the
+            // max-age cut are both about how stale a *report* is, and a
+            // transmitter that is on the air now is not a stale report.
+            let a = if s.kind == SpotKind::Broadcast {
                 1.0
+            } else {
+                let age = (now_utc - s.when_utc).max(0);
+                if age > max_age {
+                    continue;
+                } else if age as f64 > max_age as f64 * 0.75 {
+                    (1.0 - (age as f64 - max_age as f64 * 0.75) / (max_age as f64 * 0.25)) as f32
+                } else {
+                    1.0
+                }
             };
             spots.push(s.clone());
             alpha.push(a.clamp(0.15, 1.0));
@@ -1161,7 +1263,14 @@ impl SdroxideApp {
 
     /// Open a fresh log entry pre-filled from a clicked spot, and kick a
     /// callsign lookup if auto-lookup is on.
+    ///
+    /// Broadcast stations are exempt: "BBC World Service" is not a callsign to
+    /// log or look up on QRZ, so clicking one only tunes. Guarding here rather
+    /// than at each call site covers both the SPOTS list and the panadapter.
     fn prefill_from_spot(&mut self, spot: &Spot) {
+        if spot.kind == SpotKind::Broadcast {
+            return;
+        }
         let mut form = LogEditForm::new_entry(now_unix(), spot.freq_hz, &spot.mode);
         form.call = spot.call.clone();
         if let Some(g) = &spot.grid {
@@ -3319,11 +3428,13 @@ impl SdroxideApp {
         // station currently *connected*, hundreds of them, which buries the
         // decoded FT8 stations this map exists to show. The panadapter overlay
         // and the SPOTS window still carry them.
+        // Broadcast stations do appear here: they carry real transmitter
+        // coordinates, and the on-air filter keeps their count in the same range
+        // as the cluster spots already drawn.
         let spot_dots: Vec<(f64, f64, (u8, u8, u8))> = self
-            .spots
-            .iter()
+            .all_spots()
             .filter(|s| s.kind != SpotKind::FreeDv)
-            .filter(|s| self.spot_kinds_shown[spot_kind_index(s.kind)])
+            .filter(|s| self.spot_visible(s))
             .filter_map(|s| s.loc.map(|(lat, lon)| (lat, lon, s.kind.color())))
             .collect();
         if map_budget >= crate::widgets::worldmap::MIN_HEIGHT {
@@ -5961,21 +6072,27 @@ impl SdroxideApp {
         self.prefill_from_spot(spot);
     }
 
-    /// The live-spots window: source filters, a click-to-tune list of current
-    /// DX-cluster / POTA / SOTA / PSK-Reporter spots, and the feed status line.
+    /// The live-spots window: source filters, a fuzzy search box, a
+    /// click-to-tune list of current DX-cluster / POTA / SOTA / PSK-Reporter
+    /// spots and broadcast stations, and the feed status line.
     fn spots_window(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
         let worked_entities = self.worked_entities().clone();
         let mut open = self.show_spots;
         let mut clicked: Option<Spot> = None;
         let mut open_setup = false;
         let now = now_unix();
-        let spots = self.spots.clone();
+        self.refresh_broadcast_spots(now);
+        // Cloned out of `self` because the window closure needs `&mut self`.
+        let spots = self.merged_spots();
+        // Chip order has to match `spot_kind_index`: the loop below indexes
+        // `spot_kinds_shown` positionally.
         let labels = [
             (SpotKind::DxCluster, "DX"),
             (SpotKind::Pota, "POTA"),
             (SpotKind::Sota, "SOTA"),
             (SpotKind::PskReporter, "PSK"),
             (SpotKind::FreeDv, "FREEDV"),
+            (SpotKind::Broadcast, "BC"),
         ];
         let resp = egui::Window::new("SPOTS")
             .open(&mut open)
@@ -5985,8 +6102,16 @@ impl SdroxideApp {
             .default_height(480.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    for (i, (_, label)) in labels.iter().enumerate() {
-                        if crate::chrome::chip(ui, self.spot_kinds_shown[i], *label).clicked() {
+                    for (i, (kind, label)) in labels.iter().enumerate() {
+                        let chip = crate::chrome::chip(ui, self.spot_kinds_shown[i], *label);
+                        let chip = if *kind == SpotKind::Broadcast {
+                            chip.on_hover_text(
+                                "Longwave & shortwave broadcast stations on air now",
+                            )
+                        } else {
+                            chip
+                        };
+                        if chip.clicked() {
                             self.spot_kinds_shown[i] = !self.spot_kinds_shown[i];
                         }
                     }
@@ -6005,35 +6130,66 @@ impl SdroxideApp {
                         }
                     });
                 });
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 5.0;
+                    ui.label(RichText::new("⌕").color(crate::theme::CYAN_DIM).size(14.0));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.spot_search)
+                            .desired_width(200.0)
+                            .hint_text("call, station, site, frequency")
+                            .text_color(crate::theme::TEXT_STRONG),
+                    );
+                    if !self.spot_search.trim().is_empty()
+                        && ui.button("✕").on_hover_text("Clear the search").clicked()
+                    {
+                        self.spot_search.clear();
+                    }
+                });
                 if let Some(s) = &self.net_status {
                     ui.label(RichText::new(s).size(11.0).color(Color32::from_gray(150)));
                 }
                 ui.separator();
+                // Filter by the category chips, then rank by how well each row
+                // matched the query. With no query the natural frequency order
+                // is kept; with one, the best matches come first, because the
+                // whole point of typing is to get the wanted row to the top.
+                let query = self.spot_search.trim();
+                let visible: Vec<&Spot> = spots.iter().filter(|s| self.spot_visible(s)).collect();
+                let mut rows: Vec<(&Spot, i32)> = visible
+                    .iter()
+                    .filter_map(|s| {
+                        crate::fuzzy::score_terms(&spot_haystack(s), query).map(|sc| (*s, sc))
+                    })
+                    .collect();
+                if !query.is_empty() {
+                    rows.sort_by_key(|r| std::cmp::Reverse(r.1));
+                    // Counted against what the chips let through, not against
+                    // every spot held — "3 of 5" when three categories are off
+                    // would look like the search had lost the rest.
+                    let (text, colour) = match rows.len() {
+                        0 => ("no match".to_string(), crate::theme::PINK),
+                        n => (format!("{n} of {}", visible.len()), crate::theme::YELLOW),
+                    };
+                    ui.label(RichText::new(text).color(colour).size(10.0));
+                }
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show_themed(ui, |ui| {
-                    let mut shown = 0usize;
-                    for s in &spots {
-                        if !self.spot_kinds_shown[spot_kind_index(s.kind)] {
-                            continue;
-                        }
-                        if self.spot_in_view_only
-                            && !(self.view.view_lo_hz..=self.view.view_hi_hz).contains(&s.freq_hz)
-                        {
-                            continue;
-                        }
-                        let needed = sdroxide_types::entity_name(&s.call)
-                            .map(|n| !worked_entities.contains(n))
-                            .unwrap_or(false);
+                    for (s, _) in &rows {
+                        let needed = s.kind != SpotKind::Broadcast
+                            && sdroxide_types::entity_name(&s.call)
+                                .map(|n| !worked_entities.contains(n))
+                                .unwrap_or(false);
                         if spot_row(ui, s, now, needed).clicked() {
-                            clicked = Some(s.clone());
+                            clicked = Some((*s).clone());
                         }
-                        shown += 1;
                     }
-                    if shown == 0 {
+                    if rows.is_empty() {
                         ui.add_space(8.0);
-                        ui.label(
-                            RichText::new("no spots — enable a feed in ⚙ SETUP")
-                                .color(Color32::from_gray(120)),
-                        );
+                        let msg = if query.is_empty() {
+                            "no spots — enable a feed in ⚙ SETUP"
+                        } else {
+                            "nothing matches the search"
+                        };
+                        ui.label(RichText::new(msg).color(Color32::from_gray(120)));
                     }
                 });
             });
@@ -6622,6 +6778,8 @@ impl SdroxideApp {
         let mut sat_ui = std::mem::take(&mut self.sat_ui);
         let mut sat_sub_refresh = false;
         let sat_subs = self.sat_sub_views();
+        let mut bc_reload = false;
+        let mut bc_restore = false;
 
         // The concrete interface types the user chooses between. SoapySDR only
         // appears when compiled in; there is no auto-detect (an unavailable
@@ -6672,6 +6830,8 @@ impl SdroxideApp {
                         net_edit: &mut net_edit,
                         net_cmds: &mut net_cmds,
                         net_apply: &mut net_apply,
+                        bc_reload: &mut bc_reload,
+                        bc_restore: &mut bc_restore,
                         net_sync: &mut net_sync,
                         tci_srv_edit: &mut tci_srv_edit,
                         tci_srv_apply: &mut tci_srv_apply,
@@ -6763,6 +6923,14 @@ impl SdroxideApp {
             // Blocking: one HTTPS round trip per subscription. After the window
             // closure, the way the HPSDR scan is.
             self.refresh_sat_subs_now();
+        }
+        if bc_restore {
+            restore_bundled_broadcast_stations();
+        }
+        if bc_reload || bc_restore {
+            self.broadcast = load_broadcast_stations();
+            // Force a rebuild rather than waiting up to a minute for the tick.
+            self.broadcast_minute = -1;
         }
         if let Some((output, name)) = audio_pick {
             self.ctrl.set_audio_device(output, name);
@@ -7056,6 +7224,9 @@ impl SdroxideApp {
                 {
                     *io.net_apply = true;
                 }
+
+                net_heading(ui, "Broadcast stations");
+                broadcast_stations_settings(ui, io.bc_reload, io.bc_restore);
             }
             SettingsTab::Uploads => {
                 net_heading(ui, "Callsign lookup");
@@ -9724,6 +9895,9 @@ impl eframe::App for SdroxideApp {
         }
         // Network-spot overlay (shared by voice + digital panadapter paths). A
         // clicked spot is captured here and pre-filled into a log entry below.
+        // The broadcast stations are refreshed first, before anything reads
+        // them: the overlay here, the SPOTS list and the world map all do.
+        self.refresh_broadcast_spots(now_unix());
         let (net_spots, net_alpha) = self.net_overlay(now_unix());
         let mut clicked_spot: Option<Spot> = None;
         // Remaining space: the panadapter (+ FT8/FT4 operating panel).
@@ -10057,6 +10231,27 @@ fn persist_sat_config(cfg: &sdroxide_types::SatConfig) {
         eprintln!("failed to save the satellite config: {e}");
     }
 }
+
+// ── Broadcast stations (native: seeded config-dir JSON; wasm: the bundled table)
+#[cfg(not(target_arch = "wasm32"))]
+fn load_broadcast_stations() -> Vec<sdroxide_types::BroadcastStation> {
+    sdroxide_config::load_broadcast_stations()
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn restore_bundled_broadcast_stations() {
+    if let Err(e) = sdroxide_config::restore_bundled_broadcast_stations() {
+        eprintln!("failed to restore the bundled broadcast station list: {e}");
+    }
+}
+
+/// The browser tab has no config directory to seed, so it gets the table
+/// compiled into the wasm bundle — the same data, just not editable there.
+#[cfg(target_arch = "wasm32")]
+fn load_broadcast_stations() -> Vec<sdroxide_types::BroadcastStation> {
+    sdroxide_types::broadcast::builtin().to_vec()
+}
+#[cfg(target_arch = "wasm32")]
+fn restore_bundled_broadcast_stations() {}
 #[cfg(target_arch = "wasm32")]
 fn persist_sat_config(_cfg: &sdroxide_types::SatConfig) {}
 
@@ -10101,8 +10296,89 @@ fn fmt_age(secs: i64) -> String {
     }
 }
 
+/// The broadcast-station block on the Spots settings tab: where the list lives,
+/// and the two things that can be done to it from here.
+#[cfg(not(target_arch = "wasm32"))]
+fn broadcast_stations_settings(ui: &mut egui::Ui, reload: &mut bool, restore: &mut bool) {
+    let path = sdroxide_config::broadcast_stations_path();
+    ui.label(
+        RichText::new(
+            "The longwave and shortwave stations labelled on the waterfall. Seeded from the \
+             bundled list on first run, then yours to edit — sdroxide never overwrites it.",
+        )
+        .weak(),
+    );
+    if let Ok(p) = &path {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(p.display().to_string()).monospace().size(10.5).color(
+                        Color32::from_gray(150),
+                    ),
+                )
+                .truncate(),
+            );
+        });
+    }
+    ui.horizontal(|ui| {
+        if ui
+            .button("Reload")
+            .on_hover_text("Re-read the file after editing it")
+            .clicked()
+        {
+            *reload = true;
+        }
+        if ui
+            .button("Restore bundled list")
+            .on_hover_text("Replace the file with the one shipped in this build (the old one is kept as .json.bak)")
+            .clicked()
+        {
+            *restore = true;
+        }
+    });
+}
+
+/// The browser client reads the table compiled into the wasm bundle, so there is
+/// no file to point at and nothing to reload.
+#[cfg(target_arch = "wasm32")]
+fn broadcast_stations_settings(ui: &mut egui::Ui, _reload: &mut bool, _restore: &mut bool) {
+    ui.label(
+        RichText::new(
+            "The broadcast stations labelled on the waterfall come from the list built into \
+             this build. Editing them needs the desktop app.",
+        )
+        .weak(),
+    );
+}
+
+/// Everything about a spot the search box should be able to find it by.
+///
+/// The frequency goes in twice, as kHz and as MHz, because a shortwave listener
+/// thinks in `9420` and a ham in `9.420` and both should work. The kind label is
+/// in there too, so typing `bc` narrows to the broadcast stations without having
+/// to reach for the chips.
+fn spot_haystack(s: &Spot) -> String {
+    let mut h = String::with_capacity(96);
+    h.push_str(&s.call);
+    for extra in [
+        s.kind.label(),
+        &s.mode,
+        &s.comment,
+        s.reference.as_deref().unwrap_or(""),
+        &s.spotter,
+        s.grid.as_deref().unwrap_or(""),
+    ] {
+        if !extra.is_empty() {
+            h.push(' ');
+            h.push_str(extra);
+        }
+    }
+    h.push_str(&format!(" {:.0} {:.4}", s.freq_hz / 1e3, s.freq_hz / 1e6));
+    h
+}
+
 /// One clickable spot row for the spots window: kind badge, call, frequency,
-/// mode, age, and the park/summit reference or comment.
+/// mode, age or schedule, and the park/summit/transmitter reference or comment.
 fn spot_row(ui: &mut egui::Ui, s: &Spot, now_utc: i64, needed: bool) -> egui::Response {
     let (r, g, b) = s.kind.color();
     let kind_col = Color32::from_rgb(r, g, b);
@@ -10133,7 +10409,7 @@ fn spot_row(ui: &mut egui::Ui, s: &Spot, now_utc: i64, needed: bool) -> egui::Re
                 );
                 col(
                     ui,
-                    90.0,
+                    132.0,
                     egui::Label::new(
                         RichText::new(&s.call).size(14.0).strong().color(crate::theme::TEXT_STRONG),
                     )
@@ -10154,14 +10430,17 @@ fn spot_row(ui: &mut egui::Ui, s: &Spot, now_utc: i64, needed: bool) -> egui::Re
                     46.0,
                     egui::Label::new(RichText::new(&s.mode).monospace().size(11.0).color(gray)),
                 );
+                // A broadcast station is not a report that ages: it carries its
+                // schedule (`"24h"`, `"1800-2100"`) in this column instead.
+                let when = if s.kind == SpotKind::Broadcast {
+                    s.spotter.clone()
+                } else {
+                    fmt_age(now_utc - s.when_utc)
+                };
                 col(
                     ui,
-                    34.0,
-                    egui::Label::new(
-                        RichText::new(fmt_age(now_utc - s.when_utc))
-                            .size(10.5)
-                            .color(Color32::from_gray(120)),
-                    ),
+                    76.0,
+                    egui::Label::new(RichText::new(when).size(10.5).color(Color32::from_gray(120))),
                 );
                 if needed {
                     col(

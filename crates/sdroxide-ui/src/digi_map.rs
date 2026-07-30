@@ -151,6 +151,10 @@ impl DigiStations {
         DigiTraffic {
             stations: self.stations(now_t),
             dx: dx_grid.and_then(sdroxide_types::grid_to_latlon),
+            // A QSO partner needs no label: its callsign is already on the panel.
+            // The caller fills this in when it redirects the arc at a named
+            // transmitter instead.
+            dx_label: None,
             preview,
             transmitting,
             history: self.history(),

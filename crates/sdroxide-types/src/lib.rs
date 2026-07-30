@@ -6,6 +6,7 @@
 mod awards;
 mod band;
 mod band_segments;
+pub mod broadcast;
 mod callsign;
 mod caps;
 mod command;
@@ -47,6 +48,7 @@ pub use band_segments::{
     WSPR_DIALS, digi_channels, digi_channels_in, is_auto_digi, is_cw_segment, is_digi_segment,
     is_psk_segment, is_rtty_segment, segment_kind_at,
 };
+pub use broadcast::{BroadcastStation, BroadcastStations};
 pub use callsign::{CallsignInfo, UploadResult, UploadTarget};
 pub use caps::{DeviceCaps, Direction, GainElement};
 pub use command::Command;

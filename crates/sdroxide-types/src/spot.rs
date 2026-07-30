@@ -22,6 +22,13 @@ pub enum SpotKind {
     /// A station connected to FreeDV Reporter (<https://qso.freedv.org/>).
     /// Appended last so the postcard discriminants above never move.
     FreeDv,
+    /// A longwave/shortwave broadcast station from [`crate::broadcast`].
+    ///
+    /// Unlike every other kind this one is synthesised in the client from a
+    /// bundled table rather than reported by a feed, so it never travels over
+    /// the wire — but it shares `Spot` so the overlay, the list and the map
+    /// render it through one path. Appended last, as above.
+    Broadcast,
 }
 
 impl SpotKind {
@@ -32,6 +39,7 @@ impl SpotKind {
             SpotKind::Sota => "SOTA",
             SpotKind::PskReporter => "PSK",
             SpotKind::FreeDv => "FREEDV",
+            SpotKind::Broadcast => "BC",
         }
     }
 
@@ -43,6 +51,9 @@ impl SpotKind {
             SpotKind::Sota => (255, 190, 90),         // amber
             SpotKind::PskReporter => (210, 150, 255), // violet
             SpotKind::FreeDv => (255, 130, 160),      // pink
+            // The same orange the band-plan overlay shades broadcast
+            // allocations with, so a label matches the band it sits in.
+            SpotKind::Broadcast => (232, 130, 46),
         }
     }
 }

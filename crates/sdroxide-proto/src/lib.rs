@@ -98,7 +98,12 @@ use sdroxide_types::{
 /// populated rather than always `None`, which is a behaviour change but not a
 /// layout one. Both ends must agree on the three added fields, postcard being
 /// what it is.
-pub const PROTO_VERSION: u16 = 29;
+/// v30: broadcast station labels — new `SpotKind::Broadcast`, which extends the
+/// postcard discriminant space of `ServerMsg::Spots` exactly as `FreeDv` did in
+/// v14. The engine never emits it (the stations are synthesised client-side from
+/// a bundled table), but the enum both ends decode has changed shape, so they
+/// must agree on it.
+pub const PROTO_VERSION: u16 = 30;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

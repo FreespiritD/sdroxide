@@ -1334,7 +1334,7 @@ window opens the same dialog on its Spots tab). Nine tabs run across the top:
 | **Radio** | Which rig sdroxide talks to, and how. [5.2](#52-radio-choosing-and-configuring-the-rig) |
 | **UI** | Frame rate, waterfall palette, spectrum background, 3D cloud rendering. [5.3](#53-ui-display-preferences) |
 | **Controls** | Keyboard, mouse and MIDI bindings. [5.4](#54-controls-keyboard-mouse-and-midi) |
-| **Spots** | DX cluster, POTA, SOTA and PSK Reporter feeds. [5.5](#55-spots-spot-feeds) |
+| **Spots** | DX cluster, POTA, SOTA and PSK Reporter feeds, and the broadcast station list. [5.5](#55-spots-spot-feeds) |
 | **FreeDV** | FreeDV Reporter (qso.freedv.org). [5.6](#56-freedv-freedv-reporter) |
 | **Uploads** | Callsign lookup, QSL upload, confirmation download. [5.7](#57-uploads-callsign-lookup-and-qsl-services) |
 | **Servers** | Hamlib rigctld, the built-in TCI server, and the WSJT-X UDP broadcast. [5.8](#58-servers-letting-other-programs-drive-the-radio) |
@@ -1816,6 +1816,11 @@ filters, the world map — is [§9.1](#91-spot-feeds-dx-cluster-pota-sota-psk-re
   band)** shows who is being heard on the band you are on. **Max age (s)** drops
   spots older than that many seconds.
 - **APPLY** connects or disconnects the feeds and saves the settings.
+- **Broadcast stations** — where the longwave/shortwave station list lives, with
+  **Reload** (re-read the file after editing it) and **Restore bundled list**
+  (replace it with the one shipped in this build, keeping the old one as
+  `broadcast_stations.json.bak`). See
+  [§9.6](#96-broadcast-stations-on-longwave-and-shortwave).
 
 FreeDV Reporter is a spot source too, but has its own tab —
 [5.6](#56-freedv-freedv-reporter).
@@ -2720,21 +2725,34 @@ Enable the feeds you want — DX cluster, POTA, SOTA, PSK Reporter — on the
 Spots then appear two ways:
 
 - **On the panadapter** — colour-coded, clickable boxes along the bottom of the
-  waterfall (DX = cyan, POTA = green, SOTA = amber, PSK = violet, FREEDV = pink),
-  each with a leader line down to the spotted frequency. Located spots (POTA
-  parks, PSK reporters, FreeDV stations) also appear as dots on the FT8 world
-  map.
+  waterfall (DX = cyan, POTA = green, SOTA = amber, PSK = violet, FREEDV = pink,
+  BC = orange), each with a leader line down to the spotted frequency. Located
+  spots (POTA parks, PSK reporters, FreeDV stations, broadcast transmitters) also
+  appear as dots on the FT8 world map.
 - **In the SPOTS window** — a filterable list (toggle **DX / POTA / SOTA / PSK /
-  FREEDV**, or **IN VIEW** to show only spots inside the current panadapter
+  FREEDV / BC**, or **IN VIEW** to show only spots inside the current panadapter
   span). Each row
   shows the source, callsign, frequency, mode, age and reference/comment, and a
   green **NEW** flag when it is a DXCC entity you haven't worked yet.
+
+Switching a category off hides it everywhere at once — the list, the panadapter
+labels and the world-map dots.
+
+**Search** — the **⌕** box below the chips does a fuzzy search over everything in
+the list: callsigns, station and transmitter names, comments, park and summit
+references, and the frequency written either way, so `9420`, `9.420` and `avlis`
+all find the same station. Letters need only appear in order, so `bbcws` finds
+"BBC World Service"; several words are all required, so `bbc asc` narrows to the
+BBC transmissions from Ascension. Matching rows are ranked best-first while you
+type, and a counter under the box says how many of the total matched. The search
+narrows the list only — the panadapter labels stay where the frequencies are.
 
 **Click a spot** — on the panadapter or in the SPOTS list — to tune your VFO onto
 it, switch to its mode, and open a **pre-filled New Entry** in the logbook (call,
 frequency, mode, and any grid/reference from the spot). If auto-lookup is on
 (below), the name/QTH/grid are filled in too. CW spots are tuned a sidetone pitch
-low so the signal lands in the CW passband.
+low so the signal lands in the CW passband. Broadcast stations only tune — they
+have no callsign to log or look up.
 
 ### 9.2 Callsign lookup
 
@@ -2833,6 +2851,66 @@ connects read-only for twenty seconds and prints the stations and events it saw.
 It uses the server's view role, so it needs no radio and never makes you visible
 to anyone.
 
+### 9.6 Broadcast stations on longwave and shortwave
+
+SDRoxide ships a list of longwave and shortwave broadcast stations and labels them
+on the waterfall in orange, alongside the network spots — so a carrier on 225 kHz
+comes up as *Polskie Radio Program 1, Solec Kujawski* rather than as an
+unexplained signal. Click one to tune it in AM; unlike a cluster spot it opens no
+log entry and looks up no callsign.
+
+Only stations **on the air now** are labelled. Each entry may carry a UTC window
+and a set of days, and shortwave schedules move with the season, so the list is
+filtered against the clock every minute. Everything without a window — all the
+longwave transmitters, and the round-the-clock private shortwave stations — is
+always shown. Turn the whole category off with the **BC** chip in the SPOTS
+window.
+
+Because every entry names a real transmitter site with its coordinates, the
+stations also appear as dots on the FT8 world map, and **tuning one draws its path
+on the 3D globe**: a great-circle arc from your grid square to the transmitter,
+labelled with the station and site, exactly as a QSO or a weather-fax chart is.
+That turns "a signal on 15400" into "this came 8,000 km from Ascension Island".
+It needs your grid set on the **General** tab, and the **QSO** layer on.
+
+**The list is yours to edit.** On first run the bundled table is copied to
+`broadcast_stations.json` in the config directory ([§11](#11-configuration-files))
+and SDRoxide never writes it again — a schedule you have corrected or a local
+station you have added survives every upgrade. The **Spots** settings tab
+([§5.5](#55-spots-spot-feeds)) shows the path, with **Reload** to re-read the file
+after editing and **Restore bundled list** to go back to the shipped one (your
+version is kept as `broadcast_stations.json.bak`). Deleting the file also
+re-seeds it. If the file will not parse, SDRoxide warns and falls back to the
+bundled list rather than showing no stations, and leaves your file alone so you
+can fix it.
+
+Each entry needs only a name and a frequency in kHz:
+
+```json
+{ "name": "BBC World Service", "freq_khz": 15400, "site": "Ascension Island",
+  "country": "Ascension", "lat": -7.8981, "lon": -14.3769, "power_kw": 250,
+  "lang": "English", "target": "Africa",
+  "start_utc": 1800, "end_utc": 2100, "days": "1234567", "season": "B" }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `name`, `freq_khz` | Required. Frequency in kHz, as broadcast schedules print it. |
+| `site`, `country` | Transmitter site — the country is where the transmitter stands, not where the broadcaster is from. |
+| `lat`, `lon` | Transmitter position in degrees. Both or neither; without them there is no map dot and no globe arc. |
+| `power_kw`, `lang`, `target` | Shown in the spot row. |
+| `mode` | Only if it is not plain `AM` — `SAM`, `USB`, … |
+| `start_utc`, `end_utc` | UTC `HHMM`. Leave both out for a round-the-clock station. `end_utc` below `start_utc` wraps past midnight, so `2200`–`0200` works. |
+| `days` | Digits `1` (Monday) to `7` (Sunday), e.g. `"12345"` for weekdays. Empty means daily. |
+| `season` | `"A"` (last Sunday in March to last Sunday in October) or `"B"`. Absent means both. |
+
+The bundled list is deliberately conservative: it covers stations whose
+frequency-and-site pairing is stable rather than trying to be a full timetable,
+and gives times only where the station keeps to them. For a complete seasonal
+schedule to paste extra entries from, see
+[eibispace.de](https://www.eibispace.de/) or
+[short-wave.info](https://www.short-wave.info/).
+
 ---
 
 ## 10. Command-line reference
@@ -2926,6 +3004,7 @@ sdroxide stores its settings under the per-user config directory:
 | `skimmer.json` | JSON | Skimmers: which of CW / PSK / RTTY run, and each one's spot squelch in dB. Restored at startup; a narrowband (audio-mode) radio still forces them off without disturbing what you picked. |
 | `input.json` | JSON | Control inputs: keyboard bindings, panadapter mouse behaviour, mouse-button bindings, and the MIDI controller mapping. Belongs to the machine running the user interface, not the engine. |
 | `satellites.json` | JSON | Satellite additions for the 3D tracker: subscribed element-set listings, element sets pasted in by hand, and frequency entries that override the built-in table. Belongs to the user interface, like `input.json`. |
+| `broadcast_stations.json` | JSON | Longwave and shortwave broadcast stations and their transmitter sites, labelled on the waterfall ([§9.6](#96-broadcast-stations-on-longwave-and-shortwave)). Seeded from the bundled list on first run and never written again, so your edits survive upgrades; delete it to get the bundled list back. |
 | `sstv_messages.json` | JSON | The overlay message stored for each of the five SSTV transmit slots. |
 | `voice_names.json` | JSON | The label given to each of the ten voice-keyer slots. |
 | `voice/` | dir | The voice-keyer recordings (`slot1.wav`…`slot10.wav`), 48 kHz mono. Drop your own WAV in to replace a message. |

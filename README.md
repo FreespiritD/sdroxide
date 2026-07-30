@@ -249,8 +249,16 @@ the **Spots** and **Uploads** tabs of the Settings dialog, and surfaced by the
 - **Spot feeds** — connect a **DX cluster** (telnet) and poll **POTA**, **SOTA**
   and **PSK Reporter**. Spots appear as clickable, colour-coded markers along the
   bottom of the waterfall (and as dots on the FT8 world map); the **SPOTS** window
-  lists them with per-source filters. **Click a spot** to tune the VFO, set the
-  mode, and pre-fill a new log entry — one click from "heard" to "working".
+  lists them with per-source filters and a **fuzzy search** over calls, station
+  names, sites and frequencies. **Click a spot** to tune the VFO, set the mode,
+  and pre-fill a new log entry — one click from "heard" to "working".
+- **Broadcast stations** — a bundled list of **longwave and shortwave broadcasters**
+  with their real transmitter sites labels the big AM carriers on the waterfall, so
+  225 kHz reads as *Polskie Radio Program 1, Solec Kujawski*. Only what is on air
+  now is shown, and tuning one draws a **great-circle arc from your grid to the
+  transmitter** on the 3D globe. Seeded to
+  `~/.config/sdroxide/broadcast_stations.json` on first run and never overwritten,
+  so your corrections and local additions stick.
 - **Callsign lookup** — auto-fill name, QTH, grid and state from **QRZ.com** or
   **HamQTH** on a spot click, at QSO start, or when you type a call (or press
   **LOOKUP** in the entry form).

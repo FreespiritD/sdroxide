@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{info, warn};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -383,6 +383,97 @@ pub fn save_sat_config(cfg: &sdroxide_types::SatConfig) -> Result<(), ConfigErro
     save_json("satellites.json", cfg)
 }
 
+/// The broadcast station list (`broadcast_stations.json`).
+pub const BROADCAST_STATIONS_FILE: &str = "broadcast_stations.json";
+
+/// Where the broadcast station list lives, for showing in the settings panel.
+pub fn broadcast_stations_path() -> Result<PathBuf, ConfigError> {
+    Ok(config_dir()?.join(BROADCAST_STATIONS_FILE))
+}
+
+/// The longwave/shortwave broadcast stations the waterfall labels.
+///
+/// Unlike every other store here this file is *reference data*, not the
+/// operator's preferences: it is seeded once from the table compiled into the
+/// binary and then left alone, because someone who has corrected a schedule or
+/// added a local station must not lose it to an upgrade. Deleting the file
+/// restores the bundled list; [`restore_bundled_broadcast_stations`] does the
+/// same deliberately.
+///
+/// A malformed file falls back to the bundled table rather than to an empty
+/// list — the generic [`load_json`] behaviour of quietly starting fresh is
+/// wrong for data the operator never expected to have to maintain.
+pub fn load_broadcast_stations() -> Vec<sdroxide_types::BroadcastStation> {
+    let Ok(path) = broadcast_stations_path() else {
+        return sdroxide_types::broadcast::builtin().to_vec();
+    };
+    load_broadcast_stations_at(&path)
+}
+
+/// [`load_broadcast_stations`] against an explicit path, so the seed-once and
+/// fall-back-on-garbage behaviour can be tested without a config directory.
+fn load_broadcast_stations_at(path: &std::path::Path) -> Vec<sdroxide_types::BroadcastStation> {
+    if !path.exists() {
+        match write_bundled_broadcast_stations(path) {
+            Ok(()) => info!("seeded {BROADCAST_STATIONS_FILE} from the bundled station list"),
+            Err(e) => warn!("could not seed {BROADCAST_STATIONS_FILE}: {e}"),
+        }
+    }
+    match fs::read_to_string(path) {
+        Ok(text) => match serde_json::from_str::<sdroxide_types::BroadcastStations>(&text) {
+            Ok(f) => f.stations,
+            Err(e) => {
+                warn!("failed to parse {BROADCAST_STATIONS_FILE}: {e}; using the bundled list");
+                sdroxide_types::broadcast::builtin().to_vec()
+            }
+        },
+        Err(e) => {
+            warn!("failed to read {BROADCAST_STATIONS_FILE}: {e}; using the bundled list");
+            sdroxide_types::broadcast::builtin().to_vec()
+        }
+    }
+}
+
+pub fn save_broadcast_stations(
+    stations: &[sdroxide_types::BroadcastStation],
+) -> Result<(), ConfigError> {
+    let file = sdroxide_types::BroadcastStations {
+        version: 1,
+        updated: String::new(),
+        note: String::new(),
+        stations: stations.to_vec(),
+    };
+    save_json(BROADCAST_STATIONS_FILE, &file)
+}
+
+/// Replace the operator's station list with the bundled one, keeping the old
+/// file alongside as `.bak`. The only path that overwrites their edits, so it
+/// stays behind an explicit action in the UI.
+pub fn restore_bundled_broadcast_stations() -> Result<(), ConfigError> {
+    restore_bundled_broadcast_stations_at(&broadcast_stations_path()?)
+}
+
+fn restore_bundled_broadcast_stations_at(path: &std::path::Path) -> Result<(), ConfigError> {
+    if path.exists() {
+        let backup = path.with_extension("json.bak");
+        if let Err(e) = fs::rename(path, &backup) {
+            warn!("could not back up {BROADCAST_STATIONS_FILE}: {e}");
+        }
+    }
+    write_bundled_broadcast_stations(path)
+}
+
+/// Write the compiled-in table out verbatim, so the shipped and on-disk copies
+/// are byte-identical — re-serialising would drop the file's own provenance
+/// notes and reformat every entry.
+fn write_bundled_broadcast_stations(path: &std::path::Path) -> Result<(), ConfigError> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    fs::write(path, sdroxide_types::broadcast::EMBEDDED_JSON)?;
+    Ok(())
+}
+
 /// Voice-keyer slot labels (one entry per slot). The recordings themselves are
 /// WAV files under [`voice_dir`]; this stores only what each slot is called.
 pub fn load_voice_names() -> Vec<String> {
@@ -490,5 +581,78 @@ mod tests {
         assert_eq!(c.spot_max_age_secs, 600, "the rest of the file still applies");
         assert!(c.cluster.enabled);
         assert!(c.freedv_reporter.enabled);
+    }
+
+    /// A scratch directory of our own, so the station-list tests never touch the
+    /// operator's real config. No `tempfile` dependency for four tests.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sdroxide-bc-test-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch dir");
+        dir.join(BROADCAST_STATIONS_FILE)
+    }
+
+    #[test]
+    fn a_missing_station_list_is_seeded_from_the_bundled_one() {
+        let path = scratch("seed");
+        assert!(!path.exists());
+        let loaded = load_broadcast_stations_at(&path);
+        assert!(path.exists(), "the file should have been written");
+        // Byte-for-byte, so the shipped and seeded copies cannot drift and the
+        // file's own provenance notes survive.
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            sdroxide_types::broadcast::EMBEDDED_JSON
+        );
+        assert_eq!(loaded.len(), sdroxide_types::broadcast::builtin().len());
+    }
+
+    #[test]
+    fn an_edited_station_list_survives_being_loaded_again() {
+        let path = scratch("edit");
+        load_broadcast_stations_at(&path);
+        fs::write(
+            &path,
+            r#"{"version":1,"stations":[{"name":"My Local Pirate","freq_khz":6295}]}"#,
+        )
+        .unwrap();
+        let loaded = load_broadcast_stations_at(&path);
+        assert_eq!(loaded.len(), 1, "the operator's file wins, and is not re-seeded");
+        assert_eq!(loaded[0].name, "My Local Pirate");
+        assert_eq!(loaded[0].freq_khz, 6295.0);
+        // A two-field entry is legal, and everything else defaults.
+        assert!(loaded[0].site.is_empty());
+        assert_eq!(loaded[0].mode_str(), "AM");
+    }
+
+    #[test]
+    fn a_corrupt_station_list_falls_back_without_overwriting_it() {
+        let path = scratch("corrupt");
+        fs::write(&path, "{ this is not json").unwrap();
+        let loaded = load_broadcast_stations_at(&path);
+        assert_eq!(
+            loaded.len(),
+            sdroxide_types::broadcast::builtin().len(),
+            "a broken file must not leave the waterfall with no stations"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "{ this is not json",
+            "and must not be silently destroyed — it is the operator's to fix"
+        );
+    }
+
+    #[test]
+    fn restoring_the_bundled_list_keeps_the_old_one_alongside() {
+        let path = scratch("restore");
+        fs::write(&path, r#"{"version":1,"stations":[{"name":"Mine","freq_khz":6070}]}"#).unwrap();
+        restore_bundled_broadcast_stations_at(&path).expect("restore");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            sdroxide_types::broadcast::EMBEDDED_JSON
+        );
+        let backup = path.with_extension("json.bak");
+        assert!(backup.exists(), "the edited list should be kept as .json.bak");
+        assert!(fs::read_to_string(&backup).unwrap().contains("Mine"));
     }
 }

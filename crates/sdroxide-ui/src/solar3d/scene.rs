@@ -1586,6 +1586,21 @@ fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, now: f64,
             st.digi.transmitting,
         );
     }
+
+    // Name the far end when it is a transmitter rather than a callsign: a
+    // weather-fax or broadcast station. The arc already puts a ring on the spot,
+    // so this only has to say what is standing there — "Nauen" or "Ascension
+    // Island" is the whole point of drawing the path at all.
+    if let (Some(dx), Some(text)) = (st.digi.dx, st.digi.dx_label.as_ref()) {
+        let pos = to_world(ephem::geodetic_to_body(dx.0, dx.1), 1.02);
+        s.labels.push(Label {
+            world: pos.arr(),
+            text: text.clone(),
+            color: lin_color(theme::CYAN, 0.95 * fade),
+            offset: [10.0, -7.0],
+            click: Click::None,
+        });
+    }
 }
 
 /// The last hour of decodes as fading arcs, newest first.
