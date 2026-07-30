@@ -362,6 +362,22 @@ It has been developed against a **HackRF One** (half-duplex TX) and a
 
 ## Building
 
+### Toolchain
+
+Install Rust with [rustup](https://rustup.rs/) rather than your distribution's
+`rust`/`cargo` package. The workspace is edition 2024, so it needs Rust 1.85 or
+newer, and the browser client needs a second compilation target that only
+rustup can add:
+
+```sh
+rustup target add wasm32-unknown-unknown
+```
+
+A distro-packaged cargo cannot add targets itself — some distros ship the wasm
+standard library as a separate package, but the usual symptom is that the native
+build works fine and the web client build fails on the missing target. Migrating
+to rustup is the shortest way out.
+
 The RADE digital-voice codec is vendored as a git submodule, so clone with:
 
 ```sh
@@ -370,12 +386,95 @@ git clone --recurse-submodules https://github.com/dividebysandwich/sdroxide
 git submodule update --init --recursive
 ```
 
+### What depends on what
+
+The native binary and the browser client are two separate builds. Only one
+combination couples them, and it couples them at *compile* time:
+
+| You want | Build | Web client needed? |
+| --- | --- | --- |
+| Native desktop UI | `cargo build --release` | no |
+| Native remote client (`--connect`) | `cargo build --release` | no |
+| Server, client served from a directory | `cargo build --release`, run with `--web-root` | yes, at run time |
+| Server, client baked into the binary | `cargo build --release --features embed-web` | **yes, before you compile** |
+
+`embed-web` embeds `crates/sdroxide-web/dist` with `rust-embed`, so that
+directory has to exist *while cargo compiles the server*. It is `.gitignore`d
+and therefore absent from a fresh clone, so reaching for `--features embed-web`
+first thing fails with:
+
+```
+#[derive(RustEmbed)] folder '.../crates/sdroxide-web/dist' does not exist
+```
+
+Build the web client first (below) and it compiles. Nothing else in the
+workspace depends on the wasm crate — plain `cargo build --release` never
+touches it.
+
+You do not need `embed-web` to run a server. Without it `--server` still
+serves the WebSocket backend for native `--connect` clients; pass `--web-root`
+to serve a Trunk-built directory, or browse to the HTTP port and get a one-line
+placeholder saying the client wasn't built.
+
+### System dependencies
+
 For the **SoapySDR** backend you need its development libraries and the driver
 module(s) for your radio (e.g. `soapysdr`, `soapysdr-module-hackrf`,
 `soapysdr-module-lms7` on Arch/Debian-style distros). Everything else — including
 the RTL-SDR backend — needs no SDR system library at all, so
 `cargo build --release --no-default-features` gives a working binary with no
 SoapySDR installed.
+
+Building RADE additionally needs **CMake**, a **C compiler**, **libclang**
+(for `bindgen`) and **autoconf / automake / libtool** — its build fetches and
+compiles a FARGAN-enabled Opus from source. That fetch means the *first* build
+needs network access; later builds reuse it. It is also the slow part of a clean
+build: RADE's model weights are ~110 MB of generated C.
+
+### Native binary
+
+```sh
+cargo build --release
+./target/release/sdroxide --probe        # verify your device is seen
+```
+
+### Browser client
+
+The browser client is a separate WebAssembly crate built with
+[Trunk](https://github.com/trunk-rs/trunk) 0.21 or newer (CI pins 0.21.14).
+Install it with `cargo install --locked trunk`, or drop a prebuilt binary from
+its releases page on your `PATH`:
+
+```sh
+cd crates/sdroxide-web && trunk build --release
+```
+
+Output lands in `crates/sdroxide-web/dist`. Trunk downloads `wasm-bindgen-cli`
+and `wasm-opt` itself the first time, so that run needs network access too.
+
+While working on the UI, skip the embed step entirely and point the server at
+the directory — a plain `trunk build` (debug) is much faster, and a browser
+reload picks up a rebuild:
+
+```sh
+cd crates/sdroxide-web && trunk build && cd ../..
+./target/release/sdroxide --server --web-root crates/sdroxide-web/dist
+```
+
+### Server with the client baked in
+
+Build in this order, then the binary is self-contained and `--server` needs no
+`--web-root`:
+
+```sh
+(cd crates/sdroxide-web && trunk build --release)   # 1. produces dist/
+cargo build --release --features embed-web          # 2. embeds dist/
+```
+
+One wrinkle worth knowing: only a **release** build actually bakes the files in.
+A debug build with `embed-web` reads them off disk at run time from the path
+recorded at compile time, which is why a debug server picks up a rebuilt web
+client without recompiling — and why a release binary does not.
 
 ### RTL-SDR permissions
 
@@ -406,27 +505,6 @@ stops working as a TV tuner.
 If a dongle is present but sdroxide cannot open it, `--probe` says so in words
 rather than errnos.
 
-Building RADE additionally needs **CMake**, a **C compiler**, **libclang**
-(for `bindgen`) and **autoconf / automake / libtool** — its build fetches and
-compiles a FARGAN-enabled Opus from source. That fetch means the *first* build
-needs network access; later builds reuse it. It is also the slow part of a clean
-build: RADE's model weights are ~110 MB of generated C.
-
-```sh
-cargo build --release
-./target/release/sdroxide --probe        # verify your device is seen
-```
-
-The browser client is a separate WebAssembly crate built with
-[Trunk](https://trunkrs.dev/):
-
-```sh
-cd crates/sdroxide-web && trunk build --release
-```
-
-Build the server with `--features embed-web` to bake the web client into the
-binary so `--server` needs no `--web-root`.
-
 ## Running
 
 ```sh
@@ -434,9 +512,13 @@ binary so `--server` needs no `--web-root`.
 sdroxide --freq 14074000 --mode ft8
 
 # Server: DSP + hardware here, UI in a browser at http://<host>:4950
+# (needs a web client: either an embed-web build, or --web-root as below)
 sdroxide --server
 
-# Desktop UI driven by a remote server:
+# Server serving a Trunk-built client from disk instead of an embedded one:
+sdroxide --server --web-root crates/sdroxide-web/dist
+
+# Desktop UI driven by a remote server (no web client involved):
 sdroxide --connect 192.168.1.10:4950
 ```
 
@@ -456,7 +538,7 @@ sdroxide --connect 192.168.1.10:4950
 | `--server` | Run as a server: HTTP web client + WebSocket streaming backend. |
 | `--connect <HOST[:PORT]>` | Connect as a native remote client to a running server. |
 | `--port <PORT>` | Server port (default: from config, `4950`). |
-| `--web-root <DIR>` | Directory with the Trunk-built web client (default: embedded assets with `--features embed-web`). |
+| `--web-root <DIR>` | Directory with the Trunk-built web client, e.g. `crates/sdroxide-web/dist` (default: embedded assets with `--features embed-web`). |
 | `--fft <N>` | Spectrum FFT size (default `4096`). |
 | `--tx-tune <SECS>` | Headless TX smoke test: key a tune carrier at minimal drive, then exit. |
 | `--ft8-cq <SECS>` | Headless FT8 smoke test: call CQ at minimal power, then exit. |
