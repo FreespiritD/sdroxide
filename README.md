@@ -418,6 +418,29 @@ placeholder saying the client wasn't built.
 
 ### System dependencies
 
+A native build needs a C toolchain and a handful of libraries on top of Rust:
+
+```sh
+# Debian / Ubuntu
+sudo apt install build-essential pkg-config cmake autoconf automake libtool \
+                 libclang-dev libasound2-dev libopus-dev
+# Arch
+sudo pacman -S base-devel pkgconf cmake autoconf automake libtool clang alsa-lib opus
+# macOS
+brew install pkg-config cmake autoconf automake libtool opus
+```
+
+- **ALSA** (`libasound2-dev` / `alsa-lib`) is not optional on Linux: the audio
+  device layer and the MIDI control input both link it. macOS and Windows use
+  their own system audio APIs.
+- **CMake**, a **C compiler**, **libclang** (for `bindgen`) and **autoconf /
+  automake / libtool** are for RADE, whose build fetches and compiles a
+  FARGAN-enabled Opus from source. That fetch means the *first* build needs
+  network access; later builds reuse it. It is also the slow part of a clean
+  build: RADE's model weights are ~110 MB of generated C.
+- **libopus** is strictly optional, but installing it avoids a CMake 4 problem —
+  see below.
+
 For the **SoapySDR** backend you need its development libraries and the driver
 module(s) for your radio (e.g. `soapysdr`, `soapysdr-module-hackrf`,
 `soapysdr-module-lms7` on Arch/Debian-style distros). Everything else — including
@@ -425,11 +448,49 @@ the RTL-SDR backend — needs no SDR system library at all, so
 `cargo build --release --no-default-features` gives a working binary with no
 SoapySDR installed.
 
-Building RADE additionally needs **CMake**, a **C compiler**, **libclang**
-(for `bindgen`) and **autoconf / automake / libtool** — its build fetches and
-compiles a FARGAN-enabled Opus from source. That fetch means the *first* build
-needs network access; later builds reuse it. It is also the slow part of a clean
-build: RADE's model weights are ~110 MB of generated C.
+#### "Compatibility with CMake < 3.5 has been removed" on CMake 4
+
+Two unrelated Opus builds happen during a full build, which makes this error
+easy to misattribute:
+
+- **RADE's Opus** — the patched, FARGAN-enabled one that `vendor/rade_c` fetches
+  and builds with **autotools**. Every CMake file involved — the vendored ones
+  and the wrapper project `crates/sdroxide-rade/build.rs` generates — requires
+  3.16 and configures cleanly under CMake 4.
+- **The server's Opus** — audio compression for browser and native remote
+  clients, via the `opus` → `audiopus_sys` crates. On Unix `audiopus_sys` probes
+  `pkg-config` for a system Opus and, if it finds none, compiles its own
+  vendored copy **with CMake**. That copy starts with
+  `cmake_minimum_required(VERSION 3.1)`.
+
+CMake 4.0 removed support for pre-3.5 minimums, so on a machine with CMake ≥ 4
+and no system Opus the build stops with:
+
+```
+CMake Error at CMakeLists.txt:1 (cmake_minimum_required):
+  Compatibility with CMake < 3.5 has been removed from CMake.
+```
+
+The bare `CMakeLists.txt` there is
+`~/.cargo/registry/src/*/audiopus_sys-0.2.2/opus/CMakeLists.txt`, not anything
+under `vendor/rade_c` — editing the RADE sources or the generated wrapper has no
+effect on it, and 0.2.2 is `audiopus_sys`'s newest release, so there is no
+version bump to pick up either. Fix it from either end:
+
+```sh
+# Install a system Opus and no CMake build happens at all (see the lists above).
+sudo apt install libopus-dev pkg-config
+
+# Or configure the vendored copy anyway — this is what the release workflow
+# does. CMake 3.x ignores the variable, so it is harmless to leave set.
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+```
+
+The two are not quite equivalent: on glibc Linux `audiopus_sys` links a
+*system* Opus dynamically, so a binary built with `libopus-dev` present needs
+libopus installed wherever it runs, while the vendored route builds it in. Set
+`OPUS_STATIC=1` to link the system one statically instead, or `OPUS_LIB_DIR` to
+point at a libopus that `pkg-config` cannot see.
 
 ### Native binary
 
