@@ -234,6 +234,16 @@ dial + XIT — so you can see at a glance how far RX and TX are shifted.
 
 ![RIT/XIT visualization](images/rit_xit.jpg)
 
+On an SDR, all three offsets — RIT, XIT and split — are software: the receiver
+and transmitter are tuned inside the IQ stream and the hardware never moves. A
+**CAT radio** has no such stream, only its dial, so sdroxide puts them on the
+dial instead: it sits on your receive frequency (VFO + RIT) while you listen and
+moves to the transmit frequency (the other VFO when split is on, plus XIT) for
+the length of each over, then comes straight back. The radio's frequency display
+follows, which is also how you can see it working. sdroxide switches the radio's
+*own* RIT, XIT and split off when it connects, so an offset left over on the rig
+can't quietly add itself to the one you set here.
+
 ### 2.7 Receiver controls
 
 - **AGC** — a drop-down: `Off`, `Slow`, `Med`, `Fast`.
@@ -1517,6 +1527,11 @@ separately from your computer's own speakers and microphone.
 
 Scroll down for **Apply / reconnect**, which reopens the rig with the new
 settings.
+
+> **Note:** RIT, XIT and split are driven over the same serial link, by moving
+> the radio's dial — see [2.6](#26-rit-and-xit). Set them in sdroxide rather than
+> on the radio: sdroxide clears the rig's own copies on connect so the two can't
+> stack up.
 
 #### 5.2.3 HPSDR (network radios)
 

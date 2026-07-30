@@ -61,6 +61,14 @@ trait Protocol: Send {
     fn tx_telemetry_requests(&self) -> Vec<Vec<u8>> {
         Vec::new()
     }
+    /// Frames that switch the rig's *own* RIT, XIT and split off, sent once
+    /// when the port opens. sdroxide carries all three on the dial (the rig's
+    /// dial is the only frequency control a CAT rig gives us), so anything the
+    /// radio is still holding would add to ours unseen. Empty for families with
+    /// no such command.
+    fn clear_offsets(&self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
     fn parse(&mut self, buf: &mut Vec<u8>) -> Vec<CatUpdate>;
 }
 
@@ -84,6 +92,9 @@ impl Protocol for Civ {
     }
     fn tx_telemetry_requests(&self) -> Vec<Vec<u8>> {
         vec![civ::read_swr_frame(self.radio)]
+    }
+    fn clear_offsets(&self) -> Vec<Vec<u8>> {
+        civ::clear_offsets_frames(self.radio)
     }
     fn parse(&mut self, buf: &mut Vec<u8>) -> Vec<CatUpdate> {
         let mut out = Vec::new();
@@ -317,6 +328,11 @@ fn serial_thread(
         }
         // Don't force a mode on connect — adopt the rig's current mode (read via
         // `query_once`/poll); the app commands mode only when the operator picks one.
+        // RIT/XIT/split are the exception: those we do own, so clear the rig's
+        // own copies rather than let them offset us invisibly.
+        for f in protocol.clear_offsets() {
+            let _ = port.write_all(&f);
+        }
 
         let mut rx = Vec::with_capacity(256);
         let mut read_buf = [0u8; 256];
@@ -344,6 +360,22 @@ fn serial_thread(
                         }
                     }
                     Ok(CatCmd::Ptt(on)) => {
+                        // Key-down has to land on the transmit frequency. With
+                        // XIT or split the engine queues the transmit dial
+                        // immediately before PTT, and the debounce below would
+                        // otherwise let the first moment of the over go out
+                        // where we were listening — so flush it first.
+                        if on
+                            && let Some(hz) = pending_freq.take()
+                            && last_sent_freq != Some(hz)
+                        {
+                            if port.write_all(&protocol.set_freq(hz)).is_err() {
+                                break 'io true;
+                            }
+                            last_sent_freq = Some(hz);
+                            emit_freq = Some(hz); // suppress the poll echo
+                            freq_deadline = Instant::now() + Duration::from_millis(50);
+                        }
                         let failed = match cfg.ptt {
                             PttMethod::Vox => false,
                             PttMethod::Rts => port.write_request_to_send(on).is_err(),

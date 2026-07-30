@@ -138,6 +138,19 @@ pub trait IqSource: Send {
     fn set_control_mode(&mut self, _mode: Mode) -> Result<()> {
         Ok(())
     }
+
+    /// The receive offset (RIT) this front end has to carry itself, in Hz —
+    /// zero when RIT is off.
+    ///
+    /// A source with a DDC applies RIT by shifting the DDC and never sees this.
+    /// A CAT rig has no DDC: its dial is the only frequency control there is, so
+    /// the offset has to go on the dial, which means the source needs to know
+    /// how much of the dial is RIT (to subtract it again from what the rig
+    /// reports back). The transmit side needs no equivalent — [`Self::tx_begin`]
+    /// is already handed the transmit frequency with XIT and split in it.
+    ///
+    /// Default: no-op.
+    fn set_rit_hz(&mut self, _hz: f64) {}
     /// Write real TX audio to the rig's sound card (used instead of `tx_write`
     /// in demod-audio mode, where the rig does its own modulation).
     fn tx_write_audio(&mut self, _audio: &[f32]) -> Result<()> {

@@ -1464,11 +1464,16 @@ impl Engine {
     /// In audio mode, keep `state.center_hz`/`sample_rate` describing the
     /// displayed RF window (dial ± bw/2, width = bw) so the panadapter axis and
     /// zoom clamp match the audio-band spectrum.
+    ///
+    /// The window hangs off the *receive* frequency, not the VFO: the rig hands
+    /// us audio from wherever its dial is, and with RIT on that dial is the VFO
+    /// plus the offset (see [`Self::update_tuning`]). Anchoring on the VFO would
+    /// mislabel every bin by the RIT offset.
     fn update_display_center(&mut self) {
         if !self.audio_mode {
             return;
         }
-        let dial = self.state.active_freq_hz();
+        let dial = self.state.rx_freq_hz();
         let lsb = self.state.rx[0].mode.is_lower_sideband();
         self.state.center_hz =
             if lsb { dial - self.audio_bw / 2.0 } else { dial + self.audio_bw / 2.0 };
@@ -3438,8 +3443,13 @@ impl Engine {
     fn update_tuning(&mut self) {
         if self.audio_mode {
             // The rig's dial IS the VFO — command it over CAT (no DDC offset).
-            let dial = self.state.active_freq_hz();
-            let _ = self.source.set_center_hz(dial);
+            // RIT has no DDC to ride on either, so it goes on the dial too: the
+            // source is told the VFO and the offset separately so it can take
+            // the offset back out of what the rig reports. XIT and split are
+            // the same trick on the transmit side, applied by `tx_begin`, which
+            // already receives `tx_freq_hz`.
+            self.source.set_rit_hz(self.state.rit.effective_hz());
+            let _ = self.source.set_center_hz(self.state.active_freq_hz());
             self.update_display_center();
             return;
         }

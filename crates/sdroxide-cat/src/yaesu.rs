@@ -54,6 +54,11 @@ impl Protocol for Yaesu {
     fn poll_requests(&self) -> Vec<Vec<u8>> {
         vec![b"FA;".to_vec(), b"MD0;".to_vec()]
     }
+    fn clear_offsets(&self) -> Vec<Vec<u8>> {
+        // Clarifier to zero, RIT/XIT/split off — sdroxide puts all three on the
+        // dial itself. Same scaffold caveat as the rest of this file.
+        vec![b"RC;".to_vec(), b"RT0;".to_vec(), b"XT0;".to_vec(), b"ST0;".to_vec()]
+    }
     fn parse(&mut self, buf: &mut Vec<u8>) -> Vec<CatUpdate> {
         // Accumulate ASCII, split on ';'.
         self.buf.push_str(&String::from_utf8_lossy(buf));

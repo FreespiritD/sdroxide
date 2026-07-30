@@ -110,6 +110,24 @@ pub fn read_swr_frame(radio: u8) -> Vec<u8> {
     frame(radio, 0x15, &[0x12])
 }
 
+/// Hand the rig's *own* RIT, ΔTX (XIT) and split back to neutral.
+///
+/// sdroxide carries all three on the dial itself (see `AudioCatSource`), so an
+/// offset the rig is still holding — from a previous session, or from the
+/// operator's own RIT knob — would stack on top of ours where nothing in the
+/// software could see it. Sent once when the port opens; a rig that doesn't
+/// implement these sub-commands just NAKs them, which the parser ignores.
+pub fn clear_offsets_frames(radio: u8) -> Vec<Vec<u8>> {
+    vec![
+        // RIT and ΔTX share one offset register (cmd 0x21 sub 0x00): the offset
+        // as two little-endian BCD bytes, then a sign byte.
+        frame(radio, 0x21, &[0x00, 0x00, 0x00, 0x00]),
+        frame(radio, 0x21, &[0x01, 0x00]), // RIT off
+        frame(radio, 0x21, &[0x02, 0x00]), // ΔTX (XIT) off
+        frame(radio, 0x0F, &[0x00]),       // simplex (split off)
+    ]
+}
+
 /// Decode Icom's 2-byte BCD meter reading (`0000..0255`) to a plain integer.
 /// `data` is the payload after the meter sub-command byte.
 fn decode_meter(data: &[u8]) -> Option<u32> {
@@ -254,6 +272,22 @@ mod tests {
         assert_eq!(swr([0x00, 0x0f]), None);
         // The wrong meter sub-command is ignored (we only read SWR / 0x12).
         assert_eq!(parse_swr_reply(&[0x11, 0x00, 0x50]), None);
+    }
+
+    #[test]
+    fn clearing_offsets_neutralises_rit_xit_and_split() {
+        let f = clear_offsets_frames(0x70);
+        let body = |i: usize| f[i][4..f[i].len() - 1].to_vec();
+        assert_eq!(f.len(), 4);
+        // Every frame is addressed to the rig from the controller.
+        for frame in &f {
+            assert_eq!(frame[..4], [0xFE, 0xFE, 0x70, 0xE0]);
+            assert_eq!(*frame.last().unwrap(), 0xFD);
+        }
+        assert_eq!(body(0), vec![0x21, 0x00, 0x00, 0x00, 0x00], "RIT/ΔTX offset → 0 Hz, +");
+        assert_eq!(body(1), vec![0x21, 0x01, 0x00], "RIT off");
+        assert_eq!(body(2), vec![0x21, 0x02, 0x00], "ΔTX (XIT) off");
+        assert_eq!(body(3), vec![0x0F, 0x00], "simplex");
     }
 
     #[test]
