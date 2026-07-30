@@ -26,6 +26,10 @@ remote = ["dep:ewebsock", "dep:sdroxide-proto"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = "0.15"
+# The OS timezone, for the solar view's local-time clock. `clock` is the only
+# feature that matters here; the browser build asks JavaScript for the offset
+# instead, so chrono never reaches the wasm dependency path.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 sdroxide-config = { path = "../sdroxide-config" }
 # MIDI control surfaces (VFO knob, PTT button, faders). Native-only: it links
 # the host MIDI stack, so it must never reach the wasm dependency path.

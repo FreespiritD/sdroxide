@@ -36,6 +36,11 @@ fn glyph(c: char) -> Option<[u8; GLYPH_W]> {
         'T' => [0x01, 0x01, 0x7F, 0x01, 0x01],
         'C' => [0x3E, 0x41, 0x41, 0x41, 0x22],
         'Z' => [0x61, 0x51, 0x49, 0x45, 0x43],
+        'L' => [0x7F, 0x40, 0x40, 0x40, 0x40],
+        'O' => [0x3E, 0x41, 0x41, 0x41, 0x3E],
+        'S' => [0x46, 0x49, 0x49, 0x49, 0x31],
+        'I' => [0x00, 0x41, 0x7F, 0x41, 0x00],
+        'M' => [0x7F, 0x02, 0x0C, 0x02, 0x7F],
         _ => return None,
     })
 }
@@ -102,6 +107,17 @@ mod tests {
             if let Some(prev) = seen.insert(g, c) {
                 panic!("{c} and {prev} have identical bitmaps");
             }
+        }
+    }
+
+    #[test]
+    fn every_clock_label_character_has_a_glyph() {
+        // A missing letter renders blank rather than failing, so "-- SIM" once
+        // drew as two dashes and three empty cells.
+        for c in "UTC LOC -- SIM".chars().filter(|c| !c.is_whitespace() && *c != '-') {
+            let g = glyph(c).unwrap_or_else(|| panic!("no glyph for {c}"));
+            assert!(g.iter().any(|b| *b != 0), "{c} renders blank");
+            assert!(g.iter().all(|b| b & 0x80 == 0), "{c} overflows the 7-row matrix");
         }
     }
 

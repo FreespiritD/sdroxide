@@ -866,28 +866,48 @@ fn hhmm(unix: i64) -> String {
     format!("{h:02}:{m:02}")
 }
 
-/// A big dot-matrix UTC clock in the top-left corner.
+/// A big dot-matrix UTC clock in the top-left corner, with the same instant in
+/// the operator's own zone on a smaller second row.
 ///
-/// UTC because everything else in the window is: the ephemeris, the DONKI
-/// timestamps, the arrival estimates and the FT8 slot boundaries. A local-time
-/// clock here would be the only thing on screen in a different frame.
+/// UTC leads because everything else in the window is UTC: the ephemeris, the
+/// DONKI timestamps, the arrival estimates and the FT8 slot boundaries. Local
+/// time is the row underneath because "is that pass at a civilised hour?" is a
+/// question about the wall clock in the shack, and doing that subtraction in
+/// your head is how a pass gets missed.
 fn clock(ui: &egui::Ui, rect: egui::Rect, sim_now: f64, scrubbed: bool) -> Option<egui::Rect> {
     use super::dotmatrix;
 
-    let (_, _, _, h, m, s) = sdroxide_types::utc_ymd_hms(sim_now as i64);
-    let text = format!("{h:02}:{m:02}:{s:02}");
+    let hms = |unix: i64| {
+        let (_, _, _, h, m, s) = sdroxide_types::utc_ymd_hms(unix);
+        format!("{h:02}:{m:02}:{s:02}")
+    };
+    let utc = sim_now as i64;
+    let text = hms(utc);
+    // The scrubbed instant, not the wall clock: two clocks side by side that
+    // disagreed about when "now" is would read as one of them being broken.
+    let local_text = hms(utc + crate::time::local_offset_seconds());
 
     // Scale with the window, but never so large it competes with the scene.
     let pitch = (rect.width() * 0.0085).clamp(2.6, 7.0);
     let size = dotmatrix::size(&text, pitch);
+    let local_pitch = pitch * 0.58;
+    let local_size = dotmatrix::size(&local_text, local_pitch);
     let label_pitch = pitch * 0.42;
     let label = if scrubbed { "-- SIM" } else { "UTC" };
     let label_size = dotmatrix::size(label, label_pitch);
+    let local_label_size = dotmatrix::size("LOC", label_pitch);
+
+    // Both labels share one column to the right of the digits, so UTC and LOC
+    // line up however wide the two readouts come out.
+    const GAP: f32 = 10.0;
+    let label_x = size.x.max(local_size.x) + GAP;
+    let row_gap = 7.0;
 
     let pad = egui::vec2(12.0, 9.0);
     let panel = egui::Rect::from_min_size(
         rect.left_top() + egui::vec2(12.0, 12.0),
-        egui::vec2(size.x, size.y + label_size.y + 6.0) + pad * 2.0,
+        egui::vec2(label_x + label_size.x.max(local_label_size.x), size.y + row_gap + local_size.y)
+            + pad * 2.0,
     );
     if !rect.contains_rect(panel) {
         return None;
@@ -905,11 +925,31 @@ fn clock(ui: &egui::Ui, rect: egui::Rect, sim_now: f64, scrubbed: bool) -> Optio
     // rather than as text in a blocky face.
     let on = if scrubbed { theme::YELLOW } else { theme::CYAN };
     let off = on.gamma_multiply(0.11);
-    dotmatrix::draw(ui.painter(), panel.min + pad, &text, pitch, on, off);
+    let origin = panel.min + pad;
+    let p = ui.painter();
+    // Each label sits on the bottom row of the digits it names.
+    dotmatrix::draw(p, origin, &text, pitch, on, off);
     dotmatrix::draw(
-        ui.painter(),
-        panel.min + pad + egui::vec2(0.0, size.y + 6.0),
+        p,
+        origin + egui::vec2(label_x, size.y - label_size.y),
         label,
+        label_pitch,
+        on.gamma_multiply(0.6),
+        egui::Color32::TRANSPARENT,
+    );
+    let local_y = size.y + row_gap;
+    dotmatrix::draw(
+        p,
+        origin + egui::vec2(0.0, local_y),
+        &local_text,
+        local_pitch,
+        on.gamma_multiply(0.72),
+        off,
+    );
+    dotmatrix::draw(
+        p,
+        origin + egui::vec2(label_x, local_y + local_size.y - local_label_size.y),
+        "LOC",
         label_pitch,
         on.gamma_multiply(0.6),
         egui::Color32::TRANSPARENT,

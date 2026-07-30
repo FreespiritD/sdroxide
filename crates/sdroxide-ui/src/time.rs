@@ -25,3 +25,28 @@ pub fn now_unix_f64() -> f64 {
         js_sys::Date::now() / 1000.0
     }
 }
+
+/// The operator's current offset from UTC, in seconds east of Greenwich.
+///
+/// Both halves ask the platform rather than deriving anything: the offset is a
+/// political fact about this instant — which side of a DST boundary it falls on
+/// — and not something a Unix timestamp carries.
+pub fn local_offset_seconds() -> i64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // chrono re-reads the zone at most once a second and caches it, so this
+        // is cheap enough to call once a frame.
+        use chrono::{Offset, TimeZone};
+        chrono::Local
+            .timestamp_opt(now_unix(), 0)
+            .single()
+            .map_or(0, |t| i64::from(t.offset().fix().local_minus_utc()))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // getTimezoneOffset counts minutes *behind* local time, so UTC+2 — two
+        // hours east — reports -120.
+        let minutes = js_sys::Date::new_0().get_timezone_offset();
+        (-minutes * 60.0) as i64
+    }
+}
