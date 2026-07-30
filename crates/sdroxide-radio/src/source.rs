@@ -29,6 +29,25 @@ pub trait IqSource: Send {
     fn center_hz(&self) -> f64;
     fn set_center_hz(&mut self, hz: f64) -> Result<()>;
 
+    /// How far above the operator's VFO this front end wants its LO parked, or
+    /// `0.0` to tune the LO straight to the VFO.
+    ///
+    /// Zero-IF hardware leaves LO leakage, converter offset and flicker noise
+    /// piled up at DC, which is exactly where the VFO would otherwise sit. A
+    /// DC blocker takes out the static part, but not the flicker noise or the
+    /// signal's own IQ image folding onto it — measured on a HackRF One at
+    /// 2 Msps, an FM broadcast station on the LO recovers a 19 kHz pilot 12 dB
+    /// above the noise floor with the offset removed, against 26 dB once the
+    /// station is moved off DC. So the LO is parked clear of the VFO and the
+    /// DDC brings the signal back down; the offset is the engine's business
+    /// because it owns retuning (see `keep_vfo_in_span`).
+    ///
+    /// Default: `0.0`, which is right for low-IF and direct-sampling front ends
+    /// (RTL-SDR, HPSDR, TCI) and for demod-audio rigs that have no DDC at all.
+    fn lo_offset_hz(&self) -> f64 {
+        0.0
+    }
+
     /// Blocking read. Returns the number of samples written to `buf`;
     /// 0 means a timeout (caller should just retry).
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize>;

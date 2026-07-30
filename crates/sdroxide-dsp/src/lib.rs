@@ -31,7 +31,7 @@ mod window;
 pub use agc::Agc;
 pub use ddc::Ddc;
 pub use decim::{FirDecim, HalfbandDecim, RealFirDecim, lowpass_taps};
-pub use demod::{DcBlock, Demodulator, channel_target, make_demod};
+pub use demod::{ComplexDcBlock, DcBlock, Demodulator, channel_target, make_demod};
 pub use fir::{ComplexFir, RealFir, bandpass_taps};
 pub use fsq::{FsqRx, FsqTx};
 pub use fsq_image::{FsqImageRx, FsqImageTx, IMG_H as FSQ_IMG_H, IMG_W as FSQ_IMG_W};

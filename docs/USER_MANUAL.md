@@ -1452,6 +1452,28 @@ The device to open and the sample rate come from `config.toml`
 an empty value uses the first device found. You can also override the device on
 the command line with `--device`.
 
+**Why your VFO does not sit in the middle of the waterfall.** On a SoapySDR
+device with a wide enough span, sdroxide parks the hardware LO a quarter of the
+span *above* the dial and tunes down to the signal in software, so your VFO
+marker sits a quarter of the way in from the left rather than dead centre. That
+is deliberate. Most SoapySDR hardware mixes straight to baseband, which piles
+its own LO leakage, converter offset and flicker noise up at the centre of the
+span — precisely where the dial would otherwise be. A narrow mode never notices,
+because that junk falls outside the demodulator's passband, but an FM
+discriminator has no passband to hide behind: on a HackRF One tuned straight
+onto a strong FM broadcast station, the offset measures about the same amplitude
+as the station itself, and what comes out of the speaker is static. Moving the
+LO clear of the dial is worth about 14 dB of recovered signal over simply
+subtracting the offset, so sdroxide does both. Narrow streams (under 1 Msps) and
+devices whose analogue filter is too narrow to reach the offset keep the LO on
+the dial and rely on the offset subtraction alone.
+
+The whole span is still yours — three quarters of it now sits above the dial,
+which is where band activity usually is — and the LO moves only when the dial
+would otherwise leave the usable span or come too close to the centre. Other
+interfaces (RTL-SDR, HPSDR, TCI, CAT) are unaffected: none of them puts the dial
+on a dirty LO.
+
 #### 5.2.2 CAT radios (serial control + USB audio)
 
 ![The Radio tab with the CAT / Audio interface selected](images/settings-radio-cat.jpg)

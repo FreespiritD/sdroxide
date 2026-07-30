@@ -3,7 +3,8 @@
 
 use num_complex::Complex;
 use sdroxide_dsp::{
-    Agc, ComplexFir, Ddc, Duc, MonoResampler, bandpass_taps, make_demod, make_modulator,
+    Agc, ComplexDcBlock, ComplexFir, Ddc, Duc, MonoResampler, bandpass_taps, channel_target,
+    make_demod, make_modulator,
 };
 use sdroxide_types::{AgcMode, Mode};
 
@@ -590,4 +591,78 @@ fn wfm_stereo_survives_dense_programme() {
     let pr = goertzel(&r[tail..], 1_000.0, ar);
     let sep = 10.0 * (pl / pr.max(1e-30)).log10();
     assert!(sep >= 25.0, "separation only {sep:.1} dB on dense programme");
+}
+
+/// A zero-IF front end's DC offset lands exactly where the VFO sits, and an FM
+/// discriminator — unlike every narrow demodulator — has no passband to keep it
+/// out: it reads the phase of signal-plus-offset. Runs the real device-rate
+/// path, DDC included, at the rate a HackRF actually settles on (2 Msps, the
+/// nearest it supports to the 1.536 default).
+///
+/// Failure is a cliff, not a slope, and it sits at parity. While the offset is
+/// smaller than the signal the phase error stays bounded by `arcsin(|C|/|A|)`
+/// and only adds intermodulation; once it is larger the signal vector no longer
+/// encircles the origin, the phase can never complete a turn, and the recovered
+/// tone collapses by ~60×. Sweeping the ratio through this chain puts the knee
+/// between 0.95 and 1.00.
+///
+/// Which is exactly where the hardware sits: measured on a HackRF One at
+/// 93.2 MHz, the DC vector is 0.0196 against 0.0202 of wanted signal at the
+/// discriminator input — a ratio of 0.97, with the station's instantaneous
+/// envelope dipping under it constantly. Hence 1.2 here: just past the knee,
+/// which is what a real capture spends much of its time being.
+#[test]
+fn wfm_needs_the_front_end_dc_blocker() {
+    let dev_rate = 2_000_000.0;
+    let n = (dev_rate * 0.4) as usize;
+    let clean = stereo_mpx_iq(
+        dev_rate,
+        n,
+        75_000.0,
+        true,
+        |t| 0.8 * (std::f64::consts::TAU * 1_000.0 * t).sin(),
+        |_| 0.0,
+    );
+    // 1.2× the unit envelope, in the direction the hardware's offset points.
+    let dc = C32::new(1.114, -0.448);
+    let offset: Vec<C32> = clean.iter().map(|&z| z + dc).collect();
+
+    let mut blocker = ComplexDcBlock::new(20.0, dev_rate);
+    let mut blocked = offset.clone();
+    // Block at a time, as the device layer feeds it.
+    for chunk in blocked.chunks_mut(16_384) {
+        blocker.process(chunk);
+    }
+
+    // Recovered 1 kHz tone as a fraction of total audio power. A clean tone
+    // reads ≈2 (Goertzel returns amplitude², mean power is A²/2).
+    let tone_purity = |iq: &[C32]| -> f64 {
+        let mut ddc = Ddc::new(dev_rate, channel_target(Mode::Wfm));
+        let mut demod = make_demod(Mode::Wfm, ddc.out_rate()).unwrap();
+        let (mut channel, mut audio) = (Vec::new(), Vec::new());
+        for chunk in iq.chunks(16_384) {
+            channel.clear();
+            ddc.process(chunk, &mut channel);
+            demod.process(&channel, &mut audio);
+        }
+        let tail = &audio[audio.len() / 2..];
+        let total: f64 =
+            tail.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>() / tail.len() as f64;
+        goertzel(tail, 1_000.0, demod.audio_rate()) / total.max(1e-30)
+    };
+
+    let (clean_p, offset_p, blocked_p) =
+        (tone_purity(&clean), tone_purity(&offset), tone_purity(&blocked));
+    assert!(clean_p > 1.5, "reference station is not clean to begin with: {clean_p:.3}");
+    assert!(
+        offset_p < 0.2,
+        "a DC vector {:.2}× the envelope should stop the discriminator turning, \
+         but purity only moved {clean_p:.3} -> {offset_p:.3}",
+        dc.norm()
+    );
+    assert!(
+        blocked_p > clean_p * 0.95,
+        "the blocker should restore the station: {clean_p:.3} clean, \
+         {offset_p:.3} offset, {blocked_p:.3} blocked"
+    );
 }

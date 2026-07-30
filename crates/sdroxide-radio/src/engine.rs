@@ -957,6 +957,11 @@ fn engine_thread(
     // WSJT-X UDP broadcast is likewise off unless the operator turned it on.
     engine.wsjtx_cfg = sdroxide_config::load_wsjtx_config();
     engine.sync_wsjtx();
+    // The source opened with its LO on the requested frequency, which is also
+    // where the VFO now sits — on zero-IF hardware that is the one place the VFO
+    // must not be, so let the span check park the LO clear of it before the
+    // first block arrives.
+    engine.keep_vfo_in_span();
     engine.update_tuning();
 
     let mut buf = vec![Complex32::default(); 16_384];
@@ -3012,6 +3017,14 @@ impl Engine {
         if rx == RxId::Main {
             self.sync_digi_mode();
             self.emit_digi_status();
+            // A wider channel needs a wider berth from the LO: switching a
+            // narrow mode that was happily sitting 30 kHz off the LO into WFM
+            // hands the discriminator a 250 kHz channel with the DC spike
+            // inside it. Re-check the clearance and move the LO if it grew.
+            if !self.audio_mode {
+                self.keep_vfo_in_span();
+                self.update_tuning();
+            }
         }
     }
 
@@ -3071,7 +3084,7 @@ impl Engine {
         if let Some(d) = self.main.as_mut().and_then(|c| c.demod.as_mut()) {
             d.set_filter(snapshot.filter_lo, snapshot.filter_hi);
         }
-        self.retune(entry.freq_hz);
+        self.retune_for_vfo(entry.freq_hz);
         self.update_tuning();
     }
 
@@ -3404,6 +3417,9 @@ impl Engine {
         self.sync_tci_iq();
         self.sync_audio_tap();
         self.broadcast_tci_state();
+        // Same as a cold start: the fresh VFO sits on the new front end's LO,
+        // which is where zero-IF hardware must not be tuned.
+        self.keep_vfo_in_span();
         self.update_tuning();
     }
 
@@ -4087,7 +4103,8 @@ impl Engine {
         Ok(())
     }
 
-    /// Retune hardware center if the active VFO left the usable span.
+    /// Retune hardware center if the active VFO left the usable span — or, on a
+    /// front end that has to keep clear of its own LO, came too close to it.
     fn keep_vfo_in_span(&mut self) {
         if self.audio_mode {
             return; // the dial is the VFO; update_tuning drives CAT directly
@@ -4095,9 +4112,33 @@ impl Engine {
         let span = self.state.sample_rate;
         let usable = span * 0.45; // keep VFO out of the outer 5% roll-off
         let vfo = self.state.active_freq_hz();
-        if (vfo - self.state.center_hz).abs() > usable {
-            self.retune(vfo);
+        let from_lo = (vfo - self.state.center_hz).abs();
+        if from_lo > usable || from_lo < self.lo_guard_hz() {
+            self.retune_for_vfo(vfo);
         }
+    }
+
+    /// How far the active VFO has to stay from the hardware LO.
+    ///
+    /// Zero on a front end whose LO is clean (`lo_offset_hz` == 0), so its
+    /// tuning behaviour is untouched. Otherwise 1.2× the DDC channel's
+    /// half-width, which is the whole point of the offset: keep DC outside the
+    /// channel the demodulator actually sees, with a margin. Capped below the
+    /// offset itself, because a guard a retune could not satisfy would make
+    /// [`Self::keep_vfo_in_span`] retune on every single call.
+    fn lo_guard_hz(&self) -> f64 {
+        let offset = self.source.lo_offset_hz();
+        if offset <= 0.0 {
+            return 0.0;
+        }
+        let channel = self.main.as_ref().map(|c| c.channel_rate()).unwrap_or(48_000.0);
+        (channel * 0.6).min(offset * 0.8)
+    }
+
+    /// Put the hardware where this VFO wants it: on the VFO for a front end with
+    /// a clean LO, [`IqSource::lo_offset_hz`] above it for one without.
+    fn retune_for_vfo(&mut self, vfo_hz: f64) {
+        self.retune(vfo_hz + self.source.lo_offset_hz());
     }
 
     fn retune(&mut self, center_hz: f64) {

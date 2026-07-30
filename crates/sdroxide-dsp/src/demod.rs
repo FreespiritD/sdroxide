@@ -188,6 +188,47 @@ impl DcBlock {
     }
 }
 
+/// Complex DC blocker for a raw device stream: a leaky mean, subtracted.
+///
+/// Zero-IF front ends mix straight to baseband, so their own LO leakage and
+/// converter offset land at DC — on a HackRF One the residual measures ~0.020
+/// full scale, about 60 % of the amplitude of a strong local broadcast station.
+/// Narrow modes never notice, because DC falls outside the demodulator's
+/// passband. An FM discriminator has no such passband: it reads the phase of
+/// whatever vector arrives, and a constant added to a constant-envelope signal
+/// distorts that phase directly, so a broadcast station demodulates as hash.
+///
+/// The corner is tens of Hz at a device rate in the Msps, so this removes the
+/// offset without touching the signal — a 20 Hz corner at 2 Msps is 10 ppm of
+/// the span. State is `f64` deliberately: the pole sits within 1e-5 of the unit
+/// circle at those rates, close enough that `f32` would quantize the corner.
+pub struct ComplexDcBlock {
+    alpha: f64,
+    mean_re: f64,
+    mean_im: f64,
+}
+
+impl ComplexDcBlock {
+    pub fn new(corner_hz: f64, sample_rate: f64) -> Self {
+        let alpha = if sample_rate > 0.0 {
+            (1.0 - (-std::f64::consts::TAU * corner_hz / sample_rate).exp()).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        ComplexDcBlock { alpha, mean_re: 0.0, mean_im: 0.0 }
+    }
+
+    /// Subtract the running DC estimate in place.
+    pub fn process(&mut self, buf: &mut [Complex32]) {
+        for s in buf {
+            self.mean_re += self.alpha * (s.re as f64 - self.mean_re);
+            self.mean_im += self.alpha * (s.im as f64 - self.mean_im);
+            s.re -= self.mean_re as f32;
+            s.im -= self.mean_im as f32;
+        }
+    }
+}
+
 /// AM: envelope detector after the band-pass, DC blocked.
 pub struct AmDemod {
     rate: f64,
