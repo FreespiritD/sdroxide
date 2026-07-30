@@ -139,7 +139,11 @@ The smaller grey number below the readout is the *inactive* VFO's frequency.
   takes the spot's frequency, and in FT8/FT4 it still tunes rather than moving
   the transmit offset.
 - **Left-drag** grabs the spectrum and slides it (the tuning moves with the
-  content).
+  content). Let go while the pointer is still moving and the dial keeps turning,
+  coasting to a stop like a weighted VFO knob — the faster the flick, the further
+  it runs. A slow, careful drag lands exactly where you release it, and pressing
+  anywhere on the panadapter catches a coasting dial and stops it dead (that
+  press does not tune). The sub-receiver's tuning drag has the same flywheel.
 - **Right-drag** pans the view only, without changing tuning.
 - **Shift+drag** measures bandwidth: a horizontal ruler with dotted vertical
   markers appears between where you pressed and the current pointer, showing the
@@ -208,7 +212,9 @@ On the panadapter the sub is drawn in **violet**, with the same passband wash,
 draggable filter edges and tuning line the main receiver has, labelled `SUB`.
 **Drag inside its passband** (or on its tuning line) to tune it — that drag moves
 the sub instead of panning the view, so each receiver is tuned by dragging its
-own filter area. **Shift+click** anywhere sends the sub straight there.
+own filter area. Released mid-motion it coasts on like the main dial, stopping at
+the edge of the receiver's span. **Shift+click** anywhere sends the sub straight
+there.
 
 Both receivers are tuned by DDCs on the same IQ stream, so the sub can reach
 anything inside the receiver's span and nothing outside it. A band change that
@@ -1743,7 +1749,8 @@ back to receive rather than transmitting your office.
 - **Click-tune rounding** — the step click-to-tune snaps to.
 - **Invert wheel direction** — flips both wheel actions.
 - **Left-drag tunes as well as pans** — turn it off to make left-drag pan only,
-  like right-drag.
+  like right-drag. It also turns off the dial's coast, since there is no longer a
+  dial being turned.
 - **Scroll a digit on the frequency readout to tune it** — the wheel over a digit
   of the VFO readout steps that digit.
 - **Restore mouse defaults** puts the whole section back.

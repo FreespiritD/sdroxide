@@ -31,6 +31,48 @@ const EDGE_GRAB_PX: f32 = 6.0;
 /// Pixel distance for grabbing the sub receiver's tuning line — its passband is
 /// grabbable in full, but in SSB the line sits outside it.
 const MARKER_GRAB_PX: f32 = 5.0;
+/// Constant bearing friction a coasting dial loses speed to, in screen points
+/// per second². This sets the character of the flywheel: the coast lasts
+/// roughly the release speed divided by this, so a flick twice as fast runs
+/// about twice as long — which is how a weighted VFO knob behaves and what
+/// makes the gesture predictable.
+const FLING_FRICTION: f32 = 1400.0;
+/// Viscous drag, per second, on top of the friction. Stops a very hard flick
+/// from crossing half a band without making a gentle one feel sticky: an
+/// ordinary flick coasts under a second and about half a panadapter width, a
+/// hard one a second and a half and a couple of widths.
+const FLING_DRAG: f32 = 0.6;
+/// Release speed below which the drag was *placing* the dial rather than
+/// spinning it, so it stops exactly where it was let go. Careful tuning must
+/// stay exact — this is the whole reason there is a threshold at all.
+const FLING_MIN_LAUNCH: f32 = 220.0;
+/// Speed at which a coast has run out and the dial is parked.
+const FLING_STOP: f32 = 25.0;
+
+/// The speed a coasting dial has left after `dt` seconds of friction and drag.
+///
+/// Both terms are taken as one step so the decay can never carry the speed
+/// through zero and spin the dial back the way it came: a decay larger than the
+/// speed itself parks it.
+fn fling_decay(vx: f32, dt: f32) -> f32 {
+    let decay = vx * FLING_DRAG * dt + vx.signum() * FLING_FRICTION * dt;
+    if decay.abs() >= vx.abs() { 0.0 } else { vx - decay }
+}
+
+/// A dial still coasting after the drag that spun it let go.
+///
+/// The velocity is in screen points per second, not Hz: a mechanical dial does
+/// not know what band scale the display is at, so the same flick has to coast
+/// the same *visible* distance whether the view spans 3 kHz or 3 MHz. The Hz
+/// step is derived per frame from the span in force at the time.
+#[derive(Clone, Copy)]
+struct Fling {
+    /// True when the sub receiver is the dial that is turning.
+    sub: bool,
+    /// Signed pointer velocity in points/second; positive is rightwards.
+    vx: f32,
+}
+
 /// The sub receiver's colour, on the panadapter and on its control module.
 /// Deliberately nothing like the main receiver's red, the amber VFO/RTTY
 /// markers, or the cyan the digital modes use: two receivers on one waterfall
@@ -735,6 +777,17 @@ pub fn show_ext(
     let fade_id = ui.id().with("bw-fade");
     let mut bw_fade: Option<(f64, f64, f64)> = ui.data(|d| d.get_temp(fade_id)).unwrap_or(None);
 
+    // Dial inertia: a tuning drag released while still moving leaves the dial
+    // coasting to a stop. Written back once, at the end of the interaction
+    // handling below.
+    let fling_id = ui.id().with("dial-fling");
+    let mut fling: Option<Fling> = ui.data(|d| d.get_temp(fling_id)).unwrap_or(None);
+    // Set when a press has stopped a coast, so the click it becomes is swallowed:
+    // catching a spinning knob means "stop here", never "tune to where my hand
+    // landed". Lives across the press/release frame pair.
+    let stop_click_id = ui.id().with("fling-stop-click");
+    let mut stop_click: bool = ui.data(|d| d.get_temp(stop_click_id)).unwrap_or(false);
+
     if resp.drag_started_by(egui::PointerButton::Primary) {
         // Decide from the PRESS position, not the current pointer position —
         // by the time the drag threshold trips, the pointer may already have
@@ -765,6 +818,26 @@ pub fn show_ext(
         });
     }
     if resp.drag_stopped() {
+        // Hand the drag's momentum to the dial it was turning, before the flags
+        // that say which dial that was are cleared below. Only the two tuning
+        // gestures have a flywheel: a filter edge, the resize grip, the
+        // measurement ruler and a pan that does not tune (right-drag, or
+        // left-drag with `drag_tunes` off) have nothing to spin. egui
+        // deliberately keeps the pointer's final velocity alive for the frame a
+        // drag ends on, which is exactly the release speed this needs.
+        let dial = if !resp.drag_stopped_by(egui::PointerButton::Primary) {
+            None
+        } else if sub_drag {
+            Some(true)
+        } else if wheel.drag_tunes && edge.is_none() && !resizing && measuring.is_none() {
+            Some(false)
+        } else {
+            None
+        };
+        if let Some(sub) = dial {
+            let vx = ui.input(|i| i.pointer.velocity().x);
+            fling = (vx.abs() >= FLING_MIN_LAUNCH).then_some(Fling { sub, vx });
+        }
         // If we were measuring, freeze the span and start its fade-out.
         if let Some(start_hz) = measuring {
             let end_hz =
@@ -810,6 +883,18 @@ pub fn show_ext(
     }
     if sec_pan != sec_pan_before {
         ui.data_mut(|d| d.insert_temp(sec_id, sec_pan));
+    }
+
+    // A hand back on a spinning knob stops it dead. This catches the press
+    // itself, not the drag it may become: a click-tune, or the first few pixels
+    // before the drag threshold trips, must not have the old coast running
+    // underneath them.
+    if fling.is_some()
+        && ui.input(|i| i.pointer.any_pressed())
+        && press_origin.is_some_and(|p| rect.contains(p))
+    {
+        fling = None;
+        stop_click = true;
     }
 
     if measuring.is_some() && resp.dragged_by(egui::PointerButton::Primary) {
@@ -883,6 +968,9 @@ pub fn show_ext(
             let scroll = if wheel.invert { -scroll } else { scroll };
             let act = if shift { wheel.wheel_shift } else { wheel.wheel };
             if scroll.abs() > 0.1 {
+                // Zooming or wheel-tuning is a fresh command to the dial; a coast
+                // still running would fight it.
+                fling = None;
                 match act {
                     WheelAction::Zoom => {
                         // Zoom around the cursor; scroll up = zoom in.
@@ -912,7 +1000,7 @@ pub fn show_ext(
                 }
             }
         }
-        if resp.clicked() {
+        if resp.clicked() && !stop_click {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let step = if wheel.click_tune_step_hz > 0.0 {
                     wheel.click_tune_step_hz
@@ -1008,6 +1096,69 @@ pub fn show_ext(
             }
         }
     }
+
+    // --- dial inertia -----------------------------------------------------
+    // Carry a released tuning drag on, decelerating, so the dial coasts to rest
+    // instead of stopping the instant the button comes up. Both terms of the
+    // deceleration are in screen points, and the Hz step is derived from the
+    // span in force *this* frame, so a coast that is zoomed into mid-flight
+    // slows down in Hz with it and keeps sliding the display at the same rate.
+
+    // A sub receiver switched off mid-coast leaves no dial to turn, and its
+    // momentum must not be waiting when it comes back.
+    if fling.is_some_and(|f| f.sub && !sub_on) {
+        fling = None;
+    }
+    if let Some(f) = fling.filter(|_| !resp.dragged_by(egui::PointerButton::Primary) && !sec_pan) {
+        // Clamped: a stalled frame (a mode change reloading the FFT, say) must
+        // not teleport the dial across the band.
+        let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.1);
+        let vx = fling_decay(f.vx, dt);
+        if vx.abs() < FLING_STOP {
+            fling = None;
+        } else {
+            let dhz = (vx * dt) as f64 * view.span() / rect.width() as f64;
+            fling = Some(Fling { vx, ..f });
+            if f.sub {
+                // The sub follows the pointer, so it coasts the same way it was
+                // dragged; the device passband is the end stop its DDC cannot
+                // reach past, and hitting it parks the dial.
+                let hz = (state.sub_rx_hz + dhz).clamp(dev_lo, dev_hi);
+                if hz == state.sub_rx_hz {
+                    fling = None;
+                } else {
+                    state.sub_rx_hz = hz; // optimistic echo, as during the drag
+                    cmds.push(Command::SetSubRxFreq(hz));
+                }
+            } else {
+                // Grab-the-content sense, matching the left-drag: the view slides
+                // with the dial so the VFO marker keeps its place on screen.
+                view.view_lo_hz -= dhz;
+                view.view_hi_hz -= dhz;
+                let hz = (state.active_freq_hz() - dhz).max(0.0);
+                match state.active_vfo {
+                    Vfo::A => state.vfo_a_hz = hz,
+                    Vfo::B => state.vfo_b_hz = hz,
+                }
+                cmds.push(Command::SetVfo { vfo: state.active_vfo, hz });
+                if hz == 0.0 {
+                    fling = None; // ran into the bottom of the spectrum
+                }
+            }
+            // The coast is animation, not a response to input: without this it
+            // would advance only when something else happened to repaint.
+            ui.ctx().request_repaint();
+        }
+    }
+    // The swallow only covers the one press/release pair that caught the dial.
+    if ui.input(|i| i.pointer.any_released()) {
+        stop_click = false;
+    }
+    ui.data_mut(|d| {
+        d.insert_temp(fling_id, fling);
+        d.insert_temp(stop_click_id, stop_click);
+    });
+
     view.clamp_to(dev_center, dev_span);
 
     // --- drawing ----------------------------------------------------------
@@ -1845,4 +1996,67 @@ fn freq_gridlines(view: &ViewState) -> Vec<f64> {
         hz += step;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// How long a dial released at `v0` points/second keeps turning, and how far
+    /// it travels, stepped at a plausible frame rate.
+    fn coast(v0: f32) -> (f32, f32) {
+        let dt = 1.0 / 60.0;
+        let (mut vx, mut t, mut px) = (v0, 0.0, 0.0);
+        while vx.abs() >= FLING_STOP {
+            vx = fling_decay(vx, dt);
+            px += vx * dt;
+            t += dt;
+            assert!(t < 60.0, "a coast from {v0} px/s never stopped");
+        }
+        (t, px)
+    }
+
+    /// The point of the whole thing: a faster flick spins the dial for longer
+    /// and carries it further, the way a weighted VFO knob does.
+    #[test]
+    fn a_faster_flick_coasts_longer_and_further() {
+        let (slow_t, slow_px) = coast(400.0);
+        let (mid_t, mid_px) = coast(1500.0);
+        let (fast_t, fast_px) = coast(4000.0);
+        assert!(slow_t < mid_t && mid_t < fast_t, "{slow_t} {mid_t} {fast_t}");
+        assert!(slow_px < mid_px && mid_px < fast_px, "{slow_px} {mid_px} {fast_px}");
+        // And it is a dial, not a slingshot: even a hard flick settles in a
+        // couple of seconds rather than drifting across the band.
+        assert!(fast_t < 3.5, "a hard flick should still settle promptly, took {fast_t}s");
+    }
+
+    /// A coast only ever runs down. Reversing direction would read as the dial
+    /// bouncing off something, and at a long frame the naive decay does exactly
+    /// that.
+    #[test]
+    fn a_coast_never_spins_backwards() {
+        for v0 in [-4000.0f32, -300.0, 300.0, 4000.0] {
+            let mut vx = v0;
+            for _ in 0..200 {
+                // Deliberately long frames: the worst case the clamp allows.
+                let next = fling_decay(vx, 0.1);
+                assert!(next == 0.0 || next.signum() == v0.signum(), "{v0} reversed to {next}");
+                assert!(next.abs() <= vx.abs(), "{v0} sped up: {vx} -> {next}");
+                vx = next;
+            }
+            assert_eq!(vx, 0.0, "a coast from {v0} px/s should have run out");
+        }
+    }
+
+    /// A slow, careful drag must place the dial exactly where it is released —
+    /// the launch threshold is what keeps precise tuning precise.
+    #[test]
+    fn a_careful_drag_does_not_fling() {
+        // A release just under the threshold is suppressed, and the coast it
+        // would have had is short enough that nothing visible is lost — which is
+        // what makes the threshold safe to set where it is.
+        let (t, px) = coast(FLING_MIN_LAUNCH);
+        assert!(t < 0.35, "the shortest coast that can launch is {t}s — too long to feel bounded");
+        assert!(px < 30.0, "suppressing it costs {px} points of travel");
+    }
 }
