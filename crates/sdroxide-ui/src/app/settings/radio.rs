@@ -261,6 +261,23 @@ pub(in crate::app) fn settings_hpsdr_tab(
              wrong sideband and FT8 returns no decodes at all.",
         );
         ui.end_row();
+
+        ui.label("Frequency correction").on_hover_text(
+            "Crystal/TCXO error in ppm, applied to RX and TX. Applies immediately.",
+        );
+        let mut ppm = cfg.hpsdr.ppm;
+        let resp = ui.add(
+            egui::DragValue::new(&mut ppm).range(-100.0..=100.0).speed(0.1).suffix(" ppm"),
+        );
+        if resp.changed() {
+            cfg.hpsdr.ppm = ppm;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: HpsdrConfig::PPM_ELEMENT.to_string(),
+                db: ppm,
+            });
+        }
+        ui.end_row();
     });
     ui.add_space(6.0);
     ui.label(

@@ -335,6 +335,10 @@ pub struct HpsdrConfig {
     /// that works.
     #[serde(default = "HpsdrConfig::default_invert_spectrum")]
     pub invert_spectrum: bool,
+    /// Crystal/TCXO error in ppm, applied to RX/TX frequency before it's sent
+    /// to the board's NCO.
+    #[serde(default)]
+    pub ppm: f64,
 }
 
 impl Default for HpsdrConfig {
@@ -346,6 +350,7 @@ impl Default for HpsdrConfig {
             lna_gain_db: Self::default_lna_gain_db(),
             filter_board: HpsdrFilterBoard::None,
             invert_spectrum: Self::default_invert_spectrum(),
+            ppm: 0.0,
         }
     }
 }
@@ -358,6 +363,8 @@ impl HpsdrConfig {
     /// rather than in `sdroxide-hpsdr` so the (wasm-safe) settings UI can address
     /// the same element without depending on the native backend crate.
     pub const LNA_GAIN_ELEMENT: &'static str = "LNA";
+    /// Ppm correction, riding `SetGain` like [`RtlSdrConfig::PPM_ELEMENT`].
+    pub const PPM_ELEMENT: &'static str = "PPM";
 
     /// Mid-scale default: sensitive enough on a quiet band without clipping the
     /// ADC on a real antenna.
@@ -387,6 +394,11 @@ impl HpsdrConfig {
     /// `None` means "discover and use the first responder".
     pub fn target_ip(&self) -> Option<&str> {
         self.manual_ip.as_deref().filter(|s| !s.trim().is_empty()).or(self.selected_ip.as_deref())
+    }
+
+    /// Scale `hz` by a ppm correction.
+    pub fn apply_ppm(hz: f64, ppm: f64) -> f64 {
+        hz * (1.0 + ppm / 1e6)
     }
 }
 
@@ -719,5 +731,13 @@ mod tests {
         let back: HpsdrConfig =
             serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(cfg, back);
+    }
+
+    #[test]
+    fn ppm_scales_frequency_proportionally() {
+        assert_eq!(HpsdrConfig::apply_ppm(14_000_000.0, 0.0), 14_000_000.0);
+        // +1 ppm at 14 MHz is +14 Hz.
+        assert!((HpsdrConfig::apply_ppm(14_000_000.0, 1.0) - 14_000_014.0).abs() < 1e-6);
+        assert!((HpsdrConfig::apply_ppm(14_000_000.0, -1.0) - 13_999_986.0).abs() < 1e-6);
     }
 }
