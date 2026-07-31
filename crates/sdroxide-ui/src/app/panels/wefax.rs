@@ -584,7 +584,10 @@ impl SdroxideApp {
             .id(egui::Id::new("wefax-viewer"))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
-            .default_size([900.0, 640.0])
+            .default_size([
+                crate::layout::window_w(ctx, 900.0),
+                crate::layout::window_h(ctx, 640.0),
+            ])
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     // Newer is up the list, older is down it.

@@ -876,7 +876,10 @@ impl SdroxideApp {
                     .open(&mut open)
                     .collapsible(false)
                     .resizable(true)
-                    .default_size([660.0, 528.0])
+                    .default_size([
+                        crate::layout::window_w(&ctx, 660.0),
+                        crate::layout::window_h(&ctx, 528.0),
+                    ])
                     .frame(crate::chrome::window_frame())
                     .show(&ctx, |ui| {
                         // Scale up to fill the window width (preserving aspect).

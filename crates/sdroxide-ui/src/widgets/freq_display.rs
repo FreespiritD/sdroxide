@@ -4,7 +4,9 @@
 use eframe::egui::{self, Color32, Label, RichText, Sense, Ui};
 use sdroxide_types::WheelSettings;
 
-const DIGIT_SIZE: f32 = 40.0;
+/// The readout's design size, and the largest it is ever drawn at. Narrower
+/// layouts fit smaller digits into the room they have — see `freq_module`.
+pub const DIGIT_SIZE: f32 = 40.0;
 /// Smooth-scroll points per tuning step.
 const SCROLL_STEP: f32 = 30.0;
 
@@ -13,7 +15,10 @@ const SCROLL_STEP: f32 = 30.0;
 /// `wheel` supplies the operator's pointer preferences: `digit_wheel` turns the
 /// per-digit scroll stepping off for anyone who would rather scroll the page,
 /// and `invert` flips the wheel direction to match the panadapter.
-pub fn show(ui: &mut Ui, id: egui::Id, hz: f64, wheel: WheelSettings) -> Option<f64> {
+///
+/// `size` is the digit height; the caller fits it to the room it actually has
+/// (see `freq_module`). [`DIGIT_SIZE`] is the design size a desktop uses.
+pub fn show(ui: &mut Ui, id: egui::Id, hz: f64, wheel: WheelSettings, size: f32) -> Option<f64> {
     let mut freq = hz.round().max(0.0) as i64;
     let orig = freq;
 
@@ -22,7 +27,7 @@ pub fn show(ui: &mut Ui, id: egui::Id, hz: f64, wheel: WheelSettings) -> Option<
         for p in (0..10u32).rev() {
             if p < 9 && (p + 1) % 3 == 0 {
                 ui.add(Label::new(
-                    RichText::new(".").monospace().size(DIGIT_SIZE).color(Color32::from_gray(110)),
+                    RichText::new(".").monospace().size(size).color(Color32::from_gray(110)),
                 ));
             }
 
@@ -35,7 +40,7 @@ pub fn show(ui: &mut Ui, id: egui::Id, hz: f64, wheel: WheelSettings) -> Option<
             let resp = ui
                 .add(
                     Label::new(
-                        RichText::new(format!("{digit}")).monospace().size(DIGIT_SIZE).color(color),
+                        RichText::new(format!("{digit}")).monospace().size(size).color(color),
                     )
                     .sense(Sense::click()),
                 )
@@ -77,7 +82,7 @@ pub fn show(ui: &mut Ui, id: egui::Id, hz: f64, wheel: WheelSettings) -> Option<
                 }
             }
         }
-        ui.add(Label::new(RichText::new(" Hz").size(12.0).color(Color32::from_gray(140))));
+        ui.add(Label::new(RichText::new(" Hz").size(size * 0.3).color(Color32::from_gray(140))));
     });
 
     (freq != orig).then_some(freq as f64)

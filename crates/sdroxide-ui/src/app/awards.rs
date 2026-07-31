@@ -109,8 +109,8 @@ impl SdroxideApp {
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)
-            .default_width(540.0)
-            .default_height(560.0)
+            .default_width(crate::layout::window_w(ctx, 540.0))
+            .default_height(crate::layout::window_h(ctx, 560.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Band").size(11.0).color(Color32::from_gray(150)));

@@ -344,10 +344,10 @@ impl Help {
             .frame(crate::chrome::window_frame())
             .resizable(true)
             .collapsible(false)
-            .default_width(940.0)
-            .default_height(680.0)
-            .min_width(560.0)
-            .min_height(360.0)
+            .default_width(crate::layout::window_w(ctx, 940.0))
+            .default_height(crate::layout::window_h(ctx, 680.0))
+            .min_width(crate::layout::window_w(ctx, 560.0))
+            .min_height(crate::layout::window_h(ctx, 360.0))
             .show(ctx, |ui| {
                 // egui's resizable window never shrinks and grows every frame to
                 // `max(desired_size, last_content_size)` (see egui resize.rs). We
@@ -362,50 +362,66 @@ impl Help {
                 let mut actions = Actions::default();
                 let mut nav_click: Option<String> = None;
 
+                // A compact layout drops the contents column: 236 pt of it is
+                // two thirds of a phone's width, spent on an index for a
+                // document the reader would then have no room to read. The
+                // manual's own headings still get there by scrolling.
+                let nav = !crate::layout::tier(ctx).compact();
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
 
                     // --- Left: navigation outline (own scroll area) ---
                     const NAV_W: f32 = 236.0;
-                    ui.allocate_ui_with_layout(
-                        vec2(NAV_W, full_h),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            egui::Frame::new()
-                                .fill(theme::BG_DEEP)
-                                .inner_margin(egui::Margin { left: 8, right: 8, top: 8, bottom: 8 })
-                                .show(ui, |ui| {
-                                    ui.set_min_height(full_h - 16.0);
-                                    ui.set_width(NAV_W - 16.0);
-                                    ui.label(
-                                        RichText::new("CONTENTS")
-                                            .color(theme::CYAN_DIM)
-                                            .size(10.0)
-                                            .strong(),
-                                    );
-                                    ui.add_space(6.0);
-                                    egui::ScrollArea::vertical()
-                                        .id_salt("help_nav")
-                                        .auto_shrink([false, false])
-                                        .show_themed(ui, |ui| {
-                                            ui.spacing_mut().item_spacing.y = 1.0;
-                                            for entry in &self.doc.nav {
-                                                if nav_item(ui, entry, entry.slug == self.active) {
-                                                    nav_click = Some(entry.slug.clone());
+                    if nav {
+                        ui.allocate_ui_with_layout(
+                            vec2(NAV_W, full_h),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                egui::Frame::new()
+                                    .fill(theme::BG_DEEP)
+                                    .inner_margin(egui::Margin {
+                                        left: 8,
+                                        right: 8,
+                                        top: 8,
+                                        bottom: 8,
+                                    })
+                                    .show(ui, |ui| {
+                                        ui.set_min_height(full_h - 16.0);
+                                        ui.set_width(NAV_W - 16.0);
+                                        ui.label(
+                                            RichText::new("CONTENTS")
+                                                .color(theme::CYAN_DIM)
+                                                .size(10.0)
+                                                .strong(),
+                                        );
+                                        ui.add_space(6.0);
+                                        egui::ScrollArea::vertical()
+                                            .id_salt("help_nav")
+                                            .auto_shrink([false, false])
+                                            .show_themed(ui, |ui| {
+                                                ui.spacing_mut().item_spacing.y = 1.0;
+                                                for entry in &self.doc.nav {
+                                                    if nav_item(
+                                                        ui,
+                                                        entry,
+                                                        entry.slug == self.active,
+                                                    ) {
+                                                        nav_click = Some(entry.slug.clone());
+                                                    }
                                                 }
-                                            }
-                                        });
-                                });
-                        },
-                    );
+                                            });
+                                    });
+                            },
+                        );
 
-                    // Divider between the panes.
-                    let (drect, _) = ui.allocate_exact_size(vec2(9.0, full_h), Sense::hover());
-                    ui.painter().vline(
-                        drect.center().x,
-                        drect.y_range(),
-                        Stroke::new(1.0, theme::LINE_LIT),
-                    );
+                        // Divider between the panes.
+                        let (drect, _) = ui.allocate_exact_size(vec2(9.0, full_h), Sense::hover());
+                        ui.painter().vline(
+                            drect.center().x,
+                            drect.y_range(),
+                            Stroke::new(1.0, theme::LINE_LIT),
+                        );
+                    }
 
                     // A nav click wins over a stale link target and takes
                     // effect this same frame.

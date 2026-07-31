@@ -510,6 +510,16 @@ impl AgcMode {
         }
     }
 
+    /// Cycle to the next setting: Off → Slow → Med → Fast → Off.
+    pub fn next(self) -> AgcMode {
+        match self {
+            AgcMode::Off => AgcMode::Slow,
+            AgcMode::Slow => AgcMode::Med,
+            AgcMode::Med => AgcMode::Fast,
+            AgcMode::Fast => AgcMode::Off,
+        }
+    }
+
     /// Hang time in milliseconds; `None` means AGC disabled.
     pub fn hang_ms(self) -> Option<f32> {
         match self {

@@ -6,7 +6,7 @@ use eframe::egui::{
     TextStyle, Ui, WidgetText, pos2, vec2,
 };
 
-use crate::theme;
+use crate::theme::{self, ThemedScroll};
 
 /// Corner cut size for panel frames.
 const FRAME_CUT: f32 = 10.0;
@@ -100,6 +100,14 @@ pub fn popup_fade_alpha(
 ) -> f32 {
     const HOLD: f64 = 5.0;
     const FADE: f64 = 3.0;
+    // A touched screen has no hover to hold a popup open with — the browser
+    // reports the pointer gone the instant a finger lifts — so the fade would
+    // take a popup away while it was being read. There it closes on a tap
+    // outside, and on nothing else.
+    if crate::layout::tier(ctx).touch() {
+        *since = None;
+        return 1.0;
+    }
     if !egui::Popup::is_id_open(ctx, popup_id) {
         *since = None;
         return 1.0;
@@ -301,6 +309,61 @@ pub fn module_bare_flush_h<R>(
     .inner
 }
 
+/// A row of controls inside a module box or inside a menu popup.
+///
+/// The bodies of the top-bar modules are written as rows sized for a box of a
+/// few hundred points. A popup is one narrow column instead, so the same row
+/// has to wrap and its sliders have to shrink to what is left. That difference
+/// is the whole of `narrow`, which is why it describes the *container* rather
+/// than the layout tier: one body, two shapes, and no second copy to drift.
+pub fn control_row<R>(ui: &mut Ui, narrow: bool, add: impl FnOnce(&mut Ui) -> R) -> R {
+    if narrow {
+        ui.horizontal_wrapped(|ui| {
+            // Leave room for the label and readout that ride beside a slider;
+            // the floor keeps a rail draggable even in the narrowest popup.
+            ui.spacing_mut().slider_width = (ui.available_width() - 96.0).clamp(80.0, 220.0);
+            add(ui)
+        })
+        .inner
+    } else {
+        ui.horizontal(add).inner
+    }
+}
+
+/// A tap-to-open menu popup wearing the app's cut-corner chrome.
+///
+/// Full opacity and no auto-fade — a menu is read, not glanced at, and on a
+/// touch screen there is no hover to hold [`popup_fade_alpha`] open with. It
+/// closes on a tap outside or on the chip again.
+///
+/// Scrolled rather than truncated: egui clamps a popup to the screen but will
+/// not scroll it, so a long menu on a phone in landscape would otherwise have
+/// its bottom quietly cut off.
+pub fn menu_popup<R>(ui: &mut Ui, btn: &Response, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+    let screen = ui.ctx().content_rect();
+    let resp = egui::Popup::from_toggle_button_response(btn)
+        .frame(window_frame())
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_max_width(430.0_f32.min(screen.width() - 24.0));
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            egui::ScrollArea::vertical()
+                .max_height(screen.height() * 0.6)
+                .show_themed(ui, add)
+                .inner
+        });
+    if let Some(r) = &resp {
+        paint_window_border(ui.ctx(), &r.response);
+    }
+    resp.map(|r| r.inner)
+}
+
+/// A section caption inside a menu popup — the same small cyan label the
+/// module boxes wear, so a menu reads as the box it replaced.
+pub fn menu_caption(ui: &mut Ui, text: &str) {
+    ui.label(RichText::new(text.to_uppercase()).color(theme::CYAN_DIM).size(9.5).strong());
+}
+
 /// Small L-shaped corner accents (page decoration, reference-style).
 pub fn corner_brackets(p: &Painter, rect: Rect, color: Color32) {
     let len = 16.0;
@@ -339,10 +402,13 @@ pub fn red_panel<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 /// `widgets.inactive.bg_fill`, which equals the module background here, so
 /// the empty portion of the track would otherwise be invisible.
 pub fn slider(ui: &mut Ui, slider: egui::Slider<'_>) -> Response {
+    // A fatter rail where the handle is dragged with a finger. Set here rather
+    // than in the theme so the handful of raw `Slider`s elsewhere keep theirs.
+    let rail = if crate::layout::tier(ui.ctx()).touch() { 12.0 } else { 6.0 };
     ui.scope(|ui| {
         ui.visuals_mut().widgets.inactive.bg_fill = theme::INPUT_BG;
         ui.visuals_mut().widgets.hovered.bg_fill = theme::INPUT_BG;
-        ui.spacing_mut().slider_rail_height = 6.0;
+        ui.spacing_mut().slider_rail_height = rail;
         ui.add(slider)
     })
     .inner
@@ -393,7 +459,7 @@ pub fn split_handle(ui: &mut Ui, size: egui::Vec2, bg: Option<Color32>) -> Respo
 /// Angled chip: a selectable button with cut top-left and bottom-right corners.
 /// Selected chips fill cyan with dark ink, like the reference nav pills.
 pub fn chip(ui: &mut Ui, selected: bool, text: impl Into<RichText>) -> Response {
-    chip_impl(ui, selected, text.into(), None)
+    chip_impl(ui, selected, text.into(), None, Sense::click())
 }
 
 /// Chip with an explicit accent fill when selected (e.g. PTT red).
@@ -404,7 +470,21 @@ pub fn chip_accent(
     fill: Color32,
     ink: Color32,
 ) -> Response {
-    chip_impl(ui, selected, text.into(), Some((fill, ink)))
+    chip_impl(ui, selected, text.into(), Some((fill, ink)), Sense::click())
+}
+
+/// An accent chip that reports being *held* rather than clicked — for a control
+/// that is on only while a finger or a mouse button is on it. Read the result
+/// with [`Response::is_pointer_button_down_on`]: it goes false the moment the
+/// press ends, including when the pointer is taken away entirely.
+pub fn chip_hold(
+    ui: &mut Ui,
+    selected: bool,
+    text: impl Into<RichText>,
+    fill: Color32,
+    ink: Color32,
+) -> Response {
+    chip_impl(ui, selected, text.into(), Some((fill, ink)), Sense::click_and_drag())
 }
 
 fn chip_impl(
@@ -412,6 +492,7 @@ fn chip_impl(
     selected: bool,
     text: RichText,
     accent: Option<(Color32, Color32)>,
+    sense: Sense,
 ) -> Response {
     let galley = WidgetText::from(text).into_galley(
         ui,
@@ -419,9 +500,13 @@ fn chip_impl(
         f32::INFINITY,
         FontSelection::Style(TextStyle::Button),
     );
-    let padding = vec2(9.0, 4.0);
+    // A shade roomier than a plain button, which is what gives a chip its
+    // pill-like proportions. Taken from the style rather than fixed so a
+    // touched layout's larger `button_padding` grows every chip in the program
+    // at once — a chip is the only button this app has.
+    let padding = ui.spacing().button_padding + vec2(2.0, 1.0);
     let size = galley.size() + padding * 2.0;
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
 
     if ui.is_rect_visible(rect) {
         let v = ui.style().interact_selectable(&resp, selected);

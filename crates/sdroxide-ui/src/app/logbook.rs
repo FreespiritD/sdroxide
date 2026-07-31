@@ -241,8 +241,8 @@ impl SdroxideApp {
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)
-            .default_width(720.0)
-            .default_height(560.0)
+            .default_width(crate::layout::window_w(ctx, 720.0))
+            .default_height(crate::layout::window_h(ctx, 560.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let adding = self.log_edit.as_ref().is_some_and(|f| f.id == 0);

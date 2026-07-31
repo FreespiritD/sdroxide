@@ -128,6 +128,12 @@ pub struct SdroxideApp {
     mode_popup_since: Option<f64>,
     fft_popup_since: Option<f64>,
     skimmer_popup_since: Option<f64>,
+    /// The layout in force last frame, so a change can re-apply the style
+    /// metrics (chip padding, text sizes) exactly once instead of every frame.
+    tier: crate::layout::Tier,
+    /// Whether the compact layout's press-and-hold PTT is being held, so it
+    /// sends one command per edge rather than one per frame.
+    ptt_held: bool,
     mem_name: String,
     // Skimmer (CW etc.) spots, newest merge-by-id.
     skimmer_spots: Vec<SkimmerSpot>,
@@ -378,6 +384,9 @@ impl SdroxideApp {
             mode_popup_since: None,
             fft_popup_since: None,
             skimmer_popup_since: None,
+            // Corrected on the first frame, once the viewport size is known.
+            tier: crate::layout::Tier::Desktop,
+            ptt_held: false,
             mem_name: String::new(),
             skimmer_spots: Vec::new(),
             skimmer_active_at: std::collections::HashMap::new(),

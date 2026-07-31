@@ -30,7 +30,7 @@ impl SdroxideApp {
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(false)
-            .default_width(420.0)
+            .default_width(crate::layout::window_w(ctx, 420.0))
             .show(ctx, |ui| {
                 // Edit the UI-owned copy so keystrokes aren't clobbered by the
                 // engine's status echo; persist on any change.

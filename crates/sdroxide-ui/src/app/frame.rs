@@ -26,10 +26,37 @@ const IDLE_POLL_MS: u64 = 250;
 /// The stream counts as stalled after this long without a new frame (seconds).
 const STREAM_STALE_S: f64 = 1.0;
 
+/// Split the digital-mode area between the waterfall and the operating panel.
+///
+/// Returns `(waterfall height, panel height)`, which always sum to
+/// `total - handle`: the panel is clamped and the waterfall takes what is left,
+/// rather than both being floored independently and their sum allowed past the
+/// height there actually is.
+fn digi_split(total: f32, handle_h: f32, fraction: f32) -> (f32, f32) {
+    let usable = (total - handle_h).max(0.0);
+    let min_panel = 190.0_f32.min(usable * 0.5);
+    let min_wf = 80.0_f32.min(usable * 0.5);
+    let panel_h = (usable * fraction).clamp(min_panel, (usable - min_wf).max(min_panel));
+    (usable - panel_h, panel_h)
+}
+
 impl eframe::App for SdroxideApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let now = ctx.input(|i| i.time);
+        // Settle the layout for this frame before anything draws. It is a
+        // property of the viewport plus the operator's override, and the
+        // override lives in settings the context cannot see — so it is decided
+        // once here and read from the context by everything downstream.
+        let tier = crate::layout::tier_for(ctx.content_rect().size(), self.ui_settings.layout);
+        crate::layout::set_tier(&ctx, tier);
+        if self.tier != tier {
+            self.tier = tier;
+            crate::theme::apply_metrics(&ctx, tier);
+            // The `Ui` we were handed took its copy of the style before this,
+            // so the new metrics land next frame; ask for one straight away.
+            ctx.request_repaint();
+        }
         while let Some(ev) = self.ctrl.poll_event() {
             match ev {
                 RadioEvent::Capabilities(c) => {
@@ -201,10 +228,16 @@ impl eframe::App for SdroxideApp {
         // reading it never tunes the radio at the same time.
         self.help.grab_keys(&ctx);
         self.control_inputs(&ctx, &mut cmds);
-        // Shutting down with a bound key or footswitch still held would
-        // otherwise leave the rig transmitting.
-        if ctx.input(|i| i.viewport().close_requested()) && self.input.any_held() {
-            self.release_held_controls(&mut cmds);
+        // Shutting down with a bound key, a footswitch or the compact layout's
+        // PTT still held would otherwise leave the rig transmitting.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.input.any_held() {
+                self.release_held_controls(&mut cmds);
+            }
+            if self.ptt_held {
+                self.ptt_held = false;
+                cmds.push(Command::SetPtt(false));
+            }
         }
 
         egui::Panel::top(egui::Id::new("topbar"))
@@ -355,9 +388,7 @@ impl eframe::App for SdroxideApp {
             let total = ui.available_height();
             let width = ui.available_width();
             let handle_h = 7.0;
-            let panel_h =
-                (total * self.view.digi_panel_fraction).clamp(190.0, (total - 140.0).max(190.0));
-            let wf_h = (total - panel_h - handle_h).max(80.0);
+            let (wf_h, panel_h) = digi_split(total, handle_h, self.view.digi_panel_fraction);
 
             let wf_tuning = self.wf_tick(frame.is_some());
             ui.allocate_ui(egui::vec2(width, wf_h), |ui| {
@@ -438,8 +469,11 @@ impl eframe::App for SdroxideApp {
             }
             // The full-band strip, above the panadapter and only when a front
             // end actually supplies one — and the operator has left the Display
-            // module's WIDE chip on.
-            if self.view.wide_waterfall
+            // module's WIDE chip on. Never on a phone: 96 pt of strip is a
+            // quarter of the height there, taken from the waterfall being
+            // listened to for a band view nothing is tuned to.
+            if !tier.waterfall_only()
+                && self.view.wide_waterfall
                 && let Some(wide) = self.wide_frame.clone()
             {
                 crate::widgets::wide_spectrum::show(
@@ -589,7 +623,7 @@ impl SdroxideApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.set_max_width(430.0);
+                ui.set_max_width(crate::layout::window_w(ctx, 430.0));
                 ui.label(
                     RichText::new(
                         "This engine was started with --oob-tx. The amateur-band lockout is \
@@ -698,5 +732,39 @@ impl SdroxideApp {
             voice: show_voice,
         };
         input.release_all(state, &mut sink, cmds);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::digi_split;
+
+    #[test]
+    fn the_digi_split_always_fits_the_height_it_was_given() {
+        // 277 pt is what the old independent clamps needed (190 panel + 80
+        // waterfall + 7 handle); every height below it used to overflow, and a
+        // phone in landscape has around 250 to give.
+        for total in [120.0f32, 180.0, 200.0, 250.0, 277.0, 400.0, 900.0] {
+            for fraction in [0.2f32, 0.5, 0.82] {
+                let (wf, panel) = digi_split(total, 7.0, fraction);
+                assert!(wf >= 0.0 && panel >= 0.0, "negative split at {total}/{fraction}");
+                let used = wf + panel + 7.0;
+                assert!(
+                    used <= total + 0.01,
+                    "{total} pt tall, {fraction} panel: asked for {used}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_roomy_window_still_honours_the_fraction_and_the_floors() {
+        let (wf, panel) = digi_split(900.0, 7.0, 0.5);
+        assert!((panel - (893.0 * 0.5)).abs() < 0.01, "panel {panel} ignored the fraction");
+        assert!(wf >= 80.0, "waterfall {wf} below its floor");
+        // Dragged all the way down, the waterfall keeps its 80 pt minimum.
+        let (wf, panel) = digi_split(900.0, 7.0, 0.99);
+        assert!(wf >= 80.0, "waterfall {wf} squeezed out");
+        assert!(panel >= 190.0, "panel {panel} below its floor");
     }
 }

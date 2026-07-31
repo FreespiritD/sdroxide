@@ -19,7 +19,7 @@ impl SdroxideApp {
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)
-            .default_width(340.0)
+            .default_width(crate::layout::window_w(ctx, 340.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(&mut self.mem_name);
@@ -102,8 +102,13 @@ impl SdroxideApp {
             // the first time the window is ever shown, and egui persists its
             // size — without the minimum, a build that shipped a narrower
             // window would keep squeezing the slot-name fields forever.
-            .default_width(600.0)
-            .min_width(600.0)
+            //
+            // Both are held inside the viewport, for the same reason in
+            // reverse: a keyer opened at 600 pt on a desktop would otherwise
+            // stay 600 pt wide on the phone that later loads the same storage,
+            // with a third of it off the side of the screen.
+            .default_width(crate::layout::window_w(ctx, 600.0))
+            .min_width(crate::layout::window_w(ctx, 600.0))
             .show(ctx, |ui| {
                 ui.label(
                     RichText::new(

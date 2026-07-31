@@ -15,10 +15,14 @@ pub(in crate::app) fn settings_ui_tab(
     cfg: &mut sdroxide_types::UiSettings,
     cloud_march: Option<&mut bool>,
 ) {
-    use sdroxide_types::{Speed, UiSettings};
+    use sdroxide_types::{LayoutMode, Speed, UiSettings};
     ui.label(RichText::new("Display").size(14.0).strong().color(crate::theme::CYAN));
     ui.add_space(6.0);
     egui::Grid::new("ui-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+        ui.label("Layout");
+        enum_combo(ui, "ui-layout", &mut cfg.layout, &LayoutMode::ALL, LayoutMode::label);
+        ui.end_row();
+
         ui.label("Screen update rate");
         ComboBox::from_id_salt("ui-fps")
             .selected_text(format!("{} fps", cfg.frame_rate_fps))
@@ -62,7 +66,11 @@ pub(in crate::app) fn settings_ui_tab(
     ui.add_space(8.0);
     ui.label(
         RichText::new(
-            "Higher frame rates look smoother but cost more CPU/GPU. Spectrum speed \
+            "Layout picks the control strip from the window size: the full strip on a \
+             desktop, menus on a tablet, and on a phone a compact readout with the \
+             waterfall alone below it. Force one to see how it looks — or to keep the \
+             menus in a small desktop window.\n\n\
+             Higher frame rates look smoother but cost more CPU/GPU. Spectrum speed \
              sets how quickly the trace reacts (slower = smoother/more averaged). The \
              background gradient fills the spectrum area from the top colour down to \
              the bottom colour.",

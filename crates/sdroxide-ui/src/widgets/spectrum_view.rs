@@ -26,10 +26,12 @@ const CLICK_TUNE_STEP: f64 = 10.0;
 /// Smooth-scroll points per wheel detent, matching the frequency readout so the
 /// two feel the same under the finger.
 const SCROLL_PER_DETENT: f32 = 30.0;
-/// Pixel distance for grabbing a filter edge.
+/// Pixel distance for grabbing a filter edge with a mouse, and the floor a
+/// touched layout's wider zone is never squeezed below. See `edge_grab`.
 const EDGE_GRAB_PX: f32 = 6.0;
 /// Pixel distance for grabbing the sub receiver's tuning line — its passband is
-/// grabbable in full, but in SSB the line sits outside it.
+/// grabbable in full, but in SSB the line sits outside it. Scaled with the edge
+/// zone so the two keep their relative feel on a touched layout.
 const MARKER_GRAB_PX: f32 = 5.0;
 /// Constant bearing friction a coasting dial loses speed to, in screen points
 /// per second². This sets the character of the flywheel: the coast lasts
@@ -684,7 +686,13 @@ pub fn show_ext(
 
     // Layout first — interactions depend on which strip the pointer is in.
     // A collapsed spectrum shows only the waterfall.
-    let frac = view.effective_spectrum_fraction();
+    // A phone draws the waterfall and nothing else: a spectrum trace in a
+    // 360 pt-wide window is a strip too thin to read that costs the waterfall a
+    // third of its height. The operator's own `spectrum_collapsed` and
+    // `spectrum_fraction` are only overridden here, never written, so a wider
+    // window gets back exactly the split it was left with.
+    let waterfall_only = crate::layout::tier(ui.ctx()).waterfall_only();
+    let frac = if waterfall_only { 0.0 } else { view.effective_spectrum_fraction() };
     let spec_h = if frac <= 0.0 { 0.0 } else { ((rect.height() - SCALE_H) * frac).max(40.0) };
     let spec_rect = Rect::from_min_size(rect.min, vec2(rect.width(), spec_h));
     let scale_rect =
@@ -711,6 +719,15 @@ pub fn show_ext(
     let spx1 = view.freq_to_x(sub_hz + state.rx[1].filter_hi as f64, &rect);
     let sub_marker_x = view.freq_to_x(sub_hz, &rect);
 
+    // How close counts as grabbing an edge. A mouse lands where it is pointed;
+    // a fingertip covers about nine millimetres, so a touched layout needs a
+    // wider zone — but never wider than a third of the passband itself, or the
+    // two edges of a 5 pt-wide SSB filter would meet in the middle and swallow
+    // click-to-tune across the whole signal.
+    let edge_grab =
+        crate::layout::tier(ui.ctx()).grab_px().min(((px1 - px0).abs() / 3.0).max(EDGE_GRAB_PX));
+    let marker_grab = edge_grab * (MARKER_GRAB_PX / EDGE_GRAB_PX);
+
     // Which passband edge the pointer can grab: the receiver it belongs to, and
     // whether it is the high edge.
     let edge_at = |p: egui::Pos2| -> Option<(RxId, bool)> {
@@ -723,7 +740,7 @@ pub fn show_ext(
         // where the two passbands overlap, the pointer means the receiver the
         // operator just parked there, not the one they have been on all along.
         let mut best = None;
-        let mut best_d = EDGE_GRAB_PX;
+        let mut best_d = edge_grab;
         for (x, rx, hi) in [
             (px0, RxId::Main, false),
             (px1, RxId::Main, true),
@@ -750,8 +767,7 @@ pub fn show_ext(
         if !sub_on || !(spec_rect.contains(p) || wf_rect.contains(p)) {
             return false;
         }
-        (spx0.min(spx1)..=spx0.max(spx1)).contains(&p.x)
-            || (p.x - sub_marker_x).abs() < MARKER_GRAB_PX
+        (spx0.min(spx1)..=spx0.max(spx1)).contains(&p.x) || (p.x - sub_marker_x).abs() < marker_grab
     };
 
     let edge_id = ui.id().with("pb-edge");
@@ -766,7 +782,8 @@ pub fn show_ext(
     // a vertical drag there changes the spectrum height.
     let resize_id = ui.id().with("spec-resize");
     let mut resizing: bool = ui.data(|d| d.get_temp(resize_id)).unwrap_or(false);
-    let hover_resize = resp.hover_pos().map(|p| scale_rect.contains(p)).unwrap_or(false);
+    let hover_resize =
+        !waterfall_only && resp.hover_pos().map(|p| scale_rect.contains(p)).unwrap_or(false);
 
     // Shift+drag bandwidth measurement: remembers the frequency where the drag
     // started; `None` when not measuring.
@@ -804,7 +821,11 @@ pub fn show_ext(
         } else {
             edge = origin.and_then(edge_at);
             sub_drag = edge.is_none() && origin.map(sub_grab_at).unwrap_or(false);
-            resizing = edge.is_none()
+            // Not where the spectrum is suppressed rather than collapsed: the
+            // scale strip is at the top of the widget there, and a drag on it
+            // would quietly rewrite a split the operator cannot see.
+            resizing = !waterfall_only
+                && edge.is_none()
                 && !sub_drag
                 && origin.map(|p| scale_rect.contains(p)).unwrap_or(false);
             measuring = None;
@@ -897,7 +918,25 @@ pub fn show_ext(
         stop_click = true;
     }
 
-    if measuring.is_some() && resp.dragged_by(egui::PointerButton::Primary) {
+    // Two fingers on the panadapter zoom the span about the point between them
+    // — the only way to change it on a screen with no wheel.
+    //
+    // First in the chain, and it swallows the drag: the browser keeps reporting
+    // a one-finger drag from the *first* finger down for the whole gesture, so
+    // without this a pinch would pan the view and turn the dial at the same
+    // time as zooming it.
+    let pinch = ui.input(|i| i.multi_touch()).filter(|mt| rect.contains(mt.center_pos));
+    if let Some(mt) = pinch {
+        let zoom = mt.zoom_delta as f64;
+        if zoom > 0.0 {
+            // Fingers apart is zoom *in*, i.e. a smaller span.
+            zoom_about(view, mt.center_pos.x, &rect, 1.0 / zoom, dev_span);
+        }
+        // A gesture is a fresh command to the view; a coast still running would
+        // fight it, and the lift at the end must not land as a click-tune.
+        fling = None;
+        stop_click = true;
+    } else if measuring.is_some() && resp.dragged_by(egui::PointerButton::Primary) {
         // Bandwidth measurement — no tuning or panning; drawn in the overlay
         // pass at the end.
     } else if resizing && resp.dragged_by(egui::PointerButton::Primary) {
@@ -976,14 +1015,7 @@ pub fn show_ext(
                         // Zoom around the cursor; scroll up = zoom in.
                         let rate = wheel.zoom_rate.clamp(0.1, 5.0) as f64;
                         let factor = 0.998f64.powf(scroll as f64 * 2.0 * rate);
-                        let fpos = view.x_to_freq(pos.x, &rect);
-                        let lo = fpos - (fpos - view.view_lo_hz) * factor;
-                        let hi = fpos + (view.view_hi_hz - fpos) * factor;
-                        let min_span = (dev_span / 1024.0).max(1_000.0);
-                        if hi - lo >= min_span {
-                            view.view_lo_hz = lo;
-                            view.view_hi_hz = hi;
-                        }
+                        zoom_about(view, pos.x, &rect, factor, dev_span);
                     }
                     WheelAction::Tune => {
                         // Same optimistic echo as the drag arm above, so the
@@ -1782,6 +1814,24 @@ fn draw_bw_measure(
     faded_label(p, rect, cr, fy, rt, color, a);
     // Bandwidth centred below the span line.
     faded_label(p, rect, (lo + hi) * 0.5, yl + 6.0, &format_bandwidth(bw), color, a);
+}
+
+/// Zoom the view about a fixed point on screen, keeping the frequency under `x`
+/// under `x`. `factor` below 1 narrows the span (zooms in).
+///
+/// The gesture the wheel and a two-finger pinch both are, so they cannot come
+/// to disagree about where a zoom is anchored or how far it may go.
+fn zoom_about(view: &mut ViewState, x: f32, rect: &Rect, factor: f64, dev_span: f64) {
+    let fpos = view.x_to_freq(x, rect);
+    let lo = fpos - (fpos - view.view_lo_hz) * factor;
+    let hi = fpos + (view.view_hi_hz - fpos) * factor;
+    // Past this the FFT has no more detail to give and the view would go on
+    // magnifying a single bin.
+    let min_span = (dev_span / 1024.0).max(1_000.0);
+    if hi - lo >= min_span {
+        view.view_lo_hz = lo;
+        view.view_hi_hz = hi;
+    }
 }
 
 /// A frequency in Hz as `xx.xxxxx MHz`.

@@ -289,7 +289,7 @@ impl SdroxideApp {
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(false)
-            .default_width(320.0)
+            .default_width(crate::layout::window_w(ctx, 320.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.add(

@@ -1712,6 +1712,11 @@ on the next open, so it does not need physically replugging either.
 
 The **UI** tab holds display preferences, stored in `config.toml` under `[ui]`:
 
+- **Layout** — which control strip the window wears. **Auto** picks one from the
+  window size and is what you want; **Desktop**, **Tablet** and **Phone** force
+  it, to see how the compact strips look without a phone to hand, or to keep the
+  menus in a small desktop window rather than a strip wrapped over three rows.
+  See [8.4](#84-phones-and-tablets) for what each one shows.
 - **Screen update rate** — the GUI/spectrum frame rate (30, 60, or 90 fps).
   Higher looks smoother and costs more CPU/GPU.
 - **Waterfall scroll speed** — how fast the waterfall scrolls: **Slow** (5
@@ -2857,6 +2862,70 @@ ssh -N -L 4950:localhost:4950 user@radio-host
 The native remote client (`sdroxide --connect`) has no such restriction — it
 uses your local sound devices directly and carries audio over the same
 WebSocket.
+
+### 8.4 Phones and tablets
+
+The control strip is eight boxes of a fixed width. On a desktop they sit in a
+row; on a narrow screen they cannot shrink, only wrap, so the strip would eat
+the screen and the widest boxes would still run off the side of it. Below about
+1100 points wide the strip is replaced by menus, and below about 600 — or on
+anything shorter than 440 points, which is a phone held sideways — by a compact
+strip. **Settings → UI → Layout** ([5.3](#53-ui-display-preferences)) forces a
+particular one; **Auto** is the default and picks from the window.
+
+The same rule applies to the native app, so dragging a desktop window narrow
+gets the same treatment.
+
+**On a tablet**, the frequency readout and the S-meter stay as they are — the
+digits shrink a little in portrait so both fit one row — and the rest becomes a
+row of menu chips:
+
+| Chip | What it holds |
+| --- | --- |
+| **PTT** | Keys the transmitter. Hold it down; letting go unkeys. |
+| **RX** | Volume, front-end gain, AGC, squelch, NB, ANC, NR |
+| **VFO** | A↔B, A→B, SPLIT, SUB, and the RIT/XIT offsets |
+| **SUB** | The second receiver's frequency, mode, filter and level (only while it is running) |
+| **TX** | TUNE, the voice keyer, and the drive, tune and mic levels |
+| **DISP** | FIT, PEAK, SPEC, WIDE, the skimmers, and the spectrum floor/ceiling and FFT size |
+| **SYS** | LOG, SPOTS, AWARDS, MEM, SETTINGS, HELP |
+
+A menu stays open until you tap outside it or tap its chip again — the top-bar
+popups do not fade away on a touch screen the way they do under a mouse, because
+there is no hovering pointer to hold them open.
+
+**On a phone** the readout shrinks too, and the A/B selector and the other VFO's
+frequency move into the **VFO** menu; a small `A` or `B` before the digits says
+which one you are tuning. The band/mode chip stays beside the digits where the
+width allows and moves to the menu row where it does not. The S-meter becomes a
+short strip, giving up exactly the width the menu chips need so they stay on its
+row rather than wrapping — and it wears the **bar** face, because the needle's
+arc is a chord across its box and needs height a phone has not got to spare.
+Clicking it still cycles between the bar and the trace. The panadapter shows
+**the waterfall only** — no spectrum trace and no full-band strip, whatever the
+DISP chips were last left set to. Both come back exactly as you left them on a
+wider screen; nothing is thrown away.
+
+**PTT is press-and-hold on both**, unlike the desktop's latching button: a
+latching control an inch from a waterfall you pan with your thumb is one mis-tap
+away from a transmitter left on. Lifting your finger always drops it, including
+when the browser takes the touch away because you switched tabs.
+
+Touch gestures on the waterfall:
+
+| Gesture | What it does |
+| --- | --- |
+| Drag | Pans the view and takes the dial with it, with the same flywheel coast as a mouse |
+| Two-finger pinch | Zooms the span about the point between your fingers — there is no scroll wheel to do it with |
+| Tap | Tunes to that frequency |
+| Drag a passband edge | Sets the filter. The grab zone is wider than under a mouse, but never more than a third of the passband, so tapping inside a narrow CW filter still tunes |
+
+Chips, sliders and entry fields are all drawn larger on a touched layout, so a
+row of controls is a row of finger-sized targets rather than 22-point ones.
+
+Remember that **audio needs a secure context**
+([8.3](#83-audio-needs-a-secure-context)): a phone opening the server over plain
+HTTP on the LAN gets the waterfall and the controls but no sound at all.
 
 ---
 

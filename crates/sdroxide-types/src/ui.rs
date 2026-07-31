@@ -24,6 +24,33 @@ impl Speed {
     }
 }
 
+/// Which layout the window wears. `Auto` picks one from the viewport size; the
+/// rest force it — for testing the compact strips without a phone to hand, and
+/// for anyone who would rather have the menus in a small desktop window than a
+/// control strip wrapped over three rows.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LayoutMode {
+    #[default]
+    Auto,
+    Desktop,
+    Tablet,
+    Phone,
+}
+
+impl LayoutMode {
+    pub const ALL: [LayoutMode; 4] =
+        [LayoutMode::Auto, LayoutMode::Desktop, LayoutMode::Tablet, LayoutMode::Phone];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LayoutMode::Auto => "Auto",
+            LayoutMode::Desktop => "Desktop",
+            LayoutMode::Tablet => "Tablet",
+            LayoutMode::Phone => "Phone",
+        }
+    }
+}
+
 /// User display preferences. All have defaults so a missing `[ui]` table loads.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -42,6 +69,8 @@ pub struct UiSettings {
     pub gradient_top: [u8; 3],
     /// Gradient colour at the bottom of the spectrum area (sRGB, 0–255).
     pub gradient_bottom: [u8; 3],
+    /// Which layout the window wears, or `Auto` to pick from the viewport.
+    pub layout: LayoutMode,
 }
 
 impl Default for UiSettings {
@@ -54,6 +83,7 @@ impl Default for UiSettings {
             spectrum_gradient: true,
             gradient_top: [64, 0, 0],   // dark red
             gradient_bottom: [0, 0, 0], // black
+            layout: LayoutMode::Auto,
         }
     }
 }

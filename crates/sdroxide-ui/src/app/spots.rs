@@ -305,8 +305,8 @@ impl SdroxideApp {
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)
-            .default_width(580.0)
-            .default_height(480.0)
+            .default_width(crate::layout::window_w(ctx, 580.0))
+            .default_height(crate::layout::window_h(ctx, 480.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     for (i, (kind, label)) in labels.iter().enumerate() {

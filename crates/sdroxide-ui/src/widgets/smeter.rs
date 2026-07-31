@@ -92,6 +92,27 @@ impl SmeterStyle {
             SmeterStyle::Trace => SmeterStyle::Needle,
         }
     }
+
+    /// The face for a box wider than it is tall — the shape the compact strip
+    /// hands the meter on a phone.
+    ///
+    /// The needle drops out there. Its arc is a chord across the box, so its
+    /// radius follows the *width*, and the headline chip ends up covering the
+    /// half of the scale the arc has not yet descended past — the reading and
+    /// the instrument printed over each other. The bar says the same thing in
+    /// a strip, which is exactly the shape available.
+    pub fn compact(self) -> Self {
+        match self {
+            SmeterStyle::Needle => SmeterStyle::Bar,
+            other => other,
+        }
+    }
+
+    /// The next style in the click cycle, skipping any this box cannot show.
+    pub fn next_compact(self) -> Self {
+        let next = self.next();
+        if next.compact() != next { next.next() } else { next }
+    }
 }
 
 /// Draw the S-meter in the selected style, filling the box's full interior.
@@ -537,22 +558,52 @@ fn chip(p: &Painter, top_left: Pos2, text: &str, accent: Color32, pt: f32) -> Re
     rect
 }
 
+/// Type sizes on the header, as `(chip, right-hand readout)`.
+///
+/// Floored below the instrument's own scale: everything else on the face is
+/// geometry, which reads fine at any size, but these two are *numbers*, and at
+/// the `k` a phone-sized box works out to they would be grey mush. Positions
+/// still follow `k`, so the header keeps its place on the face.
+fn header_pt(k: f32) -> (f32, f32) {
+    let tk = k.max(0.85);
+    (11.0 * tk, 14.0 * tk)
+}
+
+/// The bottom of the strip [`header`] occupies — for the faces that have to
+/// know what not to draw behind. Measured rather than assumed so it cannot
+/// drift from what `header` actually paints.
+fn header_h(p: &Painter, rect: Rect, k: f32) -> f32 {
+    let (chip_pt, _) = header_pt(k);
+    let text_h = p.layout_no_wrap("0".to_owned(), FontId::monospace(chip_pt), READOUT).size().y;
+    // 3·k down from the top, the chip's own 1.5 pt of padding either side of the
+    // text, then 2·k of clearance under it.
+    rect.top() + 3.0 * k + text_h + 3.0 + 2.0 * k
+}
+
 /// The top row every face shares: the headline value in a chip on the left, the
 /// secondary reading on the right. Returns the strip it occupies.
 fn header(p: &Painter, rect: Rect, r: &Reading, k: f32) -> Rect {
     let head_y = rect.top() + 3.0 * k;
-    let chip_rect = chip(p, pos2(rect.left() + 6.0 * k, head_y), &r.chip, r.accent, 11.0 * k);
+    let (chip_pt, strong_pt) = header_pt(k);
+    let chip_rect = chip(p, pos2(rect.left() + 6.0 * k, head_y), &r.chip, r.accent, chip_pt);
     if !r.right.is_empty() {
-        let (pt, ink) = if r.right_strong { (14.0 * k, READOUT) } else { (11.0 * k, SUBDUED) };
-        p.text(
-            pos2(rect.right() - 6.0 * k, head_y),
-            Align2::RIGHT_TOP,
-            &r.right,
-            FontId::monospace(pt),
-            ink,
-        );
+        let (pt, ink) = if r.right_strong { (strong_pt, READOUT) } else { (chip_pt, SUBDUED) };
+        // The secondary reading goes only where there is room for it beside the
+        // headline one. In a box narrow enough for the two to meet, the chip is
+        // the one worth keeping — it carries the signal report, and the pair
+        // printed over each other would cost both.
+        let w = p.layout_no_wrap(r.right.clone(), FontId::monospace(pt), ink).size().x;
+        if chip_rect.right() + 8.0 + w <= rect.right() - 6.0 * k {
+            p.text(
+                pos2(rect.right() - 6.0 * k, head_y),
+                Align2::RIGHT_TOP,
+                &r.right,
+                FontId::monospace(pt),
+                ink,
+            );
+        }
     }
-    Rect::from_min_max(rect.left_top(), pos2(rect.right(), chip_rect.bottom() + 2.0 * k))
+    Rect::from_min_max(rect.left_top(), pos2(rect.right(), header_h(p, rect, k)))
 }
 
 /// Peak-hold state: the highest fraction seen, and when it was set.
@@ -920,7 +971,7 @@ fn show_trace(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
     );
     let y_of = |f: f32| plot.bottom() - plot.height() * f.clamp(0.0, 1.0);
     // Where the header ends; nothing that would be drawn behind it is drawn.
-    let head_bottom = rect.top() + 20.0 * k;
+    let head_bottom = header_h(&p, rect, k);
 
     // Time gridlines every five seconds, anchored to "now" at the right edge.
     let span_s = TRACE_LEN as f32 / TRACE_HZ as f32;
@@ -1007,4 +1058,38 @@ fn show_trace(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
     header(&p, rect, &r, k);
     border(ui, rect);
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SmeterStyle;
+
+    #[test]
+    fn the_compact_cycle_visits_every_face_it_can_show_and_no_others() {
+        let mut seen = Vec::new();
+        let mut s = SmeterStyle::default();
+        for _ in 0..6 {
+            s = s.next_compact();
+            let shown = s.compact();
+            assert_ne!(shown, SmeterStyle::Needle, "a compact box cannot draw the needle");
+            if !seen.contains(&shown) {
+                seen.push(shown);
+            }
+        }
+        assert_eq!(seen.len(), 2, "the cycle should reach both compact faces: {seen:?}");
+    }
+
+    #[test]
+    fn the_full_cycle_still_visits_all_three() {
+        let mut seen = Vec::new();
+        let mut s = SmeterStyle::default();
+        for _ in 0..3 {
+            if !seen.contains(&s) {
+                seen.push(s);
+            }
+            s = s.next();
+        }
+        assert_eq!(seen.len(), 3, "the desktop cycle lost a face: {seen:?}");
+        assert_eq!(s, SmeterStyle::default(), "the cycle should come back round");
+    }
 }

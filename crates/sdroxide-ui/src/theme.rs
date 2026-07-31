@@ -58,41 +58,10 @@ pub fn continent_color(code: &str) -> Color32 {
 
 pub fn apply(ctx: &egui::Context) {
     install_fonts(ctx);
+    apply_metrics(ctx, crate::layout::Tier::Desktop);
 
     ctx.set_theme(egui::Theme::Dark);
     ctx.all_styles_mut(|style| {
-        style.text_styles = [
-            (TextStyle::Heading, FontId::new(16.0, FontFamily::Name("chakra-bold".into()))),
-            (TextStyle::Body, FontId::new(13.5, FontFamily::Proportional)),
-            (TextStyle::Button, FontId::new(13.5, FontFamily::Proportional)),
-            (TextStyle::Small, FontId::new(11.0, FontFamily::Proportional)),
-            (TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace)),
-        ]
-        .into();
-
-        style.spacing.item_spacing = egui::vec2(7.0, 5.0);
-        style.spacing.button_padding = egui::vec2(7.0, 3.0);
-        // Fixed slider width: otherwise sliders expand to fill the row, so a
-        // module with a slider balloons and pushes later modules off-screen
-        // instead of letting `horizontal_wrapped` wrap them.
-        style.spacing.slider_width = 84.0;
-        style.spacing.combo_width = 84.0;
-
-        // egui's default scrollbars float over the content as a 2 px hairline that
-        // only fades in on hover — easy to miss and hard to grab. Use solid bars of
-        // a constant width that are always fully opaque.
-        style.spacing.scroll = egui::style::ScrollStyle {
-            bar_width: 9.0,
-            handle_min_length: 24.0,
-            bar_inner_margin: 3.0,
-            bar_outer_margin: 0.0,
-            // Take the handle colour from `fg_stroke` instead of the (near-black)
-            // widget fill, so bars we don't paint by hand — combo popups, menus —
-            // still get a handle that stands out from the gutter.
-            foreground_color: true,
-            ..egui::style::ScrollStyle::solid()
-        };
-
         let v = &mut style.visuals;
         v.dark_mode = true;
         v.panel_fill = PANEL;
@@ -142,6 +111,63 @@ pub fn apply(ctx: &egui::Context) {
         v.widgets.open.bg_stroke = Stroke::new(1.0, CYAN_DIM);
         v.widgets.open.fg_stroke = Stroke::new(1.0, TEXT_STRONG);
         v.widgets.open.corner_radius = sharp;
+    });
+}
+
+/// Sizes, spacing and hit targets for one layout tier. Split out of [`apply`]
+/// so it can be re-run when the window crosses a breakpoint — [`apply`] itself
+/// installs the fonts, and rebuilding the atlas every time a window is dragged
+/// across 600 pt would be ruinous.
+///
+/// Deliberately touches no `visuals`: [`ScrollPalette`] swaps those in and out
+/// of the same context style, and the two must not fight over it.
+///
+/// A touched screen gets bigger type and roomier targets. Everything a finger
+/// has to hit is sized from `button_padding` and `interact_size` — chips
+/// through [`crate::chrome::chip`], fields through egui itself — so those two
+/// carry most of the tier here.
+pub fn apply_metrics(ctx: &egui::Context, tier: crate::layout::Tier) {
+    let touch = tier.touch();
+    let body = if touch { 14.5 } else { 13.5 };
+    ctx.all_styles_mut(|style| {
+        style.text_styles = [
+            (TextStyle::Heading, FontId::new(16.0, FontFamily::Name("chakra-bold".into()))),
+            (TextStyle::Body, FontId::new(body, FontFamily::Proportional)),
+            (TextStyle::Button, FontId::new(body, FontFamily::Proportional)),
+            (TextStyle::Small, FontId::new(11.0, FontFamily::Proportional)),
+            (TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace)),
+        ]
+        .into();
+
+        style.spacing.item_spacing =
+            if touch { egui::vec2(6.0, 7.0) } else { egui::vec2(7.0, 5.0) };
+        style.spacing.button_padding =
+            if touch { egui::vec2(11.0, 9.0) } else { egui::vec2(7.0, 3.0) };
+        if touch {
+            // Roughly a fingertip. Fields and chips both size from this, so it
+            // is what stops a row of controls being a row of 22 pt targets.
+            style.spacing.interact_size.y = 34.0;
+        }
+        // Fixed slider width: otherwise sliders expand to fill the row, so a
+        // module with a slider balloons and pushes later modules off-screen
+        // instead of letting `horizontal_wrapped` wrap them.
+        style.spacing.slider_width = if touch { 110.0 } else { 84.0 };
+        style.spacing.combo_width = 84.0;
+
+        // egui's default scrollbars float over the content as a 2 px hairline that
+        // only fades in on hover — easy to miss and hard to grab. Use solid bars of
+        // a constant width that are always fully opaque.
+        style.spacing.scroll = egui::style::ScrollStyle {
+            bar_width: if touch { 14.0 } else { 9.0 },
+            handle_min_length: 24.0,
+            bar_inner_margin: 3.0,
+            bar_outer_margin: 0.0,
+            // Take the handle colour from `fg_stroke` instead of the (near-black)
+            // widget fill, so bars we don't paint by hand — combo popups, menus —
+            // still get a handle that stands out from the gutter.
+            foreground_color: true,
+            ..egui::style::ScrollStyle::solid()
+        };
     });
 }
 
