@@ -7,6 +7,9 @@
     <link data-trunk rel="rust" data-wasm-opt="z" />
     <link data-trunk rel="copy-file" href="assets/audio_bridge.js" />
     <link data-trunk rel="copy-file" href="assets/pcm_worklet.js" />
+    <link data-trunk rel="copy-file" href="assets/ws_arraybuffer.js" />
+    <!-- Must run before the wasm opens its socket. -->
+    <script src="ws_arraybuffer.js"></script>
     <script src="audio_bridge.js"></script>
     <style>
         html, body {
