@@ -1873,7 +1873,7 @@ tab itself is:
   stations as spots** adds them to the panadapter, world map and SPOTS window
   under the **FREEDV** filter.
 - The status lines underneath show exactly how you are being reported
-  (`OE3JJS / JN78ve — SDRoxide 0.7.0`) and whether the connection is up.
+  (`OE3JJS / JN78ve — SDRoxide 0.8.0`) and whether the connection is up.
 - **APPLY** connects or disconnects and saves.
 
 ### 5.7 Uploads: callsign lookup and QSL services
