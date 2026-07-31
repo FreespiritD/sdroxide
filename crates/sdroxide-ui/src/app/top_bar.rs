@@ -831,10 +831,19 @@ impl SdroxideApp {
     }
 
     fn display_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        // The module reserves its width before the content is drawn.
+        // The module reserves its width before the content is drawn, so the
+        // WIDE chip has to be paid for before it is known to be drawn.
         const DISPLAY_W: f32 = 348.0;
+        const WIDE_CHIP_W: f32 = 60.0;
 
-        crate::chrome::module(ui, "Display", DISPLAY_W, |ui| {
+        // Only a front end with a full-band lane has ever sent one of these, so
+        // its presence is what says the strip is on offer at all — there is no
+        // capability flag for it, and inventing one would mean a wire-format
+        // change for something the frames themselves already answer.
+        let has_wide = self.wide_frame.is_some();
+        let width = if has_wide { DISPLAY_W + WIDE_CHIP_W } else { DISPLAY_W };
+
+        crate::chrome::module(ui, "Display", width, |ui| {
             if crate::chrome::chip(ui, false, "FIT")
                 .on_hover_text("Auto-set floor/ceiling for best waterfall contrast")
                 .clicked()
@@ -853,6 +862,20 @@ impl SdroxideApp {
                 .clicked()
             {
                 self.view.spectrum_collapsed = !self.view.spectrum_collapsed;
+            }
+            if has_wide
+                && crate::chrome::chip(ui, self.view.wide_waterfall, "WIDE")
+                    .on_hover_text(
+                        "Show/hide the full-band waterfall strip above the panadapter — \
+                         everything this receiver can see at once",
+                    )
+                    .clicked()
+            {
+                self.view.wide_waterfall = !self.view.wide_waterfall;
+                // History kept while the strip is hidden would come back as a
+                // block of minutes-old band, drawn as if it were the last few
+                // seconds. Start it again from now instead.
+                self.wide_wf.clear();
             }
             self.skimmer_button(ui, cmds);
             self.solar_button(ui);

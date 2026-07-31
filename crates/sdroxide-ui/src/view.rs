@@ -34,6 +34,18 @@ pub struct ViewState {
     /// history flows up and off the top, the way several other SDR programs
     /// draw it. Affects the time gridlines and the spot lanes too.
     pub waterfall_flip: bool,
+    /// Show the full-band strip above the panadapter, where the front end
+    /// supplies one. Purely a display switch: the source keeps producing the
+    /// frames while it is off, which is what keeps the chip that controls it on
+    /// screen (its presence is the evidence that this receiver has a full-band
+    /// lane at all).
+    #[serde(default = "wide_waterfall_default")]
+    pub wide_waterfall: bool,
+    /// Which spot kinds are shown in the SPOTS list, on the panadapter and on
+    /// the world map — indexed by `spot_kind_index`, so the chip order in the
+    /// SPOTS window and this array have to stay in lockstep.
+    #[serde(default = "spot_kinds_default")]
+    pub spot_kinds_shown: [bool; SPOT_KINDS],
     /// Fraction of the FT8/FT4 layout height used by the operating panel (the
     /// decode list + QSO area); the rest is the waterfall. User-draggable.
     pub digi_panel_fraction: f32,
@@ -285,6 +297,8 @@ impl Default for ViewState {
             peak_hold: false,
             spectrum_collapsed: false,
             waterfall_flip: false,
+            wide_waterfall: wide_waterfall_default(),
+            spot_kinds_shown: spot_kinds_default(),
             digi_panel_fraction: 0.46,
             digi_split_fraction: 0.52,
             js8_split_fraction: js8_split_default(),
@@ -344,6 +358,23 @@ impl ViewState {
     }
 }
 
+/// Default for [`ViewState::wide_waterfall`] — on, so a receiver that has a
+/// full-band lane shows it without anyone having to find the chip first.
+fn wide_waterfall_default() -> bool {
+    true
+}
+
+/// Number of spot-kind filter chips, i.e. the width of
+/// [`ViewState::spot_kinds_shown`]. Lives here rather than beside the chips
+/// because it fixes the shape of the persisted blob.
+pub const SPOT_KINDS: usize = 6;
+
+/// Default for [`ViewState::spot_kinds_shown`] — every kind shown, so enabling
+/// a feed is enough to see its spots.
+fn spot_kinds_default() -> [bool; SPOT_KINDS] {
+    [true; SPOT_KINDS]
+}
+
 /// Default for [`ViewState::js8_split_fraction`].
 fn js8_split_default() -> f32 {
     0.46
@@ -376,6 +407,22 @@ mod tests {
         assert_eq!(v.pre_digi_view, None, "the new field falls back to its default");
         // Everything the blob never mentioned comes from the defaults.
         assert_eq!(v.smeter_style, ViewState::default().smeter_style);
+        // Both of these default *on*, which is the whole point: an added filter
+        // array that fell back to `[false; N]` would silently hide every spot
+        // for everyone who upgrades, and it would look like the feeds broke.
+        assert!(v.wide_waterfall, "the full-band strip stays on offer after an upgrade");
+        assert_eq!(v.spot_kinds_shown, [true; SPOT_KINDS], "no spot kind is hidden by upgrading");
+    }
+
+    /// The chips write into the persisted view, so a stored blob has to bring
+    /// back exactly the ones that were switched off.
+    #[test]
+    fn the_spot_chips_survive_a_restart() {
+        let mut v = ViewState { wide_waterfall: false, ..ViewState::default() };
+        v.spot_kinds_shown[3] = false; // PSK off
+        let back: ViewState = ron::from_str(&ron::to_string(&v).unwrap()).unwrap();
+        assert_eq!(back.spot_kinds_shown, [true, true, true, false, true, true]);
+        assert!(!back.wide_waterfall);
     }
 
     #[test]

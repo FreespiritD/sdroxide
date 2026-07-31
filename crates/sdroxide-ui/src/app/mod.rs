@@ -54,7 +54,6 @@ use self::panels::sstv::SstvUi;
 use self::persist::{load_broadcast_stations, load_qso_log, load_sat_config, load_ui_settings};
 use self::settings::servers::TciServerStatus;
 use self::settings::{SatEditState, SettingsTab, SubStatusView};
-use self::spots::SPOT_KINDS;
 
 pub struct SdroxideApp {
     ctrl: Box<dyn RadioController>,
@@ -214,9 +213,6 @@ pub struct SdroxideApp {
     net_status: Option<String>,
     /// Spots window open state.
     show_spots: bool,
-    /// Which spot kinds are shown on the overlay/list (DX, POTA, SOTA, PSK,
-    /// FREEDV, BC) — indexed by [`spot_kind_index`].
-    spot_kinds_shown: [bool; SPOT_KINDS],
     /// Show only spots that fall inside the current panadapter view span.
     spot_in_view_only: bool,
     /// Fuzzy search query for the spot list. Narrows the list in the SPOTS
@@ -420,7 +416,6 @@ impl SdroxideApp {
             spots: Vec::new(),
             net_status: None,
             show_spots: false,
-            spot_kinds_shown: [true; SPOT_KINDS],
             spot_in_view_only: false,
             spot_search: String::new(),
             broadcast: load_broadcast_stations(),

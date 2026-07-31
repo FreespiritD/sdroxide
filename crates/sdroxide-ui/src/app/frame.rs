@@ -412,8 +412,11 @@ impl eframe::App for SdroxideApp {
                 self.view.view_hi_hz = hi;
             }
             // The full-band strip, above the panadapter and only when a front
-            // end actually supplies one.
-            if let Some(wide) = self.wide_frame.clone() {
+            // end actually supplies one — and the operator has left the Display
+            // module's WIDE chip on.
+            if self.view.wide_waterfall
+                && let Some(wide) = self.wide_frame.clone()
+            {
                 crate::widgets::wide_spectrum::show(
                     ui,
                     &mut self.wide_wf,

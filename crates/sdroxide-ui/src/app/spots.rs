@@ -16,9 +16,9 @@ use crate::app::logbook::LogEditForm;
 use crate::app::settings::SettingsTab;
 use crate::app::util::fmt_age;
 
-/// Index of a spot kind into the app's `spot_kinds_shown` filter array. Must
-/// stay in lockstep with the chip order in [`App::spots_window`], which indexes
-/// the array positionally.
+/// Index of a spot kind into the [`crate::view::ViewState::spot_kinds_shown`]
+/// filter array. Must stay in lockstep with the chip order in
+/// [`SdroxideApp::spots_window`], which indexes the array positionally.
 pub(in crate::app) fn spot_kind_index(kind: SpotKind) -> usize {
     match kind {
         SpotKind::DxCluster => 0,
@@ -29,9 +29,6 @@ pub(in crate::app) fn spot_kind_index(kind: SpotKind) -> usize {
         SpotKind::Broadcast => 5,
     }
 }
-
-/// Number of spot-kind filter chips, i.e. the width of `spot_kinds_shown`.
-pub(in crate::app) const SPOT_KINDS: usize = 6;
 
 /// Everything about a spot the search box should be able to find it by.
 ///
@@ -158,7 +155,7 @@ impl SdroxideApp {
     /// The search query is deliberately *not* part of this: it narrows the list
     /// in the SPOTS window only. See [`App::spot_search`].
     pub(in crate::app) fn spot_visible(&self, s: &Spot) -> bool {
-        if !self.spot_kinds_shown[spot_kind_index(s.kind)] {
+        if !self.view.spot_kinds_shown[spot_kind_index(s.kind)] {
             return false;
         }
         if self.spot_in_view_only
@@ -313,14 +310,14 @@ impl SdroxideApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     for (i, (kind, label)) in labels.iter().enumerate() {
-                        let chip = crate::chrome::chip(ui, self.spot_kinds_shown[i], *label);
+                        let chip = crate::chrome::chip(ui, self.view.spot_kinds_shown[i], *label);
                         let chip = if *kind == SpotKind::Broadcast {
                             chip.on_hover_text("Longwave & shortwave broadcast stations on air now")
                         } else {
                             chip
                         };
                         if chip.clicked() {
-                            self.spot_kinds_shown[i] = !self.spot_kinds_shown[i];
+                            self.view.spot_kinds_shown[i] = !self.view.spot_kinds_shown[i];
                         }
                     }
                     if crate::chrome::chip(ui, self.spot_in_view_only, "IN VIEW")

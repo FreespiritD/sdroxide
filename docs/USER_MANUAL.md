@@ -304,6 +304,15 @@ passband. The grips work on both the spectrum and the waterfall.
 - **PEAK** — show a decaying peak-hold trace over the spectrum.
 - **SPEC** — show or hide the spectrum line above the waterfall (lit when the
   spectrum is shown).
+- **WIDE** — show or hide the **full-band strip**: a shallow second waterfall
+  above the panadapter covering everything the receiver can see at once, with a
+  blue outline around the slice the panadapter is receiving and an amber line on
+  the tuned frequency. Click anywhere on it to tune there. The button appears
+  only on receivers that produce a full-band view — a direct-sampling front end
+  such as the RX-888; on an RTL-SDR, HPSDR or TCI radio the panadapter span is
+  all the hardware delivers — and the setting is remembered between sessions.
+  The strip is not shown in the digital modes, whose layout gives the height to
+  the operating panel instead.
 - **SKIM** — opens the skimmer popup (per-skimmer on/off and squelch); lit while
   any skimmer runs. See [Skimmers](#4-skimmers).
 - **☀ 3D** — open the [solar system 3D view](#6-solar-system-3d-view): a second
@@ -2864,7 +2873,10 @@ Spots then appear two ways:
   green **NEW** flag when it is a DXCC entity you haven't worked yet.
 
 Switching a category off hides it everywhere at once — the list, the panadapter
-labels and the world-map dots.
+labels and the world-map dots — and the six category chips are remembered
+between sessions, so a category you have no use for stays off. (**IN VIEW** is
+not: it is a way to read a crowded band for a moment, not a standing
+preference.)
 
 **Search** — the **⌕** box below the chips does a fuzzy search over everything in
 the list: callsigns, station and transmitter names, comments, park and summit
