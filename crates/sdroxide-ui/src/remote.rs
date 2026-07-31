@@ -27,9 +27,55 @@ pub trait AudioBridge {
     }
 }
 
+/// How many pre-open messages to hold. The window is one connect round-trip
+/// wide and the UI sends a handful of config commands in it, so this only ever
+/// bites if the socket never opens at all.
+const OUTBOX_LIMIT: usize = 64;
+
+/// Outbound gate: `Hello` has to be the first message the server reads, and the
+/// UI starts issuing commands (a first-frame `SetSpectrumCfg`, with no
+/// debounce) before the socket has finished opening. Anything sent that early
+/// waits here and flushes in order *behind* `Hello`.
+///
+/// Without it the two platforms fail differently and neither is acceptable:
+/// ewebsock's native sender queues pre-open messages, so the command reaches
+/// the server ahead of `Hello` and the session is closed with
+/// "expected Hello"; its web sender calls `send()` on a still-CONNECTING
+/// socket, which throws and drops the command on the floor.
+#[derive(Default)]
+struct Outbox {
+    opened: bool,
+    queued: VecDeque<ClientMsg>,
+}
+
+impl Outbox {
+    /// `Some(msg)` to write now, `None` if it was held back.
+    fn send(&mut self, msg: ClientMsg) -> Option<ClientMsg> {
+        if self.opened {
+            return Some(msg);
+        }
+        if self.queued.len() == OUTBOX_LIMIT {
+            // Oldest first: these are latest-wins config commands.
+            self.queued.pop_front();
+        }
+        self.queued.push_back(msg);
+        None
+    }
+
+    /// The socket opened: `hello`, then everything that was waiting.
+    fn open(&mut self, hello: ClientMsg) -> Vec<ClientMsg> {
+        self.opened = true;
+        let mut out = Vec::with_capacity(self.queued.len() + 1);
+        out.push(hello);
+        out.extend(self.queued.drain(..));
+        out
+    }
+}
+
 pub struct RemoteController {
     sender: WsSender,
     receiver: WsReceiver,
+    outbox: Outbox,
     audio: Option<Box<dyn AudioBridge>>,
     pending: VecDeque<RadioEvent>,
     tx_codec: Option<AudioCodec>,
@@ -57,6 +103,7 @@ impl RemoteController {
         Ok(RemoteController {
             sender,
             receiver,
+            outbox: Outbox::default(),
             audio,
             pending: VecDeque::new(),
             tx_codec: None,
@@ -67,9 +114,17 @@ impl RemoteController {
         })
     }
 
-    fn send_msg(&mut self, msg: &ClientMsg) {
+    /// Write straight to the socket, bypassing the gate. Only for messages the
+    /// gate has already released.
+    fn write(&mut self, msg: &ClientMsg) {
         if let Ok(bytes) = encode(msg) {
             self.sender.send(WsMessage::Binary(bytes));
+        }
+    }
+
+    fn send_msg(&mut self, msg: ClientMsg) {
+        if let Some(msg) = self.outbox.send(msg) {
+            self.write(&msg);
         }
     }
 
@@ -168,7 +223,7 @@ impl RemoteController {
                 .collect();
             self.mic_seq = self.mic_seq.wrapping_add(1);
             let msg = ClientMsg::MicFrame { seq: self.mic_seq, payload };
-            self.send_msg(&msg);
+            self.send_msg(msg);
             self.mic_buf.drain(..960);
         }
     }
@@ -176,7 +231,7 @@ impl RemoteController {
 
 impl RadioController for RemoteController {
     fn send(&mut self, cmd: Command) {
-        self.send_msg(&ClientMsg::Command(cmd));
+        self.send_msg(ClientMsg::Command(cmd));
     }
 
     fn poll_event(&mut self) -> Option<RadioEvent> {
@@ -188,7 +243,10 @@ impl RadioController for RemoteController {
                         .as_ref()
                         .map(|a| a.caps())
                         .unwrap_or(AudioCaps { opus_decode: false, opus_encode: false });
-                    self.send_msg(&ClientMsg::Hello { proto: PROTO_VERSION, audio: caps });
+                    let hello = ClientMsg::Hello { proto: PROTO_VERSION, audio: caps };
+                    for msg in self.outbox.open(hello) {
+                        self.write(&msg);
+                    }
                 }
                 WsEvent::Message(WsMessage::Binary(bytes)) => match decode::<ServerMsg>(&bytes) {
                     Ok(msg) => self.on_server_msg(msg),
@@ -221,5 +279,82 @@ impl RadioController for RemoteController {
         if let Some(a) = self.audio.as_mut() {
             a.set_device(output, name);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sdroxide_types::SpectrumConfig;
+
+    fn hello() -> ClientMsg {
+        ClientMsg::Hello {
+            proto: PROTO_VERSION,
+            audio: AudioCaps { opus_decode: false, opus_encode: false },
+        }
+    }
+
+    /// The first-frame `SetSpectrumCfg` that the capture from the bug report
+    /// caught on the wire ahead of `Hello`.
+    fn first_frame_cfg() -> ClientMsg {
+        ClientMsg::Command(Command::SetSpectrumCfg(SpectrumConfig {
+            fft_size: 32768,
+            fps: 60,
+            avg_tc: 0.0,
+            db_floor: -120.0,
+            db_ceil: -20.0,
+            viewport: Some((14_584_000.0, 14_968_000.0)),
+        }))
+    }
+
+    /// The regression: on a link with real latency the UI issues commands
+    /// before `Opened` arrives. Nothing may reach the socket until `Hello` has,
+    /// or the server closes the session with "expected Hello".
+    #[test]
+    fn nothing_precedes_hello_on_the_wire() {
+        let mut ob = Outbox::default();
+        assert!(ob.send(first_frame_cfg()).is_none(), "a pre-open command must not be written");
+
+        let flushed = ob.open(hello());
+        assert_eq!(flushed.len(), 2);
+        assert!(matches!(flushed[0], ClientMsg::Hello { .. }), "Hello must be first");
+        assert_eq!(flushed[1], first_frame_cfg(), "the held command must follow it, not be lost");
+    }
+
+    /// Ordering is preserved across the gate, and once open there is no
+    /// buffering left to reorder anything.
+    #[test]
+    fn queued_commands_keep_their_order_and_then_pass_through() {
+        let mut ob = Outbox::default();
+        for cmd in [Command::SetPtt(true), Command::SetPtt(false), Command::SetCenter(14_074_000.0)]
+        {
+            assert!(ob.send(ClientMsg::Command(cmd)).is_none());
+        }
+        let flushed = ob.open(hello());
+        assert_eq!(
+            flushed[1..],
+            [
+                ClientMsg::Command(Command::SetPtt(true)),
+                ClientMsg::Command(Command::SetPtt(false)),
+                ClientMsg::Command(Command::SetCenter(14_074_000.0)),
+            ]
+        );
+        // After the handshake the gate is transparent.
+        let passed = ob.send(ClientMsg::Ping(7));
+        assert_eq!(passed, Some(ClientMsg::Ping(7)));
+    }
+
+    /// A socket that never opens must not grow the queue without bound.
+    #[test]
+    fn the_outbox_is_bounded_and_drops_the_stalest_first() {
+        let mut ob = Outbox::default();
+        for f in 0..(OUTBOX_LIMIT as u64 + 10) {
+            ob.send(ClientMsg::Ping(f));
+        }
+        let flushed = ob.open(hello());
+        assert_eq!(flushed.len(), OUTBOX_LIMIT + 1);
+        // The 10 oldest were dropped; the newest survived.
+        assert_eq!(flushed[1], ClientMsg::Ping(10));
+        assert_eq!(flushed[OUTBOX_LIMIT], ClientMsg::Ping(OUTBOX_LIMIT as u64 + 9));
     }
 }
