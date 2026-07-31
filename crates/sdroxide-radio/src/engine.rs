@@ -784,6 +784,10 @@ struct Engine {
     /// spacing (doubles on each failure up to [`RETRY_MAX`]).
     retry_at: Option<Instant>,
     retry_every: Duration,
+    /// The active VFO as of the last tune the front end accepted. A tune it
+    /// refuses puts the dial back here rather than leaving the operator on a
+    /// frequency the radio cannot receive (see [`Engine::tune_refused`]).
+    good_vfo_hz: f64,
     /// Network cockpit: owns the spot feeds (DX cluster / POTA / SOTA / PSK)
     /// and the lookup/upload worker threads. The engine only drains it.
     spots: sdroxide_net::SpotManager,
@@ -821,6 +825,7 @@ fn engine_thread(
     let audio_mode = caps.audio_mode;
     let radio_fs = source.sample_rate();
     let audio_bw = source.display_bandwidth().unwrap_or(radio_fs / 2.0);
+    let source_center_hz = source.center_hz();
 
     let mut state = RadioState::default();
     state.center_hz = source.center_hz();
@@ -969,6 +974,8 @@ fn engine_thread(
         retry_join: None,
         retry_at: None,
         retry_every: RETRY_FIRST,
+        // Where the source opened, which is by definition a frequency it took.
+        good_vfo_hz: source_center_hz,
         spots: sdroxide_net::SpotManager::new(),
         // Seeded with what is already on disk rather than with the state this
         // engine came up in, so the file always ends up describing where the
@@ -3570,7 +3577,13 @@ impl Engine {
             // the same trick on the transmit side, applied by `tx_begin`, which
             // already receives `tx_freq_hz`.
             self.source.set_rit_hz(self.state.rit.effective_hz());
-            let _ = self.source.set_center_hz(self.state.active_freq_hz());
+            let dial = self.state.active_freq_hz();
+            if self.source.set_center_hz(dial).is_ok() {
+                // The rig took the dial: this is where a refused tune goes back
+                // to. Tracked here rather than in `keep_vfo_in_span`, which a
+                // CAT rig never reaches.
+                self.good_vfo_hz = dial;
+            }
             self.update_display_center();
             return;
         }
@@ -4258,6 +4271,10 @@ impl Engine {
         let from_lo = (vfo - self.state.center_hz).abs();
         if from_lo > usable || from_lo < self.lo_guard_hz() {
             self.retune_for_vfo(vfo);
+        } else {
+            // In span on the centre the hardware is already on, so this dial is
+            // one the front end is known to be able to receive.
+            self.good_vfo_hz = vfo;
         }
     }
 
@@ -4279,12 +4296,63 @@ impl Engine {
     }
 
     /// Put the hardware where this VFO wants it: on the VFO for a front end with
-    /// a clean LO, [`IqSource::lo_offset_hz`] above it for one without.
-    fn retune_for_vfo(&mut self, vfo_hz: f64) {
-        self.retune(vfo_hz + self.source.lo_offset_hz());
+    /// a clean LO, [`IqSource::lo_offset_hz`] away from it for one without.
+    /// Reports whether the front end took it.
+    ///
+    /// The offset is normally *above* the VFO, which is where band activity
+    /// sits. At the top of a tuning range that is the one place the LO cannot
+    /// go, so the mirror position is tried next, and tuning the LO straight to
+    /// the VFO last: a DC spike inside the passband is a poorer receiver, but a
+    /// receiver, which "outside the tuning range" is not.
+    fn retune_for_vfo(&mut self, vfo_hz: f64) -> bool {
+        let offset = self.source.lo_offset_hz();
+        let center = [vfo_hz + offset, vfo_hz - offset, vfo_hz]
+            .into_iter()
+            .find(|&c| self.can_tune(c))
+            // Nothing is reachable: ask for the natural place anyway, so the
+            // refusal below reports the range rather than inventing a reason.
+            .unwrap_or(vfo_hz + offset);
+        if !self.retune_named(center, vfo_hz) {
+            return false;
+        }
+        self.good_vfo_hz = vfo_hz;
+        true
     }
 
-    fn retune(&mut self, center_hz: f64) {
+    /// Whether the front end says it can put its LO here. A front end that
+    /// publishes no ranges at all is taken at its word and asked directly.
+    fn can_tune(&self, center_hz: f64) -> bool {
+        self.caps.freq_ranges_rx.is_empty() || self.caps.can_rx_hz(center_hz)
+    }
+
+    /// Move the hardware centre, and report whether the front end took it.
+    ///
+    /// A front end that publishes its tuning range is never asked for anything
+    /// outside it. That is not politeness towards the driver: a driver can fail
+    /// a tune *part-way* and leave the hardware unusable. A LimeSDR asked for a
+    /// frequency below the LMS7002M's range answers
+    /// "SoapyLMS7::setFrequency() failed", having already torn down its
+    /// interface clock, and receives nothing further until it is set up again —
+    /// so the cheapest cure is not to make the call. A request that gets past
+    /// this and fails anyway is a hardware fault rather than an operator error:
+    /// the source restarts itself on the last frequency that worked (and asks
+    /// to be reopened if it cannot), and the dial goes back to match.
+    fn retune(&mut self, center_hz: f64) -> bool {
+        self.retune_named(center_hz, center_hz)
+    }
+
+    /// [`Self::retune`], naming `dial_hz` if the tune is refused: on a front end
+    /// that parks its LO clear of the VFO the two differ, and the operator
+    /// asked for the dial, not for the LO behind it.
+    fn retune_named(&mut self, center_hz: f64, dial_hz: f64) -> bool {
+        if !self.can_tune(center_hz) {
+            self.tune_refused(format!(
+                "{:.6} MHz is outside this radio's receive range ({})",
+                dial_hz / 1e6,
+                describe_ranges(&self.caps.freq_ranges_rx)
+            ));
+            return false;
+        }
         match self.source.set_center_hz(center_hz) {
             Ok(()) => {
                 self.state.center_hz = center_hz;
@@ -4293,13 +4361,47 @@ impl Engine {
                 if let Some(sk) = self.skimmer.as_ref() {
                     sk.set_center(center_hz);
                 }
+                true
             }
             Err(e) => {
-                let _ =
-                    self.event_tx.send(RadioEvent::ConnectionLost(format!("retune failed: {e}")));
+                self.tune_refused(format!("the radio refused to tune: {e}"));
+                false
             }
         }
     }
+
+    /// A tune the front end would not or did not take: put the dial back on the
+    /// last frequency it accepted and say why.
+    ///
+    /// The centre is untouched by a refused tune, so the dial that went with it
+    /// is still one this front end can receive — going back there leaves a
+    /// working radio rather than a receiver pointed somewhere it cannot hear.
+    /// This is a notice and not a [`RadioEvent::ConnectionLost`]: the session is
+    /// intact, and a fatal-looking error would leave every attached UI showing
+    /// a dead radio that is in fact still streaming.
+    fn tune_refused(&mut self, why: String) {
+        let good = self.good_vfo_hz;
+        warn!("{why}; dial back to {:.6} MHz", good / 1e6);
+        match self.state.active_vfo {
+            Vfo::A => self.state.vfo_a_hz = good,
+            Vfo::B => self.state.vfo_b_hz = good,
+        }
+        self.state.band = Band::containing(good);
+        self.update_tuning();
+        let _ = self
+            .event_tx
+            .send(RadioEvent::Notice(Some(format!("{why} — back to {:.6} MHz", good / 1e6))));
+        let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
+    }
+}
+
+/// Tunable ranges as an operator would read them.
+fn describe_ranges(ranges: &[(f64, f64)]) -> String {
+    ranges
+        .iter()
+        .map(|&(lo, hi)| format!("{:.3}–{:.3} MHz", lo / 1e6, hi / 1e6))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The underlying rig mode class a `Mode` commands over CAT/TCI (USB/LSB/CW/

@@ -69,7 +69,7 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>) {
     let tx_codec =
         if audio_caps.opus_encode { AudioCodec::Opus48kMono } else { AudioCodec::Pcm16_48k };
 
-    let (caps, state, memories, digi, voice) = {
+    let (caps, state, memories, digi, voice, notice) = {
         let latest = shared.latest.lock().unwrap();
         (
             latest.caps.clone(),
@@ -77,6 +77,7 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>) {
             latest.memories.clone(),
             latest.digi.clone(),
             latest.voice.clone(),
+            latest.notice.clone(),
         )
     };
     let ack = ServerMsg::HelloAck { proto: PROTO_VERSION, caps, state, rx_codec, tx_codec };
@@ -92,6 +93,12 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>) {
     // Likewise the voice keyer's slots, announced once at engine start.
     if let Some(v) = voice {
         let _ = socket.send(msg(&ServerMsg::VoiceStatus(v))).await;
+    }
+    // A standing condition rather than an event: whoever attaches next has to
+    // know the radio is refusing tunes or reconnecting, not just whoever
+    // happened to be connected when it started.
+    if notice.is_some() {
+        let _ = socket.send(msg(&ServerMsg::Notice(notice))).await;
     }
     info!(?rx_codec, ?tx_codec, "remote client connected");
 

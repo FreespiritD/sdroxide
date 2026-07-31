@@ -1,6 +1,6 @@
 use sdroxide_dsp::ComplexDcBlock;
 use soapysdr::Direction;
-use tracing::info;
+use tracing::{info, warn};
 
 use sdroxide_types::{DeviceCaps, GainElement};
 
@@ -18,6 +18,12 @@ const LO_OFFSET_FRAC: f64 = 0.25;
 /// Below this rate offset tuning costs more span than it is worth, and the span
 /// is too narrow to escape DC by a useful margin anyway.
 const LO_OFFSET_MIN_RATE: f64 = 1_000_000.0;
+
+/// How many times a failing RX stream is rebuilt in place before the source
+/// gives up and asks to be reopened. One rebuild covers a front end knocked
+/// over by a call it refused; a stream still failing after that is a device
+/// problem a fresh stream cannot fix.
+const STREAM_REBUILD_LIMIT: u32 = 2;
 
 /// LO offset for an open RX stream — see [`IqSource::lo_offset_hz`].
 ///
@@ -143,7 +149,7 @@ impl SoapyDevice {
         );
 
         let mut source = SoapyRxSource {
-            dev: self.dev,
+            dev: Some(self.dev),
             caps: self.caps,
             rx_stream: None,
             tx_stream: None,
@@ -154,6 +160,8 @@ impl SoapyDevice {
             dc: ComplexDcBlock::new(DC_BLOCK_HZ, actual_rate),
             overflows: 0,
             tx_underflows: 0,
+            stream_failures: 0,
+            lost: false,
         };
         source.open_rx_stream()?;
         Ok(source)
@@ -163,7 +171,14 @@ impl SoapyDevice {
 /// A live SoapySDR device: an RX stream (closed while transmitting on
 /// half-duplex hardware), plus a TX stream while keyed.
 pub struct SoapyRxSource {
-    dev: soapysdr::Device,
+    /// `None` once the source has been stood down ([`IqSource::release`]).
+    ///
+    /// The handle is dropped rather than merely flagged because SoapySDR keeps
+    /// a table of open devices keyed by their arguments: a second `make` with
+    /// the same arguments hands back the *same* device object, refcounted. So a
+    /// replacement opened while this one is still held is not a fresh device at
+    /// all — it is this device, carrying whatever state broke it.
+    dev: Option<soapysdr::Device>,
     caps: DeviceCaps,
     rx_stream: Option<soapysdr::RxStream<Complex32>>,
     tx_stream: Option<soapysdr::TxStream<Complex32>>,
@@ -177,6 +192,14 @@ pub struct SoapyRxSource {
     dc: ComplexDcBlock,
     overflows: u64,
     tx_underflows: u64,
+    /// Consecutive read failures since the last block of samples arrived; reset
+    /// as soon as the stream delivers again. Bounds the rebuild-in-place
+    /// attempts at [`STREAM_REBUILD_LIMIT`].
+    stream_failures: u32,
+    /// The front end stopped working and could not be brought back in place, so
+    /// it asks to be reopened ([`IqSource::needs_reopen`]) and the engine's
+    /// background reconnect owns it from here.
+    lost: bool,
 }
 
 impl SoapyRxSource {
@@ -184,17 +207,54 @@ impl SoapyRxSource {
         &self.caps
     }
 
+    /// The open device, or an error once it has been stood down.
+    fn dev(&self) -> Result<&soapysdr::Device> {
+        self.dev.as_ref().ok_or_else(|| RadioError::Msg("the device was released".into()))
+    }
+
     /// Create and activate a fresh RX stream, reasserting the RX rate and
     /// frequency first (half-duplex hardware shares the LO/clock with TX, so
     /// a TX cycle can leave them on TX values).
     fn open_rx_stream(&mut self) -> Result<()> {
-        self.dev.set_sample_rate(Direction::Rx, self.channel, self.sample_rate)?;
-        self.dev.set_frequency(Direction::Rx, self.channel, self.center_hz, ())?;
-        let mut stream = self.dev.rx_stream::<Complex32>(&[self.channel])?;
+        let dev = self.dev()?;
+        dev.set_sample_rate(Direction::Rx, self.channel, self.sample_rate)?;
+        dev.set_frequency(Direction::Rx, self.channel, self.center_hz, ())?;
+        let mut stream = dev.rx_stream::<Complex32>(&[self.channel])?;
         stream.activate(None)?;
         self.rx_stream = Some(stream);
         info!(rate = self.sample_rate, center = self.center_hz, "RX stream active");
         Ok(())
+    }
+
+    /// Put the front end back the way it was after a call the driver refused,
+    /// and give up on it if that fails too.
+    ///
+    /// A driver does not necessarily fail cleanly: SoapyLMS7 asked for a
+    /// frequency below the LMS7002M's range reconfigures the interface clock,
+    /// fails half-way ("Cannot achieve desired sample rate: rate too low"), and
+    /// leaves the device delivering nothing at all — a LimeSDR tuned out of
+    /// range that way stays dead until the process is restarted. Reasserting
+    /// the rate and the last frequency that worked, on a fresh stream, is what
+    /// brings it back.
+    fn recover(&mut self, what: &str) {
+        if self.tx_stream.is_some() {
+            // Mid-over: the receive path belongs to `tx_end`, which reasserts
+            // the rate and this same centre when it hands RX back. Opening an
+            // RX stream now would fight it — and on half-duplex hardware would
+            // pull the front end off transmit while the operator is keyed.
+            info!("front end left alone until the over ends ({what})");
+            return;
+        }
+        // The stream is rebuilt, not reused: a half-configured front end can
+        // leave it delivering stale or aliased buffers (see `tx_begin`).
+        self.rx_stream = None;
+        match self.open_rx_stream() {
+            Ok(()) => info!(center = self.center_hz, "front end restarted after {what}"),
+            Err(e) => {
+                warn!("front end could not be restarted after {what}: {e}");
+                self.lost = true;
+            }
+        }
     }
 }
 
@@ -208,14 +268,39 @@ impl IqSource for SoapyRxSource {
     }
 
     fn set_center_hz(&mut self, hz: f64) -> Result<()> {
-        self.dev.set_frequency(Direction::Rx, self.channel, hz, ())?;
-        self.center_hz = hz;
-        Ok(())
+        let Some(dev) = self.dev.as_ref() else {
+            // Stood down and waiting to be replaced. The replacement is opened
+            // on whatever the dial says by then, so the operator keeps tuning
+            // through the gap; refusing here would only snap the dial back for
+            // a front end that is on its way out anyway.
+            self.center_hz = hz;
+            return Ok(());
+        };
+        let tuned = dev.set_frequency(Direction::Rx, self.channel, hz, ());
+        match tuned {
+            Ok(()) => {
+                self.center_hz = hz;
+                Ok(())
+            }
+            Err(e) => {
+                warn!(request_hz = hz, "the front end refused the tune: {e}");
+                // The old centre is still what `self.center_hz` holds, so this
+                // puts the hardware back on the last frequency that worked.
+                self.recover("a refused tune");
+                Err(RadioError::Soapy(e))
+            }
+        }
     }
 
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
-        // No RX stream while transmitting on half-duplex hardware.
+        // No RX stream: transmitting on half-duplex hardware, or the front end
+        // has been given up on / stood down. Neither has samples, and the
+        // second must not spin the engine's loop while it waits to be reopened.
+        let lost = self.lost;
         let Some(stream) = self.rx_stream.as_mut() else {
+            if lost {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
             return Ok(0);
         };
         let n = match stream.read(&mut [buf], 200_000) {
@@ -230,8 +315,26 @@ impl IqSource for SoapyRxSource {
                 }
                 0
             }
-            Err(e) => return Err(RadioError::Soapy(e)),
+            // Anything else is the stream itself failing — a dongle pulled out
+            // of its socket, or a front end left broken by a call it refused.
+            // Rebuilding it in place is usually enough; a stream that keeps
+            // failing anyway is given up on rather than rebuilt in a loop, and
+            // asks to be reopened instead of taking the engine down with it.
+            Err(e) => {
+                warn!(attempt = self.stream_failures + 1, "RX stream failed: {e}");
+                self.stream_failures += 1;
+                if self.stream_failures > STREAM_REBUILD_LIMIT {
+                    self.rx_stream = None;
+                    self.lost = true;
+                } else {
+                    self.recover("a stream failure");
+                }
+                return Ok(0);
+            }
         };
+        if n > 0 {
+            self.stream_failures = 0; // it is delivering again
+        }
         // Deliberately not reset across a dropped block or a TX cycle: the
         // offset is a property of the hardware, not of the stream, so carrying
         // the estimate avoids a re-convergence transient on every resume.
@@ -248,30 +351,34 @@ impl IqSource for SoapyRxSource {
     }
 
     fn set_gain_element(&mut self, name: &str, db: f64) -> Result<()> {
-        let _ = self.dev.set_gain_mode(Direction::Rx, self.channel, false);
-        self.dev.set_gain_element(Direction::Rx, self.channel, name, db)?;
+        let dev = self.dev()?;
+        let _ = dev.set_gain_mode(Direction::Rx, self.channel, false);
+        dev.set_gain_element(Direction::Rx, self.channel, name, db)?;
         Ok(())
     }
 
     fn set_antenna(&mut self, name: &str) -> Result<()> {
-        self.dev.set_antenna(Direction::Rx, self.channel, name)?;
+        self.dev()?.set_antenna(Direction::Rx, self.channel, name)?;
         Ok(())
     }
 
     fn current_gains(&self) -> Vec<(String, f64)> {
-        self.dev
-            .list_gains(Direction::Rx, self.channel)
+        let Some(dev) = self.dev.as_ref() else { return Vec::new() };
+        dev.list_gains(Direction::Rx, self.channel)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|name| {
-                let db = self.dev.gain_element(Direction::Rx, self.channel, name.as_str()).ok()?;
+                let db = dev.gain_element(Direction::Rx, self.channel, name.as_str()).ok()?;
                 Some((name, db))
             })
             .collect()
     }
 
     fn current_antenna(&self) -> String {
-        self.dev.antenna(Direction::Rx, self.channel).unwrap_or_default()
+        self.dev
+            .as_ref()
+            .and_then(|d| d.antenna(Direction::Rx, self.channel).ok())
+            .unwrap_or_default()
     }
 
     fn tx_begin(&mut self, center_hz: f64, rate: f64) -> Result<f64> {
@@ -285,11 +392,12 @@ impl IqSource for SoapyRxSource {
         if !self.caps.full_duplex {
             self.rx_stream = None;
         }
-        self.dev.set_sample_rate(Direction::Tx, self.channel, rate)?;
-        self.dev.set_frequency(Direction::Tx, self.channel, center_hz, ())?;
-        let actual = self.dev.sample_rate(Direction::Tx, self.channel)?;
+        let dev = self.dev()?;
+        dev.set_sample_rate(Direction::Tx, self.channel, rate)?;
+        dev.set_frequency(Direction::Tx, self.channel, center_hz, ())?;
+        let actual = dev.sample_rate(Direction::Tx, self.channel)?;
 
-        let mut tx = self.dev.tx_stream::<Complex32>(&[self.channel])?;
+        let mut tx = dev.tx_stream::<Complex32>(&[self.channel])?;
         tx.activate(None)?;
         self.tx_stream = Some(tx);
         tracing::info!(center_hz, rate = actual, "TX active");
@@ -325,20 +433,34 @@ impl IqSource for SoapyRxSource {
     }
 
     fn set_tx_gain_element(&mut self, name: &str, db: f64) -> Result<()> {
-        self.dev.set_gain_element(Direction::Tx, self.channel, name, db)?;
+        self.dev()?.set_gain_element(Direction::Tx, self.channel, name, db)?;
         Ok(())
     }
 
     fn current_tx_gains(&self) -> Vec<(String, f64)> {
-        self.dev
-            .list_gains(Direction::Tx, self.channel)
+        let Some(dev) = self.dev.as_ref() else { return Vec::new() };
+        dev.list_gains(Direction::Tx, self.channel)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|name| {
-                let db = self.dev.gain_element(Direction::Tx, self.channel, name.as_str()).ok()?;
+                let db = dev.gain_element(Direction::Tx, self.channel, name.as_str()).ok()?;
                 Some((name, db))
             })
             .collect()
+    }
+
+    fn needs_reopen(&self) -> bool {
+        self.lost
+    }
+
+    fn release(&mut self) {
+        // Streams first: a stream outliving its device is a use-after-free in
+        // the driver, not merely an orphan.
+        self.rx_stream = None;
+        self.tx_stream = None;
+        self.dev = None;
+        // Inert but callable, and asking for a replacement — see the trait doc.
+        self.lost = true;
     }
 }
 

@@ -166,6 +166,23 @@ pub trait RadioController {
         false
     }
 
+    /// Whether this controller can be re-established after the link to the
+    /// radio dropped, i.e. whether the UI should offer a "Reconnect" button on
+    /// [`RadioEvent::ConnectionLost`]. False for an in-process engine: there is
+    /// no link to redial, and an engine that has stopped needs the app
+    /// restarted.
+    fn can_reconnect(&self) -> bool {
+        false
+    }
+
+    /// Dial the radio again after a lost connection, discarding whatever was
+    /// left of the old session. `Ok` means the attempt is under way — the
+    /// handshake completes asynchronously, so the UI learns the outcome from
+    /// the events that follow, exactly as at startup.
+    fn reconnect(&mut self) -> Result<(), String> {
+        Err("this connection cannot be re-established".into())
+    }
+
     /// The frontend's switchable audio devices, or `None` when the platform
     /// has none to offer (e.g. the browser client, where the browser owns
     /// device routing). Enumeration may be slow — call on demand, not per

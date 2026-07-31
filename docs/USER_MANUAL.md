@@ -2751,6 +2751,13 @@ microphone for audio.
 
 - **One client at a time.** A second connection is refused with a "server busy"
   message.
+- **If the link drops**, the client shows what went wrong in place of the
+  panadapter, with a **Reconnect** button under it. Pressing it dials the same
+  server again and picks the session back up — the radio keeps running
+  meanwhile, so nothing is lost by a client that was away. This applies to the
+  browser client as well; reloading the page does the same thing.
+- **A "server busy" message right after pressing Reconnect** means the server has
+  not finished letting go of the old session yet. Press it again.
 - **No authentication or encryption.** The server has no password and no TLS, and
   it binds to all interfaces by default, so anyone who can reach the port has
   full control of the radio, *including transmit*. Only expose it on a trusted
@@ -3247,6 +3254,16 @@ merely late (ExpertSDR3 not up yet, an SDR still booting) attaches on its own
 within a few seconds of appearing. The same applies when a network rig hangs up:
 it reconnects once the radio is back. You only need **Apply / reconnect** to
 switch to a *different* interface, or to apply a settings change.
+
+**The dial jumps back, with a banner saying the frequency is out of range.**
+The receiver cannot tune there. sdroxide checks the range the front end reports
+before it asks the hardware for anything, and returns the dial to the last
+frequency that worked, because a driver asked for the impossible does not always
+fail cleanly — a LimeSDR asked for a frequency below its range stops receiving
+altogether until it is set up again. If it happens anyway (the driver accepted
+the request and then failed), the front end is restarted on the last good
+frequency by itself, and reopened from scratch if that is not enough. Nothing
+needs restarting by hand; **Dismiss** clears the banner.
 
 **IQ shows no spectrum, or a warning that the device is mono.**
 IQ requires a two-channel (stereo) capture device. A mono USB adapter cannot

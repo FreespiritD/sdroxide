@@ -107,7 +107,11 @@ use sdroxide_types::{
 /// ordinary `SpectrumFrame` on its own lane. Appended at the end of the enum so
 /// no existing postcard discriminant moves, but an older client cannot decode
 /// the new message, so the handshake has to reject it.
-pub const PROTO_VERSION: u16 = 31;
+/// v32: engine notices reach remote clients — a new `ServerMsg::Notice`,
+/// likewise appended at the end. What a notice says is the operator's business
+/// wherever they are sitting: a radio refusing a tune, or an interface that has
+/// dropped and is reconnecting, is not a local-console detail.
+pub const PROTO_VERSION: u16 = 32;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -263,6 +267,11 @@ pub enum ServerMsg {
     /// purpose: postcard encodes the variant as a positional discriminant, so
     /// inserting anywhere else would silently renumber every message after it.
     WideSpectrum(SpectrumFrame),
+    /// A non-fatal operator notice from the engine, `None` to clear it — the
+    /// radio refusing a tune, an interface reconnecting. Unlike
+    /// [`ServerMsg::Error`] the session is intact and the client stays live.
+    /// Appended last, for the reason above.
+    Notice(Option<String>),
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {

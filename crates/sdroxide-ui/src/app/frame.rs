@@ -253,9 +253,34 @@ impl eframe::App for SdroxideApp {
         let mut clicked_spot: Option<Spot> = None;
         // Remaining space: the panadapter (+ FT8/FT4 operating panel).
         if let Some(err) = self.error.clone() {
-            ui.centered_and_justified(|ui| {
+            let offer_retry = self.ctrl.can_reconnect();
+            let mut retry = false;
+            ui.vertical_centered(|ui| {
+                // Roughly where `centered_and_justified` used to put the text,
+                // with the button under it rather than beside it.
+                ui.add_space(ui.available_height() * 0.4);
                 ui.label(RichText::new(err).size(18.0).color(Color32::RED));
+                if offer_retry {
+                    ui.add_space(14.0);
+                    retry = ui.button(RichText::new("Reconnect").size(16.0)).clicked();
+                }
             });
+            if retry {
+                // Optimistic: the handshake finishes asynchronously, so the
+                // screen clears now and a socket that fails again reports
+                // itself through the same event that put us here.
+                self.error = None;
+                self.frame = None;
+                self.wide_frame = None;
+                // The new session starts on the engine's own spectrum config,
+                // not the one the old session was told. Forgetting what was
+                // sent is what makes this frame's debounce push it again.
+                self.sent_cfg = None;
+                self.desired_cfg = None;
+                if let Err(e) = self.ctrl.reconnect() {
+                    self.error = Some(e);
+                }
+            }
         } else if self.state.rx[0].mode.is_digital() {
             // Remember the voice-mode view once, so leaving FT8 can restore it
             // instead of leaving the panadapter zoomed to the sub-band.

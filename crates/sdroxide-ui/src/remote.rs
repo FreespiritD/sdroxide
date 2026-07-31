@@ -32,6 +32,16 @@ pub trait AudioBridge {
 /// bites if the socket never opens at all.
 const OUTBOX_LIMIT: usize = 64;
 
+/// Open a socket that wakes the UI on every event.
+fn dial(
+    url: &str,
+    wake: &std::sync::Arc<dyn Fn() + Send + Sync>,
+) -> Result<(WsSender, WsReceiver), String> {
+    let wake = std::sync::Arc::clone(wake);
+    ewebsock::connect_with_wakeup(url, ewebsock::Options::default(), move || wake())
+        .map_err(|e| e.to_string())
+}
+
 /// Outbound gate: `Hello` has to be the first message the server reads, and the
 /// UI starts issuing commands (a first-frame `SetSpectrumCfg`, with no
 /// debounce) before the socket has finished opening. Anything sent that early
@@ -75,6 +85,11 @@ impl Outbox {
 pub struct RemoteController {
     sender: WsSender,
     receiver: WsReceiver,
+    /// What to dial, and how to wake the UI when the socket has something —
+    /// both kept so the session can be re-established in place after the link
+    /// drops, without rebuilding the app around a new controller.
+    url: String,
+    wake: std::sync::Arc<dyn Fn() + Send + Sync>,
     outbox: Outbox,
     audio: Option<Box<dyn AudioBridge>>,
     pending: VecDeque<RadioEvent>,
@@ -97,12 +112,13 @@ impl RemoteController {
         audio: Option<Box<dyn AudioBridge>>,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, String> {
-        let (sender, receiver) =
-            ewebsock::connect_with_wakeup(url, ewebsock::Options::default(), wake)
-                .map_err(|e| e.to_string())?;
+        let wake: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(wake);
+        let (sender, receiver) = dial(url, &wake)?;
         Ok(RemoteController {
             sender,
             receiver,
+            url: url.to_string(),
+            wake,
             outbox: Outbox::default(),
             audio,
             pending: VecDeque::new(),
@@ -159,6 +175,7 @@ impl RemoteController {
                 "server busy — another client is connected".into(),
             )),
             ServerMsg::Error(e) => self.pending.push_back(RadioEvent::ConnectionLost(e)),
+            ServerMsg::Notice(n) => self.pending.push_back(RadioEvent::Notice(n)),
             ServerMsg::Ft8Decodes(d) => self.pending.push_back(RadioEvent::Ft8Decodes(d)),
             ServerMsg::Ft8Status(s) => self.pending.push_back(RadioEvent::Ft8Status(s)),
             ServerMsg::Ft8QsoLogged(r) => self.pending.push_back(RadioEvent::Ft8QsoLogged(r)),
@@ -269,6 +286,33 @@ impl RadioController for RemoteController {
 
     fn wants_repaint_soon(&self) -> bool {
         !self.pending.is_empty()
+    }
+
+    fn can_reconnect(&self) -> bool {
+        true
+    }
+
+    fn reconnect(&mut self) -> Result<(), String> {
+        // Close first, and only then dial: the server allows one control
+        // session at a time, so a new socket opened while the old one is still
+        // registered is answered with `Busy` — the reconnect would fail on the
+        // strength of the connection it is replacing.
+        self.sender.close();
+        let (sender, receiver) = dial(&self.url, &self.wake)?;
+        self.sender = sender;
+        self.receiver = receiver;
+        // Everything below is per-session: the outbox gate has to hold commands
+        // behind a fresh `Hello`, the codec is renegotiated in the handshake,
+        // and neither queued events nor a half-sent microphone block from the
+        // dead session may be carried into the new one.
+        self.outbox = Outbox::default();
+        self.pending.clear();
+        self.tx_codec = None;
+        self.transmitting = false;
+        self.voice_recording = false;
+        self.mic_buf.clear();
+        self.mic_seq = 0;
+        Ok(())
     }
 
     fn audio_devices(&self) -> Option<AudioDevices> {

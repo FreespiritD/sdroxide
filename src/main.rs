@@ -948,6 +948,11 @@ fn tci_caps(address: &str, iq_rate: f64) -> DeviceCaps {
 /// Capabilities for a CAT rig. TX-capable unless PTT is VOX-only-with-no-audio;
 /// we advertise TX so the UI shows PTT and the safety rails apply. Frequency
 /// range covers HF+6m (the rig enforces its own limits over CAT).
+///
+/// The RX floor is deliberately below any rig's: the range is what the engine
+/// refuses to tune past, and a general-coverage receiver that reaches the LF
+/// time signals must not be held back by a figure invented here. A rig asked
+/// for something it cannot do simply declines over CAT, which costs nothing.
 fn cat_caps(radio: &RadioConfig) -> DeviceCaps {
     let demod = matches!(radio.cat.format, sdroxide_types::SoundFormat::DemodAudio);
     DeviceCaps {
@@ -956,7 +961,7 @@ fn cat_caps(radio: &RadioConfig) -> DeviceCaps {
         rx_channels: 1,
         tx_channels: 1,
         audio_mode: demod,
-        freq_ranges_rx: vec![(100_000.0, 148_000_000.0)],
+        freq_ranges_rx: vec![(10_000.0, 148_000_000.0)],
         freq_ranges_tx: vec![(1_800_000.0, 54_000_000.0)],
         ..DeviceCaps::default()
     }

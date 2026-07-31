@@ -74,6 +74,11 @@ pub(crate) struct Latest {
     /// reason as `digi` and replayed on connect so the keyer window opens
     /// populated instead of showing ten empty slots.
     pub voice: Option<sdroxide_types::VoiceStatus>,
+    /// The standing operator notice, if any. Replayed on connect because it is
+    /// a *condition*, not an event: a client that attaches while the radio is
+    /// reconnecting has to be told so, and it would otherwise wait for a notice
+    /// that was already sent to somebody else.
+    pub notice: Option<String>,
 }
 
 pub(crate) struct Shared {
@@ -283,9 +288,14 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             RadioEvent::Spectrum(_) => None, // spectrum travels via the watch lane
             RadioEvent::WideSpectrum(_) => None, // ...and so does the full-band lane
             RadioEvent::ConnectionLost(e) => Some(ServerMsg::Error(e)),
-            // A local radio-audio-device notice is meaningless to a remote
-            // client (its audio lives on the server host), so don't forward it.
-            RadioEvent::Notice(_) => None,
+            // Forwarded: a notice is about the radio this client is operating —
+            // a refused tune, an interface reconnecting, a sound card the
+            // engine could not open for it — and the operator needs it wherever
+            // they happen to be sitting.
+            RadioEvent::Notice(n) => {
+                latest.notice = n.clone();
+                Some(ServerMsg::Notice(n))
+            }
             RadioEvent::Ft8Decodes(d) => Some(ServerMsg::Ft8Decodes(d)),
             RadioEvent::Ft8Status(s) => {
                 latest.digi = Some(s.clone());
