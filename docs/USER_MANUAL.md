@@ -2786,12 +2786,43 @@ sdroxide --server --web-root path/to/sdroxide-web/dist
 The web client mirrors the native UI: tuning, mode and band changes, the
 panadapter and waterfall, receive audio, FT8/FT4, the logbook, memories, and
 meters. Microphone transmit is supported where the browser grants microphone
-access. The [solar system 3D view](#6-solar-system-3d-view) works too: **☀ 3D**
+access — see [audio needs a secure context](#83-audio-needs-a-secure-context)
+below. The [solar system 3D view](#6-solar-system-3d-view) works too: **☀ 3D**
 opens it in a new tab, which connects to a separate read-only endpoint and so
 does not consume the single control connection. The same
 single-client and no-authentication notes as
 [remote operation](#7-remote-operation) apply — put the server behind HTTPS with
 authentication if it is reachable from an untrusted network.
+
+### 8.3 Audio needs a secure context
+
+Browsers only hand out the two APIs the web client's audio is built on —
+`AudioWorklet` for playback and `getUserMedia` for the microphone — to pages in
+a *secure context*. Over plain `http://` that means **localhost only**, so:
+
+| How you open the page | Receive audio and microphone |
+| --- | --- |
+| `http://localhost:4950` / `http://127.0.0.1:4950` | work |
+| `https://…` (reverse proxy, tunnel) | work |
+| `http://<lan-or-wan-address>:4950` | **silent** — the browser withholds both |
+
+Everything else — the panadapter and waterfall, tuning, decodes, the logbook —
+works either way; it is only audio that the browser gates. A page opened on a
+non-secure origin says so in a banner across the top.
+
+This is a browser rule, not a server setting: sdroxide cannot opt out of it. To
+get audio from another machine, put the server behind an HTTPS reverse proxy (a
+[VPN](#7-remote-operation) or tunnel with TLS), or forward the port to your own
+machine so the browser sees `localhost`:
+
+```
+ssh -N -L 4950:localhost:4950 user@radio-host
+# then open http://localhost:4950
+```
+
+The native remote client (`sdroxide --connect`) has no such restriction — it
+uses your local sound devices directly and carries audio over the same
+WebSocket.
 
 ---
 
