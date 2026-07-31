@@ -21,6 +21,11 @@ pub const MODULE_H: f32 = 50.0;
 /// S-meter, VFO/band-mode stack) — ~25% taller than a control box's original
 /// height, so two shortened control rows sit alongside one of these.
 pub const MODULE_TALL_H: f32 = 72.0;
+/// The hairline border a module box wears. egui draws a [`egui::Frame`]'s
+/// stroke outside the content it was given, so a module built to `height`
+/// stands `height + 2 * MODULE_BORDER` tall overall — which is the figure a box
+/// that paints its own border has to match. See [`module_bare_flush_h`].
+pub const MODULE_BORDER: f32 = 1.0;
 
 /// A panel with a pink border and cut corners (top-right + bottom-left),
 /// sitting on the darker page background.
@@ -280,12 +285,20 @@ pub fn module_bare_h<R>(ui: &mut Ui, width: f32, height: f32, add: impl FnOnce(&
 /// content fills the box edge-to-edge. Used by the S-meter, which paints its
 /// own instrument face over the whole rect (an opaque fill would otherwise hide
 /// a frame border) and draws the box border itself on top.
+///
+/// It takes [`MODULE_BORDER`] into its own content on both axes: a bordered
+/// module's stroke is drawn *outside* the content it was handed, so one built
+/// to `height` stands `height + 2` tall. This box's border is painted inside
+/// its content instead, so without the two points back it would come out two
+/// short — and the S-meter would sit a hair below the boxes beside it.
 pub fn module_bare_flush_h<R>(
     ui: &mut Ui,
     width: f32,
     height: f32,
     add: impl FnOnce(&mut Ui) -> R,
 ) -> R {
+    let width = width + 2.0 * MODULE_BORDER;
+    let height = height + 2.0 * MODULE_BORDER;
     ui.allocate_ui_with_layout(
         egui::vec2(width, height),
         egui::Layout::top_down(egui::Align::Min),
@@ -537,4 +550,55 @@ fn chip_impl(
         ui.painter().galley(text_pos, galley, ink);
     }
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lay a single module out in a fresh context and return how tall it made
+    /// the row, along with whatever height it handed its own content.
+    fn module_height(height: f32, flush: bool) -> (f32, f32) {
+        let ctx = egui::Context::default();
+        let (mut row, mut content) = (0.0, 0.0);
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                let grab = |ui: &mut Ui| content = ui.available_size().y;
+                if flush {
+                    module_bare_flush_h(ui, 100.0, height, grab);
+                } else {
+                    module_bare_h(ui, 100.0, height, grab);
+                }
+                row = ui.min_rect().height();
+            });
+        });
+        (row, content)
+    }
+
+    /// The S-meter's box has no frame stroke — it paints its own border inside
+    /// its content — so it has to allocate the two points a bordered module
+    /// gets for free from the stroke egui draws outside the content it was
+    /// handed. Without them the meter stands two points shorter than every box
+    /// beside it, which reads as a row out of alignment rather than as rounding.
+    #[test]
+    fn a_flush_module_is_exactly_as_tall_as_a_bordered_one() {
+        for height in [MODULE_H, MODULE_TALL_H, 40.0] {
+            let (bordered, _) = module_height(height, false);
+            let (flush, content) = module_height(height, true);
+            assert_eq!(bordered, flush, "at {height} pt: bordered {bordered}, flush {flush}");
+            // And the meter really does get the whole of it to paint in.
+            assert_eq!(content, flush, "the flush box handed its content {content} of {flush}");
+        }
+    }
+
+    /// The figure the box heights are quoted in: a module built to `height`
+    /// stands that tall plus its border. If egui ever stops drawing a frame's
+    /// stroke outside the content, this is the assumption that breaks.
+    #[test]
+    fn a_bordered_module_stands_its_height_plus_its_border() {
+        let (row, content) = module_height(MODULE_TALL_H, false);
+        assert_eq!(row, MODULE_TALL_H + 2.0 * MODULE_BORDER, "outer height moved");
+        // Inner margin of 4 above and 5 below, inside the border.
+        assert_eq!(content, MODULE_TALL_H - 9.0, "content height moved");
+    }
 }

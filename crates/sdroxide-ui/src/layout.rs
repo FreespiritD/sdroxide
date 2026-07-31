@@ -72,9 +72,12 @@ impl Tier {
 /// 150 pt stack of control strip would take 40% of the height. No tablet lands
 /// there: every one of them is 768 tall or more in landscape.
 ///
-/// Tablet up to 1100 wide because 768 portrait leaves 732 pt of content width
-/// (the top panel's 8+8 margin plus `angled_frame`'s 10+10), while the desktop
-/// readout and the S-meter together want 770.
+/// Tablet up to 1400 wide. The full strip needs some 2600 pt to sit on one row,
+/// so everything below that is already two or three wrapped rows of it — and a
+/// row of menus reads better than a wall of boxes long before the boxes start
+/// to overflow. (768 portrait, the tightest tablet, leaves 732 pt of content
+/// width once the top panel's 8+8 margin and `angled_frame`'s 10+10 are off it,
+/// while the full-size readout and S-meter together want 770.)
 pub fn tier_for(size: egui::Vec2, mode: LayoutMode) -> Tier {
     match mode {
         LayoutMode::Desktop => Tier::Desktop,
@@ -144,12 +147,14 @@ mod tests {
         assert_eq!(tier_for(vec2(412.0, 915.0), auto), Tier::Phone);
         assert_eq!(tier_for(vec2(852.0, 393.0), auto), Tier::Phone, "landscape phone is short");
         assert_eq!(tier_for(vec2(932.0, 430.0), auto), Tier::Phone);
-        // Tablets, both ways up.
+        // Tablets, both ways up — and the laptop-sized windows that get the
+        // same treatment, because the full strip would wrap over three rows.
         assert_eq!(tier_for(vec2(768.0, 1024.0), auto), Tier::Tablet);
         assert_eq!(tier_for(vec2(1024.0, 768.0), auto), Tier::Tablet);
         assert_eq!(tier_for(vec2(820.0, 1180.0), auto), Tier::Tablet);
+        assert_eq!(tier_for(vec2(1280.0, 800.0), auto), Tier::Tablet);
         // Desktops.
-        assert_eq!(tier_for(vec2(1280.0, 800.0), auto), Tier::Desktop);
+        assert_eq!(tier_for(vec2(1440.0, 900.0), auto), Tier::Desktop);
         assert_eq!(tier_for(vec2(1920.0, 1080.0), auto), Tier::Desktop);
     }
 

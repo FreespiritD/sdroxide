@@ -143,11 +143,12 @@ pub fn apply_metrics(ctx: &egui::Context, tier: crate::layout::Tier) {
             if touch { egui::vec2(6.0, 7.0) } else { egui::vec2(7.0, 5.0) };
         style.spacing.button_padding =
             if touch { egui::vec2(11.0, 9.0) } else { egui::vec2(7.0, 3.0) };
-        if touch {
-            // Roughly a fingertip. Fields and chips both size from this, so it
-            // is what stops a row of controls being a row of 22 pt targets.
-            style.spacing.interact_size.y = 34.0;
-        }
+        // Roughly a fingertip where the screen is touched, egui's own default
+        // where it is not. Set in *both* directions on purpose: this runs again
+        // whenever the window crosses a breakpoint, and a value left behind by
+        // the tier before would keep every field and every control box that
+        // sizes from it stretched after the layout had gone back to a mouse.
+        style.spacing.interact_size.y = if touch { 34.0 } else { 18.0 };
         // Fixed slider width: otherwise sliders expand to fill the row, so a
         // module with a slider balloons and pushes later modules off-screen
         // instead of letting `horizontal_wrapped` wrap them.
@@ -285,4 +286,52 @@ fn install_fonts(ctx: &egui::Context) {
     fonts.families.insert(FontFamily::Name("chakra-bold".into()), bold_stack);
 
     ctx.set_fonts(fonts);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::Tier;
+
+    /// Every metric [`apply_metrics`] sets has to be set in *both* directions.
+    ///
+    /// It runs again whenever the window crosses a breakpoint, so a value
+    /// written only for the touched layouts stays behind when the window goes
+    /// back to a desktop one. That is how the control boxes came to stand
+    /// taller than the frequency box beside them, and how the RIT field came to
+    /// sit a few points low in its row: `interact_size` was still a fingertip
+    /// tall long after the layout had gone back to a mouse.
+    #[test]
+    fn desktop_metrics_survive_a_trip_through_the_touch_layouts() {
+        let ctx = egui::Context::default();
+        apply_metrics(&ctx, Tier::Desktop);
+        let (spacing, text) = {
+            let s = ctx.style_of(ctx.theme());
+            (s.spacing.clone(), s.text_styles.clone())
+        };
+
+        for tier in [Tier::Phone, Tier::Tablet, Tier::Phone] {
+            apply_metrics(&ctx, tier);
+        }
+        apply_metrics(&ctx, Tier::Desktop);
+
+        let s = ctx.style_of(ctx.theme());
+        assert_eq!(spacing, s.spacing, "a spacing metric was left behind by a touch layout");
+        assert_eq!(text, s.text_styles, "a text size was left behind by a touch layout");
+    }
+
+    /// The touched layouts really do differ — otherwise the test above would
+    /// pass on a function that had stopped doing anything at all.
+    #[test]
+    fn a_touched_layout_gets_bigger_targets() {
+        let ctx = egui::Context::default();
+        apply_metrics(&ctx, Tier::Desktop);
+        let desktop = ctx.style_of(ctx.theme()).spacing.clone();
+        apply_metrics(&ctx, Tier::Phone);
+        let phone = ctx.style_of(ctx.theme()).spacing.clone();
+
+        assert!(phone.interact_size.y > desktop.interact_size.y);
+        assert!(phone.button_padding.y > desktop.button_padding.y);
+        assert!(phone.scroll.bar_width > desktop.scroll.bar_width);
+    }
 }

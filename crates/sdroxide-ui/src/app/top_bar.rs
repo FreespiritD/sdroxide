@@ -379,7 +379,12 @@ impl SdroxideApp {
                             .size(12.0)
                             .color(Color32::from_gray(120)),
                     );
-                    let pad = (ui.available_height() - 24.0).max(0.0);
+                    // Push the band/mode chip to the bottom of the column by
+                    // its measured height. A literal here would leave the
+                    // column taller than the box on a touched layout, where a
+                    // chip is half again as tall — and a box that outgrows
+                    // `MODULE_TALL_H` no longer lines up with the S-meter.
+                    let pad = (ui.available_height() - chip_h(ui, Some(BAND_MODE_TEXT))).max(0.0);
                     ui.add_space(pad);
                     self.band_mode_button(ui, cmds);
                 },
@@ -1406,6 +1411,18 @@ impl SdroxideApp {
 /// How wide `text` lays out in `font`.
 fn text_w(ui: &egui::Ui, text: &str, font: egui::FontId) -> f32 {
     ui.painter().layout_no_wrap(text.to_owned(), font, Color32::WHITE).size().x
+}
+
+/// How tall a chip is, padding included — the same arithmetic
+/// [`crate::chrome::chip`] does. A literal would be wrong the moment the layout
+/// changes: chip padding comes from the style, and a touched one is roomier.
+fn chip_h(ui: &egui::Ui, size: Option<f32>) -> f32 {
+    let font = match size {
+        Some(pt) => egui::FontId::proportional(pt),
+        None => egui::TextStyle::Button.resolve(ui.style()),
+    };
+    ui.painter().layout_no_wrap("0".to_owned(), font, Color32::WHITE).size().y
+        + 2.0 * (ui.spacing().button_padding.y + 1.0)
 }
 
 /// What a chip carrying `label` will measure, padding included. `size` is the
