@@ -220,7 +220,8 @@ pub struct SdroxideApp {
     /// window only — the waterfall labels are positioned by frequency, so
     /// reordering them by match quality would mean nothing.
     spot_search: String,
-    /// The bundled/user broadcast station table, loaded once at startup.
+    /// The broadcast schedule in use: the cached season file plus the operator's
+    /// own entries, or the compiled-in copy until a download lands.
     broadcast: Vec<sdroxide_types::BroadcastStation>,
     /// The subset of `broadcast` on air right now, as spots. Rebuilt when the
     /// UTC minute rolls over — the finest granularity a schedule changes at —
@@ -228,6 +229,14 @@ pub struct SdroxideApp {
     broadcast_spots: Vec<Spot>,
     /// The UTC minute `broadcast_spots` was built for.
     broadcast_minute: i64,
+    /// An in-flight schedule download, if one is running.
+    broadcast_fetch: Option<std::sync::mpsc::Receiver<persist::ScheduleFetch>>,
+    /// What the last download did, for the settings panel. `None` while one is
+    /// running or before any has been attempted.
+    broadcast_fetch_status: Option<Result<String, String>>,
+    /// The UTC day the season was last checked on. A season change is a calendar
+    /// event, so checking once a day catches it without a timer.
+    broadcast_checked_day: i64,
     /// UI-owned editable copy of the network config (edited in the Settings
     /// dialog's Spots / FreeDV / Uploads tabs). Carries no operator identity —
     /// that comes from the digi config, edited on the General tab.
@@ -412,6 +421,11 @@ impl SdroxideApp {
             broadcast: load_broadcast_stations(),
             broadcast_spots: Vec::new(),
             broadcast_minute: -1,
+            // Kicked off at startup: the first run has no cached schedule, and
+            // after that this only fires again when the season turns over.
+            broadcast_fetch: persist::spawn_schedule_fetch(false),
+            broadcast_fetch_status: None,
+            broadcast_checked_day: -1,
             net_cfg_edit: net_cfg,
             rigctld_edit: sdroxide_types::RigctldConfig::default(),
             rigctld_seeded: false,

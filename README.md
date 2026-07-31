@@ -252,13 +252,14 @@ the **Spots** and **Uploads** tabs of the Settings dialog, and surfaced by the
   lists them with per-source filters and a **fuzzy search** over calls, station
   names, sites and frequencies. **Click a spot** to tune the VFO, set the mode,
   and pre-fill a new log entry — one click from "heard" to "working".
-- **Broadcast stations** — a bundled list of **longwave and shortwave broadcasters**
-  with their real transmitter sites labels the big AM carriers on the waterfall, so
-  225 kHz reads as *Polskie Radio Program 1, Solec Kujawski*. Only what is on air
-  now is shown, and tuning one draws a **great-circle arc from your grid to the
-  transmitter** on the 3D globe. Seeded to
-  `~/.config/sdroxide/broadcast_stations.json` on first run and never overwritten,
-  so your corrections and local additions stick.
+- **Broadcast stations** — ~4,600 **longwave and shortwave broadcasts** label the
+  AM carriers on the waterfall. Each carries its **UTC transmit window** and the transmitter
+  site it actually radiates from, so only the stations on air right now are
+  shown, and tuning one draws a great-circle arc from your grid to the
+  transmitter on the 3D globe. The schedule is downloaded from
+  [EiBi](https://www.eibispace.de/) on first run and again at each season change,
+  falling back to a built-in copy when offline. Users can define their own stations and corrections
+  in `~/.config/sdroxide/broadcast_stations.json`.
 - **Callsign lookup** — auto-fill name, QTH, grid and state from **QRZ.com** or
   **HamQTH** on a spot click, at QSO start, or when you type a call (or press
   **LOOKUP** in the entry form).

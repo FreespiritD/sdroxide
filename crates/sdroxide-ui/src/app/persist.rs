@@ -77,28 +77,67 @@ pub(in crate::app) fn persist_sat_config(cfg: &sdroxide_types::SatConfig) {
     }
 }
 
-// ── Broadcast stations (native: seeded config-dir JSON; wasm: the bundled table)
+// ── Broadcast stations ───────────────────────────────────────────────────────
+//
+// Native: the cached season schedule (or the compiled-in one until a download
+// lands), plus the operator's own entries. Wasm: the compiled-in schedule, since
+// the browser tab has nowhere to cache a download and no config file to overlay.
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(in crate::app) fn load_broadcast_stations() -> Vec<sdroxide_types::BroadcastStation> {
     sdroxide_config::load_broadcast_stations()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(in crate::app) fn restore_bundled_broadcast_stations() {
-    if let Err(e) = sdroxide_config::restore_bundled_broadcast_stations() {
-        eprintln!("failed to restore the bundled broadcast station list: {e}");
-    }
-}
-
-/// The browser tab has no config directory to seed, so it gets the table
-/// compiled into the wasm bundle — the same data, just not editable there.
 #[cfg(target_arch = "wasm32")]
 pub(in crate::app) fn load_broadcast_stations() -> Vec<sdroxide_types::BroadcastStation> {
     sdroxide_types::broadcast::builtin().to_vec()
 }
 
+/// The result of a background schedule download.
+pub(in crate::app) type ScheduleFetch =
+    Result<Vec<sdroxide_types::BroadcastStation>, String>;
+
+/// Download the current season's schedule on a worker thread.
+///
+/// Off the UI thread because it is a megabyte over a link that may not be there;
+/// the app picks the result up from the receiver on a later frame. Returns `None`
+/// when nothing needs fetching, which after a first run is every start until the
+/// season turns over.
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::app) fn spawn_schedule_fetch(
+    force: bool,
+) -> Option<std::sync::mpsc::Receiver<ScheduleFetch>> {
+    if !force && !sdroxide_config::broadcast_schedule_due() {
+        return None;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("broadcast-schedule".into())
+        .spawn(move || {
+            let _ = tx.send(sdroxide_config::fetch_broadcast_schedule());
+        })
+        .ok()?;
+    Some(rx)
+}
+
+/// The browser client has no cache to fill, so there is nothing to fetch.
 #[cfg(target_arch = "wasm32")]
-pub(in crate::app) fn restore_bundled_broadcast_stations() {}
+pub(in crate::app) fn spawn_schedule_fetch(
+    _force: bool,
+) -> Option<std::sync::mpsc::Receiver<ScheduleFetch>> {
+    None
+}
+
+/// Drop the cached schedule so the next fetch downloads it again.
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::app) fn clear_broadcast_cache() {
+    if let Err(e) = sdroxide_config::clear_broadcast_cache() {
+        eprintln!("failed to clear the broadcast schedule cache: {e}");
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(in crate::app) fn clear_broadcast_cache() {}
 
 #[cfg(target_arch = "wasm32")]
 pub(in crate::app) fn persist_sat_config(_cfg: &sdroxide_types::SatConfig) {}

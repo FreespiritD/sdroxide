@@ -1840,10 +1840,10 @@ filters, the world map — is [§9.1](#91-spot-feeds-dx-cluster-pota-sota-psk-re
   band)** shows who is being heard on the band you are on. **Max age (s)** drops
   spots older than that many seconds.
 - **APPLY** connects or disconnects the feeds and saves the settings.
-- **Broadcast stations** — where the longwave/shortwave station list lives, with
-  **Reload** (re-read the file after editing it) and **Restore bundled list**
-  (replace it with the one shipped in this build, keeping the old one as
-  `broadcast_stations.json.bak`). See
+- **Broadcast stations** — which broadcasting season's schedule is in use and
+  whether it was downloaded, where your own station file lives, **Reload** to
+  re-read it after an edit, and **Download schedule now** to refetch the season
+  immediately. See
   [§9.6](#96-broadcast-stations-on-longwave-and-shortwave).
 
 FreeDV Reporter is a spot source too, but has its own tab —
@@ -2877,18 +2877,23 @@ to anyone.
 
 ### 9.6 Broadcast stations on longwave and shortwave
 
-SDRoxide ships a list of longwave and shortwave broadcast stations and labels them
-on the waterfall in orange, alongside the network spots — so a carrier on 225 kHz
-comes up as *Polskie Radio Program 1, Solec Kujawski* rather than as an
-unexplained signal. Click one to tune it in AM; unlike a cluster spot it opens no
-log entry and looks up no callsign.
+SDRoxide labels longwave and shortwave broadcast stations on the waterfall in
+orange, alongside the network spots — so a carrier on 225 kHz comes up as
+*Polskie Radio Program 1, Solec Kujawski* rather than as an unexplained signal.
+Click one to tune it in AM; unlike a cluster spot it opens no log entry and looks
+up no callsign.
 
-Only stations **on the air now** are labelled. Each entry may carry a UTC window
-and a set of days, and shortwave schedules move with the season, so the list is
-filtered against the clock every minute. Everything without a window — all the
-longwave transmitters, and the round-the-clock private shortwave stations — is
-always shown. Turn the whole category off with the **BC** chip in the SPOTS
-window.
+Only stations **on the air now** are labelled, which is what makes a schedule of
+this size usable: it holds around 4,600 transmissions, of which roughly 350–550
+are on the air at any moment. Each carries a UTC window and, where the broadcast
+does not run daily, a day mask; the list is re-filtered against the clock every
+minute. Entries with no window — the longwave transmitters, the standard-time
+stations, the round-the-clock private shortwave stations — are always shown. Turn
+the whole category off with the **BC** chip in the SPOTS window.
+
+A band is still busy at prime time (the 31 m band carries 50–95 transmissions at
+midday UTC), so zoom in or use **IN VIEW** when the labels crowd each other —
+only five rows of labels are drawn, and the rest are dropped.
 
 Because every entry names a real transmitter site with its coordinates, the
 stations also appear as dots on the FT8 world map, and **tuning one draws its path
@@ -2897,24 +2902,58 @@ labelled with the station and site, exactly as a QSO or a weather-fax chart is.
 That turns "a signal on 15400" into "this came 8,000 km from Ascension Island".
 It needs your grid set on the **General** tab, and the **QSO** layer on.
 
-**The list is yours to edit.** On first run the bundled table is copied to
-`broadcast_stations.json` in the config directory ([§11](#11-configuration-files))
-and SDRoxide never writes it again — a schedule you have corrected or a local
-station you have added survives every upgrade. The **Spots** settings tab
-([§5.5](#55-spots-spot-feeds)) shows the path, with **Reload** to re-read the file
-after editing and **Restore bundled list** to go back to the shipped one (your
-version is kept as `broadcast_stations.json.bak`). Deleting the file also
-re-seeds it. If the file will not parse, SDRoxide warns and falls back to the
-bundled list rather than showing no stations, and leaves your file alone so you
-can fix it.
+#### The schedule downloads itself
+
+Shortwave schedules are reissued twice a year, so SDRoxide keeps its own copy
+current instead of shipping a snapshot that goes stale:
+
+- **On first run** it downloads the current season's schedule from
+  [EiBi](https://www.eibispace.de/) in the background and caches it under
+  `broadcast/` in the config directory ([§11](#11-configuration-files)).
+- **At each season change** — the last Sunday in March and the last Sunday in
+  October — the cache no longer matches the season SDRoxide is in, so the new
+  file is fetched. The check happens at startup and once a day thereafter, and
+  the previous season's file is deleted once the new one lands.
+- **Until then, or if there is no network**, the copy compiled into the binary is
+  used. A failed download changes nothing except how fresh the schedule is; it is
+  reported on the **Spots** settings tab and retried on the next start.
+
+The download runs on a worker thread, so it never delays startup, and it is only
+written to the cache after it parses into a plausible schedule — a captive
+portal's login page cannot replace your station list. The **Spots** tab shows
+which season is in use and whether it came from the network, with **Download
+schedule now** to fetch it again immediately.
+
+The schedule is fetched over plain HTTP because eibispace.de's certificate is
+expired. Nothing is trusted on the strength of the transport: the file is parsed
+into typed rows and rejected unless it looks like a season's worth of
+transmissions.
+
+#### Your own stations
+
+`broadcast_stations.json` in the config directory is yours alone. SDRoxide never
+writes it, and merges it over the downloaded schedule each time it loads:
+
+- an entry with the **same name and frequency** as a scheduled one **replaces**
+  it — that is how you correct a wrong site or time;
+- anything else is **added** — a local station, a pirate, a relay the schedule
+  does not carry.
+
+The file does not exist until you create it, and holds only your entries rather
+than a copy of everything, so it stays small and never goes stale. **Reload** on
+the **Spots** tab re-reads it after an edit. (Upgrading from an earlier SDRoxide
+that seeded a full copy here: that copy is moved aside to
+`broadcast_stations.json.bak` on first start, because laying a stale season back
+over a fresh one would duplicate hundreds of transmissions. Nothing you wrote
+yourself is touched.)
 
 Each entry needs only a name and a frequency in kHz:
 
 ```json
-{ "name": "BBC World Service", "freq_khz": 15400, "site": "Ascension Island",
-  "country": "Ascension", "lat": -7.8981, "lon": -14.3769, "power_kw": 250,
-  "lang": "English", "target": "Africa",
-  "start_utc": 1800, "end_utc": 2100, "days": "1234567", "season": "B" }
+{ "name": "BBC", "freq_khz": 15400, "site": "Ascension Island",
+  "country": "Ascension Island", "lat": -7.9, "lon": -14.3833,
+  "lang": "English", "target": "West Africa",
+  "start_utc": 1800, "end_utc": 1900, "days": "12345" }
 ```
 
 | Field | Meaning |
@@ -2928,12 +2967,22 @@ Each entry needs only a name and a frequency in kHz:
 | `days` | Digits `1` (Monday) to `7` (Sunday), e.g. `"12345"` for weekdays. Empty means daily. |
 | `season` | `"A"` (last Sunday in March to last Sunday in October) or `"B"`. Absent means both. |
 
-The bundled list is deliberately conservative: it covers stations whose
-frequency-and-site pairing is stable rather than trying to be a full timetable,
-and gives times only where the station keeps to them. For a complete seasonal
-schedule to paste extra entries from, see
-[eibispace.de](https://www.eibispace.de/) or
-[short-wave.info](https://www.short-wave.info/).
+#### Where the data comes from
+
+The shortwave entries are EiBi's seasonal schedule, parsed by SDRoxide itself —
+the same code path for a downloaded file and for the compiled-in one, so they
+cannot behave differently. Transmitter coordinates and the language, country and
+target-area names come from EiBi's README, which changes very rarely and is
+therefore compiled in rather than fetched; `tools/gen_broadcast_codes.py`
+refreshes those tables and the offline fallback schedule:
+
+```sh
+tools/gen_broadcast_codes.py --season b26
+```
+
+Longwave and the HF standard-time stations are not in EiBi's file — it starts at
+2300 kHz and skips time signals — and are maintained by hand in
+`crates/sdroxide-types/src/broadcast_seed.json`.
 
 ---
 
@@ -3028,7 +3077,8 @@ sdroxide stores its settings under the per-user config directory:
 | `skimmer.json` | JSON | Skimmers: which of CW / PSK / RTTY run, and each one's spot squelch in dB. Restored at startup; a narrowband (audio-mode) radio still forces them off without disturbing what you picked. |
 | `input.json` | JSON | Control inputs: keyboard bindings, panadapter mouse behaviour, mouse-button bindings, and the MIDI controller mapping. Belongs to the machine running the user interface, not the engine. |
 | `satellites.json` | JSON | Satellite additions for the 3D tracker: subscribed element-set listings, element sets pasted in by hand, and frequency entries that override the built-in table. Belongs to the user interface, like `input.json`. |
-| `broadcast_stations.json` | JSON | Longwave and shortwave broadcast stations and their transmitter sites, labelled on the waterfall ([§9.6](#96-broadcast-stations-on-longwave-and-shortwave)). Seeded from the bundled list on first run and never written again, so your edits survive upgrades; delete it to get the bundled list back. |
+| `broadcast_stations.json` | JSON | *Your own* broadcast stations and corrections, merged over the downloaded schedule ([§9.6](#96-broadcast-stations-on-longwave-and-shortwave)). Never written by sdroxide, and absent until you create it. |
+| `broadcast/` | CSV | The broadcasting season's schedule as downloaded from eibispace.de, one file per season. Managed by sdroxide: refetched when the season changes, and safe to delete. |
 | `sstv_messages.json` | JSON | The overlay message stored for each of the five SSTV transmit slots. |
 | `voice_names.json` | JSON | The label given to each of the ten voice-keyer slots. |
 | `voice/` | dir | The voice-keyer recordings (`slot1.wav`…`slot10.wav`), 48 kHz mono. Drop your own WAV in to replace a message. |

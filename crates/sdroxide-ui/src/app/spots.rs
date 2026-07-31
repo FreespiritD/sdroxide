@@ -170,14 +170,60 @@ impl SdroxideApp {
     }
 
     /// Rebuild the on-air broadcast station list if the UTC minute has rolled
-    /// over since it was last built. Cheap enough to call every frame.
+    /// over since it was last built, and take delivery of a schedule download.
+    /// Cheap enough to call every frame.
     pub(in crate::app) fn refresh_broadcast_spots(&mut self, now_utc: i64) {
+        self.poll_schedule_fetch(now_utc);
         let minute = now_utc.div_euclid(60);
         if minute == self.broadcast_minute {
             return;
         }
         self.broadcast_minute = minute;
         self.broadcast_spots = sdroxide_types::broadcast::on_air(&self.broadcast, now_utc);
+    }
+
+    /// Collect a finished schedule download, and start one when the broadcasting
+    /// season has turned over since the cache was filled.
+    ///
+    /// The season check is once a day rather than once a frame: it is a calendar
+    /// event, and `broadcast_schedule_due` stats a file.
+    fn poll_schedule_fetch(&mut self, now_utc: i64) {
+        if let Some(rx) = &self.broadcast_fetch
+            && let Ok(result) = rx.try_recv()
+        {
+            self.broadcast_fetch = None;
+            self.broadcast_fetch_status = Some(match result {
+                Ok(stations) => {
+                    let msg = format!("{} transmissions", stations.len());
+                    self.broadcast = stations;
+                    // Force the on-air list to be rebuilt from the new schedule
+                    // rather than waiting up to a minute for the tick.
+                    self.broadcast_minute = -1;
+                    Ok(msg)
+                }
+                // The compiled-in schedule stays in use, so a failed download
+                // costs nothing but freshness.
+                Err(e) => Err(e),
+            });
+        }
+        let day = now_utc.div_euclid(86_400);
+        if self.broadcast_fetch.is_none() && day != self.broadcast_checked_day {
+            self.broadcast_checked_day = day;
+            self.broadcast_fetch = crate::app::persist::spawn_schedule_fetch(false);
+        }
+    }
+
+    /// Download the current season's schedule now, whether or not one is cached.
+    pub(in crate::app) fn refetch_broadcast_schedule(&mut self) {
+        crate::app::persist::clear_broadcast_cache();
+        self.broadcast_fetch_status = None;
+        self.broadcast_fetch = crate::app::persist::spawn_schedule_fetch(true);
+    }
+
+    /// Re-read the operator's own station file and lay it over the schedule.
+    pub(in crate::app) fn reload_broadcast_stations(&mut self) {
+        self.broadcast = crate::app::persist::load_broadcast_stations();
+        self.broadcast_minute = -1;
     }
 
     /// Live network spots and the on-air broadcast stations, unfiltered.

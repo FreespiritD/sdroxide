@@ -383,95 +383,248 @@ pub fn save_sat_config(cfg: &sdroxide_types::SatConfig) -> Result<(), ConfigErro
     save_json("satellites.json", cfg)
 }
 
-/// The broadcast station list (`broadcast_stations.json`).
-pub const BROADCAST_STATIONS_FILE: &str = "broadcast_stations.json";
+// ── Broadcast station schedules ──────────────────────────────────────────────
+//
+// Three layers, in the order they win:
+//
+//   1. the schedule EiBi publishes for the current season, downloaded and cached
+//      under `broadcast/`, or the copy compiled into the binary until one
+//      arrives;
+//   2. the hand-kept longwave and standard-time entries, merged in by
+//      `sdroxide_types::broadcast::merge` because EiBi covers neither;
+//   3. `broadcast_stations.json`, the operator's own additions and corrections,
+//      which is never written by sdroxide.
+//
+// This is the arrangement `sdroxide-solar`'s satellite frequencies already use —
+// a built-in table plus user overrides — rather than seeding a copy of everything
+// into the config directory, which cannot survive a schedule that is reissued
+// twice a year.
 
-/// Where the broadcast station list lives, for showing in the settings panel.
+/// The operator's own broadcast stations (`broadcast_stations.json`).
+pub const BROADCAST_STATIONS_FILE: &str = "broadcast_stations.json";
+/// Where the downloaded season schedules are cached.
+const BROADCAST_CACHE_DIR: &str = "broadcast";
+/// EiBi's schedule files, published free for exactly this use.
+///
+/// Plain HTTP because the site's certificate is expired; nothing is trusted on
+/// the strength of the transport, the payload is parsed into typed rows and
+/// rejected unless it looks like a schedule.
+const EIBI_SKED_URL: &str = "http://www.eibispace.de/dx/sked-{season}.csv";
+
+/// Where the operator's own station list lives, for showing in the settings panel.
 pub fn broadcast_stations_path() -> Result<PathBuf, ConfigError> {
     Ok(config_dir()?.join(BROADCAST_STATIONS_FILE))
 }
 
-/// The longwave/shortwave broadcast stations the waterfall labels.
-///
-/// Unlike every other store here this file is *reference data*, not the
-/// operator's preferences: it is seeded once from the table compiled into the
-/// binary and then left alone, because someone who has corrected a schedule or
-/// added a local station must not lose it to an upgrade. Deleting the file
-/// restores the bundled list; [`restore_bundled_broadcast_stations`] does the
-/// same deliberately.
-///
-/// A malformed file falls back to the bundled table rather than to an empty
-/// list — the generic [`load_json`] behaviour of quietly starting fresh is
-/// wrong for data the operator never expected to have to maintain.
-pub fn load_broadcast_stations() -> Vec<sdroxide_types::BroadcastStation> {
-    let Ok(path) = broadcast_stations_path() else {
-        return sdroxide_types::broadcast::builtin().to_vec();
-    };
-    load_broadcast_stations_at(&path)
+/// Where a season's downloaded schedule is cached.
+pub fn broadcast_cache_path(season: &str) -> Result<PathBuf, ConfigError> {
+    // The season is used in a filename, so it must not be able to escape the
+    // directory even though it is computed rather than typed in.
+    let season: String =
+        season.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
+    Ok(config_dir()?.join(BROADCAST_CACHE_DIR).join(format!("sked-{season}.csv")))
 }
 
-/// [`load_broadcast_stations`] against an explicit path, so the seed-once and
-/// fall-back-on-garbage behaviour can be tested without a config directory.
-fn load_broadcast_stations_at(path: &std::path::Path) -> Vec<sdroxide_types::BroadcastStation> {
-    if !path.exists() {
-        match write_bundled_broadcast_stations(path) {
-            Ok(()) => info!("seeded {BROADCAST_STATIONS_FILE} from the bundled station list"),
-            Err(e) => warn!("could not seed {BROADCAST_STATIONS_FILE}: {e}"),
-        }
-    }
-    match fs::read_to_string(path) {
-        Ok(text) => match serde_json::from_str::<sdroxide_types::BroadcastStations>(&text) {
-            Ok(f) => f.stations,
-            Err(e) => {
-                warn!("failed to parse {BROADCAST_STATIONS_FILE}: {e}; using the bundled list");
-                sdroxide_types::broadcast::builtin().to_vec()
-            }
-        },
+/// The operator's own broadcast entries. Absent by default — this file holds
+/// additions and corrections, not a copy of the schedule.
+pub fn load_broadcast_overrides() -> Vec<sdroxide_types::BroadcastStation> {
+    let Ok(path) = broadcast_stations_path() else { return Vec::new() };
+    retire_seeded_broadcast_list(&path);
+    let Ok(text) = fs::read_to_string(&path) else { return Vec::new() };
+    match serde_json::from_str::<sdroxide_types::BroadcastStations>(&text) {
+        Ok(f) => f.stations,
         Err(e) => {
-            warn!("failed to read {BROADCAST_STATIONS_FILE}: {e}; using the bundled list");
-            sdroxide_types::broadcast::builtin().to_vec()
+            warn!("failed to parse {BROADCAST_STATIONS_FILE}: {e}; ignoring it");
+            Vec::new()
         }
     }
 }
 
-pub fn save_broadcast_stations(
-    stations: &[sdroxide_types::BroadcastStation],
-) -> Result<(), ConfigError> {
-    let file = sdroxide_types::BroadcastStations {
-        version: 1,
-        updated: String::new(),
-        note: String::new(),
-        stations: stations.to_vec(),
+/// Move aside a `broadcast_stations.json` that is a copy of a shipped schedule.
+///
+/// Earlier versions seeded the whole table into this file. Now that the schedule
+/// is downloaded and this file holds only the operator's own entries, such a copy
+/// would lay a stale season back over a fresh one — hundreds of duplicated,
+/// out-of-date transmissions.
+///
+/// Generated copies are recognised by the `source` or `updated` keys, which only
+/// sdroxide's own table generators ever set, and nothing hand-written would
+/// carry them. So this never touches a file an operator actually wrote, and it
+/// is kept as `.bak` either way.
+fn retire_seeded_broadcast_list(path: &std::path::Path) {
+    let Ok(text) = fs::read_to_string(path) else { return };
+    let Ok(file) = serde_json::from_str::<sdroxide_types::BroadcastStations>(&text) else {
+        return;
     };
-    save_json(BROADCAST_STATIONS_FILE, &file)
+    if file.source.is_empty() && file.updated.is_empty() {
+        return;
+    }
+    let backup = path.with_extension("json.bak");
+    match fs::rename(path, &backup) {
+        Ok(()) => info!(
+            "{BROADCAST_STATIONS_FILE} was a copy of a bundled schedule; kept as \
+             {} and replaced by the downloaded one",
+            backup.display()
+        ),
+        Err(e) => warn!("could not retire the seeded {BROADCAST_STATIONS_FILE}: {e}"),
+    }
 }
 
-/// Replace the operator's station list with the bundled one, keeping the old
-/// file alongside as `.bak`. The only path that overwrites their edits, so it
-/// stays behind an explicit action in the UI.
-pub fn restore_bundled_broadcast_stations() -> Result<(), ConfigError> {
-    restore_bundled_broadcast_stations_at(&broadcast_stations_path()?)
+// There is deliberately no writer for `broadcast_stations.json`. It is the one
+// file here that belongs entirely to the operator, and "sdroxide never writes
+// it" is a contract the manual states — shipping a save function would be an
+// invitation to break it, and would give `retire_seeded_broadcast_list` a case
+// it cannot distinguish from a stale seeded copy.
+
+/// The full station list: the cached (or compiled-in) schedule, plus the
+/// hand-kept longwave entries, with the operator's own entries laid over the top.
+pub fn load_broadcast_stations() -> Vec<sdroxide_types::BroadcastStation> {
+    let schedule = match cached_schedule() {
+        Some(stations) => stations,
+        None => sdroxide_types::broadcast::builtin().to_vec(),
+    };
+    apply_broadcast_overrides(schedule, load_broadcast_overrides())
 }
 
-fn restore_bundled_broadcast_stations_at(path: &std::path::Path) -> Result<(), ConfigError> {
-    if path.exists() {
-        let backup = path.with_extension("json.bak");
-        if let Err(e) = fs::rename(path, &backup) {
-            warn!("could not back up {BROADCAST_STATIONS_FILE}: {e}");
+/// Lay the operator's entries over a schedule: one with the same name and
+/// frequency replaces the scheduled row, anything else is added.
+fn apply_broadcast_overrides(
+    mut schedule: Vec<sdroxide_types::BroadcastStation>,
+    overrides: Vec<sdroxide_types::BroadcastStation>,
+) -> Vec<sdroxide_types::BroadcastStation> {
+    for own in overrides {
+        let same = |s: &sdroxide_types::BroadcastStation| {
+            s.name == own.name && (s.freq_khz - own.freq_khz).abs() < 0.001
+        };
+        schedule.retain(|s| !same(s));
+        schedule.push(own);
+    }
+    schedule.sort_by(|a, b| {
+        a.freq_khz
+            .total_cmp(&b.freq_khz)
+            .then_with(|| a.start_utc.cmp(&b.start_utc))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    schedule
+}
+
+/// The cached schedule for the season we are in, if it has been downloaded.
+fn cached_schedule() -> Option<Vec<sdroxide_types::BroadcastStation>> {
+    let season = sdroxide_types::broadcast::season_file(now_unix());
+    let path = broadcast_cache_path(&season).ok()?;
+    let bytes = fs::read(&path).ok()?;
+    let text = sdroxide_types::broadcast::decode_latin1(&bytes);
+    let stations = sdroxide_types::broadcast::parse_schedule(&text);
+    if stations.len() < MIN_SCHEDULE_ROWS {
+        warn!("cached schedule {season} has only {} entries; ignoring it", stations.len());
+        return None;
+    }
+    Some(sdroxide_types::broadcast::merge(stations))
+}
+
+/// A schedule with fewer transmissions than this is not a schedule — a captive
+/// portal's login page, a truncated download, a season file that has not been
+/// published yet. Whatever it is, the compiled-in copy is better.
+const MIN_SCHEDULE_ROWS: usize = 500;
+
+/// Whether the current season's schedule still needs downloading.
+///
+/// True on a first run, and again after each changeover, because the cache is
+/// keyed by season: October's file simply is not March's.
+pub fn broadcast_schedule_due() -> bool {
+    let season = sdroxide_types::broadcast::season_file(now_unix());
+    match broadcast_cache_path(&season) {
+        Ok(p) => !p.exists(),
+        Err(_) => false,
+    }
+}
+
+/// The season sdroxide is currently using, and whether it came from the network.
+pub fn broadcast_schedule_status() -> (String, bool) {
+    let season = sdroxide_types::broadcast::season_file(now_unix());
+    let cached = broadcast_cache_path(&season).map(|p| p.exists()).unwrap_or(false);
+    (season, cached)
+}
+
+/// Download the current season's schedule and cache it.
+///
+/// Blocking, so callers put it on a worker thread. Returns the merged station
+/// list on success. The download is written to the cache only after it parses
+/// into a plausible schedule, so a failure leaves the previous file in place
+/// rather than replacing it with a captive portal's login page.
+pub fn fetch_broadcast_schedule() -> Result<Vec<sdroxide_types::BroadcastStation>, String> {
+    let season = sdroxide_types::broadcast::season_file(now_unix());
+    let url = EIBI_SKED_URL.replace("{season}", &season);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(15)))
+        .timeout_global(Some(std::time::Duration::from_secs(120)))
+        .user_agent(concat!("sdroxide/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into();
+
+    let mut resp = agent.get(&url).call().map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let bytes = resp
+        .body_mut()
+        .with_config()
+        .limit(16 * 1024 * 1024)
+        .read_to_vec()
+        .map_err(|e| e.to_string())?;
+
+    let text = sdroxide_types::broadcast::decode_latin1(&bytes);
+    let stations = sdroxide_types::broadcast::parse_schedule(&text);
+    if stations.len() < MIN_SCHEDULE_ROWS {
+        return Err(format!(
+            "{url} yielded {} transmissions, which is not a schedule",
+            stations.len()
+        ));
+    }
+
+    let path = broadcast_cache_path(&season).map_err(|e| e.to_string())?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    // Last season's file is only dead weight once this one has landed.
+    prune_broadcast_cache(&season);
+    info!("downloaded the {season} broadcast schedule: {} transmissions", stations.len());
+
+    Ok(apply_broadcast_overrides(
+        sdroxide_types::broadcast::merge(stations),
+        load_broadcast_overrides(),
+    ))
+}
+
+/// Drop cached schedules for seasons other than `keep`.
+fn prune_broadcast_cache(keep: &str) {
+    let Ok(path) = broadcast_cache_path(keep) else { return };
+    let Some(dir) = path.parent() else { return };
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        if entry.path() != path && entry.path().extension().is_some_and(|e| e == "csv") {
+            let _ = fs::remove_file(entry.path());
         }
     }
-    write_bundled_broadcast_stations(path)
 }
 
-/// Write the compiled-in table out verbatim, so the shipped and on-disk copies
-/// are byte-identical — re-serialising would drop the file's own provenance
-/// notes and reformat every entry.
-fn write_bundled_broadcast_stations(path: &std::path::Path) -> Result<(), ConfigError> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
+/// Forget the cached schedule so the next check downloads it again.
+pub fn clear_broadcast_cache() -> Result<(), ConfigError> {
+    let season = sdroxide_types::broadcast::season_file(now_unix());
+    let path = broadcast_cache_path(&season)?;
+    if path.exists() {
+        fs::remove_file(&path)?;
     }
-    fs::write(path, sdroxide_types::broadcast::EMBEDDED_JSON)?;
     Ok(())
+}
+
+/// Seconds since the Unix epoch.
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Voice-keyer slot labels (one entry per slot). The recordings themselves are
@@ -584,75 +737,151 @@ mod tests {
     }
 
     /// A scratch directory of our own, so the station-list tests never touch the
-    /// operator's real config. No `tempfile` dependency for four tests.
+    /// operator's real config. No `tempfile` dependency for a handful of tests.
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("sdroxide-bc-test-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .join(format!("sdroxide-bc-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("scratch dir");
         dir.join(BROADCAST_STATIONS_FILE)
     }
 
-    #[test]
-    fn a_missing_station_list_is_seeded_from_the_bundled_one() {
-        let path = scratch("seed");
-        assert!(!path.exists());
-        let loaded = load_broadcast_stations_at(&path);
-        assert!(path.exists(), "the file should have been written");
-        // Byte-for-byte, so the shipped and seeded copies cannot drift and the
-        // file's own provenance notes survive.
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            sdroxide_types::broadcast::EMBEDDED_JSON
-        );
-        assert_eq!(loaded.len(), sdroxide_types::broadcast::builtin().len());
+    fn station(name: &str, khz: f64) -> sdroxide_types::BroadcastStation {
+        sdroxide_types::BroadcastStation {
+            name: name.into(),
+            freq_khz: khz,
+            site: String::new(),
+            country: String::new(),
+            lat: None,
+            lon: None,
+            power_kw: None,
+            lang: String::new(),
+            target: String::new(),
+            mode: None,
+            start_utc: None,
+            end_utc: None,
+            days: String::new(),
+            season: None,
+        }
     }
 
     #[test]
-    fn an_edited_station_list_survives_being_loaded_again() {
-        let path = scratch("edit");
-        load_broadcast_stations_at(&path);
+    fn an_override_replaces_the_scheduled_row_it_names() {
+        let schedule = vec![station("BBC", 15400.0), station("Voice of Greece", 9420.0)];
+        let mine = vec![
+            // Same name and frequency: a correction, so it wins.
+            sdroxide_types::BroadcastStation {
+                site: "Woofferton".into(),
+                ..station("BBC", 15400.0)
+            },
+            // Not in the schedule: an addition.
+            station("My Local Pirate", 6295.0),
+        ];
+        let merged = apply_broadcast_overrides(schedule, mine);
+        assert_eq!(merged.len(), 3, "the correction replaced rather than duplicated");
+        let bbc: Vec<_> = merged.iter().filter(|s| s.name == "BBC").collect();
+        assert_eq!(bbc.len(), 1);
+        assert_eq!(bbc[0].site, "Woofferton");
+        assert!(merged.iter().any(|s| s.name == "My Local Pirate"));
+        // Frequency order is what the spot list expects.
+        assert!(merged.windows(2).all(|w| w[0].freq_khz <= w[1].freq_khz));
+    }
+
+    #[test]
+    fn an_override_on_a_different_frequency_is_an_addition() {
+        // Same station, another channel — not a correction of the first.
+        let merged = apply_broadcast_overrides(
+            vec![station("BBC", 15400.0)],
+            vec![station("BBC", 12095.0)],
+        );
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn a_seeded_copy_of_a_shipped_schedule_is_retired_not_used() {
+        let path = scratch("retire");
+        // What an older sdroxide wrote: a generated table, marked with `source`.
         fs::write(
             &path,
-            r#"{"version":1,"stations":[{"name":"My Local Pirate","freq_khz":6295}]}"#,
+            r#"{"version":2,"source":"EiBi A26","stations":[
+                 {"name":"Stale Station","freq_khz":6070}]}"#,
         )
         .unwrap();
-        let loaded = load_broadcast_stations_at(&path);
-        assert_eq!(loaded.len(), 1, "the operator's file wins, and is not re-seeded");
-        assert_eq!(loaded[0].name, "My Local Pirate");
-        assert_eq!(loaded[0].freq_khz, 6295.0);
-        // A two-field entry is legal, and everything else defaults.
-        assert!(loaded[0].site.is_empty());
-        assert_eq!(loaded[0].mode_str(), "AM");
-    }
-
-    #[test]
-    fn a_corrupt_station_list_falls_back_without_overwriting_it() {
-        let path = scratch("corrupt");
-        fs::write(&path, "{ this is not json").unwrap();
-        let loaded = load_broadcast_stations_at(&path);
-        assert_eq!(
-            loaded.len(),
-            sdroxide_types::broadcast::builtin().len(),
-            "a broken file must not leave the waterfall with no stations"
-        );
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "{ this is not json",
-            "and must not be silently destroyed — it is the operator's to fix"
-        );
-    }
-
-    #[test]
-    fn restoring_the_bundled_list_keeps_the_old_one_alongside() {
-        let path = scratch("restore");
-        fs::write(&path, r#"{"version":1,"stations":[{"name":"Mine","freq_khz":6070}]}"#).unwrap();
-        restore_bundled_broadcast_stations_at(&path).expect("restore");
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            sdroxide_types::broadcast::EMBEDDED_JSON
-        );
+        retire_seeded_broadcast_list(&path);
+        assert!(!path.exists(), "the seeded copy should have been moved aside");
         let backup = path.with_extension("json.bak");
-        assert!(backup.exists(), "the edited list should be kept as .json.bak");
-        assert!(fs::read_to_string(&backup).unwrap().contains("Mine"));
+        assert!(backup.exists(), "and kept as .bak, not deleted");
+        assert!(fs::read_to_string(&backup).unwrap().contains("Stale Station"));
+    }
+
+    #[test]
+    fn an_older_seeded_copy_is_recognised_by_its_datestamp() {
+        // The first version of this feature seeded a table with `updated` but no
+        // `source`. It is still a copy of a shipped list and must not be laid
+        // back over a downloaded schedule.
+        let path = scratch("retire-dated");
+        fs::write(
+            &path,
+            r#"{"version":1,"updated":"2026-07-30","note":"bundled",
+                "stations":[{"name":"Stale","freq_khz":6070}]}"#,
+        )
+        .unwrap();
+        retire_seeded_broadcast_list(&path);
+        assert!(!path.exists());
+        assert!(path.with_extension("json.bak").exists());
+    }
+
+    #[test]
+    fn what_the_overrides_writer_produces_is_never_retired() {
+        // A file in the shape the manual documents has to survive the next
+        // start, or an operator's list would vanish exactly once.
+        let path = scratch("roundtrip");
+        let file = sdroxide_types::BroadcastStations {
+            version: 1,
+            updated: String::new(),
+            source: String::new(),
+            note: "mine".into(),
+            stations: vec![station("My Local Pirate", 6295.0)],
+        };
+        fs::write(&path, serde_json::to_string_pretty(&file).unwrap()).unwrap();
+        retire_seeded_broadcast_list(&path);
+        assert!(path.exists(), "the operator's own file must survive");
+    }
+
+    #[test]
+    fn a_hand_written_list_is_left_alone() {
+        let path = scratch("keep");
+        // No `source` key, so it is the operator's own and must survive.
+        let mine = r#"{"version":1,"stations":[{"name":"My Local Pirate","freq_khz":6295}]}"#;
+        fs::write(&path, mine).unwrap();
+        retire_seeded_broadcast_list(&path);
+        assert!(path.exists());
+        assert_eq!(fs::read_to_string(&path).unwrap(), mine);
+    }
+
+    #[test]
+    fn the_cache_path_is_named_for_the_season_and_cannot_escape_it() {
+        let a = broadcast_cache_path("a26").unwrap();
+        let b = broadcast_cache_path("b26").unwrap();
+        assert_ne!(a, b, "a season change has to miss the previous cache");
+        assert!(a.to_string_lossy().ends_with("sked-a26.csv"));
+        // The season is interpolated into a filename, so nothing in it may walk
+        // out of the cache directory even though it is computed, not typed.
+        let nasty = broadcast_cache_path("../../etc/passwd").unwrap();
+        assert_eq!(nasty.parent(), a.parent());
+        assert!(!nasty.to_string_lossy().contains(".."));
+    }
+
+    #[test]
+    fn a_short_download_is_not_a_schedule() {
+        // The guard that stops a captive portal's login page replacing the real
+        // list. One row parses fine; it just is not a season's worth.
+        let csv = "kHz;Time;Days;ITU;Station;Lng;Target;Remarks;P;Start;Stop;\n\
+                   9420;0000-2400;;GRC;Voice of Greece;G;Eu;a;1;;\n";
+        let parsed = sdroxide_types::broadcast::parse_schedule(csv);
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed.len() < MIN_SCHEDULE_ROWS);
+        // Whereas the compiled-in fallback comfortably clears the bar.
+        assert!(sdroxide_types::broadcast::builtin().len() > MIN_SCHEDULE_ROWS);
     }
 }

@@ -151,60 +151,98 @@ pub(in crate::app) fn settings_freedv_tab(
     }
 }
 
-/// The broadcast-station block on the Spots settings tab: where the list lives,
-/// and the two things that can be done to it from here.
+/// The broadcast-station block on the Spots settings tab: where the schedule
+/// came from, and the three things that can be done to it.
 #[cfg(not(target_arch = "wasm32"))]
 pub(in crate::app) fn broadcast_stations_settings(
     ui: &mut egui::Ui,
     reload: &mut bool,
-    restore: &mut bool,
+    refetch: &mut bool,
+    fetching: bool,
+    status: Option<&Result<String, String>>,
 ) {
-    let path = sdroxide_config::broadcast_stations_path();
+    let (season, cached) = sdroxide_config::broadcast_schedule_status();
     ui.label(
         RichText::new(
-            "The longwave and shortwave stations labelled on the waterfall. Seeded from the \
-             bundled list on first run, then yours to edit — sdroxide never overwrites it.",
+            "The longwave and shortwave stations labelled on the waterfall. The shortwave \
+             schedule is downloaded from eibispace.de for the current broadcasting season and \
+             re-downloaded when the season changes.",
         )
         .weak(),
     );
-    if let Ok(p) = &path {
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::Label::new(
-                    RichText::new(p.display().to_string())
-                        .monospace()
-                        .size(10.5)
-                        .color(Color32::from_gray(150)),
-                )
-                .truncate(),
-            );
-        });
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Season").size(11.0).color(Color32::from_gray(150)));
+        ui.label(
+            RichText::new(season.to_uppercase())
+                .monospace()
+                .size(11.0)
+                .color(crate::theme::TEXT_STRONG),
+        );
+        let (text, colour) = if fetching {
+            ("downloading…".to_string(), crate::theme::YELLOW)
+        } else if cached {
+            ("downloaded".to_string(), crate::theme::GREEN)
+        } else {
+            ("using the built-in copy".to_string(), Color32::from_gray(150))
+        };
+        ui.label(RichText::new(text).size(11.0).color(colour));
+    });
+    if let Some(Err(e)) = status {
+        // Worth showing, not worth alarming over: the built-in schedule is still
+        // in use, so the only thing lost is freshness.
+        ui.label(
+            RichText::new(format!("⚠ Download failed: {e}. Using the built-in schedule."))
+                .color(crate::theme::YELLOW)
+                .size(11.0),
+        );
+    }
+
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "Your own stations and corrections go in this file. sdroxide never writes it, and \
+             an entry here replaces a scheduled one with the same name and frequency.",
+        )
+        .weak(),
+    );
+    if let Ok(p) = sdroxide_config::broadcast_stations_path() {
+        ui.add(
+            egui::Label::new(
+                RichText::new(p.display().to_string())
+                    .monospace()
+                    .size(10.5)
+                    .color(Color32::from_gray(150)),
+            )
+            .truncate(),
+        );
     }
     ui.horizontal(|ui| {
         if ui
             .button("Reload")
-            .on_hover_text("Re-read the file after editing it")
+            .on_hover_text("Re-read your station file after editing it")
             .clicked()
         {
             *reload = true;
         }
         if ui
-            .button("Restore bundled list")
-            .on_hover_text("Replace the file with the one shipped in this build (the old one is kept as .json.bak)")
+            .add_enabled(!fetching, egui::Button::new("Download schedule now"))
+            .on_hover_text("Fetch this season's schedule again, replacing the cached copy")
             .clicked()
         {
-            *restore = true;
+            *refetch = true;
         }
     });
 }
 
-/// The browser client reads the table compiled into the wasm bundle, so there is
-/// no file to point at and nothing to reload.
+/// The browser client reads the schedule compiled into the wasm bundle, so there
+/// is nothing to download and no file to overlay.
 #[cfg(target_arch = "wasm32")]
 pub(in crate::app) fn broadcast_stations_settings(
     ui: &mut egui::Ui,
     _reload: &mut bool,
-    _restore: &mut bool,
+    _refetch: &mut bool,
+    _fetching: bool,
+    _status: Option<&Result<String, String>>,
 ) {
     ui.label(
         RichText::new(

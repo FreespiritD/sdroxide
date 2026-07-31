@@ -1,0 +1,29 @@
+{
+  "note": "Hand-maintained entries merged into broadcast_stations.json by gen_broadcast_stations.py. EiBi's seasonal schedule covers shortwave from 2300 kHz up, so the longwave broadcasters and the HF standard-time stations have to be kept here. Longwave verified against https://en.wikipedia.org/wiki/List_of_longwave_radio_broadcasters and https://www.asiawaves.net/longwave-radio.htm; transmitter coordinates from the per-site Wikipedia articles. Several published lists still carry Droitwich 198, RTE 252, Kalundborg 243, Lahti 252 and Gufuskalar 189 — all closed, and deliberately absent here.",
+  "stations": [
+    { "name": "Radio Algerienne Chaine 1", "freq_khz": 153, "site": "Kenadsa", "country": "Algeria", "lat": 31.5699, "lon": -2.345, "power_kw": 2000, "lang": "Arabic" },
+    { "name": "Radio Romania Antena Satelor", "freq_khz": 153, "site": "Bod", "country": "Romania", "lat": 45.7547, "lon": 25.6067, "power_kw": 200, "lang": "Romanian" },
+    { "name": "ALS162 time signal (TDF)", "freq_khz": 162, "site": "Allouis", "country": "France", "lat": 47.1696, "lon": 2.2046, "power_kw": 800, "lang": "time signal, no audio" },
+    { "name": "MNB Radio 1", "freq_khz": 164, "site": "Ulaanbaatar (Khonkhor)", "country": "Mongolia", "lat": 47.83, "lon": 107.15, "power_kw": 500, "lang": "Mongolian" },
+    { "name": "Medi 1", "freq_khz": 171, "site": "Nador", "country": "Morocco", "lat": 35.0414, "lon": -2.9186, "power_kw": 1600, "lang": "Arabic/French" },
+    { "name": "MNB Radio 1", "freq_khz": 209, "site": "Choibalsan", "country": "Mongolia", "lat": 48.07, "lon": 114.54, "power_kw": 75, "lang": "Mongolian" },
+    { "name": "MNB Radio 1", "freq_khz": 209, "site": "Dalanzadgad", "country": "Mongolia", "lat": 43.57, "lon": 104.42, "power_kw": 75, "lang": "Mongolian" },
+    { "name": "MNB Radio 1", "freq_khz": 209, "site": "Olgii", "country": "Mongolia", "lat": 48.97, "lon": 89.96, "power_kw": 30, "lang": "Mongolian" },
+    { "name": "Polskie Radio Program 1", "freq_khz": 225, "site": "Solec Kujawski", "country": "Poland", "lat": 53.0203, "lon": 18.2623, "power_kw": 1000, "lang": "Polish" },
+    { "name": "MNB Radio 1", "freq_khz": 227, "site": "Altai", "country": "Mongolia", "lat": 46.37, "lon": 96.26, "power_kw": 75, "lang": "Mongolian" },
+    { "name": "Radio Algerienne Chaine 3", "freq_khz": 252, "site": "Tipaza", "country": "Algeria", "lat": 36.5661, "lon": 2.4806, "power_kw": 1500, "lang": "French" },
+
+    { "name": "CHU time signal", "freq_khz": 3330, "site": "Ottawa, ON", "country": "Canada", "lat": 45.2947, "lon": -75.7578, "power_kw": 3, "lang": "time signal" },
+    { "name": "RWM time signal", "freq_khz": 4996, "site": "Taldom", "country": "Russia", "lat": 56.7333, "lon": 37.6333, "power_kw": 5, "lang": "time signal, CW/pulses" },
+    { "name": "WWV time signal", "freq_khz": 5000, "site": "Fort Collins, CO", "country": "USA", "lat": 40.6783, "lon": -105.0472, "power_kw": 10, "lang": "time signal" },
+    { "name": "WWVH time signal", "freq_khz": 5000, "site": "Kekaha, HI", "country": "USA", "lat": 21.9878, "lon": -159.7631, "power_kw": 10, "lang": "time signal" },
+    { "name": "CHU time signal", "freq_khz": 7850, "site": "Ottawa, ON", "country": "Canada", "lat": 45.2947, "lon": -75.7578, "power_kw": 3, "lang": "time signal" },
+    { "name": "RWM time signal", "freq_khz": 9996, "site": "Taldom", "country": "Russia", "lat": 56.7333, "lon": 37.6333, "power_kw": 5, "lang": "time signal, CW/pulses" },
+    { "name": "WWV time signal", "freq_khz": 10000, "site": "Fort Collins, CO", "country": "USA", "lat": 40.6783, "lon": -105.0472, "power_kw": 10, "lang": "time signal" },
+    { "name": "BPM time signal", "freq_khz": 10000, "site": "Pucheng", "country": "China", "lat": 34.95, "lon": 109.55, "power_kw": 20, "lang": "time signal" },
+    { "name": "CHU time signal", "freq_khz": 14670, "site": "Ottawa, ON", "country": "Canada", "lat": 45.2947, "lon": -75.7578, "power_kw": 3, "lang": "time signal" },
+    { "name": "RWM time signal", "freq_khz": 14996, "site": "Taldom", "country": "Russia", "lat": 56.7333, "lon": 37.6333, "power_kw": 5, "lang": "time signal, CW/pulses" },
+    { "name": "WWV time signal", "freq_khz": 15000, "site": "Fort Collins, CO", "country": "USA", "lat": 40.6783, "lon": -105.0472, "power_kw": 10, "lang": "time signal" },
+    { "name": "WWVH time signal", "freq_khz": 15000, "site": "Kekaha, HI", "country": "USA", "lat": 21.9878, "lon": -159.7631, "power_kw": 10, "lang": "time signal" }
+  ]
+}

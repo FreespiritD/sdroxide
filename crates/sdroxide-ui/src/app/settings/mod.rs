@@ -31,10 +31,7 @@ use self::servers::{settings_rigctld_tab, settings_tci_server_tab, settings_wsjt
 use self::tle::settings_tle_tab;
 use self::ui_tab::settings_ui_tab;
 use crate::app::SdroxideApp;
-use crate::app::persist::{
-    load_broadcast_stations, persist_sat_config, persist_ui_settings,
-    restore_bundled_broadcast_stations,
-};
+use crate::app::persist::{persist_sat_config, persist_ui_settings};
 
 /// Settings dialog tabs: General (station identity + audio devices), the radio
 /// interface and its settings, display/UI preferences, control inputs
@@ -143,11 +140,14 @@ pub(in crate::app) struct SettingsIo<'a> {
     /// with its own settings — because a switch that provably does nothing is
     /// worse than no switch.
     solar_cloud_march: Option<&'a mut bool>,
-    /// Reload the broadcast station list from disk, and restore the bundled one
-    /// over the top of it. Both act on a file rather than on an edit buffer, so
+    /// Re-read the operator's broadcast station file, and re-download this
+    /// season's schedule. Both act on files rather than on an edit buffer, so
     /// they are done after the window closure like the HPSDR scan.
     bc_reload: &'a mut bool,
-    bc_restore: &'a mut bool,
+    bc_refetch: &'a mut bool,
+    /// Whether a schedule download is in flight, and what the last one did.
+    bc_fetching: bool,
+    bc_status: Option<&'a Result<String, String>>,
     tab: &'a mut SettingsTab,
 }
 
@@ -232,7 +232,7 @@ impl SdroxideApp {
         let mut sat_sub_refresh = false;
         let sat_subs = self.sat_sub_views();
         let mut bc_reload = false;
-        let mut bc_restore = false;
+        let mut bc_refetch = false;
 
         // The concrete interface types the user chooses between. SoapySDR only
         // appears when compiled in; there is no auto-detect (an unavailable
@@ -284,7 +284,9 @@ impl SdroxideApp {
                         net_cmds: &mut net_cmds,
                         net_apply: &mut net_apply,
                         bc_reload: &mut bc_reload,
-                        bc_restore: &mut bc_restore,
+                        bc_refetch: &mut bc_refetch,
+                        bc_fetching: self.broadcast_fetch.is_some(),
+                        bc_status: self.broadcast_fetch_status.as_ref(),
                         net_sync: &mut net_sync,
                         tci_srv_edit: &mut tci_srv_edit,
                         tci_srv_apply: &mut tci_srv_apply,
@@ -377,13 +379,11 @@ impl SdroxideApp {
             // closure, the way the HPSDR scan is.
             self.refresh_sat_subs_now();
         }
-        if bc_restore {
-            restore_bundled_broadcast_stations();
+        if bc_refetch {
+            self.refetch_broadcast_schedule();
         }
-        if bc_reload || bc_restore {
-            self.broadcast = load_broadcast_stations();
-            // Force a rebuild rather than waiting up to a minute for the tick.
-            self.broadcast_minute = -1;
+        if bc_reload {
+            self.reload_broadcast_stations();
         }
         if let Some((output, name)) = audio_pick {
             self.ctrl.set_audio_device(output, name);
@@ -684,7 +684,13 @@ impl SdroxideApp {
                 }
 
                 net_heading(ui, "Broadcast stations");
-                broadcast_stations_settings(ui, io.bc_reload, io.bc_restore);
+                broadcast_stations_settings(
+                    ui,
+                    io.bc_reload,
+                    io.bc_refetch,
+                    io.bc_fetching,
+                    io.bc_status,
+                );
             }
             SettingsTab::Uploads => {
                 net_heading(ui, "Callsign lookup");

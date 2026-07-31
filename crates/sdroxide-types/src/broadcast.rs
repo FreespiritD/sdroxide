@@ -1,23 +1,326 @@
 //! Longwave and shortwave broadcast stations, and the transmitter site each one
 //! radiates from.
 //!
-//! Modelled on [`crate::WefaxStation`] — a bundled table of "what is this carrier
-//! I am hearing" reference data — but persisted rather than `const`, because a
-//! shortwave schedule is something an operator will want to correct. The bundled
-//! JSON is compiled in as [`EMBEDDED_JSON`] and written to the config directory
-//! on first run by `sdroxide-config`; from then on the file on disk wins.
+//! The shortwave half is [EiBi](https://www.eibispace.de/)'s seasonal schedule,
+//! parsed by [`parse_schedule`]. Schedules are reissued twice a year, so
+//! `sdroxide-config` downloads the current season's file and caches it; the copy
+//! compiled in here is the fallback for a first run with no network, and goes
+//! through the same parser, so there is one implementation and one set of
+//! behaviours rather than a build-time converter and a runtime one that drift.
 //!
-//! Stations become [`Spot`]s of kind [`SpotKind::Broadcast`] via [`
-//! BroadcastStation::to_spot`], so the panadapter overlay, the spot list and the
-//! world map render them through exactly the same path as a cluster spot.
+//! Longwave and the HF standard-time stations are not in EiBi's file — it starts
+//! at 2300 kHz and skips time signals — so they are kept by hand in
+//! `broadcast_seed.json` and merged in.
+//!
+//! The site coordinates and the language, country and target-area names live in
+//! EiBi's human-readable README rather than in the schedule, so they are lifted
+//! into `broadcast_codes.json` by `tools/gen_broadcast_codes.py` and compiled in.
+//! They change very rarely, which is why they are not fetched.
+//!
+//! Modelled on [`crate::WefaxStation`] — reference data answering "what is this
+//! carrier I am hearing". Stations become [`Spot`]s of kind
+//! [`SpotKind::Broadcast`] via [`BroadcastStation::to_spot`], so the panadapter
+//! overlay, the spot list and the world map render them through exactly the same
+//! path as a cluster spot.
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{Spot, SpotKind};
 
-/// The bundled station table, verbatim. Written to the operator's config dir
-/// byte-for-byte, so the shipped and seeded copies cannot drift.
-pub const EMBEDDED_JSON: &str = include_str!("broadcast_stations.json");
+/// One season of EiBi's schedule, for a first run that cannot reach the network.
+const FALLBACK_SKED: &str = include_str!("sked-fallback.csv");
+/// Hand-kept longwave broadcasters and HF standard-time stations.
+const SEED_JSON: &str = include_str!("broadcast_seed.json");
+/// Site coordinates and code names lifted from EiBi's README.
+const CODES_JSON: &str = include_str!("broadcast_codes.json");
+
+/// The ITU broadcasting allocations, plus the tropical bands.
+///
+/// EiBi's schedule also carries marine, aeronautical and military voice traffic;
+/// restricting to the broadcast bands is what separates a broadcaster from a
+/// coast station without needing a curated station list.
+const BANDS: &[(f64, f64)] = &[
+    (2300.0, 2495.0),
+    (3200.0, 3400.0),
+    (3900.0, 4000.0),
+    (4750.0, 5060.0),
+    (5800.0, 6200.0),
+    (7200.0, 7600.0),
+    (9250.0, 9900.0),
+    (11500.0, 12160.0),
+    (13570.0, 13870.0),
+    (15100.0, 15830.0),
+    (17480.0, 17900.0),
+    (18900.0, 19020.0),
+    (21450.0, 21850.0),
+    (25670.0, 26100.0),
+];
+
+/// Lookup tables from EiBi's README: `"ROU-t"` -> Tiganesti and its position,
+/// plus readable names for the language, country and target-area codes.
+#[derive(Debug, Deserialize)]
+pub struct BroadcastCodes {
+    #[serde(default)]
+    pub sites: HashMap<String, (String, f64, f64)>,
+    #[serde(default)]
+    pub languages: HashMap<String, String>,
+    #[serde(default)]
+    pub countries: HashMap<String, String>,
+    #[serde(default)]
+    pub targets: HashMap<String, String>,
+}
+
+/// The compiled-in code tables, parsed once.
+pub fn codes() -> &'static BroadcastCodes {
+    static PARSED: OnceLock<BroadcastCodes> = OnceLock::new();
+    PARSED.get_or_init(|| {
+        serde_json::from_str(CODES_JSON).unwrap_or(BroadcastCodes {
+            sites: HashMap::new(),
+            languages: HashMap::new(),
+            countries: HashMap::new(),
+            targets: HashMap::new(),
+        })
+    })
+}
+
+/// Whether a schedule row names something an AM receiver can listen to.
+///
+/// Jammers exist only to sit on top of a broadcast, numbers stations are not
+/// addressed to a listener, and the fax and DRM rows carry nothing an envelope
+/// detector can recover.
+fn is_listenable(station: &str) -> bool {
+    let lower = station.to_ascii_lowercase();
+    for phrase in ["jammer", "firedrake", "spy numbers"] {
+        if lower.contains(phrase) {
+            return false;
+        }
+    }
+    // Whole words only: a station is not disqualified for having "drm" or "fax"
+    // buried inside a place name.
+    !lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|w| matches!(w, "fax" | "drm" | "digital"))
+}
+
+/// Decode an EiBi file, which is published as latin-1.
+///
+/// Latin-1 maps byte-for-byte onto the first 256 code points, so this cannot
+/// fail — which matters, because a lossy UTF-8 decode would mangle exactly the
+/// station names an operator searches for (`Rádio Clube do Pará`).
+pub fn decode_latin1(bytes: &[u8]) -> String {
+    bytes.iter().map(|&b| b as char).collect()
+}
+
+/// Parse one EiBi `sked-XNN.csv` into stations.
+///
+/// The format is documented in EiBi's README: eleven semicolon-separated fields,
+/// of which this uses frequency, time, days, home country, station, language,
+/// target, transmitter-site code and persistence. Rows outside the broadcast
+/// bands, marked inactive, or naming something other than a broadcaster are
+/// dropped. Unparseable rows are skipped rather than failing the file — a
+/// schedule with one bad line is still worth having.
+pub fn parse_schedule(csv: &str) -> Vec<BroadcastStation> {
+    let codes = codes();
+    let mut out = Vec::new();
+    for line in csv.lines().skip(1) {
+        let f: Vec<&str> = line.split(';').collect();
+        if f.len() < 9 {
+            continue;
+        }
+        let Ok(khz) = f[0].trim().parse::<f64>() else { continue };
+        if !BANDS.iter().any(|&(lo, hi)| (lo..=hi).contains(&khz)) {
+            continue;
+        }
+        let Ok(persistence) = f[8].trim().parse::<u32>() else { continue };
+        // 8 is an inactive entry; 90 and up mark a utility station.
+        if persistence == 8 || persistence >= 90 {
+            continue;
+        }
+        let station = f[4].trim();
+        if station.is_empty() || !is_listenable(station) || f[5].trim().starts_with('-') {
+            continue;
+        }
+        let (site, lat, lon, country_code) = resolve_site(f[7].trim(), f[3].trim(), codes);
+
+        let lang = f[5]
+            .split(',')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(|c| codes.languages.get(c).map(String::as_str).unwrap_or(c))
+            .collect::<Vec<_>>()
+            .join("/");
+        let target = f[6].trim();
+        let target = codes.targets.get(target).map(String::as_str).unwrap_or(target);
+        let (start_utc, end_utc) = match parse_window(f[1].trim()) {
+            Some((a, b)) => (Some(a), Some(b)),
+            None => (None, None),
+        };
+
+        out.push(BroadcastStation {
+            name: station.to_string(),
+            freq_khz: khz,
+            site,
+            country: codes
+                .countries
+                .get(&country_code)
+                .cloned()
+                .unwrap_or(country_code),
+            lat,
+            lon,
+            power_kw: None,
+            lang,
+            target: target.to_string(),
+            mode: None,
+            start_utc,
+            end_utc,
+            days: parse_days(f[2].trim()),
+            // EiBi's persistence codes 4 and 5 mark a transmission that runs in
+            // only one broadcasting season. Everything else is left unseasoned,
+            // so a cached file keeps working past the changeover instead of
+            // emptying the band.
+            season: match persistence {
+                4 => Some("B".to_string()),
+                5 => Some("A".to_string()),
+                _ => None,
+            },
+        });
+    }
+    out
+}
+
+/// Resolve EiBi's transmitter-site code to a place.
+///
+/// `/CCC` or `/CCC-x` is a relay in another country; a bare suffix is a site in
+/// the station's home country. An unresolvable code still yields the country, so
+/// the transmission keeps its waterfall label and simply gets no map dot — better
+/// than inventing a position for it.
+fn resolve_site(
+    code: &str,
+    home: &str,
+    codes: &BroadcastCodes,
+) -> (String, Option<f64>, Option<f64>, String) {
+    let (country, suffix) = match code.strip_prefix('/') {
+        Some(body) => match body.split_once('-') {
+            Some((c, s)) => (c, s),
+            None => (body, ""),
+        },
+        None => (home, code),
+    };
+    for key in [format!("{country}-{suffix}"), country.to_string()] {
+        if let Some((name, lat, lon)) = codes.sites.get(&key) {
+            return (name.clone(), Some(*lat), Some(*lon), country.to_string());
+        }
+    }
+    (String::new(), None, None, country.to_string())
+}
+
+/// `0800-1000` -> `(800, 1000)`; `0000-2400` and degenerate spans mean around
+/// the clock, which this reports as `None`.
+fn parse_window(spec: &str) -> Option<(u16, u16)> {
+    let (a, b) = spec.split_once('-')?;
+    if a.len() != 4 || b.len() != 4 {
+        return None;
+    }
+    let a: u16 = a.parse().ok()?;
+    let mut b: u16 = b.parse().ok()?;
+    if (a, b) == (0, 2400) || a == b {
+        return None;
+    }
+    if b == 2400 {
+        b = 0;
+    }
+    if a > 2359 || b > 2359 || a % 100 > 59 || b % 100 > 59 {
+        return None;
+    }
+    Some((a, b))
+}
+
+const DAY_NAMES: [(&str, u8); 7] = [
+    ("Mo", 1),
+    ("Tu", 2),
+    ("We", 3),
+    ("Th", 4),
+    ("Fr", 5),
+    ("Sa", 6),
+    ("Su", 7),
+];
+
+fn day_number(token: &str) -> Option<u8> {
+    DAY_NAMES.iter().find(|(n, _)| *n == token).map(|(_, d)| *d)
+}
+
+/// EiBi's day spec -> the `1`=Monday..`7`=Sunday digit mask used here.
+///
+/// Handles `Mo-Fr`, `We-Mo` (wrapping the week), `Tu,Fr`, `SaSu` and specs that
+/// are already digits. Anything else — `irr`, `Ram`, `1.Sa`, a date — is not a
+/// weekly pattern, so it becomes daily: showing a station that turns out not to
+/// be transmitting costs a glance, hiding one that is costs the catch.
+fn parse_days(spec: &str) -> String {
+    if spec.is_empty() {
+        return String::new();
+    }
+    let mut days: Vec<u8> = Vec::new();
+    if spec.bytes().all(|b| b.is_ascii_digit()) {
+        days.extend(spec.bytes().map(|b| b - b'0').filter(|d| (1..=7).contains(d)));
+    } else if let Some((a, b)) = spec.split_once('-')
+        && let (Some(from), Some(to)) = (day_number(a), day_number(b))
+    {
+        let mut d = from;
+        loop {
+            days.push(d);
+            if d == to {
+                break;
+            }
+            d = d % 7 + 1;
+        }
+    } else {
+        // `Tu,Fr`, `SaSu`, `Mo We` — two-character names, however separated.
+        let stripped: String =
+            spec.chars().filter(|c| !matches!(c, ',' | ' ' | '/')).collect();
+        // Day names are ASCII pairs. Anything else cannot be one, and bailing
+        // here also keeps the byte-pair chunking below off a multi-byte char.
+        if !stripped.is_ascii() || !stripped.len().is_multiple_of(2) {
+            return String::new();
+        }
+        let mut chars = stripped.as_bytes().chunks(2);
+        let mut all = Vec::new();
+        let ok = chars.all(|c| {
+            match std::str::from_utf8(c).ok().and_then(day_number) {
+                Some(d) => {
+                    all.push(d);
+                    true
+                }
+                None => false,
+            }
+        });
+        if !ok {
+            return String::new();
+        }
+        days = all;
+    }
+    days.sort_unstable();
+    days.dedup();
+    if days.len() == 7 {
+        // "every day" is the same as leaving the mask off, and shorter.
+        return String::new();
+    }
+    days.iter().map(|d| char::from(b'0' + d)).collect()
+}
+
+/// The EiBi season file name for `unix`, e.g. `"a26"` or `"b26"`.
+///
+/// The winter season spans the new year — B26 runs from late October 2026 to late
+/// March 2027 — so it keeps the year it started in.
+pub fn season_file(unix: i64) -> String {
+    let (_, _, days) = utc_parts(unix);
+    let (year, month, _) = civil_from_days(days);
+    let season = season_at(unix);
+    let year = if season == "B" && month < 6 { year - 1 } else { year };
+    format!("{}{:02}", season.to_ascii_lowercase(), year.rem_euclid(100))
+}
 
 /// One broadcast transmission: a station, a frequency, the site it comes from,
 /// and optionally when it is on the air.
@@ -79,6 +382,11 @@ pub struct BroadcastStations {
     pub version: u32,
     #[serde(default)]
     pub updated: String,
+    /// Where a generated file came from. Present only on tables sdroxide itself
+    /// produced, which is how a copy of a shipped schedule is told apart from a
+    /// list the operator wrote.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
     #[serde(default)]
     pub note: String,
     #[serde(default)]
@@ -197,17 +505,38 @@ impl BroadcastStation {
     }
 }
 
-/// The bundled table, parsed once.
-///
-/// Falls back to an empty slice if the compiled-in JSON is malformed, which a
-/// unit test rules out at build time.
-pub fn builtin() -> &'static [BroadcastStation] {
-    static PARSED: std::sync::OnceLock<Vec<BroadcastStation>> = std::sync::OnceLock::new();
+/// The hand-kept longwave and standard-time entries.
+pub fn seed() -> &'static [BroadcastStation] {
+    static PARSED: OnceLock<Vec<BroadcastStation>> = OnceLock::new();
     PARSED.get_or_init(|| {
-        serde_json::from_str::<BroadcastStations>(EMBEDDED_JSON)
+        serde_json::from_str::<BroadcastStations>(SEED_JSON)
             .map(|f| f.stations)
             .unwrap_or_default()
     })
+}
+
+/// Merge a schedule with the hand-kept entries, in frequency order.
+///
+/// The schedule is whatever `sdroxide-config` last downloaded, or the compiled-in
+/// fallback; the seed is always added because EiBi covers neither longwave nor
+/// the time stations.
+pub fn merge(schedule: Vec<BroadcastStation>) -> Vec<BroadcastStation> {
+    let mut all = schedule;
+    all.extend(seed().iter().cloned());
+    all.sort_by(|a, b| {
+        a.freq_khz
+            .total_cmp(&b.freq_khz)
+            .then_with(|| a.start_utc.cmp(&b.start_utc))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    all
+}
+
+/// The compiled-in schedule, parsed once — the offline fallback, and what the
+/// browser client uses since it has nowhere to cache a download.
+pub fn builtin() -> &'static [BroadcastStation] {
+    static PARSED: OnceLock<Vec<BroadcastStation>> = OnceLock::new();
+    PARSED.get_or_init(|| merge(parse_schedule(FALLBACK_SKED)))
 }
 
 /// The stations on air at `unix`, as spots ready to render.
@@ -519,12 +848,155 @@ mod tests {
 
     #[test]
     fn adjacent_shortwave_channels_do_not_claim_each_others_dial() {
-        // 5 kHz spacing with a 2 kHz tolerance: tuned to one channel, only that
-        // channel's stations can match.
-        for s in builtin().iter().filter(|s| s.freq_khz > 2300.0) {
-            let hit = at_dial(builtin(), s.freq_hz(), THU_1234).expect("its own channel");
-            assert_eq!(hit.freq_khz, s.freq_khz);
+        // The 5 kHz channel raster, which the tolerance has to stay inside.
+        let ch = |khz: f64| BroadcastStation { freq_khz: khz, ..at(None, None, "") };
+        let three = [ch(9535.0), ch(9540.0), ch(9545.0)];
+        for want in &three {
+            let hit = at_dial(&three, want.freq_hz(), THU_1234).expect("its own channel");
+            assert_eq!(hit.freq_khz, want.freq_khz);
         }
+    }
+
+    #[test]
+    fn the_dial_never_matches_a_station_it_is_not_near() {
+        // Real schedules do put two stations 1 kHz apart, so `at_dial` may well
+        // return a neighbour rather than an exact hit — but never one further
+        // off than the tolerance allows.
+        for s in builtin() {
+            let hit = at_dial(builtin(), s.freq_hz(), THU_1234).expect("at least itself");
+            assert!(
+                (hit.freq_hz() - s.freq_hz()).abs() < NEAR_HZ,
+                "tuned {} kHz, matched {} on {} kHz",
+                s.freq_khz,
+                hit.name,
+                hit.freq_khz
+            );
+        }
+    }
+
+    #[test]
+    fn the_parser_reproduces_the_reference_conversion() {
+        // The Python tool that used to do this conversion at build time turned
+        // the A-26 file into 4,629 transmissions, plus 23 hand-kept entries.
+        // Pinning the totals is what catches the parser silently losing rows.
+        assert_eq!(seed().len(), 23);
+        assert_eq!(parse_schedule(FALLBACK_SKED).len(), 4629);
+        assert_eq!(builtin().len(), 4652);
+    }
+
+    #[test]
+    fn a_schedule_row_becomes_a_station() {
+        let csv = "kHz;Time(UTC);Days;ITU;Station;Lng;Target;Remarks;P;Start;Stop;\n\
+                   15400;1800-1900;Mo-Fr;G;BBC;E;WAf;/ASC;0;;\n";
+        let got = parse_schedule(csv);
+        assert_eq!(got.len(), 1);
+        let s = &got[0];
+        assert_eq!(s.name, "BBC");
+        assert_eq!(s.freq_khz, 15400.0);
+        assert_eq!(s.site, "Ascension Island");
+        assert_eq!(s.country, "Ascension Island");
+        assert_eq!(s.lang, "English");
+        assert_eq!(s.target, "West Africa");
+        assert_eq!((s.start_utc, s.end_utc), (Some(1800), Some(1900)));
+        assert_eq!(s.days, "12345");
+        assert!(s.lat.is_some() && s.lon.is_some());
+    }
+
+    #[test]
+    fn the_parser_drops_what_an_am_receiver_cannot_use() {
+        let row = |f: &str, station: &str, lng: &str, p: &str| {
+            format!("{f};0000-2400;;CHN;{station};{lng};As;;{p};;\n")
+        };
+        let csv = String::from("header\n")
+            + &row("9420", "Good Station", "E", "1")     // kept
+            + &row("9420", "CNR1 Jammer", "E", "1")      // jammer
+            + &row("9420", "E06 Spy Numbers", "E", "1")  // numbers station
+            + &row("9420", "CRI DIGITAL", "E", "1")      // DRM, no envelope
+            + &row("9420", "Retired Service", "E", "8")  // inactive
+            + &row("9420", "Coast Radio", "-CW", "1")    // not voice
+            + &row("8000", "Out Of Band", "E", "1");     // not a broadcast band
+        let got = parse_schedule(&csv);
+        assert_eq!(got.len(), 1, "kept {:?}", got.iter().map(|s| &s.name).collect::<Vec<_>>());
+        assert_eq!(got[0].name, "Good Station");
+    }
+
+    #[test]
+    fn day_specs_convert_to_the_digit_mask() {
+        assert_eq!(parse_days(""), "");
+        assert_eq!(parse_days("Mo-Fr"), "12345");
+        assert_eq!(parse_days("Su"), "7");
+        assert_eq!(parse_days("Tu,Fr"), "25");
+        assert_eq!(parse_days("SaSu"), "67");
+        assert_eq!(parse_days("156"), "156");
+        // A range may wrap the week: Saturday through Thursday is all but Friday.
+        assert_eq!(parse_days("Sa-Th"), "123467");
+        // Every day is the same as no mask at all.
+        assert_eq!(parse_days("Mo-Su"), "");
+        assert_eq!(parse_days("1234567"), "");
+        // Not weekly patterns — treated as daily rather than as never.
+        for spec in ["irr", "Ram", "1.Sa", "15Sep", "tent", "Last7"] {
+            assert_eq!(parse_days(spec), "", "{spec}");
+        }
+    }
+
+    #[test]
+    fn windows_convert_and_round_the_clock_means_no_window() {
+        assert_eq!(parse_window("0800-1000"), Some((800, 1000)));
+        assert_eq!(parse_window("2200-0200"), Some((2200, 200)));
+        // 2400 is midnight at the far end, and a full day is "no window".
+        assert_eq!(parse_window("1800-2400"), Some((1800, 0)));
+        assert_eq!(parse_window("0000-2400"), None);
+        assert_eq!(parse_window("0900-0900"), None);
+        assert_eq!(parse_window("nonsense"), None);
+        assert_eq!(parse_window("0870-0900"), None, "70 is not a minute");
+    }
+
+    #[test]
+    fn latin1_station_names_survive_decoding() {
+        // 0xE1 is á in latin-1. A lossy UTF-8 decode would replace it and break
+        // searching for the station by name.
+        assert_eq!(decode_latin1(b"R\xe1dio Clube do Par\xe1"), "Rádio Clube do Pará");
+        assert!(builtin().iter().any(|s| s.name.contains("Rádio")));
+    }
+
+    #[test]
+    fn the_season_file_name_follows_the_broadcasting_year() {
+        let at = |y, m, d| days_from_civil(y, m, d) * 86_400 + 12 * 3600;
+        assert_eq!(season_file(at(2026, 7, 30)), "a26");
+        assert_eq!(season_file(at(2026, 4, 1)), "a26");
+        assert_eq!(season_file(at(2026, 10, 24)), "a26");
+        // The winter season keeps the year it started in, across the new year.
+        assert_eq!(season_file(at(2026, 10, 25)), "b26");
+        assert_eq!(season_file(at(2026, 12, 31)), "b26");
+        assert_eq!(season_file(at(2027, 1, 1)), "b26");
+        assert_eq!(season_file(at(2027, 3, 27)), "b26");
+        assert_eq!(season_file(at(2027, 3, 28)), "a27");
+    }
+
+    #[test]
+    fn the_bundled_table_carries_real_transmit_windows() {
+        // The point of generating from a published schedule rather than by hand:
+        // most transmissions are time-limited, and the waterfall only labels the
+        // ones on air. A table that had lost its windows would look fine but
+        // would quietly show every station at every hour.
+        let all = builtin();
+        let windowed = all.iter().filter(|s| s.start_utc.is_some()).count();
+        assert!(
+            windowed * 2 > all.len(),
+            "only {windowed} of {} entries have a transmit window",
+            all.len()
+        );
+        assert!(
+            all.iter().any(|s| !s.days.is_empty()),
+            "no entry carries a day mask"
+        );
+        // And the filter has to actually thin them out over the day.
+        let day = days_from_civil(2026, 7, 30) * 86_400;
+        let counts: Vec<usize> =
+            (0..24).map(|h| on_air(all, day + h * 3600).len()).collect();
+        let (lo, hi) = (*counts.iter().min().unwrap(), *counts.iter().max().unwrap());
+        assert!(lo > 0, "nothing on air at some hour of the day");
+        assert!(hi < all.len() / 2, "the schedule filter barely removes anything");
     }
 
     #[test]

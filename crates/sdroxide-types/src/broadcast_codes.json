@@ -1,0 +1,9563 @@
+{
+"countries": {
+"ABW": "Aruba",
+"AFG": "Afghanistan",
+"AFS": "South Africa",
+"AGL": "Angola",
+"AIA": "Anguilla",
+"ALB": "Albania",
+"ALG": "Algeria",
+"ALS": "Alaska",
+"AMS": "Saint Paul & Amsterdam Is.",
+"AND": "Andorra",
+"AOE": "Western Sahara",
+"ARG": "Argentina",
+"ARM": "Armenia",
+"ARS": "Saudi Arabia",
+"ASC": "Ascension Island",
+"ATA": "Antarctica",
+"ATG": "Antigua and Barbuda",
+"ATN": "Netherlands Leeward Antilles (dissolved in 2010)",
+"AUS": "Australia",
+"AUT": "Austria",
+"AZE": "Azerbaijan",
+"AZR": "Azores",
+"B": "Brasil",
+"BAH": "Bahamas",
+"BDI": "Burundi",
+"BEL": "Belgium",
+"BEN": "Benin",
+"BER": "Bermuda",
+"BES": "Bonaire, St Eustatius, Saba (Dutch islands in the Caribbean)",
+"BFA": "Burkina Faso",
+"BGD": "Bangla Desh",
+"BHR": "Bahrain",
+"BIH": "Bosnia-Herzegovina",
+"BIO": "Chagos Is. (Diego Garcia) (British Indian Ocean Territory)",
+"BLM": "Saint-Barthelemy",
+"BLR": "Belarus",
+"BLZ": "Belize",
+"BOL": "Bolivia",
+"BOT": "Botswana",
+"BRB": "Barbados",
+"BRU": "Brunei Darussalam",
+"BTN": "Bhutan",
+"BUL": "Bulgaria",
+"BVT": "Bouvet",
+"CAB": "Cabinda *",
+"CAF": "Central African Republic",
+"CAN": "Canada",
+"CBG": "Cambodia",
+"CEU": "Ceuta *",
+"CHL": "Chile",
+"CHN": "China (People's Republic)",
+"CHR": "Christmas Island (Indian Ocean)",
+"CKH": "Cook Island",
+"CLA": "Clandestine stations *",
+"CLM": "Colombia",
+"CLN": "Sri Lanka",
+"CME": "Cameroon",
+"CNR": "Canary Islands",
+"COD": "Democratic Republic of Congo (capital Kinshasa)",
+"COG": "Republic of Congo (capital Brazzaville)",
+"COM": "Comores",
+"CPT": "Clipperton",
+"CPV": "Cape Verde Islands",
+"CRO": "Crozet Archipelago",
+"CTI": "Ivory Coast (Côte d'Ivoire)",
+"CTR": "Costa Rica",
+"CUB": "Cuba",
+"CUW": "Curacao",
+"CVA": "Vatican State",
+"CYM": "Cayman Islands",
+"CYP": "Cyprus",
+"CZE": "Czech Republic",
+"D": "Germany",
+"DJI": "Djibouti",
+"DMA": "Dominica",
+"DNK": "Denmark",
+"DOM": "Dominican Republic",
+"E": "Spain",
+"EGY": "Egypt",
+"EQA": "Ecuador",
+"ERI": "Eritrea",
+"EST": "Estonia",
+"ETH": "Ethiopia",
+"EUR": "Iles Europe & Bassas da India *",
+"F": "France",
+"FIN": "Finland",
+"FJI": "Fiji",
+"FLK": "Falkland Islands",
+"FRO": "Faroe Islands",
+"FSM": "Federated States of Micronesia",
+"G": "United Kingdom of Great Britain and Northern Ireland",
+"GAB": "Gabon",
+"GEO": "Georgia",
+"GHA": "Ghana",
+"GIB": "Gibraltar",
+"GLP": "Guadeloupe",
+"GMB": "Gambia",
+"GNB": "Guinea-Bissau",
+"GNE": "Equatorial Guinea",
+"GPG": "Galapagos *",
+"GRC": "Greece",
+"GRD": "Grenada",
+"GRL": "Greenland",
+"GTM": "Guatemala",
+"GUF": "French Guyana",
+"GUI": "Guinea",
+"GUM": "Guam / Guahan",
+"GUY": "Guyana",
+"HKG": "Hong Kong, part of China",
+"HMD": "Heard & McDonald Islands",
+"HND": "Honduras",
+"HNG": "Hungary",
+"HOL": "The Netherlands",
+"HRV": "Croatia",
+"HTI": "Haiti",
+"HWA": "Hawaii",
+"HWL": "Howland & Baker",
+"I": "Italy",
+"ICO": "Cocos (Keeling) Island",
+"IND": "India",
+"INS": "Indonesia",
+"IRL": "Ireland",
+"IRN": "Iran",
+"IRQ": "Iraq",
+"ISL": "Iceland",
+"ISR": "Israel",
+"IW": "International Waters",
+"IWA": "Ogasawara (Bonin, Iwo Jima) *",
+"J": "Japan",
+"JAR": "Jarvis Island",
+"JDN": "Juan de Nova *",
+"JMC": "Jamaica",
+"JMY": "Jan Mayen *",
+"JON": "Johnston Island",
+"JOR": "Jordan",
+"JUF": "Juan Fernandez Island *",
+"KAL": "Kaliningrad *",
+"KAZ": "Kazakstan / Kazakhstan",
+"KEN": "Kenya",
+"KER": "Kerguelen",
+"KGZ": "Kyrgyzstan",
+"KIR": "Kiribati",
+"KNA": "St Kitts and Nevis",
+"KOR": "Korea, South (Republic)",
+"KOS": "Kosovo",
+"KRE": "Korea, North (Democratic People's Republic)",
+"KWT": "Kuwait",
+"LAO": "Laos",
+"LBN": "Lebanon",
+"LBR": "Liberia",
+"LBY": "Libya",
+"LCA": "Saint Lucia",
+"LIE": "Liechtenstein",
+"LSO": "Lesotho",
+"LTU": "Lithuania",
+"LUX": "Luxembourg",
+"LVA": "Latvia",
+"MAC": "Macao",
+"MAF": "St Martin",
+"MAU": "Mauritius",
+"MCO": "Monaco",
+"MDA": "Moldova",
+"MDG": "Madagascar",
+"MDR": "Madeira",
+"MDW": "Midway Islands",
+"MEL": "Melilla *",
+"MEX": "Mexico",
+"MHL": "Marshall Islands",
+"MKD": "Macedonia (F.Y.R.)",
+"MLA": "Malaysia",
+"MLD": "Maldives",
+"MLI": "Mali",
+"MLT": "Malta",
+"MNE": "Montenegro",
+"MNG": "Mongolia",
+"MOZ": "Mozambique",
+"MRA": "Northern Mariana Islands",
+"MRC": "Morocco",
+"MRN": "Marion & Prince Edward Islands",
+"MRT": "Martinique",
+"MSR": "Montserrat",
+"MTN": "Mauritania",
+"MWI": "Malawi",
+"MYA": "Myanmar (Burma) (also BRM)",
+"MYT": "Mayotte",
+"NCG": "Nicaragua",
+"NCL": "New Caledonia",
+"NFK": "Norfolk Island",
+"NGR": "Niger",
+"NIG": "Nigeria",
+"NIU": "Niue",
+"NMB": "Namibia",
+"NOR": "Norway",
+"NPL": "Nepal",
+"NRU": "Nauru",
+"NZL": "New Zealand",
+"OCE": "French Polynesia",
+"OMA": "Oman",
+"PAK": "Pakistan",
+"PAQ": "Easter Island",
+"PHL": "Philippines",
+"PHX": "Phoenix Is.",
+"PLM": "Palmyra Island",
+"PLW": "Palau",
+"PNG": "Papua New Guinea",
+"PNR": "Panama",
+"POL": "Poland",
+"POR": "Portugal",
+"PRG": "Paraguay",
+"PRU": "Peru",
+"PRV": "Okino-Tori-Shima (Parece Vela) *",
+"PSE": "Palestine",
+"PTC": "Pitcairn",
+"PTR": "Puerto Rico",
+"QAT": "Qatar",
+"REU": "La Réunion",
+"ROD": "Rodrigues",
+"ROU": "Romania",
+"RRW": "Rwanda",
+"RUS": "Russian Federation",
+"S": "Sweden",
+"SAP": "San Andres & Providencia *",
+"SDN": "Sudan",
+"SEN": "Senegal",
+"SEY": "Seychelles",
+"SGA": "South Georgia Islands *",
+"SHN": "Saint Helena",
+"SLM": "Solomon Islands",
+"SLV": "El Salvador",
+"SMA": "Samoa (American)",
+"SMO": "Samoa",
+"SMR": "San Marino",
+"SNG": "Singapore",
+"SOK": "South Orkney Islands *",
+"SOM": "Somalia",
+"SPM": "Saint Pierre et Miquelon",
+"SRB": "Serbia",
+"SRL": "Sierra Leone",
+"SSD": "South Sudan",
+"SSI": "South Sandwich Islands *",
+"STP": "Sao Tome & Principe",
+"SUI": "Switzerland",
+"SUR": "Suriname",
+"SVB": "Svalbard *",
+"SVK": "Slovakia",
+"SVN": "Slovenia",
+"SWZ": "Swaziland",
+"SXM": "Sint Maarten",
+"SYR": "Syria",
+"TCA": "Turks and Caicos Islands",
+"TCD": "Tchad",
+"TGO": "Togo",
+"THA": "Thailand",
+"TJK": "Tajikistan",
+"TKL": "Tokelau",
+"TKM": "Turkmenistan",
+"TLS": "Timor-Leste",
+"TON": "Tonga",
+"TRC": "Tristan da Cunha",
+"TRD": "Trinidad and Tobago",
+"TUN": "Tunisia",
+"TUR": "Turkey",
+"TUV": "Tuvalu",
+"TWN": "Taiwan *",
+"TZA": "Tanzania",
+"UAE": "United Arab Emirates",
+"UGA": "Uganda",
+"UKR": "Ukraine",
+"UN": "United Nations *",
+"URG": "Uruguay",
+"USA": "United States of America",
+"UZB": "Uzbekistan",
+"VCT": "Saint Vincent and the Grenadines",
+"VEN": "Venezuela",
+"VIR": "American Virgin Islands",
+"VRG": "British Virgin Islands",
+"VTN": "Vietnam",
+"VUT": "Vanuatu",
+"WAK": "Wake Island",
+"WAL": "Wallis and Futuna",
+"XBY": "Abyei area",
+"XGZ": "Gaza strip",
+"XSP": "Spratly Islands",
+"XUU": "Unidentified",
+"XWB": "West Bank",
+"YEM": "Yemen",
+"ZMB": "Zambia",
+"ZWE": "Zimbabwe"
+},
+"languages": {
+"-CW": "Morse Station",
+"-EC": "Empty Carrier",
+"-HF": "HFDL Squitter",
+"-MX": "Music",
+"-TS": "Time Signal Station",
+"-TY": "Teletype or other digital Station",
+"A": "Arabic",
+"AB": "Abkhaz",
+"AC": "Aceh",
+"ACH": "Achang / Ngac'ang",
+"AD": "Adygea / Adyghe / Circassian",
+"ADI": "Adi",
+"AF": "Afrikaans",
+"AFA": "Afar",
+"AFG": "Pashto and Dari",
+"AH": "Amharic",
+"AJ": "Adja / Aja-Gbe",
+"AK": "Akha",
+"AKL": "Aklanon",
+"AL": "Albanian",
+"ALG": "Algerian",
+"AM": "Amoy",
+"AMD": "Tibetan Amdo",
+"AR": "Armenian",
+"ARO": "Aromanian/Vlach",
+"ARU": "Languages of Arunachal, India",
+"ASS": "Assamese",
+"ASY": "Assyrian/Syriac/Neo-Aramaic",
+"ATS": "Atsi / Zaiwa",
+"AV": "Avar",
+"AW": "Awadhi",
+"AY": "Aymara",
+"AZ": "Azeri/Azerbaijani",
+"Ang": "Angelus programme of Vatican Radio",
+"Aud": "Papal Audience",
+"BAD": "Badaga",
+"BAG": "Bagri",
+"BAI": "Bai",
+"BAJ": "Bajau",
+"BAL": "Balinese",
+"BAN": "Banjar/Banjarese",
+"BAO": "Baoulé",
+"BAR": "Bari",
+"BAS": "Bashkir/Bashkort",
+"BAY": "Bayash/Boyash",
+"BB": "Braj Bhasa/Braj Bhasha/Brij",
+"BC": "Baluchi",
+"BE": "Bengali/Bangla",
+"BED": "Bedawiyet / Bedawi / Beja",
+"BEM": "Bemba",
+"BET": "Bete / Bété",
+"BGL": "Bagheli",
+"BH": "Bhili",
+"BHN": "Bahnar",
+"BHT": "Bhatri",
+"BI": "Bilen/Bile",
+"BID": "Bidayuh languages",
+"BIS": "Bisaya",
+"BJ": "Bhojpuri/Bihari",
+"BK": "Balkarian",
+"BLK": "Balkan Romani",
+"BLT": "Balti",
+"BM": "Bambara/Bamanankan/Mandenkan",
+"BNA": "Borana Oromo/Afan Oromo",
+"BNG": "Bangala / Mbangala",
+"BNI": "Baniua/Baniwa",
+"BNJ": "Banjari / Banjara / Gormati / Lambadi",
+"BNT": "Bantawa",
+"BNY": "Banyumasan dialect of Javanese",
+"BON": "Bondo",
+"BOR": "Boro / Bodo",
+"BOS": "Bosnian",
+"BR": "Burmese / Barma / Myanmar",
+"BRA": "Brahui",
+"BRB": "Bariba / Baatonum",
+"BRU": "Bru",
+"BSL": "Bislama",
+"BT": "Black Tai / Tai Dam",
+"BTK": "Batak-Toba",
+"BU": "Bulgarian",
+"BUG": "Bugis / Buginese",
+"BUK": "Bukharian/Bukhori",
+"BUN": "Bundeli / Bundelkhandi / Bundelkandi",
+"BUR": "Buryat",
+"BUY": "Bouyei/Buyi/Yay",
+"BY": "Byelorussian / Belarusian",
+"C": "Chinese",
+"C-A": "Chin-Asho",
+"C-D": "Chin-Daai",
+"C-F": "Chin-Falam / Halam",
+"C-H": "Chin-Haka",
+"C-K": "Chin-Khumi",
+"C-M": "Chin-Mro",
+"C-O": "Chin-Thado / Thadou-Kuki",
+"C-T": "Chin-Tidim",
+"C-Z": "Chin-Zomin / Zomi-Chin",
+"CA": "Cantonese / Yue",
+"CC": "Chaochow/Chaozhou",
+"CD": "Chowdary/Chaudhry/Chodri",
+"CEB": "Cebuano",
+"CH": "Chin",
+"CHA": "Cha'palaa / Chachi",
+"CHE": "Chechen",
+"CHG": "Chhattisgarhi",
+"CHI": "Chitrali / Khowar",
+"CHR": "Chrau",
+"CHU": "Chuwabu",
+"CKM": "Chakma",
+"CKW": "Chokwe",
+"COF": "Cofan / Cofán",
+"COK": "Cook Islands Maori / Rarotongan",
+"CR": "Creole / Haitian",
+"CRU": "Chru",
+"CT": "Catalan",
+"CV": "Chuvash",
+"CVC": "Chavacano/Chabacano",
+"CW": "Chewa/Chichewa/Nyanja/Chinyanja",
+"CZ": "Czech",
+"D": "German",
+"D-P": "Lower German",
+"DA": "Danish",
+"DAH": "Dahayia",
+"DAO": "Dao",
+"DAR": "Dargwa/Dargin",
+"DD": "Dhodiya / Dhodia",
+"DEC": "Deccan/Deccani/Desi",
+"DEG": "Degar / Montagnard",
+"DEN": "Dendi",
+"DEO": "Deori",
+"DES": "Desiya / Deshiya",
+"DH": "Dhivehi",
+"DI": "Dinka",
+"DIM": "Dimasa/Dhimasa",
+"DIT": "Ditamari",
+"DO": "Dogri",
+"DR": "Dari / Eastern Farsi",
+"DU": "Dusun",
+"DUN": "Dungan",
+"DY": "Dyula/Jula",
+"DZ": "Dzongkha",
+"E": "English",
+"EC": "Eastern Cham",
+"EGY": "Egyptian Arabic",
+"EO": "Esperanto",
+"ES": "Estonian",
+"EWE": "Ewe / Éwé",
+"F": "French",
+"FA": "Faroese",
+"FI": "Finnish",
+"FJ": "Fijian",
+"FON": "Fon / Fongbe",
+"FP": "Filipino",
+"FS": "Farsi / Iranian Persian",
+"FT": "Fiote / Vili",
+"FU": "Fulani/Fulfulde",
+"FUJ": "FutaJalon / Pular",
+"FUR": "Fur",
+"GA": "Garhwali",
+"GAG": "Gagauz",
+"GAR": "Garo",
+"GD": "Greenlandic Inuktikut",
+"GE": "Georgian",
+"GI": "Gilaki",
+"GJ": "Gujari/Gojri",
+"GL": "Galicic/Gallego",
+"GM": "Gamit",
+"GNG": "Gurung",
+"GO": "Gorontalo",
+"GON": "Gondi",
+"GR": "Greek",
+"GU": "Gujarati",
+"GUA": "Guaraní",
+"GUN": "Gungbe / Gongbe / Goun",
+"GUR": "Gurage/Guragena",
+"GZ": "Ge'ez / Geez",
+"HA": "Haussa",
+"HAD": "Hadiya",
+"HAR": "Haryanvi /  Bangri / Harayanvi / Hariyanvi",
+"HAS": "Hassinya/Hassaniya",
+"HB": "Hebrew",
+"HD": "Hindko",
+"HI": "Hindi",
+"HIM": "Himachali languages",
+"HK": "Hakka",
+"HM": "Hmong/Miao languages",
+"HMA": "Hmar",
+"HMB": "Hmong-Blue/Njua",
+"HMQ": "Hmong/Miao, Northern Qiandong / Black Hmong",
+"HMW": "Hmong-White/Daw",
+"HN": "Hani",
+"HO": "Ho",
+"HR": "Croatian/Hrvatski",
+"HRE": "Hre",
+"HU": "Hungarian",
+"HUI": "Hui / Huizhou",
+"HZ": "Hazaragi",
+"I": "Italian",
+"IB": "Iban",
+"IBN": "Ibanag",
+"IF": "Ifè / Ife",
+"IG": "Igbo / Ibo",
+"ILC": "Ilocano",
+"ILG": "Ilonggo / Hiligaynon",
+"IN": "Indonesian / Bahasa Indonesia",
+"INU": "Inuktikut",
+"IRQ": "Iraqi Arabic",
+"IS": "Icelandic",
+"ISA": "Isan / Northeastern Thai",
+"ITA": "Itawis / Tawit",
+"J": "Japanese",
+"JAI": "Jaintia / Pnar / Synteng",
+"JEH": "Jeh",
+"JG": "Jingpho",
+"JOR": "Jordanian Arabic",
+"JR": "Jarai / Giarai / Jra",
+"JU": "Juba Arabic",
+"JV": "Javanese",
+"K": "Korean",
+"K-G": "Karen-Geba",
+"K-K": "Karen-Geko / Gekho",
+"K-M": "Manumanaw Karen / Kawyaw / Kayah",
+"K-P": "Karen-Pao / Black Karen / Pa'o",
+"K-S": "Karen-Sgaw / S'gaw",
+"K-W": "Karen-Pwo",
+"KA": "Karen",
+"KAB": "Kabardian",
+"KAD": "Kadazan",
+"KAL": "Kalderash Romani",
+"KAM": "Kambaata",
+"KAN": "Kannada",
+"KAO": "Kaonde",
+"KAR": "Karelian",
+"KAT": "Katu",
+"KAU": "Kau Bru / Kaubru/ Riang",
+"KAY": "Kayan",
+"KB": "Kabyle",
+"KBO": "Kok Borok/Tripuri",
+"KC": "Kachin / Jingpho",
+"KEN": "Kenyah",
+"KG": "Kyrgyz /Kirghiz",
+"KGU": "Kalanguya / Kallahan",
+"KH": "Khmer",
+"KHA": "Kham / Khams, Eastern",
+"KHM": "Khmu",
+"KHR": "Kharia / Khariya",
+"KHS": "Khasi / Kahasi",
+"KHT": "Khota",
+"KIM": "Kimwani",
+"KIN": "Kinnauri / Kinori",
+"KIS": "Kisili",
+"KK": "KiKongo/Kongo",
+"KKA": "Kankana-ey",
+"KKN": "Kukna",
+"KKU": "Korku",
+"KMB": "Kimbundu/Mbundu/Luanda",
+"KMY": "Kumyk",
+"KND": "Khandesi",
+"KNG": "Kangri",
+"KNK": "KinyaRwanda-KiRundi service of the Voice of America / BBC",
+"KNU": "Kanuri",
+"KNY": "Konyak Naga",
+"KOH": "Koho/Kohor",
+"KOK": "Kokang Shan",
+"KOM": "Komering",
+"KON": "Konkani",
+"KOR": "Korambar / Kurumba Kannada",
+"KOT": "Kotokoli / Tem",
+"KOY": "Koya",
+"KPK": "Karakalpak",
+"KRB": "Karbi / Mikir / Manchati",
+"KRI": "Krio",
+"KRW": "KinyaRwanda",
+"KRY": "Karay-a",
+"KS": "Kashmiri",
+"KT": "Kituba",
+"KTW": "Kotwali",
+"KU": "Kurdish",
+"KUI": "Kui",
+"KUL": "Kulina",
+"KUM": "Kumaoni/Kumauni",
+"KUN": "Kunama",
+"KUP": "Kupia / Kupiya",
+"KUR": "Kurukh/Kurux",
+"KUT": "Kutchi",
+"KUV": "Kuvi",
+"KUs": "Sorani",
+"KVI": "Kulluvi/Kullu",
+"KWA": "Kwanyama/Kuanyama",
+"KYB": "Kayan dialects of Borneo",
+"KYH": "Kayah",
+"KZ": "Kazakh",
+"KiR": "KiRundi",
+"KuA": "Kurdish and Arabic",
+"KuF": "Kurdish and Farsi",
+"L": "Latin",
+"LA": "Ladino",
+"LAD": "Ladakhi / Ladak",
+"LAH": "Lahu",
+"LAK": "Lak",
+"LAM": "Lampung",
+"LAO": "Lao",
+"LB": "Lun Bawang / Murut",
+"LBN": "Lebanon Arabic",
+"LBO": "Limboo /Limbu",
+"LEP": "Lepcha",
+"LEZ": "Lezgi",
+"LIM": "Limba",
+"LIN": "Lingala",
+"LIS": "Lisu",
+"LND": "Lunda",
+"LNG": "Lungeli Magar",
+"LO": "Lomwe / Ngulu",
+"LOK": "Lokpa / Lukpa / Lupka",
+"LOZ": "Lozi / Silozi",
+"LT": "Lithuanian",
+"LTO": "Oriental Liturgy of Vatican Radio",
+"LU": "Lunda",
+"LUB": "Luba",
+"LUC": "Luchazi",
+"LUG": "Luganda",
+"LUN": "Lunyaneka/Nyaneka",
+"LUR": "Luri, Northern and Southern",
+"LUV": "Luvale",
+"LV": "Latvian",
+"M": "Mandarin",
+"MA": "Maltese",
+"MAD": "Madurese/Madura",
+"MAG": "Maghi/Magahi/Maghai",
+"MAI": "Maithili / Maithali",
+"MAK": "Makonde",
+"MAL": "Malayalam",
+"MAM": "Maay / Mamay / Rahanweyn",
+"MAN": "Mandenkan",
+"MAO": "Maori",
+"MAR": "Marathi",
+"MAS": "Maasai/Massai/Masai",
+"MC": "Macedonian",
+"MCH": "Mavchi/Mouchi/Mauchi/Mawchi",
+"MEI": "Meithei/Manipuri/Meitei",
+"MEN": "Mende",
+"MEW": "Mewari/Mewadi",
+"MGA": "Magar",
+"MGO": "Malango",
+"MIE": "Mien / Iu Mien",
+"MIS": "Mising",
+"MKB": "Minangkabau",
+"MKS": "Makassar/Makasar",
+"MKU": "Makua / Makhuwa",
+"ML": "Malay / Baku",
+"MLK": "Malinke/Maninka",
+"MLT": "Malto / Kumarbhag Paharia",
+"MNA": "Mina / Gen",
+"MNB": "Manobo / T'duray",
+"MNE": "Montenegrin",
+"MNO": "Mnong",
+"MO": "Mongolian",
+"MON": "Mon",
+"MOO": "Moore/Mòoré/Mossi",
+"MOR": "Moro/Moru/Muro",
+"MR": "Maronite / Cypriot Arabic",
+"MRC": "Moroccan/Mugrabian Arabic",
+"MRI": "Mari",
+"MRU": "Maru / Lhao Vo",
+"MSY": "Malagasy",
+"MUN": "Mundari",
+"MUO": "Muong",
+"MUR": "Murut",
+"MV": "Malvi",
+"MW": "Marwari",
+"MX": "Macuxi/Macushi",
+"MY": "Maya",
+"MZ": "Mizo / Lushai",
+"NAG": "Naga",
+"NAP": "Naga Pidgin / Bodo / Nagamese",
+"NDA": "Ndau",
+"NDE": "Ndebele",
+"NE": "Nepali/Lhotshampa",
+"NG": "Nagpuri / Sadani / Sadari / Sadri",
+"NGA": "Ngangela/Nyemba",
+"NIC": "Nicobari",
+"NIG": "Nigerian Pidgin",
+"NIS": "Nishi/Nyishi",
+"NIU": "Niuean",
+"NJ": "Ngaju Dayak",
+"NL": "Dutch",
+"NLA": "Nga La / Matu Chin",
+"NO": "Norwegian",
+"NOC": "Nocte / Nockte",
+"NP": "Nupe",
+"NTK": "Natakani / Netakani / Varhadi-Nagpuri",
+"NU": "Nuer",
+"NUN": "Nung",
+"NW": "Newar/Newari",
+"NY": "Nyanja",
+"OG": "Ogan",
+"OH": "Otjiherero service in Namibia",
+"OO": "Oromo",
+"OR": "Odia / Oriya / Orissa",
+"OS": "Ossetic",
+"OW": "Oshiwambo service in Angola and Namibia",
+"P": "Portuguese",
+"PAL": "Palaung - Pale",
+"PAS": "Pasemah",
+"PED": "Pedi",
+"PJ": "Punjabi",
+"PO": "Polish",
+"POR": "Po",
+"POT": "Pothwari",
+"PS": "Pashto / Pushtu",
+"PU": "Pulaar",
+"Q": "Quechua",
+"QQ": "Qashqai",
+"R": "Russian",
+"RAD": "Rade/Ede",
+"RAJ": "Rajasthani",
+"RAK": "Rakhine/Arakanese",
+"RAT": "Rathivi",
+"REN": "Rengao",
+"RGM": "Rengma Naga",
+"RO": "Romanian",
+"ROG": "Roglai",
+"ROH": "Rohingya",
+"RON": "Rongmei Naga",
+"RU": "Rusyn / Ruthenian",
+"RUM": "Rumai Palaung",
+"RWG": "Rawang",
+"Ros": "Rosary session of Vatican Radio",
+"S": "Spanish/Castellano",
+"SAH": "Saho",
+"SAN": "Sango",
+"SAR": "Sara/Sar",
+"SAS": "Sasak",
+"SC": "Serbocroat",
+"SCA": "Scandinavian languages",
+"SD": "Sindhi",
+"SED": "Sedang",
+"SEF": "Sefardi/Judeo Spanish/Ladino",
+"SEN": "Sena",
+"SFO": "Senoufo/Sénoufo-Syenara",
+"SGA": "Shangaan/Tsonga",
+"SGM": "Sara Gambai / Sara Ngambai",
+"SGO": "Songo",
+"SGT": "Sangtam",
+"SHA": "Shan",
+"SHC": "Sharchogpa / Sarchopa / Tshangla",
+"SHE": "Sheena/Shina",
+"SHK": "Shiluk/Shilluk",
+"SHO": "Shona",
+"SHP": "Sherpa",
+"SHT": "Shan-Khamti",
+"SHU": "Shuwa Arabic",
+"SI": "Sinhalese/Sinhala",
+"SID": "Sidamo/Sidama",
+"SIK": "Sikkimese/Bhutia",
+"SIR": "Siraiki/Seraiki",
+"SK": "Slovak",
+"SLM": "Pijin/Solomon Islands Pidgin",
+"SLT": "Silte / East Gurage / xst",
+"SM": "Samoan",
+"SMP": "Sambalpuri / Sambealpuri",
+"SNK": "Sanskrit",
+"SNT": "Santhali",
+"SO": "Somali",
+"SON": "Songhai",
+"SOT": "SeSotho",
+"SR": "Serbian",
+"SRA": "Soura / Sora",
+"STI": "Stieng",
+"SUA": "Shuar",
+"SUD": "Sudanese Arabic",
+"SUM": "Sumi Naga",
+"SUN": "Sunda/Sundanese",
+"SUR": "Surgujia",
+"SUS": "Sudan Service of IBRA, in SUD, BED, FUR, and TGR",
+"SV": "Slovenian",
+"SWA": "Swahili/Kisuaheli",
+"SWE": "Swedish",
+"SWZ": "SiSwati",
+"T": "Thai",
+"TAG": "Tagalog",
+"TAH": "Tachelhit/Sous",
+"TAL": "Talysh",
+"TAM": "Tamil",
+"TAU": "Tausug",
+"TB": "Tibetan / Lhasa Tibetan",
+"TBL": "Tboli / T'boli / Tagabili",
+"TBS": "Tabasaran",
+"TEL": "Telugu",
+"TEM": "Temme/Temne",
+"TFT": "Tarifit",
+"TGB": "Tagabawa / Bagobo",
+"TGK": "Tangkhul/Tangkul Naga",
+"TGR": "Tigre/Tigré/Tigrawit",
+"TGS": "Tangsa/Naga-Tase",
+"THA": "Tharu Buksa",
+"TIG": "Tigrinya/Tigray",
+"TJ": "Tajik",
+"TK": "Turkmen",
+"TKL": "Tagakaulo",
+"TL": "Tai-Lu/Lu",
+"TM": "Tamazight",
+"TMG": "Tamang",
+"TMJ": "Tamajeq",
+"TN": "Tai-Nua/Chinese Shan",
+"TNG": "Tonga",
+"TO": "Tongan",
+"TOK": "Tokelau",
+"TOR": "Torajanese/Toraja",
+"TP": "Tok Pisin",
+"TS": "Tswana / SeTswana",
+"TSA": "Tsangla",
+"TSH": "Tshwa",
+"TT": "Tatar",
+"TTB": "Tatar-Bashkir service of Radio Liberty",
+"TU": "Turkish",
+"TUL": "Tulu",
+"TUM": "Tumbuka",
+"TUN": "Tunisian Arabic",
+"TUR": "Turkana",
+"TV": "Tuva / Tuvinic",
+"TW": "Taiwanese/Fujian/Hokkien/Min Nan",
+"TWI": "Twi/Akan",
+"TWT": "Tachawit/Shawiya/Chaouia",
+"TZ": "Tamazight/Berber",
+"UA": "Uab Meto / Dawan / Baikenu",
+"UD": "Udmurt",
+"UI": "Uighur",
+"UK": "Ukrainian",
+"UM": "Umbundu",
+"UR": "Urdu",
+"UZ": "Uzbek",
+"V": "Vasco / Basque / Euskera",
+"VAD": "Vadari / Waddar / Od",
+"VAR": "Varli / Warli",
+"VN": "Vietnamese",
+"VV": "Vasavi",
+"VX": "Vlax Romani / Romanes / Gypsy",
+"Ves": "Vespers",
+"Vn": "Vernacular = local language",
+"W": "Wolof",
+"WA": "Wa / Parauk",
+"WAO": "Waodani/Waorani",
+"WE": "Wenzhou",
+"WT": "White Tai / Tai Don",
+"WU": "Wu",
+"XH": "Xhosa",
+"YAO": "Yao/Yawo",
+"YER": "Yerukula",
+"YI": "Yi / Nosu",
+"YK": "Yakutian / Sakha",
+"YO": "Yoruba",
+"YOL": "Yolngu/Yuulngu",
+"YUN": "Dialects/languages of Yunnan",
+"YZ": "Yezidi program",
+"Z": "Zulu",
+"ZA": "Zarma/Zama",
+"ZD": "Zande",
+"ZG": "Zaghawa",
+"ZH": "Zhuang",
+"ZWE": "Languages of Zimbabwe"
+},
+"sites": {
+"AFG-k": [
+"Kabul / Pol-e-Charkhi",
+34.5333,
+69.3333
+],
+"AFG-x": [
+"Khost",
+33.2333,
+69.8167
+],
+"AFG-y": [
+"Kabul-Yakatut",
+34.5333,
+69.2167
+],
+"AFS": [
+"Meyerton",
+-26.5833,
+28.1333
+],
+"AFS-ct": [
+"Cape Town",
+-33.6833,
+18.7
+],
+"AFS-j": [
+"Johannesburg",
+-26.1278,
+28.2056
+],
+"AGL-L": [
+"Luena",
+-11.7833,
+19.9219
+],
+"AGL-lu": [
+"Luanda Radio",
+-8.8,
+13.2667
+],
+"AGL-m": [
+"Luanda - Mulenvos",
+-8.85,
+13.3167
+],
+"AIA": [
+"The Valley",
+18.2167,
+-63.0167
+],
+"ALB-c": [
+"Cerrik",
+41.0,
+20.0
+],
+"ALB-f": [
+"Fllake",
+41.3667,
+19.5
+],
+"ALB-s": [
+"Shijiak",
+41.3333,
+19.55
+],
+"ALG-ad": [
+"Adrar",
+27.8667,
+-0.2833
+],
+"ALG-al": [
+"Algiers",
+36.7667,
+3.05
+],
+"ALG-an": [
+"Annaba",
+36.9,
+7.7667
+],
+"ALG-b": [
+"Béchar",
+31.5667,
+-2.35
+],
+"ALG-fk": [
+"F'Kirina",
+35.7333,
+7.35
+],
+"ALG-o": [
+"Ouargla / Ourgla",
+31.9167,
+5.0667
+],
+"ALG-of": [
+"Ouled Fayet",
+36.7167,
+2.95
+],
+"ALG-or": [
+"Oran 7TO",
+35.7667,
+-0.55
+],
+"ALG-r": [
+"Reggane",
+26.7,
+0.1667
+],
+"ALG-s": [
+"In Salah",
+27.25,
+2.5167
+],
+"ALG-t": [
+"Tindouf",
+27.55,
+-8.1
+],
+"ALG-tm": [
+"Timimoun",
+29.2667,
+0.2333
+],
+"ALS-an": [
+"Annette",
+55.05,
+-131.5667
+],
+"ALS-ap": [
+"Anchor Point",
+59.7494,
+-151.7322
+],
+"ALS-ba": [
+"Barrow",
+71.2583,
+-156.5775
+],
+"ALS-cb": [
+"Cold Bay",
+55.2167,
+-162.7167
+],
+"ALS-e": [
+"Elmendorf AFB",
+61.2511,
+-149.8064
+],
+"ALS-g": [
+"Gakona",
+62.3917,
+-145.1467
+],
+"ALS-k": [
+"Kodiak",
+57.775,
+-152.5333
+],
+"ALS-ks": [
+"King Salmon",
+58.6833,
+-156.6667
+],
+"ALS-no": [
+"Nome",
+64.5167,
+-165.4167
+],
+"ARG-b": [
+"Buenos Aires",
+-34.6219,
+-58.355
+],
+"ARG-co": [
+"Córdoba",
+-31.3092,
+-64.2261
+],
+"ARG-cr": [
+"Comodoro Rivadavia",
+-45.8836,
+-67.5092
+],
+"ARG-cv": [
+"Comodoro Rivadavia",
+-45.7914,
+-67.4794
+],
+"ARG-e": [
+"Ezeiza, Prov. Buenos Aires",
+-34.8328,
+-58.5319
+],
+"ARG-g": [
+"General Pacheco",
+-34.6,
+-58.3667
+],
+"ARG-mp": [
+"Mar del Plata, Prov. Buenos Aires",
+-38.05,
+-57.5333
+],
+"ARG-r": [
+"Resistencia, Chaco",
+-27.4642,
+-59.0706
+],
+"ARM": [
+"Gavar",
+40.4167,
+45.2
+],
+"ARM-y": [
+"Yerevan",
+40.1667,
+44.5
+],
+"ARS-j": [
+"Jeddah/Jiddah",
+21.25,
+39.1667
+],
+"ARS-jr": [
+"Jiddah Radio",
+21.3833,
+39.1667
+],
+"ARS-jz": [
+"Jazan",
+16.8833,
+42.5667
+],
+"ARS-nj": [
+"Najran",
+17.5,
+44.1333
+],
+"ARS-r": [
+"Riyadh",
+24.5,
+46.3833
+],
+"ASC": [
+"Ascension Island",
+-7.9,
+-14.3833
+],
+"ATA-e": [
+"Base Esperanza",
+-63.4,
+-57.0
+],
+"ATA-f": [
+"Bahia Fildes, King George Island",
+-62.2,
+-58.9667
+],
+"ATA-ma": [
+"Maramio Base, Seymour Island",
+-64.2333,
+-56.6333
+],
+"AUS-L": [
+"Sydney-Leppington NSW",
+-33.9667,
+150.8
+],
+"AUS-a": [
+"Alice Springs NT",
+-23.8167,
+133.85
+],
+"AUS-ae": [
+"Aero sites: Cape Pallarenda",
+-19.2014,
+146.7681
+],
+"AUS-al": [
+"VKS737 Alice Springs NT",
+-23.6833,
+133.8667
+],
+"AUS-as": [
+"Alice Springs NT",
+-23.7967,
+133.8744
+],
+"AUS-at": [
+"Alice Springs NT",
+-23.7792,
+133.8736
+],
+"AUS-av": [
+"Alice Springs Velodrome NT",
+-23.6706,
+133.865
+],
+"AUS-b": [
+"Brandon QL",
+-19.5167,
+147.3333
+],
+"AUS-be": [
+"Bendigo VIC",
+-36.5903,
+144.2442
+],
+"AUS-bm": [
+"Broadmeadows VIC",
+-37.6919,
+144.9456
+],
+"AUS-c": [
+"Charleville QL",
+-26.4167,
+146.25
+],
+"AUS-ca": [
+"Casino NSW",
+-28.8753,
+153.0511
+],
+"AUS-ch": [
+"VKS737 Charter Towers QLD",
+-20.15,
+146.3
+],
+"AUS-cl": [
+"RFDS Charleville QLD",
+-26.4153,
+146.2264
+],
+"AUS-cv": [
+"RFDS Carnarvon WA",
+-24.8889,
+113.6733
+],
+"AUS-du": [
+"Dural/Sydney NSW",
+-33.6986,
+151.0556
+],
+"AUS-ee": [
+"VKS737 Adelaide/Elizabeth East SA",
+-34.7222,
+138.6831
+],
+"AUS-ex": [
+"Exmouth WA",
+-21.8167,
+114.1667
+],
+"AUS-g": [
+"Gunnedah NSW",
+-30.9833,
+150.25
+],
+"AUS-h": [
+"Humpty Doo NT",
+-12.5667,
+131.0833
+],
+"AUS-hp": [
+"Hurlstone Park, Sydney NSW",
+-33.9056,
+151.1322
+],
+"AUS-il": [
+"VKS737 Alice Springs-Ilparpa NT",
+-23.7556,
+133.8239
+],
+"AUS-in": [
+"Innisfail QL",
+-17.5333,
+146.05
+],
+"AUS-ka": [
+"Katherine NT",
+-14.4,
+132.1833
+],
+"AUS-kd": [
+"RFDS Kuranda QLD",
+-16.8367,
+145.6125
+],
+"AUS-kr": [
+"Kuranda QLD",
+-16.8167,
+145.6333
+],
+"AUS-ku": [
+"Kununurra WA",
+-15.8167,
+128.6667
+],
+"AUS-kw": [
+"Kununurra WA",
+-15.7714,
+128.7294
+],
+"AUS-m": [
+"Macleay Island QL",
+-27.6167,
+153.35
+],
+"AUS-ma": [
+"Manilla NSW",
+-30.7397,
+150.7156
+],
+"AUS-md": [
+"Mareeba-Dimbulah QL",
+-17.1667,
+145.0833
+],
+"AUS-mk": [
+"RFDS Meekatharra WA",
+-26.5867,
+118.5008
+],
+"AUS-n": [
+"Ningi QL",
+-27.0667,
+153.0556
+],
+"AUS-nc": [
+"VKS737 Newcastle/Edgeworth NSW",
+-32.9222,
+151.6078
+],
+"AUS-pc": [
+"Perth / Chittering WA",
+-31.4944,
+116.0811
+],
+"AUS-pe": [
+"Penong SA",
+-31.9244,
+132.9911
+],
+"AUS-pw": [
+"VKS737 Perth/Wanneroo WA",
+-31.7669,
+115.8042
+],
+"AUS-ri": [
+"Russell Island QL",
+-27.6667,
+153.35
+],
+"AUS-rm": [
+"Roma QL",
+-26.55,
+148.8
+],
+"AUS-rz": [
+"Razorback NSW",
+-34.15,
+150.6667
+],
+"AUS-s": [
+"Shepparton VIC",
+-36.3333,
+145.4167
+],
+"AUS-sa": [
+"Shepparton-Ardmona VIC",
+-36.3608,
+145.2939
+],
+"AUS-sb": [
+"VKS737 Stawell-Black Range VIC",
+-37.1003,
+142.7539
+],
+"AUS-sf": [
+"Schofields, western Sydney",
+-33.7,
+150.8667
+],
+"AUS-sj": [
+"South Johnstone QL",
+-17.5956,
+145.9933
+],
+"AUS-sm": [
+"St Mary's, Sydney",
+-33.75,
+150.7667
+],
+"AUS-st": [
+"VKS737 St Marys TAS",
+-41.5856,
+148.2147
+],
+"AUS-t": [
+"Tennant Creek NT",
+-19.6667,
+134.2667
+],
+"AUS-va": [
+"VKS737 Adelaide/Virginia SA",
+-34.6811,
+138.5931
+],
+"AUS-w": [
+"Wiluna WA",
+-26.3333,
+120.5667
+],
+"AUS-ww": [
+"Wee Waa NSW",
+-30.2153,
+149.4572
+],
+"AUT": [
+"Moosbrunn",
+48.0,
+16.4667
+],
+"AZE-b": [
+"Baku",
+40.4667,
+50.05
+],
+"AZE-g": [
+"Gäncä",
+40.6,
+46.3333
+],
+"AZE-s": [
+"Stepanakert",
+39.8264,
+46.7397
+],
+"AZR-ho": [
+"Horta",
+38.5333,
+-28.6333
+],
+"AZR-lj": [
+"Lajes Field",
+38.7667,
+27.0833
+],
+"AZR-sm": [
+"Santa Maria",
+36.9472,
+-25.1583
+],
+"B-Cg": [
+"Campo Grande, MS",
+-20.45,
+-54.6167
+],
+"B-Cp": [
+"Cachoeira Paulista, SP",
+-22.6442,
+-45.0772
+],
+"B-E": [
+"Esteio , RS",
+-29.8281,
+-51.165
+],
+"B-a": [
+"Porto Alegre, RS",
+-30.0236,
+-51.2553
+],
+"B-ag": [
+"Araguaína, TO",
+-7.2,
+-48.2
+],
+"B-am": [
+"Amparo, SP",
+-22.7,
+-46.7667
+],
+"B-an": [
+"Anápolis, GO",
+-16.2569,
+-49.0189
+],
+"B-ap": [
+"Aparecida, SP",
+-22.8464,
+-45.2203
+],
+"B-ar": [
+"Araraquara, SP",
+-21.8,
+-48.1833
+],
+"B-b": [
+"Brasilia, Parque do Rodeador, DF",
+-15.6111,
+-48.1314
+],
+"B-be": [
+"Belém, PA",
+-1.45,
+-48.4833
+],
+"B-bh": [
+"Belo Horizonte, Minas Gerais",
+-19.9167,
+-43.9333
+],
+"B-br": [
+"Braganca, PA",
+-1.0633,
+-46.7733
+],
+"B-bt": [
+"Belém, PA",
+-1.3667,
+-48.35
+],
+"B-bv": [
+"Boa Vista, RR",
+2.9219,
+-60.7106
+],
+"B-c": [
+"Contagem/Belo Horizonte, MG",
+-19.8997,
+-44.0544
+],
+"B-c2": [
+"Curitiba, PR RB2",
+-25.3928,
+-49.1678
+],
+"B-ca": [
+"Campo Largo , PR",
+-25.43,
+-49.3969
+],
+"B-cb": [
+"Camboriú, SC",
+-27.0403,
+-48.6547
+],
+"B-cc": [
+"Cáceres, MT",
+-16.0767,
+-57.6408
+],
+"B-cg": [
+"Campo Grande, MS",
+-20.52,
+-54.5833
+],
+"B-cm": [
+"Campinas, SP",
+-22.9478,
+-47.0181
+],
+"B-cn": [
+"Congonhas, MG",
+-20.5,
+-43.8667
+],
+"B-co": [
+"Coari, AM",
+-4.1164,
+-63.1253
+],
+"B-cp": [
+"Cachoeira Paulista, SP",
+-22.6458,
+-45.0783
+],
+"B-cs": [
+"Cruzeiro do Sul, Estrada do Aeroporto, AC",
+-7.6333,
+-72.6667
+],
+"B-cu": [
+"Curitiba, PR",
+-25.4522,
+-49.1139
+],
+"B-cv": [
+"Cuiabá, MT",
+-15.6186,
+-56.0978
+],
+"B-e": [
+"Esteio , RS",
+-29.8664,
+-51.1031
+],
+"B-f": [
+"Foz do Iguacu, PR",
+-25.5175,
+-54.5083
+],
+"B-fl": [
+"Florianópolis, SC",
+-27.6025,
+-48.5308
+],
+"B-fp": [
+"Florianópolis - Comboriú, SC",
+-27.04,
+-48.6547
+],
+"B-g": [
+"Guarujá, SP",
+-23.9931,
+-46.2564
+],
+"B-gb": [
+"Guaíba , RS",
+-29.9972,
+-51.2856
+],
+"B-gc": [
+"Sao Gabriel de Cachoeira, AM",
+-0.1333,
+-67.0833
+],
+"B-gm": [
+"Guajará-Mirim, RO",
+-10.7833,
+-65.3333
+],
+"B-go": [
+"Goiânia",
+-16.6583,
+-49.2272
+],
+"B-gu": [
+"Guarulhos, SP",
+-23.4333,
+-46.4167
+],
+"B-h": [
+"Belo Horizonte, MG",
+-19.9761,
+-43.9333
+],
+"B-ib": [
+"Ibitinga, SP",
+-21.7722,
+-48.8361
+],
+"B-it": [
+"Itapevi, SP",
+-23.5108,
+-46.6761
+],
+"B-ld": [
+"Londrina, PR",
+-23.3378,
+-51.2217
+],
+"B-li": [
+"Limeira, SP",
+-22.5608,
+-47.4189
+],
+"B-lj": [
+"Lajeado, RS",
+-29.4667,
+-51.9667
+],
+"B-lo": [
+"Londrina, PR",
+-23.4047,
+-51.1553
+],
+"B-m": [
+"Manaus AM",
+-3.1,
+-60.0333
+],
+"B-ma": [
+"Manaus - Radiodif.Amazonas, AM",
+-3.1378,
+-59.9814
+],
+"B-mc": [
+"Macapá, AP",
+0.0639,
+-51.0389
+],
+"B-mg": [
+"Manaus - Radio Globo, AM",
+-3.1344,
+-59.9775
+],
+"B-mi": [
+"Marília, SP",
+-22.2258,
+-49.9628
+],
+"B-mm": [
+"São Mateus do Maranhão, Maranhão",
+-4.0333,
+-44.4667
+],
+"B-mo": [
+"Mogi das Cruces, SP",
+-23.5153,
+-46.2022
+],
+"B-mp": [
+"Mirandópolis, SP",
+-21.1333,
+-51.1
+],
+"B-mr": [
+"Manaus - Radio Rio Mar, AM",
+-3.1217,
+-60.0417
+],
+"B-ob": [
+"Óbidos, PA",
+-1.9167,
+-55.5167
+],
+"B-os": [
+"Osasco, SP",
+-23.5142,
+-46.5942
+],
+"B-pa": [
+"Parintins, AM",
+-2.6167,
+-56.75
+],
+"B-pc": [
+"Pocos da Caldas, MG",
+-21.7978,
+-46.5406
+],
+"B-pe": [
+"Petrolina, PE",
+-9.4,
+-40.5
+],
+"B-pi": [
+"Piraquara , PR",
+-25.3928,
+-49.1678
+],
+"B-pv": [
+"Porto Velho, RO",
+-8.7958,
+-63.7772
+],
+"B-r": [
+"Rio de Janeiro , RJ",
+-22.8233,
+-43.0969
+],
+"B-rb": [
+"Rio Branco, AC",
+-9.9667,
+-67.8167
+],
+"B-rc": [
+"Rio de Janeiro , RJ",
+-22.7786,
+-43.0156
+],
+"B-re": [
+"Recife, PE",
+-8.0667,
+-34.9667
+],
+"B-rj": [
+"Rio de Janeiro , RJ",
+-22.7781,
+-42.9839
+],
+"B-ro": [
+"Rio de Janeiro, Observatório Nacional",
+-22.8958,
+-43.2242
+],
+"B-rp": [
+"Ribeirão Preto, SP",
+-21.1833,
+-47.8
+],
+"B-rs": [
+"Rio de Janeiro , RJ",
+-22.8228,
+-43.0892
+],
+"B-rw": [
+"Rio de Janeiro PWZ",
+-22.95,
+-42.9167
+],
+"B-sa": [
+"Santarém, PA",
+-2.4486,
+-54.7328
+],
+"B-sb": [
+"Sao Paulo - Radio Bandeirantes, SP",
+-23.6483,
+-46.6006
+],
+"B-sc": [
+"Sao Paulo - Radio Cultura, SP",
+-23.5117,
+-46.5614
+],
+"B-se": [
+"Senador Guiomard, AC",
+-10.05,
+-67.6167
+],
+"B-sg": [
+"Sao Paulo - Radio Globo, SP",
+-23.6072,
+-46.4367
+],
+"B-sj": [
+"Sao Paulo - Radio 9 de Julho, SP",
+-23.5475,
+-46.6361
+],
+"B-sm": [
+"Santa Maria, RS",
+-29.7383,
+-53.5553
+],
+"B-so": [
+"Sorocaba, SP / Votorantim",
+-23.55,
+-47.4333
+],
+"B-sr": [
+"Sao Paulo - Radio Record, SP",
+-23.6839,
+-46.7431
+],
+"B-sy": [
+"Sao Paulo PYB45",
+-23.55,
+-46.6333
+],
+"B-sz": [
+"Sao Paulo - Radio Gazeta, SP",
+-23.6694,
+-46.75
+],
+"B-ta": [
+"Taubaté, SP",
+-23.0167,
+-45.5667
+],
+"B-te": [
+"Teresina, PI",
+-5.0869,
+-42.7608
+],
+"B-tf": [
+"Tefé, AM",
+-3.3542,
+-64.7114
+],
+"B-vi": [
+"Vitória, ES",
+-20.3167,
+-40.3167
+],
+"B-x": [
+"Xapuri, AC",
+-10.65,
+-68.5
+],
+"B-xm": [
+"Unknown location in Maranhão",
+-2.5,
+-44.25
+],
+"B-xn": [
+"Unknown location in Paraná",
+-25.0,
+-52.0
+],
+"B-xp": [
+"Unknown location in Paraíba",
+-7.1667,
+-36.8333
+],
+"BEL-o": [
+"Oostende",
+51.1833,
+2.8
+],
+"BEL-r": [
+"Ruiselede OSN",
+51.0792,
+3.3347
+],
+"BEL-w": [
+"Wingene",
+51.1833,
+2.8167
+],
+"BEN-c": [
+"Cotonou",
+6.4667,
+2.35
+],
+"BEN-p": [
+"Parakou",
+9.3333,
+2.6333
+],
+"BER-h": [
+"Bermuda Harbour",
+32.3833,
+-64.6833
+],
+"BES": [
+"Bonaire",
+12.2,
+-68.3
+],
+"BFA": [
+"Ouagadougou",
+12.4333,
+-1.55
+],
+"BGD-d": [
+"Dhaka-Dhamrai",
+23.9,
+90.2
+],
+"BGD-k": [
+"Dhaka-Khabirpur",
+24.0,
+90.25
+],
+"BGD-s": [
+"Dhaka-Savar",
+23.8667,
+90.2667
+],
+"BHR-a": [
+"Abu Hayan",
+26.0333,
+50.6167
+],
+"BHR-m": [
+"Al Muharraq",
+26.2667,
+50.65
+],
+"BIH-b": [
+"Bijeljina",
+44.7,
+19.1667
+],
+"BIH-z": [
+"Zavidovici",
+44.4333,
+18.15
+],
+"BIO": [
+"Diego Garcia",
+-7.4333,
+72.4333
+],
+"BLR": [
+"Minsk-Sasnovy/Kalodziscy",
+53.9667,
+27.7833
+],
+"BLR-b": [
+"Brest",
+52.3,
+23.9
+],
+"BLR-g": [
+"Hrodna/Grodno",
+53.6667,
+23.8333
+],
+"BLR-m": [
+"Mahiliou/Mogilev",
+53.6167,
+30.3333
+],
+"BLR-mo": [
+"Molodechno/Vileyka",
+54.4667,
+26.7833
+],
+"BLR-vi": [
+"Vitebsk",
+55.1333,
+30.35
+],
+"BOL-ay": [
+"Santa Ana del Yacuma",
+-13.75,
+-65.5333
+],
+"BOL-cb": [
+"Cochabamba",
+-17.3833,
+-66.1833
+],
+"BOL-p": [
+"La Paz",
+-16.5,
+-68.1333
+],
+"BOL-ri": [
+"Riberalta",
+-10.9969,
+-66.0669
+],
+"BOL-sc": [
+"Santa Cruz",
+-17.8,
+-63.1667
+],
+"BOL-si": [
+"San Ignacio de Velasco",
+-16.3667,
+-60.95
+],
+"BOL-sz": [
+"Santa Cruz Airport",
+-17.6667,
+-63.1333
+],
+"BOL-uy": [
+"Uyuni",
+-20.4667,
+-66.8167
+],
+"BOL-yu": [
+"Yura",
+-20.0667,
+-66.1333
+],
+"BOT": [
+"Mopeng Hill",
+-21.95,
+27.65
+],
+"BTN": [
+"Thimphu",
+27.4667,
+89.65
+],
+"BUL-bg": [
+"Blagoevgrad",
+42.05,
+23.05
+],
+"BUL-bk": [
+"Bankya",
+42.7267,
+23.1592
+],
+"BUL-do": [
+"Doulovo",
+43.8167,
+27.15
+],
+"BUL-kj": [
+"Kardjali",
+41.6,
+25.3667
+],
+"BUL-p": [
+"Plovdiv-Padarsko",
+42.3833,
+24.8667
+],
+"BUL-pe": [
+"Petrich",
+41.4667,
+23.3333
+],
+"BUL-s": [
+"Sofia-Kostinbrod",
+42.8167,
+23.2167
+],
+"BUL-sa": [
+"Samuil",
+43.535,
+26.7369
+],
+"BUL-sl": [
+"Salmanovo",
+43.1833,
+26.9667
+],
+"BUL-tv": [
+"Targovishte",
+43.25,
+26.5167
+],
+"BUL-va": [
+"Varna",
+43.0667,
+27.7833
+],
+"BUL-vi": [
+"Vidin",
+43.8333,
+22.7167
+],
+"BUL-vk": [
+"Vakarel",
+42.5667,
+23.7
+],
+"CAF-ba": [
+"Bangui",
+4.35,
+18.5833
+],
+"CAF-bo": [
+"Boali",
+4.65,
+18.2
+],
+"CAN": [
+"tr2-Trenton Receiver Site ON",
+44.0322,
+-77.5506
+],
+"CAN-al": [
+"Aldergrove BC, Matsqui Tx site",
+49.1083,
+-122.2444
+],
+"CAN-ap": [
+"VAE/XLK Amphitrite Point  BC",
+48.9253,
+-125.5403
+],
+"CAN-c": [
+"Calgary AB",
+50.9006,
+-113.8758
+],
+"CAN-cb": [
+"Cambridge Bay, Victoria Island NU",
+69.1147,
+-105.0197
+],
+"CAN-cc": [
+"Churchill MB",
+58.7617,
+-93.9442
+],
+"CAN-ch": [
+"Coral Harbour NU",
+64.1503,
+-83.3728
+],
+"CAN-cr": [
+"Cap des Rosiers",
+48.8611,
+-64.2147
+],
+"CAN-cw": [
+"Cartwright NL",
+53.7083,
+-57.0214
+],
+"CAN-di": [
+"VAJ Digby Island BC",
+54.2975,
+-130.4183
+],
+"CAN-ex": [
+"Essex County , near Detroit, ON",
+42.0417,
+-82.9742
+],
+"CAN-fg": [
+"CFG8525 ON",
+43.8667,
+-79.3167
+],
+"CAN-g": [
+"Gander NL",
+48.9681,
+-54.6739
+],
+"CAN-h": [
+"Halifax NS",
+44.6842,
+-63.6097
+],
+"CAN-hd": [
+"Hopedale NL",
+55.4567,
+-60.2083
+],
+"CAN-hp": [
+"VOH-498 Hunter Point BC",
+53.2586,
+-132.7147
+],
+"CAN-hr": [
+"Hay River",
+60.8408,
+-115.77
+],
+"CAN-hx": [
+"Halifax CFH NS",
+44.9639,
+-63.9819
+],
+"CAN-i": [
+"Iqaluit NU",
+63.7311,
+-68.5422
+],
+"CAN-in": [
+"Inuvik NWT",
+68.3258,
+-133.5981
+],
+"CAN-j": [
+"St John's NL",
+47.5694,
+-52.8144
+],
+"CAN-k": [
+"Killiniq/Killinek NU",
+60.4242,
+-64.8417
+],
+"CAN-ki": [
+"Kingsburg NS",
+44.2756,
+-64.2875
+],
+"CAN-lp": [
+"Lockeport NS",
+43.6636,
+-65.1297
+],
+"CAN-lv": [
+"La Vernière, Îles-de-la-Madeleine QC",
+47.3572,
+-61.9267
+],
+"CAN-na": [
+"Natashquan QC",
+50.1517,
+-61.795
+],
+"CAN-o": [
+"Ottawa ON",
+45.2964,
+-75.7561
+],
+"CAN-pc": [
+"Port Caledonia NS",
+46.1872,
+-59.8997
+],
+"CAN-r": [
+"Resolute, Cornwallis Island NU",
+74.7464,
+-95.0031
+],
+"CAN-sa": [
+"St Anthony / Pistolet Bay NL",
+51.5,
+-55.8239
+],
+"CAN-sj": [
+"St John's NL",
+47.6111,
+-52.6669
+],
+"CAN-sl": [
+"St Lawrence NL",
+46.9192,
+-55.3792
+],
+"CAN-sm": [
+"Sambro NS",
+44.4725,
+-63.6203
+],
+"CAN-sv": [
+"Stephenville NL",
+48.5547,
+-58.7589
+],
+"CAN-t": [
+"Toronto  ON",
+43.5064,
+-79.6336
+],
+"CAN-tr": [
+"Trenton",
+43.8442,
+-77.1464
+],
+"CAN-v": [
+"Vancouver BC",
+49.1392,
+-123.1956
+],
+"CAN-ym": [
+"Yarmouth/Chebogue NS",
+43.7442,
+-66.1225
+],
+"CBG-ka": [
+"Kandal",
+11.4167,
+104.8333
+],
+"CHL-a": [
+"Antofagasta",
+-23.6667,
+-70.4
+],
+"CHL-e": [
+"Radio Esperanza",
+-38.6833,
+-72.5833
+],
+"CHL-fx": [
+"Bahia Felix",
+-52.9619,
+-74.0808
+],
+"CHL-jf": [
+"Juan Fernández",
+-33.6333,
+-78.8333
+],
+"CHL-pa": [
+"Punta Arenas",
+-53.1667,
+-70.9
+],
+"CHL-pm": [
+"Puerto Montt",
+-41.6556,
+-73.1733
+],
+"CHL-q": [
+"Isla de Pascua",
+-27.1167,
+-109.35
+],
+"CHL-s": [
+"Santiago",
+-33.6433,
+-70.8506
+],
+"CHL-t": [
+"Talagante",
+-33.6667,
+-70.9333
+],
+"CHL-tq": [
+"Talcahuano, Quiriquina Island",
+-36.6167,
+-73.0667
+],
+"CHL-v": [
+"Valparaiso",
+-32.8,
+-71.4833
+],
+"CHL-w": [
+"Wollaston Island",
+-55.6167,
+-67.4333
+],
+"CHN-B": [
+"Beijing-Chaoyang/Gaobeidian/Shuangqiao",
+39.8833,
+116.5667
+],
+"CHN-L": [
+"Lingshi",
+36.8667,
+111.6667
+],
+"CHN-a": [
+"Baoji-Xinjie",
+34.5,
+107.1667
+],
+"CHN-as": [
+"Baoji-Sifangshan",
+37.45,
+107.6833
+],
+"CHN-b": [
+"Beijing-Matoucun",
+39.75,
+116.8167
+],
+"CHN-b0": [
+"Basuo, Hainan",
+19.0961,
+108.6344
+],
+"CHN-bd": [
+"Beijing-Doudian",
+39.6333,
+116.0833
+],
+"CHN-bm": [
+"Beijing BAF",
+39.9,
+116.4667
+],
+"CHN-bs": [
+"Beijing 3SD",
+39.7,
+115.9167
+],
+"CHN-c": [
+"Chengdu",
+30.9,
+104.1167
+],
+"CHN-cc": [
+"Changchun",
+44.0289,
+125.4189
+],
+"CHN-ch": [
+"Changzhou Henglinchen",
+31.7092,
+120.1122
+],
+"CHN-d": [
+"Dongfang",
+18.8903,
+108.6617
+],
+"CHN-d2": [
+"Dongfang 2",
+18.8722,
+108.6803
+],
+"CHN-d3": [
+"Dongfang 3 Jammer",
+18.9047,
+108.6606
+],
+"CHN-d4": [
+"Dongfang 4",
+18.9278,
+108.6631
+],
+"CHN-da": [
+"Dalian",
+38.9167,
+121.65
+],
+"CHN-db": [
+"Dongfang-Basuo",
+19.1,
+108.6167
+],
+"CHN-de": [
+"Dehong",
+24.45,
+98.6
+],
+"CHN-e": [
+"Gejiu",
+23.35,
+103.1333
+],
+"CHN-eb": [
+"Beijing, Posolstvo",
+39.9167,
+116.45
+],
+"CHN-f": [
+"Fuzhou",
+26.1,
+119.4
+],
+"CHN-fz": [
+"Fuzhou-Mawei XSL",
+26.0167,
+119.45
+],
+"CHN-g": [
+"Gannan",
+34.975,
+102.9167
+],
+"CHN-gu": [
+"Gutian-Xincheng",
+26.5667,
+118.7333
+],
+"CHN-gx": [
+"Guangzhou XSQ",
+23.1575,
+113.5142
+],
+"CHN-gy": [
+"Guiyang",
+26.4167,
+106.6
+],
+"CHN-gz": [
+"Guangzhou-Huadu",
+23.4,
+113.2333
+],
+"CHN-h": [
+"Hohhot",
+40.8,
+111.7833
+],
+"CHN-ha": [
+"Hailar",
+49.1833,
+119.7167
+],
+"CHN-hd": [
+"Huadian",
+43.1167,
+126.5167
+],
+"CHN-he": [
+"Hezuo",
+34.9706,
+102.9089
+],
+"CHN-hh": [
+"Hohhot-Yijianfang",
+40.7167,
+111.55
+],
+"CHN-hk": [
+"Haikou  XSR",
+20.0667,
+110.7
+],
+"CHN-hu": [
+"Hutubi",
+44.1667,
+86.9
+],
+"CHN-j": [
+"Jinhua",
+29.1167,
+119.3167
+],
+"CHN-k": [
+"Kunming-Anning CRI",
+24.8833,
+102.5
+],
+"CHN-ka": [
+"Kashi",
+39.35,
+75.7667
+],
+"CHN-kl": [
+"Kunming-Lantao PBS",
+25.1667,
+102.8333
+],
+"CHN-ly": [
+"Lianyungang, Jiangsu",
+34.7011,
+119.3125
+],
+"CHN-n": [
+"Nanning",
+22.7833,
+108.1833
+],
+"CHN-nj": [
+"Nanjing",
+32.0333,
+118.7333
+],
+"CHN-p": [
+"Pucheng",
+35.0,
+109.5167
+],
+"CHN-pt": [
+"Putian",
+25.4667,
+119.1667
+],
+"CHN-q": [
+"Ge'ermu/Golmud",
+36.4333,
+95.0
+],
+"CHN-qq": [
+"Qiqihar",
+47.0333,
+124.05
+],
+"CHN-qz": [
+"Quanzhou",
+24.8833,
+118.8
+],
+"CHN-s": [
+"Shijiazhuang",
+38.2167,
+114.1
+],
+"CHN-sg": [
+"Shanghai-Taopuzhen",
+31.25,
+121.4833
+],
+"CHN-sh": [
+"Shanghai XSG Chongming Island",
+31.625,
+121.7303
+],
+"CHN-sn": [
+"Sanya",
+18.2333,
+109.3167
+],
+"CHN-sq": [
+"Shangqiu",
+34.9483,
+109.5428
+],
+"CHN-st": [
+"Shantou",
+23.3667,
+116.7
+],
+"CHN-sw": [
+"Nanping-Shaowu",
+27.0833,
+117.2833
+],
+"CHN-sy": [
+"Shuangyashan",
+46.7219,
+131.2111
+],
+"CHN-t": [
+"Tibet",
+29.65,
+91.25
+],
+"CHN-tj": [
+"Tianjin",
+39.05,
+117.425
+],
+"CHN-u": [
+"Urumqi",
+44.1464,
+86.8953
+],
+"CHN-uc": [
+"Urumqi-Changji",
+43.9739,
+87.2489
+],
+"CHN-x": [
+"Xian-Xianyang",
+34.2,
+108.9
+],
+"CHN-xc": [
+"Xichang",
+27.8167,
+102.2333
+],
+"CHN-xd": [
+"Xiamen-Xiangdian  XSM",
+24.5047,
+118.1436
+],
+"CHN-xg": [
+"Xining",
+36.65,
+101.5833
+],
+"CHN-xm": [
+"Xiamen",
+24.4922,
+118.0731
+],
+"CHN-xt": [
+"Xiangtan",
+27.5,
+112.5
+],
+"CHN-xw": [
+"Xuanwei",
+26.15,
+104.0333
+],
+"CHN-xy": [
+"Xingyang",
+34.8,
+113.3833
+],
+"CHN-xz": [
+"Xinzhaicun",
+25.75,
+117.1833
+],
+"CHN-ya": [
+"Yanbian-Yanji",
+42.7917,
+129.4883
+],
+"CHN-yt": [
+"Yantai",
+37.7064,
+121.1358
+],
+"CHN-zh": [
+"Zhuhai",
+22.3833,
+113.55
+],
+"CHN-zj": [
+"Zhanjiang",
+21.1833,
+110.4
+],
+"CHN-zn": [
+"Zhongshan",
+22.5333,
+113.35
+],
+"CHN-zs": [
+"Mount Putuo, Xiaohulu Island, Zhoushan",
+30.0,
+122.3833
+],
+"CKH-rt": [
+"Rarotonga",
+-21.2,
+-159.8167
+],
+"CLM-b": [
+"Barranquilla",
+10.9167,
+-74.7667
+],
+"CLM-bu": [
+"Buenaventura",
+3.8833,
+-77.0333
+],
+"CLM-pl": [
+"Puerto Lleras",
+3.2667,
+-73.3667
+],
+"CLM-r": [
+"Rioblanco, Tolima",
+3.5,
+-75.8333
+],
+"CLM-sa": [
+"San Andrés Island",
+12.55,
+-81.7167
+],
+"CLN-e": [
+"Ekala",
+7.1,
+79.9
+],
+"CLN-i": [
+"Iranawila",
+7.5167,
+79.8
+],
+"CLN-p": [
+"Puttalam",
+7.9833,
+79.8
+],
+"CLN-t": [
+"Trincomalee",
+8.7333,
+81.1667
+],
+"CME": [
+"Buea",
+4.15,
+9.2333
+],
+"CNR-ar": [
+"Arrecife",
+29.1333,
+-13.5167
+],
+"CNR-fc": [
+"Fuencaliente",
+28.5089,
+-17.8394
+],
+"CNR-gc": [
+"Gran Canaria airport",
+27.95,
+-15.3833
+],
+"CNR-hr": [
+"Haría",
+29.1408,
+-13.5172
+],
+"CNR-hy": [
+"Los Hoyos",
+28.0486,
+-15.4497
+],
+"CNR-lm": [
+"Las Mesas",
+28.4828,
+-16.2694
+],
+"CNR-pr": [
+"Puerto del Rosario",
+28.5436,
+-13.8781
+],
+"COD-bk": [
+"Bukavu",
+-2.5,
+28.8333
+],
+"COD-bu": [
+"Bunia",
+1.5333,
+30.1833
+],
+"COG-b": [
+"Brazzaville-M'Pila",
+-4.25,
+15.3
+],
+"COG-bv": [
+"Brazzaville Volmet",
+-4.2331,
+15.2617
+],
+"COG-pn": [
+"Pointe Noire",
+-4.7833,
+11.8667
+],
+"CTI-a": [
+"Abidjan",
+5.3667,
+-3.9667
+],
+"CTR": [
+"Cariari de Pococí",
+10.4167,
+-83.7167
+],
+"CTR-g": [
+"Guápiles  ELCOR",
+10.2167,
+-83.7833
+],
+"CUB": [
+"La Habana sites Quivicán/Bejucal/Bauta",
+23.0,
+-82.5
+],
+"CUB-b": [
+"Bauta",
+22.95,
+-82.55
+],
+"CUB-be": [
+"Bejucal",
+22.8667,
+-82.3333
+],
+"CUB-hr": [
+"Havana Radio",
+23.1667,
+-82.3167
+],
+"CUB-q": [
+"Quivicán/Titan",
+22.8333,
+-82.3
+],
+"CVA": [
+"Santa Maria di Galeria",
+42.05,
+12.3167
+],
+"CVA-v": [
+"Citta del Vaticano",
+41.9,
+12.45
+],
+"CYP-a": [
+"Akrotiri",
+34.6167,
+32.9333
+],
+"CYP-cr": [
+"Cyprus Radio",
+35.05,
+33.2833
+],
+"CYP-g": [
+"Cape Greco",
+34.95,
+34.0833
+],
+"CYP-m": [
+"Lady's Mile",
+34.6167,
+33.0
+],
+"CYP-n": [
+"Nicosia",
+35.1667,
+33.35
+],
+"CYP-y": [
+"Yeni Iskele",
+35.2833,
+33.9167
+],
+"CZE-b": [
+"Brno-Dobrochov",
+49.3833,
+17.1333
+],
+"CZE-cb": [
+"Ceske Budejovice-Husova kolonie",
+48.9928,
+14.4936
+],
+"CZE-dl": [
+"Dlouhá Louka",
+50.6481,
+13.6561
+],
+"CZE-kv": [
+"Karlovy Vary-Stará Role",
+50.2394,
+12.8239
+],
+"CZE-mb": [
+"Moravské Budejovice-Domamil",
+49.0764,
+15.7067
+],
+"CZE-os": [
+"Ostrava-Svinov",
+49.8114,
+18.1933
+],
+"CZE-p": [
+"Praha",
+50.0333,
+14.4833
+],
+"CZE-pl": [
+"Praha-Liblice",
+50.0786,
+14.8869
+],
+"CZE-pr": [
+"Pruhonice / Pruhonice",
+49.9911,
+14.5381
+],
+"CZE-pv": [
+"Panská Ves",
+50.5281,
+14.5669
+],
+"CZE-tr": [
+"Trebon / Trebon",
+49.0,
+14.7667
+],
+"CZE-va": [
+"Vackov",
+50.2333,
+12.3833
+],
+"D-L": [
+"Lampertheim",
+49.6047,
+8.5389
+],
+"D-al": [
+"Albersloh",
+51.8864,
+7.7219
+],
+"D-b": [
+"Biblis",
+49.6883,
+8.4922
+],
+"D-bb": [
+"Böblingen",
+48.6906,
+9.0867
+],
+"D-be": [
+"Berlin-Britz",
+52.45,
+13.4333
+],
+"D-bl": [
+"Berlin",
+52.5167,
+13.3833
+],
+"D-br": [
+"Braunschweig",
+52.2833,
+10.7167
+],
+"D-bu": [
+"Burg",
+52.2869,
+11.8969
+],
+"D-bv": [
+"Bonn-Venusberg",
+50.7081,
+7.0967
+],
+"D-cx": [
+"Cuxhaven-Sahlenburg",
+53.8639,
+8.6256
+],
+"D-d": [
+"Dillberg",
+49.3167,
+11.3833
+],
+"D-dd": [
+"Dresden-Wilsdruff",
+51.0586,
+13.5075
+],
+"D-dt": [
+"Datteln",
+51.65,
+7.35
+],
+"D-e": [
+"Erlangen-Tennenlohe",
+49.5833,
+11.0
+],
+"D-fl": [
+"Flensburg",
+54.7917,
+9.5033
+],
+"D-g": [
+"Goehren",
+53.5356,
+11.6111
+],
+"D-ge": [
+"Gera",
+50.8833,
+12.0833
+],
+"D-gl": [
+"Glücksburg",
+54.8333,
+9.5
+],
+"D-ha": [
+"Hannover",
+52.3833,
+9.7
+],
+"D-hc": [
+"Hamburg-Curslack",
+53.45,
+10.2167
+],
+"D-he": [
+"Hannover/Hemmingen",
+52.3278,
+9.7367
+],
+"D-hh": [
+"Hamburg-Moorfleet",
+53.5192,
+10.1028
+],
+"D-ht": [
+"Hartenstein",
+50.6667,
+12.6667
+],
+"D-jr": [
+"Juliusruh",
+54.6292,
+13.3739
+],
+"D-k": [
+"Kall-Krekel",
+50.4781,
+6.5231
+],
+"D-la": [
+"Langenberg",
+51.3561,
+7.1342
+],
+"D-li": [
+"Lingen",
+52.535,
+7.3531
+],
+"D-mf": [
+"Mainflingen",
+50.0156,
+9.0119
+],
+"D-n": [
+"Nauen",
+52.6486,
+12.9092
+],
+"D-nh": [
+"Neuharlingersiel DHJ59",
+53.6764,
+7.6125
+],
+"D-nu": [
+"Nuernberg",
+49.45,
+11.0833
+],
+"D-or": [
+"Oranienburg",
+52.7833,
+13.3833
+],
+"D-pi": [
+"Pinneberg",
+53.6731,
+9.8083
+],
+"D-r": [
+"Rohrbach",
+48.6,
+11.55
+],
+"D-rf": [
+"Rhauderfehn",
+53.0833,
+7.6167
+],
+"D-s": [
+"Stade",
+53.6,
+9.4667
+],
+"D-w": [
+"Wertachtal",
+48.0869,
+10.695
+],
+"D-wa": [
+"Winsen",
+52.6667,
+9.7667
+],
+"D-wb": [
+"Wachenbrunn",
+50.4856,
+10.5583
+],
+"D-we": [
+"Weenermoor",
+53.2,
+7.3167
+],
+"D-wh": [
+"Waldheim",
+51.0667,
+12.9833
+],
+"DJI-d": [
+"Djibouti",
+11.5,
+43.0
+],
+"DJI-i": [
+"Centre de Transmissions Interarmées FUV",
+11.5358,
+43.1556
+],
+"DNK-a": [
+"Aarhus-Mårslet",
+56.15,
+10.2167
+],
+"DNK-bl": [
+"Blaavand",
+55.55,
+8.1
+],
+"DNK-br": [
+"Bramming",
+55.4667,
+8.7
+],
+"DNK-bv": [
+"Bovbjerg",
+56.5167,
+8.1667
+],
+"DNK-co": [
+"Copenhagen OXT",
+55.8333,
+11.4167
+],
+"DNK-f": [
+"Frederikshavn",
+57.4333,
+10.5333
+],
+"DNK-h": [
+"Hillerod",
+55.9,
+12.2667
+],
+"DNK-hv": [
+"Copenhagen Hvidovre",
+55.65,
+12.4833
+],
+"DNK-i": [
+"Copenhagen Ishøj",
+55.6167,
+12.35
+],
+"DNK-k": [
+"Kalundborg",
+55.6764,
+11.0694
+],
+"DNK-ra": [
+"Randers",
+56.4667,
+10.0333
+],
+"DNK-ro": [
+"Ronne",
+55.0333,
+15.1
+],
+"DNK-sg": [
+"Skagen",
+57.7333,
+10.5667
+],
+"DNK-sk": [
+"Skamlebaek",
+55.8333,
+11.4167
+],
+"DOM-sd": [
+"Santo Domingo",
+18.4667,
+-69.8833
+],
+"E-af": [
+"Alfabia",
+39.7375,
+2.7181
+],
+"E-ag": [
+"Aguilas",
+37.4903,
+-1.5633
+],
+"E-ar": [
+"Ares",
+43.4528,
+-8.2833
+],
+"E-as": [
+"La Asomada",
+37.63,
+-0.9633
+],
+"E-bo": [
+"Boal",
+43.4564,
+-6.8206
+],
+"E-c": [
+"Coruna",
+43.3669,
+-8.4519
+],
+"E-cg": [
+"Cabo de Gata - Sabinar",
+37.2081,
+-7.0183
+],
+"E-cp": [
+"Chipiona",
+36.6667,
+-6.4
+],
+"E-fi": [
+"Finisterre",
+42.9,
+-9.2667
+],
+"E-gm": [
+"Torreta de Guardamar, Guardamar del Segura",
+38.0717,
+-0.6647
+],
+"E-h": [
+"Huelva",
+37.2,
+-7.0167
+],
+"E-hv": [
+"\"Huelva\"",
+43.3447,
+-1.8558
+],
+"E-jq": [
+"Jaizquibel",
+43.3447,
+-1.8558
+],
+"E-ma": [
+"Madrid",
+40.4667,
+-3.6667
+],
+"E-mu": [
+"Muxía",
+43.0772,
+-9.225
+],
+"E-mx": [
+"Marratxí",
+39.6347,
+2.67
+],
+"E-n": [
+"Noblejas",
+39.95,
+-3.4333
+],
+"E-pm": [
+"Palma de Mallorca",
+39.3667,
+2.7833
+],
+"E-pz": [
+"Pastoriza",
+42.3431,
+-8.7192
+],
+"E-rq": [
+"Roquetas",
+36.2661,
+-6.0133
+],
+"E-rs": [
+"Rostrío/Cabo de Peñas",
+43.4783,
+-5.8503
+],
+"E-sb": [
+"Sabiner",
+36.6833,
+-2.7
+],
+"E-ta": [
+"Tarifa",
+36.05,
+-5.55
+],
+"E-tj": [
+"Trijueque",
+40.7786,
+-2.9853
+],
+"E-to": [
+"Torrejón de Ardoz",
+40.5,
+-3.45
+],
+"E-vj": [
+"Vejer",
+43.4783,
+-3.8503
+],
+"EGY-a": [
+"Abis",
+31.1667,
+30.0833
+],
+"EGY-al": [
+"Alexandria / Al-Iskandaria",
+31.2,
+29.9
+],
+"EGY-ca": [
+"Cairo",
+30.0667,
+31.2167
+],
+"EGY-ea": [
+"El Arish",
+31.1119,
+33.6997
+],
+"EGY-z": [
+"Abu Zaabal",
+30.2667,
+31.3667
+],
+"EQA-a": [
+"Ambato",
+-1.2167,
+-78.6167
+],
+"EQA-c": [
+"Pico Pichincha",
+-0.1833,
+-78.5333
+],
+"EQA-g": [
+"Guayaquil",
+-2.2667,
+-79.9
+],
+"EQA-i": [
+"Ibarra",
+0.35,
+-78.1333
+],
+"EQA-o": [
+"Otavalo",
+0.3,
+-78.1833
+],
+"EQA-p": [
+"Pifo",
+-0.2333,
+-78.3333
+],
+"EQA-s": [
+"Saraguro",
+-3.7,
+-79.3
+],
+"EQA-t": [
+"Tena",
+-1.0,
+-77.8
+],
+"EQA-u": [
+"Sucúa",
+-2.4667,
+-78.1667
+],
+"ERI": [
+"Asmara-Saladaro",
+15.2167,
+38.8667
+],
+"EST-ta": [
+"Tallinn Radio",
+59.45,
+24.75
+],
+"EST-tt": [
+"Tartu",
+58.4167,
+27.1
+],
+"EST-tv": [
+"Tallinn Volmet",
+59.4167,
+24.8333
+],
+"ETH-a": [
+"Addis Abeba",
+9.0,
+38.75
+],
+"ETH-ad": [
+"Adama",
+8.5333,
+39.2667
+],
+"ETH-b": [
+"Bahir Dar",
+11.6,
+37.3833
+],
+"ETH-d": [
+"Geja Dera",
+8.7667,
+38.6667
+],
+"ETH-j": [
+"Geja Jewe",
+8.7167,
+38.6333
+],
+"ETH-jj": [
+"Jijiga",
+9.35,
+42.8
+],
+"ETH-m": [
+"Mekele",
+13.4833,
+39.4833
+],
+"ETH-n": [
+"Nekemte",
+9.0833,
+36.55
+],
+"ETH-r": [
+"Robe",
+7.1167,
+40.0
+],
+"F-a": [
+"Allouis",
+47.1667,
+2.2
+],
+"F-au": [
+"Auros",
+44.5,
+-0.15
+],
+"F-av": [
+"Avord",
+47.05,
+2.4667
+],
+"F-br": [
+"FUE Brest",
+48.4258,
+-4.2408
+],
+"F-cm": [
+"Col de la Madone",
+43.7833,
+7.4167
+],
+"F-co": [
+"Corsen",
+48.4167,
+-4.7833
+],
+"F-g": [
+"La Garde",
+43.1053,
+5.9892
+],
+"F-gn": [
+"Gris-Nez",
+50.8667,
+1.5833
+],
+"F-hy": [
+"Hyères Island",
+42.9844,
+6.2067
+],
+"F-i": [
+"Issoudun",
+46.9333,
+1.9
+],
+"F-jb": [
+"Jobourg",
+49.6847,
+-1.9078
+],
+"F-ma": [
+"Mont Angel/Fontbonne",
+43.7667,
+7.425
+],
+"F-oe": [
+"Ouessant",
+48.4667,
+-5.05
+],
+"F-p": [
+"Paris",
+48.8667,
+2.3
+],
+"F-r": [
+"Rennes",
+48.1,
+-1.6833
+],
+"F-ro": [
+"Roumoules",
+43.7833,
+6.15
+],
+"F-sa": [
+"FUG Saissac",
+43.3903,
+2.0997
+],
+"F-sb": [
+"Strasbourg",
+48.2497,
+7.4436
+],
+"F-sg": [
+"Saint Guénolé",
+47.8167,
+-4.3833
+],
+"F-to": [
+"FUO Toulon",
+43.1356,
+6.0597
+],
+"F-v": [
+"Favières FAV",
+48.5333,
+1.2333
+],
+"F-ve": [
+"Vernon",
+49.0833,
+1.5
+],
+"F-wu": [
+"Rosnay",
+46.7167,
+1.2333
+],
+"FIN-as": [
+"Asikkala",
+60.75,
+26.0833
+],
+"FIN-ha": [
+"Hailuoto",
+65.0,
+24.7333
+],
+"FIN-he": [
+"Helsinki",
+60.15,
+24.7333
+],
+"FIN-lp": [
+"Lappeenranta",
+61.0667,
+28.1833
+],
+"FIN-mh": [
+"Mariehamn",
+60.1,
+19.9333
+],
+"FIN-o": [
+"Ovaniemi",
+60.1803,
+24.8264
+],
+"FIN-p": [
+"Pori",
+61.4667,
+21.5833
+],
+"FIN-pk": [
+"Pori",
+61.4833,
+21.8
+],
+"FIN-r": [
+"Raseborg/Raasepori",
+59.9667,
+23.4333
+],
+"FIN-t": [
+"Topeno, Loppi, near Riihimäki",
+60.7667,
+24.2833
+],
+"FIN-v": [
+"Virrat",
+62.3833,
+23.6167
+],
+"FIN-va": [
+"Vaasa",
+63.0833,
+21.6
+],
+"FJI-n": [
+"Nadi-Enamanu",
+-17.7872,
+177.4222
+],
+"FRO-t": [
+"Tórshavn",
+62.0167,
+-6.7833
+],
+"FSM": [
+"Pohnpei",
+6.9667,
+158.2
+],
+"G-ab": [
+"Aberdeen",
+57.1275,
+-2.0536
+],
+"G-an": [
+"Anthorn",
+54.9111,
+-3.2806
+],
+"G-aq": [
+"Aberdeen",
+57.1444,
+-2.0878
+],
+"G-ba": [
+"Bangor",
+54.6642,
+-5.6689
+],
+"G-bd": [
+"Bridlington",
+54.0939,
+-0.1758
+],
+"G-cf": [
+"Collafirth Hill",
+60.5333,
+-1.3917
+],
+"G-cm": [
+"Crimond",
+57.6167,
+-1.8833
+],
+"G-cp": [
+"London-Crystal Palace",
+51.4167,
+-0.0833
+],
+"G-cr": [
+"London-Croydon",
+51.4167,
+-0.0833
+],
+"G-ct": [
+"Croughton",
+51.9972,
+-1.2092
+],
+"G-cu": [
+"Cullercoats, Newcastle",
+55.0747,
+-1.4631
+],
+"G-d": [
+"Droitwich",
+52.3,
+-2.1
+],
+"G-dv": [
+"Dover",
+51.1331,
+1.3433
+],
+"G-ev": [
+"St.Eval",
+50.4833,
+-5.0
+],
+"G-fh": [
+"Fareham",
+50.8583,
+-1.2497
+],
+"G-fl": [
+"Falmouth Coastguard",
+50.1453,
+-5.0456
+],
+"G-fm": [
+"Falmouth",
+49.9603,
+-5.2017
+],
+"G-hh": [
+"Holyhead",
+53.3164,
+-4.6325
+],
+"G-hu": [
+"Humber",
+54.1167,
+-0.0781
+],
+"G-ic": [
+"one of: Inskip",
+53.8333,
+-2.8333
+],
+"G-in": [
+"Inskip",
+53.8333,
+-2.8333
+],
+"G-lo": [
+"London",
+51.5,
+-0.1833
+],
+"G-lw": [
+"Lerwick",
+60.1486,
+-1.1403
+],
+"G-mh": [
+"Milford Haven, Wales",
+51.7078,
+-5.0525
+],
+"G-ni": [
+"Niton Navtex, Isle of Wight",
+50.5864,
+-1.2547
+],
+"G-nw": [
+"Northwood",
+51.5,
+-0.1667
+],
+"G-o": [
+"Orfordness",
+52.1,
+1.5833
+],
+"G-p": [
+"Portland",
+50.6,
+-2.45
+],
+"G-pp": [
+"Portpatrick Navtex",
+54.8442,
+-5.1244
+],
+"G-r": [
+"Rampisham",
+50.8083,
+-2.6431
+],
+"G-s": [
+"Skelton",
+54.7333,
+-2.9
+],
+"G-sc": [
+"Shetland",
+60.4017,
+-1.2242
+],
+"G-sm": [
+"St Mary's",
+49.9289,
+-6.3039
+],
+"G-sp": [
+"Saint Peter Port",
+49.45,
+-2.5333
+],
+"G-st": [
+"Stornoway",
+58.4614,
+-6.2311
+],
+"G-sw": [
+"Stornoway port",
+58.2033,
+-6.3756
+],
+"G-ti": [
+"Tiree",
+56.5,
+-6.8069
+],
+"G-w": [
+"Woofferton",
+52.3167,
+-2.7167
+],
+"G-wa": [
+"Washford",
+51.1606,
+-3.3486
+],
+"GAB": [
+"Moyabi",
+-1.6667,
+13.5167
+],
+"GEO-s": [
+"Sukhumi",
+42.9883,
+41.0661
+],
+"GNE-b": [
+"Bata",
+1.7667,
+9.7667
+],
+"GNE-m": [
+"Malabo",
+3.75,
+8.7833
+],
+"GRC-L": [
+"Limnos",
+39.8667,
+25.0667
+],
+"GRC-a": [
+"Avlis",
+38.3833,
+23.6
+],
+"GRC-i": [
+"Iraklion",
+35.3333,
+25.1167
+],
+"GRC-k": [
+"Kerkyra",
+39.6167,
+19.9167
+],
+"GRC-o": [
+"Olimpia",
+37.6075,
+21.4875
+],
+"GRC-r": [
+"Rhodos",
+36.4167,
+28.2167
+],
+"GRL-aa": [
+"Aasiaat",
+68.6833,
+-52.8333
+],
+"GRL-ik": [
+"Ikerasassuaq",
+60.05,
+-43.15
+],
+"GRL-ko": [
+"Kook Island",
+64.0667,
+-52.0
+],
+"GRL-ma": [
+"Maniitsoq",
+65.4,
+-52.8667
+],
+"GRL-n": [
+"Nuuk",
+64.0667,
+-52.0
+],
+"GRL-pa": [
+"Paamiut",
+62.0,
+-49.7167
+],
+"GRL-qa": [
+"Qaqortoq",
+60.6833,
+-46.6
+],
+"GRL-qe": [
+"Qeqertarsuaq",
+69.2333,
+-53.5167
+],
+"GRL-si": [
+"Sisimiut",
+66.9333,
+-53.6667
+],
+"GRL-sq": [
+"Simiutaq",
+60.6833,
+-46.6
+],
+"GRL-t": [
+"Tasiilaq/Ammassalik",
+65.6,
+-37.6333
+],
+"GRL-up": [
+"Upernavik",
+72.7833,
+-56.1667
+],
+"GRL-uu": [
+"Uummannaq",
+70.7833,
+-52.1333
+],
+"GUF": [
+"Montsinery",
+4.9,
+-52.4833
+],
+"GUI-c": [
+"Conakry-Sonfonia",
+9.6861,
+-13.5364
+],
+"GUM-a": [
+"Station KSDA, Agat",
+13.3411,
+144.6489
+],
+"GUM-an": [
+"Andersen Air Force Base",
+13.5667,
+144.9167
+],
+"GUM-b": [
+"Barrigada",
+13.4833,
+144.8333
+],
+"GUM-h": [
+"Agana HFDL site",
+13.4667,
+144.8
+],
+"GUM-m": [
+"Station KTWR, Agana/Merizo",
+13.2772,
+144.6711
+],
+"GUM-n": [
+"Naval station NPN",
+13.4333,
+144.65
+],
+"GUY": [
+"Sparendaam",
+6.8167,
+-58.0833
+],
+"HKG-a": [
+"Cape d'Aguilar",
+22.2167,
+114.25
+],
+"HKG-m": [
+"Marine Rescue Radio VRC",
+22.29,
+114.1533
+],
+"HND-t": [
+"Tegucigalpa",
+14.0667,
+-87.2167
+],
+"HNG-b": [
+"Budapest",
+47.5,
+19.05
+],
+"HNG-lh": [
+"Lakihegy",
+47.3667,
+19.0
+],
+"HOL-a": [
+"Alphen aan den Rijn",
+52.1333,
+4.6333
+],
+"HOL-b": [
+"Borculo",
+52.1167,
+6.5167
+],
+"HOL-cg": [
+"Coast Guard Den Helder - Scheveningen",
+52.1,
+4.25
+],
+"HOL-e": [
+"Elburg",
+52.4333,
+5.8667
+],
+"HOL-he": [
+"Heerde",
+52.3833,
+6.0333
+],
+"HOL-k": [
+"Klazienaveen",
+52.7333,
+6.9833
+],
+"HOL-m": [
+"Margraten",
+50.8,
+5.8
+],
+"HOL-n": [
+"Nijmegen",
+51.85,
+5.8333
+],
+"HOL-o": [
+"Ouddorp, Goeree-Overflakkee island",
+51.8,
+3.9
+],
+"HOL-ov": [
+"Overslag",
+51.2,
+3.8667
+],
+"HOL-w": [
+"Winterswijk",
+51.9667,
+6.7167
+],
+"HOL-zw": [
+"Zwolle",
+52.5167,
+6.0833
+],
+"HRV": [
+"Deanovec",
+45.65,
+16.45
+],
+"HWA-L": [
+"Lualualei",
+21.42,
+-158.1483
+],
+"HWA-a": [
+"WWVH",
+21.9892,
+-159.7644
+],
+"HWA-b": [
+"WWVH",
+21.9864,
+-159.7625
+],
+"HWA-c": [
+"WWVH",
+21.9883,
+-159.7642
+],
+"HWA-d": [
+"WWVH",
+21.9875,
+-159.7639
+],
+"HWA-hi": [
+"Hickam AFB",
+21.3167,
+-157.9167
+],
+"HWA-ho": [
+"Honolulu/Iroquois Point",
+21.3231,
+-157.9933
+],
+"HWA-m": [
+"Moloka'i",
+21.1833,
+-157.1833
+],
+"HWA-n": [
+"Naalehu",
+19.0167,
+-155.6667
+],
+"HWA-nm": [
+"NMO Honolulu/Maili",
+21.4281,
+-158.1531
+],
+"HWA-p": [
+"Pearl Harbour",
+21.4281,
+-158.1531
+],
+"I-a": [
+"Andrate",
+45.5167,
+7.8833
+],
+"I-ac": [
+"Ancona IDR",
+43.6111,
+13.5258
+],
+"I-an": [
+"Ancona IPA",
+43.6031,
+13.4706
+],
+"I-au": [
+"Augusta IQA",
+37.2372,
+15.2406
+],
+"I-b": [
+"San Benedetto de Tronto IQP",
+42.9708,
+13.8653
+],
+"I-ba": [
+"Bari IPB",
+41.0892,
+16.9956
+],
+"I-cg": [
+"Cagliari IDC",
+39.2278,
+9.2344
+],
+"I-cm": [
+"Cagliari IDR",
+39.1919,
+9.1456
+],
+"I-cv": [
+"Civitavecchia IPD",
+42.0333,
+11.8333
+],
+"I-ge": [
+"Genova ICB",
+44.4292,
+8.9331
+],
+"I-kr": [
+"Crotone IPC",
+39.05,
+17.1333
+],
+"I-li": [
+"Livorno-Montenero IPL",
+43.4903,
+10.3608
+],
+"I-lm": [
+"Lampedusa-Ponente IQN",
+35.5175,
+12.5661
+],
+"I-ls": [
+"La Spazia IDR",
+44.0833,
+9.8167
+],
+"I-me": [
+"Messina IDF",
+38.2683,
+15.6219
+],
+"I-mp": [
+"Monteparano",
+40.4419,
+17.4189
+],
+"I-mz": [
+"Mazara del Vallo IQQ",
+37.67,
+12.6131
+],
+"I-na": [
+"Napoli-Posillipo IQH",
+40.8006,
+14.1833
+],
+"I-p": [
+"Padova",
+45.15,
+11.7
+],
+"I-pa": [
+"Palermo-Punta Raisi IPP",
+38.19,
+13.1083
+],
+"I-pi": [
+"San Pietro island IDR",
+40.4478,
+17.1611
+],
+"I-pt": [
+"Porto Torres IZN",
+40.7978,
+8.3253
+],
+"I-r": [
+"Roma",
+41.8,
+12.5167
+],
+"I-ra": [
+"Roma IMB",
+41.7833,
+12.4667
+],
+"I-re": [
+"Rome",
+41.9167,
+12.4833
+],
+"I-sa": [
+"Sant'Anna d'Alfaedo IDR",
+45.6278,
+10.9458
+],
+"I-si": [
+"Sigonella",
+37.4,
+14.9167
+],
+"I-sp": [
+"Santa Panagia/Siracusa IDR",
+37.1,
+15.2833
+],
+"I-sr": [
+"Santa Rosa , Roma",
+41.9833,
+12.3667
+],
+"I-sy": [
+"NSY",
+37.1167,
+14.4333
+],
+"I-t": [
+"Trieste  IQX",
+45.6767,
+13.7692
+],
+"I-v": [
+"Viareggio, Toscana",
+43.9,
+10.2833
+],
+"IND-a": [
+"Aligarh",
+28.0,
+78.1
+],
+"IND-ah": [
+"Ahmedabad",
+22.8667,
+72.6167
+],
+"IND-az": [
+"Aizawl",
+23.7167,
+92.7167
+],
+"IND-b": [
+"Bengaluru-Doddaballapur",
+13.2333,
+77.5
+],
+"IND-bh": [
+"Bhopal",
+23.1667,
+77.5
+],
+"IND-c": [
+"Chennai",
+13.1333,
+80.1167
+],
+"IND-d": [
+"Delhi",
+28.7167,
+77.2
+],
+"IND-dn": [
+"Delhi-Nangli Poona",
+28.7667,
+77.1333
+],
+"IND-g": [
+"Gorakhpur",
+26.8667,
+83.4667
+],
+"IND-gt": [
+"Gangtok",
+27.3667,
+88.6167
+],
+"IND-hy": [
+"Hyderabad",
+17.3333,
+78.55
+],
+"IND-im": [
+"Imphal",
+24.6167,
+93.9
+],
+"IND-it": [
+"Itanagar",
+27.0667,
+93.6
+],
+"IND-j": [
+"Jalandhar",
+31.3167,
+75.3
+],
+"IND-ja": [
+"Jaipur",
+26.9,
+75.75
+],
+"IND-je": [
+"Jeypore",
+18.9167,
+82.5667
+],
+"IND-jm": [
+"Jammu",
+32.75,
+75.0
+],
+"IND-k": [
+"Kham Pur, Delhi 110036",
+28.8167,
+77.1333
+],
+"IND-kc": [
+"Kolkata-Chandi",
+22.3667,
+88.2833
+],
+"IND-kh": [
+"Kohima",
+25.65,
+94.1
+],
+"IND-ko": [
+"Kolkata-Chinsurah",
+23.0167,
+88.35
+],
+"IND-ku": [
+"Kurseong",
+26.9167,
+88.3167
+],
+"IND-kv": [
+"Kolkata Volmet",
+22.65,
+88.45
+],
+"IND-le": [
+"Leh",
+34.1333,
+77.4833
+],
+"IND-lu": [
+"Lucknow",
+26.8833,
+81.05
+],
+"IND-m": [
+"Mumbai",
+19.1833,
+72.8167
+],
+"IND-mv": [
+"Mumbai Volmet",
+19.0833,
+72.85
+],
+"IND-n": [
+"Nagpur, Maharashtra",
+20.9,
+78.9833
+],
+"IND-nj": [
+"Najibabad, Uttar Pradesh",
+29.6333,
+78.3833
+],
+"IND-p": [
+"Panaji",
+15.5167,
+73.8667
+],
+"IND-pb": [
+"Port Blair-Brookshabad",
+11.6167,
+92.75
+],
+"IND-r": [
+"Rajkot",
+22.3667,
+70.6833
+],
+"IND-ra": [
+"Ranchi",
+23.4,
+85.3667
+],
+"IND-sg": [
+"Shillong",
+25.4333,
+91.8167
+],
+"IND-si": [
+"Siliguri",
+26.7667,
+88.4333
+],
+"IND-sm": [
+"Shimla",
+31.1,
+77.15
+],
+"IND-sr": [
+"Srinagar",
+34.0,
+74.8333
+],
+"IND-su": [
+"Suratgarh",
+29.3,
+73.9167
+],
+"IND-t": [
+"Tuticorin",
+8.8167,
+78.0833
+],
+"IND-tv": [
+"Thiruvananthapuram",
+8.4833,
+76.9833
+],
+"IND-v": [
+"Vijayanarayanam",
+8.3833,
+77.75
+],
+"IND-vs": [
+"Vishakapatnam",
+17.7167,
+83.3
+],
+"IND-w": [
+"Guwahati",
+26.1833,
+91.8333
+],
+"INS-am": [
+"Ambon, Ambon Island, Maluku",
+-3.6969,
+128.1747
+],
+"INS-ap": [
+"Amamapare, Papua",
+-4.8833,
+136.8
+],
+"INS-at": [
+"Atapupu, Timor",
+-9.025,
+124.8611
+],
+"INS-b2": [
+"Bau-Bau, Buton Island, Sulawesi Tenggara",
+-5.4803,
+122.5811
+],
+"INS-b3": [
+"Bengkulu, Sumatra",
+-3.8997,
+102.3089
+],
+"INS-b4": [
+"Bima, Sumbawa Island, West Nusa Tenggara",
+-8.4406,
+118.7256
+],
+"INS-b5": [
+"Bintuni, Papua Barat",
+-2.1197,
+133.5011
+],
+"INS-b6": [
+"Bitung, Sulawesi Utara",
+1.4647,
+125.1842
+],
+"INS-b7": [
+"Bontang, Kalimantan Timur",
+-0.1333,
+117.5
+],
+"INS-ba": [
+"Banggai, Banggai Island, Sulawesi Tengah",
+-1.5903,
+123.4989
+],
+"INS-bb": [
+"Banabungi, Buton Island, Sulawesi Tenggara",
+-5.5139,
+122.8444
+],
+"INS-bd": [
+"Badas, Sumbawa Island, West Nusa Tenggara",
+-8.4622,
+117.3772
+],
+"INS-be": [
+"Bade, Papua",
+-7.1644,
+139.5969
+],
+"INS-bg": [
+"Bagan Siapi-Api, Riau, Sumatra",
+2.1525,
+100.8028
+],
+"INS-bi": [
+"Biak, Papua",
+-1.0,
+135.5
+],
+"INS-bj": [
+"Banjarmasin, Kalimantan Selatan",
+-3.3333,
+114.5833
+],
+"INS-bk": [
+"Bengkalis, Bengkalis Island, Riau",
+1.4514,
+102.1094
+],
+"INS-bl": [
+"Batu Licin, Kalimantan Selatan",
+-3.4319,
+116.0019
+],
+"INS-bm": [
+"Batu Ampar, Batam Island next to Singapore",
+1.1808,
+104.0144
+],
+"INS-bn": [
+"Bawean, Bawean Island, Jawa Timur",
+-5.8556,
+112.6556
+],
+"INS-bo": [
+"Benoa, Denpasar, Bali",
+-8.7561,
+115.2167
+],
+"INS-bp": [
+"Balikpapan, Kalimantan Timur",
+-1.2622,
+116.8203
+],
+"INS-bt": [
+"Benete, Sumbawa Island, West Nusa Tenggara",
+-8.9008,
+116.7472
+],
+"INS-bu": [
+"Bukittinggi, Sumatera Barat",
+-0.3,
+100.3667
+],
+"INS-bw": [
+"Belawan, Medan, Sumatera Utara",
+3.7214,
+98.6689
+],
+"INS-by": [
+"Biak, Biak Island, Papua",
+-1.1836,
+136.0781
+],
+"INS-cb": [
+"Celukan Bawang, Bali",
+-8.1861,
+114.8311
+],
+"INS-cc": [
+"Cilacap, Java",
+-7.7333,
+109.0
+],
+"INS-ci": [
+"Cigading, Merak, Banten, Java",
+-5.9333,
+106.0
+],
+"INS-cr": [
+"Cirebon, Jawa Barat",
+-6.7167,
+108.5667
+],
+"INS-dg": [
+"Donggala, Sulawesi Tengah",
+-0.675,
+119.7447
+],
+"INS-dm": [
+"Dumai, Riau, Sumatra",
+1.6861,
+101.4556
+],
+"INS-do": [
+"Dobo, Wamar Island, Maluku",
+-5.75,
+134.2333
+],
+"INS-ds": [
+"Dabo Singkep, Singkep Island, Riau, Sumatra",
+-0.5,
+104.5667
+],
+"INS-en": [
+"Ende, Flores Island, Nusa Tenggara Timur",
+-8.8389,
+121.6439
+],
+"INS-f": [
+"Fakfak, Papua Barat",
+-2.9333,
+132.3
+],
+"INS-fj": [
+"Fatujuring, Wokam Island, Maluku",
+-6.0167,
+134.15
+],
+"INS-g": [
+"Gorontalo, Sulawesi",
+0.5667,
+123.0667
+],
+"INS-gi": [
+"Gilimanuk, Bali",
+-8.1781,
+114.4347
+],
+"INS-go": [
+"Gorontalo port, Sulawesi",
+0.5081,
+123.0636
+],
+"INS-gr": [
+"Gresik, Surabaya, Jawa Timur",
+-7.1642,
+112.6603
+],
+"INS-gs": [
+"Gunung Sitoli, Nias Island, Sumatera Utara",
+1.3067,
+97.6097
+],
+"INS-j": [
+"Jakarta",
+-6.3917,
+106.8611
+],
+"INS-ja": [
+"Jambi PKC3",
+-1.6139,
+103.6142
+],
+"INS-jb": [
+"Jakarta BMG",
+-6.2833,
+106.8667
+],
+"INS-jm": [
+"Jambi, Sumatera",
+-1.6333,
+103.5667
+],
+"INS-jp": [
+"Jepara, Jawa Tengah",
+-6.5864,
+110.6614
+],
+"INS-js": [
+"Jakarta, Sunda Kelapa port",
+-6.1233,
+106.8083
+],
+"INS-jw": [
+"Juwana, Jawa Tengah",
+-6.7042,
+111.1536
+],
+"INS-jx": [
+"Jakarta PKX",
+-6.1189,
+106.8542
+],
+"INS-jy": [
+"Jayapura, Papua",
+-2.5194,
+140.7228
+],
+"INS-k": [
+"Kebayoran Baru, South Jakarta, Java",
+-6.2503,
+106.7914
+],
+"INS-ka": [
+"Kaimana, Papua",
+-3.6667,
+133.7667
+],
+"INS-kb": [
+"Kalabahi, Alor Island, East Nusa Tenggara",
+-8.2217,
+124.5111
+],
+"INS-kd": [
+"Kendari, Sulawesi Tenggara",
+-3.9833,
+122.6
+],
+"INS-kg": [
+"Kalianget, Sumenep, Madura Island, Jawa Timur",
+-7.0667,
+113.9667
+],
+"INS-ki": [
+"Kumai, Kalimantan Tengah",
+-2.7556,
+111.7167
+],
+"INS-kj": [
+"Kijang, Bintan Island",
+0.8511,
+104.6086
+],
+"INS-kl": [
+"Kolonodale, Sulawesi Tenggara",
+-2.0211,
+121.3411
+],
+"INS-km": [
+"Karimunjawa Island, off Java",
+-5.8833,
+110.4333
+],
+"INS-kn": [
+"Kupang, Timor",
+-10.2,
+123.6167
+],
+"INS-ko": [
+"Kolaka, Sulawesi Tenggara",
+-4.0486,
+121.5783
+],
+"INS-kp": [
+"Ketapang, Kalimantan Barat",
+-1.8167,
+109.9667
+],
+"INS-ks": [
+"Kota Langsa, Aceh, Sumatra",
+4.4833,
+97.95
+],
+"INS-kt": [
+"Kuala Tungkal, Jambi, Sumatra",
+-0.8208,
+103.4683
+],
+"INS-ku": [
+"Kota Baru, Laut Island, Kalimantan Selatan",
+-3.2333,
+116.2333
+],
+"INS-kw": [
+"Kwandang, Gorontalo, Sulawesi",
+0.8578,
+122.7922
+],
+"INS-le": [
+"Lembar, Lombok",
+-8.7281,
+116.0731
+],
+"INS-lh": [
+"Lhokseumawe, Aceh, Sumatra",
+5.2114,
+97.0392
+],
+"INS-lk": [
+"Larantuka, Flores",
+-8.3411,
+122.9903
+],
+"INS-lo": [
+"Lombok",
+-8.5017,
+116.6783
+],
+"INS-lu": [
+"Luwuky, Sulawesi Tengah",
+-0.8997,
+122.7942
+],
+"INS-ma": [
+"Manokwari, Papua Barat",
+-0.8656,
+134.0769
+],
+"INS-mb": [
+"Masalembo Island, Java Sea",
+-5.5833,
+114.4333
+],
+"INS-md": [
+"Manado, Sulawesi Utara",
+1.2,
+124.9
+],
+"INS-me": [
+"Meneng, Banyuwangi, Java",
+-8.125,
+114.3972
+],
+"INS-mk": [
+"Manokwari, Irian Jaya Barat",
+-0.8,
+134.0
+],
+"INS-mm": [
+"Maumere, Flores, Nusa Tenggara Timur",
+-8.6167,
+122.2167
+],
+"INS-mn": [
+"Manado, Sulawesi Utara",
+1.5403,
+124.8344
+],
+"INS-mr": [
+"Merauke, Papua",
+-8.4797,
+140.3939
+],
+"INS-ms": [
+"Makassar, Sulawesi Selatan",
+-5.1056,
+119.4419
+],
+"INS-mu": [
+"Muntok, Bangka Island",
+-2.0561,
+105.1511
+],
+"INS-n": [
+"Nabire, Papua",
+-3.2333,
+135.5833
+],
+"INS-na": [
+"Natuna, Tiga Island, Riau Islands",
+3.6694,
+108.1292
+],
+"INS-nu": [
+"Nunukan, Nunukan Island, Kalimantan Utara",
+4.1217,
+117.6889
+],
+"INS-p": [
+"Palangkaraya, Kalimantan Tengah",
+-0.1833,
+113.9
+],
+"INS-pa": [
+"Palu, Sulawesi Tengah",
+-0.6,
+129.6
+],
+"INS-pb": [
+"Padang Bai, Bali",
+-8.5269,
+115.5078
+],
+"INS-pd": [
+"Padang, Sumatera Barat",
+-0.1,
+100.35
+],
+"INS-pe": [
+"Pekalongan, Java",
+-6.8597,
+109.6917
+],
+"INS-pf": [
+"Pare-Pare, Sulawesi Selatan",
+-4.0167,
+119.6167
+],
+"INS-pg": [
+"Pangkal Baru, Bangkal Island",
+-2.1667,
+106.1333
+],
+"INS-ph": [
+"Panipahan, Riau, Sumatra",
+2.4167,
+100.3333
+],
+"INS-pi": [
+"Parigi, Sulawesi Tengah",
+-0.8275,
+120.1775
+],
+"INS-pj": [
+"Panjang, Lampung, Sumatra",
+-5.4731,
+105.3175
+],
+"INS-pk": [
+"Pontianak",
+-0.0267,
+109.2883
+],
+"INS-pl": [
+"Plaju, Palembang, Sumatera Selatan",
+-3.0,
+104.8333
+],
+"INS-pm": [
+"Palembang, Sumatera Selatan",
+-2.9667,
+104.7833
+],
+"INS-po": [
+"Pomalaa, Sulawesi Tenggara",
+-4.1831,
+121.6489
+],
+"INS-pp": [
+"Palopo, Sulawesi Selatan",
+-2.9889,
+120.2028
+],
+"INS-pq": [
+"Probolinggo, Jawa Timur",
+-7.7333,
+113.2167
+],
+"INS-pr": [
+"Panarukan, Jawa Timur",
+-7.7,
+113.9333
+],
+"INS-ps": [
+"Poso, Sulawesi Tengah",
+-1.3833,
+120.75
+],
+"INS-pt": [
+"Pantoloan, Sulawesi Tengah",
+-0.7167,
+119.8667
+],
+"INS-pu": [
+"Pekanbaru, Riau, Sumatra",
+0.3167,
+103.1667
+],
+"INS-pv": [
+"Pulau Sambu, Riau Islands",
+1.1583,
+103.9
+],
+"INS-ra": [
+"Raha, Muna Island, Sulawesi Tenggara",
+-4.8333,
+122.7167
+],
+"INS-re": [
+"Rengat, Riau, Sumatra",
+-0.4667,
+102.6833
+],
+"INS-ro": [
+"Reo, Flores",
+-8.2861,
+120.4522
+],
+"INS-s2": [
+"Sinabang, Simeulue Island, Aceh",
+2.4667,
+96.3833
+],
+"INS-s3": [
+"Sipura Island, Sumatera Barat",
+-2.2,
+99.6667
+],
+"INS-s4": [
+"Surabaya, Jawa Timur",
+-7.2,
+112.7333
+],
+"INS-s8": [
+"Sorong PKY8, Papua Barat",
+-0.65,
+130.7167
+],
+"INS-s9": [
+"Sorong PKY9, Papua Barat",
+-1.1333,
+131.2667
+],
+"INS-sa": [
+"Sabang, We Island, Aceh",
+5.9,
+95.35
+],
+"INS-sb": [
+"Seba, Sawu Island",
+-10.5,
+121.8333
+],
+"INS-se": [
+"Serui, Japen Island, Papua",
+-1.8833,
+136.2333
+],
+"INS-sg": [
+"Semarang, Java",
+-6.9764,
+110.3472
+],
+"INS-sh": [
+"Susoh, Aceh, Sumatra",
+3.7192,
+96.8094
+],
+"INS-si": [
+"Sarmi, Papua",
+-1.85,
+138.75
+],
+"INS-sj": [
+"Selat Panjang, Tebingtinggi Island, Riau",
+1.0208,
+102.7194
+],
+"INS-sk": [
+"Singkil, Aceh, Sumatra",
+2.3,
+97.75
+],
+"INS-sn": [
+"Sanana, Sulabes Island, Maluku",
+-2.05,
+125.9667
+],
+"INS-so": [
+"Sorong, Papua Barat",
+-0.8833,
+131.2667
+],
+"INS-sp": [
+"Sipange, Tapanuli, Sumatera Utara",
+1.2056,
+99.3792
+],
+"INS-sq": [
+"Sibolga, Sumatera Utara",
+1.7333,
+98.7833
+],
+"INS-sr": [
+"Samarinda, Kalimantan Timur",
+-0.5083,
+117.1542
+],
+"INS-st": [
+"Sampit, Kalimantan Tengah",
+-2.5572,
+112.9567
+],
+"INS-su": [
+"Siau Island",
+2.7333,
+125.4
+],
+"INS-sy": [
+"Selayar, Sulawesi Selatan",
+-6.1194,
+120.4583
+],
+"INS-t": [
+"Ternate, Ternate Island, Maluku Utara",
+0.7833,
+127.3667
+],
+"INS-ta": [
+"Tahuna, Sulawesi Utara",
+3.6056,
+125.5042
+],
+"INS-tb": [
+"Tanjung Balai Karimun, Karimunbesar Island, Riau Islands",
+0.9881,
+103.4372
+],
+"INS-td": [
+"Teluk Dalam, Dima Island, Sumatera Utara",
+0.5667,
+97.8167
+],
+"INS-te": [
+"Tegal, Java",
+-6.85,
+109.1333
+],
+"INS-tg": [
+"Tanjung Selor, Kalimantan Utara",
+2.8,
+117.3667
+],
+"INS-tk": [
+"Tarakan, Tarakan Island, Kalimantan Utara",
+3.2889,
+117.5903
+],
+"INS-tl": [
+"Tembilahan, Riau, Sumatra",
+-0.3169,
+103.1614
+],
+"INS-tm": [
+"Tarempa, Siantan Island, Riau Islands",
+3.2167,
+106.2167
+],
+"INS-to": [
+"Tobelo, Halmahera Island, Maluku Utara",
+1.725,
+128.0086
+],
+"INS-ts": [
+"Tanjung Santan, Kalimantan Timur",
+-0.1022,
+117.4642
+],
+"INS-tt": [
+"Toli-Toli, Sulawesi Tengah",
+1.055,
+120.8056
+],
+"INS-tu": [
+"Tanjung Uban, Bintan Island, Riau Islands",
+1.0658,
+104.2242
+],
+"INS-tw": [
+"Tual, Dullah Island, Maluku",
+-5.6333,
+132.75
+],
+"INS-ty": [
+"Taluk Bayur, Sumatera Barat",
+-1.0414,
+100.3806
+],
+"INS-ul": [
+"Ulee-Lheue, Banda Aceh, Aceh, Sumatra",
+5.5667,
+95.2833
+],
+"INS-w": [
+"Wamena, Papua",
+-4.1,
+138.9333
+],
+"INS-wa": [
+"Waingapu, Sumba Island, East Nusa Tenggara",
+-9.6617,
+120.2561
+],
+"IRL-mh": [
+"Malin Head, Co. Donegal",
+55.3719,
+-7.3392
+],
+"IRL-s": [
+"Shannon",
+52.7444,
+-8.9269
+],
+"IRL-sk": [
+"Sheskin, Co. Donegal",
+55.3522,
+-7.2739
+],
+"IRL-tr": [
+"Tralee, Co. Kerry",
+52.2667,
+-9.7
+],
+"IRL-v": [
+"Valentia, Co. Kerry",
+51.8678,
+-10.3342
+],
+"IRN-a": [
+"Ahwaz",
+31.3333,
+48.6667
+],
+"IRN-b": [
+"Bandar-e Torkeman",
+36.9,
+54.0667
+],
+"IRN-ba": [
+"Bandar Abbas",
+27.1017,
+56.0633
+],
+"IRN-bb": [
+"Bonab",
+37.3,
+46.05
+],
+"IRN-c": [
+"Chah Bahar",
+25.4833,
+60.5333
+],
+"IRN-g": [
+"Gorgan",
+36.85,
+54.4333
+],
+"IRN-j": [
+"Jolfa",
+38.9333,
+45.6
+],
+"IRN-k": [
+"Kamalabad",
+35.7667,
+51.45
+],
+"IRN-ke": [
+"Kish Island",
+26.5667,
+53.9333
+],
+"IRN-ki": [
+"Kiashar",
+37.4,
+50.0167
+],
+"IRN-m": [
+"Mashhad",
+36.25,
+59.55
+],
+"IRN-mh": [
+"Bandar-e Mahshahr",
+30.6167,
+49.2
+],
+"IRN-q": [
+"Qasr-e Shirin",
+34.45,
+45.6167
+],
+"IRN-s": [
+"Sirjan",
+29.45,
+55.6833
+],
+"IRN-t": [
+"Tayebad",
+34.7333,
+60.8
+],
+"IRN-te": [
+"Tehran",
+35.75,
+51.4167
+],
+"IRN-z": [
+"Zahedan",
+29.4667,
+60.8833
+],
+"IRN-zb": [
+"Zabol",
+31.0333,
+61.55
+],
+"IRQ-d": [
+"Salah al-Din",
+34.45,
+43.5833
+],
+"IRQ-s": [
+"Sulaimaniya",
+35.55,
+45.4333
+],
+"ISL-f": [
+"Fjallabyggd",
+66.15,
+-18.9167
+],
+"ISL-g": [
+"Keflavik/Grindavik",
+64.0167,
+-22.5667
+],
+"ISL-gt": [
+"Grindavik Thorbjöen",
+63.8522,
+-22.4333
+],
+"ISL-hf": [
+"Hornafjördur",
+64.25,
+-15.2167
+],
+"ISL-if": [
+"Isafjördur",
+66.0833,
+-23.0333
+],
+"ISL-n": [
+"Neskaupstadur",
+65.15,
+-13.7
+],
+"ISL-r": [
+"Reykjavik Aero/HFDL",
+64.0833,
+-21.85
+],
+"ISL-rf": [
+"Raufarhöfn",
+66.45,
+-15.9333
+],
+"ISL-rs": [
+"Reykjavik-Seltjarjarnes",
+64.1508,
+-22.0278
+],
+"ISL-s": [
+"Saudanes",
+66.1856,
+-18.9514
+],
+"ISL-sh": [
+"Stórhöfði",
+63.3994,
+-20.2886
+],
+"ISL-v": [
+"Vestmannaeyjar",
+63.45,
+-20.2667
+],
+"ISR-L": [
+"Lod",
+31.9667,
+34.8667
+],
+"ISR-h": [
+"Haifa",
+32.8167,
+35.0
+],
+"ISR-sy": [
+"She'ar-Yeshuv",
+33.2153,
+35.6447
+],
+"ISR-y": [
+"Yavne",
+31.9,
+34.75
+],
+"J-ao": [
+"Aonoyama Signal Station, Utazu",
+34.3,
+133.8167
+],
+"J-as": [
+"Asahikawa AF JJU22",
+43.8,
+142.3667
+],
+"J-ay": [
+"Ashiya AB JJZ59",
+33.8833,
+130.65
+],
+"J-c": [
+"Chiba Nagara",
+35.4667,
+140.2167
+],
+"J-ct": [
+"Chitose AB, Hokkaido JJR20",
+42.8,
+141.6667
+],
+"J-es": [
+"Esaki Signal Station , Awaji island",
+34.5983,
+134.9922
+],
+"J-f": [
+"Chofu Campus, Tokyo",
+35.65,
+139.55
+],
+"J-fu": [
+"Fuchu AB JJT55",
+35.6833,
+139.5
+],
+"J-gf": [
+"Gifu AB JJV67",
+35.4,
+136.8667
+],
+"J-h": [
+"Mount Hagane",
+33.465,
+130.1756
+],
+"J-hf": [
+"Hofu / Bofu AB JJX36",
+34.0333,
+131.55
+],
+"J-hm": [
+"Hamamatsu AB JJV56",
+34.75,
+137.7
+],
+"J-hy": [
+"Hyakurigahara AB JJT33",
+36.1833,
+140.4167
+],
+"J-io": [
+"Imabari Ohama Vessel Station , Imabari",
+34.0903,
+132.9878
+],
+"J-ir": [
+"Iruma / Irumagawa AB JJT44",
+35.85,
+139.4167
+],
+"J-it": [
+"Itoman, Okinawa JFE",
+26.15,
+127.6667
+],
+"J-iw": [
+"Isewan Signal Station, Cape Irago, Tahara",
+34.5833,
+137.0167
+],
+"J-k": [
+"Kagoshima JMH",
+31.3167,
+130.5167
+],
+"J-kg": [
+"Kumagaya AB JJT66",
+36.1667,
+139.3167
+],
+"J-ki": [
+"Kisarazu AB JJT22",
+35.4,
+139.9167
+],
+"J-kk": [
+"Komaki AB  JJV23",
+35.25,
+136.9167
+],
+"J-km": [
+"Kume Shima / Kumejina, Okinawa JJU66",
+26.3667,
+126.7167
+],
+"J-kn": [
+"Kanmon Oseto Strait Signal Station",
+33.9167,
+130.9333
+],
+"J-ko": [
+"Komatsu AB JJV90",
+36.4,
+136.4
+],
+"J-ks": [
+"Kasuga AB JJZ37",
+33.5333,
+130.4667
+],
+"J-ku": [
+"Kumamoto JJE20",
+32.8333,
+130.85
+],
+"J-ky": [
+"Kyodo",
+36.1833,
+139.85
+],
+"J-kz": [
+"Kannonzaki Signal Station, Yokosuka",
+35.2561,
+139.7433
+],
+"J-m": [
+"Miura",
+35.1397,
+139.6422
+],
+"J-mh": [
+"Miho AB, Yonago JJX25",
+35.5,
+133.2333
+],
+"J-ms": [
+"Misawa AB JJS21",
+40.7,
+141.3667
+],
+"J-mt": [
+"Matsushima AB JJS32",
+38.4,
+141.2167
+],
+"J-mu": [
+"Muroto",
+33.2833,
+134.15
+],
+"J-mz": [
+"Makurazaki",
+31.2667,
+130.3
+],
+"J-n": [
+"Nemuro",
+43.3,
+145.5667
+],
+"J-nh": [
+"Naha AB, Okinawa",
+26.2,
+127.65
+],
+"J-nk": [
+"Nagoya Kinjo Signal Station, Nagoya",
+35.035,
+136.8464
+],
+"J-nr": [
+"Nara JJW24",
+34.5667,
+135.7667
+],
+"J-ny": [
+"Nyutabaru AB JJZ26",
+32.0833,
+131.45
+],
+"J-o": [
+"Mount Otakadoya",
+37.3728,
+140.8489
+],
+"J-oe": [
+"Okinoerabu JJZ44",
+27.4333,
+128.7
+],
+"J-ok": [
+"Okinawa",
+26.4833,
+127.9333
+],
+"J-os": [
+"Osaka JJD20",
+34.7833,
+135.4333
+],
+"J-ot": [
+"Otaru, Hokkaido JJS65",
+43.1833,
+141.0
+],
+"J-sa": [
+"Sapporo / Chitose AB JJA20",
+42.7833,
+141.6667
+],
+"J-sg": [
+"Sodegaura , Chiba",
+35.4467,
+140.0197
+],
+"J-sn": [
+"Sendai / Kasuminome AB JJB20",
+38.2333,
+140.9167
+],
+"J-sz": [
+"Shizuoka",
+34.9833,
+138.3833
+],
+"J-tk": [
+"Tokyo / Tachikawa AF JJC20 JJT88",
+35.7167,
+139.4
+],
+"J-ts": [
+"Tsuiki AB JJZ48",
+33.6833,
+131.0333
+],
+"J-tv": [
+"Tokyo Volmet, Kagoshima Broadcasting Station",
+31.7167,
+130.7333
+],
+"J-y": [
+"Yamata",
+36.1667,
+139.8333
+],
+"J-yo": [
+"Yokota AFB",
+35.7486,
+139.3486
+],
+"J-yz": [
+"Yozadake",
+26.1333,
+127.7
+],
+"J-zz": [
+"Trading sites, licensed until 2027: Kubota 35N26'47\"N-140E01'11\"/Minami-Boso",
+35.1147,
+139.9556
+],
+"JOR-ak": [
+"Al Karanah / Qast Kherane",
+31.7333,
+36.4333
+],
+"JOR-am": [
+"Amman",
+31.9667,
+35.8833
+],
+"KAZ-a": [
+"Almaty",
+43.25,
+76.9167
+],
+"KAZ-ak": [
+"Aktyubinsk/Aktöbe",
+50.25,
+57.2167
+],
+"KAZ-av": [
+"Almaty Volmet",
+43.35,
+77.05
+],
+"KAZ-n": [
+"Nursultan",
+51.0167,
+71.4667
+],
+"KEN-ny": [
+"Nairobi 5YE",
+-1.25,
+36.8667
+],
+"KGZ-b": [
+"Bishkek",
+42.8833,
+74.9833
+],
+"KGZ-bk": [
+"Bishkek Beta",
+43.0667,
+73.65
+],
+"KOR-c": [
+"Chuncheon",
+37.9333,
+127.7667
+],
+"KOR-d": [
+"Dangjin",
+36.9667,
+126.6167
+],
+"KOR-db": [
+"Daebu-do",
+37.2206,
+126.5581
+],
+"KOR-g": [
+"Goyang / Koyang, Gyeonggi-do / Kyonggi-do",
+37.6,
+126.85
+],
+"KOR-h": [
+"Hwasung/Hwaseong",
+37.2167,
+126.7833
+],
+"KOR-j": [
+"Jeju/Aewol HLAZ",
+33.4833,
+126.3833
+],
+"KOR-k": [
+"Kimjae",
+35.8333,
+126.8333
+],
+"KOR-m": [
+"Muan HFDL",
+35.0322,
+126.2386
+],
+"KOR-n": [
+"Hwaseong?",
+37.2167,
+126.7833
+],
+"KOR-o": [
+"Suwon-Osan/Hwaseong-Jeongnam",
+37.15,
+127.0
+],
+"KOR-s": [
+"Seoul-Incheon HLKX",
+37.4167,
+126.75
+],
+"KOR-sg": [
+"Seoul-Gangseo-gu",
+37.5667,
+126.9667
+],
+"KOR-t": [
+"Taedok",
+36.3833,
+127.3667
+],
+"KOR-w": [
+"Nowon Gyeonggi-do / Seoul-Taereung",
+37.6333,
+127.1167
+],
+"KOS-b": [
+"Camp Bondsteel",
+42.3667,
+21.25
+],
+"KRE-c": [
+"Chongjin",
+41.7625,
+129.7083
+],
+"KRE-e": [
+"Hyesan",
+41.0667,
+128.0333
+],
+"KRE-h": [
+"Hamhung",
+39.9333,
+127.65
+],
+"KRE-hw": [
+"Hwadae/Kimchaek",
+40.6833,
+129.2
+],
+"KRE-j": [
+"Haeju",
+38.0167,
+125.7167
+],
+"KRE-k": [
+"Kanggye",
+40.9667,
+126.6
+],
+"KRE-kn": [
+"Kangnam",
+38.9,
+125.65
+],
+"KRE-p": [
+"Pyongyang",
+39.0833,
+125.3833
+],
+"KRE-s": [
+"Sariwon",
+38.0833,
+125.1333
+],
+"KRE-sg": [
+"Samgo",
+38.0333,
+126.5333
+],
+"KRE-sn": [
+"Sinuiju",
+40.0833,
+124.45
+],
+"KRE-sw": [
+"Sangwon",
+38.85,
+125.5167
+],
+"KRE-u": [
+"Kujang",
+40.0833,
+126.0833
+],
+"KRE-w": [
+"Wonsan",
+39.0833,
+127.4167
+],
+"KRE-y": [
+"Pyongsong",
+40.0833,
+124.4
+],
+"KWT-j": [
+"Jahra/Umm al-Rimam",
+29.5,
+47.6667
+],
+"KWT-k": [
+"Kabd/Sulaibiyah",
+29.15,
+47.7667
+],
+"KWT-kw": [
+"Kuwait",
+29.3833,
+47.65
+],
+"LAO-s": [
+"Sam Neua",
+20.2667,
+104.0667
+],
+"LAO-v": [
+"Vientiane",
+17.9667,
+102.55
+],
+"LBN-be": [
+"Beirut",
+33.85,
+35.55
+],
+"LBR-e": [
+"Monrovia ELWA",
+6.2333,
+-10.7
+],
+"LBR-m": [
+"Monrovia Mamba Point",
+6.3167,
+-10.8167
+],
+"LBR-s": [
+"Star Radio Monrovia",
+6.3,
+-10.7833
+],
+"LBY": [
+"Sabrata",
+32.9,
+13.1833
+],
+"LTU": [
+"Sitkunai",
+55.0436,
+23.8078
+],
+"LTU-v": [
+"Viesintos",
+55.7,
+24.9833
+],
+"LUX-j": [
+"Junglinster",
+49.7167,
+6.25
+],
+"LUX-m": [
+"Marnach",
+50.05,
+6.0833
+],
+"LVA": [
+"Ulbroka",
+56.9333,
+24.2833
+],
+"MAU-m": [
+"Malherbes",
+-20.3411,
+57.5128
+],
+"MDA": [
+"Maiac near Grigoriopol",
+47.2833,
+29.4
+],
+"MDA-ca": [
+"Cahul",
+45.9333,
+28.2833
+],
+"MDA-ce": [
+"Chisinau",
+47.0167,
+28.8167
+],
+"MDA-co": [
+"Codru-Costiujeni",
+46.95,
+28.8333
+],
+"MDA-ed": [
+"Edinet",
+48.1833,
+27.3
+],
+"MDG": [
+"Talata Volonondry",
+-18.8333,
+47.5833
+],
+"MDG-a": [
+"Ambohidrano/Sabotsy",
+-18.9167,
+47.5333
+],
+"MDG-m": [
+"Mahajanga",
+-15.7272,
+46.4458
+],
+"MDR-ps": [
+"Porto Santo",
+33.0667,
+-16.35
+],
+"MEX-c": [
+"Cuauhtémoc, Mexico City",
+19.4333,
+-99.15
+],
+"MEX-cb": [
+"Choya Bay, Sonora",
+31.3333,
+113.6333
+],
+"MEX-e": [
+"Mexico City",
+19.2667,
+-99.05
+],
+"MEX-i": [
+"Iztacalco, Mexico City",
+19.3833,
+-98.95
+],
+"MEX-m": [
+"Merida",
+20.9667,
+-89.6
+],
+"MEX-p": [
+"Chiapas",
+17.0,
+-92.0
+],
+"MEX-pr": [
+"Progreso",
+21.2667,
+-89.7833
+],
+"MEX-s": [
+"San Luis Potosi",
+22.1667,
+-101.0
+],
+"MEX-u": [
+"UNAM, Mexico City",
+19.3833,
+-99.1667
+],
+"MEX-vh": [
+"Villahermosa, Tabasco",
+18.0,
+-93.0
+],
+"MLA-ka": [
+"Kajang",
+3.0167,
+101.7667
+],
+"MLA-kk": [
+"Kota Kinabalu",
+6.2,
+116.2333
+],
+"MLA-ku": [
+"Kuching-Stapok",
+1.55,
+110.3333
+],
+"MLA-l": [
+"Lumut",
+4.2333,
+100.6333
+],
+"MLA-s": [
+"Sibu",
+2.3,
+111.8167
+],
+"MLI-c": [
+"CRI-Bamako",
+12.6833,
+-8.0333
+],
+"MLI-k": [
+"Kati",
+12.75,
+-8.05
+],
+"MLT-mr": [
+"Malta Radio",
+35.8167,
+14.5333
+],
+"MNE-oc": [
+"Ocas",
+42.0167,
+19.1333
+],
+"MNG-a": [
+"Altay",
+46.3167,
+96.25
+],
+"MNG-m": [
+"Moron/Mörön",
+49.6167,
+100.1667
+],
+"MNG-u": [
+"Ulaanbaatar-Khonkhor",
+47.9167,
+107.0
+],
+"MRA-m": [
+"Marpi, Saipan",
+15.2667,
+145.8
+],
+"MRA-s": [
+"Saipan/Agingan Point",
+15.1167,
+145.6833
+],
+"MRA-t": [
+"Tinian",
+15.05,
+145.6
+],
+"MRC-L": [
+"Laayoune",
+27.15,
+-13.2167
+],
+"MRC-ag": [
+"Agadir",
+30.3667,
+-9.55
+],
+"MRC-b": [
+"Briech",
+35.55,
+-5.9667
+],
+"MRC-ca": [
+"Casablanca",
+33.6167,
+-7.6333
+],
+"MRC-n": [
+"Nador",
+34.9667,
+-2.9167
+],
+"MRC-s": [
+"Safi",
+32.3,
+-9.2333
+],
+"MRT-fc": [
+"Fort-de-France CROSS",
+14.6,
+-61.0833
+],
+"MRT-u": [
+"FUF Martinique",
+14.5319,
+-60.9789
+],
+"MTN": [
+"Nouakchott",
+18.1167,
+-15.95
+],
+"MYA-n": [
+"Naypyidaw",
+20.1833,
+96.1333
+],
+"MYA-p": [
+"Phin Oo Lwin, Mandalay",
+22.0161,
+96.5503
+],
+"MYA-t": [
+"Taunggyi",
+20.6333,
+96.5833
+],
+"MYA-y": [
+"Yegu",
+16.8667,
+96.1667
+],
+"NCL-n": [
+"Nouméa - FUJ Ouen-Toro",
+-22.3053,
+166.4547
+],
+"NFK": [
+"Norfolk Island",
+-29.0333,
+167.95
+],
+"NGR": [
+"Niamey",
+13.5,
+2.1
+],
+"NIG-a": [
+"Abuja-Gwagwalada",
+8.9333,
+7.0667
+],
+"NIG-b": [
+"Ibadan",
+7.3833,
+3.9
+],
+"NIG-e": [
+"Enugu",
+6.45,
+7.45
+],
+"NIG-i": [
+"Ikorodu",
+6.6,
+3.5
+],
+"NIG-j": [
+"Abuja-Lugbe",
+8.9667,
+7.35
+],
+"NIG-k": [
+"Kaduna",
+10.5167,
+7.4167
+],
+"NMB-wb": [
+"Walvis Bay",
+-23.0875,
+14.625
+],
+"NOR-a": [
+"Andenes",
+69.2689,
+16.0406
+],
+"NOR-as": [
+"Andenes-Saura",
+69.14,
+16.02
+],
+"NOR-at": [
+"Andenes",
+69.2833,
+16.05
+],
+"NOR-be": [
+"Bergen",
+60.4333,
+5.2167
+],
+"NOR-bj": [
+"Bjørnøya / Bear Island",
+74.4333,
+19.05
+],
+"NOR-bk": [
+"Bergen-Kvarren",
+60.3894,
+5.25
+],
+"NOR-bo": [
+"Bodø",
+67.2833,
+14.3833
+],
+"NOR-bs": [
+"Bodø-Seines",
+67.2,
+14.3667
+],
+"NOR-bv": [
+"Berlevåg",
+70.8667,
+29.0667
+],
+"NOR-e": [
+"Erdal",
+60.4489,
+5.2164
+],
+"NOR-f": [
+"Florø",
+61.6,
+5.0333
+],
+"NOR-fs": [
+"Farsund",
+58.0833,
+6.7833
+],
+"NOR-hf": [
+"Hammerfest",
+70.6667,
+23.6833
+],
+"NOR-hp": [
+"Hopen Island",
+76.55,
+25.1167
+],
+"NOR-jm": [
+"Jan Mayen Island",
+71.0,
+-8.5
+],
+"NOR-ly": [
+"Longyearbyen, Svalbard",
+78.0667,
+13.6167
+],
+"NOR-ma": [
+"Marøy",
+60.7,
+4.8833
+],
+"NOR-mg": [
+"Molde-Gossen",
+62.8417,
+6.7931
+],
+"NOR-mr": [
+"Mågerø",
+59.15,
+10.4333
+],
+"NOR-nm": [
+"Nordmela-Andøya",
+69.1278,
+15.6333
+],
+"NOR-no": [
+"Novik",
+66.9828,
+13.8731
+],
+"NOR-oh": [
+"Oslo-Helgelandsmoen",
+60.1167,
+10.2
+],
+"NOR-or": [
+"Ørlandet",
+63.6833,
+9.65
+],
+"NOR-ro": [
+"Rogaland",
+58.65,
+5.5833
+],
+"NOR-sa": [
+"Sandnessjøen",
+66.0167,
+12.6333
+],
+"NOR-sr": [
+"Sørreisa",
+69.0667,
+18.0
+],
+"NOR-st": [
+"Stavanger-Ulsnes",
+59.0,
+5.7167
+],
+"NOR-va": [
+"Vardø",
+70.3667,
+31.1
+],
+"NPL": [
+"Khumaltar",
+27.5,
+85.5
+],
+"NZL-a": [
+"Auckland",
+-37.0167,
+174.8167
+],
+"NZL-du": [
+"Dunedin",
+-45.8667,
+170.5
+],
+"NZL-r": [
+"Rangitaiki",
+-38.8333,
+176.4167
+],
+"NZL-ru": [
+"Russell",
+-35.2833,
+174.1167
+],
+"NZL-t": [
+"Taupo",
+-38.8667,
+176.4333
+],
+"OCE-fa": [
+"Faa'a airport",
+-17.55,
+-149.6167
+],
+"OCE-ma": [
+"Mahina",
+-17.5058,
+-149.4825
+],
+"OMA-a": [
+"A'Seela",
+21.9167,
+59.6167
+],
+"OMA-s": [
+"Seeb",
+23.6667,
+58.1667
+],
+"OMA-t": [
+"Thumrait",
+17.6333,
+53.9333
+],
+"PAK-i": [
+"Islamabad",
+33.45,
+73.2
+],
+"PAK-kv": [
+"Karachi Volmet",
+24.9,
+67.1667
+],
+"PAK-m": [
+"Multan",
+30.0894,
+71.4917
+],
+"PAK-p": [
+"Peshawar",
+34.0,
+71.5
+],
+"PAK-q": [
+"Quetta",
+30.25,
+67.0
+],
+"PAK-r": [
+"Rawalpindi",
+33.5,
+73.0
+],
+"PHL-b": [
+"Bocaue",
+14.8,
+120.9167
+],
+"PHL-dv": [
+"Davao City, Mindanao",
+7.0833,
+125.6
+],
+"PHL-i": [
+"Iba",
+15.3333,
+119.9667
+],
+"PHL-ko": [
+"Koronadal City, Mindanao",
+6.5167,
+124.8167
+],
+"PHL-m": [
+"Marulas/Quezon City, Valenzuela",
+14.6833,
+120.9667
+],
+"PHL-p": [
+"Palauig, Zembales",
+15.4667,
+119.8333
+],
+"PHL-po": [
+"Poro",
+16.4333,
+120.2833
+],
+"PHL-sc": [
+"Santiago City, Luzon",
+16.7,
+121.6
+],
+"PHL-t": [
+"Tinang",
+15.35,
+120.6167
+],
+"PHL-x": [
+"Tinang-2/portable",
+15.35,
+120.6167
+],
+"PHL-zm": [
+"Zamboanga City, Mindanao",
+6.9167,
+122.1167
+],
+"PLW": [
+"Koror-Babeldaob",
+7.4561,
+134.4733
+],
+"PNG-a": [
+"Alotau",
+-10.3,
+150.4667
+],
+"PNG-b": [
+"Bougainville/Buka-Kubu",
+-5.4167,
+154.6667
+],
+"PNG-d": [
+"Daru",
+-9.0833,
+143.1667
+],
+"PNG-g": [
+"Goroka",
+-6.0333,
+145.3667
+],
+"PNG-ka": [
+"Kavieng",
+-2.5667,
+150.8
+],
+"PNG-kb": [
+"Kimbe",
+-5.55,
+150.15
+],
+"PNG-ke": [
+"Kerema",
+-7.9833,
+145.7667
+],
+"PNG-ki": [
+"Kiunga",
+-6.1167,
+141.3
+],
+"PNG-ku": [
+"Kundiawa",
+-6.0,
+144.95
+],
+"PNG-la": [
+"Lae",
+-6.7333,
+147.0
+],
+"PNG-ln": [
+"Lae Nadzab airport",
+-6.5667,
+146.7333
+],
+"PNG-lo": [
+"Lorengau",
+-2.0167,
+147.25
+],
+"PNG-ma": [
+"Madang",
+-5.2333,
+145.75
+],
+"PNG-me": [
+"Mendi",
+-6.2167,
+143.65
+],
+"PNG-mh": [
+"Mount Hagen",
+-5.9,
+144.2167
+],
+"PNG-pm": [
+"Port Moresby",
+-9.4667,
+147.1833
+],
+"PNG-po": [
+"Popondetta",
+-8.75,
+148.25
+],
+"PNG-pr": [
+"Port Moresby Maritime Radio",
+-9.4667,
+147.1833
+],
+"PNG-r": [
+"Rabaul",
+-4.2167,
+152.2167
+],
+"PNG-v": [
+"Vanimo",
+-2.6667,
+141.2833
+],
+"PNG-va": [
+"Vanimo",
+-2.6833,
+141.3
+],
+"PNG-wa": [
+"Port Moresby",
+-9.4667,
+147.1833
+],
+"PNG-ww": [
+"Wewak",
+-3.5833,
+143.6667
+],
+"PNR-al": [
+"Albrook, Panama City",
+8.9689,
+-79.5508
+],
+"POL-b": [
+"Babice",
+52.25,
+20.8333
+],
+"POL-p": [
+"Puchaly, in Falenty",
+52.1436,
+20.9
+],
+"POL-sk": [
+"Solec Kujawski",
+53.0203,
+18.2622
+],
+"POL-u": [
+"Ustka",
+54.5825,
+16.8367
+],
+"POL-w": [
+"Witowo",
+54.55,
+16.5333
+],
+"POR-ms": [
+"Monsanto",
+38.7333,
+-9.1833
+],
+"PRG-c": [
+"Capiatá",
+-25.4,
+-57.4667
+],
+"PRG-f": [
+"Filadelfia",
+-22.35,
+-60.0333
+],
+"PRU-ar": [
+"Arequipa",
+-16.4167,
+-71.5333
+],
+"PRU-at": [
+"Atalaya",
+-10.73,
+-73.7556
+],
+"PRU-bv": [
+"Bolívar",
+-7.35,
+-77.8333
+],
+"PRU-cc": [
+"Chiclayo/Santa Ana",
+-6.7333,
+-79.85
+],
+"PRU-ce": [
+"Celendín",
+-6.8833,
+-78.15
+],
+"PRU-ch": [
+"Chachapoyas",
+-6.2333,
+-77.8667
+],
+"PRU-cl": [
+"Callalli",
+-15.5,
+-71.4333
+],
+"PRU-cp": [
+"Cerre de Pasco",
+-10.6667,
+-76.25
+],
+"PRU-ct": [
+"Chota",
+-6.55,
+-78.65
+],
+"PRU-cu": [
+"Cuzco-Cerro Oscollo",
+-13.5189,
+-72.0103
+],
+"PRU-cz": [
+"Chazuta/Tarapoto, San Martin",
+-6.5667,
+-76.1333
+],
+"PRU-hb": [
+"Huancabamba",
+-5.2333,
+-79.45
+],
+"PRU-hc": [
+"Huancayo/Viques",
+-12.2017,
+-75.2197
+],
+"PRU-ho": [
+"Huánuco",
+-9.9333,
+-76.2333
+],
+"PRU-ht": [
+"Huanta/Tirapampa",
+-12.95,
+-74.25
+],
+"PRU-hu": [
+"Huanta/Vista Alegre",
+-12.9367,
+-74.2528
+],
+"PRU-hv": [
+"Huancavelica",
+-12.7833,
+-74.9833
+],
+"PRU-hz": [
+"Huaraz",
+-9.5167,
+-77.5333
+],
+"PRU-in": [
+"Chau Alto/Independencia, Huarez, Ancash",
+-9.5181,
+-77.5492
+],
+"PRU-iq": [
+"Iquitos/Moronacocha",
+-3.75,
+-73.2667
+],
+"PRU-ja": [
+"Jaén",
+-5.75,
+-78.85
+],
+"PRU-ju": [
+"Junín/Cuncush",
+-11.1667,
+-76.0
+],
+"PRU-li": [
+"Lima",
+-12.1,
+-77.05
+],
+"PRU-or": [
+"La Oroya",
+-11.5333,
+-75.9
+],
+"PRU-pc": [
+"Paucartambo",
+-10.9,
+-75.85
+],
+"PRU-pm": [
+"Puerto Maldonado",
+-12.6,
+-69.1667
+],
+"PRU-qb": [
+"Quillabamba/Macamango",
+-12.8667,
+-72.7
+],
+"PRU-qt": [
+"Quillabamba/Tiobamba Baja",
+-12.8167,
+-72.6833
+],
+"PRU-rm": [
+"Rodrigues de Mendoza",
+-6.3833,
+-77.5
+],
+"PRU-sc": [
+"Santa Cruz",
+-6.6833,
+-79.0333
+],
+"PRU-si": [
+"Sicuani",
+-14.2667,
+-71.2333
+],
+"PRU-su": [
+"Santiago de Chuco",
+-8.15,
+-78.1833
+],
+"PRU-ta": [
+"Tarma/Cerro Penitencia",
+-11.4089,
+-75.6919
+],
+"PRU-tc": [
+"Tacna",
+-18.0,
+-70.2167
+],
+"PRU-ur": [
+"valle de Urubamba, Cusco",
+-13.35,
+-72.1167
+],
+"PRU-vv": [
+"Valle de Vitor, San Luís, Arequipa",
+-16.4683,
+-71.9039
+],
+"PRU-yu": [
+"Yurimaguas",
+-5.9,
+-76.1167
+],
+"PTR-i": [
+"Isabela",
+18.3833,
+-67.1833
+],
+"PTR-s": [
+"Salinas, Camp Santiago",
+17.9833,
+66.3
+],
+"QAT-dr": [
+"Doha Radio",
+25.7,
+16.5333
+],
+"REU-su": [
+"FUX Sainte-Suzanne",
+-20.91,
+55.5847
+],
+"ROU-b": [
+"Bucuresti/Bucharest airport",
+44.5667,
+26.0833
+],
+"ROU-c": [
+"Constanta",
+44.1,
+28.6167
+],
+"ROU-g": [
+"Galbeni",
+46.75,
+26.6833
+],
+"ROU-s": [
+"Saftica",
+44.6333,
+27.0833
+],
+"ROU-t": [
+"Tiganesti",
+44.75,
+26.0833
+],
+"RRW": [
+"Kigali",
+-1.9167,
+30.1167
+],
+"RUS-B1": [
+"Buzzer sites: Kerro",
+60.3111,
+30.2778
+],
+"RUS-B2": [
+"Buzzer sites: Iskra, Naro-Fominsk",
+55.4264,
+36.7092
+],
+"RUS-L": [
+"Lesnoy",
+56.0667,
+37.9667
+],
+"RUS-a": [
+"Armavir/Tblisskaya/Krasnodar",
+45.4833,
+40.1167
+],
+"RUS-af": [
+"Astrakhan Fedorovka",
+45.8436,
+47.6436
+],
+"RUS-ag": [
+"Angarsk",
+56.1356,
+101.6389
+],
+"RUS-ak": [
+"Arkhangelsk Beta",
+64.4,
+41.5333
+],
+"RUS-am": [
+"Amderma",
+69.7667,
+61.5667
+],
+"RUS-an": [
+"Astrakhan Narimanovo",
+46.2833,
+48.0
+],
+"RUS-ar": [
+"Arkhangelsk",
+64.5833,
+40.6
+],
+"RUS-as": [
+"Astrakhan Military Base",
+47.4167,
+47.9167
+],
+"RUS-at": [
+"Arkhangelsk-Talagi",
+64.6,
+40.7167
+],
+"RUS-ay": [
+"Anadyr, Chukotka",
+64.74,
+177.5089
+],
+"RUS-b": [
+"Blagoveshchensk",
+50.2667,
+127.55
+],
+"RUS-ba": [
+"Barnaul, Altay",
+53.3333,
+83.8
+],
+"RUS-bg": [
+"Belaya Gora, Sakha",
+68.5333,
+146.1833
+],
+"RUS-bo": [
+"Bolotnoye, Novosibirsk oblast",
+55.7561,
+84.4478
+],
+"RUS-c": [
+"Chita",
+51.8333,
+113.7167
+],
+"RUS-cs": [
+"Cherskiy, Yakutia",
+68.75,
+161.3333
+],
+"RUS-cy": [
+"Chelyabinsk",
+55.3,
+61.5
+],
+"RUS-di": [
+"Dikson",
+73.5,
+80.5333
+],
+"RUS-el": [
+"Elista",
+46.3667,
+44.3333
+],
+"RUS-ey": [
+"Yeysk port",
+46.7236,
+38.2761
+],
+"RUS-ge": [
+"Gelendzhik",
+44.5989,
+37.9644
+],
+"RUS-gk": [
+"Goryachiy Klyuch, Omsk",
+55.0178,
+73.1922
+],
+"RUS-go": [
+"Gorbusha",
+55.8578,
+38.2294
+],
+"RUS-gr": [
+"Grozny",
+43.2667,
+45.7167
+],
+"RUS-i": [
+"Irkutsk",
+52.4167,
+103.6667
+],
+"RUS-ig": [
+"Igrim XMAO",
+63.1833,
+64.4167
+],
+"RUS-ik": [
+"Ivashka, Kamchatka",
+58.5619,
+162.3072
+],
+"RUS-ir": [
+"Irkutsk port",
+52.3208,
+104.2847
+],
+"RUS-iv": [
+"Irkutsk Volmet",
+52.2667,
+104.3833
+],
+"RUS-iz": [
+"Izhevsk sites",
+56.8333,
+53.25
+],
+"RUS-k": [
+"Kaliningrad-Bolshakovo",
+54.9,
+21.7167
+],
+"RUS-k1": [
+"Krasnodar Pashkovsky",
+45.0333,
+39.1667
+],
+"RUS-k2": [
+"Kamskoye Ustye, Tatarstan",
+55.1956,
+49.2869
+],
+"RUS-k3": [
+"Kolpashevo, Tomsk",
+58.3183,
+82.9861
+],
+"RUS-k4": [
+"Komsomolsk-na-Amure",
+50.5333,
+137.0333
+],
+"RUS-k5": [
+"Kultayevo, Perm",
+57.9106,
+55.9186
+],
+"RUS-k6": [
+"Kozmino, Cape Povorotny, Primorye",
+42.6806,
+133.0361
+],
+"RUS-ka": [
+"Komsomolsk-na-Amur",
+50.65,
+136.9167
+],
+"RUS-kd": [
+"Krasnodar Beta",
+44.6,
+39.5667
+],
+"RUS-kf": [
+"Krasnoyarsk HFDL site",
+56.1,
+92.3
+],
+"RUS-kg": [
+"Kaliningrad Radio UIW23",
+54.7167,
+20.7333
+],
+"RUS-kh": [
+"Khabarovsk",
+48.55,
+135.25
+],
+"RUS-ki": [
+"Kirinskoye, Sakhalin",
+51.4167,
+143.4333
+],
+"RUS-kl": [
+"Kaliningrad Military Base Yantarny",
+54.7333,
+19.9667
+],
+"RUS-km": [
+"Khanty-Mansiysk",
+61.0333,
+69.0833
+],
+"RUS-ko": [
+"Korsakov, Sakhalin",
+46.6167,
+142.7667
+],
+"RUS-kp": [
+"Krasnodar-Poltovskaya",
+45.405,
+38.1581
+],
+"RUS-kr": [
+"Krasnoyarsk",
+56.0333,
+92.7333
+],
+"RUS-kt": [
+"Kotlas",
+61.2333,
+46.7
+],
+"RUS-ku": [
+"Kurovskaya-Avsyunino",
+55.5667,
+39.15
+],
+"RUS-kv": [
+"Kirensk Volmet",
+57.7667,
+108.0667
+],
+"RUS-kx": [
+"Kamenka, Sakha",
+69.5,
+161.3333
+],
+"RUS-ky": [
+"Kyzyl",
+51.6833,
+94.6
+],
+"RUS-kz": [
+"Kazan",
+55.6,
+49.2833
+],
+"RUS-l2": [
+"Labytnangi, YNAO Gazprom",
+66.6583,
+66.2242
+],
+"RUS-li": [
+"Liski, Voronezh",
+50.9683,
+39.5214
+],
+"RUS-ln": [
+"Labytnangi, YNAO",
+66.6436,
+66.5297
+],
+"RUS-m": [
+"Moscow/Moskva",
+55.75,
+37.3
+],
+"RUS-m2": [
+"Magadan Rosmorport",
+59.7122,
+150.9942
+],
+"RUS-m3": [
+"Makhachkala, Dagestan",
+42.9833,
+47.5167
+],
+"RUS-m4": [
+"Mezen, Arkhangelsk",
+65.9,
+44.2667
+],
+"RUS-m5": [
+"Murmansk MRCC",
+68.8528,
+32.9875
+],
+"RUS-ma": [
+"Magadan/Arman",
+59.6944,
+150.1586
+],
+"RUS-mg": [
+"Magadan Military Base",
+59.7,
+150.1667
+],
+"RUS-mi": [
+"Mineralnye Vody",
+44.2333,
+43.0833
+],
+"RUS-mk": [
+"Makhachkala, Dagestan",
+42.8167,
+47.65
+],
+"RUS-mm": [
+"Murmansk Meteo",
+68.8667,
+33.075
+],
+"RUS-mp": [
+"Maykop",
+44.6667,
+40.0333
+],
+"RUS-mr": [
+"Moscow-Razdory",
+55.75,
+37.3
+],
+"RUS-mt": [
+"MTUSI University, Moscow",
+55.7542,
+37.7119
+],
+"RUS-mu": [
+"Murmansk/Monchegorsk",
+67.9167,
+32.9833
+],
+"RUS-mv": [
+"Magadan Volmet",
+59.9167,
+150.7167
+],
+"RUS-mx": [
+"Makhachkala, Dagestan",
+43.0036,
+47.4703
+],
+"RUS-mz": [
+"Mozdok, North Ossetia",
+43.75,
+44.65
+],
+"RUS-n": [
+"Novosibirsk / Oyash",
+55.5167,
+83.75
+],
+"RUS-nc": [
+"Nalchik, Kabardino-Balkaria",
+43.5167,
+43.6333
+],
+"RUS-ne": [
+"Nevelsk, Sakhalin",
+46.5167,
+141.85
+],
+"RUS-ni": [
+"Nizhnevartovsk",
+60.95,
+76.4833
+],
+"RUS-nm": [
+"Naryan-Mar",
+67.6333,
+53.1167
+],
+"RUS-nn": [
+"Nizhni Novgorod sites",
+56.1833,
+43.9667
+],
+"RUS-no": [
+"Novosibirsk City",
+55.0333,
+82.9167
+],
+"RUS-np": [
+"Novosibirsk city port",
+55.0153,
+82.9175
+],
+"RUS-nr": [
+"Novorossiysk",
+44.7461,
+37.6858
+],
+"RUS-ns": [
+"Novosibirsk Shipping Canal",
+54.845,
+83.0403
+],
+"RUS-nu": [
+"Novy Urengoy",
+66.0667,
+76.5167
+],
+"RUS-nv": [
+"Novosibirsk Volmet",
+55.0044,
+82.5622
+],
+"RUS-ny": [
+"Nadym",
+65.4833,
+72.7
+],
+"RUS-o2": [
+"Orenburg-2",
+51.7,
+55.0167
+],
+"RUS-oe": [
+"Okhotskoye, Sakhalin",
+46.8717,
+143.1531
+],
+"RUS-og": [
+"Orenburg-Gagarin airport",
+51.8,
+55.45
+],
+"RUS-ok": [
+"Oktyarbskiy, Kamchatka",
+52.6572,
+156.2447
+],
+"RUS-ol": [
+"Oleniy, Yamalo-Nenets",
+72.5964,
+77.6594
+],
+"RUS-om": [
+"Omsk",
+54.9667,
+73.3167
+],
+"RUS-or": [
+"Orenburg",
+51.7667,
+55.1
+],
+"RUS-ox": [
+"Okhotsk Bulgin",
+59.3667,
+143.15
+],
+"RUS-p": [
+"Petropavlovsk-Kamchatskiy",
+53.1833,
+158.4
+],
+"RUS-p2": [
+"Petropavlovsk-Kamchatskiy Port",
+53.0331,
+158.6422
+],
+"RUS-p3": [
+"Petropavlovsk-Kamchatskiy Commercial sea port",
+53.0064,
+158.6542
+],
+"RUS-p4": [
+"Pevek, Chukotka",
+69.7008,
+170.2572
+],
+"RUS-p5": [
+"Plastun, Primorye",
+44.7283,
+136.3175
+],
+"RUS-p6": [
+"Poronaisk, Sakhalin",
+49.2317,
+143.1144
+],
+"RUS-pc": [
+"Pechora",
+65.1167,
+57.1333
+],
+"RUS-pe": [
+"Perm",
+58.05,
+56.2333
+],
+"RUS-pk": [
+"Petropavlovsk-Kamchatskij Military Base",
+53.1667,
+158.45
+],
+"RUS-pm": [
+"Perm airport",
+57.9167,
+56.0167
+],
+"RUS-po": [
+"Preobrazhenie, Primorye",
+42.8981,
+133.8983
+],
+"RUS-pp": [
+"Petropavlovsk-Kamchatskiy Port",
+53.0631,
+158.5692
+],
+"RUS-ps": [
+"Pskov airport",
+57.7833,
+28.4
+],
+"RUS-pt": [
+"Sankt Peterburg Military Base",
+60.0,
+30.0
+],
+"RUS-pu": [
+"Puteyets, Pechora, Rep.Komi",
+65.1667,
+57.0833
+],
+"RUS-pv": [
+"Sankt Peterburg Volmet / Pulkovo",
+59.7806,
+30.2483
+],
+"RUS-py": [
+"Peleduy, Sakha",
+59.6106,
+112.7439
+],
+"RUS-rd": [
+"Reydovo, Etorofu Island, Kuril",
+45.2778,
+148.025
+],
+"RUS-re": [
+"Revda",
+68.0356,
+34.5167
+],
+"RUS-ro": [
+"Rossosh, Voronezhskaya oblast",
+50.2,
+39.5833
+],
+"RUS-rp": [
+"Rostov-na-Donu",
+47.2994,
+39.6736
+],
+"RUS-ru": [
+"Russkoye Ustye",
+71.2667,
+150.2667
+],
+"RUS-rv": [
+"Rostov Volmet, Rostov-na-Donu",
+47.2533,
+39.8172
+],
+"RUS-ry": [
+"Rybachi, Primorye",
+43.375,
+131.8944
+],
+"RUS-s": [
+"Samara",
+53.2833,
+50.25
+],
+"RUS-s1": [
+"Saratov airport",
+51.5667,
+46.05
+],
+"RUS-s2": [
+"Stavropol airport",
+45.1167,
+42.1167
+],
+"RUS-s3": [
+"St Petersburg port",
+59.9,
+30.25
+],
+"RUS-s4": [
+"St Petersburg Shepelevo",
+59.985,
+29.1269
+],
+"RUS-s5": [
+"Sterlegova Cape, Taymyr, Krasnoyarski krai",
+75.3986,
+88.7594
+],
+"RUS-s6": [
+"Stolbovoy Island, New Siberian Islands, Sakha",
+74.1694,
+135.4653
+],
+"RUS-s7": [
+"Svobodny, Amur",
+51.3353,
+128.1758
+],
+"RUS-sa": [
+"Samara Centre",
+53.2,
+50.1667
+],
+"RUS-sb": [
+"Sabetta, Yamalo-Nenets",
+71.2833,
+72.0333
+],
+"RUS-sc": [
+"Seshcha",
+53.7167,
+33.3333
+],
+"RUS-sd": [
+"Severodvinsk",
+64.5667,
+39.85
+],
+"RUS-se": [
+"Sevastopol",
+44.9333,
+34.4667
+],
+"RUS-sh": [
+"Salekhard",
+66.5833,
+66.6
+],
+"RUS-sk": [
+"Smolensk",
+54.7833,
+32.05
+],
+"RUS-sl": [
+"Seleznevo, Sakhalin",
+46.6086,
+141.8331
+],
+"RUS-sm": [
+"Severomorsk/Arkhangelsk Military Base",
+69.05,
+33.3167
+],
+"RUS-so": [
+"Sochi",
+43.45,
+39.95
+],
+"RUS-sp": [
+"St.Petersburg",
+59.65,
+30.7
+],
+"RUS-sr": [
+"Sevastopol Radio",
+44.5667,
+33.5333
+],
+"RUS-st": [
+"Saratov",
+51.5333,
+45.85
+],
+"RUS-su": [
+"Surgut",
+61.3333,
+73.4
+],
+"RUS-sv": [
+"Samara airport",
+53.5,
+50.15
+],
+"RUS-sy": [
+"Syktyvkar Volmet",
+61.6381,
+50.8636
+],
+"RUS-t": [
+"Taldom - Severnyj, Radiotsentr 3",
+56.7333,
+37.6333
+],
+"RUS-t3": [
+"Tiksi-3, Sakha",
+71.6933,
+128.8808
+],
+"RUS-tc": [
+"Taganrog Centralny",
+47.25,
+38.8333
+],
+"RUS-tg": [
+"Taganrog",
+47.2053,
+38.9517
+],
+"RUS-ti": [
+"Tiksi, Sakha",
+71.6411,
+128.88
+],
+"RUS-tm": [
+"Tomsk",
+56.4894,
+84.9453
+],
+"RUS-to": [
+"Tver-Migalovo",
+56.825,
+35.76
+],
+"RUS-tr": [
+"Temryuk, Krasnodar",
+45.3303,
+37.2292
+],
+"RUS-ts": [
+"Tarko-Sale",
+64.9333,
+77.8167
+],
+"RUS-tu": [
+"Tulagino, Sakha",
+62.2378,
+129.8128
+],
+"RUS-tv": [
+"Tavrichanka",
+43.3333,
+131.9
+],
+"RUS-ty": [
+"Tyumen Volmet",
+57.1667,
+65.3167
+],
+"RUS-u": [
+"Ulan-Ude",
+51.7333,
+107.4333
+],
+"RUS-ub": [
+"Ust-Barguzin, Buryatia",
+53.4206,
+109.0156
+],
+"RUS-uf": [
+"Ufa",
+54.5667,
+55.8833
+],
+"RUS-ug": [
+"Uglegorsk, Sakhalin",
+49.0833,
+142.0833
+],
+"RUS-uk": [
+"Ust-Kamchatsk, Kamchatka",
+56.2178,
+162.5133
+],
+"RUS-us": [
+"Ulan-Ude/Selenginsk",
+52.0333,
+106.9333
+],
+"RUS-uu": [
+"Ulan-Ude port",
+51.8381,
+107.5728
+],
+"RUS-uy": [
+"Ustyevoye, Kamchatka",
+54.1544,
+155.8419
+],
+"RUS-v": [
+"Vladivostok Razdolnoye",
+43.5333,
+131.95
+],
+"RUS-va": [
+"Vanino, Khabarovski kray",
+49.0833,
+140.2667
+],
+"RUS-vg": [
+"Vologda",
+59.2833,
+39.95
+],
+"RUS-vk": [
+"Vorkuta",
+67.4833,
+63.9833
+],
+"RUS-vl": [
+"Vladivostok Military Base",
+43.1167,
+131.9
+],
+"RUS-vm": [
+"Vzmorye, Kaliningrad",
+54.6833,
+20.25
+],
+"RUS-vo": [
+"Volgograd",
+48.7833,
+44.35
+],
+"RUS-vp": [
+"Vladivostok port",
+43.1167,
+131.8833
+],
+"RUS-vr": [
+"Varandey, Nenets",
+68.8017,
+57.9828
+],
+"RUS-vv": [
+"Veselo-Voznesenka",
+47.1417,
+38.3281
+],
+"RUS-vz": [
+"Vladikavkaz Beslan, North Ossetia",
+43.2,
+44.6
+],
+"RUS-xe": [
+"Khabarovsk-Elban",
+50.0733,
+136.6067
+],
+"RUS-xo": [
+"Kholmsk, Sakhalin",
+47.0333,
+142.05
+],
+"RUS-xv": [
+"Khabarovsk Volmet",
+48.5167,
+135.1667
+],
+"RUS-ya": [
+"Yakutsk/Tulagino",
+62.0167,
+129.8
+],
+"RUS-ys": [
+"Yuzhno-Sakhalinsk",
+46.9167,
+142.9
+],
+"RUS-yv": [
+"Yekaterinburg Volmet",
+56.75,
+60.8
+],
+"RUS-yy": [
+"Yakutsk Volmet",
+62.0833,
+129.7667
+],
+"RUS-za": [
+"Zyryanka, Sakha",
+65.7572,
+150.8392
+],
+"RUS-zg": [
+"Zhigalovo, Irkutsk region",
+54.8094,
+105.1694
+],
+"RUS-zp": [
+"Zaporozhye, Kamchatka",
+51.5081,
+156.4919
+],
+"RUS-zy": [
+"Zhatay, Yakutsk",
+62.1722,
+129.8058
+],
+"S-b": [
+"Bjuröklubb",
+64.4617,
+21.5917
+],
+"S-d": [
+"Delsbo",
+61.8,
+16.55
+],
+"S-gr": [
+"Varberg-Grimeton",
+57.1083,
+12.3933
+],
+"S-gs": [
+"Gislövshammar",
+55.4894,
+14.3144
+],
+"S-h": [
+"Härnösand",
+62.7067,
+18.1297
+],
+"S-j": [
+"Julita",
+59.1333,
+16.05
+],
+"S-k": [
+"Kvarnberget-Vallentuna",
+59.5,
+18.1333
+],
+"S-s": [
+"Sala",
+59.6069,
+17.2122
+],
+"S-st": [
+"Stavsnäs",
+59.2833,
+18.6833
+],
+"S-t": [
+"Tingstäde",
+57.7278,
+18.5986
+],
+"S-v": [
+"Vaxholm, The Castle",
+59.4,
+18.35
+],
+"SDN-a": [
+"Al-Aitahab",
+15.5833,
+32.4333
+],
+"SDN-r": [
+"Reiba",
+13.55,
+33.5167
+],
+"SEN-r": [
+"Rufisque 6WW DIRISI",
+14.7603,
+-17.2739
+],
+"SEN-y": [
+"Dakar Yoff",
+14.7333,
+-17.4833
+],
+"SEY-mh": [
+"Mahe",
+-4.6167,
+55.4333
+],
+"SLM": [
+"Honiara",
+-9.4333,
+160.05
+],
+"SNG": [
+"Kranji",
+1.4167,
+103.7333
+],
+"SNG-j": [
+"Jurong",
+1.2667,
+103.6667
+],
+"SNG-v": [
+"Singapore Volmet",
+1.3364,
+103.6861
+],
+"SOM-b": [
+"Baydhabo",
+3.1167,
+43.65
+],
+"SOM-g": [
+"Garoowe",
+8.4,
+48.4833
+],
+"SOM-h": [
+"Hargeisa",
+9.55,
+44.05
+],
+"SOM-ma": [
+"Mogadishu Airport",
+2.0167,
+45.3
+],
+"SRB-be": [
+"Beograd/Belgrade",
+44.8,
+20.4667
+],
+"SRB-s": [
+"Stubline",
+44.5667,
+20.15
+],
+"SSD-n": [
+"Narus",
+4.7667,
+33.5833
+],
+"STP": [
+"Pinheira",
+0.3,
+6.7
+],
+"SUI-be": [
+"Bern Radio HEB, Prangins",
+46.4,
+6.25
+],
+"SUI-ge": [
+"Geneva",
+46.2333,
+6.1333
+],
+"SUI-lu": [
+"Luzern",
+46.8333,
+8.4
+],
+"SUR-pm": [
+"Paramaribo",
+5.85,
+-55.15
+],
+"SVK": [
+"Rimavska Sobota",
+48.4,
+20.1333
+],
+"SWZ": [
+"Manzini/Mpangela Ranch",
+-26.5667,
+31.9833
+],
+"SYR": [
+"Adra",
+33.45,
+36.5
+],
+"TCD": [
+"N'Djamena-Gredia",
+12.1333,
+15.05
+],
+"THA-b": [
+"Bangkok / Prathum Thani",
+14.05,
+100.7167
+],
+"THA-bm": [
+"Bangkok Meteo",
+13.7333,
+100.5
+],
+"THA-bv": [
+"Bangkok Volmet",
+13.6944,
+100.7706
+],
+"THA-hy": [
+"Hat Yai",
+6.9364,
+100.3883
+],
+"THA-n": [
+"Nakhon Sawan",
+15.8167,
+100.0667
+],
+"THA-u": [
+"Udon Thani",
+17.4167,
+102.8
+],
+"TJK-da": [
+"Dushanbe airport",
+38.5333,
+68.8167
+],
+"TJK-o": [
+"Orzu",
+37.5333,
+68.7
+],
+"TJK-y": [
+"Yangi Yul",
+38.4833,
+68.8
+],
+"TKM-a": [
+"Asgabat",
+37.85,
+58.3667
+],
+"TKM-as": [
+"Ashgabat airport",
+37.9833,
+58.3667
+],
+"TKM-ds": [
+"Dasoguz/Dashoguz",
+41.7667,
+59.8333
+],
+"TKM-s": [
+"Seyda/Seidi",
+39.4711,
+62.7186
+],
+"TKM-tb": [
+"Turkmenbashi",
+40.05,
+53.0
+],
+"TRD-np": [
+"North Post",
+10.75,
+-61.5667
+],
+"TUN-bz": [
+"Bizerte",
+37.2833,
+9.8833
+],
+"TUN-gu": [
+"La Goulette",
+36.8167,
+10.3
+],
+"TUN-ke": [
+"Kelibia",
+36.8333,
+11.0833
+],
+"TUN-mh": [
+"Mahdia",
+35.5167,
+11.0667
+],
+"TUN-s": [
+"Sfax",
+34.8,
+10.8833
+],
+"TUN-sf": [
+"Sfax",
+34.7333,
+10.7333
+],
+"TUN-tb": [
+"Tabarka",
+36.95,
+8.75
+],
+"TUN-te": [
+"Tunis",
+36.8333,
+10.1833
+],
+"TUN-tu": [
+"Tunis",
+36.9,
+10.1833
+],
+"TUN-zz": [
+"Zarzis",
+33.5,
+11.1
+],
+"TUR-a": [
+"Ankara",
+39.9167,
+32.85
+],
+"TUR-c": [
+"Cakirlar",
+39.9667,
+32.6667
+],
+"TUR-e": [
+"Emirler",
+39.4833,
+32.85
+],
+"TUR-is": [
+"Istanbul TAH",
+40.9833,
+28.8167
+],
+"TUR-iz": [
+"Izmir",
+38.4167,
+27.15
+],
+"TUR-m": [
+"Mersin",
+36.8,
+34.6333
+],
+"TWN-L": [
+"Lukang",
+24.05,
+120.4167
+],
+"TWN-f": [
+"Fangliao FAN",
+22.3833,
+120.5667
+],
+"TWN-h": [
+"Huwei",
+23.7167,
+120.4167
+],
+"TWN-k": [
+"Kouhu",
+23.5333,
+120.1667
+],
+"TWN-m": [
+"Minhsiung",
+23.5667,
+120.4167
+],
+"TWN-n": [
+"Tainan/Annan",
+23.0333,
+120.1667
+],
+"TWN-p": [
+"Paochung/Baujong  PAO/BAJ",
+23.7167,
+120.3
+],
+"TWN-pe": [
+"Penghu , Jiangmei",
+23.6333,
+119.6
+],
+"TWN-s": [
+"Danshui/Tanshui/Tamsui",
+25.1833,
+121.4167
+],
+"TWN-t": [
+"Taipei",
+25.1,
+121.4333
+],
+"TWN-w": [
+"Taipei, Mount Wufen",
+25.15,
+121.5667
+],
+"TWN-y": [
+"Kuanyin",
+25.0333,
+121.1
+],
+"TWN-yl": [
+"Yilin",
+24.75,
+121.7333
+],
+"TZA-d": [
+"Daressalam",
+-6.8333,
+39.2333
+],
+"TZA-z": [
+"Zanzibar/Dole",
+-6.0833,
+39.2333
+],
+"UAE": [
+"Dhabbaya",
+24.1833,
+54.2333
+],
+"UAE-aj": [
+"Al-Abjan",
+24.5975,
+55.3975
+],
+"UAE-da": [
+"Das Island",
+25.1544,
+52.8767
+],
+"UAE-mu": [
+"Musaffah, Abu Dhabi",
+24.3828,
+54.5144
+],
+"UAE-sj": [
+"Sharjah",
+25.35,
+55.3833
+],
+"UGA-k": [
+"Kampala-Bugolobi",
+0.3333,
+32.6
+],
+"UGA-m": [
+"Mukono",
+0.35,
+32.7667
+],
+"UKR-L": [
+"Lviv",
+49.85,
+24.6667
+],
+"UKR-be": [
+"Berdiansk",
+46.6333,
+36.7667
+],
+"UKR-c": [
+"Chernivtsi",
+48.3,
+25.8333
+],
+"UKR-k": [
+"Kyyiv/Kiev/Brovary",
+50.5167,
+30.7667
+],
+"UKR-ke": [
+"Kiev",
+50.4333,
+30.5333
+],
+"UKR-lu": [
+"Luch",
+46.8167,
+32.2167
+],
+"UKR-m": [
+"Mykolaiv",
+46.8167,
+32.2333
+],
+"UKR-od": [
+"Odessa",
+46.4833,
+30.7333
+],
+"UKR-pe": [
+"Petrivka",
+46.9,
+30.7167
+],
+"UKR-rv": [
+"Rivne",
+50.6167,
+26.25
+],
+"UKR-x": [
+"Kharkiv",
+49.6333,
+36.1167
+],
+"UKR-z": [
+"Zaporizhzhya",
+47.8333,
+35.1333
+],
+"URG-lp": [
+"La Paloma",
+-34.65,
+-54.1333
+],
+"URG-m": [
+"Montevideo",
+-34.8333,
+-56.25
+],
+"URG-pc": [
+"Punta Carretas",
+-34.8,
+-56.35
+],
+"URG-pe": [
+"Punta del Este",
+-34.9667,
+-54.85
+],
+"URG-rb": [
+"Rio Branco",
+-32.5667,
+-53.3833
+],
+"URG-t": [
+"Tacuarembó",
+-31.6333,
+-55.9667
+],
+"URG-tr": [
+"Trouville",
+-34.8667,
+-56.3
+],
+"USA-L": [
+"Lebanon, TN",
+36.2764,
+-86.0994
+],
+"USA-LL": [
+"Lakeland, FL",
+27.9814,
+-82.0514
+],
+"USA-a": [
+"Andrews AFB, MD",
+38.8108,
+-76.8669
+],
+"USA-b": [
+"Birmingham / Vandiver, AL",
+33.5036,
+-86.4742
+],
+"USA-ba": [
+"WBMD Baltimore, MD",
+39.3239,
+-76.5489
+],
+"USA-bg": [
+"Barnegat, NJ",
+39.75,
+-74.3917
+],
+"USA-bo": [
+"Boston, MA",
+41.7083,
+-70.55
+],
+"USA-bt": [
+"Bethel, PA",
+40.4794,
+-76.2797
+],
+"USA-c": [
+"Cypress Creek, SC",
+32.6842,
+-81.1306
+],
+"USA-ch": [
+"Chesapeake - Pungo Airfield, VA",
+36.6778,
+-76.0278
+],
+"USA-ci": [
+"WLW Cincinnati, OH",
+39.3531,
+-84.325
+],
+"USA-cu": [
+"Cutler, ME",
+44.6333,
+-67.2833
+],
+"USA-de": [
+"KOA Denver, CO",
+39.5069,
+-104.7678
+],
+"USA-ds": [
+"Destin, FL",
+30.3833,
+-86.4333
+],
+"USA-dv": [
+"Dover, NC",
+35.2169,
+-77.4383
+],
+"USA-dx": [
+"Dixon, CA",
+38.3794,
+-121.7639
+],
+"USA-ej": [
+"Ellijay, GA",
+34.6356,
+-84.4622
+],
+"USA-fa": [
+"Fort Collins, CO",
+40.6819,
+-105.0419
+],
+"USA-fb": [
+"Fort Collins, CO",
+40.6783,
+-105.0403
+],
+"USA-fc": [
+"Fort Collins, CO",
+40.68,
+-105.0403
+],
+"USA-fd": [
+"Fort Collins, CO",
+40.6792,
+-105.0403
+],
+"USA-fe": [
+"Fort Collins, CO",
+40.6814,
+-105.0414
+],
+"USA-ff": [
+"Fort Collins, CO",
+40.6781,
+-105.0469
+],
+"USA-fg": [
+"Fort Collins, CO",
+40.6808,
+-105.0425
+],
+"USA-fv": [
+"Forest, VA",
+37.395,
+-79.2097
+],
+"USA-g": [
+"Greenville, NC",
+35.4667,
+-77.2
+],
+"USA-hw": [
+"KWHW Altus, OK",
+34.6264,
+-99.3361
+],
+"USA-jc": [
+"Jim Creek, WA",
+48.2,
+-121.9167
+],
+"USA-jo": [
+"Joliet, IL",
+41.4803,
+-88.0392
+],
+"USA-k": [
+"Key Saddlebunch, FL",
+24.65,
+-81.6
+],
+"USA-kc": [
+"KSCS Fort Worth, TX",
+32.5833,
+-96.9667
+],
+"USA-ks": [
+"KSL Salt Lake City, UT",
+40.7792,
+-112.1
+],
+"USA-lm": [
+"Lamoure, ND",
+46.3667,
+-98.3333
+],
+"USA-m": [
+"Miami / Hialeah Gardens, FL",
+25.9,
+-80.3636
+],
+"USA-mi": [
+"Milton, FL",
+30.6508,
+-87.0908
+],
+"USA-mo": [
+"Mobile, AL",
+30.595,
+-88.2214
+],
+"USA-n": [
+"Nashville, TN",
+36.2083,
+-86.8939
+],
+"USA-nm": [
+"NMG New Orleans, LA",
+29.8844,
+-89.9453
+],
+"USA-no": [
+"New Orleans, LA",
+29.8361,
+-90.1158
+],
+"USA-np": [
+"Newport, NC",
+34.7781,
+-76.8769
+],
+"USA-o": [
+"Okeechobee, FL",
+27.4583,
+-80.9333
+],
+"USA-ob": [
+"San Luis Obispo, CA, 3 tx sites: San Luis Obispo",
+35.2167,
+-120.8667
+],
+"USA-of": [
+"Offutt AFB, NE",
+41.1136,
+-95.9283
+],
+"USA-pa": [
+"Palo Alto, CA",
+37.4456,
+-122.1133
+],
+"USA-pg": [
+"Punta Gorda, FL",
+26.8942,
+-82.0597
+],
+"USA-pr": [
+"Point Reyes / Bolinas, CA",
+37.9256,
+-122.7311
+],
+"USA-q": [
+"Monticello, ME",
+46.3417,
+-67.8278
+],
+"USA-rh": [
+"Riverhead, Long Island, NY",
+40.8833,
+-72.6333
+],
+"USA-rl": [
+"Red Lion , PA",
+39.9061,
+-76.5822
+],
+"USA-rs": [
+"Los Angeles / Rancho Simi, CA",
+34.2564,
+-118.6414
+],
+"USA-rv": [
+"Rio Vista, CA",
+38.1983,
+-121.8094
+],
+"USA-sc": [
+"KEBR Sacramento, CA",
+38.4628,
+-121.1303
+],
+"USA-se": [
+"Seattle, WA",
+48.1256,
+-122.2506
+],
+"USA-sk": [
+"Seattle, WA",
+48.1944,
+-122.235
+],
+"USA-sm": [
+"University of Southern Mississippi, 3 tx sites: Destin FL",
+30.3833,
+-86.4333
+],
+"USA-uc": [
+"University of California Davis, 6 tx sites: Bodega Bay",
+38.3167,
+-123.0667
+],
+"USA-ud": [
+"University of California Davis, 5 tx sites: Bodega Bay",
+38.3167,
+-123.0667
+],
+"USA-v": [
+"Vado, NM",
+32.1339,
+-106.59
+],
+"USA-vs": [
+"Vashon Island, WA",
+47.3708,
+-122.4878
+],
+"USA-wa": [
+"Washington, DC",
+38.9167,
+-77.05
+],
+"USA-wb": [
+"WBAP Fort Worth, TX",
+32.6106,
+-97.1667
+],
+"USA-wc": [
+"\"West Coast\" Beale AFB Marysville, CA",
+39.1333,
+-121.4333
+],
+"USA-wg": [
+"WGM Fort Lauderdale, FL",
+26.5667,
+-80.0833
+],
+"USA-ws": [
+"KOVR West Sacramento, CA",
+38.5833,
+-121.55
+],
+"USA-wx": [
+"WHX Hillsboro, WV",
+38.2686,
+-80.2686
+],
+"USA-wz": [
+"Wentzville, MO",
+38.7775,
+-90.8475
+],
+"UZB": [
+"Tashkent",
+41.2167,
+69.15
+],
+"UZB-a": [
+"Tashkent Airport",
+41.2667,
+69.2833
+],
+"UZB-nu": [
+"Nukus, Karakalpakstan",
+42.4833,
+59.6167
+],
+"UZB-s": [
+"Samarkand",
+39.7,
+66.9833
+],
+"UZB-ta": [
+"Tashkent I/II",
+41.3167,
+69.25
+],
+"VEN-t": [
+"El Tigre",
+8.8833,
+-64.2667
+],
+"VEN-y": [
+"YVTO Caracas",
+10.5036,
+-66.9289
+],
+"VTN-L": [
+"Son La",
+21.3333,
+103.9167
+],
+"VTN-b": [
+"Buon Me Thuot, Daclac",
+12.6333,
+108.0167
+],
+"VTN-bt": [
+"Ben Thuy",
+18.8167,
+105.7167
+],
+"VTN-cm": [
+"Ca Mau",
+9.1897,
+105.1336
+],
+"VTN-co": [
+"Cua Ong",
+21.0261,
+107.3669
+],
+"VTN-cr": [
+"Cam Ranh",
+12.0797,
+109.1819
+],
+"VTN-ct": [
+"Can Tho",
+10.0717,
+105.7589
+],
+"VTN-db": [
+"Dien Bien",
+21.3667,
+103.0
+],
+"VTN-dn": [
+"Da Nang",
+16.0547,
+108.1578
+],
+"VTN-hc": [
+"Ho Chi Minh City / Vung Tau",
+10.3947,
+107.145
+],
+"VTN-hg": [
+"Hon Gai",
+20.95,
+107.0667
+],
+"VTN-hp": [
+"Hai Phong",
+20.8503,
+106.7336
+],
+"VTN-hu": [
+"Hue",
+16.5506,
+107.6411
+],
+"VTN-kg": [
+"Kien Giang",
+9.9914,
+105.1025
+],
+"VTN-m": [
+"Hanoi-Metri",
+21.0,
+105.7833
+],
+"VTN-mc": [
+"Mong Cai",
+21.5258,
+107.9664
+],
+"VTN-mh": [
+"My Hao",
+20.9167,
+106.0833
+],
+"VTN-nt": [
+"Nha Trang",
+12.2219,
+109.1806
+],
+"VTN-pd": [
+"Phuoc Dinh",
+11.3833,
+108.9833
+],
+"VTN-pr": [
+"Phan Rang",
+11.5667,
+109.0167
+],
+"VTN-pt": [
+"Phan Tiet",
+10.9178,
+108.1061
+],
+"VTN-py": [
+"Phu Yen",
+13.1061,
+109.3114
+],
+"VTN-qn": [
+"Quy Nhon",
+13.7778,
+109.2392
+],
+"VTN-s": [
+"Hanoi-Sontay",
+21.2,
+105.3667
+],
+"VTN-t": [
+"Thoi Long / Thoi Hung",
+10.1167,
+105.5667
+],
+"VTN-th": [
+"Thanh Hoa",
+19.3494,
+105.7933
+],
+"VTN-vt": [
+"Vung Tau",
+10.3947,
+107.145
+],
+"VTN-x": [
+"Xuan Mai",
+20.7167,
+105.55
+],
+"VUT": [
+"Empten Lagoon",
+-17.75,
+168.3667
+],
+"YEM-a": [
+"Al Hiswah/Aden",
+12.8333,
+45.0333
+],
+"YEM-s": [
+"Sanaa",
+15.3667,
+44.1833
+],
+"ZMB-L": [
+"Lusaka",
+-15.5,
+28.25
+],
+"ZMB-m": [
+"Makeni Ranch",
+-15.5333,
+28.0
+],
+"ZWE": [
+"Gweru/Guinea Fowl",
+-19.4333,
+29.85
+]
+},
+"source": "EiBi README (https://www.eibispace.de/dx/README.TXT)",
+"targets": {
+"ABW": "Aruba",
+"AFG": "Afghanistan",
+"AFS": "South Africa",
+"AGL": "Angola",
+"AIA": "Anguilla",
+"ALB": "Albania",
+"ALG": "Algeria",
+"ALS": "Alaska",
+"AMS": "Saint Paul & Amsterdam Is.",
+"AND": "Andorra",
+"AOE": "Western Sahara",
+"ARG": "Argentina",
+"ARM": "Armenia",
+"ARS": "Saudi Arabia",
+"ASC": "Ascension Island",
+"ATA": "Antarctica",
+"ATG": "Antigua and Barbuda",
+"ATN": "Netherlands Leeward Antilles",
+"AUS": "Australia",
+"AUT": "Austria",
+"AZE": "Azerbaijan",
+"AZR": "Azores",
+"Af": "Africa",
+"Am": "America",
+"As": "Asia",
+"B": "Brasil",
+"BAH": "Bahamas",
+"BDI": "Burundi",
+"BEL": "Belgium",
+"BEN": "Benin",
+"BER": "Bermuda",
+"BES": "Bonaire, St Eustatius, Saba",
+"BFA": "Burkina Faso",
+"BGD": "Bangla Desh",
+"BHR": "Bahrain",
+"BIH": "Bosnia-Herzegovina",
+"BIO": "Chagos Is.",
+"BLM": "Saint-Barthelemy",
+"BLR": "Belarus",
+"BLZ": "Belize",
+"BOL": "Bolivia",
+"BOT": "Botswana",
+"BRB": "Barbados",
+"BRU": "Brunei Darussalam",
+"BTN": "Bhutan",
+"BUL": "Bulgaria",
+"BVT": "Bouvet",
+"CAB": "Cabinda *",
+"CAF": "Central African Republic",
+"CAN": "Canada",
+"CAf": "Central Africa",
+"CAm": "Central America",
+"CAs": "Central Asia",
+"CBG": "Cambodia",
+"CCIS": "Central Commonwealth of Independent States",
+"CCNA": "Central Central North America",
+"CCar": "Central Caribbean, Gulf of Mexico, Florida Waters",
+"CCau": "Central Caucasus",
+"CENA": "Central Eastern North America",
+"CENE": "Central East-northeast",
+"CESE": "Central East-southeast",
+"CEU": "Ceuta *",
+"CEu": "Central Europe",
+"CFE": "Central Far East",
+"CGlo": "Central Global",
+"CHL": "Chile",
+"CHN": "China",
+"CHR": "Christmas Island",
+"CIS": "Commonwealth of Independent States",
+"CIn": "Central Indian subcontinent",
+"CKH": "Cook Island",
+"CLA": "Clandestine stations *",
+"CLAm": "Central Latin America",
+"CLM": "Colombia",
+"CLN": "Sri Lanka",
+"CME": "Central Middle East",
+"CNA": "Central North America",
+"CNAO": "Central North Atlantic Ocean",
+"CNE": "Central Northeast",
+"CNNE": "Central North-northeast",
+"CNNW": "Central North-northwest",
+"CNR": "Canary Islands",
+"CNW": "Central Northwest",
+"COD": "Democratic Republic of Congo",
+"COG": "Republic of Congo",
+"COM": "Comores",
+"COc": "Central Oceania",
+"CPT": "Clipperton",
+"CPV": "Cape Verde Islands",
+"CRO": "Crozet Archipelago",
+"CSAO": "Central South Atlantic Ocean",
+"CSE": "Central Southeast",
+"CSEA": "Central South East Asia",
+"CSEE": "Central South East Europe",
+"CSSE": "Central South-southeast",
+"CSSW": "Central South-southwest",
+"CSW": "Central Southwest",
+"CSib": "Central Siberia",
+"CTI": "Ivory Coast",
+"CTR": "Costa Rica",
+"CTib": "Central Tibet",
+"CUB": "Cuba",
+"CUW": "Curacao",
+"CVA": "Vatican State",
+"CWIO": "Central Western Indian Ocean",
+"CWNA": "Central Western North America",
+"CWNW": "Central West-northwest",
+"CWSW": "Central West-southwest",
+"CYM": "Cayman Islands",
+"CYP": "Cyprus",
+"CZE": "Czech Republic",
+"Car": "Caribbean, Gulf of Mexico, Florida Waters",
+"Cau": "Caucasus",
+"D": "Germany",
+"DJI": "Djibouti",
+"DMA": "Dominica",
+"DNK": "Denmark",
+"DOM": "Dominican Republic",
+"E": "Spain",
+"EAf": "East Africa",
+"EAm": "East America",
+"EAs": "East Asia",
+"ECIS": "East Commonwealth of Independent States",
+"ECNA": "East Central North America",
+"ECar": "East Caribbean, Gulf of Mexico, Florida Waters",
+"ECau": "East Caucasus",
+"EENA": "East Eastern North America",
+"EENE": "East East-northeast",
+"EESE": "East East-southeast",
+"EEu": "East Europe",
+"EFE": "East Far East",
+"EGY": "Egypt",
+"EGlo": "East Global",
+"EIn": "East Indian subcontinent",
+"ELAm": "East Latin America",
+"EME": "East Middle East",
+"ENA": "Eastern North America",
+"ENAO": "East North Atlantic Ocean",
+"ENE": "East-northeast",
+"ENNE": "East North-northeast",
+"ENNW": "East North-northwest",
+"ENW": "East Northwest",
+"EOc": "East Oceania",
+"EQA": "Ecuador",
+"ERI": "Eritrea",
+"ESAO": "East South Atlantic Ocean",
+"ESE": "East-southeast",
+"ESEA": "East South East Asia",
+"ESEE": "East South East Europe",
+"ESSE": "East South-southeast",
+"ESSW": "East South-southwest",
+"EST": "Estonia",
+"ESW": "East Southwest",
+"ESib": "East Siberia",
+"ETH": "Ethiopia",
+"ETib": "East Tibet",
+"EUR": "Iles Europe & Bassas da India *",
+"EWIO": "East Western Indian Ocean",
+"EWNA": "East Western North America",
+"EWNW": "East West-northwest",
+"EWSW": "East West-southwest",
+"Eu": "Europe",
+"F": "France",
+"FE": "Far East",
+"FIN": "Finland",
+"FJI": "Fiji",
+"FLK": "Falkland Islands",
+"FRO": "Faroe Islands",
+"FSM": "Federated States of Micronesia",
+"G": "United Kingdom of Great Britain and Northern Ireland",
+"GAB": "Gabon",
+"GEO": "Georgia",
+"GHA": "Ghana",
+"GIB": "Gibraltar",
+"GLP": "Guadeloupe",
+"GMB": "Gambia",
+"GNB": "Guinea-Bissau",
+"GNE": "Equatorial Guinea",
+"GPG": "Galapagos *",
+"GRC": "Greece",
+"GRD": "Grenada",
+"GRL": "Greenland",
+"GTM": "Guatemala",
+"GUF": "French Guyana",
+"GUI": "Guinea",
+"GUM": "Guam / Guahan",
+"GUY": "Guyana",
+"Glo": "Global",
+"HKG": "Hong Kong, part of China",
+"HMD": "Heard & McDonald Islands",
+"HND": "Honduras",
+"HNG": "Hungary",
+"HOL": "The Netherlands",
+"HRV": "Croatia",
+"HTI": "Haiti",
+"HWA": "Hawaii",
+"HWL": "Howland & Baker",
+"I": "Italy",
+"ICO": "Cocos",
+"IND": "India",
+"INS": "Indonesia",
+"IRL": "Ireland",
+"IRN": "Iran",
+"IRQ": "Iraq",
+"ISL": "Iceland",
+"ISR": "Israel",
+"IW": "International Waters",
+"IWA": "Ogasawara",
+"In": "Indian subcontinent",
+"J": "Japan",
+"JAR": "Jarvis Island",
+"JDN": "Juan de Nova *",
+"JMC": "Jamaica",
+"JMY": "Jan Mayen *",
+"JON": "Johnston Island",
+"JOR": "Jordan",
+"JUF": "Juan Fernandez Island *",
+"KAL": "Kaliningrad *",
+"KAZ": "Kazakstan / Kazakhstan",
+"KEN": "Kenya",
+"KER": "Kerguelen",
+"KGZ": "Kyrgyzstan",
+"KIR": "Kiribati",
+"KNA": "St Kitts and Nevis",
+"KOR": "Korea, South",
+"KOS": "Kosovo",
+"KRE": "Korea, North",
+"KWT": "Kuwait",
+"LAO": "Laos",
+"LAm": "Latin America",
+"LBN": "Lebanon",
+"LBR": "Liberia",
+"LBY": "Libya",
+"LCA": "Saint Lucia",
+"LIE": "Liechtenstein",
+"LSO": "Lesotho",
+"LTU": "Lithuania",
+"LUX": "Luxembourg",
+"LVA": "Latvia",
+"MAC": "Macao",
+"MAF": "St Martin",
+"MAU": "Mauritius",
+"MCO": "Monaco",
+"MDA": "Moldova",
+"MDG": "Madagascar",
+"MDR": "Madeira",
+"MDW": "Midway Islands",
+"ME": "Middle East",
+"MEL": "Melilla *",
+"MEX": "Mexico",
+"MHL": "Marshall Islands",
+"MKD": "Macedonia",
+"MLA": "Malaysia",
+"MLD": "Maldives",
+"MLI": "Mali",
+"MLT": "Malta",
+"MNE": "Montenegro",
+"MNG": "Mongolia",
+"MOZ": "Mozambique",
+"MRA": "Northern Mariana Islands",
+"MRC": "Morocco",
+"MRN": "Marion & Prince Edward Islands",
+"MRT": "Martinique",
+"MSR": "Montserrat",
+"MTN": "Mauritania",
+"MWI": "Malawi",
+"MYA": "Myanmar",
+"MYT": "Mayotte",
+"NAO": "North Atlantic Ocean",
+"NAf": "North Africa",
+"NAm": "North America",
+"NAs": "North Asia",
+"NCG": "Nicaragua",
+"NCIS": "North Commonwealth of Independent States",
+"NCL": "New Caledonia",
+"NCNA": "North Central North America",
+"NCar": "North Caribbean, Gulf of Mexico, Florida Waters",
+"NCau": "North Caucasus",
+"NE": "Northeast",
+"NENA": "North Eastern North America",
+"NENE": "North East-northeast",
+"NESE": "North East-southeast",
+"NEu": "North Europe",
+"NFE": "North Far East",
+"NFK": "Norfolk Island",
+"NGR": "Niger",
+"NGlo": "North Global",
+"NIG": "Nigeria",
+"NIU": "Niue",
+"NIn": "North Indian subcontinent",
+"NLAm": "North Latin America",
+"NMB": "Namibia",
+"NME": "North Middle East",
+"NNAO": "North North Atlantic Ocean",
+"NNE": "North-northeast",
+"NNNE": "North North-northeast",
+"NNNW": "North North-northwest",
+"NNW": "North-northwest",
+"NOR": "Norway",
+"NOc": "North Oceania",
+"NPL": "Nepal",
+"NRU": "Nauru",
+"NSAO": "North South Atlantic Ocean",
+"NSE": "North Southeast",
+"NSEA": "North South East Asia",
+"NSEE": "North South East Europe",
+"NSSE": "North South-southeast",
+"NSSW": "North South-southwest",
+"NSW": "North Southwest",
+"NSib": "North Siberia",
+"NTib": "North Tibet",
+"NW": "Northwest",
+"NWIO": "North Western Indian Ocean",
+"NWNA": "North Western North America",
+"NWNW": "North West-northwest",
+"NWSW": "North West-southwest",
+"NZL": "New Zealand",
+"OCE": "French Polynesia",
+"OMA": "Oman",
+"Oc": "Oceania",
+"PAK": "Pakistan",
+"PAQ": "Easter Island",
+"PHL": "Philippines",
+"PHX": "Phoenix Is.",
+"PLM": "Palmyra Island",
+"PLW": "Palau",
+"PNG": "Papua New Guinea",
+"PNR": "Panama",
+"POL": "Poland",
+"POR": "Portugal",
+"PRG": "Paraguay",
+"PRU": "Peru",
+"PRV": "Okino-Tori-Shima",
+"PSE": "Palestine",
+"PTC": "Pitcairn",
+"PTR": "Puerto Rico",
+"QAT": "Qatar",
+"REU": "La Réunion",
+"ROD": "Rodrigues",
+"ROU": "Romania",
+"RRW": "Rwanda",
+"RUS": "Russian Federation",
+"S": "Sweden",
+"SAO": "South Atlantic Ocean",
+"SAP": "San Andres & Providencia *",
+"SAf": "South Africa",
+"SAm": "South America",
+"SAs": "South Asia",
+"SCIS": "South Commonwealth of Independent States",
+"SCNA": "South Central North America",
+"SCar": "South Caribbean, Gulf of Mexico, Florida Waters",
+"SCau": "South Caucasus",
+"SDN": "Sudan",
+"SE": "Southeast",
+"SEA": "South East Asia",
+"SEE": "South East Europe",
+"SEN": "Senegal",
+"SENA": "South Eastern North America",
+"SENE": "South East-northeast",
+"SESE": "South East-southeast",
+"SEY": "Seychelles",
+"SEu": "South Europe",
+"SFE": "South Far East",
+"SGA": "South Georgia Islands *",
+"SGlo": "South Global",
+"SHN": "Saint Helena",
+"SIn": "South Indian subcontinent",
+"SLAm": "South Latin America",
+"SLM": "Solomon Islands",
+"SLV": "El Salvador",
+"SMA": "Samoa",
+"SME": "South Middle East",
+"SMO": "Samoa",
+"SMR": "San Marino",
+"SNAO": "South North Atlantic Ocean",
+"SNE": "South Northeast",
+"SNG": "Singapore",
+"SNNE": "South North-northeast",
+"SNNW": "South North-northwest",
+"SNW": "South Northwest",
+"SOK": "South Orkney Islands *",
+"SOM": "Somalia",
+"SOc": "South Oceania",
+"SPM": "Saint Pierre et Miquelon",
+"SRB": "Serbia",
+"SRL": "Sierra Leone",
+"SSAO": "South South Atlantic Ocean",
+"SSD": "South Sudan",
+"SSE": "South-southeast",
+"SSEA": "South South East Asia",
+"SSEE": "South South East Europe",
+"SSI": "South Sandwich Islands *",
+"SSSE": "South South-southeast",
+"SSSW": "South South-southwest",
+"SSW": "South-southwest",
+"SSib": "South Siberia",
+"STP": "Sao Tome & Principe",
+"STib": "South Tibet",
+"SUI": "Switzerland",
+"SUR": "Suriname",
+"SVB": "Svalbard *",
+"SVK": "Slovakia",
+"SVN": "Slovenia",
+"SW": "Southwest",
+"SWIO": "South Western Indian Ocean",
+"SWNA": "South Western North America",
+"SWNW": "South West-northwest",
+"SWSW": "South West-southwest",
+"SWZ": "Swaziland",
+"SXM": "Sint Maarten",
+"SYR": "Syria",
+"Sib": "Siberia",
+"TCA": "Turks and Caicos Islands",
+"TCD": "Tchad",
+"TGO": "Togo",
+"THA": "Thailand",
+"TJK": "Tajikistan",
+"TKL": "Tokelau",
+"TKM": "Turkmenistan",
+"TLS": "Timor-Leste",
+"TON": "Tonga",
+"TRC": "Tristan da Cunha",
+"TRD": "Trinidad and Tobago",
+"TUN": "Tunisia",
+"TUR": "Turkey",
+"TUV": "Tuvalu",
+"TWN": "Taiwan *",
+"TZA": "Tanzania",
+"Tib": "Tibet",
+"UAE": "United Arab Emirates",
+"UGA": "Uganda",
+"UKR": "Ukraine",
+"UN": "United Nations *",
+"URG": "Uruguay",
+"USA": "United States of America",
+"UZB": "Uzbekistan",
+"VCT": "Saint Vincent and the Grenadines",
+"VEN": "Venezuela",
+"VIR": "American Virgin Islands",
+"VRG": "British Virgin Islands",
+"VTN": "Vietnam",
+"VUT": "Vanuatu",
+"WAK": "Wake Island",
+"WAL": "Wallis and Futuna",
+"WAf": "West Africa",
+"WAm": "West America",
+"WAs": "West Asia",
+"WCIS": "West Commonwealth of Independent States",
+"WCNA": "West Central North America",
+"WCar": "West Caribbean, Gulf of Mexico, Florida Waters",
+"WCau": "West Caucasus",
+"WENA": "West Eastern North America",
+"WENE": "West East-northeast",
+"WESE": "West East-southeast",
+"WEu": "West Europe",
+"WFE": "West Far East",
+"WGlo": "West Global",
+"WIO": "Western Indian Ocean",
+"WIn": "West Indian subcontinent",
+"WLAm": "West Latin America",
+"WME": "West Middle East",
+"WNA": "Western North America",
+"WNAO": "West North Atlantic Ocean",
+"WNE": "West Northeast",
+"WNNE": "West North-northeast",
+"WNNW": "West North-northwest",
+"WNW": "West-northwest",
+"WOc": "West Oceania",
+"WSAO": "West South Atlantic Ocean",
+"WSE": "West Southeast",
+"WSEA": "West South East Asia",
+"WSEE": "West South East Europe",
+"WSSE": "West South-southeast",
+"WSSW": "West South-southwest",
+"WSW": "West-southwest",
+"WSib": "West Siberia",
+"WTib": "West Tibet",
+"WWIO": "West Western Indian Ocean",
+"WWNA": "West Western North America",
+"WWNW": "West West-northwest",
+"WWSW": "West West-southwest",
+"XBY": "Abyei area",
+"XGZ": "Gaza strip",
+"XSP": "Spratly Islands",
+"XUU": "Unidentified",
+"XWB": "West Bank",
+"YEM": "Yemen",
+"ZMB": "Zambia",
+"ZWE": "Zimbabwe"
+}
+}
