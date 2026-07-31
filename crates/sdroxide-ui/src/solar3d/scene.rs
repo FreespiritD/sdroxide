@@ -117,6 +117,11 @@ pub const STYLE_HAZE: f32 = 5.0;
 /// Not procedural at all: sample layer `style.y` of the body-map array.
 pub const STYLE_MAPPED: f32 = 6.0;
 
+/// Which tail a [`Prim::Tail`] draw is, in step with `solar_tail.wgsl`.
+/// Carried in `DrawData::params.x`, as the shading mode is for the spheres.
+pub const TAIL_ION: f32 = 0.0;
+pub const TAIL_DUST: f32 = 1.0;
+
 /// Layers of that array, in `gpu::BODY_MAPS` order.
 pub const MAP_MOON: f32 = 0.0;
 pub const MAP_MARS: f32 = 1.0;
@@ -259,6 +264,8 @@ pub enum Prim {
     /// One sphere at the top of the troposphere, with the deck marched through
     /// it in the fragment shader instead of sliced.
     CloudVolume,
+    /// A comet's ion or dust tail, as a screen-facing ribbon.
+    Tail,
 }
 
 /// A text label anchored to a point in the scene.
@@ -355,6 +362,22 @@ pub struct PlanetBody {
     pub exaggeration: f32,
 }
 
+/// A dwarf planet, asteroid or comet, placed for this frame.
+pub struct SmallPlaced {
+    /// Index into [`sdroxide_solar::smallbody::BODIES`], which is what
+    /// [`Focus::Small`] stores.
+    pub index: usize,
+    pub info: &'static sdroxide_solar::SmallBody,
+    pub pos: V3,
+    /// Rendered radius. Exaggerated like a planet's, and for the asteroids
+    /// still far below a pixel at any setting — their sprite is what makes them
+    /// visible, and the sphere is skipped entirely below [`SPHERE_MIN_PX`].
+    pub radius: f32,
+    /// The tails, if it has grown any. Directions are unit vectors in world
+    /// space, lengths are gigametres — see [`sdroxide_solar::smallbody::Tails`].
+    pub tails: Option<sdroxide_solar::smallbody::Tails>,
+}
+
 /// A moon of one of those planets.
 pub struct MoonBody {
     /// Index into [`sdroxide_solar::planets::MOONS`], which is what
@@ -380,6 +403,7 @@ pub struct Bodies {
     pub sun_frame: ephem::SunFrame,
     pub planets: Vec<PlanetBody>,
     pub moons: Vec<MoonBody>,
+    pub smalls: Vec<SmallPlaced>,
 }
 
 /// The most of the Sun's rendered radius any planet may reach.
@@ -435,6 +459,26 @@ pub fn bodies(st: &SolarUi, unix_s: f64) -> Bodies {
         }
     }
 
+    // Dwarf planets, asteroids and comets. Radii are exaggerated on the same
+    // slider as the planets, which lifts Pluto to something you can see and
+    // leaves a 200 m asteroid at a millionth of a pixel — that one is a sprite
+    // and a name, and pretending otherwise would be the lie.
+    let smalls = sdroxide_solar::smallbody::BODIES
+        .iter()
+        .enumerate()
+        .map(|(index, info)| {
+            let true_r = info.radius as f32;
+            let radius = (true_r * v.body_scale).clamp(true_r, sun_r * PLANET_MAX_SUN_FRAC);
+            SmallPlaced {
+                index,
+                info,
+                pos: V3::from_f64(info.heliocentric(jd)),
+                radius,
+                tails: info.tails(jd),
+            }
+        })
+        .collect();
+
     Bodies {
         jd,
         sun_r,
@@ -447,8 +491,17 @@ pub fn bodies(st: &SolarUi, unix_s: f64) -> Bodies {
         sun_frame: ephem::sun_frame(jd),
         planets,
         moons,
+        smalls,
     }
 }
+
+/// How big a body has to be on screen before it is worth a sphere.
+///
+/// Below this the shaded mesh cannot resolve into anything a sprite does not
+/// already say, and there are forty of these — so the sphere is skipped and the
+/// glow billboard stands for the body. It is what every asteroid in the table
+/// gets at every zoom short of flying up to one.
+const SPHERE_MIN_PX: f32 = 1.5;
 
 impl Bodies {
     /// Unit vector, in world space, from the Earth's centre towards a point on
@@ -484,6 +537,16 @@ impl Bodies {
                 // a floor: without one the camera may end up closer to it than
                 // the near plane allows.
                 .map_or((V3::ZERO, self.sun_r), |m| (m.pos, m.radius.max(1e-4))),
+            // A comet's framing radius is its coma, not its nucleus: fly to
+            // Halley at perihelion and the thing you came to see is a hundred
+            // thousand kilometres across, while the body inside it is 11 km and
+            // would put the camera inside the tail.
+            Focus::Small(i) => {
+                self.smalls.iter().find(|s| s.index == i).map_or((V3::ZERO, self.sun_r), |s| {
+                    let coma = s.tails.map_or(0.0, |t| t.coma_gm as f32);
+                    (s.pos, s.radius.max(coma).max(1e-4))
+                })
+            }
         }
     }
 }
@@ -596,7 +659,7 @@ fn satellites(
     for sat in data.satellites() {
         // A search match is drawn whether or not it otherwise would be: looking
         // for a satellite that is not on screen is the main reason to search.
-        let hit = st.sat_search_hit(&sat.name, sat.norad_id);
+        let hit = st.sat_hit(&sat.name, sat.norad_id);
         if !(show_all || sat.popular || hit) {
             continue;
         }
@@ -1041,12 +1104,22 @@ const MOON_LABEL_PX: f32 = 26.0;
 
 /// Names for every body, and the click targets that go with them.
 fn body_labels(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, view_h: f32, labels: bool) {
-    let mut add = |pos: V3, radius: f32, name: &str, color: Color32, focus: Focus, show: bool| {
+    // `force` is for a name that was asked for by name: a find-box match, or the
+    // body the camera is on. Those go through with the LABELS chip off, exactly
+    // as a matching satellite's does — withholding the one name somebody typed
+    // reads as the search being broken rather than as the display being tidy.
+    let mut add = |pos: V3,
+                   radius: f32,
+                   name: &str,
+                   color: Color32,
+                   focus: Focus,
+                   show: bool,
+                   force: bool| {
         let px = cam.pixels_for(pos, radius);
         // Everything named is also clickable, and the grab area never shrinks
         // below something a pointer can actually hit.
         s.picks.push(Pick { world: pos.arr(), radius_px: px.clamp(7.0, 400.0), focus });
-        if !show || !labels || !label_visible(px, view_h) {
+        if !show || !(labels || force) || !label_visible(px, view_h) {
             return;
         }
         s.labels.push(Label {
@@ -1067,7 +1140,7 @@ fn body_labels(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, view_h: f3
         (b.earth, b.earth_r, "EARTH", Focus::Earth, true),
         (b.moon, b.moon_r, "MOON", Focus::Moon, earth_px > MOON_LABEL_PX),
     ] {
-        add(pos, radius, name, theme::CYAN_DIM, focus, show);
+        add(pos, radius, name, theme::CYAN_DIM, focus, show, false);
     }
 
     if !st.layer(layer::PLANETS) {
@@ -1076,7 +1149,7 @@ fn body_labels(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, view_h: f3
     for p in &b.planets {
         let color = planet_look(p.planet).base;
         let name = p.planet.name().to_uppercase();
-        add(p.pos, p.radius, &name, color, Focus::Planet(p.planet), true);
+        add(p.pos, p.radius, &name, color, Focus::Planet(p.planet), true, false);
     }
     for m in &b.moons {
         // Same rule for every other moon.
@@ -1084,9 +1157,41 @@ fn body_labels(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, view_h: f3
         let show = cam.pixels_for(parent.pos, parent.radius) > MOON_LABEL_PX;
         let color = moon_look(m.info).base;
         let name = m.info.name.to_uppercase();
-        add(m.pos, m.radius, &name, color, Focus::Satellite(m.index), show);
+        add(m.pos, m.radius, &name, color, Focus::Satellite(m.index), show, false);
+    }
+
+    // Small bodies. The dwarf planets are named like planets, because that is
+    // what they are to the eye. The asteroids and comets are behind their own
+    // chip, and within it a name still has to earn its place: naming all
+    // thirty-five at once buries the planets under a thicket of designations.
+    // So the chip is the ceiling and these are the reasons — it is a comet with
+    // its tail up, which is an event rather than a fixture, or you have flown
+    // close enough that it is a thing in front of you rather than one of forty
+    // dots.
+    //
+    // Two cases go through regardless of the chip: what the find box matched,
+    // and what the camera is pointed at. Both were asked for *by name*, and a
+    // search that highlights something and then withholds its name reads as
+    // broken rather than as tidy.
+    let focus = st.focus();
+    let small_names = st.layer(layer::SMALL_LABELS);
+    for sb in &b.smalls {
+        let hit = st.small_hit(sb.info);
+        let active = sb.tails.is_some();
+        let dwarf = sb.info.class == sdroxide_solar::SmallClass::Dwarf;
+        let targeted = focus == Focus::Small(sb.index);
+        let worth_it = active || (cam.eye - sb.pos).len() < NEARBY_GM;
+        let show = hit || targeted || dwarf || (small_names && worth_it);
+        let color = if hit { theme::YELLOW } else { small_color(sb.info, active) };
+        add(sb.pos, sb.radius, sb.info.name, color, Focus::Small(sb.index), show, hit || targeted);
     }
 }
+
+/// How close the camera has to be for a small body to name itself, gigametres.
+///
+/// A third of an AU: near enough that you have gone looking for it, far enough
+/// that the name arrives before the body resolves into anything.
+const NEARBY_GM: f32 = 50.0;
 
 /// Fade a colour's alpha for a label, staying in sRGB (egui's space) rather
 /// than the linear space the shaders want.
@@ -1301,6 +1406,10 @@ fn bodies_draws(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
         }
     }
 
+    if st.layer(layer::PLANETS) {
+        small_bodies(s, b, cam);
+    }
+
     // A glow billboard with a pixel floor under every body, so "can I see the
     // Earth from 2 AU" never depends on the exaggeration slider.
     glow(s, cam, V3::ZERO, b.sun_r, 22.0, Color32::from_rgb(0xff, 0xd0, 0x80));
@@ -1319,6 +1428,165 @@ fn bodies_draws(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
             }
         }
     }
+}
+
+/// The look of a small body: what it is drawn in, and what its label takes.
+///
+/// Split by class rather than given per body, because the classes are what the
+/// eye needs to tell apart: an icy dwarf planet, a rock, and something with a
+/// tail. Within a class the bodies differ by where they are, which is the whole
+/// point of the picture.
+fn small_look(b: &sdroxide_solar::SmallBody) -> Look {
+    use sdroxide_solar::SmallClass as C;
+    let mut look = look_of(match b.class {
+        // Bright, ancient ice with tholin staining — the far ones are
+        // photometrically red, and Pluto very much so.
+        C::Dwarf => sdroxide_solar::Surface::Icy,
+        C::Asteroid | C::Comet => sdroxide_solar::Surface::Cratered,
+    });
+    if b.class == C::Dwarf {
+        look.base = Color32::from_rgb(0xd8, 0xc4, 0xae);
+        look.second = Color32::from_rgb(0x8a, 0x6a, 0x58);
+    }
+    look
+}
+
+/// Marker colour for a small body — what the sprite and the label take.
+fn small_color(b: &sdroxide_solar::SmallBody, active: bool) -> Color32 {
+    use sdroxide_solar::SmallClass as C;
+    match b.class {
+        C::Dwarf => Color32::from_rgb(0xd8, 0xc4, 0xae),
+        C::Asteroid => Color32::from_rgb(0xa8, 0x9a, 0x86),
+        // A comet with its tails up is the one thing in this layer that is an
+        // *event* rather than a fixture, so it is the one thing given the
+        // palette's live colour.
+        C::Comet if active => theme::CYAN,
+        C::Comet => Color32::from_rgb(0x8a, 0x9a, 0xa8),
+    }
+}
+
+/// Dwarf planets, asteroids and comets: the body itself, its tails, and the
+/// marker that keeps it visible when it is a millionth of a pixel across.
+fn small_bodies(s: &mut Scene, b: &Bodies, cam: &Camera) {
+    for sb in &b.smalls {
+        // Big enough to shade is a small club — the five dwarf planets at any
+        // useful zoom, and the larger asteroids once you have flown to them.
+        if cam.pixels_for(sb.pos, sb.radius) > SPHERE_MIN_PX {
+            let basis = (v3(1.0, 0.0, 0.0), v3(0.0, 1.0, 0.0), v3(0.0, 0.0, 1.0));
+            body_sphere(s, basis, sb.pos, sb.radius, small_look(sb.info));
+        }
+        if let Some(t) = sb.tails {
+            comet_tails(s, sb, &t);
+        }
+
+        // The marker. A dwarf planet gets a planet's floor; an asteroid gets
+        // less, because there are thirty of them and they are not events.
+        let color = small_color(sb.info, sb.tails.is_some());
+        let floor = match sb.info.class {
+            sdroxide_solar::SmallClass::Dwarf => 6.0,
+            _ if sb.tails.is_some() => 5.0,
+            _ => 3.2,
+        };
+        glow(s, cam, sb.pos, sb.radius, floor, color);
+
+        // ...and on an active comet, the coma over the top of it: a hundred
+        // thousand kilometres of fluorescing gas, which is the part of a comet
+        // that is actually bright.
+        if let Some(t) = sb.tails {
+            let px = cam.pixels_for(sb.pos, t.coma_gm as f32);
+            let a = (t.activity as f32).clamp(0.0, 1.0);
+            s.sprites.push(SpriteInst {
+                center: sb.pos.arr(),
+                size_px: (px * 2.0).clamp(4.0, 900.0),
+                // Green: C₂ and CN fluorescing, which is why a bright comet's
+                // head photographs green while its ion tail is blue.
+                color: lin(Color32::from_rgb(0x9c, 0xf0, 0xc0), 0.16 + 0.5 * a),
+                params: [SPRITE_GLOW, 0.0, 0.0, 0.0],
+            });
+        }
+    }
+}
+
+/// A comet's two tails.
+///
+/// Dust first, then ions: they overlap near the nucleus, both add light, and
+/// the ion tail is the one that should read as being in front.
+fn comet_tails(s: &mut Scene, sb: &SmallPlaced, t: &sdroxide_solar::smallbody::Tails) {
+    let activity = t.activity as f32;
+    let ion = V3::from_f64(t.ion);
+    let lag = V3::from_f64(t.lag);
+
+    // Dust first: the broader, fainter, curved one.
+    if t.dust_gm > 0.0 {
+        plume(
+            s,
+            sb.pos,
+            ion,
+            lag,
+            t.dust_gm as f32,
+            // Wider than the ion tail and blunter at the head — dust leaves the
+            // coma in every direction and is only then pushed back.
+            (t.coma_gm as f32) * 2.4,
+            // How far it bows away from the anti-solar line by the tip. Real
+            // dust tails curve tens of degrees; this is a fraction of the
+            // length, applied as the square of the distance out.
+            0.42,
+            TAIL_DUST,
+            activity,
+            Color32::from_rgb(0xf0, 0xdc, 0xa8),
+            Color32::from_rgb(0xb4, 0x8c, 0x50),
+        );
+    }
+    // Then the ion tail: narrow, straight, and blue, because the light is CO⁺
+    // fluorescing at 420 nm and not reflected sunlight at all.
+    if t.ion_gm > 0.0 {
+        plume(
+            s,
+            sb.pos,
+            ion,
+            lag,
+            t.ion_gm as f32,
+            (t.coma_gm as f32) * 0.9,
+            0.0,
+            TAIL_ION,
+            activity,
+            Color32::from_rgb(0x7c, 0xb4, 0xff),
+            Color32::from_rgb(0x40, 0x70, 0xd8),
+        );
+    }
+}
+
+/// One tail, as a screen-facing ribbon streaming away from the nucleus.
+///
+/// `axis` is the unit direction it runs along and `bend` the unit direction it
+/// curves towards; the pair are perpendicular, so they and their cross product
+/// make the frame the shader shapes the plume in.
+#[allow(clippy::too_many_arguments)]
+fn plume(
+    s: &mut Scene,
+    pos: V3,
+    axis: V3,
+    bend: V3,
+    length: f32,
+    width: f32,
+    curve: f32,
+    kind: f32,
+    activity: f32,
+    near: Color32,
+    far: Color32,
+) {
+    let mut d = DrawData::new(
+        // No scale: the shader works in gigametres along the frame's axes, so
+        // one mesh serves a 40 Gm ion tail and a 4 Gm dust one.
+        M4::from_basis(bend, axis.cross(bend), axis, pos, 1.0),
+        M4::from_basis(bend, axis.cross(bend), axis, V3::ZERO, 1.0),
+        near,
+        kind,
+    );
+    d.tint2 = lin(far, 1.0);
+    d.params = [kind, length, width, curve];
+    d.style = [activity, 0.0, 0.0, 0.0];
+    s.draws.push((Prim::Tail, d));
 }
 
 /// A billboard under a body, never smaller than `min_px` across.
@@ -1415,6 +1683,35 @@ fn orbits(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
         for k in 1..=PLANET_STEPS {
             let q = at(b.jd + period * k as f64 / PLANET_STEPS as f64);
             s.lines.push(seg(prev, q, 1.2, lin(theme::CYAN_DIM, 0.3)));
+            prev = q;
+        }
+    }
+
+    // Small bodies. The dwarf planets get a ring as a matter of course — they
+    // are planets in every sense the eye cares about. The asteroids and comets
+    // do not: thirty-five ellipses, half of them steeply inclined and crossing
+    // everything, is a ball of wool rather than a diagram. Theirs appears when
+    // it has been asked for, by search or by pointing the camera at it, and
+    // then it is the only one on screen and says something.
+    const SMALL_STEPS: usize = 192;
+    let focus = st.focus();
+    for sb in &b.smalls {
+        let hit = st.small_hit(sb.info);
+        let dwarf = sb.info.class == sdroxide_solar::SmallClass::Dwarf;
+        if !(hit || dwarf || focus == Focus::Small(sb.index)) {
+            continue;
+        }
+        let (w, alpha, color) = if hit {
+            (1.8, 0.75, theme::YELLOW)
+        } else if dwarf {
+            (1.2, 0.28, theme::CYAN_DIM)
+        } else {
+            (1.5, 0.55, small_color(sb.info, sb.tails.is_some()))
+        };
+        let mut path = sb.info.orbit_path(b.jd, SMALL_STEPS).map(V3::from_f64);
+        let mut prev = path.next().unwrap_or(V3::ZERO);
+        for q in path {
+            s.lines.push(seg(prev, q, w, lin(color, alpha)));
             prev = q;
         }
     }
@@ -1982,13 +2279,31 @@ mod tests {
         (sdroxide_solar::Planet::ALL.len(), sdroxide_solar::planets::MOONS.len())
     }
 
+    /// How many small bodies get a shaded sphere at the default framing, and
+    /// how many are only ever a marker. Counted from the table rather than
+    /// written down, so adding a body cannot make this quietly wrong.
+    fn small_spheres(s: &Scene, b: &Bodies, cam: &Camera) -> usize {
+        let _ = s;
+        b.smalls.iter().filter(|sb| cam.pixels_for(sb.pos, sb.radius) > SPHERE_MIN_PX).count()
+    }
+
     #[test]
     fn a_frame_produces_every_body_plus_orbits() {
         let (planets, moons) = population();
         let s = build(&ui(), None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
 
+        let st = ui();
+        let b = bodies(&st, 1_784_937_600.0);
+        let cam = Camera::from_view(&st, &b, [1600.0, 900.0]);
+        let smalls = small_spheres(&s, &b, &cam);
+
         let spheres = s.draws.iter().filter(|(p, _)| *p == Prim::Sphere).count();
-        assert_eq!(spheres, 3 + planets + moons, "Sun, Earth, Moon, the planets and their moons");
+        assert_eq!(
+            spheres,
+            3 + planets + moons + smalls,
+            "Sun, Earth, Moon, the planets, their moons and whichever small \
+             bodies are big enough on screen to be worth shading"
+        );
         // Saturn and Uranus have rings; nothing else drawn here does.
         assert_eq!(s.draws.iter().filter(|(p, _)| *p == Prim::Ring).count(), 2);
         // ...and the rings come after every sphere, so the transparent sheet
@@ -1999,10 +2314,13 @@ mod tests {
         // 256 Earth-orbit + 128 Moon-orbit segments, plus the grid and a ring
         // for every planet.
         assert!(s.lines.len() > 384 + 192 * planets, "only {} line segments", s.lines.len());
-        // A glow under each body, so none of them can be invisible.
+        // A glow under each body, so none of them can be invisible — including
+        // every small body, which is the only thing keeping a 200 m asteroid on
+        // screen at all. Comets that are active add a second one for the coma.
+        let comas = b.smalls.iter().filter(|sb| sb.tails.is_some()).count();
         assert_eq!(
             s.sprites.iter().filter(|sp| sp.params[0] == SPRITE_GLOW).count(),
-            3 + planets,
+            3 + planets + b.smalls.len() + comas,
             "at this framing the moons are inside their planets' glows"
         );
         assert!(s.globals.view_proj[3][3].is_finite());
@@ -2024,10 +2342,17 @@ mod tests {
         assert!(!s.labels.iter().any(|l| l.text == "IO"), "moons labelled from 2 AU away");
 
         // Pick targets exist for everything, name or no name, and each is big
-        // enough to actually hit.
-        assert_eq!(s.picks.len(), 3 + planets + moons);
+        // enough to actually hit — a 200 m asteroid especially, since a pointer
+        // has nothing else to aim at.
+        let smalls = sdroxide_solar::smallbody::BODIES.len();
+        assert_eq!(s.picks.len(), 3 + planets + moons + smalls);
         assert!(s.picks.iter().all(|p| p.radius_px >= 7.0));
-        for f in [Focus::Sun, Focus::Earth, Focus::Planet(sdroxide_solar::Planet::Neptune)] {
+        for f in [
+            Focus::Sun,
+            Focus::Earth,
+            Focus::Planet(sdroxide_solar::Planet::Neptune),
+            Focus::Small(0),
+        ] {
             assert!(s.picks.iter().any(|p| p.focus == f), "{f:?} cannot be clicked");
         }
 
@@ -2036,7 +2361,125 @@ mod tests {
         dark.view.layers &= !layer::LABELS;
         let s = build(&dark, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
         assert!(s.labels.is_empty());
-        assert_eq!(s.picks.len(), 3 + planets + moons);
+        assert_eq!(s.picks.len(), 3 + planets + moons + smalls);
+    }
+
+    /// A comet's tails, as geometry rather than as decoration.
+    ///
+    /// Everything here is checkable from the draw list, and every one of these
+    /// is a mistake that would still look like a comet in a screenshot: a tail
+    /// pointing the wrong way, a tail that never switches off, a dust tail that
+    /// does not curve, tails on a body that has none.
+    #[test]
+    fn a_comet_grows_tails_that_point_away_from_the_sun() {
+        use sdroxide_solar::smallbody;
+
+        // Halley at its 2061 perihelion — the one apparition in the window.
+        let halley = smallbody::find("Halley").unwrap();
+        let peri = halley.next_perihelion(smallbody::WINDOW.0);
+        let unix = sdroxide_solar::ephem::unix_from_julian_day(peri);
+
+        let st = ui();
+        let b = bodies(&st, unix);
+        let sb = b.smalls.iter().find(|s| s.info.name == "Halley").expect("Halley is placed");
+        let t = sb.tails.expect("Halley has tails at perihelion");
+
+        // Away from the Sun, but not exactly: the wind is met at an angle, and
+        // the few degrees that puts in are the whole point of modelling it.
+        let sunward = sb.pos.normalize();
+        let ion = V3::from_f64(t.ion);
+        let off = ion.dot(sunward).clamp(-1.0, 1.0).acos().to_degrees();
+        assert!(ion.dot(sunward) > 0.9, "the ion tail is not anti-sunward at all");
+        assert!((1.0..12.0).contains(&off), "aberration is {off}°");
+
+        // Two tail draws, and they are the last of the geometry, so they add
+        // over everything they are in front of instead of being clipped by it.
+        let scene = build(&st, None, unix, [1600.0, 900.0], 0.0);
+        let tails: Vec<&DrawData> =
+            scene.draws.iter().filter(|(p, _)| *p == Prim::Tail).map(|(_, d)| d).collect();
+        let comets = b.smalls.iter().filter(|s| s.tails.is_some()).count();
+        assert!(comets >= 1);
+        let want: usize = b.smalls.iter().filter_map(|s| s.tails).map(tail_count).sum();
+        assert_eq!(tails.len(), want);
+
+        // The dust tail bows and the ion tail does not — `params.w` is the
+        // curvature, and a dust tail that came out straight would be the most
+        // plausible-looking bug in the whole feature.
+        let ions: Vec<&&DrawData> = tails.iter().filter(|d| d.params[0] == TAIL_ION).collect();
+        let dusts: Vec<&&DrawData> = tails.iter().filter(|d| d.params[0] == TAIL_DUST).collect();
+        assert!(ions.iter().all(|d| d.params[3] == 0.0), "an ion tail is curved");
+        assert!(dusts.iter().all(|d| d.params[3] > 0.1), "a dust tail is straight");
+        // ...and the ion tail is the longer of the two, as it is in every
+        // photograph of a comet ever taken.
+        assert!(t.ion_gm > t.dust_gm);
+
+        // Half an orbit later Halley is at aphelion, out past Neptune, and has
+        // nothing to draw. The scene still does — with fifteen comets in the
+        // table something is always near the Sun, which is rather the point of
+        // having put them there — so this asks about Halley, not about the
+        // draw list.
+        let cold =
+            sdroxide_solar::ephem::unix_from_julian_day(peri + halley.arc(peri).period_d() * 0.5);
+        let far = bodies(&st, cold);
+        let halley_then = far.smalls.iter().find(|s| s.info.name == "Halley").unwrap();
+        assert!(halley_then.tails.is_none(), "a comet at aphelion still has its tails up");
+        assert!(halley.distance_au(sdroxide_solar::ephem::julian_day(cold)) > 30.0);
+    }
+
+    /// How many tail draws a set of tails is worth: one each, and none for a
+    /// length of zero — which is what a rock like Phaethon gets for its ion
+    /// tail, having no ice to make one from.
+    fn tail_count(t: sdroxide_solar::Tails) -> usize {
+        (t.ion_gm > 0.0) as usize + (t.dust_gm > 0.0) as usize
+    }
+
+    /// The small-body name chip, and the two things that outrank it.
+    ///
+    /// Its whole reason to exist is that thirty-five asteroid designations at
+    /// once bury the planets, so with it on there must be visibly more names
+    /// and with it off the dwarf planets must survive — they are planets to the
+    /// eye and were never the clutter. And a name that was *asked for*, by
+    /// search or by pointing the camera, has to appear either way, or the find
+    /// box would look broken to anyone who had switched the chip off.
+    #[test]
+    fn the_small_body_chip_governs_names_but_not_the_ones_asked_for() {
+        let named = |st: &SolarUi| -> Vec<String> {
+            build(st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0)
+                .labels
+                .iter()
+                .map(|l| l.text.clone())
+                .collect()
+        };
+
+        let mut on = ui();
+        on.view.layers |= layer::SMALL_LABELS;
+        let mut off = ui();
+        off.view.layers &= !layer::SMALL_LABELS;
+
+        // Pluto is a planet as far as the eye is concerned, and stays named.
+        assert!(named(&off).iter().any(|t| t == "Pluto"), "the dwarf planets went with the chip");
+        assert!(named(&on).len() >= named(&off).len(), "the chip did not add any names");
+
+        // Searching names the match with the chip off — and with LABELS off too.
+        let mut hunting = ui();
+        hunting.view.layers &= !layer::SMALL_LABELS;
+        hunting.search = "Apophis".into();
+        hunting.view.layers &= !layer::LABELS;
+        assert!(
+            named(&hunting).iter().any(|t| t == "Apophis"),
+            "the find box highlighted a body and then withheld its name"
+        );
+
+        // ...and so does pointing the camera at one.
+        let mut aimed = ui();
+        aimed.view.layers &= !layer::SMALL_LABELS;
+        let apophis = sdroxide_solar::smallbody::BODIES
+            .iter()
+            .position(|b| b.name == "Apophis")
+            .expect("Apophis is in the table");
+        aimed.set_focus(Focus::Small(apophis));
+        aimed.view.layers &= !layer::LABELS;
+        assert!(named(&aimed).iter().any(|t| t == "Apophis"), "the camera target is not named");
     }
 
     /// Framed on Jupiter, its moons get their names — and they are in the right
@@ -2109,7 +2552,7 @@ mod tests {
         assert_eq!(ring(&wide), 0, "QTH ring drawn over a sub-pixel Earth");
 
         let mut close = ui();
-        close.view.focus = Focus::Earth.to_u8();
+        close.view.focus = Focus::Earth.to_id();
         close.view.dist = 1.0;
         let s = build(&close, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
         assert_eq!(ring(&s), 1, "no QTH ring when framed on the Earth");
@@ -2188,7 +2631,7 @@ mod tests {
     fn cme_cones_are_truncated_at_the_launch_radius() {
         let now = 1_784_937_600i64;
         let mut st = ui();
-        st.view.focus = Focus::Sun.to_u8();
+        st.view.focus = Focus::Sun.to_id();
         let mut data = SolarData::default();
         // A fresh event, a two-day-old one, and a very old one.
         data.cmes = vec![
@@ -2242,7 +2685,7 @@ mod tests {
     /// Framed on the Earth, with a contact on the other side of the planet.
     fn earth_view_with_traffic(dx: Option<(f64, f64)>) -> SolarUi {
         let mut st = ui();
-        st.view.focus = Focus::Earth.to_u8();
+        st.view.focus = Focus::Earth.to_id();
         st.view.dist = 0.5;
         st.digi = super::super::state::DigiTraffic {
             stations: vec![(35.7, 139.7, 1.0), (-33.9, 151.2, 0.4), (40.7, -74.0, 0.05)],
@@ -2435,7 +2878,7 @@ mod tests {
     fn the_award_layer_burns_hottest_where_the_log_has_holes() {
         let now = 1_784_937_600.0;
         let mut st = ui();
-        st.view.focus = Focus::Earth.to_u8();
+        st.view.focus = Focus::Earth.to_id();
         st.view.dist = 0.06; // close enough for a per-entity marker to mean something
         st.view.layers |= layer::AWARDS;
         let slot = |name, lat, lon, coverage| sdroxide_types::EntitySlot {
@@ -2456,7 +2899,7 @@ mod tests {
         let glows = s.sprites.iter().filter(|sp| sp.params[0] == SPRITE_GLOW).count();
         let quiet = {
             let mut st = ui();
-            st.view.focus = Focus::Earth.to_u8();
+            st.view.focus = Focus::Earth.to_id();
             st.view.dist = 0.06;
             build(&st, None, now, [1600.0, 900.0], 0.0)
         };
@@ -2517,7 +2960,7 @@ mod tests {
 
     fn earth_view_with_aurora(oval: Option<AuroraOval>) -> (SolarUi, SolarData) {
         let mut st = ui();
-        st.view.focus = Focus::Earth.to_u8();
+        st.view.focus = Focus::Earth.to_id();
         st.view.dist = 0.5;
         let mut data = SolarData::default();
         data.aurora = oval.map(std::sync::Arc::new);
@@ -2637,7 +3080,7 @@ mod tests {
     #[test]
     fn the_oval_fades_out_with_a_distant_earth() {
         let mut st = ui();
-        st.view.focus = Focus::Sun.to_u8();
+        st.view.focus = Focus::Sun.to_id();
         let mut data = SolarData::default();
         data.aurora = Some(std::sync::Arc::new(test_oval()));
         let s = build(&st, Some(&data), 1_784_937_600.0, [1600.0, 900.0], 0.0);
@@ -2699,7 +3142,7 @@ mod tests {
 
     fn earth_view_with_clouds(field: Option<CloudField>) -> (SolarUi, SolarData) {
         let mut st = ui();
-        st.view.focus = Focus::Earth.to_u8();
+        st.view.focus = Focus::Earth.to_id();
         st.view.dist = 0.5;
         let mut data = SolarData::default();
         data.clouds = field.map(std::sync::Arc::new);
@@ -2798,7 +3241,7 @@ mod tests {
     #[test]
     fn the_deck_is_drawn_under_the_aurora() {
         let mut st = ui();
-        st.view.focus = Focus::Earth.to_u8();
+        st.view.focus = Focus::Earth.to_id();
         st.view.dist = 0.5;
         let mut data = SolarData::default();
         data.clouds = Some(std::sync::Arc::new(test_field()));
@@ -2819,7 +3262,7 @@ mod tests {
     #[test]
     fn the_deck_fades_out_with_a_distant_earth() {
         let mut st = ui();
-        st.view.focus = Focus::Sun.to_u8();
+        st.view.focus = Focus::Sun.to_id();
         let mut data = SolarData::default();
         data.clouds = Some(std::sync::Arc::new(test_field()));
         let s = build(&st, Some(&data), 1_784_937_600.0, [1600.0, 900.0], 0.0);

@@ -15,7 +15,7 @@ use crate::view::solar_layer as layer;
 /// The star field and the heliographic graticule are not among them: they are
 /// the backdrop and the coordinate frame everything else is read against, so
 /// they are always drawn rather than being switches.
-const LAYERS: [(u32, &str, &str); 10] = [
+const LAYERS: [(u32, &str, &str); 11] = [
     (layer::ORBITS, "ORBITS", "Orbital paths"),
     (
         layer::CLOUDS,
@@ -40,6 +40,13 @@ const LAYERS: [(u32, &str, &str); 10] = [
          flares came from",
     ),
     (layer::LABELS, "LABELS", "Body and region labels"),
+    (
+        layer::SMALL_LABELS,
+        "SMALL BODIES",
+        "Names on the asteroids and comets. They are drawn either way — this is only \
+         whether thirty-five designations are drawn with them. Whatever it is set to, \
+         the body the camera is on and anything the find box has matched stay named.",
+    ),
     (layer::QSO, "QSO", "Decoded FT8/FT4 stations and the path to the station being worked"),
     (layer::SATS, "SATS", "Amateur-radio satellites, their orbits and elevation from your QTH"),
     (
@@ -275,14 +282,35 @@ fn scale_module(ui: &mut egui::Ui, st: &mut SolarUi) {
 }
 
 /// Scrub the whole scene forward and back in time.
+///
+/// The month steps are what make the small bodies mean anything. A comet's
+/// apparition is weeks long and its orbit is years, so at ±24 h a click you can
+/// watch a tail grow but never reach the next one; a month a click walks
+/// through a whole apparition in a dozen presses and out to the following
+/// perihelion in a few dozen more.
+///
+/// The Sun's imagery, the aurora and the weather do not travel with it: they
+/// are measurements of now, and a scene scrubbed to 2061 shows today's Sun
+/// behind a correctly placed Halley. That is already true of the ±24 h steps
+/// and the clock says which way it has been moved.
 fn time_module(ui: &mut egui::Ui, st: &mut SolarUi) {
-    chrome::module(ui, "Time", 300.0, |ui| {
+    // A calendar month is not a fixed number of seconds; the scene's clock is,
+    // so this is the average one. Over a scrub of years the drift against the
+    // calendar is days, which is nothing to an ephemeris and everything to a
+    // "+1 mo" that sometimes moved 28 days and sometimes 31.
+    const MONTH_S: f64 = 365.2425 / 12.0 * 86_400.0;
+    chrome::module(ui, "Time", 400.0, |ui| {
         if chrome::chip(ui, st.sim_offset_s == 0.0, "NOW").clicked() {
             st.sim_offset_s = 0.0;
         }
-        for (label, dt) in
-            [("−24h", -86400.0), ("−1h", -3600.0), ("+1h", 3600.0), ("+24h", 86400.0)]
-        {
+        for (label, dt) in [
+            ("−1mo", -MONTH_S),
+            ("−24h", -86400.0),
+            ("−1h", -3600.0),
+            ("+1h", 3600.0),
+            ("+24h", 86400.0),
+            ("+1mo", MONTH_S),
+        ] {
             if chrome::chip(ui, false, label).clicked() {
                 st.sim_offset_s += dt;
             }
@@ -439,7 +467,7 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     // body, and clicking the text should not be ambiguous.
     pick_bodies(ui, st, rect, &view_proj, &picks, &resp, took_click);
     let clock_rect = clock(ui, rect, sim_now, st.sim_offset_s != 0.0);
-    sat_search(ui, st, data, rect, clock_rect);
+    find_box(ui, st, data, rect, clock_rect);
     let below = aurora_panel(ui, st, data, rect, rect.top() + 12.0, sim_now as i64);
     weather_panel(ui, st, data, rect, below, sim_now as i64);
     info_card(ui, st, data, rect, sim_now);
@@ -957,17 +985,23 @@ fn clock(ui: &egui::Ui, rect: egui::Rect, sim_now: f64, scrubbed: bool) -> Optio
     Some(panel)
 }
 
-/// The satellite search box, under the clock.
+/// The find box, under the clock.
 ///
-/// Ninety satellites is far too many to find one by reading labels, and the
-/// ones that are not in the curated set have no label at all until `ALL SATS`
-/// is on — at which point there are ninety unlabelled dots. Typing a designator
-/// pulls that satellite out of the crowd with its orbit and its name, whether
-/// or not it was being drawn a moment ago.
+/// Two populations of dots that cannot be found by reading labels, and one box
+/// for both. Ninety satellites around the Earth, of which the ones outside the
+/// curated set have no label at all until `ALL SATS` is on — at which point
+/// there are ninety unlabelled dots. And forty small bodies strung across fifty
+/// AU: five dwarf planets, twenty asteroids and fifteen comets, which are
+/// deliberately *not* all named at once because that would bury the planets.
 ///
-/// Hidden when the satellite layer is off, because a search that highlights
-/// things nothing is drawing would look broken.
-fn sat_search(
+/// Typing pulls a match out of either crowd with its orbit and its name,
+/// whether or not it was being drawn a moment ago. Enter commits: on a
+/// satellite that means its pass table, which is what you looked it up for; on
+/// a body it means pointing the camera at it, which is the same thing.
+///
+/// Hidden only when *neither* population is being drawn, because a search that
+/// highlights things nothing is drawing would look broken.
+fn find_box(
     ui: &egui::Ui,
     st: &mut SolarUi,
     data: Option<&SolarData>,
@@ -975,10 +1009,11 @@ fn sat_search(
     clock_rect: Option<egui::Rect>,
 ) {
     let Some(clock_rect) = clock_rect else { return };
-    if !st.layer(layer::SATS) {
+    let (sats, bodies) = (st.layer(layer::SATS), st.layer(layer::PLANETS));
+    if !sats && !bodies {
         // Leaving text behind in a hidden box would keep highlighting after the
-        // layer came back, with nothing on screen to say why.
-        st.sat_search.clear();
+        // layers came back, with nothing on screen to say why.
+        st.search.clear();
         return;
     }
 
@@ -991,19 +1026,29 @@ fn sat_search(
         return;
     }
 
-    // Matches are counted from the same predicate the scene highlights with, so
-    // "3 of 94" can never disagree with what is lit up.
-    let (hits, total) = match data {
+    // Counted from the same predicates the scene highlights with, so "3 of 94"
+    // can never disagree with what is lit up.
+    let (sat_hits, sat_total) = match data.filter(|_| sats) {
         Some(d) => d.satellites().fold((0usize, 0usize), |(h, n), sat| {
-            (h + st.sat_search_hit(&sat.name, sat.norad_id) as usize, n + 1)
+            (h + st.sat_hit(&sat.name, sat.norad_id) as usize, n + 1)
         }),
         None => (0, 0),
     };
-    let query = st.sat_search.trim().to_string();
+    let body_hits: Vec<usize> =
+        if bodies { st.small_hits().map(|(i, _)| i).collect() } else { Vec::new() };
+    let body_total = if bodies { sdroxide_solar::smallbody::BODIES.len() } else { 0 };
+
+    let query = st.search.trim().to_string();
     let mut clear = false;
     let mut open: Option<u64> = None;
+    let mut go: Option<Focus> = None;
+    let hint = match (sats, bodies) {
+        (true, true) => "satellite, planet or comet",
+        (true, false) => "satellite",
+        _ => "planet, asteroid or comet",
+    };
 
-    egui::Area::new(egui::Id::new("solar-sat-search"))
+    egui::Area::new(egui::Id::new("solar-find"))
         .order(egui::Order::Foreground)
         .fixed_pos(area.min)
         .show(ui.ctx(), |ui| {
@@ -1019,22 +1064,26 @@ fn sat_search(
                         // Ubuntu/Noto Emoji fallbacks — so both drew as tofu.
                         ui.label(RichText::new("🔍").color(theme::CYAN_DIM).size(12.0));
                         let edit = ui.add(
-                            egui::TextEdit::singleline(&mut st.sat_search)
+                            egui::TextEdit::singleline(&mut st.search)
                                 .desired_width(width - 62.0)
-                                .hint_text("satellite")
+                                .hint_text(hint)
                                 .text_color(theme::TEXT_STRONG),
                         );
-                        // Enter on a single match opens its pass table, which is
-                        // what you were looking the satellite up for.
-                        if edit.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                            && hits == 1
-                        {
-                            open = data.and_then(|d| {
-                                d.satellites()
-                                    .find(|s| st.sat_search_hit(&s.name, s.norad_id))
-                                    .map(|s| s.norad_id)
-                            });
+                        // Enter on a single match commits to it. A body wins a
+                        // tie against a satellite only when it is the sole
+                        // match overall, so neither can hijack the other's key.
+                        if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            match (sat_hits, body_hits.len()) {
+                                (1, 0) => {
+                                    open = data.and_then(|d| {
+                                        d.satellites()
+                                            .find(|s| st.sat_hit(&s.name, s.norad_id))
+                                            .map(|s| s.norad_id)
+                                    })
+                                }
+                                (0, 1) => go = Some(Focus::Small(body_hits[0])),
+                                _ => {}
+                            }
                         }
                         if !query.is_empty()
                             && ui.button("×").on_hover_text("Clear the search").clicked()
@@ -1043,9 +1092,23 @@ fn sat_search(
                         }
                     });
                     if !query.is_empty() {
-                        let (text, colour) = match hits {
-                            0 => ("no match".to_string(), theme::PINK),
-                            n => (format!("{n} of {total} tracked"), theme::YELLOW),
+                        let (text, colour) = match (sat_hits, body_hits.len()) {
+                            (0, 0) => ("no match".to_string(), theme::PINK),
+                            // Named outright when there is exactly one, because
+                            // "1 of 40" is a worse answer than "Apophis".
+                            (0, 1) => (
+                                format!(
+                                    "{} — ↵ to fly there",
+                                    sdroxide_solar::smallbody::BODIES[body_hits[0]].designation
+                                ),
+                                theme::YELLOW,
+                            ),
+                            (s, 0) => (format!("{s} of {sat_total} tracked"), theme::YELLOW),
+                            (0, b) => (format!("{b} of {body_total} bodies"), theme::YELLOW),
+                            (s, b) => (
+                                format!("{s} of {sat_total} tracked · {b} of {body_total} bodies"),
+                                theme::YELLOW,
+                            ),
                         };
                         ui.label(RichText::new(text).color(colour).size(10.0));
                     }
@@ -1053,10 +1116,13 @@ fn sat_search(
         });
 
     if clear {
-        st.sat_search.clear();
+        st.search.clear();
     }
     if let Some(id) = open {
         st.selected_sat = Some(id);
+    }
+    if let Some(f) = go {
+        st.set_focus(f);
     }
 }
 
@@ -1445,6 +1511,7 @@ fn info_card(
         let phase = if st.tour.in_transit() { "→ " } else { "" };
         lines.push(format!("AUTO  {phase}{}", st.tour.leg_name()));
     }
+    lines.extend(small_body_lines(st, jd));
 
     let font = egui::FontId::proportional(11.5);
     let galleys: Vec<_> = lines
@@ -1468,6 +1535,51 @@ fn info_card(
         ui.painter().galley(egui::pos2(card.left() + 10.0, y), g, theme::TEXT);
         y += dy;
     }
+}
+
+/// What the info card says about the small body the camera is pointed at.
+///
+/// A dot on an ellipse is not self-explanatory in the way the Earth is, so the
+/// card answers the three questions the dot raises: what is it, where is it,
+/// and why is it in a view that only carries forty of these. The last one is
+/// the body's own caption from the table — a close-approach date and distance
+/// straight out of JPL's database, or the mission that went there — because
+/// "relevant within the next fifty years" is a claim that has to be cashed.
+fn small_body_lines(st: &SolarUi, jd: f64) -> Vec<String> {
+    let Some(b) = st.focus().small() else { return Vec::new() };
+    let arc = b.arc(jd);
+    let au = b.distance_au(jd);
+    let year = arc.period_d() / 365.25;
+    let mut lines = vec![
+        format!("── {}", b.designation),
+        format!("{au:.3} AU from the Sun   q {:.2}  Q {:.2}", arc.q(), arc.aphelion()),
+        if year < 1.0 {
+            format!("year {:.0} days   radius {:.1} km", arc.period_d(), b.radius * 1.0e6)
+        } else {
+            format!("year {year:.1} years   radius {:.1} km", b.radius * 1.0e6)
+        },
+    ];
+
+    // A comet's perihelion is the thing worth waiting for, so it is quoted for
+    // anything that grows a tail whether or not it has one right now.
+    if b.tail != sdroxide_solar::Tail::None {
+        let t = b.next_perihelion(jd);
+        let days = t - jd;
+        let when = timefmt::ymd_hm(sdroxide_solar::ephem::unix_from_julian_day(t) as i64);
+        let when = when.split_whitespace().next().unwrap_or(&when).to_string();
+        lines.push(match b.tails(jd) {
+            Some(_) => format!("active · perihelion {when} ({days:.0} d)"),
+            None => format!("quiet · perihelion {when} ({days:.0} d)"),
+        });
+    }
+
+    // The model runs on outside its window, and running on is not the same as
+    // knowing. Say so rather than let a body sit there looking authoritative.
+    if !sdroxide_solar::smallbody::covers(jd) {
+        lines.push("outside 2026–2076: position extrapolated".to_string());
+    }
+    lines.push(b.why.to_string());
+    lines
 }
 
 /// The award layer's key, bottom right: what each colour on the globe means,

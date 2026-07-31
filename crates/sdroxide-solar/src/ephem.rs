@@ -47,6 +47,13 @@ pub fn julian_day(unix_s: f64) -> f64 {
     unix_s / 86_400.0 + 2_440_587.5
 }
 
+/// Unix timestamp from a Julian Day — the inverse of [`julian_day`], for the
+/// places that solve for a date (a comet's next perihelion) and then have to
+/// print it.
+pub fn unix_from_julian_day(jd: f64) -> f64 {
+    (jd - 2_440_587.5) * 86_400.0
+}
+
 /// Julian centuries since J2000.0.
 pub fn centuries(jd: f64) -> f64 {
     (jd - 2_451_545.0) / 36_525.0

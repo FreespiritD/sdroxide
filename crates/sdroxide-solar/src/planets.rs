@@ -670,7 +670,7 @@ fn precession_deg(jd: f64) -> f64 {
 /// One rotation about the ecliptic pole. Small, but it is the difference
 /// between the planets and the Earth being in the same frame and merely being
 /// in similar ones.
-fn precess(v: Vec3, jd: f64) -> Vec3 {
+pub(crate) fn precess(v: Vec3, jd: f64) -> Vec3 {
     rotate_z(v, precession_deg(jd))
 }
 

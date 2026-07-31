@@ -475,7 +475,7 @@ impl Tour {
             self.from = Pose::new(view.yaw, view.pitch, view.dist);
             // Start the flight from whatever the camera was actually looking
             // at, so enabling AUTO mid-view does not jump either.
-            self.from_focus = b.focus(Focus::from_u8(view.focus));
+            self.from_focus = b.focus(Focus::from_id(view.focus));
             self.last_pivot = self.from_focus;
             self.from_is_station = false;
             self.started = true;
@@ -568,8 +568,8 @@ impl Tour {
         // The contact view pivots around a point above the Earth's surface, but
         // the Earth is what the user gets if they take the controls back.
         view.focus = match frame {
-            Some(_) => Focus::Earth.to_u8(),
-            None => station.focus.to_u8(),
+            Some(_) => Focus::Earth.to_id(),
+            None => station.focus.to_id(),
         };
         self.last_pivot = pivot;
         pivot
@@ -662,7 +662,7 @@ mod tests {
     #[test]
     fn distance_is_clamped_outside_the_focused_body() {
         let mut st = SolarUi::new(Solar3dView::default());
-        st.view.focus = crate::solar3d::state::Focus::Earth.to_u8();
+        st.view.focus = crate::solar3d::state::Focus::Earth.to_id();
         st.view.dist = 1e-9;
         let b = scene::bodies(&st, 1_784_937_600.0);
         let c = Camera::from_view(&st, &b, [800.0, 600.0]);

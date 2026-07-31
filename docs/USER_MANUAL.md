@@ -2246,9 +2246,9 @@ Switching the `QSO` layer off leaves AUTO on its normal loop.
 
 **Layers** — `ORBITS` (orbital paths, sampled from the real ephemeris, so they
 are the true eccentric orbits), `CLOUDS`, `PLANETS`, `CME`, `SUN OBS`, `LABELS`,
-`QSO`, `SATS`, `AURORA` and `AWARDS`. All but `AWARDS` are on to begin with —
-that one puts a marker on all three hundred-odd DXCC entities, so it waits until
-you ask for it.
+`SMALL BODIES`, `QSO`, `SATS`, `AURORA` and `AWARDS`. All but `AWARDS` are on to
+begin with — that one puts a marker on all three hundred-odd DXCC entities, so
+it waits until you ask for it.
 
 `SUN OBS` is solar *observations* on the Sun's disk: the sunspot active regions
 and the flare source locations, which used to be two buttons and are one idea.
@@ -2283,6 +2283,76 @@ sulphur yellows, Iapetus its black leading hemisphere. Radii are exaggerated by
 the **body** scale like the Earth's, but capped so that no planet ever outgrows
 the Sun; each planet's moons are scaled by the same factor as the planet, so a
 moon at six planet radii is drawn at six planet radii.
+
+**The dwarf planets, asteroids and comets** ride on the same `PLANETS` layer.
+Forty bodies: Pluto, Ceres, Eris, Haumea and Makemake; twenty asteroids; and
+fifteen periodic comets.
+
+They are there because the next fifty years turn on them, and that is a query
+rather than an opinion. `tools/fit_smallbodies.py` asks JPL's close-approach
+database for everything that passes inside 0.02 AU of the Earth between now and
+2076 and is big enough to be worth naming — which is how Apophis, 2001 WN5 and
+1999 AN10 got in — and adds the bodies anyone would expect to find: the dwarf
+planets, the large main-belt asteroids, the mission targets (Bennu, Ryugu,
+Itokawa, Didymos, Psyche, the two Lucy Trojans), and every periodic comet with a
+perihelion inside the window. Swift-Tuttle is absent for that last reason: the
+Perseids' parent does not come back until 2126.
+
+Point the camera at one and the info card gives its distance, its perihelion and
+aphelion, the length of its year, and one line on why it is in the table — the
+date and distance of the close approach, straight out of JPL's database, or the
+spacecraft that went there.
+
+**Finding one** is what the box under the clock is for. It searches the small
+bodies and the satellites together, on name, catalogue number or designation:
+`apophis`, `99942`, `1P`, `2024 YR4`. A match is drawn with its orbit and its
+name whether or not it otherwise would be, and **↵** on a single match flies the
+camera to it. The asteroids have no layer button of their own on purpose — a
+button answers "show me all thirty-five of these", which is not a question
+anyone has; the question people have is *where is Apophis*, and that is a search
+box. The `SMALL BODIES` button is a different thing: it governs their **names**,
+because thirty-five designations at once bury the planets. Whatever it is set
+to, the body the camera is on and anything the search has matched stay named.
+
+**Comets grow tails**, and the tails are geometry rather than decoration:
+
+- The **ion tail** is CO⁺ fluorescing at 420 nm — blue, and not reflected
+  sunlight at all. It is swept by the solar wind, so it points *away from the
+  Sun* rather than back along the orbit, and it is drawn dead straight, narrow,
+  and broken into the rays and travelling knots the plasma makes as the field it
+  is frozen into varies. It does not point exactly anti-sunward: the comet meets
+  the 400 km/s wind while crossing it at its own orbital speed, so the tail lies
+  along the difference and lags the radial line by a few degrees. That angle is
+  what makes a photograph of a comet look the way it does.
+- The **dust tail** is grains reflecting sunlight — warm, broader, smoother, and
+  *curved*, because the grains are far too heavy for the wind to sweep and keep
+  the orbital velocity they were released with while radiation pressure eases
+  them outwards.
+- The **coma** is the head: a hundred thousand kilometres of gas, green from
+  diatomic carbon, which is the part of a comet that is actually bright.
+
+All of it switches on and off with the comet's distance from the Sun. Water ice
+stops sublimating past about 3 AU, so a comet spends most of its orbit as a bare
+dot and lights up for the months around perihelion; the tails grow as the
+inverse square of the distance and with the cube root of the nucleus radius.
+Phaethon is the exception that shows the model is doing something: it is a rock,
+not a comet, and gets a short dust tail and no ion tail at all, inside a fifth
+of an AU of the Sun where its own surface is being cooked apart.
+
+Use the **Time** module's `±1 mo` steps to watch it happen — Encke returns every
+3.3 years, Tempel-Tuttle in 2031, Halley in 2061.
+
+Where the numbers come from, and how good they are:
+
+| | Source | Accuracy |
+| --- | --- | --- |
+| Small-body positions | A chain of Keplerian arcs fitted to JPL Horizons across 2026–2076 | Measured against Horizons: inside 0.16° for every body but Apophis, whose 2029 Earth encounter changes its orbit and leaves it at 0.66° worst case, 0.03° typical |
+| Which bodies | JPL's close-approach database, plus the dwarf planets, large asteroids and mission targets | The close-approach dates and distances quoted in the info card are JPL's, not this model's |
+| Tail lengths | A visual model, stated as one | Scaled so Halley at its 2061 perihelion draws the tail Halley actually had; the *directions* are physics |
+
+Outside 2026–2076 the arcs simply run on, which is a two-body extrapolation of a
+perturbed orbit and decays quickly. Scrub the clock past either end and the info
+card says so rather than letting the body sit there looking authoritative.
 
 **The CLOUDS layer** puts the weather on the globe, live, from NOAA/NESDIS's
 Global Mosaic of Geostationary Satellite Imagery — GOES-East and GOES-West, both
@@ -2428,8 +2498,11 @@ curated set has no label at all until `ALL SATS` is on, and then there are
 ninety unlabelled dots. Matching is case-insensitive and on any part of the
 name, so a partial designator is enough. The line underneath says how many of
 the tracked satellites matched; **Enter** on a single match opens its pass
-table, and **✕** clears the box. The search only appears while the `SATS` layer
-is on.
+table, and **✕** clears the box. The same box finds the dwarf planets,
+asteroids and comets — see the `PLANETS` layer above — and **Enter** on a single
+body flies the camera to it instead. It appears whenever either the `SATS` or
+the `PLANETS` layer is on, since those are the two populations it can find
+anything in.
 
 ![Aurora and satellite visualization and pass table](images/17-sats-passes.jpg)
 

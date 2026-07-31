@@ -29,6 +29,7 @@ pub mod indices;
 pub mod planets;
 pub mod satellites;
 pub mod satfreq;
+pub mod smallbody;
 pub mod swpc;
 pub mod timefmt;
 #[cfg(not(target_arch = "wasm32"))]
@@ -48,6 +49,7 @@ pub use indices::{GeomagneticIndex, MufEstimate, SolarFlux, SpaceWeather, XrayLe
 pub use planets::{Moon, Planet, Surface};
 pub use satellites::{Pass, PassSearch, SatState, Satellite};
 pub use satfreq::{Passband, SatFreqs, SatLink};
+pub use smallbody::{Class as SmallClass, SmallBody, Tail, Tails};
 pub use swpc::ActiveRegion;
 #[cfg(not(target_arch = "wasm32"))]
 pub use tlesub::SubStatus;

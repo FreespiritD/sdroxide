@@ -12,8 +12,8 @@ use crate::view::Solar3dView;
 
 /// Which body the orbit camera pivots around.
 ///
-/// Persisted as a `u8` in [`Solar3dView::focus`], so the encoding in
-/// [`Focus::to_u8`] is a stable format: the four original values keep indices
+/// Persisted as an integer in [`Solar3dView::focus`], so the encoding in
+/// [`Focus::to_id`] is a stable format: the four original values keep indices
 /// 0–3 and everything new is appended after them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -25,14 +25,32 @@ pub enum Focus {
     Planet(sdroxide_solar::Planet),
     /// A moon of another planet, by index into [`sdroxide_solar::planets::MOONS`].
     Satellite(usize),
+    /// A dwarf planet, asteroid or comet, by index into
+    /// [`sdroxide_solar::smallbody::BODIES`].
+    Small(usize),
 }
 
 impl Focus {
     /// The four targets that are not a table lookup.
     pub const NEAR: [Focus; 4] = [Focus::Sun, Focus::Earth, Focus::Moon, Focus::EarthMoon];
 
+    /// Where the small bodies start in the persisted encoding.
+    ///
+    /// A round number well past the moons rather than immediately after them,
+    /// so that adding a moon — which the moon table's own docs invite, by
+    /// appending — cannot shift every asteroid's stored id underneath somebody's
+    /// settings file. The gap costs nothing: the encoding is a `u16` and this
+    /// is the only thing in it that has to be arranged rather than counted.
+    const SMALL_BASE: usize = 256;
+
     /// Every target, grouped the way the picker lays them out: the Sun and the
-    /// Earth–Moon system first, then a row per planet with its own moons.
+    /// Earth–Moon system first, then a row per planet with its own moons, then
+    /// the dwarf planets.
+    ///
+    /// The asteroids and comets are deliberately absent. There are thirty-five
+    /// of them, they would swamp a popup meant for choosing between eleven
+    /// planets, and the search box finds them by name — which is how you look
+    /// for a body you already have in mind, and the only way that scales.
     pub fn groups() -> Vec<(&'static str, Vec<Focus>)> {
         let mut v = vec![("HOME", Focus::NEAR.to_vec())];
         for p in sdroxide_solar::Planet::ALL {
@@ -46,28 +64,51 @@ impl Focus {
             );
             v.push((p.name(), row));
         }
+        v.push((
+            "DWARF PLANETS",
+            sdroxide_solar::smallbody::BODIES
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b.class == sdroxide_solar::SmallClass::Dwarf)
+                .map(|(i, _)| Focus::Small(i))
+                .collect(),
+        ));
         v
     }
 
-    /// Every target, flattened. Used by the tests that guard the persisted
-    /// encoding; the picker itself wants them grouped.
+    /// Every target, flattened — the picker's, plus the small bodies it leaves
+    /// to the search box. Used by the tests that guard the persisted encoding.
     #[cfg(test)]
     pub fn all() -> Vec<Focus> {
-        Focus::groups().into_iter().flat_map(|(_, row)| row).collect()
+        let mut v: Vec<Focus> = Focus::groups().into_iter().flat_map(|(_, row)| row).collect();
+        for i in 0..sdroxide_solar::smallbody::BODIES.len() {
+            if !v.contains(&Focus::Small(i)) {
+                v.push(Focus::Small(i));
+            }
+        }
+        v
     }
 
-    pub fn from_u8(v: u8) -> Focus {
+    pub fn from_id(v: u16) -> Focus {
         let v = v as usize;
         if let Some(f) = Focus::NEAR.get(v) {
             return *f;
+        }
+        if v >= Focus::SMALL_BASE {
+            // An id from a newer build with more bodies: fall back to the Sun
+            // rather than to a body that is not the one meant.
+            let i = v - Focus::SMALL_BASE;
+            return if i < sdroxide_solar::smallbody::BODIES.len() {
+                Focus::Small(i)
+            } else {
+                Focus::Sun
+            };
         }
         let k = v - Focus::NEAR.len();
         match sdroxide_solar::Planet::ALL.get(k) {
             Some(p) => Focus::Planet(*p),
             None => {
                 let m = k - sdroxide_solar::Planet::ALL.len();
-                // An index from a future version with more moons: fall back to
-                // the Sun rather than to a body that is not the one meant.
                 if m < sdroxide_solar::planets::MOONS.len() {
                     Focus::Satellite(m)
                 } else {
@@ -77,14 +118,23 @@ impl Focus {
         }
     }
 
-    pub fn to_u8(self) -> u8 {
+    pub fn to_id(self) -> u16 {
         let base = Focus::NEAR.len();
         let planets = sdroxide_solar::Planet::ALL.len();
         (match self {
             Focus::Planet(p) => base + p.index(),
             Focus::Satellite(i) => base + planets + i,
+            Focus::Small(i) => Focus::SMALL_BASE + i,
             f => Focus::NEAR.iter().position(|x| *x == f).unwrap_or(0),
-        }) as u8
+        }) as u16
+    }
+
+    /// The small body this target names, if it is one.
+    pub fn small(self) -> Option<&'static sdroxide_solar::SmallBody> {
+        match self {
+            Focus::Small(i) => sdroxide_solar::smallbody::BODIES.get(i),
+            _ => None,
+        }
     }
 
     /// Full name, as the picker shows it.
@@ -96,6 +146,7 @@ impl Focus {
             Focus::EarthMoon => "Earth + Moon",
             Focus::Planet(p) => p.name(),
             Focus::Satellite(i) => sdroxide_solar::planets::MOONS.get(i).map_or("Sun", |m| m.name),
+            Focus::Small(i) => sdroxide_solar::smallbody::BODIES.get(i).map_or("Sun", |b| b.name),
         }
     }
 
@@ -166,12 +217,20 @@ pub struct SolarUi {
     /// Empty in the browser tab, which has no settings dialog of its own — the
     /// built-in table shows through there.
     pub sat_cfg: std::sync::Arc<sdroxide_types::SatConfig>,
-    /// What has been typed into the satellite search box.
+    /// What has been typed into the find box.
     ///
-    /// Matching satellites are drawn with their orbit and label whether or not
-    /// they would otherwise be — searching for a satellite that is not on
-    /// screen is the main reason to search at all.
-    pub sat_search: String,
+    /// Matches are drawn with their orbit and label whether or not they
+    /// otherwise would be — looking for something that is *not* on screen is
+    /// the main reason to search at all. It covers two populations that have
+    /// the same problem: ninety satellites around one planet, and forty small
+    /// bodies scattered over fifty AU, both of them dots too small and too
+    /// numerous to find by reading labels.
+    ///
+    /// The small bodies have no layer chip of their own on purpose. A chip
+    /// answers "show me all of these", which for thirty-five asteroids is not a
+    /// question anyone has; the question people actually have is "where is
+    /// Apophis", and that is a search box.
+    pub search: String,
     /// Satellite whose pass table is open, by catalogue number.
     pub selected_sat: Option<u64>,
     /// Cached pass prediction: which satellite, from what QTH, computed when,
@@ -259,7 +318,7 @@ impl SolarUi {
             awards: Default::default(),
             lapse_back_s: 0.0,
             lapse_playing: false,
-            sat_search: String::new(),
+            search: String::new(),
             sat_cfg: Default::default(),
             selected_sat: None,
             sat_passes: None,
@@ -280,7 +339,7 @@ impl SolarUi {
     }
 
     pub fn focus(&self) -> Focus {
-        Focus::from_u8(self.view.focus)
+        Focus::from_id(self.view.focus)
     }
 
     /// Point the camera at a body, from the picker or from a click in the view.
@@ -291,7 +350,7 @@ impl SolarUi {
         if self.focus() != f {
             self.retarget = true;
         }
-        self.view.focus = f.to_u8();
+        self.view.focus = f.to_id();
         self.view.auto = false;
     }
 
@@ -321,18 +380,30 @@ impl SolarUi {
         self.lapse_back_s = back_s.clamp(0.0, crate::digi_map::HISTORY_S as f64);
     }
 
-    /// Whether a satellite matches what is in the search box.
+    /// Whether a satellite matches what is in the find box.
     ///
     /// Case-insensitive substring on the name, and on the catalogue number as
     /// text so `25544` finds the ISS. An empty box matches *nothing* rather
     /// than everything: this drives a highlight, and highlighting all ninety
     /// would be the same as highlighting none.
-    pub fn sat_search_hit(&self, name: &str, norad_id: u64) -> bool {
-        let q = self.sat_search.trim();
+    pub fn sat_hit(&self, name: &str, norad_id: u64) -> bool {
+        let q = self.search.trim();
         if q.is_empty() {
             return false;
         }
         contains_ignore_ascii_case(name, q) || contains_ignore_ascii_case(&norad_id.to_string(), q)
+    }
+
+    /// Whether a small body matches what is in the find box. Same rule as
+    /// [`SolarUi::sat_hit`], over the body's name and full designation — see
+    /// [`sdroxide_solar::SmallBody::matches`].
+    pub fn small_hit(&self, b: &sdroxide_solar::SmallBody) -> bool {
+        b.matches(&self.search)
+    }
+
+    /// Every small body the find box currently picks out.
+    pub fn small_hits(&self) -> impl Iterator<Item = (usize, &'static sdroxide_solar::SmallBody)> {
+        sdroxide_solar::smallbody::search(&self.search)
     }
 
     pub fn layer(&self, bit: u32) -> bool {
@@ -360,39 +431,53 @@ impl SolarUi {
 mod tests {
     use super::*;
 
-    /// The camera target is persisted as a single byte, so its encoding is a
-    /// file format: every target has to survive the round trip, and the four
-    /// that existed before the planets were added have to keep their original
-    /// values or an upgrade would silently move everyone's camera.
+    /// The camera target is persisted as an integer, so its encoding is a file
+    /// format: every target has to survive the round trip, and the ones that
+    /// existed before each later addition have to keep their original values or
+    /// an upgrade would silently move everyone's camera.
     #[test]
-    fn every_target_round_trips_through_its_persisted_byte() {
+    fn every_target_round_trips_through_its_persisted_id() {
         for f in Focus::all() {
-            assert_eq!(Focus::from_u8(f.to_u8()), f, "{f:?} did not survive");
+            assert_eq!(Focus::from_id(f.to_id()), f, "{f:?} did not survive");
         }
         for (i, f) in Focus::NEAR.iter().enumerate() {
-            assert_eq!(f.to_u8() as usize, i, "{f:?} moved off its historical index");
+            assert_eq!(f.to_id() as usize, i, "{f:?} moved off its historical index");
         }
-        // Distinct bytes, or two bodies would share a slot.
-        let mut seen: Vec<u8> = Focus::all().iter().map(|f| f.to_u8()).collect();
+        // The planets and moons keep the ids they were written with when the
+        // field was still a byte — everything new had to go above 255.
+        assert_eq!(Focus::Planet(sdroxide_solar::Planet::Mercury).to_id(), 4);
+        assert_eq!(Focus::Satellite(0).to_id(), 4 + 7);
+        assert!(Focus::Satellite(sdroxide_solar::planets::MOONS.len() - 1).to_id() < 256);
+        assert!(Focus::Small(0).to_id() >= 256);
+        // Distinct ids, or two bodies would share a slot.
+        let mut seen: Vec<u16> = Focus::all().iter().map(|f| f.to_id()).collect();
         let count = seen.len();
         seen.sort_unstable();
         seen.dedup();
-        assert_eq!(seen.len(), count, "two targets encode to the same byte");
+        assert_eq!(seen.len(), count, "two targets encode to the same id");
     }
 
-    /// A stored byte from a *newer* build, or from a corrupt file, must land on
+    /// A stored id from a *newer* build, or from a corrupt file, must land on
     /// something rather than on a body that is not the one meant.
     #[test]
-    fn an_unknown_target_byte_falls_back_to_the_sun() {
-        assert_eq!(Focus::from_u8(u8::MAX), Focus::Sun);
-        assert_eq!(Focus::from_u8(Focus::all().len() as u8), Focus::Sun);
+    fn an_unknown_target_id_falls_back_to_the_sun() {
+        assert_eq!(Focus::from_id(u16::MAX), Focus::Sun);
+        assert_eq!(Focus::from_id(200), Focus::Sun);
+        assert_eq!(
+            Focus::from_id(256 + sdroxide_solar::smallbody::BODIES.len() as u16),
+            Focus::Sun
+        );
     }
 
     #[test]
     fn the_picker_lists_every_body_with_its_planet() {
         let all = Focus::all();
-        // The four near targets, seven planets, and every moon in the table.
-        assert_eq!(all.len(), 4 + 7 + sdroxide_solar::planets::MOONS.len());
+        // The four near targets, seven planets, every moon in the table, and
+        // every small body.
+        assert_eq!(
+            all.len(),
+            4 + 7 + sdroxide_solar::planets::MOONS.len() + sdroxide_solar::smallbody::BODIES.len()
+        );
         // Each planet is immediately followed by its own moons.
         let jupiter = all.iter().position(|f| *f == Focus::Planet(sdroxide_solar::Planet::Jupiter));
         let after = &all[jupiter.expect("Jupiter is in the list") + 1..][..4];
@@ -409,29 +494,29 @@ mod tests {
     fn the_search_matches_names_and_catalogue_numbers() {
         let mut st = SolarUi::new(Solar3dView::default());
         // Nothing typed: nothing highlighted, or every satellite would be.
-        assert!(!st.sat_search_hit("ISS", 25544));
-        st.sat_search = "   ".into();
-        assert!(!st.sat_search_hit("ISS", 25544));
+        assert!(!st.sat_hit("ISS", 25544));
+        st.search = "   ".into();
+        assert!(!st.sat_hit("ISS", 25544));
 
-        st.sat_search = "iss".into();
-        assert!(st.sat_search_hit("ISS", 25544));
-        assert!(!st.sat_search_hit("AO-73", 39444));
+        st.search = "iss".into();
+        assert!(st.sat_hit("ISS", 25544));
+        assert!(!st.sat_hit("AO-73", 39444));
         // Substrings anywhere, in either case.
-        st.sat_search = "o-7".into();
-        assert!(st.sat_search_hit("AO-73", 39444));
-        assert!(st.sat_search_hit("ao-7", 7530));
-        assert!(!st.sat_search_hit("RS-44", 44909));
+        st.search = "o-7".into();
+        assert!(st.sat_hit("AO-73", 39444));
+        assert!(st.sat_hit("ao-7", 7530));
+        assert!(!st.sat_hit("RS-44", 44909));
         // ...and by catalogue number, which is how you find one whose
         // designator you cannot remember.
-        st.sat_search = "25544".into();
-        assert!(st.sat_search_hit("ISS", 25544));
-        assert!(!st.sat_search_hit("ISS", 25545));
+        st.search = "25544".into();
+        assert!(st.sat_hit("ISS", 25544));
+        assert!(!st.sat_hit("ISS", 25545));
         // Surrounding whitespace is not part of the query.
-        st.sat_search = "  QO-100 ".into();
-        assert!(st.sat_search_hit("QO-100", 43700));
+        st.search = "  QO-100 ".into();
+        assert!(st.sat_hit("QO-100", 43700));
         // A query longer than the name cannot match it.
-        st.sat_search = "QO-100-AND-MORE".into();
-        assert!(!st.sat_search_hit("QO-100", 43700));
+        st.search = "QO-100-AND-MORE".into();
+        assert!(!st.sat_hit("QO-100", 43700));
     }
 
     #[test]

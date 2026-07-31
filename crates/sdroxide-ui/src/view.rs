@@ -88,6 +88,15 @@ pub mod solar_layer {
     pub const PLANETS: u32 = 1 << 10;
     /// Cloud cover and the lightning inside it.
     pub const CLOUDS: u32 = 1 << 12;
+    /// Names on the asteroids and comets.
+    ///
+    /// Separate from [`LABELS`] because it is a different question. `LABELS`
+    /// is "do I want names at all"; this is "do I want thirty-five asteroid
+    /// designations *as well*", and the answer differs by what you are looking
+    /// at. Whatever the state of it, the body the camera is pointed at and
+    /// anything the find box has matched keep their names — those were asked
+    /// for by name, and withholding them would read as the search being broken.
+    pub const SMALL_LABELS: u32 = 1 << 13;
     /// Award coverage: which DXCC entities are still missing from the log.
     ///
     /// Deliberately absent from [`ALL`], and so off until it is asked for: it
@@ -112,17 +121,30 @@ pub mod solar_layer {
         | SATS
         | AURORA
         | PLANETS
-        | CLOUDS;
+        | CLOUDS
+        | SMALL_LABELS;
     /// Values `ALL` has had in earlier versions. A stored mask equal to one of
     /// these was "everything" when it was written, so it is upgraded rather
     /// than leaving newly added layers silently switched off.
     #[allow(dead_code)]
-    pub const PREVIOUS_ALL: [u32; 5] = [
+    pub const PREVIOUS_ALL: [u32; 6] = [
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS,
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO,
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS,
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS | AURORA,
         ORBITS | CME | SPOTS | FLARES | GRID | LABELS | STARS | QSO | SATS | AURORA | PLANETS,
+        ORBITS
+            | CME
+            | SPOTS
+            | FLARES
+            | GRID
+            | LABELS
+            | STARS
+            | QSO
+            | SATS
+            | AURORA
+            | PLANETS
+            | CLOUDS,
     ];
 }
 
@@ -170,7 +192,13 @@ pub struct Solar3dView {
     /// Window open state, restored on the next launch.
     pub open: bool,
     /// Camera focus body (see `solar3d::state::Focus`).
-    pub focus: u8,
+    ///
+    /// Widened from `u8` when the small bodies arrived: there are more targets
+    /// than a byte holds, and the encoding keeps every value it ever wrote, so
+    /// a settings file from before the change still points at the same body.
+    /// TOML and JSON both store an integer without a width, so nothing has to
+    /// be migrated.
+    pub focus: u16,
     /// Orbit camera: yaw/pitch in radians, distance in gigametres.
     pub yaw: f32,
     pub pitch: f32,

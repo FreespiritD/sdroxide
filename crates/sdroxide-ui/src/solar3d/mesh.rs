@@ -132,6 +132,42 @@ pub fn ring() -> (Vec<Vertex>, Vec<u32>) {
     (verts, idx)
 }
 
+/// Steps along a comet tail. Generous, because the dust tail is a curve and a
+/// coarse one would read as a bent stick.
+pub const PLUME_AXIAL: u32 = 72;
+/// Steps across it. The brightness profile across a tail is shaded per
+/// fragment, so this only has to be fine enough that the silhouette is smooth.
+const PLUME_ACROSS: u32 = 8;
+
+/// A comet tail, parametric like [`cone`]: `pos` carries `[s, t, 0]` with
+/// `s ∈ [−1, 1]` across the ribbon and `t ∈ [0, 1]` from the nucleus to the tip.
+///
+/// The vertex shader turns that into a screen-facing ribbon — expanded
+/// perpendicular to both the tail's axis and the eye, so a tail seen end-on is
+/// still a tail rather than an invisible edge. That is also what makes one mesh
+/// serve a 40 Gm ion tail and a 4 Gm dust one: length, width and curvature all
+/// arrive as uniforms.
+pub fn plume() -> (Vec<Vertex>, Vec<u32>) {
+    let row = PLUME_ACROSS + 1;
+    let mut verts = Vec::with_capacity(((PLUME_AXIAL + 1) * row) as usize);
+    for j in 0..=PLUME_AXIAL {
+        let t = j as f32 / PLUME_AXIAL as f32;
+        for i in 0..=PLUME_ACROSS {
+            let s = i as f32 / PLUME_ACROSS as f32 * 2.0 - 1.0;
+            verts.push(Vertex { pos: [s, t, 0.0], uv: [s, t] });
+        }
+    }
+    let mut idx = Vec::with_capacity((PLUME_AXIAL * PLUME_ACROSS * 6) as usize);
+    for j in 0..PLUME_AXIAL {
+        for i in 0..PLUME_ACROSS {
+            let a = j * row + i;
+            let (b, c, d) = (a + 1, a + row, a + row + 1);
+            idx.extend_from_slice(&[a, c, b, b, c, d]);
+        }
+    }
+    (verts, idx)
+}
+
 /// Corner offsets of a quad, `[-1, 1]` in both axes, as two triangles.
 ///
 /// Instanced pipelines (lines, sprites) expand this in the vertex shader, which

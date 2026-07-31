@@ -55,6 +55,7 @@ pub struct SolarResources {
     cloud_march_pipe: wgpu::RenderPipeline,
     cone_pipe: wgpu::RenderPipeline,
     ring_pipe: wgpu::RenderPipeline,
+    tail_pipe: wgpu::RenderPipeline,
     line_pipe: wgpu::RenderPipeline,
     sprite_pipe: wgpu::RenderPipeline,
     blit_pipe: wgpu::RenderPipeline,
@@ -80,6 +81,9 @@ pub struct SolarResources {
     ring_vb: wgpu::Buffer,
     ring_ib: wgpu::Buffer,
     ring_indices: u32,
+    plume_vb: wgpu::Buffer,
+    plume_ib: wgpu::Buffer,
+    plume_indices: u32,
     quad_vb: wgpu::Buffer,
 
     line_buf: wgpu::Buffer,
@@ -158,6 +162,7 @@ fn build(rs: &RenderState) -> SolarResources {
         shader("solar-cloud-march", include_str!("../shaders/solar_cloud_march.wgsl"));
     let cone_sh = shader("solar-cone", include_str!("../shaders/solar_cone.wgsl"));
     let ring_sh = shader("solar-ring", include_str!("../shaders/solar_ring.wgsl"));
+    let tail_sh = shader("solar-tail", include_str!("../shaders/solar_tail.wgsl"));
     let line_sh = shader("solar-line", include_str!("../shaders/solar_line.wgsl"));
     let sprite_sh = shader("solar-sprite", include_str!("../shaders/solar_sprite.wgsl"));
     let blit_sh = shader("solar-blit", include_str!("../shaders/solar_blit.wgsl"));
@@ -404,6 +409,19 @@ fn build(rs: &RenderState) -> SolarResources {
         depth_state(false, wgpu::CompareFunction::Greater),
         sample_count,
     );
+    // A comet tail is emission through emission: additive, and no depth write,
+    // so the dust tail and the ion tail sum where they overlap instead of one
+    // clipping the other. It still *tests* depth, which is what puts the far
+    // half of a tail behind whatever it is streaming past.
+    let tail_pipe = make_pipe(
+        "solar-tail",
+        &draw_layout,
+        &tail_sh,
+        &[mesh_layout.clone()],
+        Some(premultiplied),
+        depth_state(false, wgpu::CompareFunction::Greater),
+        sample_count,
+    );
     let line_pipe = make_pipe(
         "solar-line",
         &scene_layout,
@@ -431,6 +449,7 @@ fn build(rs: &RenderState) -> SolarResources {
     let (sv, si) = mesh::sphere();
     let (cv, ci) = mesh::cone();
     let (rv, ri) = mesh::ring();
+    let (pv, pi) = mesh::plume();
     let quad = mesh::quad();
     let vb = |label: &str, data: &[u8], usage: wgpu::BufferUsages| {
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -445,6 +464,8 @@ fn build(rs: &RenderState) -> SolarResources {
     let cone_ib = vb("solar-cone-ib", bytemuck::cast_slice(&ci), wgpu::BufferUsages::INDEX);
     let ring_vb = vb("solar-ring-vb", bytemuck::cast_slice(&rv), wgpu::BufferUsages::VERTEX);
     let ring_ib = vb("solar-ring-ib", bytemuck::cast_slice(&ri), wgpu::BufferUsages::INDEX);
+    let plume_vb = vb("solar-plume-vb", bytemuck::cast_slice(&pv), wgpu::BufferUsages::VERTEX);
+    let plume_ib = vb("solar-plume-ib", bytemuck::cast_slice(&pi), wgpu::BufferUsages::INDEX);
     let quad_vb = vb("solar-quad-vb", bytemuck::cast_slice(&quad), wgpu::BufferUsages::VERTEX);
 
     let stars = super::scene::stars();
@@ -592,6 +613,7 @@ fn build(rs: &RenderState) -> SolarResources {
         cloud_march_pipe,
         cone_pipe,
         ring_pipe,
+        tail_pipe,
         line_pipe,
         sprite_pipe,
         blit_pipe,
@@ -614,6 +636,9 @@ fn build(rs: &RenderState) -> SolarResources {
         ring_vb,
         ring_ib,
         ring_indices: ri.len() as u32,
+        plume_vb,
+        plume_ib,
+        plume_indices: pi.len() as u32,
         quad_vb,
         line_buf: inst_buf("solar-lines", line_cap),
         line_cap,
@@ -1370,6 +1395,11 @@ impl CallbackTrait for SolarCallback {
                         pass.set_vertex_buffer(0, r.ring_vb.slice(..));
                         pass.set_index_buffer(r.ring_ib.slice(..), wgpu::IndexFormat::Uint32);
                     }
+                    Prim::Tail => {
+                        pass.set_pipeline(&r.tail_pipe);
+                        pass.set_vertex_buffer(0, r.plume_vb.slice(..));
+                        pass.set_index_buffer(r.plume_ib.slice(..), wgpu::IndexFormat::Uint32);
+                    }
                 }
                 bound = Some(*prim);
             }
@@ -1378,6 +1408,7 @@ impl CallbackTrait for SolarCallback {
                 Prim::Sphere | Prim::Aurora | Prim::Cloud | Prim::CloudVolume => r.sphere_indices,
                 Prim::Cone => r.cone_indices,
                 Prim::Ring => r.ring_indices,
+                Prim::Tail => r.plume_indices,
             };
             pass.draw_indexed(0..n, 0, 0..1);
         }
@@ -1452,6 +1483,7 @@ mod tests {
             ("solar_cloud_march.wgsl", include_str!("../shaders/solar_cloud_march.wgsl")),
             ("solar_cone.wgsl", include_str!("../shaders/solar_cone.wgsl")),
             ("solar_ring.wgsl", include_str!("../shaders/solar_ring.wgsl")),
+            ("solar_tail.wgsl", include_str!("../shaders/solar_tail.wgsl")),
             ("solar_line.wgsl", include_str!("../shaders/solar_line.wgsl")),
             ("solar_sprite.wgsl", include_str!("../shaders/solar_sprite.wgsl")),
             ("solar_blit.wgsl", include_str!("../shaders/solar_blit.wgsl")),
