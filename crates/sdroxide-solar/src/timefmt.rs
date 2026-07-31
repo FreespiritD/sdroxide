@@ -50,6 +50,19 @@ pub fn ymd_hm(unix: i64) -> String {
     format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}Z")
 }
 
+/// `12 Nov 2026` — a calendar date to be read rather than parsed.
+///
+/// The named month is the point: `2026-11-12` and `2026-12-11` differ by one
+/// transposed pair, and the overlay shows two of these side by side (UTC and
+/// local) where telling them apart at a glance is the whole job.
+pub fn dmy(unix: i64) -> String {
+    const MONTHS: [&str; 12] =
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let (y, mo, d, _, _, _) = utc_ymd_hms(unix);
+    let name = MONTHS.get(mo.saturating_sub(1) as usize).copied().unwrap_or("???");
+    format!("{d} {name} {y:04}")
+}
+
 /// A compact "how long ago", for data-freshness readouts.
 pub fn age(seconds: i64) -> String {
     let s = seconds.max(0);
@@ -84,6 +97,14 @@ mod tests {
         let t = parse_unix("2026-07-24T06:11:37").unwrap();
         assert_eq!(ymd(t), "2026-07-24");
         assert_eq!(ymd_hm(t), "2026-07-24 06:11Z");
+        assert_eq!(dmy(t), "24 Jul 2026");
+    }
+
+    #[test]
+    fn dates_read_as_a_named_month_at_both_ends_of_the_year() {
+        assert_eq!(dmy(parse_unix("2026-01-01").unwrap()), "1 Jan 2026");
+        assert_eq!(dmy(parse_unix("2026-11-12").unwrap()), "12 Nov 2026");
+        assert_eq!(dmy(parse_unix("2026-12-31").unwrap()), "31 Dec 2026");
     }
 
     #[test]
