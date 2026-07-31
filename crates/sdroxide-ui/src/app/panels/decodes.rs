@@ -7,7 +7,7 @@
 //! rebuilt from scratch every frame.
 
 use eframe::egui::{self, Color32, RichText};
-use sdroxide_types::{Command, Decode, Mode, SpotKind};
+use sdroxide_types::{Command, Decode, Mode};
 
 use crate::theme::ThemedScroll;
 use crate::time::now_unix;
@@ -40,6 +40,19 @@ struct DecodeRow<'a> {
     cq: bool,
     novelty: sdroxide_types::Novelty,
     to_me: bool,
+}
+
+/// Whether a spot's announced mode is the one this panel works.
+///
+/// Feeds are inconsistent about case and about the FT4 spelling — the clusters
+/// carry both `FT4` and the older `FT8-4` — so this compares loosely rather than
+/// going through [`sdroxide_types::Mode`], which would also fold every other
+/// data mode into `USB`.
+fn is_ft8_or_ft4(mode: &str) -> bool {
+    let m = mode.trim();
+    m.eq_ignore_ascii_case("FT8")
+        || m.eq_ignore_ascii_case("FT4")
+        || m.eq_ignore_ascii_case("FT8-4")
 }
 
 impl SdroxideApp {
@@ -691,16 +704,15 @@ impl SdroxideApp {
         // Located network spots (filtered by the shown-kind toggles), as
         // kind-coloured dots on the map.
         //
-        // FreeDV Reporter is excluded whatever its toggle says: it lists every
-        // station currently *connected*, hundreds of them, which buries the
-        // decoded FT8 stations this map exists to show. The panadapter overlay
-        // and the SPOTS window still carry them.
-        // Broadcast stations do appear here: they carry real transmitter
-        // coordinates, and the on-air filter keeps their count in the same range
-        // as the cluster spots already drawn.
+        // Only spots announced as FT8 or FT4, whatever fed them: this is the map
+        // beside the FT8/FT4 decode list, and it exists to show where the mode is
+        // being worked right now. Broadcast stations, FreeDV Reporter's hundreds
+        // of connected stations, and the SSB/CW half of the cluster all buried
+        // that with traffic from bands the panel cannot answer. They are still on
+        // the panadapter overlay and in the SPOTS window.
         let spot_dots: Vec<(f64, f64, (u8, u8, u8))> = self
             .all_spots()
-            .filter(|s| s.kind != SpotKind::FreeDv)
+            .filter(|s| is_ft8_or_ft4(&s.mode))
             .filter(|s| self.spot_visible(s))
             .filter_map(|s| s.loc.map(|(lat, lon)| (lat, lon, s.kind.color())))
             .collect();
