@@ -57,8 +57,8 @@ fn qrz_insert_then_delete() {
 /// Query the logbook for a call and return the matching LOGIDs.
 fn qrz_logids_for(key: &str, call: &str) -> Vec<String> {
     let body = ureq::post("https://logbook.qrz.com/api")
-        .send_form(&[("KEY", key), ("ACTION", "FETCH"), ("OPTION", &format!("CALL:{call}"))])
-        .and_then(|r| Ok(r.into_string()?))
+        .send_form([("KEY", key), ("ACTION", "FETCH"), ("OPTION", &format!("CALL:{call}"))])
+        .and_then(|mut r| r.body_mut().read_to_string())
         .unwrap_or_default();
     // The FETCH response embeds ADIF with HTML-entity-encoded tags, e.g.
     // `&lt;app_qrzlog_logid:10&gt;1482246002`. Pull the digits after each.
@@ -86,8 +86,9 @@ fn qrz_logids_for(key: &str, call: &str) -> Vec<String> {
 
 fn qrz_delete(key: &str, logid: &str) -> Result<String, String> {
     ureq::post("https://logbook.qrz.com/api")
-        .send_form(&[("KEY", key), ("ACTION", "DELETE"), ("LOGIDS", logid)])
+        .send_form([("KEY", key), ("ACTION", "DELETE"), ("LOGIDS", logid)])
         .map_err(|e| e.to_string())?
-        .into_string()
+        .body_mut()
+        .read_to_string()
         .map_err(|e| e.to_string())
 }

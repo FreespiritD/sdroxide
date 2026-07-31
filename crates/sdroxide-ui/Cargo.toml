@@ -25,7 +25,7 @@ bytemuck = { version = "1", features = ["derive"] }
 remote = ["dep:ewebsock", "dep:sdroxide-proto"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rfd = "0.15"
+rfd = "0.17.2"
 # The OS timezone, for the solar view's local-time clock. `clock` is the only
 # feature that matters here; the browser build asks JavaScript for the offset
 # instead, so chrono never reaches the wasm dependency path.
@@ -38,7 +38,7 @@ sdroxide-midi = { path = "../sdroxide-midi" }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-rfd = "0.15"
+rfd = "0.17.2"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Url", "Document", "Window", "HtmlAnchorElement", "HtmlElement"] }
 
@@ -46,4 +46,4 @@ web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Url", "Docu
 # Compiles and validates the WGSL in src/shaders/ as a unit test, so a shader
 # error is a test failure rather than a blank window at runtime. Same version
 # wgpu already uses, so it adds no build time.
-naga = { version = "29", features = ["wgsl-in"] }
+naga = { version = "30.0.0", features = ["wgsl-in"] }

@@ -18,9 +18,9 @@
 //! [`synth_cpfsk`] reproduces JS8Call's waveform exactly and exists so the
 //! difference can be measured rather than argued about.
 
-use mfsk_core::core::dsp::gfsk::{GfskCfg, synth_f32};
-use mfsk_core::core::tx::codeword_to_itone;
-use mfsk_core::core::{FrameLayout, ModulationParams};
+use mfsk_core::engine::dsp::gfsk::{GfskCfg, synth_f32};
+use mfsk_core::engine::tx::codeword_to_itone;
+use mfsk_core::engine::{FrameLayout, ModulationParams};
 use sdroxide_types::Js8Speed;
 
 use super::ldpc;

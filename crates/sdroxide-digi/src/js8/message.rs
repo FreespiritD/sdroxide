@@ -15,7 +15,7 @@
 //! of base64. Rust packs the bits directly, but the mapping is kept here because
 //! it is the form JS8Call's golden vectors come in.
 
-use mfsk_core::core::protocol::{DecodeContext, MessageCodec, MessageFields};
+use mfsk_core::engine::protocol::{DecodeContext, MessageCodec, MessageFields};
 
 use super::crc12::{self, CRC_BITS, MSG_BITS, PAYLOAD_BITS, TYPE_BITS};
 

@@ -3,6 +3,7 @@
 //! decode-result fields** — if the crate's field names change, only
 //! `decode_slot` needs updating.
 
+use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::hash_table::CallsignHashTable;
 use mfsk_core::msg::wsjt77;
 use sdroxide_types::{Decode, Mode};
@@ -140,9 +141,11 @@ impl Ft8Modem {
 
     /// Decode one full receive slot of 12 kHz mono i16 audio.
     ///
-    /// FT8 and FT4 return different mfsk-core result types, so each is mapped
-    /// to our stable [`Decode`] inside its own arm — the only place that
-    /// reads raw mfsk-core fields.
+    /// FT8 and FT4 take different routes through mfsk-core — only FT8 has a
+    /// wide-band a-priori pass — so each is mapped to our stable [`Decode`]
+    /// inside its own arm, the only place that reads raw mfsk-core fields.
+    /// (The two shared one result type as of mfsk-core 0.8; before that they
+    /// were separate types, which is why the arms were split to begin with.)
     ///
     /// `ap` is what we already know about the message we are waiting for (see
     /// [`ApHints`]); `listening_hz` is where we are tuned, which is the only
@@ -161,44 +164,47 @@ impl Ft8Modem {
         let mode = self.mode;
         let ht = &self.hashes;
         let mut decodes: Vec<Decode> = match mode {
-            Mode::Ft4 => {
-                let depth = mfsk_core::core::pipeline::DecodeDepth::BpAllOsd;
-                mfsk_core::ft4::decode::decode_frame_with_options(
-                    audio_12k,
-                    AUDIO_MIN_HZ,
-                    AUDIO_MAX_HZ,
-                    SYNC_MIN,
-                    None,
-                    depth,
-                    MAX_CAND,
-                )
-                .into_iter()
-                .filter_map(|r| {
-                    let bits: [u8; 77] = r.message77().try_into().ok()?;
-                    build_decode(&bits, r.snr_db, r.dt_sec, r.freq_hz, slot_utc, ht)
-                })
-                .collect()
-            }
+            Mode::Ft4 => DecodeRequest::<mfsk_core::Ft4>::new(
+                audio_12k,
+                AUDIO_MIN_HZ,
+                AUDIO_MAX_HZ,
+                SYNC_MIN,
+                MAX_CAND,
+            )
+            .osd(true)
+            .decode()
+            .results
+            .into_iter()
+            .filter_map(|r| {
+                let bits: [u8; 77] = r.message77().try_into().ok()?;
+                build_decode(&bits, r.snr_db, r.dt_sec, r.freq_hz, slot_utc, ht)
+            })
+            .collect(),
             _ => {
-                let depth = mfsk_core::ft8::decode::DecodeDepth::BpAllOsd;
-                // With no hint this is bit-for-bit the plain `decode_frame`;
+                // With no hint this is bit-for-bit the plain wide-band decode;
                 // with one, every candidate that fails an ordinary decode gets a
                 // second attempt with our two callsigns' bits locked.
-                mfsk_core::ft8::decode::decode_frame_with_ap(
+                let hint = ap.ft8();
+                let req = DecodeRequest::<mfsk_core::Ft8>::new(
                     audio_12k,
                     AUDIO_MIN_HZ,
                     AUDIO_MAX_HZ,
                     SYNC_MIN,
-                    None,
-                    depth,
                     MAX_CAND,
-                    ap.ft8().as_ref(),
                 )
-                .into_iter()
-                .filter_map(|r| {
-                    build_decode(&r.message77, r.snr_db, r.dt_sec, r.freq_hz, slot_utc, ht)
-                })
-                .collect()
+                .osd(true);
+                let req = match hint.as_ref() {
+                    Some(h) => req.ap_hint(h),
+                    None => req,
+                };
+                req.decode()
+                    .results
+                    .into_iter()
+                    .filter_map(|r| {
+                        let bits: [u8; 77] = r.message77().try_into().ok()?;
+                        build_decode(&bits, r.snr_db, r.dt_sec, r.freq_hz, slot_utc, ht)
+                    })
+                    .collect()
             }
         };
         // FT4 has no wide-band a-priori pass, only a targeted one. Aim it where
@@ -206,20 +212,25 @@ impl Ft8Modem {
         // describes — and keep whatever it finds that the wide pass missed.
         if mode == Mode::Ft4 {
             if let Some(hint) = ap.ft4() {
-                let extra = mfsk_core::ft4::decode::decode_sniper_ap(
-                    audio_12k,
-                    listening_hz,
-                    MAX_CAND,
-                    mfsk_core::core::equalize::EqMode::Off,
-                    Some(&hint),
-                )
-                .into_iter()
-                .filter_map(|r| {
-                    let bits: [u8; 77] = r.message77().try_into().ok()?;
-                    build_decode(&bits, r.snr_db, r.dt_sec, r.freq_hz, slot_utc, ht)
-                })
-                .filter(|d| !decodes.iter().any(|o| same_signal(o, d)))
-                .collect::<Vec<_>>();
+                let extra =
+                    DecodeRequest::<mfsk_core::Ft4>::sniper(audio_12k, listening_hz, MAX_CAND)
+                        // The threshold the old `decode_sniper_ap` entry point applied
+                        // for us, and looser than the sniper default: with the hint's
+                        // bits locked the FEC can carry a candidate whose coarse sync
+                        // would never qualify on its own.
+                        .sync_min(0.5)
+                        .osd(true)
+                        .eq_mode(mfsk_core::engine::equalize::EqMode::Off)
+                        .ap_hint(&hint)
+                        .decode()
+                        .results
+                        .into_iter()
+                        .filter_map(|r| {
+                            let bits: [u8; 77] = r.message77().try_into().ok()?;
+                            build_decode(&bits, r.snr_db, r.dt_sec, r.freq_hz, slot_utc, ht)
+                        })
+                        .filter(|d| !decodes.iter().any(|o| same_signal(o, d)))
+                        .collect::<Vec<_>>();
                 decodes.extend(extra);
             }
         }
@@ -755,6 +766,42 @@ mod tests {
 
             let plain = Ft8Modem::new(Mode::Ft8).decode_slot(&buf, 0, &ApHints::default(), 1500.0);
             let hinted = Ft8Modem::new(Mode::Ft8).decode_slot(&buf, 0, &ap, 1500.0);
+            for d in &plain {
+                assert!(
+                    hinted.iter().any(|h| h.message == d.message),
+                    "noise {level}: the hinted pass lost {:?}",
+                    d.message
+                );
+            }
+        }
+    }
+
+    /// FT4's hint takes the other path — a targeted sniper decode aimed where
+    /// we are listening, run *after* the wide pass and merged into it. Same
+    /// guarantee as FT8's, and the one that would break silently if the sniper
+    /// were ever aimed, thresholded or de-duplicated wrongly: the wide pass's
+    /// decodes must all survive.
+    #[test]
+    fn an_ft4_a_priori_hint_only_ever_adds_decodes() {
+        let ap = ApHints { my_call: "AB1CD".into(), dx_call: Some("W9XYZ".into()) };
+        let mut rng: u32 = 0x1234_5678;
+        let mut noise = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            (rng as i32 as f32) / (i32::MAX as f32)
+        };
+        for &level in &[0.05f32, 0.2, 0.5] {
+            let modem = Ft8Modem::new(Mode::Ft4);
+            let (burst, _) = modem.encode_burst_12k("AB1CD W9XYZ -13", 1500.0, 0.5).unwrap();
+            let mut slot = vec![0.0f32; 6_000];
+            slot.extend_from_slice(&burst);
+            slot.resize((7.5 * 12_000.0) as usize, 0.0);
+            let buf: Vec<i16> =
+                slot.iter().map(|&s| ((s + level * noise()) * 12_000.0) as i16).collect();
+
+            let plain = Ft8Modem::new(Mode::Ft4).decode_slot(&buf, 0, &ApHints::default(), 1500.0);
+            let hinted = Ft8Modem::new(Mode::Ft4).decode_slot(&buf, 0, &ap, 1500.0);
             for d in &plain {
                 assert!(
                     hinted.iter().any(|h| h.message == d.message),

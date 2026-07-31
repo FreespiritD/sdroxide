@@ -6,15 +6,24 @@
 //! **sealed** `LdpcParams` trait (`src/fec/ldpc/params.rs`), documented as "the
 //! compile-time expression of 'the WSJT LDPC generator matrices are a closed
 //! set'". (174,87) is not in that set and cannot be added from outside, so the
-//! codec is standalone here and plugs back in through the public [`FecCodec`]
-//! trait.
+//! codec is standalone here.
+//!
+//! It used to implement mfsk-core's public `FecCodec` trait as well. mfsk-core
+//! 0.8 sealed that trait (its `decode_soft` is f32-hardcoded and upstream wants
+//! room to make it generic without a breaking change), so the same surface —
+//! `N`, `K`, `encode`, `decode_soft` — is an inherent impl now. Nothing was
+//! lost: every caller here names [`Ldpc174_87`] concretely, and the mfsk-core
+//! code that would consume a `P::Fec` lives entirely in `engine::pipeline`,
+//! which JS8 never enters (see [`super::decode`]). `FecOpts` and `FecResult`
+//! are still public and unsealed, so they stay as the parameter and return
+//! types.
 //!
 //! Two things about this code depart from what a reader familiar with FT8 would
 //! expect, and both come from JS8Call rather than from choice:
 //!
 //! * **The codeword is not systematic-prefix.** Parity occupies `cw[0..87]` and
-//!   the message `cw[87..174]` — the reverse of [`FecCodec`]'s documented
-//!   contract. `lib/ft8/encode174.f90` builds `[parity, message]` and then
+//!   the message `cw[87..174]` — the reverse of the usual systematic
+//!   convention. `lib/ft8/encode174.f90` builds `[parity, message]` and then
 //!   scatters it through a `colorder` permutation; JS8Call's C++ port folds that
 //!   permutation into the generator row order instead, which is the form we
 //!   transcribed. Reordering it to satisfy the trait's letter would mean
@@ -25,7 +34,7 @@
 //! The decoder is a faithful port of `JS8.cpp:744-830`, including its early-stop
 //! heuristic, with one deliberate change noted at [`TANH_CLAMP`].
 
-use mfsk_core::core::protocol::{FecCodec, FecOpts, FecResult};
+use mfsk_core::engine::protocol::{FecOpts, FecResult};
 
 use super::ldpc_tables::{GEN_PARITY, K, M, MAX_ROW, MN, N, NM, NRW};
 
@@ -175,13 +184,15 @@ pub fn bp_decode(
     None
 }
 
-impl FecCodec for Ldpc174_87 {
-    const N: usize = N;
-    const K: usize = K;
+impl Ldpc174_87 {
+    /// Codeword length in bits.
+    pub const N: usize = N;
+    /// Information-bit length.
+    pub const K: usize = K;
 
-    /// Note the deviation from the trait's systematic-prefix contract described
-    /// in the module docs: the information bits land at `codeword[87..174]`.
-    fn encode(&self, info: &[u8], codeword: &mut [u8]) {
+    /// Note the deviation from the systematic-prefix convention described in
+    /// the module docs: the information bits land at `codeword[87..174]`.
+    pub fn encode(&self, info: &[u8], codeword: &mut [u8]) {
         debug_assert_eq!(info.len(), K);
         debug_assert_eq!(codeword.len(), N);
         let mut fixed = [0u8; K];
@@ -189,7 +200,7 @@ impl FecCodec for Ldpc174_87 {
         codeword.copy_from_slice(&encode(&fixed));
     }
 
-    fn decode_soft(&self, llr: &[f32], opts: &FecOpts) -> Option<FecResult> {
+    pub fn decode_soft(&self, llr: &[f32], opts: &FecOpts) -> Option<FecResult> {
         if llr.len() != N {
             return None;
         }
@@ -398,8 +409,8 @@ mod tests {
     #[test]
     fn the_fec_codec_impl_round_trips() {
         let codec = Ldpc174_87;
-        assert_eq!(<Ldpc174_87 as FecCodec>::N, 174);
-        assert_eq!(<Ldpc174_87 as FecCodec>::K, 87);
+        assert_eq!(Ldpc174_87::N, 174);
+        assert_eq!(Ldpc174_87::K, 87);
         let mut rng = Xorshift(0x6666);
         let info = rng.info();
         let mut cw = [0u8; N];

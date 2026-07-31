@@ -12,7 +12,7 @@ sdroxide-dsp.workspace = true
 sdroxide-rade.workspace = true
 # The JS8 candidate loop hands complex baseband between mfsk-core primitives.
 num-complex.workspace = true
-mfsk-core = { version = "0.7.4", default-features = false, features = ["std", "ft8", "ft4", "parallel", "fft-rustfft"] }
+mfsk-core = { version = "0.8.0", default-features = false, features = ["std", "ft8", "ft4", "parallel", "fft-rustfft"] }
 crossbeam-channel.workspace = true
 tracing.workspace = true
 # RIFP: the manifest is JSON, the object is verified with SHA-256, and its
@@ -24,9 +24,9 @@ serde_json = "1"
 sha2 = "0.11"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"] }
-fax = "0.2"
+fax = "0.3.0"
 # Session IDs: the draft asks for a CSPRNG, which is all this is used for.
-getrandom = "0.3"
+getrandom = "0.4.3"
 
 [dev-dependencies]
 # WAV in and out for the JS8 interop bridge and the decoder corpus tests.

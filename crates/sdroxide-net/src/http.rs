@@ -4,42 +4,45 @@
 use std::time::Duration;
 
 /// Shared agent with sane timeouts. Cheap to build per call.
+///
+/// A non-2xx response is deliberately *not* turned into an error here: the
+/// callers report the server's own body on failure (many APIs explain the
+/// rejection in it), and that body is only reachable while the status is still
+/// carried by a response rather than by `Error::StatusCode`.
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout(Duration::from_secs(20))
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_global(Some(Duration::from_secs(20)))
+        .http_status_as_error(false)
         .user_agent(concat!("sdroxide/", env!("CARGO_PKG_VERSION")))
         .build()
+        .into()
 }
 
 /// GET `url`, returning the response body as a string.
 pub fn get(url: &str) -> Result<String, String> {
-    agent().get(url).call().map_err(err_string)?.into_string().map_err(|e| e.to_string())
+    body_or_status(agent().get(url).call().map_err(|e| e.to_string())?)
 }
 
 /// POST `fields` as `application/x-www-form-urlencoded`.
 pub fn post_form(url: &str, fields: &[(&str, &str)]) -> Result<String, String> {
-    agent()
-        .post(url)
-        .send_form(fields)
-        .map_err(err_string)?
-        .into_string()
-        .map_err(|e| e.to_string())
+    body_or_status(agent().post(url).send_form(fields.iter().copied()).map_err(|e| e.to_string())?)
 }
 
-/// Turn a ureq error into a compact message, unwrapping HTTP status errors so
-/// the caller sees the server's own body (many APIs report failures in it).
-fn err_string(e: ureq::Error) -> String {
-    match e {
-        ureq::Error::Status(code, resp) => {
-            let body = resp.into_string().unwrap_or_default();
-            let body = body.trim();
-            if body.is_empty() {
-                format!("HTTP {code}")
-            } else {
-                format!("HTTP {code}: {}", body.chars().take(200).collect::<String>())
-            }
-        }
-        ureq::Error::Transport(t) => t.to_string(),
+/// The body as a string, or a compact message for an HTTP status error that
+/// keeps the server's own body so the caller can report why it was rejected.
+fn body_or_status(mut resp: ureq::http::Response<ureq::Body>) -> Result<String, String> {
+    let status = resp.status();
+    // Same 10 MB cap `read_to_string` applies by default.
+    let body = resp.body_mut().read_to_string().map_err(|e| e.to_string())?;
+    if status.is_success() {
+        return Ok(body);
+    }
+    let code = status.as_u16();
+    let body = body.trim();
+    if body.is_empty() {
+        Err(format!("HTTP {code}"))
+    } else {
+        Err(format!("HTTP {code}: {}", body.chars().take(200).collect::<String>()))
     }
 }

@@ -358,7 +358,7 @@ fn encode_group4(gray: &[u8], w: u16, h: u16) -> Result<Vec<u8>, String> {
     for y in 0..hi {
         let row = &gray[y * wi..(y + 1) * wi];
         let pels = row.iter().map(|&p| if p >= 128 { Color::White } else { Color::Black });
-        encoder.encode_line(pels, w).map_err(|_| "Group 4 encode failed".to_string())?;
+        encoder.encode_line(pels, w as u32).map_err(|_| "Group 4 encode failed".to_string())?;
     }
     let writer = encoder.finish().map_err(|_| "Group 4 encode failed".to_string())?;
     Ok(fax::tiff::wrap(&writer.finish(), w as u32, h as u32))

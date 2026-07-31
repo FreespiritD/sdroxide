@@ -1,6 +1,6 @@
 //! The JS8 candidate loop: a slot of 12 kHz audio in, decoded frames out.
 //!
-//! ## Why this does not call `mfsk_core::core::pipeline`
+//! ## Why this does not call `mfsk_core::engine::pipeline`
 //!
 //! `pipeline::decode_frame` and `process_candidate_basic` would give us this
 //! loop for free, but both branch on `P::ID` — at `pipeline.rs:184`, `:299`,
@@ -31,11 +31,11 @@
 //! accept the gap; measuring it against JS8Call on a live band is the job of the
 //! on-air milestone.
 
-use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
-use mfsk_core::core::llr::{compute_llr, symbol_spectra, sync_quality};
-use mfsk_core::core::protocol::{FecCodec, FecOpts};
-use mfsk_core::core::sync::{SyncCandidate, coarse_sync, refine_candidate};
-use mfsk_core::core::{FrameLayout, ModulationParams};
+use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+use mfsk_core::engine::protocol::FecOpts;
+use mfsk_core::engine::sync::{SyncCandidate, coarse_sync, refine_candidate};
+use mfsk_core::engine::{FrameLayout, ModulationParams};
 use num_complex::Complex;
 use sdroxide_types::Js8Speed;
 

@@ -15,11 +15,10 @@
 //!   while the faster speeds use three **different** arrays. There are two sets,
 //!   not one, and Normal's is not FT8's.
 
-use mfsk_core::core::dsp::downsample::DownsampleCfg;
-use mfsk_core::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode};
+use mfsk_core::engine::dsp::downsample::DownsampleCfg;
+use mfsk_core::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode};
 use sdroxide_types::Js8Speed;
 
-use super::ldpc::Ldpc174_87;
 use super::message::Js8Message;
 
 /// JS8 does not Gray-code its data symbols — the tone *is* the 3-bit codeword
@@ -109,13 +108,23 @@ macro_rules! js8_speed {
         }
 
         impl Protocol for $ty {
-            type Fec = Ldpc174_87;
+            // Both of the following are inert tags, for the same reason:
+            // `super::decode` owns its own candidate loop and never enters
+            // `mfsk_core::engine::pipeline`, the only place either is read.
+            // Do not "simplify" that away without reading the note in
+            // `super::decode`.
+            //
+            // `ProtocolId` has no JS8 variant, and it is only an FFI/registry
+            // tag; entering the pipeline would apply FT8/FT4 gates to us.
+            //
+            // `Fec` cannot name JS8's real codec at all since mfsk-core 0.8
+            // sealed `FecCodec` — see [`super::ldpc`], which carries the
+            // (174,87) code as an inherent impl and is called directly. The
+            // FT8 codec stands in only to satisfy the associated-type bound;
+            // it shares JS8's 174-bit codeword length and differs in K
+            // (91 vs 87), so it would be wrong if anything ever read it.
+            type Fec = mfsk_core::fec::Ldpc174_91;
             type Msg = Js8Message;
-            // `ProtocolId` has no JS8 variant and is only an FFI/registry tag.
-            // It is inert for us because `super::decode` owns its own candidate
-            // loop and never enters `mfsk_core::core::pipeline`, whose FT8/FT4
-            // gates would otherwise apply. Do not "simplify" that away without
-            // reading the note in `super::decode`.
             const ID: ProtocolId = ProtocolId::Ft8;
         }
 
