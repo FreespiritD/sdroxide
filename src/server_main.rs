@@ -38,6 +38,9 @@ pub fn run(
             // A headless server is typically started before the rig it talks
             // to; the engine uses this to attach as soon as the radio is there.
             reopen,
+            // The server *is* the radio for everyone connected to it, so it is
+            // the side that remembers where the last session was left.
+            remember_session: true,
         },
     );
 

@@ -47,3 +47,7 @@ web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Url", "Docu
 # error is a test failure rather than a blank window at runtime. Same version
 # wgpu already uses, so it adds no build time.
 naga = { version = "30.0.0", features = ["wgsl-in"] }
+# The format eframe's storage uses, so the persisted-state tests can read a blob
+# written by an older version exactly as the app would. Already in the tree via
+# eframe, so it adds no build time either.
+ron = "0.12"

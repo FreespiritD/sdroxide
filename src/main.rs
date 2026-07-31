@@ -40,9 +40,9 @@ struct Cli {
     #[arg(long)]
     file: Option<std::path::PathBuf>,
 
-    /// Center frequency in Hz
-    #[arg(long, default_value_t = 14_200_000.0)]
-    freq: f64,
+    /// Center frequency in Hz (default: where the last session was left)
+    #[arg(long)]
+    freq: Option<f64>,
 
     /// Sample rate in Hz (default: from config)
     #[arg(long)]
@@ -54,6 +54,8 @@ struct Cli {
 
     /// Initial mode (USB, LSB, CW, AM, SAM, NFM, WFM, DIGU, DIGL, DSB, SPEC, FT8,
     /// FT4, PSK, RTTY, SSTV, RIFP, OLIVIA, THOR, FSQ)
+    ///
+    /// Default: the mode the last session was left in.
     #[arg(long)]
     mode: Option<sdroxide_types::Mode>,
 
@@ -135,6 +137,28 @@ struct Cli {
 }
 
 impl Cli {
+    /// The dial to open the front end on. Always resolved by
+    /// [`Cli::restore_session`] before anything reads it; the fallback is only
+    /// so this can never panic on a code path that skipped that.
+    fn center_hz(&self) -> f64 {
+        self.freq.unwrap_or_else(|| sdroxide_config::Session::default().freq_hz)
+    }
+
+    /// Fill in the frequency and mode the operator did not ask for from where
+    /// the last session was left, so the program comes back up where it was.
+    /// Returns the mode the engine should start in.
+    fn restore_session(&mut self) -> Option<sdroxide_types::Mode> {
+        self.apply_session(sdroxide_config::load_session())
+    }
+
+    /// The command line always wins; whatever it left out comes from the
+    /// remembered session.
+    fn apply_session(&mut self, session: sdroxide_config::Session) -> Option<sdroxide_types::Mode> {
+        self.freq = Some(self.freq.unwrap_or(session.freq_hz));
+        self.mode = Some(self.mode.unwrap_or(session.mode));
+        self.mode
+    }
+
     /// Whether the engine should refuse to key outside the amateur bands.
     ///
     /// The flag can only ever *loosen* the config, never tighten it: a build
@@ -151,13 +175,14 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     let settings = Settings::load();
 
     if cli.probe {
         return probe(&cli, &settings);
     }
     if cli.console {
+        cli.restore_session();
         let (source, _caps) = open_source(&cli, &settings)?;
         return console::run(
             source,
@@ -171,6 +196,10 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
+    // The headless smoke tests below deliberately do *not* restore the
+    // remembered dial. They are diagnostics — one of them keys a carrier — and
+    // they have to run somewhere predictable rather than wherever the last
+    // session happened to end. `--freq` still moves them.
     if let Some(secs) = cli.tx_tune {
         let (source, caps) = open_source(&cli, &settings)?;
         return tx_tune_test(source, caps, cli.tx_ham_only(&settings), secs.clamp(0.2, 10.0));
@@ -188,6 +217,7 @@ fn main() -> anyhow::Result<()> {
         return freedv_reporter_probe(&cli.freedv_reporter_host, secs.clamp(2.0, 300.0));
     }
     if cli.server {
+        let initial_mode = cli.restore_session();
         let (source, caps) = open_source(&cli, &settings)?;
         let port = cli.port.unwrap_or(settings.server_port);
         return server_main::run(
@@ -195,24 +225,27 @@ fn main() -> anyhow::Result<()> {
             caps,
             &settings,
             cli.tx_ham_only(&settings),
-            cli.mode,
+            initial_mode,
             port,
             cli.web_root.clone(),
             Some(reopen_factory(&cli)),
         );
     }
+    // A remote client drives somebody else's engine; that engine is the one
+    // that remembers where its radio was left.
     if let Some(target) = &cli.connect {
         let url = if target.contains("://") { target.clone() } else { format!("ws://{target}/ws") };
         return gui_main::run_remote(&url);
     }
 
+    let initial_mode = cli.restore_session();
     let (source, caps) = open_source(&cli, &settings)?;
     gui_main::run(
         source,
         caps,
         &settings,
         cli.tx_ham_only(&settings),
-        cli.mode,
+        initial_mode,
         Some(reopen_factory(&cli)),
     )
 }
@@ -227,7 +260,7 @@ fn reopen_factory(cli: &Cli) -> sdroxide_radio::ReopenFn {
     let cli = cli.clone();
     Box::new(move |center: f64| {
         let mut c = cli.clone();
-        c.freq = center;
+        c.freq = Some(center);
         let settings = Settings::load();
         if c.siggen || c.file.is_some() {
             return open_source(&c, &settings).map_err(|e| format!("{e:#}"));
@@ -611,7 +644,7 @@ fn open_source(cli: &Cli, settings: &Settings) -> anyhow::Result<(Box<dyn IqSour
 
     if cli.siggen {
         return Ok((
-            Box::new(SigGenSource::demo(rate, cli.freq)),
+            Box::new(SigGenSource::demo(rate, cli.center_hz())),
             synthetic_caps("Signal generator"),
         ));
     }
@@ -619,7 +652,7 @@ fn open_source(cli: &Cli, settings: &Settings) -> anyhow::Result<(Box<dyn IqSour
         let label = format!("IQ file {}", path.display());
         return Ok((
             Box::new(
-                FileSource::open(path, rate, cli.freq)
+                FileSource::open(path, rate, cli.center_hz())
                     .with_context(|| format!("opening IQ file {}", path.display()))?,
             ),
             synthetic_caps(&label),
@@ -640,7 +673,10 @@ fn open_source(cli: &Cli, settings: &Settings) -> anyhow::Result<(Box<dyn IqSour
             tracing::warn!("radio interface unavailable: {e:#}");
             let msg =
                 format!("{e}. Retrying — or open Settings → Radio to choose another interface.");
-            Ok((Box::new(null_source::NullSource::new(cli.freq, msg)), synthetic_caps("No radio")))
+            Ok((
+                Box::new(null_source::NullSource::new(cli.center_hz(), msg)),
+                synthetic_caps("No radio"),
+            ))
         }
     }
 }
@@ -654,10 +690,10 @@ fn open_configured_source(
 ) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
     match radio.backend {
         Backend::Cat => open_cat_source(radio),
-        Backend::Hpsdr => open_hpsdr_source(radio, cli.freq),
-        Backend::Tci => open_tci_source(radio, cli.freq),
-        Backend::RtlSdr => open_rtlsdr_source(radio, cli.freq),
-        Backend::Rx888 => open_rx888_source(radio, cli.freq),
+        Backend::Hpsdr => open_hpsdr_source(radio, cli.center_hz()),
+        Backend::Tci => open_tci_source(radio, cli.center_hz()),
+        Backend::RtlSdr => open_rtlsdr_source(radio, cli.center_hz()),
+        Backend::Rx888 => open_rx888_source(radio, cli.center_hz()),
         Backend::Soapy => open_soapy_source(cli, settings),
         Backend::Auto => {
             #[cfg(feature = "soapy")]
@@ -692,7 +728,7 @@ fn open_soapy_source(
     let dev =
         SoapyDevice::open(&info.args).with_context(|| format!("opening device {}", info.label))?;
     let caps = dev.caps().clone();
-    Ok((Box::new(dev.rx_source(rate, cli.freq, cli.gain)?), caps))
+    Ok((Box::new(dev.rx_source(rate, cli.center_hz(), cli.gain)?), caps))
 }
 
 #[cfg(not(feature = "soapy"))]
@@ -970,5 +1006,50 @@ mod tests {
         assert!(!Cli::parse_from(["sdroxide"]).oob_tx);
         assert!(Cli::parse_from(["sdroxide", "--oob-tx"]).oob_tx);
         assert!(Settings::default().tx_ham_only, "the shipped default is locked");
+    }
+
+    fn session(freq_hz: f64, mode: sdroxide_types::Mode) -> sdroxide_config::Session {
+        sdroxide_config::Session { freq_hz, mode }
+    }
+
+    /// Starting with no arguments is the case this exists for: come back up on
+    /// the frequency and mode the radio was left on, not on a fixed default.
+    #[test]
+    fn a_bare_start_comes_up_where_the_last_session_ended() {
+        let mut c = Cli::parse_from(["sdroxide"]);
+        let mode = c.apply_session(session(7_074_000.0, sdroxide_types::Mode::Ft8));
+        assert_eq!(c.center_hz(), 7_074_000.0);
+        assert_eq!(mode, Some(sdroxide_types::Mode::Ft8));
+        assert_eq!(c.mode, mode, "the engine and the source agree on the mode");
+    }
+
+    /// The command line is an instruction, not a suggestion: what it names must
+    /// survive the restore, and only what it left out may be filled in.
+    #[test]
+    fn the_command_line_outranks_the_remembered_session() {
+        let mut both = Cli::parse_from(["sdroxide", "--freq", "50150000", "--mode", "cw"]);
+        both.apply_session(session(7_074_000.0, sdroxide_types::Mode::Ft8));
+        assert_eq!(both.center_hz(), 50_150_000.0);
+        assert_eq!(both.mode, Some(sdroxide_types::Mode::Cw));
+
+        // Each half is independent — naming one must not discard the other.
+        let mut freq_only = Cli::parse_from(["sdroxide", "--freq", "50150000"]);
+        freq_only.apply_session(session(7_074_000.0, sdroxide_types::Mode::Ft8));
+        assert_eq!(freq_only.center_hz(), 50_150_000.0);
+        assert_eq!(freq_only.mode, Some(sdroxide_types::Mode::Ft8), "the mode is still restored");
+
+        let mut mode_only = Cli::parse_from(["sdroxide", "--mode", "cw"]);
+        mode_only.apply_session(session(7_074_000.0, sdroxide_types::Mode::Ft8));
+        assert_eq!(mode_only.center_hz(), 7_074_000.0, "the frequency is still restored");
+        assert_eq!(mode_only.mode, Some(sdroxide_types::Mode::Cw));
+    }
+
+    /// A run that never restores anything — the headless smoke tests — still
+    /// has to open a front end somewhere, on the frequency this program has
+    /// always defaulted to.
+    #[test]
+    fn a_run_that_skips_the_restore_keeps_the_old_default() {
+        assert_eq!(Cli::parse_from(["sdroxide"]).center_hz(), 14_200_000.0);
+        assert_eq!(Cli::parse_from(["sdroxide", "--freq", "50150000"]).center_hz(), 50_150_000.0);
     }
 }

@@ -53,6 +53,8 @@ pub fn run(
         initial_mode,
         tx_ham_only,
         reopen,
+        // This engine is the operator's radio: remember where they leave it.
+        remember_session: true,
     };
     let mut handles = start_engine(source, caps, cfg);
     let engine_thread = handles.thread.take();

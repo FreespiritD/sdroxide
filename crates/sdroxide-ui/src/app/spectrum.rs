@@ -324,6 +324,15 @@ impl SdroxideApp {
         if self.view.is_unset() {
             return; // spectrum_view will fit and center on first draw
         }
+        // A restored zoom only means anything against the front end it was
+        // saved with. Come up on a different interface — or on the same one at
+        // another sample rate — and last session's window can be wider than the
+        // whole passband, which draws the spectrum squeezed into part of the
+        // panadapter with dead space either side. Only the width is wrong;
+        // where it sits is settled just below.
+        if first && self.state.sample_rate > 0.0 && self.view.span() > self.state.sample_rate {
+            self.view.fit(self.state.center_hz, self.state.sample_rate);
+        }
         let moved = (vfo - prev_vfo).abs() > 0.5;
         let outside = !(self.view.view_lo_hz..=self.view.view_hi_hz).contains(&vfo);
         if (moved || first) && outside {

@@ -3099,10 +3099,10 @@ Longwave and the HF standard-time stations are not in EiBi's file — it starts 
 | `--console` | Terminal (text) waterfall instead of the GUI. |
 | `--siggen` | Use the built-in signal generator instead of hardware. |
 | `--file <PATH>` | Play a raw interleaved CF32 IQ file instead of hardware. |
-| `--freq <HZ>` | Center frequency in Hz (default 14,200,000). |
+| `--freq <HZ>` | Center frequency in Hz (default: where the last session was left, or 14,200,000 on a first run). |
 | `--rate <HZ>` | Sample rate in Hz (default: from config). |
 | `--gain <DB>` | Overall RX gain in dB (default: hardware AGC or a moderate value). |
-| `--mode <MODE>` | Initial mode (USB, LSB, CW, AM, SAM, NFM, WFM, DIGU, DIGL, DSB, SPEC, FT8, FT4, PSK, RTTY, OLIVIA, THOR, FSQ, SSTV, RIFP, WEFAX, RFPAINT, RADE). |
+| `--mode <MODE>` | Initial mode (USB, LSB, CW, AM, SAM, NFM, WFM, DIGU, DIGL, DSB, SPEC, FT8, FT4, PSK, RTTY, OLIVIA, THOR, FSQ, SSTV, RIFP, WEFAX, RFPAINT, RADE). Default: the mode the last session was left in. |
 | `--server` | Run as a server (web client + WebSocket streaming backend). |
 | `--connect <HOST[:PORT]>` | Connect as a native remote client to a running server. |
 | `--port <PORT>` | Server port (default: from config, 4950). |
@@ -3173,6 +3173,7 @@ sdroxide stores its settings under the per-user config directory:
 | `digi.json` | JSON | FT8/FT4 operator settings: your callsign and grid, TX period, auto-sequence, and message templates. |
 | `memories.json` | JSON | Saved memory channels. |
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |
+| `session.json` | JSON | Where you left the radio: the dial frequency and the mode, restored the next time you start. Written by the engine as you tune, so `--freq` and `--mode` override it for a run without changing it. |
 | `qso_log.json` | JSON | The logbook (digital and manual QSOs, with contest/QSL fields). |
 | `net.json` | JSON | Network cockpit: DX cluster / POTA / SOTA / PSK / FreeDV Reporter feed settings, and callsign-lookup / eQSL / QRZ / Club Log / LoTW credentials (stored in plaintext). |
 | `tciserver.json` | JSON | Built-in TCI server: enabled, bind address, port, advertised device name, whether clients may transmit, and the client limit. |

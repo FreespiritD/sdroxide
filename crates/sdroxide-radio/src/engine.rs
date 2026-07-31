@@ -106,6 +106,13 @@ pub struct EngineConfig {
     /// Rebuilds the IQ source at runtime when the operator switches interfaces.
     /// `None` disables runtime interface switching (a restart is then required).
     pub reopen: Option<ReopenFn>,
+    /// Write the dial and mode to `session.json` as the radio is used, so the
+    /// next start comes up where this one left off.
+    ///
+    /// Off by default: the headless smoke tests and the integration tests bring
+    /// engines up on synthetic sources, and none of them may overwrite what the
+    /// operator left the radio on.
+    pub remember_session: bool,
 }
 
 impl Default for EngineConfig {
@@ -117,6 +124,7 @@ impl Default for EngineConfig {
             initial_mode: None,
             tx_ham_only: true,
             reopen: None,
+            remember_session: false,
         }
     }
 }
@@ -779,6 +787,11 @@ struct Engine {
     /// Network cockpit: owns the spot feeds (DX cluster / POTA / SOTA / PSK)
     /// and the lookup/upload worker threads. The engine only drains it.
     spots: sdroxide_net::SpotManager,
+    /// What was last written to `session.json`, so the periodic check only
+    /// touches the disk when the operator has actually moved. `None` when this
+    /// engine does not remember its session (see
+    /// [`EngineConfig::remember_session`]).
+    session: Option<sdroxide_config::Session>,
 }
 
 /// Target width of the CW skimmer window (Hz); the Ddc snaps to the nearest
@@ -789,6 +802,11 @@ const SKIM_TARGET_HZ: f64 = 192_000.0;
 /// runs, and the ceiling the spacing doubles up to while attempts keep failing.
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(15);
+
+/// How often the dial and mode are compared against what is in `session.json`.
+/// Only a change writes anything, and a clean exit flushes as well, so this
+/// interval only decides how much tuning a crash or a kill can lose.
+const SESSION_SAVE_INTERVAL: Duration = Duration::from_secs(10);
 
 fn engine_thread(
     source: Box<dyn IqSource>,
@@ -952,6 +970,12 @@ fn engine_thread(
         retry_at: None,
         retry_every: RETRY_FIRST,
         spots: sdroxide_net::SpotManager::new(),
+        // Seeded with what is already on disk rather than with the state this
+        // engine came up in, so the file always ends up describing where the
+        // radio actually was: a start that overrode the dial (`--freq`, or a
+        // CAT rig reporting its own) is a difference like any other, and gets
+        // written even if nothing is touched afterwards.
+        session: engine_cfg.remember_session.then(sdroxide_config::load_session),
     };
     if let Some(mic) = &engine.mic {
         engine.mic_resampler = MonoResampler::new(mic.rate, 48_000.0);
@@ -994,6 +1018,7 @@ fn engine_thread(
     let mut buf = vec![Complex32::default(); 16_384];
     let mut next_frame = Instant::now();
     let mut next_meters = Instant::now();
+    let mut next_session = Instant::now() + SESSION_SAVE_INTERVAL;
 
     loop {
         loop {
@@ -1112,6 +1137,10 @@ fn engine_thread(
                 let _ = engine.event_tx.send(RadioEvent::Meters(m));
             }
         }
+        if now >= next_session {
+            next_session = now + SESSION_SAVE_INTERVAL;
+            engine.save_session();
+        }
     }
 }
 
@@ -1174,6 +1203,10 @@ impl RigDigest {
 
 impl Drop for Engine {
     fn drop(&mut self) {
+        // Where the radio was left, for the next start. Here as well as on the
+        // periodic tick because a clean quit is the common case, and it would
+        // otherwise lose up to one tick's worth of tuning.
+        self.save_session();
         // Finalize any in-progress recording so the MP3 file is closed cleanly
         // when the engine thread exits (all controllers gone / fatal error).
         if let Some(rec) = self.recorder.take() {
@@ -3153,6 +3186,32 @@ impl Engine {
         }
         self.retune_for_vfo(entry.freq_hz);
         self.update_tuning();
+    }
+
+    /// Write the dial and mode to `session.json` if either has moved since the
+    /// last write, so the next start comes up here rather than on the default
+    /// frequency. A no-op on an engine that isn't remembering its session.
+    ///
+    /// Compared before writing rather than written on every change: the dial
+    /// moves continuously while it is being spun, and none of those hundreds of
+    /// intermediate frequencies is worth a file write.
+    fn save_session(&mut self) {
+        let Some(saved) = self.session else { return };
+        // The active VFO's dial, not VFO A's: an operator working on B should
+        // come back up on that frequency. It is restored as A — remembering
+        // which of the two was in use is a bigger promise than this makes.
+        let now = sdroxide_config::Session {
+            freq_hz: self.state.active_freq_hz(),
+            mode: self.state.rx[0].mode,
+        };
+        if now == saved {
+            return;
+        }
+        match sdroxide_config::save_session(&now) {
+            Ok(()) => self.session = Some(now),
+            // Don't latch the new value on failure, so the next tick retries.
+            Err(e) => warn!("saving the session (dial + mode): {e}"),
+        }
     }
 
     fn save_memories(&mut self) {

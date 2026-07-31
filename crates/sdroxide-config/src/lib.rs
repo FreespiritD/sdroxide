@@ -209,6 +209,52 @@ impl Settings {
     }
 }
 
+/// Where the operator left the radio (`session.json`): the dial and the mode.
+/// Restored on the next start, so the program comes back up where it was
+/// instead of on a fixed default frequency.
+///
+/// Deliberately not part of `config.toml`. That file holds preferences the
+/// operator sets once; this is written by the engine as the radio is used, and
+/// the command line still wins over it (`--freq`, `--mode`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Session {
+    /// Dial frequency of VFO A, in Hz.
+    pub freq_hz: f64,
+    /// Mode of the main receiver.
+    pub mode: sdroxide_types::Mode,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        // The 20 m band-stack default — exactly where the program started every
+        // time before it remembered anything.
+        let (freq_hz, mode) = sdroxide_types::Band::M20.default_entry();
+        Session { freq_hz, mode }
+    }
+}
+
+impl Session {
+    /// Whether this record can be restored.
+    ///
+    /// The frequency is handed straight to a front end as its centre, so a
+    /// hand-edited or truncated file must not be able to open the receiver on
+    /// 0 Hz or NaN — a far worse failure than a forgotten session.
+    fn is_usable(&self) -> bool {
+        self.freq_hz.is_finite() && self.freq_hz > 0.0
+    }
+}
+
+/// The remembered dial and mode, or the defaults on a first run.
+pub fn load_session() -> Session {
+    let s: Session = load_json("session.json");
+    if s.is_usable() { s } else { Session::default() }
+}
+
+pub fn save_session(session: &Session) -> Result<(), ConfigError> {
+    save_json("session.json", session)
+}
+
 /// Band-stack registers: up to 3 remembered (freq, mode, filter) per band.
 pub type BandStacks =
     std::collections::HashMap<sdroxide_types::Band, Vec<sdroxide_types::BandStackEntry>>;
@@ -420,8 +466,7 @@ pub fn broadcast_stations_path() -> Result<PathBuf, ConfigError> {
 pub fn broadcast_cache_path(season: &str) -> Result<PathBuf, ConfigError> {
     // The season is used in a filename, so it must not be able to escape the
     // directory even though it is computed rather than typed in.
-    let season: String =
-        season.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
+    let season: String = season.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
     Ok(config_dir()?.join(BROADCAST_CACHE_DIR).join(format!("sked-{season}.csv")))
 }
 
@@ -696,6 +741,39 @@ mod tests {
     }
 
     #[test]
+    fn session_roundtrips_via_json() {
+        let s = Session { freq_hz: 7_074_000.0, mode: sdroxide_types::Mode::Ft8 };
+        let back: Session = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+    }
+
+    /// The first run, and every run before this file existed, has to land where
+    /// the program has always started.
+    #[test]
+    fn the_session_default_is_where_the_program_always_started() {
+        let s = Session::default();
+        assert_eq!(s.freq_hz, 14_200_000.0);
+        assert_eq!(s.mode, sdroxide_types::Mode::Usb);
+        // A file missing a key still loads; only what it names is used.
+        let partial: Session = serde_json::from_str(r#"{"freq_hz":3573000.0}"#).unwrap();
+        assert_eq!(partial.freq_hz, 3_573_000.0);
+        assert_eq!(partial.mode, s.mode);
+    }
+
+    /// This frequency is handed straight to a front end as its centre, so a
+    /// nonsense one has to be dropped rather than passed on: a receiver opening
+    /// at 0 Hz or NaN is a much worse failure than a forgotten session.
+    #[test]
+    fn a_session_frequency_that_is_not_one_is_refused() {
+        for bad in [0.0, -14_200_000.0, f64::NAN, f64::INFINITY] {
+            let s = Session { freq_hz: bad, ..Session::default() };
+            assert!(!s.is_usable(), "{bad} should not be accepted as a dial frequency");
+        }
+        assert!(Session { freq_hz: 1_840_000.0, ..Session::default() }.is_usable());
+        assert!(Session::default().is_usable(), "the fallback must itself be restorable");
+    }
+
+    #[test]
     fn default_settings_roundtrip_via_toml() {
         let s = Settings::default();
         let text = toml::to_string_pretty(&s).unwrap();
@@ -739,8 +817,8 @@ mod tests {
     /// A scratch directory of our own, so the station-list tests never touch the
     /// operator's real config. No `tempfile` dependency for a handful of tests.
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("sdroxide-bc-test-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("sdroxide-bc-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("scratch dir");
         dir.join(BROADCAST_STATIONS_FILE)
@@ -790,10 +868,8 @@ mod tests {
     #[test]
     fn an_override_on_a_different_frequency_is_an_addition() {
         // Same station, another channel — not a correction of the first.
-        let merged = apply_broadcast_overrides(
-            vec![station("BBC", 15400.0)],
-            vec![station("BBC", 12095.0)],
-        );
+        let merged =
+            apply_broadcast_overrides(vec![station("BBC", 15400.0)], vec![station("BBC", 12095.0)]);
         assert_eq!(merged.len(), 2);
     }
 

@@ -4220,6 +4220,7 @@ dependencies = [
  "js-sys",
  "naga 30.0.0",
  "rfd",
+ "ron",
  "sdroxide-config",
  "sdroxide-midi",
  "sdroxide-proto",

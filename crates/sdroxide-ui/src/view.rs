@@ -10,6 +10,16 @@ pub struct ViewState {
     /// Visible frequency window; 0/0 means "fit the full device span".
     pub view_lo_hz: f64,
     pub view_hi_hz: f64,
+    /// Voice-mode window saved on entering FT8/FT4 (which locks the view to the
+    /// narrow sub-band), restored on leaving so the panadapter isn't left stuck
+    /// zoomed in.
+    ///
+    /// Persisted with the rest of the view, not held only in memory: quitting
+    /// from a digital mode would otherwise store the sub-band window as *the*
+    /// zoom, and the next voice mode would come up zoomed into 3.7 kHz of a
+    /// band the operator had been looking at whole.
+    #[serde(default)]
+    pub pre_digi_view: Option<(f64, f64)>,
     pub db_floor: f32,
     pub db_ceil: f32,
     pub fft_size: u32,
@@ -267,6 +277,7 @@ impl Default for ViewState {
         ViewState {
             view_lo_hz: 0.0,
             view_hi_hz: 0.0,
+            pre_digi_view: None,
             db_floor: -120.0,
             db_ceil: -20.0,
             fft_size: 4096,
@@ -342,4 +353,40 @@ fn js8_split_default() -> f32 {
 /// gallery had before the divider was draggable.
 fn wefax_gallery_default() -> f32 {
     0.18
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// eframe's storage is one blob per key, so a field added here has to be
+    /// optional in the stored form or *every* existing panadapter view — zoom,
+    /// levels, every panel divider — would fail to parse and reset to defaults
+    /// on the version that added it.
+    #[test]
+    fn a_view_stored_by_an_older_version_still_loads() {
+        // A real `"view"` blob, from before the zoom was remembered across a
+        // digital-mode session.
+        let stored = "(view_lo_hz:14062061.420876093,view_hi_hz:14289352.162287109,\
+                      db_floor:-129.32353,db_ceil:-100.0,fft_size:32768,\
+                      spectrum_fraction:0.17981522,peak_hold:false)";
+        let v: ViewState = ron::from_str(stored).expect("an older view must still parse");
+        assert_eq!(v.view_lo_hz, 14_062_061.420876093, "the zoom survives the upgrade");
+        assert_eq!(v.fft_size, 32_768);
+        assert_eq!(v.pre_digi_view, None, "the new field falls back to its default");
+        // Everything the blob never mentioned comes from the defaults.
+        assert_eq!(v.smeter_style, ViewState::default().smeter_style);
+    }
+
+    #[test]
+    fn the_view_roundtrips_through_storage() {
+        let v = ViewState {
+            view_lo_hz: 7_074_000.0,
+            view_hi_hz: 7_077_000.0,
+            pre_digi_view: Some((7_000_000.0, 7_200_000.0)),
+            ..ViewState::default()
+        };
+        let back: ViewState = ron::from_str(&ron::to_string(&v).unwrap()).unwrap();
+        assert_eq!(back, v);
+    }
 }

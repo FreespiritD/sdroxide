@@ -259,8 +259,8 @@ impl eframe::App for SdroxideApp {
         } else if self.state.rx[0].mode.is_digital() {
             // Remember the voice-mode view once, so leaving FT8 can restore it
             // instead of leaving the panadapter zoomed to the sub-band.
-            if self.pre_digi_view.is_none() {
-                self.pre_digi_view = Some((self.view.view_lo_hz, self.view.view_hi_hz));
+            if self.view.pre_digi_view.is_none() {
+                self.view.pre_digi_view = Some((self.view.view_lo_hz, self.view.view_hi_hz));
             }
             // Lock the view to the digital sub-band (audio 0..3.5 kHz above dial).
             let dial = self.state.rx_freq_hz();
@@ -407,7 +407,7 @@ impl eframe::App for SdroxideApp {
         } else {
             // Restore the pre-FT8 view span once, on the first voice frame
             // after leaving a digital mode.
-            if let Some((lo, hi)) = self.pre_digi_view.take() {
+            if let Some((lo, hi)) = self.view.pre_digi_view.take() {
                 self.view.view_lo_hz = lo;
                 self.view.view_hi_hz = hi;
             }

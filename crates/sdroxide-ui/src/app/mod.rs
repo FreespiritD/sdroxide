@@ -204,10 +204,6 @@ pub struct SdroxideApp {
     digi_new_only: bool,
     /// The FT8 free-text entry, sent verbatim in the next transmit slot.
     digi_free_text: String,
-    /// Voice-mode view span saved on entering FT8/FT4 (which locks the view to
-    /// the narrow sub-band), restored on leaving so the panadapter isn't left
-    /// stuck zoomed in.
-    pre_digi_view: Option<(f64, f64)>,
     /// Logbook overlay open state, and the in-progress new/edit entry (if any).
     show_logbook: bool,
     log_edit: Option<LogEditForm>,
@@ -419,7 +415,6 @@ impl SdroxideApp {
             digi_cq_only: false,
             digi_new_only: false,
             digi_free_text: String::new(),
-            pre_digi_view: None,
             show_logbook: false,
             log_edit: None,
             spots: Vec::new(),
