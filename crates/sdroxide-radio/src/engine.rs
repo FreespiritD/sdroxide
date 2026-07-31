@@ -101,6 +101,10 @@ pub struct EngineConfig {
     pub cal_offset_db: f32,
     /// Startup mode override (e.g. from `--mode wfm`).
     pub initial_mode: Option<Mode>,
+    /// Startup antenna overrides (`--antenna`, `--tx-antenna`), RX then TX.
+    /// Each outranks what the session remembered, and is ignored when the front
+    /// end does not offer a port by that name.
+    pub initial_antenna: (Option<String>, Option<String>),
     /// Refuse to key up outside amateur bands.
     pub tx_ham_only: bool,
     /// Rebuilds the IQ source at runtime when the operator switches interfaces.
@@ -122,6 +126,7 @@ impl Default for EngineConfig {
             mic: None,
             cal_offset_db: 0.0,
             initial_mode: None,
+            initial_antenna: (None, None),
             tx_ham_only: true,
             reopen: None,
             remember_session: false,
@@ -796,6 +801,17 @@ struct Engine {
     /// engine does not remember its session (see
     /// [`EngineConfig::remember_session`]).
     session: Option<sdroxide_config::Session>,
+    /// The antenna ports the operator wants, RX and TX: the command line's
+    /// choice, else the remembered session's, else whatever they last picked in
+    /// the UI. Re-applied whenever a front end is (re)opened, because a
+    /// reconnect or an interface switch arrives on the driver's default port and
+    /// nothing else would put it back.
+    ///
+    /// `None` means "no preference" — a device with a single port, or a start
+    /// that never expressed one. A name the current device does not offer is
+    /// held rather than dropped: swapping back to the radio it belongs to
+    /// restores it.
+    want_antenna: (Option<String>, Option<String>),
 }
 
 /// Target width of the CW skimmer window (Hz); the Ddc snaps to the nearest
@@ -835,7 +851,11 @@ fn engine_thread(
     state.band = Band::containing(state.vfo_a_hz);
     state.gains = source.current_gains();
     state.tx_gains = source.current_tx_gains();
+    // Read back rather than assumed: the remembered antenna is applied further
+    // down, once the engine exists to own the preference, and a front end that
+    // refuses it must leave the UI showing the port actually in use.
     state.antenna_rx = source.current_antenna();
+    state.antenna_tx = source.current_tx_antenna();
     // Published so every UI attached to this engine — including a remote one
     // started by somebody else — can warn about it.
     state.oob_tx = !engine_cfg.tx_ham_only;
@@ -876,7 +896,6 @@ fn engine_thread(
 
     info!(source = %source.describe(), "engine started");
     let _ = event_tx.send(RadioEvent::Capabilities(caps.clone()));
-    let _ = event_tx.send(RadioEvent::State(state.clone()));
     let _ = event_tx.send(RadioEvent::Memories(memories.clone()));
     // Surface any warning captured while opening the source (e.g. radio audio
     // device unavailable / mono card chosen for IQ) so the UI can show it
@@ -884,6 +903,20 @@ fn engine_thread(
     if let Some(msg) = source.open_status() {
         let _ = event_tx.send(RadioEvent::Notice(Some(msg)));
     }
+
+    // Seeded with what is already on disk rather than with the state this
+    // engine came up in, so the file always ends up describing where the
+    // radio actually was: a start that overrode the dial (`--freq`, or a
+    // CAT rig reporting its own) is a difference like any other, and gets
+    // written even if nothing is touched afterwards.
+    let session = engine_cfg.remember_session.then(sdroxide_config::load_session);
+    // The command line outranks the remembered session, exactly as it does for
+    // the dial and the mode.
+    let (cli_rx, cli_tx) = engine_cfg.initial_antenna;
+    let want_antenna = (
+        cli_rx.or_else(|| session.as_ref().and_then(|s| s.antenna_rx.clone())),
+        cli_tx.or_else(|| session.as_ref().and_then(|s| s.antenna_tx.clone())),
+    );
 
     let mut engine = Engine {
         source,
@@ -977,13 +1010,15 @@ fn engine_thread(
         // Where the source opened, which is by definition a frequency it took.
         good_vfo_hz: source_center_hz,
         spots: sdroxide_net::SpotManager::new(),
-        // Seeded with what is already on disk rather than with the state this
-        // engine came up in, so the file always ends up describing where the
-        // radio actually was: a start that overrode the dial (`--freq`, or a
-        // CAT rig reporting its own) is a difference like any other, and gets
-        // written even if nothing is touched afterwards.
-        session: engine_cfg.remember_session.then(sdroxide_config::load_session),
+        session,
+        want_antenna,
     };
+    // After the struct, not before: the preference has to be applied through
+    // the same path a reconnect uses, so both land on the same port.
+    engine.restore_antennas();
+    // The opening state goes out here rather than with the capabilities above,
+    // so the first thing every UI sees is the port the radio is actually on.
+    let _ = engine.event_tx.send(RadioEvent::State(engine.state.clone()));
     if let Some(mic) = &engine.mic {
         engine.mic_resampler = MonoResampler::new(mic.rate, 48_000.0);
     }
@@ -2223,16 +2258,25 @@ impl Engine {
                     self.state.tx_gains = self.source.current_tx_gains();
                 }
             },
-            SetAntenna { dir, name } => {
-                if dir == sdroxide_types::Direction::Rx {
+            // Remembered as well as applied: a reconnect or an interface switch
+            // reopens the device on its driver default, and the operator's
+            // choice has to survive that (see [`Engine::restore_antennas`]).
+            SetAntenna { dir, name } => match dir {
+                Direction::Rx => {
                     if let Err(e) = self.source.set_antenna(&name) {
-                        warn!("set antenna {name}: {e}");
+                        warn!("set RX antenna {name}: {e}");
                     }
                     self.state.antenna_rx = self.source.current_antenna();
-                } else {
-                    self.state.antenna_tx = name; // applied when TX exists (M5)
+                    self.want_antenna.0 = Some(name);
                 }
-            }
+                Direction::Tx => {
+                    if let Err(e) = self.source.set_tx_antenna(&name) {
+                        warn!("set TX antenna {name}: {e}");
+                    }
+                    self.state.antenna_tx = self.source.current_tx_antenna();
+                    self.want_antenna.1 = Some(name);
+                }
+            },
             StoreMemory { name } => {
                 let id = self.memories.iter().map(|m| m.id).max().unwrap_or(0) + 1;
                 let rx = &self.state.rx[0];
@@ -3195,29 +3239,67 @@ impl Engine {
         self.update_tuning();
     }
 
-    /// Write the dial and mode to `session.json` if either has moved since the
-    /// last write, so the next start comes up here rather than on the default
-    /// frequency. A no-op on an engine that isn't remembering its session.
+    /// Put the front end back on the antenna ports the operator asked for.
+    ///
+    /// Called on every source that reaches this engine — the one it started
+    /// with, and every one a reconnect or an interface switch brings in — because
+    /// a freshly opened device is on whatever port its driver defaults to.
+    ///
+    /// A name the device does not list is skipped rather than attempted: after
+    /// an interface switch the preference usually belongs to the *other* radio,
+    /// and a driver asked for a port it has never heard of logs an error that
+    /// says nothing useful. The state is refreshed from the hardware either way,
+    /// so the UI shows the port in use rather than the one that was wanted.
+    fn restore_antennas(&mut self) {
+        let (want_rx, want_tx) = self.want_antenna.clone();
+        if let Some(name) = want_rx.filter(|n| self.caps.antennas_rx.contains(n))
+            && self.state.antenna_rx != name
+        {
+            if let Err(e) = self.source.set_antenna(&name) {
+                warn!("restoring RX antenna {name}: {e}");
+            }
+            self.state.antenna_rx = self.source.current_antenna();
+        }
+        if let Some(name) = want_tx.filter(|n| self.caps.antennas_tx.contains(n))
+            && self.state.antenna_tx != name
+        {
+            if let Err(e) = self.source.set_tx_antenna(&name) {
+                warn!("restoring TX antenna {name}: {e}");
+            }
+            self.state.antenna_tx = self.source.current_tx_antenna();
+        }
+    }
+
+    /// Write the dial, mode and antennas to `session.json` if any of them has
+    /// moved since the last write, so the next start comes up here rather than
+    /// on the default frequency. A no-op on an engine that isn't remembering its
+    /// session.
     ///
     /// Compared before writing rather than written on every change: the dial
     /// moves continuously while it is being spun, and none of those hundreds of
     /// intermediate frequencies is worth a file write.
     fn save_session(&mut self) {
-        let Some(saved) = self.session else { return };
+        let Some(saved) = self.session.as_ref() else { return };
+        // What the hardware reports, not what was asked for, and dropped when it
+        // is empty: a front end with no antenna to choose (a CAT rig, a file)
+        // must not erase the port a real radio was left on.
+        let keep = |name: &str| (!name.is_empty()).then(|| name.to_string());
         // The active VFO's dial, not VFO A's: an operator working on B should
         // come back up on that frequency. It is restored as A — remembering
         // which of the two was in use is a bigger promise than this makes.
         let now = sdroxide_config::Session {
             freq_hz: self.state.active_freq_hz(),
             mode: self.state.rx[0].mode,
+            antenna_rx: keep(&self.state.antenna_rx).or_else(|| saved.antenna_rx.clone()),
+            antenna_tx: keep(&self.state.antenna_tx).or_else(|| saved.antenna_tx.clone()),
         };
-        if now == saved {
+        if now == *saved {
             return;
         }
         match sdroxide_config::save_session(&now) {
             Ok(()) => self.session = Some(now),
             // Don't latch the new value on failure, so the next tick retries.
-            Err(e) => warn!("saving the session (dial + mode): {e}"),
+            Err(e) => warn!("saving the session (dial + mode + antennas): {e}"),
         }
     }
 
@@ -3485,12 +3567,17 @@ impl Engine {
         state.gains = self.source.current_gains();
         state.tx_gains = self.source.current_tx_gains();
         state.antenna_rx = self.source.current_antenna();
+        state.antenna_tx = self.source.current_tx_antenna();
         state.skimmer = if self.audio_mode {
             sdroxide_types::SkimmerSettings::OFF // wideband-only feature
         } else {
             self.skim_cfg // the operator's choice survives the swap
         };
         self.state = state;
+        // The tuning is fresh, but the antenna is a property of the station's
+        // coax rather than of the front end: a radio that dropped out and came
+        // back has to return to the port it was receiving on.
+        self.restore_antennas();
 
         // Rebuild the device analyzer for the new rate.
         self.analyzer =

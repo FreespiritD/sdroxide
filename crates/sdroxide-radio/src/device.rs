@@ -449,6 +449,24 @@ impl IqSource for SoapyRxSource {
             .collect()
     }
 
+    fn set_tx_antenna(&mut self, name: &str) -> Result<()> {
+        if self.caps.tx_channels == 0 {
+            return Err(RadioError::Msg("device is not transmit capable".into()));
+        }
+        self.dev()?.set_antenna(Direction::Tx, self.channel, name)?;
+        Ok(())
+    }
+
+    fn current_tx_antenna(&self) -> String {
+        if self.caps.tx_channels == 0 {
+            return String::new();
+        }
+        self.dev
+            .as_ref()
+            .and_then(|d| d.antenna(Direction::Tx, self.channel).ok())
+            .unwrap_or_default()
+    }
+
     fn needs_reopen(&self) -> bool {
         self.lost
     }

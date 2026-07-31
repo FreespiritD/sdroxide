@@ -17,6 +17,10 @@ pub fn run(
     // `main` from `config.toml` and the `--oob-tx` flag.
     tx_ham_only: bool,
     initial_mode: Option<Mode>,
+    // Antenna ports named on the command line (RX, TX); the remembered session
+    // fills in whichever the operator left out. The main reason this flag
+    // exists: nobody is sitting at a headless server to pick a port by hand.
+    initial_antenna: (Option<String>, Option<String>),
     port: u16,
     web_root: Option<PathBuf>,
     reopen: Option<ReopenFn>,
@@ -34,6 +38,7 @@ pub fn run(
             mic: Some(MicParams { consumer: mic_consumer, rate: 48_000.0 }),
             cal_offset_db: settings.cal_offset_db as f32,
             initial_mode,
+            initial_antenna,
             tx_ham_only,
             // A headless server is typically started before the rig it talks
             // to; the engine uses this to attach as soon as the radio is there.

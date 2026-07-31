@@ -209,20 +209,28 @@ impl Settings {
     }
 }
 
-/// Where the operator left the radio (`session.json`): the dial and the mode.
-/// Restored on the next start, so the program comes back up where it was
-/// instead of on a fixed default frequency.
+/// Where the operator left the radio (`session.json`): the dial, the mode and
+/// the selected antennas. Restored on the next start, so the program comes back
+/// up where it was instead of on a fixed default frequency and whichever port
+/// the driver happens to power up on.
 ///
 /// Deliberately not part of `config.toml`. That file holds preferences the
 /// operator sets once; this is written by the engine as the radio is used, and
-/// the command line still wins over it (`--freq`, `--mode`).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// the command line still wins over it (`--freq`, `--mode`, `--antenna`,
+/// `--tx-antenna`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Session {
     /// Dial frequency of VFO A, in Hz.
     pub freq_hz: f64,
     /// Mode of the main receiver.
     pub mode: sdroxide_types::Mode,
+    /// RX antenna port, as the device names it ("LNAH", "TX/RX"). `None` on a
+    /// front end that has no antenna to choose, and on every session written
+    /// before this was remembered.
+    pub antenna_rx: Option<String>,
+    /// TX antenna port, likewise ("BAND1", "BAND2").
+    pub antenna_tx: Option<String>,
 }
 
 impl Default for Session {
@@ -230,7 +238,9 @@ impl Default for Session {
         // The 20 m band-stack default — exactly where the program started every
         // time before it remembered anything.
         let (freq_hz, mode) = sdroxide_types::Band::M20.default_entry();
-        Session { freq_hz, mode }
+        // No antenna preference: whatever the driver selects on open stands,
+        // which is what every start did before this was remembered.
+        Session { freq_hz, mode, antenna_rx: None, antenna_tx: None }
     }
 }
 
@@ -742,7 +752,12 @@ mod tests {
 
     #[test]
     fn session_roundtrips_via_json() {
-        let s = Session { freq_hz: 7_074_000.0, mode: sdroxide_types::Mode::Ft8 };
+        let s = Session {
+            freq_hz: 7_074_000.0,
+            mode: sdroxide_types::Mode::Ft8,
+            antenna_rx: Some("LNAW".into()),
+            antenna_tx: Some("BAND2".into()),
+        };
         let back: Session = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
     }
@@ -754,10 +769,24 @@ mod tests {
         let s = Session::default();
         assert_eq!(s.freq_hz, 14_200_000.0);
         assert_eq!(s.mode, sdroxide_types::Mode::Usb);
+        assert_eq!(s.antenna_rx, None, "no port preference until one is expressed");
+        assert_eq!(s.antenna_tx, None);
         // A file missing a key still loads; only what it names is used.
         let partial: Session = serde_json::from_str(r#"{"freq_hz":3573000.0}"#).unwrap();
         assert_eq!(partial.freq_hz, 3_573_000.0);
         assert_eq!(partial.mode, s.mode);
+    }
+
+    /// Every `session.json` written before the antennas were remembered has to
+    /// keep restoring its dial and mode, and simply express no preference.
+    #[test]
+    fn a_session_written_before_antennas_still_loads() {
+        let old: Session =
+            serde_json::from_str(r#"{"freq_hz":7074000.0,"mode":"Ft8"}"#).expect("parses");
+        assert_eq!(old.freq_hz, 7_074_000.0);
+        assert_eq!(old.mode, sdroxide_types::Mode::Ft8);
+        assert_eq!(old.antenna_rx, None);
+        assert_eq!(old.antenna_tx, None);
     }
 
     /// This frequency is handed straight to a front end as its centre, so a

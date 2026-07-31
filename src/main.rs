@@ -59,6 +59,19 @@ struct Cli {
     #[arg(long)]
     mode: Option<sdroxide_types::Mode>,
 
+    /// RX antenna port, as the device names it ("LNAH", "TX/RX"). Run --probe
+    /// to list what the front end offers.
+    ///
+    /// Default: the port the last session was left on, and failing that
+    /// whatever the driver selects when it opens the device. Worth setting on a
+    /// headless server, where nobody is at the machine to pick one.
+    #[arg(long, value_name = "NAME")]
+    antenna: Option<String>,
+
+    /// TX antenna port, likewise ("BAND1", "BAND2")
+    #[arg(long, value_name = "NAME")]
+    tx_antenna: Option<String>,
+
     /// Headless TX smoke test: key a tune carrier for SECS seconds at the
     /// configured (minimal) drive and gains, then exit
     #[arg(long, value_name = "SECS")]
@@ -159,6 +172,16 @@ impl Cli {
         self.mode
     }
 
+    /// The antenna ports named on the command line, RX then TX.
+    ///
+    /// Not merged with the session here, the way the dial and mode are: the
+    /// front end has to be open before a port name means anything, so the engine
+    /// does that merge once it can check the names against what the device
+    /// actually offers.
+    fn initial_antenna(&self) -> (Option<String>, Option<String>) {
+        (self.antenna.clone(), self.tx_antenna.clone())
+    }
+
     /// Whether the engine should refuse to key outside the amateur bands.
     ///
     /// The flag can only ever *loosen* the config, never tighten it: a build
@@ -226,6 +249,7 @@ fn main() -> anyhow::Result<()> {
             &settings,
             cli.tx_ham_only(&settings),
             initial_mode,
+            cli.initial_antenna(),
             port,
             cli.web_root.clone(),
             Some(reopen_factory(&cli)),
@@ -246,6 +270,7 @@ fn main() -> anyhow::Result<()> {
         &settings,
         cli.tx_ham_only(&settings),
         initial_mode,
+        cli.initial_antenna(),
         Some(reopen_factory(&cli)),
     )
 }
@@ -1014,7 +1039,7 @@ mod tests {
     }
 
     fn session(freq_hz: f64, mode: sdroxide_types::Mode) -> sdroxide_config::Session {
-        sdroxide_config::Session { freq_hz, mode }
+        sdroxide_config::Session { freq_hz, mode, ..Default::default() }
     }
 
     /// Starting with no arguments is the case this exists for: come back up on

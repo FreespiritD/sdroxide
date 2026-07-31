@@ -1465,7 +1465,22 @@ exposes, and nothing it does not:
   A rig with no software-adjustable gains says so instead, as in the screenshot
   above.
 - **TX gains** — transmit gain sliders, if the device has them.
-- **Antenna** — a drop-down when the device has more than one RX antenna.
+- **Antennas** — an **RX** drop-down when the device has more than one receive
+  port, and a **TX** one when it has more than one transmit port. A LimeSDR
+  receives on `LNAH`/`LNAL`/`LNAW` and transmits on `BAND1`/`BAND2`; a HackRF
+  has a single `TX/RX` port and gets no drop-down at all.
+
+Whichever ports you pick are remembered in `session.json` and selected again the
+next time you start, and re-selected if the radio drops out and the engine
+reconnects it — a freshly opened device is on whatever port its driver defaults
+to, which need not be the feedline you were listening on. To pin them at start
+instead — on a headless server, where nobody is at the machine to pick — use
+`--antenna` and `--tx-antenna`; `--probe` lists the names a device offers.
+
+These are the one part of this tab a **remote client** can also reach: the
+interface and its configuration belong to the machine the server runs on, but
+the gains and antennas ride ordinary commands to the running device, so an
+operator away from the shack can still swap to the beam.
 
 The cyan heading above the gains names the device that is *open right now*, not
 the one selected — which is why the screenshot still reads
@@ -2803,7 +2818,10 @@ The web client mirrors the native UI: tuning, mode and band changes, the
 panadapter and waterfall, receive audio, FT8/FT4, the logbook, memories, and
 meters. Microphone transmit is supported where the browser grants microphone
 access — see [audio needs a secure context](#83-audio-needs-a-secure-context)
-below. The [solar system 3D view](#6-solar-system-3d-view) works too: **☀ 3D**
+below. **Settings → Radio** shows the server device's gains and antenna
+drop-downs, so you can swap feedline or wind an LNA back from the browser; which
+interface the server opens, and how it is configured, stays on the machine that
+runs it. The [solar system 3D view](#6-solar-system-3d-view) works too: **☀ 3D**
 opens it in a new tab, which connects to a separate read-only endpoint and so
 does not consume the single control connection. The same
 single-client and no-authentication notes as
@@ -3122,6 +3140,8 @@ Longwave and the HF standard-time stations are not in EiBi's file — it starts 
 | `--rate <HZ>` | Sample rate in Hz (default: from config). |
 | `--gain <DB>` | Overall RX gain in dB (default: hardware AGC or a moderate value). |
 | `--mode <MODE>` | Initial mode (USB, LSB, CW, AM, SAM, NFM, WFM, DIGU, DIGL, DSB, SPEC, FT8, FT4, PSK, RTTY, OLIVIA, THOR, FSQ, SSTV, RIFP, WEFAX, RFPAINT, RADE). Default: the mode the last session was left in. |
+| `--antenna <NAME>` | RX antenna port, as the device names it (LNAH, TX/RX — `--probe` lists them). Default: the port the last session was left on, and failing that whatever the driver selects. |
+| `--tx-antenna <NAME>` | TX antenna port, likewise (BAND1, BAND2). |
 | `--server` | Run as a server (web client + WebSocket streaming backend). |
 | `--connect <HOST[:PORT]>` | Connect as a native remote client to a running server. |
 | `--port <PORT>` | Server port (default: from config, 4950). |
@@ -3192,7 +3212,7 @@ sdroxide stores its settings under the per-user config directory:
 | `digi.json` | JSON | FT8/FT4 operator settings: your callsign and grid, TX period, auto-sequence, and message templates. |
 | `memories.json` | JSON | Saved memory channels. |
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |
-| `session.json` | JSON | Where you left the radio: the dial frequency and the mode, restored the next time you start. Written by the engine as you tune, so `--freq` and `--mode` override it for a run without changing it. |
+| `session.json` | JSON | Where you left the radio: the dial frequency, the mode and the RX/TX antenna ports, restored the next time you start. Written by the engine as you tune, so `--freq`, `--mode`, `--antenna` and `--tx-antenna` override it for a run without changing it. |
 | `qso_log.json` | JSON | The logbook (digital and manual QSOs, with contest/QSL fields). |
 | `net.json` | JSON | Network cockpit: DX cluster / POTA / SOTA / PSK / FreeDV Reporter feed settings, and callsign-lookup / eQSL / QRZ / Club Log / LoTW credentials (stored in plaintext). |
 | `tciserver.json` | JSON | Built-in TCI server: enabled, bind address, port, advertised device name, whether clients may transmit, and the client limit. |

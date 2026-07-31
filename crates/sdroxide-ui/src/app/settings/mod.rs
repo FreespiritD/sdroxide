@@ -566,7 +566,22 @@ impl SdroxideApp {
             }
             SettingsTab::Radio => {
                 let Some(cfg) = io.radio_edit.as_mut() else {
-                    ui.label("Radio configuration is only available in the native app.");
+                    // A remote client cannot choose the server's interface or
+                    // edit its config — that file lives on the other machine.
+                    // The hardware controls are a different matter: they ride
+                    // ordinary commands to the running device, and both the
+                    // capabilities and the current gains/antennas are already
+                    // replicated here, so an operator away from the shack can
+                    // still swap to the beam or wind the LNA back.
+                    self.settings_device_tab(ui, cmds);
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(
+                            "Which radio interface the server uses is set on the machine it \
+                             runs on.",
+                        )
+                        .weak(),
+                    );
                     return;
                 };
                 // The single "which radio interface" selector.

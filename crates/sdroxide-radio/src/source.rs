@@ -91,6 +91,16 @@ pub trait IqSource: Send {
     fn current_tx_gains(&self) -> Vec<(String, f64)> {
         Vec::new()
     }
+    /// Select the transmit antenna port. Separate from [`Self::set_antenna`]
+    /// because a device with a shared port still lists the two directions
+    /// separately, and the names need not match on one that doesn't (a LimeSDR
+    /// receives on LNAH/LNAL/LNAW and transmits on BAND1/BAND2).
+    fn set_tx_antenna(&mut self, _name: &str) -> Result<()> {
+        Ok(())
+    }
+    fn current_tx_antenna(&self) -> String {
+        String::new()
+    }
     /// Set the TX drive as a `0..1` fraction on rigs that modulate their own
     /// audio (CAT/TCI), which command output power directly rather than scaling
     /// the transmitted samples. No-op for IQ sources (they apply drive in the

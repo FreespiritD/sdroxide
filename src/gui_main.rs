@@ -16,6 +16,9 @@ pub fn run(
     // `main` from `config.toml` and the `--oob-tx` flag.
     tx_ham_only: bool,
     initial_mode: Option<Mode>,
+    // Antenna ports named on the command line (RX, TX); the remembered session
+    // fills in whichever the operator left out.
+    initial_antenna: (Option<String>, Option<String>),
     reopen: Option<ReopenFn>,
 ) -> Result<()> {
     // The cpal streams must outlive the engine's ring endpoints; their handles
@@ -51,6 +54,7 @@ pub fn run(
         mic: mic_params,
         cal_offset_db: settings.cal_offset_db as f32,
         initial_mode,
+        initial_antenna,
         tx_ham_only,
         reopen,
         // This engine is the operator's radio: remember where they leave it.

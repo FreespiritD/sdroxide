@@ -605,18 +605,48 @@ impl SdroxideApp {
                 }
             });
         }
-        if caps.antennas_rx.len() > 1 {
+        // Only worth a control where there is a choice to make: a front end with
+        // one port has nothing to switch to, and a row saying so is noise.
+        let rx_ports = caps.antennas_rx.len() > 1;
+        let tx_ports = caps.antennas_tx.len() > 1;
+        if rx_ports || tx_ports {
             ui.separator();
-            ComboBox::from_id_salt("ant-rx").selected_text(self.state.antenna_rx.clone()).show_ui(
-                ui,
-                |ui| {
-                    for a in &caps.antennas_rx {
-                        if ui.selectable_label(self.state.antenna_rx == *a, a).clicked() {
-                            cmds.push(Command::SetAntenna { dir: Direction::Rx, name: a.clone() });
-                        }
-                    }
-                },
-            );
+            ui.label(RichText::new("Antennas").strong());
+            egui::Grid::new("antennas").num_columns(2).show(ui, |ui| {
+                if rx_ports {
+                    ui.label("RX");
+                    ComboBox::from_id_salt("ant-rx")
+                        .selected_text(self.state.antenna_rx.clone())
+                        .show_ui(ui, |ui| {
+                            for a in &caps.antennas_rx {
+                                if ui.selectable_label(self.state.antenna_rx == *a, a).clicked() {
+                                    cmds.push(Command::SetAntenna {
+                                        dir: Direction::Rx,
+                                        name: a.clone(),
+                                    });
+                                }
+                            }
+                        });
+                    ui.end_row();
+                }
+                if tx_ports {
+                    ui.label(RichText::new("TX").color(Color32::from_rgb(240, 90, 60)));
+                    ComboBox::from_id_salt("ant-tx")
+                        .selected_text(self.state.antenna_tx.clone())
+                        .show_ui(ui, |ui| {
+                            for a in &caps.antennas_tx {
+                                if ui.selectable_label(self.state.antenna_tx == *a, a).clicked() {
+                                    cmds.push(Command::SetAntenna {
+                                        dir: Direction::Tx,
+                                        name: a.clone(),
+                                    });
+                                }
+                            }
+                        });
+                    ui.end_row();
+                }
+            });
+            ui.label(RichText::new("Remembered for the next start.").weak());
         }
     }
 }
