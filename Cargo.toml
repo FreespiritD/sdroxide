@@ -136,6 +136,9 @@ assets = [
     ["packaging/icons/sdroxide-256.png", "usr/share/icons/hicolor/256x256/apps/sdroxide.png", "644"],
     ["packaging/icons/sdroxide-512.png", "usr/share/icons/hicolor/512x512/apps/sdroxide.png", "644"],
     ["README.md", "usr/share/doc/sdroxide/README.md", "644"],
+    # The binary embeds the RX-888's FX3 firmware image, which is MIT licensed
+    # rather than GPL like the rest: its notice has to ship with the package.
+    ["crates/sdroxide-rx888/firmware/LICENSE.txt", "usr/share/doc/sdroxide/LICENSE-rx888-firmware.txt", "644"],
 ]
 
 # SoapySDR .deb: links libSoapySDR, so recommend the driver modules (apt

@@ -178,10 +178,20 @@ jobs:
           strip target/release/sdroxide
           mkdir -p out stage/sdroxide
           cp target/release/sdroxide LICENSE stage/sdroxide/
+          # Every binary embeds the RX-888's FX3 firmware image, which is MIT
+          # licensed: the notice has to travel with the binary, not just live
+          # in the source tree.
+          cp crates/sdroxide-rx888/firmware/LICENSE.txt stage/sdroxide/LICENSE-rx888-firmware.txt
           # The .deb registers the menu entry itself; the portable tarball
           # carries the same files plus a script that installs them per-user.
           cp packaging/linux/sdroxide.desktop packaging/icons/sdroxide.svg stage/sdroxide/
           cp packaging/linux/install-desktop-entry.sh stage/sdroxide/
+          # Likewise the udev rules: the .deb drops them in
+          # /usr/lib/udev/rules.d, but a tarball user has to install them by
+          # hand and cannot do that if they are not in the tarball. Both
+          # variants carry them — the RTL-SDR and RX-888 drivers are native and
+          # present in every build.
+          cp packaging/linux/60-sdroxide-rtlsdr.rules packaging/linux/60-sdroxide-rx888.rules stage/sdroxide/
           if [[ "${{ matrix.variant }}" == "cat" ]]; then
             cat > stage/sdroxide/README.txt <<'EOF'
           sdroxide — SDR transceiver (https://github.com/dividebysandwich/sdroxide)
@@ -189,10 +199,17 @@ jobs:
           Standard build (no SoapySDR). Runtime requirement:
             libasound2 (or libasound2t64)   — ALSA
 
-          Drives a CAT-controlled radio over a serial port + sound card
-          (Settings -> Audio/CAT), plus the OpenHPSDR and TCI network
-          backends. It cannot use SoapySDR devices — download the
-          "-soapysdr" build for those.
+          Drives, with no SoapySDR involved at all:
+            * RTL-SDR dongles and RX-888 / RX-888 Mk2 receivers, directly over
+              USB via native pure-Rust drivers. The RX-888's FX3 firmware is
+              bundled and uploaded automatically, so there is no vendor driver
+              package to install and nothing to run first.
+            * a CAT-controlled radio over a serial port + sound card
+              (Settings -> Audio/CAT)
+            * the OpenHPSDR and TCI network backends
+
+          Other SoapySDR devices (HackRF, Airspy, PlutoSDR, ...) need the
+          "-soapysdr" build.
 
           Run ./sdroxide for the GUI, ./sdroxide --server to serve the web UI
           on http://localhost:4950, or ./sdroxide --help for all options.
@@ -204,6 +221,11 @@ jobs:
           Runtime requirements (Debian/Ubuntu package names):
             libsoapysdr0.8  soapysdr-module-all  libasound2 (or libasound2t64)
 
+          RTL-SDR dongles and RX-888 / RX-888 Mk2 receivers do not go through
+          SoapySDR in this build either: they have native pure-Rust drivers and
+          are opened directly over USB. SoapySDR is what adds everything else
+          (HackRF, Airspy, PlutoSDR, ...).
+
           Run ./sdroxide for the GUI, ./sdroxide --server to serve the web UI
           on http://localhost:4950, or ./sdroxide --help for all options.
           EOF
@@ -213,6 +235,19 @@ jobs:
           To add sdroxide to your desktop menu, run ./install-desktop-entry.sh
           (per-user, no root needed; --uninstall removes it again). The .deb
           package registers the menu entry automatically.
+
+          USB receivers: opening an RTL-SDR or RX-888 as a normal user needs a
+          udev rule, which the .deb installs for you but the tarball cannot:
+
+            sudo cp 60-sdroxide-*.rules /usr/lib/udev/rules.d/
+            sudo udevadm control --reload
+
+          Then unplug and replug the receiver. Without this sdroxide will see
+          the device and fail to open it (--probe says which).
+
+          LICENSE-rx888-firmware.txt covers the RX-888 FX3 firmware image that
+          is bundled in the binary and uploaded to the receiver; it is MIT
+          licensed and separate from sdroxide's own LICENSE.
           EOF
           tar czf "out/$PKG.tar.gz" -C stage sdroxide
           cargo install cargo-deb --locked
@@ -235,14 +270,22 @@ jobs:
           BIN_DIR="target/$CARGO_BUILD_TARGET/release"
           cp "$BIN_DIR/sdroxide.exe" stage/sdroxide/
           cp LICENSE stage/sdroxide/LICENSE.txt
+          # MIT notice for the FX3 firmware image embedded in the binary.
+          cp crates/sdroxide-rx888/firmware/LICENSE.txt stage/sdroxide/LICENSE-rx888-firmware.txt
           if [[ "${{ matrix.variant }}" == "cat" ]]; then
             cat > stage/sdroxide/README.txt <<'EOF'
           sdroxide — SDR transceiver (https://github.com/dividebysandwich/sdroxide)
 
-          Standard build (no SoapySDR / PothosSDR needed). Drives a
-          CAT-controlled radio over a serial port + sound card (Settings ->
-          Audio/CAT), plus the OpenHPSDR and TCI network backends. It cannot
-          use SoapySDR devices — download the "-soapysdr" build for those.
+          Standard build (no SoapySDR / PothosSDR needed). Drives:
+            * RTL-SDR dongles and RX-888 / RX-888 Mk2 receivers, directly over
+              USB via native drivers. The RX-888's FX3 firmware is bundled and
+              uploaded automatically — no vendor driver package needed.
+            * a CAT-controlled radio over a serial port + sound card
+              (Settings -> Audio/CAT)
+            * the OpenHPSDR and TCI network backends
+
+          Other SoapySDR devices (HackRF, Airspy, PlutoSDR, ...) need the
+          "-soapysdr" build.
 
           Run sdroxide.exe for the GUI, sdroxide.exe --server to serve the web
           UI on http://localhost:4950, or sdroxide.exe --help for all options.
@@ -255,10 +298,30 @@ jobs:
             https://downloads.myriadrf.org/builds/PothosSDR/
           During its installation choose "Add PothosSDR to the system PATH".
 
+          RTL-SDR dongles and RX-888 / RX-888 Mk2 receivers do not go through
+          SoapySDR in this build either: they have native drivers and are
+          opened directly over USB.
+
           Run sdroxide.exe for the GUI, sdroxide.exe --server to serve the web
           UI on http://localhost:4950, or sdroxide.exe --help for all options.
           EOF
           fi
+          # Both variants have the native USB drivers, so both need the WinUSB
+          # note. Zadig is the only Windows-side setup either receiver needs.
+          cat >> stage/sdroxide/README.txt <<'EOF'
+
+          USB receivers: Windows has no driver bound to an RTL-SDR or RX-888
+          out of the box. Use Zadig (https://zadig.akeo.ie/) to bind the device
+          to WinUSB — for the RX-888 do this for BOTH of its USB ids,
+          04B4:00F3 (the bare Cypress FX3 bootloader it enumerates as on every
+          plug-in) and 04B4:00F1 (the same device once sdroxide has uploaded
+          firmware into it). Binding only the second one never works, because
+          the upload happens through the first.
+
+          LICENSE-rx888-firmware.txt covers the RX-888 FX3 firmware image that
+          is bundled in the binary and uploaded to the receiver; it is MIT
+          licensed and separate from sdroxide's own LICENSE.txt.
+          EOF
           7z a "out/$PKG.zip" ./stage/sdroxide > /dev/null
           # The MSI (fixed product identity) is only built for the default
           # (non-SoapySDR) variant; SoapySDR users take the portable .zip.
@@ -279,14 +342,23 @@ jobs:
           ls -lh target/release/sdroxide
           # Portable tarball (both variants)
           cp target/release/sdroxide LICENSE stage/sdroxide/
+          # MIT notice for the FX3 firmware image embedded in the binary.
+          cp crates/sdroxide-rx888/firmware/LICENSE.txt stage/sdroxide/LICENSE-rx888-firmware.txt
           if [[ "${{ matrix.variant }}" == "cat" ]]; then
             cat > stage/sdroxide/README.txt <<'EOF'
           sdroxide — SDR transceiver (https://github.com/dividebysandwich/sdroxide)
 
-          Standard build (no SoapySDR needed). Drives a CAT-controlled radio
-          over a serial port + sound card (Settings -> Audio/CAT), plus the
-          OpenHPSDR and TCI network backends. It cannot use SoapySDR devices —
-          download the "-soapysdr" build for those.
+          Standard build (no SoapySDR needed). Drives:
+            * RTL-SDR dongles and RX-888 / RX-888 Mk2 receivers, directly over
+              USB via native drivers. The RX-888's FX3 firmware is bundled and
+              uploaded automatically — no vendor driver package needed, and
+              nothing to set up on macOS.
+            * a CAT-controlled radio over a serial port + sound card
+              (Settings -> Audio/CAT)
+            * the OpenHPSDR and TCI network backends
+
+          Other SoapySDR devices (HackRF, Airspy, PlutoSDR, ...) need the
+          "-soapysdr" build.
 
           Run ./sdroxide for the GUI, ./sdroxide --server to serve the web UI
           on http://localhost:4950, or ./sdroxide --help for all options.
@@ -298,10 +370,20 @@ jobs:
           Requires SoapySDR plus the driver for your radio, e.g.:
             brew install soapysdr soapyrtlsdr
 
+          RTL-SDR dongles and RX-888 / RX-888 Mk2 receivers do not go through
+          SoapySDR in this build either: they have native drivers and are
+          opened directly over USB, with nothing to set up on macOS.
+
           Run ./sdroxide for the GUI, ./sdroxide --server to serve the web UI
           on http://localhost:4950, or ./sdroxide --help for all options.
           EOF
           fi
+          cat >> stage/sdroxide/README.txt <<'EOF'
+
+          LICENSE-rx888-firmware.txt covers the RX-888 FX3 firmware image that
+          is bundled in the binary and uploaded to the receiver; it is MIT
+          licensed and separate from sdroxide's own LICENSE.
+          EOF
           tar czf "out/$PKG.tar.gz" -C stage sdroxide
           # The .app/.dmg (fixed bundle identity) is only built for the default
           # (non-SoapySDR) variant; SoapySDR users take the portable tarball.
@@ -314,9 +396,15 @@ jobs:
             # CFBundleIconFile=sdroxide resolves to this; without it Launchpad
             # and the Dock fall back to the blank generic-application icon.
             cp packaging/macos/sdroxide.icns "$APP/Contents/Resources/sdroxide.icns"
+            # The MIT notice for the embedded FX3 firmware goes into the bundle
+            # (so it survives dragging the .app out of the image) as well as
+            # alongside it. It has to be in place before codesign, which seals
+            # the contents of Resources into the signature.
+            cp crates/sdroxide-rx888/firmware/LICENSE.txt "$APP/Contents/Resources/LICENSE-rx888-firmware.txt"
             codesign --force -s - "$APP/Contents/MacOS/sdroxide"
             codesign --force -s - "$APP"
             cp LICENSE stage-dmg/
+            cp crates/sdroxide-rx888/firmware/LICENSE.txt stage-dmg/LICENSE-rx888-firmware.txt
             # The image is created at an explicit size and filled by hand
             # rather than handed to `hdiutil create -srcfolder`, whose own
             # sizing runs out of room mid-copy ("hdiutil: create failed - No
@@ -336,6 +424,7 @@ jobs:
             ditto "$APP" "$mnt/sdroxide.app"
             codesign --verify --strict "$mnt/sdroxide.app"
             cp LICENSE "$mnt/"
+            cp crates/sdroxide-rx888/firmware/LICENSE.txt "$mnt/LICENSE-rx888-firmware.txt"
             ln -s /Applications "$mnt/Applications"
             hdiutil detach "$mnt" || { sleep 5; hdiutil detach "$mnt" -force; }
             hdiutil convert rw.dmg -format UDZO -ov -o "out/$PKG.dmg"
@@ -377,15 +466,19 @@ jobs:
           Two builds are provided for every platform:
 
           - **Standard** (no suffix) — built without SoapySDR, so it needs no
-            libSoapySDR/PothosSDR at all. Use it for a CAT-controlled radio
-            (Icom/Yaesu/Xiegu) over a serial port + USB sound card
-            (**Settings → Audio/CAT**), or the **OpenHPSDR** and **TCI** network
-            backends. It cannot drive SoapySDR devices. This is the recommended
+            libSoapySDR/PothosSDR at all. It still drives real SDR hardware:
+            **RTL-SDR** dongles and **RX-888 / RX-888 Mk2** receivers are opened
+            directly over USB by native pure-Rust drivers (the RX-888's FX3
+            firmware is bundled and uploaded automatically — no vendor driver
+            package). Plus a CAT-controlled radio (Icom/Yaesu/Xiegu) over a
+            serial port + USB sound card (**Settings → Audio/CAT**), and the
+            **OpenHPSDR** and **TCI** network backends. This is the recommended
             download for most users, and the one packaged as an installer
             (Windows `.msi`, macOS `.dmg`).
-          - **SoapySDR** (`-soapysdr` suffix) — dynamically links **SoapySDR**;
-            use this for SoapySDR-supported SDRs (HackRF, RTL-SDR, etc.). Ships
-            as a portable archive only.
+          - **SoapySDR** (`-soapysdr` suffix) — everything above *plus* a
+            dynamic link against **SoapySDR**, for devices that have no native
+            driver here (HackRF, Airspy, PlutoSDR, …). Ships as a portable
+            archive only.
 
           ### Requirements (SoapySDR builds)
 
@@ -403,6 +496,25 @@ jobs:
           Linux; built in on Windows/macOS) — no SoapySDR. On macOS the app is
           unsigned: right-click → Open on first launch, or clear quarantine with
           `xattr -dr com.apple.quarantine sdroxide.app`.
+
+          ### USB receivers (RTL-SDR, RX-888) — all builds
+
+          - **Linux**: the `.deb` installs the udev rules for you. Portable
+            tarballs now ship them: `sudo cp 60-sdroxide-*.rules
+            /usr/lib/udev/rules.d/ && sudo udevadm control --reload`, then
+            replug. For the RX-888 **both** ids in the rule are required —
+            `04b4:00f3` is the bare FX3 bootloader it enumerates as on every
+            plug-in, `04b4:00f1` is the same device after sdroxide uploads
+            firmware into it.
+          - **Windows**: bind the device to WinUSB with
+            [Zadig](https://zadig.akeo.ie/) — for the RX-888, once for each of
+            the two ids above.
+          - **macOS**: nothing to do.
+
+          The RX-888 FX3 firmware image is bundled in every binary and uploaded
+          to the receiver at open time. It is MIT licensed (© 2017-2020 Oscar
+          Steila IK1XPV and the rx888-firmware contributors) and its notice
+          ships as `LICENSE-rx888-firmware.txt` in every package.
 
           Every binary embeds the web client: run `sdroxide --server` and open
           `http://<host>:4950` in a browser. `sdroxide-web-*.zip` contains the

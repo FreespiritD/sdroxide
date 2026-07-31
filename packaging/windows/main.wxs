@@ -33,6 +33,14 @@
                 <Component Id="LicenseFile" Guid="8D0E1A6B-4C2F-4B7A-9E3D-51A9C7F0B2D4">
                     <File Id="LicenseTxt" Source="LICENSE" Name="LICENSE.txt" KeyPath="yes" />
                 </Component>
+                <!-- sdroxide.exe embeds the RX-888's Cypress FX3 firmware
+                     image, which is MIT licensed rather than GPL like the rest
+                     of the binary, so its notice has to be installed too. -->
+                <Component Id="Rx888FirmwareLicenseFile" Guid="39C601A1-A18D-4371-A4BE-9C2DA17E18EC">
+                    <File Id="Rx888FirmwareLicenseTxt"
+                          Source="crates/sdroxide-rx888/firmware/LICENSE.txt"
+                          Name="LICENSE-rx888-firmware.txt" KeyPath="yes" />
+                </Component>
                 <Component Id="PathEnv" Guid="603FD0CB-F87B-47EF-98D0-28669884B706">
                     <RegistryValue Root="HKLM" Key="Software\sdroxide" Name="PathEnv" Type="integer" Value="1" KeyPath="yes" />
                     <Environment Id="PathEntry" Name="PATH" Value="[INSTALLFOLDER]" Permanent="no" Part="last" Action="set" System="yes" />
@@ -67,6 +75,7 @@
         <Feature Id="Main">
             <ComponentRef Id="MainExe" />
             <ComponentRef Id="LicenseFile" />
+            <ComponentRef Id="Rx888FirmwareLicenseFile" />
             <ComponentRef Id="PathEnv" />
             <ComponentRef Id="StartMenuShortcut" />
             <ComponentRef Id="DesktopShortcut" />
