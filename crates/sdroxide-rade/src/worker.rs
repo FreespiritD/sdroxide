@@ -212,13 +212,38 @@ impl RadeWorker {
         push(&mut self.tx_in, audio, &self.shared);
     }
 
+    /// Microphone audio pushed but not yet modulated, in samples.
+    ///
+    /// The transmit-side counterpart of [`RadeWorker::rx_free`], and needed for
+    /// the same reason: a live microphone delivers in real time and never gets
+    /// ahead, but a caller feeding from a file has nothing pacing it. Free
+    /// space is the wrong thing to watch there — the worker converts the whole
+    /// backlog in one wake, so letting this ring fill only moves the overflow
+    /// to the modulated side. Keep the backlog shallow instead.
+    pub fn tx_pending(&self) -> usize {
+        self.tx_in.buffer().capacity() - self.tx_in.slots()
+    }
+
     /// Fill `out` with modulated modem audio, padding with silence when the
     /// worker has not produced enough yet (which is normal for the first
     /// ~120 ms of an over, while the first modem frame is still being built).
-    pub fn pop_tx(&mut self, out: &mut [f32]) {
+    ///
+    /// Returns how many leading samples were real. A sound card wants the
+    /// whole buffer filled and can ignore this; a caller splicing the result
+    /// into a stream has to know, because the padding is silence inserted into
+    /// the signal rather than part of it.
+    pub fn pop_tx(&mut self, out: &mut [f32]) -> usize {
+        let mut n = 0;
         for s in out.iter_mut() {
-            *s = self.tx_out.pop().unwrap_or(0.0);
+            match self.tx_out.pop() {
+                Ok(v) => {
+                    *s = v;
+                    n += 1;
+                }
+                Err(_) => *s = 0.0,
+            }
         }
+        n
     }
 
     /// Enter or leave transmit. Leaving queues the End-of-Over frame; watch

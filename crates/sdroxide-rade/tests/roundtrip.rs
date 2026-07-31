@@ -171,20 +171,34 @@ fn worker_transmits_an_over_that_decodes_back() {
         worker.set_tx(true);
 
         // Feed and drain in 10 ms blocks, the granularity the engine uses.
+        // Only the samples the worker actually produced are kept: `pop_tx`
+        // pads to fill the buffer, which is what a sound card needs but would
+        // splice silence into the signal we are about to decode.
         let block = (AUDIO_RATE / 100.0) as usize;
         let mut out = vec![0.0f32; block];
+        // The worker modulates its whole backlog in one wake, so a deep one
+        // comes back out as a single burst; keep it to ~100 ms, well inside
+        // what a 10 ms drain can carry away.
+        let max_backlog = block * 10;
         for chunk in mic.chunks(block) {
+            // Nothing paces a file the way a sound card paces a microphone, so
+            // follow the worker's actual backlog rather than sleeping a fixed
+            // amount: the modulator is faster than real time, but *how much*
+            // faster is a property of the machine, and on a busy one a fixed
+            // guess lets the test outrun the worker and lose audio.
+            while worker.tx_pending() > max_backlog {
+                let n = worker.pop_tx(&mut out);
+                modem.extend_from_slice(&out[..n]);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
             worker.push_mic(chunk);
-            worker.pop_tx(&mut out);
-            modem.extend_from_slice(&out);
-            // The modem is faster than real time but not instant; keep the ring
-            // from overflowing without pacing the whole test at 1x.
-            std::thread::sleep(std::time::Duration::from_micros(200));
+            let n = worker.pop_tx(&mut out);
+            modem.extend_from_slice(&out[..n]);
         }
         worker.set_tx(false);
         for _ in 0..500 {
-            worker.pop_tx(&mut out);
-            modem.extend_from_slice(&out);
+            let n = worker.pop_tx(&mut out);
+            modem.extend_from_slice(&out[..n]);
             if worker.tx_drained() {
                 break;
             }
@@ -192,12 +206,13 @@ fn worker_transmits_an_over_that_decodes_back() {
         }
         assert!(worker.tx_drained(), "transmit never drained after releasing");
         assert_eq!(worker.stats().dropped, 0);
-        // Drain the tail the end-of-over frame left behind.
-        for _ in 0..20 {
-            worker.pop_tx(&mut out);
-            modem.extend_from_slice(&out);
-        }
     }
+
+    // Half a second of silence on the end, because a real receiver never stops
+    // delivering audio: the end-of-over frame is the last thing transmitted,
+    // and without a tail to push it through the demodulator's pipeline it would
+    // never come back out.
+    modem.resize(modem.len() + AUDIO_RATE as usize / 2, 0.0);
 
     let peak = modem.iter().fold(0.0f32, |a, s| a.max(s.abs()));
     assert!(peak > 0.05, "transmitted signal peaked at only {peak}");
