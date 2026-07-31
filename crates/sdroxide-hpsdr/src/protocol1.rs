@@ -563,6 +563,9 @@ pub(crate) fn run(ctx: ThreadCtx) {
                     tx_scratch.extend_from_slice(b);
                     pair.commit_all();
                 }
+                if invert_spectrum {
+                    conjugate(&mut tx_scratch);
+                }
             }
             let cc = regs.cc(rot.take(&regs));
             let mox = if regs.ptt { 1 } else { 0 };
