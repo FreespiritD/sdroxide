@@ -612,6 +612,7 @@ impl SdroxideApp {
                         &self.rx888_devices,
                         io.radio_edit,
                         io.rx888_rescan,
+                        io.apply_iface,
                         cmds,
                     ),
                     // Legacy configs may still carry the removed auto-detect

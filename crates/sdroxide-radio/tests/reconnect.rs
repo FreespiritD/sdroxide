@@ -225,3 +225,88 @@ fn failing_interface_backs_off() {
         let _ = t.join();
     }
 }
+
+/// A source that reports whatever rate it was built with, standing in for an
+/// RX-888 whose ADC clock the operator has just changed.
+struct AtRate(f64);
+
+impl IqSource for AtRate {
+    fn sample_rate(&self) -> f64 {
+        self.0
+    }
+    fn center_hz(&self) -> f64 {
+        CENTER
+    }
+    fn set_center_hz(&mut self, _hz: f64) -> Result<()> {
+        Ok(())
+    }
+    fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        std::thread::sleep(Duration::from_millis(5));
+        let n = buf.len().min(256);
+        buf[..n].fill(Complex32::new(0.0, 0.0));
+        Ok(n)
+    }
+    fn describe(&self) -> String {
+        format!("source at {:.0} Hz", self.0)
+    }
+}
+
+/// Changing the sample rate must take effect on a reopen, without restarting.
+///
+/// This is the path a setting like the RX-888's ADC clock takes: persist the
+/// config, ask the engine to reopen, and let the factory build a source with a
+/// *different* rate from the one the engine is currently running. The engine has
+/// to rebuild everything it sized against the old rate rather than carry it
+/// over — a stale rate is not a cosmetic problem, it puts every later frequency
+/// calculation out by the ratio between the two.
+#[test]
+fn a_changed_sample_rate_takes_effect_on_reopen() {
+    const NEW_RATE: f64 = 96_000.0;
+
+    let reopen: sdroxide_radio::ReopenFn = Box::new(move |_center: f64| {
+        let mut c = caps("rerated");
+        c.sample_rates = vec![NEW_RATE];
+        Ok((Box::new(AtRate(NEW_RATE)) as Box<dyn IqSource>, c))
+    });
+
+    let cfg = EngineConfig { reopen: Some(reopen), ..Default::default() };
+    let mut h = start_engine(Box::new(AtRate(RATE)), caps("initial"), cfg);
+    let thread = h.thread.take();
+
+    // Let it settle at the original rate, then ask for the swap.
+    std::thread::sleep(Duration::from_millis(200));
+    h.swap_tx.send(EngineSwap::ReopenSource).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut rerated = false;
+    let mut state_rate = 0.0f64;
+    while !rerated && Instant::now() < deadline {
+        while let Ok(ev) = h.event_rx.try_recv() {
+            match ev {
+                RadioEvent::Capabilities(c) if c.driver == "rerated" => rerated = true,
+                RadioEvent::State(s) => state_rate = s.sample_rate,
+                _ => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(rerated, "the engine never adopted the re-rated source");
+
+    // The state the UI draws from must describe the new rate, not the old one.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while state_rate != NEW_RATE && Instant::now() < deadline {
+        while let Ok(ev) = h.event_rx.try_recv() {
+            if let RadioEvent::State(s) = ev {
+                state_rate = s.sample_rate;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(state_rate, NEW_RATE, "the engine kept reporting the old sample rate");
+
+    drop(h.cmd_tx);
+    drop(h.swap_tx);
+    if let Some(t) = thread {
+        let _ = t.join();
+    }
+}

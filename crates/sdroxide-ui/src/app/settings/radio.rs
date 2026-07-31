@@ -633,6 +633,7 @@ pub(in crate::app) fn settings_rx888_tab(
     devices: &[sdroxide_types::Rx888Device],
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     rescan: &mut bool,
+    apply: &mut bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::Rx888Config;
@@ -640,6 +641,15 @@ pub(in crate::app) fn settings_rx888_tab(
         ui.label("Radio configuration is only available in the native app.");
         return;
     };
+
+    // Everything on this panel takes effect as soon as it is touched. The gain
+    // stages ride `SetGain` straight to the running device; the rest need the
+    // DSP chain rebuilt around a new sample rate, so they ask for a reopen
+    // instead of leaving the operator to find a button. That is affordable here
+    // in a way it is not for other backends — the device is already programmed,
+    // so reopening it costs about a millisecond plus the firmware's own start
+    // latency, measured at ~150 ms end to end.
+    let before = (cfg.rx888.serial.clone(), cfg.rx888.adc_rate_hz, cfg.rx888.randomize);
 
     egui::Grid::new("rx888-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Receiver");
@@ -708,8 +718,8 @@ pub(in crate::app) fn settings_rx888_tab(
         ui.label(
             egui::RichText::new(
                 "129.6 Msps needs a SuperSpeed link and a fast host; 64.8 is the \
-                 safe default. The receiver uploads its own firmware on every \
-                 plug-in, so there is nothing to install.",
+                 safe default. Changing it reopens the receiver automatically, \
+                 which takes a moment but needs no restart.",
             )
             .weak(),
         );
@@ -801,22 +811,35 @@ pub(in crate::app) fn settings_rx888_tab(
         ui.end_row();
 
         ui.label("Clock trim");
-        ui.add(
-            egui::DragValue::new(&mut cfg.rx888.ppm)
-                .speed(0.1)
-                .range(-200.0..=200.0)
-                .suffix(" ppm"),
-        )
-        .on_hover_text("Corrects the reference oscillator. Applies on reconnect.");
+        let r = ui
+            .add(
+                egui::DragValue::new(&mut cfg.rx888.ppm)
+                    .speed(0.1)
+                    .range(-200.0..=200.0)
+                    .suffix(" ppm"),
+            )
+            .on_hover_text(
+                "Corrects the reference oscillator. Applied when you let go of \
+                 the value — reopening on every pixel of a drag would restart \
+                 the receiver hundreds of times.",
+            );
+        if r.drag_stopped() || r.lost_focus() {
+            *apply = true;
+        }
         ui.end_row();
     });
+
+    if before != (cfg.rx888.serial.clone(), cfg.rx888.adc_rate_hz, cfg.rx888.randomize) {
+        *apply = true;
+    }
 
     ui.add_space(6.0);
     ui.label(
         egui::RichText::new(
             "Receive only, 0–32 MHz by direct sampling. There is no hardware \
              downconverter: the full ADC stream is converted to baseband on the \
-             host, so retuning anywhere in HF is instant.",
+             host, so retuning anywhere in HF is instant. Every setting here \
+             applies straight away — there is no Apply button to press.",
         )
         .weak(),
     );
