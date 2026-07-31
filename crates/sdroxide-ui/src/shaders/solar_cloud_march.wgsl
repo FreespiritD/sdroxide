@@ -57,6 +57,11 @@ const EARTH_R_KM = 6371.0;
 const ALBEDO = vec3<f32>(0.93, 0.95, 0.99);
 const FLASH_TINT = vec3<f32>(0.80, 0.87, 1.00);
 const NIGHT_FLOOR = 0.035;
+/// The lit face's diffuse return. Purely diffuse and matched to the sliced path
+/// in `solar_cloud.wgsl`, so switching between the two does not change how bright
+/// the weather is. Same reasoning for the value: the deeper shadow below only
+/// takes light away, and this holds the mean up against it.
+const DAY_GAIN = 0.82;
 /// Hard ceiling on the loop. The step budget in `params.w` follows the globe's
 /// size on screen; this is what stops a driver having to unroll the worst case.
 const MAX_STEPS = 40;
@@ -96,7 +101,7 @@ fn vnoise(p: vec3<f32>) -> f32 {
 fn billows(n: vec3<f32>, alt: f32, t: f32) -> f32 {
     let drift = t * 0.004;
     let p = n * 190.0 + vec3(0.0, 0.0, alt * 0.55) + vec3(drift, drift * 0.3, 0.0);
-    return clamp(0.42 + 1.05 * vnoise(p * 0.35) + 0.38 * vnoise(p * 1.4), 0.0, 2.0);
+    return clamp(0.26 + 1.28 * vnoise(p * 0.35) + 0.46 * vnoise(p * 1.4), 0.0, 2.0);
 }
 
 fn deck_depth(opacity: f32, top_km: f32) -> f32 {
@@ -233,13 +238,16 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
             let n = normalize(p);
             let day = smoothstep(-0.06, 0.16, dot(n, to_sun_dir));
 
-            // One shadow tap towards the Sun. A full secondary march would be
-            // the textbook answer and four times the cost; a single sample a
-            // few kilometres up-sun captures what actually reads — that a
-            // tower shades its own underside and the deck beside it.
-            let shadow_p = p + to_sun_dir * (r_top - r_base) * 0.9;
-            let occl = sample_cloud(shadow_p, earth_r, lift, d.style.y, g.misc.x).x;
-            let shade = exp(-occl * 2.2);
+            // Two shadow taps towards the Sun. A full secondary march would be
+            // the textbook answer and many times the cost; two samples up-sun
+            // capture what actually reads — the near one that a tower shades its
+            // own flank, the far one that it throws shadow across the deck
+            // beside it. One tap alone gave a single soft falloff, which is the
+            // shading equivalent of a wash, and the deck came out flat.
+            let slab = r_top - r_base;
+            let near = sample_cloud(p + to_sun_dir * slab * 0.3, earth_r, lift, d.style.y, g.misc.x).x;
+            let far = sample_cloud(p + to_sun_dir * slab * 1.1, earth_r, lift, d.style.y, g.misc.x).x;
+            let shade = exp(-(near * 2.6 + far * 1.6));
 
             // Light from the storms, attenuated by the cloud it has already
             // crossed. This is the whole reason for marching: a flash inside a
@@ -252,7 +260,7 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
                 flash += f.w * exp(-dist / max(fl.reach.x, 1e-6));
             }
 
-            let sun_col = srgb_to_linear(ALBEDO) * (NIGHT_FLOOR + day * shade * 0.95);
+            let sun_col = srgb_to_linear(ALBEDO) * (NIGHT_FLOOR + day * shade * DAY_GAIN);
             let flash_col = srgb_to_linear(FLASH_TINT) * flash * s.y * 1.1;
             // Beer–Lambert over one step, integrated front to back.
             let absorbed = 1.0 - exp(-s.x * dt / earth_r * 900.0);

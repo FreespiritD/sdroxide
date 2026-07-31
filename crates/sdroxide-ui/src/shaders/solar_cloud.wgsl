@@ -63,6 +63,8 @@ struct Flashes {
 /// Cloud-top height at the top of the stored range, kilometres. Must match
 /// `clouds::TOP_MAX_KM`.
 const TOP_MAX_KM = 18.0;
+const EARTH_R_KM = 6371.0;
+const PI = 3.14159265;
 
 /// A sunlit cloud top reflects about seven tenths of what falls on it, against
 /// the ocean's six hundredths. If the deck is not markedly brighter than the
@@ -73,6 +75,31 @@ const FLASH_TINT = vec3<f32>(0.80, 0.87, 1.00);
 /// What the night side keeps. Not zero: an unlit deck still has to occlude the
 /// coastline glow under it, or the land shows straight through the weather.
 const NIGHT_FLOOR = 0.035;
+/// How much of the sunlight the lit face returns towards the eye. The deck is
+/// lit purely diffusely — no view-dependent term — so a column is exactly as
+/// bright from over the subsolar point as it is from the side, and the middle of
+/// the daylit disc no longer blows out into a hotspot as the globe is turned.
+///
+/// A little above the flat-lit value it would take on its own: the relief terms
+/// below only ever remove light on balance, so the deck would drift darker
+/// overall as they were added. This holds the *mean* where it was and spends the
+/// difference on contrast.
+const DAY_GAIN = 0.82;
+/// How hard the deck's own relief is allowed to shade it — see `top_slope`.
+///
+/// Asymmetric, and that is the physical way round rather than a taste knob. A
+/// tilted cloud top that turns to face the Sun gathers a little more light than
+/// a flat one; a tilted top that turns *away* falls into its own shadow, and
+/// there is no floor on how dark that gets short of the skylight bouncing around
+/// it. So relief mostly carves shadow, and only slightly adds highlight.
+const RELIEF_LIGHT = 0.32;
+const RELIEF_DARK = 0.62;
+/// The drop below its neighbours, in exaggerated kilometres, at which a column
+/// counts as a fully enclosed hollow — and how much light such a hollow loses.
+/// Cut the depth to zero and the deck goes back to reading as a painted sheet
+/// wherever the Sun is high.
+const CAVITY_KM = 4.0;
+const CAVITY_DEPTH = 0.38;
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let lo = c / 12.92;
@@ -113,7 +140,59 @@ fn billows(n: vec3<f32>, alt: f32, t: f32) -> f32 {
     let p = n * 190.0 + vec3(0.0, 0.0, alt * 0.55) + vec3(drift, drift * 0.3, 0.0);
     let coarse = vnoise(p * 0.35);
     let fine = vnoise(p * 1.4);
-    return clamp(0.42 + 1.05 * coarse + 0.38 * fine, 0.0, 2.0);
+    // Same mean as an unweighted deck, wider spread: the pedestal is lower and
+    // the swing above it larger, so the thin edges of a sheet break up into
+    // ragged cloud instead of fading out as an even wash. Keeping the mean put
+    // is what stops this from being a global opacity change in disguise.
+    return clamp(0.26 + 1.28 * coarse + 0.46 * fine, 0.0, 2.0);
+}
+
+/// The shape of the cloud top over one column: which way it tilts, and whether
+/// it stands proud of what surrounds it or sits down in a hollow.
+///
+/// The mosaic is a height field, and a height field has a shape. Every column at
+/// the same opacity returns exactly the same light without this, which is why an
+/// unshaded deck reads as a sheet of paint however much structure is in the data
+/// — the structure is all in the *coverage* and none of it in the *light*. Four
+/// taps of the neighbourhood buy both halves of the fix, and they are the same
+/// four either way.
+struct TopRelief {
+    /// (east, south) tilt: kilometres of rise per kilometre of run, carrying the
+    /// same vertical exaggeration the geometry was built with. The shells really
+    /// are drawn `lift` times too tall, so shading them any flatter would light a
+    /// shape that is not the one on screen.
+    slope: vec2<f32>,
+    /// How far this column sits below its neighbours' mean, in exaggerated
+    /// kilometres. Positive in a hollow, negative on a peak. This is the part
+    /// that does not care where the Sun is: a dell in the deck sees less of the
+    /// sky than a dome does whatever the hour, so it is darker at noon too — and
+    /// noon is exactly where the tilt term has nothing left to say, because a
+    /// Sun straight overhead lights every slope alike.
+    cavity: f32,
+};
+
+fn top_relief(uv: vec2<f32>, centre: f32, coslat: f32, lift: f32) -> TopRelief {
+    let dims = vec2<f32>(textureDimensions(cloud_tex, 0));
+    let du = 1.0 / dims.x;
+    let dv = 1.0 / dims.y;
+    // Central differences, at level zero: the mosaic has no mips, and a filtered
+    // tap would flatten the very gradient this is here to find.
+    let e = textureSampleLevel(cloud_tex, samp, vec2(uv.x + du, uv.y), 0.0).g;
+    let w = textureSampleLevel(cloud_tex, samp, vec2(uv.x - du, uv.y), 0.0).g;
+    let s = textureSampleLevel(cloud_tex, samp, vec2(uv.x, uv.y + dv), 0.0).g;
+    let n = textureSampleLevel(cloud_tex, samp, vec2(uv.x, uv.y - dv), 0.0).g;
+    // How far apart those taps are on the ground, kilometres. Meridians
+    // converge, so a texel of longitude is shorter the further from the equator
+    // it lies; the clamp is what stops the last rows before the pole turning a
+    // one-texel step into a cliff. Nothing is drawn poleward of about 73° anyway
+    // — no geostationary satellite looks there — so it never bites in practice.
+    let run_e = 2.0 * EARTH_R_KM * (2.0 * PI * du) * max(coslat, 0.10);
+    let run_s = 2.0 * EARTH_R_KM * (PI * dv);
+
+    var r: TopRelief;
+    r.slope = vec2((e - w) * TOP_MAX_KM / run_e, (s - n) * TOP_MAX_KM / run_s) * lift;
+    r.cavity = ((e + w + s + n) * 0.25 - centre) * TOP_MAX_KM * lift;
+    return r;
 }
 
 /// How deep the cloud in this column is, kilometres.
@@ -221,14 +300,37 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     // own column. It is why a deck looks three-dimensional instead of like fog
     // — the underside of a tower is dark and its anvil is white.
     let above = max(top_km - alt, 0.0) / max(top_km - base_km, 0.1);
-    let shade = mix(1.0, 0.30, clamp(above * opacity, 0.0, 1.0));
+    let shade = mix(1.0, 0.22, clamp(above * opacity, 0.0, 1.0));
 
-    // The silver lining: light that has come the long way through the edge of a
-    // cloud, which is why the rim facing the Sun is the brightest thing in the
-    // sky.
-    let forward = pow(max(dot(-to_eye, -to_sun), 0.0), 8.0) * 0.45;
+    // Relief, from the tilt of the cloud top over this column.
+    //
+    // Taken as the *difference* the slope makes against the smooth sphere under
+    // it, not as a replacement for the terminator above. That is what lets the
+    // deck be sculpted and still share the ground's day/night line exactly: the
+    // large-scale distribution of light is untouched, and only the local tilt —
+    // the part that was missing — is added.
+    //
+    // The tangent frame is the sphere mesh's own: +Z at the north pole and u
+    // running east, so `east` is the horizontal perpendicular to the column and
+    // `north` closes the triple. The slope tilts the normal away from uphill,
+    // which is a height field's normal written out.
+    let nb = normalize(in.body);
+    let horiz = length(nb.xy);
+    let east = select(vec3(0.0, 1.0, 0.0), vec3(-nb.y, nb.x, 0.0) / max(horiz, 1e-5), horiz > 1e-5);
+    let north = cross(nb, east);
+    let rel = top_relief(in.uv, c.g, horiz, d.style.x);
+    let tilted = normalize(nb - east * rel.slope.x + north * rel.slope.y);
+    let sun_b = normalize(vec3(dot(to_sun, d.basis[0].xyz), dot(to_sun, d.basis[1].xyz), dot(to_sun, d.basis[2].xyz)));
+    // Thin cloud has no relief to speak of — it is a sheet, and carving shadow
+    // into a cirrus veil would invent a structure the data never claimed.
+    let relief = clamp((dot(tilted, sun_b) - dot(nb, sun_b)) * opacity, -RELIEF_DARK, RELIEF_LIGHT);
+    // The hollows, over a few kilometres of exaggerated depth. Unlike the tilt
+    // this survives a Sun overhead, which is what keeps the middle of the daylit
+    // disc from going back to being a wash.
+    let cavity = clamp(rel.cavity / CAVITY_KM, -0.5, 1.0) * opacity;
 
-    var col = srgb_to_linear(ALBEDO) * (NIGHT_FLOOR + day * (0.95 * shade + forward));
+    var col = srgb_to_linear(ALBEDO)
+        * (NIGHT_FLOOR + day * DAY_GAIN * shade * (1.0 + relief) * (1.0 - CAVITY_DEPTH * cavity));
     // Lightning, added as light rather than as more cloud: it brightens the
     // storm without making it thicker. `convective` is read off the height
     // field, so only the towers that are making the flashes light up with them.
