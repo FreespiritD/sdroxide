@@ -1,0 +1,19 @@
+[package]
+name = "sdroxide-rx888"
+version.workspace = true
+edition.workspace = true
+
+# Native-only RX-888 Mk2 (Cypress FX3 + LTC2208) support over USB. Pure Rust via
+# `nusb` — no libusb, no libSoapySDR, no C dependency at all. Must never be a
+# dependency of any wasm-targeted crate.
+[dependencies]
+sdroxide-types.workspace = true
+sdroxide-dsp.workspace = true
+crossbeam-channel.workspace = true
+rtrb.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+nusb.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

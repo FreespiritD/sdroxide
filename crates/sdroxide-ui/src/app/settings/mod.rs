@@ -26,7 +26,9 @@ use self::net::{
     broadcast_stations_settings, net_heading, net_row, net_secret, operator_identity_note,
     settings_freedv_tab,
 };
-use self::radio::{settings_cat_tab, settings_hpsdr_tab, settings_rtlsdr_tab, settings_tci_tab};
+use self::radio::{
+    settings_cat_tab, settings_hpsdr_tab, settings_rtlsdr_tab, settings_rx888_tab, settings_tci_tab,
+};
 use self::servers::{settings_rigctld_tab, settings_tci_server_tab, settings_wsjtx_tab};
 use self::tle::settings_tle_tab;
 use self::ui_tab::settings_ui_tab;
@@ -98,6 +100,7 @@ pub(in crate::app) struct SettingsIo<'a> {
     /// Re-enumerate the USB bus for RTL-SDR dongles. Cheap and non-invasive —
     /// no device is opened — so it cannot disturb a running stream.
     rtlsdr_rescan: &'a mut bool,
+    rx888_rescan: &'a mut bool,
     tci_test: &'a mut bool,
     apply_iface: &'a mut bool,
     ui_edit: &'a mut sdroxide_types::UiSettings,
@@ -207,6 +210,7 @@ impl SdroxideApp {
         let mut audio_pick: Option<(bool, Option<String>)> = None;
         let mut hpsdr_discover = false;
         let mut rtlsdr_rescan = false;
+        let mut rx888_rescan = false;
         let mut tci_test = false;
         let mut apply_iface = false;
         let mut radio_edit = self.radio_cfg.clone();
@@ -247,6 +251,9 @@ impl SdroxideApp {
         // Ungated, unlike SoapySDR: the RTL-SDR driver is pure Rust and needs
         // no system library, so it is compiled into every build variant.
         iface_opts.push(sdroxide_types::Backend::RtlSdr);
+        // Same reasoning as the RTL-SDR: pure Rust over `nusb`, no system
+        // library, so it is in every build variant.
+        iface_opts.push(sdroxide_types::Backend::Rx888);
 
         let mut tab = self.settings_tab;
         let mut open = self.show_settings;
@@ -275,6 +282,7 @@ impl SdroxideApp {
                         audio_pick: &mut audio_pick,
                         hpsdr_discover: &mut hpsdr_discover,
                         rtlsdr_rescan: &mut rtlsdr_rescan,
+                        rx888_rescan: &mut rx888_rescan,
                         tci_test: &mut tci_test,
                         apply_iface: &mut apply_iface,
                         ui_edit: &mut ui_edit,
@@ -398,6 +406,9 @@ impl SdroxideApp {
             // USB enumeration only — no device is opened, so this is safe to
             // press at any time, including while a dongle is streaming.
             self.rtlsdr_devices = self.ctrl.list_rtlsdr();
+        }
+        if rx888_rescan {
+            self.rx888_devices = self.ctrl.list_rx888();
         }
         if tci_test {
             // Blocking connect (~up to 3 s); after the closure so it can take
@@ -594,6 +605,13 @@ impl SdroxideApp {
                         &self.rtlsdr_devices,
                         io.radio_edit,
                         io.rtlsdr_rescan,
+                        cmds,
+                    ),
+                    Backend::Rx888 => settings_rx888_tab(
+                        ui,
+                        &self.rx888_devices,
+                        io.radio_edit,
+                        io.rx888_rescan,
                         cmds,
                     ),
                     // Legacy configs may still carry the removed auto-detect

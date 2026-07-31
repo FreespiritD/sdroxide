@@ -205,6 +205,15 @@ pub trait RadioController {
         Vec::new()
     }
 
+    /// List RX-888 receivers on the USB bus (native local client only). Same
+    /// contract as [`RadioController::list_rtlsdr`]: nothing is opened, so it is
+    /// safe to call while one is streaming. Devices still sitting in their boot
+    /// ROM are included and flagged, because that is the normal state of an
+    /// RX-888 that has just been plugged in.
+    fn list_rx888(&self) -> Vec<crate::Rx888Device> {
+        Vec::new()
+    }
+
     /// Test a TCI server connection at `address` (`host:port`). Blocking — the
     /// settings UI calls this on demand (a "Test connection" button). Returns a
     /// success summary or an error message. Default: unsupported (remote client).

@@ -277,7 +277,7 @@ other ham software). See the [User Manual](docs/USER_MANUAL.md) for setup steps.
 
 ## Radio backends
 
-sdroxide can drive five kinds of radio, selected on the **Radio** tab of the
+sdroxide can drive six kinds of radio, selected on the **Radio** tab of the
 Settings window. Backend, serial, and radio-audio changes apply live when you
 press **Apply / reconnect**. A radio that isn't there yet at startup — or that
 drops mid-session — is retried in the background and attaches by itself, so
@@ -290,6 +290,21 @@ starting sdroxide before the rig is fine:
   an RTL-SDR Blog V4's built-in upconverter, or on other sticks by direct
   sampling the ADC's Q branch (the V3's HF port). Bias tee and ppm correction
   are on the Radio tab; see "RTL-SDR permissions" under Building.
+- **RX-888 (USB)** — an RX-888 or RX-888 Mk2 direct-sampling HF receiver
+  (LTC2208 16-bit ADC, Cypress FX3), driven directly over USB by a native
+  pure-Rust driver. **No SoapySDR, no libusb, and no vendor driver package.**
+  Covers 0–32 MHz by sampling HF directly at up to 129.6 Msps.
+
+  The FX3 on this board has no boot EEPROM, so the receiver appears as a bare
+  Cypress bootloader on every plug-in with no radio function at all. sdroxide
+  uploads the (MIT-licensed, bundled) firmware itself, so there is nothing to
+  install and nothing to run first — plug it in and pick it in Settings. See
+  "RX-888 permissions" under Building for the Linux udev rule.
+
+  There is no hardware downconverter in this receiver: the full ADC stream is
+  converted to complex baseband on the host, which is why retuning anywhere in
+  HF is instantaneous, and why it wants a modern CPU and a real USB 3 port.
+  Receive only; the VHF/UHF tuner is not driven.
 - **SoapySDR** — any [SoapySDR](https://github.com/pothosware/SoapySDR) device
   (wideband IQ) — HackRF, Airspy, PlutoSDR and friends. See below.
 - **OpenHPSDR** — Hermes/Metis-family Ethernet SDRs on the LAN (Protocol 1 and
@@ -574,6 +589,37 @@ stops working as a TV tuner.
 
 If a dongle is present but sdroxide cannot open it, `--probe` says so in words
 rather than errnos.
+
+### RX-888 permissions
+
+Same situation as the RTL-SDR — direct USB access — with one wrinkle worth
+knowing about.
+
+**Linux.** Install the packaged udev rule and replug the receiver:
+
+```sh
+sudo cp packaging/linux/60-sdroxide-rx888.rules /usr/lib/udev/rules.d/
+sudo udevadm control --reload
+```
+
+The `.deb` installs this for you. The rule covers **two** USB ids, and both are
+required: `04b4:00f3` is the bare Cypress FX3 bootloader, which is how the
+receiver appears on every plug-in, and `04b4:00f1` is the same device once
+sdroxide has uploaded firmware into it. A rule covering only the second looks
+right and never works, because the upload happens through the first.
+
+**Windows.** Bind the device to **WinUSB** with [Zadig](https://zadig.akeo.ie/),
+once for each of the two ids above.
+
+**macOS.** Nothing to do.
+
+**Getting the full sample rate.** The FX3 bootloader always enumerates at USB
+2.0, *even on a perfectly good USB 3 cable and port* — only the firmware
+sdroxide uploads re-enumerates at SuperSpeed. So a receiver reported as "USB
+2.0" before it is programmed is not a problem. If it is still USB 2.0
+afterwards, that is a real cable or port problem, and sdroxide clamps the sample
+rate and says so on screen rather than silently dropping samples. `--probe`
+reports the link speed.
 
 ## Running
 

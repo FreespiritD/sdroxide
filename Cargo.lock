@@ -3934,6 +3934,7 @@ dependencies = [
  "sdroxide-proto",
  "sdroxide-radio",
  "sdroxide-rtlsdr",
+ "sdroxide-rx888",
  "sdroxide-server",
  "sdroxide-tci",
  "sdroxide-types",
@@ -4004,6 +4005,7 @@ version = "0.8.0"
 dependencies = [
  "nnnoiseless",
  "num-complex",
+ "realfft",
  "rubato",
  "rustfft",
  "sdroxide-types",
@@ -4115,6 +4117,20 @@ dependencies = [
  "crossbeam-channel",
  "nusb",
  "rtrb",
+ "sdroxide-types",
+ "thiserror 2.0.19",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "sdroxide-rx888"
+version = "0.8.0"
+dependencies = [
+ "crossbeam-channel",
+ "nusb",
+ "rtrb",
+ "sdroxide-dsp",
  "sdroxide-types",
  "thiserror 2.0.19",
  "tracing",

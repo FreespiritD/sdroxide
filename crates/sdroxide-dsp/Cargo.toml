@@ -7,6 +7,10 @@ edition.workspace = true
 sdroxide-types.workspace = true
 num-complex.workspace = true
 rustfft.workspace = true
+# Real-input FFT for the RX-888's wideband downconverter. A thin pure-Rust
+# wrapper over rustfft (already in the tree via rubato), so it adds no new
+# transitive dependency and stays wasm-clean.
+realfft = "3.5"
 rubato = "4.0.0"
 # RNNoise neural speech denoiser (pure Rust, wasm-clean). Core library only —
 # the default features pull in a CLI binary (clap/hound/dasp).

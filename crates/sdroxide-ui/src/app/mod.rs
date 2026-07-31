@@ -106,6 +106,7 @@ pub struct SdroxideApp {
     /// HPSDR devices found by the last "Discover" scan in the settings dialog.
     hpsdr_devices: Vec<sdroxide_types::HpsdrDevice>,
     rtlsdr_devices: Vec<sdroxide_types::RtlSdrDevice>,
+    rx888_devices: Vec<sdroxide_types::Rx888Device>,
     /// Result of the last TCI "Test connection" (Ok summary / Err message).
     tci_test_result: Option<Result<String, String>>,
     seen_first_state: bool,
@@ -366,6 +367,7 @@ impl SdroxideApp {
             serial_ports: Vec::new(),
             hpsdr_devices: Vec::new(),
             rtlsdr_devices: Vec::new(),
+            rx888_devices: Vec::new(),
             tci_test_result: None,
             seen_first_state: false,
             show_memories: false,

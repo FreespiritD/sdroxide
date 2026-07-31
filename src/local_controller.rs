@@ -132,6 +132,10 @@ impl RadioController for LocalController {
         sdroxide_hpsdr::discover_default()
     }
 
+    fn list_rx888(&self) -> Vec<sdroxide_types::Rx888Device> {
+        sdroxide_rx888::list()
+    }
+
     fn list_rtlsdr(&self) -> Vec<sdroxide_types::RtlSdrDevice> {
         sdroxide_rtlsdr::list()
     }

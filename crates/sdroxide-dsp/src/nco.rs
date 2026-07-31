@@ -29,6 +29,23 @@ impl Nco {
         self.step = num_complex::Complex::new(w.cos(), w.sin());
     }
 
+    /// samples[i] *= phasor, in place.
+    ///
+    /// Same recurrence as [`Nco::mix`], for callers that already own the buffer
+    /// they want shifted and would otherwise copy it just to mix it.
+    pub fn mix_in_place(&mut self, samples: &mut [Complex32]) {
+        for x in samples {
+            let p = Complex32::new(self.phasor.re as f32, self.phasor.im as f32);
+            *x *= p;
+            self.phasor *= self.step;
+            self.renorm += 1;
+            if self.renorm >= 1 << 16 {
+                self.renorm = 0;
+                self.phasor /= self.phasor.norm();
+            }
+        }
+    }
+
     /// out[i] = input[i] * phasor (appends to `out`).
     pub fn mix(&mut self, input: &[Complex32], out: &mut Vec<Complex32>) {
         out.reserve(input.len());

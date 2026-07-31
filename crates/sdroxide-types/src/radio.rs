@@ -21,16 +21,20 @@ pub enum Backend {
     /// RTL2832U dongle driven directly over USB by the native driver — no
     /// SoapySDR, no libusb, nothing to install.
     RtlSdr,
+    /// RX-888 Mk2 direct-sampling HF receiver, driven over USB by the native
+    /// driver. Uploads its own firmware, so nothing needs installing.
+    Rx888,
 }
 
 impl Backend {
-    pub const ALL: [Backend; 6] = [
+    pub const ALL: [Backend; 7] = [
         Backend::Auto,
         Backend::Soapy,
         Backend::Cat,
         Backend::Hpsdr,
         Backend::Tci,
         Backend::RtlSdr,
+        Backend::Rx888,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -40,6 +44,7 @@ impl Backend {
             Backend::Hpsdr => "HPSDR (network)",
             Backend::Tci => "TCI (network)",
             Backend::RtlSdr => "RTL-SDR (USB)",
+            Backend::Rx888 => "RX-888 (USB)",
         }
     }
 }
@@ -676,6 +681,104 @@ impl RtlSdrDevice {
     }
 }
 
+/// An RX-888 seen on the USB bus.
+///
+/// Wasm-safe so it can cross the `RadioController` trait to the settings UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rx888Device {
+    /// USB serial. The boot ROM and the running firmware report *different*
+    /// serials, so a pinned value only matches the state the device is in.
+    pub serial: Option<String>,
+    /// Product string, or a generic name while it is still in its boot ROM.
+    pub name: String,
+    /// True while the device is still in the Cypress boot ROM. Not a fault:
+    /// every RX-888 looks like this until something programs it, and sdroxide
+    /// does that on open.
+    pub needs_firmware: bool,
+    /// Whether the link negotiated SuperSpeed. Only meaningful once the device
+    /// is programmed — the boot ROM always enumerates at USB 2.0, even on a
+    /// perfectly good USB 3 cable and port.
+    pub superspeed: bool,
+}
+
+impl Rx888Device {
+    /// One-line label for the selection UI.
+    pub fn label(&self) -> String {
+        let mut s = self.name.clone();
+        if let Some(serial) = &self.serial {
+            s.push_str(&format!("  (serial {serial})"));
+        }
+        if self.needs_firmware {
+            s.push_str("  [firmware will be uploaded]");
+        }
+        s
+    }
+}
+
+/// RX-888 settings (`radio.json`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Rx888Config {
+    /// Pin a particular receiver; empty means "the first one found".
+    pub serial: String,
+    /// ADC clock in Hz, which is also the real-sample rate on the wire.
+    pub adc_rate_hz: f64,
+    /// LTC2208 dither: costs a little noise floor, buys spurious-free dynamic
+    /// range.
+    pub dither: bool,
+    /// LTC2208 output randomiser. On by default — it stops the digital bus
+    /// radiating into the front end, and undoing it costs one XOR per sample.
+    pub randomize: bool,
+    /// DC on the HF antenna port. Off by default: putting phantom power on
+    /// someone's feedline uninvited is not a good default.
+    pub bias_tee_hf: bool,
+    /// Select the ADC's wider 2.25 Vp-p input range. Named for the GPIO bit,
+    /// which is not actually a preamplifier — see the driver's `gpio::PGA_EN`.
+    pub pga: bool,
+    /// Step attenuator as a gain, i.e. -31.5..=0 dB.
+    pub attenuator_db: f64,
+    /// AD8370 VGA gain in dB.
+    pub vga_db: f64,
+    /// Reference trim, parts per million.
+    pub ppm: f64,
+    /// Override the bundled FX3 firmware image. Empty uses the built-in one.
+    pub firmware_path: String,
+}
+
+impl Default for Rx888Config {
+    fn default() -> Self {
+        Rx888Config {
+            serial: String::new(),
+            adc_rate_hz: 64_800_000.0,
+            dither: false,
+            randomize: true,
+            bias_tee_hf: false,
+            pga: true,
+            attenuator_db: 0.0,
+            vga_db: 12.0,
+            ppm: 0.0,
+            firmware_path: String::new(),
+        }
+    }
+}
+
+impl Rx888Config {
+    /// Pseudo gain-element names, riding `Command::SetGain` so this backend
+    /// needs no new `Command` variant, no `DeviceCaps` field and no engine
+    /// change for settings only it has. They live here rather than in
+    /// `sdroxide-rx888` so the wasm-safe settings UI can address them without
+    /// depending on the native backend crate.
+    pub const VGA_ELEMENT: &'static str = "VGA";
+    pub const ATT_ELEMENT: &'static str = "ATT";
+    pub const DITHER_ELEMENT: &'static str = "DITHER";
+    pub const BIAS_TEE_ELEMENT: &'static str = "BIASTEE";
+    pub const PGA_ELEMENT: &'static str = "PGA";
+
+    /// ADC clocks offered in the UI. The Si5351 will synthesise others, but
+    /// these are the ones in common use on this board.
+    pub const ADC_RATES: [f64; 4] = [16_200_000.0, 32_400_000.0, 64_800_000.0, 129_600_000.0];
+}
+
 /// Persisted backend configuration (`radio.json`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -689,6 +792,7 @@ pub struct RadioConfig {
     pub hpsdr: HpsdrConfig,
     pub tci: TciConfig,
     pub rtlsdr: RtlSdrConfig,
+    pub rx888: Rx888Config,
 }
 
 #[cfg(test)]

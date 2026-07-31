@@ -84,7 +84,7 @@ pub use netcfg::{
 pub use radio::{
     Backend, CatConfig, CatFamily, DigiMode, HpsdrConfig, HpsdrDevice, HpsdrFilterBoard, LineState,
     ModeControl, Parity, PttMethod, RadioConfig, RtlSdrAgc, RtlSdrConfig, RtlSdrDevice,
-    RtlSdrHfMode, SerialConfig, SoundFormat, StopBits, TciConfig,
+    RtlSdrHfMode, Rx888Config, Rx888Device, SerialConfig, SoundFormat, StopBits, TciConfig,
 };
 pub use rifp::{
     RIFP_CALLING_HZ, RIFP_MAP_MAX_CHUNKS, RifpEncoding, RifpMeta, RifpProfile, RifpSession,

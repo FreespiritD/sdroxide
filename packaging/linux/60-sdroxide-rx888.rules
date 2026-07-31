@@ -1,0 +1,28 @@
+# RX-888 / RX-888 Mk2 direct-sampling receivers, for sdroxide's native USB driver.
+#
+# sdroxide talks to these directly with nusb rather than through libusb or
+# libSoapySDR, but the kernel-level requirement is the same: the invoking user
+# needs write access to the usbfs node.
+#
+# BOTH ids are needed, and this is the part that catches people out. The Cypress
+# FX3 on this board has no boot EEPROM, so it appears as 04b4:00f3 ("FX3 BootROM")
+# on every single plug-in and has no radio function at all until a host uploads
+# firmware into its RAM. sdroxide does that automatically, after which the device
+# drops off the bus and comes back as 04b4:00f1. A rule covering only the second
+# id looks correct and fails every time, because the upload happens through the
+# first one.
+#
+# TAG+="uaccess" hands an ACL to whoever is logged in at the active seat. That
+# is better than the older GROUP="plugdev" recipe, which needs a group to exist,
+# the user to be added to it, and a full re-login before it takes effect.
+#
+# Install:
+#   sudo cp 60-sdroxide-rx888.rules /usr/lib/udev/rules.d/
+#   sudo udevadm control --reload
+# then unplug and replug the receiver.
+
+# Cypress FX3 boot ROM — how every RX-888 appears before it is programmed.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="04b4", ATTRS{idProduct}=="00f3", MODE="0660", TAG+="uaccess"
+
+# The programmed receiver, product string "RX888mk2".
+SUBSYSTEM=="usb", ATTRS{idVendor}=="04b4", ATTRS{idProduct}=="00f1", MODE="0660", TAG+="uaccess"

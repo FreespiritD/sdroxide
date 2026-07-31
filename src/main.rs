@@ -5,6 +5,7 @@ mod hpsdr_source;
 mod local_controller;
 mod null_source;
 mod rtlsdr_source;
+mod rx888_source;
 mod server_main;
 mod tci_source;
 
@@ -493,6 +494,7 @@ fn probe(cli: &Cli, settings: &Settings) -> anyhow::Result<()> {
     // variant. It is the field-diagnosis tool for "does this machine see my
     // dongle, and may this user have it?".
     probe_rtlsdr();
+    probe_rx888();
     probe_soapy(cli, settings)
 }
 
@@ -504,6 +506,28 @@ fn probe_rtlsdr() {
         println!("=== RTL-SDR (native USB driver) ===");
         for (i, d) in devices.iter().enumerate() {
             println!("  {}: {}  [usb {:04x}:{:04x}]", i, d.label(), d.vid, d.pid);
+        }
+    }
+    println!();
+}
+
+fn probe_rx888() {
+    let devices = sdroxide_rx888::list();
+    if devices.is_empty() {
+        println!("No RX-888 receivers found on USB.");
+    } else {
+        println!("=== RX-888 (native USB driver) ===");
+        for (i, d) in devices.iter().enumerate() {
+            // A receiver in its boot ROM always reports USB 2.0, so saying
+            // "not SuperSpeed" there would be alarming and wrong.
+            let link = if d.needs_firmware {
+                "link speed unknown until programmed"
+            } else if d.superspeed {
+                "SuperSpeed"
+            } else {
+                "USB 2.0 — use a USB 3 cable and port for the full rate"
+            };
+            println!("  {}: {}  [{}]", i, d.label(), link);
         }
     }
     println!();
@@ -633,6 +657,7 @@ fn open_configured_source(
         Backend::Hpsdr => open_hpsdr_source(radio, cli.freq),
         Backend::Tci => open_tci_source(radio, cli.freq),
         Backend::RtlSdr => open_rtlsdr_source(radio, cli.freq),
+        Backend::Rx888 => open_rx888_source(radio, cli.freq),
         Backend::Soapy => open_soapy_source(cli, settings),
         Backend::Auto => {
             #[cfg(feature = "soapy")]
@@ -755,6 +780,62 @@ fn open_rtlsdr_source(
         .context("opening RTL-SDR dongle")?;
     let caps = rtlsdr_caps(&src);
     Ok((Box::new(src), caps))
+}
+
+/// Build the RX-888 source from radio.json. Uploads the FX3 firmware first if
+/// the receiver is still sitting in its boot ROM, which it will be on every
+/// fresh plug-in.
+fn open_rx888_source(
+    radio: &RadioConfig,
+    center_hz: f64,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let src = rx888_source::Rx888Source::open(&radio.rx888, center_hz)
+        .context("opening RX-888 receiver")?;
+    let caps = rx888_caps(&src);
+    Ok((Box::new(src), caps))
+}
+
+/// Capabilities for an RX-888: wideband IQ, receive only, HF.
+///
+/// Two things differ from every other backend here. The sample rate advertised
+/// is the *downconverter's* output, not the ADC clock — the hardware has no DDC,
+/// so the conversion from 64.8 Msps of real samples to complex baseband happens
+/// on the host. And the frequency range stops at the ADC's Nyquist limit rather
+/// than at some tuner's ceiling, because direct sampling is all this receiver
+/// does: there is no VHF path in this driver.
+fn rx888_caps(src: &rx888_source::Rx888Source) -> DeviceCaps {
+    use sdroxide_types::{Direction, GainElement, Rx888Config};
+    let rate = src.sample_rate_hz();
+    let nyquist = src.adc_rate_hz() / 2.0;
+    DeviceCaps {
+        driver: "rx888".into(),
+        label: src.describe(),
+        rx_channels: 1,
+        tx_channels: 0,
+        audio_mode: false,
+        freq_ranges_rx: vec![(0.0, nyquist)],
+        sample_rates: vec![rate],
+        gains: vec![
+            GainElement {
+                name: Rx888Config::VGA_ELEMENT.into(),
+                direction: Direction::Rx,
+                min_db: -6.0,
+                max_db: 34.0,
+                // The AD8370's vernier is linear in voltage, so the dB step
+                // varies; a request is snapped to the nearest code and reported
+                // back, which makes a fine slider honest enough.
+                step_db: 0.5,
+            },
+            GainElement {
+                name: Rx888Config::ATT_ELEMENT.into(),
+                direction: Direction::Rx,
+                min_db: -31.5,
+                max_db: 0.0,
+                step_db: 0.5,
+            },
+        ],
+        ..DeviceCaps::default()
+    }
 }
 
 /// Capabilities for an RTL-SDR: wideband IQ, receive only.

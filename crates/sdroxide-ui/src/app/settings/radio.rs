@@ -262,13 +262,11 @@ pub(in crate::app) fn settings_hpsdr_tab(
         );
         ui.end_row();
 
-        ui.label("Frequency correction").on_hover_text(
-            "Crystal/TCXO error in ppm, applied to RX and TX. Applies immediately.",
-        );
+        ui.label("Frequency correction")
+            .on_hover_text("Crystal/TCXO error in ppm, applied to RX and TX. Applies immediately.");
         let mut ppm = cfg.hpsdr.ppm;
-        let resp = ui.add(
-            egui::DragValue::new(&mut ppm).range(-100.0..=100.0).speed(0.1).suffix(" ppm"),
-        );
+        let resp =
+            ui.add(egui::DragValue::new(&mut ppm).range(-100.0..=100.0).speed(0.1).suffix(" ppm"));
         if resp.changed() {
             cfg.hpsdr.ppm = ppm;
             cmds.push(Command::SetGain {
@@ -621,4 +619,205 @@ impl SdroxideApp {
             );
         }
     }
+}
+
+/// Settings for the RX-888 direct-sampling receiver.
+///
+/// The layout follows the signal path: which receiver, how fast to clock the
+/// ADC, then the two analogue gain stages, then the switches. The ADC rate is
+/// the one setting an operator can get badly wrong — it decides both how much
+/// spectrum is visible and how much USB bandwidth is needed — so it says what it
+/// costs rather than just listing numbers.
+pub(in crate::app) fn settings_rx888_tab(
+    ui: &mut egui::Ui,
+    devices: &[sdroxide_types::Rx888Device],
+    radio_edit: &mut Option<sdroxide_types::RadioConfig>,
+    rescan: &mut bool,
+    cmds: &mut Vec<Command>,
+) {
+    use sdroxide_types::Rx888Config;
+    let Some(cfg) = radio_edit.as_mut() else {
+        ui.label("Radio configuration is only available in the native app.");
+        return;
+    };
+
+    egui::Grid::new("rx888-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Receiver");
+        ui.horizontal(|ui| {
+            if ui
+                .button("Rescan")
+                .on_hover_text(
+                    "Re-list the USB bus. No device is opened, so this is safe \
+                     to press while receiving.",
+                )
+                .clicked()
+            {
+                *rescan = true;
+            }
+            let shown = if cfg.rx888.serial.is_empty() {
+                "— first one found —".to_string()
+            } else {
+                cfg.rx888.serial.clone()
+            };
+            ComboBox::from_id_salt("rx888_dev").width(300.0).selected_text(shown).show_ui(
+                ui,
+                |ui| {
+                    if devices.is_empty() {
+                        ui.label("No RX-888 found — press Rescan");
+                    }
+                    ui.selectable_value(
+                        &mut cfg.rx888.serial,
+                        String::new(),
+                        "— first one found —",
+                    );
+                    for d in devices {
+                        let serial = d.serial.clone().unwrap_or_default();
+                        ui.selectable_value(&mut cfg.rx888.serial, serial, d.label());
+                    }
+                },
+            );
+        });
+        ui.end_row();
+
+        ui.label("ADC clock");
+        ui.horizontal(|ui| {
+            let rate = cfg.rx888.adc_rate_hz;
+            ComboBox::from_id_salt("rx888_rate")
+                .width(150.0)
+                .selected_text(format!("{:.1} Msps", rate / 1e6))
+                .show_ui(ui, |ui| {
+                    for r in Rx888Config::ADC_RATES {
+                        ui.selectable_value(
+                            &mut cfg.rx888.adc_rate_hz,
+                            r,
+                            format!("{:.1} Msps", r / 1e6),
+                        );
+                    }
+                });
+            ui.label(
+                egui::RichText::new(format!(
+                    "0–{:.1} MHz coverage, {:.0} MB/s over USB",
+                    rate / 2e6,
+                    rate * 2.0 / 1e6
+                ))
+                .weak(),
+            );
+        });
+        ui.end_row();
+        ui.label("");
+        ui.label(
+            egui::RichText::new(
+                "129.6 Msps needs a SuperSpeed link and a fast host; 64.8 is the \
+                 safe default. The receiver uploads its own firmware on every \
+                 plug-in, so there is nothing to install.",
+            )
+            .weak(),
+        );
+        ui.end_row();
+
+        ui.label("VGA gain");
+        if ui
+            .add(egui::Slider::new(&mut cfg.rx888.vga_db, -6.0..=34.0).suffix(" dB"))
+            .on_hover_text("AD8370 variable-gain amplifier ahead of the ADC.")
+            .changed()
+        {
+            cmds.push(Command::SetGain {
+                dir: sdroxide_types::Direction::Rx,
+                element: Rx888Config::VGA_ELEMENT.into(),
+                db: cfg.rx888.vga_db,
+            });
+        }
+        ui.end_row();
+
+        ui.label("Attenuator");
+        if ui
+            .add(egui::Slider::new(&mut cfg.rx888.attenuator_db, -31.5..=0.0).suffix(" dB"))
+            .on_hover_text("PE4304 step attenuator, in 0.5 dB steps.")
+            .changed()
+        {
+            cmds.push(Command::SetGain {
+                dir: sdroxide_types::Direction::Rx,
+                element: Rx888Config::ATT_ELEMENT.into(),
+                db: cfg.rx888.attenuator_db,
+            });
+        }
+        ui.end_row();
+
+        ui.label("ADC range");
+        if ui
+            .checkbox(&mut cfg.rx888.pga, "Wide (2.25 Vp-p)")
+            .on_hover_text(
+                "Selects the ADC's wider input range: more headroom for strong \
+                 broadcast signals, fewer counts for weak ones. Off selects the \
+                 more sensitive 1.5 Vp-p range.",
+            )
+            .changed()
+        {
+            cmds.push(Command::SetGain {
+                dir: sdroxide_types::Direction::Rx,
+                element: Rx888Config::PGA_ELEMENT.into(),
+                db: cfg.rx888.pga as u8 as f64,
+            });
+        }
+        ui.end_row();
+
+        ui.label("Dither");
+        if ui
+            .checkbox(&mut cfg.rx888.dither, "Enable")
+            .on_hover_text(
+                "Adds a small dither signal ahead of the ADC: costs a little \
+                 noise floor, buys spurious-free dynamic range.",
+            )
+            .changed()
+        {
+            cmds.push(Command::SetGain {
+                dir: sdroxide_types::Direction::Rx,
+                element: Rx888Config::DITHER_ELEMENT.into(),
+                db: cfg.rx888.dither as u8 as f64,
+            });
+        }
+        ui.end_row();
+
+        ui.label("Randomiser");
+        ui.checkbox(&mut cfg.rx888.randomize, "Enable").on_hover_text(
+            "The ADC scrambles its output so the digital bus stops radiating \
+                 into the front end; the driver unscrambles it. Leave this on \
+                 unless you are debugging. Applies on reconnect.",
+        );
+        ui.end_row();
+
+        ui.label("Bias tee");
+        if ui
+            .checkbox(&mut cfg.rx888.bias_tee_hf, "DC on the HF antenna port")
+            .on_hover_text("Powers an active antenna or preamp down the coax.")
+            .changed()
+        {
+            cmds.push(Command::SetGain {
+                dir: sdroxide_types::Direction::Rx,
+                element: Rx888Config::BIAS_TEE_ELEMENT.into(),
+                db: cfg.rx888.bias_tee_hf as u8 as f64,
+            });
+        }
+        ui.end_row();
+
+        ui.label("Clock trim");
+        ui.add(
+            egui::DragValue::new(&mut cfg.rx888.ppm)
+                .speed(0.1)
+                .range(-200.0..=200.0)
+                .suffix(" ppm"),
+        )
+        .on_hover_text("Corrects the reference oscillator. Applies on reconnect.");
+        ui.end_row();
+    });
+
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new(
+            "Receive only, 0–32 MHz by direct sampling. There is no hardware \
+             downconverter: the full ADC stream is converted to baseband on the \
+             host, so retuning anywhere in HF is instant.",
+        )
+        .weak(),
+    );
 }
