@@ -1470,34 +1470,9 @@ fn write_instances<T: bytemuck::Pod>(
 
 #[cfg(test)]
 mod tests {
-    /// Compile and validate every solar shader.
-    ///
-    /// wgpu only builds these when the window is first opened, so without this
-    /// a typo in the WGSL is a blank window at runtime instead of a red test.
-    #[test]
-    fn shaders_compile_and_validate() {
-        let shaders = [
-            ("solar_body.wgsl", include_str!("../shaders/solar_body.wgsl")),
-            ("solar_aurora.wgsl", include_str!("../shaders/solar_aurora.wgsl")),
-            ("solar_cloud.wgsl", include_str!("../shaders/solar_cloud.wgsl")),
-            ("solar_cloud_march.wgsl", include_str!("../shaders/solar_cloud_march.wgsl")),
-            ("solar_cone.wgsl", include_str!("../shaders/solar_cone.wgsl")),
-            ("solar_ring.wgsl", include_str!("../shaders/solar_ring.wgsl")),
-            ("solar_tail.wgsl", include_str!("../shaders/solar_tail.wgsl")),
-            ("solar_line.wgsl", include_str!("../shaders/solar_line.wgsl")),
-            ("solar_sprite.wgsl", include_str!("../shaders/solar_sprite.wgsl")),
-            ("solar_blit.wgsl", include_str!("../shaders/solar_blit.wgsl")),
-        ];
-        for (name, src) in shaders {
-            let module = naga::front::wgsl::parse_str(src)
-                .unwrap_or_else(|e| panic!("{name} failed to parse:\n{}", e.emit_to_string(src)));
-            let mut v = naga::valid::Validator::new(
-                naga::valid::ValidationFlags::all(),
-                naga::valid::Capabilities::empty(),
-            );
-            v.validate(&module).unwrap_or_else(|e| panic!("{name} failed validation:\n{e:?}"));
-        }
-    }
+    // Shader compilation and validation live in `tests/shaders.rs`, which
+    // covers the waterfall shaders too and additionally checks the WebGL2
+    // uniform-alignment rule.
 
     /// The vertex-buffer layouts in `build` hard-code these strides and
     /// offsets; if a struct grows, the attributes silently read the wrong
