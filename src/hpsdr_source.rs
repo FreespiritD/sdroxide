@@ -18,6 +18,8 @@ const SILENCE_BEFORE_REOPEN: Duration = Duration::from_secs(5);
 pub struct HpsdrSource {
     handle: HpsdrHandle,
     center: f64,
+    /// See [`sdroxide_types::HpsdrConfig::ppm`].
+    ppm: f64,
     rx_scratch: Vec<f32>,
     tx_scratch: Vec<f32>,
     label: String,
@@ -40,7 +42,7 @@ impl HpsdrSource {
             cfg.filter_board,
             cfg.invert_spectrum,
         )?;
-        handle.set_rx_freq(center_hz);
+        handle.set_rx_freq(sdroxide_types::HpsdrConfig::apply_ppm(center_hz, cfg.ppm));
         let label =
             format!("HPSDR {} @ {ip} ({:.3} Msps)", handle.board, handle.sample_rate_hz / 1e6);
         tracing::info!(
@@ -49,6 +51,7 @@ impl HpsdrSource {
         );
         Ok(HpsdrSource {
             center: center_hz,
+            ppm: cfg.ppm,
             rx_scratch: Vec::new(),
             tx_scratch: Vec::new(),
             label,
@@ -85,7 +88,7 @@ impl IqSource for HpsdrSource {
 
     fn set_center_hz(&mut self, hz: f64) -> Result<()> {
         self.center = hz;
-        self.handle.set_rx_freq(hz);
+        self.handle.set_rx_freq(sdroxide_types::HpsdrConfig::apply_ppm(hz, self.ppm));
         Ok(())
     }
 
@@ -117,6 +120,9 @@ impl IqSource for HpsdrSource {
     fn set_gain_element(&mut self, name: &str, db: f64) -> Result<()> {
         if name == LNA_GAIN_ELEMENT {
             self.handle.set_lna_gain_db(db);
+        } else if name == sdroxide_types::HpsdrConfig::PPM_ELEMENT {
+            self.ppm = db;
+            self.handle.set_rx_freq(sdroxide_types::HpsdrConfig::apply_ppm(self.center, self.ppm));
         }
         Ok(())
     }
@@ -138,7 +144,7 @@ impl IqSource for HpsdrSource {
     }
 
     fn tx_begin(&mut self, center_hz: f64, _rate: f64) -> Result<f64> {
-        Ok(self.handle.tx_begin(center_hz))
+        Ok(self.handle.tx_begin(sdroxide_types::HpsdrConfig::apply_ppm(center_hz, self.ppm)))
     }
 
     fn tx_write(&mut self, samples: &[Complex32]) -> Result<()> {
