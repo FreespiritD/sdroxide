@@ -38,6 +38,11 @@ impl eframe::App for SdroxideApp {
                         c.label
                     )));
                     self.caps = Some(c);
+                    // A new source may have no full-band lane at all. Without
+                    // this the strip from the previous backend stays on screen
+                    // for good, showing a band nothing is receiving any more.
+                    self.wide_frame = None;
+                    self.wide_wf.clear();
                 }
                 RadioEvent::State(s) => {
                     let prev_vfo = self.state.active_freq_hz();
@@ -51,6 +56,12 @@ impl eframe::App for SdroxideApp {
                 RadioEvent::Spectrum(f) => {
                     self.frame = Some(std::sync::Arc::new(f));
                     self.last_spectrum_at = now;
+                }
+                // Deliberately does not touch `last_spectrum_at`: that drives
+                // the "waiting for spectrum" notice, and a full-band frame is
+                // not evidence that the tuned receiver is producing samples.
+                RadioEvent::WideSpectrum(f) => {
+                    self.wide_frame = Some(std::sync::Arc::new(f));
                 }
                 RadioEvent::Meters(m) => self.meters = Some(m),
                 RadioEvent::Memories(m) => self.memories = m,
@@ -399,6 +410,19 @@ impl eframe::App for SdroxideApp {
             if let Some((lo, hi)) = self.pre_digi_view.take() {
                 self.view.view_lo_hz = lo;
                 self.view.view_hi_hz = hi;
+            }
+            // The full-band strip, above the panadapter and only when a front
+            // end actually supplies one.
+            if let Some(wide) = self.wide_frame.clone() {
+                crate::widgets::wide_spectrum::show(
+                    ui,
+                    &mut self.wide_wf,
+                    &wide,
+                    &self.state,
+                    self.ui_settings.waterfall_palette,
+                    &mut cmds,
+                );
+                ui.add_space(2.0);
             }
             let (cw_spots, cw_alpha) = self.cw_overlay(now);
             let frame = self.frame.take();

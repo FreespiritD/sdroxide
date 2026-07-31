@@ -14,15 +14,15 @@
 //! Buffers are recycled between the two rather than allocated, because at this
 //! rate the allocator is a real cost.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use nusb::MaybeFuture;
 use nusb::transfer::{Bulk, In, TransferError};
 use rtrb::Producer;
-use sdroxide_dsp::{Complex32, WbDdc};
+use sdroxide_dsp::{Complex32, WbDdc, WideSpectrum};
 
 use crate::convert;
 use crate::device::{Device, Settings};
@@ -36,6 +36,13 @@ pub const DDC_BLOCK: usize = 8192;
 /// Bins selected, and so the inverse FFT size. 256 of 8192 at 64.8 Msps is a
 /// 2.025 Msps output, comfortably inside what the engine's own DDC expects.
 pub const DDC_BINS: usize = 256;
+
+/// FFT size for the full-band display. A real FFT of 8192 gives 4097 bins over
+/// 0–32.4 MHz — 7.9 kHz each, or about two bins per pixel once the engine pools
+/// them down to its 2048-bin display width.
+pub const WIDE_FFT: usize = 8192;
+/// Frames per second for the full-band display.
+pub const WIDE_FPS: f64 = 20.0;
 
 /// Bounds on the transfer geometry, so a bad config cannot wedge the stream.
 const MIN_TRANSFERS: usize = 4;
@@ -69,6 +76,7 @@ pub fn spawn(settings: &Settings, center_hz: f64) -> Result<Rx888Handle> {
         vga_tenth_db: AtomicI64::new(i64::MIN),
         att_tenth_db: AtomicI64::new(i64::MIN),
         dropped: AtomicU64::new(0),
+        wide: Mutex::new(None),
     });
 
     let out_rate = settings.adc_rate_hz * DDC_BINS as f64 / DDC_BLOCK as f64;
@@ -165,12 +173,13 @@ fn run(
     let (full_tx, full_rx) = crossbeam_channel::bounded::<Filled>(HANDOFF_DEPTH);
     let (empty_tx, empty_rx) = crossbeam_channel::bounded::<Vec<u8>>(HANDOFF_DEPTH + 4);
 
+    let wide = WideSpectrum::new(adc_rate, WIDE_FFT, WIDE_FPS);
     let conv_shared = Arc::clone(&shared);
     let randomized = dev.randomized();
     let (ddc_ctrl_tx, ddc_ctrl_rx) = crossbeam_channel::unbounded::<f64>();
     let converter =
         std::thread::Builder::new().name("sdroxide-rx888-ddc".into()).spawn(move || {
-            convert_loop(ddc, randomized, full_rx, empty_tx, rx, conv_shared, ddc_ctrl_rx);
+            convert_loop(ddc, wide, randomized, full_rx, empty_tx, rx, conv_shared, ddc_ctrl_rx);
         });
     let converter = match converter {
         Ok(t) => t,
@@ -359,6 +368,7 @@ fn apply(dev: &mut Device, p: &Pending, settings: &mut Settings, ddc_ctrl: &Send
 #[allow(clippy::too_many_arguments)]
 fn convert_loop(
     mut ddc: WbDdc,
+    mut wide: WideSpectrum,
     randomized: bool,
     full: Receiver<Filled>,
     empty: Sender<Vec<u8>>,
@@ -384,6 +394,15 @@ fn convert_loop(
         }
 
         convert::to_f32(&filled.buf, randomized, &mut carry, &mut real);
+
+        // The full-band display analyses about 2 % of these samples, so it sits
+        // on the same thread as the downconverter rather than earning one of
+        // its own.
+        wide.process(&real);
+        if let Some((frame, mut slot)) = wide.take().zip(shared.wide.lock().ok()) {
+            *slot = Some(frame);
+        }
+
         cplx.clear();
         ddc.process(&real, &mut cplx);
 

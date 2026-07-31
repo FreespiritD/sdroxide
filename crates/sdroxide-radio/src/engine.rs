@@ -49,6 +49,11 @@ pub struct EngineHandles {
     pub cmd_tx: Sender<Command>,
     pub event_rx: Receiver<RadioEvent>,
     pub spectrum_out: triple_buffer::Output<SpectrumFrame>,
+    /// Full-band spectrum from front ends that can see far more than the IQ
+    /// they deliver (the RX-888's whole 0–32 MHz). Empty frames on every other
+    /// source. Separate from `spectrum_out` rather than multiplexed onto it
+    /// because the two have different rates, spans and lifetimes.
+    pub wide_spectrum_out: triple_buffer::Output<SpectrumFrame>,
     /// Runtime device swaps: audio-device changes (rebuilt cpal ring endpoints)
     /// and radio-interface changes (rebuild the IQ source from the persisted
     /// config, no restart).
@@ -131,13 +136,23 @@ pub fn start(source: Box<dyn IqSource>, caps: DeviceCaps, cfg: EngineConfig) -> 
         bins: Vec::new(),
     };
     let (spec_in, spectrum_out) = triple_buffer::triple_buffer(&empty);
+    let (wide_in, wide_spectrum_out) = triple_buffer::triple_buffer(&empty);
 
     let thread = std::thread::Builder::new()
         .name("sdroxide-dsp".into())
-        .spawn(move || engine_thread(source, caps, cfg, cmd_rx, swap_rx, event_tx, spec_in))
+        .spawn(move || {
+            engine_thread(source, caps, cfg, cmd_rx, swap_rx, event_tx, spec_in, wide_in)
+        })
         .expect("spawn dsp thread");
 
-    EngineHandles { cmd_tx, event_rx, spectrum_out, swap_tx, thread: Some(thread) }
+    EngineHandles {
+        cmd_tx,
+        event_rx,
+        spectrum_out,
+        wide_spectrum_out,
+        swap_tx,
+        thread: Some(thread),
+    }
 }
 
 /// Whether a receiver's demod may decode stereo right now.
@@ -585,6 +600,14 @@ struct Engine {
     state: RadioState,
     cfg: SpectrumConfig,
     analyzer: SpectrumAnalyzer,
+    /// Scratch for the full-band spectrum a direct-sampling source can supply.
+    /// Reused so the 20 Hz poll does not allocate.
+    wide_scratch: Vec<f32>,
+    /// Sequence number for full-band frames, kept apart from the main
+    /// analyser's so a client can tell one lane's frames from the other's.
+    wide_seq: u32,
+    /// Auto-ranged dB window for the full-band lane, smoothed across frames.
+    wide_levels: Option<(f32, f32)>,
     event_tx: Sender<RadioEvent>,
     main: Option<RxChain>,
     sub: Option<RxChain>,
@@ -775,6 +798,7 @@ fn engine_thread(
     swap_rx: Receiver<EngineSwap>,
     event_tx: Sender<RadioEvent>,
     mut spec_in: triple_buffer::Input<SpectrumFrame>,
+    mut wide_in: triple_buffer::Input<SpectrumFrame>,
 ) {
     let audio_mode = caps.audio_mode;
     let radio_fs = source.sample_rate();
@@ -860,6 +884,9 @@ fn engine_thread(
         tx_active: false,
         tx_center_hz: 0.0,
         tx_ham_only: engine_cfg.tx_ham_only,
+        wide_scratch: Vec::new(),
+        wide_seq: 0,
+        wide_levels: None,
         tx_analyzer: SpectrumAnalyzer::new(cfg.fft_size as usize, TX_MONITOR_RATE, cfg.avg_tc),
         tx_mon_buf: Vec::new(),
         tune_phase: 0.0,
@@ -1047,6 +1074,11 @@ fn engine_thread(
         if now >= next_frame {
             next_frame = now + Duration::from_secs_f64(1.0 / engine.cfg.fps.max(1) as f64);
             spec_in.write(engine.make_spectrum_frame());
+        }
+        // Polled rather than paced: the source decides its own frame rate, and
+        // asking more often than it produces simply returns `None`.
+        if let Some(frame) = engine.make_wide_frame() {
+            wide_in.write(frame);
         }
         if now >= next_meters {
             next_meters = now + METER_INTERVAL;
@@ -1788,6 +1820,36 @@ impl Engine {
     /// Build the display spectrum frame. In digital modes it comes from the
     /// high-resolution channel analyzer (VFO-centered), zoomed to the FT8
     /// audio passband; otherwise from the full-rate device analyzer.
+    /// Build a full-band frame, if the source has one waiting.
+    ///
+    /// The source hands over dBFS bins covering its whole Nyquist band; the
+    /// display policy — pooling down to [`DISPLAY_BINS`] and mapping to the u8
+    /// range the client draws — stays here, identical to the main lane, so both
+    /// panadapters respond to the same level controls.
+    fn make_wide_frame(&mut self) -> Option<SpectrumFrame> {
+        let mut scratch = std::mem::take(&mut self.wide_scratch);
+        let span = self.source.wide_spectrum_db(&mut scratch);
+        let out = span.and_then(|(center_hz, span_hz)| {
+            if scratch.is_empty() {
+                return None;
+            }
+            self.wide_seq = self.wide_seq.wrapping_add(1);
+            let (floor, ceil) = auto_levels(&scratch, self.wide_levels);
+            self.wide_levels = Some((floor, ceil));
+            Some(pool_to_frame(
+                &scratch,
+                self.wide_seq,
+                center_hz,
+                span_hz,
+                floor,
+                ceil,
+                DISPLAY_BINS,
+            ))
+        });
+        self.wide_scratch = scratch;
+        out
+    }
+
     fn make_spectrum_frame(&mut self) -> SpectrumFrame {
         if self.tx_active {
             return self.make_tx_frame();
@@ -4384,5 +4446,227 @@ mod stereo_tests {
             last_stereo = r.is_some();
         }
         assert!(!last_stereo, "still decoding stereo after NR had been on for 3 s");
+    }
+}
+
+/// Max-pool dB bins down to `out_bins` and map them onto the u8 range clients
+/// draw, producing a frame with the axis the caller describes.
+///
+/// Max rather than mean on purpose: a narrow carrier occupying one bin of
+/// several thousand must survive being squeezed into one pixel, and averaging
+/// it against its neighbours is exactly how a panadapter loses weak signals as
+/// the operator zooms out.
+fn pool_to_frame(
+    db: &[f32],
+    seq: u32,
+    center_hz: f64,
+    span_hz: f64,
+    db_floor: f32,
+    db_ceil: f32,
+    out_bins: usize,
+) -> SpectrumFrame {
+    let scale = 255.0 / (db_ceil - db_floor).max(1e-6);
+    let n = db.len();
+    let mut bins = Vec::with_capacity(out_bins);
+    for i in 0..out_bins {
+        let lo = i * n / out_bins;
+        let hi = (((i + 1) * n / out_bins).max(lo + 1)).min(n);
+        let peak = db[lo..hi].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        bins.push(((peak - db_floor) * scale).clamp(0.0, 255.0) as u8);
+    }
+    SpectrumFrame { seq, center_hz, span_hz, db_floor, db_ceil, bins }
+}
+
+#[cfg(test)]
+mod wide_frame_tests {
+    use super::*;
+
+    #[test]
+    fn pooling_preserves_a_narrow_carrier() {
+        // One hot bin in four thousand must still be visible after being pooled
+        // into two thousand — this is the whole reason for max-pooling.
+        let mut db = vec![-120.0f32; 4096];
+        db[1234] = -20.0;
+        let f = pool_to_frame(&db, 1, 16.2e6, 32.4e6, -120.0, -20.0, DISPLAY_BINS);
+        assert_eq!(f.bins.len(), DISPLAY_BINS);
+        assert_eq!(f.bins[1234 * DISPLAY_BINS / 4096], 255);
+        assert_eq!(f.bins[0], 0);
+    }
+
+    #[test]
+    fn the_frame_carries_the_axis_it_was_given() {
+        let db = vec![-60.0f32; 1024];
+        let f = pool_to_frame(&db, 7, 16.2e6, 32.4e6, -120.0, -20.0, 256);
+        assert_eq!(f.seq, 7);
+        assert_eq!(f.center_hz, 16.2e6);
+        assert_eq!(f.span_hz, 32.4e6);
+        // freq_at_bin should then map the ends onto DC and Nyquist.
+        assert!(f.freq_at_bin(0) >= 0.0);
+        assert!(f.freq_at_bin(255) <= 32.4e6);
+    }
+
+    #[test]
+    fn levels_outside_the_window_clamp_rather_than_wrap() {
+        let db = vec![40.0f32; 64];
+        let hot = pool_to_frame(&db, 1, 0.0, 1.0, -120.0, -20.0, 8);
+        assert!(hot.bins.iter().all(|b| *b == 255));
+        let db = vec![-400.0f32; 64];
+        let cold = pool_to_frame(&db, 1, 0.0, 1.0, -120.0, -20.0, 8);
+        assert!(cold.bins.iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn fewer_input_bins_than_output_bins_still_produces_a_full_frame() {
+        let db = vec![-50.0f32; 100];
+        let f = pool_to_frame(&db, 1, 0.0, 1.0, -120.0, -20.0, DISPLAY_BINS);
+        assert_eq!(f.bins.len(), DISPLAY_BINS);
+        assert!(f.bins.iter().all(|b| *b > 0));
+    }
+}
+
+/// Choose the dB window that shows everything in a full-band frame.
+///
+/// The main panadapter's window is set by the operator, which is right for a
+/// slice they are working in. It is wrong for a strip covering the whole of HF:
+/// the difference between a quiet 10 m and a crowded broadcast band is 60 dB or
+/// more, and any fixed pair of numbers leaves one end of the band either black
+/// or saturated.
+///
+/// The floor tracks a low percentile rather than the minimum, so a handful of
+/// dead bins cannot drag it down. The ceiling tracks the strongest signal,
+/// because a scale that clips the loudest carrier in the band is not showing
+/// "all signal strengths" — but the *DC region is excluded first*, since a
+/// direct-sampling ADC parks a large offset spike at bin zero and letting that
+/// set the scale would push the entire band to black.
+///
+/// Both ends are then smoothed towards their new values: jumping straight there
+/// makes the display flicker every time a signal keys up.
+fn auto_levels(db: &[f32], prev: Option<(f32, f32)>) -> (f32, f32) {
+    const FALLBACK: (f32, f32) = (-120.0, -20.0);
+    /// Widest window worth showing; beyond this the interesting part of the
+    /// band gets too few levels to distinguish.
+    const MAX_RANGE: f32 = 120.0;
+
+    // Drop the DC region: on a direct-sampling front end bin 0 carries the
+    // ADC's offset, which is tens of dB above everything else and is not a
+    // signal.
+    let skip = (db.len() / 512).max(1);
+    let usable = db.get(skip..).unwrap_or(&[]);
+    let mut v: Vec<f32> = usable.iter().copied().filter(|x| x.is_finite()).collect();
+    if v.is_empty() {
+        return prev.unwrap_or(FALLBACK);
+    }
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    // A few dB below the noise floor, so the floor itself reads as texture
+    // rather than as flat black.
+    let mut floor = v[((v.len() - 1) as f64 * 0.10).round() as usize] - 4.0;
+    let mut ceil = v[v.len() - 1] + 6.0;
+
+    // Never let the window collapse: a degenerate range maps everything to one
+    // colour and looks like a dead receiver.
+    if ceil - floor < 24.0 {
+        let mid = 0.5 * (ceil + floor);
+        floor = mid - 12.0;
+        ceil = mid + 12.0;
+    }
+    if ceil - floor > MAX_RANGE {
+        floor = ceil - MAX_RANGE;
+    }
+
+    match prev {
+        None => (floor, ceil),
+        Some((pf, pc)) => {
+            // Rise quickly so a band opening is not clipped, fall slowly so the
+            // scale does not pump between frames.
+            let smooth = |old: f32, new: f32| {
+                let a = if new > old { 0.35 } else { 0.08 };
+                old + (new - old) * a
+            };
+            (smooth(pf, floor), smooth(pc, ceil))
+        }
+    }
+}
+
+#[cfg(test)]
+mod auto_level_tests {
+    use super::*;
+
+    fn band(noise: f32, signals: &[(usize, f32)], n: usize) -> Vec<f32> {
+        let mut v = vec![noise; n];
+        for (i, db) in signals {
+            v[*i] = *db;
+        }
+        v
+    }
+
+    #[test]
+    fn the_window_brackets_the_signals_present() {
+        let db = band(-110.0, &[(100, -30.0), (500, -45.0)], 4096);
+        let (floor, ceil) = auto_levels(&db, None);
+        assert!(floor < -110.0, "floor {floor} should sit below the noise");
+        assert!(ceil > -30.0, "ceiling {ceil} should clear the strongest signal");
+    }
+
+    #[test]
+    fn one_dead_bin_does_not_drag_the_floor_down() {
+        let mut db = band(-100.0, &[(7, -20.0)], 4096);
+        db[0] = -400.0; // a single pathological bin
+        let (floor, _) = auto_levels(&db, None);
+        assert!(floor > -130.0, "a single dead bin moved the floor to {floor}");
+    }
+
+    #[test]
+    fn the_ceiling_accommodates_the_loudest_real_signal() {
+        // A 0 dBFS carrier is a real signal, and a scale that clips it is not
+        // showing all signal strengths.
+        let db = band(-100.0, &[(2000, 0.0)], 4096);
+        let (_, ceil) = auto_levels(&db, None);
+        assert!(ceil >= 0.0, "ceiling {ceil} clips the strongest carrier");
+    }
+
+    /// The DC bin on a direct-sampling ADC carries the converter's offset, not
+    /// a signal. Letting it set the ceiling pushes the whole band to black —
+    /// this receiver really does sit ~65 counts off zero.
+    #[test]
+    fn the_dc_offset_spike_does_not_set_the_scale() {
+        let mut db = band(-100.0, &[(3000, -40.0)], 4096);
+        db[0] = 0.0;
+        db[1] = -10.0;
+        let (_, ceil) = auto_levels(&db, None);
+        assert!(ceil < -20.0, "the DC spike set the ceiling to {ceil}");
+    }
+
+    #[test]
+    fn the_window_never_grows_past_what_is_readable() {
+        let db = band(-200.0, &[(9, 0.0)], 4096);
+        let (floor, ceil) = auto_levels(&db, None);
+        assert!(ceil - floor <= 120.0 + 1.0, "window is {:.0} dB wide", ceil - floor);
+    }
+
+    #[test]
+    fn a_flat_band_still_gets_a_usable_window() {
+        let db = vec![-95.0f32; 4096];
+        let (floor, ceil) = auto_levels(&db, None);
+        assert!(ceil - floor >= 24.0, "window collapsed to {:.1} dB", ceil - floor);
+    }
+
+    #[test]
+    fn levels_are_smoothed_rather_than_jumping() {
+        let quiet = vec![-120.0f32; 4096];
+        let loud = band(-60.0, &[(10, -10.0)], 4096);
+        let first = auto_levels(&quiet, None);
+        let second = auto_levels(&loud, Some(first));
+        // It moves towards the new scale but does not arrive in one frame.
+        let target = auto_levels(&loud, None);
+        assert!(second.1 > first.1, "ceiling did not rise");
+        assert!(second.1 < target.1, "ceiling jumped straight to the target");
+    }
+
+    #[test]
+    fn an_empty_frame_keeps_the_previous_window() {
+        let prev = (-115.0, -25.0);
+        assert_eq!(auto_levels(&[], Some(prev)), prev);
+        assert_eq!(auto_levels(&[f32::NAN, f32::NAN], Some(prev)), prev);
     }
 }

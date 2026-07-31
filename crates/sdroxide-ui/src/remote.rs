@@ -85,6 +85,7 @@ impl RemoteController {
                 self.pending.push_back(RadioEvent::State(s));
             }
             ServerMsg::Spectrum(f) => self.pending.push_back(RadioEvent::Spectrum(f)),
+            ServerMsg::WideSpectrum(f) => self.pending.push_back(RadioEvent::WideSpectrum(f)),
             ServerMsg::Meters(m) => self.pending.push_back(RadioEvent::Meters(m)),
             ServerMsg::Memories(m) => self.pending.push_back(RadioEvent::Memories(m)),
             ServerMsg::RxAudio { payload, .. } => {

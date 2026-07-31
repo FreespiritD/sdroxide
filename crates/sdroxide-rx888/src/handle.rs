@@ -4,8 +4,8 @@
 //! device, control goes in over a crossbeam channel, samples come back out
 //! through an `rtrb` ring of interleaved `f32`.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -75,6 +75,12 @@ pub(crate) struct Shared {
     pub att_tenth_db: AtomicI64,
     /// Samples the ring could not take because the consumer fell behind.
     pub dropped: AtomicU64,
+    /// Latest full-band spectrum frame, in dBFS ascending from DC.
+    ///
+    /// Latest-wins rather than queued: a display that falls behind wants the
+    /// newest picture, not a backlog of stale ones. A mutex is fine here — it is
+    /// taken twenty times a second, not per sample.
+    pub wide: Mutex<Option<Vec<f32>>>,
 }
 
 /// Throughput and health accounting.
@@ -230,6 +236,17 @@ impl Rx888Handle {
     /// Coarse tuning grid, in Hz.
     pub fn bin_hz(&self) -> f64 {
         self.bin_hz
+    }
+
+    /// Centre and span of the full-band spectrum, in Hz. A real ADC stream
+    /// covers DC to Nyquist, so this is a quarter and a half of the ADC clock.
+    pub fn wide_span_hz(&self) -> (f64, f64) {
+        (self.adc_rate_hz / 4.0, self.adc_rate_hz / 2.0)
+    }
+
+    /// Take the newest full-band spectrum frame, if one is waiting.
+    pub fn take_wide_spectrum(&self) -> Option<Vec<f32>> {
+        self.shared.wide.lock().ok().and_then(|mut g| g.take())
     }
 
     pub fn warning(&self) -> Option<&str> {
@@ -396,6 +413,7 @@ mod tests {
             vga_tenth_db: AtomicI64::new(i64::MIN),
             att_tenth_db: AtomicI64::new(i64::MIN),
             dropped: AtomicU64::new(0),
+            wide: Mutex::new(None),
         });
         let join = std::thread::spawn(|| {});
         let mut h = Rx888Handle::from_parts(
@@ -433,6 +451,7 @@ mod tests {
             vga_tenth_db: AtomicI64::new(i64::MIN),
             att_tenth_db: AtomicI64::new(i64::MIN),
             dropped: AtomicU64::new(0),
+            wide: Mutex::new(None),
         });
         let join = std::thread::spawn(|| {});
         let mut h = Rx888Handle::from_parts(

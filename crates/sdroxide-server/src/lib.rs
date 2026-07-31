@@ -40,6 +40,7 @@ pub struct ServerParams {
     pub cmd_tx: crossbeam_channel::Sender<Command>,
     pub event_rx: crossbeam_channel::Receiver<RadioEvent>,
     pub spectrum_out: triple_buffer::Output<SpectrumFrame>,
+    pub wide_spectrum_out: triple_buffer::Output<SpectrumFrame>,
     /// Interleaved stereo 48 kHz demod audio from the engine.
     pub audio_rx: rtrb::Consumer<f32>,
     /// Mono 48 kHz mic samples into the engine.
@@ -82,6 +83,7 @@ pub(crate) struct Shared {
     pub busy: AtomicBool,
     pub mic_tx: Mutex<rtrb::Producer<f32>>,
     pub spectrum_rx: watch::Receiver<Option<SpectrumFrame>>,
+    pub wide_spectrum_rx: watch::Receiver<Option<SpectrumFrame>>,
     /// The solar-system viewers on `/solar-ws`. Independent of `busy`: they
     /// control nothing, so any number may watch alongside the one control
     /// client. See [`solar`].
@@ -95,6 +97,7 @@ pub fn run_blocking(params: ServerParams) -> Result<(), ServerError> {
 
 pub async fn serve(params: ServerParams) -> Result<(), ServerError> {
     let (spectrum_watch, spectrum_rx) = watch::channel(None);
+    let (wide_watch, wide_spectrum_rx) = watch::channel(None);
     let shared = Arc::new(Shared {
         cmd_tx: params.cmd_tx,
         latest: Mutex::new(Latest::default()),
@@ -102,6 +105,7 @@ pub async fn serve(params: ServerParams) -> Result<(), ServerError> {
         busy: AtomicBool::new(false),
         mic_tx: Mutex::new(params.mic_tx),
         spectrum_rx,
+        wide_spectrum_rx,
         solar: solar::SolarHub::default(),
     });
 
@@ -110,7 +114,15 @@ pub async fn serve(params: ServerParams) -> Result<(), ServerError> {
         std::thread::Builder::new()
             .name("sdroxide-pump".into())
             .spawn(move || {
-                pump(shared, params.event_rx, params.spectrum_out, params.audio_rx, spectrum_watch)
+                pump(
+                    shared,
+                    params.event_rx,
+                    params.spectrum_out,
+                    params.wide_spectrum_out,
+                    params.audio_rx,
+                    spectrum_watch,
+                    wide_watch,
+                )
             })
             .expect("spawn pump thread");
     }
@@ -135,8 +147,10 @@ fn pump(
     shared: Arc<Shared>,
     event_rx: crossbeam_channel::Receiver<RadioEvent>,
     mut spectrum_out: triple_buffer::Output<SpectrumFrame>,
+    mut wide_spectrum_out: triple_buffer::Output<SpectrumFrame>,
     mut audio_rx: rtrb::Consumer<f32>,
     spectrum_watch: watch::Sender<Option<SpectrumFrame>>,
+    wide_watch: watch::Sender<Option<SpectrumFrame>>,
 ) {
     let mut mono = Vec::<f32>::new();
     let mut opus_enc: Option<opus::Encoder> = None;
@@ -159,6 +173,12 @@ fn pump(
         }
 
         // Spectrum: latest wins.
+        if wide_spectrum_out.update() {
+            let f = wide_spectrum_out.output_buffer();
+            if !f.bins.is_empty() {
+                let _ = wide_watch.send_replace(Some(f.clone()));
+            }
+        }
         if spectrum_out.update() {
             let f = spectrum_out.output_buffer();
             if !f.bins.is_empty() {
@@ -261,6 +281,7 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             }
             RadioEvent::Meters(m) => Some(ServerMsg::Meters(m)),
             RadioEvent::Spectrum(_) => None, // spectrum travels via the watch lane
+            RadioEvent::WideSpectrum(_) => None, // ...and so does the full-band lane
             RadioEvent::ConnectionLost(e) => Some(ServerMsg::Error(e)),
             // A local radio-audio-device notice is meaningless to a remote
             // client (its audio lives on the server host), so don't forward it.

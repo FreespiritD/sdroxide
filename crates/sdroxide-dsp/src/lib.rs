@@ -26,6 +26,7 @@ mod spectrum_paint;
 mod sstv;
 mod thor;
 mod wbddc;
+mod wbspectrum;
 pub mod wefax;
 mod window;
 
@@ -57,6 +58,7 @@ pub use spectrum_paint::{
 pub use sstv::{SstvEvent, SstvRx, SstvTx};
 pub use thor::{ThorRx, ThorTx};
 pub use wbddc::WbDdc;
+pub use wbspectrum::WideSpectrum;
 pub use wefax::{Ioc as WefaxIoc, Lpm as WefaxLpm, WefaxEvent, WefaxRx};
 pub use window::blackman_harris;
 

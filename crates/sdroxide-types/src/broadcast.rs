@@ -163,11 +163,7 @@ pub fn parse_schedule(csv: &str) -> Vec<BroadcastStation> {
             name: station.to_string(),
             freq_khz: khz,
             site,
-            country: codes
-                .countries
-                .get(&country_code)
-                .cloned()
-                .unwrap_or(country_code),
+            country: codes.countries.get(&country_code).cloned().unwrap_or(country_code),
             lat,
             lon,
             power_kw: None,
@@ -238,15 +234,8 @@ fn parse_window(spec: &str) -> Option<(u16, u16)> {
     Some((a, b))
 }
 
-const DAY_NAMES: [(&str, u8); 7] = [
-    ("Mo", 1),
-    ("Tu", 2),
-    ("We", 3),
-    ("Th", 4),
-    ("Fr", 5),
-    ("Sa", 6),
-    ("Su", 7),
-];
+const DAY_NAMES: [(&str, u8); 7] =
+    [("Mo", 1), ("Tu", 2), ("We", 3), ("Th", 4), ("Fr", 5), ("Sa", 6), ("Su", 7)];
 
 fn day_number(token: &str) -> Option<u8> {
     DAY_NAMES.iter().find(|(n, _)| *n == token).map(|(_, d)| *d)
@@ -278,8 +267,7 @@ fn parse_days(spec: &str) -> String {
         }
     } else {
         // `Tu,Fr`, `SaSu`, `Mo We` — two-character names, however separated.
-        let stripped: String =
-            spec.chars().filter(|c| !matches!(c, ',' | ' ' | '/')).collect();
+        let stripped: String = spec.chars().filter(|c| !matches!(c, ',' | ' ' | '/')).collect();
         // Day names are ASCII pairs. Anything else cannot be one, and bailing
         // here also keeps the byte-pair chunking below off a multi-byte char.
         if !stripped.is_ascii() || !stripped.len().is_multiple_of(2) {
@@ -287,14 +275,12 @@ fn parse_days(spec: &str) -> String {
         }
         let mut chars = stripped.as_bytes().chunks(2);
         let mut all = Vec::new();
-        let ok = chars.all(|c| {
-            match std::str::from_utf8(c).ok().and_then(day_number) {
-                Some(d) => {
-                    all.push(d);
-                    true
-                }
-                None => false,
+        let ok = chars.all(|c| match std::str::from_utf8(c).ok().and_then(day_number) {
+            Some(d) => {
+                all.push(d);
+                true
             }
+            None => false,
         });
         if !ok {
             return String::new();
@@ -509,9 +495,7 @@ impl BroadcastStation {
 pub fn seed() -> &'static [BroadcastStation] {
     static PARSED: OnceLock<Vec<BroadcastStation>> = OnceLock::new();
     PARSED.get_or_init(|| {
-        serde_json::from_str::<BroadcastStations>(SEED_JSON)
-            .map(|f| f.stations)
-            .unwrap_or_default()
+        serde_json::from_str::<BroadcastStations>(SEED_JSON).map(|f| f.stations).unwrap_or_default()
     })
 }
 
@@ -564,14 +548,11 @@ pub fn at_dial(
     dial_hz: f64,
     unix: i64,
 ) -> Option<&BroadcastStation> {
-    stations
-        .iter()
-        .filter(|s| (s.freq_hz() - dial_hz).abs() < NEAR_HZ)
-        .max_by(|a, b| {
-            a.on_air_at(unix).cmp(&b.on_air_at(unix)).then_with(|| {
-                a.power_kw.unwrap_or(0.0).total_cmp(&b.power_kw.unwrap_or(0.0))
-            })
-        })
+    stations.iter().filter(|s| (s.freq_hz() - dial_hz).abs() < NEAR_HZ).max_by(|a, b| {
+        a.on_air_at(unix)
+            .cmp(&b.on_air_at(unix))
+            .then_with(|| a.power_kw.unwrap_or(0.0).total_cmp(&b.power_kw.unwrap_or(0.0)))
+    })
 }
 
 // ── UTC civil-time helpers ───────────────────────────────────────────────────
@@ -776,13 +757,13 @@ mod tests {
             }
             // A site without coordinates would be invisible on the world map,
             // which defeats the point of recording the site at all.
-            assert_eq!(
-                s.lat.is_some(),
-                s.lon.is_some(),
-                "{} has half a coordinate pair",
-                s.name
+            assert_eq!(s.lat.is_some(), s.lon.is_some(), "{} has half a coordinate pair", s.name);
+            assert!(
+                s.mode_str().parse::<crate::Mode>().is_ok(),
+                "{} has mode {:?}",
+                s.name,
+                s.mode
             );
-            assert!(s.mode_str().parse::<crate::Mode>().is_ok(), "{} has mode {:?}", s.name, s.mode);
             if !s.days.is_empty() {
                 assert!(
                     s.days.chars().all(|c| ('1'..='7').contains(&c)),
@@ -804,11 +785,7 @@ mod tests {
         let closed = ["Droitwich", "Kalundborg", "Lahti", "Gufuskalar", "Burg", "Saarlouis"];
         for s in builtin().iter().filter(|s| s.freq_khz < 300.0) {
             for c in closed {
-                assert!(
-                    !s.site.contains(c),
-                    "{} lists the closed transmitter at {c}",
-                    s.name
-                );
+                assert!(!s.site.contains(c), "{} lists the closed transmitter at {c}", s.name);
             }
         }
     }
@@ -914,7 +891,7 @@ mod tests {
             + &row("9420", "CRI DIGITAL", "E", "1")      // DRM, no envelope
             + &row("9420", "Retired Service", "E", "8")  // inactive
             + &row("9420", "Coast Radio", "-CW", "1")    // not voice
-            + &row("8000", "Out Of Band", "E", "1");     // not a broadcast band
+            + &row("8000", "Out Of Band", "E", "1"); // not a broadcast band
         let got = parse_schedule(&csv);
         assert_eq!(got.len(), 1, "kept {:?}", got.iter().map(|s| &s.name).collect::<Vec<_>>());
         assert_eq!(got[0].name, "Good Station");
@@ -986,14 +963,10 @@ mod tests {
             "only {windowed} of {} entries have a transmit window",
             all.len()
         );
-        assert!(
-            all.iter().any(|s| !s.days.is_empty()),
-            "no entry carries a day mask"
-        );
+        assert!(all.iter().any(|s| !s.days.is_empty()), "no entry carries a day mask");
         // And the filter has to actually thin them out over the day.
         let day = days_from_civil(2026, 7, 30) * 86_400;
-        let counts: Vec<usize> =
-            (0..24).map(|h| on_air(all, day + h * 3600).len()).collect();
+        let counts: Vec<usize> = (0..24).map(|h| on_air(all, day + h * 3600).len()).collect();
         let (lo, hi) = (*counts.iter().min().unwrap(), *counts.iter().max().unwrap());
         assert!(lo > 0, "nothing on air at some hour of the day");
         assert!(hi < all.len() / 2, "the schedule filter barely removes anything");

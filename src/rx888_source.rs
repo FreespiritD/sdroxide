@@ -169,6 +169,18 @@ impl IqSource for Rx888Source {
         ]
     }
 
+    /// The whole of HF at once, at about twenty frames a second.
+    ///
+    /// The backend analyses roughly 2 % of the samples going past to build this,
+    /// so it costs about 1 % of what the downconverter costs — see
+    /// `sdroxide_dsp::WideSpectrum`.
+    fn wide_spectrum_db(&mut self, out: &mut Vec<f32>) -> Option<(f64, f64)> {
+        let frame = self.handle.take_wide_spectrum()?;
+        out.clear();
+        out.extend_from_slice(&frame);
+        Some(self.handle.wide_span_hz())
+    }
+
     /// A receiver that has been unplugged, or whose threads have died, is
     /// reported as needing a reopen so the engine reconnects on its own.
     fn needs_reopen(&self) -> bool {

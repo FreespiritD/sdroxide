@@ -45,6 +45,7 @@ pub fn run(
         cmd_tx: handles.cmd_tx,
         event_rx: handles.event_rx,
         spectrum_out: handles.spectrum_out,
+        wide_spectrum_out: handles.wide_spectrum_out,
         audio_rx: audio_consumer,
         mic_tx: mic_producer,
         bind: settings.server_bind.clone(),

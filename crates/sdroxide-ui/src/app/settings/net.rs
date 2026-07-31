@@ -217,10 +217,7 @@ pub(in crate::app) fn broadcast_stations_settings(
         );
     }
     ui.horizontal(|ui| {
-        if ui
-            .button("Reload")
-            .on_hover_text("Re-read your station file after editing it")
-            .clicked()
+        if ui.button("Reload").on_hover_text("Re-read your station file after editing it").clicked()
         {
             *reload = true;
         }

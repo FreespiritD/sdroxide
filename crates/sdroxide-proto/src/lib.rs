@@ -103,7 +103,11 @@ use sdroxide_types::{
 /// v14. The engine never emits it (the stations are synthesised client-side from
 /// a bundled table), but the enum both ends decode has changed shape, so they
 /// must agree on it.
-pub const PROTO_VERSION: u16 = 30;
+/// v31: the full-band panadapter — a new `ServerMsg::WideSpectrum`, carrying an
+/// ordinary `SpectrumFrame` on its own lane. Appended at the end of the enum so
+/// no existing postcard discriminant moves, but an older client cannot decode
+/// the new message, so the handshake has to reject it.
+pub const PROTO_VERSION: u16 = 31;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -255,6 +259,10 @@ pub enum ServerMsg {
         clients: usize,
         error: Option<String>,
     },
+    /// Full-band spectrum from a direct-sampling front end. Appended last on
+    /// purpose: postcard encodes the variant as a positional discriminant, so
+    /// inserting anywhere else would silently renumber every message after it.
+    WideSpectrum(SpectrumFrame),
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {

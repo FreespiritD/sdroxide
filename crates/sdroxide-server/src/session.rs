@@ -104,8 +104,10 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>) {
 
     // Sender: reliable first, then audio, then latest spectrum.
     let mut spectrum_rx = shared.spectrum_rx.clone();
+    let mut wide_rx = shared.wide_spectrum_rx.clone();
     let sender = async {
         let mut last_spectrum_seq = 0u32;
+        let mut last_wide_seq = 0u32;
         loop {
             tokio::select! {
                 biased;
@@ -116,6 +118,16 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>) {
                 m = aud_rx.recv() => {
                     let Some(m) = m else { break };
                     if ws_tx.send(msg(&m)).await.is_err() { break; }
+                }
+                changed = wide_rx.changed() => {
+                    if changed.is_err() { break; }
+                    let frame = wide_rx.borrow_and_update().clone();
+                    if let Some(f) = frame {
+                        if f.seq != last_wide_seq {
+                            last_wide_seq = f.seq;
+                            if ws_tx.send(msg(&ServerMsg::WideSpectrum(f))).await.is_err() { break; }
+                        }
+                    }
                 }
                 changed = spectrum_rx.changed() => {
                     if changed.is_err() { break; }

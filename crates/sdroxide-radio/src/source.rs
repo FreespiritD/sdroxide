@@ -129,6 +129,26 @@ pub trait IqSource: Send {
         None
     }
 
+    /// A full-band power spectrum, far wider than the IQ this source delivers.
+    ///
+    /// Fills `out` with dBFS bins ascending from the low edge and returns the
+    /// `(centre, span)` in Hz they cover, or `None` when there is no new frame —
+    /// which is the answer for every source that has nothing wider to show.
+    ///
+    /// # Why finished bins rather than samples
+    ///
+    /// A direct-sampling front end sees its whole Nyquist band at once: 32 MHz
+    /// for an RX-888. That cannot cross this trait as IQ — it would be 64 Msps
+    /// of complex samples for a picture that is a couple of thousand pixels
+    /// wide. The source already has the samples and can analyse a small
+    /// fraction of them cheaply, so it hands over the result and the engine
+    /// keeps the display policy (pooling to `DISPLAY_BINS`, the dB window).
+    ///
+    /// Default: nothing to show.
+    fn wide_spectrum_db(&mut self, _out: &mut Vec<f32>) -> Option<(f64, f64)> {
+        None
+    }
+
     /// Drain any out-of-band changes the rig reported (dial/mode moved on the
     /// radio). Default: none.
     fn poll_control(&mut self) -> Vec<ControlUpdate> {

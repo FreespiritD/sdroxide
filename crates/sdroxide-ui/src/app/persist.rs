@@ -94,8 +94,7 @@ pub(in crate::app) fn load_broadcast_stations() -> Vec<sdroxide_types::Broadcast
 }
 
 /// The result of a background schedule download.
-pub(in crate::app) type ScheduleFetch =
-    Result<Vec<sdroxide_types::BroadcastStation>, String>;
+pub(in crate::app) type ScheduleFetch = Result<Vec<sdroxide_types::BroadcastStation>, String>;
 
 /// Download the current season's schedule on a worker thread.
 ///

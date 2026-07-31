@@ -116,6 +116,56 @@ fn main() {
         );
     }
 
+    // The full-band lane: prove it produces frames, and that the strongest
+    // things in them land where they physically are.
+    let (wc, wsp) = h.wide_span_hz();
+    println!("\nfull-band lane: centre {:.3} MHz, span {:.3} MHz", wc / 1e6, wsp / 1e6);
+    let mut frames = 0usize;
+    let mut last: Option<Vec<f32>> = None;
+    let until = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < until {
+        if let Some(f) = h.take_wide_spectrum() {
+            frames += 1;
+            last = Some(f);
+        }
+        let _ = h.read(&mut buf);
+    }
+    println!("  {frames} frames in 2 s ({:.1} fps)", frames as f64 / 2.0);
+    if let Some(f) = last {
+        let lo = wc - wsp / 2.0;
+        let bin_hz = wsp / (f.len() - 1) as f64;
+        let floor = {
+            let mut v = f.clone();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v[v.len() / 2]
+        };
+        println!("  {} bins, {:.1} kHz each, median floor {floor:.1} dBFS", f.len(), bin_hz / 1e3);
+        // What the engine's auto-ranger would choose for this frame. Mirrors
+        // `auto_levels`: DC region skipped, floor at the 10th percentile less
+        // 4 dB, ceiling at the strongest bin plus 6.
+        {
+            let skip = (f.len() / 512).max(1);
+            let mut v: Vec<f32> = f[skip..].to_vec();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let p10 = v[((v.len() - 1) as f64 * 0.10).round() as usize];
+            let auto = (p10 - 4.0, v[v.len() - 1] + 6.0);
+            println!(
+                "  auto-range would show {:.1} … {:.1} dBFS ({:.0} dB window)",
+                auto.0,
+                auto.1,
+                auto.1 - auto.0
+            );
+        }
+        let mut idx: Vec<usize> = (1..f.len() - 1)
+            .filter(|&i| f[i] > floor + 25.0 && f[i] >= f[i - 1] && f[i] >= f[i + 1])
+            .collect();
+        idx.sort_by(|a, b| f[*b].partial_cmp(&f[*a]).unwrap());
+        println!("  strongest carriers:");
+        for i in idx.into_iter().take(8) {
+            println!("    {:9.4} MHz  {:6.1} dBFS", (lo + i as f64 * bin_hz) / 1e6, f[i]);
+        }
+    }
+
     h.release();
     println!("\nreleased cleanly, alive = {}", h.is_alive());
 }

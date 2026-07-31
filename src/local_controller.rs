@@ -13,6 +13,7 @@ pub struct LocalController {
     cmd_tx: Sender<Command>,
     event_rx: Receiver<RadioEvent>,
     spectrum: triple_buffer::Output<SpectrumFrame>,
+    wide_spectrum: triple_buffer::Output<SpectrumFrame>,
     swap_tx: Sender<EngineSwap>,
     /// Live cpal streams (they must outlive their ring endpoints in the engine).
     audio_out: Option<sdroxide_audio::AudioOutput>,
@@ -34,6 +35,7 @@ impl LocalController {
             cmd_tx: handles.cmd_tx,
             event_rx: handles.event_rx,
             spectrum: handles.spectrum_out,
+            wide_spectrum: handles.wide_spectrum_out,
             swap_tx: handles.swap_tx,
             audio_out,
             mic_in,
@@ -67,11 +69,17 @@ impl RadioController for LocalController {
                 return Some(RadioEvent::Spectrum(f.clone()));
             }
         }
+        if self.wide_spectrum.update() {
+            let f = self.wide_spectrum.output_buffer();
+            if !f.bins.is_empty() {
+                return Some(RadioEvent::WideSpectrum(f.clone()));
+            }
+        }
         None
     }
 
     fn wants_repaint_soon(&self) -> bool {
-        !self.event_rx.is_empty() || self.spectrum.updated()
+        !self.event_rx.is_empty() || self.spectrum.updated() || self.wide_spectrum.updated()
     }
 
     fn audio_devices(&self) -> Option<AudioDevices> {

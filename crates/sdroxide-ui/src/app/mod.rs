@@ -63,6 +63,12 @@ pub struct SdroxideApp {
     /// Latest spectrum frame, shared with the GPU waterfall callback — the Arc
     /// makes the per-repaint handoff a refcount bump instead of a bins clone.
     frame: Option<std::sync::Arc<SpectrumFrame>>,
+    /// Latest full-band frame, from a direct-sampling front end that can see far
+    /// more than the IQ it delivers. `None` on every other backend, which is
+    /// also how the UI decides whether to offer the strip at all.
+    wide_frame: Option<std::sync::Arc<SpectrumFrame>>,
+    /// Scrolling history behind the full-band strip.
+    wide_wf: crate::widgets::wide_spectrum::WideWaterfall,
     meters: Option<Meters>,
     memories: Vec<MemoryChannel>,
     view: ViewState,
@@ -344,6 +350,8 @@ impl SdroxideApp {
             caps: None,
             state: RadioState::default(),
             frame: None,
+            wide_frame: None,
+            wide_wf: Default::default(),
             meters: None,
             memories: Vec::new(),
             view,

@@ -11,6 +11,10 @@ pub enum RadioEvent {
     /// Full state snapshot on any change (latest-wins).
     State(RadioState),
     Spectrum(SpectrumFrame),
+    /// Full-band spectrum from a front end that sees far more than the IQ it
+    /// delivers — the RX-888's whole 0–32 MHz. Only ever sent by sources that
+    /// have one; every other backend leaves this lane silent.
+    WideSpectrum(SpectrumFrame),
     Meters(Meters),
     Memories(Vec<MemoryChannel>),
     ConnectionLost(String),
