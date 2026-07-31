@@ -2911,6 +2911,33 @@ latching control an inch from a waterfall you pan with your thumb is one mis-tap
 away from a transmitter left on. Lifting your finger always drops it, including
 when the browser takes the touch away because you switched tabs.
 
+#### The FT8/FT4 panel
+
+The operating panel ([3](#3-digital-modes)) is a decode list beside a QSO area,
+with a world map above the QSO area. Neither layout keeps the map: it is the
+largest thing in that column and the only part of it that is neither the state
+of the contact nor a control that changes it, and on a tablet it was taking the
+room the transmit buttons needed. The same stations are still on the panadapter
+and in the [3D view](#6-solar-system-3d-view).
+
+**On a tablet** the two columns stay side by side, as on a desktop.
+
+**On a phone** they take turns, with a row of chips above them:
+
+| Chip | What it shows |
+| --- | --- |
+| **DECODES** | The stations being heard, each with its REPLY button |
+| **QSO** | The conversation, the station card, the message picker and CALL CQ / STOP QSO / STOP TX |
+| **WFALL** | The waterfall, zoomed to the mode's sub-band, filling the screen |
+
+The count of stations decoded in the last slot sits at the right of that row, so
+it is readable from all three. Answering somebody from the decode list switches
+to QSO by itself — you started an exchange, so the panel shows you the exchange.
+
+The waterfall is a view of its own here rather than a strip above the panel: a
+third of a phone's height is not enough to read a decode list *and* watch a
+band, and splitting it that way left both too small to use.
+
 Touch gestures on the waterfall:
 
 | Gesture | What it does |

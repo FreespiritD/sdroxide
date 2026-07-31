@@ -4,6 +4,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::widgets::smeter::SmeterStyle;
 
+/// Which view the digital panel shows on a phone.
+///
+/// The decode list, the QSO area and the waterfall each want the whole of a
+/// phone's width and most of its height, so rather than three slivers the panel
+/// shows one at a time and a row of chips switches between them. Persisted, so
+/// an operator who works from the decode list comes back to it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DigiTab {
+    /// The stations being decoded, with their REPLY buttons.
+    #[default]
+    Decodes,
+    /// The conversation, the station card and the transmit controls.
+    Qso,
+    /// The panadapter, zoomed to the mode's sub-band.
+    Waterfall,
+}
+
+impl DigiTab {
+    /// The tabs in the order the chips show them, with their labels.
+    pub const ALL: [(DigiTab, &'static str); 3] =
+        [(DigiTab::Decodes, "DECODES"), (DigiTab::Qso, "QSO"), (DigiTab::Waterfall, "WFALL")];
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ViewState {
@@ -60,7 +83,14 @@ pub struct ViewState {
     pub js8_split_fraction: f32,
     /// Fraction of the QSO area's height given to the world map; the rest is the
     /// station card + transcript + buttons. User-draggable.
+    ///
+    /// Desktop only: the map is the first thing a compact layout gives up, so
+    /// there is nothing for this to divide there.
     pub digi_map_fraction: f32,
+    /// Which of the digital panel's three views a phone is showing. They do not
+    /// fit together at that width, so they take turns.
+    #[serde(default)]
+    pub digi_tab: DigiTab,
     /// Fraction of the SSTV panel width given to the TRANSMIT (send) column; the
     /// rest is the receive side (LIVE + RECEIVED). User-draggable.
     pub sstv_tx_fraction: f32,
@@ -303,6 +333,7 @@ impl Default for ViewState {
             digi_split_fraction: 0.52,
             js8_split_fraction: js8_split_default(),
             digi_map_fraction: 0.6,
+            digi_tab: DigiTab::default(),
             sstv_tx_fraction: 0.38,
             sstv_gallery_fraction: 0.4,
             wefax_gallery_fraction: wefax_gallery_default(),

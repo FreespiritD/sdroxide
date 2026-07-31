@@ -469,6 +469,42 @@ pub fn split_handle(ui: &mut Ui, size: egui::Vec2, bg: Option<Color32>) -> Respo
     resp
 }
 
+/// How wide `text` lays out in `font`.
+pub fn text_width(ui: &Ui, text: &str, font: egui::FontId) -> f32 {
+    ui.painter().layout_no_wrap(text.to_owned(), font, Color32::WHITE).size().x
+}
+
+/// The font a chip uses for `size` points of text, or for its default.
+fn chip_font(ui: &Ui, size: Option<f32>) -> egui::FontId {
+    match size {
+        Some(pt) => egui::FontId::proportional(pt),
+        None => TextStyle::Button.resolve(ui.style()),
+    }
+}
+
+/// What a chip carrying `label` will measure, padding included — the same
+/// arithmetic [`chip`] does, for a caller that has to budget a row before
+/// drawing it. `size` is the text size where the chip sets one.
+pub fn chip_width(ui: &Ui, label: &str, size: Option<f32>) -> f32 {
+    text_width(ui, label, chip_font(ui, size)) + 2.0 * chip_padding(ui).x
+}
+
+/// How tall a chip stands, padding included. A literal would be wrong the
+/// moment the layout changes: chip padding comes from the style, and a touched
+/// one is roomier.
+pub fn chip_height(ui: &Ui, size: Option<f32>) -> f32 {
+    ui.painter().layout_no_wrap("0".to_owned(), chip_font(ui, size), Color32::WHITE).size().y
+        + 2.0 * chip_padding(ui).y
+}
+
+/// A chip's padding. A shade roomier than a plain button, which is what gives a
+/// chip its pill-like proportions. Taken from the style rather than fixed so a
+/// touched layout's larger `button_padding` grows every chip in the program at
+/// once — a chip is the only button this app has.
+fn chip_padding(ui: &Ui) -> egui::Vec2 {
+    ui.spacing().button_padding + vec2(2.0, 1.0)
+}
+
 /// Angled chip: a selectable button with cut top-left and bottom-right corners.
 /// Selected chips fill cyan with dark ink, like the reference nav pills.
 pub fn chip(ui: &mut Ui, selected: bool, text: impl Into<RichText>) -> Response {
@@ -513,11 +549,7 @@ fn chip_impl(
         f32::INFINITY,
         FontSelection::Style(TextStyle::Button),
     );
-    // A shade roomier than a plain button, which is what gives a chip its
-    // pill-like proportions. Taken from the style rather than fixed so a
-    // touched layout's larger `button_padding` grows every chip in the program
-    // at once — a chip is the only button this app has.
-    let padding = ui.spacing().button_padding + vec2(2.0, 1.0);
+    let padding = chip_padding(ui);
     let size = galley.size() + padding * 2.0;
     let (rect, resp) = ui.allocate_exact_size(size, sense);
 

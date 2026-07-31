@@ -197,9 +197,46 @@ impl SdroxideApp {
         self.hell.clear();
     }
 
+    /// The chips a phone switches the digital panel's three views with, plus
+    /// the one reading worth carrying across all of them: how many stations the
+    /// last slot decoded, which is the answer to "is the band open".
+    pub(in crate::app) fn digi_tabs(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::new()
+            .inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 2 })
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (tab, label) in crate::view::DigiTab::ALL {
+                        if crate::chrome::chip(ui, self.view.digi_tab == tab, label).clicked() {
+                            self.view.digi_tab = tab;
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(format!("{} rx", self.digi_decodes.len()))
+                                .size(10.0)
+                                .color(egui::Color32::from_gray(120)),
+                        );
+                    });
+                });
+            });
+    }
+
     /// The FT8/FT4 operating panel: decode list on the left, QSO area on the
     /// right. Sits below the (zoomed) waterfall in digital modes.
+    ///
+    /// A phone shows one column at a time instead — see [`Self::digi_tabs`].
+    /// Two columns need 180 + 7 + 220 points before either has said anything,
+    /// which is more than the whole of the screen.
     pub(in crate::app) fn digi_panel(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        if crate::layout::tier(ui.ctx()) == crate::layout::Tier::Phone {
+            match self.view.digi_tab {
+                crate::view::DigiTab::Qso => self.qso_area(ui, cmds),
+                // The waterfall tab never reaches the panel at all: it replaces
+                // it, so it is drawn where the panel would have been.
+                _ => self.decode_list(ui, cmds),
+            }
+            return;
+        }
         let avail = ui.available_size();
         let handle_w = 7.0;
         // Decode list takes a user-draggable fraction of the width; the QSO area

@@ -141,7 +141,8 @@ impl SdroxideApp {
         let tx_capable = self.caps.as_ref().is_some_and(|c| c.is_transmit_capable());
         let gap = ui.spacing().item_spacing.x;
         let mut w = 0.0;
-        let mut add = |label: &str, size: Option<f32>| w += chip_w(ui, label, size) + gap;
+        let mut add =
+            |label: &str, size: Option<f32>| w += crate::chrome::chip_width(ui, label, size) + gap;
         if !band_mode_shown {
             add(&self.band_mode_label(), Some(BAND_MODE_TEXT));
         }
@@ -312,10 +313,14 @@ impl SdroxideApp {
         // past them — and a column reserved too narrow does not clip, it
         // overflows the box, which is what would push the meter onto a row of
         // its own on a tablet in portrait.
-        let ab_w = AB_W.max(2.0 * chip_w(ui, "A", Some(15.0)) + 6.0);
+        let ab_w = AB_W.max(2.0 * crate::chrome::chip_width(ui, "A", Some(15.0)) + 6.0);
         let right_w = RIGHT_W
-            .max(chip_w(ui, &self.band_mode_label(), Some(BAND_MODE_TEXT)))
-            .max(text_w(ui, &self.inactive_vfo_label(), egui::FontId::monospace(12.0)));
+            .max(crate::chrome::chip_width(ui, &self.band_mode_label(), Some(BAND_MODE_TEXT)))
+            .max(crate::chrome::text_width(
+                ui,
+                &self.inactive_vfo_label(),
+                egui::FontId::monospace(12.0),
+            ));
         let overhead = ab_w + right_w + 38.0; // side columns, gaps, box margins
         // A few points of slack, so a readout that comes out exactly the width
         // of the space left does not round its way onto the next row.
@@ -384,7 +389,9 @@ impl SdroxideApp {
                     // column taller than the box on a touched layout, where a
                     // chip is half again as tall — and a box that outgrows
                     // `MODULE_TALL_H` no longer lines up with the S-meter.
-                    let pad = (ui.available_height() - chip_h(ui, Some(BAND_MODE_TEXT))).max(0.0);
+                    let pad = (ui.available_height()
+                        - crate::chrome::chip_height(ui, Some(BAND_MODE_TEXT)))
+                    .max(0.0);
                     ui.add_space(pad);
                     self.band_mode_button(ui, cmds);
                 },
@@ -1406,37 +1413,6 @@ impl SdroxideApp {
             }
         });
     }
-}
-
-/// How wide `text` lays out in `font`.
-fn text_w(ui: &egui::Ui, text: &str, font: egui::FontId) -> f32 {
-    ui.painter().layout_no_wrap(text.to_owned(), font, Color32::WHITE).size().x
-}
-
-/// How tall a chip is, padding included — the same arithmetic
-/// [`crate::chrome::chip`] does. A literal would be wrong the moment the layout
-/// changes: chip padding comes from the style, and a touched one is roomier.
-fn chip_h(ui: &egui::Ui, size: Option<f32>) -> f32 {
-    let font = match size {
-        Some(pt) => egui::FontId::proportional(pt),
-        None => egui::TextStyle::Button.resolve(ui.style()),
-    };
-    ui.painter().layout_no_wrap("0".to_owned(), font, Color32::WHITE).size().y
-        + 2.0 * (ui.spacing().button_padding.y + 1.0)
-}
-
-/// What a chip carrying `label` will measure, padding included. `size` is the
-/// text size where the chip sets one, or `None` for the button style.
-///
-/// The same arithmetic [`crate::chrome::chip`] does, so a caller can budget a
-/// row before drawing it. Kept here rather than in `chrome` because it is the
-/// layout that needs to know, not the chrome.
-fn chip_w(ui: &egui::Ui, label: &str, size: Option<f32>) -> f32 {
-    let font = match size {
-        Some(pt) => egui::FontId::proportional(pt),
-        None => egui::TextStyle::Button.resolve(ui.style()),
-    };
-    text_w(ui, label, font) + 2.0 * (ui.spacing().button_padding.x + 2.0)
 }
 
 /// The VFO A/B selector chips. In the frequency box on a desktop, in the VFO

@@ -29,11 +29,18 @@ const STREAM_STALE_S: f64 = 1.0;
 /// Split the digital-mode area between the waterfall and the operating panel.
 ///
 /// Returns `(waterfall height, panel height)`, which always sum to
-/// `total - handle`: the panel is clamped and the waterfall takes what is left,
-/// rather than both being floored independently and their sum allowed past the
-/// height there actually is.
-fn digi_split(total: f32, handle_h: f32, fraction: f32) -> (f32, f32) {
-    let usable = (total - handle_h).max(0.0);
+/// `total - divider_h`: the panel is clamped and the waterfall takes what is
+/// left, rather than both being floored independently and their sum allowed
+/// past the height there actually is.
+///
+/// `divider_h` is everything between the two — the drag handle *and* the two
+/// gaps the layout puts either side of it. Leaving the gaps out of it is what
+/// let the panel start `2 × item_spacing` below where the arithmetic thought it
+/// did, and hang that far off the bottom of the window: ten points on a desktop,
+/// which the transcript quietly absorbed, and fourteen on a touched layout,
+/// which took the action buttons with it.
+fn digi_split(total: f32, divider_h: f32, fraction: f32) -> (f32, f32) {
+    let usable = (total - divider_h).max(0.0);
     let min_panel = 190.0_f32.min(usable * 0.5);
     let min_wf = 80.0_f32.min(usable * 0.5);
     let panel_h = (usable * fraction).clamp(min_panel, (usable - min_wf).max(min_panel));
@@ -382,83 +389,116 @@ impl eframe::App for SdroxideApp {
                 if mode.is_slotted() { self.ft8_overlay() } else { (Vec::new(), Vec::new()) };
 
             let frame = self.frame.take();
+            // A phone shows one of the three at a time, chosen by a row of
+            // chips: the decode list, the QSO area and the waterfall each want
+            // the whole width and most of the height, and three slivers would
+            // be three things too small to use. Everything wider keeps the
+            // waterfall above the panel, split by a draggable divider.
+            let phone = tier == crate::layout::Tier::Phone;
+            let width = ui.available_width();
+            if phone {
+                self.digi_tabs(ui);
+            }
+            let tab = self.view.digi_tab;
+            let show_wf = !phone || tab == crate::view::DigiTab::Waterfall;
+            let show_panel = !phone || tab != crate::view::DigiTab::Waterfall;
+
             // Manual vertical split with a draggable divider: the operating
             // panel gets `digi_panel_fraction` of the height, the waterfall the
             // rest. A thin handle between them resizes the split.
             let total = ui.available_height();
-            let width = ui.available_width();
-            let handle_h = 7.0;
-            let (wf_h, panel_h) = digi_split(total, handle_h, self.view.digi_panel_fraction);
+            let handle_h = if phone { 0.0 } else { 7.0 };
+            let (wf_h, panel_h) = if phone {
+                // Whichever one is showing gets all of it.
+                (total, total)
+            } else {
+                // The handle plus the gap the layout inserts on each side of it.
+                let divider = handle_h + 2.0 * ui.spacing().item_spacing.y;
+                digi_split(total, divider, self.view.digi_panel_fraction)
+            };
 
             let wf_tuning = self.wf_tick(frame.is_some());
-            ui.allocate_ui(egui::vec2(width, wf_h), |ui| {
-                spectrum_view::show_ext(
-                    ui,
-                    &mut self.view,
-                    &mut self.state,
-                    frame.as_ref(),
-                    &mut self.peaks,
-                    &mut self.spec_smooth,
-                    &mut self.trace_cache,
-                    Some(audio_hz),
-                    if mode == Mode::Ft8 {
-                        self.digi_status.as_ref().map(|s| s.config.dxped_mode).unwrap_or_default()
-                    } else {
-                        sdroxide_types::DxpedMode::Normal
-                    },
-                    mode.is_slotted()
-                        && self.digi_status.as_ref().map(|s| s.config.auto_tx_freq).unwrap_or(true),
-                    &markers,
-                    &ft8_spots,
-                    &ft8_alpha,
-                    &net_spots,
-                    &net_alpha,
-                    &mut clicked_spot,
-                    self.input.cfg.wheel,
-                    wf_tuning,
-                    &mut cmds,
-                );
-            });
-            // Resize handle between the waterfall and the FT8/FT4 panel.
-            let hresp = crate::chrome::split_handle(
-                ui,
-                egui::vec2(width, handle_h),
-                Some(crate::theme::PANEL),
-            );
-            if hresp.dragged() {
-                // Drag down shrinks the panel (waterfall grows), drag up grows it.
-                let d = hresp.drag_delta().y / total;
-                self.view.digi_panel_fraction =
-                    (self.view.digi_panel_fraction - d).clamp(0.2, 0.82);
+            if show_wf {
+                ui.allocate_ui(egui::vec2(width, wf_h), |ui| {
+                    spectrum_view::show_ext(
+                        ui,
+                        &mut self.view,
+                        &mut self.state,
+                        frame.as_ref(),
+                        &mut self.peaks,
+                        &mut self.spec_smooth,
+                        &mut self.trace_cache,
+                        Some(audio_hz),
+                        if mode == Mode::Ft8 {
+                            self.digi_status
+                                .as_ref()
+                                .map(|s| s.config.dxped_mode)
+                                .unwrap_or_default()
+                        } else {
+                            sdroxide_types::DxpedMode::Normal
+                        },
+                        mode.is_slotted()
+                            && self
+                                .digi_status
+                                .as_ref()
+                                .map(|s| s.config.auto_tx_freq)
+                                .unwrap_or(true),
+                        &markers,
+                        &ft8_spots,
+                        &ft8_alpha,
+                        &net_spots,
+                        &net_alpha,
+                        &mut clicked_spot,
+                        self.input.cfg.wheel,
+                        wf_tuning,
+                        &mut cmds,
+                    );
+                });
             }
-            ui.allocate_ui(egui::vec2(width, panel_h), |ui| {
-                egui::Frame::new()
-                    .fill(crate::theme::BG_DEEP)
-                    .inner_margin(egui::Margin { left: 0, right: 0, top: 6, bottom: 0 })
-                    .show(ui, |ui| {
-                        crate::chrome::angled_frame(ui, crate::theme::PINK, |ui| {
-                            if mode.is_rade() {
-                                self.rade_panel(ui, &mut cmds, panel_h);
-                            } else if mode.is_wefax() {
-                                self.wefax_panel(ui, &mut cmds, panel_h);
-                            } else if mode.is_image() {
-                                self.image_panel(ui, &mut cmds, mode);
-                            } else if mode.is_rf_paint() {
-                                self.rf_paint_panel(ui, &mut cmds, panel_h);
-                            } else if mode.is_fsq() {
-                                self.fsq_panel(ui, &mut cmds, panel_h);
-                            } else if mode.is_hell() {
-                                self.hell_panel(ui, &mut cmds, panel_h);
-                            } else if is_text {
-                                self.text_modem_panel(ui, &mut cmds, panel_h);
-                            } else if mode.is_js8() {
-                                self.js8_panel(ui, &mut cmds, panel_h);
-                            } else {
-                                self.digi_panel(ui, &mut cmds);
-                            }
+            if !phone {
+                // Resize handle between the waterfall and the FT8/FT4 panel.
+                let hresp = crate::chrome::split_handle(
+                    ui,
+                    egui::vec2(width, handle_h),
+                    Some(crate::theme::PANEL),
+                );
+                if hresp.dragged() {
+                    // Drag down shrinks the panel (waterfall grows), drag up grows it.
+                    let d = hresp.drag_delta().y / total;
+                    self.view.digi_panel_fraction =
+                        (self.view.digi_panel_fraction - d).clamp(0.2, 0.82);
+                }
+            }
+            if show_panel {
+                ui.allocate_ui(egui::vec2(width, panel_h), |ui| {
+                    egui::Frame::new()
+                        .fill(crate::theme::BG_DEEP)
+                        .inner_margin(egui::Margin { left: 0, right: 0, top: 6, bottom: 0 })
+                        .show(ui, |ui| {
+                            crate::chrome::angled_frame(ui, crate::theme::PINK, |ui| {
+                                if mode.is_rade() {
+                                    self.rade_panel(ui, &mut cmds, panel_h);
+                                } else if mode.is_wefax() {
+                                    self.wefax_panel(ui, &mut cmds, panel_h);
+                                } else if mode.is_image() {
+                                    self.image_panel(ui, &mut cmds, mode);
+                                } else if mode.is_rf_paint() {
+                                    self.rf_paint_panel(ui, &mut cmds, panel_h);
+                                } else if mode.is_fsq() {
+                                    self.fsq_panel(ui, &mut cmds, panel_h);
+                                } else if mode.is_hell() {
+                                    self.hell_panel(ui, &mut cmds, panel_h);
+                                } else if is_text {
+                                    self.text_modem_panel(ui, &mut cmds, panel_h);
+                                } else if mode.is_js8() {
+                                    self.js8_panel(ui, &mut cmds, panel_h);
+                                } else {
+                                    self.digi_panel(ui, &mut cmds);
+                                }
+                            });
                         });
-                    });
-            });
+                });
+            }
             self.frame = frame;
         } else {
             // Restore the pre-FT8 view span once, on the first voice frame
@@ -744,15 +784,21 @@ mod tests {
         // 277 pt is what the old independent clamps needed (190 panel + 80
         // waterfall + 7 handle); every height below it used to overflow, and a
         // phone in landscape has around 250 to give.
-        for total in [120.0f32, 180.0, 200.0, 250.0, 277.0, 400.0, 900.0] {
-            for fraction in [0.2f32, 0.5, 0.82] {
-                let (wf, panel) = digi_split(total, 7.0, fraction);
-                assert!(wf >= 0.0 && panel >= 0.0, "negative split at {total}/{fraction}");
-                let used = wf + panel + 7.0;
-                assert!(
-                    used <= total + 0.01,
-                    "{total} pt tall, {fraction} panel: asked for {used}"
-                );
+        //
+        // The divider is the handle plus the gap either side of it — 7 + 2×5 on
+        // a desktop, 7 + 2×7 on a touched layout. Both are checked: leaving the
+        // gaps out is what hung the panel off the bottom of the window.
+        for divider in [7.0f32, 17.0, 21.0] {
+            for total in [120.0f32, 180.0, 200.0, 250.0, 277.0, 400.0, 900.0] {
+                for fraction in [0.2f32, 0.5, 0.82] {
+                    let (wf, panel) = digi_split(total, divider, fraction);
+                    assert!(wf >= 0.0 && panel >= 0.0, "negative split at {total}/{fraction}");
+                    let used = wf + panel + divider;
+                    assert!(
+                        used <= total + 0.01,
+                        "{total} pt tall, {fraction} panel, {divider} divider: asked for {used}"
+                    );
+                }
             }
         }
     }

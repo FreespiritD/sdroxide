@@ -59,16 +59,22 @@ impl SdroxideApp {
     /// Touch-friendly decode list with a per-row REPLY button. Clicking a
     /// row moves the TX audio frequency to that signal; REPLY starts a QSO.
     pub(in crate::app) fn decode_list(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("DECODES").size(9.5).strong().color(crate::theme::CYAN_DIM));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(format!("{} rx", self.digi_decodes.len()))
-                        .size(10.0)
-                        .color(Color32::from_gray(120)),
-                );
+        let phone = crate::layout::tier(ui.ctx()) == crate::layout::Tier::Phone;
+        // The tab row above already says which view this is and how many
+        // stations came in; a second header would be a row of a phone's screen
+        // spent repeating it.
+        if !phone {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("DECODES").size(9.5).strong().color(crate::theme::CYAN_DIM));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!("{} rx", self.digi_decodes.len()))
+                            .size(10.0)
+                            .color(Color32::from_gray(120)),
+                    );
+                });
             });
-        });
+        }
         // Per-turn ordering + a CQ-only filter for the decode list.
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
@@ -547,6 +553,13 @@ impl SdroxideApp {
                         // Starting a QSO promotes the station to the active DX
                         // marker; drop the faint preview so they don't overlap.
                         new_preview = Some(None);
+                        // On a phone the exchange happens in the other view, so
+                        // answering somebody takes you there. Leaving the
+                        // operator on the decode list would have them watching
+                        // the sequencer they just started from behind a chip.
+                        if phone {
+                            self.view.digi_tab = crate::view::DigiTab::Qso;
+                        }
                     } else if queue {
                         if let Some(from) = &d.from {
                             if queued {
@@ -589,24 +602,26 @@ impl SdroxideApp {
     /// world map, station card, transcript, and action buttons.
     pub(in crate::app) fn qso_area(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
         let status = self.digi_status.clone();
-        let in_qso = status
-            .as_ref()
-            .map(|s| {
-                !matches!(
-                    s.step,
-                    sdroxide_types::QsoStep::Idle
-                        | sdroxide_types::QsoStep::Confirming
-                        | sdroxide_types::QsoStep::Done
-                )
-            })
-            .unwrap_or(false);
+
+        let tier = crate::layout::tier(ui.ctx());
+        let compact = tier.compact();
+        let phone = tier == crate::layout::Tier::Phone;
 
         // Header: QSO left, session log + downloads centered, SETUP right.
         // The count is this run's; the export buttons still save the whole
         // logbook, which is what their hover text says.
+        //
+        // A phone keeps only the two that steer the mode — the frequency chip
+        // and SETUP. The session count and the ADIF/TXT exports are a row of
+        // screen for something the logbook window (SYS → LOG) already offers,
+        // exports included.
         let session = self.session_qsos;
         let logged = self.qso_log.len();
-        let row_h = 26.0;
+        // Measured, not assumed: this row holds `Button`s and chips, and both
+        // grow with the touch style. Allocating the desktop's 26 points for a
+        // 34-point row is what pushed the buttons at the bottom of this column
+        // off the end of it.
+        let row_h = 26.0_f32.max(ui.spacing().interact_size.y);
         let (row, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
         let third = row.width() / 3.0;
@@ -625,37 +640,39 @@ impl SdroxideApp {
                 self.digi_freq_chip(ui, cmds);
             },
         );
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(zone(1.0))
-                .layout(egui::Layout::top_down(egui::Align::Center)),
-            |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!("Session: {session} QSO"))
-                            .size(11.0)
-                            .color(Color32::from_gray(150)),
-                    )
-                    .on_hover_text("QSOs worked since sdroxide was started");
-                    if ui
-                        .add_enabled(logged > 0, egui::Button::new("ADIF"))
-                        .on_hover_text(format!("Save the whole logbook ({logged} QSO) as ADIF"))
-                        .clicked()
-                    {
-                        let adif = sdroxide_types::qso_log_to_adif(&self.qso_log);
-                        crate::download::save("sdroxide-log.adi", adif.as_bytes());
-                    }
-                    if ui
-                        .add_enabled(logged > 0, egui::Button::new("TXT"))
-                        .on_hover_text(format!("Save the whole logbook ({logged} QSO) as text"))
-                        .clicked()
-                    {
-                        let txt = sdroxide_types::qso_log_to_text(&self.qso_log);
-                        crate::download::save("sdroxide-log.txt", txt.as_bytes());
-                    }
-                });
-            },
-        );
+        if !phone {
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(zone(1.0))
+                    .layout(egui::Layout::top_down(egui::Align::Center)),
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("Session: {session} QSO"))
+                                .size(11.0)
+                                .color(Color32::from_gray(150)),
+                        )
+                        .on_hover_text("QSOs worked since sdroxide was started");
+                        if ui
+                            .add_enabled(logged > 0, egui::Button::new("ADIF"))
+                            .on_hover_text(format!("Save the whole logbook ({logged} QSO) as ADIF"))
+                            .clicked()
+                        {
+                            let adif = sdroxide_types::qso_log_to_adif(&self.qso_log);
+                            crate::download::save("sdroxide-log.adi", adif.as_bytes());
+                        }
+                        if ui
+                            .add_enabled(logged > 0, egui::Button::new("TXT"))
+                            .on_hover_text(format!("Save the whole logbook ({logged} QSO) as text"))
+                            .clicked()
+                        {
+                            let txt = sdroxide_types::qso_log_to_text(&self.qso_log);
+                            crate::download::save("sdroxide-log.txt", txt.as_bytes());
+                        }
+                    });
+                },
+            );
+        }
         ui.scope_builder(
             egui::UiBuilder::new()
                 .max_rect(zone(2.0))
@@ -671,8 +688,19 @@ impl SdroxideApp {
         // World map — its height is a user-draggable fraction of the QSO area,
         // clamped so the station card + a usable transcript + the action buttons
         // stay visible. On very short windows it shrinks and then disappears.
-        let btn_h = 44.0;
+        //
+        // A compact layout has no map at all. It is the largest thing in this
+        // column and the only one that is purely nice to have: everything else
+        // here is either the state of the QSO or a control that changes it, and
+        // on a tablet the map was taking the room they needed. The same
+        // stations are still on the panadapter and in the 3D view.
+        let show_map = !compact;
         let gap = 8.0;
+        // Only the map budget needs this: the rows below the transcript place
+        // themselves (see the bottom-up layout further down). Measured rather
+        // than fixed at 44 so it still means "a row of buttons" on a layout
+        // whose chips are half again as tall.
+        let btn_h = crate::chrome::chip_height(ui, Some(15.0));
         let map_handle_h = 7.0;
         const CARD_RESERVE: f32 = 60.0;
         let full_h = ui.available_height();
@@ -686,37 +714,40 @@ impl SdroxideApp {
         let map_hi =
             (full_h - (map_handle_h + CARD_RESERVE + 5.0 + gap + btn_h)).min(avail_w).max(map_lo);
         let map_budget = map_lo + (map_hi - map_lo) * self.view.digi_map_fraction;
-        let hover_ll = self.digi_hover_ll;
         let my_grid = status.as_ref().map(|s| s.config.my_grid.clone()).unwrap_or_default();
-        let home_ll = sdroxide_types::grid_to_latlon(&my_grid);
-        let dx_grid = status.as_ref().and_then(|s| s.dx_grid.clone());
-        let dx_ll = dx_grid.as_deref().and_then(sdroxide_types::grid_to_latlon);
-        // A clicked (but not yet answered) decode shows as a faint preview.
-        let preview_ll = self.digi_preview.as_ref().map(|(_, ll)| *ll);
-        let tx_active = status.as_ref().map(|s| s.transmitting).unwrap_or(false);
-        // White station dots fade over 2 minutes since a station was last
-        // decoded, then expire (dropped from the map and from the zoom fit).
-        // Ages use egui frame time (monotonic, works native + wasm); each grid
-        // remembers the frame it was last freshly decoded in.
-        let now_t = ui.input(|i| i.time);
-        self.digi_stations.observe(&self.digi_decodes, now_t, now_unix());
-        let stations = self.digi_stations.stations(now_t);
-        // Located network spots (filtered by the shown-kind toggles), as
-        // kind-coloured dots on the map.
-        //
-        // Only spots announced as FT8 or FT4, whatever fed them: this is the map
-        // beside the FT8/FT4 decode list, and it exists to show where the mode is
-        // being worked right now. Broadcast stations, FreeDV Reporter's hundreds
-        // of connected stations, and the SSB/CW half of the cluster all buried
-        // that with traffic from bands the panel cannot answer. They are still on
-        // the panadapter overlay and in the SPOTS window.
-        let spot_dots: Vec<(f64, f64, (u8, u8, u8))> = self
-            .all_spots()
-            .filter(|s| is_ft8_or_ft4(&s.mode))
-            .filter(|s| self.spot_visible(s))
-            .filter_map(|s| s.loc.map(|(lat, lon)| (lat, lon, s.kind.color())))
-            .collect();
-        if map_budget >= crate::widgets::worldmap::MIN_HEIGHT {
+        // Everything from here to the map itself is only ever read by the map,
+        // so a layout without one does none of it — including walking every
+        // spot the client holds, once a frame.
+        if show_map && map_budget >= crate::widgets::worldmap::MIN_HEIGHT {
+            let hover_ll = self.digi_hover_ll;
+            let home_ll = sdroxide_types::grid_to_latlon(&my_grid);
+            let dx_grid = status.as_ref().and_then(|s| s.dx_grid.clone());
+            let dx_ll = dx_grid.as_deref().and_then(sdroxide_types::grid_to_latlon);
+            // A clicked (but not yet answered) decode shows as a faint preview.
+            let preview_ll = self.digi_preview.as_ref().map(|(_, ll)| *ll);
+            let tx_active = status.as_ref().map(|s| s.transmitting).unwrap_or(false);
+            // White station dots fade over 2 minutes since a station was last
+            // decoded, then expire (dropped from the map and from the zoom fit).
+            // Ages use egui frame time (monotonic, works native + wasm); each grid
+            // remembers the frame it was last freshly decoded in.
+            let now_t = ui.input(|i| i.time);
+            self.digi_stations.observe(&self.digi_decodes, now_t, now_unix());
+            let stations = self.digi_stations.stations(now_t);
+            // Located network spots (filtered by the shown-kind toggles), as
+            // kind-coloured dots on the map.
+            //
+            // Only spots announced as FT8 or FT4, whatever fed them: this is the map
+            // beside the FT8/FT4 decode list, and it exists to show where the mode is
+            // being worked right now. Broadcast stations, FreeDV Reporter's hundreds
+            // of connected stations, and the SSB/CW half of the cluster all buried
+            // that with traffic from bands the panel cannot answer. They are still on
+            // the panadapter overlay and in the SPOTS window.
+            let spot_dots: Vec<(f64, f64, (u8, u8, u8))> = self
+                .all_spots()
+                .filter(|s| is_ft8_or_ft4(&s.mode))
+                .filter(|s| self.spot_visible(s))
+                .filter_map(|s| s.loc.map(|(lat, lon)| (lat, lon, s.kind.color())))
+                .collect();
             crate::widgets::worldmap::show(
                 ui,
                 &mut self.map_view,
@@ -950,17 +981,31 @@ impl SdroxideApp {
             });
         }
 
-        // Transcript: a red-bordered scroll box that always fills the space
-        // between the station card and the action buttons (reserve the button
-        // row height first, give the rest to the transcript).
+        // The rest of the column: the conversation, the message picker and the
+        // action buttons.
+        //
+        // Laid out bottom-up, so the two rows that have to stay reachable are
+        // placed first — from the bottom edge, where they belong — and the
+        // conversation takes whatever is left above them. The alternative is to
+        // predict their height and give the transcript the remainder, and every
+        // prediction of it has been wrong on some screen: the rows carry chips
+        // whose padding comes from the style, a text field that sizes from
+        // `interact_size`, and a button row that wraps when three no longer fit
+        // across. Asking the layout instead of guessing is what keeps STOP TX
+        // on the screen.
         ui.add_space(5.0);
-        // Reserve the button row (+gap) at the bottom so the action buttons stay
-        // visible no matter how short the window is; the transcript takes the
-        // rest. Floor at 0 (not a fixed minimum) so a very short window shrinks
-        // the conversation rather than pushing the buttons off-screen.
-        let msg_row_h = 26.0;
-        let trans_h = (ui.available_height() - btn_h - msg_row_h - 2.0 * gap).max(0.0);
-        ui.allocate_ui(egui::vec2(ui.available_width(), trans_h), |ui| {
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+            self.qso_controls(ui, cmds, gap);
+            // Whatever is left above the controls is the conversation's.
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                self.transcript(ui, status.as_ref());
+            });
+        });
+    }
+
+    /// The conversation box: what has been sent and heard this QSO.
+    fn transcript(&mut self, ui: &mut egui::Ui, status: Option<&sdroxide_types::DigiStatus>) {
+        ui.allocate_ui(egui::vec2(ui.available_width(), ui.available_height()), |ui| {
             let inner = egui::Frame::new()
                 .fill(crate::theme::ROW_BG)
                 .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP))
@@ -1020,7 +1065,55 @@ impl SdroxideApp {
                 crate::theme::PINK,
             );
         });
+    }
 
+    /// The two rows under the conversation: the message picker and the action
+    /// buttons. Drawn into a bottom-up layout, so they are added in the order
+    /// they should sit from the bottom edge — buttons first.
+    fn qso_controls(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, gap: f32) {
+        let status = self.digi_status.clone();
+        let in_qso = status
+            .as_ref()
+            .map(|s| {
+                !matches!(
+                    s.step,
+                    sdroxide_types::QsoStep::Idle
+                        | sdroxide_types::QsoStep::Confirming
+                        | sdroxide_types::QsoStep::Done
+                )
+            })
+            .unwrap_or(false);
+        // Action buttons (larger for touch). Wrapped, so a column too narrow
+        // for all three takes a second row rather than clipping the last one —
+        // and STOP TX is the one that would have been clipped.
+        ui.horizontal_wrapped(|ui| {
+            let cq = ui.add_enabled_ui(!in_qso, |ui| {
+                crate::chrome::chip_accent(
+                    ui,
+                    false,
+                    RichText::new("  CALL CQ  ").size(15.0).strong(),
+                    crate::theme::GREEN,
+                    crate::theme::INK_ON_CYAN,
+                )
+            });
+            if cq.inner.clicked() {
+                cmds.push(Command::DigiCallCq);
+            }
+            if crate::chrome::chip(ui, false, RichText::new(" STOP QSO ").size(14.0)).clicked() {
+                cmds.push(Command::DigiStopQso);
+            }
+            if crate::chrome::chip_accent(
+                ui,
+                false,
+                RichText::new(" STOP TX ").size(15.0).strong(),
+                crate::theme::PINK,
+                Color32::WHITE,
+            )
+            .clicked()
+            {
+                cmds.push(Command::DigiAbortTx);
+            }
+        });
         ui.add_space(gap);
         // Message picker: choose by hand which message goes next (WSJT-X's
         // Tx1–Tx6), or send a line of free text in the next slot.
@@ -1063,37 +1156,6 @@ impl SdroxideApp {
             if (send.clicked() || entered) && !self.digi_free_text.trim().is_empty() {
                 cmds.push(Command::DigiSendText(self.digi_free_text.clone()));
                 self.digi_free_text.clear();
-            }
-        });
-
-        ui.add_space(gap);
-        // Action buttons (larger for touch).
-        ui.horizontal(|ui| {
-            let cq = ui.add_enabled_ui(!in_qso, |ui| {
-                crate::chrome::chip_accent(
-                    ui,
-                    false,
-                    RichText::new("  CALL CQ  ").size(15.0).strong(),
-                    crate::theme::GREEN,
-                    crate::theme::INK_ON_CYAN,
-                )
-            });
-            if cq.inner.clicked() {
-                cmds.push(Command::DigiCallCq);
-            }
-            if crate::chrome::chip(ui, false, RichText::new(" STOP QSO ").size(14.0)).clicked() {
-                cmds.push(Command::DigiStopQso);
-            }
-            if crate::chrome::chip_accent(
-                ui,
-                false,
-                RichText::new(" STOP TX ").size(15.0).strong(),
-                crate::theme::PINK,
-                Color32::WHITE,
-            )
-            .clicked()
-            {
-                cmds.push(Command::DigiAbortTx);
             }
         });
     }
