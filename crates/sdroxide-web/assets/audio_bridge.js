@@ -34,7 +34,9 @@
             bar.style.cssText =
                 "position:fixed;left:0;right:0;top:0;z-index:9999;padding:8px 12px;" +
                 "font:13px system-ui,sans-serif;background:#4a3000;color:#ffd479;" +
-                "border-bottom:1px solid #7a5000;cursor:pointer";
+                "border-bottom:1px solid #7a5000;cursor:pointer;" +
+                // The page disables selection; this text is worth copying.
+                "-webkit-user-select:text;user-select:text";
             bar.textContent =
                 "No audio: " + location.protocol + "//" + location.host +
                 " is not a secure origin, so this browser withholds audio playback " +
