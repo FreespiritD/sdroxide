@@ -2590,7 +2590,9 @@ is reference data transcribed from the AMSAT list rather than anything derived
 from the element set — transponders do get switched and schedules do change. Add
 your own or correct a wrong one in the **TLE** settings tab
 ([5.9](#59-tle-satellites-and-their-frequencies)), where your entries override
-the built-in table.
+the built-in table. They belong to the station, so the browser's 3D view shows
+them too — it is fed by the same engine — and a correction made at the shack
+machine is on screen in every open tab.
 
 **The QSO layer** puts your FT8/FT4 traffic on the globe. Every station decoded
 in the last two minutes is a white dot that fades as it ages — the same set the

@@ -204,10 +204,14 @@ pub struct SolarUi {
     /// The operator's satellite additions: their own element sets (already
     /// pushed into the feed) and the frequency entries that override the
     /// built-in table in the pass window. Republished by the host whenever the
-    /// settings dialog changes them.
+    /// station's config changes.
     ///
-    /// Empty in the browser tab, which has no settings dialog of its own — the
-    /// built-in table shows through there.
+    /// Only `freqs` is read here, which is why the browser tab — where this
+    /// arrives over `/solar-ws` as a bare frequency table — can fill nothing
+    /// else and lose nothing by it. Anything that comes to want another field
+    /// has to widen [`SolarServerMsg::SatFreqs`] to carry it.
+    ///
+    /// [`SolarServerMsg::SatFreqs`]: sdroxide_proto::solar::SolarServerMsg::SatFreqs
     pub sat_cfg: std::sync::Arc<sdroxide_types::SatConfig>,
     /// What has been typed into the find box.
     ///

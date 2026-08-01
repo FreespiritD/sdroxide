@@ -85,6 +85,13 @@ impl eframe::App for SolarApp {
         self.state.set_qth(&self.net.my_grid.clone());
         self.state.digi =
             self.stations.traffic(now_t, self.net.dx_grid.as_deref(), None, self.net.transmitting);
+        // The operator's satellite frequencies, as the server last relayed
+        // them. Compared by pointer: the client replaces the whole `Arc` when a
+        // new table arrives, so this is one word per frame rather than a walk
+        // of the table.
+        if !std::sync::Arc::ptr_eq(&self.state.sat_cfg, &self.net.sat_cfg) {
+            self.state.sat_cfg = std::sync::Arc::clone(&self.net.sat_cfg);
+        }
 
         overlay::ui(ui, &mut self.state);
 

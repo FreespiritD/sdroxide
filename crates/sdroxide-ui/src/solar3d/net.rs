@@ -47,6 +47,15 @@ pub struct SolarClient {
     pub my_grid: String,
     pub dx_grid: Option<String>,
     pub transmitting: bool,
+    /// The operator's satellite frequency overrides, in the shape `SolarUi`
+    /// takes. Replaced wholesale when the station's config changes, so the
+    /// caller adopts it with an `Arc::ptr_eq` check rather than a comparison of
+    /// the table itself.
+    ///
+    /// Only `freqs` is ever populated: it is the one field of the config this
+    /// view reads, and the only one the relay carries — see
+    /// [`SolarServerMsg::SatFreqs`].
+    pub sat_cfg: Arc<sdroxide_types::SatConfig>,
     /// Channel/resolution last requested, so a change in the UI is sent once.
     sent_channel: Option<(u8, u16)>,
 }
@@ -69,6 +78,7 @@ impl SolarClient {
             my_grid: String::new(),
             dx_grid: None,
             transmitting: false,
+            sat_cfg: Default::default(),
             sent_channel: None,
         })
     }
@@ -167,6 +177,9 @@ impl SolarClient {
                 self.transmitting = transmitting;
             }
             SolarServerMsg::Decodes(d) => self.decodes = d,
+            SolarServerMsg::SatFreqs(freqs) => {
+                self.sat_cfg = Arc::new(sdroxide_types::SatConfig { freqs, ..Default::default() });
+            }
             // Decode outside the lock, exactly as the feed's worker does: a
             // 2048² JPEG is over a hundred milliseconds, which is far too long
             // to hold a lock the renderer takes every frame.

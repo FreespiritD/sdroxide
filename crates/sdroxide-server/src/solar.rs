@@ -61,6 +61,9 @@ pub(crate) struct SolarLatest {
     /// Relayed from the radio's own event stream, not from the solar feed.
     pub digi: Option<SolarServerMsg>,
     pub decodes: Option<SolarServerMsg>,
+    /// The operator's satellite frequency overrides, likewise from the radio
+    /// side: they are part of the station config the engine announces.
+    pub sat_freqs: Option<SolarServerMsg>,
 }
 
 impl SolarLatest {
@@ -73,6 +76,7 @@ impl SolarLatest {
             &self.events,
             &self.digi,
             &self.decodes,
+            &self.sat_freqs,
             &self.tles_amateur,
             &self.tles_geo,
             &self.aurora,
@@ -91,10 +95,11 @@ impl SolarLatest {
     ///
     /// The two have different lifecycles. Feed products die with the feed:
     /// serving them to a viewer half an hour later would present the readings
-    /// of a stopped feed as current. `digi` and `decodes` come from the radio,
-    /// which is still running — and the operator config is announced exactly
-    /// once at engine start, so dropping it means no later viewer ever learns
-    /// the QTH and the globe loses its home marker and its QSO arcs.
+    /// of a stopped feed as current. `digi`, `decodes` and `sat_freqs` come
+    /// from the radio, which is still running — and both the operator config
+    /// and the station config are announced at engine start, so dropping them
+    /// means no later viewer ever learns the QTH (the globe loses its home
+    /// marker and its QSO arcs) or the operator's satellite frequencies.
     fn clear_feed_products(&mut self) {
         self.sun = None;
         self.aurora = None;
@@ -120,6 +125,7 @@ impl SolarLatest {
             SolarServerMsg::Status(_) => &mut self.status,
             SolarServerMsg::Digi { .. } => &mut self.digi,
             SolarServerMsg::Decodes(_) => &mut self.decodes,
+            SolarServerMsg::SatFreqs(_) => &mut self.sat_freqs,
             // Per-connection handshake traffic is not part of a snapshot.
             SolarServerMsg::HelloAck { .. } | SolarServerMsg::Error(_) | SolarServerMsg::Pong => {
                 return;
@@ -187,15 +193,26 @@ impl SolarHub {
         }
     }
 
-    /// Adopt the station's satellite additions and, if a feed is running, hand
-    /// them to it now.
+    /// Adopt the station's satellite additions: hand the element sets to the
+    /// feed, and the frequency overrides to the viewers.
     ///
-    /// This is what makes the TLE tab mean something for a browser viewer: the
-    /// tab edits the engine host's config, and the tracker those satellites
-    /// appear in is the feed *here*. Without it the subscriptions would be
-    /// persisted and never fetched, and the sky would come up with nothing but
-    /// the geostationary belt.
+    /// This is what makes the TLE tab mean something for a browser viewer. The
+    /// tab edits the engine host's config, and both halves of what it changes
+    /// live here: the tracker those satellites appear in is the feed *here*
+    /// (without which the subscriptions would be persisted and never fetched,
+    /// and the sky would come up with nothing but the geostationary belt), and
+    /// the frequency table the pass window shows is a product this hub relays
+    /// (without which a viewer shows the published figures where the operator
+    /// has deliberately corrected them).
+    ///
+    /// The frequencies are published unconditionally rather than only on a
+    /// change: [`SolarHub::publish`] is also what records the snapshot the next
+    /// viewer receives, and the first announcement can be identical to the
+    /// default this started on.
     pub(crate) fn set_sat_config(&self, cfg: sdroxide_types::SatConfig) {
+        // Before the feed lock, not inside it: `publish` takes `latest`, and
+        // the fewer places that hold two of these at once the better.
+        self.publish(SolarServerMsg::SatFreqs(cfg.freqs.clone()));
         let mut st = self.feed.lock().unwrap();
         if st.sat == cfg {
             return;
@@ -538,9 +555,12 @@ mod tests {
     }
 
     /// Stopping the feed must not discard what the radio said. The operator
-    /// config is announced once, at engine start; if it is dropped when the
-    /// last viewer leaves, every later viewer comes up with no QTH — no home
-    /// marker, no QSO arcs — and nothing will ever re-send it.
+    /// config and the station config are both announced at engine start; if
+    /// either is dropped when the last viewer leaves, every later viewer comes
+    /// up without it — no QTH, so no home marker and no QSO arcs, or no
+    /// frequency overrides, so the pass window shows the published figures
+    /// where the operator has deliberately corrected them — and nothing will
+    /// ever re-send it.
     #[test]
     fn stopping_the_feed_keeps_the_radio_side_of_the_snapshot() {
         let mut l = SolarLatest::default();
@@ -550,6 +570,11 @@ mod tests {
             transmitting: false,
         });
         l.record(&SolarServerMsg::Decodes(Vec::new()));
+        l.record(&SolarServerMsg::SatFreqs(vec![sdroxide_types::SatFreqs::new(
+            25_544,
+            "ISS",
+            Vec::new(),
+        )]));
         l.record(&SolarServerMsg::Sun { channel: 0, fetched_unix: 1, jpeg: vec![1] });
         l.record(&SolarServerMsg::Aurora(AuroraOval {
             observed_unix: 1,
@@ -559,9 +584,10 @@ mod tests {
 
         l.clear_feed_products();
         let snap = l.snapshot();
-        assert_eq!(snap.len(), 2, "expected only the radio's messages, got {snap:?}");
+        assert_eq!(snap.len(), 3, "expected only the radio's messages, got {snap:?}");
         assert!(snap.iter().any(|m| matches!(m, SolarServerMsg::Digi { .. })));
         assert!(snap.iter().any(|m| matches!(m, SolarServerMsg::Decodes(_))));
+        assert!(snap.iter().any(|m| matches!(m, SolarServerMsg::SatFreqs(_))));
     }
 
     /// Both element sets have to survive independently, or QO-100 overwrites

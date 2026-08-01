@@ -32,7 +32,11 @@ use sdroxide_types::Decode;
 
 /// Bump on any incompatible change to the two enums below. Independent of
 /// [`crate::PROTO_VERSION`]: the two protocols share a transport and nothing else.
-pub const SOLAR_PROTO_VERSION: u16 = 2;
+///
+/// v3: `SolarServerMsg::SatFreqs` — the operator's satellite frequency
+/// overrides. Appended, so no existing postcard discriminant moves, but an
+/// older viewer cannot decode it and the handshake has to reject it.
+pub const SOLAR_PROTO_VERSION: u16 = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SolarClientMsg {
@@ -115,6 +119,19 @@ pub enum SolarServerMsg {
         fetched_unix: i64,
         png: Vec<u8>,
     },
+    /// The operator's satellite frequency entries — the ones that override the
+    /// built-in table, or add one for a satellite it never knew about.
+    ///
+    /// Knowing when a bird comes over is only half of working it; the other
+    /// half is what to tune to, and a viewer that does not have these shows the
+    /// published table where the operator has deliberately corrected it. Sent
+    /// on connect and whenever the station's satellite config changes.
+    ///
+    /// Only the frequency table crosses: it is the one part of `SatConfig` this
+    /// view reads. The element sets themselves arrive as [`SolarServerMsg::Tles`]
+    /// — already fetched and parsed — and the subscriptions that produced them
+    /// are the engine host's business, not a viewer's.
+    SatFreqs(Vec<sdroxide_types::SatFreqs>),
 }
 
 #[cfg(test)]
@@ -171,6 +188,25 @@ mod tests {
                 fetched_unix: 1_785_352_493,
                 png: vec![0x89, b'P', b'N', b'G'],
             },
+            // A transponder and a beacon on one satellite: passbands and single
+            // frequencies take different paths through `Passband`.
+            SolarServerMsg::SatFreqs(vec![sdroxide_types::SatFreqs::new(
+                43_700,
+                "QO-100",
+                vec![
+                    sdroxide_types::SatLink::duplex(
+                        "NB transponder",
+                        "SSB/CW",
+                        sdroxide_types::Passband::range(2400.050, 2400.300),
+                        sdroxide_types::Passband::range(10489.550, 10489.800),
+                    ),
+                    sdroxide_types::SatLink::down(
+                        "Beacon",
+                        "CW",
+                        sdroxide_types::Passband::at(10489.550),
+                    ),
+                ],
+            )]),
         ];
         for m in server {
             let bytes = encode(&m).expect("encode");
