@@ -27,7 +27,7 @@ use eframe::egui::{self, Color32, ComboBox, RichText};
 use sdroxide_types::{Command, LookupProvider, NetworkConfig};
 
 use self::controls::settings_controls_tab;
-use self::general::device_combo;
+use self::general::{device_combo, remote_access_settings};
 use self::net::{
     broadcast_stations_settings, net_heading, net_row, net_secret, operator_identity_note,
     settings_freedv_tab,
@@ -99,6 +99,11 @@ pub(in crate::app) struct SettingsIo<'a> {
     tci_test: &'a mut bool,
     apply_iface: &'a mut bool,
     ui_edit: &'a mut sdroxide_types::UiSettings,
+    /// Who may connect to this machine's server, or `None` where this client
+    /// is in no position to say — a remote one, and every browser one. Those
+    /// credentials are `config.toml` on the machine the radio is attached to,
+    /// and this is not it.
+    access_edit: Option<&'a mut sdroxide_types::RemoteAccess>,
     digi_edit: &'a mut sdroxide_types::DigiConfig,
     digi_seeded: bool,
     net_edit: &'a mut NetworkConfig,
@@ -223,6 +228,9 @@ impl SdroxideApp {
         let mut apply_iface = false;
         let mut radio_edit = self.radio_cfg.clone();
         let mut ui_edit = self.ui_settings;
+        // Only where the engine is in this process: see `SettingsIo`.
+        let owns_server = !self.ctrl.engine_is_remote();
+        let mut access_edit = self.remote_access.clone();
         let mut digi_edit = self.digi_cfg_edit.clone();
         let digi_seeded = self.digi_cfg_seeded;
         let mut net_edit = self.net_cfg_edit.clone();
@@ -294,6 +302,7 @@ impl SdroxideApp {
                         tci_test: &mut tci_test,
                         apply_iface: &mut apply_iface,
                         ui_edit: &mut ui_edit,
+                        access_edit: owns_server.then_some(&mut access_edit),
                         digi_edit: &mut digi_edit,
                         digi_seeded,
                         net_edit: &mut net_edit,
@@ -450,6 +459,14 @@ impl SdroxideApp {
             self.ui_settings = ui_edit;
             persist_ui_settings(&self.ui_settings);
         }
+        // Written as it is typed, like the control bindings: the server rereads
+        // the file for every sign-in, so there is no APPLY step to hang this
+        // off. Gated on owning the server, so a remote client cannot write its
+        // own machine's config.toml from a tab it was never shown.
+        if owns_server && access_edit != self.remote_access {
+            self.remote_access = access_edit;
+            crate::app::persist::persist_remote_access(&self.remote_access);
+        }
         // Callsign/grid from the General tab — same store as the FT8/SSTV setup
         // dialog. Only apply once seeded so we can't overwrite the engine's saved
         // config with defaults.
@@ -576,6 +593,13 @@ impl SdroxideApp {
                             );
                         });
                     }
+                }
+
+                if let Some(access) = io.access_edit.as_deref_mut() {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                    remote_access_settings(ui, access);
                 }
             }
             SettingsTab::Radio => {

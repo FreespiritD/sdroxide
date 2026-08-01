@@ -127,7 +127,11 @@ impl SolarLatest {
             SolarServerMsg::Decodes(_) => &mut self.decodes,
             SolarServerMsg::SatFreqs(_) => &mut self.sat_freqs,
             // Per-connection handshake traffic is not part of a snapshot.
-            SolarServerMsg::HelloAck { .. } | SolarServerMsg::Error(_) | SolarServerMsg::Pong => {
+            SolarServerMsg::HelloAck { .. }
+            | SolarServerMsg::Error(_)
+            | SolarServerMsg::Pong
+            | SolarServerMsg::AuthRequired
+            | SolarServerMsg::AuthRejected(_) => {
                 return;
             }
         };
@@ -268,6 +272,30 @@ async fn session(mut socket: WebSocket, shared: Arc<Shared>) {
         },
         _ => return,
     }
+
+    // A viewer controls nothing, but it is shown the operator's QTH, every
+    // station they are decoding and every satellite frequency they have
+    // corrected — so the same door applies here. Before `acquire_feed`, so a
+    // stranger cannot start thirteen outbound fetches by opening a socket.
+    let signed_in = crate::auth::challenge(
+        &mut socket,
+        &shared.auth,
+        crate::auth::Frames {
+            what: "/solar-ws",
+            required: encode(&SolarServerMsg::AuthRequired).expect("encode"),
+            rejected: &|why| encode(&SolarServerMsg::AuthRejected(why.into())).expect("encode"),
+            credentials: &|bytes| match decode::<SolarClientMsg>(bytes) {
+                Ok(SolarClientMsg::Auth { username, password }) => Some((username, password)),
+                _ => None,
+            },
+        },
+    )
+    .await;
+    if !signed_in {
+        let _ = socket.close().await;
+        return;
+    }
+
     if socket.send(msg(&SolarServerMsg::HelloAck { proto: SOLAR_PROTO_VERSION })).await.is_err() {
         return;
     }
@@ -327,6 +355,10 @@ async fn session(mut socket: WebSocket, shared: Arc<Shared>) {
                 Ok(SolarClientMsg::RefreshAll) => shared.solar.send_cmd(FeedCmd::RefreshAll),
                 Ok(SolarClientMsg::Ping) => shared.solar.publish(SolarServerMsg::Pong),
                 Ok(SolarClientMsg::Hello { .. }) => {}
+                // A late `Auth` is ignored for the same reason `/ws` ignores
+                // one: this viewer is already in, and re-running the gate would
+                // let it hold everybody else's sign-in up.
+                Ok(SolarClientMsg::Auth { .. }) => {}
                 Err(e) => debug!("solar viewer sent an undecodable message: {e}"),
             }
         }

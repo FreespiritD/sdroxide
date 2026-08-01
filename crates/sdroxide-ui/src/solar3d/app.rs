@@ -35,6 +35,10 @@ pub struct SolarApp {
     stations: DigiStations,
     /// Reported once, so a failed connection does not spam the log every frame.
     reported: Option<Link>,
+    /// The sign-in this tab is challenged with, exactly as the main one is.
+    /// Usually invisible: the main tab's "remember" box is what lets this one
+    /// answer without asking, and both tabs share an origin so both find it.
+    login: crate::login::LoginForm,
 }
 
 impl SolarApp {
@@ -58,13 +62,34 @@ impl SolarApp {
 
         let mut state = SolarUi::new(view);
         state.data = Some(net.shared());
-        Ok(SolarApp { state, net, stations: DigiStations::default(), reported: None })
+        Ok(SolarApp {
+            state,
+            net,
+            stations: DigiStations::default(),
+            reported: None,
+            login: Default::default(),
+        })
     }
 }
 
 impl eframe::App for SolarApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.net.poll();
+
+        // The same door as the main tab. Drawn in place of the view rather
+        // than over it: without the feed there is no Sun, no aurora and no
+        // satellites, so what is behind this is a scene of exactly one planet.
+        let phase = self.net.auth.clone();
+        self.login.settle(&phase);
+        if phase.is_pending() {
+            let rs = frame.wgpu_render_state();
+            if let Some(login) = crate::login::screen(ui, &mut self.login, &phase, rs) {
+                self.net.send_auth(login.username, login.password);
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+            return;
+        }
+
         // Report each transition once, not every frame. The overlay already
         // tells the honest story on its own — with no link, no source ever
         // reports a successful fetch and every freshness readout says so — so

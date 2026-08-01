@@ -244,6 +244,20 @@ pub trait RadioController {
         Err("this connection cannot be re-established".into())
     }
 
+    /// Where this connection stands with the server's sign-in challenge, so
+    /// the UI knows whether to put a dialog up instead of the radio.
+    ///
+    /// Always [`AuthPhase::Open`] for an in-process engine: there is no
+    /// network between the UI and the radio, so there is nothing to prove.
+    fn auth_phase(&self) -> crate::AuthPhase {
+        crate::AuthPhase::Open
+    }
+
+    /// Answer the challenge. No-op where there is none.
+    fn send_auth(&mut self, username: String, password: String) {
+        let _ = (username, password);
+    }
+
     /// The frontend's switchable audio devices, or `None` when the platform
     /// has none to offer (e.g. the browser client, where the browser owns
     /// device routing). Enumeration may be slow — call on demand, not per

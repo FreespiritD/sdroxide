@@ -10,6 +10,7 @@
 //! triple-buffered spectrum, rtrb audio) into those async lanes and caches
 //! the latest state/caps/memories so a new session can be greeted instantly.
 
+mod auth;
 mod session;
 mod solar;
 
@@ -36,6 +37,18 @@ pub enum ServerError {
     Io(#[from] std::io::Error),
 }
 
+/// How the server finds out who may connect.
+///
+/// A function rather than a value because it is called afresh for every
+/// connection and every sign-in attempt: the credentials are a file on this
+/// machine, and an operator who changes their password — by hand, or from the
+/// settings dialog of a GUI running beside the server — expects that to hold
+/// without restarting the server and dropping whoever is on it.
+///
+/// `None`, or a [`RemoteAccess`](sdroxide_types::RemoteAccess) with both fields
+/// empty, leaves the server open to anyone who can reach the port.
+pub type AccessFn = Box<dyn Fn() -> sdroxide_types::RemoteAccess + Send + Sync>;
+
 pub struct ServerParams {
     pub cmd_tx: crossbeam_channel::Sender<Command>,
     pub event_rx: crossbeam_channel::Receiver<RadioEvent>,
@@ -50,6 +63,8 @@ pub struct ServerParams {
     /// Directory with the built web client; `None` uses embedded assets
     /// (feature `embed-web`) or a plain info page.
     pub web_root: Option<PathBuf>,
+    /// Who may connect. `None` leaves the server open — see [`AccessFn`].
+    pub access: Option<AccessFn>,
 }
 
 pub(crate) struct SessionTx {
@@ -107,6 +122,10 @@ pub(crate) struct Shared {
     /// control nothing, so any number may watch alongside the one control
     /// client. See [`solar`].
     pub solar: solar::SolarHub,
+    /// The sign-in gate both endpoints pass through — shared, so the
+    /// one-attempt-at-a-time rule and the lockout after a wrong password apply
+    /// across the whole server rather than per socket. See [`auth`].
+    pub auth: auth::AuthGate,
 }
 
 /// Build a tokio runtime and serve until the process exits.
@@ -126,6 +145,7 @@ pub async fn serve(params: ServerParams) -> Result<(), ServerError> {
         spectrum_rx,
         wide_spectrum_rx,
         solar: solar::SolarHub::default(),
+        auth: auth::AuthGate::new(params.access),
     });
 
     {
@@ -144,6 +164,19 @@ pub async fn serve(params: ServerParams) -> Result<(), ServerError> {
                 )
             })
             .expect("spawn pump thread");
+    }
+
+    // Worth saying out loud either way. This port hands out a transmitter, and
+    // an operator who forwarded it through a router without noticing that it
+    // asks for nothing should find that out from the log rather than from a
+    // complaint about what went out on their callsign.
+    match shared.auth.required() {
+        Some(a) if a.username.is_empty() => info!("remote clients must give the password"),
+        Some(a) => info!("remote clients must sign in as {:?}", a.username),
+        None => warn!(
+            "no remote-access credentials configured — anyone who can reach this port can \
+             operate the radio; set [remote_access] in config.toml, or Settings → General"
+        ),
     }
 
     let mut app = Router::new()

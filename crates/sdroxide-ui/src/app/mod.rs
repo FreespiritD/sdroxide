@@ -335,6 +335,16 @@ pub struct SdroxideApp {
     /// this session. Never persisted: `--oob-tx` has to be passed again on the
     /// next launch, so the warning has to be acknowledged again too.
     oob_tx_ack: bool,
+    /// The sign-in screen a server that asks for a password puts up, in place
+    /// of everything above.
+    login: crate::login::LoginForm,
+    /// Who may connect to *this* machine's server, edited on the General tab.
+    ///
+    /// Only shown — and only meaningful — when the engine is in this process:
+    /// these are `config.toml` on the machine the radio is attached to, so a
+    /// remote client has nothing here to read them from and no business
+    /// writing them. Left at the default and never persisted in the browser.
+    remote_access: sdroxide_types::RemoteAccess,
 }
 
 impl SdroxideApp {
@@ -478,6 +488,8 @@ impl SdroxideApp {
             sat_sub_status: Vec::new(),
             wefax: Default::default(),
             oob_tx_ack: false,
+            login: Default::default(),
+            remote_access: persist::load_remote_access(),
         }
     }
 }

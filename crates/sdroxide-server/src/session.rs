@@ -1,5 +1,5 @@
-//! The single remote WebSocket session: Hello handshake, codec negotiation,
-//! three-lane sender, and the command/mic receive loop.
+//! The single remote WebSocket session: Hello handshake, sign-in, codec
+//! negotiation, three-lane sender, and the command/mic receive loop.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -12,9 +12,10 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use sdroxide_proto::{AudioCodec, ClientMsg, PROTO_VERSION, ServerMsg, decode, encode};
+use sdroxide_proto::{AudioCaps, AudioCodec, ClientMsg, PROTO_VERSION, ServerMsg, decode, encode};
 use sdroxide_types::Command;
 
+use crate::auth;
 use crate::{SessionTx, Shared};
 
 pub async fn ws_route(State(shared): State<Arc<Shared>>, upgrade: WebSocketUpgrade) -> Response {
@@ -26,13 +27,22 @@ fn msg(m: &ServerMsg) -> Message {
 }
 
 async fn session(mut socket: WebSocket, shared: Arc<Shared>) {
+    // Hello and the sign-in first, and only then the single-client slot. The
+    // order matters: claiming the slot before knowing who this is would let
+    // anyone who can open a socket lock the operator out of their own radio
+    // without ever proving they may touch it.
+    let Some(audio_caps) = handshake(&mut socket, &shared).await else {
+        let _ = socket.close().await;
+        return;
+    };
+
     // Single-client rule: the loser gets Busy and is closed immediately.
     if shared.busy.swap(true, Ordering::SeqCst) {
         let _ = socket.send(msg(&ServerMsg::Busy)).await;
         let _ = socket.close().await;
         return;
     }
-    run_session(&mut socket, &shared).await;
+    run_session(&mut socket, &shared, audio_caps).await;
 
     // Cleanup — whatever happened, release the slot and drop the key.
     *shared.session.lock().unwrap() = None;
@@ -42,8 +52,14 @@ async fn session(mut socket: WebSocket, shared: Arc<Shared>) {
     info!("remote session ended");
 }
 
-async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>) {
-    // --- Hello handshake (5 s budget) ---------------------------------
+/// `Hello`, then the sign-in challenge if this server has one. `None` means the
+/// socket is finished with — the caller closes it and claims nothing.
+///
+/// The version check comes first so a client on the wrong protocol is told
+/// exactly that, rather than being asked to sign in to a server it could not
+/// have talked to anyway.
+async fn handshake(socket: &mut WebSocket, shared: &Arc<Shared>) -> Option<AudioCaps> {
+    // --- Hello (5 s budget) -------------------------------------------
     let hello = tokio::time::timeout(Duration::from_secs(5), socket.recv()).await;
     let audio_caps = match hello {
         Ok(Some(Ok(Message::Binary(bytes)))) => match decode::<ClientMsg>(&bytes) {
@@ -54,16 +70,35 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>) {
                         "protocol mismatch: server {PROTO_VERSION}, client {proto}"
                     ))))
                     .await;
-                return;
+                return None;
             }
             _ => {
                 let _ = socket.send(msg(&ServerMsg::Error("expected Hello".into()))).await;
-                return;
+                return None;
             }
         },
-        _ => return,
+        _ => return None,
     };
 
+    // --- Sign-in ------------------------------------------------------
+    let signed_in = auth::challenge(
+        socket,
+        &shared.auth,
+        auth::Frames {
+            what: "/ws",
+            required: encode(&ServerMsg::AuthRequired).expect("encode"),
+            rejected: &|why| encode(&ServerMsg::AuthRejected(why.into())).expect("encode"),
+            credentials: &|bytes| match decode::<ClientMsg>(bytes) {
+                Ok(ClientMsg::Auth { username, password }) => Some((username, password)),
+                _ => None,
+            },
+        },
+    )
+    .await;
+    signed_in.then_some(audio_caps)
+}
+
+async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>, audio_caps: AudioCaps) {
     let rx_codec =
         if audio_caps.opus_decode { AudioCodec::Opus48kMono } else { AudioCodec::Pcm16_48k };
     let tx_codec =
@@ -222,6 +257,11 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>) {
                     }
                 }
                 Ok(ClientMsg::Hello { .. }) => {} // ignore late Hello
+                // Likewise a late `Auth`: this socket is already signed in, so
+                // there is nothing to re-check, and running it through the gate
+                // would let an established client lock everybody else's sign-in
+                // out for three seconds at a time.
+                Ok(ClientMsg::Auth { .. }) => {}
                 Err(e) => warn!("bad client message: {e}"),
             }
         }

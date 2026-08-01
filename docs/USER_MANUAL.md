@@ -84,7 +84,8 @@ or connects to a remote sdroxide server.
   with click-through pass predictions, your FT8 contacts arcing between stations,
   and a propagation panel with MUF, Kp/A, F10.7 and the current GOES X-ray level.
 - **Remote and web operation:** run headless as a server and control it from a
-  browser or from a second sdroxide instance over the network.
+  browser or from a second sdroxide instance over the network, behind a username
+  and password.
 
 ---
 
@@ -1376,7 +1377,7 @@ window opens the same dialog on its Spots tab). Nine tabs run across the top:
 
 | Tab | What it holds |
 | --- | --- |
-| **General** | Your callsign and grid, and the sound devices. [5.1](#51-general-station-and-audio) |
+| **General** | Your callsign and grid, the sound devices, and who may connect remotely. [5.1](#51-general-station-audio-and-remote-access) |
 | **Radio** | Which rig sdroxide talks to, and how. [5.2](#52-radio-choosing-and-configuring-the-rig) |
 | **UI** | Frame rate, waterfall palette, spectrum background, 3D cloud rendering. [5.3](#53-ui-display-preferences) |
 | **Controls** | Keyboard, mouse and MIDI bindings. [5.4](#54-controls-keyboard-mouse-and-midi) |
@@ -1402,11 +1403,14 @@ connects to, the servers it offers, the satellites it tracks. They live on the
 machine the radio engine runs on, and the engine tells every client what they
 say — so the **Spots**, **FreeDV**, **Uploads**, **Servers** and **TLE** tabs
 show, and change, the real thing whether you are at the shack machine, on a
-native remote client or in a browser tab. Only `config.toml` and `input.json`
-belong to the screen in front of you: a display preference and a knob on your
-desk have nothing to do with the radio in the other room.
+native remote client or in a browser tab. `input.json` and the `[ui]` half of
+`config.toml` are the exception, and belong to the screen in front of you: a
+display preference and a knob on your desk have nothing to do with the radio in
+the other room. The rest of `config.toml` — including the `[remote_access]`
+sign-in — belongs to the engine's machine, which is why the **Remote access**
+section of the General tab is only shown there.
 
-### 5.1 General: station and audio
+### 5.1 General: station, audio and remote access
 
 ![The General tab: callsign, grid square, and your own speakers and microphone](images/settings-general.jpg)
 
@@ -1450,6 +1454,28 @@ sound card dedicated to the radio, the reliable fix is to tell WirePlumber to
 stop managing that card, leaving it for sdroxide. Create a drop-in such as
 `~/.config/wireplumber/wireplumber.conf.d/51-radio.conf` that disables the
 card, then restart WirePlumber. See [troubleshooting](#12-troubleshooting).
+
+**Remote access** — the **Username** and **Password** a remote client has to
+give before this station will let it operate: the browser page, another sdroxide
+started with `--connect`, and the 3D view's tab. See
+[§ 7.3 Sign-in](#73-sign-in-who-may-operate-the-station).
+
+- Both boxes empty leaves the server **open** — anyone who can reach the port
+  can operate the radio, transmit included. The tab says so in yellow.
+- A password with an empty username is a complete setting; clients are then
+  asked only for the password. Most single-operator stations want this.
+- Typing here writes `config.toml` straight away, and the server re-reads it for
+  every sign-in — so a password change holds without restarting the server or
+  dropping whoever is already connected. There is no **APPLY**.
+- The section only appears when the engine is running in *this* process. These
+  credentials are a file on the machine the radio is attached to, so a remote
+  client is not shown them: a box there would edit its own machine's file and
+  look as though the station's password had changed when it had not. Set them at
+  the shack machine, or edit `[remote_access]` in `config.toml` by hand.
+
+Like every other password sdroxide stores — the cluster login, QRZ, eQSL — it is
+kept in the clear, so `config.toml` is worth the same file permissions as the
+rest of your config directory.
 
 ### 5.2 Radio: choosing and configuring the rig
 
@@ -1549,7 +1575,7 @@ on a dirty LO.
 ![The Radio tab with the CAT / Audio interface selected](images/settings-radio-cat.jpg)
 
 A CAT radio is controlled over a serial port while its audio arrives over a USB
-sound card — chosen on the **General** tab ([5.1](#51-general-station-and-audio)),
+sound card — chosen on the **General** tab ([5.1](#51-general-station-audio-and-remote-access)),
 separately from your computer's own speakers and microphone.
 
 **Sound format** — how the radio's audio is interpreted:
@@ -1560,7 +1586,7 @@ separately from your computer's own speakers and microphone.
   X6100.
 - **IQ (stereo)** — the radio sends a stereo IQ signal (I on the left channel, Q
   on the right). This gives a full panadapter but requires a **stereo** capture
-  device (see the note in [5.1](#51-general-station-and-audio)).
+  device (see the note in [5.1](#51-general-station-audio-and-remote-access)).
 
 **Serial (CAT) settings**, in the order they appear:
 
@@ -2790,6 +2816,10 @@ The server opens the configured radio, streams spectrum and audio, and accepts a
 WebSocket control connection. The default port is **4950** and the default bind
 address is **all interfaces** (`0.0.0.0`).
 
+Set a username and password first — see
+[§ 7.3](#73-sign-in-who-may-operate-the-station). Without one the server is open
+to anyone who can reach the port, and says so in its log at startup.
+
 ### 7.2 Connect a native remote client
 
 On another machine:
@@ -2805,7 +2835,35 @@ Receive audio streams down (48 kHz mono), and your microphone is sent up to the
 server while you transmit. The remote client uses your local speakers and
 microphone for audio.
 
-### 7.3 What to know
+### 7.3 Sign-in: who may operate the station
+
+The server can ask every remote client for a username and password. Set them on
+the machine the radio is attached to, either in **Settings → General → Remote
+access** ([5.1](#51-general-station-audio-and-remote-access)) or by hand in
+`config.toml`:
+
+```toml
+[remote_access]
+username = "oe1test"
+password = "a long passphrase"
+```
+
+Leave `username` empty to be asked only for the password. Leave **both** empty —
+which is the default, and what every version before this one did — and the
+server is open to anyone who can reach it.
+
+Nothing crosses before the sign-in is accepted, and — the part that matters most
+— an unauthenticated connection does **not** take the single-client slot. A
+stranger cannot lock you out of your own radio by opening a socket to it.
+
+> **Sign-in is not encryption.** It stops the wrong people operating the radio;
+> it does not hide what you are doing from anyone watching the network, and the
+> password itself crosses in the clear over plain `ws://`. On anything but a
+> trusted LAN, run the server behind a VPN or an HTTPS reverse proxy — which is
+> also what the browser client needs before it will give you audio
+> ([8.3](#83-audio-needs-a-secure-context)).
+
+### 7.4 What to know
 
 - **One client at a time.** A second connection is refused with a "server busy"
   message.
@@ -2816,11 +2874,13 @@ microphone for audio.
   browser client as well; reloading the page does the same thing.
 - **A "server busy" message right after pressing Reconnect** means the server has
   not finished letting go of the old session yet. Press it again.
-- **No authentication or encryption.** The server has no password and no TLS, and
-  it binds to all interfaces by default, so anyone who can reach the port has
-  full control of the radio, *including transmit*. Only expose it on a trusted
-  network, or put it behind a VPN or an HTTPS reverse proxy that adds
-  authentication.
+- **A sign-in is asked for again after a reconnect.** Each socket is challenged
+  on its own; *remember* is what makes that invisible.
+- **No encryption.** The server speaks plain `ws://` and binds to all interfaces
+  by default. The sign-in ([7.3](#73-sign-in-who-may-operate-the-station))
+  decides who may operate the radio, but nothing here is confidential in
+  transit. Put the server behind a VPN or an HTTPS reverse proxy if it is
+  reachable from an untrusted network.
 
 ---
 
@@ -2866,10 +2926,11 @@ drop-downs, so you can swap feedline or wind an LNA back from the browser; which
 interface the server opens, and how it is configured, stays on the machine that
 runs it. The [solar system 3D view](#6-solar-system-3d-view) works too: **☀ 3D**
 opens it in a new tab, which connects to a separate read-only endpoint and so
-does not consume the single control connection. The same
-single-client and no-authentication notes as
-[remote operation](#7-remote-operation) apply — put the server behind HTTPS with
-authentication if it is reachable from an untrusted network.
+does not consume the single control connection — though it is challenged for the
+same sign-in, since it is shown your QTH and everything the station is decoding.
+The same single-client and sign-in notes as
+[remote operation](#7-remote-operation) apply, and nothing here is encrypted —
+put the server behind HTTPS if it is reachable from an untrusted network.
 
 ### 8.3 Audio needs a secure context
 
@@ -3351,7 +3412,7 @@ sdroxide stores its settings under the per-user config directory:
 
 | File | Format | Contents |
 | --- | --- | --- |
-| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`. |
+| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, plus the `[ui]` display preferences and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
 | `radio.json` | JSON | Radio backend: SoapySDR vs CAT, serial/CAT settings, sound format, and the radio's sound-card device names. |
 | `digi.json` | JSON | FT8/FT4 operator settings: your callsign and grid, TX period, auto-sequence, and message templates. |
 | `memories.json` | JSON | Saved memory channels. |
@@ -3364,6 +3425,7 @@ sdroxide stores its settings under the per-user config directory:
 | `wsjtx.json` | JSON | WSJT-X UDP broadcast: enabled, destination host and port, and the name clients see. |
 | `skimmer.json` | JSON | Skimmers: which of CW / PSK / RTTY run, and each one's spot squelch in dB. Restored at startup; a narrowband (audio-mode) radio still forces them off without disturbing what you picked. |
 | `input.json` | JSON | Control inputs: keyboard bindings, panadapter mouse behaviour, mouse-button bindings, and the MIDI controller mapping. Belongs to the machine running the user interface, not the engine. |
+| `remote_login.json` | JSON | A sign-in to *somebody else's* server that you asked this client to remember ([§7.3](#73-sign-in-who-may-operate-the-station)). Written only when the **Remember on this device** box is ticked, holds the password in plaintext, and deleted when you untick it or the server refuses it. Belongs to the user interface, like `input.json`; the browser client keeps the same thing in local storage instead. |
 | `satellites.json` | JSON | Satellite additions for the 3D tracker: subscribed element-set listings, element sets pasted in by hand, and frequency entries that override the built-in table. Belongs to the engine, like `net.json`: the listings are fetched and cached where the radio is, so remote and browser clients track the same satellites. |
 | `broadcast_stations.json` | JSON | *Your own* broadcast stations and corrections, merged over the downloaded schedule ([§9.6](#96-broadcast-stations-on-longwave-and-shortwave)). Never written by sdroxide, and absent until you create it. |
 | `broadcast/` | CSV | The broadcasting season's schedule as downloaded from eibispace.de, one file per season. Managed by sdroxide: refetched when the season changes, and safe to delete. |

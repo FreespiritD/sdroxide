@@ -40,6 +40,11 @@ pub struct SolarClient {
     sender: WsSender,
     receiver: WsReceiver,
     pub link: Link,
+    /// Where this viewer stands with the server's sign-in challenge. A viewer
+    /// controls nothing, but it is shown the operator's QTH and everything the
+    /// station is decoding, so a server that asks the control client for a
+    /// password asks this one too.
+    pub auth: sdroxide_types::AuthPhase,
     /// The snapshot handed to `SolarUi`, filled in place as messages arrive.
     data: Arc<Mutex<SolarData>>,
     /// Newest decode list, for the caller's own fade bookkeeping.
@@ -73,6 +78,7 @@ impl SolarClient {
             sender,
             receiver,
             link: Link::Connecting,
+            auth: sdroxide_types::AuthPhase::Open,
             data: Arc::new(Mutex::new(SolarData::default())),
             decodes: Vec::new(),
             my_grid: String::new(),
@@ -158,9 +164,16 @@ impl SolarClient {
         }
     }
 
+    /// Answer the server's challenge.
+    pub fn send_auth(&mut self, username: String, password: String) {
+        self.auth = sdroxide_types::AuthPhase::Checking;
+        self.send(&SolarClientMsg::Auth { username, password });
+    }
+
     fn apply(&mut self, msg: SolarServerMsg) {
         match msg {
             SolarServerMsg::HelloAck { proto } => {
+                self.auth = sdroxide_types::AuthPhase::Open;
                 self.link = if proto == SOLAR_PROTO_VERSION {
                     Link::Up
                 } else {
@@ -168,6 +181,15 @@ impl SolarClient {
                         "solar protocol mismatch: server {proto}, client {SOLAR_PROTO_VERSION}"
                     ))
                 };
+            }
+            // The link is not down — the socket is open and the server is
+            // talking — it is simply waiting for a password. Left as
+            // `Connecting`, which is what it is.
+            SolarServerMsg::AuthRequired => {
+                self.auth = sdroxide_types::AuthPhase::Prompt(None);
+            }
+            SolarServerMsg::AuthRejected(why) => {
+                self.auth = sdroxide_types::AuthPhase::Prompt(Some(why));
             }
             SolarServerMsg::Error(e) => self.link = Link::Down(e),
             SolarServerMsg::Pong => {}

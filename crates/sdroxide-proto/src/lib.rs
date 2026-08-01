@@ -140,7 +140,15 @@ use sdroxide_types::{
 /// go to that machine with a file manager; a browser tab could not do it at all.
 /// The deletion is broadcast rather than answered, because a picture that has
 /// gone is gone from every gallery, not just the one that asked.
-pub const PROTO_VERSION: u16 = 35;
+/// v36: sign-in — one new `ClientMsg` (`Auth`) and two new `ServerMsg`s
+/// (`AuthRequired`, `AuthRejected`), all appended so no existing discriminant
+/// moves. A server with credentials configured answers `Hello` with
+/// `AuthRequired` instead of `HelloAck` and waits; everything that used to
+/// happen next happens after the credentials are accepted. The version still
+/// has to be bumped despite the appends: a v35 client cannot decode
+/// `AuthRequired`, so it would report a protocol error rather than the truth,
+/// which is that it needs a password and cannot ask for one.
+pub const PROTO_VERSION: u16 = 36;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -182,6 +190,13 @@ pub enum ClientMsg {
         payload: Vec<u8>,
     },
     Ping(u64),
+    /// Answer to [`ServerMsg::AuthRequired`]. Appended last on purpose:
+    /// postcard encodes the variant as a positional discriminant, so inserting
+    /// anywhere else would silently renumber every message after it.
+    Auth {
+        username: String,
+        password: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -340,6 +355,21 @@ pub enum ServerMsg {
         kind: ImageKind,
         name: String,
     },
+    /// This server wants a username and password. Sent in place of
+    /// [`ServerMsg::HelloAck`] once `Hello` has been read and its version
+    /// accepted — after, so a client on the wrong protocol is told *that*
+    /// rather than being asked to sign in to a server it could not talk to
+    /// anyway. The client answers with [`ClientMsg::Auth`].
+    ///
+    /// Nothing else is sent, read or acted on until the credentials are
+    /// accepted: not the capabilities, not the state, and above all not the
+    /// single-client slot, which is claimed only afterwards so that a stranger
+    /// cannot lock the operator out of their own radio by connecting to it.
+    AuthRequired,
+    /// Those were not the credentials, and why not. The socket stays open so
+    /// the operator can correct a typo without redialling — but the server
+    /// takes its time before it will judge another attempt.
+    AuthRejected(String),
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {
@@ -513,11 +543,7 @@ mod tests {
             ClientMsg::Command(Command::ImageSetMessage { slot: 2, message: "73".into() }),
             ClientMsg::Command(Command::ImageGetSlot(4)),
             ClientMsg::Command(Command::ImageClearSlot(0)),
-            ClientMsg::Command(Command::ImageList {
-                kind: ImageKind::Wefax,
-                offset: 0,
-                count: 48,
-            }),
+            ClientMsg::Command(Command::ImageList { kind: ImageKind::Wefax, offset: 0, count: 48 }),
             ClientMsg::Command(Command::ImageGet {
                 kind: ImageKind::Sstv,
                 name: "sstv-1753795200000.png".into(),
@@ -620,6 +646,25 @@ mod tests {
 
     fn no_station() -> sdroxide_types::StationConfig {
         sdroxide_types::StationConfig::default()
+    }
+
+    /// The sign-in exchange, both ways.
+    ///
+    /// These three are the only messages that cross before the handshake has
+    /// finished, so a client and server that disagree about their encoding
+    /// cannot recover — there is no established session to report the fault on.
+    #[test]
+    fn roundtrip_sign_in() {
+        let ask = ServerMsg::AuthRequired;
+        assert_eq!(decode::<ServerMsg>(&encode(&ask).unwrap()).unwrap(), ask);
+
+        let no = ServerMsg::AuthRejected("username or password not accepted".into());
+        assert_eq!(decode::<ServerMsg>(&encode(&no).unwrap()).unwrap(), no);
+
+        // Non-ASCII in either field: passwords are whatever the operator typed.
+        let answer =
+            ClientMsg::Auth { username: "oe1test".into(), password: "pässwörd ✓".into() };
+        assert_eq!(decode::<ClientMsg>(&encode(&answer).unwrap()).unwrap(), answer);
     }
 
     #[test]

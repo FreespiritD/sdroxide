@@ -43,6 +43,14 @@ pub struct Settings {
     pub audio_input: Option<String>,
     /// UI / display preferences (frame rate, waterfall + spectrum speed).
     pub ui: sdroxide_types::UiSettings,
+    /// Username and password a remote client must present in server mode.
+    /// Empty (the default) leaves the server open, exactly as it was before
+    /// this existed.
+    ///
+    /// Last in the struct because TOML puts tables after values, and serde
+    /// emits fields in declaration order: a table declared above a plain value
+    /// would swallow that value into itself on the next write.
+    pub remote_access: sdroxide_types::RemoteAccess,
 }
 
 impl Default for Settings {
@@ -59,6 +67,7 @@ impl Default for Settings {
             audio_output: None,
             audio_input: None,
             ui: sdroxide_types::UiSettings::default(),
+            remote_access: sdroxide_types::RemoteAccess::default(),
         }
     }
 }
@@ -74,6 +83,54 @@ pub fn save_ui_settings(ui: &sdroxide_types::UiSettings) -> Result<(), ConfigErr
     let mut s = Settings::load();
     s.ui = *ui;
     s.save()
+}
+
+/// Load just the remote-access credentials.
+///
+/// Read fresh rather than cached: the server calls this once per connection, so
+/// an edit to `config.toml` — by hand, or from the settings dialog of the GUI
+/// running on the same machine — takes effect on the next sign-in instead of
+/// waiting for the server to be restarted.
+pub fn load_remote_access() -> sdroxide_types::RemoteAccess {
+    Settings::load().remote_access
+}
+
+/// Persist the remote-access credentials, preserving every other setting
+/// (read-modify-write, like [`save_ui_settings`]).
+pub fn save_remote_access(access: &sdroxide_types::RemoteAccess) -> Result<(), ConfigError> {
+    let mut s = Settings::load();
+    s.remote_access = access.clone();
+    s.save()
+}
+
+/// A sign-in the operator asked this client to remember (`remote_login.json`).
+///
+/// A *client*-side file, like `input.json`: it is what this machine types into
+/// somebody else's server, not what this machine demands of anyone. Written
+/// only when the sign-in dialog's "remember" box is ticked, and holding the
+/// password in the clear — same as every other credential sdroxide stores, and
+/// noted as such in the manual and in the dialog itself.
+pub fn load_remote_login() -> Option<sdroxide_types::RemoteAccess> {
+    let login: sdroxide_types::RemoteAccess = load_json("remote_login.json");
+    login.is_enforced().then_some(login)
+}
+
+pub fn save_remote_login(login: Option<&sdroxide_types::RemoteAccess>) -> Result<(), ConfigError> {
+    match login {
+        Some(l) => save_json("remote_login.json", l),
+        // Forgetting has to remove the file, not write an empty one: an empty
+        // record and a deleted one mean the same thing, and leaving a password
+        // field behind that says `""` invites the belief that something was
+        // scrubbed when the old file is simply still there.
+        None => {
+            let path = config_dir()?.join("remote_login.json");
+            match fs::remove_file(&path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e.into()),
+            }
+        }
+    }
 }
 
 pub fn config_dir() -> Result<PathBuf, ConfigError> {
@@ -809,6 +866,38 @@ mod tests {
         let s: Settings = toml::from_str("sample_rate = 2400000.0").unwrap();
         assert_eq!(s.sample_rate, 2_400_000.0);
         assert_eq!(s.server_port, Settings::default().server_port);
+    }
+
+    /// The credentials survive a write and a read, and — the part that is easy
+    /// to get wrong — every plain value above them is still a plain value
+    /// afterwards. TOML puts tables last, so a table declared before
+    /// `tx_ham_only` would quietly adopt it into itself and the next start
+    /// would come up with the band-edge lockout in a different place.
+    #[test]
+    fn remote_access_survives_a_write_without_swallowing_the_settings_above_it() {
+        let s = Settings {
+            remote_access: sdroxide_types::RemoteAccess {
+                username: "oe1test".into(),
+                password: "hunter2".into(),
+            },
+            tx_ham_only: false,
+            server_port: 4951,
+            ..Settings::default()
+        };
+        let text = toml::to_string_pretty(&s).unwrap();
+        let back: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(back.remote_access.password, "hunter2");
+        assert!(!back.tx_ham_only, "a value below the table must not become part of it");
+        assert_eq!(back.server_port, 4951);
+    }
+
+    /// A `config.toml` written before this feature existed leaves the server
+    /// open, which is what that operator has always had.
+    #[test]
+    fn a_config_without_credentials_leaves_the_server_open() {
+        let s: Settings = toml::from_str("server_port = 4950").unwrap();
+        assert!(!s.remote_access.is_enforced());
     }
 
     #[test]

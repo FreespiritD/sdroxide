@@ -48,7 +48,7 @@ fn digi_split(total: f32, divider_h: f32, fraction: f32) -> (f32, f32) {
 }
 
 impl eframe::App for SdroxideApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let now = ctx.input(|i| i.time);
         // Settle the layout for this frame before anything draws. It is a
@@ -274,6 +274,24 @@ impl eframe::App for SdroxideApp {
             self.skimmer_spots.retain(|s| self.state.skimmer.enabled(s.kind));
         }
         self.poll_adif_import();
+
+        // A server that asks for a password gets the whole window until it has
+        // one. Nothing below this point has anything to draw — no capabilities,
+        // no state and no spectrum arrive until the sign-in is accepted — and
+        // nothing below it may run either: the bindings would happily send PTT
+        // to a socket that is not going to read it.
+        let phase = self.ctrl.auth_phase();
+        self.login.settle(&phase);
+        if phase.is_pending() {
+            let rs = frame.wgpu_render_state();
+            if let Some(login) = crate::login::screen(ui, &mut self.login, &phase, rs) {
+                self.ctrl.send_auth(login.username, login.password);
+            }
+            // The socket wakes the UI when the server answers; this is only so
+            // a spinner-less "CHECKING…" cannot look like a hung window.
+            ctx.request_repaint_after(Duration::from_millis(IDLE_POLL_MS));
+            return;
+        }
 
         let mut cmds = Vec::new();
         // F1 toggles the manual — handled here (not in `keyboard_shortcuts`) so

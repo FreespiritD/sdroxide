@@ -59,6 +59,12 @@ pub fn run(
         bind: settings.server_bind.clone(),
         port,
         web_root,
+        // Re-read per connection rather than captured from `settings`: the
+        // credentials are a file on this machine, and an operator who changes
+        // their password — by hand, or from the settings dialog of the GUI
+        // running beside this server — should not have to restart the server
+        // and drop whoever is on it for the change to hold.
+        access: Some(Box::new(sdroxide_config::load_remote_access)),
     })?;
     Ok(())
 }

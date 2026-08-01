@@ -19,6 +19,8 @@ const SHADERS: &[(&str, &str)] = &[
     ("solar_line.wgsl", include_str!("../src/shaders/solar_line.wgsl")),
     ("solar_sprite.wgsl", include_str!("../src/shaders/solar_sprite.wgsl")),
     ("solar_blit.wgsl", include_str!("../src/shaders/solar_blit.wgsl")),
+    ("login_globe.wgsl", include_str!("../src/shaders/login_globe.wgsl")),
+    ("login_blur.wgsl", include_str!("../src/shaders/login_blur.wgsl")),
 ];
 
 fn parse(name: &str, src: &str) -> naga::Module {

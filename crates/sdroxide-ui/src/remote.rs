@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use sdroxide_proto::{AudioCaps, AudioCodec, ClientMsg, PROTO_VERSION, ServerMsg, decode, encode};
-use sdroxide_types::{AudioDevices, Command, RadioController, RadioEvent};
+use sdroxide_types::{AudioDevices, AuthPhase, Command, RadioController, RadioEvent};
 
 /// Platform audio glue: playback of received PCM and microphone capture.
 /// The wasm client backs this with an AudioWorklet bridge.
@@ -42,16 +42,28 @@ fn dial(
         .map_err(|e| e.to_string())
 }
 
-/// Outbound gate: `Hello` has to be the first message the server reads, and the
-/// UI starts issuing commands (a first-frame `SetSpectrumCfg`, with no
-/// debounce) before the socket has finished opening. Anything sent that early
-/// waits here and flushes in order *behind* `Hello`.
+/// Outbound gate: nothing the UI produces reaches the socket until the
+/// handshake has finished, because the UI starts issuing commands (a
+/// first-frame `SetSpectrumCfg`, with no debounce) long before it has.
+/// Anything sent that early waits here and flushes in order once `HelloAck`
+/// arrives.
 ///
-/// Without it the two platforms fail differently and neither is acceptable:
-/// ewebsock's native sender queues pre-open messages, so the command reaches
-/// the server ahead of `Hello` and the session is closed with
+/// The gate is held until `HelloAck` rather than merely until the socket opens,
+/// which is what it used to be. A server that asks for a password answers
+/// `Hello` with a challenge and reads nothing else until it is answered, so
+/// commands released at open time would be discarded unread — the UI would come
+/// up on the engine's spectrum config instead of its own, silently, and only
+/// against a server that asks.
+///
+/// Without a gate at all the two platforms fail differently and neither is
+/// acceptable: ewebsock's native sender queues pre-open messages, so the
+/// command reaches the server ahead of `Hello` and the session is closed with
 /// "expected Hello"; its web sender calls `send()` on a still-CONNECTING
 /// socket, which throws and drops the command on the floor.
+///
+/// `Hello` and `Auth` are the two messages that must cross while the gate is
+/// shut, so both are written straight to the socket instead of going through
+/// it.
 #[derive(Default)]
 struct Outbox {
     opened: bool,
@@ -72,13 +84,10 @@ impl Outbox {
         None
     }
 
-    /// The socket opened: `hello`, then everything that was waiting.
-    fn open(&mut self, hello: ClientMsg) -> Vec<ClientMsg> {
+    /// The handshake finished: everything that was waiting, in order.
+    fn release(&mut self) -> Vec<ClientMsg> {
         self.opened = true;
-        let mut out = Vec::with_capacity(self.queued.len() + 1);
-        out.push(hello);
-        out.extend(self.queued.drain(..));
-        out
+        self.queued.drain(..).collect()
     }
 }
 
@@ -91,6 +100,9 @@ pub struct RemoteController {
     url: String,
     wake: std::sync::Arc<dyn Fn() + Send + Sync>,
     outbox: Outbox,
+    /// Where this connection stands with the server's sign-in challenge, for
+    /// the UI to put a dialog up against.
+    auth: AuthPhase,
     audio: Option<Box<dyn AudioBridge>>,
     pending: VecDeque<RadioEvent>,
     tx_codec: Option<AudioCodec>,
@@ -120,6 +132,7 @@ impl RemoteController {
             url: url.to_string(),
             wake,
             outbox: Outbox::default(),
+            auth: AuthPhase::Open,
             audio,
             pending: VecDeque::new(),
             tx_codec: None,
@@ -148,9 +161,21 @@ impl RemoteController {
         match msg {
             ServerMsg::HelloAck { caps, state, tx_codec, .. } => {
                 self.tx_codec = Some(tx_codec);
+                // Whatever the server wanted, it has it: the handshake is over
+                // and everything the UI produced while it ran can go out now.
+                self.auth = AuthPhase::Open;
+                let queued = self.outbox.release();
+                for msg in queued {
+                    self.write(&msg);
+                }
                 self.pending.push_back(RadioEvent::Capabilities(caps));
                 self.pending.push_back(RadioEvent::State(state));
             }
+            // The server wants a password before it will go any further. The
+            // socket stays open and the UI puts a dialog up; nothing else
+            // happens until [`RadioController::send_auth`] answers it.
+            ServerMsg::AuthRequired => self.auth = AuthPhase::Prompt(None),
+            ServerMsg::AuthRejected(why) => self.auth = AuthPhase::Prompt(Some(why)),
             ServerMsg::State(s) => {
                 self.transmitting = s.tx.ptt || s.tx.tune;
                 self.pending.push_back(RadioEvent::State(s));
@@ -274,10 +299,10 @@ impl RadioController for RemoteController {
                         .as_ref()
                         .map(|a| a.caps())
                         .unwrap_or(AudioCaps { opus_decode: false, opus_encode: false });
-                    let hello = ClientMsg::Hello { proto: PROTO_VERSION, audio: caps };
-                    for msg in self.outbox.open(hello) {
-                        self.write(&msg);
-                    }
+                    // Straight to the socket, ahead of the gate: this is what
+                    // the gate exists to stay behind. Everything the UI queued
+                    // follows once the server answers — see `HelloAck`.
+                    self.write(&ClientMsg::Hello { proto: PROTO_VERSION, audio: caps });
                 }
                 WsEvent::Message(WsMessage::Binary(bytes)) => match decode::<ServerMsg>(&bytes) {
                     Ok(msg) => self.on_server_msg(msg),
@@ -310,6 +335,16 @@ impl RadioController for RemoteController {
         true
     }
 
+    fn auth_phase(&self) -> AuthPhase {
+        self.auth.clone()
+    }
+
+    fn send_auth(&mut self, username: String, password: String) {
+        // Past the gate, like `Hello`: the server is reading nothing else.
+        self.auth = AuthPhase::Checking;
+        self.write(&ClientMsg::Auth { username, password });
+    }
+
     fn reconnect(&mut self) -> Result<(), String> {
         // Close first, and only then dial: the server allows one control
         // session at a time, so a new socket opened while the old one is still
@@ -324,6 +359,10 @@ impl RadioController for RemoteController {
         // and neither queued events nor a half-sent microphone block from the
         // dead session may be carried into the new one.
         self.outbox = Outbox::default();
+        // Including the sign-in: the new socket is challenged on its own
+        // merits, so a dialog left over from the dead session must not be
+        // showing against it — nor a `Checking` that nothing will ever answer.
+        self.auth = AuthPhase::Open;
         self.pending.clear();
         self.tx_codec = None;
         self.transmitting = false;
@@ -349,13 +388,6 @@ mod tests {
     use super::*;
     use sdroxide_types::SpectrumConfig;
 
-    fn hello() -> ClientMsg {
-        ClientMsg::Hello {
-            proto: PROTO_VERSION,
-            audio: AudioCaps { opus_decode: false, opus_encode: false },
-        }
-    }
-
     /// The first-frame `SetSpectrumCfg` that the capture from the bug report
     /// caught on the wire ahead of `Hello`.
     fn first_frame_cfg() -> ClientMsg {
@@ -373,14 +405,28 @@ mod tests {
     /// before `Opened` arrives. Nothing may reach the socket until `Hello` has,
     /// or the server closes the session with "expected Hello".
     #[test]
-    fn nothing_precedes_hello_on_the_wire() {
+    fn nothing_precedes_the_handshake_on_the_wire() {
         let mut ob = Outbox::default();
         assert!(ob.send(first_frame_cfg()).is_none(), "a pre-open command must not be written");
 
-        let flushed = ob.open(hello());
-        assert_eq!(flushed.len(), 2);
-        assert!(matches!(flushed[0], ClientMsg::Hello { .. }), "Hello must be first");
-        assert_eq!(flushed[1], first_frame_cfg(), "the held command must follow it, not be lost");
+        let flushed = ob.release();
+        assert_eq!(flushed, [first_frame_cfg()], "the held command must follow, not be lost");
+    }
+
+    /// The gate stays shut for the whole handshake, not just until the socket
+    /// opens: a server that asks for a password reads nothing but `Auth` until
+    /// it has one, so a command released at open time would be dropped unread.
+    #[test]
+    fn the_gate_stays_shut_across_a_sign_in() {
+        let mut ob = Outbox::default();
+        // The socket opens — `Hello` goes out around the gate, not through it —
+        // and the server answers with a challenge rather than `HelloAck`.
+        assert!(ob.send(first_frame_cfg()).is_none());
+        // The operator types a password, gets it wrong, types it again. Still
+        // nothing may leave.
+        assert!(ob.send(ClientMsg::Ping(1)).is_none(), "still held during the challenge");
+        // Only `HelloAck` opens it.
+        assert_eq!(ob.release(), [first_frame_cfg(), ClientMsg::Ping(1)]);
     }
 
     /// Ordering is preserved across the gate, and once open there is no
@@ -392,9 +438,8 @@ mod tests {
         {
             assert!(ob.send(ClientMsg::Command(cmd)).is_none());
         }
-        let flushed = ob.open(hello());
         assert_eq!(
-            flushed[1..],
+            ob.release(),
             [
                 ClientMsg::Command(Command::SetPtt(true)),
                 ClientMsg::Command(Command::SetPtt(false)),
@@ -406,17 +451,18 @@ mod tests {
         assert_eq!(passed, Some(ClientMsg::Ping(7)));
     }
 
-    /// A socket that never opens must not grow the queue without bound.
+    /// A socket that never opens — or a sign-in nobody ever completes — must
+    /// not grow the queue without bound.
     #[test]
     fn the_outbox_is_bounded_and_drops_the_stalest_first() {
         let mut ob = Outbox::default();
         for f in 0..(OUTBOX_LIMIT as u64 + 10) {
             ob.send(ClientMsg::Ping(f));
         }
-        let flushed = ob.open(hello());
-        assert_eq!(flushed.len(), OUTBOX_LIMIT + 1);
+        let flushed = ob.release();
+        assert_eq!(flushed.len(), OUTBOX_LIMIT);
         // The 10 oldest were dropped; the newest survived.
-        assert_eq!(flushed[1], ClientMsg::Ping(10));
-        assert_eq!(flushed[OUTBOX_LIMIT], ClientMsg::Ping(OUTBOX_LIMIT as u64 + 9));
+        assert_eq!(flushed[0], ClientMsg::Ping(10));
+        assert_eq!(flushed[OUTBOX_LIMIT - 1], ClientMsg::Ping(OUTBOX_LIMIT as u64 + 9));
     }
 }

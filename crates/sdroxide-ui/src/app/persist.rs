@@ -57,6 +57,33 @@ pub(in crate::app) fn persist_ui_settings(_ui: &sdroxide_types::UiSettings) {
     // Written by eframe's periodic `save()` into localStorage.
 }
 
+// ── Remote-access credentials (native: config.toml [remote_access]) ──────────
+//
+// Who may connect to *this* machine's server. There is no browser half: these
+// are a file on the machine the radio is attached to, and a browser client is
+// by definition not it — the General tab hides the editor rather than offering
+// one that writes nowhere.
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::app) fn load_remote_access() -> sdroxide_types::RemoteAccess {
+    sdroxide_config::load_remote_access()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(in crate::app) fn load_remote_access() -> sdroxide_types::RemoteAccess {
+    sdroxide_types::RemoteAccess::default()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::app) fn persist_remote_access(access: &sdroxide_types::RemoteAccess) {
+    if let Err(e) = sdroxide_config::save_remote_access(access) {
+        eprintln!("failed to save the remote-access credentials: {e}");
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(in crate::app) fn persist_remote_access(_access: &sdroxide_types::RemoteAccess) {}
+
 // ── Broadcast stations ───────────────────────────────────────────────────────
 //
 // Native: the cached season schedule (or the compiled-in one until a download

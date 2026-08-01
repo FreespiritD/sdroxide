@@ -36,7 +36,13 @@ use sdroxide_types::Decode;
 /// v3: `SolarServerMsg::SatFreqs` — the operator's satellite frequency
 /// overrides. Appended, so no existing postcard discriminant moves, but an
 /// older viewer cannot decode it and the handshake has to reject it.
-pub const SOLAR_PROTO_VERSION: u16 = 3;
+/// v4: sign-in — `SolarClientMsg::Auth` plus `SolarServerMsg::AuthRequired` /
+/// `AuthRejected`, appended for the same reason and rejected for the same one.
+/// A viewer controls nothing, but it is shown the operator's QTH, everything
+/// the station is decoding and every satellite frequency they have corrected —
+/// so a server that asks the control client for a password asks this one too,
+/// rather than leaving the same station's traffic on an open port.
+pub const SOLAR_PROTO_VERSION: u16 = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SolarClientMsg {
@@ -50,6 +56,12 @@ pub enum SolarClientMsg {
     /// The overlay's ↻ button: make every source due again.
     RefreshAll,
     Ping,
+    /// Answer to [`SolarServerMsg::AuthRequired`]. Appended last, like every
+    /// addition to a postcard enum.
+    Auth {
+        username: String,
+        password: String,
+    },
 }
 
 /// One update from the server's feed.
@@ -132,6 +144,17 @@ pub enum SolarServerMsg {
     /// — already fetched and parsed — and the subscriptions that produced them
     /// are the engine host's business, not a viewer's.
     SatFreqs(Vec<sdroxide_types::SatFreqs>),
+    /// This server wants a username and password before it will start the feed.
+    /// Sent in place of [`SolarServerMsg::HelloAck`], and answered with
+    /// [`SolarClientMsg::Auth`].
+    ///
+    /// Nothing is sent and nothing is started until they are accepted — in
+    /// particular the outbound feed, which talks to thirteen endpoints and
+    /// exists precisely because it should run only when somebody is watching.
+    AuthRequired,
+    /// Those were not the credentials. Same contract as the radio protocol's:
+    /// the socket stays open for another try, at the server's pace.
+    AuthRejected(String),
 }
 
 #[cfg(test)]
@@ -207,6 +230,8 @@ mod tests {
                     ),
                 ],
             )]),
+            SolarServerMsg::AuthRequired,
+            SolarServerMsg::AuthRejected("username or password not accepted".into()),
         ];
         for m in server {
             let bytes = encode(&m).expect("encode");
@@ -219,6 +244,7 @@ mod tests {
             SolarClientMsg::SetResolution(2048),
             SolarClientMsg::RefreshAll,
             SolarClientMsg::Ping,
+            SolarClientMsg::Auth { username: "oe1test".into(), password: "pässwörd ✓".into() },
         ];
         for m in client {
             let bytes = encode(&m).expect("encode");

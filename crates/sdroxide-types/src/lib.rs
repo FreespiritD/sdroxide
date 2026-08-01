@@ -3,6 +3,7 @@
 //! This crate must stay free of I/O, threads, and native-only dependencies:
 //! it compiles for `wasm32-unknown-unknown`.
 
+mod access;
 mod awards;
 mod band;
 mod band_segments;
@@ -39,6 +40,7 @@ mod wefax;
 mod worldmask;
 mod wsjtx;
 
+pub use access::{AuthPhase, RemoteAccess};
 pub use awards::{
     Awards, Coverage, EntitySlot, Highlight, LogIndex, Novelty, Status as AwardStatus, US_STATES,
     compute_awards, counts, coverage_counts, entity_coverage, entity_name,

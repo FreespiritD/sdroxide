@@ -1,6 +1,6 @@
 //! End-to-end server test: real engine (signal generator) + real WebSocket
-//! client. Covers the handshake, state echo, spectrum/audio streaming, and
-//! the single-client Busy rule.
+//! client. Covers the handshake, sign-in, state echo, spectrum/audio streaming,
+//! and the single-client Busy rule.
 
 use std::time::Duration;
 
@@ -9,16 +9,19 @@ use tokio_tungstenite::tungstenite::Message;
 
 use sdroxide_proto::{AudioCaps, ClientMsg, PROTO_VERSION, ServerMsg, decode, encode};
 use sdroxide_radio::{AudioParams, EngineConfig, MicParams, SigGenSource, start_engine};
-use sdroxide_server::{ServerParams, serve};
-use sdroxide_types::{Command, DeviceCaps, Vfo};
+use sdroxide_server::{AccessFn, ServerParams, serve};
+use sdroxide_types::{Command, DeviceCaps, RemoteAccess, Vfo};
 
 const PORT: u16 = 39471;
+/// The sign-in test's own engine, so the two tests cannot disturb each other's
+/// turnstile — it is deliberately server-wide state.
+const AUTH_PORT: u16 = 39472;
 
 async fn recv_msg(
     ws: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin),
 ) -> ServerMsg {
     loop {
-        let m = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        let m = tokio::time::timeout(Duration::from_secs(15), ws.next())
             .await
             .expect("timeout waiting for server message")
             .expect("stream ended")
@@ -29,9 +32,8 @@ async fn recv_msg(
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn full_session_flow() {
-    // Engine on a signal generator.
+/// An engine on a signal generator, served on `port`.
+async fn spawn_server(port: u16, access: Option<AccessFn>) {
     let (audio_producer, audio_consumer) = sdroxide_radio::rtrb::RingBuffer::<f32>::new(96_000);
     let (mic_producer, mic_consumer) = sdroxide_radio::rtrb::RingBuffer::<f32>::new(48_000);
     let source = SigGenSource::demo(1_536_000.0, 14_200_000.0);
@@ -60,21 +62,39 @@ async fn full_session_flow() {
         audio_rx: audio_consumer,
         mic_tx: mic_producer,
         bind: "127.0.0.1".into(),
-        port: PORT,
+        port,
         web_root: None,
+        access,
     }));
     tokio::time::sleep(Duration::from_millis(400)).await;
+}
+
+fn hello() -> ClientMsg {
+    ClientMsg::Hello {
+        proto: PROTO_VERSION,
+        audio: AudioCaps { opus_decode: false, opus_encode: false },
+    }
+}
+
+async fn send(
+    ws: &mut (impl SinkExt<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin),
+    m: &ClientMsg,
+) {
+    ws.send(Message::Binary(encode(m).unwrap().into())).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn full_session_flow() {
+    // No credentials configured: the server is open, exactly as it was before
+    // sign-in existed.
+    spawn_server(PORT, None).await;
 
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{PORT}/ws"))
         .await
         .expect("connect");
 
     // Hello → HelloAck with the device caps, PCM16 negotiated.
-    let hello = ClientMsg::Hello {
-        proto: PROTO_VERSION,
-        audio: AudioCaps { opus_decode: false, opus_encode: false },
-    };
-    ws.send(Message::Binary(encode(&hello).unwrap().into())).await.unwrap();
+    send(&mut ws, &hello()).await;
     match recv_msg(&mut ws).await {
         ServerMsg::HelloAck { proto, caps, state, rx_codec, .. } => {
             assert_eq!(proto, PROTO_VERSION);
@@ -109,7 +129,7 @@ async fn full_session_flow() {
 
     // Command → state echo.
     let cmd = ClientMsg::Command(Command::SetVfo { vfo: Vfo::A, hz: 14_100_000.0 });
-    ws.send(Message::Binary(encode(&cmd).unwrap().into())).await.unwrap();
+    send(&mut ws, &cmd).await;
     loop {
         if let ServerMsg::State(s) = recv_msg(&mut ws).await {
             if (s.vfo_a_hz - 14_100_000.0).abs() < 1.0 {
@@ -122,7 +142,7 @@ async fn full_session_flow() {
     let (mut ws2, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{PORT}/ws"))
         .await
         .expect("connect 2");
-    ws2.send(Message::Binary(encode(&hello).unwrap().into())).await.unwrap();
+    send(&mut ws2, &hello()).await;
     match recv_msg(&mut ws2).await {
         ServerMsg::Busy => {}
         other => panic!("expected Busy, got {other:?}"),
@@ -135,9 +155,78 @@ async fn full_session_flow() {
     let (mut ws3, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{PORT}/ws"))
         .await
         .expect("reconnect");
-    ws3.send(Message::Binary(encode(&hello).unwrap().into())).await.unwrap();
+    send(&mut ws3, &hello()).await;
     match recv_msg(&mut ws3).await {
         ServerMsg::HelloAck { .. } => {}
         other => panic!("expected HelloAck on reconnect, got {other:?}"),
+    }
+}
+
+/// The sign-in, over a real socket: what a wrong password costs, and the two
+/// things a client that has not given one must not be able to do — take the
+/// single-client slot, or reach the radio.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_with_credentials_signs_clients_in() {
+    spawn_server(
+        AUTH_PORT,
+        Some(Box::new(|| RemoteAccess { username: "oe1test".into(), password: "hunter2".into() })),
+    )
+    .await;
+    let url = format!("ws://127.0.0.1:{AUTH_PORT}/ws");
+
+    // Hello is answered with the challenge, not with the radio.
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.expect("connect");
+    send(&mut ws, &hello()).await;
+    assert_eq!(recv_msg(&mut ws).await, ServerMsg::AuthRequired);
+
+    // A command sent instead of credentials must not reach the engine. Nothing
+    // comes back for it — the socket simply stays in the challenge — so the
+    // proof is that the *next* thing the server says is still a rejection.
+    send(&mut ws, &ClientMsg::Command(Command::SetPtt(true))).await;
+    send(&mut ws, &ClientMsg::Auth { username: "oe1test".into(), password: "wrong".into() }).await;
+    match recv_msg(&mut ws).await {
+        ServerMsg::AuthRejected(why) => {
+            assert!(!why.is_empty());
+            // Which half was wrong is exactly what an attacker with a list of
+            // callsigns wants to be told, so it must not be in there.
+            let why = why.to_lowercase();
+            assert!(!why.contains("unknown user"), "the message must not name the wrong half");
+        }
+        other => panic!("expected AuthRejected, got {other:?}"),
+    }
+
+    // A client that has not signed in holds nothing: a second one is still
+    // offered the challenge rather than being turned away as Busy. This is the
+    // part that stops a stranger locking the operator out of their own radio
+    // simply by opening a socket.
+    let (mut ws2, _) = tokio_tungstenite::connect_async(&url).await.expect("connect 2");
+    send(&mut ws2, &hello()).await;
+    assert_eq!(recv_msg(&mut ws2).await, ServerMsg::AuthRequired);
+
+    // The right credentials get in — but not before the wrong answer above has
+    // finished shutting the door, which is what makes guessing impractical.
+    let started = std::time::Instant::now();
+    send(&mut ws2, &ClientMsg::Auth { username: "oe1test".into(), password: "hunter2".into() })
+        .await;
+    match recv_msg(&mut ws2).await {
+        ServerMsg::HelloAck { proto, caps, .. } => {
+            assert_eq!(proto, PROTO_VERSION);
+            assert_eq!(caps.label, "Test signal generator");
+        }
+        other => panic!("expected HelloAck after signing in, got {other:?}"),
+    }
+    assert!(
+        started.elapsed() >= Duration::from_millis(2_500),
+        "a correct sign-in was judged {:?} after a wrong one, without serving out the lockout",
+        started.elapsed()
+    );
+
+    // ...and now that somebody is in, the slot really is held: the one still
+    // sitting on the challenge signs in and is told the radio is taken.
+    send(&mut ws, &ClientMsg::Auth { username: "oe1test".into(), password: "hunter2".into() })
+        .await;
+    match recv_msg(&mut ws).await {
+        ServerMsg::Busy => {}
+        other => panic!("expected Busy for the second signed-in client, got {other:?}"),
     }
 }
