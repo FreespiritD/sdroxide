@@ -902,8 +902,8 @@ fn hhmm(unix: i64) -> String {
     format!("{h:02}:{m:02}")
 }
 
-/// A big dot-matrix UTC clock in the top-left corner, with the same instant in
-/// the operator's own zone on a smaller second row.
+/// A dot-matrix UTC clock in the top-left corner, with the same instant in the
+/// operator's own zone on a smaller second row.
 ///
 /// UTC leads because everything else in the window is UTC: the ephemeris, the
 /// DONKI timestamps, the arrival estimates and the FT8 slot boundaries. Local
@@ -923,8 +923,10 @@ fn clock(ui: &egui::Ui, rect: egui::Rect, sim_now: f64, scrubbed: bool) -> Optio
     // disagreed about when "now" is would read as one of them being broken.
     let local_text = hms(utc + crate::time::local_offset_seconds());
 
-    // Scale with the window, but never so large it competes with the scene.
-    let pitch = (rect.width() * 0.0085).clamp(2.6, 7.0);
+    // Scale with the window, but never so large it competes with the scene —
+    // and the panel's own paddings scale with the dots, so the whole box grows
+    // and shrinks as one piece.
+    let pitch = (rect.width() * 0.004_25).clamp(1.3, 3.5);
     let size = dotmatrix::size(&text, pitch);
     let local_pitch = pitch * 0.58;
     let local_size = dotmatrix::size(&local_text, local_pitch);
@@ -935,13 +937,13 @@ fn clock(ui: &egui::Ui, rect: egui::Rect, sim_now: f64, scrubbed: bool) -> Optio
 
     // Both labels share one column to the right of the digits, so UTC and LOC
     // line up however wide the two readouts come out.
-    const GAP: f32 = 10.0;
+    const GAP: f32 = 5.0;
     let label_x = size.x.max(local_size.x) + GAP;
-    let row_gap = 7.0;
+    let row_gap = 3.5;
 
-    let pad = egui::vec2(12.0, 9.0);
+    let pad = egui::vec2(6.0, 4.5);
     let panel = egui::Rect::from_min_size(
-        rect.left_top() + egui::vec2(12.0, 12.0),
+        rect.left_top() + egui::vec2(MARGIN, MARGIN),
         egui::vec2(label_x + label_size.x.max(local_label_size.x), size.y + row_gap + local_size.y)
             + pad * 2.0,
     );
