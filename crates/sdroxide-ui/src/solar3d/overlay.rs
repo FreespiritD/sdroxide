@@ -84,110 +84,142 @@ pub fn ui(ui: &mut egui::Ui, st: &mut SolarUi) {
     let handle = st.data.clone();
     let guard = handle.as_ref().map(|d| d.lock().unwrap_or_else(|e| e.into_inner()));
     let data = guard.as_deref();
-    let now = super::wall_clock_unix() as i64;
-
-    egui::Panel::top(egui::Id::new("solar-top"))
-        .frame(egui::Frame::new().fill(theme::BG_DEEP).inner_margin(egui::Margin::symmetric(8, 6)))
-        .show(ui, |ui| {
-            chrome::angled_frame(ui, theme::PINK, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-                ui.with_layout(
-                    egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
-                    |ui| {
-                        view_module(ui, st);
-                        layers_module(ui, st);
-                        sun_module(ui, st, data, now);
-                        scale_module(ui, st);
-                        time_module(ui, st);
-                        activity_module(ui, st);
-                    },
-                );
-            });
-        });
 
     scene(ui, st, data);
 }
 
-/// Camera target + the animated tour toggle.
-fn view_module(ui: &mut egui::Ui, st: &mut SolarUi) {
-    chrome::module(ui, "View", 336.0, |ui| {
-        target_button(ui, st);
-        if chrome::chip_accent(ui, st.view.auto, "▶ AUTO", theme::CYAN, theme::INK_ON_CYAN)
-            .on_hover_text(
-                "Fly a spline through a set of framed viewpoints. Any mouse input cancels it.",
-            )
-            .clicked()
-        {
-            st.view.auto = !st.view.auto;
-            if st.view.auto {
-                st.tour.request_resume();
-            }
-        }
-    });
+/// The menu chips along the top of the scene: one per control box, each opening
+/// what that box used to hold.
+///
+/// Chips over the picture rather than a bar above it, because this window *is*
+/// the picture. Six captioned boxes wrapped to three rows on anything narrower
+/// than a desktop, which took a third of a phone screen away from the thing
+/// being looked at, and all of it to show controls that are set once and then
+/// left alone. Everything in them is one tap away instead.
+///
+/// Laid out from the clock's right edge to the right margin, wrapping as often
+/// as it must. Returns the row it came out as, so the space-weather panels can
+/// stack underneath rather than be drawn over.
+fn menu_bar(
+    ui: &mut egui::Ui,
+    st: &mut SolarUi,
+    data: Option<&SolarData>,
+    rect: egui::Rect,
+    clock_rect: Option<egui::Rect>,
+) -> Option<egui::Rect> {
+    // Freshness is a fact about the wall clock, not about the scrubbed scene: a
+    // view wound forward a month has not made the imagery a month stale.
+    let now = super::wall_clock_unix() as i64;
+    let left = clock_rect.map_or(rect.left() + MARGIN, |r| r.right() + 8.0);
+    let width = rect.right() - MARGIN - left;
+    // Narrower than a single chip and there is nowhere to put the bar at all.
+    if width < 64.0 {
+        return None;
+    }
+
+    let area = egui::Area::new(egui::Id::new("solar-menu"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::pos2(left, rect.top() + MARGIN))
+        .constrain_to(rect)
+        .show(ui.ctx(), |ui| {
+            ui.set_max_width(width);
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            ui.horizontal_wrapped(|ui| {
+                let btn = chrome::chip(ui, st.view.auto, "VIEW")
+                    .on_hover_text("Which body the camera orbits, and the animated tour");
+                chrome::menu_popup(ui, &btn, |ui| view_controls(ui, st));
+
+                let btn = chrome::chip(ui, false, "LAYERS")
+                    .on_hover_text("What is drawn: orbits, clouds, CMEs, labels, QSOs, aurora");
+                chrome::menu_popup(ui, &btn, |ui| {
+                    chrome::menu_caption(ui, "Layers");
+                    layer_controls(ui, st);
+                });
+
+                let btn = chrome::chip(ui, false, "SUN")
+                    .on_hover_text("Which SDO channel wraps the Sun, and how old it is");
+                chrome::menu_popup(ui, &btn, |ui| {
+                    chrome::menu_caption(ui, "Sun");
+                    sun_controls(ui, st, data, now);
+                });
+
+                let btn = chrome::chip(ui, false, "SCALE")
+                    .on_hover_text("Body and Moon-orbit exaggeration");
+                chrome::menu_popup(ui, &btn, |ui| {
+                    chrome::menu_caption(ui, "Scale");
+                    scale_controls(ui, st);
+                });
+
+                let btn = chrome::chip(ui, st.sim_offset_s != 0.0, "TIME")
+                    .on_hover_text("Scrub the whole scene forward and back");
+                chrome::menu_popup(ui, &btn, |ui| {
+                    chrome::menu_caption(ui, "Time");
+                    time_controls(ui, st);
+                });
+
+                let btn = chrome::chip(ui, st.lapse_playing, "ACTIVITY")
+                    .on_hover_text("Replay the last hour of decodes on the globe");
+                chrome::menu_popup(ui, &btn, |ui| {
+                    chrome::menu_caption(ui, "Activity");
+                    activity_controls(ui, st);
+                });
+            });
+        });
+    Some(area.response.rect)
 }
 
-/// The camera target, as a button that opens the whole solar system.
-///
-/// A chip per body would be thirty chips across the top bar, so the current
-/// target is the button face and the rest live in a popup laid out the way the
-/// system is: the Sun and the Earth–Moon pair first, then one row per planet
-/// with its own moons beside it.
-fn target_button(ui: &mut egui::Ui, st: &mut SolarUi) {
-    let btn = chrome::chip(ui, true, RichText::new(format!("◎ {}", st.focus().short())).size(13.0))
+/// The animated tour, and the camera target: the whole solar system as chips,
+/// laid out the way the system is — the Sun and the Earth–Moon pair first, then
+/// one row per planet with its own moons beside it.
+fn view_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
+    chrome::menu_caption(ui, "View");
+    if chrome::chip_accent(ui, st.view.auto, "▶ AUTO", theme::CYAN, theme::INK_ON_CYAN)
         .on_hover_text(
-            "Body the camera orbits. Planets, moons and their labels can also be clicked \
-             directly in the view.",
-        );
+            "Fly a spline through a set of framed viewpoints. Any mouse input cancels it.",
+        )
+        .clicked()
+    {
+        st.view.auto = !st.view.auto;
+        if st.view.auto {
+            st.tour.request_resume();
+        }
+    }
 
     let mut chosen = None;
-    let resp = egui::Popup::from_toggle_button_response(&btn)
-        .frame(chrome::window_frame())
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
-        .show(|ui| {
-            ui.set_max_width(560.0);
-            for (caption, targets) in Focus::groups() {
-                ui.label(
-                    RichText::new(caption.to_uppercase()).color(theme::CYAN_DIM).size(9.5).strong(),
-                );
-                ui.horizontal_wrapped(|ui| {
-                    for f in targets {
-                        // Moons are dimmer, so a row reads as "this planet, and
-                        // the things that go round it".
-                        let text = if f.is_satellite() {
-                            RichText::new(f.short()).size(11.5).color(theme::CYAN_DIM)
-                        } else {
-                            RichText::new(f.short()).size(13.0)
-                        };
-                        if chrome::chip(ui, st.focus() == f, text).clicked() {
-                            chosen = Some(f);
-                        }
-                    }
-                });
+    for (caption, targets) in Focus::groups() {
+        chrome::menu_caption(ui, caption);
+        ui.horizontal_wrapped(|ui| {
+            for f in targets {
+                // Moons are dimmer, so a row reads as "this planet, and the
+                // things that go round it".
+                let text = if f.is_satellite() {
+                    RichText::new(f.short()).size(11.5).color(theme::CYAN_DIM)
+                } else {
+                    RichText::new(f.short()).size(13.0)
+                };
+                if chrome::chip(ui, st.focus() == f, text).clicked() {
+                    chosen = Some(f);
+                }
             }
-            ui.add_space(2.0);
-            ui.label(
-                RichText::new(
-                    "Moons ride circular orbits fitted to JPL Horizons: within a degree or two \
-                     of where they really are, and up to six for Miranda, whose orbit plane \
-                     swings too fast for a circle to follow.",
-                )
-                .color(theme::LINE_LIT)
-                .size(10.0),
-            );
         });
-    if let Some(r) = &resp {
-        chrome::paint_popup_cut_border(ui.ctx(), &r.response, 1.0);
     }
+    ui.add_space(2.0);
+    ui.label(
+        RichText::new(
+            "Moons ride circular orbits fitted to JPL Horizons: within a degree or two \
+             of where they really are, and up to six for Miranda, whose orbit plane \
+             swings too fast for a circle to follow.",
+        )
+        .color(theme::LINE_LIT)
+        .size(10.0),
+    );
     if let Some(f) = chosen {
         st.set_focus(f);
     }
 }
 
-fn layers_module(ui: &mut egui::Ui, st: &mut SolarUi) {
-    // Wide enough for the nine chips that show without a logbook. AWARDS, which
-    // only appears once there is a log to colour, spills past the edge — it
-    // always has.
-    chrome::module(ui, "Layers", 610.0, |ui| {
+fn layer_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
+    ui.horizontal_wrapped(|ui| {
         for (bit, label, hint) in LAYERS {
             // The award layer has nothing to paint without a logbook to paint
             // it from — the browser tab has none — and a chip that provably
@@ -206,8 +238,8 @@ fn layers_module(ui: &mut egui::Ui, st: &mut SolarUi) {
 }
 
 /// Which SDO product wraps the Sun, plus the honest freshness readout.
-fn sun_module(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, now: i64) {
-    chrome::module(ui, "Sun", 470.0, |ui| {
+fn sun_controls(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, now: i64) {
+    ui.horizontal_wrapped(|ui| {
         let current = SdoChannel::from_u8(st.view.channel);
         for c in SdoChannel::ALL {
             if chrome::chip(ui, current == c, c.label()).on_hover_text(c.description()).clicked() {
@@ -249,32 +281,38 @@ fn sun_module(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, now
 
 /// Size exaggeration. Positions are always real; only radii (and optionally the
 /// Moon's orbit) are scaled, or nothing at this distance would be visible.
-fn scale_module(ui: &mut egui::Ui, st: &mut SolarUi) {
-    chrome::module(ui, "Scale", 400.0, |ui| {
+fn scale_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
+    // Names ride *inside* the boxes rather than beside them: a wrapping row
+    // breaks wherever it runs out of width, and a "moon orbit" left at the end
+    // of one line with its value at the start of the next names nothing.
+    ui.horizontal_wrapped(|ui| {
         // The Moon renders *inside* the Earth once the exaggerated radii exceed
         // the (unexaggerated) Earth–Moon distance, so cap body scale against it.
         let max_body = super::max_body_scale(st.view.moon_orbit_scale);
-        ui.label(RichText::new("body").color(theme::CYAN_DIM).size(10.0));
         ui.add(
             egui::DragValue::new(&mut st.view.body_scale)
                 .speed(0.25)
                 .range(1.0..=max_body as f64)
+                .prefix("body ")
                 .suffix("×"),
         )
         .on_hover_text(format!(
             "Earth/Moon radius exaggeration (max {max_body:.0}× at this moon-orbit scale)"
         ));
-        ui.label(RichText::new("moon orbit").color(theme::CYAN_DIM).size(10.0));
         ui.add(
             egui::DragValue::new(&mut st.view.moon_orbit_scale)
                 .speed(0.1)
                 .range(1.0..=30.0)
+                .prefix("moon orbit ")
                 .suffix("×"),
         )
         .on_hover_text("Stretch the Earth→Moon distance so the pair can be seen apart");
-        ui.label(RichText::new("sun").color(theme::CYAN_DIM).size(10.0));
         ui.add(
-            egui::DragValue::new(&mut st.view.sun_scale).speed(0.1).range(1.0..=20.0).suffix("×"),
+            egui::DragValue::new(&mut st.view.sun_scale)
+                .speed(0.1)
+                .range(1.0..=20.0)
+                .prefix("sun ")
+                .suffix("×"),
         )
         .on_hover_text(
             "Sun radius exaggeration. Leave at 1× to keep the CME geometry readable — \
@@ -296,13 +334,13 @@ fn scale_module(ui: &mut egui::Ui, st: &mut SolarUi) {
 /// are measurements of now, and a scene scrubbed to 2061 shows today's Sun
 /// behind a correctly placed Halley. That is already true of the ±24 h steps
 /// and the clock says which way it has been moved.
-fn time_module(ui: &mut egui::Ui, st: &mut SolarUi) {
+fn time_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
     // A calendar month is not a fixed number of seconds; the scene's clock is,
     // so this is the average one. Over a scrub of years the drift against the
     // calendar is days, which is nothing to an ephemeris and everything to a
     // "+1 mo" that sometimes moved 28 days and sometimes 31.
     const MONTH_S: f64 = 365.2425 / 12.0 * 86_400.0;
-    chrome::module(ui, "Time", 400.0, |ui| {
+    ui.horizontal_wrapped(|ui| {
         if chrome::chip(ui, st.sim_offset_s == 0.0, "NOW").clicked() {
             st.sim_offset_s = 0.0;
         }
@@ -324,8 +362,8 @@ fn time_module(ui: &mut egui::Ui, st: &mut SolarUi) {
 /// The FT8/FT4 activity time-lapse: where in the last hour the globe's arcs
 /// are being replayed from, how long a trail they leave, and how fast the
 /// replay runs.
-fn activity_module(ui: &mut egui::Ui, st: &mut SolarUi) {
-    chrome::module(ui, "Activity", 430.0, |ui| {
+fn activity_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
+    ui.horizontal_wrapped(|ui| {
         let hour = crate::digi_map::HISTORY_S as f64;
         if chrome::chip(ui, st.lapse_live() && !st.lapse_playing, "LIVE")
             .on_hover_text("Follow the band as it happens")
@@ -366,20 +404,21 @@ fn activity_module(ui: &mut egui::Ui, st: &mut SolarUi) {
             st.lapse_playing = false;
         }
 
-        ui.label(RichText::new("trail").color(theme::CYAN_DIM).size(10.0));
+        // Named inside the box, for the reason the scale controls are.
         ui.add(
             egui::DragValue::new(&mut st.view.lapse_trail_min)
                 .speed(0.25)
                 .range(0.5..=(hour / 60.0))
+                .prefix("trail ")
                 .suffix(" min"),
         )
         .on_hover_text("How long a decode's arc stays on the globe behind the head");
 
-        ui.label(RichText::new("speed").color(theme::CYAN_DIM).size(10.0));
         ui.add(
             egui::DragValue::new(&mut st.view.lapse_speed)
                 .speed(1.0)
                 .range(1.0..=600.0)
+                .prefix("speed ")
                 .suffix("×"),
         )
         .on_hover_text("How much faster than real time the replay runs");
@@ -470,8 +509,12 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     // body, and clicking the text should not be ambiguous.
     pick_bodies(ui, st, rect, &view_proj, &picks, &resp, took_click);
     let clock_rect = clock(ui, rect, sim_now, st.sim_offset_s != 0.0);
-    find_box(ui, st, data, rect, clock_rect);
-    let top = rect.top() + MARGIN;
+    // The menu row owns the top band outright, and everything else starts under
+    // it: the alternative is measuring a panel that has not been drawn yet to
+    // find out whether the chips would have reached it.
+    let menu_rect = menu_bar(ui, st, data, rect, clock_rect);
+    find_box(ui, st, data, rect, clock_rect, menu_rect);
+    let top = menu_rect.map_or(rect.top() + MARGIN, |r| r.bottom() + 8.0);
     let aurora_rect = aurora_panel(ui, st, data, rect, top, sim_now as i64);
     let below = aurora_rect.map_or(top, |r| r.bottom() + 8.0);
     weather_panel(ui, st, data, rect, below, sim_now as i64);
@@ -1091,6 +1134,7 @@ fn find_box(
     data: Option<&SolarData>,
     rect: egui::Rect,
     clock_rect: Option<egui::Rect>,
+    menu_rect: Option<egui::Rect>,
 ) {
     let Some(clock_rect) = clock_rect else { return };
     let (sats, bodies) = (st.layer(layer::SATS), st.layer(layer::PLANETS));
@@ -1102,8 +1146,12 @@ fn find_box(
     }
 
     let width = clock_rect.width().max(210.0);
+    // Under the clock, or under the menu row when that has wrapped far enough
+    // down the left of the window to be in the way: the box is wider than the
+    // clock on a narrow window, so the two do meet.
+    let below = menu_rect.map_or(clock_rect.bottom(), |m| clock_rect.bottom().max(m.bottom()));
     let area = egui::Rect::from_min_size(
-        clock_rect.left_bottom() + egui::vec2(0.0, 6.0),
+        egui::pos2(clock_rect.left(), below + 6.0),
         egui::vec2(width, 30.0),
     );
     if !rect.contains_rect(area) {
