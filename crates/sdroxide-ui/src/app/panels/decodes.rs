@@ -778,12 +778,25 @@ impl SdroxideApp {
             match status.as_ref() {
                 Some(s) => {
                     ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(s.step.label())
-                                .size(13.0)
-                                .strong()
-                                .color(crate::theme::CYAN),
-                        );
+                        // The contact is over and logged once we are confirming;
+                        // green says so, since "Confirming" on its own reads like
+                        // an exchange still in progress.
+                        let done = s.step == sdroxide_types::QsoStep::Confirming;
+                        let step_col = if done { crate::theme::GREEN } else { crate::theme::CYAN };
+                        ui.label(RichText::new(s.step.label()).size(13.0).strong().color(step_col));
+                        if done {
+                            ui.label(
+                                RichText::new("✓ QSO COMPLETE")
+                                    .size(11.0)
+                                    .strong()
+                                    .color(crate::theme::GREEN),
+                            )
+                            .on_hover_text(
+                                "The contact is complete and in the log. It is held here for a \
+                                 few minutes so the final message can be re-sent if the other \
+                                 station repeats theirs — nothing more is owed.",
+                            );
+                        }
                         if s.transmitting {
                             ui.label(
                                 RichText::new("● TX").size(13.0).strong().color(crate::theme::PINK),
@@ -1024,19 +1037,27 @@ impl SdroxideApp {
                                     any = true;
                                     // Pink marks traffic that isn't ours: the
                                     // station we called is working someone else.
-                                    let (tag, col) = if line.overheard {
+                                    let (tag, col) = if line.done {
+                                        ("✓", crate::theme::GREEN)
+                                    } else if line.overheard {
                                         ("·", crate::theme::PINK)
                                     } else if line.tx {
                                         ("»", crate::theme::YELLOW)
                                     } else {
                                         ("«", crate::theme::GREEN)
                                     };
-                                    ui.label(
-                                        RichText::new(format!("{tag} {}", line.text))
-                                            .monospace()
-                                            .size(12.5)
-                                            .color(col),
-                                    );
+                                    let txt = RichText::new(format!("{tag} {}", line.text))
+                                        .monospace()
+                                        .size(12.5)
+                                        .color(col);
+                                    // Received messages are green too, so the
+                                    // completion line needs more than colour to
+                                    // stand out at the end of a run of them.
+                                    ui.label(if line.done {
+                                        txt.strong().background_color(crate::theme::DONE_BG)
+                                    } else {
+                                        txt
+                                    });
                                 }
                                 if let Some(msg) = &s.tx_pending_msg {
                                     any = true;

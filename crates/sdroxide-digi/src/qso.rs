@@ -539,6 +539,11 @@ impl QsoMachine {
                             }
                         }
                     }
+                    // They are on the air and free: that is the thing we were
+                    // waiting for, so the calls we made before they went quiet
+                    // must not count against the ones we are about to make.
+                    self.progress();
+                    self.progress_utc = now_utc;
                     self.step = QsoStep::TxGrid;
                     changed = true;
                 } else if let Some(other) = other {
@@ -603,6 +608,13 @@ impl QsoMachine {
                     last_utc: now_utc,
                 });
                 self.transcript.push(TranscriptLine::rcvd(d.message.clone()));
+                // Somebody came back to us: the CQ run is over and a fresh
+                // contact starts here. Without this the CQs we sent waiting for
+                // them stay on the unanswered-call count, and a run long enough
+                // to reach `max_tx_repeats` gives up on the very station that
+                // answered it — before ever sending them a report.
+                self.progress();
+                self.progress_utc = now_utc;
                 changed |= self.advance(&payload, now_utc);
                 // Whatever they sent, we are working them now. An answer we
                 // could not parse is still an answer, and staying in `CallingCq`
@@ -688,7 +700,7 @@ impl QsoMachine {
         // logged us and moved on.
         if self.dxped() == DxpedMode::Hound
             && self.step == QsoStep::TxRReport
-            && matches!(payload, Payload::Rrr | Payload::Rr73)
+            && matches!(payload, Payload::Rrr | Payload::Rr73 | Payload::B73)
         {
             self.log_qso(now_utc);
             return true;
@@ -721,8 +733,13 @@ impl QsoMachine {
                 self.set_rcvd(*r);
                 self.step = QsoStep::TxRr73;
             }
-            // (Answerer) they rogered → send 73.
-            (QsoStep::TxRReport, Payload::Rrr | Payload::Rr73) => {
+            // (Answerer) they rogered → send 73. A bare 73 says the same thing:
+            // they have our R+report and are signing off, and plenty of
+            // stations close with that rather than RR73. Treating it as
+            // nothing left us repeating R+report at a station that had already
+            // finished, until the unanswered-call count gave up on them — and
+            // the contact was never logged.
+            (QsoStep::TxRReport, Payload::Rrr | Payload::Rr73 | Payload::B73) => {
                 self.step = QsoStep::Tx73;
             }
             // (CQ caller) at TxRr73 we log + enter Confirming once our RR73 goes
@@ -760,6 +777,11 @@ impl QsoMachine {
                 my_grid: self.cfg.my_grid.clone(),
                 ..Default::default() // id assigned by the logbook, no comment
             });
+            // Say so in the transcript. The exchange stays on screen for the
+            // operator to read, and the step alone ("Confirming") is not the
+            // word anyone uses for a contact that is finished and in the log.
+            self.transcript
+                .push(TranscriptLine::complete(format!("QSO with {} complete — logged", dx.call)));
         }
         self.step = QsoStep::Confirming;
         self.deadline_utc = now_utc + CONFIRM_S;
@@ -1357,6 +1379,81 @@ mod tests {
         assert!(!q.wants_tx());
         let note = q.status(false).transcript.pop().expect("a note");
         assert!(note.text.contains("W9XYZ") && note.text.contains("3 calls"), "{}", note.text);
+    }
+
+    #[test]
+    fn an_answer_to_our_cq_starts_the_count_again() {
+        // A long CQ run must not be charged to the station that finally comes
+        // back: giving up on them before the first report goes out is exactly
+        // backwards. Only calls to *them* count.
+        let cfg = DigiConfig { max_tx_repeats: 4, ..cfg() };
+        let mut q = QsoMachine::new(Mode::Ft8, cfg);
+        q.call_cq();
+        for _ in 0..4 {
+            q.note_tx_sent(100);
+        }
+        assert!(q.on_rx(&[decode("AB1CD W9XYZ EM48")], 115));
+        assert_eq!(q.step(), QsoStep::TxReport);
+
+        // Three reports go out with them still silent, and we are still calling.
+        for i in 0..3 {
+            q.note_tx_sent(130 + i * 15);
+            assert_eq!(q.step(), QsoStep::TxReport, "gave up after {} reports", i + 1);
+        }
+        // The fourth is the one the setting bounds.
+        q.note_tx_sent(175);
+        assert_eq!(q.step(), QsoStep::Idle);
+    }
+
+    #[test]
+    fn a_station_that_comes_back_on_the_air_gets_a_fresh_count() {
+        // Same rule for a station we held off calling because they were busy:
+        // the calls we made before they answered someone else are spent.
+        let cfg = DigiConfig { max_tx_repeats: 2, ..cfg() };
+        let mut q = QsoMachine::new(Mode::Ft8, cfg);
+        q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100);
+        q.note_tx_sent(100);
+        q.on_rx(&[decode("K1ABC W9XYZ -13")], 115);
+        assert_eq!(q.step(), QsoStep::WaitCq);
+        assert!(q.on_rx(&[decode("CQ W9XYZ EM48")], 130));
+        assert_eq!(q.step(), QsoStep::TxGrid);
+        q.note_tx_sent(145);
+        assert_eq!(q.step(), QsoStep::TxGrid, "the earlier call was not this one's");
+    }
+
+    #[test]
+    fn a_bare_73_finishes_the_exchange() {
+        // Plenty of stations close with 73 where the sequence says RR73. It
+        // means the same thing — they have our R+report and are signing off —
+        // so it must complete the contact, not leave us repeating at them.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100);
+        q.on_rx(&[decode("AB1CD W9XYZ -13")], 115);
+        assert_eq!(q.step(), QsoStep::TxRReport);
+        assert!(q.on_rx(&[decode("AB1CD W9XYZ 73")], 130));
+        assert_eq!(q.step(), QsoStep::Tx73);
+
+        q.note_tx_sent(145);
+        assert_eq!(q.step(), QsoStep::Confirming);
+        let rec = q.take_completed().expect("logged");
+        assert_eq!(rec.call, "W9XYZ");
+        assert_eq!(rec.rst_rcvd, Some(-13));
+    }
+
+    #[test]
+    fn a_completed_contact_says_so_in_the_transcript() {
+        // The exchange stays on screen after it ends, so the transcript has to
+        // carry the fact that it *has* ended.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.call_cq();
+        q.on_rx(&[decode("AB1CD W9XYZ EM48")], 100);
+        q.on_rx(&[decode("AB1CD W9XYZ R-12")], 115);
+        assert!(q.status(false).transcript.iter().all(|l| !l.done), "not finished yet");
+
+        q.note_tx_sent(130); // our RR73 goes out → logged
+        let line = q.status(false).transcript.into_iter().find(|l| l.done).expect("a done line");
+        assert!(line.text.contains("W9XYZ"), "{}", line.text);
+        assert!(!line.overheard && !line.tx, "the completion line is neither ours nor overheard");
     }
 
     #[test]

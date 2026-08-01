@@ -265,22 +265,33 @@ pub struct TranscriptLine {
     /// differently so it's obvious they aren't talking to us.
     #[serde(default)]
     pub overheard: bool,
+    /// True for the line that marks the contact complete and logged. The
+    /// transcript stays on screen after a QSO ends — that is what makes it
+    /// readable — so without a line saying so, a finished exchange and one
+    /// still waiting for the other station look exactly alike.
+    #[serde(default)]
+    pub done: bool,
 }
 
 impl TranscriptLine {
     /// A message we transmitted.
     pub fn sent(text: impl Into<String>) -> Self {
-        TranscriptLine { tx: true, text: text.into(), overheard: false }
+        TranscriptLine { tx: true, text: text.into(), overheard: false, done: false }
     }
 
     /// A message we received as part of our exchange.
     pub fn rcvd(text: impl Into<String>) -> Self {
-        TranscriptLine { tx: false, text: text.into(), overheard: false }
+        TranscriptLine { tx: false, text: text.into(), overheard: false, done: false }
     }
 
     /// A note about the DX working another station.
     pub fn note(text: impl Into<String>) -> Self {
-        TranscriptLine { tx: false, text: text.into(), overheard: true }
+        TranscriptLine { tx: false, text: text.into(), overheard: true, done: false }
+    }
+
+    /// The contact is complete and in the log.
+    pub fn complete(text: impl Into<String>) -> Self {
+        TranscriptLine { tx: false, text: text.into(), overheard: false, done: true }
     }
 }
 

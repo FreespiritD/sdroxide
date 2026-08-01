@@ -155,7 +155,11 @@ use sdroxide_types::{
 /// version has to be bumped either way. AGC off used to mean unity gain on the
 /// demodulator's own output, which for an SSB signal 60 dB down is silence at
 /// any volume setting; it now means this fixed gain instead.
-pub const PROTO_VERSION: u16 = 37;
+/// v38: a finished FT8/FT4 contact says so — `TranscriptLine` gained `done`,
+/// the flag on the line that marks the QSO complete and logged. Appended to the
+/// struct, but postcard is not self-describing, so every message carrying a
+/// `DigiStatus` changes layout and both ends have to agree on the field.
+pub const PROTO_VERSION: u16 = 38;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

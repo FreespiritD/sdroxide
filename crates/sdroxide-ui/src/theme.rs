@@ -30,6 +30,9 @@ pub const RED_DEEP: Color32 = Color32::from_rgb(0x6e, 0x18, 0x2c);
 pub const CQ_BG: Color32 = Color32::from_rgb(0x24, 0x0c, 0x15);
 /// Background for a decode addressed to our own station (warm gold, stands out).
 pub const TOME_BG: Color32 = Color32::from_rgb(0x2c, 0x24, 0x06);
+/// Background for the QSO-complete line in a transcript whose received messages
+/// are already green — the band is what makes it read as an event, not a message.
+pub const DONE_BG: Color32 = Color32::from_rgb(0x08, 0x2a, 0x17);
 pub const ROW_BG: Color32 = Color32::from_rgb(0x0a, 0x10, 0x1b);
 pub const ROW_HOVER: Color32 = Color32::from_rgb(0x14, 0x1e, 0x2e);
 // Scrollbars: a cyan handle riding in a recessed gutter, hot pink while dragged.
