@@ -68,6 +68,40 @@ const LAYERS: [(u32, &str, &str); 11] = [
 /// The inset every floating panel keeps from the edge of the viewport.
 const MARGIN: f32 = 12.0;
 
+/// Where a readout box goes: parked against the right-hand edge of the scene,
+/// or allocated inline in a menu popup.
+///
+/// A phone has no width to spare down the side for boxes that are read once and
+/// then ignored — the aurora and propagation panels together take a third of a
+/// 400 pt screen — so on one they move behind a menu chip instead. Same boxes
+/// and the same code drawing them: only where they are put changes.
+#[derive(Clone, Copy)]
+enum Place {
+    Corner { scene: egui::Rect, top: f32 },
+    Inline,
+}
+
+impl Place {
+    /// Reserve `size` and return the rect to paint into.
+    ///
+    /// `None` in the corner when the scene cannot hold the box — the rule every
+    /// readout in this window keeps, because a panel clipped by the viewport
+    /// edge is worse than no panel. A popup always has room: it is sized to
+    /// what it is given.
+    fn reserve(self, ui: &mut egui::Ui, size: egui::Vec2) -> Option<egui::Rect> {
+        match self {
+            Place::Corner { scene, top } => {
+                let r = egui::Rect::from_min_size(
+                    egui::pos2(scene.right() - size.x - MARGIN, top),
+                    size,
+                );
+                scene.contains_rect(r).then_some(r)
+            }
+            Place::Inline => Some(ui.allocate_space(size).1),
+        }
+    }
+}
+
 /// How often the view redraws when nothing is happening to it.
 ///
 /// This is a clock, not a document: the Earth turns, the terminator moves, the
@@ -106,10 +140,15 @@ fn menu_bar(
     data: Option<&SolarData>,
     rect: egui::Rect,
     clock_rect: Option<egui::Rect>,
+    phone: bool,
 ) -> Option<egui::Rect> {
     // Freshness is a fact about the wall clock, not about the scrubbed scene: a
-    // view wound forward a month has not made the imagery a month stale.
-    let now = super::wall_clock_unix() as i64;
+    // view wound forward a month has not made the imagery a month stale. The
+    // space weather is read against the scene's own clock, like the panels it
+    // stands in for.
+    let wall = super::wall_clock_unix();
+    let now = wall as i64;
+    let sim_now = (wall + st.sim_offset_s) as i64;
     let left = clock_rect.map_or(rect.left() + MARGIN, |r| r.right() + 8.0);
     let width = rect.right() - MARGIN - left;
     // Narrower than a single chip and there is nowhere to put the bar at all.
@@ -142,6 +181,26 @@ fn menu_bar(
                     chrome::menu_caption(ui, "Sun");
                     sun_controls(ui, st, data, now);
                 });
+
+                // Only where the panels themselves cannot fit: on anything
+                // wider they are already on screen, and a chip that opens a
+                // copy of what is beside it is a chip that does nothing.
+                if phone {
+                    let btn = chrome::chip(ui, false, "WEATHER")
+                        .on_hover_text("The aurora and the propagation numbers");
+                    chrome::menu_popup(ui, &btn, |ui| {
+                        chrome::menu_caption(ui, "Space weather");
+                        let aurora = aurora_panel(ui, st, data, Place::Inline, sim_now).is_some();
+                        let prop = weather_panel(ui, st, data, Place::Inline, sim_now).is_some();
+                        if !aurora && !prop {
+                            ui.label(
+                                RichText::new("nothing measured yet")
+                                    .color(theme::CYAN_DIM)
+                                    .size(10.5),
+                            );
+                        }
+                    });
+                }
 
                 let btn = chrome::chip(ui, false, "SCALE")
                     .on_hover_text("Body and Moon-orbit exaggeration");
@@ -508,16 +567,30 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     // Only if a label did not already take it: a name sits on top of its own
     // body, and clicking the text should not be ambiguous.
     pick_bodies(ui, st, rect, &view_proj, &picks, &resp, took_click);
+    // A phone puts the space weather behind the menu bar's WEATHER chip instead
+    // of down the right-hand edge; see [`Place`].
+    //
+    // Measured from this window rather than read from `layout::tier`, which is
+    // the whole app's: natively this view is a child viewport sharing the main
+    // window's context, so the app-wide tier says how big the *radio* window is.
+    // The override still counts — an operator who asked for the phone layout
+    // meant everywhere — so it is either that or this window's own size.
+    let phone = crate::layout::tier(ui.ctx()) == crate::layout::Tier::Phone
+        || crate::layout::tier_for(rect.size(), sdroxide_types::LayoutMode::Auto)
+            == crate::layout::Tier::Phone;
     let clock_rect = clock(ui, rect, sim_now, st.sim_offset_s != 0.0);
     // The menu row owns the top band outright, and everything else starts under
     // it: the alternative is measuring a panel that has not been drawn yet to
     // find out whether the chips would have reached it.
-    let menu_rect = menu_bar(ui, st, data, rect, clock_rect);
+    let menu_rect = menu_bar(ui, st, data, rect, clock_rect, phone);
     find_box(ui, st, data, rect, clock_rect, menu_rect);
     let top = menu_rect.map_or(rect.top() + MARGIN, |r| r.bottom() + 8.0);
-    let aurora_rect = aurora_panel(ui, st, data, rect, top, sim_now as i64);
-    let below = aurora_rect.map_or(top, |r| r.bottom() + 8.0);
-    weather_panel(ui, st, data, rect, below, sim_now as i64);
+    if !phone {
+        let aurora = aurora_panel(ui, st, data, Place::Corner { scene: rect, top }, sim_now as i64);
+        let below = aurora.map_or(top, |r| r.bottom() + 8.0);
+        let _ =
+            weather_panel(ui, st, data, Place::Corner { scene: rect, top: below }, sim_now as i64);
+    }
     // The bottom-right stack, from the corner up: the date, then the award key
     // above whatever the date left.
     let date_rect = date_readout(ui, st, rect, sim_now);
@@ -1258,17 +1331,16 @@ fn find_box(
     }
 }
 
-/// The propagation numbers, down the right-hand edge under the aurora: MUF at
-/// the QTH, K and A, the 10.7 cm flux and the current GOES X-ray level.
+/// The propagation numbers, under the aurora: MUF at the QTH, K and A, the
+/// 10.7 cm flux and the current GOES X-ray level.
 fn weather_panel(
-    ui: &egui::Ui,
+    ui: &mut egui::Ui,
     st: &SolarUi,
     data: Option<&SolarData>,
-    rect: egui::Rect,
-    top: f32,
+    place: Place,
     now: i64,
-) {
-    let Some(d) = data else { return };
+) -> Option<egui::Rect> {
+    let d = data?;
     let w = &d.weather;
 
     // (label, value, colour). Colours say what the number means for the bands,
@@ -1316,12 +1388,14 @@ fn weather_panel(
         ));
     }
     if rows.is_empty() {
-        return;
+        return None;
     }
 
     let font = egui::FontId::proportional(12.0);
     let small = egui::FontId::proportional(10.0);
-    let p = ui.painter();
+    // Cloned so the box can be laid out before the space for it is reserved:
+    // `Place::Inline` needs the `Ui` back to allocate from.
+    let p = ui.painter().clone();
     let laid: Vec<_> = rows
         .iter()
         .map(|(k, v, c)| {
@@ -1353,16 +1427,10 @@ fn weather_panel(
     let width = note.as_ref().map_or(width, |n| width.max(n.size().x + pad * 2.0));
     let height =
         rows.len() as f32 * row_h + note.as_ref().map_or(0.0, |n| n.size().y + 4.0) + pad * 2.0;
-    let panel = egui::Rect::from_min_size(
-        egui::pos2(rect.right() - width - MARGIN, top),
-        egui::vec2(width, height),
-    );
-    if !rect.contains_rect(panel) {
-        return;
-    }
+    let panel = place.reserve(ui, egui::vec2(width, height))?;
 
     p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
-    chrome::paint_cut_border(p, panel, theme::LINE_LIT, egui::Color32::TRANSPARENT);
+    chrome::paint_cut_border(&p, panel, theme::LINE_LIT, egui::Color32::TRANSPARENT);
     let mut y = panel.top() + pad;
     for ((key, val), (_, _, color)) in laid.iter().zip(&rows) {
         p.galley(egui::pos2(panel.left() + pad, y + 2.0), key.clone(), theme::CYAN_DIM);
@@ -1372,24 +1440,23 @@ fn weather_panel(
     if let Some(n) = note {
         p.galley(egui::pos2(panel.left() + pad, y + 2.0), n, theme::LINE_LIT);
     }
+    Some(panel)
 }
 
-/// Aurora, top right: how much power is going into each oval, how far towards
-/// the equator it reaches, whether it is over your head, and what the planetary
-/// K forecast says about tonight.
+/// Aurora: how much power is going into each oval, how far towards the equator
+/// it reaches, whether it is over your head, and what the planetary K forecast
+/// says about tonight.
 ///
 /// The colours here mean the same thing they do everywhere else in the window —
 /// green quiet, yellow worth watching, pink a storm.
 ///
 /// Returns the box it drew, or `None` if it drew nothing — the propagation
-/// numbers stack under it either way, and the date readout keeps clear of its
-/// left edge.
+/// numbers stack under it either way.
 fn aurora_panel(
-    ui: &egui::Ui,
+    ui: &mut egui::Ui,
     st: &SolarUi,
     data: Option<&SolarData>,
-    rect: egui::Rect,
-    top: f32,
+    place: Place,
     now: i64,
 ) -> Option<egui::Rect> {
     use sdroxide_solar::{HemisphericPower, aurora};
@@ -1488,7 +1555,9 @@ fn aurora_panel(
 
     let font = egui::FontId::proportional(12.0);
     let small = egui::FontId::proportional(10.0);
-    let p = ui.painter();
+    // Cloned for the reason the propagation box clones it: laid out first, and
+    // only then handed a place to sit.
+    let p = ui.painter().clone();
     let laid: Vec<_> = rows
         .iter()
         .map(|(k, v, c)| {
@@ -1528,18 +1597,10 @@ fn aurora_panel(
         + footer.as_ref().map_or(0.0, |f| f.size().y + 4.0)
         + pad * 2.0;
 
-    let panel = egui::Rect::from_min_size(
-        egui::pos2(rect.right() - width - 12.0, top),
-        egui::vec2(width, height),
-    );
-    // Same rule as every other readout in this window: if it does not fit, it
-    // is not drawn. A panel clipped by the viewport edge is worse than none.
-    if !rect.contains_rect(panel) {
-        return None;
-    }
+    let panel = place.reserve(ui, egui::vec2(width, height))?;
 
     p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
-    chrome::paint_cut_border(p, panel, theme::LINE_LIT, egui::Color32::TRANSPARENT);
+    chrome::paint_cut_border(&p, panel, theme::LINE_LIT, egui::Color32::TRANSPARENT);
 
     let mut y = panel.top() + pad;
     let title_h = title.size().y;
