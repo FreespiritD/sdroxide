@@ -542,12 +542,64 @@ fn agc_pair_preserves_the_channel_ratio() {
         assert!((ratio - 0.25).abs() < 1e-4, "sample {i}: ratio drifted to {ratio}");
     }
 
-    // AGC off passes both through untouched, with no delay applied.
+    // AGC off is a fixed manual gain, not a bypass: one gain on both channels
+    // (so the image survives there too) and the same lookahead delay, which is
+    // what keeps switching the AGC on and off free of jumps.
     let mut agc = Agc::new(48_000.0);
+    agc.set_manual_gain_db(20.0);
     agc.set_mode(AgcMode::Off);
-    let (mut a, mut b) = (vec![0.3f32; 64], vec![0.1f32; 64]);
+    let (mut a, mut b) = (vec![0.03f32; 4_800], vec![0.01f32; 4_800]);
     agc.process_pair(&mut a, &mut b);
-    assert!(a.iter().all(|&v| v == 0.3) && b.iter().all(|&v| v == 0.1));
+    for (i, (m, s)) in a.iter().zip(&b).enumerate().skip(2_000) {
+        assert!((m - 0.3).abs() < 1e-5, "sample {i}: main {m}, wanted 0.3");
+        assert!((s - 0.1).abs() < 1e-5, "sample {i}: side {s}, wanted 0.1");
+    }
+}
+
+/// Switching the AGC off must not switch the receiver off with it. Unlevelled,
+/// the demodulator hands over whatever the band gave it — a weak SSB signal
+/// tens of dB below anything audible — so "off" applies a fixed gain instead,
+/// seeded from where the AGC had settled.
+#[test]
+fn agc_off_holds_the_level_it_was_switched_off_at() {
+    let rate = 48_000.0;
+    let run = |agc: &mut Agc, amp: f32, secs: f64| -> f32 {
+        let n = (rate * secs) as usize;
+        let mut peak_tail = 0.0f32;
+        let tail_start = n * 3 / 4;
+        for start in (0..n).step_by(512) {
+            let mut block: Vec<f32> = (start..(start + 512).min(n))
+                .map(|i| amp * (std::f64::consts::TAU * 1000.0 * i as f64 / rate).sin() as f32)
+                .collect();
+            agc.process(&mut block);
+            if start >= tail_start {
+                for &v in &block {
+                    peak_tail = peak_tail.max(v.abs());
+                }
+            }
+        }
+        peak_tail
+    };
+
+    let mut agc = Agc::new(rate);
+    agc.set_mode(AgcMode::Med);
+    agc.set_max_gain_db(90.0);
+    // A signal 60 dB below full scale, levelled up to the AGC's target.
+    let levelled = run(&mut agc, 0.001, 3.0);
+    assert!(levelled > 0.1, "AGC left the weak signal at {levelled}");
+
+    // Switch off the way the engine does: carry the tracked gain over.
+    agc.set_manual_gain_db(agc.gain_db());
+    agc.set_mode(AgcMode::Off);
+    let held = run(&mut agc, 0.001, 1.0);
+    let step_db = 20.0 * (held / levelled).log10();
+    assert!(step_db.abs() < 1.0, "level jumped {step_db:.1} dB when the AGC went off");
+
+    // And it stays fixed: 20 dB more signal now really is 20 dB more audio,
+    // which is the whole point of turning the levelling off.
+    let louder = run(&mut agc, 0.01, 1.0);
+    let rise_db = 20.0 * (louder / held).log10();
+    assert!((rise_db - 20.0).abs() < 0.5, "manual gain moved: {rise_db:.1} dB for a 20 dB step");
 }
 
 /// Broadcast-like programme: many tones across the band at full modulation,

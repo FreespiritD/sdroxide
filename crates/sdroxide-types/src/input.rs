@@ -32,6 +32,8 @@ pub enum Action {
     FilterWidth,
     FilterShift,
     AgcMaxGain,
+    /// Fixed audio gain, in effect while the AGC is off.
+    ManualGain,
     TxDrive,
     TuneDrive,
     MicGain,
@@ -103,8 +105,8 @@ impl Action {
         use Action::*;
         match self {
             Tune | RitOffset | XitOffset | Volume | SubVolume | Squelch | FilterWidth
-            | FilterShift | AgcMaxGain | TxDrive | TuneDrive | MicGain | DigiAudioFreq
-            | SpectrumZoom | SpectrumPan | SpectrumFloorDb | SpectrumCeilDb => {
+            | FilterShift | AgcMaxGain | ManualGain | TxDrive | TuneDrive | MicGain
+            | DigiAudioFreq | SpectrumZoom | SpectrumPan | SpectrumFloorDb | SpectrumCeilDb => {
                 ActionKind::Continuous
             }
             _ => ActionKind::Momentary,
@@ -118,9 +120,9 @@ impl Action {
             Tune | RitOffset | XitOffset | RitEnable | XitEnable | RitClear | XitClear
             | VfoSelect(_) | VfoToggle | SwapVfos | CopyAtoB | Split | BandUp | BandDown
             | BandSelect(_) | MemoryRecall(_) => "Tuning",
-            Volume | SubVolume | Squelch | FilterWidth | FilterShift | AgcMaxGain | Mute
-            | NoiseBlanker | NoiseReductionCycle | AutoNotch | AgcCycle | SubRx | ModeNext
-            | ModePrev | ModeSelect(_) | RecordToggle => "Receive",
+            Volume | SubVolume | Squelch | FilterWidth | FilterShift | AgcMaxGain | ManualGain
+            | Mute | NoiseBlanker | NoiseReductionCycle | AutoNotch | AgcCycle | SubRx
+            | ModeNext | ModePrev | ModeSelect(_) | RecordToggle => "Receive",
             Ptt | TuneCarrier | TxDrive | TuneDrive | MicGain | DigiAudioFreq | AbortTx
             | VoicePlay(_) | VoiceStop => "Transmit",
             SpectrumZoom | SpectrumPan | SpectrumFloorDb | SpectrumCeilDb | FitSpan | ZoomIn
@@ -142,6 +144,7 @@ impl Action {
             FilterWidth => "Filter width",
             FilterShift => "Filter shift",
             AgcMaxGain => "AGC max gain",
+            ManualGain => "Manual gain (AGC off)",
             TxDrive => "TX drive",
             TuneDrive => "Tune drive",
             MicGain => "Mic gain",
@@ -203,7 +206,7 @@ impl Action {
             RitOffset | XitOffset | DigiAudioFreq => 10.0,
             FilterWidth | FilterShift => 50.0,
             Volume | SubVolume | TxDrive | TuneDrive | MicGain => 0.02,
-            Squelch | AgcMaxGain | SpectrumFloorDb | SpectrumCeilDb => 1.0,
+            Squelch | AgcMaxGain | ManualGain | SpectrumFloorDb | SpectrumCeilDb => 1.0,
             SpectrumZoom => 0.05,
             SpectrumPan => 0.02,
             _ => 1.0,
@@ -224,6 +227,7 @@ impl Action {
             FilterWidth,
             FilterShift,
             AgcMaxGain,
+            ManualGain,
             TxDrive,
             TuneDrive,
             MicGain,

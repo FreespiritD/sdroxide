@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use sdroxide_types::{
     Action, ActionInput, ActionKind, BindingTuning, ButtonMode, Command, InputSettings, KeyChord,
-    MouseButton, RadioState, RxId, SQUELCH_OPEN_DB, Vfo,
+    MAX_MANUAL_GAIN_DB, MouseButton, RadioState, RxId, SQUELCH_OPEN_DB, Vfo,
 };
 
 use crate::view::ViewState;
@@ -88,6 +88,7 @@ fn absolute_range(act: Action, state: &RadioState) -> Option<(f32, f32)> {
         Volume | SubVolume | TxDrive | TuneDrive | MicGain => (0.0, 1.0),
         Squelch => (SQUELCH_OPEN_DB, 0.0),
         AgcMaxGain => (0.0, 120.0),
+        ManualGain => (0.0, MAX_MANUAL_GAIN_DB),
         RitOffset | XitOffset => (-MAX_OFFSET_HZ, MAX_OFFSET_HZ),
         DigiAudioFreq => (100.0, 3500.0),
         SpectrumFloorDb => (-160.0, 0.0),
@@ -192,6 +193,12 @@ pub(crate) fn apply_action(
                 state.rx[0].filter_lo = lo;
                 state.rx[0].filter_hi = hi;
                 cmds.push(Command::SetFilter { rx, lo, hi });
+            }
+            ManualGain => {
+                let cur = state.rx[0].manual_gain_db;
+                let db = target.unwrap_or(cur + delta).clamp(0.0, MAX_MANUAL_GAIN_DB);
+                state.rx[0].manual_gain_db = db;
+                cmds.push(Command::SetManualGain { rx, db });
             }
             AgcMaxGain => {
                 let cur = state.rx[0].agc_max_gain_db;

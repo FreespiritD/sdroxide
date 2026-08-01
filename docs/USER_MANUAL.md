@@ -248,8 +248,14 @@ can't quietly add itself to the one you set here.
 ### 2.7 Receiver controls
 
 - **AGC** — a drop-down: `Off`, `Slow`, `Med`, `Fast`.
+- **Man** — the fixed audio gain the receiver runs on while the AGC is `Off`,
+  shown only then. Unlevelled audio is whatever the band delivered, and a weak
+  SSB signal can sit tens of dB below anything the volume control can reach, so
+  "AGC off" means *this gain* rather than no gain at all. Switching the AGC off
+  seeds it from the level the AGC was holding at that moment, so nothing jumps;
+  from there it is yours to set, and it stays put however the signal moves.
 - **Vol** — audio volume.
-- **MUTE** — mute the receiver (keyboard shortcut **M**).
+- **MUTE** (Filter/Noise row) — mute the receiver (keyboard shortcut **M**).
 - **SQL** (Filter/Noise module) — squelch; below the open threshold it reads
   `off`.
 - **NB** — impulse noise blanker on the raw signal (keyboard shortcut **N**).

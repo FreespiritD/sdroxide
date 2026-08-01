@@ -27,9 +27,9 @@ use sdroxide_rigctld::{RigState, RigctldController};
 use sdroxide_skimmer::{SkimmerAction, SkimmerController};
 use sdroxide_tci::server::{ServerRequest, TciServerController, TciStateSnapshot};
 use sdroxide_types::{
-    Band, BandStackEntry, Command, DeviceCaps, DigiConfig, Direction, ImageKind, MemoryChannel,
-    Meters, Mode, NrLevel, RadioEvent, RadioState, RigctldConfig, RxId, RxState, SpectrumConfig,
-    SpectrumFrame, TciServerConfig, TxMeters, Vfo,
+    AgcMode, Band, BandStackEntry, Command, DeviceCaps, DigiConfig, Direction, ImageKind,
+    MemoryChannel, Meters, Mode, NrLevel, RadioEvent, RadioState, RigctldConfig, RxId, RxState,
+    SpectrumConfig, SpectrumFrame, TciServerConfig, TxMeters, Vfo,
 };
 
 use crate::recorder::Recorder;
@@ -285,6 +285,7 @@ impl RxChain {
         self.agc = Agc::new(audio_rate);
         self.agc.set_mode(rx.agc);
         self.agc.set_max_gain_db(rx.agc_max_gain_db);
+        self.agc.set_manual_gain_db(rx.manual_gain_db);
         self.resampler = MonoResampler::new(audio_rate, self.out_rate);
         self.stereo_rs = StereoResampler::new(audio_rate, self.out_rate);
     }
@@ -2136,7 +2137,19 @@ impl Engine {
             }
             SetAgc { rx, agc } => {
                 self.state.rx[rx.index()].agc = agc;
+                // Switching off hands the audio to the fixed manual gain. Seed
+                // it from where the AGC had settled so the level carries over:
+                // the operator is turning off the levelling, not asking to go
+                // deaf. They can trim it from there.
+                if agc == AgcMode::Off {
+                    if let Some(db) = self.chain_mut(rx).map(|c| c.agc.gain_db()) {
+                        self.state.rx[rx.index()].manual_gain_db =
+                            db.clamp(0.0, sdroxide_types::MAX_MANUAL_GAIN_DB);
+                    }
+                }
+                let manual_db = self.state.rx[rx.index()].manual_gain_db;
                 if let Some(c) = self.chain_mut(rx) {
+                    c.agc.set_manual_gain_db(manual_db);
                     c.agc.set_mode(agc);
                 }
             }
@@ -2144,6 +2157,13 @@ impl Engine {
                 self.state.rx[rx.index()].agc_max_gain_db = db;
                 if let Some(c) = self.chain_mut(rx) {
                     c.agc.set_max_gain_db(db);
+                }
+            }
+            SetManualGain { rx, db } => {
+                let db = db.clamp(0.0, sdroxide_types::MAX_MANUAL_GAIN_DB);
+                self.state.rx[rx.index()].manual_gain_db = db;
+                if let Some(c) = self.chain_mut(rx) {
+                    c.agc.set_manual_gain_db(db);
                 }
             }
             SetVolume { rx, v } => self.state.rx[rx.index()].volume = v.clamp(0.0, 1.0),

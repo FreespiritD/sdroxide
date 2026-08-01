@@ -108,7 +108,9 @@ pub use skimmer::{SkimmerKind, SkimmerSettings, SkimmerSpot};
 pub use spectrum::{SpectrumConfig, SpectrumFrame};
 pub use spot::{Spot, SpotKind};
 pub use sstv::{SstvMode, SstvStatus};
-pub use state::{OffsetState, RadioState, RxId, RxState, SQUELCH_OPEN_DB, TxState, Vfo};
+pub use state::{
+    MAX_MANUAL_GAIN_DB, OffsetState, RadioState, RxId, RxState, SQUELCH_OPEN_DB, TxState, Vfo,
+};
 pub use station::StationConfig;
 pub use tciserver::TciServerConfig;
 pub use ui::{LayoutMode, Speed, UiSettings};

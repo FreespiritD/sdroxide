@@ -40,6 +40,9 @@ impl OffsetState {
 /// Squelch fully open (slider minimum).
 pub const SQUELCH_OPEN_DB: f32 = -150.0;
 
+/// Ceiling for [`RxState::manual_gain_db`], matching the AGC's own maximum.
+pub const MAX_MANUAL_GAIN_DB: f32 = 120.0;
+
 /// Per-receiver settings.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct RxState {
@@ -49,6 +52,10 @@ pub struct RxState {
     pub filter_hi: f32,
     pub agc: AgcMode,
     pub agc_max_gain_db: f32,
+    /// Fixed audio gain applied while `agc` is [`AgcMode::Off`]. Without one,
+    /// switching the AGC off would leave the demodulator's raw output — for a
+    /// weak SSB signal, tens of dB below anything audible.
+    pub manual_gain_db: f32,
     /// 0.0..=1.0
     pub volume: f32,
     pub muted: bool,
@@ -73,6 +80,7 @@ impl RxState {
             filter_hi,
             agc: AgcMode::Med,
             agc_max_gain_db: 90.0,
+            manual_gain_db: 20.0,
             volume: 0.5,
             muted: false,
             squelch_db: SQUELCH_OPEN_DB,

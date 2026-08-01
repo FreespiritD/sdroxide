@@ -637,12 +637,21 @@ impl SdroxideApp {
         });
     }
 
-    /// Combined Receiver + Filter/Noise box: AGC / volume / mute on top, with the
-    /// squelch + noise-blanker + auto-notch + noise-reduction controls stacked
-    /// underneath. Bare and tall, like the VFO/RIT box — replaces the separate
-    /// Receiver and Filter boxes.
+    /// Combined Receiver + Filter/Noise box: volume, gain and AGC on top, with
+    /// the squelch + noise + mute/record chips stacked underneath. Bare and
+    /// tall, like the VFO/RIT box — replaces the separate Receiver and Filter
+    /// boxes.
     fn rx_filter_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        let width = if self.rx_gain().is_some() { 506.0 } else { 356.0 };
+        // Two rows in one box, so it is sized for the wider of them, each
+        // figure being that row laid out at the desktop tier plus a little
+        // slack. Which row leads changes with the rig and the state: the noise
+        // row usually, the receive row once it carries both a front-end gain
+        // rail and the manual-gain rail that appears with the AGC off.
+        let noise_row: f32 = 447.0 + if self.state.rx[0].mode == Mode::Wfm { 40.0 } else { 0.0 };
+        let rx_row = 205.0
+            + if self.rx_gain().is_some() { 180.0 } else { 0.0 }
+            + if self.state.rx[0].agc == AgcMode::Off { 170.0 } else { 0.0 };
+        let width = noise_row.max(rx_row) + 16.0;
         crate::chrome::module_bare_h(ui, width, crate::chrome::MODULE_TALL_H, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
@@ -671,7 +680,7 @@ impl SdroxideApp {
     fn rx_controls(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, narrow: bool) {
         let rx_gains = self.rx_gains();
         let rx_gain = rx_gains.first().cloned();
-        // Receiver: volume, RF gain, AGC, mute.
+        // Receiver: volume, RF gain, AGC and the manual gain it falls back to.
         crate::chrome::control_row(ui, narrow, |ui| {
             let mut vol = self.state.rx[0].volume;
             ui.label("Vol");
@@ -740,30 +749,40 @@ impl SdroxideApp {
             {
                 cmds.push(Command::SetAgc { rx: RxId::Main, agc: agc.next() });
             }
-            let muted = self.state.rx[0].muted;
-            if crate::chrome::chip_accent(ui, muted, "MUTE", crate::theme::PINK, Color32::WHITE)
-                .clicked()
-            {
-                cmds.push(Command::SetMute { rx: RxId::Main, muted: !muted });
-            }
-            // Record receiver audio to an MP3 file (toggling).
-            let recording = self.state.recording;
-            let rec = crate::chrome::chip_accent(
-                ui,
-                recording,
-                "REC",
-                crate::theme::PINK,
-                Color32::WHITE,
-            )
-            .on_hover_text(match &self.state.recording_file {
-                Some(f) => format!("Recording to {f} — click to stop"),
-                None => "Record receiver audio to MP3".to_string(),
-            });
-            if rec.clicked() {
-                cmds.push(Command::SetRecording(!recording));
+            // With the AGC off the audio rides on this fixed gain instead. It
+            // has to be here: unlevelled, the demodulator's output is whatever
+            // the band handed it, and a weak SSB signal is tens of dB below
+            // anything the volume control can reach. Switching the AGC off
+            // seeds it from where the AGC had settled, so this starts in the
+            // right place and only needs trimming.
+            if agc == AgcMode::Off {
+                let mut db = self.state.rx[0].manual_gain_db;
+                ui.label("Man");
+                let resp = ui
+                    .scope(|ui| {
+                        if !narrow {
+                            ui.spacing_mut().slider_width = 76.0;
+                        }
+                        crate::chrome::slider(
+                            ui,
+                            Slider::new(&mut db, 0.0..=sdroxide_types::MAX_MANUAL_GAIN_DB)
+                                .step_by(1.0)
+                                .suffix(" dB"),
+                        )
+                    })
+                    .inner
+                    .on_hover_text(
+                        "Manual audio gain, used while the AGC is off. Seeded from \
+                         the level the AGC was holding when it was switched off.",
+                    );
+                if resp.changed() {
+                    self.state.rx[0].manual_gain_db = db; // optimistic echo
+                    cmds.push(Command::SetManualGain { rx: RxId::Main, db });
+                }
             }
         });
-        // Filter / Noise: squelch, noise blanker.
+        // Filter / Noise: squelch and the noise chips, then mute and record —
+        // the two that act on the finished audio rather than on the level.
         crate::chrome::control_row(ui, narrow, |ui| {
             let mut sql = self.state.rx[0].squelch_db;
             ui.label("SQL");
@@ -811,6 +830,28 @@ impl SdroxideApp {
                         self.state.rx[0].noise_reduction = next; // optimistic echo
                         cmds.push(Command::SetNoiseReduction { rx: RxId::Main, level: next });
                     }
+            let muted = self.state.rx[0].muted;
+            if crate::chrome::chip_accent(ui, muted, "MUTE", crate::theme::PINK, Color32::WHITE)
+                .clicked()
+            {
+                cmds.push(Command::SetMute { rx: RxId::Main, muted: !muted });
+            }
+            // Record receiver audio to an MP3 file (toggling).
+            let recording = self.state.recording;
+            let rec = crate::chrome::chip_accent(
+                ui,
+                recording,
+                "REC",
+                crate::theme::PINK,
+                Color32::WHITE,
+            )
+            .on_hover_text(match &self.state.recording_file {
+                Some(f) => format!("Recording to {f} — click to stop"),
+                None => "Record receiver audio to MP3".to_string(),
+            });
+            if rec.clicked() {
+                cmds.push(Command::SetRecording(!recording));
+            }
             // WFM broadcast stereo: lit while a 19 kHz pilot is locked,
             // click to force mono. Only WFM has a pilot to find.
             if self.state.rx[0].mode == Mode::Wfm {

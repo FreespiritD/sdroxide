@@ -148,7 +148,14 @@ use sdroxide_types::{
 /// has to be bumped despite the appends: a v35 client cannot decode
 /// `AuthRequired`, so it would report a protocol error rather than the truth,
 /// which is that it needs a password and cannot ask for one.
-pub const PROTO_VERSION: u16 = 36;
+/// v37: manual audio gain — `RxState.manual_gain_db` and a new
+/// `Command::SetManualGain`, which is *not* appended: it sits with the other
+/// receiver commands, so the discriminants after it move. Both ends must agree
+/// on the added field anyway, postcard not being self-describing, so the
+/// version has to be bumped either way. AGC off used to mean unity gain on the
+/// demodulator's own output, which for an SSB signal 60 dB down is silence at
+/// any volume setting; it now means this fixed gain instead.
+pub const PROTO_VERSION: u16 = 37;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

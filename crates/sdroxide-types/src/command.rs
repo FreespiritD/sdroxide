@@ -42,6 +42,11 @@ pub enum Command {
         rx: RxId,
         db: f32,
     },
+    /// Fixed audio gain used while the AGC is off.
+    SetManualGain {
+        rx: RxId,
+        db: f32,
+    },
     SetVolume {
         rx: RxId,
         v: f32,

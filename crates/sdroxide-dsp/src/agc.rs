@@ -1,20 +1,32 @@
 //! Hang AGC with lookahead delay: fast attack, configurable hang time,
 //! slow recovery, capped maximum gain.
+//!
+//! Switched off it becomes a fixed manual gain rather than a bypass. A bypass
+//! is unity gain on the demodulator's own output, and that output is whatever
+//! the antenna delivered — an SSB signal sitting 60 dB below full scale stays
+//! 60 dB below full scale, which no volume control can rescue. The tracker
+//! keeps running while off so the manual level can be seeded from it and so
+//! switching back on doesn't jump.
 
 use std::collections::VecDeque;
 
-use sdroxide_types::AgcMode;
+use sdroxide_types::{AgcMode, MAX_MANUAL_GAIN_DB};
 
 const TARGET: f32 = 0.35;
 const LOOKAHEAD_S: f32 = 0.020;
 const ATTACK_TC_S: f32 = 0.002;
 const RECOVERY_TC_S: f32 = 0.250;
 const ENV_DECAY_TC_S: f32 = 0.050;
+/// Manual gain before anyone has set one. Matches `RxState::manual_gain_db`'s
+/// own default, so a fresh chain and a fresh receiver agree.
+const DEFAULT_MANUAL_GAIN_DB: f32 = 20.0;
 
 pub struct Agc {
     rate: f32,
     enabled: bool,
     max_gain: f32,
+    /// Linear gain applied while the AGC is off.
+    manual_gain: f32,
     gain: f32,
     env: f32,
     hang_samples: u32,
@@ -36,6 +48,7 @@ impl Agc {
             rate,
             enabled: true,
             max_gain: 10f32.powf(90.0 / 20.0),
+            manual_gain: 1.0,
             gain: 1.0,
             env: 0.0,
             hang_samples: 0,
@@ -48,23 +61,23 @@ impl Agc {
             delay_len: (rate * LOOKAHEAD_S) as usize,
         };
         agc.set_mode(AgcMode::Med);
+        // Only reached if something switches the AGC off before any audio has
+        // run through it; anything that goes on to do so re-seeds this from the
+        // level the tracker had settled at.
+        agc.set_manual_gain_db(DEFAULT_MANUAL_GAIN_DB);
         agc
     }
 
+    /// Switching between the two is glitch-free: the lookahead delay and the
+    /// gain tracker run in both states, so nothing is flushed and re-enabling
+    /// resumes at the level the signal already warrants.
     pub fn set_mode(&mut self, mode: AgcMode) {
         match mode.hang_ms() {
             Some(ms) => {
                 self.enabled = true;
                 self.hang_samples = (self.rate * ms / 1000.0) as u32;
             }
-            None => {
-                self.enabled = false;
-                self.gain = 1.0;
-                // Otherwise re-enabling would emit one lookahead's worth of
-                // audio from before the mode change.
-                self.delay.clear();
-                self.delay_b.clear();
-            }
+            None => self.enabled = false,
         }
     }
 
@@ -72,11 +85,21 @@ impl Agc {
         self.max_gain = 10f32.powf(db.clamp(0.0, 120.0) / 20.0);
     }
 
-    /// In-place. Output is the delayed input scaled by the tracked gain.
+    /// The fixed gain used while the AGC is off.
+    pub fn set_manual_gain_db(&mut self, db: f32) {
+        self.manual_gain = 10f32.powf(db.clamp(0.0, MAX_MANUAL_GAIN_DB) / 20.0);
+    }
+
+    /// What the tracker is applying right now, in dB. Seeds the manual gain
+    /// when the operator switches the AGC off, so the level carries over
+    /// instead of dropping to whatever was last set by hand.
+    pub fn gain_db(&self) -> f32 {
+        20.0 * self.gain.max(1e-9).log10()
+    }
+
+    /// In-place. Output is the delayed input scaled by the tracked gain — or by
+    /// the manual gain while the AGC is off.
     pub fn process(&mut self, samples: &mut [f32]) {
-        if !self.enabled {
-            return;
-        }
         for s in samples.iter_mut() {
             let x = *s;
             let (d, _) = self.push_delay(x, 0.0);
@@ -97,9 +120,6 @@ impl Agc {
     /// its limit and clip both ears.
     pub fn process_pair(&mut self, main: &mut [f32], side: &mut [f32]) {
         debug_assert_eq!(main.len(), side.len(), "AGC channel pair must be equal length");
-        if !self.enabled {
-            return;
-        }
         for (m, sd) in main.iter_mut().zip(side.iter_mut()) {
             let (x, y) = (*m, *sd);
             let (dm, ds) = self.push_delay(x, y);
@@ -129,6 +149,10 @@ impl Agc {
     /// Advance the envelope/gain tracker by one sample and return the gain to
     /// apply. Envelope: instant attack, exponential decay — it sees the sample
     /// `LOOKAHEAD_S` before that sample leaves the delay line.
+    ///
+    /// The tracker advances even while the AGC is off — the manual gain is what
+    /// gets *applied* then, but keeping `gain` converged is what makes switching
+    /// back on silent and gives [`Agc::gain_db`] something honest to report.
     fn step(&mut self, a: f32) -> f32 {
         self.env = if a > self.env { a } else { self.env * self.env_decay };
 
@@ -141,6 +165,6 @@ impl Agc {
         } else {
             self.gain += (desired - self.gain) * self.recovery_alpha;
         }
-        self.gain
+        if self.enabled { self.gain } else { self.manual_gain }
     }
 }
