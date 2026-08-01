@@ -28,6 +28,43 @@ use sdroxide_types::{Band, Command, Mode};
 
 use crate::app::SdroxideApp;
 
+/// The waterfall's tab. Always last, and every mode has one: on a phone the
+/// panadapter is a view of its own rather than a strip above the panel, because
+/// a third of that height is not enough to work a mode *and* watch a band.
+pub(in crate::app) const TAB_WFALL: &str = "WFALL";
+
+/// The panes a mode's panel splits into, in the order the tabs show them.
+///
+/// A phone draws one at a time — two columns want 180 and 220 points before
+/// either has said anything, which is more than the screen — so this is also
+/// the answer to "what is there to switch between". Modes whose panel is a
+/// single column name it anyway, so the tab row reads the same everywhere and
+/// the waterfall always has something to sit beside.
+pub(in crate::app) fn panel_panes(mode: Mode) -> &'static [&'static str] {
+    match mode {
+        Mode::Ft8 | Mode::Ft4 => &["DECODES", "QSO"],
+        Mode::Js8 => &["HEARD", "CHAT"],
+        Mode::Fsq => &["HEARD", "TRAFFIC"],
+        Mode::Sstv | Mode::Rifp => &["RECEIVE", "SEND"],
+        Mode::Wefax => &["CHART", "SAVED"],
+        Mode::RfPaint => &["TEXT", "IMAGE"],
+        // The keyboard modes and RADE are one column already: receive above,
+        // what you are sending below it.
+        _ => &["PANEL"],
+    }
+}
+
+/// The full tab row for `mode`: its panes, then the waterfall.
+pub(in crate::app) fn panel_tabs(mode: Mode) -> impl Iterator<Item = &'static str> {
+    panel_panes(mode).iter().copied().chain(std::iter::once(TAB_WFALL))
+}
+
+/// Index of the pane named `name`, for the panels that need to switch to one of
+/// their own (answering a call takes an operator to the QSO pane).
+pub(in crate::app) fn pane_index(mode: Mode, name: &str) -> usize {
+    panel_panes(mode).iter().position(|p| *p == name).unwrap_or(0)
+}
+
 /// Standard FT8/FT4 dial frequencies per HF/6 m band.
 /// The standard FT8/FT4 dial frequency for `band`, if one exists for `mode`
 /// (matched by which band's edges the frequency falls within).
@@ -197,28 +234,69 @@ impl SdroxideApp {
         self.hell.clear();
     }
 
-    /// The chips a phone switches the digital panel's three views with, plus
-    /// the one reading worth carrying across all of them: how many stations the
-    /// last slot decoded, which is the answer to "is the band open".
-    pub(in crate::app) fn digi_tabs(&mut self, ui: &mut egui::Ui) {
+    /// The chips a phone switches the panel's views with, plus the one reading
+    /// worth carrying across all of them: how many stations the last slot
+    /// decoded, which is the answer to "is the band open".
+    ///
+    /// Wrapped, so a mode with more panes than the width holds takes a second
+    /// row rather than losing the last one — which on most modes is the
+    /// waterfall.
+    pub(in crate::app) fn digi_tabs(&mut self, ui: &mut egui::Ui, mode: Mode) {
+        let selected = self.digi_pane(mode);
+        // Pin the content to the width left *inside* the margins. A `Frame`
+        // reports an outer rect of content-plus-margins, and a content row that
+        // has taken all the width there was makes that outer rect wider than
+        // the window — which the parent then expands to include, leaving every
+        // row drawn after this one wrapping against a width the screen has not
+        // got and clipping whatever crosses the edge.
+        const MARGIN: f32 = 8.0;
+        let inner_w = (ui.available_width() - 2.0 * MARGIN).max(80.0);
         egui::Frame::new()
             .inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 2 })
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for (tab, label) in crate::view::DigiTab::ALL {
-                        if crate::chrome::chip(ui, self.view.digi_tab == tab, label).clicked() {
-                            self.view.digi_tab = tab;
+                ui.set_max_width(inner_w);
+                ui.horizontal_wrapped(|ui| {
+                    for (i, label) in panel_tabs(mode).enumerate() {
+                        if crate::chrome::chip(ui, selected == i, label).clicked() {
+                            self.view.digi_pane = i;
                         }
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(format!("{} rx", self.digi_decodes.len()))
-                                .size(10.0)
-                                .color(egui::Color32::from_gray(120)),
-                        );
-                    });
+                    // Only the modes whose panel is the decode list have a
+                    // count to put here. JS8 is slotted too, but it keeps its
+                    // own heard list and never fills `digi_decodes` — a "0 rx"
+                    // beside a busy band would be a lie.
+                    if matches!(mode, Mode::Ft8 | Mode::Ft4) {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(format!("{} rx", self.digi_decodes.len()))
+                                    .size(10.0)
+                                    .color(egui::Color32::from_gray(120)),
+                            );
+                        });
+                    }
                 });
             });
+    }
+
+    /// The pane showing this frame, clamped to what `mode` actually has. A
+    /// stored index only means anything against the mode it was stored in, and
+    /// switching from a two-pane mode to a one-pane one must not leave the
+    /// panel pointing at a pane that does not exist.
+    pub(in crate::app) fn digi_pane(&self, mode: Mode) -> usize {
+        self.view.digi_pane.min(panel_panes(mode).len())
+    }
+
+    /// Which pane a panel should draw, or `None` where it draws them all.
+    ///
+    /// `None` on every layout but a phone, and on a phone whenever the
+    /// waterfall tab is up — the waterfall replaces the panel rather than
+    /// living inside it, so the panel is not drawn at all.
+    pub(in crate::app) fn phone_pane(&self, ui: &egui::Ui, mode: Mode) -> Option<usize> {
+        if crate::layout::tier(ui.ctx()) != crate::layout::Tier::Phone {
+            return None;
+        }
+        let pane = self.digi_pane(mode);
+        (pane < panel_panes(mode).len()).then_some(pane)
     }
 
     /// The FT8/FT4 operating panel: decode list on the left, QSO area on the
@@ -228,12 +306,10 @@ impl SdroxideApp {
     /// Two columns need 180 + 7 + 220 points before either has said anything,
     /// which is more than the whole of the screen.
     pub(in crate::app) fn digi_panel(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        if crate::layout::tier(ui.ctx()) == crate::layout::Tier::Phone {
-            match self.view.digi_tab {
-                crate::view::DigiTab::Qso => self.qso_area(ui, cmds),
-                // The waterfall tab never reaches the panel at all: it replaces
-                // it, so it is drawn where the panel would have been.
-                _ => self.decode_list(ui, cmds),
+        if let Some(pane) = self.phone_pane(ui, self.state.rx[0].mode) {
+            match pane {
+                0 => self.decode_list(ui, cmds),
+                _ => self.qso_area(ui, cmds),
             }
             return;
         }
@@ -388,5 +464,54 @@ impl SdroxideApp {
                 .map_or(15.0, |j| j.speed.slot_s()),
             _ => 15.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The waterfall is the tab one past the mode's own panes — that is how
+    /// `App::ui` tells "show the panadapter" from "show the panel", so a mode
+    /// with no panes at all would make the two indistinguishable.
+    #[test]
+    fn every_mode_has_at_least_one_pane_and_a_waterfall_after_it() {
+        for mode in Mode::ALL {
+            let panes = panel_panes(mode);
+            assert!(!panes.is_empty(), "{mode:?} has no panes");
+            let tabs: Vec<_> = panel_tabs(mode).collect();
+            assert_eq!(tabs.len(), panes.len() + 1, "{mode:?} tab count");
+            assert_eq!(tabs.last().copied(), Some(TAB_WFALL), "{mode:?} waterfall is not last");
+            assert!(!panes.contains(&TAB_WFALL), "{mode:?} names a pane after the waterfall tab");
+        }
+    }
+
+    /// A stored pane index only means anything against the mode it was stored
+    /// in. Clamping it to the pane count is what stops a switch from FT8 (two
+    /// panes) to PSK (one) leaving the panel pointing past the end — the value
+    /// the clamp yields is always either a real pane or the waterfall.
+    #[test]
+    fn a_stored_pane_index_is_valid_in_every_other_mode() {
+        for from in Mode::ALL {
+            // The furthest tab the mode it was stored in could select.
+            let stored = panel_panes(from).len();
+            for to in Mode::ALL {
+                let panes = panel_panes(to).len();
+                let clamped = stored.min(panes);
+                assert!(clamped <= panes, "{from:?} → {to:?}: {clamped} past {panes}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_slotted_modes_can_find_their_qso_pane() {
+        for mode in [Mode::Ft8, Mode::Ft4] {
+            let i = pane_index(mode, "QSO");
+            assert_eq!(panel_panes(mode)[i], "QSO", "{mode:?}");
+            assert_ne!(i, pane_index(mode, "DECODES"), "{mode:?} panes collapsed");
+        }
+        // A mode with no such pane falls back to its first, rather than to an
+        // index that is not there.
+        assert_eq!(pane_index(Mode::Psk, "QSO"), 0);
     }
 }

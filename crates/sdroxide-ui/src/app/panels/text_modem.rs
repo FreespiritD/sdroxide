@@ -37,7 +37,7 @@ impl SdroxideApp {
         let my_call = status.as_ref().map(|s| s.config.my_call.clone()).unwrap_or_default();
 
         // Header: mode + tuning readout / nudges, SETUP + TX indicator.
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(mode.label()).size(11.0).strong().color(crate::theme::CYAN));
             ui.label(
                 RichText::new(format!("{audio_hz:.0} Hz"))
@@ -54,7 +54,7 @@ impl SdroxideApp {
             // Mode parameters inline next to the tune buttons (RTTY shift/baud,
             // Olivia tones/bandwidth, THOR submode) — no separate setup dialog.
             self.text_modem_params_row(ui, cmds);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            crate::chrome::row_tail(ui, |ui| {
                 if transmitting {
                     ui.label(RichText::new("● TX").size(11.0).strong().color(crate::theme::PINK));
                 }

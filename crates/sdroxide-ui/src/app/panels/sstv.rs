@@ -465,9 +465,20 @@ impl SdroxideApp {
         let handle_w = 7.0;
         // TRANSMIT (send) column takes a user-draggable fraction of the width; the
         // receive side (LIVE + RECEIVED) gets the rest. Each keeps a usable minimum.
-        let tx_w = (avail.x * self.view.sstv_tx_fraction)
-            .clamp(300.0, (avail.x - handle_w - 300.0).max(300.0));
-        let left_w = (avail.x - tx_w - handle_w).max(300.0);
+        // A phone takes the receive side and the compositor in turns: each has a
+        // 300 pt floor of its own, so together they want twice a phone's width
+        // before either has drawn a picture.
+        let pane = self.phone_pane(ui, self.state.rx[0].mode);
+        let (left_w, tx_w) = match pane {
+            // Whichever one is up takes the row.
+            Some(0) => (avail.x, 0.0),
+            Some(_) => (0.0, avail.x),
+            None => {
+                let tx = (avail.x * self.view.sstv_tx_fraction)
+                    .clamp(300.0, (avail.x - handle_w - 300.0).max(300.0));
+                ((avail.x - tx - handle_w).max(300.0), tx)
+            }
+        };
         // LIVE takes the rest of the receive side; the RECEIVED gallery width is a
         // user-draggable fraction of it (min one thumbnail column).
         let gallery_w = (left_w * self.view.sstv_gallery_fraction)
@@ -479,6 +490,7 @@ impl SdroxideApp {
             let mut enlarge: Option<usize> = None;
 
             // ── LEFT: boxed controls, then LIVE + RECEIVED ──
+            if pane.is_none_or(|p| p == 0) {
             ui.allocate_ui_with_layout(
                 egui::vec2(left_w, full_h),
                 egui::Layout::top_down(egui::Align::Min),
@@ -587,8 +599,24 @@ impl SdroxideApp {
                     ui.add_space(6.0);
 
                     // LIVE + RECEIVED fill the remaining height of the left column.
+                    //
+                    // Stacked on a phone rather than side by side: halving 377
+                    // points leaves two columns too narrow to show a picture in,
+                    // and a received picture is the whole point of the mode.
+                    let stack = pane.is_some();
                     let row_h = ui.available_height().max(160.0);
-                    ui.horizontal_top(|ui| {
+                    let (row_h, live_w, gallery_w) = if stack {
+                        let w = ui.available_width();
+                        ((row_h / 2.0).max(120.0), w, w)
+                    } else {
+                        (row_h, live_w, gallery_w)
+                    };
+                    let lay = if stack {
+                        egui::Layout::top_down(egui::Align::Min)
+                    } else {
+                        egui::Layout::left_to_right(egui::Align::Min)
+                    };
+                    ui.with_layout(lay, |ui| {
                         // LIVE: the picture currently decoding, shown large.
                         sstv_section(ui, "LIVE", egui::vec2(live_w, row_h), |ui| {
                             ui.centered_and_justified(|ui| {
@@ -613,13 +641,15 @@ impl SdroxideApp {
                             });
                         });
                         // Draggable vertical divider between LIVE and RECEIVED.
-                        let hresp =
-                            crate::chrome::split_handle(ui, egui::vec2(handle_w, row_h), None);
-                        if hresp.dragged() {
-                            // Dragging right shrinks the gallery (grows LIVE).
-                            let d = hresp.drag_delta().x / left_w.max(1.0);
-                            self.view.sstv_gallery_fraction =
-                                (self.view.sstv_gallery_fraction - d).clamp(0.2, 0.6);
+                        if !stack {
+                            let hresp =
+                                crate::chrome::split_handle(ui, egui::vec2(handle_w, row_h), None);
+                            if hresp.dragged() {
+                                // Dragging right shrinks the gallery (grows LIVE).
+                                let d = hresp.drag_delta().x / left_w.max(1.0);
+                                self.view.sstv_gallery_fraction =
+                                    (self.view.sstv_gallery_fraction - d).clamp(0.2, 0.6);
+                            }
                         }
 
                         // RECEIVED: narrow multi-column gallery of decoded pictures.
@@ -660,16 +690,21 @@ impl SdroxideApp {
                 },
             );
 
+            }
+
             // Draggable vertical divider between the receive side and the
             // TRANSMIT (send) column — mirrors the FT8 decode/QSO splitter.
-            let hresp = crate::chrome::split_handle(ui, egui::vec2(handle_w, full_h), None);
-            if hresp.dragged() {
-                // Dragging right shrinks the TX column (grows the receive side).
-                let d = hresp.drag_delta().x / avail.x.max(1.0);
-                self.view.sstv_tx_fraction = (self.view.sstv_tx_fraction - d).clamp(0.22, 0.6);
+            if pane.is_none() {
+                let hresp = crate::chrome::split_handle(ui, egui::vec2(handle_w, full_h), None);
+                if hresp.dragged() {
+                    // Dragging right shrinks the TX column (grows the receive side).
+                    let d = hresp.drag_delta().x / avail.x.max(1.0);
+                    self.view.sstv_tx_fraction = (self.view.sstv_tx_fraction - d).clamp(0.22, 0.6);
+                }
             }
 
             // ── RIGHT: transmit compositor, full height ──
+            if pane.is_none_or(|p| p != 0) {
             ui.allocate_ui(egui::vec2(tx_w, full_h), |ui| {
                 sstv_section(ui, "TRANSMIT", egui::vec2(tx_w, full_h), |ui| {
                     let inner_w = tx_w - 16.0;
@@ -862,6 +897,7 @@ impl SdroxideApp {
                     });
                 });
             });
+            }
 
             if let Some(i) = enlarge {
                 self.sstv.enlarged = Some(i);

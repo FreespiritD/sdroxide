@@ -4,29 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::widgets::smeter::SmeterStyle;
 
-/// Which view the digital panel shows on a phone.
-///
-/// The decode list, the QSO area and the waterfall each want the whole of a
-/// phone's width and most of its height, so rather than three slivers the panel
-/// shows one at a time and a row of chips switches between them. Persisted, so
-/// an operator who works from the decode list comes back to it.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DigiTab {
-    /// The stations being decoded, with their REPLY buttons.
-    #[default]
-    Decodes,
-    /// The conversation, the station card and the transmit controls.
-    Qso,
-    /// The panadapter, zoomed to the mode's sub-band.
-    Waterfall,
-}
-
-impl DigiTab {
-    /// The tabs in the order the chips show them, with their labels.
-    pub const ALL: [(DigiTab, &'static str); 3] =
-        [(DigiTab::Decodes, "DECODES"), (DigiTab::Qso, "QSO"), (DigiTab::Waterfall, "WFALL")];
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ViewState {
@@ -87,10 +64,17 @@ pub struct ViewState {
     /// Desktop only: the map is the first thing a compact layout gives up, so
     /// there is nothing for this to divide there.
     pub digi_map_fraction: f32,
-    /// Which of the digital panel's three views a phone is showing. They do not
-    /// fit together at that width, so they take turns.
+    /// Which of the digital panel's views a phone is showing, as an index into
+    /// the mode's own list (see `panels::panel_tabs`) — the panes differ by
+    /// mode, and the waterfall is always the last of them. They do not fit
+    /// together at a phone's width, so they take turns.
+    ///
+    /// Clamped on use rather than on load: the list is shorter in some modes
+    /// than others, and a stored index is only meaningful against the mode it
+    /// was stored in. Replaces an older `digi_tab` enum, which a stored blob
+    /// may still carry; serde ignores it and everyone starts on the first pane.
     #[serde(default)]
-    pub digi_tab: DigiTab,
+    pub digi_pane: usize,
     /// Fraction of the SSTV panel width given to the TRANSMIT (send) column; the
     /// rest is the receive side (LIVE + RECEIVED). User-draggable.
     pub sstv_tx_fraction: f32,
@@ -333,7 +317,7 @@ impl Default for ViewState {
             digi_split_fraction: 0.52,
             js8_split_fraction: js8_split_default(),
             digi_map_fraction: 0.6,
-            digi_tab: DigiTab::default(),
+            digi_pane: 0,
             sstv_tx_fraction: 0.38,
             sstv_gallery_fraction: 0.4,
             wefax_gallery_fraction: wefax_gallery_default(),

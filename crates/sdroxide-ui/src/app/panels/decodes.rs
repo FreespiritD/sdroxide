@@ -558,7 +558,8 @@ impl SdroxideApp {
                         // operator on the decode list would have them watching
                         // the sequencer they just started from behind a chip.
                         if phone {
-                            self.view.digi_tab = crate::view::DigiTab::Qso;
+                            self.view.digi_pane =
+                                crate::app::panels::pane_index(self.state.rx[0].mode, "QSO");
                         }
                     } else if queue {
                         if let Some(from) = &d.from {

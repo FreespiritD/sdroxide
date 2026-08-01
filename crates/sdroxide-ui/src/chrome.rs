@@ -35,7 +35,12 @@ pub fn angled_frame<R>(ui: &mut Ui, accent: Color32, add: impl FnOnce(&mut Ui) -
     // against). Capture the panel's real width here, before the frame, and
     // pin the content to it so wrapping happens at the visible edge.
     let avail = {
-        let a = ui.available_width();
+        // Never wider than the window itself, whatever the parent reports. A
+        // `Frame`'s outer rect is its content plus its margins, so a child that
+        // took all the width there was leaves the parent expanded past the
+        // screen edge — and every row measured against *that* wraps too late
+        // and has whatever crossed the edge clipped away.
+        let a = ui.available_width().min(ui.ctx().content_rect().width());
         if a.is_finite() && a > 50.0 { a } else { ui.ctx().content_rect().width() - 24.0 }
     };
     let margin = 10i8;
@@ -340,6 +345,22 @@ pub fn control_row<R>(ui: &mut Ui, narrow: bool, add: impl FnOnce(&mut Ui) -> R)
         .inner
     } else {
         ui.horizontal(add).inner
+    }
+}
+
+/// The trailing items of a header row: pinned to the right where there is room
+/// to spare, and simply next in line where there is not.
+///
+/// A right-to-left child claims what is left of the row and right-aligns inside
+/// it. That reads well on a row with slack, and badly on one that has already
+/// wrapped — "what is left of the row" is then the sliver beside the items just
+/// placed, and the pinned ones get drawn over them. A compact layout wraps
+/// nearly every header, so there it stays in flow.
+pub fn row_tail<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    if crate::layout::tier(ui.ctx()).compact() {
+        add(ui)
+    } else {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add).inner
     }
 }
 

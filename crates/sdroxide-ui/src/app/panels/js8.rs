@@ -164,7 +164,7 @@ impl SdroxideApp {
         let js8 = status.as_ref().and_then(|s| s.js8.clone()).unwrap_or_default();
 
         // ── Header: speed, tuning, queue depth ──────────────────────────────
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("JS8").size(11.0).strong().color(crate::theme::CYAN));
             for speed in Js8Speed::ALL {
                 if crate::chrome::chip(ui, js8.speed == speed, speed.label()).clicked()
@@ -227,7 +227,7 @@ impl SdroxideApp {
                     sdroxide_types::HB_BAND_HI_HZ,
                 ));
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            crate::chrome::row_tail(ui, |ui| {
                 // Every setting this mode has — callsign, groups, auto-reply,
                 // the beacon interval, the status message — lives in that
                 // window, and the JS8 panel is the only one with no other way
@@ -265,8 +265,19 @@ impl SdroxideApp {
 
         let avail_h = (content_bottom - ui.cursor().top()).max(80.0);
         let total_w = ui.available_width();
-        let left_w = (total_w * self.view.js8_split_fraction).clamp(160.0, total_w - 200.0);
 
+        // A phone gets one of the two at a time: the heard list wants 160
+        // points and the conversation 200 before either has drawn anything.
+        if let Some(pane) = self.phone_pane(ui, self.state.rx[0].mode) {
+            if pane == 0 {
+                self.js8_heard_list(ui, &js8, avail_h, total_w);
+            } else {
+                self.js8_chat(ui, cmds, &js8, avail_h);
+            }
+            return;
+        }
+
+        let left_w = (total_w * self.view.js8_split_fraction).clamp(160.0, total_w - 200.0);
         ui.horizontal_top(|ui| {
             // ── Left: who is on the band ────────────────────────────────────
             ui.vertical(|ui| {
@@ -283,24 +294,37 @@ impl SdroxideApp {
             }
 
             // ── Right: the conversation ─────────────────────────────────────
-            //
-            // Laid out bottom-up so the controls claim their real height and
-            // the conversation takes whatever is left. Reserving a guessed
-            // number of pixels for them instead clips the bottom row as soon as
-            // a chip is added or the theme's spacing changes.
             ui.vertical(|ui| {
                 ui.set_height(avail_h);
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    // First declared is lowest in a bottom-up layout, so this
-                    // is the gap between the controls and the panel edge.
-                    // Without it they sit flush against the frame.
-                    ui.add_space(8.0);
-                    self.js8_compose(ui, cmds, &js8);
-                    ui.add_space(4.0);
-                    // Back to normal order for the scrolling part.
-                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                        self.js8_conversation(ui, &js8);
-                    });
+                self.js8_chat(ui, cmds, &js8, avail_h);
+            });
+        });
+    }
+
+    /// The conversation and the controls under it.
+    ///
+    /// Laid out bottom-up so the controls claim their real height and the
+    /// conversation takes whatever is left. Reserving a guessed number of
+    /// pixels for them instead clips the bottom row as soon as a chip is added
+    /// or the theme's spacing changes.
+    fn js8_chat(
+        &mut self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<Command>,
+        js8: &sdroxide_types::Js8Status,
+        avail_h: f32,
+    ) {
+        ui.allocate_ui(egui::vec2(ui.available_width(), avail_h), |ui| {
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                // First declared is lowest in a bottom-up layout, so this is
+                // the gap between the controls and the panel edge. Without it
+                // they sit flush against the frame.
+                ui.add_space(8.0);
+                self.js8_compose(ui, cmds, js8);
+                ui.add_space(4.0);
+                // Back to normal order for the scrolling part.
+                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    self.js8_conversation(ui, js8);
                 });
             });
         });

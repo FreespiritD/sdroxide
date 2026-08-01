@@ -214,7 +214,7 @@ impl SdroxideApp {
             status.as_ref().map(|s| (s.tx_sent as f32 / 1000.0).clamp(0.0, 1.0)).unwrap_or(0.0);
 
         // Header: title, transmit-speed slider, and the transmit indicator.
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("RF PAINT").size(11.0).strong().color(crate::theme::CYAN));
             ui.add_space(12.0);
             ui.label(RichText::new("Scan speed").size(10.5).color(crate::theme::CYAN_DIM));
@@ -237,7 +237,7 @@ impl SdroxideApp {
                 self.digi_cfg_edit.rf_paint_speed = speed;
                 cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            crate::chrome::row_tail(ui, |ui| {
                 if transmitting {
                     if crate::chrome::chip(ui, false, "Abort").clicked() {
                         cmds.push(Command::DigiAbortTx);
@@ -267,97 +267,107 @@ impl SdroxideApp {
 
         let avail_w = ui.available_width();
         let gap = 10.0;
-        let half = ((avail_w - gap) / 2.0).max(150.0);
+        // A phone paints one at a time. The two sections have a 150 pt floor
+        // each, which is most of the screen before either has a preview in it,
+        // and a preview of what is about to go on the air is the point of both.
+        let pane = self.phone_pane(ui, self.state.rx[0].mode);
+        let half = if pane.is_some() { avail_w } else { ((avail_w - gap) / 2.0).max(150.0) };
         let content_h = (ui.available_height() - 2.0).max(150.0);
 
         ui.horizontal_top(|ui| {
             // ── Text paint ──
-            sstv_section(ui, "TEXT PAINT", egui::vec2(half, content_h), |ui| {
-                let inner_w = ui.available_width();
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.rf_paint.text)
-                        .hint_text("Type text to paint…")
-                        .desired_width(inner_w),
-                );
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new("PREVIEW WATERFALL").size(8.5).color(crate::theme::CYAN_DIM),
-                );
-                ui.add_space(2.0);
-                let prev_h = (ui.available_height() - 40.0).max(44.0);
-                draw_scroll_preview(
-                    ui,
-                    self.rf_paint.text_prev.as_ref(),
-                    egui::vec2(inner_w, prev_h),
-                    time,
-                    "type text to preview",
-                );
-                ui.add_space(6.0);
-                let ready = !self.rf_paint.text.trim().is_empty();
-                ui.add_enabled_ui(ready && !transmitting, |ui| {
-                    if crate::chrome::chip_accent(
+            if pane.is_none_or(|p| p == 0) {
+                sstv_section(ui, "TEXT PAINT", egui::vec2(half, content_h), |ui| {
+                    let inner_w = ui.available_width();
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.rf_paint.text)
+                            .hint_text("Type text to paint…")
+                            .desired_width(inner_w),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new("PREVIEW WATERFALL").size(8.5).color(crate::theme::CYAN_DIM),
+                    );
+                    ui.add_space(2.0);
+                    let prev_h = (ui.available_height() - 40.0).max(44.0);
+                    draw_scroll_preview(
                         ui,
-                        true,
-                        "  TRANSMIT  ",
-                        crate::theme::PINK,
-                        Color32::WHITE,
-                    )
-                    .clicked()
-                        && let Some((gray, w, h)) =
-                            crate::rf_paint::text_bitmap(&self.rf_paint.text)
-                        && let Some(png) = crate::rf_paint::gray_to_png(&gray, w, h)
-                    {
-                        cmds.push(Command::DigiImageTx { png });
-                    }
+                        self.rf_paint.text_prev.as_ref(),
+                        egui::vec2(inner_w, prev_h),
+                        time,
+                        "type text to preview",
+                    );
+                    ui.add_space(6.0);
+                    let ready = !self.rf_paint.text.trim().is_empty();
+                    ui.add_enabled_ui(ready && !transmitting, |ui| {
+                        if crate::chrome::chip_accent(
+                            ui,
+                            true,
+                            "  TRANSMIT  ",
+                            crate::theme::PINK,
+                            Color32::WHITE,
+                        )
+                        .clicked()
+                            && let Some((gray, w, h)) =
+                                crate::rf_paint::text_bitmap(&self.rf_paint.text)
+                            && let Some(png) = crate::rf_paint::gray_to_png(&gray, w, h)
+                        {
+                            cmds.push(Command::DigiImageTx { png });
+                        }
+                    });
                 });
-            });
-            ui.add_space(gap);
+            }
+            if pane.is_none() {
+                ui.add_space(gap);
+            }
             // ── Image paint ──
-            sstv_section(ui, "IMAGE PAINT", egui::vec2(half, content_h), |ui| {
-                let inner_w = ui.available_width();
-                let img_h = (content_h * 0.4).clamp(56.0, 150.0);
-                draw_image_box(
-                    ui,
-                    self.rf_paint.img_disp.as_ref(),
-                    self.rf_paint.img_gray.as_ref().map(|(_, w, h)| (*w, *h)),
-                    egui::vec2(inner_w, img_h),
-                    "no image loaded",
-                );
-                ui.add_space(4.0);
-                if crate::chrome::chip(ui, false, "Load image…").clicked() {
-                    pick_image(self.rf_paint.inbox.clone());
-                }
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new("PREVIEW WATERFALL").size(8.5).color(crate::theme::CYAN_DIM),
-                );
-                ui.add_space(2.0);
-                let prev_h = (ui.available_height() - 40.0).max(40.0);
-                draw_scroll_preview(
-                    ui,
-                    self.rf_paint.img_prev.as_ref(),
-                    egui::vec2(inner_w, prev_h),
-                    time,
-                    "load an image to preview",
-                );
-                ui.add_space(6.0);
-                let ready = self.rf_paint.img_gray.is_some();
-                ui.add_enabled_ui(ready && !transmitting, |ui| {
-                    if crate::chrome::chip_accent(
+            if pane.is_none_or(|p| p != 0) {
+                sstv_section(ui, "IMAGE PAINT", egui::vec2(half, content_h), |ui| {
+                    let inner_w = ui.available_width();
+                    let img_h = (content_h * 0.4).clamp(56.0, 150.0);
+                    draw_image_box(
                         ui,
-                        true,
-                        "  TRANSMIT  ",
-                        crate::theme::PINK,
-                        Color32::WHITE,
-                    )
-                    .clicked()
-                        && let Some((gray, w, h)) = &self.rf_paint.img_gray
-                        && let Some(png) = crate::rf_paint::gray_to_png(gray, *w, *h)
-                    {
-                        cmds.push(Command::DigiImageTx { png });
+                        self.rf_paint.img_disp.as_ref(),
+                        self.rf_paint.img_gray.as_ref().map(|(_, w, h)| (*w, *h)),
+                        egui::vec2(inner_w, img_h),
+                        "no image loaded",
+                    );
+                    ui.add_space(4.0);
+                    if crate::chrome::chip(ui, false, "Load image…").clicked() {
+                        pick_image(self.rf_paint.inbox.clone());
                     }
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new("PREVIEW WATERFALL").size(8.5).color(crate::theme::CYAN_DIM),
+                    );
+                    ui.add_space(2.0);
+                    let prev_h = (ui.available_height() - 40.0).max(40.0);
+                    draw_scroll_preview(
+                        ui,
+                        self.rf_paint.img_prev.as_ref(),
+                        egui::vec2(inner_w, prev_h),
+                        time,
+                        "load an image to preview",
+                    );
+                    ui.add_space(6.0);
+                    let ready = self.rf_paint.img_gray.is_some();
+                    ui.add_enabled_ui(ready && !transmitting, |ui| {
+                        if crate::chrome::chip_accent(
+                            ui,
+                            true,
+                            "  TRANSMIT  ",
+                            crate::theme::PINK,
+                            Color32::WHITE,
+                        )
+                        .clicked()
+                            && let Some((gray, w, h)) = &self.rf_paint.img_gray
+                            && let Some(png) = crate::rf_paint::gray_to_png(gray, *w, *h)
+                        {
+                            cmds.push(Command::DigiImageTx { png });
+                        }
+                    });
                 });
-            });
+            }
         });
     }
 }

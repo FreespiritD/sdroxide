@@ -152,7 +152,13 @@ impl SdroxideApp {
             // Phase nudge: for a chart whose phasing pulse was missed, which is
             // every chart you tune into halfway through.
             ui.label(RichText::new("PHASE").color(theme::CYAN_DIM).size(9.5).strong());
-            for (face, px) in [("⏪", -100), ("◀", -10), ("▶", 10), ("⏩", 100)] {
+            // Labelled with the shift itself rather than with arrows. The
+            // media glyphs this used to wear (⏪ ◀ ▶ ⏩) are not in Chakra
+            // Petch, and the fallback the browser substitutes measures
+            // narrower than it draws — so a wrapped row decided they fitted
+            // when they did not, and the last of them was clipped at the edge
+            // of a phone. The amount is what the hover text said anyway.
+            for (face, px) in [("−100", -100), ("−10", -10), ("+10", 10), ("+100", 100)] {
                 if crate::chrome::chip(ui, false, face)
                     .on_hover_text(format!("Shift the picture {px} pixels"))
                     .clicked()
@@ -260,6 +266,10 @@ impl SdroxideApp {
         // instead of pushing it out of the panel.
         let avail_h = ui.available_height().max(80.0).min(panel_h);
         let handle_w = 7.0;
+        // A phone takes the chart and the gallery in turns: a 120 pt strip of
+        // thumbnails beside a chart leaves neither wide enough to read, and a
+        // weather chart is the one thing on this screen worth the whole width.
+        let pane = self.phone_pane(ui, self.state.rx[0].mode);
         ui.horizontal_top(|ui| {
             // The gallery takes a user-draggable fraction of the width, the
             // chart the rest; each keeps enough to stay useful. The strip is
@@ -268,65 +278,73 @@ impl SdroxideApp {
             // back out of the way while a chart is being read at 1:1.
             let total_w = ui.available_width();
             let gap = ui.spacing().item_spacing.x;
-            let gallery_w = (total_w * self.view.wefax_gallery_fraction)
-                .clamp(120.0, (total_w - handle_w - 2.0 * gap - 200.0).max(120.0));
-            let img_w = (total_w - gallery_w - handle_w - 2.0 * gap).max(120.0);
+            let (img_w, gallery_w) = match pane {
+                // Whichever one is up takes the row.
+                Some(0) => (total_w, 0.0),
+                Some(_) => (0.0, total_w),
+                None => {
+                    let g = (total_w * self.view.wefax_gallery_fraction)
+                        .clamp(120.0, (total_w - handle_w - 2.0 * gap - 200.0).max(120.0));
+                    ((total_w - g - handle_w - 2.0 * gap).max(120.0), g)
+                }
+            };
             // Both columns are explicitly top-down: `allocate_ui` inherits the
             // surrounding layout, which is the horizontal one that puts the two
             // columns side by side, and a gallery laid out left-to-right walks
             // its thumbnails off the edge of the window.
-            ui.allocate_ui_with_layout(
-                egui::vec2(img_w, avail_h),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    let receiving = st.receiving;
-                    let (w, h) = self.wefax.live_size();
-                    // Cloned rather than borrowed: the follow flag is updated from
-                    // the scroll position afterwards, which needs the state back.
-                    let tex = self.wefax.live_texture(&ctx).cloned();
-                    match tex {
-                        Some(tex) => {
-                            // The scroll area's own width, less the bar it will
-                            // put down the side, is what the picture has to fit
-                            // into; using the column width would leave a chart
-                            // fitted "to the width" a scrollbar too wide.
-                            let bar = ui.spacing().scroll.bar_width + 4.0;
-                            let view = (img_w - bar, avail_h - bar);
-                            let size = crate::wefax::live_size(
-                                self.wefax.zoom,
-                                self.wefax.aspect,
-                                view,
-                                (w, h),
-                            );
-                            let out = egui::ScrollArea::both()
-                                .id_salt("wefax-live")
-                                .auto_shrink([false, false])
-                                // Follow the newest rows only while the operator is
-                                // at the bottom. Sticking regardless would snap the
-                                // view back every time a line arrived, which is
-                                // exactly what makes a chart unreadable until it has
-                                // finished.
-                                .stick_to_bottom(receiving && self.wefax.follow)
-                                .show(ui, |ui| {
-                                    ui.add(
-                                        egui::Image::new(&tex)
-                                            .fit_to_exact_size(egui::vec2(size.0, size.1))
-                                            // The size above already carries the
-                                            // aspect the operator asked for;
-                                            // preserving the texture's own would
-                                            // undo the stretch control.
-                                            .maintain_aspect_ratio(false),
-                                    );
-                                });
-                            // Where they left the view decides whether we keep
-                            // following: at the bottom means "show me the new
-                            // lines", anywhere else means "I am reading".
-                            let slack = (out.content_size.y - out.inner_rect.height()).max(0.0);
-                            self.wefax.follow = out.state.offset.y >= slack - 8.0;
-                        }
-                        None => {
-                            ui.centered_and_justified(|ui| {
-                                ui.label(
+            if pane.is_none_or(|p| p == 0) {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(img_w, avail_h),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        let receiving = st.receiving;
+                        let (w, h) = self.wefax.live_size();
+                        // Cloned rather than borrowed: the follow flag is updated from
+                        // the scroll position afterwards, which needs the state back.
+                        let tex = self.wefax.live_texture(&ctx).cloned();
+                        match tex {
+                            Some(tex) => {
+                                // The scroll area's own width, less the bar it will
+                                // put down the side, is what the picture has to fit
+                                // into; using the column width would leave a chart
+                                // fitted "to the width" a scrollbar too wide.
+                                let bar = ui.spacing().scroll.bar_width + 4.0;
+                                let view = (img_w - bar, avail_h - bar);
+                                let size = crate::wefax::live_size(
+                                    self.wefax.zoom,
+                                    self.wefax.aspect,
+                                    view,
+                                    (w, h),
+                                );
+                                let out = egui::ScrollArea::both()
+                                    .id_salt("wefax-live")
+                                    .auto_shrink([false, false])
+                                    // Follow the newest rows only while the operator is
+                                    // at the bottom. Sticking regardless would snap the
+                                    // view back every time a line arrived, which is
+                                    // exactly what makes a chart unreadable until it has
+                                    // finished.
+                                    .stick_to_bottom(receiving && self.wefax.follow)
+                                    .show(ui, |ui| {
+                                        ui.add(
+                                            egui::Image::new(&tex)
+                                                .fit_to_exact_size(egui::vec2(size.0, size.1))
+                                                // The size above already carries the
+                                                // aspect the operator asked for;
+                                                // preserving the texture's own would
+                                                // undo the stretch control.
+                                                .maintain_aspect_ratio(false),
+                                        );
+                                    });
+                                // Where they left the view decides whether we keep
+                                // following: at the bottom means "show me the new
+                                // lines", anywhere else means "I am reading".
+                                let slack = (out.content_size.y - out.inner_rect.height()).max(0.0);
+                                self.wefax.follow = out.state.offset.y >= slack - 8.0;
+                            }
+                            None => {
+                                ui.centered_and_justified(|ui| {
+                                    ui.label(
                                     RichText::new(
                                         "Tune a fax schedule in USB and wait for a start tone, or \
                                      press START to begin mid-chart.",
@@ -334,29 +352,34 @@ impl SdroxideApp {
                                     .color(theme::LINE_LIT)
                                     .size(11.5),
                                 );
-                            });
+                                });
+                            }
                         }
-                    }
-                },
-            );
-
-            // Draggable vertical divider between the chart and the gallery.
-            let hresp = crate::chrome::split_handle(ui, egui::vec2(handle_w, avail_h), None);
-            if hresp.dragged() {
-                // Dragging right shrinks the gallery (grows the chart).
-                let d = hresp.drag_delta().x / total_w.max(1.0);
-                self.view.wefax_gallery_fraction =
-                    (self.view.wefax_gallery_fraction - d).clamp(0.1, 0.5);
+                    },
+                );
             }
 
-            ui.allocate_ui_with_layout(
-                egui::vec2(gallery_w, avail_h),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.set_max_width(gallery_w);
-                    self.wefax_gallery(ui, gallery_w);
-                },
-            );
+            // Draggable vertical divider between the chart and the gallery.
+            if pane.is_none() {
+                let hresp = crate::chrome::split_handle(ui, egui::vec2(handle_w, avail_h), None);
+                if hresp.dragged() {
+                    // Dragging right shrinks the gallery (grows the chart).
+                    let d = hresp.drag_delta().x / total_w.max(1.0);
+                    self.view.wefax_gallery_fraction =
+                        (self.view.wefax_gallery_fraction - d).clamp(0.1, 0.5);
+                }
+            }
+
+            if pane.is_none_or(|p| p != 0) {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(gallery_w, avail_h),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_max_width(gallery_w);
+                        self.wefax_gallery(ui, gallery_w);
+                    },
+                );
+            }
         });
 
         self.wefax_viewer(&ctx);

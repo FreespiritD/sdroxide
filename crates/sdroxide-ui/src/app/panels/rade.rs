@@ -20,12 +20,12 @@ impl SdroxideApp {
         let rade = status.as_ref().and_then(|s| s.rade).unwrap_or_default();
         let transmitting = status.as_ref().map(|s| s.transmitting).unwrap_or(false);
 
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("RADE").size(11.0).strong().color(crate::theme::CYAN));
             ui.label(
                 RichText::new("FreeDV V1 digital voice").size(10.5).color(crate::theme::CYAN_DIM),
             );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            crate::chrome::row_tail(ui, |ui| {
                 if transmitting {
                     ui.label(RichText::new("● TX").size(11.0).strong().color(crate::theme::PINK));
                     ui.add_space(8.0);

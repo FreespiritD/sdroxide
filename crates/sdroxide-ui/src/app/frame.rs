@@ -397,11 +397,13 @@ impl eframe::App for SdroxideApp {
             let phone = tier == crate::layout::Tier::Phone;
             let width = ui.available_width();
             if phone {
-                self.digi_tabs(ui);
+                self.digi_tabs(ui, mode);
             }
-            let tab = self.view.digi_tab;
-            let show_wf = !phone || tab == crate::view::DigiTab::Waterfall;
-            let show_panel = !phone || tab != crate::view::DigiTab::Waterfall;
+            // The waterfall is the tab past the last of the mode's own panes.
+            let on_waterfall =
+                phone && self.digi_pane(mode) == crate::app::panels::panel_panes(mode).len();
+            let show_wf = !phone || on_waterfall;
+            let show_panel = !phone || !on_waterfall;
 
             // Manual vertical split with a draggable divider: the operating
             // panel gets `digi_panel_fraction` of the height, the waterfall the
