@@ -77,6 +77,12 @@ impl eframe::App for SdroxideApp {
                     // for good, showing a band nothing is receiving any more.
                     self.wide_frame = None;
                     self.wide_wf.clear();
+                    // This also fires on a reconnect, and pictures may have
+                    // come in while the link was down. Read the stores again
+                    // rather than leaving a gallery that stops at the moment
+                    // the connection dropped.
+                    self.sstv.listed = false;
+                    self.wefax.listed = false;
                 }
                 RadioEvent::State(s) => {
                     let prev_vfo = self.state.active_freq_hz();
@@ -133,9 +139,7 @@ impl eframe::App for SdroxideApp {
                 RadioEvent::SstvLine { image_id, y, rgb } => {
                     self.sstv.on_line(image_id, y, &rgb, &ctx);
                 }
-                RadioEvent::SstvImage { image_id, mode, w, h, png } => {
-                    self.sstv.on_image(image_id, mode, w, h, &png, &ctx);
-                }
+                RadioEvent::SstvImage { png, .. } => self.sstv.on_image(&png, &ctx),
                 RadioEvent::DigiImage { png } => {
                     if let Some((rgb, w, h)) = crate::sstv::decode_image(&png) {
                         let ci = crate::sstv::color_image(&rgb, w, h);
@@ -151,17 +155,12 @@ impl eframe::App for SdroxideApp {
                     self.wefax.push_line(image_id, y, &gray);
                 }
                 RadioEvent::WefaxImage { png, .. } => {
-                    // The engine has already written the file; the gallery entry
-                    // is named by the same rule against the same clock and dial,
-                    // so it carries the date and station the file on disk does.
-                    // A remote client, which has no file, gets the label anyway.
-                    let dial = self.state.rx_freq_hz();
-                    let name = sdroxide_types::WefaxChartMeta {
-                        unix: crate::time::now_unix(),
-                        dial_hz: (dial > 0.0).then_some(dial),
-                    }
-                    .file_name();
-                    self.wefax.add_chart(&ctx, &name, &png);
+                    // The chart is held rather than filed: the engine names the
+                    // file it wrote and announces it a moment later, and that
+                    // name is the chart's whole metadata. Guessing it here — as
+                    // this once did, off a second clock — would sooner or later
+                    // label a chart a second away from the file it is.
+                    self.wefax.hold_fresh(&ctx, &png);
                     self.wefax.clear_live();
                 }
                 RadioEvent::WefaxStatus(s) => self.wefax.status = s,
@@ -181,9 +180,7 @@ impl eframe::App for SdroxideApp {
                 RadioEvent::RifpRows { image_id, y, w, h, rows } => {
                     self.sstv.on_rifp_rows(image_id, y, w, h, &rows, &ctx);
                 }
-                RadioEvent::RifpImage { image_id, meta, png } => {
-                    self.sstv.on_rifp_image(image_id, meta, &png, &ctx);
-                }
+                RadioEvent::RifpImage { png, .. } => self.sstv.on_rifp_image(&png, &ctx),
                 RadioEvent::RifpStatus(s) => {
                     self.sstv.rifp = s;
                 }
@@ -213,6 +210,24 @@ impl eframe::App for SdroxideApp {
                     self.rigctld_status = Some(TciServerStatus { running, addr, clients, error });
                 }
                 RadioEvent::VoiceStatus(v) => self.voice = v,
+                RadioEvent::ImagePresets(p) => self.sstv.on_presets(p, &ctx),
+                RadioEvent::ImageSlotSource { slot, version, png } => {
+                    self.sstv.on_slot_source(slot, version, &png);
+                }
+                // One store per mode: SSTV and RIFP share a gallery, charts
+                // have their own.
+                RadioEvent::ImageListing(l) => match l.kind {
+                    sdroxide_types::ImageKind::Sstv => self.sstv.on_listing(l, &ctx),
+                    sdroxide_types::ImageKind::Wefax => self.wefax.on_listing(l, &ctx),
+                },
+                RadioEvent::ImageFile { kind, name, png } => match kind {
+                    sdroxide_types::ImageKind::Sstv => self.sstv.on_file(&name, &png, &ctx),
+                    sdroxide_types::ImageKind::Wefax => self.wefax.on_file(&name, &png, &ctx),
+                },
+                RadioEvent::ImageSaved(e) => match e.kind {
+                    sdroxide_types::ImageKind::Sstv => self.sstv.on_saved(e, &ctx),
+                    sdroxide_types::ImageKind::Wefax => self.wefax.on_saved(e, &ctx),
+                },
                 RadioEvent::CallsignResult(info) => self.apply_callsign(info),
                 RadioEvent::Upload(r) => self.on_upload_result(r),
                 RadioEvent::Confirmations(recs) => self.apply_confirmations(recs),

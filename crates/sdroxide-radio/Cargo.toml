@@ -31,5 +31,7 @@ sdroxide-rigctld = { path = "../sdroxide-rigctld" }
 sdroxide-wsjtx = { path = "../sdroxide-wsjtx" }
 # SSTV: encode received images to PNG for the config store, decode composed
 # TX images (PNG) back to RGB. Minimal formats to keep the build lean.
-image = { version = "0.25", default-features = false, features = ["png"] }
+# JPEG as well as PNG: the transmit-preset store normalises whatever the
+# operator picked, and the file picker offers both.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 shine-rs = "0.1.3"

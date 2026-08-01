@@ -137,6 +137,35 @@ pub enum RadioEvent {
         clients: usize,
         error: Option<String>,
     },
+    /// The transmit-image presets: what is in each slot, and the message
+    /// composited over it. Emitted once at startup and on every change, like
+    /// the voice keyer, because the pictures a station sends belong to the
+    /// radio rather than to whichever screen is attached to it.
+    ImagePresets(crate::ImagePresets),
+    /// A preset's stored source picture, answering [`Command::ImageGetSlot`].
+    /// `png` is empty for an empty slot. `version` is the fingerprint the
+    /// picture had when it was read, so a client that asked during a change
+    /// knows which one it got.
+    ImageSlotSource {
+        slot: u8,
+        version: u32,
+        png: Vec<u8>,
+    },
+    /// One page of a received store, answering [`Command::ImageList`].
+    ImageListing(crate::ImageListing),
+    /// One received picture at full size, answering [`Command::ImageGet`].
+    /// An empty `png` means the store does not have it — a gallery that is
+    /// waiting has to be able to stop waiting.
+    ImageFile {
+        kind: crate::ImageKind,
+        name: String,
+        png: Vec<u8>,
+    },
+    /// A freshly received picture has been stored. Carries the same entry a
+    /// listing would, so a gallery prepends it without asking for the page
+    /// again — and, unlike a listing, it is the only place a RIFP manifest
+    /// survives.
+    ImageSaved(crate::ImageEntry),
 }
 
 /// Snapshot of the frontend's switchable sound devices (native clients).
@@ -172,6 +201,16 @@ pub trait RadioController {
     /// no link to redial, and an engine that has stopped needs the app
     /// restarted.
     fn can_reconnect(&self) -> bool {
+        false
+    }
+
+    /// Whether the engine is on another machine, so the paths it reports —
+    /// where received pictures are being saved, where a recording went — name
+    /// *its* filesystem rather than the one the operator is sitting at.
+    ///
+    /// Wording only, and false by default: an in-process engine writes to the
+    /// disk the UI reads.
+    fn engine_is_remote(&self) -> bool {
         false
     }
 

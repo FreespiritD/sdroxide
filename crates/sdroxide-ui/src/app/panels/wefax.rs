@@ -37,7 +37,17 @@ impl SdroxideApp {
 
         let st = self.wefax.status;
         let ctx = ui.ctx().clone();
-        self.wefax_load_disk_once(&ctx);
+        // The charts are the engine's; list its store once when the panel first
+        // opens. Charts that arrive afterwards are announced one at a time.
+        if !self.wefax.listed {
+            self.wefax.listed = true;
+            self.wefax.page_pending = true;
+            cmds.push(Command::ImageList {
+                kind: sdroxide_types::ImageKind::Wefax,
+                offset: 0,
+                count: sdroxide_types::IMAGE_PAGE_MAX,
+            });
+        }
         // A chart arrives at two lines a second; there is no need to chase it
         // any faster than the eye can follow.
         ctx.request_repaint_after(Duration::from_millis(200));
@@ -376,13 +386,13 @@ impl SdroxideApp {
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                         ui.set_max_width(gallery_w);
-                        self.wefax_gallery(ui, gallery_w);
+                        self.wefax_gallery(ui, gallery_w, cmds);
                     },
                 );
             }
         });
 
-        self.wefax_viewer(&ctx);
+        self.wefax_viewer(&ctx, cmds);
     }
 
     /// The gallery of saved charts: a thumbnail per chart, labelled with when it
@@ -393,19 +403,29 @@ impl SdroxideApp {
     /// surface analyses that look identical at thumbnail size, and picking out
     /// "yesterday's 06Z from Pinneberg" without a date on it means opening them
     /// one at a time.
-    fn wefax_gallery(&mut self, ui: &mut egui::Ui, width: f32) {
+    fn wefax_gallery(&mut self, ui: &mut egui::Ui, width: f32, cmds: &mut Vec<Command>) {
         use crate::theme;
 
         let dir = self.wefax.dir.clone();
+        // The path names a directory on the machine the radio is plugged into,
+        // which is not this one when the engine is somewhere else. Copying it is
+        // still the right thing to offer — it is exactly what you want on the
+        // clipboard when you are about to go and look at it over there.
+        let where_ = self.store_where(&dir);
         ui.horizontal(|ui| {
             ui.label(RichText::new("SAVED").color(theme::CYAN_DIM).size(9.5).strong());
-            let n = self.wefax.gallery.len() + self.wefax.disk_extra;
-            if n > 0 {
-                ui.label(RichText::new(format!("{n}")).color(theme::LINE_LIT).size(9.5));
+            if self.wefax.total > 0 {
+                ui.label(
+                    RichText::new(format!("{}", self.wefax.total))
+                        .color(theme::LINE_LIT)
+                        .size(9.5),
+                );
             }
             if !dir.is_empty()
                 && crate::chrome::chip(ui, false, RichText::new("PATH").size(9.5))
-                    .on_hover_text(format!("Charts are saved in\n{dir}\n\nClick to copy the path"))
+                    .on_hover_text(format!(
+                        "Charts are saved {where_}\n\nClick to copy the path"
+                    ))
                     .clicked()
             {
                 ui.ctx().copy_text(dir.clone());
@@ -414,10 +434,12 @@ impl SdroxideApp {
 
         if self.wefax.gallery.is_empty() {
             ui.label(
-                RichText::new(if dir.is_empty() {
+                RichText::new(if self.wefax.page_pending {
+                    "Reading the radio's charts…".to_string()
+                } else if dir.is_empty() {
                     "Finished charts collect here.".to_string()
                 } else {
-                    format!("Finished charts are saved in {dir} and collect here.")
+                    format!("Finished charts are saved {where_} and collect here.")
                 })
                 .color(theme::LINE_LIT)
                 .size(10.0),
@@ -431,6 +453,7 @@ impl SdroxideApp {
         // are shorter still and simply take less room.
         let thumb_h = thumb_w * 0.36;
         let mut open = None;
+        let mut more = false;
         egui::ScrollArea::vertical().id_salt("wefax-gallery").auto_shrink([false, false]).show(
             ui,
             |ui| {
@@ -501,19 +524,42 @@ impl SdroxideApp {
                     }
                     ui.add_space(6.0);
                 }
-                // Charts beyond the ones held as textures are still on disk;
-                // saying so stops the gallery looking like it lost them.
-                if self.wefax.disk_extra > 0 {
+                // The rest of the store is a request away. Exact, not a guess:
+                // the engine counted the directory.
+                let older = self.wefax.total.saturating_sub(self.wefax.gallery.len() as u32);
+                if older > 0 && !self.wefax.can_page() {
+                    // Not a collection that has been lost — the store still has
+                    // them and this says how many. This client simply stops
+                    // holding thumbnails somewhere.
                     ui.label(
-                        RichText::new(format!("+{} older on disk", self.wefax.disk_extra))
+                        RichText::new(format!("{older} older in the store"))
                             .color(theme::LINE_LIT)
                             .size(9.5),
                     );
+                } else if older > 0 {
+                    let label = if self.wefax.page_pending {
+                        "loading…".to_string()
+                    } else {
+                        format!("{older} older — load more")
+                    };
+                    if crate::chrome::chip(ui, false, RichText::new(label).size(9.5)).clicked()
+                        && !self.wefax.page_pending
+                    {
+                        more = true;
+                    }
                 }
             },
         );
         if open.is_some() {
             self.wefax.viewing = open;
+        }
+        if more {
+            self.wefax.page_pending = true;
+            cmds.push(Command::ImageList {
+                kind: sdroxide_types::ImageKind::Wefax,
+                offset: self.wefax.gallery.len() as u32,
+                count: sdroxide_types::IMAGE_PAGE_MAX,
+            });
         }
     }
 
@@ -592,16 +638,34 @@ impl SdroxideApp {
     /// Stepping between charts from inside the window matters for the same
     /// reason: comparing this run against the last one is most of what the
     /// charts are for.
-    fn wefax_viewer(&mut self, ctx: &egui::Context) {
+    fn wefax_viewer(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
         let Some(i) = self.wefax.viewing else { return };
         let n = self.wefax.gallery.len();
         let Some(chart) = self.wefax.gallery.get(i) else {
             self.wefax.viewing = None;
             return;
         };
-        let (name, size, tex) = (chart.name.clone(), chart.size, chart.texture.clone());
+        // Two megapixels of chart live in the engine's store; the thumbnail
+        // stands in until the real one arrives, so the window opens on
+        // something rather than on nothing. Asked once per chart, whatever the
+        // answer — a fetch that fails must not become a request every frame.
+        if chart.full.is_none() && self.wefax.full_asked.as_deref() != Some(&chart.name) {
+            self.wefax.full_asked = Some(chart.name.clone());
+            self.wefax.full_gone = false;
+            cmds.push(Command::ImageGet {
+                kind: sdroxide_types::ImageKind::Wefax,
+                name: chart.name.clone(),
+            });
+        }
+        let chart = &self.wefax.gallery[i];
+        let (name, size) = (chart.name.clone(), chart.size);
+        let loaded = chart.full.is_some();
+        let tex = chart.full.clone().unwrap_or_else(|| chart.texture.clone());
+        let savable = self.wefax.full_png.as_ref().is_some_and(|(n, _)| *n == name);
+        let gone = self.wefax.full_gone;
         let title = chart.title();
         let mut open = true;
+        let mut save = false;
         let mut step = 0i32;
         let resp = egui::Window::new(format!("{title}  ·  {}×{}", size.0, size.1))
             .id(egui::Id::new("wefax-viewer"))
@@ -632,6 +696,25 @@ impl SdroxideApp {
                         step = 1;
                     }
                     ui.add_space(8.0);
+                    if gone {
+                        ui.label(
+                            RichText::new("no longer in the store")
+                                .color(crate::theme::YELLOW)
+                                .size(10.0),
+                        );
+                    } else if !loaded {
+                        ui.label(
+                            RichText::new("loading full size…")
+                                .color(crate::theme::CYAN_DIM)
+                                .size(10.0),
+                        );
+                    } else if savable
+                        && crate::chrome::chip(ui, false, RichText::new("SAVE").size(9.5))
+                            .on_hover_text("Save a copy of this chart on this computer")
+                            .clicked()
+                    {
+                        save = true;
+                    }
                     ui.label(RichText::new(&name).color(crate::theme::LINE_LIT).size(10.0))
                         .on_hover_text("The file this chart was saved as");
                 });
@@ -640,77 +723,32 @@ impl SdroxideApp {
                     .id_salt("wefax-viewer-scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.add(egui::Image::new(&tex).maintain_aspect_ratio(true));
+                        // Sized from the chart, not the texture: a thumbnail
+                        // standing in must not shrink the window and then jump.
+                        let native =
+                            egui::vec2(f32::from(size.0.max(1)), f32::from(size.1.max(1)));
+                        ui.add(egui::Image::new(&tex).fit_to_exact_size(native));
                     });
             });
         if let Some(r) = &resp {
             crate::chrome::paint_window_border(ctx, &r.response);
         }
+        if save {
+            if let Some((name, png)) = &self.wefax.full_png {
+                crate::download::save_as(name, png, crate::download::Mime::Png);
+            }
+        }
         if step != 0 && n > 0 {
             self.wefax.viewing = Some((i as i32 + step).clamp(0, n as i32 - 1) as usize);
+            // Stepping to another chart means the outstanding fetch, if any, is
+            // for one nobody is looking at any more.
+            self.wefax.full_asked = None;
+            self.wefax.full_gone = false;
         }
         if !open {
             self.wefax.viewing = None;
+            self.wefax.full_asked = None;
+            self.wefax.full_gone = false;
         }
-    }
-
-    /// Load previously saved charts into the gallery, once per session.
-    ///
-    /// Reads the legacy config-directory store as well as the pictures one, so
-    /// a collection saved before charts moved to `<Pictures>/sdroxide/wefax`
-    /// still shows up rather than looking as though it had been thrown away.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn wefax_load_disk_once(&mut self, ctx: &egui::Context) {
-        if self.wefax.loaded_disk {
-            return;
-        }
-        self.wefax.loaded_disk = true;
-        let Ok(dir) = sdroxide_config::wefax_rx_dir() else { return };
-        self.wefax.dir = dir.display().to_string();
-
-        // Newest first, and only the most recent few: a chart is two megapixels
-        // as a texture, and a season of them would be gigabytes of VRAM.
-        const KEEP: usize = 24;
-        let mut files: Vec<(i64, std::path::PathBuf)> = Vec::new();
-        let dirs = std::iter::once(dir).chain(sdroxide_config::wefax_legacy_rx_dir());
-        for d in dirs {
-            let Ok(entries) = std::fs::read_dir(&d) else { continue };
-            files.extend(
-                entries
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("png")))
-                    .map(|p| {
-                        // Order by the timestamp the name carries; a file this
-                        // program did not write has none, and sorts oldest.
-                        let when = p
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .and_then(sdroxide_types::WefaxChartMeta::from_file_name)
-                            .map_or(0, |m| m.unix);
-                        (when, p)
-                    }),
-            );
-        }
-        files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-        self.wefax.disk_extra = files.len().saturating_sub(KEEP);
-        for (_, path) in files.iter().take(KEEP) {
-            let Ok(bytes) = std::fs::read(path) else { continue };
-            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-            self.wefax.add_chart(ctx, &name, &bytes);
-        }
-        // `add_chart` prepends, so reading newest-first leaves the list oldest
-        // first; sorting puts it back the way the gallery is browsed.
-        self.wefax.sort_gallery();
-        // Nothing is open yet — `add_chart` shifted the viewer index for each
-        // chart it prepended, and there was no chart to shift.
-        self.wefax.viewing = None;
-    }
-
-    /// The browser tab has no config directory to read a gallery out of; the
-    /// charts it receives this session are all it shows.
-    #[cfg(target_arch = "wasm32")]
-    fn wefax_load_disk_once(&mut self, _ctx: &egui::Context) {
-        self.wefax.loaded_disk = true;
     }
 }

@@ -21,6 +21,7 @@ mod memory;
 mod meters;
 mod mode;
 mod netcfg;
+mod pictures;
 mod radio;
 mod rifp;
 mod rigctld;
@@ -80,6 +81,11 @@ pub use mode::{AgcMode, Mode, NrLevel};
 pub use netcfg::{
     ClusterConfig, Credentials, FeedConfig, FreeDvReporterConfig, LookupProvider, NetworkConfig,
     PskConfig,
+};
+pub use pictures::{
+    IMAGE_NAME_MAX, IMAGE_PAGE_MAX, IMAGE_SLOT_THUMB_EDGE, IMAGE_SLOTS, IMAGE_SOURCE_MAX_EDGE,
+    IMAGE_THUMB_EDGE, IMAGE_UPLOAD_MAX, ImageEntry, ImageKind, ImageListing, ImagePresets,
+    ImageSlotInfo, received_at, safe_name,
 };
 pub use radio::{
     Backend, CatConfig, CatFamily, DigiMode, HpsdrConfig, HpsdrDevice, HpsdrFilterBoard, LineState,

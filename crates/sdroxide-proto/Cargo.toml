@@ -12,3 +12,10 @@ sdroxide-solar = { path = "../sdroxide-solar" }
 serde.workspace = true
 postcard.workspace = true
 thiserror.workspace = true
+
+# `examples/picture_store_probe.rs` only: a WebSocket client and a picture
+# encoder, so the probe can drive a running server the way a browser tab does.
+# Never reachable from the library, which is what compiles to wasm32.
+[dev-dependencies]
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+image = { version = "0.25", default-features = false, features = ["png"] }

@@ -7,6 +7,7 @@
 mod device;
 pub mod engine;
 mod error;
+mod image_store;
 mod recorder;
 mod source;
 mod voice;

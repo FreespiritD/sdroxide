@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgcMode, Band, DigiConfig, Direction, Mode, NetworkConfig, NrLevel, QsoStep, RigctldConfig,
-    RxId, SkimmerSettings, SpectrumConfig, SstvMode, TciServerConfig, UploadTarget, Vfo,
-    WsjtxConfig,
+    AgcMode, Band, DigiConfig, Direction, ImageKind, Mode, NetworkConfig, NrLevel, QsoStep,
+    RigctldConfig, RxId, SkimmerSettings, SpectrumConfig, SstvMode, TciServerConfig, UploadTarget,
+    Vfo, WsjtxConfig,
 };
 
 /// The single control vocabulary. The GUI, the WebSocket protocol, and the
@@ -263,5 +263,46 @@ pub enum Command {
     SetWfmStereo {
         rx: RxId,
         on: bool,
+    },
+
+    // Transmit-image presets and the received-picture stores. Appended for the
+    // usual reason: postcard numbers variants by position.
+    /// Store a picture in transmit preset `slot`, from the raw bytes of a
+    /// picked file (PNG or JPEG). The engine scales the long edge down to
+    /// [`crate::IMAGE_SOURCE_MAX_EDGE`] and keeps a PNG of that, so the store
+    /// never holds a phone camera's forty megapixels and every client composes
+    /// from identical pixels. The result comes back as
+    /// [`crate::RadioEvent::ImagePresets`]; an upload that is too big or is not
+    /// a picture is refused with a [`crate::RadioEvent::Notice`].
+    ImageSetSlot {
+        slot: u8,
+        bytes: Vec<u8>,
+    },
+    /// Empty a preset's picture. The overlay message is the operator's text and
+    /// stays — clearing a picture is replacing it, not forgetting what it said.
+    ImageClearSlot(u8),
+    /// Set the text composited over a preset's picture.
+    ImageSetMessage {
+        slot: u8,
+        message: String,
+    },
+    /// Ask for a preset's stored source picture; the answer is
+    /// [`crate::RadioEvent::ImageSlotSource`]. Requested lazily and cached
+    /// against the slot's version: composition happens client-side, so the
+    /// pixels only have to cross once per picture, not once per keystroke.
+    ImageGetSlot(u8),
+    /// List a received store, newest first: `count` entries (capped at
+    /// [`crate::IMAGE_PAGE_MAX`]) starting at `offset`. Answered with
+    /// [`crate::RadioEvent::ImageListing`].
+    ImageList {
+        kind: ImageKind,
+        offset: u32,
+        count: u32,
+    },
+    /// Fetch one received picture at full size, by the name a listing gave.
+    /// Answered with [`crate::RadioEvent::ImageFile`].
+    ImageGet {
+        kind: ImageKind,
+        name: String,
     },
 }

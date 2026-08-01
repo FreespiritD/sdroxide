@@ -1,17 +1,25 @@
 //! The SSTV and RIFP image panel.
 //!
-//! [`SstvUi`] holds everything the panel draws that is not engine state: the
-//! gallery of received images, the four transmit slots with their overlay
-//! messages, and the textures for both. Received scanlines arrive one at a
-//! time and are painted into a texture as they come, so a picture builds up on
-//! screen exactly as it does on the air.
+//! [`SstvUi`] draws two things the engine owns and one it does not. The five
+//! transmit presets and the gallery of received pictures live on the machine
+//! the radio is plugged into — the panel holds metadata, thumbnails and
+//! whatever pixels it has been handed, and asks for the rest. The picture
+//! currently arriving is the exception: scanlines are painted into a texture as
+//! they come, so a picture builds up on screen exactly as it does on the air.
+//!
+//! Compositing stays here. The crop, the header strip and the overlay text are
+//! applied to the fetched source client-side, so the preview redraws on every
+//! keystroke without a round trip, and only the finished picture goes back to
+//! the engine as an ordinary `SstvTx` / `RifpTx`.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
 use sdroxide_types::{
-    Command, Mode, RifpEncoding, RifpMeta, RifpProfile, RifpSize, RifpStatus, SstvMode, SstvStatus,
+    Command, IMAGE_SLOTS, IMAGE_UPLOAD_MAX, ImageEntry, ImageKind, ImagePresets, Mode,
+    RifpEncoding, RifpProfile, RifpSize, RifpStatus, SstvMode, SstvStatus,
 };
 
 use crate::theme::ThemedScroll;
@@ -22,22 +30,31 @@ use crate::app::util::shorten;
 
 // ───────────────────────────── SSTV panel ──────────────────────────────
 
-/// A transmit-image slot: the (bounded) source picture plus its thumbnail.
+/// A fetched transmit source: the picture the compositor works from, and which
+/// stored version it is, so a slot changed from another screen is refetched
+/// rather than composed from the old photograph.
 pub(in crate::app) struct SstvSlot {
     src_rgb: Vec<u8>,
     sw: u16,
     sh: u16,
-    tex: egui::TextureHandle,
+    version: u32,
 }
 
-/// A received-image gallery entry.
-#[allow(dead_code)] // not used on wasm
+/// Pictures the gallery will hold thumbnails for.
+///
+/// Not a limit on the collection — the engine counts the whole store and the
+/// panel says how many more there are — but on what this client keeps as
+/// textures.
+const GALLERY_MAX: usize = 240;
+
+/// A received-picture gallery entry.
 pub(in crate::app) struct SstvRecv {
-    mode: Option<SstvMode>,
-    /// Where a RIFP picture came from and how it was carried, for the caption
-    /// under the enlarged view. `None` for SSTV, which carries no metadata.
-    rifp: Option<RifpMeta>,
-    tex: egui::TextureHandle,
+    entry: ImageEntry,
+    thumb: egui::TextureHandle,
+    /// The picture at full size, once it has been fetched — or promoted
+    /// straight from the one that had just been received, which the panel
+    /// already held. `None` until the operator enlarges it.
+    full: Option<egui::TextureHandle>,
 }
 
 /// Image-panel state, shared by SSTV and RIFP: received gallery, in-progress
@@ -63,17 +80,53 @@ pub(in crate::app) struct SstvUi {
     /// Auto mode: RX auto-detects the mode; TX defaults to Martin 1 until a mode
     /// is heard or the operator picks one.
     pub(in crate::app) auto: bool,
-    /// Overlay message per image slot (index-aligned with `slots`). The message
-    /// box edits the entry for `selected_slot`, so switching slots swaps the
-    /// text — and each is persisted alongside its picture.
-    pub(in crate::app) slot_messages: Vec<String>,
+    /// The engine's transmit presets: what is in each slot and the message over
+    /// it. The truth — `slots` below only caches its pixels.
+    pub(in crate::app) presets: ImagePresets,
+    /// Thumbnails of the presets, rebuilt when the engine announces a change.
+    pub(in crate::app) slot_thumbs: Vec<Option<egui::TextureHandle>>,
+    /// The message being typed and which slot it belongs to. Only that one slot
+    /// is client-owned, so an echo of our own write — or an edit made on another
+    /// screen — can update the other four without fighting the keyboard.
+    pub(in crate::app) msg_edit: Option<(usize, String)>,
+    /// Fetched source pictures, keyed by slot; `None` until one arrives.
     pub(in crate::app) slots: Vec<Option<SstvSlot>>,
+    /// The version last asked for per slot.
+    ///
+    /// Deliberately not cleared when the answer lands: it records the *ask*, so
+    /// a picture that fails to decode is asked for once rather than once a
+    /// frame for ever. A slot changed on the radio arrives with a new version,
+    /// which is what makes the next ask happen.
+    pub(in crate::app) src_asked: HashMap<usize, u32>,
     pub(in crate::app) selected_slot: usize,
     pub(in crate::app) received: Vec<SstvRecv>,
+    /// How many pictures the store holds altogether, so the gallery can say
+    /// exactly how many older ones there are rather than guessing.
+    pub(in crate::app) total: u32,
+    /// Where the engine is saving received pictures, for the gallery to show.
+    pub(in crate::app) dir: String,
+    /// True while a listing page is outstanding — the reliable lane is finite
+    /// and a scroll must not spray requests down it.
+    pub(in crate::app) page_pending: bool,
+    /// Name of the picture whose full size has been asked for. Like
+    /// `src_asked`, it records the ask and is cleared when the viewer moves on,
+    /// not when the answer arrives.
+    pub(in crate::app) full_asked: Option<String>,
+    /// The answer to that ask was empty — the store no longer has it.
+    pub(in crate::app) full_gone: bool,
     /// In-progress incoming image (painted line-by-line).
     pub(in crate::app) rx_color: Option<egui::ColorImage>,
     pub(in crate::app) rx_tex: Option<egui::TextureHandle>,
     pub(in crate::app) rx_id: u32,
+    /// The picture that has just finished arriving, held until the engine names
+    /// the file it went into. Enlarging it then costs nothing, where fetching
+    /// back what the panel was handed a moment ago would cost a megabyte.
+    pub(in crate::app) fresh: Option<(egui::TextureHandle, Vec<u8>)>,
+    /// The bytes of the full-size picture last fetched or received, and its
+    /// name. One at a time: this is what "Save picture…" writes out, and
+    /// keeping every picture's bytes for a button nobody may press would hold
+    /// a gallery's worth of megabytes for nothing.
+    pub(in crate::app) full_png: Option<(String, Vec<u8>)>,
     pub(in crate::app) status: SstvStatus,
     /// Received-gallery index currently shown enlarged in an overlay window.
     pub(in crate::app) enlarged: Option<usize>,
@@ -82,10 +135,14 @@ pub(in crate::app) struct SstvUi {
     pub(in crate::app) last_detected: Option<SstvMode>,
     pub(in crate::app) preview_tex: Option<egui::TextureHandle>,
     pub(in crate::app) preview_dirty: bool,
-    pub(in crate::app) loaded_disk: bool,
+    /// Whether the store has been listed this session.
+    pub(in crate::app) listed: bool,
     /// File-picker result inbox (raw image bytes), filled by the picker task.
     pub(in crate::app) inbox: Arc<Mutex<Option<Vec<u8>>>>,
     pub(in crate::app) pick_target: Option<usize>,
+    /// A local complaint about a picked file — too big to be worth sending, or
+    /// one the engine refused. Cleared when the next picture is picked.
+    pub(in crate::app) pick_error: Option<String>,
 }
 
 impl Default for SstvUi {
@@ -97,21 +154,32 @@ impl Default for SstvUi {
             preview_dims: (0, 0),
             callsign: String::new(),
             auto: true,
-            slot_messages: vec![String::new(); 5],
-            slots: (0..5).map(|_| None).collect(),
+            presets: ImagePresets::default(),
+            slot_thumbs: (0..IMAGE_SLOTS).map(|_| None).collect(),
+            msg_edit: None,
+            slots: (0..IMAGE_SLOTS).map(|_| None).collect(),
+            src_asked: HashMap::new(),
             selected_slot: 0,
             received: Vec::new(),
+            total: 0,
+            dir: String::new(),
+            page_pending: false,
+            full_asked: None,
+            full_gone: false,
             rx_color: None,
             rx_tex: None,
             rx_id: 0,
+            fresh: None,
+            full_png: None,
             status: SstvStatus::default(),
             enlarged: None,
             last_detected: None,
             preview_tex: None,
             preview_dirty: true,
-            loaded_disk: false,
+            listed: false,
             inbox: Arc::new(Mutex::new(None)),
             pick_target: None,
+            pick_error: None,
         }
     }
 }
@@ -137,22 +205,15 @@ impl SstvUi {
         self.rx_tex = Some(ctx.load_texture("sstv_rx", ci.clone(), egui::TextureOptions::NEAREST));
     }
 
-    /// A completed image arrived: decode and add it to the gallery.
-    pub(in crate::app) fn on_image(
-        &mut self,
-        _id: u32,
-        mode: SstvMode,
-        _w: u16,
-        _h: u16,
-        png: &[u8],
-        ctx: &egui::Context,
-    ) {
-        if let Some((rgb, w, h)) = crate::sstv::decode_image(png) {
+    /// A completed picture arrived. The gallery entry comes from the engine a
+    /// moment later, naming the file it was saved as; what is held here is the
+    /// full-size texture, so enlarging it does not fetch back what the panel
+    /// has just been given.
+    pub(in crate::app) fn on_image(&mut self, png: &[u8], ctx: &egui::Context) {
+        self.fresh = crate::sstv::decode_image(png).map(|(rgb, w, h)| {
             let ci = crate::sstv::color_image(&rgb, w, h);
-            let tex = ctx.load_texture("sstv_recv", ci, egui::TextureOptions::NEAREST);
-            self.received.insert(0, SstvRecv { mode: Some(mode), rifp: None, tex });
-            self.received.truncate(60);
-        }
+            (ctx.load_texture("sstv_recv", ci, egui::TextureOptions::NEAREST), png.to_vec())
+        });
         self.rx_color = None;
         self.rx_tex = None;
     }
@@ -190,32 +251,140 @@ impl SstvUi {
     }
 
     /// RIFP: a complete, digest-verified picture arrived.
-    pub(in crate::app) fn on_rifp_image(
+    pub(in crate::app) fn on_rifp_image(&mut self, png: &[u8], ctx: &egui::Context) {
+        self.on_image(png, ctx);
+        self.rx_dims = (0, 0);
+    }
+
+    /// The engine announced the transmit presets: adopt them, rebuild the slot
+    /// thumbnails, and drop any cached source whose picture has been replaced.
+    pub(in crate::app) fn on_presets(&mut self, presets: ImagePresets, ctx: &egui::Context) {
+        for (i, slot) in presets.slots.iter().enumerate() {
+            let held = self.slots.get(i).and_then(|s| s.as_ref()).map(|s| s.version);
+            if held.is_some_and(|v| v != slot.version) || (held.is_some() && !slot.has_picture()) {
+                if let Some(cell) = self.slots.get_mut(i) {
+                    *cell = None;
+                }
+                if i == self.selected_slot {
+                    self.preview_dirty = true;
+                }
+            }
+            let thumb = (!slot.thumb.is_empty())
+                .then(|| crate::sstv::decode_image(&slot.thumb))
+                .flatten()
+                .map(|(rgb, w, h)| {
+                    let ci = crate::sstv::color_image(&rgb, w, h);
+                    ctx.load_texture("sstv_slot", ci, egui::TextureOptions::LINEAR)
+                });
+            if let Some(cell) = self.slot_thumbs.get_mut(i) {
+                *cell = thumb;
+            }
+        }
+        // The message box takes the engine's text for every slot except the one
+        // under the cursor, so an edit made elsewhere shows up.
+        if self.presets.slot(self.selected_slot).message != presets.slot(self.selected_slot).message
+            && !matches!(&self.msg_edit, Some((i, _)) if *i == self.selected_slot)
+        {
+            self.preview_dirty = true;
+        }
+        self.presets = presets;
+    }
+
+    /// A fetched source picture for a slot.
+    pub(in crate::app) fn on_slot_source(&mut self, slot: u8, version: u32, png: &[u8]) {
+        let slot = slot as usize;
+        let Some(cell) = self.slots.get_mut(slot) else { return };
+        *cell = crate::sstv::load_source_bounded(png, 1024)
+            .map(|(rgb, sw, sh)| SstvSlot { src_rgb: rgb, sw, sh, version });
+        if slot == self.selected_slot {
+            self.preview_dirty = true;
+        }
+    }
+
+    /// One page of the received store.
+    pub(in crate::app) fn on_listing(
         &mut self,
-        _id: u32,
-        meta: RifpMeta,
-        png: &[u8],
+        listing: sdroxide_types::ImageListing,
         ctx: &egui::Context,
     ) {
-        if let Some((rgb, w, h)) = crate::sstv::decode_image(png) {
-            let ci = crate::sstv::color_image(&rgb, w, h);
-            let tex = ctx.load_texture("rifp_recv", ci, egui::TextureOptions::NEAREST);
-            self.received.insert(0, SstvRecv { mode: None, rifp: Some(meta), tex });
-            self.received.truncate(60);
+        self.page_pending = false;
+        self.total = listing.total;
+        self.dir = listing.dir;
+        for entry in listing.entries {
+            self.insert_entry(entry, None, ctx);
         }
-        self.rx_color = None;
-        self.rx_tex = None;
-        self.rx_dims = (0, 0);
+    }
+
+    /// A picture the engine has just stored. It goes to the front of the
+    /// gallery, taking the full-size texture the panel already holds from the
+    /// picture that has this moment finished arriving.
+    pub(in crate::app) fn on_saved(&mut self, entry: ImageEntry, ctx: &egui::Context) {
+        let fresh = self.fresh.take();
+        if let Some((_, png)) = &fresh {
+            self.full_png = Some((entry.name.clone(), png.clone()));
+        }
+        self.total += 1;
+        self.insert_entry(entry, fresh.map(|(tex, _)| tex), ctx);
+    }
+
+    /// A fetched full-size picture. An empty answer means the store no longer
+    /// has it — the file moved or was deleted between listing and opening.
+    pub(in crate::app) fn on_file(&mut self, name: &str, png: &[u8], ctx: &egui::Context) {
+        let Some((rgb, w, h)) = crate::sstv::decode_image(png) else {
+            if self.full_asked.as_deref() == Some(name) {
+                self.full_gone = true;
+            }
+            return;
+        };
+        let tex = ctx.load_texture(
+            "sstv_full",
+            crate::sstv::color_image(&rgb, w, h),
+            egui::TextureOptions::NEAREST,
+        );
+        if let Some(r) = self.received.iter_mut().find(|r| r.entry.name == name) {
+            r.full = Some(tex);
+        }
+        self.full_png = Some((name.to_string(), png.to_vec()));
+    }
+
+    /// Add a gallery entry in received order, skipping one already held.
+    ///
+    /// The listing and the just-arrived notification can name the same picture
+    /// when one lands in the gap between the request and its answer; the name
+    /// is what tells them apart.
+    fn insert_entry(
+        &mut self,
+        entry: ImageEntry,
+        full: Option<egui::TextureHandle>,
+        ctx: &egui::Context,
+    ) {
+        if self.received.iter().any(|r| r.entry.name == entry.name) {
+            return;
+        }
+        let Some((rgb, w, h)) = crate::sstv::decode_image(&entry.thumb) else { return };
+        let thumb = ctx.load_texture(
+            "sstv_thumb",
+            crate::sstv::color_image(&rgb, w, h),
+            egui::TextureOptions::LINEAR,
+        );
+        let at = self.received.partition_point(|r| r.entry.unix > entry.unix);
+        self.received.insert(at, SstvRecv { entry, thumb, full });
+        // The enlarged view is an index into this list, so anything inserted
+        // above it moves what the operator is looking at.
+        if let Some(v) = self.enlarged.as_mut() {
+            if at <= *v {
+                *v += 1;
+            }
+        }
+        // A long session receives more pictures than this client will hold
+        // textures for. The oldest go, not the newest — they are still in the
+        // store, and `total` still counts them.
+        self.received.truncate(GALLERY_MAX);
     }
 
     /// The overlay message for the slot currently being edited.
     pub(in crate::app) fn current_message(&self) -> &str {
-        self.slot_messages.get(self.selected_slot).map(String::as_str).unwrap_or("")
-    }
-
-    /// Persist the per-slot overlay messages to the config file (native only).
-    pub(in crate::app) fn save_messages(&self) {
-        sstv_save_messages(&self.slot_messages);
+        crate::sstv::message_shown(&self.msg_edit, &self.presets, self.selected_slot)
     }
 
     /// Rebuild the transmit preview when the size, slot, or message changed.
@@ -261,97 +430,28 @@ impl SstvUi {
         crate::sstv::encode_png(&rgb, w, h)
     }
 
-    /// Accept a picked image file into `slot`, building a thumbnail texture.
-    pub(in crate::app) fn set_slot(&mut self, slot: usize, bytes: &[u8], ctx: &egui::Context) {
-        let Some((rgb, w, h)) = crate::sstv::load_source_bounded(bytes, 1024) else { return };
-        let ci = crate::sstv::color_image(&rgb, w, h);
-        let tex = ctx.load_texture("sstv_slot", ci, egui::TextureOptions::LINEAR);
-        if let Some(cell) = self.slots.get_mut(slot) {
-            *cell = Some(SstvSlot { src_rgb: rgb, sw: w, sh: h, tex });
-        }
+    /// Send a picked file to the engine for a slot.
+    ///
+    /// Nothing is kept here: the engine scales the picture, stores it and
+    /// announces the presets, and the slot fills in when that comes back. That
+    /// round trip is the point — it is what makes the browser tab and the
+    /// console show the same five pictures.
+    pub(in crate::app) fn set_slot(&mut self, slot: usize, bytes: Vec<u8>, cmds: &mut Vec<Command>) {
         self.selected_slot = slot;
-        self.preview_dirty = true;
-        sstv_save_slot(slot, bytes);
-    }
-}
-
-// ── Disk persistence (native only) ──
-
-#[cfg(not(target_arch = "wasm32"))]
-fn sstv_save_slot(i: usize, png_bytes: &[u8]) {
-    if let Ok(dir) = sdroxide_config::sstv_tx_dir() {
-        let _ = std::fs::write(dir.join(format!("slot{i}.png")), png_bytes);
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn sstv_save_slot(_i: usize, _png_bytes: &[u8]) {}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn sstv_save_messages(messages: &[String]) {
-    let _ = sdroxide_config::save_sstv_messages(messages);
-}
-
-#[cfg(target_arch = "wasm32")]
-fn sstv_save_messages(_messages: &[String]) {}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn sstv_load_messages() -> Vec<String> {
-    sdroxide_config::load_sstv_messages()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn sstv_load_messages() -> Vec<String> {
-    Vec::new()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn sstv_load_slots() -> Vec<Option<(Vec<u8>, u16, u16)>> {
-    let mut out = Vec::new();
-    let dir = match sdroxide_config::sstv_tx_dir() {
-        Ok(d) => d,
-        Err(_) => return (0..5).map(|_| None).collect(),
-    };
-    for i in 0..5 {
-        let entry = std::fs::read(dir.join(format!("slot{i}.png")))
-            .ok()
-            .and_then(|b| crate::sstv::load_source_bounded(&b, 1024));
-        out.push(entry);
-    }
-    out
-}
-
-#[cfg(target_arch = "wasm32")]
-fn sstv_load_slots() -> Vec<Option<(Vec<u8>, u16, u16)>> {
-    (0..5).map(|_| None).collect()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn sstv_load_gallery() -> Vec<(Vec<u8>, u16, u16)> {
-    let mut entries: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(dir) = sdroxide_config::sstv_rx_dir() {
-        if let Ok(rd) = std::fs::read_dir(dir) {
-            for e in rd.flatten() {
-                let p = e.path();
-                if p.extension().and_then(|x| x.to_str()) == Some("png") {
-                    entries.push(p);
-                }
-            }
+        // Checked here as well as engine-side: pushing forty megabytes down the
+        // socket only to have it refused at the far end is a poor experience,
+        // and it keeps a huge upload clear of the WebSocket's frame limit.
+        if bytes.len() > IMAGE_UPLOAD_MAX {
+            self.pick_error = Some(format!(
+                "That picture is {} MB — the limit is {} MB.",
+                bytes.len() / 1_048_576,
+                IMAGE_UPLOAD_MAX / 1_048_576,
+            ));
+            return;
         }
+        self.pick_error = None;
+        cmds.push(Command::ImageSetSlot { slot: slot as u8, bytes });
     }
-    // Newest first by filename (timestamps), cap the count.
-    entries.sort();
-    entries.reverse();
-    entries.truncate(40);
-    entries
-        .into_iter()
-        .filter_map(|p| std::fs::read(&p).ok().and_then(|b| crate::sstv::decode_image(&b)))
-        .collect()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn sstv_load_gallery() -> Vec<(Vec<u8>, u16, u16)> {
-    Vec::new()
 }
 
 /// One incoming RIFP transfer's chunk map: a lit cell per chunk received, dark
@@ -422,13 +522,36 @@ impl SdroxideApp {
     ) {
         let ctx = ui.ctx().clone();
         let rifp = mode.is_rifp();
-        self.sstv_load_disk_once(&ctx);
+        // The store is the engine's; list it once when the panel first opens.
+        // Pictures that arrive afterwards are announced one at a time.
+        if !self.sstv.listed {
+            self.sstv.listed = true;
+            self.sstv.page_pending = true;
+            cmds.push(Command::ImageList {
+                kind: ImageKind::Sstv,
+                offset: 0,
+                count: sdroxide_types::IMAGE_PAGE_MAX,
+            });
+        }
         // Drain a completed file-pick (only consume the target once bytes arrive).
         let picked = self.sstv.inbox.lock().ok().and_then(|mut g| g.take());
         if let Some(bytes) = picked {
             if let Some(target) = self.sstv.pick_target.take() {
-                self.sstv.set_slot(target, &bytes, &ctx);
+                self.sstv.set_slot(target, bytes, cmds);
             }
+        }
+        // Fetch the selected slot's source when what is cached is not what the
+        // engine says is stored — a slot loaded here, or changed from another
+        // screen. Asked once, not once per frame.
+        let sel = self.sstv.selected_slot;
+        let want = self.sstv.presets.slot(sel);
+        let have = self.sstv.slots.get(sel).and_then(|s| s.as_ref()).map(|s| s.version);
+        if want.has_picture()
+            && have != Some(want.version)
+            && self.sstv.src_asked.get(&sel) != Some(&want.version)
+        {
+            self.sstv.src_asked.insert(sel, want.version);
+            cmds.push(Command::ImageGetSlot(sel as u8));
         }
         // Keep the header callsign in sync with the operator config.
         if self.sstv.callsign != self.digi_cfg_edit.my_call {
@@ -488,6 +611,8 @@ impl SdroxideApp {
         ui.horizontal_top(|ui| {
             // A received thumbnail was clicked → enlarge it (applied after the row).
             let mut enlarge: Option<usize> = None;
+            // The gallery asked for the next page.
+            let mut more = false;
 
             // ── LEFT: boxed controls, then LIVE + RECEIVED ──
             if pane.is_none_or(|p| p == 0) {
@@ -652,17 +777,28 @@ impl SdroxideApp {
                             }
                         }
 
-                        // RECEIVED: narrow multi-column gallery of decoded pictures.
+                        // RECEIVED: narrow multi-column gallery of decoded
+                        // pictures, thumbnailed by the engine out of its own
+                        // store — so it is the same gallery here, on a browser
+                        // tab, and on a client dialled in from anywhere else.
                         sstv_section(ui, "RECEIVED", egui::vec2(gallery_w, row_h), |ui| {
                             if self.sstv.received.is_empty() {
-                                ui.label(
-                                    RichText::new("Decoded pictures collect here.")
-                                        .size(11.0)
-                                        .weak(),
-                                );
+                                let msg = if self.sstv.page_pending {
+                                    "Reading the radio's pictures…".to_string()
+                                } else if self.sstv.dir.is_empty() {
+                                    "Decoded pictures collect here.".to_string()
+                                } else {
+                                    format!(
+                                        "Decoded pictures are saved {} and collect here.",
+                                        self.store_where(&self.sstv.dir),
+                                    )
+                                };
+                                ui.label(RichText::new(msg).size(11.0).weak());
                                 return;
                             }
                             let thumb = egui::vec2(112.0, 90.0);
+                            let shown = self.sstv.received.len() as u32;
+                            let older = self.sstv.total.saturating_sub(shown);
                             egui::ScrollArea::vertical()
                                 .id_salt("sstv-gallery")
                                 .max_height(row_h - 24.0)
@@ -673,7 +809,7 @@ impl SdroxideApp {
                                         for (i, r) in self.sstv.received.iter().enumerate() {
                                             let resp = ui
                                                 .add(
-                                                    egui::Image::new(&r.tex)
+                                                    egui::Image::new(&r.thumb)
                                                         .fit_to_exact_size(thumb)
                                                         .corner_radius(2.0)
                                                         .sense(egui::Sense::click()),
@@ -684,6 +820,30 @@ impl SdroxideApp {
                                             }
                                         }
                                     });
+                                    // The rest of the store is a request away.
+                                    // Explicit rather than automatic on scroll:
+                                    // a page is a few hundred kilobytes and the
+                                    // operator may be on a phone link.
+                                    if older > 0 && self.sstv.received.len() >= GALLERY_MAX {
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            RichText::new(format!("{older} older in the store"))
+                                                .size(9.5)
+                                                .weak(),
+                                        );
+                                    } else if older > 0 {
+                                        ui.add_space(4.0);
+                                        let label = if self.sstv.page_pending {
+                                            "loading…".to_string()
+                                        } else {
+                                            format!("{older} older — load more")
+                                        };
+                                        if crate::chrome::chip(ui, false, label).clicked()
+                                            && !self.sstv.page_pending
+                                        {
+                                            more = true;
+                                        }
+                                    }
                                 });
                         });
                     });
@@ -718,12 +878,14 @@ impl SdroxideApp {
                     );
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 5.0;
-                        for i in 0..self.sstv.slots.len() {
+                        for i in 0..IMAGE_SLOTS {
                             let sel = self.sstv.selected_slot == i;
                             let size = egui::vec2(70.0, 54.0);
-                            let resp = if let Some(slot) = &self.sstv.slots[i] {
+                            let resp = if let Some(tex) =
+                                self.sstv.slot_thumbs.get(i).and_then(|t| t.as_ref())
+                            {
                                 ui.add(
-                                    egui::Image::new(&slot.tex)
+                                    egui::Image::new(tex)
                                         .fit_to_exact_size(size)
                                         .corner_radius(2.0)
                                         .sense(egui::Sense::click()),
@@ -781,7 +943,14 @@ impl SdroxideApp {
                                 self.sstv.pick_target = Some(i);
                                 pick_image(self.sstv.inbox.clone());
                             } else if resp.clicked() && !sel {
-                                self.sstv.save_messages(); // flush the slot we leave
+                                // Hand the slot we are leaving back to the
+                                // engine before moving on, so an edit is never
+                                // lost to a click.
+                                cmds.extend(crate::sstv::claim_message(
+                                    &mut self.sstv.msg_edit,
+                                    &self.sstv.presets,
+                                    i,
+                                ));
                                 self.sstv.selected_slot = i;
                                 self.sstv.preview_dirty = true;
                             }
@@ -789,17 +958,26 @@ impl SdroxideApp {
                     });
                     ui.add_space(5.0);
 
-                    // Explicit image load button for the active slot.
+                    // Load/replace/clear the active slot's picture.
                     ui.horizontal(|ui| {
                         let sel = self.sstv.selected_slot;
-                        let has_img =
-                            self.sstv.slots.get(sel).map(|s| s.is_some()) == Some(true);
+                        let has_img = self.sstv.presets.slot(sel).has_picture();
                         let label = if has_img { "Change image…" } else { "Load image…" };
                         if crate::chrome::chip(ui, false, label).clicked() {
                             self.sstv.pick_target = Some(sel);
                             pick_image(self.sstv.inbox.clone());
                         }
+                        if has_img
+                            && crate::chrome::chip(ui, false, "Clear")
+                                .on_hover_text("Empty this slot's picture (the message stays)")
+                                .clicked()
+                        {
+                            cmds.push(Command::ImageClearSlot(sel as u8));
+                        }
                     });
+                    if let Some(err) = &self.sstv.pick_error {
+                        ui.label(RichText::new(err).size(10.0).color(crate::theme::YELLOW));
+                    }
                     ui.add_space(6.0);
 
                     // Preview gets a capped share of the height; the message box
@@ -823,42 +1001,67 @@ impl SdroxideApp {
                                             .max_width(inner_w - 4.0),
                                     );
                                 } else {
+                                    let waiting =
+                                        self.sstv.presets.slot(self.sstv.selected_slot).has_picture();
                                     ui.label(
-                                        RichText::new("Load an image into this slot →")
-                                            .size(11.0)
-                                            .weak(),
+                                        RichText::new(if waiting {
+                                            "Fetching this slot's picture…"
+                                        } else {
+                                            "Load an image into this slot →"
+                                        })
+                                        .size(11.0)
+                                        .weak(),
                                     );
                                 }
                             });
                         });
                     ui.add_space(gap);
 
-                    // Overlay message for the active slot — fills the height above
-                    // the buttons; persisted when focus leaves the box or the slot
-                    // changes. A per-slot id keeps each tab's cursor independent.
+                    // Overlay message for the active slot — fills the height
+                    // above the buttons. The engine owns the text; this box
+                    // claims the slot while the cursor is in it and hands it
+                    // back when focus leaves, so an edit made on another screen
+                    // still reaches every slot but this one.
                     let sel = self.sstv.selected_slot;
                     let msg_h = (ui.available_height() - btn_h - gap).max(48.0);
+                    let mut buf = self.sstv.current_message().to_string();
                     let resp = ui
                         .push_id(sel, |ui| {
                             ui.add_sized(
                                 egui::vec2(inner_w, msg_h),
-                                egui::TextEdit::multiline(&mut self.sstv.slot_messages[sel])
+                                egui::TextEdit::multiline(&mut buf)
                                     .hint_text("Drawn on this slot's image"),
                             )
                         })
                         .inner;
                     if resp.changed() {
+                        self.sstv.msg_edit = Some((sel, buf));
                         self.sstv.preview_dirty = true;
+                    } else if resp.gained_focus() {
+                        cmds.extend(crate::sstv::claim_message(
+                            &mut self.sstv.msg_edit,
+                            &self.sstv.presets,
+                            sel,
+                        ));
                     }
                     if resp.lost_focus() {
-                        self.sstv.save_messages();
+                        cmds.extend(crate::sstv::commit_message(
+                            &mut self.sstv.msg_edit,
+                            &self.sstv.presets,
+                        ));
                     }
                     ui.add_space(gap);
 
                     // Large cut-corner TX / ABORT buttons.
                     ui.horizontal(|ui| {
-                        let can_tx = self.sstv.slots.get(self.sstv.selected_slot).map(|s| s.is_some())
-                            == Some(true)
+                        // The source has to have arrived as well as be stored:
+                        // pressing TX while it is still on its way would compose
+                        // nothing and look like the button was broken.
+                        let can_tx = self
+                            .sstv
+                            .slots
+                            .get(self.sstv.selected_slot)
+                            .is_some_and(|s| s.is_some())
                             && !tx_active;
                         let tx = ui
                             .add_enabled_ui(can_tx, |ui| {
@@ -872,8 +1075,16 @@ impl SdroxideApp {
                             })
                             .inner;
                         if tx.clicked() {
-                            self.sstv.save_messages(); // capture any unfocused edit
-                            if let Some(png) = self.sstv.compose_png(dims) {
+                            // Compose before committing: what goes on the air is
+                            // what is on screen, including an edit the operator
+                            // never clicked out of. The commit follows so the
+                            // engine stores it too.
+                            let png = self.sstv.compose_png(dims);
+                            cmds.extend(crate::sstv::commit_message(
+                                &mut self.sstv.msg_edit,
+                                &self.sstv.presets,
+                            ));
+                            if let Some(png) = png {
                                 cmds.push(if rifp {
                                     Command::RifpTx { png }
                                 } else {
@@ -902,12 +1113,36 @@ impl SdroxideApp {
             if let Some(i) = enlarge {
                 self.sstv.enlarged = Some(i);
             }
+            if more {
+                self.sstv.page_pending = true;
+                cmds.push(Command::ImageList {
+                    kind: ImageKind::Sstv,
+                    offset: self.sstv.received.len() as u32,
+                    count: sdroxide_types::IMAGE_PAGE_MAX,
+                });
+            }
         });
 
         // Enlarged view of a clicked received image (overlay window).
         if let Some(idx) = self.sstv.enlarged {
             let mut open = true;
+            let mut save = false;
             if let Some(r) = self.sstv.received.get(idx) {
+                // The full-size picture lives on the radio. Ask for it the
+                // moment one is opened, and show the thumbnail scaled up in the
+                // meantime rather than an empty window. Asked once per picture,
+                // whatever the answer — a fetch that fails must not become a
+                // request every frame.
+                if r.full.is_none() && self.sstv.full_asked.as_deref() != Some(&r.entry.name) {
+                    self.sstv.full_asked = Some(r.entry.name.clone());
+                    self.sstv.full_gone = false;
+                    cmds.push(Command::ImageGet {
+                        kind: ImageKind::Sstv,
+                        name: r.entry.name.clone(),
+                    });
+                }
+                let r = &self.sstv.received[idx];
+                let savable = self.sstv.full_png.as_ref().is_some_and(|(n, _)| *n == r.entry.name);
                 egui::Window::new("Received image")
                     .open(&mut open)
                     .collapsible(false)
@@ -919,13 +1154,42 @@ impl SdroxideApp {
                     .frame(crate::chrome::window_frame())
                     .show(&ctx, |ui| {
                         // Scale up to fill the window width (preserving aspect).
-                        let native = r.tex.size_vec2();
+                        // A thumbnail stands in until the real one arrives, at
+                        // the size the real one will be, so nothing jumps.
+                        let tex = r.full.as_ref().unwrap_or(&r.thumb);
+                        let native = egui::vec2(f32::from(r.entry.width), f32::from(r.entry.height));
+                        let native = if native.x > 0.0 { native } else { tex.size_vec2() };
                         let avail_w = ui.available_width().min(1000.0);
                         let scale = (avail_w / native.x.max(1.0)).clamp(1.0, 4.0);
-                        ui.add(egui::Image::new(&r.tex).fit_to_exact_size(native * scale));
+                        ui.add(egui::Image::new(tex).fit_to_exact_size(native * scale));
+                        ui.horizontal(|ui| {
+                            if self.sstv.full_gone {
+                                ui.label(
+                                    RichText::new("no longer in the store")
+                                        .size(10.0)
+                                        .color(crate::theme::YELLOW),
+                                );
+                            } else if r.full.is_none() {
+                                ui.label(RichText::new("loading full size…").size(10.0).weak());
+                            } else if savable
+                                && crate::chrome::chip(ui, false, "Save picture…")
+                                    .on_hover_text("Save a copy on this computer")
+                                    .clicked()
+                            {
+                                save = true;
+                            }
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} · {}×{}",
+                                    r.entry.name, r.entry.width, r.entry.height
+                                ))
+                                .size(10.0)
+                                .weak(),
+                            );
+                        });
                         // RIFP knows where a picture came from and how it was
                         // carried; SSTV knows none of that, and says nothing.
-                        if let Some(m) = &r.rifp {
+                        if let Some(m) = &r.entry.rifp {
                             ui.add_space(4.0);
                             let from = m.sender.as_deref().unwrap_or("unidentified");
                             ui.label(
@@ -954,8 +1218,15 @@ impl SdroxideApp {
             } else {
                 open = false;
             }
+            if save {
+                if let Some((name, png)) = &self.sstv.full_png {
+                    crate::download::save_as(name, png, crate::download::Mime::Png);
+                }
+            }
             if !open {
                 self.sstv.enlarged = None;
+                self.sstv.full_asked = None;
+                self.sstv.full_gone = false;
             }
         }
     }
@@ -1099,6 +1370,29 @@ impl SdroxideApp {
         });
         ui.add_space(5.0);
 
+        // The content hint: a caption carried in the manifest itself, so it
+        // reaches a receiver as text rather than as pixels they have to read.
+        // Distinct from the slot message, which is drawn into the picture.
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(seeded, |ui| {
+                ui.label(RichText::new("Caption").size(10.0).weak()).on_hover_text(
+                    "Sent in the manifest as the content hint, and shown under the picture by \
+                     receivers. Travels as text — it is not drawn into the image.",
+                );
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.digi_cfg_edit.rifp_content_hint)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("What this picture is"),
+                );
+                // On focus loss rather than per keystroke: this is persisted
+                // engine-side, and a config write per character is absurd.
+                if resp.lost_focus() && resp.changed() {
+                    changed = true;
+                }
+            });
+        });
+        ui.add_space(5.0);
+
         // Robustness: RIFP has no repair requests, so repetition is the only
         // recovery there is.
         ui.horizontal_wrapped(|ui| {
@@ -1193,32 +1487,16 @@ impl SdroxideApp {
         }
     }
 
-    /// On first entry, load any persisted transmit slots and received gallery
-    /// from disk (native only).
-    fn sstv_load_disk_once(&mut self, ctx: &egui::Context) {
-        if self.sstv.loaded_disk {
-            return;
-        }
-        self.sstv.loaded_disk = true;
-        for (i, entry) in sstv_load_slots().into_iter().enumerate() {
-            if let Some((rgb, w, h)) = entry {
-                let ci = crate::sstv::color_image(&rgb, w, h);
-                let tex = ctx.load_texture("sstv_slot", ci, egui::TextureOptions::LINEAR);
-                if let Some(cell) = self.sstv.slots.get_mut(i) {
-                    *cell = Some(SstvSlot { src_rgb: rgb, sw: w, sh: h, tex });
-                }
-            }
-        }
-        // Restore the per-slot overlay messages (padded to the slot count).
-        for (i, msg) in sstv_load_messages().into_iter().enumerate() {
-            if let Some(cell) = self.sstv.slot_messages.get_mut(i) {
-                *cell = msg;
-            }
-        }
-        for (rgb, w, h) in sstv_load_gallery() {
-            let ci = crate::sstv::color_image(&rgb, w, h);
-            let tex = ctx.load_texture("sstv_recv", ci, egui::TextureOptions::NEAREST);
-            self.sstv.received.push(SstvRecv { mode: None, rifp: None, tex });
+    /// How to name a directory the engine reported.
+    ///
+    /// A path is only a path if the operator can walk to it. Driving a radio on
+    /// another machine, it names a directory over there, and saying so is the
+    /// difference between a useful hint and a wrong one.
+    pub(in crate::app) fn store_where(&self, dir: &str) -> String {
+        if self.ctrl.engine_is_remote() {
+            format!("on the radio, in {dir}")
+        } else {
+            format!("in {dir}")
         }
     }
 }

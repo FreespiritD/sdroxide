@@ -11,9 +11,9 @@ pub mod solar;
 use serde::{Deserialize, Serialize};
 
 use sdroxide_types::{
-    CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, MemoryChannel, Meters, QsoRecord,
-    RadioState, RifpMeta, RifpStatus, SkimmerSpot, SpectrumFrame, Spot, SstvMode, SstvStatus,
-    UploadResult, VoiceStatus,
+    CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, ImageEntry, ImageKind, ImageListing,
+    ImagePresets, MemoryChannel, Meters, QsoRecord, RadioState, RifpMeta, RifpStatus, SkimmerSpot,
+    SpectrumFrame, Spot, SstvMode, SstvStatus, UploadResult, VoiceStatus,
 };
 
 /// Bump on any incompatible change to the message enums (this includes the
@@ -111,7 +111,18 @@ use sdroxide_types::{
 /// likewise appended at the end. What a notice says is the operator's business
 /// wherever they are sitting: a radio refusing a tune, or an interface that has
 /// dropped and is reconnecting, is not a local-console detail.
-pub const PROTO_VERSION: u16 = 32;
+/// v33: the picture stores moved server-side — five new `ServerMsg`s
+/// (`ImagePresets`, `ImageSlotSource`, `ImageListing`, `ImageFile`,
+/// `ImageSaved`) and six new `Command`s (`ImageSetSlot`, `ImageClearSlot`,
+/// `ImageSetMessage`, `ImageGetSlot`, `ImageList`, `ImageGet`), all appended so
+/// no existing discriminant moves. The transmit slots, their overlay messages
+/// and the received galleries used to be client state, which meant a browser
+/// tab and the console attached to the same radio disagreed about both — and
+/// the browser, having no filesystem, had neither. They belong to the radio:
+/// the engine owns the files and hands out metadata, thumbnails and pixels on
+/// request. Composition stays client-side, and transmit still rides the
+/// existing `SstvTx` / `RifpTx`.
+pub const PROTO_VERSION: u16 = 33;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -272,6 +283,29 @@ pub enum ServerMsg {
     /// [`ServerMsg::Error`] the session is intact and the client stays live.
     /// Appended last, for the reason above.
     Notice(Option<String>),
+    /// The transmit-image presets, announced at startup and on every change.
+    /// Cached by the server and replayed on connect, like the digi config and
+    /// the voice keyer — without it a browser tab opens on five empty slots
+    /// beside a console showing five full ones, and there is no second
+    /// announcement to wait for.
+    ImagePresets(ImagePresets),
+    /// A preset's stored source picture, answering `Command::ImageGetSlot`.
+    ImageSlotSource {
+        slot: u8,
+        version: u32,
+        png: Vec<u8>,
+    },
+    /// One page of a received store, answering `Command::ImageList`.
+    ImageListing(ImageListing),
+    /// One received picture at full size, answering `Command::ImageGet`. An
+    /// empty `png` means the store does not have it.
+    ImageFile {
+        kind: ImageKind,
+        name: String,
+        png: Vec<u8>,
+    },
+    /// A freshly received picture has been stored, as a gallery would list it.
+    ImageSaved(ImageEntry),
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {
@@ -289,6 +323,7 @@ pub fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T, ProtoError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sdroxide_types::ImageSlotInfo;
 
     #[test]
     fn roundtrip_client_and_server_msgs() {
@@ -372,6 +407,87 @@ mod tests {
         for m in &rifp {
             let bytes = encode(m).unwrap();
             let back: ServerMsg = decode(&bytes).unwrap();
+            assert_eq!(&back, m);
+        }
+
+        // The picture stores: metadata one way, thumbnails and whole pictures
+        // the other. Every one of these carries a binary payload, which is
+        // exactly what a length-prefixed non-self-describing encoding gets
+        // wrong when a field is added in the wrong place.
+        let pictures = [
+            ServerMsg::ImagePresets(ImagePresets {
+                slots: vec![
+                    ImageSlotInfo {
+                        message: "CQ SSTV de OE1TEST".into(),
+                        width: 1024,
+                        height: 768,
+                        version: 0xdead_beef,
+                        thumb: vec![0x89, 0x50, 0x4e, 0x47, 0x0d],
+                    },
+                    ImageSlotInfo::default(),
+                ],
+            }),
+            ServerMsg::ImageSlotSource {
+                slot: 3,
+                version: 0x1234_5678,
+                png: vec![0x89, 0x50, 0x4e, 0x47, 1, 2, 3],
+            },
+            ServerMsg::ImageListing(ImageListing {
+                kind: ImageKind::Wefax,
+                offset: 48,
+                total: 312,
+                entries: vec![ImageEntry {
+                    kind: ImageKind::Wefax,
+                    name: "wefax-20260729-141530Z-7878.1kHz-DWD.png".into(),
+                    unix: 1_785_075_330,
+                    width: 1809,
+                    height: 1200,
+                    bytes: 1_234_567,
+                    thumb: vec![0x89, 0x50, 0x4e, 0x47],
+                    rifp: None,
+                }],
+                dir: "/home/op/Pictures/sdroxide/wefax".into(),
+            }),
+            ServerMsg::ImageFile {
+                kind: ImageKind::Sstv,
+                name: "sstv-1753795200000.png".into(),
+                png: vec![0x89, 0x50, 0x4e, 0x47, 9, 9],
+            },
+            ServerMsg::ImageSaved(ImageEntry {
+                kind: ImageKind::Sstv,
+                name: "sstv-1753795200000.png".into(),
+                unix: 1_753_795_200,
+                width: 320,
+                height: 256,
+                bytes: 40_000,
+                thumb: vec![0x89, 0x50],
+                rifp: None,
+            }),
+        ];
+        for m in &pictures {
+            let bytes = encode(m).unwrap();
+            let back: ServerMsg = decode(&bytes).unwrap();
+            assert_eq!(&back, m);
+        }
+
+        let cmds = [
+            ClientMsg::Command(Command::ImageSetSlot { slot: 2, bytes: vec![0xff, 0xd8, 0xff] }),
+            ClientMsg::Command(Command::ImageSetMessage { slot: 2, message: "73".into() }),
+            ClientMsg::Command(Command::ImageGetSlot(4)),
+            ClientMsg::Command(Command::ImageClearSlot(0)),
+            ClientMsg::Command(Command::ImageList {
+                kind: ImageKind::Wefax,
+                offset: 0,
+                count: 48,
+            }),
+            ClientMsg::Command(Command::ImageGet {
+                kind: ImageKind::Sstv,
+                name: "sstv-1753795200000.png".into(),
+            }),
+        ];
+        for m in &cmds {
+            let bytes = encode(m).unwrap();
+            let back: ClientMsg = decode(&bytes).unwrap();
             assert_eq!(&back, m);
         }
     }

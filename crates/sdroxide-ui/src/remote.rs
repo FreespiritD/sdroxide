@@ -220,6 +220,15 @@ impl RemoteController {
             ServerMsg::TciServerStatus { running, addr, clients, error } => self
                 .pending
                 .push_back(RadioEvent::TciServerStatus { running, addr, clients, error }),
+            ServerMsg::ImagePresets(p) => self.pending.push_back(RadioEvent::ImagePresets(p)),
+            ServerMsg::ImageSlotSource { slot, version, png } => {
+                self.pending.push_back(RadioEvent::ImageSlotSource { slot, version, png })
+            }
+            ServerMsg::ImageListing(l) => self.pending.push_back(RadioEvent::ImageListing(l)),
+            ServerMsg::ImageFile { kind, name, png } => {
+                self.pending.push_back(RadioEvent::ImageFile { kind, name, png })
+            }
+            ServerMsg::ImageSaved(e) => self.pending.push_back(RadioEvent::ImageSaved(e)),
         }
     }
 
@@ -289,6 +298,10 @@ impl RadioController for RemoteController {
     }
 
     fn can_reconnect(&self) -> bool {
+        true
+    }
+
+    fn engine_is_remote(&self) -> bool {
         true
     }
 

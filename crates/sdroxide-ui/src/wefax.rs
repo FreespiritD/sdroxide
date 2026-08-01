@@ -18,10 +18,14 @@ const MAX_W: usize = 4096;
 /// Tallest, matching the demodulator's own limit with headroom.
 const MAX_H: usize = 4096;
 
-/// Charts held as textures at once. A chart is two megapixels, so a season of
-/// them would be gigabytes of VRAM; the rest stay on disk and are counted
-/// rather than loaded.
-pub const GALLERY_MAX: usize = 48;
+/// Charts the gallery will hold thumbnails for.
+///
+/// Not a limit on the collection — the engine counts the whole store and the
+/// panel says how much more there is — but on what this client keeps as
+/// textures. A thumbnail is a few tens of kilobytes where the chart behind it
+/// is two megapixels, so this is several screens' worth of scrolling and still
+/// a fraction of what the old whole-chart gallery cost.
+pub const GALLERY_MAX: usize = 240;
 
 /// Magnification limits for the live view. The lower end is enough to see a
 /// whole chart's layout at a glance; the upper end is where a fax pixel is
@@ -48,24 +52,27 @@ pub enum Zoom {
 }
 
 /// A saved chart in the gallery.
+///
+/// What is held is a thumbnail; the chart itself is two megapixels and lives in
+/// the engine's store, fetched only when one is opened.
 pub struct Chart {
+    /// Thumbnail, as the engine rendered it out of the stored file.
     pub texture: egui::TextureHandle,
+    /// The chart at full size, once fetched — or promoted straight from one
+    /// that has just been received, which the panel already held.
+    pub full: Option<egui::TextureHandle>,
     /// File name it was saved under, which carries its date and dial.
     pub name: String,
     /// When it was received and where from, read back out of that name. `None`
     /// for a file in the directory that is not one of ours.
     pub meta: Option<sdroxide_types::WefaxChartMeta>,
+    /// Size of the chart itself, not of the thumbnail.
     pub size: (u16, u16),
+    /// When it was received, as the engine ordered the store by.
+    pub unix: i64,
 }
 
 impl Chart {
-    /// When it was received, for ordering. A chart whose name says nothing
-    /// sorts oldest; there is nowhere better to put it.
-    #[allow(dead_code)] // ordering is a disk-load concern, and wasm has no disk
-    pub fn when(&self) -> i64 {
-        self.meta.map_or(0, |m| m.unix)
-    }
-
     /// Date, time and station, or the bare file name when the name is not one
     /// this program wrote.
     pub fn title(&self) -> String {
@@ -104,10 +111,29 @@ pub struct WefaxUi {
     pub follow: bool,
     /// Saved charts, newest first.
     pub gallery: Vec<Chart>,
-    pub loaded_disk: bool,
-    /// Charts on disk beyond the ones held as textures, so the panel can say
-    /// that the gallery is not the whole collection.
-    pub disk_extra: usize,
+    /// Whether the engine's store has been listed this session.
+    pub listed: bool,
+    /// How many charts the store holds altogether — exact, where the old
+    /// client-side gallery could only guess from what it had read.
+    pub total: u32,
+    /// True while a listing page is outstanding, so a click cannot spray
+    /// requests down the one reliable lane.
+    pub page_pending: bool,
+    /// Name of the chart whose full size has been asked for.
+    ///
+    /// Records the *ask*, and is cleared when the viewer moves on rather than
+    /// when the answer arrives: a chart that fails to come back must be asked
+    /// for once, not once a frame for as long as the window is open.
+    pub full_asked: Option<String>,
+    /// The answer to that ask was empty — the store no longer has it.
+    pub full_gone: bool,
+    /// The chart that has just finished arriving, held until the engine names
+    /// the file it went into.
+    fresh: Option<(egui::TextureHandle, Vec<u8>)>,
+    /// Bytes of the chart last fetched or received, and its name — what "Save
+    /// chart…" writes out. One at a time: a chart is megabytes, and holding
+    /// every one for a button nobody may press would be a gallery in memory.
+    pub full_png: Option<(String, Vec<u8>)>,
     /// Where charts are being saved, for the panel to show and to copy.
     pub dir: String,
     /// Which gallery entry is open full-size, if any.
@@ -130,8 +156,13 @@ impl Default for WefaxUi {
             aspect: 1.0,
             follow: true,
             gallery: Vec::new(),
-            loaded_disk: false,
-            disk_extra: 0,
+            listed: false,
+            total: 0,
+            page_pending: false,
+            full_asked: None,
+            full_gone: false,
+            fresh: None,
+            full_png: None,
             dir: String::new(),
             viewing: None,
         }
@@ -214,45 +245,111 @@ impl WefaxUi {
         self.live_tex.as_ref()
     }
 
-    /// Add a decoded PNG to the front of the gallery.
+    /// Hold a chart that has just finished arriving, until the engine names the
+    /// file it went into.
     ///
-    /// The name is the metadata: when the chart was received and what it was
-    /// tuned to, both read straight back out of it, so a chart loaded from disk
-    /// is labelled exactly like one that has just arrived.
-    pub fn add_chart(&mut self, ctx: &egui::Context, name: &str, png: &[u8]) {
-        let Some((gray, w, h)) = decode_gray(png) else { return };
-        let texture = ctx.load_texture(
+    /// The name is the metadata — when the chart was received and what it was
+    /// tuned to, both read straight back out of it — and only the engine knows
+    /// it, because only the engine wrote the file. Reconstructing it here off a
+    /// second clock got a chart within a second of the truth, which is close
+    /// enough to look right and not close enough to fetch by.
+    pub fn hold_fresh(&mut self, ctx: &egui::Context, png: &[u8]) {
+        self.fresh = decode_gray(png).map(|(gray, w, h)| {
+            let tex =
+                ctx.load_texture("wefax-fresh", gray_image(&gray, w, h), egui::TextureOptions::LINEAR);
+            (tex, png.to_vec())
+        });
+    }
+
+    /// One page of the engine's chart store.
+    pub fn on_listing(&mut self, listing: sdroxide_types::ImageListing, ctx: &egui::Context) {
+        self.page_pending = false;
+        self.total = listing.total;
+        self.dir = listing.dir;
+        for entry in listing.entries {
+            self.insert_entry(entry, None, ctx);
+        }
+    }
+
+    /// Whether more of the store can still be paged in, or this client is
+    /// holding as many thumbnails as it will.
+    pub fn can_page(&self) -> bool {
+        self.gallery.len() < GALLERY_MAX
+    }
+
+    /// A chart the engine has just stored, taking the full-size texture the
+    /// panel already holds from the one that has this moment finished arriving.
+    pub fn on_saved(&mut self, entry: sdroxide_types::ImageEntry, ctx: &egui::Context) {
+        let fresh = self.fresh.take();
+        if let Some((_, png)) = &fresh {
+            self.full_png = Some((entry.name.clone(), png.clone()));
+        }
+        self.total += 1;
+        self.insert_entry(entry, fresh.map(|(tex, _)| tex), ctx);
+    }
+
+    /// A fetched full-size chart. An empty answer means the store no longer has
+    /// it — the file moved or was deleted between listing and opening.
+    pub fn on_file(&mut self, name: &str, png: &[u8], ctx: &egui::Context) {
+        let Some((gray, w, h)) = decode_gray(png) else {
+            if self.full_asked.as_deref() == Some(name) {
+                self.full_gone = true;
+            }
+            return;
+        };
+        let tex = ctx.load_texture(
             format!("wefax-{name}"),
             gray_image(&gray, w, h),
             egui::TextureOptions::LINEAR,
         );
-        self.gallery.insert(
-            0,
-            Chart {
-                texture,
-                name: name.to_string(),
-                meta: sdroxide_types::WefaxChartMeta::from_file_name(name),
-                size: (w, h),
-            },
-        );
-        // Textures dropped off the end are still on disk, and saying so is the
-        // difference between a gallery that forgets and one that is a window
-        // onto a directory.
-        if self.gallery.len() > GALLERY_MAX {
-            self.disk_extra += self.gallery.len() - GALLERY_MAX;
-            self.gallery.truncate(GALLERY_MAX);
+        if let Some(c) = self.gallery.iter_mut().find(|c| c.name == name) {
+            c.full = Some(tex);
         }
-        // The entry the viewer is on has just moved down by one.
-        if let Some(v) = self.viewing.as_mut() {
-            *v += 1;
-        }
+        self.full_png = Some((name.to_string(), png.to_vec()));
     }
 
-    /// Put the gallery in newest-first order, whatever order the entries
-    /// arrived in.
-    #[allow(dead_code)] // only the disk load can produce an out-of-order gallery
-    pub fn sort_gallery(&mut self) {
-        self.gallery.sort_by(|a, b| b.when().cmp(&a.when()).then_with(|| a.name.cmp(&b.name)));
+    /// Add a gallery entry in received order, skipping one already held.
+    ///
+    /// A listing and a just-arrived notification can name the same chart when
+    /// one lands in the gap between the request and its answer; the name is
+    /// what tells them apart.
+    fn insert_entry(
+        &mut self,
+        entry: sdroxide_types::ImageEntry,
+        full: Option<egui::TextureHandle>,
+        ctx: &egui::Context,
+    ) {
+        if self.gallery.iter().any(|c| c.name == entry.name) {
+            return;
+        }
+        let Some((gray, tw, th)) = decode_gray(&entry.thumb) else { return };
+        let texture = ctx.load_texture(
+            format!("wefax-thumb-{}", entry.name),
+            gray_image(&gray, tw, th),
+            egui::TextureOptions::LINEAR,
+        );
+        let at = self.gallery.partition_point(|c| c.unix > entry.unix);
+        self.gallery.insert(
+            at,
+            Chart {
+                texture,
+                full,
+                meta: sdroxide_types::WefaxChartMeta::from_file_name(&entry.name),
+                size: (entry.width, entry.height),
+                unix: entry.unix,
+                name: entry.name,
+            },
+        );
+        // The entry the viewer is on has just moved down if this went above it.
+        if let Some(v) = self.viewing.as_mut() {
+            if at <= *v {
+                *v += 1;
+            }
+        }
+        // A season of charts is more than this client will hold thumbnails for.
+        // The oldest go, not the newest — they are still in the store, and
+        // `total` still counts them.
+        self.gallery.truncate(GALLERY_MAX);
     }
 }
 

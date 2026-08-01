@@ -82,14 +82,6 @@ pub fn config_dir() -> Result<PathBuf, ConfigError> {
         .ok_or(ConfigError::NoConfigDir)
 }
 
-/// Directory for received SSTV images (`~/.config/sdroxide/sstv_rx`), created
-/// on demand.
-pub fn sstv_rx_dir() -> Result<PathBuf, ConfigError> {
-    let dir = config_dir()?.join("sstv_rx");
-    fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
-
 /// Directory for a mode's received pictures (`~/.config/sdroxide/<kind>_rx`),
 /// created on demand.
 ///

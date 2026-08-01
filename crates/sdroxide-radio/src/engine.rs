@@ -27,9 +27,9 @@ use sdroxide_rigctld::{RigState, RigctldController};
 use sdroxide_skimmer::{SkimmerAction, SkimmerController};
 use sdroxide_tci::server::{ServerRequest, TciServerController, TciStateSnapshot};
 use sdroxide_types::{
-    Band, BandStackEntry, Command, DeviceCaps, DigiConfig, Direction, MemoryChannel, Meters, Mode,
-    NrLevel, RadioEvent, RadioState, RigctldConfig, RxId, RxState, SpectrumConfig, SpectrumFrame,
-    TciServerConfig, TxMeters, Vfo,
+    Band, BandStackEntry, Command, DeviceCaps, DigiConfig, Direction, ImageKind, MemoryChannel,
+    Meters, Mode, NrLevel, RadioEvent, RadioState, RigctldConfig, RxId, RxState, SpectrumConfig,
+    SpectrumFrame, TciServerConfig, TxMeters, Vfo,
 };
 
 use crate::recorder::Recorder;
@@ -664,6 +664,15 @@ struct Engine {
     /// Voice keyer: ten recorded messages plus whichever is being recorded or
     /// transmitted right now.
     voice: VoiceKeyer,
+    /// The five transmit-image presets and their overlay messages. Owned here
+    /// rather than by whichever screen is attached: the pictures an operator
+    /// sends belong to the station, and a browser tab showing five empty slots
+    /// beside a console showing five full ones was the bug.
+    images: crate::image_store::ImagePresetStore,
+    /// Directory walks, thumbnailing, full-size reads and upload decoding — all
+    /// of it off this thread, because this loop is the audio loop and decoding
+    /// a two-megapixel chart in it drops a block. Drained by `poll_images`.
+    gallery: crate::image_store::GalleryWorker,
     /// True while the voice keyer owns the transmitter. Set from the moment it
     /// keys up until the over has fully ended — including a digital-voice tail
     /// after the message itself has played out, so the live microphone can
@@ -956,6 +965,8 @@ fn engine_thread(
         digi_config,
         digi_tx: false,
         voice: VoiceKeyer::load(),
+        images: crate::image_store::ImagePresetStore::load(),
+        gallery: crate::image_store::GalleryWorker::new(),
         voice_tx: false,
         voice_rec_buf: Vec::new(),
         voice_prev_q: Vec::new(),
@@ -1029,6 +1040,9 @@ fn engine_thread(
         .send(RadioEvent::Ft8Status(sdroxide_types::DigiStatus::idle(engine.digi_config.clone())));
     // Likewise the voice keyer: the UI's slot list is whatever is on disk.
     engine.emit_voice_status();
+    // And the transmit-image presets — five pictures the operator arranged once
+    // and expects to find wherever they next sit down.
+    engine.emit_image_presets();
     // If we start up already in a digital mode, spin up the controller.
     engine.sync_digi_mode();
     if !audio_mode {
@@ -1103,6 +1117,7 @@ fn engine_thread(
         engine.poll_rigctld();
         engine.wsjtx_heartbeat();
         engine.poll_spots();
+        engine.poll_images();
         // Attach (or re-attach) the configured radio on its own when the
         // front-end is only a stand-in — no trip through Settings.
         engine.poll_reconnect();
@@ -1760,7 +1775,12 @@ impl Engine {
                     // Encode once: PNG for both the persistent store and the wire.
                     let png = encode_png(&rgb, w, h);
                     if let Some(png) = png.clone() {
-                        save_sstv_rx(&png);
+                        // The picture goes out whole so the live pane resolves
+                        // immediately; the gallery entry follows from the
+                        // worker, carrying the name it was filed under.
+                        if let Some(name) = save_sstv_rx(&png) {
+                            self.gallery.entry(ImageKind::Sstv, name, None);
+                        }
                         let _ =
                             self.event_tx.send(RadioEvent::SstvImage { image_id, mode, w, h, png });
                     }
@@ -1776,7 +1796,9 @@ impl Engine {
                     // art in one channel, and tripling it to RGB would treble
                     // a two-megapixel PNG for nothing.
                     if let Some(png) = encode_png_gray(&gray, w, h) {
-                        save_wefax_rx(&png, dial);
+                        if let Some(name) = save_wefax_rx(&png, dial) {
+                            self.gallery.entry(ImageKind::Wefax, name, None);
+                        }
                         let _ = self.event_tx.send(RadioEvent::WefaxImage { image_id, w, h, png });
                     }
                 }
@@ -1790,7 +1812,13 @@ impl Engine {
                     // Same store as SSTV: a received picture is a received
                     // picture, whichever mode carried it.
                     if let Some(png) = encode_png(&rgb, w, h) {
-                        save_sstv_rx(&png);
+                        // The manifest goes with the entry: it is not in the
+                        // PNG and there is nowhere on disk it survives, so this
+                        // is the only chance the gallery has to record who sent
+                        // the picture and how it was carried.
+                        if let Some(name) = save_sstv_rx(&png) {
+                            self.gallery.entry(ImageKind::Sstv, name, Some(meta.clone()));
+                        }
                         let _ = self.event_tx.send(RadioEvent::RifpImage { image_id, meta, png });
                     }
                 }
@@ -2543,6 +2571,53 @@ impl Engine {
                 return;
             }
 
+            // Transmit-image presets and the received-picture stores (no
+            // RadioState change → return before the State emit below).
+            ImageSetSlot { slot, bytes } => {
+                if slot as usize >= sdroxide_types::IMAGE_SLOTS {
+                    warn!(slot, "picture upload for a slot that does not exist");
+                } else if bytes.len() > sdroxide_types::IMAGE_UPLOAD_MAX {
+                    // Refused here, before the bytes reach a worker: the point
+                    // of the cap is not to spend anything on them at all.
+                    warn!(slot, len = bytes.len(), "picture upload refused: too large");
+                    let _ = self.event_tx.send(RadioEvent::Notice(Some(format!(
+                        "Picture refused: {} MB is over the {} MB limit",
+                        bytes.len() / 1_048_576,
+                        sdroxide_types::IMAGE_UPLOAD_MAX / 1_048_576,
+                    ))));
+                } else {
+                    self.gallery.normalise(slot, bytes);
+                }
+                return;
+            }
+            ImageClearSlot(slot) => {
+                if self.images.clear(slot as usize) {
+                    self.emit_image_presets();
+                }
+                return;
+            }
+            ImageSetMessage { slot, message } => {
+                if self.images.set_message(slot as usize, message) {
+                    self.emit_image_presets();
+                }
+                return;
+            }
+            // Answered inline: the bytes are already in memory and bounded to
+            // a thousand pixels, so there is nothing here worth a thread.
+            ImageGetSlot(slot) => {
+                let (version, png) = self.images.source(slot as usize);
+                let _ = self.event_tx.send(RadioEvent::ImageSlotSource { slot, version, png });
+                return;
+            }
+            ImageList { kind, offset, count } => {
+                self.gallery.list(kind, offset, count);
+                return;
+            }
+            ImageGet { kind, name } => {
+                self.gallery.fetch(kind, name);
+                return;
+            }
+
             // Built-in TCI server (no RadioState change → return before the
             // State emit below).
             SetTciServerConfig(cfg) => {
@@ -3098,6 +3173,38 @@ impl Engine {
     fn emit_digi_status(&self) {
         if let Some(d) = self.digi.as_ref() {
             let _ = self.event_tx.send(RadioEvent::Ft8Status(d.status()));
+        }
+    }
+
+    fn emit_image_presets(&self) {
+        let _ = self.event_tx.send(RadioEvent::ImagePresets(self.images.status()));
+    }
+
+    /// Drain the picture worker: a normalised upload lands in a slot, a listing
+    /// or a fetched file goes straight out, a rejection becomes an operator
+    /// notice.
+    fn poll_images(&mut self) {
+        use crate::image_store::GalleryEvent;
+        for ev in self.gallery.poll() {
+            match ev {
+                GalleryEvent::Normalised { slot, png, w, h } => {
+                    if self.images.adopt(slot as usize, png, w, h) {
+                        self.emit_image_presets();
+                    }
+                }
+                GalleryEvent::Rejected(msg) => {
+                    let _ = self.event_tx.send(RadioEvent::Notice(Some(msg)));
+                }
+                GalleryEvent::Listing(l) => {
+                    let _ = self.event_tx.send(RadioEvent::ImageListing(l));
+                }
+                GalleryEvent::File { kind, name, png } => {
+                    let _ = self.event_tx.send(RadioEvent::ImageFile { kind, name, png });
+                }
+                GalleryEvent::Saved(e) => {
+                    let _ = self.event_tx.send(RadioEvent::ImageSaved(e));
+                }
+            }
         }
     }
 
@@ -4536,9 +4643,10 @@ fn decode_png_rgb(png: &[u8]) -> Option<(Vec<u8>, u16, u16)> {
     Some((img.into_raw(), w, h))
 }
 
-/// Persist a received SSTV image (PNG) under the config `sstv_rx` directory.
-fn save_sstv_rx(png: &[u8]) {
-    save_image_rx("sstv", png);
+/// Persist a received SSTV image (PNG) under the config `sstv_rx` directory,
+/// returning the name it was filed under.
+fn save_sstv_rx(png: &[u8]) -> Option<String> {
+    save_image_rx("sstv", png)
 }
 
 /// Persist a received picture under the store its mode keeps.
@@ -4547,21 +4655,29 @@ fn save_sstv_rx(png: &[u8]) {
 /// weather chart and an SSTV picture never land in the same gallery — they are
 /// browsed for completely different reasons and a fifteen-minute chart would
 /// bury a session's SSTV.
-fn save_image_rx(kind: &str, png: &[u8]) {
+///
+/// The name is returned rather than kept quiet: it is what a gallery lists the
+/// picture under and the key every later fetch names it by.
+fn save_image_rx(kind: &str, png: &[u8]) -> Option<String> {
     let dir = match sdroxide_config::image_rx_dir(kind) {
         Ok(d) => d,
         Err(e) => {
             warn!("{kind}_rx dir: {e}");
-            return;
+            return None;
         }
     };
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let path = dir.join(format!("{kind}-{ts}.png"));
-    if let Err(e) = std::fs::write(&path, png) {
-        warn!("saving {kind} image {}: {e}", path.display());
+    let name = format!("{kind}-{ts}.png");
+    let path = dir.join(&name);
+    match std::fs::write(&path, png) {
+        Ok(()) => Some(name),
+        Err(e) => {
+            warn!("saving {kind} image {}: {e}", path.display());
+            None
+        }
     }
 }
 
@@ -4573,12 +4689,12 @@ fn save_image_rx(kind: &str, png: &[u8]) {
 /// that will ever say which of a station's dozen daily products this one is.
 /// The name is built by `sdroxide-types` so that the panel — which has to label
 /// charts it reads back off disk — reads exactly what is written here.
-fn save_wefax_rx(png: &[u8], dial_hz: f64) {
+fn save_wefax_rx(png: &[u8], dial_hz: f64) -> Option<String> {
     let dir = match sdroxide_config::wefax_rx_dir() {
         Ok(d) => d,
         Err(e) => {
             warn!("wefax chart dir: {e}");
-            return;
+            return None;
         }
     };
     let unix = std::time::SystemTime::now()
@@ -4591,9 +4707,14 @@ fn save_wefax_rx(png: &[u8], dial_hz: f64) {
         // recording — better an unlabelled chart than a mislabelled one.
         dial_hz: (dial_hz > 0.0).then_some(dial_hz),
     };
-    let path = dir.join(meta.file_name());
-    if let Err(e) = std::fs::write(&path, png) {
-        warn!("saving wefax chart {}: {e}", path.display());
+    let name = meta.file_name();
+    let path = dir.join(&name);
+    match std::fs::write(&path, png) {
+        Ok(()) => Some(name),
+        Err(e) => {
+            warn!("saving wefax chart {}: {e}", path.display());
+            None
+        }
     }
 }
 

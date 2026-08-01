@@ -74,6 +74,11 @@ pub(crate) struct Latest {
     /// reason as `digi` and replayed on connect so the keyer window opens
     /// populated instead of showing ten empty slots.
     pub voice: Option<sdroxide_types::VoiceStatus>,
+    /// The transmit-image presets, announced once at startup for the same
+    /// reason as `digi` and `voice` and replayed on connect. Without it a
+    /// browser tab opens on five empty slots beside a console showing five full
+    /// ones, and nothing will announce them again.
+    pub images: Option<sdroxide_types::ImagePresets>,
     /// The standing operator notice, if any. Replayed on connect because it is
     /// a *condition*, not an event: a client that attaches while the radio is
     /// reconnecting has to be told so, and it would otherwise wait for a notice
@@ -343,6 +348,25 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             RadioEvent::TciServerStatus { running, addr, clients, error } => {
                 Some(ServerMsg::TciServerStatus { running, addr, clients, error })
             }
+            RadioEvent::ImagePresets(p) => {
+                latest.images = Some(p.clone());
+                Some(ServerMsg::ImagePresets(p))
+            }
+            // The other four are answers to a question this client asked.
+            // Caching one would replay a page nobody wanted, and a full-size
+            // chart is megabytes a fresh session has no use for.
+            RadioEvent::ImageSlotSource { slot, version, png } => {
+                Some(ServerMsg::ImageSlotSource { slot, version, png })
+            }
+            RadioEvent::ImageListing(l) => Some(ServerMsg::ImageListing(l)),
+            RadioEvent::ImageFile { kind, name, png } => {
+                Some(ServerMsg::ImageFile { kind, name, png })
+            }
+            // Unsolicited, but still not cached: a client attaching later gets
+            // the store by listing it, which is the authoritative view.
+            // Replaying this would stack a duplicate of the newest picture on
+            // top of that listing.
+            RadioEvent::ImageSaved(e) => Some(ServerMsg::ImageSaved(e)),
         }
     };
     if let Some(msg) = msg {
