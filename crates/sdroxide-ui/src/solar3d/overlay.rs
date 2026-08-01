@@ -1884,12 +1884,29 @@ fn advance_tour(ui: &egui::Ui, st: &mut SolarUi, sim_now: f64, dt: f32) {
     ui.ctx().request_repaint();
 }
 
-/// Drag to rotate, scroll to zoom, double-click to reframe. Any of them cancels
-/// the animated tour — the user taking the controls is the signal to stop.
+/// Drag to rotate, scroll or pinch to zoom, double-click to reframe. Any of them
+/// cancels the animated tour — the user taking the controls is the signal to
+/// stop.
 fn interact(ui: &egui::Ui, st: &mut SolarUi, resp: &egui::Response) {
     let mut touched = false;
 
-    if resp.dragged_by(egui::PointerButton::Primary) {
+    // Two fingers on the scene zoom it: on a screen with no wheel there is no
+    // other way to change the camera distance.
+    //
+    // First in the chain, and it swallows the drag, for the reason the
+    // panadapter's pinch does: the browser keeps reporting a one-finger drag
+    // from the *first* finger down for the whole gesture, so without this a
+    // pinch would spin the camera at the same time as it zoomed.
+    let pinch = ui.input(|i| i.multi_touch()).filter(|mt| resp.rect.contains(mt.center_pos));
+    if let Some(mt) = pinch {
+        if mt.zoom_delta > 0.0 {
+            // Fingers apart is zoom *in*, i.e. a shorter distance to the focus.
+            // Multiplicative like the wheel, so a gesture covers the same visual
+            // fraction whether you are 3 Gm or 3 AU out.
+            st.view.dist /= mt.zoom_delta;
+            touched |= mt.zoom_delta != 1.0;
+        }
+    } else if resp.dragged_by(egui::PointerButton::Primary) {
         let d = resp.drag_delta();
         st.view.yaw -= d.x * 0.006;
         st.view.pitch = (st.view.pitch + d.y * 0.006)
