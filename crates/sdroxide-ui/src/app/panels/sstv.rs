@@ -869,13 +869,6 @@ impl SdroxideApp {
                 sstv_section(ui, "TRANSMIT", egui::vec2(tx_w, full_h), |ui| {
                     let inner_w = tx_w - 16.0;
 
-                    // Five source slots — the highlighted one acts as the active
-                    // "tab" whose message the box below edits.
-                    ui.label(
-                        RichText::new("Image slots — click one to edit its message")
-                            .size(9.5)
-                            .weak(),
-                    );
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 5.0;
                         for i in 0..IMAGE_SLOTS {
@@ -984,7 +977,6 @@ impl SdroxideApp {
                     // grows to fill whatever's left above the buttons.
                     let btn_h = 42.0;
                     let gap = 6.0;
-                    ui.label(RichText::new("Preview (what is transmitted)").size(9.5).weak());
                     let preview_h = (ui.available_height() * 0.45).clamp(80.0, 260.0);
                     egui::Frame::new()
                         .fill(Color32::from_gray(6))

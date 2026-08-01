@@ -369,17 +369,60 @@ pub fn row_tail<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 /// Full opacity and no auto-fade — a menu is read, not glanced at, and on a
 /// touch screen there is no hover to hold [`popup_fade_alpha`] open with. It
 /// closes on a tap outside or on the chip again.
-///
-/// Scrolled rather than truncated: egui clamps a popup to the screen but will
-/// not scroll it, so a long menu on a phone in landscape would otherwise have
-/// its bottom quietly cut off.
 pub fn menu_popup<R>(ui: &mut Ui, btn: &Response, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+    popup_body(ui, btn, None, add)
+}
+
+/// [`menu_popup`], but it dismisses itself after a while on a pointer layout —
+/// for a popup that also opens from a control box on the desktop strip, where
+/// nothing else would take it away. `since` is the caller-owned open time
+/// [`popup_fade_alpha`] keeps; the fade is off on a touched layout, so there the
+/// two helpers behave identically.
+pub fn fading_menu_popup<R>(
+    ui: &mut Ui,
+    btn: &Response,
+    since: &mut Option<f64>,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
+    popup_body(ui, btn, Some(since), add)
+}
+
+/// The body both menu popups share: cut-corner chrome, a width the viewport can
+/// hold, and a scrolled content column.
+///
+/// Sized against the screen rather than the wish, in both directions, because a
+/// popup is the one thing here that is not laid out inside a panel:
+///
+/// - Width comes out of the viewport with the frame's own margins already
+///   subtracted. egui constrains a popup's *position* to the screen but cannot
+///   shrink one that is too wide, so a content column sized to the full viewport
+///   is a popup hanging off the edge of the phone by its margins.
+/// - Height is scrolled rather than truncated, for the same reason: a menu
+///   taller than a phone in landscape would otherwise have its bottom quietly
+///   cut off, with no way to reach it.
+fn popup_body<R>(
+    ui: &mut Ui,
+    btn: &Response,
+    mut fade: Option<&mut Option<f64>>,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
     let screen = ui.ctx().content_rect();
+    let now = ui.input(|i| i.time);
+    let alpha = match fade.as_deref_mut() {
+        Some(since) => {
+            popup_fade_alpha(ui.ctx(), egui::Popup::default_response_id(btn), now, since)
+        }
+        None => 1.0,
+    };
+    // 24 = the frame's 11 pt inner margin either side, plus a couple of points
+    // so the cut-corner border is not flush against the screen edge.
+    let max_w = (screen.width() - 24.0).clamp(160.0, 430.0);
     let resp = egui::Popup::from_toggle_button_response(btn)
-        .frame(window_frame())
+        .frame(window_frame_alpha(alpha))
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
-            ui.set_max_width(430.0_f32.min(screen.width() - 24.0));
+            ui.set_opacity(alpha);
+            ui.set_max_width(max_w);
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
             egui::ScrollArea::vertical()
                 .max_height(screen.height() * 0.6)
@@ -387,7 +430,14 @@ pub fn menu_popup<R>(ui: &mut Ui, btn: &Response, add: impl FnOnce(&mut Ui) -> R
                 .inner
         });
     if let Some(r) = &resp {
-        paint_window_border(ui.ctx(), &r.response);
+        paint_popup_cut_border(ui.ctx(), &r.response, alpha);
+        // Hovering the popup keeps it up: the fade is for a menu left open and
+        // forgotten, not one being read.
+        if r.response.contains_pointer()
+            && let Some(since) = fade
+        {
+            *since = Some(now);
+        }
     }
     resp.map(|r| r.inner)
 }
@@ -532,6 +582,22 @@ pub fn chip(ui: &mut Ui, selected: bool, text: impl Into<RichText>) -> Response 
     chip_impl(ui, selected, text.into(), None, Sense::click())
 }
 
+/// A chip that may be greyed out, in a row that is allowed to wrap.
+///
+/// `Ui::add_enabled_ui` builds a child `Ui`, and a child `Ui` inside a
+/// `horizontal_wrapped` row does not wrap: it is measured first and placed
+/// afterwards with `allocate_rect`, which never consults the wrapping placer.
+/// The row then simply grows past the edge it should have broken at — which is
+/// how the band row of the band/mode menu came to be one 870 pt line, wider
+/// than any phone it opened on. Reserving the chip's own size up front puts the
+/// wrap decision back where the layout can make it, and the child then fits
+/// exactly inside what was reserved.
+pub fn chip_enabled(ui: &mut Ui, enabled: bool, selected: bool, label: &str) -> Response {
+    let size = vec2(chip_width(ui, label, None), chip_height(ui, None));
+    ui.allocate_ui(size, |ui| ui.add_enabled_ui(enabled, |ui| chip(ui, selected, label)).inner)
+        .inner
+}
+
 /// Chip with an explicit accent fill when selected (e.g. PTT red).
 pub fn chip_accent(
     ui: &mut Ui,
@@ -653,5 +719,64 @@ mod tests {
         assert_eq!(row, MODULE_TALL_H + 2.0 * MODULE_BORDER, "outer height moved");
         // Inner margin of 4 above and 5 below, inside the border.
         assert_eq!(content, MODULE_TALL_H - 9.0, "content height moved");
+    }
+
+    /// Stand-in for a menu with more in it than any phone can show at once.
+    fn a_long_menu(ui: &mut Ui) {
+        ui.horizontal_wrapped(|ui| {
+            for i in 0..60 {
+                chip(ui, false, format!("CHIP{i}"));
+            }
+        });
+    }
+
+    /// Open a menu popup from a chip on a `screen`-sized viewport and return the
+    /// rect it took.
+    fn menu_popup_rect(screen: egui::Vec2) -> Rect {
+        let ctx = egui::Context::default();
+        let tier = crate::layout::tier_for(screen, sdroxide_types::LayoutMode::Auto);
+        crate::layout::set_tier(&ctx, tier);
+        theme::apply_metrics(&ctx, tier);
+        let input = || egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),
+            ..Default::default()
+        };
+        // First pass to give the chip an id, then open its popup and lay it out.
+        let mut id = None;
+        let _ = ctx.run_ui(input(), |ui| {
+            let btn = chip(ui, false, "MENU");
+            id = Some(egui::Popup::default_response_id(&btn));
+            menu_popup(ui, &btn, a_long_menu);
+        });
+        let id = id.expect("the chip was drawn");
+        egui::Popup::open_id(&ctx, id);
+        let _ = ctx.run_ui(input(), |ui| {
+            let btn = chip(ui, false, "MENU");
+            menu_popup(ui, &btn, a_long_menu);
+        });
+        ctx.memory(|m| m.area_rect(id)).expect("the popup was shown")
+    }
+
+    /// A popup is the one thing here not laid out inside a panel: egui will move
+    /// one that lands off the edge, but it cannot shrink one that is too big for
+    /// the screen — it simply hangs off it, and the part that hangs off cannot
+    /// be reached at all. Every menu therefore has to come out no larger than
+    /// the phone it opened on, however much content it was handed.
+    #[test]
+    fn a_menu_popup_fits_the_screen_it_opens_on() {
+        // Phones, portrait and landscape, plus a tablet for company.
+        for screen in
+            [vec2(360.0, 800.0), vec2(393.0, 852.0), vec2(852.0, 393.0), vec2(768.0, 1024.0)]
+        {
+            let r = menu_popup_rect(screen);
+            assert!(r.width() <= screen.x, "{screen:?}: popup {} pt wide", r.width());
+            assert!(r.height() <= screen.y, "{screen:?}: popup {} pt tall", r.height());
+            assert!(
+                r.left() >= 0.0 && r.right() <= screen.x,
+                "{screen:?}: popup spans {}..{}",
+                r.left(),
+                r.right()
+            );
+        }
     }
 }

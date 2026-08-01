@@ -8,7 +8,8 @@
 
 use eframe::egui::{self, Color32, ComboBox, DragValue, RichText, Slider};
 use sdroxide_types::{
-    AgcMode, Band, Command, Direction, GainElement, Mode, RxId, SkimmerKind, Vfo,
+    AgcMode, Band, Command, DeviceCaps, Direction, GainElement, Mode, RadioState, RxId,
+    SkimmerKind, Vfo,
 };
 
 use crate::widgets::{freq_display, smeter};
@@ -626,100 +627,14 @@ impl SdroxideApp {
             RichText::new(self.band_mode_label()).size(BAND_MODE_TEXT),
         );
 
-        let popup_id = egui::Popup::default_response_id(&btn);
-        let now = ui.input(|i| i.time);
-        let alpha =
-            crate::chrome::popup_fade_alpha(ui.ctx(), popup_id, now, &mut self.mode_popup_since);
-        let resp = egui::Popup::from_toggle_button_response(&btn)
-            .frame(crate::chrome::window_frame_alpha(alpha))
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show(|ui| {
-                ui.set_opacity(alpha);
-                ui.set_max_width(crate::layout::window_w(ui.ctx(), 430.0));
-                ui.label(RichText::new("BAND").color(crate::theme::CYAN_DIM).size(9.5).strong());
-                let digital = mode.is_digital();
-                ui.horizontal_wrapped(|ui| {
-                    for b in Band::ALL {
-                        // In a digital mode, a band button tunes to that
-                        // band's FT8/FT4 dial frequency (SetVfo keeps the
-                        // mode); otherwise it's a normal band change. Bands
-                        // with no standard digital frequency are disabled.
-                        // RF Paint has no calling frequency, so its band
-                        // buttons jump to the band's default frequency while
-                        // staying in RF Paint — every band the radio can
-                        // reach is available.
-                        let digi_hz = if mode.is_rf_paint() {
-                            Some(b.default_entry().0)
-                        } else if digital {
-                            digi_freq_for_band(mode, b)
-                        } else {
-                            None
-                        };
-                        let cap_ok = self.caps.as_ref().is_none_or(|c| {
-                            b.edges().is_none_or(|(lo, hi)| c.can_rx_hz(lo) || c.can_rx_hz(hi))
-                        });
-                        let enabled = cap_ok && (!digital || digi_hz.is_some());
-                        let active = if mode.is_rf_paint() {
-                            self.state.band == b
-                        } else {
-                            match digi_hz {
-                                Some(hz) => (self.state.active_freq_hz() - hz).abs() < 500.0,
-                                None => !digital && self.state.band == b,
-                            }
-                        };
-                        let clicked = ui
-                            .add_enabled_ui(enabled, |ui| {
-                                crate::chrome::chip(ui, active, b.label())
-                            })
-                            .inner
-                            .clicked();
-                        if clicked {
-                            match digi_hz {
-                                Some(hz) => {
-                                    cmds.push(Command::SetVfo { vfo: self.state.active_vfo, hz })
-                                }
-                                None => cmds.push(Command::SetBand(b)),
-                            }
-                        }
-                    }
-                });
-                ui.add_space(6.0);
-                ui.label(RichText::new("MODE").color(crate::theme::CYAN_DIM).size(9.5).strong());
-                ui.horizontal_wrapped(|ui| {
-                    for m in [
-                        Mode::Lsb,
-                        Mode::Usb,
-                        Mode::Cw,
-                        Mode::Am,
-                        Mode::Sam,
-                        Mode::Nfm,
-                        Mode::Wfm,
-                        Mode::Digu,
-                        Mode::Digl,
-                        Mode::Dsb,
-                        Mode::Spec,
-                    ] {
-                        if crate::chrome::chip(ui, mode == m, m.label()).clicked() {
-                            cmds.push(Command::SetMode { rx: RxId::Main, mode: m });
-                        }
-                    }
-                });
-                ui.add_space(6.0);
-                ui.label(RichText::new("DIGITAL").color(crate::theme::CYAN_DIM).size(9.5).strong());
-                ui.horizontal_wrapped(|ui| {
-                    for m in Mode::DIGITAL {
-                        if crate::chrome::chip(ui, mode == m, m.label()).clicked() {
-                            cmds.push(Command::SetMode { rx: RxId::Main, mode: m });
-                        }
-                    }
-                });
-            });
-        if let Some(r) = &resp {
-            crate::chrome::paint_popup_cut_border(ui.ctx(), &r.response, alpha);
-            if r.response.contains_pointer() {
-                self.mode_popup_since = Some(now); // keep it up while the pointer is on it
-            }
-        }
+        // The same scrolled, viewport-sized popup the menu chips use. This is
+        // the longest menu in the program — three sections and forty chips —
+        // and it opens on every layout, so it is the one that has to be held
+        // inside the screen in both directions rather than hang off it.
+        let (state, caps) = (&self.state, &self.caps);
+        crate::chrome::fading_menu_popup(ui, &btn, &mut self.mode_popup_since, |ui| {
+            band_mode_menu(ui, mode, state, caps.as_ref(), cmds);
+        });
     }
 
     /// Combined Receiver + Filter/Noise box: AGC / volume / mute on top, with the
@@ -1415,6 +1330,87 @@ impl SdroxideApp {
     }
 }
 
+/// The band + mode + digital chip rows: the body of the band/mode popup.
+///
+/// A free function taking the state it draws from, rather than a method, so a
+/// test can lay the whole menu out on a phone-sized viewport without an app
+/// around it — see `the_band_menu_fits_a_phone_screen`.
+fn band_mode_menu(
+    ui: &mut egui::Ui,
+    mode: Mode,
+    state: &RadioState,
+    caps: Option<&DeviceCaps>,
+    cmds: &mut Vec<Command>,
+) {
+    crate::chrome::menu_caption(ui, "Band");
+    let digital = mode.is_digital();
+    ui.horizontal_wrapped(|ui| {
+        for b in Band::ALL {
+            // In a digital mode, a band button tunes to that band's FT8/FT4
+            // dial frequency (SetVfo keeps the mode); otherwise it's a normal
+            // band change. Bands with no standard digital frequency are
+            // disabled. RF Paint has no calling frequency, so its band buttons
+            // jump to the band's default frequency while staying in RF Paint —
+            // every band the radio can reach is available.
+            let digi_hz = if mode.is_rf_paint() {
+                Some(b.default_entry().0)
+            } else if digital {
+                digi_freq_for_band(mode, b)
+            } else {
+                None
+            };
+            let cap_ok = caps.is_none_or(|c| {
+                b.edges().is_none_or(|(lo, hi)| c.can_rx_hz(lo) || c.can_rx_hz(hi))
+            });
+            let enabled = cap_ok && (!digital || digi_hz.is_some());
+            let active = if mode.is_rf_paint() {
+                state.band == b
+            } else {
+                match digi_hz {
+                    Some(hz) => (state.active_freq_hz() - hz).abs() < 500.0,
+                    None => !digital && state.band == b,
+                }
+            };
+            if crate::chrome::chip_enabled(ui, enabled, active, b.label()).clicked() {
+                match digi_hz {
+                    Some(hz) => cmds.push(Command::SetVfo { vfo: state.active_vfo, hz }),
+                    None => cmds.push(Command::SetBand(b)),
+                }
+            }
+        }
+    });
+    ui.add_space(6.0);
+    crate::chrome::menu_caption(ui, "Mode");
+    ui.horizontal_wrapped(|ui| {
+        for m in [
+            Mode::Lsb,
+            Mode::Usb,
+            Mode::Cw,
+            Mode::Am,
+            Mode::Sam,
+            Mode::Nfm,
+            Mode::Wfm,
+            Mode::Digu,
+            Mode::Digl,
+            Mode::Dsb,
+            Mode::Spec,
+        ] {
+            if crate::chrome::chip(ui, mode == m, m.label()).clicked() {
+                cmds.push(Command::SetMode { rx: RxId::Main, mode: m });
+            }
+        }
+    });
+    ui.add_space(6.0);
+    crate::chrome::menu_caption(ui, "Digital");
+    ui.horizontal_wrapped(|ui| {
+        for m in Mode::DIGITAL {
+            if crate::chrome::chip(ui, mode == m, m.label()).clicked() {
+                cmds.push(Command::SetMode { rx: RxId::Main, mode: m });
+            }
+        }
+    });
+}
+
 /// The VFO A/B selector chips. In the frequency box on a desktop, in the VFO
 /// menu on a phone — one definition either way.
 fn vfo_ab_chips(ui: &mut egui::Ui, active: Vfo, cmds: &mut Vec<Command>) {
@@ -1555,5 +1551,70 @@ mod tests {
         let (size, box_w) = tablet_box(&f, 1024.0);
         assert_eq!(size, 40.0, "a 1024 pt tablet has room for the design size");
         assert!(box_w + 8.0 + SMETER_W <= 1024.0 - 36.0, "{box_w} + meter overflowed");
+    }
+
+    /// Open the band/mode menu on a `screen`-sized viewport and measure the
+    /// popup it produced.
+    fn band_menu_rect(screen: egui::Vec2) -> egui::Rect {
+        let ctx = egui::Context::default();
+        let tier = crate::layout::tier_for(screen, sdroxide_types::LayoutMode::Auto);
+        crate::layout::set_tier(&ctx, tier);
+        crate::theme::apply_metrics(&ctx, tier);
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+            ..Default::default()
+        };
+        let state = RadioState::default();
+        let menu = |ui: &mut egui::Ui| {
+            let btn = crate::chrome::chip(ui, false, "20m · USB");
+            let id = egui::Popup::default_response_id(&btn);
+            crate::chrome::menu_popup(ui, &btn, |ui| {
+                band_mode_menu(ui, state.rx[0].mode, &state, None, &mut Vec::new());
+            });
+            id
+        };
+        // The first pass gives the chip an id; then it is opened and laid out.
+        let mut id = None;
+        let _ = ctx.run_ui(input(), |ui| id = Some(menu(ui)));
+        let id = id.expect("the chip was drawn");
+        egui::Popup::open_id(&ctx, id);
+        let _ = ctx.run_ui(input(), |ui| {
+            menu(ui);
+        });
+        ctx.memory(|m| m.area_rect(id)).expect("the menu was shown")
+    }
+
+    /// The longest menu in the program, on the smallest screens it opens on.
+    ///
+    /// A popup is not laid out inside a panel: egui moves one that lands off an
+    /// edge, but it cannot shrink one that is simply too big for the screen —
+    /// the overflow hangs off the viewport where no finger can reach it. Forty
+    /// chips in three sections is well past what a phone in landscape can show,
+    /// so this menu only fits because [`crate::chrome::menu_popup`] bounds it
+    /// and scrolls the rest.
+    #[test]
+    fn the_band_menu_fits_a_phone_screen() {
+        for screen in [
+            egui::vec2(360.0, 800.0),  // small phone, portrait
+            egui::vec2(393.0, 852.0),  // common phone, portrait
+            egui::vec2(852.0, 393.0),  // and in landscape
+            egui::vec2(667.0, 375.0),  // a small phone in landscape: the tightest of all
+            egui::vec2(768.0, 1024.0), // tablet, for company
+        ] {
+            let r = band_menu_rect(screen);
+            assert!(
+                r.width() <= screen.x && r.height() <= screen.y,
+                "{screen:?}: the band menu came out {} x {}",
+                r.width(),
+                r.height()
+            );
+            assert!(
+                r.left() >= 0.0
+                    && r.right() <= screen.x
+                    && r.top() >= 0.0
+                    && r.bottom() <= screen.y,
+                "{screen:?}: the band menu spans {r:?}"
+            );
+        }
     }
 }
