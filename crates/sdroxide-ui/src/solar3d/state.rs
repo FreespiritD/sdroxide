@@ -239,7 +239,15 @@ pub struct SolarUi {
     /// Set when the target changes, so the next frame — which has the bodies
     /// placed already — can pull the camera in to frame whatever was picked.
     pub retarget: bool,
+    /// When each menu chip's popup was opened, for the fade that takes a
+    /// forgotten one away again. One slot per chip, in bar order; owned here
+    /// because [`crate::chrome::popup_fade_alpha`] keeps no state of its own.
+    pub menu_since: [Option<f64>; MENUS],
 }
+
+/// How many menu chips the overlay's bar has — the width of
+/// [`SolarUi::menu_since`].
+pub const MENUS: usize = 7;
 
 /// ASCII-case-insensitive substring test.
 ///
@@ -318,6 +326,7 @@ impl SolarUi {
             tour: super::camera::Tour::default(),
             last_frame_time: 0.0,
             retarget: false,
+            menu_since: [None; MENUS],
         }
     }
 

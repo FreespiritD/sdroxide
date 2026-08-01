@@ -122,6 +122,36 @@ pub fn ui(ui: &mut egui::Ui, st: &mut SolarUi) {
     scene(ui, st, data);
 }
 
+// Fade slots in [`SolarUi::menu_since`], in bar order.
+const M_VIEW: usize = 0;
+const M_LAYERS: usize = 1;
+const M_SUN: usize = 2;
+const M_WEATHER: usize = 3;
+const M_SCALE: usize = 4;
+const M_TIME: usize = 5;
+const M_ACTIVITY: usize = 6;
+
+/// One menu chip's popup, wearing the same fade the main window's menus have: a
+/// popup opened and then forgotten takes itself away rather than sitting over
+/// the scene until something else is clicked. Off on a touched layout, where
+/// there is no hover to hold it open with — that rule lives in
+/// [`chrome::popup_fade_alpha`].
+///
+/// The open time is copied out and back rather than borrowed in place, because
+/// the popup body needs `st` mutably too and `&mut st.menu_since[slot]` would
+/// hold the whole of it.
+fn menu(
+    ui: &mut egui::Ui,
+    st: &mut SolarUi,
+    slot: usize,
+    btn: egui::Response,
+    add: impl FnOnce(&mut egui::Ui, &mut SolarUi),
+) {
+    let mut since = st.menu_since[slot];
+    chrome::fading_menu_popup(ui, &btn, &mut since, |ui| add(ui, st));
+    st.menu_since[slot] = since;
+}
+
 /// The menu chips along the top of the scene: one per control box, each opening
 /// what that box used to hold.
 ///
@@ -166,18 +196,18 @@ fn menu_bar(
             ui.horizontal_wrapped(|ui| {
                 let btn = chrome::chip(ui, st.view.auto, "VIEW")
                     .on_hover_text("Which body the camera orbits, and the animated tour");
-                chrome::menu_popup(ui, &btn, |ui| view_controls(ui, st));
+                menu(ui, st, M_VIEW, btn, view_controls);
 
                 let btn = chrome::chip(ui, false, "LAYERS")
                     .on_hover_text("What is drawn: orbits, clouds, CMEs, labels, QSOs, aurora");
-                chrome::menu_popup(ui, &btn, |ui| {
+                menu(ui, st, M_LAYERS, btn, |ui, st| {
                     chrome::menu_caption(ui, "Layers");
                     layer_controls(ui, st);
                 });
 
                 let btn = chrome::chip(ui, false, "SUN")
                     .on_hover_text("Which SDO channel wraps the Sun, and how old it is");
-                chrome::menu_popup(ui, &btn, |ui| {
+                menu(ui, st, M_SUN, btn, |ui, st| {
                     chrome::menu_caption(ui, "Sun");
                     sun_controls(ui, st, data, now);
                 });
@@ -188,7 +218,7 @@ fn menu_bar(
                 if phone {
                     let btn = chrome::chip(ui, false, "WEATHER")
                         .on_hover_text("The aurora and the propagation numbers");
-                    chrome::menu_popup(ui, &btn, |ui| {
+                    menu(ui, st, M_WEATHER, btn, |ui, st| {
                         chrome::menu_caption(ui, "Space weather");
                         let aurora = aurora_panel(ui, st, data, Place::Inline, sim_now).is_some();
                         let prop = weather_panel(ui, st, data, Place::Inline, sim_now).is_some();
@@ -204,21 +234,21 @@ fn menu_bar(
 
                 let btn = chrome::chip(ui, false, "SCALE")
                     .on_hover_text("Body and Moon-orbit exaggeration");
-                chrome::menu_popup(ui, &btn, |ui| {
+                menu(ui, st, M_SCALE, btn, |ui, st| {
                     chrome::menu_caption(ui, "Scale");
                     scale_controls(ui, st);
                 });
 
                 let btn = chrome::chip(ui, st.sim_offset_s != 0.0, "TIME")
                     .on_hover_text("Scrub the whole scene forward and back");
-                chrome::menu_popup(ui, &btn, |ui| {
+                menu(ui, st, M_TIME, btn, |ui, st| {
                     chrome::menu_caption(ui, "Time");
                     time_controls(ui, st);
                 });
 
                 let btn = chrome::chip(ui, st.lapse_playing, "ACTIVITY")
                     .on_hover_text("Replay the last hour of decodes on the globe");
-                chrome::menu_popup(ui, &btn, |ui| {
+                menu(ui, st, M_ACTIVITY, btn, |ui, st| {
                     chrome::menu_caption(ui, "Activity");
                     activity_controls(ui, st);
                 });
