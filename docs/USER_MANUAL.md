@@ -809,7 +809,8 @@ It is a 33-tone incremental-FSK mode; choose the **speed** (FSQ-2/3/4.5/6) and a
   **DEL** to remove.
 - **Images** — **Send image…** picks a picture, which is scaled to grayscale and
   transmitted as an analog tone scan; received pictures appear in the image
-  gallery below.
+  gallery below. Nothing here is written to disk, so clearing it is local and
+  immediate: right-click a picture to remove it, or **CLEAR** to forget the lot.
 
 These three modems are native-Rust and self-contained. On-air interoperability
 with fldigi is being validated; the first release targets clean-to-moderate
@@ -938,6 +939,14 @@ Band buttons tune to that band's common SSTV calling frequency (for example
   to pick it.
 - Received images are saved as PNG under `~/.config/sdroxide/sstv_rx/` and reload
   into the gallery next time.
+- **Deleting.** Most of what a night on 20 m leaves behind is noise. **Right-click**
+  a thumbnail and choose *Delete this picture*, or open one and use **Delete…** in
+  the enlarged window — which asks a second time, because the file goes for good
+  and there is no undo. The picture is removed from the store on the machine the
+  radio is plugged into, so it is gone from every screen attached to it, and a
+  browser client can clear the collection down without going near that machine.
+  Deleting the picture you are looking at leaves the window on the next-older one,
+  so a run of blank frames can be thrown away in a sequence of clicks.
 
 **Transmitting:**
 
@@ -1030,7 +1039,8 @@ between the two modes.
 - The counters read **frames** (valid), **bad** (failed their CRC and were not
   recovered) and **pictures** (complete and verified).
 - Received pictures are saved as PNG under `~/.config/sdroxide/sstv_rx/`,
-  alongside the SSTV ones.
+  alongside the SSTV ones — and are deleted the same way (3.10): right-click a
+  thumbnail, or **Delete…** in the enlarged window.
 
 **Transmitting:** identical to SSTV — pick a slot, load an image, type its
 message, press **TX**. The status line shows which frame of how many is going
@@ -1134,8 +1144,19 @@ open it full size, which you will need to — the fronts and isobars are
 unreadable at thumbnail scale — and **◀ NEWER** / **OLDER ▶** step through the
 rest without closing the window. **PATH** copies the directory.
 
+A station that keys up over a dead band fills the directory with grey pages, so
+charts can be thrown away from the panel: **right-click** a card and choose
+*Delete this chart*, or use **DELETE** in the open chart's window, which asks a
+second time before the file goes. The chart is deleted on the machine the radio
+is plugged into and disappears from every screen attached to it. Deleting the
+chart you are viewing leaves the window on the next-older one — the same place
+**OLDER ▶** would have gone — so a run of blank pages goes in a sequence of
+clicks.
+
 Charts saved by earlier versions in `~/.config/sdroxide/wefax_rx/` are still
 listed alongside the new ones, so nothing you have already received disappears.
+Deleting one takes both copies, so a chart that was in the old directory too
+does not reappear on the next listing.
 
 ### 3.13 JS8
 

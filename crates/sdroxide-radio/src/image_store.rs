@@ -155,6 +155,37 @@ pub fn resolve(kind: ImageKind, name: &str) -> Option<PathBuf> {
     read_dirs(kind).into_iter().find_map(|dir| resolve_in(&dir, name))
 }
 
+/// Every store directory holding a file by this name, under the same two checks.
+///
+/// [`resolve`] takes the first, which is right for reading: a listing shows a
+/// name once and the current directory wins. Deleting has to take them all, or a
+/// chart present in both the pictures directory and the legacy one would come
+/// straight back on the next listing, out of the copy nobody can see.
+fn resolve_every(kind: ImageKind, name: &str) -> Vec<PathBuf> {
+    resolve_every_in(&read_dirs(kind), name)
+}
+
+/// The [`resolve_every`] search over a given list of directories, so a delete
+/// can be tested against temporary ones rather than the operator's collection.
+fn resolve_every_in(dirs: &[PathBuf], name: &str) -> Vec<PathBuf> {
+    let Some(name) = sdroxide_types::safe_name(name) else { return Vec::new() };
+    dirs.iter().filter_map(|dir| resolve_in(dir, name)).collect()
+}
+
+/// Unlink every path, reporting the last failure. Split out from the worker for
+/// the same reason as [`resolve_every_in`]: this is the one place in the program
+/// where a mistake costs something that cannot be got back.
+fn remove_all(paths: &[PathBuf]) -> Option<String> {
+    let mut failed = None;
+    for path in paths {
+        if let Err(e) = std::fs::remove_file(path) {
+            warn!(path = %path.display(), "deleting stored picture: {e}");
+            failed = Some(e.to_string());
+        }
+    }
+    failed
+}
+
 /// The [`resolve`] check against one directory, so it can be tested against a
 /// real temporary one rather than the operator's config directory.
 fn resolve_in(dir: &Path, name: &str) -> Option<PathBuf> {
@@ -418,6 +449,8 @@ pub enum GalleryEvent {
     Listing(ImageListing),
     File { kind: ImageKind, name: String, png: Vec<u8> },
     Saved(ImageEntry),
+    /// A stored picture is gone — either just removed, or already absent.
+    Deleted { kind: ImageKind, name: String },
 }
 
 /// Directory walks, thumbnailing, full-size reads and upload decoding, all off
@@ -489,6 +522,37 @@ impl GalleryWorker {
             // An empty payload rather than silence: a gallery that is waiting
             // has to be able to stop waiting.
             let _ = tx.send(GalleryEvent::File { kind, name, png });
+        });
+    }
+
+    /// Remove one stored picture.
+    ///
+    /// Off the engine thread like everything else here — the file is on whatever
+    /// the operator's pictures directory is mounted on, and an unlink on a tired
+    /// SD card or a network share takes long enough to drop an audio block.
+    ///
+    /// A name that resolves to nothing is reported as deleted rather than as a
+    /// failure. There is nothing left to delete, which is what was asked for,
+    /// and a gallery still showing it is exactly the state this is meant to
+    /// fix — a refusal would leave the thumbnail sitting there for ever.
+    pub fn delete(&self, kind: ImageKind, name: String) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let paths = resolve_every(kind, &name);
+            let ev = match remove_all(&paths) {
+                // Left where it was: say so, rather than letting the gallery
+                // drop a thumbnail for a file that is still on the disk.
+                Some(e) => GalleryEvent::Rejected(format!("Could not delete {name}: {e}")),
+                None => {
+                    if paths.is_empty() {
+                        warn!(%name, "picture delete: not a name in this store");
+                    } else {
+                        info!(%name, copies = paths.len(), "stored picture deleted");
+                    }
+                    GalleryEvent::Deleted { kind, name }
+                }
+            };
+            let _ = tx.send(ev);
         });
     }
 
@@ -676,6 +740,67 @@ mod tests {
         assert!(shared.path.starts_with(&new), "the current store wins");
         // And the date came out of the name, not off the clock.
         assert_eq!(shared.unix, sdroxide_types::ymd_hms_to_unix(2026, 7, 29, 14, 15, 30));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The delete's own path check, which is the one that matters most here: a
+    /// name arrives over a socket nothing authenticates and ends at
+    /// `remove_file`, and there is no undo behind it.
+    #[test]
+    fn a_delete_cannot_reach_outside_the_store() {
+        let root = std::env::temp_dir().join(format!("sdroxide-del-{}", std::process::id()));
+        let store = root.join("rx");
+        std::fs::create_dir_all(&store).expect("temp store");
+        let outside = root.join("precious.png");
+        std::fs::write(&outside, png_of(4, 4)).expect("outside");
+        std::fs::write(store.join("sstv-1753795200000.png"), png_of(4, 4)).expect("inside");
+        let dirs = [store.clone()];
+
+        for bad in ["../precious.png", "/etc/passwd", "precious.png", "..", "a/b.png"] {
+            assert!(resolve_every_in(&dirs, bad).is_empty(), "{bad} must name nothing");
+        }
+        // A symlink planted in the store still points outside it, which the name
+        // check alone cannot see — and following it would delete the target.
+        #[cfg(unix)]
+        {
+            let link = store.join("sneaky.png");
+            std::os::unix::fs::symlink(&outside, &link).expect("symlink");
+            assert!(resolve_every_in(&dirs, "sneaky.png").is_empty());
+            let _ = std::fs::remove_file(&link);
+        }
+        assert!(outside.is_file(), "nothing outside the store may be removed");
+
+        // And a name that is really in it resolves, and goes.
+        let paths = resolve_every_in(&dirs, "sstv-1753795200000.png");
+        assert_eq!(paths.len(), 1);
+        assert_eq!(remove_all(&paths), None);
+        assert!(!store.join("sstv-1753795200000.png").exists());
+        // Deleting what is already gone resolves to nothing rather than failing:
+        // there is nothing left to delete, which is what was asked for.
+        assert!(resolve_every_in(&dirs, "sstv-1753795200000.png").is_empty());
+        assert_eq!(remove_all(&[]), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A chart present in both the current directory and the legacy one is
+    /// listed once, so deleting it has to take both copies — otherwise the
+    /// operator deletes a chart and it comes straight back on the next listing,
+    /// out of the copy they cannot see.
+    #[test]
+    fn a_delete_takes_every_copy_a_listing_would_have_hidden() {
+        let root = std::env::temp_dir().join(format!("sdroxide-del2-{}", std::process::id()));
+        let (new, old) = (root.join("new"), root.join("old"));
+        std::fs::create_dir_all(&new).expect("new");
+        std::fs::create_dir_all(&old).expect("old");
+        let name = "wefax-20260729-141530Z.png";
+        std::fs::write(new.join(name), png_of(8, 4)).expect("write");
+        std::fs::write(old.join(name), png_of(8, 4)).expect("write");
+        let dirs = [new.clone(), old.clone()];
+
+        let paths = resolve_every_in(&dirs, name);
+        assert_eq!(paths.len(), 2, "both copies have to be found: {paths:?}");
+        assert_eq!(remove_all(&paths), None);
+        assert!(!new.join(name).exists() && !old.join(name).exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 

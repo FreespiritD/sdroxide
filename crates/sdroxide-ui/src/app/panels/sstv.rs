@@ -130,6 +130,14 @@ pub(in crate::app) struct SstvUi {
     pub(in crate::app) status: SstvStatus,
     /// Received-gallery index currently shown enlarged in an overlay window.
     pub(in crate::app) enlarged: Option<usize>,
+    /// Name of the picture whose DELETE has been pressed once and is waiting to
+    /// be pressed again.
+    ///
+    /// Two presses rather than a modal, because the file goes for good and there
+    /// is no undo to offer: a stray click on a chip beside SAVE would otherwise
+    /// be the last anyone saw of a picture. Armed per name, so it cannot survive
+    /// into the next picture and delete that one instead.
+    pub(in crate::app) confirm_delete: Option<String>,
     /// Last VIS/free-run-detected mode we auto-applied to `tx_mode`, so a steady
     /// detection doesn't keep overriding the operator's manual mode choice.
     pub(in crate::app) last_detected: Option<SstvMode>,
@@ -173,6 +181,7 @@ impl Default for SstvUi {
             full_png: None,
             status: SstvStatus::default(),
             enlarged: None,
+            confirm_delete: None,
             last_detected: None,
             preview_tex: None,
             preview_dirty: true,
@@ -325,6 +334,38 @@ impl SstvUi {
         }
         self.total += 1;
         self.insert_entry(entry, fresh.map(|(tex, _)| tex), ctx);
+    }
+
+    /// A picture is no longer in the store: this screen's delete, or another's.
+    ///
+    /// The enlarged view is an index into the list, so it is moved with the
+    /// list. Deleting the picture being looked at leaves the index on the
+    /// next-older one, which is what makes culling a gallery a sequence of
+    /// clicks in one place rather than a reopen after every one.
+    pub(in crate::app) fn on_deleted(&mut self, name: &str) {
+        let Some(at) = self.received.iter().position(|r| r.entry.name == name) else { return };
+        self.received.remove(at);
+        // `total` counts the whole store, of which this list is only a window.
+        // It comes down for a picture that was in the window, because that is
+        // the case where this client knows the store really did shrink; for one
+        // past the end it is left alone and the next listing settles it.
+        self.total = self.total.saturating_sub(1);
+        if self.full_png.as_ref().is_some_and(|(n, _)| n == name) {
+            self.full_png = None;
+        }
+        if self.confirm_delete.as_deref() == Some(name) {
+            self.confirm_delete = None;
+        }
+        if let Some(v) = self.enlarged {
+            let next = if at < v { v - 1 } else { v };
+            self.enlarged = (next < self.received.len()).then_some(next);
+            // Only a delete of the picture being looked at puts a different one
+            // in the window; anything above it just shifted the same picture up.
+            if at == v {
+                self.full_asked = None;
+                self.full_gone = false;
+            }
+        }
     }
 
     /// A fetched full-size picture. An empty answer means the store no longer
@@ -613,6 +654,10 @@ impl SdroxideApp {
             let mut enlarge: Option<usize> = None;
             // The gallery asked for the next page.
             let mut more = false;
+            // A picture was deleted from the gallery's context menu. By name,
+            // not by index: the answer comes back asynchronously and the list
+            // may have grown a picture at the front by then.
+            let mut delete: Option<String> = None;
 
             // ── LEFT: boxed controls, then LIVE + RECEIVED ──
             if pane.is_none_or(|p| p == 0) {
@@ -814,10 +859,29 @@ impl SdroxideApp {
                                                         .corner_radius(2.0)
                                                         .sense(egui::Sense::click()),
                                                 )
-                                                .on_hover_text("Click to enlarge");
+                                                .on_hover_text(
+                                                    "Click to enlarge · right-click to delete",
+                                                );
                                             if resp.clicked() {
                                                 enlarge = Some(i);
                                             }
+                                            // A menu rather than an ✕ on the
+                                            // thumbnail: a picture is 112 points
+                                            // across in a wrapped grid, and a
+                                            // delete target that close to the
+                                            // one for opening it would be pressed
+                                            // by accident.
+                                            resp.context_menu(|ui| {
+                                                ui.label(
+                                                    RichText::new(shorten(&r.entry.name, 32))
+                                                        .size(10.0)
+                                                        .weak(),
+                                                );
+                                                if ui.button("Delete this picture").clicked() {
+                                                    delete = Some(r.entry.name.clone());
+                                                    ui.close();
+                                                }
+                                            });
                                         }
                                     });
                                     // The rest of the store is a request away.
@@ -1113,12 +1177,19 @@ impl SdroxideApp {
                     count: sdroxide_types::IMAGE_PAGE_MAX,
                 });
             }
+            // The gallery entry goes when the engine says the file has, not
+            // here: the store is on the radio's machine, and a thumbnail that
+            // vanished from a delete that then failed would be a lie.
+            if let Some(name) = delete {
+                cmds.push(Command::ImageDelete { kind: ImageKind::Sstv, name });
+            }
         });
 
         // Enlarged view of a clicked received image (overlay window).
         if let Some(idx) = self.sstv.enlarged {
             let mut open = true;
             let mut save = false;
+            let mut pressed_delete = false;
             if let Some(r) = self.sstv.received.get(idx) {
                 // The full-size picture lives on the radio. Ask for it the
                 // moment one is opened, and show the thumbnail scaled up in the
@@ -1133,8 +1204,16 @@ impl SdroxideApp {
                         name: r.entry.name.clone(),
                     });
                 }
+                // A picture can be stored before the first listing has come
+                // back, so the directory is not always known to name.
+                let del_hint = if self.sstv.dir.is_empty() {
+                    "Delete this picture from the store".to_string()
+                } else {
+                    format!("Delete this picture {}", self.store_where(&self.sstv.dir))
+                };
                 let r = &self.sstv.received[idx];
                 let savable = self.sstv.full_png.as_ref().is_some_and(|(n, _)| *n == r.entry.name);
+                let armed = self.sstv.confirm_delete.as_deref() == Some(&r.entry.name);
                 egui::Window::new("Received image")
                     .open(&mut open)
                     .collapsible(false)
@@ -1169,6 +1248,24 @@ impl SdroxideApp {
                                     .clicked()
                             {
                                 save = true;
+                            }
+                            // Two presses, the second one red: the file goes
+                            // from the radio's disk and there is nothing to
+                            // undo it with.
+                            let del = if armed {
+                                crate::chrome::chip_accent(
+                                    ui,
+                                    true,
+                                    "Delete — sure?",
+                                    crate::theme::PINK,
+                                    crate::theme::INK_ON_CYAN,
+                                )
+                                .on_hover_text("Click again to delete it for good")
+                            } else {
+                                crate::chrome::chip(ui, false, "Delete…").on_hover_text(&del_hint)
+                            };
+                            if del.clicked() {
+                                pressed_delete = true;
                             }
                             ui.label(
                                 RichText::new(format!(
@@ -1215,10 +1312,23 @@ impl SdroxideApp {
                     crate::download::save_as(name, png, crate::download::Mime::Png);
                 }
             }
+            // First press arms the chip, second sends it. The gallery entry
+            // stays until the engine confirms the file is gone.
+            if pressed_delete {
+                if let Some(name) = self.sstv.received.get(idx).map(|r| r.entry.name.clone()) {
+                    if self.sstv.confirm_delete.as_deref() == Some(name.as_str()) {
+                        self.sstv.confirm_delete = None;
+                        cmds.push(Command::ImageDelete { kind: ImageKind::Sstv, name });
+                    } else {
+                        self.sstv.confirm_delete = Some(name);
+                    }
+                }
+            }
             if !open {
                 self.sstv.enlarged = None;
                 self.sstv.full_asked = None;
                 self.sstv.full_gone = false;
+                self.sstv.confirm_delete = None;
             }
         }
     }

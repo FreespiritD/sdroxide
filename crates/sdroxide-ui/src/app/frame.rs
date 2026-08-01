@@ -257,6 +257,12 @@ impl eframe::App for SdroxideApp {
                     sdroxide_types::ImageKind::Sstv => self.sstv.on_saved(e, &ctx),
                     sdroxide_types::ImageKind::Wefax => self.wefax.on_saved(e, &ctx),
                 },
+                // Broadcast, so this is as likely to be another screen's delete
+                // as our own — either way the picture has gone.
+                RadioEvent::ImageDeleted { kind, name } => match kind {
+                    sdroxide_types::ImageKind::Sstv => self.sstv.on_deleted(&name),
+                    sdroxide_types::ImageKind::Wefax => self.wefax.on_deleted(&name),
+                },
                 RadioEvent::CallsignResult(info) => self.apply_callsign(info),
                 RadioEvent::Upload(r) => self.on_upload_result(r),
                 RadioEvent::Confirmations(recs) => self.apply_confirmations(recs),

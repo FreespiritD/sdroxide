@@ -454,6 +454,10 @@ impl SdroxideApp {
         let thumb_h = thumb_w * 0.36;
         let mut open = None;
         let mut more = false;
+        // A card's context menu asked for a chart to go. By name, not by index:
+        // the answer comes back asynchronously and a chart may have arrived at
+        // the front of the gallery by then.
+        let mut delete: Option<String> = None;
         egui::ScrollArea::vertical().id_salt("wefax-gallery").auto_shrink([false, false]).show(
             ui,
             |ui| {
@@ -510,18 +514,26 @@ impl SdroxideApp {
                             egui::StrokeKind::Inside,
                         );
                     }
-                    if resp
-                        .on_hover_text(format!(
-                            "{}\n{} × {} pixels\n{}",
-                            c.meta.map_or_else(|| c.name.clone(), |m| m.when_full()),
-                            c.size.0,
-                            c.size.1,
-                            c.name
-                        ))
-                        .clicked()
-                    {
+                    let resp = resp.on_hover_text(format!(
+                        "{}\n{} × {} pixels\n{}\n\nRight-click to delete",
+                        c.meta.map_or_else(|| c.name.clone(), |m| m.when_full()),
+                        c.size.0,
+                        c.size.1,
+                        c.name
+                    ));
+                    if resp.clicked() {
                         open = Some(i);
                     }
+                    // A menu rather than a button on the card: the whole card
+                    // is the target for opening it, and a delete sharing that
+                    // target would be pressed by accident.
+                    resp.context_menu(|ui| {
+                        ui.label(RichText::new(c.title()).color(theme::CYAN_DIM).size(10.0));
+                        if ui.button("Delete this chart").clicked() {
+                            delete = Some(c.name.clone());
+                            ui.close();
+                        }
+                    });
                     ui.add_space(6.0);
                 }
                 // The rest of the store is a request away. Exact, not a guess:
@@ -560,6 +572,12 @@ impl SdroxideApp {
                 offset: self.wefax.gallery.len() as u32,
                 count: sdroxide_types::IMAGE_PAGE_MAX,
             });
+        }
+        // The card goes when the engine says the file has, not here: the store
+        // is on the radio's machine, and a thumbnail that vanished from a
+        // delete that then failed would be a lie.
+        if let Some(name) = delete {
+            cmds.push(Command::ImageDelete { kind: sdroxide_types::ImageKind::Wefax, name });
         }
     }
 
@@ -663,9 +681,18 @@ impl SdroxideApp {
         let tex = chart.full.clone().unwrap_or_else(|| chart.texture.clone());
         let savable = self.wefax.full_png.as_ref().is_some_and(|(n, _)| *n == name);
         let gone = self.wefax.full_gone;
+        let armed = self.wefax.confirm_delete.as_deref() == Some(name.as_str());
+        // A chart can be stored before the first listing has come back, so the
+        // directory is not always known to name.
+        let del_hint = if self.wefax.dir.is_empty() {
+            "Delete this chart from the store".to_string()
+        } else {
+            format!("Delete this chart {}", self.store_where(&self.wefax.dir))
+        };
         let title = chart.title();
         let mut open = true;
         let mut save = false;
+        let mut pressed_delete = false;
         let mut step = 0i32;
         let resp = egui::Window::new(format!("{title}  ·  {}×{}", size.0, size.1))
             .id(egui::Id::new("wefax-viewer"))
@@ -715,6 +742,24 @@ impl SdroxideApp {
                     {
                         save = true;
                     }
+                    // Two presses, the second one red: the file goes from the
+                    // radio's disk and there is nothing to undo it with.
+                    let del = if armed {
+                        crate::chrome::chip_accent(
+                            ui,
+                            true,
+                            RichText::new("SURE?").size(9.5),
+                            crate::theme::PINK,
+                            crate::theme::INK_ON_CYAN,
+                        )
+                        .on_hover_text("Click again to delete this chart for good")
+                    } else {
+                        crate::chrome::chip(ui, false, RichText::new("DELETE").size(9.5))
+                            .on_hover_text(&del_hint)
+                    };
+                    if del.clicked() {
+                        pressed_delete = true;
+                    }
                     ui.label(RichText::new(&name).color(crate::theme::LINE_LIT).size(10.0))
                         .on_hover_text("The file this chart was saved as");
                 });
@@ -738,17 +783,33 @@ impl SdroxideApp {
                 crate::download::save_as(name, png, crate::download::Mime::Png);
             }
         }
+        // First press arms the chip, second sends it. The card stays until the
+        // engine confirms the file is gone.
+        if pressed_delete {
+            if armed {
+                self.wefax.confirm_delete = None;
+                cmds.push(Command::ImageDelete {
+                    kind: sdroxide_types::ImageKind::Wefax,
+                    name: name.clone(),
+                });
+            } else {
+                self.wefax.confirm_delete = Some(name.clone());
+            }
+        }
         if step != 0 && n > 0 {
             self.wefax.viewing = Some((i as i32 + step).clamp(0, n as i32 - 1) as usize);
             // Stepping to another chart means the outstanding fetch, if any, is
-            // for one nobody is looking at any more.
+            // for one nobody is looking at any more — and an armed DELETE is
+            // for a chart nobody is looking at any more either.
             self.wefax.full_asked = None;
             self.wefax.full_gone = false;
+            self.wefax.confirm_delete = None;
         }
         if !open {
             self.wefax.viewing = None;
             self.wefax.full_asked = None;
             self.wefax.full_gone = false;
+            self.wefax.confirm_delete = None;
         }
     }
 }

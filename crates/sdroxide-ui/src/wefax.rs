@@ -138,6 +138,14 @@ pub struct WefaxUi {
     pub dir: String,
     /// Which gallery entry is open full-size, if any.
     pub viewing: Option<usize>,
+    /// Name of the chart whose DELETE has been pressed once and is waiting to
+    /// be pressed again.
+    ///
+    /// Two presses rather than a modal, because the file goes for good and
+    /// there is no undo to offer: a stray click on a chip beside SAVE would
+    /// otherwise be the last anyone saw of a chart. Armed per name, so it
+    /// cannot survive into the next chart and delete that one instead.
+    pub confirm_delete: Option<String>,
 }
 
 impl Default for WefaxUi {
@@ -165,6 +173,7 @@ impl Default for WefaxUi {
             full_png: None,
             dir: String::new(),
             viewing: None,
+            confirm_delete: None,
         }
     }
 }
@@ -286,6 +295,38 @@ impl WefaxUi {
         }
         self.total += 1;
         self.insert_entry(entry, fresh.map(|(tex, _)| tex), ctx);
+    }
+
+    /// A chart is no longer in the store: this screen's delete, or another's.
+    ///
+    /// The viewer is an index into the gallery, so it moves with it. Deleting
+    /// the chart on screen leaves the viewer on the next-older one — the same
+    /// place OLDER ▶ would have gone — which is what makes throwing away a run
+    /// of blank pages a sequence of clicks rather than a reopen after each.
+    pub fn on_deleted(&mut self, name: &str) {
+        let Some(at) = self.gallery.iter().position(|c| c.name == name) else { return };
+        self.gallery.remove(at);
+        // `total` is the whole store's count, of which this gallery is a
+        // window. It comes down for a chart that was in the window, because
+        // that is the case where this client knows the store really shrank; for
+        // one past the end it is left alone and the next listing settles it.
+        self.total = self.total.saturating_sub(1);
+        if self.full_png.as_ref().is_some_and(|(n, _)| n == name) {
+            self.full_png = None;
+        }
+        if self.confirm_delete.as_deref() == Some(name) {
+            self.confirm_delete = None;
+        }
+        if let Some(v) = self.viewing {
+            let next = if at < v { v - 1 } else { v };
+            self.viewing = (next < self.gallery.len()).then_some(next);
+            // Only a delete of the chart being viewed puts a different one in
+            // the window; anything above it just shifted the same chart up.
+            if at == v {
+                self.full_asked = None;
+                self.full_gone = false;
+            }
+        }
     }
 
     /// A fetched full-size chart. An empty answer means the store no longer has
@@ -444,6 +485,91 @@ mod tests {
         ui.clear_live();
         assert!(!ui.has_live());
         assert_eq!(ui.live_size(), (6, 0));
+    }
+
+    /// A one-pixel PNG, for the gallery tests: `insert_entry` decodes the
+    /// thumbnail it is given, so the entry has to carry a real picture.
+    fn dot_png() -> Vec<u8> {
+        let img = image::GrayImage::from_pixel(2, 2, image::Luma([128]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageLuma8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .expect("encode");
+        buf.into_inner()
+    }
+
+    /// A gallery of `n` charts, newest first, named the way the store names them.
+    fn gallery_of(n: i64, ctx: &egui::Context) -> WefaxUi {
+        let mut ui = WefaxUi::default();
+        for i in 0..n {
+            ui.on_saved(
+                sdroxide_types::ImageEntry {
+                    kind: sdroxide_types::ImageKind::Wefax,
+                    name: format!("wefax-2026072{i}-141530Z.png"),
+                    unix: 1_000 + i,
+                    width: 2,
+                    height: 2,
+                    bytes: 64,
+                    thumb: dot_png(),
+                    rifp: None,
+                },
+                ctx,
+            );
+        }
+        ui
+    }
+
+    /// The viewer is an index into the gallery, so a deletion has to move it.
+    ///
+    /// Getting this wrong is not cosmetic: an index left where it was after the
+    /// list shortened means the operator deletes one chart and the window jumps
+    /// to a different one — or, at the end of the list, that the next DELETE is
+    /// aimed at whatever slid into the gap.
+    #[test]
+    fn deleting_a_chart_carries_the_viewer_to_the_next_one() {
+        let ctx = egui::Context::default();
+        let mut ui = gallery_of(4, &ctx);
+        // Newest first: index 0 is the highest unix.
+        assert_eq!(ui.gallery.len(), 4);
+        assert_eq!(ui.total, 4);
+        let names: Vec<String> = ui.gallery.iter().map(|c| c.name.clone()).collect();
+
+        // Deleting above the viewer shifts the same chart up under it.
+        ui.viewing = Some(2);
+        ui.on_deleted(&names[0]);
+        assert_eq!(ui.viewing, Some(1));
+        assert_eq!(ui.gallery[1].name, names[2], "the viewer must stay on its chart");
+        assert_eq!(ui.total, 3, "the store shrank by one");
+
+        // Deleting the chart being viewed lands on the next-older one, which is
+        // what makes culling a run of blank pages a sequence of clicks.
+        ui.on_deleted(&names[2]);
+        assert_eq!(ui.viewing, Some(1));
+        assert_eq!(ui.gallery[1].name, names[3]);
+
+        // Deleting the last one has nowhere to go, so the window closes.
+        ui.on_deleted(&names[3]);
+        assert_eq!(ui.viewing, None);
+        assert_eq!(ui.gallery.len(), 1);
+
+        // A name this client is not holding — an older chart deleted from
+        // another screen — changes nothing, `total` included: this gallery is
+        // only a window on the store and cannot tell what happened outside it.
+        ui.total = 40;
+        ui.on_deleted("wefax-20990101-000000Z.png");
+        assert_eq!((ui.gallery.len(), ui.total), (1, 40));
+    }
+
+    /// An armed DELETE belongs to one chart. Left set, it would be a loaded
+    /// second click waiting for whatever the operator opened next.
+    #[test]
+    fn an_armed_delete_does_not_survive_its_chart() {
+        let ctx = egui::Context::default();
+        let mut ui = gallery_of(2, &ctx);
+        let name = ui.gallery[0].name.clone();
+        ui.confirm_delete = Some(name.clone());
+        ui.on_deleted(&name);
+        assert_eq!(ui.confirm_delete, None);
     }
 
     /// Rubbish off the wire must be refused rather than sized into an

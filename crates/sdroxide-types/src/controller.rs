@@ -178,6 +178,16 @@ pub enum RadioEvent {
     /// What each TLE subscription's last fetch did. Emitted with the config it
     /// describes and again after a [`crate::Command::RefreshTleSubs`].
     TleSubStatus(Vec<crate::TleSubStatus>),
+    /// A received picture is no longer in the store, answering
+    /// [`Command::ImageDelete`].
+    ///
+    /// Broadcast rather than returned to whoever asked: the store belongs to the
+    /// radio, and a gallery on another screen showing a thumbnail of a file that
+    /// no longer exists would only find out by opening it.
+    ImageDeleted {
+        kind: crate::ImageKind,
+        name: String,
+    },
 }
 
 /// Snapshot of the frontend's switchable sound devices (native clients).

@@ -322,4 +322,24 @@ pub enum Command {
     /// trip per subscription, off the engine thread; the outcome comes back as
     /// [`crate::RadioEvent::TleSubStatus`].
     RefreshTleSubs,
+
+    // Culling a received store. Appended for the usual reason: postcard numbers
+    // variants by position.
+    /// Delete one received picture, by the name a listing gave it.
+    ///
+    /// The file goes, on the machine the radio is plugged into — a store fills
+    /// up with noise-only frames and half-decoded charts, and the alternative is
+    /// walking over to that machine with a file manager. The name is sanitised
+    /// and resolved inside the store exactly as [`Command::ImageGet`]'s is: it
+    /// arrives over a socket nothing authenticates and ends up at
+    /// `std::fs::remove_file`, which is the one place in this program where
+    /// getting that wrong costs something that cannot be got back.
+    ///
+    /// Answered with [`crate::RadioEvent::ImageDeleted`] to *every* attached
+    /// client, since a picture that has gone is gone from all of their galleries;
+    /// a delete that fails becomes a [`crate::RadioEvent::Notice`] instead.
+    ImageDelete {
+        kind: ImageKind,
+        name: String,
+    },
 }

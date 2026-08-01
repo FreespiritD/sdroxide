@@ -378,6 +378,11 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             // Replaying this would stack a duplicate of the newest picture on
             // top of that listing.
             RadioEvent::ImageSaved(e) => Some(ServerMsg::ImageSaved(e)),
+            // Likewise unsolicited and likewise not cached: a client that
+            // attaches after the deletion lists a store the picture is already
+            // out of, and replaying it would be an instruction to remove a
+            // thumbnail that was never there.
+            RadioEvent::ImageDeleted { kind, name } => Some(ServerMsg::ImageDeleted { kind, name }),
             RadioEvent::StationConfig(c) => {
                 latest.station = Some(c.clone());
                 sat = Some(c.sat.clone());

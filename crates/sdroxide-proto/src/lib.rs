@@ -133,7 +133,14 @@ use sdroxide_types::{
 /// defaults, and pressing APPLY wrote the defaults back over the operator's
 /// real configuration. The engine announces them instead, and the server caches
 /// and replays them like the digi config.
-pub const PROTO_VERSION: u16 = 34;
+/// v35: received pictures can be deleted — one new `ServerMsg` (`ImageDeleted`)
+/// and one new `Command` (`ImageDelete`), both appended so no existing
+/// discriminant moves. The store is on the engine host, so until now the only
+/// way to clear out a season of half-decoded charts and noise-only frames was to
+/// go to that machine with a file manager; a browser tab could not do it at all.
+/// The deletion is broadcast rather than answered, because a picture that has
+/// gone is gone from every gallery, not just the one that asked.
+pub const PROTO_VERSION: u16 = 35;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -326,6 +333,13 @@ pub enum ServerMsg {
     /// What each TLE subscription's cached listing holds. Replayed on connect
     /// beside the config it annotates.
     TleSubStatus(Vec<TleSubStatus>),
+    /// A received picture has been deleted from the store, answering
+    /// `Command::ImageDelete`. Sent to whichever client is attached, whether or
+    /// not it is the one that asked.
+    ImageDeleted {
+        kind: ImageKind,
+        name: String,
+    },
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {
@@ -483,6 +497,10 @@ mod tests {
                 thumb: vec![0x89, 0x50],
                 rifp: None,
             }),
+            ServerMsg::ImageDeleted {
+                kind: ImageKind::Wefax,
+                name: "wefax-20260729-141530Z-7878.1kHz-DWD.png".into(),
+            },
         ];
         for m in &pictures {
             let bytes = encode(m).unwrap();
@@ -501,6 +519,10 @@ mod tests {
                 count: 48,
             }),
             ClientMsg::Command(Command::ImageGet {
+                kind: ImageKind::Sstv,
+                name: "sstv-1753795200000.png".into(),
+            }),
+            ClientMsg::Command(Command::ImageDelete {
                 kind: ImageKind::Sstv,
                 name: "sstv-1753795200000.png".into(),
             }),

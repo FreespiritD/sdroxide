@@ -2648,6 +2648,10 @@ impl Engine {
                 self.gallery.fetch(kind, name);
                 return;
             }
+            ImageDelete { kind, name } => {
+                self.gallery.delete(kind, name);
+                return;
+            }
 
             // Built-in TCI server (no RadioState change → return before the
             // State emit below).
@@ -3313,6 +3317,9 @@ impl Engine {
                 }
                 GalleryEvent::Saved(e) => {
                     let _ = self.event_tx.send(RadioEvent::ImageSaved(e));
+                }
+                GalleryEvent::Deleted { kind, name } => {
+                    let _ = self.event_tx.send(RadioEvent::ImageDeleted { kind, name });
                 }
             }
         }

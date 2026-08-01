@@ -166,26 +166,56 @@ impl SdroxideApp {
                         self.fsq_target.clear();
                     }
                     ui.separator();
-                    ui.label(
-                        RichText::new("IMAGE").size(10.5).strong().color(crate::theme::CYAN_DIM),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("IMAGE")
+                                .size(10.5)
+                                .strong()
+                                .color(crate::theme::CYAN_DIM),
+                        );
+                        // Unlike SSTV and wefax, nothing here is on a disk to
+                        // delete: an FSQ picture is a texture this client made
+                        // and nothing else holds, so clearing it needs no
+                        // confirmation and no round trip to the radio.
+                        if !self.fsq_rx_images.is_empty()
+                            && crate::chrome::chip(ui, false, RichText::new("CLEAR").size(9.5))
+                                .on_hover_text("Forget the pictures received so far")
+                                .clicked()
+                        {
+                            self.fsq_rx_images.clear();
+                        }
+                    });
                     if crate::chrome::chip(ui, false, "Send image…").clicked() {
                         pick_image(self.fsq_img_inbox.clone());
                     }
+                    let mut drop_at = None;
                     egui::ScrollArea::vertical()
                         .id_salt("fsq-images")
                         .max_height(images_h)
                         .auto_shrink([false, true])
                         .show_themed(ui, |ui| {
-                            for tex in &self.fsq_rx_images {
+                            for (i, tex) in self.fsq_rx_images.iter().enumerate() {
                                 ui.add(
                                     egui::Image::new(tex)
                                         .fit_to_exact_size(egui::vec2(140.0, 105.0))
-                                        .corner_radius(2.0),
-                                );
+                                        .corner_radius(2.0)
+                                        .sense(egui::Sense::click()),
+                                )
+                                .on_hover_text("Right-click to remove")
+                                .context_menu(|ui| {
+                                    if ui.button("Remove this picture").clicked() {
+                                        drop_at = Some(i);
+                                        ui.close();
+                                    }
+                                });
                                 ui.add_space(3.0);
                             }
                         });
+                    if let Some(i) = drop_at {
+                        // Dropping the handle is the whole of it: the texture
+                        // goes when the last reference to it does.
+                        drop(self.fsq_rx_images.remove(i));
+                    }
                 });
             }
 

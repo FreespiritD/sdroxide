@@ -249,3 +249,40 @@ fn listing_a_store_always_answers_and_names_its_directory() {
     }
     assert!(listings[1].entries.len() <= 8, "an explicit count is honoured");
 }
+
+/// A delete is answered whatever it names, and the answer is the gallery's cue
+/// to drop a thumbnail — so a name that reaches nothing must still produce one,
+/// or a picture the store has already lost sits on screen for ever.
+///
+/// Every name here is chosen so that a broken path check cannot destroy
+/// anything: the traversal ones point at files that do not exist, and the plain
+/// one is not a name either store has ever written.
+#[test]
+fn a_delete_is_always_answered_and_reaches_nothing_outside_the_store() {
+    let names = [
+        "../sdroxide-delete-guard-does-not-exist.png",
+        "a/b-sdroxide-delete-guard.png",
+        "zzz-sdroxide-delete-guard.png",
+    ];
+    let cmds: Vec<Command> = names
+        .iter()
+        .map(|n| Command::ImageDelete { kind: ImageKind::Sstv, name: (*n).into() })
+        .collect();
+    let events = run(&cmds, |evs| {
+        evs.iter().filter(|e| matches!(e, RadioEvent::ImageDeleted { .. })).count() >= names.len()
+    });
+
+    let deleted: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            RadioEvent::ImageDeleted { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(deleted.len(), names.len(), "every delete must be answered: {deleted:?}");
+    for n in names {
+        assert!(deleted.iter().any(|d| d == n), "{n} went unanswered");
+    }
+    // Nothing was really removed, so the presets never moved.
+    assert_eq!(announcements(&events), 1);
+}

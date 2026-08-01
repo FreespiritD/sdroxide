@@ -229,6 +229,9 @@ impl RemoteController {
                 self.pending.push_back(RadioEvent::ImageFile { kind, name, png })
             }
             ServerMsg::ImageSaved(e) => self.pending.push_back(RadioEvent::ImageSaved(e)),
+            ServerMsg::ImageDeleted { kind, name } => {
+                self.pending.push_back(RadioEvent::ImageDeleted { kind, name })
+            }
             ServerMsg::StationConfig(c) => self.pending.push_back(RadioEvent::StationConfig(c)),
             ServerMsg::TleSubStatus(s) => self.pending.push_back(RadioEvent::TleSubStatus(s)),
         }
