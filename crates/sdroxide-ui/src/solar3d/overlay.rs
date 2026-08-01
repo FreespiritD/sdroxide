@@ -583,7 +583,7 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     // it: the alternative is measuring a panel that has not been drawn yet to
     // find out whether the chips would have reached it.
     let menu_rect = menu_bar(ui, st, data, rect, clock_rect, phone);
-    find_box(ui, st, data, rect, clock_rect, menu_rect);
+    find_box(ui, st, data, rect, clock_rect);
     let top = menu_rect.map_or(rect.top() + MARGIN, |r| r.bottom() + 8.0);
     if !phone {
         let aurora = aurora_panel(ui, st, data, Place::Corner { scene: rect, top }, sim_now as i64);
@@ -1206,7 +1206,6 @@ fn find_box(
     data: Option<&SolarData>,
     rect: egui::Rect,
     clock_rect: Option<egui::Rect>,
-    menu_rect: Option<egui::Rect>,
 ) {
     let Some(clock_rect) = clock_rect else { return };
     let (sats, bodies) = (st.layer(layer::SATS), st.layer(layer::PLANETS));
@@ -1217,13 +1216,14 @@ fn find_box(
         return;
     }
 
-    let width = clock_rect.width().max(210.0);
-    // Under the clock, or under the menu row when that has wrapped far enough
-    // down the left of the window to be in the way: the box is wider than the
-    // clock on a narrow window, so the two do meet.
-    let below = menu_rect.map_or(clock_rect.bottom(), |m| clock_rect.bottom().max(m.bottom()));
+    // Exactly the clock's width, so the two make one column down the left edge
+    // and the box stays clear of the menu chips beside them. Anything wider
+    // reaches into the chips' column, and on a phone — where the row wraps down
+    // the window — that pushed the box below however many rows of chips there
+    // were, which is no longer under the clock at all.
+    let width = clock_rect.width();
     let area = egui::Rect::from_min_size(
-        egui::pos2(clock_rect.left(), below + 6.0),
+        clock_rect.left_bottom() + egui::vec2(0.0, 6.0),
         egui::vec2(width, 30.0),
     );
     if !rect.contains_rect(area) {
