@@ -65,6 +65,9 @@ const LAYERS: [(u32, &str, &str); 11] = [
     ),
 ];
 
+/// The inset every floating panel keeps from the edge of the viewport.
+const MARGIN: f32 = 12.0;
+
 /// How often the view redraws when nothing is happening to it.
 ///
 /// This is a clock, not a document: the Earth turns, the terminator moves, the
@@ -468,15 +471,15 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     pick_bodies(ui, st, rect, &view_proj, &picks, &resp, took_click);
     let clock_rect = clock(ui, rect, sim_now, st.sim_offset_s != 0.0);
     find_box(ui, st, data, rect, clock_rect);
-    let top = rect.top() + 12.0;
+    let top = rect.top() + MARGIN;
     let aurora_rect = aurora_panel(ui, st, data, rect, top, sim_now as i64);
     let below = aurora_rect.map_or(top, |r| r.bottom() + 8.0);
-    let weather_rect = weather_panel(ui, st, data, rect, below, sim_now as i64);
-    // Last of the top row, because where it goes depends on how wide its
-    // neighbours came out.
-    date_readout(ui, st, rect, sim_now, clock_rect, [aurora_rect, weather_rect]);
+    weather_panel(ui, st, data, rect, below, sim_now as i64);
+    // The bottom-right stack, from the corner up: the date, then the award key
+    // above whatever the date left.
+    let date_rect = date_readout(ui, st, rect, sim_now);
     info_card(ui, st, data, rect, sim_now);
-    award_panel(ui, st, rect);
+    award_panel(ui, st, rect, date_rect.map_or(rect.bottom() - MARGIN, |r| r.top() - 8.0));
     clouds_note(ui, st, data, rect, sim_now as i64);
     impact_banner(ui, data, rect, sim_now as i64);
     pass_window(ui, st, data, sim_now);
@@ -990,18 +993,14 @@ fn clock(ui: &egui::Ui, rect: egui::Rect, sim_now: f64, scrubbed: bool) -> Optio
     Some(panel)
 }
 
-/// Left edge of a `width`-wide box centred in the gap from `left` to `right`,
-/// or `None` if it cannot sit there with `margin` clear on both sides.
-///
-/// Crowding one neighbour would read as belonging to it rather than as sitting
-/// between the two, so a gap too tight for the margins means nothing is drawn —
-/// the rule the rest of the overlay keeps for panels that do not fit.
-fn centered_in_gap(left: f32, right: f32, width: f32, margin: f32) -> Option<f32> {
-    (width + 2.0 * margin <= right - left).then_some((left + right - width) * 0.5)
+/// A `size`-sized box tucked against the right edge of `rect`, with its base on
+/// `bottom` and [`MARGIN`] clear of the edge.
+fn bottom_right(rect: egui::Rect, bottom: f32, size: egui::Vec2) -> egui::Rect {
+    egui::Rect::from_min_size(egui::pos2(rect.right() - MARGIN - size.x, bottom - size.y), size)
 }
 
-/// The calendar date the clock's time belongs to, UTC over local, in the gap
-/// along the top between the clock and the right-hand panels.
+/// The calendar date the clock's time belongs to, UTC over local, in the
+/// bottom-right corner.
 ///
 /// The clock deliberately shows only `HH:MM:SS`, which is all you need until
 /// the two zones fall on different days — and then "is that pass tonight or
@@ -1009,17 +1008,10 @@ fn centered_in_gap(left: f32, right: f32, width: f32, margin: f32) -> Option<f32
 /// makes it worse: a month of simulated time moves nothing in a readout that
 /// only counts seconds.
 ///
-/// Centred in the space its neighbours leave rather than at the middle of the
-/// window, because that space is what changes as the panels grow: the aurora
-/// box widens with the forecast strip and the clock with the window.
-fn date_readout(
-    ui: &egui::Ui,
-    st: &SolarUi,
-    rect: egui::Rect,
-    sim_now: f64,
-    clock_rect: Option<egui::Rect>,
-    right_panels: [Option<egui::Rect>; 2],
-) {
+/// Out of the way rather than beside the clock: the date is checked once and
+/// then ignored, while the top of the view is where the menu chips and the space
+/// weather live. Returns the box it drew, so the award key can stack above it.
+fn date_readout(ui: &egui::Ui, st: &SolarUi, rect: egui::Rect, sim_now: f64) -> Option<egui::Rect> {
     let utc = sim_now as i64;
     let scrubbed = st.sim_offset_s != 0.0;
     // The scrubbed instant, like the clock: two readouts of "now" that disagreed
@@ -1046,23 +1038,14 @@ fn date_readout(
     let date_w = laid.iter().map(|(_, d)| d.size().x).fold(0.0f32, f32::max);
     let row_h = laid.iter().map(|(_, d)| d.size().y + 2.0).fold(0.0f32, f32::max);
 
-    // Between the label column and the dates, and between the box and whatever
-    // it is sitting between — the same 12 px inset every other panel keeps from
-    // the viewport edge.
+    // Between the label column and the dates.
     const COL_GAP: f32 = 8.0;
-    const MARGIN: f32 = 12.0;
     let pad = egui::vec2(10.0, 7.0);
     let size = egui::vec2(label_w + COL_GAP + date_w, row_h * laid.len() as f32) + pad * 2.0;
 
-    // The gap: from whatever the clock left (or the window edge, when it did not
-    // draw) to the nearer left edge of the two stacked right-hand panels.
-    let left = clock_rect.map_or(rect.left() + MARGIN, |r| r.right());
-    let right =
-        right_panels.iter().flatten().map(|r| r.left()).fold(rect.right() - MARGIN, f32::min);
-    let Some(x) = centered_in_gap(left, right, size.x, MARGIN) else { return };
-    let panel = egui::Rect::from_min_size(egui::pos2(x, rect.top() + 12.0), size);
+    let panel = bottom_right(rect, rect.bottom() - MARGIN, size);
     if !rect.contains_rect(panel) {
-        return;
+        return None;
     }
 
     p.rect_filled(panel, 0, theme::BG_DEEP.gamma_multiply(0.72));
@@ -1081,6 +1064,7 @@ fn date_readout(
         p.galley(egui::pos2(panel.right() - pad.x - date.size().x, y), date, on);
         y += row_h;
     }
+    Some(panel)
 }
 
 /// The find box, under the clock.
@@ -1226,9 +1210,6 @@ fn find_box(
 
 /// The propagation numbers, down the right-hand edge under the aurora: MUF at
 /// the QTH, K and A, the 10.7 cm flux and the current GOES X-ray level.
-///
-/// Returns the box it drew, so the date readout can keep clear of its left edge
-/// — it can come out wider than the aurora panel above it.
 fn weather_panel(
     ui: &egui::Ui,
     st: &SolarUi,
@@ -1236,8 +1217,8 @@ fn weather_panel(
     rect: egui::Rect,
     top: f32,
     now: i64,
-) -> Option<egui::Rect> {
-    let d = data?;
+) {
+    let Some(d) = data else { return };
     let w = &d.weather;
 
     // (label, value, colour). Colours say what the number means for the bands,
@@ -1285,7 +1266,7 @@ fn weather_panel(
         ));
     }
     if rows.is_empty() {
-        return None;
+        return;
     }
 
     let font = egui::FontId::proportional(12.0);
@@ -1323,11 +1304,11 @@ fn weather_panel(
     let height =
         rows.len() as f32 * row_h + note.as_ref().map_or(0.0, |n| n.size().y + 4.0) + pad * 2.0;
     let panel = egui::Rect::from_min_size(
-        egui::pos2(rect.right() - width - 12.0, top),
+        egui::pos2(rect.right() - width - MARGIN, top),
         egui::vec2(width, height),
     );
     if !rect.contains_rect(panel) {
-        return None;
+        return;
     }
 
     p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
@@ -1341,7 +1322,6 @@ fn weather_panel(
     if let Some(n) = note {
         p.galley(egui::pos2(panel.left() + pad, y + 2.0), n, theme::LINE_LIT);
     }
-    Some(panel)
 }
 
 /// Aurora, top right: how much power is going into each oval, how far towards
@@ -1688,8 +1668,9 @@ fn small_body_lines(st: &SolarUi, jd: f64) -> Vec<String> {
 /// and how many entities are in each state.
 ///
 /// A heat map with no legend is decoration. This one is small, and it only
-/// exists while the layer it explains is switched on.
-fn award_panel(ui: &egui::Ui, st: &SolarUi, rect: egui::Rect) {
+/// exists while the layer it explains is switched on. `bottom` is what the date
+/// readout in the same corner left of it.
+fn award_panel(ui: &egui::Ui, st: &SolarUi, rect: egui::Rect, bottom: f32) {
     if !st.layer(layer::AWARDS) || st.awards.is_empty() {
         return;
     }
@@ -1712,10 +1693,7 @@ fn award_panel(ui: &egui::Ui, st: &SolarUi, rect: egui::Rect) {
     const SWATCH: f32 = 9.0;
     let w = galleys.iter().map(|g| g.size().x).fold(title.size().x, f32::max) + SWATCH + 26.0;
     let h = galleys.iter().map(|g| g.size().y + 3.0).sum::<f32>() + title.size().y + 18.0;
-    let panel = egui::Rect::from_min_size(
-        egui::pos2(rect.right() - w - 12.0, rect.bottom() - h - 12.0),
-        egui::vec2(w, h),
-    );
+    let panel = bottom_right(rect, bottom, egui::vec2(w, h));
     if !rect.contains_rect(panel) {
         return; // too small a window to be worth crowding
     }
@@ -1942,23 +1920,17 @@ fn interact(ui: &egui::Ui, st: &mut SolarUi, resp: &egui::Response) {
 mod tests {
     use super::*;
 
-    /// The date box goes midway between its neighbours, not midway across the
-    /// window: an aurora panel that widens with the forecast strip moves it.
+    /// The date box sits in the corner itself, and the award key stacks on top
+    /// of whatever it left rather than over it.
     #[test]
-    fn the_date_box_sits_in_the_middle_of_the_gap() {
-        // Clock ends at 200, aurora starts at 700, 100-wide box → 350..450.
-        assert_eq!(centered_in_gap(200.0, 700.0, 100.0, 12.0), Some(400.0));
-        // Same window, a wider right-hand panel: the box follows the gap left.
-        assert_eq!(centered_in_gap(200.0, 600.0, 100.0, 12.0), Some(350.0));
-    }
+    fn the_bottom_right_stack_grows_upwards_from_the_corner() {
+        let view = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let date = bottom_right(view, view.bottom() - MARGIN, egui::vec2(120.0, 40.0));
+        assert_eq!(date.right(), 788.0);
+        assert_eq!(date.bottom(), 588.0);
 
-    /// A gap with no room for the margins draws nothing rather than a box
-    /// touching whichever panel it ended up nearest.
-    #[test]
-    fn a_gap_too_tight_for_the_margins_draws_nothing() {
-        assert_eq!(centered_in_gap(200.0, 324.0, 100.0, 12.0), Some(212.0)); // exactly fits
-        assert_eq!(centered_in_gap(200.0, 323.0, 100.0, 12.0), None);
-        assert_eq!(centered_in_gap(200.0, 200.0, 100.0, 12.0), None); // panels touching
-        assert_eq!(centered_in_gap(700.0, 200.0, 100.0, 12.0), None); // overlapping
+        let award = bottom_right(view, date.top() - 8.0, egui::vec2(140.0, 60.0));
+        assert_eq!(award.right(), 788.0, "both boxes hang off the same edge");
+        assert!(award.bottom() <= date.top(), "the key must not sit over the date");
     }
 }
