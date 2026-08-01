@@ -129,14 +129,6 @@ impl Focus {
         }) as u16
     }
 
-    /// The small body this target names, if it is one.
-    pub fn small(self) -> Option<&'static sdroxide_solar::SmallBody> {
-        match self {
-            Focus::Small(i) => sdroxide_solar::smallbody::BODIES.get(i),
-            _ => None,
-        }
-    }
-
     /// Full name, as the picker shows it.
     pub fn label(self) -> &'static str {
         match self {

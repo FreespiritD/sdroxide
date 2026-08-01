@@ -78,6 +78,9 @@ impl Camera {
 /// station holds its framing as the bodies move rather than drifting out of it
 /// over the minutes the loop takes.
 pub struct Station {
+    /// Read only by [`Tour::leg_name`], and so only by the tour's own tests now
+    /// that no readout names the leg.
+    #[allow(dead_code)]
     pub name: &'static str,
     pub focus: Focus,
     /// Yaw relative to `relative_to`, radians.
@@ -434,7 +437,10 @@ impl Tour {
         &STATIONS[self.index % STATIONS.len()]
     }
 
-    /// What the readout calls the leg the camera is on.
+    /// What the leg the camera is on would be called. Nothing on screen names
+    /// it any more; the tour's tests are what read this, and it is how "the
+    /// camera reached the contact and left again" is asserted at all.
+    #[allow(dead_code)]
     pub fn leg_name(&self) -> &'static str {
         match self.leg {
             Leg::Qso => "QSO PATH",
@@ -443,6 +449,8 @@ impl Tour {
     }
 
     /// Whether the camera is currently moving rather than holding a station.
+    /// Test-only, like [`Tour::leg_name`].
+    #[allow(dead_code)]
     pub fn in_transit(&self) -> bool {
         self.elapsed < TRANSITION_S
     }

@@ -594,7 +594,6 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     // The bottom-right stack, from the corner up: the date, then the award key
     // above whatever the date left.
     let date_rect = date_readout(ui, st, rect, sim_now);
-    info_card(ui, st, data, rect, sim_now);
     award_panel(ui, st, rect, date_rect.map_or(rect.bottom() - MARGIN, |r| r.top() - 8.0));
     clouds_note(ui, st, data, rect, sim_now as i64);
     impact_banner(ui, data, rect, sim_now as i64);
@@ -1663,118 +1662,6 @@ fn aurora_panel(
     Some(panel)
 }
 
-/// Bottom-left readout: where the Sun is, where it is over the operator, and
-/// what the feed knows.
-fn info_card(
-    ui: &egui::Ui,
-    st: &SolarUi,
-    data: Option<&SolarData>,
-    rect: egui::Rect,
-    sim_now: f64,
-) {
-    use sdroxide_solar::ephem;
-    let jd = ephem::julian_day(sim_now);
-    let (_, b0, l0) = ephem::solar_p_b0_l0(jd);
-    let (slat, slon) = ephem::subsolar_point(jd);
-
-    let mut lines = vec![
-        format!("{}  UTC", timefmt::ymd_hm(sim_now as i64)),
-        format!("sub-solar  {slat:+.1}°  {slon:+.1}°"),
-        format!("B0 {b0:+.2}°   L0 {l0:.1}°"),
-    ];
-    if let Some((lat, lon)) = st.qth {
-        let (el, az) = sun_elevation_azimuth(lat, lon, slat, slon);
-        let state = if el > 0.0 { "day" } else { "night" };
-        lines.push(format!("{}  sun {el:+.0}° el {az:.0}° az ({state})", st.qth_grid));
-    }
-    if let Some(d) = data {
-        let visible = d
-            .cmes
-            .iter()
-            .filter(|e| {
-                e.analysis.as_ref().is_some_and(|a| {
-                    let age = sim_now as i64 - a.t21_5_unix;
-                    (0..(st.view.cme_window_h as i64 * 3600)).contains(&age)
-                })
-            })
-            .count();
-        lines.push(format!("{visible} CME · {} spots", d.regions.len()));
-    }
-    if st.view.auto {
-        let phase = if st.tour.in_transit() { "→ " } else { "" };
-        lines.push(format!("AUTO  {phase}{}", st.tour.leg_name()));
-    }
-    lines.extend(small_body_lines(st, jd));
-
-    let font = egui::FontId::proportional(11.5);
-    let galleys: Vec<_> = lines
-        .iter()
-        .map(|l| ui.painter().layout_no_wrap(l.clone(), font.clone(), theme::TEXT))
-        .collect();
-    let w = galleys.iter().map(|g| g.size().x).fold(0.0f32, f32::max) + 20.0;
-    let h = galleys.iter().map(|g| g.size().y + 2.0).sum::<f32>() + 16.0;
-    let card = egui::Rect::from_min_size(
-        egui::pos2(rect.left() + 12.0, rect.bottom() - h - 12.0),
-        egui::vec2(w, h),
-    );
-    if !rect.contains_rect(card) {
-        return; // too small a window to be worth crowding
-    }
-    ui.painter().rect_filled(card, 0, theme::FILL.gamma_multiply(0.82));
-    chrome::paint_cut_border(ui.painter(), card, theme::LINE_LIT, egui::Color32::TRANSPARENT);
-    let mut y = card.top() + 8.0;
-    for g in galleys {
-        let dy = g.size().y + 2.0;
-        ui.painter().galley(egui::pos2(card.left() + 10.0, y), g, theme::TEXT);
-        y += dy;
-    }
-}
-
-/// What the info card says about the small body the camera is pointed at.
-///
-/// A dot on an ellipse is not self-explanatory in the way the Earth is, so the
-/// card answers the three questions the dot raises: what is it, where is it,
-/// and why is it in a view that only carries forty of these. The last one is
-/// the body's own caption from the table — a close-approach date and distance
-/// straight out of JPL's database, or the mission that went there — because
-/// "relevant within the next fifty years" is a claim that has to be cashed.
-fn small_body_lines(st: &SolarUi, jd: f64) -> Vec<String> {
-    let Some(b) = st.focus().small() else { return Vec::new() };
-    let arc = b.arc(jd);
-    let au = b.distance_au(jd);
-    let year = arc.period_d() / 365.25;
-    let mut lines = vec![
-        format!("── {}", b.designation),
-        format!("{au:.3} AU from the Sun   q {:.2}  Q {:.2}", arc.q(), arc.aphelion()),
-        if year < 1.0 {
-            format!("year {:.0} days   radius {:.1} km", arc.period_d(), b.radius * 1.0e6)
-        } else {
-            format!("year {year:.1} years   radius {:.1} km", b.radius * 1.0e6)
-        },
-    ];
-
-    // A comet's perihelion is the thing worth waiting for, so it is quoted for
-    // anything that grows a tail whether or not it has one right now.
-    if b.tail != sdroxide_solar::Tail::None {
-        let t = b.next_perihelion(jd);
-        let days = t - jd;
-        let when = timefmt::ymd_hm(sdroxide_solar::ephem::unix_from_julian_day(t) as i64);
-        let when = when.split_whitespace().next().unwrap_or(&when).to_string();
-        lines.push(match b.tails(jd) {
-            Some(_) => format!("active · perihelion {when} ({days:.0} d)"),
-            None => format!("quiet · perihelion {when} ({days:.0} d)"),
-        });
-    }
-
-    // The model runs on outside its window, and running on is not the same as
-    // knowing. Say so rather than let a body sit there looking authoritative.
-    if !sdroxide_solar::smallbody::covers(jd) {
-        lines.push("outside 2026–2076: position extrapolated".to_string());
-    }
-    lines.push(b.why.to_string());
-    lines
-}
-
 /// The award layer's key, bottom right: what each colour on the globe means,
 /// and how many entities are in each state.
 ///
@@ -1929,22 +1816,6 @@ fn impact_banner(ui: &egui::Ui, data: Option<&SolarData>, rect: egui::Rect, now:
         galley,
         theme::TEXT_STRONG,
     );
-}
-
-/// Solar elevation and azimuth at a location, from the sub-solar point.
-///
-/// Both points are on the same sphere, so this is the great-circle geometry the
-/// FT8 map already uses for bearings — elevation is 90° minus the angular
-/// distance to the sub-solar point.
-fn sun_elevation_azimuth(lat: f64, lon: f64, slat: f64, slon: f64) -> (f64, f64) {
-    let (p1, p2) = (lat.to_radians(), slat.to_radians());
-    let dl = (slon - lon).to_radians();
-    let cos_c = p1.sin() * p2.sin() + p1.cos() * p2.cos() * dl.cos();
-    let elevation = cos_c.clamp(-1.0, 1.0).asin().to_degrees();
-    let az = (dl.sin() * p2.cos())
-        .atan2(p1.cos() * p2.sin() - p1.sin() * p2.cos() * dl.cos())
-        .to_degrees();
-    (elevation, (az + 360.0) % 360.0)
 }
 
 /// Fly the AUTO tour, using real elapsed time so the pacing is frame-rate
