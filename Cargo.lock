@@ -4093,6 +4093,7 @@ dependencies = [
  "sdroxide-net",
  "sdroxide-rigctld",
  "sdroxide-skimmer",
+ "sdroxide-solar",
  "sdroxide-tci",
  "sdroxide-types",
  "sdroxide-wsjtx",

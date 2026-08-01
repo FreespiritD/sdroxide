@@ -5,6 +5,11 @@
 //! and logged QSOs to GridTracker, JTAlert, N1MM+ and Log4OM. All three are
 //! bound by the engine, which is also what persists their configuration and
 //! reports back whether the bind succeeded.
+//!
+//! That makes these three settings the *station's*, not the screen's: the
+//! engine announces what it has, and this tab edits that. `seeded` is whether
+//! the announcement has arrived yet — a client that has not been told cannot
+//! be allowed to apply defaults over the real thing.
 
 use eframe::egui::{self, Color32, ComboBox, RichText};
 
@@ -26,13 +31,7 @@ pub(in crate::app) fn settings_wsjtx_tab(
     ui.label(RichText::new("WSJT-X UDP broadcast").size(14.0).strong().color(crate::theme::CYAN));
     ui.add_space(4.0);
     if !seeded {
-        ui.label(
-            RichText::new(
-                "The broadcast leaves the machine the radio engine runs on, so it can only be \
-                 configured from the native app.",
-            )
-            .weak(),
-        );
+        ui.label(RichText::new("Waiting for the station's WSJT-X broadcast configuration…").weak());
         return;
     }
     ui.label(
@@ -101,13 +100,7 @@ pub(in crate::app) fn settings_rigctld_tab(
     ui.label(RichText::new("Hamlib rigctld server").size(14.0).strong().color(crate::theme::CYAN));
     ui.add_space(4.0);
     if !seeded {
-        ui.label(
-            RichText::new(
-                "The rigctld server runs alongside the radio engine, so it can only be \
-                 configured from the native app.",
-            )
-            .weak(),
-        );
+        ui.label(RichText::new("Waiting for the station's rigctld configuration…").weak());
         return;
     }
     ui.add_space(2.0);
@@ -230,13 +223,7 @@ pub(in crate::app) fn settings_tci_server_tab(
     use sdroxide_types::TciServerConfig;
 
     if !seeded {
-        ui.label(
-            RichText::new(
-                "The TCI server runs alongside the radio engine, so it can only be \
-                           configured from the native app.",
-            )
-            .weak(),
-        );
+        ui.label(RichText::new("Waiting for the station's TCI server configuration…").weak());
         return;
     }
 

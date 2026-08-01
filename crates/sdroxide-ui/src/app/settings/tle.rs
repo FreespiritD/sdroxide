@@ -1,9 +1,15 @@
 //! The TLE tab: the operator's satellite additions.
 //!
 //! Element sets can be pasted in or subscribed to by URL, and either can carry
-//! a frequency correction. Like the input bindings, edits here are written
-//! straight out — there is no APPLY step to hang them off — and the solar
-//! window picks up the new `Arc` on its next frame.
+//! a frequency correction. Edits here are written straight out — there is no
+//! APPLY step to hang them off — and the solar window picks up the new `Arc` on
+//! its next frame.
+//!
+//! "Written out" means sent to the engine, which persists `satellites.json` and
+//! announces the result. The engine host is where the subscribed listings are
+//! fetched and cached, and in server mode its tracker is what feeds the
+//! browser's 3D view — so this tab configures the station's satellites from
+//! wherever it happens to be open, rather than a set of its own.
 
 use eframe::egui::{self, RichText};
 
@@ -30,21 +36,17 @@ pub(in crate::app) fn settings_tle_tab(ui: &mut egui::Ui, io: &mut SettingsIo) {
             .color(theme::CYAN),
     );
     ui.add_space(4.0);
-    if cfg!(target_arch = "wasm32") {
-        ui.label(
-            RichText::new(
-                "The tracker runs in the native app; this tab configures it there. The solar \
-                 view in the browser is fed by the server's relay.",
-            )
-            .weak(),
-        );
+    if !io.sat_seeded {
+        ui.label(RichText::new("Waiting for the station's satellite configuration…").weak());
         return;
     }
     ui.label(
         RichText::new(
             "The tracker already fetches CelesTrak's amateur group on its own. This is for \
              everything else: the NOAA weather birds, a cubesat too new to be in the group, or \
-             a fresher element set than the one that arrived.",
+             a fresher element set than the one that arrived. The listings are fetched — and \
+             kept — where the radio engine runs, so this is the same set of satellites wherever \
+             the app is open.",
         )
         .weak(),
     );
@@ -186,7 +188,7 @@ fn settings_tle_subscriptions(ui: &mut egui::Ui, io: &mut SettingsIo) {
             theme::GREEN,
             theme::INK_ON_CYAN,
         )
-        .on_hover_text("Fetch every enabled subscription now")
+        .on_hover_text("Ask the radio engine to fetch every enabled subscription now")
         .clicked()
         {
             *io.sat_sub_refresh = true;

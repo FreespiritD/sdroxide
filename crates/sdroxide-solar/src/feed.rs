@@ -203,7 +203,7 @@ fn worker(
             d.sats_custom = dedup_by_norad(sats);
             d.tle_subs = status;
             drop(d);
-            raw(RawUpdate::Tle { geo: false, text: subscribed_tle_text(&cache, &subs) });
+            raw(RawUpdate::Tle { geo: false, text: custom_tle_text(&cache, &pasted_text, &subs) });
             changed = true;
         }
         for src in Source::ALL {
@@ -250,6 +250,10 @@ fn worker(
                 // not free, and the UI reads this mutex every frame.
                 pasted_text = text;
                 publish_custom(&shared, &cache, &pasted_text, &subs);
+                raw(RawUpdate::Tle {
+                    geo: false,
+                    text: custom_tle_text(&cache, &pasted_text, &subs),
+                });
                 wake();
             }
             Ok(FeedCmd::SetTleSubs(v)) => {
@@ -258,7 +262,10 @@ fn worker(
                 // operator has had for weeks should not blank the sky while a
                 // fetch it does not need runs.
                 publish_custom(&shared, &cache, &pasted_text, &subs);
-                raw(RawUpdate::Tle { geo: false, text: subscribed_tle_text(&cache, &subs) });
+                raw(RawUpdate::Tle {
+                    geo: false,
+                    text: custom_tle_text(&cache, &pasted_text, &subs),
+                });
                 // ...then let the next loop pass decide whether to refetch,
                 // from when each listing was last actually fetched.
                 subs_due_unix =
@@ -293,15 +300,25 @@ fn publish_custom(
     d.tle_subs = status;
 }
 
-/// Every subscribed listing's cached text, concatenated, for the browser relay.
+/// The operator's element sets — pasted and subscribed — as one listing, for
+/// the browser relay.
 ///
 /// The browser has no subscription machinery — it is fed decoded products over
 /// the WebSocket — so it gets the union as one element-set listing and puts it
 /// where the amateur group used to go. Concatenating three-line listings is
 /// valid, and [`satellites::parse_tles`] drops the duplicates that overlapping
-/// groups produce.
-fn subscribed_tle_text(cache: &Cache, subs: &[sdroxide_types::TleSubscription]) -> String {
+/// groups produce. The pasted sets go first, so they win those duplicates the
+/// way they do in [`publish_custom`].
+fn custom_tle_text(
+    cache: &Cache,
+    pasted_text: &str,
+    subs: &[sdroxide_types::TleSubscription],
+) -> String {
     let mut out = String::new();
+    if !pasted_text.trim().is_empty() {
+        out.push_str(pasted_text.trim_end());
+        out.push('\n');
+    }
     for sub in subs {
         if let Some(text) = crate::tlesub::cached_text(cache, sub) {
             out.push_str(text.trim_end());

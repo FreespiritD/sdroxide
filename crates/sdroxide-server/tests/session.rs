@@ -85,9 +85,13 @@ async fn full_session_flow() {
         other => panic!("expected HelloAck, got {other:?}"),
     }
 
-    // Streams flow: within a few seconds we must see spectrum AND audio.
-    let (mut got_spectrum, mut got_audio) = (false, false);
-    while !(got_spectrum && got_audio) {
+    // Streams flow: within a few seconds we must see spectrum AND audio. The
+    // station config has to arrive too — the engine announces it once, long
+    // before anybody connects, so it only reaches a client if the server kept
+    // it and replayed it. Without that the settings dialog here shows every
+    // server-side tab as unconfigured.
+    let (mut got_spectrum, mut got_audio, mut got_station) = (false, false, false);
+    while !(got_spectrum && got_audio && got_station) {
         match recv_msg(&mut ws).await {
             ServerMsg::Spectrum(f) => {
                 assert!(!f.bins.is_empty());
@@ -98,6 +102,7 @@ async fn full_session_flow() {
                 assert_eq!(payload.len(), 1920, "20 ms of PCM16");
                 got_audio = true;
             }
+            ServerMsg::StationConfig(_) => got_station = true,
             _ => {}
         }
     }

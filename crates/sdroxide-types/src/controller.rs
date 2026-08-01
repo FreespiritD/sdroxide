@@ -166,6 +166,18 @@ pub enum RadioEvent {
     /// again — and, unlike a listing, it is the only place a RIFP manifest
     /// survives.
     ImageSaved(crate::ImageEntry),
+    /// Everything the engine host persists on the station's behalf — the
+    /// network cockpit, the two built-in servers, the WSJT-X broadcast and the
+    /// satellite additions. Emitted once at startup and after every change, so
+    /// a settings dialog is populated from what the *station* is actually set
+    /// to rather than from whatever file happens to sit beside the screen.
+    ///
+    /// Boxed: the bundle is by far the largest event here, and every other
+    /// variant would otherwise pay for it.
+    StationConfig(Box<crate::StationConfig>),
+    /// What each TLE subscription's last fetch did. Emitted with the config it
+    /// describes and again after a [`crate::Command::RefreshTleSubs`].
+    TleSubStatus(Vec<crate::TleSubStatus>),
 }
 
 /// Snapshot of the frontend's switchable sound devices (native clients).
@@ -299,32 +311,4 @@ pub trait RadioController {
     /// restart. Call after [`RadioController::set_radio_config`]. No-op on the
     /// remote client (the server owns its hardware).
     fn reopen_source(&mut self) {}
-
-    /// The persisted network-cockpit config (spot feeds, lookup, uploads), or
-    /// `None` where the client can't own it. Applied to the engine by sending
-    /// [`Command::SetNetworkConfig`]. Default `None`.
-    fn network_config(&self) -> Option<crate::NetworkConfig> {
-        None
-    }
-
-    /// The persisted built-in TCI server config, or `None` where the client
-    /// can't own it (the browser remote client — the server runs where the
-    /// engine runs). Applied by sending [`Command::SetTciServerConfig`].
-    fn tci_server_config(&self) -> Option<crate::TciServerConfig> {
-        None
-    }
-
-    /// The persisted built-in rigctld server config, or `None` where the client
-    /// can't own it (the browser remote client — the server runs where the
-    /// engine runs). Applied by sending [`Command::SetRigctldConfig`].
-    fn rigctld_config(&self) -> Option<crate::RigctldConfig> {
-        None
-    }
-
-    /// The persisted WSJT-X UDP broadcast config, or `None` where the client
-    /// can't own it (the broadcast leaves the machine the engine runs on).
-    /// Applied by sending [`Command::SetWsjtxConfig`].
-    fn wsjtx_config(&self) -> Option<crate::WsjtxConfig> {
-        None
-    }
 }

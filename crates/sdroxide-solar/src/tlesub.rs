@@ -26,23 +26,11 @@ use crate::satellites::Satellite;
 const BODY_LIMIT: u64 = 4 * 1024 * 1024;
 
 /// What one subscription's last fetch did, for the settings dialog.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SubStatus {
-    pub url: String,
-    /// When the listing was last fetched successfully, or 0 for never.
-    pub fetched_unix: i64,
-    /// How many satellites it yielded after the filter.
-    pub count: usize,
-    /// How many of those are in the tracker's built-in curated list.
-    ///
-    /// Zero for every listing that is not the amateur group — that list is ten
-    /// amateur satellites — which is what lets the settings dialog grey out an
-    /// orbit-ring position that would do nothing here.
-    pub curated: usize,
-    /// Why the last attempt failed, if it did. A failure does not clear
-    /// `count`: the cached listing is still what is being tracked.
-    pub error: Option<String>,
-}
+///
+/// Declared in `sdroxide-types` rather than here because it crosses the wire:
+/// a remote settings dialog edits the engine host's subscriptions, so the
+/// engine host is the only place that knows what each listing last yielded.
+pub use sdroxide_types::TleSubStatus as SubStatus;
 
 /// Cache file name for a subscription's body.
 ///

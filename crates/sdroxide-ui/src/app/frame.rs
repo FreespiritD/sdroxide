@@ -224,6 +224,35 @@ impl eframe::App for SdroxideApp {
                     sdroxide_types::ImageKind::Sstv => self.sstv.on_file(&name, &png, &ctx),
                     sdroxide_types::ImageKind::Wefax => self.wefax.on_file(&name, &png, &ctx),
                 },
+                // What the station is set up to do, from the machine the engine
+                // runs on. Seeded once, like the digi config above: later edits
+                // are the dialog's, so typing sticks, and the engine echoes
+                // every applied change back here anyway.
+                RadioEvent::StationConfig(c) => {
+                    if !self.net_cfg_seeded {
+                        self.net_cluster_cmds = c.net.cluster.commands.join("\n");
+                        self.net_cfg_edit = c.net.clone();
+                        self.net_cfg_seeded = true;
+                    }
+                    if !self.rigctld_seeded {
+                        self.rigctld_edit = c.rigctld.clone();
+                        self.rigctld_seeded = true;
+                    }
+                    if !self.tci_srv_seeded {
+                        self.tci_srv_edit = c.tci_server.clone();
+                        self.tci_srv_seeded = true;
+                    }
+                    if !self.wsjtx_seeded {
+                        self.wsjtx_edit = c.wsjtx.clone();
+                        self.wsjtx_seeded = true;
+                    }
+                    if !self.sat_cfg_seeded {
+                        self.sat_cfg_edit = c.sat.clone();
+                        self.sat_cfg = std::sync::Arc::new(c.sat.clone());
+                        self.sat_cfg_seeded = true;
+                    }
+                }
+                RadioEvent::TleSubStatus(s) => self.on_tle_sub_status(s),
                 RadioEvent::ImageSaved(e) => match e.kind {
                     sdroxide_types::ImageKind::Sstv => self.sstv.on_saved(e, &ctx),
                     sdroxide_types::ImageKind::Wefax => self.wefax.on_saved(e, &ctx),

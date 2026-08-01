@@ -51,9 +51,9 @@ use self::panels::decodes::DecodeSort;
 use self::panels::fsq::fsq_load_contacts;
 use self::panels::rf_paint::RfPaintUi;
 use self::panels::sstv::SstvUi;
-use self::persist::{load_broadcast_stations, load_qso_log, load_sat_config, load_ui_settings};
+use self::persist::{load_broadcast_stations, load_qso_log, load_ui_settings};
 use self::settings::servers::TciServerStatus;
-use self::settings::{SatEditState, SettingsTab, SubStatusView};
+use self::settings::{SatEditState, SettingsTab};
 
 pub struct SdroxideApp {
     ctrl: Box<dyn RadioController>,
@@ -245,18 +245,23 @@ pub struct SdroxideApp {
     /// UI-owned editable copy of the network config (edited in the Settings
     /// dialog's Spots / FreeDV / Uploads tabs). Carries no operator identity —
     /// that comes from the digi config, edited on the General tab.
+    ///
+    /// Seeded from `RadioEvent::StationConfig` — the engine's copy, wherever
+    /// the engine is running — and left alone afterwards so typing sticks. The
+    /// tabs that edit it stay disabled until it has arrived: applying an
+    /// unseeded copy would write defaults over the station's real config.
     net_cfg_edit: NetworkConfig,
+    net_cfg_seeded: bool,
     // ── Built-in TCI server ──
-    /// UI-owned editable copy of the TCI server config, seeded from the
-    /// controller when the settings dialog opens.
+    /// UI-owned editable copy of the TCI server config, seeded from the engine
+    /// like the network config above.
     tci_srv_edit: sdroxide_types::TciServerConfig,
     tci_srv_seeded: bool,
     /// Live server status (bound address, connected clients, bind error) from
     /// `RadioEvent::TciServerStatus`.
     tci_srv_status: Option<TciServerStatus>,
     // ── Built-in rigctld server ──
-    /// UI-owned editable copy of the rigctld config, seeded from the controller
-    /// when the settings dialog opens.
+    /// UI-owned editable copy of the rigctld config, seeded from the engine.
     rigctld_edit: sdroxide_types::RigctldConfig,
     rigctld_seeded: bool,
     // ── WSJT-X UDP broadcast (decodes / status / QSOs for the loggers) ──
@@ -313,12 +318,17 @@ pub struct SdroxideApp {
     /// subscribed to, and their frequency corrections. Shared by `Arc` because
     /// the solar window's render closure takes a handle it outlives any borrow
     /// of; replaced wholesale on every edit rather than mutated in place.
+    ///
+    /// Seeded from the engine like the network config: the subscribed listings
+    /// are fetched — and cached — on the machine the engine runs on, which is
+    /// the only one a browser client can reach.
     sat_cfg: std::sync::Arc<sdroxide_types::SatConfig>,
     /// The settings dialog's working copy, its transient state, and what each
-    /// subscription's last fetch did. All seeded when the dialog opens.
+    /// subscription's last fetch did.
     sat_cfg_edit: sdroxide_types::SatConfig,
+    sat_cfg_seeded: bool,
     sat_ui: SatEditState,
-    sat_sub_status: Vec<SubStatusView>,
+    sat_sub_status: Vec<sdroxide_types::TleSubStatus>,
     /// Weather fax: the chart being painted and the gallery of saved ones.
     wefax: crate::wefax::WefaxUi,
     /// Whether the operator has dismissed the out-of-band transmit warning
@@ -339,10 +349,6 @@ impl SdroxideApp {
         #[cfg(not(target_arch = "wasm32"))]
         let solar3d_view = view.solar3d;
         let soapy_supported = ctrl.soapy_supported();
-        // Seed the network config from disk up front so auto-lookup / auto-upload
-        // are honoured from launch (not only after the setup window is opened).
-        let net_cfg = ctrl.network_config().unwrap_or_default();
-        let net_cluster_cmds = net_cfg.cluster.commands.join("\n");
         SdroxideApp {
             ctrl,
             caps: None,
@@ -435,7 +441,8 @@ impl SdroxideApp {
             broadcast_fetch: persist::spawn_schedule_fetch(false),
             broadcast_fetch_status: None,
             broadcast_checked_day: -1,
-            net_cfg_edit: net_cfg,
+            net_cfg_edit: NetworkConfig::default(),
+            net_cfg_seeded: false,
             rigctld_edit: sdroxide_types::RigctldConfig::default(),
             rigctld_seeded: false,
             wsjtx_edit: sdroxide_types::WsjtxConfig::default(),
@@ -444,7 +451,7 @@ impl SdroxideApp {
             tci_srv_edit: sdroxide_types::TciServerConfig::default(),
             tci_srv_seeded: false,
             tci_srv_status: None,
-            net_cluster_cmds,
+            net_cluster_cmds: String::new(),
             net_log: Vec::new(),
             adif_import_inbox: Arc::new(Mutex::new(None)),
             pending_lookups: Vec::new(),
@@ -464,8 +471,9 @@ impl SdroxideApp {
             // sessions never open this window.
             #[cfg(not(target_arch = "wasm32"))]
             solar: crate::solar3d::Solar3d::new(cc.wgpu_render_state.clone(), solar3d_view),
-            sat_cfg: std::sync::Arc::new(load_sat_config()),
+            sat_cfg: Default::default(),
             sat_cfg_edit: Default::default(),
+            sat_cfg_seeded: false,
             sat_ui: Default::default(),
             sat_sub_status: Vec::new(),
             wefax: Default::default(),

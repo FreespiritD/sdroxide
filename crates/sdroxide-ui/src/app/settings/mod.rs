@@ -3,8 +3,14 @@
 //! The window closure borrows `&self`, so it cannot reach `&mut self.ctrl`;
 //! every edit is written into a [`SettingsIo`] and applied by
 //! [`SdroxideApp::settings_window`] after the closure returns. That is also
-//! where the blocking operations live — an HPSDR scan, a TCI connection test,
-//! a subscription fetch — so none of them run inside a layout pass.
+//! where the blocking operations live — an HPSDR scan, a TCI connection test —
+//! so neither runs inside a layout pass.
+//!
+//! Tabs that configure the *station* rather than this screen — Spots, FreeDV,
+//! Uploads, Servers, TLE — are seeded from `RadioEvent::StationConfig` and stay
+//! disabled until it arrives. They edit files on the engine host, which may not
+//! be this machine, so there is nothing here to read them from and applying an
+//! unseeded copy would write defaults over the real thing.
 //!
 //! [`SdroxideApp::settings_body`] draws the tab strip and dispatches to one
 //! submodule per tab.
@@ -33,7 +39,7 @@ use self::servers::{settings_rigctld_tab, settings_tci_server_tab, settings_wsjt
 use self::tle::settings_tle_tab;
 use self::ui_tab::settings_ui_tab;
 use crate::app::SdroxideApp;
-use crate::app::persist::{persist_sat_config, persist_ui_settings};
+use crate::app::persist::persist_ui_settings;
 
 /// Settings dialog tabs: General (station identity + audio devices), the radio
 /// interface and its settings, display/UI preferences, control inputs
@@ -69,22 +75,11 @@ pub(in crate::app) struct SatEditState {
     /// What the last add attempt did, good or bad, so a paste that yielded
     /// nothing says so instead of appearing to have been ignored.
     note: String,
-}
-
-/// One subscription's fetch state, in a form both targets have.
-///
-/// The native type lives in `sdroxide-solar`, which the browser build does not
-/// compile the fetching half of; copying the three fields the dialog shows
-/// keeps the tab itself target-agnostic.
-#[derive(Clone, Default)]
-pub(in crate::app) struct SubStatusView {
-    url: String,
-    fetched_unix: i64,
-    count: usize,
-    /// How many of the listing's satellites are in the built-in curated list.
-    /// Zero for everything that is not the amateur group.
-    curated: usize,
-    error: Option<String>,
+    /// Whether UPDATE NOW is waiting on the engine. The fetch happens over
+    /// there — one HTTPS round trip per subscription — so the answer arrives as
+    /// an event rather than as a return value, and this is what tells the
+    /// arriving status it was asked for.
+    fetching: bool,
 }
 
 /// Everything the settings dialog can change, collected in one place.
@@ -107,6 +102,12 @@ pub(in crate::app) struct SettingsIo<'a> {
     digi_edit: &'a mut sdroxide_types::DigiConfig,
     digi_seeded: bool,
     net_edit: &'a mut NetworkConfig,
+    /// Whether the engine has said what the station's network config actually
+    /// is. Until it has, the tabs that edit it are disabled: applying an
+    /// unseeded copy would write defaults over the operator's real settings,
+    /// and showing empty boxes would claim the station is unconfigured when it
+    /// is not.
+    net_seeded: bool,
     net_cmds: &'a mut String,
     net_apply: &'a mut bool,
     net_sync: &'a mut bool,
@@ -129,13 +130,16 @@ pub(in crate::app) struct SettingsIo<'a> {
     midi_learn: &'a mut Option<crate::input::MidiLearn>,
     midi_rescan: &'a mut bool,
     /// The operator's satellite additions, and the transient state of the
-    /// dialog that edits them. Persisted on change, like the input bindings:
-    /// there is no APPLY step to hang it off.
+    /// dialog that edits them. Sent to the engine on change, like the input
+    /// bindings are written on change: there is no APPLY step to hang it off.
     sat_edit: &'a mut sdroxide_types::SatConfig,
+    /// Whether the engine has said what the station tracks. Same contract as
+    /// `net_seeded`, and with more at stake: this tab writes on every keystroke.
+    sat_seeded: bool,
     sat_ui: &'a mut SatEditState,
-    sat_subs: &'a [SubStatusView],
-    /// Fetch every subscription now. Blocking, so it is done after the window
-    /// closure the way the HPSDR scan is.
+    sat_subs: &'a [sdroxide_types::TleSubStatus],
+    /// Re-fetch every subscription now. The engine does it, so this is a
+    /// command rather than a blocking call.
     sat_sub_refresh: &'a mut bool,
     /// How the 3D view draws its cloud deck: `Some(true)` marches the volume,
     /// `Some(false)` stacks shells through it. `None` where there is no 3D view
@@ -152,6 +156,20 @@ pub(in crate::app) struct SettingsIo<'a> {
     bc_fetching: bool,
     bc_status: Option<&'a Result<String, String>>,
     tab: &'a mut SettingsTab,
+}
+
+/// Guard for the three tabs that edit the network config. Returns whether the
+/// station's copy has arrived; if it has not, it says so and the caller draws
+/// nothing.
+///
+/// The alternative — showing the boxes empty — reads as "this station has
+/// nothing configured", which is a lie whenever the engine is on another
+/// machine, and one the operator could act on by typing over it.
+fn net_seeded_note(ui: &mut egui::Ui, seeded: bool) -> bool {
+    if !seeded {
+        ui.label(RichText::new("Waiting for the station's network configuration…").weak());
+    }
+    seeded
 }
 
 pub(in crate::app) fn enum_combo<T: PartialEq + Copy>(
@@ -183,25 +201,15 @@ impl SdroxideApp {
             self.radio_cfg = self.ctrl.radio_config();
             self.serial_ports = self.ctrl.serial_ports();
             (self.midi_in_ports, self.midi_out_ports) = self.input.midi_ports();
-            // The TCI server lives with the engine, so only a native client
-            // owns its config; the browser remote gets `None` and a note.
-            if let Some(cfg) = self.ctrl.tci_server_config() {
-                self.tci_srv_edit = cfg;
-                self.tci_srv_seeded = true;
-            }
-            if let Some(cfg) = self.ctrl.rigctld_config() {
-                self.rigctld_edit = cfg;
-                self.rigctld_seeded = true;
-            }
-            if let Some(cfg) = self.ctrl.wsjtx_config() {
-                self.wsjtx_edit = cfg;
-                self.wsjtx_seeded = true;
-            }
-            // The satellite config is the client's own, so it comes from the
-            // live copy rather than from the engine. Subscription status is
-            // read from the disk cache, which is the only source that has an
-            // answer when the solar window has never been opened.
-            self.sat_cfg_edit = (*self.sat_cfg).clone();
+            // Everything the *station* is set to — the network cockpit, the two
+            // built-in servers, the WSJT-X broadcast and the satellites — was
+            // seeded from `RadioEvent::StationConfig` and needs no query here:
+            // those files live wherever the engine does, which may not be this
+            // machine at all.
+            //
+            // Subscription status is the exception worth refreshing: a native
+            // client with the solar window open has a fetcher of its own, and
+            // what it last did is fresher than what the engine announced.
             self.refresh_sat_sub_status();
             self.audio_devices_queried = true;
         }
@@ -234,7 +242,7 @@ impl SdroxideApp {
         let mut sat_edit = self.sat_cfg_edit.clone();
         let mut sat_ui = std::mem::take(&mut self.sat_ui);
         let mut sat_sub_refresh = false;
-        let sat_subs = self.sat_sub_views();
+        let sat_subs = self.sat_sub_status.clone();
         let mut bc_reload = false;
         let mut bc_refetch = false;
 
@@ -289,6 +297,7 @@ impl SdroxideApp {
                         digi_edit: &mut digi_edit,
                         digi_seeded,
                         net_edit: &mut net_edit,
+                        net_seeded: self.net_cfg_seeded,
                         net_cmds: &mut net_cmds,
                         net_apply: &mut net_apply,
                         bc_reload: &mut bc_reload,
@@ -307,6 +316,7 @@ impl SdroxideApp {
                         midi_learn: &mut midi_learn,
                         midi_rescan: &mut midi_rescan,
                         sat_edit: &mut sat_edit,
+                        sat_seeded: self.sat_cfg_seeded,
                         sat_ui: &mut sat_ui,
                         sat_subs: &sat_subs,
                         sat_sub_refresh: &mut sat_sub_refresh,
@@ -329,9 +339,11 @@ impl SdroxideApp {
             self.solar.set_cloud_march(solar_cloud_march);
         }
         // Persist net-config edits (kept across frames) and apply on demand.
-        self.net_cfg_edit = net_edit;
-        self.net_cluster_cmds = net_cmds;
-        if net_apply {
+        if self.net_cfg_seeded {
+            self.net_cfg_edit = net_edit;
+            self.net_cluster_cmds = net_cmds;
+        }
+        if net_apply && self.net_cfg_seeded {
             self.net_cfg_edit.cluster.commands = self
                 .net_cluster_cmds
                 .lines()
@@ -372,20 +384,22 @@ impl SdroxideApp {
             cmds.push(Command::SetWsjtxConfig(self.wsjtx_edit.clone()));
         }
         self.sat_ui = sat_ui;
-        if sat_edit != self.sat_cfg_edit {
+        if self.sat_cfg_seeded && sat_edit != self.sat_cfg_edit {
             // Written straight out, like the input bindings: there is no APPLY
             // step here, and a satellite the operator cannot see saved is one
-            // they will add again after the next restart. The solar window
-            // picks the new `Arc` up on its next frame.
+            // they will add again after the next restart. The engine persists
+            // it — the subscribed listings are fetched on its machine — and the
+            // solar window picks the new `Arc` up on its next frame.
+            //
+            // Gated on having been seeded, so a client that has not yet been
+            // told what the station tracks cannot write an empty list over it.
             self.sat_cfg_edit = sat_edit;
             self.sat_cfg_edit.prune();
             self.sat_cfg = std::sync::Arc::new(self.sat_cfg_edit.clone());
-            persist_sat_config(&self.sat_cfg_edit);
+            cmds.push(Command::SetSatConfig(self.sat_cfg_edit.clone()));
         }
         if sat_sub_refresh {
-            // Blocking: one HTTPS round trip per subscription. After the window
-            // closure, the way the HPSDR scan is.
-            self.refresh_sat_subs_now();
+            self.refresh_sat_subs_now(cmds);
         }
         if bc_refetch {
             self.refetch_broadcast_schedule();
@@ -656,6 +670,9 @@ impl SdroxideApp {
             }
             SettingsTab::Ui => settings_ui_tab(ui, io.ui_edit, io.solar_cloud_march.as_deref_mut()),
             SettingsTab::Spots => {
+                if !net_seeded_note(ui, io.net_seeded) {
+                    return;
+                }
                 operator_identity_note(ui, io.digi_edit, io.digi_seeded);
 
                 net_heading(ui, "DX cluster (telnet)");
@@ -727,6 +744,9 @@ impl SdroxideApp {
                 );
             }
             SettingsTab::Uploads => {
+                if !net_seeded_note(ui, io.net_seeded) {
+                    return;
+                }
                 net_heading(ui, "Callsign lookup");
                 ui.horizontal(|ui| {
                     ui.add_sized([96.0, 22.0], egui::Label::new("Provider"));
@@ -793,6 +813,9 @@ impl SdroxideApp {
                 });
             }
             SettingsTab::FreeDv => {
+                if !net_seeded_note(ui, io.net_seeded) {
+                    return;
+                }
                 // The reported identity is the operator's, from the General tab.
                 let call = io.digi_edit.my_call.trim().to_string();
                 let grid = io.digi_edit.my_grid.trim().to_string();
@@ -844,43 +867,44 @@ impl SdroxideApp {
 
     /// Subscription status for the settings dialog.
     ///
-    /// The live feed is preferred — it has the result of the fetch it just did
-    /// — but it only exists while the solar window is open, so the disk cache
-    /// answers for the far more common case of the dialog being opened with the
-    /// window shut.
+    /// The engine announces this with the config it annotates, which is the
+    /// only source a browser client has. A native client's solar window runs a
+    /// fetcher of its own, though, and what *it* last did is both fresher and
+    /// what that window is actually drawing — so it wins while it has anything
+    /// to say.
     #[cfg(not(target_arch = "wasm32"))]
     fn refresh_sat_sub_status(&mut self) {
         let live = self.solar.tle_sub_status();
-        let subs: Vec<_> = self.sat_cfg.subs.clone();
-        self.sat_sub_status =
-            if live.is_empty() { sdroxide_solar::tlesub::status_all(&subs) } else { live }
-                .into_iter()
-                .map(|s| SubStatusView {
-                    url: s.url,
-                    fetched_unix: s.fetched_unix,
-                    count: s.count,
-                    curated: s.curated,
-                    error: s.error,
-                })
-                .collect();
+        if !live.is_empty() {
+            self.sat_sub_status = live;
+        }
     }
 
     #[cfg(target_arch = "wasm32")]
     fn refresh_sat_sub_status(&mut self) {}
 
-    fn sat_sub_views(&self) -> Vec<SubStatusView> {
-        self.sat_sub_status.clone()
+    /// Fetch every enabled subscription now, from the settings dialog's UPDATE
+    /// NOW button.
+    ///
+    /// The engine does the fetching: its config directory holds the listings,
+    /// and on a server it is also what feeds the browser's solar view. A native
+    /// client's own window shares the same disk cache when the engine is local,
+    /// so it is told to re-read rather than being left on what it loaded at
+    /// open time.
+    fn refresh_sat_subs_now(&mut self, cmds: &mut Vec<Command>) {
+        cmds.push(Command::RefreshTleSubs);
+        self.sat_ui.note = "Fetching subscriptions…".to_string();
+        self.sat_ui.fetching = true;
     }
 
-    /// Fetch every enabled subscription now, from the settings dialog's UPDATE
-    /// NOW button. Blocking — up to one HTTPS round trip per subscription.
-    ///
-    /// The solar window's feed shares the same disk cache, so a listing fetched
-    /// here is what it serves next time it looks, without a second request.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn refresh_sat_subs_now(&mut self) {
-        let subs: Vec<_> = self.sat_cfg_edit.subs.clone();
-        let done = sdroxide_solar::tlesub::refresh_all(&subs);
+    /// Summarise a refresh the operator asked for, once its status lands.
+    pub(in crate::app) fn on_tle_sub_status(&mut self, status: Vec<sdroxide_types::TleSubStatus>) {
+        let asked = std::mem::take(&mut self.sat_ui.fetching);
+        self.sat_sub_status = status;
+        if !asked {
+            return;
+        }
+        let done = &self.sat_sub_status;
         let failed = done.iter().filter(|s| s.error.is_some()).count();
         let total: usize = done.iter().map(|s| s.count).sum();
         self.sat_ui.note = match (done.len(), failed) {
@@ -888,12 +912,9 @@ impl SdroxideApp {
             (n, 0) => format!("Updated {n} subscription(s): {total} satellites."),
             (n, f) => format!("Updated {} of {n}; {f} failed — see the rows above.", n - f),
         };
-        self.refresh_sat_sub_status();
-        // The window's feed is told to re-read the cache rather than being left
-        // on what it loaded at open time.
+        // The window's feed shares the disk cache with a local engine, so it is
+        // told to re-read rather than being left on what it loaded at open time.
+        #[cfg(not(target_arch = "wasm32"))]
         self.solar.reload_tle_subs();
     }
-
-    #[cfg(target_arch = "wasm32")]
-    fn refresh_sat_subs_now(&mut self) {}
 }

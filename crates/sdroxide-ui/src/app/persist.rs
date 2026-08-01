@@ -57,26 +57,6 @@ pub(in crate::app) fn persist_ui_settings(_ui: &sdroxide_types::UiSettings) {
     // Written by eframe's periodic `save()` into localStorage.
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(in crate::app) fn load_sat_config() -> sdroxide_types::SatConfig {
-    sdroxide_config::load_sat_config()
-}
-
-/// The browser tab has no satellite tracker of its own — the solar view there
-/// is fed by the server's relay — so there is nothing to configure and nothing
-/// to load.
-#[cfg(target_arch = "wasm32")]
-pub(in crate::app) fn load_sat_config() -> sdroxide_types::SatConfig {
-    Default::default()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(in crate::app) fn persist_sat_config(cfg: &sdroxide_types::SatConfig) {
-    if let Err(e) = sdroxide_config::save_sat_config(cfg) {
-        eprintln!("failed to save the satellite config: {e}");
-    }
-}
-
 // ── Broadcast stations ───────────────────────────────────────────────────────
 //
 // Native: the cached season schedule (or the compiled-in one until a download
@@ -137,6 +117,3 @@ pub(in crate::app) fn clear_broadcast_cache() {
 
 #[cfg(target_arch = "wasm32")]
 pub(in crate::app) fn clear_broadcast_cache() {}
-
-#[cfg(target_arch = "wasm32")]
-pub(in crate::app) fn persist_sat_config(_cfg: &sdroxide_types::SatConfig) {}

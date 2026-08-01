@@ -69,7 +69,7 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>) {
     let tx_codec =
         if audio_caps.opus_encode { AudioCodec::Opus48kMono } else { AudioCodec::Pcm16_48k };
 
-    let (caps, state, memories, digi, voice, images, notice) = {
+    let (caps, state, memories, digi, voice, images, notice, station, tle_subs) = {
         let latest = shared.latest.lock().unwrap();
         (
             latest.caps.clone(),
@@ -79,6 +79,8 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>) {
             latest.voice.clone(),
             latest.images.clone(),
             latest.notice.clone(),
+            latest.station.clone(),
+            latest.tle_subs.clone(),
         )
     };
     let ack = ServerMsg::HelloAck { proto: PROTO_VERSION, caps, state, rx_codec, tx_codec };
@@ -100,6 +102,14 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>) {
     // is both authoritative and the only view that can be paged.
     if let Some(p) = images {
         let _ = socket.send(msg(&ServerMsg::ImagePresets(p))).await;
+    }
+    // What the station is set up to do, announced at engine start like the
+    // operator config. Without this replay the settings dialog here shows
+    // defaults for every server-side tab — and applying them would write those
+    // defaults over the operator's real configuration.
+    if let Some(s) = station {
+        let _ = socket.send(msg(&ServerMsg::StationConfig(s))).await;
+        let _ = socket.send(msg(&ServerMsg::TleSubStatus(tle_subs))).await;
     }
     // A standing condition rather than an event: whoever attaches next has to
     // know the radio is refusing tunes or reconnecting, not just whoever

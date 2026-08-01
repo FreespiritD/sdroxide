@@ -264,7 +264,7 @@ impl CustomTle {
 /// handful of satellites in the tracker's own curated list kept their rings
 /// anyway, which made the switch look broken. Now that behaviour is a position
 /// on the control rather than something happening behind it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OrbitRings {
     /// None of them. Plain dots, and only visible at all under `ALL SATS`.
     None,
@@ -319,15 +319,47 @@ impl OrbitRings {
     }
 }
 
+impl Serialize for OrbitRings {
+    /// Hand-written rather than derived so it can be asymmetric: see
+    /// [`OrbitRings::deserialize`] for why the two formats differ.
+    ///
+    /// The human-readable form is the tag name the derive used to emit, so
+    /// existing `satellites.json` files keep round-tripping.
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        if s.is_human_readable() {
+            s.serialize_str(match self {
+                OrbitRings::None => "None",
+                OrbitRings::Curated => "Curated",
+                OrbitRings::All => "All",
+            })
+        } else {
+            s.serialize_u8(*self as u8)
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for OrbitRings {
-    /// Also accepts the boolean this used to be, so an existing
-    /// `satellites.json` loads rather than failing and taking the operator's
-    /// pasted element sets and frequency entries down with it.
+    /// In a config file, also accepts the boolean this used to be, so an
+    /// existing `satellites.json` loads rather than failing and taking the
+    /// operator's pasted element sets and frequency entries down with it.
     ///
     /// `true` ringed everything, so it becomes [`OrbitRings::All`]. `false`
     /// still left the curated few ringed, so it becomes [`OrbitRings::Curated`]
     /// — which is what those files actually meant, whatever they said.
+    ///
+    /// On the wire it is a plain index instead. The tolerant path is `untagged`,
+    /// which means `deserialize_any`, and a non-self-describing format (postcard,
+    /// which is what carries this to a remote client) cannot answer that at all.
+    /// There is no legacy to accept there either: a version that did not have
+    /// this field on the wire could not send it.
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        if !d.is_human_readable() {
+            return Ok(match u8::deserialize(d)? {
+                0 => OrbitRings::None,
+                2 => OrbitRings::All,
+                _ => OrbitRings::Curated,
+            });
+        }
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Wire {
@@ -501,6 +533,32 @@ pub const CELESTRAK_GROUPS: &[CelestrakGroup] = &[
         orbits: OrbitRings::Curated,
     },
 ];
+
+/// What one subscription's last fetch did, for the settings dialog.
+///
+/// Produced by the tracker's fetcher (`sdroxide_solar::tlesub`), but declared
+/// here because it also has to cross the wire: a remote client's settings
+/// dialog edits the *engine host's* subscriptions, so the engine host is the
+/// only place that knows when each listing was last fetched and what it
+/// yielded.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TleSubStatus {
+    pub url: String,
+    /// When the listing was last fetched successfully, or 0 for never.
+    pub fetched_unix: i64,
+    /// How many satellites it yielded after the filter.
+    pub count: usize,
+    /// How many of those are in the tracker's built-in curated list.
+    ///
+    /// Zero for every listing that is not the amateur group — that list is ten
+    /// amateur satellites — which is what lets the settings dialog grey out an
+    /// orbit-ring position that would do nothing here.
+    pub curated: usize,
+    /// Why the last attempt failed, if it did. A failure does not clear
+    /// `count`: the cached listing is still what is being tracked.
+    pub error: Option<String>,
+}
 
 /// The operator's satellite additions, persisted as `satellites.json`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

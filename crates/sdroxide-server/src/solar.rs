@@ -147,6 +147,11 @@ struct FeedState {
     generation: u64,
     channel: SdoChannel,
     resolution: u32,
+    /// The operator's satellite additions, as the engine last announced them.
+    /// Held rather than pushed straight through because the feed is only alive
+    /// while somebody is watching: a subscription added with the map shut has
+    /// to be waiting for the next feed that starts.
+    sat: sdroxide_types::SatConfig,
 }
 
 impl Default for SolarHub {
@@ -162,6 +167,7 @@ impl Default for SolarHub {
                 // the first thing a viewer sees is white light with real spots.
                 channel: SdoChannel::from_u8(0),
                 resolution: 1024,
+                sat: Default::default(),
             }),
         }
     }
@@ -180,6 +186,36 @@ impl SolarHub {
             f.send(cmd);
         }
     }
+
+    /// Adopt the station's satellite additions and, if a feed is running, hand
+    /// them to it now.
+    ///
+    /// This is what makes the TLE tab mean something for a browser viewer: the
+    /// tab edits the engine host's config, and the tracker those satellites
+    /// appear in is the feed *here*. Without it the subscriptions would be
+    /// persisted and never fetched, and the sky would come up with nothing but
+    /// the geostationary belt.
+    pub(crate) fn set_sat_config(&self, cfg: sdroxide_types::SatConfig) {
+        let mut st = self.feed.lock().unwrap();
+        if st.sat == cfg {
+            return;
+        }
+        st.sat = cfg;
+        if let Some(f) = st.feed.as_ref() {
+            for cmd in feed_tle_cmds(&st.sat) {
+                f.send(cmd);
+            }
+        }
+    }
+}
+
+/// What a feed has to be told to track the operator's satellites: the pasted
+/// element sets, then the listings to keep fetched.
+fn feed_tle_cmds(cfg: &sdroxide_types::SatConfig) -> [FeedCmd; 2] {
+    [
+        FeedCmd::SetCustomTles(cfg.tle_text()),
+        FeedCmd::SetTleSubs(cfg.live_subs().cloned().collect()),
+    ]
 }
 
 pub async fn ws_route(State(shared): State<Arc<Shared>>, upgrade: WebSocketUpgrade) -> Response {
@@ -311,6 +347,12 @@ fn acquire_feed(shared: &Arc<Shared>) -> usize {
         Some(raw_tx),
     );
     let data = feed.shared();
+    // Whatever the operator has subscribed to, before the first fetch: the
+    // cached listings go out immediately, so a viewer opening the map sees the
+    // sky it saw last time rather than an empty one for the first few seconds.
+    for cmd in feed_tle_cmds(&st.sat) {
+        feed.send(cmd);
+    }
     st.feed = Some(feed);
     let viewers = st.viewers;
     drop(st);

@@ -31,6 +31,7 @@ mod spectrum;
 mod spot;
 mod sstv;
 mod state;
+mod station;
 mod tciserver;
 mod ui;
 mod voice;
@@ -99,13 +100,14 @@ pub use rifp::{
 pub use rigctld::RigctldConfig;
 pub use satcfg::{
     CELESTRAK_GROUPS, CelestrakGroup, CustomTle, OrbitRings, Passband, SatConfig, SatFreqs,
-    SatLink, TleSubscription, fmt_mhz as fmt_sat_mhz, parse_tle_block,
+    SatLink, TleSubStatus, TleSubscription, fmt_mhz as fmt_sat_mhz, parse_tle_block,
 };
 pub use skimmer::{SkimmerKind, SkimmerSettings, SkimmerSpot};
 pub use spectrum::{SpectrumConfig, SpectrumFrame};
 pub use spot::{Spot, SpotKind};
 pub use sstv::{SstvMode, SstvStatus};
 pub use state::{OffsetState, RadioState, RxId, RxState, SQUELCH_OPEN_DB, TxState, Vfo};
+pub use station::StationConfig;
 pub use tciserver::TciServerConfig;
 pub use ui::{LayoutMode, Speed, UiSettings};
 pub use voice::{VOICE_MAX_LEN_S, VOICE_SLOTS, VoiceSlotInfo, VoiceStatus, slot_label};

@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use sdroxide_types::{
     CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, ImageEntry, ImageKind, ImageListing,
     ImagePresets, MemoryChannel, Meters, QsoRecord, RadioState, RifpMeta, RifpStatus, SkimmerSpot,
-    SpectrumFrame, Spot, SstvMode, SstvStatus, UploadResult, VoiceStatus,
+    SpectrumFrame, Spot, SstvMode, SstvStatus, StationConfig, TleSubStatus, UploadResult,
+    VoiceStatus,
 };
 
 /// Bump on any incompatible change to the message enums (this includes the
@@ -122,7 +123,17 @@ use sdroxide_types::{
 /// the engine owns the files and hands out metadata, thumbnails and pixels on
 /// request. Composition stays client-side, and transmit still rides the
 /// existing `SstvTx` / `RifpTx`.
-pub const PROTO_VERSION: u16 = 33;
+/// v34: the station configuration reaches remote clients — two new `ServerMsg`s
+/// (`StationConfig`, `TleSubStatus`) and two new `Command`s (`SetSatConfig`,
+/// `RefreshTleSubs`), all appended so no existing discriminant moves. The
+/// network cockpit, the two built-in servers, the WSJT-X broadcast and the
+/// satellite additions all describe the *station*, and all of them are files in
+/// the engine host's config directory. A remote settings dialog used to read
+/// its own machine's copy — nonexistent in a browser — so those tabs opened on
+/// defaults, and pressing APPLY wrote the defaults back over the operator's
+/// real configuration. The engine announces them instead, and the server caches
+/// and replays them like the digi config.
+pub const PROTO_VERSION: u16 = 34;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -306,6 +317,15 @@ pub enum ServerMsg {
     },
     /// A freshly received picture has been stored, as a gallery would list it.
     ImageSaved(ImageEntry),
+    /// What the station is set up to do: the network cockpit, the two built-in
+    /// servers, the WSJT-X broadcast and the satellite additions. Cached by the
+    /// server and replayed on connect, like the digi config — these are files
+    /// in the engine host's config directory, and a client on another machine
+    /// has no other way to learn them.
+    StationConfig(Box<StationConfig>),
+    /// What each TLE subscription's cached listing holds. Replayed on connect
+    /// beside the config it annotates.
+    TleSubStatus(Vec<TleSubStatus>),
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {
@@ -490,6 +510,94 @@ mod tests {
             let back: ClientMsg = decode(&bytes).unwrap();
             assert_eq!(&back, m);
         }
+    }
+
+    /// The station configuration, both ways.
+    ///
+    /// Worth its own test because `SatConfig` reaches types that were only ever
+    /// written to JSON before: `OrbitRings` deserialises tolerantly from a
+    /// config file (`untagged`, so `deserialize_any`), which postcard refuses
+    /// outright. It has to take a second, non-self-describing form here, and a
+    /// round trip is the only thing that says so.
+    #[test]
+    fn roundtrip_station_config() {
+        use sdroxide_types::{
+            CustomTle, OrbitRings, Passband, SatConfig, SatFreqs, SatLink, StationConfig,
+            TleSubStatus, TleSubscription,
+        };
+
+        let sat = SatConfig {
+            tles: vec![CustomTle {
+                name: "NOAA 19".into(),
+                line1: "1 33591U 09005A   26031.51268519  .00000271  00000-0  16472-3 0  9992"
+                    .into(),
+                line2: "2 33591  99.0361 121.3384 0013431 262.5195  97.4595 14.13096410877269"
+                    .into(),
+                enabled: true,
+            }],
+            subs: vec![TleSubscription {
+                name: "Weather".into(),
+                url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle".into(),
+                enabled: true,
+                orbits: OrbitRings::All,
+                only: vec![33_591],
+            }],
+            freqs: vec![SatFreqs::new(
+                43_017,
+                "NOAA 19",
+                vec![SatLink::down("APT", "FM", Passband::at(137.1))],
+            )],
+            seeded: true,
+        };
+        let msgs = [
+            ServerMsg::StationConfig(Box::new(StationConfig { sat: sat.clone(), ..no_station() })),
+            ServerMsg::TleSubStatus(vec![TleSubStatus {
+                url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle".into(),
+                fetched_unix: 1_785_075_330,
+                count: 8,
+                curated: 0,
+                error: Some("connection reset".into()),
+            }]),
+        ];
+        for m in &msgs {
+            let bytes = encode(m).unwrap();
+            let back: ServerMsg = decode(&bytes).unwrap();
+            assert_eq!(&back, m);
+        }
+
+        let cmd = ClientMsg::Command(Command::SetSatConfig(sat));
+        let back: ClientMsg = decode(&encode(&cmd).unwrap()).unwrap();
+        assert_eq!(back, cmd);
+        let cmd = ClientMsg::Command(Command::RefreshTleSubs);
+        let back: ClientMsg = decode(&encode(&cmd).unwrap()).unwrap();
+        assert_eq!(back, cmd);
+    }
+
+    /// Every orbit-ring position survives the wire, including the one a bare
+    /// index would land on by accident if the mapping ever slipped.
+    #[test]
+    fn orbit_rings_survive_the_wire() {
+        use sdroxide_types::{OrbitRings, SatConfig, StationConfig, TleSubscription};
+
+        for orbits in OrbitRings::ALL {
+            let sat = SatConfig {
+                subs: vec![TleSubscription {
+                    name: "g".into(),
+                    url: "https://example.invalid/tle.txt".into(),
+                    enabled: true,
+                    orbits,
+                    only: Vec::new(),
+                }],
+                ..SatConfig::default()
+            };
+            let m = ServerMsg::StationConfig(Box::new(StationConfig { sat, ..no_station() }));
+            let back: ServerMsg = decode(&encode(&m).unwrap()).unwrap();
+            assert_eq!(back, m, "orbit rings {orbits:?} did not survive");
+        }
+    }
+
+    fn no_station() -> sdroxide_types::StationConfig {
+        sdroxide_types::StationConfig::default()
     }
 
     #[test]

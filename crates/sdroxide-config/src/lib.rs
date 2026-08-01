@@ -409,9 +409,11 @@ pub fn save_sstv_messages(messages: &[String]) -> Result<(), ConfigError> {
 /// The operator's satellite additions: element sets pasted in by hand, and
 /// frequency entries that override or extend the built-in table.
 ///
-/// A client-side file like `input.json`: it describes what this operator wants
-/// to track and where they have found the transponders, so it stays with the UI
-/// rather than with the engine.
+/// An engine-side file like `net.json`, despite describing something only the
+/// UI draws. The subscribed listings are fetched over HTTPS and cached on disk,
+/// and in server mode that machine's tracker is also what feeds the browser's
+/// 3D view — so a browser client, which has neither, has to be able to
+/// configure the one that does.
 pub fn load_sat_config() -> sdroxide_types::SatConfig {
     let mut cfg: sdroxide_types::SatConfig = load_json("satellites.json");
     // The amateur satellites and the ISS used to be fetched unconditionally.

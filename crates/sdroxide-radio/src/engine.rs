@@ -805,6 +805,18 @@ struct Engine {
     /// Network cockpit: owns the spot feeds (DX cluster / POTA / SOTA / PSK)
     /// and the lookup/upload worker threads. The engine only drains it.
     spots: sdroxide_net::SpotManager,
+    /// The network-cockpit config as last persisted. The spot manager has its
+    /// own copy but does not hand it back, and a remote settings dialog has to
+    /// be told what this station is set to — see [`Engine::emit_station_config`].
+    net_cfg: sdroxide_types::NetworkConfig,
+    /// The operator's satellite additions. The engine does not track anything
+    /// itself; it persists this and announces it, because a browser client has
+    /// no config directory of its own and the subscribed listings are fetched
+    /// (and cached) on this machine.
+    sat_cfg: sdroxide_types::SatConfig,
+    /// A running [`Command::RefreshTleSubs`], joined when it finishes so the
+    /// fetched status reaches the clients that asked for it.
+    tle_refresh: Option<std::thread::JoinHandle<Vec<sdroxide_types::TleSubStatus>>>,
     /// What was last written to `session.json`, so the periodic check only
     /// touches the disk when the operator has actually moved. `None` when this
     /// engine does not remember its session (see
@@ -1021,6 +1033,9 @@ fn engine_thread(
         // Where the source opened, which is by definition a frequency it took.
         good_vfo_hz: source_center_hz,
         spots: sdroxide_net::SpotManager::new(),
+        net_cfg: sdroxide_types::NetworkConfig::default(),
+        sat_cfg: sdroxide_types::SatConfig::default(),
+        tle_refresh: None,
         session,
         want_antenna,
     };
@@ -1052,7 +1067,8 @@ fn engine_thread(
     // operator identity comes from the digi config — one identity for the whole
     // app — and has to be in place before the feeds that log in with it.
     engine.spots.set_operator(&engine.digi_config.my_call, &engine.digi_config.my_grid);
-    engine.spots.set_config(sdroxide_config::load_network_config());
+    engine.net_cfg = sdroxide_config::load_network_config();
+    engine.spots.set_config(engine.net_cfg.clone());
     // Bring up the built-in TCI server (enabled by default) so third-party
     // clients can connect without the operator having to arm anything.
     engine.tci_cfg = sdroxide_config::load_tci_server_config();
@@ -1064,6 +1080,16 @@ fn engine_thread(
     // WSJT-X UDP broadcast is likewise off unless the operator turned it on.
     engine.wsjtx_cfg = sdroxide_config::load_wsjtx_config();
     engine.sync_wsjtx();
+    // The satellite additions are not acted on here — the tracker lives in the
+    // UI — but this is where they are persisted, so this is where they are
+    // announced from.
+    engine.sat_cfg = sdroxide_config::load_sat_config();
+    // Seed clients with the whole station configuration up front, for the same
+    // reason as the operator config above: a settings dialog that has not been
+    // told what the station is set to would show defaults, and applying those
+    // would write them over the real thing.
+    engine.emit_station_config();
+    engine.emit_tle_sub_status();
     // The source opened with its LO on the requested frequency, which is also
     // where the VFO now sits — on zero-IF hardware that is the one place the VFO
     // must not be, so let the span check park the LO clear of it before the
@@ -1118,6 +1144,7 @@ fn engine_thread(
         engine.wsjtx_heartbeat();
         engine.poll_spots();
         engine.poll_images();
+        engine.poll_tle_refresh();
         // Attach (or re-attach) the configured radio on its own when the
         // front-end is only a stand-in — no trip through Settings.
         engine.poll_reconnect();
@@ -2529,7 +2556,9 @@ impl Engine {
                 if let Err(e) = sdroxide_config::save_network_config(&cfg) {
                     warn!("saving network config: {e}");
                 }
+                self.net_cfg = cfg.clone();
                 self.spots.set_config(cfg);
+                self.emit_station_config();
                 return;
             }
             SpotDialHint(hz) => {
@@ -2557,6 +2586,7 @@ impl Engine {
                 }
                 self.rigctld_cfg = cfg;
                 self.sync_rigctld();
+                self.emit_station_config();
                 return;
             }
 
@@ -2568,6 +2598,7 @@ impl Engine {
                 }
                 self.wsjtx_cfg = cfg;
                 self.sync_wsjtx();
+                self.emit_station_config();
                 return;
             }
 
@@ -2626,6 +2657,26 @@ impl Engine {
                 }
                 self.tci_cfg = cfg;
                 self.sync_tci_server();
+                self.emit_station_config();
+                return;
+            }
+
+            // The operator's satellite additions (no RadioState change → return
+            // before the State emit below).
+            SetSatConfig(cfg) => {
+                if let Err(e) = sdroxide_config::save_sat_config(&cfg) {
+                    warn!("saving satellite config: {e}");
+                }
+                self.sat_cfg = cfg;
+                self.emit_station_config();
+                // The subscription list may have gained or lost a row, so the
+                // status list it is drawn beside has to be rebuilt. Read from
+                // the disk cache — no fetch, which is what UPDATE NOW is for.
+                self.emit_tle_sub_status();
+                return;
+            }
+            RefreshTleSubs => {
+                self.start_tle_refresh();
                 return;
             }
         }
@@ -3178,6 +3229,65 @@ impl Engine {
 
     fn emit_image_presets(&self) {
         let _ = self.event_tx.send(RadioEvent::ImagePresets(self.images.status()));
+    }
+
+    /// Announce everything this station persists, as one snapshot.
+    ///
+    /// Sent at startup and after every change rather than answered on request:
+    /// the settings dialog may be running on another machine, and the files
+    /// these describe are only reachable from this one.
+    fn emit_station_config(&self) {
+        let _ = self.event_tx.send(RadioEvent::StationConfig(Box::new(
+            sdroxide_types::StationConfig {
+                net: self.net_cfg.clone(),
+                rigctld: self.rigctld_cfg.clone(),
+                tci_server: self.tci_cfg.clone(),
+                wsjtx: self.wsjtx_cfg.clone(),
+                sat: self.sat_cfg.clone(),
+            },
+        )));
+    }
+
+    /// Announce what each TLE subscription's cached listing holds. Reads the
+    /// disk cache the tracker fetches into — no network, so this is free to
+    /// send alongside every config change.
+    fn emit_tle_sub_status(&self) {
+        let status = sdroxide_solar::tlesub::status_all(&self.sat_cfg.subs);
+        let _ = self.event_tx.send(RadioEvent::TleSubStatus(status));
+    }
+
+    /// Re-fetch every enabled TLE subscription, off the engine thread.
+    ///
+    /// One HTTPS round trip per subscription, so it cannot run inline: a dozen
+    /// listings behind a slow link would stall the receiver for seconds. A
+    /// refresh already in flight is left to finish rather than being stacked
+    /// on — the operator pressing UPDATE NOW twice wants one answer, not two.
+    fn start_tle_refresh(&mut self) {
+        if self.tle_refresh.as_ref().is_some_and(|h| !h.is_finished()) {
+            return;
+        }
+        let subs = self.sat_cfg.subs.clone();
+        self.tle_refresh = std::thread::Builder::new()
+            .name("sdroxide-tlesub".into())
+            .spawn(move || sdroxide_solar::tlesub::refresh_all(&subs))
+            .map_err(|e| warn!("could not start the TLE refresh: {e}"))
+            .ok();
+    }
+
+    /// Publish a finished TLE refresh. Called once per tick; a no-op unless a
+    /// refresh thread has just come home.
+    fn poll_tle_refresh(&mut self) {
+        if !self.tle_refresh.as_ref().is_some_and(|h| h.is_finished()) {
+            return;
+        }
+        let status = match self.tle_refresh.take().expect("checked above").join() {
+            Ok(v) => v,
+            Err(_) => {
+                warn!("the TLE refresh thread panicked");
+                return;
+            }
+        };
+        let _ = self.event_tx.send(RadioEvent::TleSubStatus(status));
     }
 
     /// Drain the picture worker: a normalised upload lands in a slot, a listing

@@ -84,6 +84,15 @@ pub(crate) struct Latest {
     /// reconnecting has to be told so, and it would otherwise wait for a notice
     /// that was already sent to somebody else.
     pub notice: Option<String>,
+    /// What the station is set up to do — the network cockpit, the two built-in
+    /// servers, the WSJT-X broadcast and the satellite additions. Announced at
+    /// startup and on every change, for the same reason as `digi`, and the only
+    /// way a client on another machine can learn any of it: these are files in
+    /// *this* machine's config directory.
+    pub station: Option<Box<sdroxide_types::StationConfig>>,
+    /// What each TLE subscription's cached listing holds, alongside the config
+    /// it annotates.
+    pub tle_subs: Vec<sdroxide_types::TleSubStatus>,
 }
 
 pub(crate) struct Shared {
@@ -274,6 +283,8 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
         _ => {}
     }
 
+    // Set by the station-config arm below, and acted on after the lock.
+    let mut sat: Option<sdroxide_types::SatConfig> = None;
     let msg = {
         let mut latest = shared.latest.lock().unwrap();
         match ev {
@@ -367,8 +378,25 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             // Replaying this would stack a duplicate of the newest picture on
             // top of that listing.
             RadioEvent::ImageSaved(e) => Some(ServerMsg::ImageSaved(e)),
+            RadioEvent::StationConfig(c) => {
+                latest.station = Some(c.clone());
+                sat = Some(c.sat.clone());
+                Some(ServerMsg::StationConfig(c))
+            }
+            RadioEvent::TleSubStatus(s) => {
+                latest.tle_subs = s.clone();
+                Some(ServerMsg::TleSubStatus(s))
+            }
         }
     };
+    // The satellite half of the station config also drives this machine's own
+    // tracker: the browser's solar view is a viewer on the feed running here,
+    // so an element set the operator subscribes to has to reach that feed, not
+    // just the settings dialog it was typed into. After the lock, because the
+    // hub takes one of its own.
+    if let Some(sat) = sat {
+        shared.solar.set_sat_config(sat);
+    }
     if let Some(msg) = msg {
         if let Some(s) = shared.session.lock().unwrap().as_ref() {
             if s.reliable.try_send(msg).is_err() {

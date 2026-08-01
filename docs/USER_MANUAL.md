@@ -1376,6 +1376,15 @@ bindings to `input.json`, feeds and credentials to `net.json`, the two servers
 to `rigctld.json`, `tciserver.json` and `wsjtx.json`, and the satellite
 additions to `satellites.json`.
 
+Most of those files describe the *station*, not the screen: the feeds it
+connects to, the servers it offers, the satellites it tracks. They live on the
+machine the radio engine runs on, and the engine tells every client what they
+say — so the **Spots**, **FreeDV**, **Uploads**, **Servers** and **TLE** tabs
+show, and change, the real thing whether you are at the shack machine, on a
+native remote client or in a browser tab. Only `config.toml` and `input.json`
+belong to the screen in front of you: a display preference and a knob on your
+desk have nothing to do with the radio in the other room.
+
 ### 5.1 General: station and audio
 
 ![The General tab: callsign, grid square, and your own speakers and microphone](images/settings-general.jpg)
@@ -2081,6 +2090,12 @@ frequency the built-in table has wrong.
 
 Everything on this tab is saved the moment you change it — there is no APPLY —
 into `satellites.json`. The 3D view picks changes up on its next frame.
+
+The file lives with the radio engine, not with the screen: the subscribed
+listings are fetched and cached on that machine, which in server mode is also
+what feeds the browser's 3D view. So this tab configures the same set of
+satellites from anywhere — the shack machine, a native remote client, or a
+browser tab — and **UPDATE NOW** asks the engine to do the fetching.
 
 #### 5.9.1 Subscriptions
 
@@ -3326,7 +3341,7 @@ sdroxide stores its settings under the per-user config directory:
 | `wsjtx.json` | JSON | WSJT-X UDP broadcast: enabled, destination host and port, and the name clients see. |
 | `skimmer.json` | JSON | Skimmers: which of CW / PSK / RTTY run, and each one's spot squelch in dB. Restored at startup; a narrowband (audio-mode) radio still forces them off without disturbing what you picked. |
 | `input.json` | JSON | Control inputs: keyboard bindings, panadapter mouse behaviour, mouse-button bindings, and the MIDI controller mapping. Belongs to the machine running the user interface, not the engine. |
-| `satellites.json` | JSON | Satellite additions for the 3D tracker: subscribed element-set listings, element sets pasted in by hand, and frequency entries that override the built-in table. Belongs to the user interface, like `input.json`. |
+| `satellites.json` | JSON | Satellite additions for the 3D tracker: subscribed element-set listings, element sets pasted in by hand, and frequency entries that override the built-in table. Belongs to the engine, like `net.json`: the listings are fetched and cached where the radio is, so remote and browser clients track the same satellites. |
 | `broadcast_stations.json` | JSON | *Your own* broadcast stations and corrections, merged over the downloaded schedule ([§9.6](#96-broadcast-stations-on-longwave-and-shortwave)). Never written by sdroxide, and absent until you create it. |
 | `broadcast/` | CSV | The broadcasting season's schedule as downloaded from eibispace.de, one file per season. Managed by sdroxide: refetched when the season changes, and safe to delete. |
 | `sstv_messages.json` | JSON | The overlay message stored for each of the five SSTV transmit slots. |

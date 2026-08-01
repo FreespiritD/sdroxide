@@ -167,20 +167,4 @@ impl RadioController for LocalController {
         // The engine rebuilds the source from the freshly persisted radio config.
         let _ = self.swap_tx.send(EngineSwap::ReopenSource);
     }
-
-    fn network_config(&self) -> Option<sdroxide_types::NetworkConfig> {
-        Some(sdroxide_config::load_network_config())
-    }
-
-    fn tci_server_config(&self) -> Option<sdroxide_types::TciServerConfig> {
-        Some(sdroxide_config::load_tci_server_config())
-    }
-
-    fn wsjtx_config(&self) -> Option<sdroxide_types::WsjtxConfig> {
-        Some(sdroxide_config::load_wsjtx_config())
-    }
-
-    fn rigctld_config(&self) -> Option<sdroxide_types::RigctldConfig> {
-        Some(sdroxide_config::load_rigctld_config())
-    }
 }

@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgcMode, Band, DigiConfig, Direction, ImageKind, Mode, NetworkConfig, NrLevel, QsoStep,
-    RigctldConfig, RxId, SkimmerSettings, SpectrumConfig, SstvMode, TciServerConfig, UploadTarget,
-    Vfo, WsjtxConfig,
+    RigctldConfig, RxId, SatConfig, SkimmerSettings, SpectrumConfig, SstvMode, TciServerConfig,
+    UploadTarget, Vfo, WsjtxConfig,
 };
 
 /// The single control vocabulary. The GUI, the WebSocket protocol, and the
@@ -305,4 +305,21 @@ pub enum Command {
         kind: ImageKind,
         name: String,
     },
+
+    // The operator's satellite additions. Appended for the usual reason:
+    // postcard numbers variants by position.
+    /// Apply (and persist) the satellite configuration: pasted element sets,
+    /// subscribed listings and frequency overrides. Answered with a fresh
+    /// [`crate::RadioEvent::StationConfig`] and, since the subscription list
+    /// may have changed, a fresh [`crate::RadioEvent::TleSubStatus`].
+    ///
+    /// It rides the engine rather than being written client-side because the
+    /// tracker's listings are fetched — and cached — on the machine the engine
+    /// runs on, which is the only one a browser client can reach.
+    SetSatConfig(SatConfig),
+    /// Re-fetch every enabled TLE subscription now, rather than waiting for the
+    /// six-hourly cadence (the settings dialog's UPDATE NOW). One HTTPS round
+    /// trip per subscription, off the engine thread; the outcome comes back as
+    /// [`crate::RadioEvent::TleSubStatus`].
+    RefreshTleSubs,
 }
