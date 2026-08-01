@@ -14,9 +14,23 @@ mod web {
         fn push_pcm(pcm: &[f32]);
         #[wasm_bindgen(js_name = pullMic)]
         fn pull_mic() -> Vec<f32>;
+        // `catch`, because this one is newer than the rest of the bridge. A
+        // browser holding a cached `audio_bridge.js` from before it existed
+        // would otherwise throw a TypeError straight through wasm on the first
+        // frame, killing the whole UI over an optional feature.
+        #[wasm_bindgen(js_name = setMicActive, catch)]
+        fn set_mic_active(active: bool) -> Result<(), JsValue>;
     }
 
-    struct WebAudioBridge;
+    #[derive(Default)]
+    struct WebAudioBridge {
+        /// Last value handed to JS. `pump_mic` calls every frame; the bridge
+        /// wants the edge, not the level.
+        mic_active: bool,
+        /// Set once the JS side has been found to be missing `setMicActive`,
+        /// so a stale bridge costs one warning rather than one per frame.
+        mic_active_unsupported: bool,
+    }
 
     impl AudioBridge for WebAudioBridge {
         fn caps(&self) -> AudioCaps {
@@ -29,6 +43,21 @@ mod web {
         }
         fn pull_mic(&mut self, out: &mut Vec<f32>) {
             out.extend(pull_mic());
+        }
+        fn set_mic_active(&mut self, active: bool) {
+            if active == self.mic_active || self.mic_active_unsupported {
+                return;
+            }
+            self.mic_active = active;
+            if let Err(e) = set_mic_active(active) {
+                self.mic_active_unsupported = true;
+                web_sys::console::warn_2(
+                    &"sdroxide audio: setMicActive unavailable (stale audio_bridge.js?); \
+                      microphone transmit will not work until the page is reloaded"
+                        .into(),
+                    &e,
+                );
+            }
         }
     }
 
@@ -128,7 +157,7 @@ mod web {
                             // native remote client for rationale.
                             let ctrl = RemoteController::connect(
                                 &url,
-                                Some(Box::new(WebAudioBridge)),
+                                Some(Box::new(WebAudioBridge::default())),
                                 move || {
                                     ctx.request_repaint_after(std::time::Duration::from_millis(33))
                                 },

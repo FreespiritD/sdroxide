@@ -15,6 +15,13 @@ pub trait AudioBridge {
     fn play(&mut self, pcm: &[f32]);
     /// Append captured mic samples (mono 48 kHz) to `out`.
     fn pull_mic(&mut self, out: &mut Vec<f32>);
+    /// Whether the microphone is wanted right now. The browser bridge opens
+    /// the capture stream on the first `true` and not before: on iOS
+    /// `getUserMedia` puts the audio session into play-and-record, which
+    /// attenuates and reroutes playback for listeners who never transmit.
+    fn set_mic_active(&mut self, active: bool) {
+        let _ = active;
+    }
     /// Switchable sound devices, when the platform has any (native cpal
     /// bridge). The browser bridge keeps the default `None` — the browser
     /// owns device routing there.
@@ -264,6 +271,7 @@ impl RemoteController {
 
     fn pump_mic(&mut self) {
         let Some(bridge) = self.audio.as_mut() else { return };
+        bridge.set_mic_active(self.transmitting || self.voice_recording);
         if !self.transmitting && !self.voice_recording {
             self.mic_buf.clear();
             // Keep draining the capture ring so it doesn't back up.

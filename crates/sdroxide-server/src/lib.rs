@@ -455,6 +455,17 @@ fn add_static_routes(app: Router, web_root: Option<PathBuf>) -> Router {
         }
         None => add_embedded_or_placeholder(app),
     };
+    // Trunk fingerprints the wasm bundle, but index.html and the hand-written
+    // JS beside it keep fixed names. With no validator on those a browser is
+    // free to pair a cached `audio_bridge.js` with a freshly fingerprinted
+    // wasm, and the two then disagree about which functions exist — which
+    // presents as the client failing to start, not as an audio glitch.
+    // `no-cache` still caches; it just requires revalidation, which the
+    // embedded handler answers with a 304 off the ETag.
+    let app = app.layer(SetResponseHeaderLayer::if_not_present(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache"),
+    ));
     // Cross-origin isolation: lets the client use SharedArrayBuffer if the
     // audio path is ever upgraded to it.
     app.layer(SetResponseHeaderLayer::if_not_present(
@@ -476,13 +487,33 @@ fn add_embedded_or_placeholder(app: Router) -> Router {
     #[folder = "$CARGO_MANIFEST_DIR/../sdroxide-web/dist"]
     struct WebAssets;
 
-    async fn serve_embedded(uri: Uri) -> axum::response::Response {
+    async fn serve_embedded(headers: axum::http::HeaderMap, uri: Uri) -> axum::response::Response {
+        use std::fmt::Write as _;
+
         let path = uri.path().trim_start_matches('/');
         let path = if path.is_empty() { "index.html" } else { path };
         match WebAssets::get(path) {
             Some(f) => {
+                // The content hash rust-embed already computed at build time,
+                // so revalidating a fixed-name asset costs a 304 and no body.
+                let mut etag = String::with_capacity(66);
+                etag.push('"');
+                for b in f.metadata.sha256_hash() {
+                    let _ = write!(etag, "{b:02x}");
+                }
+                etag.push('"');
+                let fresh = headers
+                    .get(header::IF_NONE_MATCH)
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|v| v.split(',').any(|t| t.trim() == etag));
+                if fresh {
+                    return (StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response();
+                }
                 let mime = mime_guess::from_path(path).first_or_octet_stream();
-                ([(header::CONTENT_TYPE, mime.as_ref().to_string())], f.data.into_owned())
+                (
+                    [(header::CONTENT_TYPE, mime.as_ref().to_string()), (header::ETAG, etag)],
+                    f.data.into_owned(),
+                )
                     .into_response()
             }
             None => (StatusCode::NOT_FOUND, "not found").into_response(),

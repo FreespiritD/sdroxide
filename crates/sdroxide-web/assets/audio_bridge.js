@@ -4,13 +4,15 @@
 // Uplink: capture worklet posts mic blocks here; wasm polls pullMic().
 //
 // The AudioContext can only start after a user gesture, so everything is
-// initialized lazily on the first click/keydown.
+// initialized lazily on the first one.
 
 (function () {
     let ctx = null;
     let player = null;
     let micChunks = [];
-    let micStarted = false;
+    let micWanted = false;
+    let micStarting = false;
+    let micReady = false;
     let initStarted = false;
 
     // AudioWorklet and getUserMedia are both secure-context-only, and the whole
@@ -55,24 +57,46 @@
         initStarted = true;
         try {
             ctx = new AudioContext({ sampleRate: 48000 });
-            await ctx.audioWorklet.addModule("pcm_worklet.js");
+            // iOS drops the context on any audio-session interruption (a call,
+            // another app, backgrounding) and never comes back on its own. It
+            // also has a non-standard "interrupted" state, so test against
+            // "running" rather than listing the states we know about.
+            ctx.onstatechange = () => {
+                console.log("sdroxide audio: context state", ctx.state);
+                if (ctx.state !== "running") resumeCtx();
+            };
+            // Start the module fetch but do NOT await it yet: resume() has to
+            // be called while the gesture's transient activation is still
+            // alive, and on WebKit that is gone by the time an await resolves.
+            const moduleReady = ctx.audioWorklet.addModule("pcm_worklet.js");
+            resumeCtx();
+            await moduleReady;
             player = new AudioWorkletNode(ctx, "pcm-player", {
                 outputChannelCount: [1],
             });
             player.connect(ctx.destination);
-            if (ctx.state === "suspended") {
-                await ctx.resume();
-            }
+            // Second chance, now that there is something to hear.
+            resumeCtx();
             console.log("sdroxide audio: playback ready at", ctx.sampleRate, "Hz");
         } catch (e) {
             console.warn("sdroxide audio init failed:", e);
         }
-        startMic();
     }
 
+    function resumeCtx() {
+        if (!ctx || ctx.state === "running") return;
+        // Outside a user gesture this rejects; the next gesture retries.
+        ctx.resume().catch(() => {});
+    }
+
+    // Opening the microphone is deliberately deferred until the app actually
+    // wants to transmit. On iOS getUserMedia switches the audio session into
+    // play-and-record, which attenuates and reroutes playback -- so requesting
+    // it up front makes receive audio quiet or silent for every listener who
+    // never keys up, on top of prompting them for a mic they will not use.
     async function startMic() {
-        if (micStarted || !ctx) return;
-        micStarted = true;
+        if (micStarting || micReady || !ctx) return;
+        micStarting = true;
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: { sampleRate: 48000, channelCount: 1 },
@@ -85,17 +109,41 @@
                 while (micChunks.length > 400) micChunks.shift();
             };
             src.connect(capture);
+            micReady = true;
             console.log("sdroxide audio: mic ready");
         } catch (e) {
-            console.warn("sdroxide audio: no microphone:", e);
+            // Safari wants transient activation for getUserMedia, and the TX
+            // request reaches us a frame or more after the tap that caused it.
+            // Leave micWanted set so the next gesture tries again.
+            console.warn("sdroxide audio: no microphone (will retry):", e);
+        } finally {
+            micStarting = false;
         }
+    }
+
+    function onGesture() {
+        init();
+        resumeCtx();
+        if (micWanted) startMic();
     }
 
     if (INSECURE) {
         warnInsecure();
     } else {
-        window.addEventListener("click", init, { once: false });
-        window.addEventListener("keydown", init, { once: false });
+        // Capture phase, and not just "click": eframe's canvas handlers call
+        // preventDefault() on touchstart -- which stops WebKit synthesizing the
+        // compatibility mouse events, so a touch device never fires "click" at
+        // all -- and stopPropagation() on touchstart and pointerdown, which
+        // keeps bubble-phase window listeners from ever running. Capture runs
+        // before the canvas target, so neither can hide the gesture from us.
+        const opts = { capture: true, passive: true };
+        for (const ev of ["pointerdown", "touchstart", "touchend", "click", "keydown"]) {
+            window.addEventListener(ev, onGesture, opts);
+        }
+        // iOS suspends the context when the tab goes to the background.
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden) resumeCtx();
+        });
     }
 
     window.sdroxideAudio = {
@@ -117,6 +165,10 @@
             }
             micChunks = [];
             return out;
+        },
+        setMicActive: function (active) {
+            micWanted = !!active;
+            if (micWanted) startMic();
         },
     };
 })();
