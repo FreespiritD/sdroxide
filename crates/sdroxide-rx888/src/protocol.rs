@@ -165,7 +165,7 @@ pub const STATS_LEN: usize = 30;
 /// The shortest reply we can still decode.
 ///
 /// Measured, not documented: the published API reference describes a 30-byte
-/// block ending in the live GPIO word, but firmware 2.4 — the version in the
+/// block ending in the live GPIO word, but firmware 2.3 — the version in the
 /// image vendored here — returns 26 bytes and stops after `clk0_result`. Every
 /// preceding field is at the same offset in both, so the GPIO word is simply
 /// reported as absent rather than refusing to decode a block that is otherwise
@@ -203,6 +203,22 @@ impl Stats {
     }
 }
 
+/// Which receiver the firmware decided it is running on.
+///
+/// The firmware probes for an R828D tuner over I2C and senses GPIO36 at boot,
+/// and **only initialises the front-end GPIO block when both say RX-888 Mk2**.
+/// On a receiver it does not recognise it still enumerates, still clocks the
+/// ADC and still streams — but every GPIO the host writes lands on a pin that
+/// was never configured as an output, so the bias tee, the dither and
+/// randomizer switches, the ADC range select and both gain stages silently do
+/// nothing. That is why this byte matters enough to have a name.
+pub mod hardware {
+    /// The firmware's detection failed: no front-end control at all.
+    pub const NO_RADIO: u8 = 0x00;
+    /// RX-888 Mk2, the only receiver this driver (and this firmware) supports.
+    pub const RX888R2: u8 = 0x04;
+}
+
 /// Firmware version as reported by `TESTFX3`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Version {
@@ -210,17 +226,36 @@ pub struct Version {
     pub minor: u8,
 }
 
-impl Version {
+/// What `TESTFX3` says about the device: which board the firmware thinks it is
+/// driving, and which firmware that is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Identity {
+    /// Hardware configuration byte — see [`hardware`].
+    pub hardware: u8,
+    pub version: Version,
+}
+
+impl Identity {
     /// Decode the 4-byte `TESTFX3` reply.
     ///
-    /// The version is a 16-bit little-endian field at offset 0 whose high byte
-    /// is the major — confirmed against the vendored image, which reports
-    /// `[04, 02, 03, 00]`, i.e. 2.4. The remaining two bytes are the hardware
-    /// configuration and a vendor-request counter, neither of which this driver
-    /// has a use for yet.
-    pub fn parse(b: &[u8]) -> Option<Version> {
-        let raw = u16::from_le_bytes([*b.first()?, *b.get(1)?]);
-        Some(Version { major: (raw >> 8) as u8, minor: (raw & 0xff) as u8 })
+    /// The layout is `[hardware, major, minor, vendor-request count]`: the
+    /// firmware fills `glEp0Buffer[0]` with `glHWconfig` and the next two bytes
+    /// with `glFWconfig` (`major << 8 | minor`) *high byte first*, so the
+    /// version is not a little-endian 16-bit field and must not be read as one.
+    /// The receiver on the bench replies `[04, 02, 03, n]` — an RX-888 Mk2
+    /// running firmware 2.3, which is the version the bundled image announces
+    /// (see `firmware/PROVENANCE.md`).
+    pub fn parse(b: &[u8]) -> Option<Identity> {
+        Some(Identity {
+            hardware: *b.first()?,
+            version: Version { major: *b.get(1)?, minor: *b.get(2)? },
+        })
+    }
+
+    /// Whether the firmware set up the front-end GPIO block. False means every
+    /// switch this driver offers is a no-op — see [`hardware`].
+    pub fn front_end_ready(&self) -> bool {
+        self.hardware == hardware::RX888R2
     }
 }
 
@@ -261,7 +296,7 @@ mod tests {
         assert!(s.clock_running());
     }
 
-    /// Firmware 2.4 stops after `clk0_result`. Captured from the real device:
+    /// Firmware 2.3 stops after `clk0_result`. Captured from the real device:
     /// a freshly programmed receiver, before `STARTADC`, so the Si5351 is still
     /// powered down and this is exactly what a healthy one reports.
     #[test]
@@ -305,11 +340,26 @@ mod tests {
     }
 
     #[test]
-    fn the_version_reply_from_the_bundled_firmware_reads_as_2_4() {
+    fn the_identity_reply_from_the_bundled_firmware_is_an_mk2_running_2_3() {
         // Captured from the real device after loading firmware/SDDC_FX3.img.
-        assert_eq!(Version::parse(&[0x04, 0x02, 0x03, 0x00]), Some(Version { major: 2, minor: 4 }));
-        assert_eq!(Version::parse(&[0x04, 0x02, 0x03, 0x00]).unwrap().to_string(), "2.4");
-        assert_eq!(Version::parse(&[0x04]), None);
+        // The trailing byte is the vendor-request counter and is ignored.
+        let id = Identity::parse(&[0x04, 0x02, 0x03, 0x07]).expect("a 4-byte reply decodes");
+        assert_eq!(id.hardware, hardware::RX888R2);
+        assert_eq!(id.version, Version { major: 2, minor: 3 });
+        assert_eq!(id.version.to_string(), "2.3");
+        assert!(id.front_end_ready());
+        assert_eq!(Identity::parse(&[0x04, 0x02]), None);
+    }
+
+    #[test]
+    fn a_receiver_the_firmware_did_not_recognise_has_no_front_end_control() {
+        // Detection failed: the firmware skipped `rx888r2_GpioInitialize`, so
+        // every switch the host writes goes to an unconfigured pin.
+        let id = Identity::parse(&[hardware::NO_RADIO, 0x02, 0x03, 0x00]).unwrap();
+        assert!(!id.front_end_ready());
+        // ...and the firmware version is still readable, which is what makes
+        // this distinguishable from a device that answered with rubbish.
+        assert_eq!(id.version, Version { major: 2, minor: 3 });
     }
 
     #[test]

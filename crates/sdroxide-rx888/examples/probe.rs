@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use nusb::transfer::{Bulk, In};
 
-use sdroxide_rx888::protocol::{Cmd, STATS_LEN, Stats, Version};
+use sdroxide_rx888::protocol::{Cmd, Identity, STATS_LEN, Stats};
 use sdroxide_rx888::usb::{self, speed_name, usable_bytes_per_sec};
 use sdroxide_rx888::{convert, device, protocol};
 
@@ -79,8 +79,20 @@ fn main() {
     match dev.vendor_in(Cmd::TestFx3, 0, 0, 4) {
         Ok(b) => {
             println!("\nTESTFX3 -> {b:02x?}");
-            match Version::parse(&b) {
-                Some(v) => println!("  firmware version {v}"),
+            match Identity::parse(&b) {
+                Some(id) => {
+                    println!("  firmware version {}", id.version);
+                    println!(
+                        "  hardware id      0x{:02x} ({})",
+                        id.hardware,
+                        if id.front_end_ready() {
+                            "RX-888 Mk2 — front-end controls initialised"
+                        } else {
+                            "NOT recognised — bias tee, dither, ADC range and \
+                             both gain stages will do nothing"
+                        }
+                    );
+                }
                 None => println!("  (short reply)"),
             }
         }

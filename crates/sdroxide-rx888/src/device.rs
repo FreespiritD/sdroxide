@@ -9,7 +9,7 @@ use std::time::Duration;
 use nusb::transfer::TransferError;
 
 use crate::error::{Error, Result};
-use crate::protocol::{Cmd, STATS_LEN, Stats, Version, arg, gpio};
+use crate::protocol::{Cmd, Identity, STATS_LEN, Stats, Version, arg, gpio};
 use crate::usb::{self, UsbDev};
 
 /// Default ADC clock. 64.8 Msps covers 0–32.4 MHz, needs 129.6 MB/s, and leaves
@@ -89,9 +89,9 @@ pub struct Device {
     gpio_word: u32,
     adc_rate_hz: f64,
     randomize: bool,
-    version: Option<Version>,
-    /// Set when the link is too slow for the requested rate, for
-    /// `IqSource::open_status`.
+    identity: Option<Identity>,
+    /// Set when the link is too slow for the requested rate, or when the
+    /// firmware never initialised the front end, for `IqSource::open_status`.
     warning: Option<String>,
     streaming: bool,
 }
@@ -99,20 +99,32 @@ pub struct Device {
 impl Device {
     /// Open, upload firmware if needed, and apply `settings`.
     pub fn open(settings: &Settings, firmware_override: Option<&[u8]>) -> Result<Device> {
-        let usb = usb::open(settings.serial.as_deref(), firmware_override)?;
-        let version = usb.vendor_in(Cmd::TestFx3, 0, 0, 4).ok().and_then(|b| Version::parse(&b));
-        if let Some(v) = version {
-            tracing::info!("RX-888 firmware {v}");
+        let mut usb = usb::open(settings.serial.as_deref(), firmware_override)?;
+        let mut identity = identify(&usb);
+
+        // A receiver the firmware did not recognise streams perfectly and
+        // ignores every front-end switch — the bias tee included, which is the
+        // way this usually shows up. The detection runs once, at boot, so the
+        // one thing worth trying is booting it again.
+        if identity.is_some_and(|i| !i.front_end_ready()) {
+            tracing::warn!(
+                "RX-888: the firmware reports hardware id 0x{:02x}, not an Mk2 — its front-end \
+                 GPIO was never initialised. Reloading the firmware to run the detection again.",
+                identity.map(|i| i.hardware).unwrap_or(0),
+            );
+            usb = usb::reload_firmware(usb, firmware_override)?;
+            identity = identify(&usb);
         }
 
-        let (adc_rate_hz, warning) = clamp_rate_to_link(settings.adc_rate_hz, &usb);
+        let (adc_rate_hz, link_warning) = clamp_rate_to_link(settings.adc_rate_hz, &usb);
+        let warning = join_warnings(link_warning, front_end_warning(identity));
 
         let mut dev = Device {
             usb,
             gpio_word: 0,
             adc_rate_hz,
             randomize: settings.randomize,
-            version,
+            identity,
             warning,
             streaming: false,
         };
@@ -133,7 +145,12 @@ impl Device {
     }
 
     pub fn version(&self) -> Option<Version> {
-        self.version
+        self.identity.map(|i| i.version)
+    }
+
+    /// What the firmware says it is running on, or `None` if it did not answer.
+    pub fn identity(&self) -> Option<Identity> {
+        self.identity
     }
 
     /// The ADC clock, which is also the real-sample rate.
@@ -274,7 +291,7 @@ impl Device {
     /// # Why the status stage is allowed to go missing
     ///
     /// `STARTFX3` does not poke a register — it rebuilds the FX3's DMA channels
-    /// and restarts the GPIF state machine, and firmware 2.4 does not answer the
+    /// and restarts the GPIF state machine, and firmware 2.3 does not answer the
     /// control transfer while that is happening. On the hardware this was
     /// developed against the request never completes at all: nusb gives up after
     /// its timeout and reports `Cancelled` (usbfs maps `ETIMEDOUT` onto it), and
@@ -296,7 +313,7 @@ impl Device {
             Ok(()) => {}
             Err(Error::Transfer { source: TransferError::Cancelled, .. }) => {
                 tracing::debug!(
-                    "RX-888: STARTFX3 returned no status stage (expected on firmware 2.4)"
+                    "RX-888: STARTFX3 returned no status stage (expected on firmware 2.3)"
                 );
             }
             Err(e) => return Err(e),
@@ -328,6 +345,39 @@ impl Device {
             let _ = self.stop();
         }
         let _ = self.set_led(false);
+    }
+}
+
+/// Ask the running firmware what it is and what it thinks it is driving.
+fn identify(usb: &UsbDev) -> Option<Identity> {
+    let id = usb.vendor_in(Cmd::TestFx3, 0, 0, 4).ok().and_then(|b| Identity::parse(&b))?;
+    tracing::info!("RX-888 firmware {} (hardware id 0x{:02x})", id.version, id.hardware);
+    Some(id)
+}
+
+/// The operator-facing consequence of a firmware that did not recognise the
+/// receiver: everything on the front panel of the settings page is inert.
+///
+/// Stated in terms of what stops working rather than in terms of a hardware id,
+/// because the symptom — "the bias tee does nothing" — is what brings someone
+/// here, and nothing else in the program can tell them why.
+fn front_end_warning(identity: Option<Identity>) -> Option<String> {
+    let id = identity?;
+    (!id.front_end_ready()).then(|| {
+        format!(
+            "the RX-888 firmware did not recognise this receiver (hardware id 0x{:02x}), so it \
+             never initialised the front-end controls: the bias tee, dither, ADC range and both \
+             gain stages will do nothing. Reception is unaffected. Unplugging the receiver and \
+             plugging it back in usually clears it.",
+            id.hardware
+        )
+    })
+}
+
+fn join_warnings(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(format!("{a}  •  {b}")),
+        (a, b) => a.or(b),
     }
 }
 

@@ -81,35 +81,83 @@ pub fn open(serial: Option<&str>, firmware_override: Option<&[u8]>) -> Result<Us
     let info = find(want)?;
 
     if info.product_id() == PID_FX3_BOOTLOADER {
-        // Remember what was already programmed, so that after the jump we can
-        // tell *our* device from someone else's that happened to be there.
-        let before: Vec<String> = programmed_ids();
-
-        let bytes = firmware_override.unwrap_or(firmware::BUNDLED);
-        let image = Image::parse(bytes)?;
-        tracing::info!(
-            "RX-888 is in its boot ROM; uploading {} bytes of firmware in {} sections",
-            image.payload_len(),
-            image.sections.len()
-        );
-
-        let label = "RX-888 (boot ROM)";
-        let device = info.open().wait().map_err(|e| Error::from_open(e, &label))?;
-        let iface = device
-            .detach_and_claim_interface(INTERFACE)
-            .wait()
-            .map_err(|e| Error::from_open(e, &label))?;
-        firmware::upload(&iface, &image)?;
-        // Let go before the device leaves the bus, so the handle cannot keep a
-        // stale usbfs node alive across re-enumeration.
-        drop(iface);
-        drop(device);
-
-        let info = wait_for_programmed(&before)?;
-        return claim(info);
+        return upload_and_claim(info, firmware_override);
     }
 
     claim(info)
+}
+
+/// Reset a programmed receiver back to its boot ROM and load the firmware
+/// again, returning the freshly programmed device.
+///
+/// Worth doing when the firmware comes up not recognising the hardware it is
+/// running on: the detection it does at boot (an I2C probe for the R828D plus a
+/// GPIO sense) is the only thing standing between a working front end and one
+/// whose control pins were never configured, and it is not always right the
+/// first time.
+///
+/// The handle is consumed because the device has to leave the bus for this, and
+/// a failure leaves nothing to hand back — the caller gets the error and the
+/// receiver is gone until it re-enumerates.
+pub fn reload_firmware(dev: UsbDev, firmware_override: Option<&[u8]>) -> Result<UsbDev> {
+    // The boot ROM reports a *different* serial from the running firmware, so
+    // nothing can follow a particular receiver across the reset. With one on the
+    // bus there is nothing to confuse it with; with several, refuse rather than
+    // reprogram somebody else's.
+    if list().len() != 1 {
+        return Err(Error::Unsupported(
+            "more than one RX-888 is plugged in, so the firmware cannot be reloaded blind".into(),
+        ));
+    }
+    tracing::info!("RX-888: resetting to the boot ROM to load the firmware again");
+    // Best-effort: the device is on its way out of the bus, so the status stage
+    // of its own reset command is not something to insist on.
+    let _ = dev.vendor_out(Cmd::ResetFx3, 0, 0, &[]);
+    drop(dev);
+
+    let deadline = Instant::now() + REENUMERATE_TIMEOUT;
+    loop {
+        let found = nusb::list_devices().wait().ok().and_then(|mut ds| {
+            ds.find(|d| d.vendor_id() == VID_CYPRESS && d.product_id() == PID_FX3_BOOTLOADER)
+        });
+        if let Some(info) = found {
+            return upload_and_claim(info, firmware_override);
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::FirmwareNoReenumerate);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Push the firmware image into a device sitting in its boot ROM, then claim it
+/// once it comes back as a receiver.
+fn upload_and_claim(info: nusb::DeviceInfo, firmware_override: Option<&[u8]>) -> Result<UsbDev> {
+    // Remember what was already programmed, so that after the jump we can
+    // tell *our* device from someone else's that happened to be there.
+    let before: Vec<String> = programmed_ids();
+
+    let bytes = firmware_override.unwrap_or(firmware::BUNDLED);
+    let image = Image::parse(bytes)?;
+    tracing::info!(
+        "RX-888 is in its boot ROM; uploading {} bytes of firmware in {} sections",
+        image.payload_len(),
+        image.sections.len()
+    );
+
+    let label = "RX-888 (boot ROM)";
+    let device = info.open().wait().map_err(|e| Error::from_open(e, &label))?;
+    let iface = device
+        .detach_and_claim_interface(INTERFACE)
+        .wait()
+        .map_err(|e| Error::from_open(e, &label))?;
+    firmware::upload(&iface, &image)?;
+    // Let go before the device leaves the bus, so the handle cannot keep a
+    // stale usbfs node alive across re-enumeration.
+    drop(iface);
+    drop(device);
+
+    claim(wait_for_programmed(&before)?)
 }
 
 /// Serial numbers of every already-programmed receiver, used to spot the new
