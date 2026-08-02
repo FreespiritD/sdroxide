@@ -148,7 +148,12 @@ impl TextModemController {
         let (o_tones, o_bw) = (cfg.olivia_tones as usize, cfg.olivia_bw_hz as f64);
         let t_baud = cfg.thor_mode.baud() as f64;
         let rx = match mode {
-            Mode::Rtty => RxModem::Rtty(RttyRx::new(MODEM_RATE, audio_hz as f64, baud, shift)),
+            Mode::Rtty => {
+                let mut r = RttyRx::new(MODEM_RATE, audio_hz as f64, baud, shift);
+                r.set_reverse(cfg.rtty_reverse);
+                r.set_afc(cfg.rtty_afc);
+                RxModem::Rtty(r)
+            }
             Mode::Olivia => {
                 RxModem::Olivia(OliviaRx::new(MODEM_RATE, audio_hz as f64, o_tones, o_bw))
             }
@@ -193,7 +198,11 @@ impl TextModemController {
         let t_baud = self.cfg.thor_mode.baud() as f64;
         match &mut self.rx {
             RxModem::Psk(r) => r.set_carrier(hz),
-            RxModem::Rtty(r) => r.set_tuning(hz, baud, shift),
+            RxModem::Rtty(r) => {
+                r.set_tuning(hz, baud, shift);
+                r.set_reverse(self.cfg.rtty_reverse);
+                r.set_afc(self.cfg.rtty_afc);
+            }
             RxModem::Olivia(r) => r.set_params(hz, o_tones, o_bw),
             RxModem::Thor(r) => r.set_params(hz, t_baud),
         }
@@ -332,6 +341,8 @@ impl DigiEngine for TextModemController {
     fn set_config(&mut self, cfg: DigiConfig) {
         let retune = cfg.rtty_baud != self.cfg.rtty_baud
             || cfg.rtty_shift_hz != self.cfg.rtty_shift_hz
+            || cfg.rtty_reverse != self.cfg.rtty_reverse
+            || cfg.rtty_afc != self.cfg.rtty_afc
             || cfg.olivia_tones != self.cfg.olivia_tones
             || cfg.olivia_bw_hz != self.cfg.olivia_bw_hz
             || cfg.thor_mode != self.cfg.thor_mode;

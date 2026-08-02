@@ -721,8 +721,18 @@ pub struct DigiConfig {
     pub msg_73: String,
     /// RTTY baud rate (45.45 / 50 / 75).
     pub rtty_baud: f32,
-    /// RTTY frequency shift in Hz (170 / 425 / 850).
+    /// RTTY frequency shift in Hz. 170 is the amateur norm; commercial and
+    /// weather broadcasts commonly use 425/450 (Deutscher Wetterdienst) or 850.
     pub rtty_shift_hz: f32,
+    /// Swap the RTTY mark and space tones. A signal received on the opposite
+    /// sideband from the one it was sent on arrives inverted and decodes as
+    /// nonsense until this is set — the "Reverse"/RV control other RTTY
+    /// programs offer.
+    pub rtty_reverse: bool,
+    /// Let the RTTY decoder track tuning error rather than staying pinned to
+    /// the cursor. On by default; the matched-filter detector is much less
+    /// forgiving of mistuning than a wideband discriminator would be.
+    pub rtty_afc: bool,
     /// Olivia tone count (2 / 4 / 8 / 16 / 32 / 64).
     pub olivia_tones: u8,
     /// Olivia bandwidth in Hz (125 / 250 / 500 / 1000 / 2000).
@@ -924,6 +934,8 @@ impl Default for DigiConfig {
             msg_73: "{DX} {MYCALL} 73".into(),
             rtty_baud: 45.45,
             rtty_shift_hz: 170.0,
+            rtty_reverse: false,
+            rtty_afc: true,
             olivia_tones: 32,
             olivia_bw_hz: 1000.0,
             thor_mode: ThorMode::Thor16,

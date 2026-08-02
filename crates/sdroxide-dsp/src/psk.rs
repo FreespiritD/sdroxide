@@ -311,11 +311,50 @@ impl Default for VaricodeRx {
     }
 }
 
+/// Second-order loop coefficients for a normalised bandwidth and 0.707 damping.
+/// Written out rather than hand-picked because the frequency term is what sets
+/// how much carrier offset the Costas loop can pull in, and eyeballing it is how
+/// a loop ends up taking half a minute to acquire a few Hz.
+fn loop_gains(bw: f32) -> (f32, f32) {
+    let damp = 0.707f32;
+    let theta = bw / (damp + 0.25 / damp);
+    let denom = 1.0 + 2.0 * damp * theta + theta * theta;
+    (4.0 * damp * theta / denom, 4.0 * theta * theta / denom)
+}
+
+/// Costas/Gardner loop bandwidth as a fraction of the baseband sample rate.
+const LOOP_BW: f32 = 0.006;
+/// Gardner timing-loop gain, applied to a magnitude-normalised error.
+const TIMING_GAIN: f32 = 0.05;
+
+/// Carrier-coherence noise gate.
+///
+/// Varicode has no framing to check — every bit pattern ending in `00` is some
+/// character — so a receiver parked on an empty channel prints a steady stream
+/// of plausible-looking letters. What does separate signal from noise is where
+/// the differential product lands: locked BPSK puts it on the real axis, while
+/// isotropic noise spreads it around the circle and averages |cos| = 2/π ≈ 0.64.
+/// Gating on that costs nothing in sensitivity, because by the time coherence
+/// falls this far the text is unreadable anyway.
+const COHERENCE_SMOOTH: f32 = 1.0 / 32.0;
+const COHERENCE_GATE: f32 = 0.72;
+
 /// Streaming BPSK31 symbol decoder over *complex baseband* at `sps` samples per
-/// symbol: a Costas loop removes any residual carrier offset, a Gardner loop
-/// recovers symbol timing, differential detection yields bits, and Varicode
-/// yields text. Shared by the audio [`PskRx`] (well-oversampled) and the
-/// skimmer (a coarse ~6 sps filterbank tap, where the Costas loop is essential).
+/// symbol: a matched filter collects the symbol energy, a Costas loop removes
+/// any residual carrier offset, a Gardner loop recovers symbol timing,
+/// differential detection yields bits, and Varicode yields text. Shared by the
+/// audio [`PskRx`] (well-oversampled) and the skimmer (a coarse ~6 sps
+/// filterbank tap, where the Costas loop is essential).
+///
+/// The matched filter is what makes this a weak-signal decoder. Deciding from a
+/// single baseband sample per symbol throws away the rest of the symbol's
+/// energy and leaves the front-end filter's whole bandwidth of noise in the
+/// decision — worth about 6 dB on a mode whose entire appeal is reading signals
+/// well below the noise floor.
+///
+/// Both loop errors are normalised by signal magnitude. Without that the loop
+/// bandwidths scale with the audio level, so the same signal 40 dB quieter gets
+/// a loop 100× slower and never acquires.
 pub struct BpskCore {
     sps: f32,
     ph: f32,
@@ -323,43 +362,96 @@ pub struct BpskCore {
     alpha: f32,
     beta: f32,
     acc: f32,
+    /// Raised-cosine matched filter over one symbol, and its ring buffer.
+    mf_taps: Vec<f32>,
+    mf_buf: Vec<Complex32>,
+    mf_pos: usize,
     hist: VecDeque<Complex32>,
     prev_sym: Complex32,
     vrx: VaricodeRx,
     mag: f32,
+    coherence: f32,
+    gate: bool,
 }
 
 impl BpskCore {
     pub fn new(sps: f32) -> Self {
-        // Costas loop gains for a modest tracking bandwidth (~1% of symbol rate).
-        let bw = 0.008f32;
+        let (alpha, beta) = loop_gains(LOOP_BW);
+        let n = (sps.round() as usize).max(3);
+        // Hann over one symbol: matched to the raised-cosine envelope the
+        // transmitter blends reversals with, and it weights the symbol centre
+        // (where the phase is clean) over the edges (where it is in transit).
+        let mut taps: Vec<f32> = (0..n)
+            .map(|i| 0.5 * (1.0 - (std::f32::consts::TAU * (i + 1) as f32 / (n + 1) as f32).cos()))
+            .collect();
+        let sum: f32 = taps.iter().sum();
+        taps.iter_mut().for_each(|t| *t /= sum);
+
         let mut hist = VecDeque::new();
         hist.extend(std::iter::repeat(Complex32::new(0.0, 0.0)).take(sps as usize + 2));
         BpskCore {
             sps,
             ph: 0.0,
             freq: 0.0,
-            alpha: 2.0 * bw,
-            beta: bw * bw,
+            alpha,
+            beta,
             acc: 0.0,
+            mf_taps: taps,
+            mf_buf: vec![Complex32::new(0.0, 0.0); n],
+            mf_pos: 0,
             hist,
             prev_sym: Complex32::new(1.0, 0.0),
             vrx: VaricodeRx::new(),
             mag: 0.0,
+            coherence: 1.0,
+            gate: true,
         }
+    }
+
+    /// Turn the carrier-coherence noise gate off (the skimmer scores its own
+    /// candidates and would rather see everything).
+    pub fn set_gate(&mut self, on: bool) {
+        self.gate = on;
+    }
+
+    /// Smoothed carrier coherence in [0, 1]: 1 is a cleanly locked signal,
+    /// about 0.64 is pure noise.
+    pub fn coherence(&self) -> f32 {
+        self.coherence
     }
 
     pub fn magnitude(&self) -> f32 {
         self.mag
     }
 
+    /// Residual carrier offset the Costas loop is holding, in fractions of the
+    /// baseband sample rate.
+    pub fn freq_offset(&self) -> f32 {
+        self.freq / std::f32::consts::TAU
+    }
+
+    fn matched(&mut self, y: Complex32) -> Complex32 {
+        self.mf_buf[self.mf_pos] = y;
+        self.mf_pos = (self.mf_pos + 1) % self.mf_buf.len();
+        let n = self.mf_buf.len();
+        let mut acc = Complex32::new(0.0, 0.0);
+        for (k, &t) in self.mf_taps.iter().enumerate() {
+            acc += self.mf_buf[(self.mf_pos + k) % n] * t;
+        }
+        acc
+    }
+
     /// Feed one complex baseband sample; push any decoded characters to `out`.
     pub fn push(&mut self, z: Complex32, out: &mut String) {
-        // Costas loop: derotate by the tracked phase, then a decision-directed
-        // BPSK error nudges phase/frequency to null any residual carrier offset.
+        // Derotate by the tracked phase first — the matched filter is a
+        // lowpass, so the signal has to be centred before it is applied.
         let rot = Complex32::new(self.ph.cos(), -self.ph.sin());
-        let y = z * rot;
-        let e = (if y.re >= 0.0 { y.im } else { -y.im }).clamp(-1.0, 1.0);
+        let y = self.matched(z * rot);
+
+        // Decision-directed BPSK phase error, normalised to radians so the loop
+        // bandwidth does not depend on how loud the signal is.
+        let n = y.norm();
+        let e = if n > 1e-20 { (if y.re >= 0.0 { y.im } else { -y.im }) / n } else { 0.0 };
         self.freq = (self.freq + self.beta * e).clamp(-0.4, 0.4);
         self.ph += self.freq + self.alpha * e;
         if self.ph > std::f32::consts::PI {
@@ -376,17 +468,27 @@ impl BpskCore {
         if self.acc >= self.sps {
             self.acc -= self.sps;
             let curr = y;
-            // Gardner timing (sample at symbol center + half-symbol prior).
+            // Gardner timing (sample at symbol center + half-symbol prior),
+            // again normalised so the correction is in symbol fractions.
             let midi = self.hist.len().saturating_sub(self.sps as usize / 2 + 1);
             let mid = *self.hist.get(midi).unwrap_or(&curr);
             let et = (mid.conj() * (curr - self.prev_sym)).re;
-            self.acc += (-0.02 * et).clamp(-1.0, 1.0);
+            let scale = mid.norm() * curr.norm().max(self.prev_sym.norm());
+            if scale > 1e-20 {
+                self.acc += (TIMING_GAIN * et / scale).clamp(-0.5, 0.5);
+            }
             // Differential BPSK detection (immune to the Costas ± ambiguity).
             let d = curr * self.prev_sym.conj();
             let bit = if d.re >= 0.0 { 1u8 } else { 0 };
+            let dn = d.norm();
+            if dn > 1e-20 {
+                self.coherence += COHERENCE_SMOOTH * (d.re.abs() / dn - self.coherence);
+            }
             self.mag += 0.05 * (curr.norm() - self.mag);
             self.prev_sym = curr;
-            if let Some(c) = self.vrx.push_bit(bit) {
+            if let Some(c) = self.vrx.push_bit(bit)
+                && (!self.gate || self.coherence >= COHERENCE_GATE)
+            {
                 out.push(c);
             }
         }

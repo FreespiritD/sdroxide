@@ -473,17 +473,36 @@ impl SdroxideApp {
             ui.spacing_mut().item_spacing.x = 3.0;
             match mode {
                 Mode::Rtty => {
+                    // 450 is what the Deutscher Wetterdienst broadcasts use and
+                    // is far enough from 425 to matter; the nudge covers the
+                    // rest, since commercial shifts are not a short list.
                     cap(ui, "Shift");
-                    for s in [170.0f32, 425.0, 850.0] {
+                    for s in [170.0f32, 425.0, 450.0, 850.0] {
                         let sel = (cfg.rtty_shift_hz - s).abs() < 0.5;
                         if ui.selectable_label(sel, format!("{s:.0}")).clicked() {
                             cfg.rtty_shift_hz = s;
                             changed = true;
                         }
                     }
+                    if ui.small_button("−").on_hover_text("Shift −5 Hz").clicked() {
+                        cfg.rtty_shift_hz = (cfg.rtty_shift_hz - 5.0).clamp(20.0, 1200.0);
+                        changed = true;
+                    }
+                    if ui.small_button("+").on_hover_text("Shift +5 Hz").clicked() {
+                        cfg.rtty_shift_hz = (cfg.rtty_shift_hz + 5.0).clamp(20.0, 1200.0);
+                        changed = true;
+                    }
+                    // Show the value whenever it is not one of the presets, so a
+                    // nudged shift is never invisible.
+                    if ![170.0f32, 425.0, 450.0, 850.0]
+                        .iter()
+                        .any(|s| (cfg.rtty_shift_hz - s).abs() < 0.5)
+                    {
+                        cap(ui, &format!("{:.0}", cfg.rtty_shift_hz));
+                    }
                     ui.add_space(8.0);
                     cap(ui, "Baud");
-                    for b in [45.45f32, 50.0, 75.0] {
+                    for b in [45.45f32, 50.0, 75.0, 100.0] {
                         let sel = (cfg.rtty_baud - b).abs() < 0.5;
                         let lbl = if (b - 45.45).abs() < 0.5 {
                             "45".to_string()
@@ -494,6 +513,30 @@ impl SdroxideApp {
                             cfg.rtty_baud = b;
                             changed = true;
                         }
+                    }
+                    ui.add_space(8.0);
+                    if ui
+                        .selectable_label(cfg.rtty_reverse, "RV")
+                        .on_hover_text(
+                            "Reverse: swap mark and space. Needed when the signal \
+                             is received on the opposite sideband to the one it \
+                             was sent on, which inverts the tones.",
+                        )
+                        .clicked()
+                    {
+                        cfg.rtty_reverse = !cfg.rtty_reverse;
+                        changed = true;
+                    }
+                    if ui
+                        .selectable_label(cfg.rtty_afc, "AFC")
+                        .on_hover_text(
+                            "Track tuning error automatically instead of staying \
+                             pinned to the cursor.",
+                        )
+                        .clicked()
+                    {
+                        cfg.rtty_afc = !cfg.rtty_afc;
+                        changed = true;
                     }
                 }
                 Mode::Olivia => {
