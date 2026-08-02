@@ -317,6 +317,34 @@ pub trait RadioController {
         Err("not supported on this client".into())
     }
 
+    /// Listen for FlexRadio discovery broadcasts (native local client only).
+    /// Blocking for a couple of seconds — the settings UI calls it on demand
+    /// from a "Discover" button, not per frame. Default empty: a browser client
+    /// cannot see the server's network.
+    fn discover_smartsdr(&self) -> Vec<crate::SmartSdrDevice> {
+        Vec::new()
+    }
+
+    /// Test a SmartSDR radio at `address`. Blocking, on demand.
+    ///
+    /// Implementations must stop short of registering as a GUI client: on a
+    /// radio without multiFLEX that would evict whatever client the operator is
+    /// actually using, which is a poor thing for a "Test connection" button to
+    /// do. Default: unsupported (remote client).
+    fn test_smartsdr(&self, _address: &str) -> Result<String, String> {
+        Err("not supported on this client".into())
+    }
+
+    /// The most recent SmartSDR session trace, for a bug report.
+    ///
+    /// This backend has not been verified against hardware, so the settings UI
+    /// offers the trace as copyable text rather than expecting a user to
+    /// reproduce a fault with the right `RUST_LOG` filter set. `None` when no
+    /// session has run. Default: nothing to report.
+    fn smartsdr_diagnostics(&self) -> Option<String> {
+        None
+    }
+
     /// The persisted radio-backend config (SoapySDR vs CAT), or `None` when the
     /// client can't own it (the browser remote client).
     fn radio_config(&self) -> Option<crate::RadioConfig> {

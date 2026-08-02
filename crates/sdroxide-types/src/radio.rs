@@ -24,15 +24,22 @@ pub enum Backend {
     /// RX-888 Mk2 direct-sampling HF receiver, driven over USB by the native
     /// driver. Uploads its own firmware, so nothing needs installing.
     Rx888,
+    /// SmartSDR (FlexRadio FLEX-6000 / FLEX-8000) over the LAN. Receive is a DAX
+    /// IQ stream, transmit is DAX audio the radio modulates.
+    ///
+    /// Appended last on purpose: this enum is serde-serialised into `radio.json`
+    /// by variant name, but `ALL` fixes the order the UI offers.
+    SmartSdr,
 }
 
 impl Backend {
-    pub const ALL: [Backend; 7] = [
+    pub const ALL: [Backend; 8] = [
         Backend::Auto,
         Backend::Soapy,
         Backend::Cat,
         Backend::Hpsdr,
         Backend::Tci,
+        Backend::SmartSdr,
         Backend::RtlSdr,
         Backend::Rx888,
     ];
@@ -43,6 +50,7 @@ impl Backend {
             Backend::Cat => "CAT / Audio",
             Backend::Hpsdr => "HPSDR (network)",
             Backend::Tci => "TCI (network)",
+            Backend::SmartSdr => "SmartSDR / FlexRadio (network)",
             Backend::RtlSdr => "RTL-SDR (USB)",
             Backend::Rx888 => "RX-888 (USB)",
         }
@@ -463,6 +471,94 @@ impl TciConfig {
     pub const IQ_RATES: [f64; 3] = [48_000.0, 96_000.0, 192_000.0];
 }
 
+/// SmartSDR (FlexRadio) backend configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SmartSdrConfig {
+    /// Radio address as `host[:port]`. Empty means "use the discovered radio",
+    /// which is the normal case on a LAN — a FlexRadio announces itself.
+    pub address: String,
+    /// IP of the radio picked from a discovery scan (persisted selection).
+    pub selected_ip: Option<String>,
+    /// DAX IQ stream rate in Hz. 192 kHz is the radio's maximum, and so this
+    /// backend's widest span.
+    pub iq_sample_rate_hz: f64,
+    /// Which of the radio's four DAX IQ channels to claim. Change it only when
+    /// something else on the network is already using channel 1.
+    pub iq_channel: u32,
+    /// Station name reported to the radio, shown against our session in
+    /// SmartSDR's client list and used to derive our stable GUI client id — so
+    /// changing it makes the radio treat us as a new client.
+    pub station: String,
+}
+
+impl Default for SmartSdrConfig {
+    fn default() -> Self {
+        SmartSdrConfig {
+            address: String::new(),
+            selected_ip: None,
+            iq_sample_rate_hz: 192_000.0,
+            iq_channel: 1,
+            station: "sdroxide".into(),
+        }
+    }
+}
+
+impl SmartSdrConfig {
+    /// IQ sample rates a FLEX will deliver over DAX.
+    pub const IQ_RATES: [f64; 4] = [24_000.0, 48_000.0, 96_000.0, 192_000.0];
+    /// DAX IQ channels the radio provides.
+    pub const IQ_CHANNELS: [u32; 4] = [1, 2, 3, 4];
+
+    /// The address to connect to: the manual entry, else the discovered
+    /// selection, else nothing.
+    pub fn target(&self) -> Option<&str> {
+        let manual = self.address.trim();
+        if !manual.is_empty() {
+            return Some(manual);
+        }
+        self.selected_ip.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+}
+
+/// A FlexRadio found by a discovery scan, for the selection UI.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SmartSdrDevice {
+    pub ip: String,
+    pub port: u16,
+    pub model: String,
+    pub serial: String,
+    pub nickname: String,
+    pub version: String,
+    /// Whether a GUI client can join: nobody else has it, or multiFLEX is on.
+    pub joinable: bool,
+    /// Station names of GUI clients already connected.
+    pub gui_clients: Vec<String>,
+}
+
+impl SmartSdrDevice {
+    /// One-line label for the selection UI.
+    pub fn label(&self) -> String {
+        let name = match (self.nickname.is_empty(), self.model.is_empty()) {
+            (false, false) => format!("{} ({})", self.nickname, self.model),
+            (false, true) => self.nickname.clone(),
+            (true, false) => self.model.clone(),
+            (true, true) => "FlexRadio".to_string(),
+        };
+        let mut s = format!("{name}  {}", self.ip);
+        if !self.version.is_empty() {
+            s.push_str(&format!("  v{}", self.version));
+        }
+        if !self.gui_clients.is_empty() {
+            s.push_str(&format!("  [in use: {}]", self.gui_clients.join(", ")));
+        }
+        if !self.joinable {
+            s.push_str("  [multiFLEX off]");
+        }
+        s
+    }
+}
+
 /// How an RTL-SDR reaches HF. The R82xx tuner itself starts at 24 MHz, so
 /// anything below that needs help from the dongle's hardware.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -791,6 +887,7 @@ pub struct RadioConfig {
     pub cat: CatConfig,
     pub hpsdr: HpsdrConfig,
     pub tci: TciConfig,
+    pub smartsdr: SmartSdrConfig,
     pub rtlsdr: RtlSdrConfig,
     pub rx888: Rx888Config,
 }

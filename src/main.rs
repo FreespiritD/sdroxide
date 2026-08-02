@@ -7,6 +7,7 @@ mod null_source;
 mod rtlsdr_source;
 mod rx888_source;
 mod server_main;
+mod smartsdr_source;
 mod tci_source;
 
 use anyhow::{Context, bail};
@@ -717,6 +718,7 @@ fn open_configured_source(
         Backend::Cat => open_cat_source(radio),
         Backend::Hpsdr => open_hpsdr_source(radio, cli.center_hz()),
         Backend::Tci => open_tci_source(radio, cli.center_hz()),
+        Backend::SmartSdr => open_smartsdr_source(radio, cli.center_hz()),
         Backend::RtlSdr => open_rtlsdr_source(radio, cli.center_hz()),
         Backend::Rx888 => open_rx888_source(radio, cli.center_hz()),
         Backend::Soapy => open_soapy_source(cli, settings),
@@ -966,6 +968,51 @@ fn tci_caps(address: &str, iq_rate: f64) -> DeviceCaps {
         // (verified against ExpertSDR3 — no command spelling drives it, and
         // toggling it in the GUI emits nothing on the wire). TCI gain control
         // is deferred until a controllable path is found.
+        ..DeviceCaps::default()
+    }
+}
+
+/// Build the SmartSDR (FlexRadio) source from radio.json: DAX IQ receive +
+/// DAX audio transmit over the LAN.
+fn open_smartsdr_source(
+    radio: &RadioConfig,
+    center_hz: f64,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let src = smartsdr_source::SmartSdrSource::open(&radio.smartsdr, center_hz)
+        .context("connecting to the FlexRadio")?;
+    let caps = smartsdr_caps(src.model(), src.describe());
+    Ok((Box::new(src), caps))
+}
+
+/// Capabilities for a FlexRadio: wideband IQ RX over DAX (not `audio_mode`), TX
+/// via DAX audio (`tx_audio`) which the radio modulates.
+///
+/// The frequency ranges are the radio's own published coverage rather than
+/// anything this backend imposes: a FLEX receives from 30 kHz to 54 MHz (the
+/// 8000 series and the 6600/6700 add 2 m), and the radio declines anything it
+/// cannot do. The sample rates are the four DAX IQ stream rates — 192 kHz is
+/// the ceiling, which makes it this backend's widest span.
+fn smartsdr_caps(model: &str, label: String) -> DeviceCaps {
+    // The 6400/6600 and the whole 8000 family have a 2 m receiver; the rest stop
+    // at 6 m. Getting this wrong only costs a refused tune, so infer it.
+    let vhf = matches!(model, "FLEX-6600" | "FLEX-6600M" | "FLEX-6700" | "FLEX-6700R")
+        || model.starts_with("FLEX-8");
+    let rx_top = if vhf { 165_000_000.0 } else { 54_000_000.0 };
+    DeviceCaps {
+        driver: "smartsdr".into(),
+        label,
+        rx_channels: 1,
+        tx_channels: 1,
+        audio_mode: false,
+        tx_audio: true,
+        freq_ranges_rx: vec![(30_000.0, rx_top)],
+        freq_ranges_tx: vec![(1_800_000.0, 54_000_000.0)],
+        sample_rates: sdroxide_types::SmartSdrConfig::IQ_RATES.to_vec(),
+        // No RX gain elements: a FLEX has no user-settable front-end gain in the
+        // sense this list means. Its `display pan rfgain` is a per-panadapter
+        // preamp/attenuator whose steps differ by model and are only discoverable
+        // by asking the radio (`display pan rfgain_info`), so it is left out
+        // until that query can be verified against hardware.
         ..DeviceCaps::default()
     }
 }

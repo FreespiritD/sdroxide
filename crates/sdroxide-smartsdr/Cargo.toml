@@ -1,0 +1,23 @@
+[package]
+name = "sdroxide-smartsdr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Native-only SmartSDR (FlexRadio FLEX-6000/8000) client and radio simulator.
+# Plain TCP/UDP sockets from std — pure Rust, no system library. Must never be
+# a dependency of any wasm-targeted crate.
+[dependencies]
+sdroxide-types.workspace = true
+crossbeam-channel.workspace = true
+rtrb.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# Discovery has to share UDP 4992 with SmartSDR (and with a second sdroxide
+# window), which needs SO_REUSEADDR/SO_REUSEPORT set before the bind — something
+# `std::net` cannot express.
+# `all` gates the platform-specific setters, of which `set_reuse_port` is one.
+socket2 = { version = "0.6", features = ["all"] }
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

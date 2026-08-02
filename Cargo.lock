@@ -3936,6 +3936,7 @@ dependencies = [
  "sdroxide-rtlsdr",
  "sdroxide-rx888",
  "sdroxide-server",
+ "sdroxide-smartsdr",
  "sdroxide-tci",
  "sdroxide-types",
  "sdroxide-ui",
@@ -4173,6 +4174,19 @@ dependencies = [
  "sdroxide-dsp",
  "sdroxide-types",
  "tracing",
+]
+
+[[package]]
+name = "sdroxide-smartsdr"
+version = "0.9.0"
+dependencies = [
+ "crossbeam-channel",
+ "rtrb",
+ "sdroxide-types",
+ "socket2",
+ "thiserror 2.0.19",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

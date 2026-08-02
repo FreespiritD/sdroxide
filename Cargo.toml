@@ -46,6 +46,7 @@ sdroxide-midi = { path = "crates/sdroxide-midi" }
 sdroxide-rigctld = { path = "crates/sdroxide-rigctld" }
 sdroxide-hpsdr = { path = "crates/sdroxide-hpsdr" }
 sdroxide-tci = { path = "crates/sdroxide-tci" }
+sdroxide-smartsdr = { path = "crates/sdroxide-smartsdr" }
 sdroxide-rtlsdr = { path = "crates/sdroxide-rtlsdr" }
 sdroxide-rx888 = { path = "crates/sdroxide-rx888" }
 sdroxide-net = { path = "crates/sdroxide-net" }
@@ -84,6 +85,7 @@ sdroxide-server.workspace = true
 sdroxide-cat.workspace = true
 sdroxide-hpsdr.workspace = true
 sdroxide-tci.workspace = true
+sdroxide-smartsdr.workspace = true
 sdroxide-rtlsdr.workspace = true
 sdroxide-rx888.workspace = true
 sdroxide-ui = { workspace = true, features = ["remote"] }

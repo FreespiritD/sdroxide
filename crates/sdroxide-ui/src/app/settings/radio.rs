@@ -540,6 +540,173 @@ pub(in crate::app) fn settings_tci_tab(
     );
 }
 
+/// SmartSDR (FlexRadio) interface: radio selection, DAX IQ stream settings, and
+/// the diagnostic report.
+///
+/// The report button is not decoration. This backend has never been run against
+/// a FLEX, so the first people to use it are the ones who can say whether it
+/// works — and asking them to reproduce a fault with the right `RUST_LOG`
+/// filter set is asking them to reproduce it twice. The trace is always
+/// recorded; this copies it out.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::app) fn settings_smartsdr_tab(
+    ui: &mut egui::Ui,
+    devices: &[sdroxide_types::SmartSdrDevice],
+    radio_edit: &mut Option<sdroxide_types::RadioConfig>,
+    discover: &mut bool,
+    test: &mut bool,
+    copy_report: &mut bool,
+    test_result: &Option<Result<String, String>>,
+) {
+    use sdroxide_types::SmartSdrConfig;
+    let Some(cfg) = radio_edit.as_mut() else {
+        ui.label("Radio configuration is only available in the native app.");
+        return;
+    };
+
+    egui::Grid::new("smartsdr-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Radios").on_hover_text(
+            "A FlexRadio announces itself on the local network about once a second. \
+             A radio reached through a router or a VPN never broadcasts to you — \
+             enter its address below instead.",
+        );
+        ui.horizontal(|ui| {
+            if ui.button("Discover").clicked() {
+                *discover = true;
+            }
+            let shown = cfg.smartsdr.selected_ip.clone().unwrap_or_else(|| "— none —".into());
+            ComboBox::from_id_salt("flex_dev").width(340.0).selected_text(shown).show_ui(
+                ui,
+                |ui| {
+                    if devices.is_empty() {
+                        ui.label(RichText::new("no radios — press Discover").weak());
+                    }
+                    for d in devices {
+                        let sel = cfg.smartsdr.selected_ip.as_deref() == Some(d.ip.as_str());
+                        // A radio that is already claimed and has multiFLEX off
+                        // will refuse us, so it is shown but not selectable.
+                        if d.joinable {
+                            if ui.selectable_label(sel, d.label()).clicked() {
+                                cfg.smartsdr.selected_ip = Some(d.ip.clone());
+                            }
+                        } else {
+                            ui.label(RichText::new(d.label()).weak()).on_hover_text(
+                                "Another GUI client has this radio and multiFLEX is \
+                                 disabled. Disconnect that client, or enable multiFLEX \
+                                 on the radio.",
+                            );
+                        }
+                    }
+                },
+            );
+        });
+        ui.end_row();
+
+        ui.label("Address").on_hover_text(
+            "Overrides the selection above. Use this for a radio on another subnet, \
+             behind a VPN, or on a non-standard port.",
+        );
+        ui.add(
+            egui::TextEdit::singleline(&mut cfg.smartsdr.address)
+                .desired_width(220.0)
+                .hint_text("optional, e.g. 192.168.1.50"),
+        );
+        ui.end_row();
+
+        ui.label("IQ sample rate").on_hover_text(
+            "Width of the spectrum sdroxide receives. 192 kHz is the radio's maximum \
+             for a DAX IQ stream, and so the widest span this interface can show.",
+        );
+        let shown = format!("{} kHz", (cfg.smartsdr.iq_sample_rate_hz / 1000.0) as u32);
+        ComboBox::from_id_salt("flex_rate").selected_text(shown).show_ui(ui, |ui| {
+            for &r in &SmartSdrConfig::IQ_RATES {
+                let sel = (cfg.smartsdr.iq_sample_rate_hz - r).abs() < 1.0;
+                if ui.selectable_label(sel, format!("{} kHz", (r / 1000.0) as u32)).clicked() {
+                    cfg.smartsdr.iq_sample_rate_hz = r;
+                }
+            }
+        });
+        ui.end_row();
+
+        ui.label("DAX IQ channel").on_hover_text(
+            "The radio has four. Change this only if something else on the network \
+             is already using channel 1 — the radio refuses a channel twice over.",
+        );
+        ComboBox::from_id_salt("flex_ch")
+            .selected_text(cfg.smartsdr.iq_channel.to_string())
+            .show_ui(ui, |ui| {
+                for ch in SmartSdrConfig::IQ_CHANNELS {
+                    let sel = cfg.smartsdr.iq_channel == ch;
+                    if ui.selectable_label(sel, ch.to_string()).clicked() {
+                        cfg.smartsdr.iq_channel = ch;
+                    }
+                }
+            });
+        ui.end_row();
+
+        ui.label("Station name").on_hover_text(
+            "Shown against this session in the radio's client list. The radio also \
+             remembers a client by it, so renaming makes the radio treat sdroxide as \
+             a new one.",
+        );
+        ui.add(egui::TextEdit::singleline(&mut cfg.smartsdr.station).desired_width(160.0));
+        ui.end_row();
+
+        ui.label("");
+        ui.horizontal(|ui| {
+            if ui
+                .button("Test connection")
+                .on_hover_text(
+                    "Checks the radio answers, without registering as a GUI client — \
+                     so it will not disturb a SmartSDR session already running.",
+                )
+                .clicked()
+            {
+                *test = true;
+            }
+            if ui
+                .button("Copy diagnostic report")
+                .on_hover_text(
+                    "Copies the last session's protocol trace to the clipboard, for a \
+                     bug report.",
+                )
+                .clicked()
+            {
+                *copy_report = true;
+            }
+        });
+        ui.end_row();
+    });
+
+    match test_result {
+        Some(Ok(s)) => {
+            ui.label(
+                RichText::new(format!("Connected: {s}")).color(Color32::from_rgb(90, 200, 110)),
+            );
+        }
+        Some(Err(e)) => {
+            ui.label(RichText::new(format!("Failed: {e}")).color(Color32::from_rgb(230, 90, 80)));
+        }
+        None => {}
+    }
+
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new(
+            "Wideband IQ receive over DAX, audio transmit the radio modulates. Press \
+             \"Apply / reconnect\" to switch without a restart.",
+        )
+        .weak(),
+    );
+    ui.label(
+        RichText::new(
+            "Not yet verified against real hardware. If it misbehaves, please send the \
+             diagnostic report — it contains every protocol line exchanged with the radio.",
+        )
+        .color(Color32::from_rgb(220, 170, 70)),
+    );
+}
+
 impl SdroxideApp {
     /// SoapySDR RX/TX gains + antenna (empty for a CAT rig).
     pub(in crate::app) fn settings_device_tab(&self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {

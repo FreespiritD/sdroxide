@@ -33,7 +33,8 @@ use self::net::{
     settings_freedv_tab,
 };
 use self::radio::{
-    settings_cat_tab, settings_hpsdr_tab, settings_rtlsdr_tab, settings_rx888_tab, settings_tci_tab,
+    settings_cat_tab, settings_hpsdr_tab, settings_rtlsdr_tab, settings_rx888_tab,
+    settings_smartsdr_tab, settings_tci_tab,
 };
 use self::servers::{settings_rigctld_tab, settings_tci_server_tab, settings_wsjtx_tab};
 use self::tle::settings_tle_tab;
@@ -97,6 +98,11 @@ pub(in crate::app) struct SettingsIo<'a> {
     rtlsdr_rescan: &'a mut bool,
     rx888_rescan: &'a mut bool,
     tci_test: &'a mut bool,
+    /// Listen for FlexRadio discovery broadcasts (a couple of seconds, blocking).
+    smartsdr_discover: &'a mut bool,
+    smartsdr_test: &'a mut bool,
+    /// Copy the last SmartSDR session's protocol trace to the clipboard.
+    smartsdr_copy_report: &'a mut bool,
     apply_iface: &'a mut bool,
     ui_edit: &'a mut sdroxide_types::UiSettings,
     /// Who may connect to this machine's server, or `None` where this client
@@ -225,6 +231,9 @@ impl SdroxideApp {
         let mut rtlsdr_rescan = false;
         let mut rx888_rescan = false;
         let mut tci_test = false;
+        let mut smartsdr_discover = false;
+        let mut smartsdr_test = false;
+        let mut smartsdr_copy_report = false;
         let mut apply_iface = false;
         let mut radio_edit = self.radio_cfg.clone();
         let mut ui_edit = self.ui_settings;
@@ -264,6 +273,7 @@ impl SdroxideApp {
         iface_opts.push(sdroxide_types::Backend::Hpsdr);
         iface_opts.push(sdroxide_types::Backend::Cat);
         iface_opts.push(sdroxide_types::Backend::Tci);
+        iface_opts.push(sdroxide_types::Backend::SmartSdr);
         // Ungated, unlike SoapySDR: the RTL-SDR driver is pure Rust and needs
         // no system library, so it is compiled into every build variant.
         iface_opts.push(sdroxide_types::Backend::RtlSdr);
@@ -300,6 +310,9 @@ impl SdroxideApp {
                         rtlsdr_rescan: &mut rtlsdr_rescan,
                         rx888_rescan: &mut rx888_rescan,
                         tci_test: &mut tci_test,
+                        smartsdr_discover: &mut smartsdr_discover,
+                        smartsdr_test: &mut smartsdr_test,
+                        smartsdr_copy_report: &mut smartsdr_copy_report,
                         apply_iface: &mut apply_iface,
                         ui_edit: &mut ui_edit,
                         access_edit: owns_server.then_some(&mut access_edit),
@@ -439,6 +452,30 @@ impl SdroxideApp {
             if let Some(cfg) = &radio_edit {
                 self.tci_test_result = Some(self.ctrl.test_tci(&cfg.tci.address));
             }
+        }
+        if smartsdr_discover {
+            // A passive listen (~2.5 s) — radios broadcast unprompted, so
+            // nothing is sent and nothing on the network is disturbed.
+            self.smartsdr_devices = self.ctrl.discover_smartsdr();
+        }
+        if smartsdr_test {
+            if let Some(cfg) = &radio_edit {
+                self.smartsdr_test_result = Some(match cfg.smartsdr.target() {
+                    Some(addr) => self.ctrl.test_smartsdr(addr),
+                    None => {
+                        Err("no radio selected — press Discover, or enter an address".to_string())
+                    }
+                });
+            }
+        }
+        if smartsdr_copy_report {
+            // The whole point of the trace is that a user can hand it over
+            // without reproducing the fault under a log filter.
+            let report = self
+                .ctrl
+                .smartsdr_diagnostics()
+                .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
+            ctx.copy_text(report);
         }
         if apply_iface {
             // Persist the latest edits, then rebuild the live source (no restart).
@@ -653,6 +690,15 @@ impl SdroxideApp {
                     Backend::Tci => {
                         settings_tci_tab(ui, io.radio_edit, io.tci_test, &self.tci_test_result)
                     }
+                    Backend::SmartSdr => settings_smartsdr_tab(
+                        ui,
+                        &self.smartsdr_devices,
+                        io.radio_edit,
+                        io.smartsdr_discover,
+                        io.smartsdr_test,
+                        io.smartsdr_copy_report,
+                        &self.smartsdr_test_result,
+                    ),
                     Backend::RtlSdr => settings_rtlsdr_tab(
                         ui,
                         &self.rtlsdr_devices,

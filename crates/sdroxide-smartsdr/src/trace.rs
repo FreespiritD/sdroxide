@@ -1,0 +1,204 @@
+//! A self-contained session trace, so a user with a radio can produce a report
+//! that a developer without one can read.
+//!
+//! Everything here also goes to `tracing`, but `tracing` is the wrong shape for
+//! a bug report: it needs `RUST_LOG` set before the run, it interleaves with
+//! every other subsystem, and asking somebody to reproduce a connect failure
+//! with the right filter is asking them to reproduce it twice. A [`Trace`] is
+//! always on, bounded, and dumps as one text block.
+//!
+//! # What it records
+//!
+//! Every control line in both directions, the first packet of each VITA-49
+//! stream with its decoded header, and a periodic counter summary per stream.
+//! Full packet bodies are *not* recorded — a 192 kHz IQ stream is 1.5 MB/s, and
+//! the header plus the counters is what actually diagnoses a fault.
+//!
+//! # What it deliberately drops
+//!
+//! The line buffer is a ring: a long session keeps the most recent
+//! [`Trace::CAPACITY`] lines and reports how many it discarded. A trace that
+//! grew without bound would either exhaust memory on a radio that reconnects in
+//! a loop — which is exactly the fault worth tracing — or force a size cap that
+//! silently truncated the interesting end.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+/// Per-stream packet counters, kept for the diagnostic summary.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StreamCounters {
+    pub packets: u64,
+    pub bytes: u64,
+    /// Packets the 4-bit VITA counter says went missing.
+    pub lost: u64,
+    /// Class code of the most recent packet — a stream that changes it (a DAX
+    /// IQ rate change, say) is worth seeing.
+    pub class_code: u16,
+}
+
+#[derive(Debug, Default)]
+struct Inner {
+    lines: VecDeque<String>,
+    dropped: u64,
+    streams: BTreeMap<u32, StreamCounters>,
+}
+
+/// A shared, bounded record of one radio session.
+///
+/// Cloning shares the same buffer — the TCP thread, the UDP thread and the
+/// `IqSource` all hold one.
+#[derive(Debug, Clone)]
+pub struct Trace {
+    inner: Arc<Mutex<Inner>>,
+    started: Instant,
+}
+
+impl Default for Trace {
+    fn default() -> Self {
+        Trace::new()
+    }
+}
+
+impl Trace {
+    /// How many lines are kept before the oldest are discarded. At roughly 100
+    /// bytes a line this is a few hundred kilobytes — small enough to hold
+    /// permanently, long enough to cover a connect plus several minutes of
+    /// status churn.
+    pub const CAPACITY: usize = 4000;
+
+    pub fn new() -> Trace {
+        Trace { inner: Arc::new(Mutex::new(Inner::default())), started: Instant::now() }
+    }
+
+    /// Record a free-form event.
+    pub fn note(&self, what: impl AsRef<str>) {
+        self.push(format!("{:>9.3}  {}", self.started.elapsed().as_secs_f64(), what.as_ref()));
+    }
+
+    /// Record a control line we sent.
+    pub fn tx_line(&self, line: &str) {
+        self.note(format!("→ {}", line.trim_end()));
+        tracing::trace!(target: "smartsdr::control", line = %line.trim_end(), "sent");
+    }
+
+    /// Record a control line the radio sent.
+    pub fn rx_line(&self, line: &str) {
+        self.note(format!("← {}", line.trim_end()));
+        tracing::trace!(target: "smartsdr::control", line = %line.trim_end(), "received");
+    }
+
+    /// Record a VITA-49 packet's arrival. The first packet of each stream is
+    /// written out in full; later ones only move the counters.
+    pub fn packet(&self, stream_id: u32, class_code: u16, bytes: usize, lost: u8) {
+        let first = {
+            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let e = g.streams.entry(stream_id).or_default();
+            let first = e.packets == 0;
+            e.packets += 1;
+            e.bytes += bytes as u64;
+            e.lost += lost as u64;
+            e.class_code = class_code;
+            first
+        };
+        if first {
+            self.note(format!(
+                "▷ first packet stream=0x{stream_id:08X} class=0x{class_code:04X} bytes={bytes}"
+            ));
+            tracing::debug!(
+                target: "smartsdr::vita",
+                stream = format!("0x{stream_id:08X}"),
+                class = format!("0x{class_code:04X}"),
+                bytes,
+                "first packet on stream"
+            );
+        }
+    }
+
+    /// A snapshot of the per-stream counters.
+    pub fn stream_counters(&self) -> BTreeMap<u32, StreamCounters> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).streams.clone()
+    }
+
+    /// Render the whole trace as one text block, ready to paste into an issue.
+    pub fn dump(&self) -> String {
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out = String::with_capacity(64 * 1024);
+        out.push_str("=== sdroxide SmartSDR session trace ===\n");
+        out.push_str(&format!("elapsed: {:.1} s\n", self.started.elapsed().as_secs_f64()));
+        if g.dropped > 0 {
+            out.push_str(&format!(
+                "note: {} earlier lines were discarded (ring holds {})\n",
+                g.dropped,
+                Trace::CAPACITY
+            ));
+        }
+        out.push_str("\n--- streams ---\n");
+        if g.streams.is_empty() {
+            out.push_str("(no VITA-49 packets received)\n");
+        }
+        for (id, c) in &g.streams {
+            out.push_str(&format!(
+                "0x{id:08X}  class=0x{:04X}  packets={}  bytes={}  lost={}\n",
+                c.class_code, c.packets, c.bytes, c.lost
+            ));
+        }
+        out.push_str("\n--- control ---\n");
+        for line in &g.lines {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+
+    fn push(&self, line: String) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if g.lines.len() >= Trace::CAPACITY {
+            g.lines.pop_front();
+            g.dropped += 1;
+        }
+        g.lines.push_back(line);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dump_reports_both_directions_and_streams() {
+        let t = Trace::new();
+        t.tx_line("C1|client program sdroxide\n");
+        t.rx_line("R1|0|");
+        t.packet(0x0400_0001, 0x02E6, 1032, 0);
+        t.packet(0x0400_0001, 0x02E6, 1032, 2);
+
+        let d = t.dump();
+        assert!(d.contains("→ C1|client program sdroxide"));
+        assert!(d.contains("← R1|0|"));
+        assert!(d.contains("0x04000001"));
+        assert!(d.contains("packets=2"));
+        assert!(d.contains("lost=2"));
+        // Only the first packet of a stream gets its own line.
+        assert_eq!(d.matches("first packet").count(), 1);
+    }
+
+    #[test]
+    fn the_ring_bounds_a_long_session_and_says_so() {
+        let t = Trace::new();
+        for i in 0..(Trace::CAPACITY + 50) {
+            t.note(format!("line {i}"));
+        }
+        let d = t.dump();
+        assert!(d.contains("50 earlier lines were discarded"));
+        // The recent end is what survives — that's the end a fault is at.
+        assert!(d.contains(&format!("line {}", Trace::CAPACITY + 49)));
+        assert!(!d.contains("line 0\n"));
+    }
+
+    #[test]
+    fn an_empty_trace_still_dumps() {
+        assert!(Trace::new().dump().contains("no VITA-49 packets received"));
+    }
+}

@@ -152,6 +152,18 @@ impl RadioController for LocalController {
         sdroxide_tci::test_connection(address, std::time::Duration::from_secs(3))
     }
 
+    fn discover_smartsdr(&self) -> Vec<sdroxide_types::SmartSdrDevice> {
+        crate::smartsdr_source::discover()
+    }
+
+    fn test_smartsdr(&self, address: &str) -> Result<String, String> {
+        sdroxide_smartsdr::test_connection(address, std::time::Duration::from_secs(3))
+    }
+
+    fn smartsdr_diagnostics(&self) -> Option<String> {
+        Some(crate::smartsdr_source::diagnostics_or_hint())
+    }
+
     fn radio_config(&self) -> Option<RadioConfig> {
         Some(sdroxide_config::load_radio_config())
     }

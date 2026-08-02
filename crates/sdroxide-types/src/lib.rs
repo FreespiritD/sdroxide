@@ -93,7 +93,8 @@ pub use pictures::{
 pub use radio::{
     Backend, CatConfig, CatFamily, DigiMode, HpsdrConfig, HpsdrDevice, HpsdrFilterBoard, LineState,
     ModeControl, Parity, PttMethod, RadioConfig, RtlSdrAgc, RtlSdrConfig, RtlSdrDevice,
-    RtlSdrHfMode, Rx888Config, Rx888Device, SerialConfig, SoundFormat, StopBits, TciConfig,
+    RtlSdrHfMode, Rx888Config, Rx888Device, SerialConfig, SmartSdrConfig, SmartSdrDevice,
+    SoundFormat, StopBits, TciConfig,
 };
 pub use rifp::{
     RIFP_CALLING_HZ, RIFP_MAP_MAX_CHUNKS, RifpEncoding, RifpMeta, RifpProfile, RifpSession,

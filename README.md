@@ -1,7 +1,7 @@
 # SDR Oxide
 
 A PowerSDR/Thetis-style software-defined-radio transceiver client in Rust, with
-pluggable radio backends (**SoapySDR**, **OpenHPSDR**, **TCI**, and **CAT**), an
+pluggable radio backends (**SoapySDR**, **OpenHPSDR**, **TCI**, **SmartSDR**, and **CAT**), an
 [egui](https://github.com/emilk/egui) GUI, and a cyberpunk theme. It runs as a **native desktop application** and, from the same
 binary, as a **server that streams the same UI to a web browser** over
 WebSocket. It includes an integrated, persistent **logbook**, many digital modes like **FT8/FT4**
@@ -317,11 +317,21 @@ starting sdroxide before the rig is fine:
 - **TCI** — a TCI (Transceiver Control Interface) server such as ExpertSDR3 
   over WebSocket (default `127.0.0.1:50001`): wideband IQ receive plus 
   audio transmit.
+- **SmartSDR / FlexRadio** — a FLEX-6000 or FLEX-8000 on the LAN. Press
+  **Discover** to listen for radios (they announce themselves), or enter an
+  address for one reached over a router or VPN. Receive is a **DAX IQ** stream,
+  so sdroxide does its own demodulation and the radio's slice follows the dial;
+  transmit is DAX audio the radio modulates. DAX IQ tops out at **192 kHz**,
+  which is this backend's widest span.
 
-The wideband-IQ backends (RTL-SDR, SoapySDR, HPSDR, TCI) drive the full
-panadapter, the CW/PSK/RTTY skimmers, and internal demodulation; a CAT rig
+The wideband-IQ backends (RTL-SDR, SoapySDR, HPSDR, TCI, SmartSDR) drive the
+full panadapter, the CW/PSK/RTTY skimmers, and internal demodulation; a CAT rig
 feeding demodulated audio shows only a narrow audio-band slice. RTL-SDR is
 receive-only; the others can transmit.
+
+### SmartSDR Simulator
+
+A **wire-level radio simulator** allows for the backend to be exercised end to end with no radio present.
 
 ## Built-in TCI server
 

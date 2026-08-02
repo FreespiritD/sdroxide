@@ -72,9 +72,10 @@ or connects to a remote sdroxide server.
 - **Award tracking** — live DXCC / WAS / WAZ / grid tallies, worked vs confirmed.
 - **Wideband skimmers** — a CW skimmer plus PSK31 and RTTY skimmers that decode
   many signals at once and label them on the waterfall.
-- **Four radio backends:** SoapySDR devices, OpenHPSDR (Hermes/Metis) Ethernet
-  SDRs, a TCI server (ExpertSDR3/Thetis), or a CAT-controlled radio with audio
-  over a USB sound card (demodulated audio or stereo IQ).
+- **Six radio backends:** SoapySDR devices, OpenHPSDR (Hermes/Metis) Ethernet
+  SDRs, a TCI server (ExpertSDR3/Thetis), a SmartSDR radio (FlexRadio
+  FLEX-6000/8000), RTL-SDR and RX-888 receivers over USB, or a CAT-controlled
+  radio with audio over a USB sound card (demodulated audio or stereo IQ).
 - **Memory channels** and per-band memory of your last frequency/mode/filter.
 - **Solar system 3D view** — the Sun, the Earth and the Moon, the
   other seven planets and eighteen of their moons with their orbits, live NASA
@@ -1496,6 +1497,8 @@ radio. Everything below the selector changes to match the choice:
   [5.2.2](#522-cat-radios-serial-control--usb-audio).
 - **TCI (network)** — a TCI server such as ExpertSDR3 or Thetis. See
   [5.2.4](#524-tci-network-expertsdr3-and-thetis).
+- **SmartSDR / FlexRadio (network)** — a FLEX-6000 or FLEX-8000 on the LAN. See
+  [5.2.6](#526-smartsdr-flexradio-network-radios).
 - **RTL-SDR (USB)** — an RTL2832U dongle, driven by sdroxide's own USB driver
   with no SoapySDR involved. See [5.2.5](#525-rtl-sdr-usb-dongles).
 
@@ -1767,6 +1770,57 @@ If the dongle is unplugged, sdroxide notices within a few seconds and reconnects
 by itself when you plug it back in — no need to press Apply. A dongle left
 streaming by a program that was killed rather than closed is reset automatically
 on the next open, so it does not need physically replugging either.
+
+#### 5.2.6 SmartSDR (FlexRadio network radios)
+
+With the **SmartSDR / FlexRadio (network)** interface, sdroxide drives a
+FLEX-6000 or FLEX-8000 over the LAN. It connects as a GUI client on TCP 4992,
+creates a panadapter and a **DAX IQ** stream, and receives raw complex baseband
+from it — so the panadapter, the waterfall, the skimmers and every digital mode
+are sdroxide's own, working from the radio's samples rather than from a picture
+the radio already drew. Transmit sends audio over a DAX TX stream, which the
+radio modulates.
+
+- **Radios / Discover** — a FlexRadio announces itself on the local network
+  about once a second, so **Discover** listens for a couple of seconds rather
+  than probing. A radio already claimed by another GUI client is listed but
+  greyed out unless multiFLEX is enabled on it.
+- **Address** — overrides the selection above. Radios reached through a router
+  or a VPN never broadcast to you, so those have to be entered by hand.
+- **IQ sample rate** — 24, 48, 96 or 192 kHz. **192 kHz is the radio's maximum
+  for a DAX IQ stream**, and therefore the widest span this interface can show;
+  it is not a limit sdroxide imposes.
+- **DAX IQ channel** — the radio has four. Change this only if something else on
+  the network already holds channel 1; the radio refuses the same channel twice.
+- **Station name** — shown against this session in the radio's client list. The
+  radio also remembers a client by it and restores that client's slices, so
+  renaming makes the radio treat sdroxide as a new one.
+- **Test connection** — checks the radio answers *without* registering as a GUI
+  client, so it will not disturb a SmartSDR session already running.
+- **Copy diagnostic report** — see below.
+
+Tuning moves the radio's own slice, so its front panel and any second client
+follow your dial rather than the other way round. TX power and TUNE power
+command the radio's `rfpower`/`tunepower`, and SWR and forward power come back
+from the radio's meters while you transmit.
+
+> **Help wanted — this backend has not been verified against real hardware.**
+> It was written from the published wire format and tested against a simulator,
+> which proves the bytes are self-consistent but not that a FLEX agrees with
+> them.
+>
+> Every session records a **protocol trace** — each control line in both
+> directions, the first packet of each VITA-49 stream, and per-stream packet and
+> loss counters. It is always recording, so there is no log level to set in
+> advance and nothing to reproduce twice: press **Copy diagnostic report** and
+> paste it into an issue. That report is what makes a fault diagnosable by
+> somebody who does not own the radio.
+>
+> If you do not have a FLEX either, you can still exercise the backend: a
+> wire-level radio simulator ships in the source tree. Run
+> `cargo run -p sdroxide-smartsdr --example sim`, then point this tab at
+> `127.0.0.1:4992`.
+
 
 ### 5.3 UI: display preferences
 
