@@ -117,11 +117,15 @@ impl SoapyDevice {
         self.dev.set_sample_rate(Direction::Rx, channel, rate)?;
         self.dev.set_frequency(Direction::Rx, channel, center_hz, ())?;
 
+        // Hardware AGC owns the RX stages where it is running, so those must not
+        // be re-asserted behind its back (see `rx_gains`).
+        let mut agc = false;
         if let Some(g) = gain_db {
             let _ = self.dev.set_gain_mode(Direction::Rx, channel, false);
             self.dev.set_gain(Direction::Rx, channel, g)?;
         } else if self.dev.has_gain_mode(Direction::Rx, channel).unwrap_or(false) {
             let _ = self.dev.set_gain_mode(Direction::Rx, channel, true);
+            agc = true;
         } else if let Ok(range) = self.dev.gain_range(Direction::Rx, channel) {
             let g = range.minimum + 0.4 * (range.maximum - range.minimum);
             let _ = self.dev.set_gain(Direction::Rx, channel, g);
@@ -140,6 +144,23 @@ impl SoapyDevice {
                 }
             }
         }
+
+        // What the stages are set to now, which is what every later stream
+        // restart and direction change has to reproduce.
+        let read_back = |dir: Direction| -> Vec<(String, f64)> {
+            self.dev
+                .list_gains(dir, channel)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|name| {
+                    let db = self.dev.gain_element(dir, channel, name.as_str()).ok()?;
+                    Some((name, db))
+                })
+                .collect()
+        };
+        let rx_gains = if agc { Vec::new() } else { read_back(Direction::Rx) };
+        let tx_gains =
+            if self.caps.tx_channels > 0 { read_back(Direction::Tx) } else { Vec::new() };
 
         let analog_bw = self.dev.bandwidth(Direction::Rx, channel).unwrap_or(0.0);
         let lo_offset = lo_offset_for(actual_rate, analog_bw);
@@ -162,6 +183,8 @@ impl SoapyDevice {
             tx_underflows: 0,
             stream_failures: 0,
             lost: false,
+            rx_gains,
+            tx_gains,
         };
         source.open_rx_stream()?;
         Ok(source)
@@ -200,6 +223,21 @@ pub struct SoapyRxSource {
     /// it asks to be reopened ([`IqSource::needs_reopen`]) and the engine's
     /// background reconnect owns it from here.
     lost: bool,
+    /// What each RX gain stage is supposed to be set to, so a stream restart
+    /// cannot quietly hand the front end back to whatever the hardware happens
+    /// to be left in — see [`SoapyRxSource::reassert_gains`]. Empty while
+    /// hardware AGC is running, which owns those stages itself.
+    rx_gains: Vec<(String, f64)>,
+    /// The same for the transmit side, re-asserted on every key-up.
+    tx_gains: Vec<(String, f64)>,
+}
+
+/// Record a gain element's requested value, replacing any earlier one.
+fn remember_gain(list: &mut Vec<(String, f64)>, name: &str, db: f64) {
+    match list.iter_mut().find(|(n, _)| n == name) {
+        Some(entry) => entry.1 = db,
+        None => list.push((name.to_string(), db)),
+    }
 }
 
 impl SoapyRxSource {
@@ -222,8 +260,41 @@ impl SoapyRxSource {
         let mut stream = dev.rx_stream::<Complex32>(&[self.channel])?;
         stream.activate(None)?;
         self.rx_stream = Some(stream);
+        self.reassert_gains(Direction::Rx);
         info!(rate = self.sample_rate, center = self.center_hz, "RX stream active");
         Ok(())
+    }
+
+    /// Write the gain stages for `dir` back to what they are supposed to be.
+    ///
+    /// # Why a stream restart loses them
+    ///
+    /// Stopping a stream puts the transceiver in its idle state, and that state
+    /// is not neutral. On a HackRF, `hackrf_stop_rx`/`hackrf_stop_tx` sets
+    /// transceiver mode OFF, and the firmware's `rf_path_set_direction(OFF)`
+    /// bypasses the 14 dB RF amplifier and *records* the bypass; starting RX or
+    /// TX again only powers the amp back up if the bypass is already clear, so
+    /// the amp stays dead until something sends `hackrf_set_amp_enable` again.
+    /// SoapyHackRF does not: it caches the amp state and re-applies it only on a
+    /// direct RX↔TX handover, and closing the stream (which is what half-duplex
+    /// keying does here) goes through mode OFF instead. The cached value still
+    /// reads 14 dB, so nothing anywhere notices that the hardware disagrees.
+    ///
+    /// The result an operator sees is the receive AMP going dead after the first
+    /// over and the transmit AMP never working at all — the level is set while
+    /// receiving, then thrown away by the very transition that was supposed to
+    /// use it.
+    fn reassert_gains(&self, dir: Direction) {
+        let Some(dev) = self.dev.as_ref() else { return };
+        let wanted = match dir {
+            Direction::Rx => &self.rx_gains,
+            Direction::Tx => &self.tx_gains,
+        };
+        for (name, db) in wanted {
+            if let Err(e) = dev.set_gain_element(dir, self.channel, name.as_str(), *db) {
+                warn!("could not re-apply the {name} gain: {e}");
+            }
+        }
     }
 
     /// Put the front end back the way it was after a call the driver refused,
@@ -354,6 +425,10 @@ impl IqSource for SoapyRxSource {
         let dev = self.dev()?;
         let _ = dev.set_gain_mode(Direction::Rx, self.channel, false);
         dev.set_gain_element(Direction::Rx, self.channel, name, db)?;
+        // Remembered as well as applied: this is what `reassert_gains` puts back
+        // after a stream restart, and setting it by hand also ends any AGC that
+        // was running (the `set_gain_mode` above), so the stage is ours now.
+        remember_gain(&mut self.rx_gains, name, db);
         Ok(())
     }
 
@@ -400,6 +475,9 @@ impl IqSource for SoapyRxSource {
         let mut tx = dev.tx_stream::<Complex32>(&[self.channel])?;
         tx.activate(None)?;
         self.tx_stream = Some(tx);
+        // After activation, so the direction change cannot undo it: switching
+        // the RF path is what drops the amplifier state in the first place.
+        self.reassert_gains(Direction::Tx);
         tracing::info!(center_hz, rate = actual, "TX active");
         Ok(actual)
     }
@@ -434,6 +512,14 @@ impl IqSource for SoapyRxSource {
 
     fn set_tx_gain_element(&mut self, name: &str, db: f64) -> Result<()> {
         self.dev()?.set_gain_element(Direction::Tx, self.channel, name, db)?;
+        remember_gain(&mut self.tx_gains, name, db);
+        // A stage shared between the two directions — the HackRF's 14 dB amp is
+        // one switch, not two — has just been moved by a transmit setting while
+        // the receiver is the one using it. Put the receive side back; the
+        // transmit value is re-asserted at key-up.
+        if self.tx_stream.is_none() {
+            self.reassert_gains(Direction::Rx);
+        }
         Ok(())
     }
 
@@ -584,6 +670,17 @@ fn probe_caps(dev: &soapysdr::Device) -> Result<DeviceCaps> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gain_element_is_remembered_once_and_updated_in_place() {
+        let mut gains = Vec::new();
+        remember_gain(&mut gains, "AMP", 14.0);
+        remember_gain(&mut gains, "LNA", 24.0);
+        // A second value for a stage replaces the first rather than queuing
+        // behind it — otherwise a stream restart would re-apply the old one.
+        remember_gain(&mut gains, "AMP", 0.0);
+        assert_eq!(gains, vec![("AMP".to_string(), 0.0), ("LNA".to_string(), 24.0)]);
+    }
 
     #[test]
     fn lo_offset_wants_span_and_an_analog_filter_wide_enough_to_reach_it() {
