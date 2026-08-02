@@ -34,13 +34,13 @@ One binary, three ways to run it:
 
 ## Core features
 
+- **Radios** - CAT/Audio, CAT/Stereo IQ, TCI (SunSDR), OpenHPSDR P1 and P2
+  (Hermes Lite 2, Apache Labs), SoapySDR (HackRF, etc.), RTL-SDR (native support), 
+  RX-888 (native support), SmartSDR (FlexRadio - experimental!)
 - **Panadapter** — GPU (wgpu) waterfall + spectrum line, wheel-zoom around the
   cursor, drag-to-pan, per-digit frequency readout, selectable colormaps,
   peak-hold, and a **one-click auto-contrast** ("FIT") that picks the display
   floor/ceiling from the signals currently on screen.
-- **Bandplan overlay** — a colour-coded strip along the bottom of the waterfall
-  that labels allocations (ham bands, broadcast, CB, AM); it shows coarse bands
-  when zoomed out and CW/digital/SSB sub-segments when zoomed into a ham band.
 - **Modes** — SSB (USB/LSB), CW, AM, SAM, NFM (with **CTCSS/DCS** decoding and
   tone squelch), WFM (with broadcast
   pilot-tone **stereo**), DSB, DIGU/DIGL, a
@@ -58,6 +58,9 @@ One binary, three ways to run it:
   the waterfall), noise blanker, auto-notch, **neural (RNNoise) or spectral noise
   reduction**, squelch, a second sub-receiver, RIT/XIT, VFO A/B with split,
   per-band band stacks, and memory channels.
+- **Bandplan overlay** — a colour-coded strip along the bottom of the waterfall
+  that labels allocations (ham bands, broadcast, CB, AM); it shows coarse bands
+  when zoomed out and CW/digital/SSB sub-segments when zoomed into a ham band.
 - **Scanner** — work through the memory channels or a frequency range and stop
   where somebody is transmitting, with a configurable threshold (or the
   receiver's own squelch), dwell, skip list, and carrier / timed / manual
