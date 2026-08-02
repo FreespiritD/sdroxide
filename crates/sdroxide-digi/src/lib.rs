@@ -10,6 +10,7 @@
 
 pub mod clock;
 pub mod controller;
+pub mod cw_controller;
 pub mod fox;
 pub mod fsq_controller;
 pub mod hell_controller;
@@ -30,6 +31,7 @@ pub mod wefax_controller;
 
 pub use clock::ClockMonitor;
 pub use controller::{DigiAction, DigiController};
+pub use cw_controller::CwController;
 pub use fox::Fox;
 pub use fsq_controller::FsqController;
 pub use hell_controller::HellController;
@@ -160,7 +162,9 @@ mod dispatch_tests {
     /// Mirrors `Engine::make_digi`'s predicate chain. Kept here so the ordering
     /// can be exercised without standing up an engine.
     fn pick(mode: Mode) -> &'static str {
-        if mode.is_rade() {
+        if mode == Mode::Cw {
+            "cw"
+        } else if mode.is_rade() {
             "rade"
         } else if mode.is_sstv() {
             "sstv"
@@ -196,6 +200,11 @@ mod dispatch_tests {
         assert_eq!(pick(Mode::Psk), "text");
         assert_eq!(pick(Mode::Rade), "rade");
         assert_eq!(pick(Mode::Wefax), "wefax");
+        // CW is not a digital mode at all, so it has to be picked off before
+        // the chain rather than by it — the fall-through would hand it an FT8
+        // decoder, which would sit there decoding nothing for ever.
+        assert_eq!(pick(Mode::Cw), "cw");
+        assert!(!Mode::Cw.is_digital(), "CW must stay an analog mode");
     }
 
     #[test]

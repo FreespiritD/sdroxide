@@ -1000,6 +1000,7 @@ impl QsoMachine {
             fox_queue: self.fox.as_ref().map(Fox::status).unwrap_or_default(),
             call_queue: self.queue.iter().cloned().collect(),
             clock_offset_s: None,
+            cw: None,
         }
     }
 }

@@ -7,7 +7,6 @@ mod callsign;
 mod controller;
 mod cw;
 mod digi;
-mod morse;
 
 pub use controller::{SkimmerAction, SkimmerController};
 pub use cw::CwSkimmer;

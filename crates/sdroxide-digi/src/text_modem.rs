@@ -234,6 +234,7 @@ impl TextModemController {
             fox_queue: Vec::new(),
             call_queue: Vec::new(),
             clock_offset_s: None,
+            cw: None,
         }
     }
 }

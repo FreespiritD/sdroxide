@@ -6,11 +6,10 @@
 use std::sync::Arc;
 
 use rustfft::{Fft, FftPlanner};
-use sdroxide_dsp::Complex32 as C32;
+use sdroxide_dsp::{Complex32 as C32, CwDecoder};
 use sdroxide_types::{SkimmerKind, SkimmerSpot};
 
 use crate::callsign::find_callsign;
-use crate::morse::MorseDecoder;
 
 // A 4096-pt window over the ~200 kHz skim rate is ~20 ms / ~49 Hz per bin —
 // close to a CW signal's own bandwidth, so the carrier lands in one bin with
@@ -22,11 +21,14 @@ const HOP: usize = 1024;
 /// Frames of noise-floor priming before detection starts.
 const WARMUP: u32 = 40;
 
-/// Key-on threshold above the per-bin noise floor (power ratio; ~10 dB). High
-/// enough that random noise rarely crosses it across thousands of bins.
+/// Detection threshold above the per-bin noise floor (power ratio; ~10 dB).
+/// High enough that random noise rarely crosses it across thousands of bins.
+///
+/// This only decides where the *signals* are — which bins are worth tracking,
+/// where the spot marker goes, and whether a track is still alive. Whether the
+/// key was down at any given moment is [`CwDecoder`]'s business, and it decides
+/// it by fitting a threshold of its own to each track's envelope.
 const ON_RATIO: f32 = 10.0;
-/// Key-off threshold (per-track hysteresis; ~6 dB).
-const OFF_RATIO: f32 = 4.0;
 /// Bins per region for the median noise-floor estimate (~3 kHz at 47 Hz/bin).
 /// The median of a region is a noise bin as long as CW signals stay sparse in
 /// it, so a signal — however strong or persistent — can't inflate the floor.
@@ -44,35 +46,33 @@ const DC_GUARD: i64 = 3;
 /// Frames a track must be detected before it's reported (rejects noise blips;
 /// one dit at 20 WPM is ~12 frames at this hop).
 const MIN_HITS: u32 = 8;
-/// Envelope low-pass factor (fraction of the previous envelope retained). A
-/// little smoothing bridges frame-to-frame flicker on marginal signals; too
-/// much makes a strong signal's envelope decay slowly and merge marks.
-const ENV_A: f32 = 0.0;
-
 /// Track pruning (ms): empties (noise blips) go fast; decoded tracks linger.
 const PRUNE_EMPTY_MS: f64 = 1200.0;
 const PRUNE_DECODED_MS: f64 = 8000.0;
 /// A track counts as "active" (currently keying) within this of its last mark.
 const ACTIVE_MS: f64 = 1500.0;
-/// Force-decode the pending character after this much silence.
-const FLUSH_SILENCE_MS: f32 = 800.0;
 /// Bound on simultaneous tracks.
 const MAX_TRACKS: usize = 256;
+/// How often each track's envelope is re-fitted. Far slower than the panel
+/// decoder's default: a spot is worth having a second late, and this runs over
+/// every signal in a 200 kHz window at once.
+const TRACK_HOP_S: f32 = 0.5;
+/// Rolling decoded text kept per track.
+const MAX_TEXT: usize = 64;
 
 struct Track {
     id: u64,
     bin: i64, // signed offset bin from DC (negative = below center)
-    dec: MorseDecoder,
-    key_on: bool,
-    dur_ms: f32,
-    silence_ms: f32,
-    flushed: bool,
+    /// The shared envelope-domain Morse engine, fed this bin's magnitude once
+    /// per STFT frame. It fits its own decision threshold, speed and spacing to
+    /// the track, which is what a single global key-on ratio could never do
+    /// across signals that differ by 40 dB and 3:1 in speed.
+    dec: CwDecoder,
+    text: String,
     last_on_ms: f64,
     snr_db: i16,
     /// Frames this track has been keyed (for confirmation).
     hits: u32,
-    /// Smoothed power envelope at the track's bin.
-    env: f32,
     /// Time-smoothed power at [bin-1, bin, bin+1], accumulated over keyed-on
     /// frames. Quadratic interpolation over these three resolves the carrier to
     /// a fraction of a bin, so the spot marker lands on the signal instead of
@@ -259,18 +259,16 @@ impl CwSkimmer {
                 let k = self.bin_index(off);
                 let km = self.bin_index(off - 1);
                 let kp = self.bin_index(off + 1);
+                let mut dec = CwDecoder::new(1000.0 / self.frame_ms);
+                dec.set_hop_s(TRACK_HOP_S);
                 self.tracks.push(Track {
                     id,
                     bin: off,
-                    dec: MorseDecoder::new(),
-                    key_on: false,
-                    dur_ms: 0.0,
-                    silence_ms: 0.0,
-                    flushed: false,
+                    dec,
+                    text: String::new(),
                     last_on_ms: self.now_ms,
                     snr_db: 0,
                     hits: 0,
-                    env: self.power[k],
                     pk: [self.power[km], self.power[k], self.power[kp]],
                 });
             }
@@ -281,20 +279,18 @@ impl CwSkimmer {
         self.centers = centers;
         self.cands = cands;
 
-        // Advance every track from a smoothed single-bin envelope: low-pass the
-        // power at its (fixed) bin and key on/off with hysteresis. The smoothing
-        // bridges frame-to-frame flicker; the 10:4 on:off ratio prevents chatter.
-        let dt = self.frame_ms;
+        // Advance every track: hand its bin's magnitude to the decoder, and keep
+        // the bookkeeping the *spot* needs — is anything there, how strong, and
+        // exactly which frequency — from a plain threshold on the bin.
         let now = self.now_ms;
         for t in self.tracks.iter_mut() {
             let k = (t.bin.rem_euclid(n as i64)) as usize;
             let floor = self.noise[k].max(1e-12);
-            t.env = ENV_A * t.env + (1.0 - ENV_A) * self.power[k];
-            let on = if t.key_on { t.env > floor * OFF_RATIO } else { t.env > floor * ON_RATIO };
-            if on {
+            let p = self.power[k];
+            if p > floor * ON_RATIO {
                 t.hits = t.hits.saturating_add(1);
                 t.last_on_ms = now;
-                t.snr_db = (10.0 * (t.env / floor).log10()).round().clamp(-30.0, 60.0) as i16;
+                t.snr_db = (10.0 * (p / floor).log10()).round().clamp(-30.0, 60.0) as i16;
                 // Accumulate the smoothed 3-bin peak shape while keyed.
                 let km = ((t.bin - 1).rem_euclid(n as i64)) as usize;
                 let kp = ((t.bin + 1).rem_euclid(n as i64)) as usize;
@@ -302,25 +298,15 @@ impl CwSkimmer {
                 t.pk[1] = 0.9 * t.pk[1] + 0.1 * self.power[k];
                 t.pk[2] = 0.9 * t.pk[2] + 0.1 * self.power[kp];
             }
-            if on == t.key_on {
-                t.dur_ms += dt;
-            } else {
-                if t.key_on {
-                    t.dec.on_mark(t.dur_ms);
-                } else {
-                    t.dec.on_gap(t.dur_ms);
-                }
-                t.key_on = on;
-                t.dur_ms = dt;
-            }
-            if on {
-                t.silence_ms = 0.0;
-                t.flushed = false;
-            } else {
-                t.silence_ms += dt;
-                if t.silence_ms > FLUSH_SILENCE_MS && !t.flushed {
-                    t.dec.flush();
-                    t.flushed = true;
+            // Amplitude, not power: the decoder's thresholds and noise model are
+            // an envelope's.
+            let fresh = t.dec.push(&[p.sqrt()]);
+            if !fresh.is_empty() {
+                t.text.push_str(&fresh);
+                if t.text.chars().count() > MAX_TEXT {
+                    let drop = t.text.chars().count() - MAX_TEXT;
+                    let cut = t.text.char_indices().nth(drop).map_or(t.text.len(), |(i, _)| i);
+                    t.text.drain(..cut);
                 }
             }
         }
@@ -328,7 +314,7 @@ impl CwSkimmer {
         // Prune stale tracks.
         self.tracks.retain(|t| {
             let age = now - t.last_on_ms;
-            if t.dec.text().is_empty() { age < PRUNE_EMPTY_MS } else { age < PRUNE_DECODED_MS }
+            if t.text.is_empty() { age < PRUNE_EMPTY_MS } else { age < PRUNE_DECODED_MS }
         });
     }
 
@@ -344,9 +330,9 @@ impl CwSkimmer {
                 if t.hits < MIN_HITS {
                     return None;
                 }
-                let text = t.dec.text();
-                let wpm = t.dec.wpm();
-                if !(8..=45).contains(&wpm) {
+                let text = t.text.trim_end();
+                let wpm = t.dec.wpm().round().clamp(0.0, 99.0) as u16;
+                if !(8..=45).contains(&wpm) || text.is_empty() {
                     return None;
                 }
                 // Quadratic peak interpolation over the smoothed 3-bin shape
@@ -381,7 +367,14 @@ impl CwSkimmer {
     pub fn debug_dump(&self) {
         for t in &self.tracks {
             if t.hits >= 3 {
-                eprintln!("bin{} hits{} wpm{} text={:?}", t.bin, t.hits, t.dec.wpm(), t.dec.text());
+                eprintln!(
+                    "bin{} hits{} wpm{:.0} cost{:.3} text={:?}",
+                    t.bin,
+                    t.hits,
+                    t.dec.wpm(),
+                    t.dec.cost(),
+                    t.text
+                );
             }
         }
     }
@@ -402,65 +395,58 @@ impl CwSkimmer {
 
 #[cfg(test)]
 mod tests {
+    use sdroxide_dsp::CwTx;
+
     use super::*;
 
     /// Build skim IQ: a keyed CW tone at `off_hz` plus noise of amplitude
     /// `noise` per component (0.02 = light; a large value = a high noise floor).
+    ///
+    /// The keying comes from the shared [`CwTx`], so the skimmer is exercised
+    /// against exactly the envelope shape the rest of the tree agrees is CW —
+    /// raised-cosine edges and all — rather than against square keying only
+    /// this test knows how to make.
     fn synth(text: &str, off_hz: f64, wpm: f32, rate: f64, noise: f32) -> Vec<C32> {
-        let dit = 1200.0 / wpm; // ms
-        // Reuse the morse test-encoder shape inline: elements → key envelope.
-        let mut key: Vec<bool> = Vec::new(); // per-ms key state
-        let push = |v: &mut Vec<bool>, on: bool, ms: f32| {
-            for _ in 0..ms.round() as usize {
-                v.push(on);
-            }
-        };
-        // 200 ms leading silence to prime the noise floor.
-        push(&mut key, false, 250.0);
-        let words: Vec<&str> = text.split(' ').filter(|w| !w.is_empty()).collect();
-        for (wi, word) in words.iter().enumerate() {
-            let chars: Vec<char> = word.chars().collect();
-            for (ci, ch) in chars.iter().enumerate() {
-                let code = crate::morse::encode_char(*ch).unwrap();
-                let m = code.chars().count();
-                for (ei, el) in code.chars().enumerate() {
-                    push(&mut key, true, if el == '-' { dit * 3.0 } else { dit });
-                    if ei + 1 < m {
-                        push(&mut key, false, dit);
-                    }
-                }
-                if ci + 1 < chars.len() {
-                    push(&mut key, false, dit * 3.0);
-                }
-            }
-            if wi + 1 < words.len() {
-                push(&mut key, false, dit * 7.0);
-            }
+        // Generate the sidetone at a rate where a dit is plenty of samples,
+        // then take its envelope and re-key a complex carrier at the skim rate.
+        const AUDIO: f64 = 8000.0;
+        let mut tx = CwTx::new(AUDIO, 1000.0, wpm);
+        tx.push_text(text);
+        let mut env: Vec<f32> = Vec::new();
+        while !tx.drained() {
+            let mut blk = [0.0f32; 512];
+            tx.next_block(&mut blk);
+            env.extend_from_slice(&blk);
         }
-        push(&mut key, false, 1200.0); // trailing silence → flush
+        // The sidetone's own envelope: its peak over each cycle of the 1 kHz
+        // tone, which is one keying envelope sample every 8 audio samples.
+        let key: Vec<f32> =
+            env.chunks(8).map(|c| c.iter().fold(0.0f32, |a, b| a.max(b.abs()))).collect();
+        let key_rate = AUDIO / 8.0;
 
-        let mut iq = Vec::with_capacity(key.len() * (rate as usize / 1000));
-        let spm = rate / 1000.0; // samples per ms
+        let lead = (key_rate * 0.25) as usize;
+        let tail = (key_rate * 1.2) as usize;
+
+        let mut iq = Vec::new();
         let mut phase = 0.0f64;
         let dphi = 2.0 * std::f64::consts::PI * off_hz / rate;
-        // simple deterministic "noise"
         let mut seed = 0x1234_5678u32;
         let mut rng = || {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5
         };
-        let mut ms_frac = 0.0f64;
-        for &on in &key {
-            ms_frac += spm;
-            let take = ms_frac as usize;
-            ms_frac -= take as f64;
+        let spk = rate / key_rate; // skim samples per key-envelope sample
+        let mut frac = 0.0f64;
+        for i in 0..lead + key.len() + tail {
+            let amp = key.get(i.wrapping_sub(lead)).copied().unwrap_or(0.0);
+            frac += spk;
+            let take = frac as usize;
+            frac -= take as f64;
             for _ in 0..take {
                 phase += dphi;
-                let amp = if on { 1.0 } else { 0.0 };
-                let n = noise;
                 iq.push(C32::new(
-                    amp * phase.cos() as f32 + n * rng(),
-                    amp * phase.sin() as f32 + n * rng(),
+                    amp * phase.cos() as f32 + noise * rng(),
+                    amp * phase.sin() as f32 + noise * rng(),
                 ));
             }
         }
@@ -521,6 +507,64 @@ mod tests {
         let spots = sk.spots();
         let hit = spots.iter().find(|s| s.text.contains("W1AW"));
         assert!(hit.is_some(), "strong signal in high noise did not decode: {spots:?}");
+    }
+
+    /// A crowded window: several stations at once, at different speeds and 25 dB
+    /// apart in level, on a common noise floor.
+    ///
+    /// This is what a skimmer is for and the case a single global key-on
+    /// threshold cannot serve — the level that reads the loud station's keying
+    /// is above the weak one's marks entirely. Each track fits its own.
+    #[test]
+    fn decodes_several_stations_at_once() {
+        let rate = 192_000.0;
+        let center = 14_030_000.0;
+        let want = [
+            ("CQ TEST DE W1AW W1AW K", 6_000.0, 18.0, 1.0),
+            ("CQ CQ DE K5ZZ K5ZZ K", -2_500.0, 30.0, 0.06),
+            ("CQ DE VK3XY VK3XY K", 12_000.0, 24.0, 0.3),
+        ];
+        let mut mixed: Vec<C32> = Vec::new();
+        for (text, off, wpm, amp) in want {
+            let sig = synth(text, off, wpm, rate, 0.0);
+            if mixed.len() < sig.len() {
+                mixed.resize(sig.len(), C32::default());
+            }
+            for (m, s) in mixed.iter_mut().zip(sig.iter()) {
+                *m += *s * amp;
+            }
+        }
+        // One noise floor under all of them.
+        let mut seed = 0xC0FF_EE01u32;
+        for m in mixed.iter_mut() {
+            let mut r = || {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+            };
+            *m += C32::new(0.02 * r(), 0.02 * r());
+        }
+
+        let mut sk = CwSkimmer::new(rate, center);
+        for chunk in mixed.chunks(8192) {
+            sk.process(chunk);
+        }
+        sk.debug_dump();
+        let spots = sk.spots();
+        for (_, off, wpm, _) in want {
+            let call = ["W1AW", "K5ZZ", "VK3XY"]
+                [want.iter().position(|w| w.1 == off).expect("offset is one of ours")];
+            let hit = spots
+                .iter()
+                .find(|s| s.callsign.as_deref() == Some(call))
+                .unwrap_or_else(|| panic!("{call} not spotted; got {spots:?}"));
+            let err = hit.freq_hz - (center + off);
+            assert!(err.abs() < 60.0, "{call} spotted {err:+.0} Hz off");
+            assert!(
+                (hit.wpm as f32 - wpm).abs() < 4.0,
+                "{call} read as {} WPM, sent at {wpm}",
+                hit.wpm
+            );
+        }
     }
 
     /// End-to-end frequency accuracy through the *real* engine path: device-rate

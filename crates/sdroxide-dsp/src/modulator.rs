@@ -12,9 +12,9 @@ pub trait Modulator: Send {
     fn process(&mut self, audio: &[f32], out: &mut Vec<Complex32>);
 }
 
-/// Modulator for a mode. `None` = mode has no audio-driven TX (SPEC, WFM
-/// broadcast, and CW until the keyer exists — the engine transmits a plain
-/// carrier for those when keyed).
+/// Modulator for a mode. `None` = the mode has no audio-driven transmit (SPEC,
+/// WFM broadcast, and CW) — the engine transmits a plain carrier for those when
+/// keyed.
 pub fn make_modulator(mode: Mode, rate: f64) -> Option<Box<dyn Modulator>> {
     let (lo, hi) = mode.default_filter();
     match mode {
@@ -42,6 +42,11 @@ pub fn make_modulator(mode: Mode, rate: f64) -> Option<Box<dyn Modulator>> {
         Mode::Nfm => Some(Box::new(FmMod::new(rate))),
         // RIFP keys the carrier itself rather than a sideband of it.
         Mode::Rifp => Some(Box::new(CpfskMod::new(rate))),
+        // CW has none, deliberately. A manual PTT in CW keys a carrier — that
+        // is what a straight key does — and modulating the microphone instead
+        // would put speech on the air in a CW segment. The panel's keyer needs
+        // single-sideband all the same, and asks for it by name
+        // (`Engine::tx_block_digi`).
         Mode::Cw | Mode::Wfm | Mode::Spec => None,
     }
 }

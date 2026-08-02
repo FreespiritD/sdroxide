@@ -4,6 +4,7 @@
 //! current [`Mode`] and hands it the height it may use. One submodule per
 //! panel:
 //!
+//! - [`cw`] — the Morse decode/keyboard panel, the one non-digital mode here
 //! - [`decodes`] — the FT8/FT4/JS8 decode list and the QSO sequencer beside it
 //! - [`text_modem`] — PSK, RTTY, Olivia, THOR, Contestia and Hellschreiber
 //! - [`js8`], [`fsq`] — the two keyboard modes with their own message model
@@ -12,6 +13,7 @@
 //! - [`setup`] — the digimode setup window the panels share
 //! - [`widgets`] — the row and station-card widgets several panels draw
 
+pub(in crate::app) mod cw;
 pub(in crate::app) mod decodes;
 pub(in crate::app) mod fsq;
 pub(in crate::app) mod js8;
@@ -227,6 +229,11 @@ impl SdroxideApp {
     /// (for SSTV, a keyboard mode, or plain SSB) doesn't carry its labels over.
     pub(in crate::app) fn clear_digi_rx(&mut self) {
         self.digi_decodes.clear();
+        // The outgoing buffer too: the engine rebuilds its controller for the
+        // new mode and its sent-character count restarts from zero, so text
+        // left over from the last mode would be redrawn as unsent and keyed
+        // again the moment transmit came on.
+        self.text_tx.clear();
         self.digi_stations = Default::default();
         self.digi_preview = None;
         // The Hell raster is a continuous strip with no frame boundary, so

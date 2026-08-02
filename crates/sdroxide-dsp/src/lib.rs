@@ -1,4 +1,5 @@
 mod agc;
+mod cw;
 mod ddc;
 mod decim;
 mod demod;
@@ -31,6 +32,7 @@ pub mod wefax;
 mod window;
 
 pub use agc::Agc;
+pub use cw::{CwDecoder, CwRx, CwTx, morse_decode, morse_encode};
 pub use ddc::Ddc;
 pub use decim::{FirDecim, HalfbandDecim, RealFirDecim, lowpass_taps};
 pub use demod::{ComplexDcBlock, DcBlock, Demodulator, channel_target, make_demod};
@@ -39,7 +41,7 @@ pub use fsq::{FsqRx, FsqTx};
 pub use fsq_image::{FsqImageRx, FsqImageTx, IMG_H as FSQ_IMG_H, IMG_W as FSQ_IMG_W};
 pub use hell::{HELL_CELL_COLS, HELL_ROWS, HellRx, HellTx, render_columns as hell_columns};
 pub use interp::{Duc, HalfbandInterp};
-pub use modulator::{Modulator, make_modulator};
+pub use modulator::{Modulator, SsbMod, make_modulator};
 pub use nb::NoiseBlanker;
 pub use nco::Nco;
 pub use nnr::NeuralNr;

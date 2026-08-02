@@ -357,6 +357,25 @@ pub struct DigiStatus {
     /// way it is the offset stations on the air actually see.
     #[serde(default)]
     pub clock_offset_s: Option<f32>,
+    /// CW: what the decoder is making of the signal under the cursor. `None` in
+    /// every other mode, so the panel that renders it is its own mode test.
+    #[serde(default)]
+    pub cw: Option<CwStatus>,
+}
+
+/// Live state of the CW decoder.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct CwStatus {
+    /// The decoder is copying: its timing fit is good and holding steady.
+    pub locked: bool,
+    /// Sending speed it is reading, in words per minute.
+    pub wpm: f32,
+    /// Signal-to-noise referred to the 500 Hz bandwidth CW reports are quoted
+    /// in, so it is comparable with what another operator would tell you.
+    pub snr_db: f32,
+    /// The tone actually being copied, in Hz above the dial — the operator's
+    /// pitch plus whatever the decoder's AFC has pulled to stay on the signal.
+    pub tone_hz: f32,
 }
 
 /// Live state of the RADE V1 modem.
@@ -418,6 +437,7 @@ impl DigiStatus {
             fox_queue: Vec::new(),
             call_queue: Vec::new(),
             clock_offset_s: None,
+            cw: None,
         }
     }
 }
@@ -857,8 +877,36 @@ pub struct DigiConfig {
     pub rifp_content_hint: String,
     /// Dither the picture when quantising to fewer than 8 bits per pixel.
     pub rifp_dither: bool,
+    /// CW: the tone the decoder listens on and the transmitter keys, in Hz
+    /// above the dial. This is where the waterfall cursor sits, so it is both
+    /// "which signal am I copying" and "where does mine go out" — in CW those
+    /// are the same question, because a station answers on the frequency it
+    /// heard the call on.
+    #[serde(default = "cw_default_pitch")]
+    pub cw_pitch_hz: f32,
+    /// CW: transmit speed in words per minute.
+    #[serde(default = "cw_default_wpm")]
+    pub cw_wpm: f32,
+    /// CW: transmit character speed for Farnsworth sending — the elements go
+    /// out at `cw_wpm` and only the spacing is stretched to this overall speed.
+    /// 0, or anything at or above `cw_wpm`, means ordinary timing.
+    #[serde(default)]
+    pub cw_farnsworth_wpm: f32,
+    /// CW: pin the decoder's speed search to `cw_wpm` instead of reading the
+    /// speed off the signal. Worth having for a signal too weak for the search
+    /// to settle when you already know how fast the other station sends.
+    #[serde(default)]
+    pub cw_speed_lock: bool,
     /// Give up on an incomplete incoming session after this many seconds.
     pub rifp_session_timeout_s: u32,
+}
+
+fn cw_default_pitch() -> f32 {
+    700.0
+}
+
+fn cw_default_wpm() -> f32 {
+    20.0
 }
 
 impl Default for DigiConfig {
@@ -882,6 +930,10 @@ impl Default for DigiConfig {
             fsq_baud: 4.5,
             fsq_call: String::new(),
             digi_squelch: 0.35,
+            cw_pitch_hz: cw_default_pitch(),
+            cw_wpm: cw_default_wpm(),
+            cw_farnsworth_wpm: 0.0,
+            cw_speed_lock: false,
             tx_watchdog_min: 6,
             max_tx_repeats: 10,
             sstv_tx_ppm: 0.0,

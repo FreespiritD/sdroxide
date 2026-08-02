@@ -498,7 +498,7 @@ impl eframe::App for SdroxideApp {
                         &mut self.peaks,
                         &mut self.spec_smooth,
                         &mut self.trace_cache,
-                        Some(audio_hz),
+                        Some(spectrum_view::AudioCursor { hz: audio_hz, click_sets_offset: true }),
                         if mode == Mode::Ft8 {
                             self.digi_status
                                 .as_ref()
@@ -599,23 +599,83 @@ impl eframe::App for SdroxideApp {
             let (cw_spots, cw_alpha) = self.cw_overlay(now);
             let frame = self.frame.take();
             let wf_tuning = self.wf_tick(frame.is_some());
-            spectrum_view::show(
-                ui,
-                &mut self.view,
-                &mut self.state,
-                frame.as_ref(),
-                &mut self.peaks,
-                &mut self.spec_smooth,
-                &mut self.trace_cache,
-                &cw_spots,
-                &cw_alpha,
-                &net_spots,
-                &net_alpha,
-                &mut clicked_spot,
-                self.input.cfg.wheel,
-                wf_tuning,
-                &mut cmds,
-            );
+            // CW is the one analog mode with a panel under the panadapter. It
+            // is not a digital mode and does not take the digital path — the
+            // demodulated tone stays audible and the view stays wherever the
+            // operator left it — but it has a decoder and a keyboard, and both
+            // need somewhere to live. The cursor is the mode's own: a marker at
+            // the pitch being copied, which a click on the waterfall moves.
+            let cw_mode = self.state.rx[0].mode == Mode::Cw;
+            let phone = tier == crate::layout::Tier::Phone;
+            let (wf_h, panel_h, show_wf, show_panel) = if !cw_mode {
+                (ui.available_height(), 0.0, true, false)
+            } else if phone {
+                self.digi_tabs(ui, Mode::Cw);
+                let on_wf =
+                    self.digi_pane(Mode::Cw) == crate::app::panels::panel_panes(Mode::Cw).len();
+                let h = ui.available_height();
+                (h, h, on_wf, !on_wf)
+            } else {
+                let total = ui.available_height();
+                let divider = 7.0 + 2.0 * ui.spacing().item_spacing.y;
+                let (w, p) = digi_split(total, divider, self.view.digi_panel_fraction);
+                (w, p, true, true)
+            };
+            let width = ui.available_width();
+            let cw_pitch = cw_mode.then(|| spectrum_view::AudioCursor {
+                hz: self.digi_status.as_ref().map_or(700.0, |s| s.audio_hz),
+                // A click tunes the dial so the signal lands on the cursor.
+                click_sets_offset: false,
+            });
+            if show_wf {
+                ui.allocate_ui(egui::vec2(width, wf_h), |ui| {
+                    spectrum_view::show_ext(
+                        ui,
+                        &mut self.view,
+                        &mut self.state,
+                        frame.as_ref(),
+                        &mut self.peaks,
+                        &mut self.spec_smooth,
+                        &mut self.trace_cache,
+                        cw_pitch,
+                        sdroxide_types::DxpedMode::Normal,
+                        false,
+                        &[],
+                        &cw_spots,
+                        &cw_alpha,
+                        &net_spots,
+                        &net_alpha,
+                        &mut clicked_spot,
+                        self.input.cfg.wheel,
+                        wf_tuning,
+                        &mut cmds,
+                    );
+                });
+            }
+            if show_panel {
+                if !phone {
+                    let hresp = crate::chrome::split_handle(
+                        ui,
+                        egui::vec2(width, 7.0),
+                        Some(crate::theme::PANEL),
+                    );
+                    if hresp.dragged() {
+                        let d = hresp.drag_delta().y / ui.available_height().max(1.0);
+                        self.view.digi_panel_fraction =
+                            (self.view.digi_panel_fraction - d).clamp(0.2, 0.82);
+                    }
+                }
+                ui.allocate_ui(egui::vec2(width, panel_h), |ui| {
+                    egui::Frame::new()
+                        .fill(crate::theme::BG_DEEP)
+                        .inner_margin(egui::Margin { left: 0, right: 0, top: 6, bottom: 0 })
+                        .show(ui, |ui| {
+                            crate::chrome::angled_frame(ui, crate::theme::PINK, |ui| {
+                                self.cw_panel(ui, &mut cmds, panel_h);
+                            });
+                        });
+                });
+            }
             self.frame = frame;
         }
         // A spot clicked on the panadapter: pre-fill a log entry (tuning + mode

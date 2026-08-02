@@ -53,6 +53,11 @@ or connects to a remote sdroxide server.
   **monitor of your own signal**: wideband IQ rigs display it at its on-air
   frequency in the full span; CAT rigs and digital modes show a narrow
   transmit-sideband scope (an approximation built from the outgoing audio).
+- **CW decode and keyboard sending** — a Morse decoder that finds the speed,
+  the threshold and the spacing for itself rather than being told them, with a
+  waterfall cursor that picks the signal to copy (and the frequency to answer
+  on), and a type-ahead keyboard that sends as you type. The same decoder drives
+  the wideband CW skimmer.
 - **Voice keyer** — ten recorded messages, transmitted from a button, a numpad
   key, a MIDI pad or a Hamlib `send_voice_mem` command; works in the voice modes
   and in RADE digital voice.
@@ -440,6 +445,76 @@ press **Store** to save the current frequency and mode. Each saved row has a
 **RCL** (recall) button and a **DEL** (delete) button.
 
 ![The memory channels window](images/06-memories.png)
+
+---
+
+### 2.13 CW: decoding and keyboard sending
+
+Choose **CW** from the Band/Mode popup and the panadapter gains a **cursor** and
+a panel underneath it. CW is not a digital mode — the tone stays audible, the
+waterfall stays on the whole band, and nothing about the way you tune changes —
+but a decoder reads what you are listening to, and a keyboard sends.
+
+![The CW panel: decoded text above, what you are sending below](images/cw.jpg)
+
+**The cursor is the frequency.** The cyan line on the waterfall marks the tone
+being copied. It is also the tone you transmit on, because in CW those are the
+same frequency: you answer a station where you heard it. Everything follows the
+cursor together — the passband moves with it, so what is decoded is always what
+is audible.
+
+- **Click a signal on the waterfall** to bring it to the cursor. This tunes the
+  dial so the signal lands at your pitch, which is what you want and what a bare
+  click-to-tune does not do: the dial in CW sits a sidetone-pitch *below* what
+  you hear, so tuning a signal onto the dial itself is the one place it is
+  guaranteed to be inaudible.
+- **−/+** in the panel header move the cursor 10 Hz at a time. This is your
+  sidetone pitch, a personal preference; you will set it once.
+- Clicking a **CW skimmer box** ([4](#4-skimmers)) does the same thing, so a
+  station spotted across the band is one click from being copied.
+
+**What the header tells you.** A CW decoder cannot fail quietly the way a
+framed digital mode does — fed noise, a naive one produces confident nonsense —
+so the panel says how sure it is:
+
+- The **lamp** is lit while the decoder is actually copying: its timing fit is
+  good and holding steady from one look at the signal to the next. Unlit, it
+  says "listening" and prints nothing at all, which is the correct output for an
+  empty frequency.
+- **WPM** is the speed read off the signal, not a setting. It is worth watching:
+  a decoder locked at the right speed is a decoder you can trust.
+- **dB** is the signal-to-noise in 500 Hz — the same bandwidth a signal report
+  is quoted in, so it is directly comparable with what another operator would
+  tell you.
+- A **±Hz** figure appears when the signal is more than a few hertz off your
+  cursor. The decoder tracks it (and keeps copying), but the passband does not
+  follow, so nudge the cursor if it grows.
+
+**Sending.** Type in the lower box. Characters go out **as you type** rather
+than a line at a time, and the ones already on the air turn **green** — so when
+you pause you can watch the sending catch up.
+
+- Typing keys the transmitter by itself; you do not have to press **TX** first.
+- **TX** holds the key down between characters so nothing you type waits. It
+  releases itself after five seconds with nothing left to send, so a transmitter
+  is never left holding the frequency.
+- **CALL CQ** loads and sends a CQ built from your callsign; **CLEAR** stops and
+  drops whatever has not gone out.
+
+**Speed and spacing** are set from the chips at the right of the header:
+
+- **WPM** — your keying speed.
+- **FW** — Farnsworth: send the characters at full speed and stretch only the
+  gaps between them, so they are heard at the right rhythm but arrive slowly
+  enough to write down. Choose the overall speed to stretch to, or Off.
+- **LOCK** — decode at your own speed instead of reading the speed off the
+  signal. Worth turning on for a signal too weak for the speed search to settle
+  when you already know how fast the other station sends.
+
+> **Transmitting** needs an IQ radio (SoapySDR, HPSDR, TCI, SmartSDR): the keyer
+> builds its own sideband signal. A CAT radio that takes demodulated audio will
+> decode perfectly well but cannot be keyed this way — its CW keying is the
+> rig's own.
 
 ---
 
@@ -1357,8 +1432,9 @@ label each one on the waterfall. There are three: **CW**, **PSK31**, and
   showing the callsign (once resolved, for CW) and a rolling tail of decoded
   text. Boxes fade out a few seconds after a signal stops.
 - **Click a skimmer box** to tune to that signal and switch to its mode — CW for
-  a CW spot, PSK or RTTY for a digimode spot (which also opens the messaging
-  panel, [3.7](#37-psk31-and-rtty)).
+  a CW spot (which lands it on the CW panel's cursor, [2.13](#213-cw-decoding-and-keyboard-sending)),
+  PSK or RTTY for a digimode spot (which also opens the messaging panel,
+  [3.7](#37-psk31-and-rtty)).
 
 **Band-aware gating.** To avoid noise and false decodes, each skimmer only runs
 where its mode is used: the CW skimmer in CW sub-bands, and the PSK and RTTY
@@ -1367,7 +1443,9 @@ QRSS watering-holes excluded so their signals aren't mistaken for PSK or RTTY
 (the WSPR window and the slow-CW/QRSS beacons just below it sit inside the RTTY
 sub-band on several bands, so they're carved out explicitly). The skimmer-decoded
 text is a coarse best-effort copy; switch to the mode (click a box) for a clean
-decode.
+decode — the CW skimmer runs the same decoder as the CW panel, but over hundreds
+of signals at once and re-reading each one only twice a second, so a signal you
+care about is always better copied on the panel.
 
 > **Note:** the skimmers are a wideband feature and work only with true IQ/SDR
 > sources (SoapySDR, HPSDR, TCI). They are unavailable when a CAT radio is
@@ -3610,7 +3688,7 @@ F1 is the exception: it always opens the manual, so it is not rebindable.
 | Mode | Description |
 | --- | --- |
 | LSB / USB | Lower / upper sideband voice. |
-| CW | Morse (continuous wave). |
+| CW | Morse (continuous wave). Decoded on a waterfall cursor, with type-ahead keyboard sending — see [2.13](#213-cw-decoding-and-keyboard-sending). |
 | AM | Amplitude modulation. |
 | SAM | Synchronous AM. |
 | NFM / WFM | Narrow / wide FM. WFM decodes broadcast stereo automatically. |

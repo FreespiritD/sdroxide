@@ -575,53 +575,28 @@ impl TraceEntry {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn show(
-    ui: &mut Ui,
-    view: &mut ViewState,
-    state: &mut RadioState,
-    frame: Option<&Arc<SpectrumFrame>>,
-    peaks: &mut PeakHold,
-    smooth: &mut SpectrumSmooth,
-    trace: &mut TraceCache,
-    skimmer: &[SkimmerSpot],
-    alpha: &[f32],
-    net_spots: &[Spot],
-    net_alpha: &[f32],
-    clicked_spot: &mut Option<Spot>,
-    wheel: WheelSettings,
-    wf: WfTuning,
-    cmds: &mut Vec<Command>,
-) {
-    show_ext(
-        ui,
-        view,
-        state,
-        frame,
-        peaks,
-        smooth,
-        trace,
-        None,
-        sdroxide_types::DxpedMode::Normal,
-        false,
-        &[],
-        skimmer,
-        alpha,
-        net_spots,
-        net_alpha,
-        clicked_spot,
-        wheel,
-        wf,
-        cmds,
-    );
+/// An audio-offset cursor on the panadapter: a marker at `dial + hz`, and what
+/// a left-click on the waterfall means while it is there.
+#[derive(Clone, Copy, Debug)]
+pub struct AudioCursor {
+    /// Offset from the dial, in Hz.
+    pub hz: f32,
+    /// `true` — a click sets the offset. The digital modes, where the dial is
+    /// parked on a sub-band and the operator picks a signal *within* it.
+    ///
+    /// `false` — a click tunes the dial so that the clicked frequency lands on
+    /// the cursor. CW, where the panadapter spans the whole band: the cursor is
+    /// the pitch being listened at, and clicking a signal means "put that one
+    /// here", not "move my pitch to the far side of the passband".
+    pub click_sets_offset: bool,
 }
 
-/// `show` with an optional digital-mode audio marker. When `digi_audio_hz`
-/// is `Some`, left-click sets the FT8/FT4 audio TX frequency instead of the
-/// VFO, and a marker is drawn at `dial + audio_hz`.
+/// The panadapter: spectrum trace, frequency scale and waterfall, with the
+/// tuning, filter and spot interactions on them.
 ///
-/// `skimmer` are the overlay boxes (CW skimmer spots, or FT8 station callsigns
-/// in digital mode) and `alpha` is a parallel per-box opacity for fade-out.
+/// `cursor` is the optional audio-offset marker — see [`AudioCursor`]. `skimmer`
+/// are the overlay boxes (CW skimmer spots, or FT8 station callsigns in digital
+/// mode) and `alpha` is a parallel per-box opacity for fade-out.
 pub fn show_ext(
     ui: &mut Ui,
     view: &mut ViewState,
@@ -630,7 +605,7 @@ pub fn show_ext(
     peaks: &mut PeakHold,
     smooth: &mut SpectrumSmooth,
     trace: &mut TraceCache,
-    digi_audio_hz: Option<f32>,
+    cursor: Option<AudioCursor>,
     // FT8 DXpedition role. Anything but `Normal` shades the two halves of the
     // passband the pile-up divides itself into, with the half we operate in
     // named — a Hound calling down among the Fox's signals is the single most
@@ -656,6 +631,11 @@ pub fn show_ext(
     wf: WfTuning,
     cmds: &mut Vec<Command>,
 ) {
+    let cursor_hz = cursor.map(|c| c.hz);
+    // True only where a click *sets* the offset. In CW a click tunes the dial
+    // instead, so everything keyed to "is there a cursor" has to ask which kind.
+    let click_sets_offset = cursor.is_some_and(|c| c.click_sets_offset);
+
     let rect = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(rect, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
@@ -702,8 +682,7 @@ pub fn show_ext(
     // Skimmer boxes are laid out up front so the click hit-test (below) and the
     // draw pass (bottom) agree on their rects. FT8 (digital) boxes fit their
     // text; CW skimmer boxes use a fixed width for their live-growing tail.
-    let spot_boxes =
-        layout_spots(&painter, view, &rect, &wf_rect, skimmer, digi_audio_hz.is_some());
+    let spot_boxes = layout_spots(&painter, view, &rect, &wf_rect, skimmer, click_sets_offset);
     let net_boxes = layout_net_spots(&painter, view, &rect, &wf_rect, net_spots);
 
     // --- interactions -----------------------------------------------------
@@ -1077,7 +1056,7 @@ pub fn show_ext(
                 } else if let Some(sb) = spot_boxes.iter().find(|b| b.rect.contains(pos)) {
                     let spot = &skimmer[sb.idx];
                     let spot_hz = spot.freq_hz;
-                    if digi_audio_hz.is_some() {
+                    if click_sets_offset {
                         // FT8 station box. Moving our transmit onto the station
                         // is what Auto TX FRQ exists to avoid — they transmit in
                         // the period opposite ours, so their frequency says
@@ -1091,10 +1070,13 @@ pub fn show_ext(
                         // Skimmer spot: switch to the spot's mode and tune onto it.
                         match spot.kind {
                             SkimmerKind::Cw => {
-                                // Dial a sidetone-pitch below so it lands in the
-                                // CW filter (CW is USB-side, ~700 Hz passband).
-                                let (lo, hi) = Mode::Cw.default_filter();
-                                let pitch = ((lo + hi) * 0.5) as f64;
+                                // Dial a sidetone-pitch below so it lands on the
+                                // CW cursor — the operator's own pitch when one
+                                // is already set, the mode default otherwise.
+                                let pitch = cursor_hz.map(f64::from).unwrap_or_else(|| {
+                                    let (lo, hi) = Mode::Cw.default_filter();
+                                    ((lo + hi) * 0.5) as f64
+                                });
                                 cmds.push(Command::SetVfo {
                                     vfo: state.active_vfo,
                                     hz: spot_hz - pitch,
@@ -1117,12 +1099,17 @@ pub fn show_ext(
                             }
                         }
                     }
-                } else if digi_audio_hz.is_some() {
+                } else if click_sets_offset {
                     // Digital mode: set the audio TX offset, not the VFO.
                     let audio = (view.x_to_freq(pos.x, &rect) - state.rx_freq_hz()) as f32;
                     cmds.push(Command::SetDigiAudioFreq(audio.clamp(200.0, 3500.0)));
                 } else {
-                    let hz = (view.x_to_freq(pos.x, &rect) / step).round() * step;
+                    // CW: tune so the clicked signal lands *on* the cursor, not
+                    // on the dial. The dial in CW is a sidetone-pitch below what
+                    // you hear, so tuning a signal to the dial is the one place
+                    // it is guaranteed not to be audible.
+                    let off = cursor_hz.map(f64::from).unwrap_or(0.0);
+                    let hz = ((view.x_to_freq(pos.x, &rect) - off) / step).round() * step;
                     cmds.push(Command::SetVfo { vfo: state.active_vfo, hz });
                 }
             }
@@ -1463,8 +1450,8 @@ pub fn show_ext(
         }
     }
 
-    // Digital-mode audio TX marker (cyan) at dial + audio_hz.
-    if let Some(a) = digi_audio_hz {
+    // The audio-offset cursor (cyan) at dial + offset.
+    if let Some(a) = cursor_hz {
         let hz = state.rx_freq_hz() + a as f64;
         if in_view(hz) {
             let x = view.freq_to_x(hz, &rect);
@@ -1599,7 +1586,7 @@ pub fn show_ext(
             Stroke::new(1.0, fade(border, a)),
         );
         painter.circle_filled(pos2(b.sig_x, cy), 1.8, fade(border, a));
-        draw_spot_box(&painter, b, spot, hovered, a, digi_audio_hz.is_some());
+        draw_spot_box(&painter, b, spot, hovered, a, click_sets_offset);
     }
 
     // Network spot boxes (bottom-anchored lanes) — DX cluster / POTA / SOTA /
@@ -1704,7 +1691,7 @@ pub fn show_ext(
                 painter.vline(p.x, spec_rect.y_range(), Stroke::new(1.0, line));
             }
             painter.vline(p.x, wf_rect.y_range(), Stroke::new(1.0, line));
-            let text = click_tune_label(view, state, &rect, p.x, digi_audio_hz);
+            let text = click_tune_label(view, state, &rect, p.x, cursor);
             label_box(&painter, pos2(p.x + 8.0, p.y - 9.0), &text, Color32::WHITE, rect);
         }
     }
@@ -1934,19 +1921,21 @@ fn label_box(p: &egui::Painter, top_left: Pos2, text: &str, fg: Color32, bounds:
 }
 
 /// The value a left-click at screen `x` would set: the audio TX offset in a
-/// digital mode, else the (10 Hz-rounded) dial frequency.
+/// digital mode, else the (10 Hz-rounded) dial frequency it would tune to.
 fn click_tune_label(
     view: &ViewState,
     state: &RadioState,
     rect: &Rect,
     x: f32,
-    digi_audio_hz: Option<f32>,
+    cursor: Option<AudioCursor>,
 ) -> String {
     let hz = view.x_to_freq(x, rect);
-    if digi_audio_hz.is_some() {
+    if cursor.is_some_and(|c| c.click_sets_offset) {
         let audio = (hz - state.rx_freq_hz()).clamp(200.0, 3500.0);
         format!("{audio:.0} Hz")
     } else {
+        // The label is the frequency of the *signal*, which in CW is a pitch
+        // above the dial the click will actually set.
         let tuned = (hz / CLICK_TUNE_STEP).round() * CLICK_TUNE_STEP;
         format!("{:.5} MHz", tuned / 1e6)
     }

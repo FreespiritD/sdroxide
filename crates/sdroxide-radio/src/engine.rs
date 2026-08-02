@@ -14,9 +14,9 @@ use tracing::{debug, info, warn};
 
 use sdroxide_config::BandStacks;
 use sdroxide_digi::{
-    DigiAction, DigiController, DigiEngine, FsqController, HellController, Js8Controller,
-    RadeController, RfPaintController, RifpController, SstvController, TextModemController,
-    WefaxController,
+    CwController, DigiAction, DigiController, DigiEngine, FsqController, HellController,
+    Js8Controller, RadeController, RfPaintController, RifpController, SstvController,
+    TextModemController, WefaxController,
 };
 use sdroxide_dsp::{
     Agc, AutoNotch, DcBlock, Ddc, Demodulator, Duc, Modulator, MonoResampler, NeuralNr,
@@ -1871,7 +1871,12 @@ impl Engine {
     /// Build the digital-mode engine for `mode`: the continuous keyboard
     /// controller for PSK/RTTY, else the slotted FT8/FT4 controller.
     fn make_digi(&self, mode: Mode, tap_rate: f64) -> Box<dyn DigiEngine> {
-        if mode.is_rade() {
+        if mode == Mode::Cw {
+            // First, because CW is not `is_digital()` and nothing below would
+            // catch it: it is an ordinary analog mode that happens to have a
+            // decoder and a keyer bolted alongside. See `CwController`.
+            Box::new(CwController::new(self.digi_config.clone(), tap_rate))
+        } else if mode.is_rade() {
             Box::new(RadeController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_sstv() {
             Box::new(SstvController::new(self.digi_config.clone(), tap_rate))
@@ -1900,10 +1905,39 @@ impl Engine {
         }
     }
 
+    /// Keep the CW passband centred on the pitch the panel is copying.
+    ///
+    /// The decoder is fed the post-filter audio, the same audio the operator
+    /// hears, so a cursor moved outside the passband would be a cursor on a
+    /// signal that is neither audible nor decodable. Every CW rig moves its
+    /// filter with its pitch control for the same reason; the width the
+    /// operator has chosen is left alone.
+    fn sync_cw_filter(&mut self) {
+        if self.state.rx[0].mode != Mode::Cw {
+            return;
+        }
+        let pitch = self.digi.as_ref().map_or(self.digi_config.cw_pitch_hz, |d| d.audio_hz());
+        let r = &mut self.state.rx[0];
+        let w = (r.filter_hi - r.filter_lo).abs().clamp(50.0, 3000.0);
+        let (lo, hi) = (pitch - w / 2.0, pitch + w / 2.0);
+        if (r.filter_lo - lo).abs() < 0.5 && (r.filter_hi - hi).abs() < 0.5 {
+            return;
+        }
+        (r.filter_lo, r.filter_hi) = (lo, hi);
+        if let Some(d) = self.main.as_mut().and_then(|c| c.demod.as_mut()) {
+            d.set_filter(lo, hi);
+        }
+    }
+
     /// Construct or tear down the digi controller to match the current mode.
     fn sync_digi_mode(&mut self) {
         let mode = self.state.rx[0].mode;
-        let want = mode.is_digital();
+        // CW joins the digital modes here and nowhere else. It is not one — the
+        // rig is in CW, the demodulated tone stays audible, and none of the
+        // digital-mode display or band-plan handling applies — but the panel's
+        // decoder and keyer need exactly the audio tap and transmit-block seam
+        // this builds, so it gets one.
+        let want = mode.is_digital() || mode == Mode::Cw;
         let have = self.digi.is_some();
         // Audio mode feeds the decoder the rig's audio directly (run_audio_mode);
         // there's no RxChain tap or high-res channel analyzer.
@@ -1922,6 +1956,9 @@ impl Engine {
                 self.channel_analyzer = Some(SpectrumAnalyzer::new(16_384, ch_rate, 0.10));
             }
             info!(?mode, tap_rate, "digital-mode engine started");
+            // CW enters with the operator's saved pitch, which need not be the
+            // 700 Hz the mode's default passband is centred on.
+            self.sync_cw_filter();
             // Emit the operator config so a client that hasn't seen a digital
             // mode yet (e.g. straight into SSTV) can seed its editable copy.
             self.emit_digi_status();
@@ -1944,7 +1981,7 @@ impl Engine {
             self.digi = None;
             self.channel_analyzer = None;
             self.sync_audio_tap();
-            info!("FT8/FT4 engine stopped");
+            info!("digital-mode engine stopped");
         }
     }
 
@@ -2405,6 +2442,7 @@ impl Engine {
                 if let Some(d) = self.digi.as_mut() {
                     d.set_config(c);
                 }
+                self.sync_cw_filter();
                 if let Err(e) = sdroxide_config::save_digi_config(&self.digi_config) {
                     warn!("saving digi config: {e}");
                 }
@@ -2417,6 +2455,7 @@ impl Engine {
                 if let Some(d) = self.digi.as_mut() {
                     d.set_audio_hz(hz);
                 }
+                self.sync_cw_filter();
             }
             DigiCallCq => {
                 if let Some(d) = self.digi.as_mut() {
@@ -4450,7 +4489,19 @@ impl Engine {
         };
 
         tx.mod_buf.clear();
-        let modulator = tx.modulator.as_mut().expect("SsbMod for Ft8/Ft4");
+        // Every mode that reaches here rides single sideband, so the chain has
+        // a modulator — except CW, where the chain deliberately has none so
+        // that a manual PTT keys a carrier rather than modulating the mic. The
+        // keyer's sidetone does want one: put through the same USB path as
+        // everything else it lands on the air at dial + pitch, which is exactly
+        // where the waterfall cursor says it should.
+        let modulator = match tx.modulator.as_mut() {
+            Some(m) => m,
+            None => {
+                let (lo, hi) = Mode::Usb.default_filter();
+                tx.modulator.insert(Box::new(sdroxide_dsp::SsbMod::new(48_000.0, lo, hi)))
+            }
+        };
         modulator.process(&audio, &mut tx.mod_buf);
         let drive = self.state.tx.drive;
         for z in &mut tx.mod_buf {
