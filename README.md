@@ -329,6 +329,14 @@ full panadapter, the CW/PSK/RTTY skimmers, and internal demodulation; a CAT rig
 feeding demodulated audio shows only a narrow audio-band slice. RTL-SDR is
 receive-only; the others can transmit.
 
+Whichever backend you pick, a **converter offset** on the same tab handles an
+external HF upconverter (Ham It Up, SpyVerter) or a receive converter: set it to
+`+125 MHz` and you tune 10.1008 MHz while the receiver is quietly sent to
+135.1008 MHz. The dial, band buttons, memories, the logbook and every spot and
+upload stay on the real on-air frequency. Receive only — transmit is switched
+off while a converter is set, because a converter is not in the transmit path.
+Not yet verified against physical hardware.
+
 ### SmartSDR Simulator
 
 A **wire-level radio simulator** allows for the backend to be exercised end to end with no radio present.

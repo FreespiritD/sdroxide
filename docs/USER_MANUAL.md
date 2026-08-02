@@ -1597,6 +1597,41 @@ afterwards — sdroxide keeps trying it in the background and attaches by itself
 retrying at first every second and then more slowly. The same happens if the
 link drops mid-session: it reconnects when the radio comes back.
 
+**Converter offset**, under the interface selector, is for an external frequency
+converter in the antenna line — an HF upconverter such as the Ham It Up or
+SpyVerter, or a receive converter for a band your hardware cannot reach. Set it
+to how far *above* the dial the converter puts the signal, and tune in real
+frequencies from then on: with `+125 MHz` you type 10.1008 MHz and sdroxide
+quietly sends the receiver to 135.1008 MHz. The **+125** button fills in the
+usual upconverter value; **None** takes the converter back out. The offset takes
+effect when you press **Apply / reconnect**, not as you type it.
+
+Everything downstream follows the dial, not the hardware: band buttons, the band
+plan, memories, the logbook, cluster and PSK Reporter spots, what gets uploaded
+after a digital contact, and the tuning range quoted if you ask for a frequency
+the radio cannot reach. Nothing needs a second correction anywhere.
+
+Three things to know:
+
+- **Transmit is switched off while a converter is set.** A converter sits between
+  the antenna and the receiver's *input*, so it is not in the transmit path.
+  Keying through it would put the radio 125 MHz away from the frequency on the
+  dial — legal on 30 m, an aeronautical band up there — so sdroxide withdraws
+  transmit entirely rather than risk it. Bidirectional transverters are not
+  supported yet.
+- **Frequencies you saved before setting the offset are now wrong.** If you have
+  been doing this arithmetic by hand, your memories, band stacks and last-used
+  frequency all hold the receiver's numbers (135.1008 MHz). Once the offset is
+  set those are read as dial frequencies and everything jumps 125 MHz. Re-enter
+  them once and they stay right.
+- **RTL-SDR Blog V4 owners:** the V4 has an upconverter of its own that switches
+  in below 28.8 MHz. A positive offset is fine — the converter's output lands
+  well above that — but a *negative* offset that drops the hardware frequency
+  below 28.8 MHz would be shifted a second time by the dongle.
+
+This has been tested against sdroxide's own simulated front ends, not against a
+physical converter. If you have one, reports are welcome.
+
 #### 5.2.1 SoapySDR devices
 
 ![The Radio tab with the SoapySDR interface selected](images/settings-radio-soapysdr.jpg)

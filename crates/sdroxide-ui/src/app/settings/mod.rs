@@ -91,6 +91,9 @@ pub(in crate::app) struct SatEditState {
 pub(in crate::app) struct SettingsIo<'a> {
     iface_opts: &'a [sdroxide_types::Backend],
     radio_edit: &'a mut Option<sdroxide_types::RadioConfig>,
+    /// Converter offset in MHz, buffered until Apply — see
+    /// `SdroxideApp::converter_edit_mhz`.
+    converter_mhz: &'a mut Option<f64>,
     audio_pick: &'a mut Option<(bool, Option<String>)>,
     hpsdr_discover: &'a mut bool,
     /// Re-enumerate the USB bus for RTL-SDR dongles. Cheap and non-invasive —
@@ -206,6 +209,10 @@ impl SdroxideApp {
         if !self.show_settings {
             self.audio_devices = None;
             self.audio_devices_queried = false;
+            // Drop an uncommitted converter offset rather than carry it to the
+            // next open: closing the dialog without pressing Apply means the
+            // radio is still on the old one, and the box should say so.
+            self.converter_edit_mhz = None;
             return;
         } else if !self.audio_devices_queried {
             self.audio_devices = self.ctrl.audio_devices();
@@ -236,6 +243,7 @@ impl SdroxideApp {
         let mut smartsdr_copy_report = false;
         let mut apply_iface = false;
         let mut radio_edit = self.radio_cfg.clone();
+        let mut converter_mhz = self.converter_edit_mhz;
         let mut ui_edit = self.ui_settings;
         // Only where the engine is in this process: see `SettingsIo`.
         let owns_server = !self.ctrl.engine_is_remote();
@@ -305,6 +313,7 @@ impl SdroxideApp {
                     &mut SettingsIo {
                         iface_opts: &iface_opts,
                         radio_edit: &mut radio_edit,
+                        converter_mhz: &mut converter_mhz,
                         audio_pick: &mut audio_pick,
                         hpsdr_discover: &mut hpsdr_discover,
                         rtlsdr_rescan: &mut rtlsdr_rescan,
@@ -478,12 +487,18 @@ impl SdroxideApp {
             ctx.copy_text(report);
         }
         if apply_iface {
+            // The one field that waits for this moment, so the radio is never
+            // reopened on a partly-typed offset.
+            if let (Some(cfg), Some(mhz)) = (radio_edit.as_mut(), converter_mhz) {
+                cfg.converter_offset_hz = mhz * 1e6;
+            }
             // Persist the latest edits, then rebuild the live source (no restart).
             if let Some(cfg) = &radio_edit {
                 self.ctrl.set_radio_config(cfg.clone());
             }
             self.ctrl.reopen_source();
         }
+        self.converter_edit_mhz = converter_mhz;
         if radio_edit != self.radio_cfg {
             if let Some(cfg) = &radio_edit {
                 self.ctrl.set_radio_config(cfg.clone());
@@ -659,12 +674,53 @@ impl SdroxideApp {
                     );
                     return;
                 };
-                // The single "which radio interface" selector.
+                // The single "which radio interface" selector, and the converter
+                // that may sit in front of whichever one is chosen.
+                let backend = cfg.backend;
+                let converter = io.converter_mhz.get_or_insert(cfg.converter_offset_hz / 1e6);
                 egui::Grid::new("iface-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                     ui.label(RichText::new("Radio interface").strong());
                     enum_combo(ui, "iface", &mut cfg.backend, io.iface_opts, Backend::label);
                     ui.end_row();
+
+                    ui.label(RichText::new("Converter offset").strong());
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(converter)
+                                .speed(0.1)
+                                .range(-2000.0..=2000.0)
+                                .max_decimals(6)
+                                .suffix(" MHz"),
+                        )
+                        .on_hover_text(
+                            "How far above the dial an external converter tunes the hardware, so \
+                             an upconverter's dial reads the real on-air frequency. A Ham It Up \
+                             or SpyVerter is +125 MHz. 0 = no converter.\n\nReceive only: a \
+                             converter is not in the transmit path, so transmit is switched off \
+                             while this is set.\n\nTakes effect on Apply.",
+                        );
+                        if ui.small_button("+125").on_hover_text("Ham It Up / SpyVerter").clicked()
+                        {
+                            *converter = 125.0;
+                        }
+                        if ui.small_button("None").clicked() {
+                            *converter = 0.0;
+                        }
+                    });
+                    ui.end_row();
                 });
+                if *converter != 0.0 {
+                    ui.label(
+                        RichText::new(if backend == Backend::RtlSdr && *converter < 0.0 {
+                            "Transmit is off while a converter is set. Careful on an RTL-SDR: the \
+                             Blog V4 upconverts on its own below 28.8 MHz, so a negative offset \
+                             that lands the hardware there shifts twice."
+                        } else {
+                            "Transmit is off while a converter is set."
+                        })
+                        .weak(),
+                    );
+                }
                 ui.separator();
 
                 match cfg.backend {

@@ -1,0 +1,555 @@
+//! An HF upconverter must not make the operator do the arithmetic.
+//!
+//! With a Ham It Up in the antenna line, 10.1008 MHz on the air arrives at the
+//! receiver as 135.1008 MHz. Everything above `ConvertedSource` — the dial, the
+//! band edges, memories, spots, what gets uploaded to PSK Reporter — has to say
+//! 10.1008 MHz, and only the hardware may hear about the other number.
+//!
+//! No upconverter was available while this was written, so these tests are the
+//! acceptance criterion for the arithmetic; the hardware remains unproven.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use crossbeam_channel::Receiver;
+use sdroxide_radio::{
+    Complex32, ConvertedSource, EngineConfig, IqSource, Result, shift_caps, start_engine,
+};
+use sdroxide_types::{Command, DeviceCaps, Mode, RadioEvent, Vfo};
+
+/// A Ham It Up / SpyVerter.
+const OFFSET: f64 = 125_000_000.0;
+/// 30 m WSPR, the frequency the operator wants to see on the dial.
+const DIAL: f64 = 10_100_800.0;
+const RATE: f64 = 2_400_000.0;
+
+/// A front end that accepts every tune and records where it was sent. Everything
+/// it sees is in the *hardware* domain.
+struct Hardware {
+    center_hz: f64,
+    rate_hz: f64,
+    lo_offset_hz: f64,
+    landed: Arc<Mutex<f64>>,
+}
+
+impl Hardware {
+    fn new(center_hz: f64) -> Self {
+        Hardware {
+            center_hz,
+            rate_hz: RATE,
+            lo_offset_hz: 0.0,
+            landed: Arc::new(Mutex::new(center_hz)),
+        }
+    }
+}
+
+impl IqSource for Hardware {
+    fn sample_rate(&self) -> f64 {
+        self.rate_hz
+    }
+    fn center_hz(&self) -> f64 {
+        self.center_hz
+    }
+    fn lo_offset_hz(&self) -> f64 {
+        self.lo_offset_hz
+    }
+    fn set_center_hz(&mut self, hz: f64) -> Result<()> {
+        self.center_hz = hz;
+        *self.landed.lock().unwrap() = hz;
+        Ok(())
+    }
+    fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        std::thread::sleep(Duration::from_millis(5));
+        let n = buf.len().min(256);
+        buf[..n].fill(Complex32::new(0.0, 0.0));
+        Ok(n)
+    }
+    fn describe(&self) -> String {
+        "test front end".into()
+    }
+}
+
+/// A device that can hear the whole VHF range the converter's output lands in,
+/// and transmit on it — so the transmit withdrawal is a real change, not a
+/// device that could never key anyway.
+fn hardware_caps() -> DeviceCaps {
+    DeviceCaps {
+        driver: "test".into(),
+        label: "test".into(),
+        rx_channels: 1,
+        tx_channels: 1,
+        sample_rates: vec![RATE],
+        freq_ranges_rx: vec![(24_000_000.0, 1_766_000_000.0)],
+        freq_ranges_tx: vec![(24_000_000.0, 1_766_000_000.0)],
+        antennas_tx: vec!["TX/RX".into()],
+        ..DeviceCaps::default()
+    }
+}
+
+/// Collect events for `secs`, returning the notices seen and where the dial and
+/// the hardware centre ended up (both as the *engine* understands them).
+fn drain(rx: &Receiver<RadioEvent>, secs: f64) -> (Vec<String>, f64, f64) {
+    let mut notices = Vec::new();
+    let (mut dial, mut center) = (f64::NAN, f64::NAN);
+    let deadline = Instant::now() + Duration::from_secs_f64(secs);
+    while Instant::now() < deadline {
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                RadioEvent::Notice(Some(n)) => notices.push(n),
+                RadioEvent::State(s) => {
+                    dial = s.active_freq_hz();
+                    center = s.center_hz;
+                }
+                _ => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    (notices, dial, center)
+}
+
+/// The whole point: type 10.1008 and the hardware goes to 135.1008, while every
+/// number the engine publishes stays on 10.1008.
+#[test]
+fn the_dial_stays_on_air_while_the_hardware_takes_the_offset() {
+    let inner = Hardware::new(DIAL + OFFSET);
+    let landed = Arc::clone(&inner.landed);
+    let source = ConvertedSource::new(Box::new(inner), OFFSET);
+    let mut h = start_engine(
+        Box::new(source),
+        shift_caps(hardware_caps(), OFFSET),
+        EngineConfig::default(),
+    );
+    let thread = h.thread.take();
+
+    // Far enough to leave the span, so the engine has to move the hardware.
+    let target = DIAL + 3_000_000.0;
+    h.cmd_tx.send(Command::SetVfo { vfo: Vfo::A, hz: target }).unwrap();
+    let (notices, dial, center) = drain(&h.event_rx, 1.0);
+
+    assert!(notices.is_empty(), "this frequency is reachable, got {notices:?}");
+    assert!((dial - target).abs() < 1.0, "the dial should read {target}, not {dial}");
+    assert!((center - target).abs() < 1.0, "the centre is operator-domain too, got {center}");
+    let hw = *landed.lock().unwrap();
+    assert!(
+        (hw - (target + OFFSET)).abs() < 1.0,
+        "the hardware should have gone to {}, not {hw}",
+        target + OFFSET
+    );
+
+    drop(h.cmd_tx);
+    if let Some(t) = thread {
+        let _ = t.join();
+    }
+}
+
+/// Where the source opened is where the dial starts, so a restart with a
+/// converter set does not come up 125 MHz out — or, with the subtraction
+/// missing, on a negative frequency.
+#[test]
+fn the_engine_starts_on_the_operator_frequency() {
+    let inner = Hardware::new(DIAL + OFFSET);
+    let source = ConvertedSource::new(Box::new(inner), OFFSET);
+    let mut h = start_engine(
+        Box::new(source),
+        shift_caps(hardware_caps(), OFFSET),
+        EngineConfig::default(),
+    );
+    let thread = h.thread.take();
+
+    let (_, dial, center) = drain(&h.event_rx, 0.5);
+    assert!(dial > 0.0, "the dial must not start below DC, got {dial}");
+    assert!((dial - DIAL).abs() < 1.0, "the dial should start on {DIAL}, not {dial}");
+    assert!((center - DIAL).abs() < 1.0, "and so should the centre, got {center}");
+
+    drop(h.cmd_tx);
+    if let Some(t) = thread {
+        let _ = t.join();
+    }
+}
+
+/// The converter and a zero-IF front end's own LO offset are different things
+/// and have to compose: the LO is parked clear of the VFO *and* the whole axis
+/// is translated.
+#[test]
+fn a_converter_composes_with_a_zero_if_lo_offset() {
+    const LO: f64 = 600_000.0;
+    let inner = Hardware { lo_offset_hz: LO, ..Hardware::new(DIAL + LO + OFFSET) };
+    let landed = Arc::clone(&inner.landed);
+    let source = ConvertedSource::new(Box::new(inner), OFFSET);
+    let mut h = start_engine(
+        Box::new(source),
+        shift_caps(hardware_caps(), OFFSET),
+        EngineConfig::default(),
+    );
+    let thread = h.thread.take();
+
+    let target = DIAL + 3_000_000.0;
+    h.cmd_tx.send(Command::SetVfo { vfo: Vfo::A, hz: target }).unwrap();
+    let (notices, dial, center) = drain(&h.event_rx, 1.0);
+
+    assert!(notices.is_empty(), "this frequency is reachable, got {notices:?}");
+    assert!((dial - target).abs() < 1.0, "the dial should read {target}, not {dial}");
+    // The DDC has to make up the LO offset and nothing else — if the converter
+    // leaked into this difference the demodulator would be 125 MHz off.
+    assert!(
+        (dial - center - -LO).abs() < 1.0,
+        "the DDC should see only the LO offset, got {}",
+        dial - center
+    );
+    let hw = *landed.lock().unwrap();
+    assert!(
+        (hw - (target + LO + OFFSET)).abs() < 1.0,
+        "the hardware should have gone to {}, not {hw}",
+        target + LO + OFFSET
+    );
+
+    drop(h.cmd_tx);
+    if let Some(t) = thread {
+        let _ = t.join();
+    }
+}
+
+/// A dial the converted front end cannot reach is refused, and the operator is
+/// told so in frequencies they recognise — not in the hardware's.
+#[test]
+fn an_unreachable_dial_is_refused_in_the_operators_own_numbers() {
+    let inner = Hardware::new(DIAL + OFFSET);
+    let source = ConvertedSource::new(Box::new(inner), OFFSET);
+    let mut h = start_engine(
+        Box::new(source),
+        shift_caps(hardware_caps(), OFFSET),
+        EngineConfig::default(),
+    );
+    let thread = h.thread.take();
+
+    // The hardware tops out at 1766 MHz, which is 1641 MHz on the dial.
+    h.cmd_tx.send(Command::SetVfo { vfo: Vfo::A, hz: 1_700_000_000.0 }).unwrap();
+    let (notices, dial, _) = drain(&h.event_rx, 1.0);
+
+    assert!(
+        notices.iter().any(|n| n.contains("outside") && n.contains("1641.000")),
+        "the range should be quoted as the operator sees it, got {notices:?}"
+    );
+    assert!((dial - DIAL).abs() < 1.0, "the dial should be back on {DIAL}, not {dial}");
+
+    drop(h.cmd_tx);
+    if let Some(t) = thread {
+        let _ = t.join();
+    }
+}
+
+/// A converter is not in the transmit path, so it takes transmit with it. The
+/// alternative is worse than no feature: the licence check passes on the dial
+/// and the radio keys 125 MHz up, in an aeronautical band.
+#[test]
+fn a_converter_withdraws_transmit() {
+    let caps = shift_caps(hardware_caps(), OFFSET);
+    assert!(!caps.is_transmit_capable(), "transmit must be gone entirely");
+    assert!(!caps.can_tx_hz(DIAL), "and no frequency may be transmittable");
+    assert!(caps.antennas_tx.is_empty());
+    // Receive is untouched apart from the translation: HF opens up, and the top
+    // of the range comes down by the same amount.
+    assert!(caps.can_rx_hz(DIAL), "10.1008 MHz is reachable through the converter");
+    assert!(!hardware_caps().can_rx_hz(DIAL), "and was not before it");
+    assert!(!caps.can_rx_hz(1_700_000_000.0), "the ceiling came down with everything else");
+    assert!(hardware_caps().can_rx_hz(1_700_000_000.0), "though the hardware itself reaches it");
+}
+
+/// Receive edges move into the operator's domain, and never below DC: a
+/// negative low edge is not a frequency, and it reads as nonsense in the
+/// "outside this radio's receive range" notice and in what the rigctld and TCI
+/// servers advertise.
+#[test]
+fn shifted_receive_ranges_are_clamped_at_dc() {
+    let caps = DeviceCaps {
+        // An RTL-SDR Blog V4: everything from DC up.
+        freq_ranges_rx: vec![(0.0, 1_766_000_000.0), (0.0, 1_000_000.0)],
+        ..DeviceCaps::default()
+    };
+    let shifted = shift_caps(caps, OFFSET);
+    assert_eq!(shifted.freq_ranges_rx, vec![(0.0, 1_766_000_000.0 - OFFSET)]);
+    // The second range ended below the offset, so through this converter there
+    // is nothing in it to hear; it is dropped rather than inverted.
+    assert!(shifted.freq_ranges_rx.iter().all(|&(lo, hi)| lo >= 0.0 && hi > lo));
+}
+
+/// Every call the wrapper makes to the front end underneath it, in the order the
+/// trait declares them.
+#[derive(Default)]
+struct Calls(Arc<Mutex<Vec<&'static str>>>);
+
+impl Calls {
+    fn note(&self, what: &'static str) {
+        self.0.lock().unwrap().push(what);
+    }
+    fn seen(&self) -> Vec<&'static str> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+/// A front end that answers nothing but remembers being asked. Its frequencies
+/// are deliberately distinctive so a missing translation shows up as a number,
+/// not as a shrug.
+struct Recorder {
+    calls: Calls,
+    hw_center: f64,
+    released: Arc<AtomicBool>,
+}
+
+impl IqSource for Recorder {
+    fn sample_rate(&self) -> f64 {
+        self.calls.note("sample_rate");
+        RATE
+    }
+    fn center_hz(&self) -> f64 {
+        self.calls.note("center_hz");
+        self.hw_center
+    }
+    fn set_center_hz(&mut self, hz: f64) -> Result<()> {
+        self.calls.note("set_center_hz");
+        self.hw_center = hz;
+        Ok(())
+    }
+    fn lo_offset_hz(&self) -> f64 {
+        self.calls.note("lo_offset_hz");
+        600_000.0
+    }
+    fn read(&mut self, _buf: &mut [Complex32]) -> Result<usize> {
+        self.calls.note("read");
+        Ok(0)
+    }
+    fn describe(&self) -> String {
+        self.calls.note("describe");
+        "recorder".into()
+    }
+    fn set_gain_element(&mut self, _name: &str, _db: f64) -> Result<()> {
+        self.calls.note("set_gain_element");
+        Ok(())
+    }
+    fn set_antenna(&mut self, _name: &str) -> Result<()> {
+        self.calls.note("set_antenna");
+        Ok(())
+    }
+    fn current_gains(&self) -> Vec<(String, f64)> {
+        self.calls.note("current_gains");
+        vec![("LNA".into(), 12.0)]
+    }
+    fn current_antenna(&self) -> String {
+        self.calls.note("current_antenna");
+        "RX".into()
+    }
+    fn tx_begin(&mut self, center_hz: f64, _rate: f64) -> Result<f64> {
+        self.calls.note("tx_begin");
+        // Handed back so the test can see which domain it arrived in.
+        Ok(center_hz)
+    }
+    fn tx_write(&mut self, _samples: &[Complex32]) -> Result<()> {
+        self.calls.note("tx_write");
+        Ok(())
+    }
+    fn tx_end(&mut self) -> Result<()> {
+        self.calls.note("tx_end");
+        Ok(())
+    }
+    fn set_tx_gain_element(&mut self, _name: &str, _db: f64) -> Result<()> {
+        self.calls.note("set_tx_gain_element");
+        Ok(())
+    }
+    fn current_tx_gains(&self) -> Vec<(String, f64)> {
+        self.calls.note("current_tx_gains");
+        vec![("PA".into(), 0.0)]
+    }
+    fn set_tx_antenna(&mut self, _name: &str) -> Result<()> {
+        self.calls.note("set_tx_antenna");
+        Ok(())
+    }
+    fn current_tx_antenna(&self) -> String {
+        self.calls.note("current_tx_antenna");
+        "TX".into()
+    }
+    fn set_tx_drive(&mut self, _frac: f64) {
+        self.calls.note("set_tx_drive");
+    }
+    fn set_tune_drive(&mut self, _frac: f64) {
+        self.calls.note("set_tune_drive");
+    }
+    fn commands_tx_power(&self) -> bool {
+        self.calls.note("commands_tx_power");
+        true
+    }
+    fn tx_telemetry(&mut self) -> Option<sdroxide_types::TxTelemetry> {
+        self.calls.note("tx_telemetry");
+        Some(sdroxide_types::TxTelemetry { fwd_w: Some(5.0), swr: Some(1.2) })
+    }
+    fn set_if_offset(&mut self, _hz: f64) {
+        self.calls.note("set_if_offset");
+    }
+    fn display_bandwidth(&self) -> Option<f64> {
+        self.calls.note("display_bandwidth");
+        Some(3000.0)
+    }
+    fn wide_spectrum_db(&mut self, out: &mut Vec<f32>) -> Option<(f64, f64)> {
+        self.calls.note("wide_spectrum_db");
+        out.push(-90.0);
+        Some((self.hw_center, 32_000_000.0))
+    }
+    fn poll_control(&mut self) -> Vec<sdroxide_radio::ControlUpdate> {
+        self.calls.note("poll_control");
+        vec![
+            sdroxide_radio::ControlUpdate::Freq(self.hw_center),
+            sdroxide_radio::ControlUpdate::Mode(Mode::Usb),
+        ]
+    }
+    fn set_control_mode(&mut self, _mode: Mode) -> Result<()> {
+        self.calls.note("set_control_mode");
+        Ok(())
+    }
+    fn set_rit_hz(&mut self, _hz: f64) {
+        self.calls.note("set_rit_hz");
+    }
+    fn tx_write_audio(&mut self, _audio: &[f32]) -> Result<()> {
+        self.calls.note("tx_write_audio");
+        Ok(())
+    }
+    fn tx_drain(&mut self) {
+        self.calls.note("tx_drain");
+    }
+    fn open_status(&self) -> Option<String> {
+        self.calls.note("open_status");
+        Some("bias tee is off".into())
+    }
+    fn needs_reopen(&self) -> bool {
+        self.calls.note("needs_reopen");
+        true
+    }
+    fn release(&mut self) {
+        self.calls.note("release");
+        self.released.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The wrapper must be transparent. Every method has a default, so one that is
+/// not forwarded compiles happily and then quietly reverts to it — which is how
+/// a converter would take away the RX-888's full-band strip, the reconnect
+/// loop, or the ability to release a USB dongle on Apply.
+#[test]
+fn every_call_reaches_the_front_end_underneath() {
+    let calls = Calls::default();
+    let seen = Calls(Arc::clone(&calls.0));
+    let released = Arc::new(AtomicBool::new(false));
+    let inner = Recorder { calls, hw_center: DIAL + OFFSET, released: Arc::clone(&released) };
+    let mut s = ConvertedSource::new(Box::new(inner), OFFSET);
+
+    // Translated, and checked for the direction of the translation.
+    assert!((s.center_hz() - DIAL).abs() < 1.0);
+    s.set_center_hz(DIAL + 1000.0).unwrap();
+    assert!((s.center_hz() - (DIAL + 1000.0)).abs() < 1.0, "round trip through the wrapper");
+    assert!(s.describe().contains("recorder"), "the inner description survives");
+    assert!(s.describe().contains("converter"), "and says a converter is in circuit");
+    let mut bins = Vec::new();
+    let (wide_center, wide_span) = s.wide_spectrum_db(&mut bins).expect("a wide frame");
+    assert!(
+        (wide_center - (DIAL + 1000.0)).abs() < 1.0,
+        "the full-band axis is operator-domain too, got {wide_center}"
+    );
+    assert_eq!(wide_span, 32_000_000.0, "the span is a width, not a frequency");
+    assert_eq!(bins, vec![-90.0]);
+    match s.poll_control().as_slice() {
+        [
+            sdroxide_radio::ControlUpdate::Freq(hz),
+            sdroxide_radio::ControlUpdate::Mode(Mode::Usb),
+        ] => {
+            assert!((hz - (DIAL + 1000.0)).abs() < 1.0, "a rig-reported dial comes back translated")
+        }
+        other => panic!("unexpected control updates: {other:?}"),
+    }
+    // Never translated: a converter is not in the transmit path.
+    assert_eq!(s.tx_begin(DIAL, RATE).unwrap(), DIAL);
+
+    // Forwarded verbatim — the answers prove they came from the recorder and
+    // not from the trait's default.
+    assert_eq!(s.sample_rate(), RATE);
+    assert_eq!(s.lo_offset_hz(), 600_000.0);
+    assert_eq!(s.read(&mut []).unwrap(), 0);
+    s.set_gain_element("LNA", 12.0).unwrap();
+    s.set_antenna("RX").unwrap();
+    assert_eq!(s.current_gains(), vec![("LNA".to_string(), 12.0)]);
+    assert_eq!(s.current_antenna(), "RX");
+    s.tx_write(&[]).unwrap();
+    s.tx_end().unwrap();
+    s.set_tx_gain_element("PA", 0.0).unwrap();
+    assert_eq!(s.current_tx_gains(), vec![("PA".to_string(), 0.0)]);
+    s.set_tx_antenna("TX").unwrap();
+    assert_eq!(s.current_tx_antenna(), "TX");
+    s.set_tx_drive(0.5);
+    s.set_tune_drive(0.05);
+    assert!(s.commands_tx_power());
+    assert_eq!(s.tx_telemetry().and_then(|t| t.swr), Some(1.2));
+    s.set_if_offset(1000.0);
+    assert_eq!(s.display_bandwidth(), Some(3000.0));
+    s.set_control_mode(Mode::Usb).unwrap();
+    s.set_rit_hz(-50.0);
+    s.tx_write_audio(&[]).unwrap();
+    s.tx_drain();
+    assert_eq!(s.open_status().as_deref(), Some("bias tee is off"));
+    assert!(s.needs_reopen());
+    s.release();
+    assert!(released.load(Ordering::SeqCst));
+
+    // And nothing was answered from the wrapper's own head.
+    let missed: Vec<_> = [
+        "sample_rate",
+        "center_hz",
+        "set_center_hz",
+        "lo_offset_hz",
+        "read",
+        "describe",
+        "set_gain_element",
+        "set_antenna",
+        "current_gains",
+        "current_antenna",
+        "tx_begin",
+        "tx_write",
+        "tx_end",
+        "set_tx_gain_element",
+        "current_tx_gains",
+        "set_tx_antenna",
+        "current_tx_antenna",
+        "set_tx_drive",
+        "set_tune_drive",
+        "commands_tx_power",
+        "tx_telemetry",
+        "set_if_offset",
+        "display_bandwidth",
+        "wide_spectrum_db",
+        "poll_control",
+        "set_control_mode",
+        "set_rit_hz",
+        "tx_write_audio",
+        "tx_drain",
+        "open_status",
+        "needs_reopen",
+        "release",
+    ]
+    .into_iter()
+    .filter(|m| !seen.seen().contains(m))
+    .collect();
+    assert!(missed.is_empty(), "these never reached the front end: {missed:?}");
+}
+
+/// Three back ends answer `Ok` to any frequency and then clamp inside their own
+/// DDC, so a request that lands below DC has to be stopped here — otherwise the
+/// engine believes the tune worked while the receiver sits somewhere else.
+#[test]
+fn a_frequency_below_dc_after_the_offset_is_refused() {
+    let calls = Calls::default();
+    let inner =
+        Recorder { calls, hw_center: 28_000_000.0, released: Arc::new(AtomicBool::new(false)) };
+    // A 2 m transverter with a 28 MHz IF.
+    let mut s = ConvertedSource::new(Box::new(inner), -116_000_000.0);
+    assert!(s.set_center_hz(144_000_000.0).is_ok(), "in range");
+    let err = s.set_center_hz(10_000_000.0).expect_err("below DC once translated");
+    assert!(format!("{err}").contains("below DC"), "the reason should say so, got {err}");
+}

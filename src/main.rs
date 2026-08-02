@@ -13,7 +13,7 @@ mod tci_source;
 use anyhow::{Context, bail};
 use clap::Parser;
 use sdroxide_config::Settings;
-use sdroxide_radio::{FileSource, IqSource, SigGenSource};
+use sdroxide_radio::{ConvertedSource, FileSource, IqSource, SigGenSource, shift_caps};
 #[cfg(feature = "soapy")]
 use sdroxide_radio::{SoapyDevice, enumerate_devices};
 use sdroxide_types::{Backend, DeviceCaps, RadioConfig};
@@ -292,7 +292,7 @@ fn reopen_factory(cli: &Cli) -> sdroxide_radio::ReopenFn {
             return open_source(&c, &settings).map_err(|e| format!("{e:#}"));
         }
         let radio = sdroxide_config::load_radio_config();
-        open_configured_source(&radio, &c, &settings).map_err(|e| format!("{e:#}"))
+        open_converted_source(&radio, &c, &settings).map_err(|e| format!("{e:#}"))
     })
 }
 
@@ -693,7 +693,7 @@ fn open_source(cli: &Cli, settings: &Settings) -> anyhow::Result<(Box<dyn IqSour
     // so a rig that simply wasn't ready attaches by itself; Settings → Radio is
     // only needed to choose a *different* one.
     let radio = sdroxide_config::load_radio_config();
-    match open_configured_source(&radio, cli, settings) {
+    match open_converted_source(&radio, cli, settings) {
         Ok(pair) => Ok(pair),
         Err(e) => {
             tracing::warn!("radio interface unavailable: {e:#}");
@@ -705,6 +705,33 @@ fn open_source(cli: &Cli, settings: &Settings) -> anyhow::Result<(Box<dyn IqSour
             ))
         }
     }
+}
+
+/// [`open_configured_source`], with any external frequency converter folded in.
+///
+/// The distinction that makes this a separate function: the centre
+/// `open_configured_source` passes to each back end is a *hardware* frequency,
+/// while the one this is called with — from `--freq`, from the restored session,
+/// or from the engine's current dial on a reopen — is the operator's. So the
+/// offset goes on here, once, and [`ConvertedSource`] takes it off again for
+/// everything the source reports back.
+fn open_converted_source(
+    radio: &RadioConfig,
+    cli: &Cli,
+    settings: &Settings,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let offset = radio.converter_offset_hz;
+    if offset == 0.0 || !offset.is_finite() {
+        return open_configured_source(radio, cli, settings);
+    }
+    let mut c = cli.clone();
+    c.freq = Some(cli.center_hz() + offset);
+    let (source, caps) = open_configured_source(radio, &c, settings)?;
+    tracing::info!(
+        "frequency converter: hardware tuned {:.6} MHz above the dial; transmit withdrawn",
+        offset / 1e6
+    );
+    Ok((Box::new(ConvertedSource::new(source, offset)), shift_caps(caps, offset)))
 }
 
 /// Open the interface selected in `radio.json`. `Auto` prefers a SoapySDR device

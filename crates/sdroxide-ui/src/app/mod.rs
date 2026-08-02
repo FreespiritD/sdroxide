@@ -107,6 +107,12 @@ pub struct SdroxideApp {
     /// config at startup, edited in the UI tab, persisted on change.
     ui_settings: sdroxide_types::UiSettings,
     radio_cfg: Option<sdroxide_types::RadioConfig>,
+    /// The converter offset being typed on the Radio tab, in MHz. Held apart
+    /// from `radio_cfg` because every other field on that tab is written to
+    /// `radio.json` as it is typed, and the engine rereads that file whenever it
+    /// reopens the radio — so a half-typed `125000000` would arrive as an offset
+    /// of 12 Hz. This one lands only on Apply. `None` = not being edited.
+    converter_edit_mhz: Option<f64>,
     serial_ports: Vec<String>,
     /// HPSDR devices found by the last "Discover" scan in the settings dialog.
     hpsdr_devices: Vec<sdroxide_types::HpsdrDevice>,
@@ -390,6 +396,7 @@ impl SdroxideApp {
             settings_tab: SettingsTab::General,
             ui_settings: load_ui_settings(cc.storage),
             radio_cfg: None,
+            converter_edit_mhz: None,
             serial_ports: Vec::new(),
             hpsdr_devices: Vec::new(),
             rtlsdr_devices: Vec::new(),

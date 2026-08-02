@@ -24,6 +24,14 @@ pub enum ControlUpdate {
 ///
 /// This is the seam that lets the whole DSP stack run in CI and without
 /// hardware attached.
+///
+/// # Adding a method here
+///
+/// [`ConvertedSource`] below wraps an arbitrary `IqSource` and forwards every
+/// one of these methods. Almost all of them have a default, so a new method
+/// that is not forwarded compiles cleanly and then silently reverts to that
+/// default for anyone running a frequency converter. Add the forward at the
+/// same time.
 pub trait IqSource: Send {
     fn sample_rate(&self) -> f64;
     fn center_hz(&self) -> f64;
@@ -232,6 +240,230 @@ pub trait IqSource: Send {
     /// a replacement built alongside the source it replaces means a bad new
     /// config leaves the working interface on air.
     fn release(&mut self) {}
+}
+
+/// A front end with an external frequency converter in its antenna line: an HF
+/// upconverter (Ham It Up, SpyVerter) or a receive converter for a band the
+/// hardware cannot reach.
+///
+/// The converter mixes the whole spectrum up by a fixed amount, so `10.1008 MHz`
+/// on the air arrives at the receiver as `135.1008 MHz`. This wrapper is the one
+/// place that arithmetic happens: everything above it — the engine, the UI, the
+/// CAT servers, memories, spots, the logbook — works in the operator's
+/// frequency, and everything below it in the hardware's.
+///
+/// # Receive only
+///
+/// A converter sits between the antenna and the receiver *input*; it is not in
+/// the transmit path. So [`Self::tx_begin`] is forwarded untouched, and
+/// [`shift_caps`] takes the transmit capability away entirely rather than
+/// translating it. Translating it would be worse than useless: the licence gate
+/// in the engine checks the operator's frequency, which would pass on 30 m and
+/// then key the radio 125 MHz up, in an aeronautical band.
+pub struct ConvertedSource {
+    inner: Box<dyn IqSource>,
+    /// Hardware frequency minus operator frequency. Positive for an upconverter.
+    offset_hz: f64,
+}
+
+impl ConvertedSource {
+    pub fn new(inner: Box<dyn IqSource>, offset_hz: f64) -> Self {
+        ConvertedSource { inner, offset_hz }
+    }
+
+    /// Operator frequency → hardware frequency.
+    fn up(&self, hz: f64) -> f64 {
+        hz + self.offset_hz
+    }
+
+    /// Hardware frequency → operator frequency.
+    fn down(&self, hz: f64) -> f64 {
+        hz - self.offset_hz
+    }
+}
+
+/// Move a device's published tuning ranges into the operator's domain, and take
+/// its transmit capability away (see [`ConvertedSource`]).
+///
+/// The receive edges are clamped at DC and ranges that collapse are dropped: a
+/// negative frequency is not one, and it would read as nonsense in the "outside
+/// this radio's receive range" notice and in what the rigctld and TCI servers
+/// advertise to their clients.
+pub fn shift_caps(
+    mut caps: sdroxide_types::DeviceCaps,
+    offset_hz: f64,
+) -> sdroxide_types::DeviceCaps {
+    caps.freq_ranges_rx = caps
+        .freq_ranges_rx
+        .into_iter()
+        .map(|(lo, hi)| ((lo - offset_hz).max(0.0), hi - offset_hz))
+        .filter(|&(lo, hi)| hi > lo)
+        .collect();
+    caps.freq_ranges_tx.clear();
+    caps.antennas_tx.clear();
+    caps.tx_channels = 0;
+    caps
+}
+
+impl IqSource for ConvertedSource {
+    // --- translated ---------------------------------------------------------
+
+    fn center_hz(&self) -> f64 {
+        self.down(self.inner.center_hz())
+    }
+
+    fn set_center_hz(&mut self, hz: f64) -> Result<()> {
+        let hw = self.up(hz);
+        // Refused here rather than passed down, because several back ends
+        // (RTL-SDR, RX-888, HPSDR) answer `Ok` to any frequency and then clamp
+        // inside their DDC. That would leave the engine believing the tune
+        // succeeded while the receiver sat somewhere else entirely; an error
+        // goes through the normal refused-tune path and puts the dial back.
+        if hw < 0.0 {
+            return Err(crate::RadioError::Msg(format!(
+                "{:.6} MHz is below DC once the {:.6} MHz converter offset is applied",
+                hz / 1e6,
+                self.offset_hz / 1e6
+            )));
+        }
+        self.inner.set_center_hz(hw)
+    }
+
+    fn describe(&self) -> String {
+        format!("{} (+{:.6} MHz converter)", self.inner.describe(), self.offset_hz / 1e6)
+    }
+
+    fn wide_spectrum_db(&mut self, out: &mut Vec<f32>) -> Option<(f64, f64)> {
+        let (center, span) = self.inner.wide_spectrum_db(out)?;
+        Some((self.down(center), span))
+    }
+
+    fn poll_control(&mut self) -> Vec<ControlUpdate> {
+        self.inner
+            .poll_control()
+            .into_iter()
+            .map(|u| match u {
+                ControlUpdate::Freq(hz) => ControlUpdate::Freq(self.down(hz)),
+                other => other,
+            })
+            .collect()
+    }
+
+    // --- forwarded verbatim -------------------------------------------------
+
+    fn sample_rate(&self) -> f64 {
+        self.inner.sample_rate()
+    }
+
+    /// Relative to the VFO, so the converter does not enter into it: the LO ends
+    /// up at `(vfo ± lo_offset) + converter offset`, which is what both want.
+    fn lo_offset_hz(&self) -> f64 {
+        self.inner.lo_offset_hz()
+    }
+
+    fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        self.inner.read(buf)
+    }
+
+    fn set_gain_element(&mut self, name: &str, db: f64) -> Result<()> {
+        self.inner.set_gain_element(name, db)
+    }
+
+    fn set_antenna(&mut self, name: &str) -> Result<()> {
+        self.inner.set_antenna(name)
+    }
+
+    fn current_gains(&self) -> Vec<(String, f64)> {
+        self.inner.current_gains()
+    }
+
+    fn current_antenna(&self) -> String {
+        self.inner.current_antenna()
+    }
+
+    /// Deliberately *not* translated — see the type documentation. The engine
+    /// never gets here anyway, because [`shift_caps`] withdraws transmit.
+    fn tx_begin(&mut self, center_hz: f64, rate: f64) -> Result<f64> {
+        self.inner.tx_begin(center_hz, rate)
+    }
+
+    fn tx_write(&mut self, samples: &[Complex32]) -> Result<()> {
+        self.inner.tx_write(samples)
+    }
+
+    fn tx_end(&mut self) -> Result<()> {
+        self.inner.tx_end()
+    }
+
+    fn set_tx_gain_element(&mut self, name: &str, db: f64) -> Result<()> {
+        self.inner.set_tx_gain_element(name, db)
+    }
+
+    fn current_tx_gains(&self) -> Vec<(String, f64)> {
+        self.inner.current_tx_gains()
+    }
+
+    fn set_tx_antenna(&mut self, name: &str) -> Result<()> {
+        self.inner.set_tx_antenna(name)
+    }
+
+    fn current_tx_antenna(&self) -> String {
+        self.inner.current_tx_antenna()
+    }
+
+    fn set_tx_drive(&mut self, frac: f64) {
+        self.inner.set_tx_drive(frac);
+    }
+
+    fn set_tune_drive(&mut self, frac: f64) {
+        self.inner.set_tune_drive(frac);
+    }
+
+    fn commands_tx_power(&self) -> bool {
+        self.inner.commands_tx_power()
+    }
+
+    fn tx_telemetry(&mut self) -> Option<sdroxide_types::TxTelemetry> {
+        self.inner.tx_telemetry()
+    }
+
+    /// Relative (VFO minus IQ centre), so untouched.
+    fn set_if_offset(&mut self, hz: f64) {
+        self.inner.set_if_offset(hz);
+    }
+
+    fn display_bandwidth(&self) -> Option<f64> {
+        self.inner.display_bandwidth()
+    }
+
+    fn set_control_mode(&mut self, mode: Mode) -> Result<()> {
+        self.inner.set_control_mode(mode)
+    }
+
+    /// Relative (an offset from the dial), so untouched.
+    fn set_rit_hz(&mut self, hz: f64) {
+        self.inner.set_rit_hz(hz);
+    }
+
+    fn tx_write_audio(&mut self, audio: &[f32]) -> Result<()> {
+        self.inner.tx_write_audio(audio)
+    }
+
+    fn tx_drain(&mut self) {
+        self.inner.tx_drain();
+    }
+
+    fn open_status(&self) -> Option<String> {
+        self.inner.open_status()
+    }
+
+    fn needs_reopen(&self) -> bool {
+        self.inner.needs_reopen()
+    }
+
+    fn release(&mut self) {
+        self.inner.release();
+    }
 }
 
 /// Paces reads so a non-hardware source delivers samples in real time.

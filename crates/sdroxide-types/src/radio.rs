@@ -884,6 +884,14 @@ pub struct RadioConfig {
     pub radio_audio_in: Option<String>,
     /// Sound-card device (cpal name) carrying the TX audio PC → radio.
     pub radio_audio_out: Option<String>,
+    /// External frequency converter in the antenna line: the hardware is tuned
+    /// this far from the operator's dial, so `+125_000_000` is a Ham It Up or
+    /// SpyVerter HF upconverter and the dial reads the real on-air frequency.
+    /// `0.0` (the default) is no converter and leaves tuning exactly as it was.
+    ///
+    /// Receive only — a converter is not in the transmit path, so transmit is
+    /// withdrawn while this is set.
+    pub converter_offset_hz: f64,
     pub cat: CatConfig,
     pub hpsdr: HpsdrConfig,
     pub tci: TciConfig,
@@ -924,6 +932,21 @@ mod tests {
         let off: HpsdrConfig =
             serde_json::from_str(r#"{"invert_spectrum": false}"#).expect("parses");
         assert!(!off.invert_spectrum);
+    }
+
+    /// Every `radio.json` written before the converter existed has to keep
+    /// tuning the radio exactly where it did — which means the offset must read
+    /// back as zero, the one value that takes the whole feature out of circuit.
+    #[test]
+    fn converter_offset_defaults_to_none() {
+        for json in [r#"{}"#, r#"{"backend": "RtlSdr"}"#, r#"{"rx888": {"ppm": 1.5}}"#] {
+            let cfg: RadioConfig = serde_json::from_str(json).expect("parses");
+            assert_eq!(cfg.converter_offset_hz, 0.0, "converter offset after loading {json}");
+        }
+        assert_eq!(RadioConfig::default().converter_offset_hz, 0.0);
+        let up: RadioConfig =
+            serde_json::from_str(r#"{"converter_offset_hz": 125000000.0}"#).expect("parses");
+        assert_eq!(up.converter_offset_hz, 125_000_000.0);
     }
 
     #[test]
