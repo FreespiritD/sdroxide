@@ -58,6 +58,12 @@ One binary, three ways to run it:
   the waterfall), noise blanker, auto-notch, **neural (RNNoise) or spectral noise
   reduction**, squelch, a second sub-receiver, RIT/XIT, VFO A/B with split,
   per-band band stacks, and memory channels.
+- **Scanner** — work through the memory channels or a frequency range and stop
+  where somebody is transmitting, with a configurable threshold (or the
+  receiver's own squelch), dwell, skip list, and carrier / timed / manual
+  resume. A range scan reads a whole span out of the panadapter's FFT rather
+  than visiting channels one at a time, so sweeping 2 m takes well under a
+  second instead of minutes.
 - **Transmit** — PTT and tune carrier, drive/ALC metering, device-aware
   half-duplex sequencing (HackRF) or full-duplex (LimeSDR), and a ham-band /
   TX-range lockout so you can't key outside your allocation.

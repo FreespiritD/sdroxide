@@ -143,6 +143,10 @@ pub struct RadioState {
 
     pub tx: TxState,
     pub band: Band,
+    /// What the scanner is doing. The settings behind it travel separately —
+    /// see [`crate::ScannerConfig`] — because this struct is sent whole on
+    /// every change and a skip list does not belong in that.
+    pub scan: crate::ScanState,
     /// Impulse noise blanker on the raw IQ stream.
     pub noise_blanker: bool,
     /// Which wideband skimmers (CW / PSK / RTTY) run, and the squelch each
@@ -194,6 +198,7 @@ impl Default for RadioState {
             // scale until the operator raises it deliberately.
             tx: TxState { drive: 0.1, tune_drive: 0.05, mic_gain: 0.5, ..TxState::default() },
             band: Band::M20,
+            scan: crate::ScanState::default(),
             noise_blanker: false,
             skimmer: crate::SkimmerSettings::default(),
             gains: Vec::new(),

@@ -362,6 +362,8 @@ passband. The grips work on both the spectrum and the waterfall.
   the operating panel instead.
 - **SKIM** — opens the skimmer popup (per-skimmer on/off and squelch); lit while
   any skimmer runs. See [Skimmers](#4-skimmers).
+- **SCAN** — opens the scanner window; lit while a scan is running, green while
+  it has stopped on a signal. See [Scanning](#213-scanning).
 - **☀ 3D** — open the [solar system 3D view](#6-solar-system-3d-view): a second
   window in the native app, a second browser tab in the web client.
 
@@ -482,7 +484,57 @@ press **Store** to save the current frequency and mode. Each saved row has a
 
 ---
 
-### 2.13 CW: decoding and keyboard sending
+### 2.13 Scanning
+
+Open **SCAN** (System module) to work through channels and stop where somebody
+is transmitting. Two kinds:
+
+- **MEM** — the stored memory channels, each in its own mode and filter. Mark
+  any of them **SKIP** to pass it over; a channel that is always busy with
+  something you do not want to hear is what that is for.
+- **RANGE** — a slice of a band on a channel grid. Give it a **From** and a
+  **to** in MHz, a **Step** (5 / 6.25 / 8.33 / 10 / 12.5 / 25 kHz) and a mode.
+
+**A range scan is fast**, and not in the way a handheld scanner is. A scanner
+has one receiver and has to visit each channel in turn, which is why sweeping
+2 m takes minutes. Here the FFT that already draws the panadapter sees over a
+megahertz at once, so the radio moves one span at a time and reads every channel
+in that span together — the whole of 2 m in well under a second. A CAT rig
+feeding demodulated audio has no such span, so it falls back to visiting
+channels one at a time, and behaves like the handheld.
+
+**Stops at** is how loud a channel has to be. Either give a level directly, or
+press **SQL** to use the receiver's own squelch, which makes the scan stop
+exactly where the audio would have opened — one control instead of two. Note
+that with the squelch slider at `off` the scan will stop on the first channel it
+looks at, since every channel then counts as busy.
+
+**Listens for** is how long it stays on a candidate before judging it. Below
+about a tenth of a second the level meter has not settled and weak signals get
+missed; the default 150 ms is a reasonable balance.
+
+**Resumes** decides what ends a stop:
+
+- **CARRIER** — carry on once the signal drops, plus a grace period. The grace
+  is what keeps you on a conversation through the gaps between overs; two
+  seconds is a good starting point.
+- **TIMED** — carry on after a fixed time whether or not the signal is still
+  there. Useful on a channel somebody is sitting on.
+- **MANUAL** — stay until you press **NEXT**.
+
+While a scan is running, **NEXT** moves on now and **SKIP** moves on and adds
+the channel to the skip list. Touching the dial, changing band, recalling a
+memory or transmitting all stop the scan where it is — as on any scanner, and so
+that the radio is not fighting you for the VFO.
+
+The **SCAN** chip in the System module lights while a scan is running, in cyan
+while it is sweeping and green while it is stopped on something, so you can
+close the window and still see what it is doing. Settings are remembered in
+`scanner.json`.
+
+---
+
+### 2.14 CW: decoding and keyboard sending
 
 Choose **CW** from the Band/Mode popup and the panadapter gains a **cursor** and
 a panel underneath it. CW is not a digital mode — the tone stays audible, the
@@ -1466,7 +1518,7 @@ label each one on the waterfall. There are three: **CW**, **PSK31**, and
   showing the callsign (once resolved, for CW) and a rolling tail of decoded
   text. Boxes fade out a few seconds after a signal stops.
 - **Click a skimmer box** to tune to that signal and switch to its mode — CW for
-  a CW spot (which lands it on the CW panel's cursor, [2.13](#213-cw-decoding-and-keyboard-sending)),
+  a CW spot (which lands it on the CW panel's cursor, [2.13](#214-cw-decoding-and-keyboard-sending)),
   PSK or RTTY for a digimode spot (which also opens the messaging panel,
   [3.7](#37-psk31-and-rtty)).
 
@@ -3630,6 +3682,7 @@ sdroxide stores its settings under the per-user config directory:
 | `tciserver.json` | JSON | Built-in TCI server: enabled, bind address, port, advertised device name, whether clients may transmit, and the client limit. |
 | `rigctld.json` | JSON | Built-in Hamlib rigctld server: enabled, bind address, port, reported rig name, whether clients may transmit, and the client limit. |
 | `wsjtx.json` | JSON | WSJT-X UDP broadcast: enabled, destination host and port, and the name clients see. |
+| `scanner.json` | JSON | The scanner: memories or a range, the range and channel step, the level that counts as busy, the dwell, how it resumes, and which memories to skip. |
 | `skimmer.json` | JSON | Skimmers: which of CW / PSK / RTTY run, and each one's spot squelch in dB. Restored at startup; a narrowband (audio-mode) radio still forces them off without disturbing what you picked. |
 | `input.json` | JSON | Control inputs: keyboard bindings, panadapter mouse behaviour, mouse-button bindings, and the MIDI controller mapping. Belongs to the machine running the user interface, not the engine. |
 | `remote_login.json` | JSON | A sign-in to *somebody else's* server that you asked this client to remember ([§7.3](#73-sign-in-who-may-operate-the-station)). Written only when the **Remember on this device** box is ticked, holds the password in plaintext, and deleted when you untick it or the server refuses it. Belongs to the user interface, like `input.json`; the browser client keeps the same thing in local storage instead. |
@@ -3757,7 +3810,7 @@ F1 is the exception: it always opens the manual, so it is not rebindable.
 | Mode | Description |
 | --- | --- |
 | LSB / USB | Lower / upper sideband voice. |
-| CW | Morse (continuous wave). Decoded on a waterfall cursor, with type-ahead keyboard sending — see [2.13](#213-cw-decoding-and-keyboard-sending). |
+| CW | Morse (continuous wave). Decoded on a waterfall cursor, with type-ahead keyboard sending — see [2.13](#214-cw-decoding-and-keyboard-sending). |
 | AM | Amplitude modulation. |
 | SAM | Synchronous AM. |
 | NFM / WFM | Narrow / wide FM. WFM decodes broadcast stereo automatically. |

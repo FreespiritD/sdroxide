@@ -1,0 +1,399 @@
+//! Scanning end to end through the engine: stopping on a signal, resuming when
+//! it goes, and getting out of the operator's way.
+
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use sdroxide_radio::{Complex32, EngineConfig, IqSource, Result, rtrb, start_engine};
+use sdroxide_types::{
+    Command, DeviceCaps, MemoryChannel, Mode, RadioEvent, ScanKind, ScanResume, ScannerConfig, Vfo,
+};
+
+const RATE: f64 = 1_536_000.0;
+const CENTER: f64 = 145_000_000.0;
+
+/// Point the config directory at a scratch of our own, before any engine reads
+/// it.
+///
+/// Unlike most of the suite this one cannot be read-only against the operator's
+/// config: a scan is configured by a command the engine persists, and a memory
+/// scan needs memories to scan. So the whole config directory is redirected —
+/// this is a separate test binary, so nothing outside it is affected, and the
+/// `Once` guarantees it happens before the first engine (and therefore the
+/// first reader of the environment) exists.
+fn isolate_config() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let dir = std::env::temp_dir().join(format!("sdroxide-scan-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch config directory");
+        // SAFETY: no engine exists yet, so nothing else is reading these.
+        unsafe {
+            // Linux, macOS, Windows — whichever `directories` consults.
+            std::env::set_var("XDG_CONFIG_HOME", &dir);
+            std::env::set_var("HOME", &dir);
+            std::env::set_var("APPDATA", &dir);
+        }
+    });
+}
+
+/// A front end that delivers a carrier at one absolute frequency, and records
+/// every hardware centre it was sent to.
+struct Bench {
+    center_hz: f64,
+    /// Where the (single) signal is, or `None` for a dead band.
+    signal_hz: Arc<Mutex<Option<f64>>>,
+    visited: Arc<Mutex<Vec<f64>>>,
+    phase: f64,
+}
+
+impl Bench {
+    fn new(signal_hz: Option<f64>) -> Self {
+        Bench {
+            center_hz: CENTER,
+            signal_hz: Arc::new(Mutex::new(signal_hz)),
+            visited: Arc::new(Mutex::new(vec![CENTER])),
+            phase: 0.0,
+        }
+    }
+}
+
+impl IqSource for Bench {
+    fn sample_rate(&self) -> f64 {
+        RATE
+    }
+    fn center_hz(&self) -> f64 {
+        self.center_hz
+    }
+    fn set_center_hz(&mut self, hz: f64) -> Result<()> {
+        self.center_hz = hz;
+        self.visited.lock().unwrap().push(hz);
+        Ok(())
+    }
+    fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        let n = buf.len().min(16_384);
+        // Real time, so the engine's dwells and grace periods mean what they say.
+        std::thread::sleep(Duration::from_secs_f64(n as f64 / RATE));
+        let signal = *self.signal_hz.lock().unwrap();
+        match signal {
+            Some(f) => {
+                let step = std::f64::consts::TAU * (f - self.center_hz) / RATE;
+                for s in buf[..n].iter_mut() {
+                    self.phase += step;
+                    let (si, co) = self.phase.sin_cos();
+                    *s = Complex32::new(co as f32 * 0.5, si as f32 * 0.5);
+                }
+            }
+            None => buf[..n].fill(Complex32::new(0.0, 0.0)),
+        }
+        Ok(n)
+    }
+    fn describe(&self) -> String {
+        "scanner bench".into()
+    }
+}
+
+fn caps() -> DeviceCaps {
+    DeviceCaps {
+        driver: "test".into(),
+        label: "test".into(),
+        rx_channels: 1,
+        sample_rates: vec![RATE],
+        freq_ranges_rx: vec![(24_000_000.0, 1_766_000_000.0)],
+        ..DeviceCaps::default()
+    }
+}
+
+fn range_cfg() -> ScannerConfig {
+    ScannerConfig {
+        kind: ScanKind::Range,
+        range_lo_hz: 144_000_000.0,
+        range_hi_hz: 146_000_000.0,
+        step_hz: 12_500.0,
+        mode: Mode::Nfm,
+        threshold_db: -60.0,
+        follow_squelch: false,
+        dwell_ms: 60,
+        resume: ScanResume::Carrier,
+        resume_ms: 300,
+        skip: Vec::new(),
+    }
+}
+
+/// The engine's state as this test last saw it.
+///
+/// Accumulated across calls rather than rebuilt each time, because the engine
+/// only announces its state when something *changes*: a scan sitting on a
+/// signal is silent, and a fresh snapshot would read that silence as "not
+/// holding" and quietly invert the assertion.
+#[derive(Default)]
+struct Watch {
+    dial: f64,
+    running: bool,
+    holding: bool,
+    held_at: Option<f64>,
+    notices: Vec<String>,
+}
+
+struct Rig {
+    h: sdroxide_radio::EngineHandles,
+    thread: Option<std::thread::JoinHandle<()>>,
+    visited: Arc<Mutex<Vec<f64>>>,
+    signal: Arc<Mutex<Option<f64>>>,
+    /// The speaker ring, drained and discarded. Its presence is the point: with
+    /// it the engine builds a real receive chain, and the scanner reads the same
+    /// level meter the squelch does — which is the arrangement every operator
+    /// actually has.
+    audio: rtrb::Consumer<f32>,
+    w: Watch,
+}
+
+impl Rig {
+    fn new(signal_hz: Option<f64>) -> Self {
+        isolate_config();
+        let source = Bench::new(signal_hz);
+        let (visited, signal) = (Arc::clone(&source.visited), Arc::clone(&source.signal_hz));
+        let (producer, audio) = rtrb::RingBuffer::new(48_000);
+        let cfg = EngineConfig {
+            audio: Some(sdroxide_radio::AudioParams { producer, out_rate: 48_000.0 }),
+            ..EngineConfig::default()
+        };
+        let mut h = start_engine(Box::new(source), caps(), cfg);
+        let thread = h.thread.take();
+        Rig { h, thread, visited, signal, audio, w: Watch::default() }
+    }
+
+    fn send(&self, cmd: Command) {
+        self.h.cmd_tx.send(cmd).unwrap();
+    }
+
+    /// Run the engine for up to `secs`, returning early once it has stopped on
+    /// something if `until_hold`.
+    fn pump(&mut self, secs: f64, until_hold: bool) -> &Watch {
+        let deadline = Instant::now() + Duration::from_secs_f64(secs);
+        while Instant::now() < deadline {
+            while let Ok(ev) = self.h.event_rx.try_recv() {
+                match ev {
+                    RadioEvent::State(s) => {
+                        self.w.dial = s.active_freq_hz();
+                        self.w.running = s.scan.running;
+                        self.w.holding = s.scan.holding;
+                        if s.scan.holding && self.w.held_at.is_none() {
+                            self.w.held_at = Some(s.active_freq_hz());
+                        }
+                    }
+                    RadioEvent::Notice(Some(n)) => self.w.notices.push(n),
+                    _ => {}
+                }
+            }
+            // Keep the speaker ring moving so the engine is never blocked on it.
+            while self.audio.pop().is_ok() {}
+            if until_hold && self.w.held_at.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        &self.w
+    }
+
+    /// Forget what has been seen so far, for an assertion about what happens
+    /// next rather than what has happened at all.
+    fn forget(&mut self) {
+        self.w.held_at = None;
+        self.w.notices.clear();
+    }
+
+    fn memories(&mut self) -> Vec<MemoryChannel> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut got = Vec::new();
+        while Instant::now() < deadline {
+            while let Ok(ev) = self.h.event_rx.try_recv() {
+                if let RadioEvent::Memories(m) = ev {
+                    got = m;
+                }
+            }
+            if !got.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        got
+    }
+}
+
+impl Drop for Rig {
+    fn drop(&mut self) {
+        let (tx, _) = crossbeam_channel::unbounded();
+        let dead = std::mem::replace(&mut self.h.cmd_tx, tx);
+        drop(dead);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// The point of sweeping rather than stepping: a carrier anywhere in a 2 MHz
+/// range is found, on the channel grid, without visiting a hundred and sixty
+/// channels to get there.
+#[test]
+fn a_range_scan_stops_on_a_carrier() {
+    const SIGNAL: f64 = 145_312_500.0;
+    let mut rig = Rig::new(Some(SIGNAL));
+    rig.send(Command::SetScannerConfig(range_cfg()));
+    rig.send(Command::SetScanning(true));
+
+    let held = rig.pump(6.0, true).held_at.expect("the scan should have stopped on the carrier");
+    assert!(
+        (held - SIGNAL).abs() <= 12_500.0,
+        "stopped on {held} rather than within a channel of {SIGNAL}"
+    );
+}
+
+/// A dead band is scanned round and round without ever stopping, and without
+/// the dial wandering outside the range it was given.
+#[test]
+fn a_quiet_range_never_stops_and_stays_in_range() {
+    let mut rig = Rig::new(None);
+    rig.send(Command::SetScannerConfig(range_cfg()));
+    rig.send(Command::SetScanning(true));
+
+    let w = rig.pump(2.5, false);
+    assert!(w.running, "the scan should still be going");
+    assert_eq!(w.held_at, None, "nothing was transmitting, so nothing should have stopped it");
+    for &f in rig.visited.lock().unwrap().iter().skip(1) {
+        // Slices are centred inside the range, so every hardware centre has to
+        // be one the range could have asked for.
+        assert!(
+            (143_000_000.0..=147_000_000.0).contains(&f),
+            "the sweep tuned to {f}, outside the range it was given"
+        );
+    }
+}
+
+/// Carrier resume: the scan leaves once the signal goes, but only then — a gap
+/// between overs is not the end of a conversation.
+#[test]
+fn a_carrier_resume_waits_for_the_signal_to_go() {
+    const SIGNAL: f64 = 145_312_500.0;
+    let mut rig = Rig::new(Some(SIGNAL));
+    rig.send(Command::SetScannerConfig(range_cfg()));
+    rig.send(Command::SetScanning(true));
+    assert!(rig.pump(6.0, true).held_at.is_some(), "did not stop on the carrier to begin with");
+
+    // Still holding well past the 300 ms grace, because the signal is still there.
+    assert!(rig.pump(1.0, false).holding, "left a channel that was still busy");
+
+    // Now take it away.
+    *rig.signal.lock().unwrap() = None;
+    let w = rig.pump(2.0, false);
+    assert!(!w.holding, "stayed on a channel that had gone quiet");
+    assert!(w.running, "resuming is not stopping");
+}
+
+/// Manual resume means manual: it sits there until it is told otherwise, and
+/// NEXT is what tells it.
+#[test]
+fn manual_resume_stays_until_next() {
+    const SIGNAL: f64 = 145_312_500.0;
+    let mut rig = Rig::new(Some(SIGNAL));
+    rig.send(Command::SetScannerConfig(ScannerConfig {
+        resume: ScanResume::Manual,
+        ..range_cfg()
+    }));
+    rig.send(Command::SetScanning(true));
+    assert!(rig.pump(6.0, true).held_at.is_some(), "did not stop on the carrier");
+
+    *rig.signal.lock().unwrap() = None;
+    assert!(rig.pump(1.5, false).holding, "manual resume left on its own");
+
+    rig.send(Command::ScanNext);
+    let w = rig.pump(1.0, false);
+    assert!(!w.holding, "NEXT did not move it on");
+    assert!(w.running);
+}
+
+/// Touching the dial stops the scan. Every scanner works this way, and the
+/// alternative is the engine and the operator fighting over the VFO.
+#[test]
+fn tuning_by_hand_stops_the_scan() {
+    let mut rig = Rig::new(None);
+    rig.send(Command::SetScannerConfig(range_cfg()));
+    rig.send(Command::SetScanning(true));
+    assert!(rig.pump(0.6, false).running, "the scan should have started");
+
+    rig.send(Command::SetVfo { vfo: Vfo::A, hz: 145_500_000.0 });
+    let w = rig.pump(0.6, false);
+    assert!(!w.running, "the scan kept going after the operator tuned");
+    assert!(
+        (w.dial - 145_500_000.0).abs() < 1.0,
+        "and it should have left the dial where they put it, not at {}",
+        w.dial
+    );
+}
+
+/// A memory scan visits the stored channels, and a skipped one is not among
+/// them.
+#[test]
+fn a_memory_scan_passes_over_skipped_channels() {
+    const SIGNAL: f64 = 145_600_000.0;
+    let mut rig = Rig::new(Some(SIGNAL));
+    // Two channels: a quiet one, and the one the carrier is on.
+    rig.send(Command::SetVfo { vfo: Vfo::A, hz: 145_200_000.0 });
+    rig.send(Command::StoreMemory { name: "quiet".into() });
+    rig.send(Command::SetVfo { vfo: Vfo::A, hz: SIGNAL });
+    rig.send(Command::StoreMemory { name: "busy".into() });
+    let mems = rig.memories();
+    assert_eq!(mems.len(), 2, "both memories should have been stored");
+    let busy = mems.iter().find(|m| m.name == "busy").expect("the busy memory").id;
+
+    let cfg = ScannerConfig {
+        kind: ScanKind::Memories,
+        threshold_db: -60.0,
+        dwell_ms: 60,
+        resume: ScanResume::Manual,
+        ..range_cfg()
+    };
+    rig.send(Command::SetScannerConfig(cfg.clone()));
+    rig.send(Command::SetScanning(true));
+    let held = rig.pump(5.0, true).held_at.expect("should have stopped on the busy memory");
+    assert!((held - SIGNAL).abs() < 1.0, "stopped on {held} rather than {SIGNAL}");
+
+    // Skip it, and now there is nothing left to stop on.
+    rig.send(Command::SetScanning(false));
+    rig.send(Command::SetScannerConfig(ScannerConfig { skip: vec![busy], ..cfg }));
+    rig.forget();
+    rig.send(Command::SetScanning(true));
+    assert_eq!(rig.pump(2.5, true).held_at, None, "it stopped on a channel it was told to skip");
+}
+
+/// Asking for a scan that could never stop anywhere says so rather than
+/// pretending to run.
+#[test]
+fn an_impossible_scan_is_refused_with_a_reason() {
+    let mut rig = Rig::new(None);
+    rig.send(Command::SetScannerConfig(ScannerConfig {
+        range_lo_hz: 145_000_000.0,
+        range_hi_hz: 145_000_000.0,
+        ..range_cfg()
+    }));
+    rig.send(Command::SetScanning(true));
+    let w = rig.pump(1.0, false);
+    assert!(!w.running, "an empty range should not start a scan");
+    assert!(
+        w.notices.iter().any(|n| n.contains("range")),
+        "the operator should be told why, got {:?}",
+        w.notices
+    );
+
+    // And a memory scan with nothing to scan.
+    rig.forget();
+    rig.send(Command::SetScannerConfig(ScannerConfig { kind: ScanKind::Memories, ..range_cfg() }));
+    rig.send(Command::SetScanning(true));
+    let w = rig.pump(1.0, false);
+    assert!(!w.running, "a memory scan with no memories should not start");
+    assert!(
+        w.notices.iter().any(|n| n.contains("memory")),
+        "the operator should be told why, got {:?}",
+        w.notices
+    );
+}

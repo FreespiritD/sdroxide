@@ -25,6 +25,7 @@ pub(in crate::app) mod logbook;
 pub(in crate::app) mod net;
 pub(in crate::app) mod panels;
 pub(in crate::app) mod persist;
+pub(in crate::app) mod scanner;
 pub(in crate::app) mod settings;
 pub(in crate::app) mod solar;
 pub(in crate::app) mod spectrum;
@@ -70,6 +71,9 @@ pub struct SdroxideApp {
     wide_wf: crate::widgets::wide_spectrum::WideWaterfall,
     meters: Option<Meters>,
     memories: Vec<MemoryChannel>,
+    /// The scanner's settings, mirrored from the engine and edited in place —
+    /// the whole struct goes back on any change, the way the skimmer's does.
+    scanner: sdroxide_types::ScannerConfig,
     view: ViewState,
     peaks: spectrum_view::PeakHold,
     /// UI-side smoothing for the spectrum *line* (waterfall stays un-averaged).
@@ -126,6 +130,7 @@ pub struct SdroxideApp {
     smartsdr_test_result: Option<Result<String, String>>,
     seen_first_state: bool,
     show_memories: bool,
+    show_scanner: bool,
     show_settings: bool,
     /// Voice keyer: the engine's slot list and what it is doing, the window's
     /// open state, and the one slot label being typed into (only the focused
@@ -380,6 +385,7 @@ impl SdroxideApp {
             wide_wf: Default::default(),
             meters: None,
             memories: Vec::new(),
+            scanner: sdroxide_types::ScannerConfig::default(),
             view,
             peaks: spectrum_view::PeakHold::default(),
             spec_smooth: spectrum_view::SpectrumSmooth::default(),
@@ -408,6 +414,7 @@ impl SdroxideApp {
             smartsdr_test_result: None,
             seen_first_state: false,
             show_memories: false,
+            show_scanner: false,
             show_settings: false,
             voice: sdroxide_types::VoiceStatus::default(),
             show_voice: false,

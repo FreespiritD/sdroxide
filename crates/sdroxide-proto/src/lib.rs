@@ -169,7 +169,13 @@ use sdroxide_types::{
 /// The command is appended, so no surviving discriminant moves, but postcard is
 /// not self-describing and the two added struct fields change the layout of
 /// every message carrying `RadioState` or `Meters`.
-pub const PROTO_VERSION: u16 = 40;
+/// v41: the frequency scanner — `RadioState.scan` says whether it is running
+/// and whether it has stopped on something, `RadioEvent::Scanner` carries the
+/// settings the way `Memories` carries the memory list, and four appended
+/// commands (`SetScannerConfig`, `SetScanning`, `ScanNext`, `ScanSkip`) drive
+/// it. The commands are appended, but the added `RadioState` field changes the
+/// layout of every message carrying one, postcard not being self-describing.
+pub const PROTO_VERSION: u16 = 41;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -235,6 +241,9 @@ pub enum ServerMsg {
     Spectrum(SpectrumFrame),
     Meters(Meters),
     Memories(Vec<MemoryChannel>),
+    /// The scanner's settings, replayed on connect and re-sent on every change,
+    /// exactly as `Memories` is.
+    Scanner(sdroxide_types::ScannerConfig),
     RxAudio {
         seq: u32,
         payload: Vec<u8>,

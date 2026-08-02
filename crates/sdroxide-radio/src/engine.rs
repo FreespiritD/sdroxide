@@ -29,7 +29,7 @@ use sdroxide_tci::server::{ServerRequest, TciServerController, TciStateSnapshot}
 use sdroxide_types::{
     AgcMode, Band, BandStackEntry, Command, DeviceCaps, DigiConfig, Direction, ImageKind,
     MemoryChannel, Meters, Mode, NrLevel, RadioEvent, RadioState, RigctldConfig, RxId, RxState,
-    SpectrumConfig, SpectrumFrame, TciServerConfig, TxMeters, Vfo,
+    ScanKind, ScanResume, SpectrumConfig, SpectrumFrame, TciServerConfig, TxMeters, Vfo,
 };
 
 use crate::recorder::Recorder;
@@ -450,6 +450,57 @@ impl RxChain {
     }
 }
 
+/// Where a running scan has got to.
+///
+/// The two shapes a scan can take are one type because they differ only in how
+/// `queue` is refilled: a memory scan takes the next stored channel, a range
+/// scan on a wideband front end asks the FFT for everything busy in a whole
+/// span at once, and a range scan on a CAT rig walks the channel grid. After
+/// that they all visit candidates the same way.
+struct Scan {
+    phase: ScanPhase,
+    /// Still to visit before the queue has to be refilled.
+    queue: std::collections::VecDeque<ScanTarget>,
+    /// Hardware centres a range sweep works through, and which one is up.
+    slices: Vec<f64>,
+    slice: usize,
+    /// Channels a stepped range scan walks, and how far along it is.
+    stepped: Vec<f64>,
+    step_at: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ScanPhase {
+    /// The front end has just moved; neither the FFT nor the meter means
+    /// anything yet.
+    Settling(Instant),
+    /// Parked on a candidate, listening long enough to be sure.
+    Probing(Instant),
+    /// Stopped on something. `last_busy` is the last moment the signal was
+    /// actually there, which is what a carrier-resume waits on.
+    Holding { since: Instant, last_busy: Instant },
+}
+
+/// What a refill did, so the caller knows whether there is anything to visit
+/// yet.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Refill {
+    /// The queue has candidates in it now.
+    Queued,
+    /// The front end is moving; the next poll picks things up.
+    Waiting,
+    /// The scan is over.
+    Stopped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ScanTarget {
+    /// A stored channel, which brings its own mode and filter.
+    Memory(u32),
+    /// A bare frequency, in whichever mode the range scan is set to.
+    Freq(f64),
+}
+
 /// Interleaves two mono streams into the stereo ring. The second is whichever
 /// source has claimed the right ear — the sub receiver, or the right channel of
 /// a WFM stereo broadcast; with neither, the first goes to both ears.
@@ -721,6 +772,18 @@ struct Engine {
     /// `state.skimmer`, which is the *live* setting and is forced off on an
     /// audio-mode source — this is what a wideband source gets restored to.
     skim_cfg: sdroxide_types::SkimmerSettings,
+    /// The operator's persisted scanner settings. What the scanner is *doing*
+    /// lives in `state.scan`, which every client already receives.
+    scan_cfg: sdroxide_types::ScannerConfig,
+    /// The running scan, or `None` when it is stopped.
+    scan: Option<Scan>,
+    /// Scratch for the sweep's spectrum read, kept so a scan allocates nothing
+    /// per slice.
+    scan_db: Vec<f32>,
+    /// Smoothed audio power on a demod-audio (CAT) source, which has no
+    /// `RxChain` and so no `power_dbfs`. Tracked with the same time constant as
+    /// the real one so a scan behaves the same way on either.
+    audio_level: f32,
     /// Built-in Hamlib rigctld server: the control-only surface every
     /// "NET rigctl" client speaks (WSJT-X, fldigi, N1MM, Log4OM, GPredict).
     /// Present while enabled and successfully bound.
@@ -922,12 +985,14 @@ fn engine_thread(
     };
 
     let memories = sdroxide_config::load_memories();
+    let scan_cfg = sdroxide_config::load_scanner_config();
     let stacks = sdroxide_config::load_bandstacks();
     let digi_config = sdroxide_config::load_digi_config();
 
     info!(source = %source.describe(), "engine started");
     let _ = event_tx.send(RadioEvent::Capabilities(caps.clone()));
     let _ = event_tx.send(RadioEvent::Memories(memories.clone()));
+    let _ = event_tx.send(RadioEvent::Scanner(scan_cfg.clone()));
     // Surface any warning captured while opening the source (e.g. radio audio
     // device unavailable / mono card chosen for IQ) so the UI can show it
     // instead of an unexplained "waiting for spectrum".
@@ -1003,6 +1068,10 @@ fn engine_thread(
         skimmer: None,
         skim_buf: Vec::new(),
         skim_cfg,
+        scan_cfg,
+        scan: None,
+        scan_db: Vec::new(),
+        audio_level: 0.0,
         wsjtx: None,
         wsjtx_cfg: sdroxide_types::WsjtxConfig::default(),
         wsjtx_beat: Instant::now(),
@@ -1149,6 +1218,7 @@ fn engine_thread(
         engine.poll_digi();
         engine.poll_voice();
         engine.poll_skimmer();
+        engine.poll_scanner();
         engine.poll_tci_server();
         engine.poll_rigctld();
         engine.wsjtx_heartbeat();
@@ -1441,6 +1511,17 @@ impl Engine {
     fn run_audio_mode(&mut self, iq: &[Complex32]) {
         self.audio_re.clear();
         self.audio_re.extend(iq.iter().map(|c| c.re));
+
+        // The only level reading there is on a demod-audio source: there is no
+        // DDC and no demodulator here, so nothing else measures anything. Same
+        // one-pole as the real S-meter's, so the scanner's threshold behaves
+        // consistently across front ends even though the two are not the same
+        // quantity — this one is the rig's audio, after its own AGC and squelch.
+        if !self.audio_re.is_empty() {
+            let p: f32 =
+                self.audio_re.iter().map(|s| s * s).sum::<f32>() / self.audio_re.len() as f32;
+            self.audio_level += 0.3 * (p - self.audio_level);
+        }
 
         // Panadapter (packed-real FFT — see make_spectrum_frame).
         self.analyzer.process(iq);
@@ -2141,6 +2222,7 @@ impl Engine {
         use Command::*;
         match cmd {
             SetVfo { vfo, hz } => {
+                self.stop_scan_for_operator();
                 let hz = hz.max(0.0);
                 match vfo {
                     Vfo::A => self.state.vfo_a_hz = hz,
@@ -2174,7 +2256,10 @@ impl Engine {
                 self.update_tuning();
             }
             SetSampleRate(_) => { /* needs stream re-open; deferred */ }
-            SetBand(band) => self.change_band(band),
+            SetBand(band) => {
+                self.stop_scan_for_operator();
+                self.change_band(band);
+            }
             SetMode { rx, mode } => self.set_rx_mode(rx, mode),
             SetFilter { rx, lo, hi } => {
                 let (lo, hi) = (lo.min(hi), lo.max(hi));
@@ -2223,6 +2308,20 @@ impl Engine {
             SetAutoNotch { rx, on } => self.state.rx[rx.index()].auto_notch = on,
             SetWfmStereo { rx, on } => self.state.rx[rx.index()].wfm_stereo = on,
             SetToneSquelch { rx, tone } => self.state.rx[rx.index()].tone_sql = tone,
+            SetScannerConfig(cfg) => {
+                let restart = self.state.scan.running && cfg.kind != self.scan_cfg.kind;
+                self.scan_cfg = cfg;
+                if restart {
+                    // A different kind of scan is a different scan; starting it
+                    // fresh is clearer than reinterpreting a half-finished pass.
+                    self.stop_scan(None);
+                    self.set_scanning(true);
+                }
+                self.save_scanner_config();
+            }
+            SetScanning(on) => self.set_scanning(on),
+            ScanNext => self.scan_skip(false),
+            ScanSkip => self.scan_skip(true),
             SetRecording(on) => {
                 if on {
                     self.start_recording();
@@ -2416,6 +2515,7 @@ impl Engine {
                 self.save_memories();
             }
             RecallMemory(id) => {
+                self.stop_scan_for_operator();
                 if let Some(m) = self.memories.iter().find(|m| m.id == id).cloned() {
                     self.apply_entry(BandStackEntry {
                         freq_hz: m.freq_hz,
@@ -3517,8 +3617,415 @@ impl Engine {
         }
     }
 
+    // ---- Scanning ----------------------------------------------------------
+
+    /// What the level on the current channel is, in dBFS on the same scale as
+    /// the receiver's own squelch — so "stop where the audio would open" is
+    /// true by construction when the operator asks for it.
+    fn scan_level_dbfs(&mut self) -> Option<f32> {
+        if let Some(p) = self.main.as_ref().and_then(|c| c.power_dbfs()) {
+            return Some(p);
+        }
+        // A CAT rig on a sound card: no DDC, no demodulator, no meter — the
+        // audio it sends is the only evidence there is.
+        if self.audio_mode {
+            return Some(10.0 * (self.audio_level + 1e-20).log10());
+        }
+        // No audio chain at all — a headless engine started without a sound
+        // device. The panadapter's FFT is still running, and channel power read
+        // off it is the same quantity the demodulator would have measured, so a
+        // scan still works with nothing to listen on. It inherits the display's
+        // own averaging, though, so with `avg_tc` turned up a channel takes
+        // longer to read as free than the real meter would have taken.
+        let (flo, fhi) = self.state.rx[0].mode.default_filter();
+        self.analyzer.spectrum_db(&mut self.scan_db);
+        crate::scanner::channel_power_db(
+            &self.scan_db,
+            self.state.center_hz,
+            self.state.sample_rate,
+            self.state.rx_freq_hz(),
+            (fhi - flo).abs().max(1.0) as f64,
+        )
+    }
+
+    fn scan_threshold_db(&self) -> f32 {
+        if self.scan_cfg.follow_squelch {
+            self.state.rx[0].squelch_db
+        } else {
+            self.scan_cfg.threshold_db
+        }
+    }
+
+    fn scan_is_busy(&mut self) -> bool {
+        self.scan_level_dbfs().is_some_and(|level| level >= self.scan_threshold_db())
+    }
+
+    /// Whether this front end can search a whole span at once. A demod-audio
+    /// source has no span to search, so it walks channels instead.
+    fn scan_can_sweep(&self) -> bool {
+        !self.audio_mode && self.state.sample_rate > 0.0
+    }
+
+    /// How long to give the front end after it moves. The meter's own one-pole
+    /// takes about a tenth of a second to be worth reading, and a hardware
+    /// retune has to finish before that even starts.
+    fn scan_settle(&self) -> Duration {
+        Duration::from_millis(self.scan_cfg.dwell_ms.max(40) as u64)
+    }
+
+    /// Start or stop scanning, saying why if it cannot start.
+    fn set_scanning(&mut self, on: bool) {
+        if !on {
+            self.stop_scan(None);
+            return;
+        }
+        if self.state.scan.running {
+            return;
+        }
+        if self.tx_active {
+            self.notice("cannot scan while transmitting");
+            return;
+        }
+        let usable = match self.scan_cfg.kind {
+            ScanKind::Memories => {
+                let any = self.memories.iter().any(|m| !self.scan_cfg.skip.contains(&m.id));
+                if !any {
+                    self.notice("nothing to scan: no memory channels, or all of them skipped");
+                }
+                any
+            }
+            ScanKind::Range => {
+                let ok = self.scan_cfg.range_is_usable();
+                if !ok {
+                    self.notice("the scan range is empty — check the low and high frequencies");
+                }
+                ok
+            }
+        };
+        if !usable {
+            return;
+        }
+        let now = Instant::now();
+        self.scan = Some(Scan {
+            phase: ScanPhase::Probing(now),
+            queue: std::collections::VecDeque::new(),
+            slices: Vec::new(),
+            slice: usize::MAX, // rolls over to 0 on the first refill
+            stepped: Vec::new(),
+            step_at: 0,
+        });
+        self.state.scan = sdroxide_types::ScanState { running: true, holding: false };
+        // Pick the first target now rather than waiting a poll for it, so
+        // nothing has to distinguish "just started" from "just finished a
+        // dwell" later on.
+        self.scan_advance(now);
+        self.emit_state();
+    }
+
+    /// Stop a running scan wherever it happens to be, which leaves the operator
+    /// on that channel — the same as pressing stop on a handheld.
+    fn stop_scan(&mut self, why: Option<&str>) {
+        if self.scan.take().is_none() && !self.state.scan.running {
+            return;
+        }
+        self.state.scan = sdroxide_types::ScanState::default();
+        if let Some(why) = why {
+            self.notice(why);
+        }
+        self.emit_state();
+    }
+
+    /// Called from every command that moves the dial by hand. Touching the
+    /// tuning stops the scanner, as it does on every radio that has one; the
+    /// alternative is the engine and the operator fighting over the VFO.
+    fn stop_scan_for_operator(&mut self) {
+        if self.state.scan.running {
+            self.stop_scan(None);
+        }
+    }
+
+    fn poll_scanner(&mut self) {
+        if !self.state.scan.running {
+            return;
+        }
+        if self.tx_active {
+            self.stop_scan(Some("scan stopped: transmitting"));
+            return;
+        }
+        let now = Instant::now();
+        let Some(phase) = self.scan.as_ref().map(|s| s.phase) else { return };
+        match phase {
+            ScanPhase::Settling(until) => {
+                if now >= until {
+                    self.scan_read_slice(now);
+                }
+            }
+            ScanPhase::Probing(until) => {
+                if now >= until {
+                    self.scan_decide(now);
+                }
+            }
+            ScanPhase::Holding { since, last_busy } => self.scan_hold(now, since, last_busy),
+        }
+    }
+
+    /// The front end has settled on a sweep slice: read the whole span at once
+    /// and queue everything busy in it.
+    fn scan_read_slice(&mut self, now: Instant) {
+        self.analyzer.spectrum_db(&mut self.scan_db);
+        let (lo, hi) = self.scan_cfg.range();
+        let (flo, fhi) = self.scan_cfg.mode.default_filter();
+        let found = crate::scanner::busy_channels(
+            &self.scan_db,
+            self.state.center_hz,
+            self.state.sample_rate,
+            lo,
+            hi,
+            (fhi - flo).abs().max(1.0) as f64,
+            self.scan_cfg.step_hz.max(1.0),
+            self.scan_threshold_db(),
+        );
+        if let Some(sc) = self.scan.as_mut() {
+            sc.queue.extend(found.into_iter().map(ScanTarget::Freq));
+        }
+        self.scan_advance(now);
+    }
+
+    /// The dwell on a candidate is up: stop here, or carry on.
+    fn scan_decide(&mut self, now: Instant) {
+        if self.scan_is_busy() {
+            if let Some(sc) = self.scan.as_mut() {
+                sc.phase = ScanPhase::Holding { since: now, last_busy: now };
+            }
+            self.state.scan.holding = true;
+            self.emit_state();
+        } else {
+            self.scan_advance(now);
+        }
+    }
+
+    /// Stopped on a channel: decide whether it is time to move on.
+    fn scan_hold(&mut self, now: Instant, since: Instant, last_busy: Instant) {
+        let busy = self.scan_is_busy();
+        if busy {
+            if let Some(sc) = self.scan.as_mut() {
+                sc.phase = ScanPhase::Holding { since, last_busy: now };
+            }
+        }
+        let grace = Duration::from_millis(self.scan_cfg.resume_ms as u64);
+        let done = match self.scan_cfg.resume {
+            ScanResume::Manual => false,
+            ScanResume::Timed => now.duration_since(since) >= grace,
+            // A gap between overs is not the end of a conversation, so the
+            // grace period runs from when the signal actually stopped.
+            ScanResume::Carrier => !busy && now.duration_since(last_busy) >= grace,
+        };
+        if done {
+            self.scan_advance(now);
+        }
+    }
+
+    /// Move on to the next thing to look at, refilling the queue as needed.
+    fn scan_advance(&mut self, now: Instant) {
+        self.state.scan.holding = false;
+        // Bounded: one refill to top the queue up, and a second attempt only if
+        // that refill produced nothing to visit. Anything further waits for the
+        // next poll, so no arrangement of settings can spin the DSP thread.
+        for _ in 0..2 {
+            if let Some(target) = self.scan.as_mut().and_then(|s| s.queue.pop_front()) {
+                self.scan_goto(target, now);
+                return;
+            }
+            match self.scan_refill(now) {
+                Refill::Queued => continue,
+                // Either the front end is moving and the next poll picks it up,
+                // or the scan is over.
+                Refill::Waiting | Refill::Stopped => return,
+            }
+        }
+    }
+
+    /// Put the next batch of candidates in the queue, or set the front end
+    /// moving towards them.
+    fn scan_refill(&mut self, now: Instant) -> Refill {
+        match self.scan_cfg.kind {
+            ScanKind::Memories => {
+                let targets: Vec<ScanTarget> = self
+                    .memories
+                    .iter()
+                    .filter(|m| !self.scan_cfg.skip.contains(&m.id))
+                    .map(|m| ScanTarget::Memory(m.id))
+                    .collect();
+                if targets.is_empty() {
+                    self.stop_scan(Some("scan stopped: every memory channel is skipped"));
+                    return Refill::Stopped;
+                }
+                if let Some(sc) = self.scan.as_mut() {
+                    sc.queue.extend(targets);
+                }
+                Refill::Queued
+            }
+            ScanKind::Range if self.scan_can_sweep() => self.scan_next_slice(now),
+            ScanKind::Range => self.scan_next_stepped(),
+        }
+    }
+
+    /// Move the front end to the next slice of the range. The spectrum is read
+    /// once it has settled, which is a poll or two later.
+    fn scan_next_slice(&mut self, now: Instant) -> Refill {
+        let (lo, hi) = self.scan_cfg.range();
+        let span = self.state.sample_rate;
+        let settle = self.scan_settle();
+        let Some(sc) = self.scan.as_mut() else { return Refill::Stopped };
+        if sc.slices.is_empty() {
+            sc.slices = crate::scanner::slice_centers(lo, hi, span);
+            if sc.slices.is_empty() {
+                self.stop_scan(Some("scan stopped: the range is not a usable one"));
+                return Refill::Stopped;
+            }
+        }
+        sc.slice = sc.slice.wrapping_add(1);
+        if sc.slice >= sc.slices.len() {
+            sc.slice = 0; // round again: a scanner runs until it is stopped
+        }
+        let center = sc.slices[sc.slice];
+        sc.phase = ScanPhase::Settling(now + settle);
+
+        // Park the dial on the slice as well, so the operator sees where the
+        // scan is looking rather than a dial left behind on the last candidate.
+        match self.state.active_vfo {
+            Vfo::A => self.state.vfo_a_hz = center,
+            Vfo::B => self.state.vfo_b_hz = center,
+        }
+        self.state.band = Band::containing(center);
+        if !self.retune(center) {
+            // Outside the front end's range: `tune_refused` has already put the
+            // dial back and said so, and the next slice may still be reachable.
+            return Refill::Waiting;
+        }
+        // The running average still holds the previous slice's samples, and
+        // they are from a different part of the band entirely.
+        self.analyzer.reset();
+        self.update_tuning();
+        self.emit_state();
+        Refill::Waiting
+    }
+
+    /// One channel at a time along the range's grid — for a front end with no
+    /// span of its own to search.
+    fn scan_next_stepped(&mut self) -> Refill {
+        let (lo, hi) = self.scan_cfg.range();
+        let step = self.scan_cfg.step_hz.max(1.0);
+        let Some(sc) = self.scan.as_mut() else { return Refill::Stopped };
+        if sc.stepped.is_empty() {
+            // Capped: a whole band on a 5 kHz grid is a few thousand channels,
+            // and asking a CAT rig to visit a hundred thousand is not a scan.
+            const MAX: usize = 8192;
+            let n = (((hi - lo) / step).floor() as usize + 1).min(MAX);
+            sc.stepped = (0..n).map(|i| lo + i as f64 * step).collect();
+            if sc.stepped.is_empty() {
+                self.stop_scan(Some("scan stopped: the range is not a usable one"));
+                return Refill::Stopped;
+            }
+        }
+        // One channel per refill: every one on this path has to be listened to,
+        // so queueing the whole band up front would buy nothing.
+        if sc.step_at >= sc.stepped.len() {
+            sc.step_at = 0;
+        }
+        let f = sc.stepped[sc.step_at];
+        sc.step_at += 1;
+        sc.queue.push_back(ScanTarget::Freq(f));
+        Refill::Queued
+    }
+
+    /// Park the receiver on a candidate and start listening to it.
+    fn scan_goto(&mut self, target: ScanTarget, now: Instant) {
+        match target {
+            ScanTarget::Memory(id) => {
+                let Some(m) = self.memories.iter().find(|m| m.id == id) else { return };
+                let entry = BandStackEntry {
+                    freq_hz: m.freq_hz,
+                    mode: m.mode,
+                    filter_lo: m.filter_lo,
+                    filter_hi: m.filter_hi,
+                };
+                self.place_entry_in_span(entry);
+            }
+            ScanTarget::Freq(hz) => {
+                if self.state.rx[0].mode != self.scan_cfg.mode {
+                    self.set_rx_mode(RxId::Main, self.scan_cfg.mode);
+                }
+                match self.state.active_vfo {
+                    Vfo::A => self.state.vfo_a_hz = hz,
+                    Vfo::B => self.state.vfo_b_hz = hz,
+                }
+                self.state.band = Band::containing(hz);
+                self.keep_vfo_in_span();
+                self.update_tuning();
+            }
+        }
+        let settle = self.scan_settle();
+        if let Some(sc) = self.scan.as_mut() {
+            sc.phase = ScanPhase::Probing(now + settle);
+        }
+        self.emit_state();
+    }
+
+    /// Leave the channel the scan is holding on, optionally never to stop there
+    /// again.
+    fn scan_skip(&mut self, forever: bool) {
+        if !self.state.scan.running {
+            return;
+        }
+        // Whichever memory the dial is actually sitting on, rather than
+        // whichever one the queue last dealt: a recall can be refused, and the
+        // operator means "this one, the one I am listening to".
+        if forever && self.scan_cfg.kind == ScanKind::Memories {
+            let here = self.state.active_freq_hz();
+            if let Some(id) =
+                self.memories.iter().find(|m| (m.freq_hz - here).abs() < 1.0).map(|m| m.id)
+                && !self.scan_cfg.skip.contains(&id)
+            {
+                self.scan_cfg.skip.push(id);
+                self.save_scanner_config();
+            }
+        }
+        self.scan_advance(Instant::now());
+    }
+
+    fn save_scanner_config(&mut self) {
+        if let Err(e) = sdroxide_config::save_scanner_config(&self.scan_cfg) {
+            warn!("saving scanner config: {e}");
+        }
+        let _ = self.event_tx.send(RadioEvent::Scanner(self.scan_cfg.clone()));
+    }
+
+    fn notice(&self, text: &str) {
+        let _ = self.event_tx.send(RadioEvent::Notice(Some(text.to_string())));
+    }
+
+    fn emit_state(&self) {
+        let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
+    }
+
     /// Tune + set mode/filter from a band-stack entry or memory channel.
     fn apply_entry(&mut self, entry: BandStackEntry) {
+        self.place_entry(entry, true);
+    }
+
+    /// [`Self::apply_entry`], but leaving the front end where it is when the
+    /// target is already inside the span it is receiving.
+    ///
+    /// For the scanner, where a run of memories on the same band costs a DDC
+    /// shift each instead of a hardware retune each — the difference between
+    /// stepping channels in microseconds and stepping them in tens of
+    /// milliseconds. A band change still moves the LO, via `keep_vfo_in_span`.
+    fn place_entry_in_span(&mut self, entry: BandStackEntry) {
+        self.place_entry(entry, false);
+    }
+
+    fn place_entry(&mut self, entry: BandStackEntry, force_retune: bool) {
         match self.state.active_vfo {
             Vfo::A => self.state.vfo_a_hz = entry.freq_hz,
             Vfo::B => self.state.vfo_b_hz = entry.freq_hz,
@@ -3531,7 +4038,11 @@ impl Engine {
         if let Some(d) = self.main.as_mut().and_then(|c| c.demod.as_mut()) {
             d.set_filter(snapshot.filter_lo, snapshot.filter_hi);
         }
-        self.retune_for_vfo(entry.freq_hz);
+        if force_retune {
+            self.retune_for_vfo(entry.freq_hz);
+        } else {
+            self.keep_vfo_in_span();
+        }
         self.update_tuning();
     }
 

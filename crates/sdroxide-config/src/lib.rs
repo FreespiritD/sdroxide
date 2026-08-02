@@ -383,6 +383,17 @@ pub fn save_skimmer_config(cfg: &sdroxide_types::SkimmerSettings) -> Result<(), 
     save_json("skimmer.json", cfg)
 }
 
+/// Scanner settings: what to scan, how hard a signal has to be to stop it, and
+/// which memories to pass over. Restored at startup so a scan set up once is
+/// one keypress away afterwards.
+pub fn load_scanner_config() -> sdroxide_types::ScannerConfig {
+    load_json("scanner.json")
+}
+
+pub fn save_scanner_config(cfg: &sdroxide_types::ScannerConfig) -> Result<(), ConfigError> {
+    save_json("scanner.json", cfg)
+}
+
 /// FSQ contacts (address book for directed FSQCALL messaging).
 pub fn load_contacts() -> Vec<sdroxide_types::FsqContact> {
     load_json("contacts.json")

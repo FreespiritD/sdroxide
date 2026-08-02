@@ -105,6 +105,7 @@ impl eframe::App for SdroxideApp {
                 }
                 RadioEvent::Meters(m) => self.meters = Some(m),
                 RadioEvent::Memories(m) => self.memories = m,
+                RadioEvent::Scanner(c) => self.scanner = c,
                 RadioEvent::ConnectionLost(e) => self.error = Some(e),
                 RadioEvent::Notice(n) => self.radio_notice = n,
                 RadioEvent::Ft8Decodes(d) => {
@@ -685,6 +686,7 @@ impl eframe::App for SdroxideApp {
         }
 
         self.memories_window(&ctx, &mut cmds);
+        self.scanner_window(&ctx, &mut cmds);
         self.voice_window(&ctx, &mut cmds);
         self.settings_window(&ctx, &mut cmds);
         self.digi_settings_window(&ctx, &mut cmds);

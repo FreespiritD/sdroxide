@@ -78,6 +78,11 @@ pub(crate) struct Latest {
     pub caps: DeviceCaps,
     pub state: RadioState,
     pub memories: Vec<MemoryChannel>,
+    /// The scanner's settings, announced at startup and on every change, and
+    /// replayed on connect for the same reason as `memories`: a client that
+    /// attaches later would otherwise open the scanner window on defaults it
+    /// would then write back over the operator's.
+    pub scanner: sdroxide_types::ScannerConfig,
     /// The engine announces the operator config (callsign, grid, templates)
     /// exactly once, at startup, so the settings editors are populated before
     /// any digital mode is selected. In server mode that happens long before
@@ -332,6 +337,10 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             RadioEvent::Memories(m) => {
                 latest.memories = m.clone();
                 Some(ServerMsg::Memories(m))
+            }
+            RadioEvent::Scanner(c) => {
+                latest.scanner = c.clone();
+                Some(ServerMsg::Scanner(c))
             }
             RadioEvent::Meters(m) => Some(ServerMsg::Meters(m)),
             RadioEvent::Spectrum(_) => None, // spectrum travels via the watch lane

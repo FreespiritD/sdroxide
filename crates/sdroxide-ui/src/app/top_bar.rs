@@ -1461,7 +1461,8 @@ impl SdroxideApp {
     }
 
     fn windows_module(&mut self, ui: &mut egui::Ui) {
-        crate::chrome::module(ui, "System", 285.0, |ui| {
+        // 285 for the original five chips, plus the width SCAN adds.
+        crate::chrome::module(ui, "System", 285.0 + 56.0, |ui| {
             self.windows_controls(ui, false);
         });
     }

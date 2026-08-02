@@ -355,4 +355,18 @@ pub enum Command {
         rx: RxId,
         tone: Option<crate::SubTone>,
     },
+
+    // Scanning. Appended for the usual reason: postcard numbers variants by
+    // position.
+    /// Apply (and persist) the scanner settings. Echoed back to every client as
+    /// [`crate::RadioEvent::Scanner`], the way memories are.
+    SetScannerConfig(crate::ScannerConfig),
+    /// Start or stop scanning. A scan also stops on its own if the operator
+    /// tunes, changes band, recalls a memory or transmits.
+    SetScanning(bool),
+    /// Leave the channel the scan stopped on and carry on now.
+    ScanNext,
+    /// Leave it and don't stop here again: adds the memory to the skip list, or
+    /// the frequency to the range scan's.
+    ScanSkip,
 }

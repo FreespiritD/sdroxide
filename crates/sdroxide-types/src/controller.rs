@@ -188,6 +188,10 @@ pub enum RadioEvent {
         kind: crate::ImageKind,
         name: String,
     },
+    /// The scanner's settings, after a change or on connect — the same contract
+    /// as [`RadioEvent::Memories`]. What the scanner is *doing* rides in
+    /// [`crate::RadioState::scan`] instead, being small and constantly changing.
+    Scanner(crate::ScannerConfig),
 }
 
 /// Snapshot of the frontend's switchable sound devices (native clients).
