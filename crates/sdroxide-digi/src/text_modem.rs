@@ -262,7 +262,18 @@ impl DigiEngine for TextModemController {
         let decoded = self.rx.process(&self.scratch8);
         // Squelch: drop decoded text while the signal sits at the noise floor so
         // pure noise doesn't fill the window. `digi_squelch` is the sensitivity.
-        let open = self.sq.open(self.rx.magnitude(), self.cfg.digi_squelch);
+        //
+        // RTTY and PSK are exempt: both now refuse to emit anything unless the
+        // decoder itself is convinced (RTTY needs several consecutively
+        // well-framed characters, PSK needs a carrier-coherent constellation),
+        // which is a strictly better signal-presence test than a level
+        // comparison. It is also the only one that works here — the magnitude
+        // squelch seeds its noise floor from the first block it sees, so tuning
+        // to a station that is already transmitting seeds the "floor" at the
+        // signal's own level and the gate never opens at all. Olivia and THOR
+        // have no such internal gate and still need it.
+        let self_gating = matches!(self.mode, Mode::Rtty | Mode::Psk);
+        let open = self.sq.open(self.rx.magnitude(), self.cfg.digi_squelch) || self_gating;
         if !decoded.is_empty() && open {
             self.rx_text.push_str(&decoded);
             if self.rx_text.len() > RX_TEXT_CAP {
