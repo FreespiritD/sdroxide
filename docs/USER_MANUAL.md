@@ -1683,14 +1683,22 @@ afterwards — sdroxide keeps trying it in the background and attaches by itself
 retrying at first every second and then more slowly. The same happens if the
 link drops mid-session: it reconnects when the radio comes back.
 
-**Converter offset**, under the interface selector, is for an external frequency
-converter in the antenna line — an HF upconverter such as the Ham It Up or
-SpyVerter, or a receive converter for a band your hardware cannot reach. Set it
-to how far *above* the dial the converter puts the signal, and tune in real
-frequencies from then on: with `+125 MHz` you type 10.1008 MHz and sdroxide
-quietly sends the receiver to 135.1008 MHz. The **+125** button fills in the
-usual upconverter value; **None** takes the converter back out. The offset takes
-effect when you press **Apply / reconnect**, not as you type it.
+**Converter** and **Offset**, under the interface selector, are for an external
+frequency converter in the antenna line — an HF upconverter such as the Ham It
+Up or SpyVerter, a transverter, or a satellite LNB. Pick a converter from the
+list and the offset fills itself in; pick nothing and type one, which the list
+then shows as **Manual**.
+
+The offset is **in hertz**, and it is the same number, with the same sign, that
+the converter's own documentation and every other SDR program (SDR++, SDR#,
+GQRX) states: how far the converter moves the signal on its way to the receiver.
+A Ham It Up is `125000000`. Positive means an upconverter — you type 10.1008 MHz
+and sdroxide quietly sends the receiver to 135.1008 MHz. Negative means a
+down-converter: a universal Ku-band LNB is `-9750000000`, so a 10.489 GHz
+downlink is received at 739 MHz while the dial reads 10.489 GHz. Dragging the
+box trims a hertz at a time, which is what a converter whose oscillator is a
+little off wants. The offset takes effect when you press **Apply / reconnect**,
+not as you type it.
 
 Everything downstream follows the dial, not the hardware: band buttons, the band
 plan, memories, the logbook, cluster and PSK Reporter spots, what gets uploaded

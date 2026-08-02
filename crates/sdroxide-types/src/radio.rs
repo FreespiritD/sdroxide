@@ -875,6 +875,40 @@ impl Rx888Config {
     pub const ADC_RATES: [f64; 4] = [16_200_000.0, 32_400_000.0, 64_800_000.0, 129_600_000.0];
 }
 
+/// Named converters for [`RadioConfig::converter_offset_hz`], with the offset
+/// each one puts on the dial in Hz.
+///
+/// Signs follow the one rule the whole feature is built on: the hardware is
+/// tuned to `dial + offset`. An *up*-converter therefore has a positive offset
+/// — a Ham It Up presents 10.1 MHz to the receiver as 135.1 MHz — and a
+/// *down*-converter a negative one: a universal Ku-band LNB with a 9750 MHz
+/// local oscillator hands a 10.489 GHz downlink to the receiver at 739 MHz.
+///
+/// Anything else is typed in directly; the settings dialog calls that Manual,
+/// and shows it whenever the offset matches nothing here.
+pub const CONVERTER_PRESETS: [(&str, f64); 5] = [
+    ("None", 0.0),
+    ("Ham It Up (+125 MHz)", 125_000_000.0),
+    ("SpyVerter (+120 MHz)", 120_000_000.0),
+    ("LNB, Ku low (−9750 MHz)", -9_750_000_000.0),
+    ("LNB, Ku high (−10600 MHz)", -10_600_000_000.0),
+];
+
+/// How far a converter offset may be set either way, in Hz.
+///
+/// Wide enough for a Ku-band LNB, which is the largest offset anyone puts in
+/// front of a receiver; an HF upconverter is two orders of magnitude inside it.
+pub const CONVERTER_OFFSET_MAX_HZ: f64 = 12_000_000_000.0;
+
+/// The preset name for an offset, or `"Manual"` when it is not one of them.
+pub fn converter_preset_name(offset_hz: f64) -> &'static str {
+    CONVERTER_PRESETS
+        .iter()
+        .find(|(_, hz)| (hz - offset_hz).abs() < 0.5)
+        .map(|(name, _)| *name)
+        .unwrap_or("Manual")
+}
+
 /// Persisted backend configuration (`radio.json`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -885,9 +919,14 @@ pub struct RadioConfig {
     /// Sound-card device (cpal name) carrying the TX audio PC → radio.
     pub radio_audio_out: Option<String>,
     /// External frequency converter in the antenna line: the hardware is tuned
-    /// this far from the operator's dial, so `+125_000_000` is a Ham It Up or
-    /// SpyVerter HF upconverter and the dial reads the real on-air frequency.
-    /// `0.0` (the default) is no converter and leaves tuning exactly as it was.
+    /// this far from the operator's dial, in Hz. So `+125_000_000` is a Ham It
+    /// Up HF upconverter and the dial reads the real on-air frequency, and a
+    /// negative value is a down-converter such as a satellite LNB. `0.0` (the
+    /// default) is no converter and leaves tuning exactly as it was.
+    ///
+    /// Hz rather than MHz because that is the unit every converter's
+    /// documentation and every other SDR program states it in, and a number
+    /// copied from one of those has to mean the same thing here.
     ///
     /// Receive only — a converter is not in the transmit path, so transmit is
     /// withdrawn while this is set.
@@ -947,6 +986,25 @@ mod tests {
         let up: RadioConfig =
             serde_json::from_str(r#"{"converter_offset_hz": 125000000.0}"#).expect("parses");
         assert_eq!(up.converter_offset_hz, 125_000_000.0);
+    }
+
+    /// The sign is the whole feature. An upconverter moves the hardware *up*
+    /// from the dial and a down-converter moves it down, and getting either
+    /// backwards points the receiver twice the offset away from the signal.
+    #[test]
+    fn converter_presets_have_the_right_sign_and_size() {
+        for (name, hz) in CONVERTER_PRESETS {
+            assert!(hz.abs() <= CONVERTER_OFFSET_MAX_HZ, "{name} is outside the allowed range");
+            assert_eq!(converter_preset_name(hz), name, "{name} should name itself");
+        }
+        // A Ham It Up presents 10.1008 MHz to the receiver as 135.1008 MHz.
+        let ham = CONVERTER_PRESETS[1].1;
+        assert_eq!(10_100_800.0 + ham, 135_100_800.0);
+        // A universal LNB hands a 10.489 GHz downlink over at 739 MHz.
+        let lnb = CONVERTER_PRESETS[3].1;
+        assert_eq!(10_489_000_000.0 + lnb, 739_000_000.0);
+        assert_eq!(converter_preset_name(0.0), "None");
+        assert_eq!(converter_preset_name(28_000_000.0), "Manual");
     }
 
     #[test]

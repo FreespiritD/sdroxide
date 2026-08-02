@@ -337,12 +337,14 @@ feeding demodulated audio shows only a narrow audio-band slice. RTL-SDR is
 receive-only; the others can transmit.
 
 Whichever backend you pick, a **converter offset** on the same tab handles an
-external HF upconverter (Ham It Up, SpyVerter) or a receive converter: set it to
-`+125 MHz` and you tune 10.1008 MHz while the receiver is quietly sent to
-135.1008 MHz. The dial, band buttons, memories, the logbook and every spot and
-upload stay on the real on-air frequency. Receive only — transmit is switched
-off while a converter is set, because a converter is not in the transmit path.
-Not yet verified against physical hardware.
+external frequency converter: an HF upconverter (Ham It Up, SpyVerter), a
+transverter, or a satellite LNB. Pick one from the list or type an offset in Hz
+— the same number and sign the converter's documentation and other SDR programs
+use — and tune in real frequencies: with a Ham It Up you work 10.1008 MHz while
+the receiver is quietly sent to 135.1008 MHz. The dial, band buttons, memories,
+the logbook and every spot and upload stay on the real on-air frequency. Receive
+only — transmit is switched off while a converter is set, because a converter is
+not in the transmit path. Not yet verified against physical hardware.
 
 ### SmartSDR Simulator
 

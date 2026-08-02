@@ -94,10 +94,11 @@ pub use pictures::{
     ImageSlotInfo, received_at, safe_name,
 };
 pub use radio::{
-    Backend, CatConfig, CatFamily, DigiMode, HpsdrConfig, HpsdrDevice, HpsdrFilterBoard, LineState,
-    ModeControl, Parity, PttMethod, RadioConfig, RtlSdrAgc, RtlSdrConfig, RtlSdrDevice,
-    RtlSdrHfMode, Rx888Config, Rx888Device, SerialConfig, SmartSdrConfig, SmartSdrDevice,
-    SoundFormat, StopBits, TciConfig,
+    Backend, CONVERTER_OFFSET_MAX_HZ, CONVERTER_PRESETS, CatConfig, CatFamily, DigiMode,
+    HpsdrConfig, HpsdrDevice, HpsdrFilterBoard, LineState, ModeControl, Parity, PttMethod,
+    RadioConfig, RtlSdrAgc, RtlSdrConfig, RtlSdrDevice, RtlSdrHfMode, Rx888Config, Rx888Device,
+    SerialConfig, SmartSdrConfig, SmartSdrDevice, SoundFormat, StopBits, TciConfig,
+    converter_preset_name,
 };
 pub use rifp::{
     RIFP_CALLING_HZ, RIFP_MAP_MAX_CHUNKS, RifpEncoding, RifpMeta, RifpProfile, RifpSession,
