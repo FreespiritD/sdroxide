@@ -1006,6 +1006,18 @@ fn engine_thread(
     // CAT rig reporting its own) is a difference like any other, and gets
     // written even if nothing is touched afterwards.
     let session = engine_cfg.remember_session.then(sdroxide_config::load_session);
+    // Volume, RX gain, AGC mode, drive and mic gain have no command-line
+    // override, so the remembered session (if any) always wins over the
+    // hardcoded defaults `RadioState::default()` / `engine_cfg.initial_mode`
+    // set above.
+    if let Some(s) = session.as_ref() {
+        state.rx[0].volume = s.volume;
+        state.rx[0].manual_gain_db = s.rx_gain_db;
+        state.rx[0].agc = s.agc;
+        state.tx.drive = s.drive;
+        state.tx.tune_drive = s.tune_drive;
+        state.tx.mic_gain = s.mic_gain;
+    }
     // The command line outranks the remembered session, exactly as it does for
     // the dial and the mode.
     let (cli_rx, cli_tx) = engine_cfg.initial_antenna;
@@ -4077,10 +4089,10 @@ impl Engine {
         }
     }
 
-    /// Write the dial, mode and antennas to `session.json` if any of them has
-    /// moved since the last write, so the next start comes up here rather than
-    /// on the default frequency. A no-op on an engine that isn't remembering its
-    /// session.
+    /// Write the dial, mode, antennas and levels to `session.json` if any of
+    /// them has moved since the last write, so the next start comes up here
+    /// rather than on the default frequency and levels. A no-op on an engine
+    /// that isn't remembering its session.
     ///
     /// Compared before writing rather than written on every change: the dial
     /// moves continuously while it is being spun, and none of those hundreds of
@@ -4099,6 +4111,12 @@ impl Engine {
             mode: self.state.rx[0].mode,
             antenna_rx: keep(&self.state.antenna_rx).or_else(|| saved.antenna_rx.clone()),
             antenna_tx: keep(&self.state.antenna_tx).or_else(|| saved.antenna_tx.clone()),
+            volume: self.state.rx[0].volume,
+            rx_gain_db: self.state.rx[0].manual_gain_db,
+            agc: self.state.rx[0].agc,
+            drive: self.state.tx.drive,
+            tune_drive: self.state.tx.tune_drive,
+            mic_gain: self.state.tx.mic_gain,
         };
         if now == *saved {
             return;
@@ -4106,7 +4124,7 @@ impl Engine {
         match sdroxide_config::save_session(&now) {
             Ok(()) => self.session = Some(now),
             // Don't latch the new value on failure, so the next tick retries.
-            Err(e) => warn!("saving the session (dial + mode + antennas): {e}"),
+            Err(e) => warn!("saving the session (dial + mode + antennas + levels): {e}"),
         }
     }
 

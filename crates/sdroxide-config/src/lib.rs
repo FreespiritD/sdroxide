@@ -258,10 +258,10 @@ impl Settings {
     }
 }
 
-/// Where the operator left the radio (`session.json`): the dial, the mode and
-/// the selected antennas. Restored on the next start, so the program comes back
-/// up where it was instead of on a fixed default frequency and whichever port
-/// the driver happens to power up on.
+/// Where the operator left the radio (`session.json`): the dial, the mode, the
+/// selected antennas, and the audio/RF levels. Restored on the next start, so
+/// the program comes back up where it was instead of on a fixed default
+/// frequency and whichever port and level the driver happens to power up on.
 ///
 /// Deliberately not part of `config.toml`. That file holds preferences the
 /// operator sets once; this is written by the engine as the radio is used, and
@@ -280,6 +280,18 @@ pub struct Session {
     pub antenna_rx: Option<String>,
     /// TX antenna port, likewise ("BAND1", "BAND2").
     pub antenna_tx: Option<String>,
+    /// Main receiver's AF volume, 0.0..=1.0.
+    pub volume: f32,
+    /// Main receiver's manual (AGC-off) gain, in dB.
+    pub rx_gain_db: f32,
+    /// Main receiver's AGC mode.
+    pub agc: sdroxide_types::AgcMode,
+    /// TX drive, 0.0..=1.0 fraction of maximum.
+    pub drive: f32,
+    /// Drive used while tuning, 0.0..=1.0 fraction of maximum.
+    pub tune_drive: f32,
+    /// Mic gain, 0.0..=1.0.
+    pub mic_gain: f32,
 }
 
 impl Default for Session {
@@ -289,7 +301,22 @@ impl Default for Session {
         let (freq_hz, mode) = sdroxide_types::Band::M20.default_entry();
         // No antenna preference: whatever the driver selects on open stands,
         // which is what every start did before this was remembered.
-        Session { freq_hz, mode, antenna_rx: None, antenna_tx: None }
+        // Levels match `RadioState::default()` so an operator who has never
+        // touched them comes up at the same drive and mic gain a fresh start
+        // always used, rather than a dead mic.
+        let radio = sdroxide_types::RadioState::default();
+        Session {
+            freq_hz,
+            mode,
+            antenna_rx: None,
+            antenna_tx: None,
+            volume: radio.rx[0].volume,
+            rx_gain_db: radio.rx[0].manual_gain_db,
+            agc: radio.rx[0].agc,
+            drive: radio.tx.drive,
+            tune_drive: radio.tx.tune_drive,
+            mic_gain: radio.tx.mic_gain,
+        }
     }
 }
 
@@ -819,9 +846,31 @@ mod tests {
             mode: sdroxide_types::Mode::Ft8,
             antenna_rx: Some("LNAW".into()),
             antenna_tx: Some("BAND2".into()),
+            volume: 0.8,
+            rx_gain_db: 35.0,
+            agc: sdroxide_types::AgcMode::Fast,
+            drive: 0.4,
+            tune_drive: 0.2,
+            mic_gain: 0.6,
         };
         let back: Session = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
+    }
+
+    /// Every `session.json` written before the levels were remembered has to
+    /// keep restoring its dial and mode, and fall back to the levels a fresh
+    /// start has always come up at.
+    #[test]
+    fn a_session_written_before_levels_still_loads() {
+        let old: Session =
+            serde_json::from_str(r#"{"freq_hz":7074000.0,"mode":"Ft8"}"#).expect("parses");
+        let radio = sdroxide_types::RadioState::default();
+        assert_eq!(old.volume, radio.rx[0].volume);
+        assert_eq!(old.rx_gain_db, radio.rx[0].manual_gain_db);
+        assert_eq!(old.agc, radio.rx[0].agc);
+        assert_eq!(old.drive, radio.tx.drive);
+        assert_eq!(old.tune_drive, radio.tx.tune_drive);
+        assert_eq!(old.mic_gain, radio.tx.mic_gain);
     }
 
     /// The first run, and every run before this file existed, has to land where
