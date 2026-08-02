@@ -844,7 +844,7 @@ impl SdroxideApp {
             {
                 cmds.push(Command::SetMute { rx: RxId::Main, muted: !muted });
             }
-            // Record receiver audio to an MP3 file (toggling).
+            // Record both sides of the QSO to an MP3 file (toggling).
             let recording = self.state.recording;
             let rec = crate::chrome::chip_accent(
                 ui,
@@ -855,10 +855,32 @@ impl SdroxideApp {
             )
             .on_hover_text(match &self.state.recording_file {
                 Some(f) => format!("Recording to {f} — click to stop"),
-                None => "Record receiver audio to MP3".to_string(),
+                None => "Record RX (left) and TX (right) audio to MP3".to_string(),
             });
             if rec.clicked() {
                 cmds.push(Command::SetRecording(!recording));
+            }
+            // Channel layout for the *next* recording — has no effect on one
+            // already running, hence the disabled look while `recording`.
+            let mono = self.state.recording_mono;
+            let mono_chip = ui
+                .add_enabled_ui(!recording, |ui| {
+                    crate::chrome::chip_accent(
+                        ui,
+                        mono,
+                        "MONO",
+                        crate::theme::PINK,
+                        Color32::WHITE,
+                    )
+                })
+                .inner
+                .on_hover_text(if mono {
+                    "Recording mixes RX/TX to one channel — click for RX left / TX right"
+                } else {
+                    "Recording splits RX left / TX right — click for a single mixed channel"
+                });
+            if mono_chip.clicked() {
+                cmds.push(Command::SetRecordingMono(!mono));
             }
             // WFM broadcast stereo: lit while a 19 kHz pilot is locked,
             // click to force mono. Only WFM has a pilot to find.

@@ -167,6 +167,12 @@ pub struct RadioState {
     /// when not recording.
     #[serde(default)]
     pub recording_file: Option<String>,
+    /// Mix both sides down to a single channel instead of RX left / TX right —
+    /// for RX-only listening, or anyone who doesn't want split-ear audio.
+    /// Takes effect on the next `SetRecording(true)`, not on an already-running
+    /// recording.
+    #[serde(default)]
+    pub recording_mono: bool,
     /// The engine will key outside the amateur bands.
     ///
     /// Set by the `--oob-tx` command-line flag, never by anything in the UI:
@@ -207,6 +213,7 @@ impl Default for RadioState {
             antenna_tx: String::new(),
             recording: false,
             recording_file: None,
+            recording_mono: false,
             oob_tx: false,
         }
     }
