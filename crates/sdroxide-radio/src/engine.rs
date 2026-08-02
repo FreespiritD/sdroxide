@@ -374,8 +374,13 @@ impl RxChain {
         }
 
         // Squelch: gate on post-filter (pre-AGC) power, smoothed ~10 ms so
-        // opening and closing don't click.
-        let open = demod.power_dbfs() >= rx.squelch_db;
+        // opening and closing don't click. Tone squelch, where the operator has
+        // set one, is an extra condition on the same gate rather than a second
+        // one: a repeater's own tone takes about a second to identify, and
+        // running two gates in series would make that a second of clipped audio
+        // every over instead of a slightly later opening.
+        let tone_ok = rx.tone_sql.is_none_or(|want| demod.sub_tone() == Some(want));
+        let open = demod.power_dbfs() >= rx.squelch_db && tone_ok;
         let sq_target = if open { 1.0 } else { 0.0 };
         let vol = if rx.muted { 0.0 } else { rx.volume * rx.volume };
         if stereo {
@@ -438,6 +443,10 @@ impl RxChain {
 
     fn stereo_locked(&self) -> bool {
         self.demod.as_ref().is_some_and(|d| d.stereo_locked())
+    }
+
+    fn sub_tone(&self) -> Option<sdroxide_types::SubTone> {
+        self.demod.as_ref().and_then(|d| d.sub_tone())
     }
 }
 
@@ -1207,14 +1216,17 @@ fn engine_thread(
                     adc_peak_dbfs: 0.0,
                     tx: Some(TxMeters { fwd_w: tele.fwd_w, swr: tele.swr, alc }),
                     stereo: false,
+                    tone: None,
                 })
             } else {
                 let stereo = engine.main.as_ref().is_some_and(|c| c.stereo_locked());
+                let tone = engine.main.as_ref().and_then(|c| c.sub_tone());
                 engine.main.as_ref().and_then(|c| c.power_dbfs()).map(|p| Meters {
                     s_dbm: p + engine.cal_offset_db,
                     adc_peak_dbfs: 0.0,
                     tx: None,
                     stereo,
+                    tone,
                 })
             };
             if let Some(m) = meters {
@@ -2210,6 +2222,7 @@ impl Engine {
             SetNoiseReduction { rx, level } => self.state.rx[rx.index()].noise_reduction = level,
             SetAutoNotch { rx, on } => self.state.rx[rx.index()].auto_notch = on,
             SetWfmStereo { rx, on } => self.state.rx[rx.index()].wfm_stereo = on,
+            SetToneSquelch { rx, tone } => self.state.rx[rx.index()].tone_sql = tone,
             SetRecording(on) => {
                 if on {
                     self.start_recording();

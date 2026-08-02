@@ -69,6 +69,10 @@ pub struct RxState {
     /// Allow WFM broadcast stereo when the 19 kHz pilot locks. Ignored in every
     /// other mode.
     pub wfm_stereo: bool,
+    /// Tone squelch: the CTCSS tone or DCS code that must also be present before
+    /// the audio gate opens. `None` (the default) is carrier squelch — the
+    /// gate follows [`Self::squelch_db`] alone. NFM only.
+    pub tone_sql: Option<crate::SubTone>,
 }
 
 impl RxState {
@@ -87,6 +91,7 @@ impl RxState {
             noise_reduction: NrLevel::Off,
             auto_notch: false,
             wfm_stereo: true,
+            tone_sql: None,
         }
     }
 }

@@ -347,4 +347,12 @@ pub enum Command {
         kind: ImageKind,
         name: String,
     },
+
+    /// Require a CTCSS tone or DCS code before the audio gate opens on this
+    /// receiver, or `None` for plain carrier squelch. NFM only. Appended for the
+    /// usual reason: postcard numbers variants by position.
+    SetToneSquelch {
+        rx: RxId,
+        tone: Option<crate::SubTone>,
+    },
 }

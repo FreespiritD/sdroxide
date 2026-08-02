@@ -1,4 +1,5 @@
 mod agc;
+mod ctcss;
 mod cw;
 mod ddc;
 mod decim;
@@ -32,6 +33,7 @@ pub mod wefax;
 mod window;
 
 pub use agc::Agc;
+pub use ctcss::{SubToneDetect, golay23_decode, golay23_encode};
 pub use cw::{CwDecoder, CwRx, CwTx, morse_decode, morse_encode};
 pub use ddc::Ddc;
 pub use decim::{FirDecim, HalfbandDecim, RealFirDecim, lowpass_taps};

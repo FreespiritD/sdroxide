@@ -32,6 +32,10 @@ pub struct Meters {
     /// A WFM stereo pilot is locked on the main receiver. Drives the `ST`
     /// indicator; always `false` in every other mode.
     pub stereo: bool,
+    /// The CTCSS tone or DCS code being received on the main receiver. Drives
+    /// the sub-audible readout; always `None` outside NFM, and `None` in NFM
+    /// until a tone has been present long enough to be sure of.
+    pub tone: Option<crate::SubTone>,
 }
 
 impl Meters {

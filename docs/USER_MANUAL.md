@@ -46,7 +46,8 @@ or connects to a remote sdroxide server.
 - **Receive controls:** AGC (Off/Slow/Med/Fast), volume, mute, squelch, an
   impulse noise blanker, an adaptive auto-notch (constant-tone canceller),
   noise reduction (neural RNNoise or spectral, three levels each), RIT, and a
-  draggable filter passband.
+  draggable filter passband. On NFM, the CTCSS tone or DCS stream under the
+  signal is decoded and shown, and can be made a condition of the squelch.
 - **Transmit** (on TX-capable rigs): PTT, TUNE, drive and tune-drive levels,
   mic gain, XIT, and a transmit meter (power / SWR / ALC). A ham-band-only
   transmit lockout is on by default. While transmitting, the panadapter shows a
@@ -298,6 +299,39 @@ can't quietly add itself to the one you set here.
   mono sum. Clean mono beats noisy stereo, and the blend is gradual enough that
   you will not hear it switch. Forcing mono is still worth doing on a marginal
   signal you want to listen to for a long time.
+- **Tone** (NFM only) — the **CTCSS tone or DCS code** under the signal. Analog
+  FM systems carry a sub-audible tone below the voice so a receiver can ignore
+  traffic that is not theirs, and the chip shows what is arriving: `88.5` for a
+  CTCSS tone, or `DCS` for a digital coded squelch stream. On an idle or
+  toneless channel it just reads `TONE`.
+
+  It takes about a second of signal to appear. That is not slowness for its own
+  sake: the closest pair in the standard table is 67.0 and 69.3 Hz, and telling
+  2.3 Hz apart takes about a second however it is measured. Expect the tone
+  roughly a second after a repeater keys up, and expect it to stay for about
+  half a second after it drops.
+
+  Clicking the chip opens the **tone squelch** picker: choose a tone and the
+  audio only opens when *that* tone is present, which is how you sit on a busy
+  shared channel and hear one system. **USE 88.5** arms whatever is being
+  received right now, which is usually what you want; **OFF** goes back to plain
+  carrier squelch. While a tone squelch is armed the chip turns yellow, and it
+  lights when the required tone actually arrives. Note that the ordinary **SQL**
+  slider still applies — tone squelch is an extra condition on the same gate,
+  not a replacement.
+
+  DCS is reported as `DCS` without its three-digit code. The code travels in a
+  cyclic error-correcting codeword, so every one of the 23 possible word
+  boundaries decodes to a valid code and picking the wrong one yields a
+  different, equally plausible answer; without a transmitter to check against,
+  a code shown here would be a coin toss between two of them. That the signal
+  *is* DCS, on the other hand, follows from the data repeating exactly every 23
+  bits, which needs no such assumption. Arming tone squelch on **ANY DCS** opens
+  on any DCS-coded signal.
+
+  The sub-audible tones no longer reach the speaker: NFM audio is high-passed at
+  around 250 Hz, as it is in any FM receiver, so what used to arrive as a low
+  rumble under the voice is now decoded instead of heard.
 
   Two things turn stereo off on purpose: switching on the **sub receiver**,
   which claims the right ear for itself, and switching on **NR** or **ANC**,

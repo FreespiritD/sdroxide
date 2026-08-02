@@ -3,7 +3,7 @@
 //! The wanted signal's carrier sits at DC; the passband filter edges are in
 //! Hz relative to that carrier (negative = lower sideband).
 
-use sdroxide_types::Mode;
+use sdroxide_types::{Mode, SubTone};
 
 use crate::Complex32;
 use crate::decim::RealFirDecim;
@@ -52,6 +52,13 @@ pub trait Demodulator: Send {
     /// 1 = full stereo). Diagnostic; the blend is driven by pilot SNR.
     fn stereo_blend(&self) -> f32 {
         0.0
+    }
+
+    /// The CTCSS tone or DCS code currently locked on the sub-audible part of
+    /// the signal. Only NFM carries one, so `None` (the default) everywhere
+    /// else.
+    fn sub_tone(&self) -> Option<SubTone> {
+        None
     }
 }
 
@@ -335,18 +342,41 @@ impl Demodulator for SamDemod {
     }
 }
 
-/// NFM: quadrature discriminator, scaled for ±5 kHz deviation, DC blocked
-/// (off-tune carrier offset), audio low-pass.
+/// Corner of the NFM listener high-pass, and how many one-pole sections it is
+/// built from.
+///
+/// Below this live the CTCSS tones (67 to 254.1 Hz) and the DCS data, which are
+/// meant to be decoded rather than listened to; without the filter they arrive
+/// at the speaker as a rumble under the voice, which is why every FM receiver
+/// has one. A cascade rather than a windowed FIR because the corner is 0.5 % of
+/// the sample rate: an FIR with a transition band that sharp needs a couple of
+/// thousand taps, and this needs four multiply-accumulates. Four sections put
+/// 88.5 Hz nearly 40 dB down while costing a kilohertz of speech about 1 dB.
+const NFM_HPF_HZ: f64 = 250.0;
+const NFM_HPF_POLES: usize = 4;
+
+/// NFM: quadrature discriminator, scaled for ±5 kHz deviation, then a high-pass
+/// that takes out the sub-audible signalling and an audio low-pass. The
+/// CTCSS/DCS decoder is tapped off the raw discriminator ahead of both.
 pub struct FmDemod {
     rate: f64,
     fir: ComplexFir,
     lpf: RealFir,
-    dc: DcBlock,
+    /// One-pole high-pass sections. These also do the DC blocking a
+    /// discriminator needs for an off-tune carrier, so there is no separate
+    /// blocker in front of them.
+    hpf: Vec<DcBlock>,
     prev: Complex32,
     scale: f32,
     filtered: Vec<Complex32>,
-    raw_audio: Vec<f32>,
+    /// The discriminator output as it comes, before anything is taken out of
+    /// it. This is what the sub-audible decoder needs: a DC blocker fast enough
+    /// to track a mistuned carrier has a time constant close to the 7.4 ms DCS
+    /// bit period and would droop the data away.
+    disc: Vec<f32>,
+    listen: Vec<f32>,
     power: PowerMeter,
+    sub_tone: crate::ctcss::SubToneDetect,
 }
 
 impl FmDemod {
@@ -355,12 +385,14 @@ impl FmDemod {
             rate,
             fir: ComplexFir::new(bandpass_taps(PASSBAND_TAPS, lo as f64, hi as f64, rate)),
             lpf: RealFir::lowpass(63, 3600.0, rate),
-            dc: DcBlock::new(20.0, rate),
+            hpf: (0..NFM_HPF_POLES).map(|_| DcBlock::new(NFM_HPF_HZ, rate)).collect(),
             prev: Complex32::new(1.0, 0.0),
             scale: (rate / (std::f64::consts::TAU * 5_000.0)) as f32,
             filtered: Vec::new(),
-            raw_audio: Vec::new(),
+            disc: Vec::new(),
+            listen: Vec::new(),
             power: PowerMeter::new(),
+            sub_tone: crate::ctcss::SubToneDetect::new(rate),
         }
     }
 }
@@ -371,13 +403,19 @@ impl Demodulator for FmDemod {
         self.fir.process(iq, &mut self.filtered);
         self.power.update(&self.filtered);
 
-        self.raw_audio.clear();
+        self.disc.clear();
         for &z in &self.filtered {
             let d = z * self.prev.conj();
             self.prev = z;
-            self.raw_audio.push(self.dc.run(d.arg() * self.scale));
+            self.disc.push(d.arg() * self.scale);
         }
-        self.lpf.process(&self.raw_audio, out);
+        self.sub_tone.process(&self.disc);
+
+        self.listen.clear();
+        for &s in &self.disc {
+            self.listen.push(self.hpf.iter_mut().fold(s, |v, hp| hp.run(v)));
+        }
+        self.lpf.process(&self.listen, out);
     }
 
     fn set_filter(&mut self, lo: f32, hi: f32) {
@@ -390,6 +428,10 @@ impl Demodulator for FmDemod {
 
     fn power_dbfs(&self) -> f32 {
         self.power.dbfs()
+    }
+
+    fn sub_tone(&self) -> Option<SubTone> {
+        self.sub_tone.detected()
     }
 }
 

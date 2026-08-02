@@ -41,7 +41,8 @@ One binary, three ways to run it:
 - **Bandplan overlay** — a colour-coded strip along the bottom of the waterfall
   that labels allocations (ham bands, broadcast, CB, AM); it shows coarse bands
   when zoomed out and CW/digital/SSB sub-segments when zoomed into a ham band.
-- **Modes** — SSB (USB/LSB), CW, AM, SAM, NFM, WFM (with broadcast
+- **Modes** — SSB (USB/LSB), CW, AM, SAM, NFM (with **CTCSS/DCS** decoding and
+  tone squelch), WFM (with broadcast
   pilot-tone **stereo**), DSB, DIGU/DIGL, a
   spectrum-only mode, **FT8/FT4**, **JS8** (all four speeds, with directed
   messaging, heartbeats and multi-frame free text), the keyboard modes

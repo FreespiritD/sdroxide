@@ -163,7 +163,13 @@ use sdroxide_types::{
 /// state a finished contact sits in — so no engine has ever put it on the wire.
 /// It was the last variant, so no surviving discriminant moves, but the enum
 /// both ends decode has changed shape and this codebase bumps for that.
-pub const PROTO_VERSION: u16 = 39;
+/// v40: sub-audible squelch signalling on NFM — `Meters.tone` carries the CTCSS
+/// tone or DCS code being received, `RxState.tone_sql` the one the operator
+/// requires before the audio gate opens, and `Command::SetToneSquelch` sets it.
+/// The command is appended, so no surviving discriminant moves, but postcard is
+/// not self-describing and the two added struct fields change the layout of
+/// every message carrying `RadioState` or `Meters`.
+pub const PROTO_VERSION: u16 = 40;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

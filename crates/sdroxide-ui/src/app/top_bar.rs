@@ -9,7 +9,7 @@
 use eframe::egui::{self, Color32, ComboBox, DragValue, RichText, Slider};
 use sdroxide_types::{
     AgcMode, Band, Command, DeviceCaps, Direction, GainElement, Mode, RadioState, RxId,
-    SkimmerKind, Vfo,
+    SkimmerKind, SubTone, Vfo,
 };
 
 use crate::widgets::{freq_display, smeter};
@@ -647,7 +647,14 @@ impl SdroxideApp {
         // slack. Which row leads changes with the rig and the state: the noise
         // row usually, the receive row once it carries both a front-end gain
         // rail and the manual-gain rail that appears with the AGC off.
-        let noise_row: f32 = 447.0 + if self.state.rx[0].mode == Mode::Wfm { 40.0 } else { 0.0 };
+        let noise_row: f32 = 447.0
+            + match self.state.rx[0].mode {
+                Mode::Wfm => 40.0,
+                // The tone chip reads "D023N" at its widest, plus the dot that
+                // marks an armed-but-silent squelch.
+                Mode::Nfm => 66.0,
+                _ => 0.0,
+            };
         let rx_row = 205.0
             + if self.rx_gain().is_some() { 180.0 } else { 0.0 }
             + if self.state.rx[0].agc == AgcMode::Off { 170.0 } else { 0.0 };
@@ -869,7 +876,139 @@ impl SdroxideApp {
                     cmds.push(Command::SetWfmStereo { rx: RxId::Main, on: !want });
                 }
             }
+            // CTCSS/DCS: what is coming in, and optionally what has to be
+            // present before the audio opens. Only NFM carries either.
+            if self.state.rx[0].mode == Mode::Nfm {
+                self.tone_button(ui, cmds);
+            }
         });
+    }
+
+    /// The sub-audible readout: the CTCSS tone or DCS code being received, and a
+    /// popup to require one before the audio gate opens.
+    ///
+    /// The chip shows what is *heard* in preference to what is *armed*, because
+    /// on a monitoring receiver the tone is mostly a label — it says which
+    /// repeater or system you are listening to — and the armed code is
+    /// something you set once and then stop thinking about.
+    fn tone_button(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let heard = self.meters.as_ref().and_then(|m| m.tone);
+        let armed = self.state.rx[0].tone_sql;
+        let label = match (heard, armed) {
+            (Some(t), _) => t.label(),
+            // Armed but silent: the dot marks it as a requirement, not a decode.
+            (None, Some(t)) => format!("·{}", t.label()),
+            (None, None) => "TONE".to_string(),
+        };
+        let hover = match (heard, armed) {
+            (Some(h), Some(a)) if h == a => {
+                format!("Receiving {}, which is the tone squelch — audio open", h.label())
+            }
+            (Some(h), Some(a)) => format!(
+                "Receiving {}, but the tone squelch wants {} — audio stays closed",
+                h.label(),
+                a.label()
+            ),
+            (Some(h), None) => format!("Receiving CTCSS/DCS {}", h.label()),
+            (None, Some(a)) => {
+                format!("Tone squelch {}: nothing matching it is being received", a.label())
+            }
+            (None, None) => "CTCSS / DCS — no sub-audible tone on this signal".to_string(),
+        };
+        let btn = match armed {
+            // Yellow while a gate is armed, so a silent receiver reads as
+            // "waiting for its tone" rather than as a dead one.
+            Some(_) => crate::chrome::chip_accent(
+                ui,
+                heard == armed,
+                label,
+                crate::theme::YELLOW,
+                Color32::BLACK,
+            ),
+            None => crate::chrome::chip(ui, heard.is_some(), label),
+        }
+        .on_hover_text(hover);
+
+        let popup_id = egui::Popup::default_response_id(&btn);
+        let now = ui.input(|i| i.time);
+        let alpha =
+            crate::chrome::popup_fade_alpha(ui.ctx(), popup_id, now, &mut self.tone_popup_since);
+        let resp = egui::Popup::from_toggle_button_response(&btn)
+            .frame(crate::chrome::window_frame_alpha(alpha))
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_opacity(alpha);
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                crate::chrome::menu_caption(ui, "Tone squelch");
+                self.tone_controls(ui, cmds, heard, armed);
+            });
+        if let Some(r) = &resp {
+            crate::chrome::paint_popup_cut_border(ui.ctx(), &r.response, alpha);
+            if r.response.contains_pointer() {
+                self.tone_popup_since = Some(now);
+            }
+        }
+    }
+
+    /// The tone picker: off, the tone being received, then the 50 CTCSS tones
+    /// and the 104 DCS codes in each polarity.
+    fn tone_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<Command>,
+        heard: Option<SubTone>,
+        armed: Option<SubTone>,
+    ) {
+        let mut pick: Option<Option<SubTone>> = None;
+        ui.horizontal(|ui| {
+            if crate::chrome::chip(ui, armed.is_none(), "OFF")
+                .on_hover_text("Carrier squelch: open on any signal")
+                .clicked()
+            {
+                pick = Some(None);
+            }
+            // The shortcut that matters in practice — you are listening to a
+            // repeater, it is sending its tone, and you want only that.
+            if let Some(h) = heard {
+                if armed != Some(h)
+                    && crate::chrome::chip(ui, false, format!("USE {}", h.label()))
+                        .on_hover_text("Require the tone currently being received")
+                        .clicked()
+                {
+                    pick = Some(Some(h));
+                }
+            }
+        });
+        ui.separator();
+        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+            ui.label(RichText::new("CTCSS").size(10.0).color(crate::theme::CYAN_DIM));
+            egui::Grid::new("ctcss-grid").spacing([3.0, 3.0]).show(ui, |ui| {
+                for (i, &tenths) in sdroxide_types::CTCSS_TONES.iter().enumerate() {
+                    let t = SubTone::Ctcss(tenths);
+                    if crate::chrome::chip(ui, armed == Some(t), t.label()).clicked() {
+                        pick = Some(Some(t));
+                    }
+                    if i % 10 == 9 {
+                        ui.end_row();
+                    }
+                }
+            });
+            ui.add_space(6.0);
+            ui.label(RichText::new("DCS").size(10.0).color(crate::theme::CYAN_DIM));
+            if crate::chrome::chip(ui, armed == Some(SubTone::Dcs), "ANY DCS")
+                .on_hover_text(
+                    "Open on any DCS-coded signal. Which of the 104 codes it carries cannot be \
+                     read reliably here, so there is nothing finer to choose",
+                )
+                .clicked()
+            {
+                pick = Some(Some(SubTone::Dcs));
+            }
+        });
+        if let Some(tone) = pick {
+            self.state.rx[0].tone_sql = tone; // optimistic echo
+            cmds.push(Command::SetToneSquelch { rx: RxId::Main, tone });
+        }
     }
 
     /// The sub receiver's own controls, shown only while it is running. The sub
