@@ -94,6 +94,9 @@ pub(in crate::app) struct SettingsIo<'a> {
     /// Converter offset in Hz, buffered until Apply — see
     /// `SdroxideApp::converter_edit_hz`.
     converter_hz: &'a mut Option<f64>,
+    /// The RX and TX tuning ranges as typed, buffered until Apply — see
+    /// `SdroxideApp::range_edit`.
+    ranges: &'a mut Option<(String, String)>,
     audio_pick: &'a mut Option<(bool, Option<String>)>,
     hpsdr_discover: &'a mut bool,
     /// Re-enumerate the USB bus for RTL-SDR dongles. Cheap and non-invasive —
@@ -186,6 +189,27 @@ fn net_seeded_note(ui: &mut egui::Ui, seeded: bool) -> bool {
     seeded
 }
 
+/// One "which frequencies does this radio cover" box, in the megahertz an
+/// operator would say them in.
+///
+/// Whatever is typed is checked as it is typed and the fault named underneath,
+/// because the alternative — finding out on Apply, by way of a band that has
+/// quietly stopped working — is a poor way to learn that a dash was a slash.
+fn freq_range_edit(ui: &mut egui::Ui, id: &str, text: &mut String, hover: &str) {
+    ui.vertical(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(text)
+                .id_salt(id)
+                .desired_width(220.0)
+                .hint_text("as the device reports"),
+        )
+        .on_hover_text(hover);
+        if let Err(e) = sdroxide_types::parse_freq_ranges(text) {
+            ui.label(RichText::new(e).color(Color32::from_rgb(230, 90, 80)));
+        }
+    });
+}
+
 pub(in crate::app) fn enum_combo<T: PartialEq + Copy>(
     ui: &mut egui::Ui,
     id: &str,
@@ -213,6 +237,7 @@ impl SdroxideApp {
             // next open: closing the dialog without pressing Apply means the
             // radio is still on the old one, and the box should say so.
             self.converter_edit_hz = None;
+            self.range_edit = None;
             return;
         } else if !self.audio_devices_queried {
             self.audio_devices = self.ctrl.audio_devices();
@@ -244,6 +269,7 @@ impl SdroxideApp {
         let mut apply_iface = false;
         let mut radio_edit = self.radio_cfg.clone();
         let mut converter_hz = self.converter_edit_hz;
+        let mut ranges = self.range_edit.clone();
         let mut ui_edit = self.ui_settings;
         // Only where the engine is in this process: see `SettingsIo`.
         let owns_server = !self.ctrl.engine_is_remote();
@@ -314,6 +340,7 @@ impl SdroxideApp {
                         iface_opts: &iface_opts,
                         radio_edit: &mut radio_edit,
                         converter_hz: &mut converter_hz,
+                        ranges: &mut ranges,
                         audio_pick: &mut audio_pick,
                         hpsdr_discover: &mut hpsdr_discover,
                         rtlsdr_rescan: &mut rtlsdr_rescan,
@@ -487,10 +514,21 @@ impl SdroxideApp {
             ctx.copy_text(report);
         }
         if apply_iface {
-            // The one field that waits for this moment, so the radio is never
-            // reopened on a partly-typed offset.
+            // The fields that wait for this moment, so the radio is never
+            // reopened on a partly-typed offset or a half-written range.
             if let (Some(cfg), Some(hz)) = (radio_edit.as_mut(), converter_hz) {
                 cfg.converter_offset_hz = hz;
+            }
+            if let (Some(cfg), Some((rx, tx))) = (radio_edit.as_mut(), ranges.as_ref()) {
+                // Anything that doesn't parse leaves that direction as it was:
+                // the box is showing the operator why in red, and applying half
+                // of what they meant would be worse than applying none of it.
+                if let Ok(r) = sdroxide_types::parse_freq_ranges(rx) {
+                    cfg.freq_ranges_rx = r;
+                }
+                if let Ok(r) = sdroxide_types::parse_freq_ranges(tx) {
+                    cfg.freq_ranges_tx = r;
+                }
             }
             // Persist the latest edits, then rebuild the live source (no restart).
             if let Some(cfg) = &radio_edit {
@@ -499,6 +537,7 @@ impl SdroxideApp {
             self.ctrl.reopen_source();
         }
         self.converter_edit_hz = converter_hz;
+        self.range_edit = ranges;
         if radio_edit != self.radio_cfg {
             if let Some(cfg) = &radio_edit {
                 self.ctrl.set_radio_config(cfg.clone());
@@ -678,6 +717,12 @@ impl SdroxideApp {
                 // that may sit in front of whichever one is chosen.
                 let backend = cfg.backend;
                 let converter = io.converter_hz.get_or_insert(cfg.converter_offset_hz);
+                let ranges = io.ranges.get_or_insert_with(|| {
+                    (
+                        sdroxide_types::format_freq_ranges(&cfg.freq_ranges_rx),
+                        sdroxide_types::format_freq_ranges(&cfg.freq_ranges_tx),
+                    )
+                });
                 egui::Grid::new("iface-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                     ui.label(RichText::new("Radio interface").strong());
                     enum_combo(ui, "iface", &mut cfg.backend, io.iface_opts, Backend::label);
@@ -729,7 +774,52 @@ impl SdroxideApp {
                          while this is set.\n\nTakes effect on Apply.",
                     );
                     ui.end_row();
+
+                    // The ranges the operator says this radio has, for a driver
+                    // that publishes none (SoapySX and friends implement no
+                    // frequency-range call at all, which leaves nothing to
+                    // check a frequency against) or publishes the tuner chip's
+                    // rather than the radio's.
+                    ui.label(RichText::new("RX range").strong());
+                    freq_range_edit(
+                        ui,
+                        "rx-range",
+                        &mut ranges.0,
+                        "Which frequencies this radio receives, in MHz: 144-146, 430-440. Leave \
+                         empty to use whatever the device reports about itself.\n\nBand buttons \
+                         outside the range are greyed out and the dial will not go there.\n\nTakes \
+                         effect on Apply.",
+                    );
+                    ui.end_row();
+
+                    ui.label(RichText::new("TX range").strong());
+                    freq_range_edit(
+                        ui,
+                        "tx-range",
+                        &mut ranges.1,
+                        "Which frequencies this radio transmits on, in MHz: 144-146, 430-440. \
+                         Leave empty to use whatever the device reports — and if it reports \
+                         nothing, the driver is taken at its word and any frequency is \
+                         allowed.\n\nThis is a limit you set, not a licence: transmitting outside \
+                         the amateur bands is refused regardless unless you have turned that off \
+                         in config.toml. Nor does it give a receive-only device a \
+                         transmitter.\n\nTakes effect on Apply.",
+                    );
+                    ui.end_row();
                 });
+                // The two range boxes are the only megahertz on a tab whose
+                // other frequency field is hertz, so the example says the same
+                // range both ways rather than leaving anyone to count zeros.
+                ui.label(
+                    RichText::new(
+                        "Ranges are in MHz, low-high, separated by commas: 144-146, 430-440 — \
+                         that is 144000000-146000000 Hz and 430000000-440000000 Hz. The \
+                         converter offset above is the field in hertz. Leave a range empty to \
+                         use whatever the device reports about itself; a device that reports \
+                         nothing is taken at its word.",
+                    )
+                    .weak(),
+                );
                 if *converter != 0.0 {
                     ui.label(
                         RichText::new(if backend == Backend::RtlSdr && *converter < 0.0 {

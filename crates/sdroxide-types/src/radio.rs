@@ -909,6 +909,88 @@ pub fn converter_preset_name(offset_hz: f64) -> &'static str {
         .unwrap_or("Manual")
 }
 
+/// The highest frequency an operator-supplied tuning range may name, in Hz.
+///
+/// 300 GHz is the top of the highest amateur allocation, and well past any
+/// front end this program will meet — a number above it is a typo (a range
+/// entered in Hz where megahertz was asked for, most likely) rather than a
+/// microwave station.
+pub const FREQ_RANGE_MAX_HZ: f64 = 300_000_000_000.0;
+
+/// Parse an operator-typed list of tuning ranges — `"144-146, 430-440"` — into
+/// (low, high) pairs in Hz.
+///
+/// The numbers are megahertz, because that is how an operator says which bands
+/// a radio covers and how every band plan is written; the ranges themselves are
+/// kept in Hz to match [`crate::DeviceCaps`]. Ranges are separated by commas,
+/// semicolons or newlines and their edges by `-`, `–` or `..`, so a list
+/// pasted back out of [`format_freq_ranges`] — or copied from a band plan —
+/// reads straight in.
+///
+/// Empty input is not an error: it parses to no ranges, which is how an
+/// operator says "use whatever the device publishes".
+pub fn parse_freq_ranges(text: &str) -> Result<Vec<(f64, f64)>, String> {
+    let mut out = Vec::new();
+    for item in text.split([',', ';', '\n']) {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let normalised = item.replace(['\u{2013}', '\u{2014}'], "-").replace("..", "-");
+        let Some((lo, hi)) = normalised.split_once('-') else {
+            return Err(format!("\"{item}\" is not a range — write it as low-high, e.g. 430-440"));
+        };
+        let lo = parse_range_edge(lo, item)?;
+        let hi = parse_range_edge(hi, item)?;
+        if hi <= lo {
+            return Err(format!("\"{item}\" has its top at or below its bottom"));
+        }
+        out.push((lo, hi));
+    }
+    Ok(out)
+}
+
+/// One edge of a range, in MHz, to Hz. `whole` names the range it came from so
+/// the message points at what was typed rather than at a bare number.
+fn parse_range_edge(edge: &str, whole: &str) -> Result<f64, String> {
+    let text = edge.trim();
+    // A unit is optional and only ever the one the field is in; accepting it
+    // costs nothing and refusing it would look like the number was wrong.
+    let text = text.strip_suffix("MHz").or_else(|| text.strip_suffix("mhz")).unwrap_or(text).trim();
+    let mhz: f64 = text
+        .parse()
+        .map_err(|_| format!("\"{text}\" in \"{whole}\" is not a number of megahertz"))?;
+    if !mhz.is_finite() || mhz < 0.0 {
+        return Err(format!("\"{text}\" in \"{whole}\" is not a frequency"));
+    }
+    let hz = mhz * 1e6;
+    if hz > FREQ_RANGE_MAX_HZ {
+        return Err(format!(
+            "\"{text}\" in \"{whole}\" is above {} GHz — these are megahertz",
+            FREQ_RANGE_MAX_HZ / 1e9
+        ));
+    }
+    Ok(hz)
+}
+
+/// Ranges in Hz back to the megahertz list an operator typed, ready to be
+/// parsed again by [`parse_freq_ranges`].
+pub fn format_freq_ranges(ranges: &[(f64, f64)]) -> String {
+    fn mhz(hz: f64) -> String {
+        // Six decimals is one hertz, and trailing zeros are trimmed so a band
+        // edge reads as "430" rather than "430.000000".
+        let mut s = format!("{:.6}", hz / 1e6);
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+        s
+    }
+    ranges.iter().map(|&(lo, hi)| format!("{}-{}", mhz(lo), mhz(hi))).collect::<Vec<_>>().join(", ")
+}
+
 /// Persisted backend configuration (`radio.json`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -931,6 +1013,28 @@ pub struct RadioConfig {
     /// Receive only — a converter is not in the transmit path, so transmit is
     /// withdrawn while this is set.
     pub converter_offset_hz: f64,
+    /// Tuning ranges the operator states for this radio, in Hz, replacing what
+    /// the device publishes about itself. Empty (the default) leaves the
+    /// device's own answer alone.
+    ///
+    /// Two things need this. A driver may publish no range at all — it is an
+    /// optional call in SoapySDR, and SoapySX among others does not implement
+    /// it — which leaves the program with nothing to check a frequency
+    /// against. Or the range it publishes may be the silicon's rather than the
+    /// radio's: a transceiver whose filters and PA cover one band still reports
+    /// whatever its tuner chip can synthesise, and an operator who wants the
+    /// dial and the transmit gate held to the real hardware has to say so.
+    ///
+    /// These describe the *device*, on the hardware side of any converter
+    /// offset, which is where its own published ranges come from.
+    pub freq_ranges_rx: Vec<(f64, f64)>,
+    /// Transmit ranges the operator states, by the same rule as
+    /// [`Self::freq_ranges_rx`] — and the licence gate still applies on top,
+    /// so naming a range here is not a way around `tx_ham_only`.
+    ///
+    /// This cannot conjure a transmitter: a receive-only device has no TX
+    /// channel and stays receive-only whatever is written here.
+    pub freq_ranges_tx: Vec<(f64, f64)>,
     pub cat: CatConfig,
     pub hpsdr: HpsdrConfig,
     pub tci: TciConfig,
@@ -1005,6 +1109,65 @@ mod tests {
         assert_eq!(10_489_000_000.0 + lnb, 739_000_000.0);
         assert_eq!(converter_preset_name(0.0), "None");
         assert_eq!(converter_preset_name(28_000_000.0), "Manual");
+    }
+
+    /// The forms an operator will actually type, including one copied straight
+    /// back out of the box below it.
+    #[test]
+    fn tuning_ranges_parse_the_way_they_are_written() {
+        let two = parse_freq_ranges("144-146, 430-440").expect("parses");
+        assert_eq!(two, vec![(144_000_000.0, 146_000_000.0), (430_000_000.0, 440_000_000.0)]);
+        // Spaces, semicolons, en dashes, `..` and a unit are all the same list.
+        for text in [
+            " 144 - 146 ; 430 .. 440 ",
+            "144\u{2013}146\n430-440",
+            "144MHz-146MHz, 430 mhz - 440 mhz",
+        ] {
+            assert_eq!(parse_freq_ranges(text).expect(text), two, "parsing {text:?}");
+        }
+        // What the field shows is what the field accepts.
+        assert_eq!(format_freq_ranges(&two), "144-146, 430-440");
+        assert_eq!(parse_freq_ranges(&format_freq_ranges(&two)).unwrap(), two);
+        // Down to the hertz, without trailing zeros on the round numbers.
+        assert_eq!(format_freq_ranges(&[(10_100_805.0, 10_150_000.0)]), "10.100805-10.15");
+        // Blank means "whatever the device says", not an error.
+        assert_eq!(parse_freq_ranges("   ").unwrap(), vec![]);
+        assert_eq!(format_freq_ranges(&[]), "");
+    }
+
+    /// Every rejection has to name what was typed: this is a field where a
+    /// silent misreading would either hide bands or open ones the radio can't
+    /// reach.
+    #[test]
+    fn nonsense_tuning_ranges_are_refused() {
+        for bad in [
+            "430",                   // not a range
+            "430-",                  // half a range
+            "440-430",               // backwards
+            "430-430",               // empty
+            "seven-eight",           // not numbers
+            "430000000-44000000000", // Hz where megahertz was asked for
+        ] {
+            assert!(parse_freq_ranges(bad).is_err(), "{bad:?} should be refused");
+        }
+        // A good range in a bad list fails the whole list rather than being
+        // quietly kept: half an entered limit is not a limit.
+        assert!(parse_freq_ranges("144-146, oops").is_err());
+    }
+
+    /// A `radio.json` from before this setting existed has to keep behaving as
+    /// it did, which means no ranges at all — the device's own answer stands.
+    #[test]
+    fn tuning_range_overrides_default_to_empty() {
+        for json in [r#"{}"#, r#"{"backend": "Soapy"}"#, r#"{"converter_offset_hz": 0.0}"#] {
+            let cfg: RadioConfig = serde_json::from_str(json).expect("parses");
+            assert!(cfg.freq_ranges_rx.is_empty(), "rx ranges after loading {json}");
+            assert!(cfg.freq_ranges_tx.is_empty(), "tx ranges after loading {json}");
+        }
+        let cfg: RadioConfig =
+            serde_json::from_str(r#"{"freq_ranges_tx": [[430000000.0, 440000000.0]]}"#)
+                .expect("parses");
+        assert_eq!(cfg.freq_ranges_tx, vec![(430_000_000.0, 440_000_000.0)]);
     }
 
     #[test]

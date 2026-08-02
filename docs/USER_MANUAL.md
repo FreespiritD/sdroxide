@@ -1726,6 +1726,40 @@ Three things to know:
 This has been tested against sdroxide's own simulated front ends, not against a
 physical converter. If you have one, reports are welcome.
 
+**RX range** and **TX range**, below the offset, are where you tell sdroxide
+which frequencies this radio actually covers. They are **in megahertz**, written
+low-high and separated by commas — `144-146, 430-440`, which is
+144000000-146000000 Hz and 430000000-440000000 Hz. (The offset above them is the
+one field on this tab in hertz.) Edges may be as fine as a hertz: `10.1-10.15`
+and `144.0-144.035` are both fine. An entry that doesn't parse is named in red
+under the box, and the ranges take effect on **Apply / reconnect** like the
+offset.
+
+Leave both empty — the default — and sdroxide uses whatever the device says
+about itself. There are two reasons to fill them in:
+
+- **The device says nothing.** Publishing a tuning range is optional in
+  SoapySDR, and a good many drivers never implement it; `sdroxide --probe` shows
+  `not published by this driver` for those. An unpublished range is treated as
+  *unknown*, not as *nothing* — the driver is taken at its word, every band
+  button stays live and transmit is allowed — so a transceiver whose driver is
+  silent, such as the SXceiver, works without touching these boxes at all. Fill
+  them in when you would rather have a limit than none.
+- **What it says is the chip, not the radio.** A transceiver whose filters, PA
+  and antenna port cover one band often reports whatever its synthesiser can
+  reach. Stating the real range holds the dial and the transmit gate to the
+  hardware you actually have.
+
+Two things a stated TX range is not. It is not a licence: transmitting outside
+the amateur bands is refused whatever you write here, unless you have set
+`tx_ham_only = false` in `config.toml`. And it does not give a receive-only
+device a transmitter — a device with no TX channel stays receive-only.
+
+Ranges describe the radio, on the hardware side of any converter offset, which
+is the same side the device's own answer comes from. With a converter set they
+are shifted onto the dial along with everything else — and transmit is off
+regardless, as above.
+
 #### 5.2.1 SoapySDR devices
 
 ![The Radio tab with the SoapySDR interface selected](images/settings-radio-soapysdr.jpg)

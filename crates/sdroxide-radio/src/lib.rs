@@ -20,7 +20,10 @@ pub use engine::{
     start as start_engine,
 };
 pub use error::RadioError;
-pub use source::{ControlUpdate, ConvertedSource, FileSource, IqSource, SigGenSource, shift_caps};
+pub use source::{
+    ControlUpdate, ConvertedSource, FileSource, IqSource, SigGenSource, override_caps_ranges,
+    shift_caps,
+};
 
 // Re-exported so frontends can name handle types without direct deps.
 pub use crossbeam_channel;

@@ -346,6 +346,15 @@ the logbook and every spot and upload stay on the real on-air frequency. Receive
 only — transmit is switched off while a converter is set, because a converter is
 not in the transmit path. Not yet verified against physical hardware.
 
+Beside it, **RX range** and **TX range** state which frequencies the radio
+covers, in MHz (`144-146, 430-440`). Leave them empty and sdroxide uses what the
+device says about itself. Fill them in when the device says nothing — publishing
+a tuning range is optional in SoapySDR and plenty of drivers skip it — or when
+what it says is the tuner chip's range rather than the radio's. A driver that
+publishes no transmit range is taken at its word rather than silenced, so a
+transceiver like the SXceiver keys up out of the box; the amateur-band gate
+still applies either way.
+
 ### SmartSDR Simulator
 
 A **wire-level radio simulator** allows for the backend to be exercised end to end with no radio present.

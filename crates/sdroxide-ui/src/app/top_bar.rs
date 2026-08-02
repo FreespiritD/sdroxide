@@ -1566,8 +1566,12 @@ fn band_mode_menu(
             } else {
                 None
             };
+            // A radio that publishes no tuning range keeps every band button:
+            // `may_rx_hz` reads an empty range list as "the driver didn't say",
+            // and greying out the whole bar would be a worse guess than
+            // offering a band the radio turns out not to reach.
             let cap_ok = caps.is_none_or(|c| {
-                b.edges().is_none_or(|(lo, hi)| c.can_rx_hz(lo) || c.can_rx_hz(hi))
+                b.edges().is_none_or(|(lo, hi)| c.may_rx_hz(lo) || c.may_rx_hz(hi))
             });
             let enabled = cap_ok && (!digital || digi_hz.is_some());
             let active = if mode.is_rf_paint() {

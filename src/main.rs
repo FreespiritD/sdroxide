@@ -13,7 +13,9 @@ mod tci_source;
 use anyhow::{Context, bail};
 use clap::Parser;
 use sdroxide_config::Settings;
-use sdroxide_radio::{ConvertedSource, FileSource, IqSource, SigGenSource, shift_caps};
+use sdroxide_radio::{
+    ConvertedSource, FileSource, IqSource, SigGenSource, override_caps_ranges, shift_caps,
+};
 #[cfg(feature = "soapy")]
 use sdroxide_radio::{SoapyDevice, enumerate_devices};
 use sdroxide_types::{Backend, DeviceCaps, RadioConfig};
@@ -631,8 +633,21 @@ fn print_caps(caps: &sdroxide_types::DeviceCaps) {
             " (receive only)"
         }
     );
-    for (name, ranges) in [("RX freq", &caps.freq_ranges_rx), ("TX freq", &caps.freq_ranges_tx)] {
-        if !ranges.is_empty() {
+    // Both directions are always printed, including the empty case: a driver
+    // that implements no frequency-range call is a thing an operator needs to
+    // be told, not a line that quietly goes missing. This is the device's own
+    // answer — any range stated in radio.json is applied when the radio is
+    // opened for use, not here.
+    for (name, ranges, chan) in [
+        ("RX freq", &caps.freq_ranges_rx, caps.rx_channels),
+        ("TX freq", &caps.freq_ranges_tx, caps.tx_channels),
+    ] {
+        if chan == 0 {
+            continue;
+        }
+        if ranges.is_empty() {
+            println!("  {name:<13} : not published by this driver (set one in Settings → Radio)");
+        } else {
             let list: Vec<String> = ranges
                 .iter()
                 .map(|&(lo, hi)| format!("{} – {}", fmt_mhz(lo), fmt_mhz(hi)))
@@ -707,7 +722,8 @@ fn open_source(cli: &Cli, settings: &Settings) -> anyhow::Result<(Box<dyn IqSour
     }
 }
 
-/// [`open_configured_source`], with any external frequency converter folded in.
+/// [`open_configured_source`], with the operator's own tuning ranges and any
+/// external frequency converter folded in.
 ///
 /// The distinction that makes this a separate function: the centre
 /// `open_configured_source` passes to each back end is a *hardware* frequency,
@@ -715,6 +731,10 @@ fn open_source(cli: &Cli, settings: &Settings) -> anyhow::Result<(Box<dyn IqSour
 /// or from the engine's current dial on a reopen — is the operator's. So the
 /// offset goes on here, once, and [`ConvertedSource`] takes it off again for
 /// everything the source reports back.
+///
+/// Stated ranges go on before the offset, for the same reason: they describe
+/// the hardware, and `shift_caps` moves the hardware's ranges into the
+/// operator's domain whether the hardware or its owner named them.
 fn open_converted_source(
     radio: &RadioConfig,
     cli: &Cli,
@@ -722,16 +742,37 @@ fn open_converted_source(
 ) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
     let offset = radio.converter_offset_hz;
     if offset == 0.0 || !offset.is_finite() {
-        return open_configured_source(radio, cli, settings);
+        let (source, caps) = open_configured_source(radio, cli, settings)?;
+        return Ok((source, stated_ranges(caps, radio)));
     }
     let mut c = cli.clone();
     c.freq = Some(cli.center_hz() + offset);
     let (source, caps) = open_configured_source(radio, &c, settings)?;
+    let caps = stated_ranges(caps, radio);
     tracing::info!(
         "frequency converter: hardware tuned {:.6} MHz above the dial; transmit withdrawn",
         offset / 1e6
     );
     Ok((Box::new(ConvertedSource::new(source, offset)), shift_caps(caps, offset)))
+}
+
+/// Apply the tuning ranges stated in `radio.json`, and say so in the log —
+/// a range the operator set months ago is otherwise invisible when a band later
+/// refuses to come up.
+fn stated_ranges(caps: DeviceCaps, radio: &RadioConfig) -> DeviceCaps {
+    let out = override_caps_ranges(caps, &radio.freq_ranges_rx, &radio.freq_ranges_tx);
+    for (dir, stated, applied) in [
+        ("RX", &radio.freq_ranges_rx, &out.freq_ranges_rx),
+        ("TX", &radio.freq_ranges_tx, &out.freq_ranges_tx),
+    ] {
+        if !stated.is_empty() {
+            tracing::info!(
+                "{dir} tuning range set in the configuration: {} MHz",
+                sdroxide_types::format_freq_ranges(applied)
+            );
+        }
+    }
+    out
 }
 
 /// Open the interface selected in `radio.json`. `Auto` prefers a SoapySDR device

@@ -305,6 +305,42 @@ pub fn shift_caps(
     caps
 }
 
+/// Replace what a device says about its own tuning ranges with what the
+/// operator says, for whichever direction they gave an answer for.
+///
+/// Both lists are in the hardware's own domain — the same one the device
+/// publishes in — so a converter offset is applied to them afterwards, not
+/// before. Nonsensical pairs are dropped rather than refused: this runs while
+/// the radio is being opened, where the worst outcome is not "a bad range" but
+/// "no radio", and the settings dialog has already refused anything malformed
+/// at the point it was typed.
+///
+/// A stated transmit range does not make a receiver into a transceiver — a
+/// device with no TX channel has no transmitter to unlock, and this leaves
+/// `tx_channels` exactly as the device reported it.
+pub fn override_caps_ranges(
+    mut caps: sdroxide_types::DeviceCaps,
+    rx: &[(f64, f64)],
+    tx: &[(f64, f64)],
+) -> sdroxide_types::DeviceCaps {
+    fn sane(ranges: &[(f64, f64)]) -> Vec<(f64, f64)> {
+        ranges
+            .iter()
+            .copied()
+            .filter(|&(lo, hi)| lo.is_finite() && hi.is_finite() && lo >= 0.0 && hi > lo)
+            .collect()
+    }
+    let rx = sane(rx);
+    let tx = sane(tx);
+    if !rx.is_empty() {
+        caps.freq_ranges_rx = rx;
+    }
+    if !tx.is_empty() {
+        caps.freq_ranges_tx = tx;
+    }
+    caps
+}
+
 impl IqSource for ConvertedSource {
     // --- translated ---------------------------------------------------------
 

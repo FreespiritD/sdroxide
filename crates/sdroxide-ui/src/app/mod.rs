@@ -117,6 +117,12 @@ pub struct SdroxideApp {
     /// reopens the radio — so a half-typed `125000000` would arrive as an offset
     /// of 12 Hz. This one lands only on Apply. `None` = not being edited.
     converter_edit_hz: Option<f64>,
+    /// The RX and TX tuning ranges being typed on the Radio tab, as the
+    /// operator's megahertz text. Buffered until Apply for the same reason as
+    /// `converter_edit_hz`, and kept as text so a half-typed range is only ever
+    /// a half-typed range and never a limit the radio is briefly held to.
+    /// `None` = not being edited.
+    range_edit: Option<(String, String)>,
     serial_ports: Vec<String>,
     /// HPSDR devices found by the last "Discover" scan in the settings dialog.
     hpsdr_devices: Vec<sdroxide_types::HpsdrDevice>,
@@ -405,6 +411,7 @@ impl SdroxideApp {
             ui_settings: load_ui_settings(cc.storage),
             radio_cfg: None,
             converter_edit_hz: None,
+            range_edit: None,
             serial_ports: Vec::new(),
             hpsdr_devices: Vec::new(),
             rtlsdr_devices: Vec::new(),

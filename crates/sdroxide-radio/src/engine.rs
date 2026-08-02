@@ -4532,7 +4532,7 @@ impl Engine {
             if !self.caps.is_transmit_capable() {
                 return deny("device is not transmit capable", &mut self.state);
             }
-            if !self.caps.can_tx_hz(txf) {
+            if !self.caps.may_tx_hz(txf) {
                 return deny("frequency outside the device TX range", &mut self.state);
             }
             if self.tx_ham_only && Band::containing(txf) == Band::Gen {
@@ -5228,7 +5228,7 @@ impl Engine {
     /// Whether the front end says it can put its LO here. A front end that
     /// publishes no ranges at all is taken at its word and asked directly.
     fn can_tune(&self, center_hz: f64) -> bool {
-        self.caps.freq_ranges_rx.is_empty() || self.caps.can_rx_hz(center_hz)
+        self.caps.may_rx_hz(center_hz)
     }
 
     /// Move the hardware centre, and report whether the front end took it.
