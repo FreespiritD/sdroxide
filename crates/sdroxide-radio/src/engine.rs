@@ -4576,6 +4576,10 @@ impl Engine {
             if let Err(e) = self.source.tx_end() {
                 warn!("tx_end: {e}");
             }
+            // The radio kept streaming RX for the whole over; PTT only
+            // stopped us polling it. Drop the backlog instead of replaying
+            // it as fresh RX on the next read.
+            self.source.discard_pending_rx();
             self.tx = None;
             self.tx_active = false;
             self.tx_pace = None;

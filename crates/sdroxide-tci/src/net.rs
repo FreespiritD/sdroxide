@@ -293,6 +293,13 @@ impl TciHandle {
         n
     }
 
+    /// Drop whatever the network thread queued in the RX ring. The rig keeps
+    /// streaming I/Q for the whole over, so `rx_read` would otherwise replay
+    /// a stale backlog after `tx_end`.
+    pub fn discard_pending_rx(&mut self) {
+        while self.rx.pop().is_ok() {}
+    }
+
     /// Drain any rig-reported frequency/mode changes.
     pub fn poll_updates(&self) -> Vec<TciUpdate> {
         self.updates.try_iter().collect()

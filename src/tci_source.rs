@@ -124,6 +124,10 @@ impl IqSource for TciSource {
         Ok(())
     }
 
+    fn discard_pending_rx(&mut self) {
+        self.handle.discard_pending_rx();
+    }
+
     fn tx_telemetry(&mut self) -> Option<TxTelemetry> {
         if let Some(t) = self.handle.poll_telemetry() {
             self.last_telem = Some(t);

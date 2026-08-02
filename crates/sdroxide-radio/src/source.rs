@@ -93,6 +93,10 @@ pub trait IqSource: Send {
     fn tx_end(&mut self) -> Result<()> {
         Ok(())
     }
+    /// Discard any RX samples buffered while transmitting, so the first read
+    /// after [`Self::tx_end`] returns fresh data instead of a stale backlog.
+    /// Default no-op: most sources have no such buffer.
+    fn discard_pending_rx(&mut self) {}
     fn set_tx_gain_element(&mut self, _name: &str, _db: f64) -> Result<()> {
         Ok(())
     }
