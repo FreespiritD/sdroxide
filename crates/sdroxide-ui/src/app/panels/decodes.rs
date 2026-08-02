@@ -1099,9 +1099,7 @@ impl SdroxideApp {
             .map(|s| {
                 !matches!(
                     s.step,
-                    sdroxide_types::QsoStep::Idle
-                        | sdroxide_types::QsoStep::Confirming
-                        | sdroxide_types::QsoStep::Done
+                    sdroxide_types::QsoStep::Idle | sdroxide_types::QsoStep::Confirming
                 )
             })
             .unwrap_or(false);

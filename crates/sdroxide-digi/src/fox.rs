@@ -117,6 +117,11 @@ impl Fox {
             }
             let Some(from) = d.from.as_deref().filter(|f| !f.is_empty()) else { continue };
             match classify_payload(&d.message) {
+                // Somebody signing off, not somebody asking to be worked. A
+                // Hound we have just logged commonly sends a 73 afterwards, and
+                // reading that as a fresh call put them straight back into the
+                // pile-up to be worked all over again.
+                Payload::B73 | Payload::Rrr | Payload::Rr73 => continue,
                 // They rogered our report: their contact is complete bar the
                 // RR73 we owe them.
                 Payload::RReport(r) => {

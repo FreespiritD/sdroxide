@@ -416,8 +416,10 @@ impl DigiController {
         done
     }
 
-    /// Notify the QSO machine that the burst finished going out (advances a
-    /// terminal 73 to Done). Returns actions (status change) for the engine.
+    /// Notify the QSO machine that the burst finished going out. A final
+    /// message (73 / RR73) leaving is what logs the contact and moves it to
+    /// `Confirming`; anything else just counts towards the unanswered-call
+    /// limit. Marks the status dirty so the engine re-broadcasts it.
     pub fn on_burst_done(&mut self) {
         let now = SlotScheduler::unix_now(SystemTime::now()) as i64;
         self.qso.note_tx_sent(now);

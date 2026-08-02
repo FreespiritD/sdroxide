@@ -159,7 +159,11 @@ use sdroxide_types::{
 /// the flag on the line that marks the QSO complete and logged. Appended to the
 /// struct, but postcard is not self-describing, so every message carrying a
 /// `DigiStatus` changes layout and both ends have to agree on the field.
-pub const PROTO_VERSION: u16 = 38;
+/// v39: `QsoStep::Done` is gone. Nothing ever set it — `Confirming` is the
+/// state a finished contact sits in — so no engine has ever put it on the wire.
+/// It was the last variant, so no surviving discriminant moves, but the enum
+/// both ends decode has changed shape and this codebase bumps for that.
+pub const PROTO_VERSION: u16 = 39;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

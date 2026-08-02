@@ -233,8 +233,6 @@ pub enum QsoStep {
     /// few minutes and re-send our final message if the DX repeats theirs (i.e.
     /// they didn't receive our 73 / RR73).
     Confirming,
-    /// QSO finished (logged).
-    Done,
 }
 
 impl QsoStep {
@@ -249,7 +247,6 @@ impl QsoStep {
             QsoStep::TxRr73 => "Tx RR73",
             QsoStep::Tx73 => "Tx 73",
             QsoStep::Confirming => "Confirming",
-            QsoStep::Done => "Done",
         }
     }
 }

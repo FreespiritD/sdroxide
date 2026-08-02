@@ -117,6 +117,11 @@ pub struct QsoMachine {
     final_msg: Option<String>,
     /// A re-send of `final_msg` is queued for the next transmit slot.
     resend: bool,
+    /// This contact has already produced a log entry. The final message can
+    /// legitimately go out more than once — the operator picks RR73 again when
+    /// they think the DX missed it — and every send of it lands back in
+    /// [`log_qso`](Self::log_qso), which would otherwise log the contact twice.
+    logged: bool,
     /// A message the operator queued by hand. It takes the next transmit slot
     /// whatever the sequencer had planned, then the exchange carries on from
     /// where it was.
@@ -166,6 +171,7 @@ impl QsoMachine {
             deadline_utc: 0,
             final_msg: None,
             resend: false,
+            logged: false,
             manual: None,
             worked_calls: std::collections::HashSet::new(),
             worked_entities: std::collections::HashSet::new(),
@@ -235,7 +241,7 @@ impl QsoMachine {
             return false;
         }
         match self.step {
-            QsoStep::Idle | QsoStep::Done => true,
+            QsoStep::Idle => true,
             // Calling into an empty band: a station we marked is a better use
             // of the slot. Once someone answers, `dx` is set and we are busy.
             QsoStep::CallingCq => self.dx.is_none(),
@@ -264,14 +270,30 @@ impl QsoMachine {
         &self.cfg.my_call
     }
 
-    /// Note that the sequencer got somewhere: a reply arrived, or the operator
-    /// acted. Restarts both the watchdog and the unanswered-call count.
+    /// Note that the sequencer got somewhere: restart the watchdog's clock and
+    /// the unanswered-call count.
+    ///
+    /// This is progress *on the air* — a reply arrived — and it deliberately
+    /// leaves [`watchdog`](Self::tx_watchdog) alone. Once the watchdog has
+    /// stopped the sequencer, only the operator starts it again: the whole
+    /// point of it is that an unattended station stops transmitting, and a
+    /// station that resumed the moment somebody called it would be unattended
+    /// and transmitting. Clearing the flag here also cleared the readout that
+    /// said why the sequencer had stopped, and released the call queue to march
+    /// on to the next station.
     ///
     /// The timestamp is left for the next [`tick`](Self::tick) to fill in,
     /// because operator actions arrive without a clock.
     fn progress(&mut self) {
         self.progress_utc = 0;
         self.tx_since_progress = 0;
+    }
+
+    /// The operator did something — called CQ, picked a message, queued text,
+    /// answered a station. That is the one thing that takes the watchdog down,
+    /// on top of everything [`progress`](Self::progress) does.
+    fn operator_acted(&mut self) {
+        self.progress();
         self.watchdog = false;
     }
 
@@ -286,8 +308,9 @@ impl QsoMachine {
         self.transcript.clear();
         self.final_msg = None;
         self.resend = false;
+        self.logged = false;
         self.manual = None;
-        self.progress();
+        self.operator_acted();
         self.step = QsoStep::CallingCq;
     }
 
@@ -304,7 +327,7 @@ impl QsoMachine {
             return true;
         }
         self.manual = None;
-        self.progress();
+        self.operator_acted();
         self.step = step;
         true
     }
@@ -314,7 +337,7 @@ impl QsoMachine {
     pub fn queue_text(&mut self, text: String) {
         let text = text.trim().to_ascii_uppercase();
         self.manual = (!text.is_empty()).then_some(text);
-        self.progress();
+        self.operator_acted();
     }
 
     /// Record a message we transmitted (called by the controller when it
@@ -343,8 +366,9 @@ impl QsoMachine {
         self.transcript.clear();
         self.final_msg = None;
         self.resend = false;
+        self.logged = false;
         self.manual = None;
-        self.progress();
+        self.operator_acted();
         // Working them now settles whatever the queue had them down for.
         self.queue.retain(|q| !q.call.eq_ignore_ascii_case(&from));
         // What they last sent us, if they have been calling recently: it decides
@@ -388,6 +412,8 @@ impl QsoMachine {
         self.step = QsoStep::Idle;
         self.dx = None;
         self.manual = None;
+        self.logged = false;
+        self.watchdog = false;
     }
 
     /// True while we intend to transmit this cycle. `WaitCq` holds silently
@@ -403,7 +429,7 @@ impl QsoMachine {
             return self.step == QsoStep::CallingCq && !self.cfg.my_call.trim().is_empty();
         }
         match self.step {
-            QsoStep::Idle | QsoStep::Done | QsoStep::WaitCq => false,
+            QsoStep::Idle | QsoStep::WaitCq => false,
             QsoStep::Confirming => self.resend,
             _ => true,
         }
@@ -431,11 +457,18 @@ impl QsoMachine {
             return true;
         }
         match self.step {
+            // A re-send the DX asked for holds the contact open past its
+            // deadline. It is one transmission, already earned by them
+            // repeating their final message, and retiring on top of it would
+            // drop the answer rather than send it — `note_tx_sent` clears the
+            // flag as it leaves, and the next tick retires as usual.
+            QsoStep::Confirming if self.resend => false,
             QsoStep::WaitCq | QsoStep::Confirming if now_utc >= self.deadline_utc => {
                 self.step = QsoStep::Idle;
                 self.dx = None;
                 self.resend = false;
                 self.final_msg = None;
+                self.logged = false;
                 true
             }
             _ => false,
@@ -515,7 +548,7 @@ impl QsoMachine {
             if hound
                 && d.rr73_to.as_deref() == Some(my_call.as_str())
                 && self.dx.as_ref().map(|x| x.call.as_str()) == Some(from)
-                && !matches!(self.step, QsoStep::Idle | QsoStep::Confirming | QsoStep::Done)
+                && !matches!(self.step, QsoStep::Idle | QsoStep::Confirming)
             {
                 self.transcript.push(TranscriptLine::rcvd(d.message.clone()));
                 self.log_qso(now_utc);
@@ -531,20 +564,35 @@ impl QsoMachine {
             // (they're free) or address us directly (no need to keep waiting).
             if self.step == QsoStep::WaitCq {
                 if self.dx.as_ref().map(|x| x.call.as_str()) == Some(from) && (d.is_cq || to_me) {
+                    let payload = classify_payload(&d.message);
+                    // Where to pick the exchange up. Their CQ says nothing
+                    // about us, so we open with our grid; anything addressed to
+                    // us is answered from where *they* are, because resuming at
+                    // Tx1 would send our grid to a station that already has it
+                    // and is waiting on a report. A bare 73 asks for nothing at
+                    // all, so it is not the thing we were waiting for.
+                    let Some(resume) =
+                        (if d.is_cq { Some(QsoStep::TxGrid) } else { reply_step(&payload) })
+                    else {
+                        continue;
+                    };
                     if let Some(dx) = self.dx.as_mut() {
                         dx.last_utc = now_utc;
                         if dx.grid.is_none() {
-                            if let Payload::Grid(g) = classify_payload(&d.message) {
-                                dx.grid = Some(g);
+                            if let Payload::Grid(g) = &payload {
+                                dx.grid = Some(g.clone());
                             }
                         }
+                    }
+                    if let Payload::Report(r) | Payload::RReport(r) = payload {
+                        self.set_rcvd(r);
                     }
                     // They are on the air and free: that is the thing we were
                     // waiting for, so the calls we made before they went quiet
                     // must not count against the ones we are about to make.
                     self.progress();
                     self.progress_utc = now_utc;
-                    self.step = QsoStep::TxGrid;
+                    self.step = resume;
                     changed = true;
                 } else if let Some(other) = other {
                     // Still busy — keep the log showing who with.
@@ -553,16 +601,21 @@ impl QsoMachine {
                 continue;
             }
 
-            // We called them, but they took someone else's call: stop calling
-            // and hold until they're free again rather than doubling into their
-            // exchange. Only while our own exchange is still unfinished — once
-            // we owe them a 73 / RR73 that message goes out regardless, so the
-            // contact gets completed and logged.
+            // They took someone else's call: stop calling and hold until they
+            // are free again rather than doubling into their exchange. Only
+            // while our own exchange is still unfinished — once we owe them a
+            // 73 / RR73 that message goes out regardless, so the contact gets
+            // completed and logged.
+            //
+            // `TxReport` counts as much as the other two. It is the step a CQ
+            // caller sits in, and a station that answers a CQ and then goes off
+            // with somebody else leaves us reporting into their QSO for as many
+            // slots as the unanswered-call count allows.
             //
             // A Hound is exempt: a Fox is *always* working somebody, and a Hound
             // that stood down each time would never be answered at all.
             if let Some(other) = other.filter(|_| !hound) {
-                if matches!(self.step, QsoStep::TxGrid | QsoStep::TxRReport) {
+                if matches!(self.step, QsoStep::TxGrid | QsoStep::TxReport | QsoStep::TxRReport) {
                     self.note_working(from, other);
                     self.step = QsoStep::WaitCq;
                     self.deadline_utc = now_utc + WAIT_CQ_S;
@@ -607,6 +660,7 @@ impl QsoMachine {
                     started_utc: now_utc,
                     last_utc: now_utc,
                 });
+                self.logged = false; // a new contact, whatever the last one did
                 self.transcript.push(TranscriptLine::rcvd(d.message.clone()));
                 // Somebody came back to us: the CQ run is over and a fresh
                 // contact starts here. Without this the CQs we sent waiting for
@@ -705,46 +759,53 @@ impl QsoMachine {
             self.log_qso(now_utc);
             return true;
         }
+        // Stood down — by the operator, the watchdog, or the unanswered-call
+        // count. The DX turning up again is worth showing, but not worth
+        // starting to transmit over: a stand-down that the far end can undo is
+        // no stand-down at all. The operator resumes it, from the message they
+        // pick or the REPLY that re-opens the contact.
+        if self.step == QsoStep::Idle {
+            return false;
+        }
+        // Their report is their report wherever the exchange had got to.
+        if let Payload::Report(r) | Payload::RReport(r) = payload {
+            self.set_rcvd(*r);
+        }
         let prev = self.step;
-        match (self.step, payload) {
-            // They answered our CQ with their grid → send them a report.
-            (QsoStep::CallingCq, Payload::Grid(_)) => self.step = QsoStep::TxReport,
-            // They answered our CQ with a report instead of a grid — plenty of
-            // stations skip the grid message, and one that already knows our
-            // grid always will. That makes us the answering side: roger what
-            // they sent and reply with R+report.
-            (QsoStep::CallingCq, Payload::Report(r)) => {
-                self.set_rcvd(*r);
-                self.step = QsoStep::TxRReport;
+        match payload {
+            // Free text, a bare call, anything the packer mangled: it says
+            // nothing about where they are in the exchange, so it must not move
+            // us — least of all backwards. "TNX QSO 73 GL" arriving while we
+            // are sending 73 is not a request to start again from a report.
+            // (Answering our CQ is the one case where an unreadable message is
+            // still information — `on_rx` handles that, since there what makes
+            // it an answer is that it was addressed to us at all.)
+            Payload::Other => {}
+            // A bare 73 closes the contact rather than asking for anything. If
+            // we still owe a final message it goes out and logs the QSO on its
+            // own; the one step that would otherwise wait for ever is
+            // TxRReport, where their 73 does the job of the RR73 we expected.
+            Payload::B73 => {
+                if self.step == QsoStep::TxRReport {
+                    self.step = QsoStep::Tx73;
+                }
             }
-            // …or with R+report, so they have us a message further on than we
-            // thought (our report reached them; their reply to it didn't).
-            (QsoStep::CallingCq, Payload::RReport(r)) => {
-                self.set_rcvd(*r);
-                self.step = QsoStep::TxRr73;
+            // Everything else: send the message that answers what they actually
+            // sent. That is the whole rule, and it is the same one
+            // [`reply_step`] states for a contact the operator opens by hand.
+            //
+            // It is deliberately blind to where *we* thought we were. Matching
+            // on both sides — only accepting the reply the sequence predicted —
+            // is what used to wedge these exchanges: two stations both sending
+            // bare reports, or both sending R+report, each waiting for a message
+            // the other had already moved past, until the unanswered-call count
+            // gave up. When it moves us backwards, that is the point: they never
+            // heard the message we have moved past, so we send it again.
+            _ => {
+                if let Some(step) = reply_step(payload) {
+                    self.step = step;
+                }
             }
-            // (Answerer) they sent us a report → send R+report.
-            (QsoStep::TxGrid, Payload::Report(r)) => {
-                self.set_rcvd(*r);
-                self.step = QsoStep::TxRReport;
-            }
-            // They sent R+report back → send RR73.
-            (QsoStep::TxReport, Payload::RReport(r)) => {
-                self.set_rcvd(*r);
-                self.step = QsoStep::TxRr73;
-            }
-            // (Answerer) they rogered → send 73. A bare 73 says the same thing:
-            // they have our R+report and are signing off, and plenty of
-            // stations close with that rather than RR73. Treating it as
-            // nothing left us repeating R+report at a station that had already
-            // finished, until the unanswered-call count gave up on them — and
-            // the contact was never logged.
-            (QsoStep::TxRReport, Payload::Rrr | Payload::Rr73 | Payload::B73) => {
-                self.step = QsoStep::Tx73;
-            }
-            // (CQ caller) at TxRr73 we log + enter Confirming once our RR73 goes
-            // out (see `note_tx_sent`); a 73 arriving first just confirms it.
-            _ => {}
         }
         self.step != prev
     }
@@ -757,8 +818,13 @@ impl QsoMachine {
 
     /// Log the QSO and enter [`QsoStep::Confirming`], keeping the DX so we can
     /// re-send our final message for a few minutes if they didn't hear it.
+    ///
+    /// Only the first call for a given contact writes a log entry. Sending the
+    /// final message again lands here again — which is what put a second
+    /// identical record in the logbook, and from there in every ADIF export and
+    /// upload, whenever the operator re-sent an RR73 they thought was missed.
     fn log_qso(&mut self, now_utc: i64) {
-        if let Some(dx) = self.dx.as_ref() {
+        if let Some(dx) = self.dx.as_ref().filter(|_| !self.logged) {
             self.worked_calls.insert(dx.call.to_ascii_uppercase());
             if let Some(e) = sdroxide_types::entity_name(&dx.call) {
                 self.worked_entities.insert(e.to_string());
@@ -783,6 +849,7 @@ impl QsoMachine {
             self.transcript
                 .push(TranscriptLine::complete(format!("QSO with {} complete — logged", dx.call)));
         }
+        self.logged = true;
         self.step = QsoStep::Confirming;
         self.deadline_utc = now_utc + CONFIRM_S;
         self.resend = false;
@@ -853,7 +920,7 @@ impl QsoMachine {
             QsoStep::Tx73 => Some(fill(&self.cfg.msg_73, None)),
             // Re-send our final message only when the DX prompted it.
             QsoStep::Confirming => self.resend.then(|| self.final_msg.clone()).flatten(),
-            QsoStep::Idle | QsoStep::WaitCq | QsoStep::Done => None,
+            QsoStep::Idle | QsoStep::WaitCq => None,
         }
     }
 
@@ -1440,6 +1507,167 @@ mod tests {
         assert_eq!(rec.rst_rcvd, Some(-13));
     }
 
+    /// Drive a machine to `step` with W9XYZ as the DX, by the route the
+    /// sequencer actually takes to get there.
+    fn at(step: QsoStep) -> QsoMachine {
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        match step {
+            QsoStep::TxGrid => q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100),
+            QsoStep::TxReport => {
+                q.call_cq();
+                q.on_rx(&[decode("AB1CD W9XYZ EM48")], 100);
+            }
+            QsoStep::TxRReport => {
+                q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100);
+                q.on_rx(&[decode("AB1CD W9XYZ -13")], 115);
+            }
+            QsoStep::TxRr73 => {
+                q.call_cq();
+                q.on_rx(&[decode("AB1CD W9XYZ EM48")], 100);
+                q.on_rx(&[decode("AB1CD W9XYZ R-13")], 115);
+            }
+            QsoStep::Tx73 => {
+                q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100);
+                q.on_rx(&[decode("AB1CD W9XYZ -13")], 115);
+                q.on_rx(&[decode("AB1CD W9XYZ RR73")], 130);
+            }
+            other => panic!("no route to {other:?}"),
+        }
+        assert_eq!(q.step(), step, "the route did not reach {step:?}");
+        q
+    }
+
+    #[test]
+    fn every_message_they_send_is_answered_from_wherever_we_are() {
+        // The sequencer answers what the DX actually sent, not what it was
+        // expecting. Matching on both sides used to wedge these exchanges:
+        // each station waiting for a message the other had moved past, both
+        // repeating themselves until the unanswered-call count gave up.
+        //
+        // `want` is what we should send next; the step we were in is the DX's
+        // problem, not ours.
+        let cases = [
+            // (they send, from this step, we answer with)
+            ("AB1CD W9XYZ EM48", QsoStep::TxGrid, QsoStep::TxReport),
+            ("AB1CD W9XYZ EM48", QsoStep::TxRReport, QsoStep::TxReport),
+            ("AB1CD W9XYZ -12", QsoStep::TxReport, QsoStep::TxRReport),
+            ("AB1CD W9XYZ -12", QsoStep::TxRr73, QsoStep::TxRReport),
+            ("AB1CD W9XYZ R-12", QsoStep::TxGrid, QsoStep::TxRr73),
+            ("AB1CD W9XYZ R-12", QsoStep::TxRReport, QsoStep::TxRr73),
+            ("AB1CD W9XYZ RR73", QsoStep::TxGrid, QsoStep::Tx73),
+            ("AB1CD W9XYZ RR73", QsoStep::TxReport, QsoStep::Tx73),
+            ("AB1CD W9XYZ RRR", QsoStep::TxReport, QsoStep::Tx73),
+            // Already sending the right answer: their repeat changes nothing.
+            ("AB1CD W9XYZ EM48", QsoStep::TxReport, QsoStep::TxReport),
+            ("AB1CD W9XYZ -12", QsoStep::TxRReport, QsoStep::TxRReport),
+            ("AB1CD W9XYZ R-12", QsoStep::TxRr73, QsoStep::TxRr73),
+            ("AB1CD W9XYZ RR73", QsoStep::Tx73, QsoStep::Tx73),
+        ];
+        for (msg, from, want) in cases {
+            let mut q = at(from);
+            q.on_rx(&[decode(msg)], 200);
+            assert_eq!(q.step(), want, "{from:?} + \"{msg}\" should leave us at {want:?}");
+        }
+    }
+
+    #[test]
+    fn free_text_does_not_move_the_exchange() {
+        // Free text carries no place in the sequence, so it must not move us —
+        // least of all backwards. "TNX QSO 73 GL" while we are sending 73 is
+        // not a request to start again from a signal report.
+        for step in [QsoStep::TxGrid, QsoStep::TxReport, QsoStep::TxRReport, QsoStep::Tx73] {
+            let mut q = at(step);
+            q.on_rx(&[decode("AB1CD W9XYZ TNX QSO")], 200);
+            assert_eq!(q.step(), step, "free text moved us out of {step:?}");
+        }
+
+        // Answering our CQ is the exception: whatever it says, somebody called
+        // us, so they get a report.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.call_cq();
+        q.on_rx(&[decode("AB1CD W9XYZ HI")], 100);
+        assert_eq!(q.step(), QsoStep::TxReport);
+    }
+
+    #[test]
+    fn a_stood_down_sequencer_is_not_restarted_by_the_dx() {
+        // The watchdog and the unanswered-call count both stop the sequencer
+        // with the contact still on screen. A stand-down the far end can undo
+        // is no stand-down at all — only the operator resumes it.
+        let cfg = DigiConfig { max_tx_repeats: 1, ..cfg() };
+        let mut q = QsoMachine::new(Mode::Ft8, cfg);
+        q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100);
+        q.note_tx_sent(115);
+        assert_eq!(q.step(), QsoStep::Idle, "gave up");
+
+        q.on_rx(&[decode("AB1CD W9XYZ -13")], 130);
+        assert_eq!(q.step(), QsoStep::Idle, "the DX turning up must not key the radio again");
+        assert!(!q.wants_tx());
+        // …but answering them by hand picks up from where they are.
+        q.start_qso("W9XYZ".into(), None, -10, false, 145);
+        assert_eq!(q.plan_tx().as_deref(), Some("W9XYZ AB1CD R-10"));
+    }
+
+    #[test]
+    fn the_final_message_is_logged_once_however_often_it_is_sent() {
+        // The operator re-sends RR73 when they think the DX missed it. Every
+        // send lands back in `log_qso`, which used to write a second identical
+        // record — and from there a duplicate in every ADIF export and upload.
+        let mut q = at(QsoStep::TxRr73);
+        q.note_tx_sent(130);
+        assert_eq!(q.step(), QsoStep::Confirming);
+        assert!(q.take_completed().is_some(), "the contact is logged");
+
+        assert!(q.set_step(QsoStep::TxRr73), "operator sends it again");
+        q.note_tx_sent(145);
+        assert!(q.take_completed().is_none(), "logged twice");
+        // And the transcript says "complete" once, not once per send.
+        assert_eq!(q.status(false).transcript.iter().filter(|l| l.done).count(), 1);
+
+        // A genuinely new contact logs as usual.
+        q.call_cq();
+        q.on_rx(&[decode("AB1CD K1ABC EM48")], 160);
+        q.on_rx(&[decode("AB1CD K1ABC R-12")], 175);
+        q.note_tx_sent(190);
+        assert_eq!(q.take_completed().map(|r| r.call), Some("K1ABC".into()));
+    }
+
+    #[test]
+    fn a_cq_caller_stops_reporting_at_a_station_that_took_someone_else() {
+        // They answered our CQ, then went off with K1ABC. Carrying on sends our
+        // report straight into their exchange.
+        let mut q = at(QsoStep::TxReport);
+        assert!(q.on_rx(&[decode("K1ABC W9XYZ R-05")], 130));
+        assert_eq!(q.step(), QsoStep::WaitCq);
+        assert!(!q.wants_tx());
+        let note = q.status(false).transcript.pop().expect("a note");
+        assert_eq!(note.text, "W9XYZ is working K1ABC");
+
+        // They come back to us → we carry on where we left off.
+        assert!(q.on_rx(&[decode("AB1CD W9XYZ EM48")], 145));
+        assert_eq!(q.step(), QsoStep::TxReport);
+        assert!(q.wants_tx());
+    }
+
+    #[test]
+    fn a_requested_resend_outlives_the_confirm_window() {
+        // They repeated their final message in the last seconds of the window.
+        // Retiring the contact on top of that drops the answer instead of
+        // sending it.
+        let mut q = at(QsoStep::Tx73);
+        q.note_tx_sent(145);
+        assert_eq!(q.step(), QsoStep::Confirming);
+        q.on_rx(&[decode("AB1CD W9XYZ RR73")], 145 + CONFIRM_S - 1);
+        assert!(q.wants_tx(), "a re-send is queued");
+
+        assert!(!q.tick(145 + CONFIRM_S), "the contact is held for the re-send");
+        assert_eq!(q.plan_tx().as_deref(), Some("W9XYZ AB1CD 73"));
+        q.note_tx_sent(145 + CONFIRM_S);
+        // Once it has gone out the contact retires as usual.
+        assert!(q.tick(145 + CONFIRM_S + 1));
+        assert_eq!(q.step(), QsoStep::Idle);
+    }
+
     #[test]
     fn a_completed_contact_says_so_in_the_transcript() {
         // The exchange stays on screen after it ends, so the transcript has to
@@ -1681,6 +1909,39 @@ mod tests {
         q.on_rx(&[decode("AB1CD K1ABC EM48")], 100);
         q.queue_add(queued("W9XYZ"));
         assert!(q.take_next_queued().is_none());
+    }
+
+    #[test]
+    fn only_the_operator_takes_the_watchdog_down() {
+        // The watchdog exists to stop an unattended station transmitting, so
+        // nothing arriving over the air may start it again: resuming because
+        // somebody transmitted at us is precisely the unattended operation it
+        // is there to prevent. It used to take the readout saying why the
+        // sequencer had stopped away with it, too.
+        let mut q = QsoMachine::new(Mode::Ft8, cfg());
+        q.queue_add(queued("K1ABC"));
+        q.start_qso("W9XYZ".into(), Some("EM48".into()), -10, false, 100);
+        q.tick(100);
+        assert!(q.tick(100 + 6 * 60 + 1));
+        assert!(q.tx_watchdog());
+        assert_eq!(q.step(), QsoStep::Idle);
+
+        // The station we had been calling comes back.
+        q.on_rx(&[decode("AB1CD W9XYZ -13")], 100 + 7 * 60);
+        assert!(q.tx_watchdog(), "a decode is not an operator");
+        assert!(!q.wants_tx());
+        assert_eq!(q.step(), QsoStep::Idle);
+        assert!(q.take_next_queued().is_none(), "nor may the queue march on");
+
+        // It still restarts the *clock*, so once the operator does resume, the
+        // watchdog gives the contact its full window rather than what was left.
+        assert!(!q.tick(100 + 7 * 60 + 1));
+
+        // Answering them is what starts it again.
+        q.start_qso("W9XYZ".into(), None, -10, false, 100 + 8 * 60);
+        assert!(!q.tx_watchdog());
+        assert!(q.wants_tx());
+        assert_eq!(q.plan_tx().as_deref(), Some("W9XYZ AB1CD R-10"), "from where they are");
     }
 
     #[test]

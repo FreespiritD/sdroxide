@@ -18,8 +18,6 @@ pub struct DigiParams {
     pub tx_offset_s: f64,
     /// Nominal on-air burst length in seconds.
     pub burst_s: f64,
-    /// How far into a slot to wait before decoding (collect ~90% of the slot).
-    pub decode_at_s: f64,
 }
 
 impl DigiParams {
@@ -32,31 +30,17 @@ impl DigiParams {
     /// given and complains in debug builds.
     pub fn for_mode(mode: Mode) -> Self {
         match mode {
-            Mode::Ft4 => {
-                DigiParams { mode, slot_s: 7.5, tx_offset_s: 0.5, burst_s: 4.48, decode_at_s: 6.0 }
-            }
+            Mode::Ft4 => DigiParams { mode, slot_s: 7.5, tx_offset_s: 0.5, burst_s: 4.48 },
             // Symbol 0 is nominally 0.5 s into the slot (matches WSJT-X /
             // mfsk-core dt reference).
-            Mode::Ft8 => DigiParams {
-                mode,
-                slot_s: 15.0,
-                tx_offset_s: 0.5,
-                burst_s: 12.64,
-                decode_at_s: 13.5,
-            },
+            Mode::Ft8 => DigiParams { mode, slot_s: 15.0, tx_offset_s: 0.5, burst_s: 12.64 },
             other => {
                 debug_assert!(
                     false,
                     "DigiParams::for_mode({other:?}) has no arm — add one rather than \
                      inheriting FT8's timing"
                 );
-                DigiParams {
-                    mode,
-                    slot_s: 15.0,
-                    tx_offset_s: 0.5,
-                    burst_s: 12.64,
-                    decode_at_s: 13.5,
-                }
+                DigiParams { mode, slot_s: 15.0, tx_offset_s: 0.5, burst_s: 12.64 }
             }
         }
     }
@@ -69,9 +53,6 @@ impl DigiParams {
             slot_s: speed.slot_s(),
             tx_offset_s: speed.start_delay_s(),
             burst_s: speed.burst_s(),
-            // The window a decoder examines, which for Slow is shorter than
-            // its cycle.
-            decode_at_s: speed.decode_window_s(),
         }
     }
 
@@ -104,12 +85,5 @@ mod tests {
             // The burst plus its start delay has to fit inside the slot.
             assert!(p.tx_offset_s + p.burst_s < p.slot_s, "{}", speed.label());
         }
-    }
-
-    #[test]
-    fn slow_analyses_less_than_its_cycle() {
-        let p = DigiParams::for_js8(Js8Speed::Slow);
-        assert_eq!(p.slot_s, 30.0);
-        assert_eq!(p.decode_at_s, 28.0, "Slow's decode window is shorter than its slot");
     }
 }
