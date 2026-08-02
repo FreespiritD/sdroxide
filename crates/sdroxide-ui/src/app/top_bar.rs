@@ -250,8 +250,9 @@ impl SdroxideApp {
             self.display_controls(ui, cmds, true);
         });
 
-        let btn = crate::chrome::chip(ui, false, "SYS")
-            .on_hover_text("Logbook, spots, awards, memories, settings and the manual");
+        let btn = crate::chrome::chip(ui, false, "SYS").on_hover_text(
+            "Logbook, spots, awards, memories, the scanner, settings and the manual",
+        );
         crate::chrome::menu_popup(ui, &btn, |ui| {
             crate::chrome::menu_caption(ui, "System");
             self.windows_controls(ui, true);
@@ -1461,8 +1462,7 @@ impl SdroxideApp {
     }
 
     fn windows_module(&mut self, ui: &mut egui::Ui) {
-        // 285 for the original five chips, plus the width SCAN adds.
-        crate::chrome::module(ui, "System", 285.0 + 56.0, |ui| {
+        crate::chrome::module(ui, "System", 285.0, |ui| {
             self.windows_controls(ui, false);
         });
     }
@@ -1494,6 +1494,32 @@ impl SdroxideApp {
                 .clicked()
             {
                 self.show_memories = !self.show_memories;
+            }
+            // Accented while a scan is actually running, so its state is visible
+            // with the window closed — which is how it will usually be.
+            let scan = self.state.scan;
+            let scan_chip = if scan.running {
+                crate::chrome::chip_accent(
+                    ui,
+                    true,
+                    "SCAN",
+                    if scan.holding { crate::theme::GREEN } else { crate::theme::CYAN },
+                    Color32::BLACK,
+                )
+            } else {
+                crate::chrome::chip(ui, self.show_scanner, "SCAN")
+            };
+            if scan_chip
+                .on_hover_text(if scan.holding {
+                    "Scanner — stopped on a signal"
+                } else if scan.running {
+                    "Scanner — running"
+                } else {
+                    "Scan memory channels or a frequency range"
+                })
+                .clicked()
+            {
+                self.show_scanner = !self.show_scanner;
             }
             if crate::chrome::chip(ui, self.show_settings, "⚙ SETTINGS")
                 .on_hover_text("Settings — device gains, antennas, audio devices")
