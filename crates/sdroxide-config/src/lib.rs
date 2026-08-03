@@ -51,6 +51,11 @@ pub struct Settings {
     /// emits fields in declaration order: a table declared above a plain value
     /// would swallow that value into itself on the next write.
     pub remote_access: sdroxide_types::RemoteAccess,
+    /// Spoken announcements. A client-side preference like `[ui]`: what the
+    /// operator at this screen wants to hear, not how the station is set up.
+    ///
+    /// Also a table, so it goes after every plain value for the reason above.
+    pub speech: sdroxide_types::SpeechSettings,
 }
 
 impl Default for Settings {
@@ -68,6 +73,7 @@ impl Default for Settings {
             audio_input: None,
             ui: sdroxide_types::UiSettings::default(),
             remote_access: sdroxide_types::RemoteAccess::default(),
+            speech: sdroxide_types::SpeechSettings::default(),
         }
     }
 }
@@ -100,6 +106,19 @@ pub fn load_remote_access() -> sdroxide_types::RemoteAccess {
 pub fn save_remote_access(access: &sdroxide_types::RemoteAccess) -> Result<(), ConfigError> {
     let mut s = Settings::load();
     s.remote_access = access.clone();
+    s.save()
+}
+
+/// Load just the spoken-announcement preferences.
+pub fn load_speech_settings() -> sdroxide_types::SpeechSettings {
+    Settings::load().speech
+}
+
+/// Persist the spoken-announcement preferences, preserving every other setting
+/// (read-modify-write, like [`save_ui_settings`]).
+pub fn save_speech_settings(speech: &sdroxide_types::SpeechSettings) -> Result<(), ConfigError> {
+    let mut s = Settings::load();
+    s.speech = speech.clone();
     s.save()
 }
 
@@ -197,6 +216,19 @@ pub fn sstv_tx_dir() -> Result<PathBuf, ConfigError> {
 /// slot, so a message can be edited or replaced with any audio editor.
 pub fn voice_dir() -> Result<PathBuf, ConfigError> {
     let dir = config_dir()?.join("voice");
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Directory for operator-supplied speech voices
+/// (`~/.config/sdroxide/speech_voices`), created on demand. One Piper voice per
+/// `.onnx` + `.onnx.json` pair.
+///
+/// Deliberately not [`voice_dir`], which is the voice *keyer*'s recordings —
+/// two unrelated meanings of the word that would be a nasty surprise to share
+/// a directory.
+pub fn speech_voice_dir() -> Result<PathBuf, ConfigError> {
+    let dir = config_dir()?.join("speech_voices");
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -959,6 +991,41 @@ mod tests {
         assert_eq!(back.remote_access.password, "hunter2");
         assert!(!back.tx_ham_only, "a value below the table must not become part of it");
         assert_eq!(back.server_port, 4951);
+    }
+
+    /// The same hazard, with three tables rather than two: `[speech]` carries
+    /// sub-tables of its own, and a scalar of *its* declared after them would
+    /// be swallowed just as surely.
+    #[test]
+    fn speech_settings_survive_a_write_without_swallowing_anything() {
+        let mut speech = sdroxide_types::SpeechSettings {
+            enabled: true,
+            voice: "en_US-hfc_female-medium".into(),
+            rate: 1.4,
+            verbosity: sdroxide_types::Verbosity::Full,
+            ..Default::default()
+        };
+        speech.cat.filters = true;
+        speech.text.cw = true;
+        speech.tune.period_s = 3.0;
+
+        let s = Settings { speech: speech.clone(), tx_ham_only: false, ..Settings::default() };
+        let text = toml::to_string_pretty(&s).unwrap();
+        let back: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(back.speech, speech);
+        assert!(back.speech.enabled);
+        assert!(back.speech.cat.filters);
+        assert!(!back.tx_ham_only, "a value below a table must not become part of it");
+        assert_eq!(back.ui, s.ui, "the table above must survive too");
+    }
+
+    /// A `config.toml` written before this feature existed comes up silent,
+    /// which is what that operator has always had.
+    #[test]
+    fn a_config_without_a_speech_table_stays_quiet() {
+        let s: Settings = toml::from_str("server_port = 4950").unwrap();
+        assert!(!s.speech.enabled);
     }
 
     /// A `config.toml` written before this feature existed leaves the server

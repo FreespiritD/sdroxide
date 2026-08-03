@@ -57,6 +57,39 @@ pub(in crate::app) fn persist_ui_settings(_ui: &sdroxide_types::UiSettings) {
     // Written by eframe's periodic `save()` into localStorage.
 }
 
+// ── Spoken announcements (native: config.toml [speech]) ─────────────────────
+//
+// A client-side preference like `[ui]`, so it has a browser half too — the
+// wasm build carries the announcer with a null sink, and remembering the
+// settings there means a later browser backend inherits them rather than
+// starting from defaults.
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::app) fn load_speech_settings(
+    _storage: Option<&dyn eframe::Storage>,
+) -> sdroxide_types::SpeechSettings {
+    sdroxide_config::load_speech_settings()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(in crate::app) fn load_speech_settings(
+    storage: Option<&dyn eframe::Storage>,
+) -> sdroxide_types::SpeechSettings {
+    storage.and_then(|s| eframe::get_value(s, "speech_settings")).unwrap_or_default()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::app) fn persist_speech_settings(cfg: &sdroxide_types::SpeechSettings) {
+    if let Err(e) = sdroxide_config::save_speech_settings(cfg) {
+        eprintln!("failed to save speech settings: {e}");
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(in crate::app) fn persist_speech_settings(_cfg: &sdroxide_types::SpeechSettings) {
+    // Written by eframe's periodic `save()` into localStorage.
+}
+
 // ── Remote-access credentials (native: config.toml [remote_access]) ──────────
 //
 // Who may connect to *this* machine's server. There is no browser half: these

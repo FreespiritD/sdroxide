@@ -671,6 +671,14 @@ struct StereoMixer {
     /// Whether `rec_tap` was opened for a mono recording (one channel) rather
     /// than stereo (two) — must match what `Recorder::start` configured.
     rec_mono: bool,
+    /// Attenuation applied to the speaker path while a local spoken
+    /// announcement plays. 1.0 is off.
+    ///
+    /// Applied here rather than to the buffers upstream for two reasons: this
+    /// is the single funnel every audio path goes through, and the recorder's
+    /// channels arrive as separate arguments — so ducking here cannot leak into
+    /// an MP3 however the caller assembled the two sides.
+    duck: f32,
 }
 
 /// Bound on per-channel queueing (≈¼ s at 48 kHz) so a stalled side can't
@@ -691,7 +699,13 @@ impl StereoMixer {
             tx_rec_scratch: Vec::new(),
             rx_rec_enabled: true,
             rec_mono: false,
+            duck: 1.0,
         }
+    }
+
+    /// Set the speaker-path attenuation. See [`StereoMixer::duck`].
+    fn set_duck(&mut self, gain: f32) {
+        self.duck = gain.clamp(0.0, 1.0);
     }
 
     /// `left`/`right` are the speaker path (post AF-volume/mute); `rec_left`/
@@ -770,9 +784,10 @@ impl StereoMixer {
 
         if n > 0 {
             if self.out.slots() >= n * 2 {
+                let duck = self.duck;
                 for i in 0..n {
-                    let l = self.main_q[i];
-                    let r = if dual { self.sub_q[i] } else { l };
+                    let l = self.main_q[i] * duck;
+                    let r = if dual { self.sub_q[i] * duck } else { l };
                     let _ = self.out.push(l);
                     let _ = self.out.push(r);
                 }
@@ -1100,6 +1115,10 @@ struct Engine {
     /// Right channel of the main chain, non-empty only while WFM stereo is
     /// decoding and the sub receiver is off.
     main_play_r: Vec<f32>,
+    /// Speaker-path attenuation asked for by a local spoken announcement.
+    /// Held here as well as in the mixer so a device swap, which builds a new
+    /// mixer, does not come back at full volume mid-announcement.
+    speech_duck: f32,
     /// The recorder's copy of this block — see [`RxChain::take_rec_audio`].
     /// Independent of `main_play`/`main_play_r` once AF volume/mute (and the
     /// voice-keyer/digital-voice overrides) are applied to those.
@@ -1381,6 +1400,7 @@ fn engine_thread(
         voice_play: Vec::new(),
         main_play: Vec::new(),
         main_play_r: Vec::new(),
+        speech_duck: 1.0,
         main_play_rec: Vec::new(),
         main_play_r_rec: Vec::new(),
         tci_tx: false,
@@ -2729,6 +2749,12 @@ impl Engine {
             SetScanning(on) => self.set_scanning(on),
             ScanNext => self.scan_skip(false),
             ScanSkip => self.scan_skip(true),
+            SetAudioDuck(gain) => {
+                if let Some(mixer) = self.mixer.as_mut() {
+                    mixer.set_duck(gain);
+                }
+                self.speech_duck = gain.clamp(0.0, 1.0);
+            }
             SetRecording(on) => {
                 if on {
                     self.start_recording();
@@ -4604,7 +4630,10 @@ impl Engine {
             Some(a) => {
                 self.main =
                     Some(RxChain::new(self.state.sample_rate, &self.state.rx[0], a.out_rate));
-                self.mixer = Some(StereoMixer::new(a.producer));
+                let mut mixer = StereoMixer::new(a.producer);
+                // A swap mid-announcement must not come back at full volume.
+                mixer.set_duck(self.speech_duck);
+                self.mixer = Some(mixer);
                 self.audio_out_rate = a.out_rate;
                 self.sub = self
                     .state

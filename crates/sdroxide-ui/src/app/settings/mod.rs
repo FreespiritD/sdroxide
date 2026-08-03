@@ -40,7 +40,7 @@ use self::servers::{settings_rigctld_tab, settings_tci_server_tab, settings_wsjt
 use self::tle::settings_tle_tab;
 use self::ui_tab::settings_ui_tab;
 use crate::app::SdroxideApp;
-use crate::app::persist::persist_ui_settings;
+use crate::app::persist::{persist_speech_settings, persist_ui_settings};
 use crate::theme::ThemedScroll as _;
 
 /// Settings dialog tabs: General (station identity + audio devices), the radio
@@ -179,6 +179,15 @@ pub(in crate::app) struct SettingsIo<'a> {
     /// Whether a schedule download is in flight, and what the last one did.
     bc_fetching: bool,
     bc_status: Option<&'a Result<String, String>>,
+    /// Spoken announcements, edited in place and written back after the
+    /// window closure like every other buffer here.
+    speech_edit: &'a mut sdroxide_types::SpeechSettings,
+    /// Voices found on disk, listed once when the dialog opened.
+    speech_voices: &'a [String],
+    speech_status: &'a crate::app::speech::SpeechStatus,
+    /// The TEST button was pressed; answered after the closure, where the
+    /// announcer is reachable.
+    speech_test: &'a mut bool,
     tab: &'a mut SettingsTab,
 }
 
@@ -261,11 +270,16 @@ impl SdroxideApp {
             // client with the solar window open has a fetcher of its own, and
             // what it last did is fresher than what the engine announced.
             self.refresh_sat_sub_status();
+            // Reading a directory listing is cheap, but not per-frame cheap.
+            self.speech_voices = crate::app::speech::SpeechRuntime::voices();
             self.audio_devices_queried = true;
         }
         // Edits collected here and applied after the window closure, which
         // borrows `&self` and so can't touch `&mut self.ctrl`.
         let mut audio_pick: Option<(bool, Option<String>)> = None;
+        let mut speech_edit = self.speech.settings().clone();
+        let speech_status = self.speech.status();
+        let mut speech_test = false;
         let mut hpsdr_discover = false;
         let mut rtlsdr_rescan = false;
         let mut rx888_rescan = false;
@@ -405,6 +419,10 @@ impl SdroxideApp {
                             bc_refetch: &mut bc_refetch,
                             bc_fetching: self.broadcast_fetch.is_some(),
                             bc_status: self.broadcast_fetch_status.as_ref(),
+                            speech_edit: &mut speech_edit,
+                            speech_voices: &self.speech_voices,
+                            speech_status: &speech_status,
+                            speech_test: &mut speech_test,
                             net_sync: &mut net_sync,
                             tci_srv_edit: &mut tci_srv_edit,
                             tci_srv_apply: &mut tci_srv_apply,
@@ -611,6 +629,15 @@ impl SdroxideApp {
             self.ui_settings = ui_edit;
             persist_ui_settings(&self.ui_settings);
         }
+        if &speech_edit != self.speech.settings() {
+            // Live too: rate and volume reach the running worker, and only a
+            // change of voice or output device restarts it.
+            self.speech.set_settings(speech_edit.clone());
+            persist_speech_settings(&speech_edit);
+        }
+        if speech_test {
+            self.speech.announcer.say_sample(ctx.input(|i| i.time));
+        }
         // Written as it is typed, like the control bindings: the server rereads
         // the file for every sign-in, so there is no APPLY step to hang this
         // off. Gated on owning the server, so a remote client cannot write its
@@ -746,6 +773,18 @@ impl SdroxideApp {
                         });
                     }
                 }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                general::speech_settings(
+                    ui,
+                    io.speech_edit,
+                    io.speech_voices,
+                    self.audio_devices.as_ref().map(|d| d.outputs.as_slice()).unwrap_or(&[]),
+                    io.speech_status,
+                    io.speech_test,
+                );
 
                 if let Some(access) = io.access_edit.as_deref_mut() {
                     ui.add_space(10.0);

@@ -29,6 +29,7 @@ pub(in crate::app) mod scanner;
 pub(in crate::app) mod settings;
 pub(in crate::app) mod solar;
 pub(in crate::app) mod spectrum;
+pub(in crate::app) mod speech;
 pub(in crate::app) mod spots;
 pub(in crate::app) mod top_bar;
 pub(in crate::app) mod util;
@@ -52,7 +53,9 @@ use self::panels::decodes::DecodeSort;
 use self::panels::fsq::fsq_load_contacts;
 use self::panels::rf_paint::RfPaintUi;
 use self::panels::sstv::SstvUi;
-use self::persist::{load_broadcast_stations, load_qso_log, load_ui_settings};
+use self::persist::{
+    load_broadcast_stations, load_qso_log, load_speech_settings, load_ui_settings,
+};
 use self::settings::servers::TciServerStatus;
 use self::settings::{SatEditState, SettingsTab};
 
@@ -110,6 +113,12 @@ pub struct SdroxideApp {
     /// Display preferences (frame rate, waterfall + spectrum speed), loaded from
     /// config at startup, edited in the UI tab, persisted on change.
     ui_settings: sdroxide_types::UiSettings,
+    /// Spoken announcements: the state machine that decides what to say, and
+    /// the synthesizer that says it. Always present — switched off, it holds a
+    /// null sink and costs a comparison per event.
+    speech: speech::SpeechRuntime,
+    /// Voices found on disk, listed when the settings dialog opens.
+    speech_voices: Vec<String>,
     radio_cfg: Option<sdroxide_types::RadioConfig>,
     /// The converter offset being typed on the Radio tab, in Hz. Held apart
     /// from `radio_cfg` because every other field on that tab is written to
@@ -415,6 +424,8 @@ impl SdroxideApp {
             soapy_supported,
             settings_tab: SettingsTab::General,
             ui_settings: load_ui_settings(cc.storage),
+            speech: speech::SpeechRuntime::new(load_speech_settings(cc.storage)),
+            speech_voices: Vec::new(),
             radio_cfg: None,
             converter_edit_hz: None,
             range_edit: None,

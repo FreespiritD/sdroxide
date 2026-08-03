@@ -37,6 +37,13 @@ pub(crate) struct UiSink<'a> {
     pub spots: &'a mut bool,
     pub memories: &'a mut bool,
     pub voice: &'a mut bool,
+    /// Speech actions triggered this frame, for the caller to act on.
+    ///
+    /// Collected rather than applied here because answering them needs the
+    /// meters and the frame clock, neither of which this module has any other
+    /// reason to know about — and because the announcer is borrowed from the
+    /// same `self` this sink already has torn apart.
+    pub speech: &'a mut Vec<Action>,
 }
 
 /// Which binding table an in-flight momentary press came from. Held state is
@@ -350,6 +357,7 @@ pub(crate) fn apply_action(
         ToggleSpots => *ui.spots = !*ui.spots,
         ToggleMemories => *ui.memories = !*ui.memories,
         ToggleVoice => *ui.voice = !*ui.voice,
+        SpeakStatus | SpeakRepeat | SpeechSilence | SpeechToggle => ui.speech.push(act),
         _ => {}
     }
 }
@@ -971,7 +979,11 @@ mod tests {
     use super::*;
     use sdroxide_types::{Band, Mode};
 
-    fn sink<'a>(view: &'a mut ViewState, flags: &'a mut [bool; 6]) -> UiSink<'a> {
+    fn sink<'a>(
+        view: &'a mut ViewState,
+        flags: &'a mut [bool; 6],
+        speech: &'a mut Vec<Action>,
+    ) -> UiSink<'a> {
         let (help, rest) = flags.split_at_mut(1);
         let (settings, rest) = rest.split_at_mut(1);
         let (logbook, rest) = rest.split_at_mut(1);
@@ -985,6 +997,7 @@ mod tests {
             spots: &mut spots[0],
             memories: &mut memories[0],
             voice: &mut voice[0],
+            speech,
         }
     }
 
@@ -996,7 +1009,8 @@ mod tests {
             RadioState { vfo_a_hz: 14_074_000.0, active_vfo: Vfo::A, ..RadioState::default() };
         let mut view = ViewState::default();
         let mut flags = [false; 6];
-        let mut ui = sink(&mut view, &mut flags);
+        let mut speech_acts = Vec::new();
+        let mut ui = sink(&mut view, &mut flags, &mut speech_acts);
         let mut cmds = Vec::new();
         apply_action(
             Action::Tune,
@@ -1015,7 +1029,8 @@ mod tests {
         let mut state = RadioState { vfo_a_hz: 100.0, ..RadioState::default() };
         let mut view = ViewState::default();
         let mut flags = [false; 6];
-        let mut ui = sink(&mut view, &mut flags);
+        let mut speech_acts = Vec::new();
+        let mut ui = sink(&mut view, &mut flags, &mut speech_acts);
         let mut cmds = Vec::new();
         apply_action(
             Action::Tune,
@@ -1033,7 +1048,8 @@ mod tests {
         let mut state = RadioState::default();
         let mut view = ViewState::default();
         let mut flags = [false; 6];
-        let mut ui = sink(&mut view, &mut flags);
+        let mut speech_acts = Vec::new();
+        let mut ui = sink(&mut view, &mut flags, &mut speech_acts);
         let mut cmds = Vec::new();
         apply_action(
             Action::Ptt,
@@ -1063,7 +1079,8 @@ mod tests {
 
         let mut view = ViewState::default();
         let mut flags = [false; 6];
-        let mut ui = sink(&mut view, &mut flags);
+        let mut speech_acts = Vec::new();
+        let mut ui = sink(&mut view, &mut flags, &mut speech_acts);
         let mut cmds = Vec::new();
         apply_action(
             Action::Ptt,
@@ -1093,7 +1110,8 @@ mod tests {
         let mut state = RadioState::default();
         let mut view = ViewState::default();
         let mut flags = [false; 6];
-        let mut ui = sink(&mut view, &mut flags);
+        let mut speech_acts = Vec::new();
+        let mut ui = sink(&mut view, &mut flags, &mut speech_acts);
         let mut cmds = Vec::new();
         apply_action(
             Action::SwapVfos,
@@ -1119,7 +1137,8 @@ mod tests {
         let mut state = RadioState::default();
         let mut view = ViewState::default();
         let mut flags = [false; 6];
-        let mut ui = sink(&mut view, &mut flags);
+        let mut speech_acts = Vec::new();
+        let mut ui = sink(&mut view, &mut flags, &mut speech_acts);
         let mut cmds = Vec::new();
         apply_action(
             Action::Volume,
@@ -1141,7 +1160,8 @@ mod tests {
         let before = state.vfo_a_hz;
         let mut view = ViewState::default();
         let mut flags = [false; 6];
-        let mut ui = sink(&mut view, &mut flags);
+        let mut speech_acts = Vec::new();
+        let mut ui = sink(&mut view, &mut flags, &mut speech_acts);
         let mut cmds = Vec::new();
         apply_action(
             Action::Tune,
@@ -1162,7 +1182,8 @@ mod tests {
 
         let mut view = ViewState::default();
         let mut flags = [false; 6];
-        let mut ui = sink(&mut view, &mut flags);
+        let mut speech_acts = Vec::new();
+        let mut ui = sink(&mut view, &mut flags, &mut speech_acts);
         let mut cmds = Vec::new();
         // Squeeze far past zero width.
         for _ in 0..200 {
@@ -1195,7 +1216,8 @@ mod tests {
         let mut flags = [false; 6];
         let mut cmds = Vec::new();
         {
-            let mut ui = sink(&mut view, &mut flags);
+            let mut speech_acts = Vec::new();
+            let mut ui = sink(&mut view, &mut flags, &mut speech_acts);
             apply_action(
                 Action::FitSpan,
                 ActionInput::Press,

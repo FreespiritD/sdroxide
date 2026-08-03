@@ -91,7 +91,18 @@ sdroxide-rtlsdr.workspace = true
 sdroxide-rx888.workspace = true
 sdroxide-pluto.workspace = true
 sdroxide-ui = { workspace = true, features = ["remote"] }
-eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11", "persistence"] }
+# `accesskit` is one of eframe's defaults, and turning the defaults off
+# silently switched it back off: without it the whole widget tree is
+# invisible to NVDA, Orca and VoiceOver. It is native-only (it maps to
+# egui-winit), so it costs the browser build nothing.
+eframe = { version = "0.35.0", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "wgpu",
+    "wayland",
+    "x11",
+    "persistence",
+] }
 anyhow.workspace = true
 clap.workspace = true
 tracing.workspace = true
@@ -140,6 +151,17 @@ assets = [
     ["packaging/icons/sdroxide-256.png", "usr/share/icons/hicolor/256x256/apps/sdroxide.png", "644"],
     ["packaging/icons/sdroxide-512.png", "usr/share/icons/hicolor/512x512/apps/sdroxide.png", "644"],
     ["README.md", "usr/share/doc/sdroxide/README.md", "644"],
+    # The speech voice, for the spoken-announcement feature. A separate data
+    # file rather than something linked into the binary: it is CC BY-NC-SA,
+    # which is not a licence a GPL program may absorb, and keeping it an
+    # aggregated asset that the program merely reads is what keeps the two
+    # apart. Its notice ships alongside, like the RX-888 firmware's below.
+    ["assets/voices/en_US-hfc_female-medium.onnx", "usr/share/sdroxide/voices/", "644"],
+    ["assets/voices/en_US-hfc_female-medium.onnx.json", "usr/share/sdroxide/voices/", "644"],
+    ["assets/voices/en_US-hfc_female-medium.MODEL_CARD", "usr/share/sdroxide/voices/", "644"],
+    ["assets/voices/LICENSE-voice.txt", "usr/share/doc/sdroxide/LICENSE-voice.txt", "644"],
+    # CMUdict (BSD-2-Clause) is embedded in the binary for grapheme-to-phoneme.
+    ["crates/sdroxide-speech/assets/LICENSE-cmudict.txt", "usr/share/doc/sdroxide/LICENSE-cmudict.txt", "644"],
     # The binary embeds the RX-888's FX3 firmware image, which is MIT licensed
     # rather than GPL like the rest: its notice has to ship with the package.
     ["crates/sdroxide-rx888/firmware/LICENSE.txt", "usr/share/doc/sdroxide/LICENSE-rx888-firmware.txt", "644"],

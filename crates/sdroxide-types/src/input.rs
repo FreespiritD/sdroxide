@@ -92,6 +92,18 @@ pub enum Action {
     ToggleSpots,
     ToggleMemories,
     ToggleVoice,
+
+    // ── Spoken announcements; also client-local only ─────────────────────────
+    /// Read the whole radio out: band, frequency, mode, VFO, split, and SWR
+    /// while keyed.
+    SpeakStatus,
+    /// Say the last announcement again — for the word that was masked by a
+    /// burst of noise just as it arrived.
+    SpeakRepeat,
+    /// Stop talking now and drop whatever is queued.
+    SpeechSilence,
+    /// Announcements on/off, with a spoken confirmation either way.
+    SpeechToggle,
 }
 
 /// Whether an action is driven by a value or by a button.
@@ -130,6 +142,7 @@ impl Action {
             | ZoomOut | PeakHold | SpectrumCollapse | WaterfallFlip => "Display",
             ToggleHelp | ToggleSettings | ToggleLogbook | ToggleSpots | ToggleMemories
             | ToggleVoice => "Windows",
+            SpeakStatus | SpeakRepeat | SpeechSilence | SpeechToggle => "Speech",
         }
     }
 
@@ -189,6 +202,10 @@ impl Action {
             ToggleSpots => "Spots window",
             ToggleMemories => "Memories window",
             ToggleVoice => "Voice keyer window",
+            SpeakStatus => "Speak status",
+            SpeakRepeat => "Repeat last announcement",
+            SpeechSilence => "Stop speaking",
+            SpeechToggle => "Announcements on/off",
             VfoSelect(v) => return format!("Select VFO {}", if v == Vfo::A { "A" } else { "B" }),
             BandSelect(b) => return format!("Band {}", b.label()),
             ModeSelect(m) => return format!("Mode {}", m.label()),
@@ -276,6 +293,10 @@ impl Action {
             ToggleSpots,
             ToggleMemories,
             ToggleVoice,
+            SpeakStatus,
+            SpeakRepeat,
+            SpeechSilence,
+            SpeechToggle,
         ]);
         v
     }

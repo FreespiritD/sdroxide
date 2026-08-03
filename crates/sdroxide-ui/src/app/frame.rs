@@ -83,6 +83,10 @@ impl eframe::App for SdroxideApp {
                     // the connection dropped.
                     self.sstv.listed = false;
                     self.wefax.listed = false;
+                    // Same reasoning for speech: a reconnect must not make the
+                    // radio recite its whole configuration.
+                    self.speech.announcer.reseed();
+                    self.speech.announcer.reset_decodes();
                 }
                 RadioEvent::State(s) => {
                     let prev_vfo = self.state.active_freq_hz();
@@ -92,6 +96,12 @@ impl eframe::App for SdroxideApp {
                         self.clear_digi_rx();
                     }
                     self.recenter_if_tuned_away(prev_vfo);
+                    // The announcer diffs *this* — the engine's own snapshot —
+                    // rather than `self.state` per frame, because the UI
+                    // mutates that optimistically before the engine confirms
+                    // and the engine has the last word on where the radio
+                    // actually went.
+                    self.speech.announcer.on_state(&self.state, now);
                 }
                 RadioEvent::Spectrum(f) => {
                     self.frame = Some(std::sync::Arc::new(f));
@@ -103,12 +113,24 @@ impl eframe::App for SdroxideApp {
                 RadioEvent::WideSpectrum(f) => {
                     self.wide_frame = Some(std::sync::Arc::new(f));
                 }
-                RadioEvent::Meters(m) => self.meters = Some(m),
+                RadioEvent::Meters(m) => {
+                    self.speech.announcer.on_meters(&m, &self.state, now);
+                    self.meters = Some(m);
+                }
                 RadioEvent::Memories(m) => self.memories = m,
                 RadioEvent::Scanner(c) => self.scanner = c,
-                RadioEvent::ConnectionLost(e) => self.error = Some(e),
-                RadioEvent::Notice(n) => self.radio_notice = n,
+                RadioEvent::ConnectionLost(e) => {
+                    self.speech.announcer.on_error(&e, now);
+                    self.error = Some(e);
+                }
+                RadioEvent::Notice(n) => {
+                    self.speech.announcer.on_notice(n.as_deref(), now);
+                    self.radio_notice = n;
+                }
                 RadioEvent::Ft8Decodes(d) => {
+                    if let Some(st) = self.digi_status.as_ref() {
+                        self.speech.announcer.on_ft8(&d, st, now);
+                    }
                     // Prepend newest-slot decodes; keep a rolling window.
                     for dec in d.into_iter().rev() {
                         self.digi_decodes.insert(0, dec);
@@ -122,6 +144,7 @@ impl eframe::App for SdroxideApp {
                         self.digi_cfg_edit = s.config.clone();
                         self.digi_cfg_seeded = true;
                     }
+                    self.speech.announcer.on_digi(&s, &self.state, now);
                     self.digi_status = Some(s);
                 }
                 RadioEvent::Ft8QsoLogged(mut r) => {
@@ -303,7 +326,7 @@ impl eframe::App for SdroxideApp {
         // An open manual takes the scrolling keys before the bindings run, so
         // reading it never tunes the radio at the same time.
         self.help.grab_keys(&ctx);
-        self.control_inputs(&ctx, &mut cmds);
+        self.control_inputs(&ctx, now, &mut cmds);
         // Shutting down with a bound key, a footswitch or the compact layout's
         // PTT still held would otherwise leave the rig transmitting.
         if ctx.input(|i| i.viewport().close_requested()) {
@@ -731,6 +754,19 @@ impl eframe::App for SdroxideApp {
             cmds.push(Command::UploadQso { qso_id, adif, targets });
         }
 
+        // Run the announcer's timers after the drain, so anything a command
+        // just caused is diffed on the snapshot the engine sends back rather
+        // than on the optimistic local copy.
+        let speech_deadline = self.speech.announcer.tick(&self.state, self.meters.as_ref(), now);
+        // Attenuate the receiver while an announcement plays. Only when this
+        // client owns the engine: a remote listener taps the same mixer, and
+        // ducking their audio for speech they cannot hear would be rude.
+        if !self.ctrl.engine_is_remote()
+            && let Some(gain) = self.speech.announcer.take_duck_change()
+        {
+            self.ctrl.send(Command::SetAudioDuck(gain));
+        }
+
         for c in cmds {
             self.ctrl.send(c);
         }
@@ -754,7 +790,14 @@ impl eframe::App for SdroxideApp {
                 && now - self.last_spectrum_at < STREAM_STALE_S;
             // Floor division keeps the poll period <= the stream period, so no
             // frame is ever skipped (the spectrum buffer is latest-wins).
-            let wait_ms = if streaming { 1000 / fps } else { IDLE_POLL_MS };
+            let mut wait_ms = if streaming { 1000 / fps } else { IDLE_POLL_MS };
+            // A settle timer only fires when a frame runs. Idling at a quarter
+            // of a second would smear a 600 ms frequency settle across most of
+            // a second, so wake for it instead.
+            if let Some(at) = speech_deadline {
+                let ms = ((at - now).max(0.0) * 1000.0).ceil() as u64;
+                wait_ms = wait_ms.min(ms.max(1));
+            }
             ctx.request_repaint_after(Duration::from_millis(wait_ms));
         }
     }
@@ -851,7 +894,8 @@ impl SdroxideApp {
     /// [`crate::input::InputRuntime`]); the shipped defaults reproduce the
     /// shortcuts that used to be hardcoded here — ←/→ ±100 Hz (Shift: ±10),
     /// ↑/↓ ±1 kHz, PgUp/PgDn ±10 kHz, M mute, N noise blanker, F fit span.
-    fn control_inputs(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
+    fn control_inputs(&mut self, ctx: &egui::Context, now: f64, cmds: &mut Vec<Command>) {
+        let mut speech_acts: Vec<sdroxide_types::Action> = Vec::new();
         // Destructured rather than borrowed field-by-field: the runtime needs
         // `state` and the window flags mutably at the same time, and they are
         // disjoint parts of `self`.
@@ -875,10 +919,40 @@ impl SdroxideApp {
             spots: show_spots,
             memories: show_memories,
             voice: show_voice,
+            speech: &mut speech_acts,
         };
         input.poll_pointer_and_keys(ctx, state, &mut sink, cmds);
         #[cfg(not(target_arch = "wasm32"))]
         input.poll_midi(ctx, state, &mut sink, cmds);
+        drop(sink);
+        for act in speech_acts {
+            self.apply_speech_action(act, now);
+        }
+    }
+
+    /// Answer a speech hotkey.
+    fn apply_speech_action(&mut self, act: sdroxide_types::Action, now: f64) {
+        use sdroxide_types::Action::*;
+        match act {
+            SpeakStatus => self.speech.announcer.say_status(&self.state, self.meters.as_ref(), now),
+            SpeakRepeat => self.speech.announcer.repeat_last(now),
+            SpeechSilence => self.speech.announcer.silence(),
+            SpeechToggle => {
+                let mut cfg = self.speech.settings().clone();
+                cfg.enabled = !cfg.enabled;
+                let turning_on = cfg.enabled;
+                self.speech.set_settings(cfg.clone());
+                crate::app::persist::persist_speech_settings(&cfg);
+                // Confirm out loud when switching on; switching off is its own
+                // confirmation, and speaking after being told to stop would be
+                // a poor joke.
+                if turning_on {
+                    self.speech.announcer.say_sample(now);
+                }
+            }
+            // `apply_action` only ever collects the four above.
+            _ => {}
+        }
     }
 
     /// De-assert every held control. Closing the window while a footswitch or
@@ -904,6 +978,7 @@ impl SdroxideApp {
             spots: show_spots,
             memories: show_memories,
             voice: show_voice,
+            speech: &mut Vec::new(),
         };
         input.release_all(state, &mut sink, cmds);
     }

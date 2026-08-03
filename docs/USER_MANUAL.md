@@ -90,6 +90,12 @@ or connects to a remote sdroxide server.
   over the globe with a Kp forecast for tonight, live amateur-satellite orbits
   with click-through pass predictions, your FT8 contacts arcing between stations,
   and a propagation panel with MUF, Kp/A, F10.7 and the current GOES X-ray level.
+- **Spoken announcements:** the radio reads itself out — frequency, mode, band,
+  split, AGC, the transmit levels, band-edge warnings, the SWR while you tune up,
+  and FT8/JS8 messages addressed to you — so it can be operated without seeing
+  it. The voice ships with the program and runs on your own machine. The window
+  is also exposed to NVDA, Orca and VoiceOver. See
+  [5.1](#51-general-station-audio-and-remote-access).
 - **Remote and web operation:** run headless as a server and control it from a
   browser or from a second sdroxide instance over the network, behind a username
   and password.
@@ -1663,6 +1669,80 @@ started with `--connect`, and the 3D view's tab. See
 Like every other password sdroxide stores — the cluster login, QRZ, eQSL — it is
 kept in the clear, so `config.toml` is worth the same file permissions as the
 rest of your config directory.
+
+#### Voice announcements
+
+The last section of the General tab reads the radio out loud, so it can be
+operated without seeing it. Tick **Speak changes to the radio** to switch it on;
+it is off until you ask for it.
+
+The voice is a neural one that ships with sdroxide and runs on your own machine.
+Nothing is sent anywhere, no speech service has to be installed, and it works
+with no network at all.
+
+- **Voice** — **Shipped voice**, or any other Piper voice you have dropped into
+  `speech_voices/` in the config directory (an `.onnx` and its `.onnx.json`,
+  side by side). Changing it restarts the voice, which takes a moment.
+- **Speed** — 0.5× to 2×. The voice stretches or compresses its own phrasing
+  rather than being played faster, so the pitch does not change. Past about 2×
+  it stops getting shorter — that is a limit of the voice, not of the slider.
+- **Volume** — independent of the AF gain.
+- **Output** — which sound device announcements come out of. Because speech has
+  its own output stream it can be a *different* device from the receiver:
+  announcements in the room, the band in the headphones.
+- **Detail** — **Terse** says only what changed; **Normal** adds the numbers
+  that go with it; **Full** adds units, band segments, and the settings that
+  normally stay quiet.
+- **Duck receiver** — dip the receiver while an announcement plays, and by how
+  much. This never reaches a recording, but anyone listening to your station
+  remotely does hear the dip.
+- **Test** speaks a sample line. Beside it is the voice that loaded, or why one
+  did not.
+
+**What to announce**, the collapsing section below, is a switch per category.
+The defaults are what most operators want: frequency, mode and band, VFO and
+split, AGC, the drive/tune/mic levels, transmit and receive, RIT and XIT,
+memories and scanning, band-edge warnings, and the engine's own messages.
+Filters, squelch and noise reduction are off, because they move constantly while
+chasing a signal.
+
+Some behaviour worth knowing, because it is deliberate:
+
+- **The frequency waits for the dial to stop.** Scrolling says nothing until you
+  let go, then reads the frequency once. Spin two kilohertz up and back and it
+  stays quiet, because you settled where you already were.
+- **One button press is one phrase.** A band change moves band, frequency and
+  mode together and is read as "forty meters, seven point one zero zero, L S B",
+  not as three separate announcements.
+- **Leaving an amateur band warns once**, on the way out, and keying up outside
+  one warns immediately rather than waiting for the dial to settle.
+- **SWR is read out while TUNE is held** — every two seconds by default, with
+  the best match reached announced when you let go. A match that goes above 3:1
+  interrupts with a warning, and clears again below 2.5:1. On a rig with no SWR
+  bridge you are told so once and then left in peace.
+- **Speech stops while you transmit**, since it goes to your speakers and
+  therefore into your microphone. High-SWR warnings still get through.
+- **Decoded messages**: FT8 calls addressed to you, JS8 and FSQ messages
+  addressed to you. Ordinary CQs are not read — a busy evening on twenty metres
+  is a hundred a minute — but you can switch them on.
+- **Reading CW and RTTY aloud** is off by default. A decoder produces text
+  faster than speech reads it, so anything that falls too far behind the live
+  audio is dropped rather than queued: you hear what is being sent now, not what
+  was sent a minute ago. CW is only read while the decoder reports lock.
+
+Callsigns are read in phonetics — "kilo one alpha bravo charlie" — because a
+callsign is the one thing that must not be misheard. Frequencies are read the
+way an operator reads a dial, digit by digit after the decimal point, and always
+"zero", never "oh". Both can be changed under **How things are read**.
+
+Keys for **Speak status**, **Repeat last announcement**, **Stop speaking** and
+**Announcements on/off** are on the Controls tab
+([5.4](#54-controls-keyboard-mouse-and-midi)) under **Speech**. They have no
+defaults; bind the ones you want.
+
+sdroxide also exposes its whole window to the platform screen reader — NVDA on
+Windows, Orca on Linux, VoiceOver on macOS — so the controls can be navigated
+and read as well as heard.
 
 ### 5.2 Radio: choosing and configuring the rig
 
@@ -3854,7 +3934,7 @@ sdroxide stores its settings under the per-user config directory:
 
 | File | Format | Contents |
 | --- | --- | --- |
-| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, plus the `[ui]` display preferences and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
+| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, plus the `[ui]` display preferences, the `[speech]` announcement settings ([§5.1](#51-general-station-audio-and-remote-access)) and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
 | `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/RX-888/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
 | `digi.json` | JSON | FT8/FT4 operator settings: your callsign and grid, TX period, auto-sequence, and message templates. |
 | `memories.json` | JSON | Saved memory channels. |
@@ -3875,6 +3955,7 @@ sdroxide stores its settings under the per-user config directory:
 | `sstv_messages.json` | JSON | The overlay message stored for each of the five SSTV transmit slots. |
 | `voice_names.json` | JSON | The label given to each of the ten voice-keyer slots. |
 | `voice/` | dir | The voice-keyer recordings (`slot1.wav`…`slot10.wav`), 48 kHz mono. Drop your own WAV in to replace a message. |
+| `speech_voices/` | dir | Extra voices for the spoken announcements: a Piper `.onnx` model and its `.onnx.json` config, side by side. Absent until you create it — the shipped voice lives with the program, not here. Note this is *not* `voice/`, which is the voice keyer. |
 | `sstv_tx/` | dir | The five SSTV transmit-image slots (`slot0.png`…`slot4.png`). |
 | `sstv_rx/` | dir | Received SSTV and RIFP pictures, kept for the gallery. |
 | `wefax_rx/` | dir | Weather-fax charts received by an earlier version. Charts now go to `~/Pictures/sdroxide/wefax/`, but this is still read so an existing collection stays in the gallery. |
@@ -3987,6 +4068,17 @@ These are the **defaults**. Every one of them can be rebound — and PTT, band
 changes, filter width and much else bound to keys, mouse buttons or a MIDI
 controller — on the **Controls** tab; see [5.4](#54-controls-keyboard-mouse-and-midi).
 F1 is the exception: it always opens the manual, so it is not rebindable.
+
+The spoken-announcement actions ([5.1](#51-general-station-audio-and-remote-access))
+ship with no default keys, since any choice would take a key somebody is already
+using. Bind them under **Speech** on the Controls tab:
+
+| Action | What it does |
+| --- | --- |
+| Speak status | Reads the whole radio out: band, frequency, mode, VFO, split, and the SWR while keyed. |
+| Repeat last announcement | Says the last one again — for the word that a burst of noise landed on. |
+| Stop speaking | Stops mid-sentence and drops whatever is queued. |
+| Announcements on/off | The master switch, confirmed out loud when switching on. |
 
 ### Modes
 

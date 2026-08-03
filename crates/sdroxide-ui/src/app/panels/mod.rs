@@ -239,6 +239,11 @@ impl SdroxideApp {
         // The Hell raster is a continuous strip with no frame boundary, so
         // leaving it up across a mode change would splice unrelated text.
         self.hell.clear();
+        // The read-along stream anchors on the buffer it was last reading; a
+        // new mode fills that buffer with something unrelated, and without a
+        // re-anchor the first snapshot after the change would be read out from
+        // the beginning.
+        self.speech.announcer.reset_text();
     }
 
     /// The chips a phone switches the panel's views with, plus the one reading

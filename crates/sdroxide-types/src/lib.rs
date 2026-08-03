@@ -30,6 +30,7 @@ mod satcfg;
 mod scanner;
 mod skimmer;
 mod spectrum;
+mod speech;
 mod spot;
 mod sstv;
 mod state;
@@ -113,6 +114,10 @@ pub use satcfg::{
 pub use scanner::{SCAN_STEPS_HZ, ScanKind, ScanResume, ScanState, ScannerConfig};
 pub use skimmer::{SkimmerKind, SkimmerSettings, SkimmerSpot};
 pub use spectrum::{SpectrumConfig, SpectrumFrame};
+pub use speech::{
+    CallsignStyle, CategoryFlags, DecodeSpeech, FreqStyle, SpeechSettings, TextSpeech, TuneSpeech,
+    Verbosity,
+};
 pub use spot::{Spot, SpotKind};
 pub use sstv::{SstvMode, SstvStatus};
 pub use state::{

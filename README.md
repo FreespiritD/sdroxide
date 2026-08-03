@@ -84,6 +84,15 @@ One binary, three ways to run it:
   PTT and band buttons, faders as gain controls, with LED/motor feedback. Mouse
   buttons take bindings too (a side button held for PTT works as a footswitch),
   and the panadapter wheel can zoom or tune.
+- **Spoken announcements** — the radio reads itself out, for operating it
+  without seeing it. A neural voice ships with the program and runs locally, so
+  nothing is sent anywhere and no speech service has to be installed. It reads
+  the frequency once the dial stops moving, folds a band change into one phrase,
+  warns when you leave an amateur band, reads the SWR out while you tune up
+  (with a warning above 3:1), and announces FT8/JS8 messages addressed to you.
+  Announcements play on their own sound device, so they are never recorded and
+  never sent to a remote listener. The window is also exposed to NVDA, Orca and
+  VoiceOver.
 - **Persistence** — device, rates, gains, memories, band stacks, the FT8/FT4
   operator profile, network/QSL credentials, control bindings, and the logbook
   are all stored under `~/.config/sdroxide/`.

@@ -1,0 +1,65 @@
+[package]
+name = "sdroxide-speech"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sdroxide-types.workspace = true
+serde.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+
+# ── `synth` only ────────────────────────────────────────────────────────────
+# Everything below is optional and gated behind the `synth` feature. The
+# default build is the pure core, which must compile for wasm32 because
+# sdroxide-ui depends on this crate unconditionally; cpal and a 60 MB model
+# have no business on that path.
+#
+# Pure-Rust ONNX inference for the Piper voice — same reasoning as the
+# DeepFilterNet3 denoiser in sdroxide-dsp: no ONNX Runtime, no C, nothing for
+# the operator to install. A different runtime from tract because deep_filter
+# pins tract at 0.19 and this graph needs a current one.
+# `random` is not optional in practice: VITS samples noise in its stochastic
+# duration predictor (RandomNormalLike), and without it the model refuses to
+# load. `mmap` keeps the 60 MB of weights out of the resident set.
+rten = { version = "0.25", optional = true, features = ["mmap", "random"] }
+rten-tensor = { version = "0.25", optional = true }
+# The voice's .onnx.json: phoneme_id_map, sample rate, inference scales.
+serde_json = { version = "1", optional = true }
+# Grapheme-to-phoneme. eSpeak-free (CMUdict + ARPAbet -> IPA) and pure Rust, so
+# the speech path needs no system library. English only: the announcements are
+# English and each extra language carries its own dictionary.
+piper-plus-g2p = { version = "0.4", optional = true, default-features = false, features = [
+    "english",
+] }
+# Speech gets its own output stream rather than being mixed into the radio
+# audio, so it never reaches the MP3 recorder or a remote listener.
+sdroxide-audio = { workspace = true, optional = true }
+# 22050 Hz model output -> whatever rate the sound card actually gave us.
+sdroxide-dsp = { workspace = true, optional = true }
+rtrb = { workspace = true, optional = true }
+crossbeam-channel = { workspace = true, optional = true }
+
+[dev-dependencies]
+hound = "3"
+tracing-subscriber.workspace = true
+
+[features]
+# The pure core: text normalisation, the announcement state machine and the
+# priority queue. No audio, no model, no I/O — which is what lets
+# `cargo test -p sdroxide-speech` run the whole risk surface in seconds.
+default = []
+synth = [
+    "dep:rten",
+    "dep:rten-tensor",
+    "dep:serde_json",
+    "dep:piper-plus-g2p",
+    "dep:sdroxide-audio",
+    "dep:sdroxide-dsp",
+    "dep:rtrb",
+    "dep:crossbeam-channel",
+]
+
+[[example]]
+name = "say"
+required-features = ["synth"]

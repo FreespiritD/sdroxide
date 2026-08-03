@@ -375,4 +375,14 @@ pub enum Command {
     /// Leave it and don't stop here again: adds the memory to the skip list, or
     /// the frequency to the range scan's.
     ScanSkip,
+
+    /// Attenuate receiver audio to `gain` (0.0..=1.0) while a local spoken
+    /// announcement plays, and back to 1.0 when it finishes. Appended for the
+    /// usual reason: postcard numbers variants by position.
+    ///
+    /// The speaker path only — the recording tap is left alone, so a duck never
+    /// appears in an MP3. It does reach anyone listening remotely, since they
+    /// tap the same mixer; the client therefore sends this only when it owns
+    /// the engine rather than when it is somebody else's remote.
+    SetAudioDuck(f32),
 }
