@@ -28,6 +28,8 @@ pub mod squelch;
 pub mod sstv_controller;
 pub mod text_modem;
 pub mod wefax_controller;
+pub mod wspr;
+pub mod wspr_controller;
 
 pub use clock::ClockMonitor;
 pub use controller::{DigiAction, DigiController};
@@ -46,6 +48,7 @@ pub use scheduler::SlotScheduler;
 pub use sstv_controller::SstvController;
 pub use text_modem::TextModemController;
 pub use wefax_controller::WefaxController;
+pub use wspr_controller::WsprController;
 
 use std::time::SystemTime;
 
@@ -182,6 +185,8 @@ mod dispatch_tests {
             "text"
         } else if mode.is_js8() {
             "js8"
+        } else if mode.is_wspr() {
+            "wspr"
         } else {
             "ft8"
         }
@@ -193,6 +198,10 @@ mod dispatch_tests {
         // branch hands it an FT8 decoder and nothing downstream notices — no
         // error, no log line, just a receiver listening for another protocol.
         assert_eq!(pick(Mode::Js8), "js8");
+        // WSPR is the same trap as JS8, and worse: it is slotted, it is 4-FSK
+        // in the same passband, and a controller handed FT8's decoder would sit
+        // there finding nothing for ever without a word.
+        assert_eq!(pick(Mode::Wspr), "wspr");
         assert_eq!(pick(Mode::Ft8), "ft8");
         assert_eq!(pick(Mode::Ft4), "ft8");
         assert_eq!(pick(Mode::Fsq), "fsq");

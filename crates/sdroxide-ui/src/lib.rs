@@ -21,6 +21,7 @@ mod input;
 pub mod layout;
 mod login;
 mod login_globe;
+mod prop_map;
 #[cfg(feature = "remote")]
 mod remote;
 mod rf_paint;

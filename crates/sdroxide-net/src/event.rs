@@ -18,6 +18,14 @@ pub enum NetEvent {
     Upload(UploadResult),
     /// Parsed confirmation records downloaded from LoTW/eQSL.
     Confirmations(Vec<QsoRecord>),
+    /// WSPR reception reports fetched from WSPRnet — normally reports of *our*
+    /// own transmissions, which is the only feedback a beacon ever gets.
+    ///
+    /// Not folded into [`NetEvent::Spots`]: a WSPR report carries a power level,
+    /// a drift and a reporter, and flattening it into a cluster-style
+    /// [`Spot`] would discard exactly the fields that make it a measurement of a
+    /// path rather than an invitation to work someone.
+    WsprSpots(Vec<sdroxide_types::WsprSpot>),
 }
 
 /// A feed thread's full current view of its own spots (replaces the prior set

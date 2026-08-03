@@ -1067,6 +1067,37 @@ impl SdroxideApp {
                     ui.add(egui::DragValue::new(age).range(60..=7200));
                 });
 
+                net_heading(ui, "WSPRnet");
+                ui.checkbox(&mut io.net_edit.wspr.upload, "Upload my WSPR decodes").on_hover_text(
+                    "Send every WSPR reception to wsprnet.org. On by default: it puts \
+                         nothing on the air, and reporting what you hear is what makes a WSPR \
+                         receiver part of the network rather than a private curiosity. A slot \
+                         that decoded nothing is reported too, which is how the network tells a \
+                         shut band from a receiver that was switched off.",
+                );
+                ui.checkbox(&mut io.net_edit.wspr.download_heard_us, "Download who heard me")
+                    .on_hover_text(
+                        "Ask wsprnet.org which stations decoded this one. WSPR has no \
+                         acknowledgement of any kind, so this is the only way a transmitting \
+                         beacon learns anything about its own reach.",
+                    );
+                if io.net_edit.wspr.download_heard_us {
+                    ui.horizontal(|ui| {
+                        ui.add_sized([96.0, 22.0], egui::Label::new("Ask every"));
+                        ui.add(
+                            egui::DragValue::new(&mut io.net_edit.wspr.download_interval_secs)
+                                .range(60..=3600)
+                                .suffix(" s"),
+                        );
+                        ui.add_sized([56.0, 22.0], egui::Label::new("looking back"));
+                        ui.add(
+                            egui::DragValue::new(&mut io.net_edit.wspr.download_window_min)
+                                .range(2..=180)
+                                .suffix(" min"),
+                        );
+                    });
+                }
+
                 ui.add_space(8.0);
                 if crate::chrome::chip_accent(
                     ui,

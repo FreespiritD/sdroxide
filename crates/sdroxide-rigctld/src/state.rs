@@ -121,6 +121,7 @@ pub fn to_hamlib_mode(m: Mode) -> &'static str {
         Mode::Rtty => "RTTY",
         Mode::Ft8
         | Mode::Js8
+        | Mode::Wspr
         | Mode::Ft4
         | Mode::Psk
         | Mode::Sstv

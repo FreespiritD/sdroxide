@@ -69,6 +69,19 @@ pub enum DigiAction {
     /// framing. `seq` is the absolute column index, which is how the panel tells
     /// a dropped batch (leave a gap) from a restarted receiver (clear).
     HellColumns { seq: u64, rows: u8, cols: Vec<u8> },
+    /// WSPR: what a completed two-minute slot decoded.
+    ///
+    /// Not `Decodes`: a WSPR reception is a measurement of a path, not a
+    /// message addressed to anyone, and the transmit power and drift that make
+    /// it one have nowhere to live in a [`Decode`].
+    WsprSpots(Vec<sdroxide_types::WsprSpot>),
+    /// WSPR band hopping: put the dial here for the slot now starting.
+    ///
+    /// A request, not an instruction. The engine owns the VFO and refuses when
+    /// it is transmitting, when the device cannot reach the frequency, or when
+    /// the operator has a hand on the tuning — a beacon and its operator
+    /// fighting over the dial is the failure this must not have.
+    SetDial(f64),
     /// RADE: a remote station's callsign, recovered from its End-of-Over frame,
     /// with the SNR at the end of the over and the dial it was heard on.
     ///

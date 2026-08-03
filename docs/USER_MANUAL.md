@@ -14,7 +14,7 @@ or connects to a remote sdroxide server.
 
 1. [Feature overview](#1-feature-overview)
 2. [Basic operation](#2-basic-operation)
-3. [Digital modes (FT8, FT4, PSK31, RTTY, Olivia, THOR, FSQ, Hellschreiber, SSTV, RIFP, weather fax, RF Paint)](#3-digital-modes)
+3. [Digital modes (FT8, FT4, PSK31, RTTY, Olivia, THOR, FSQ, Hellschreiber, SSTV, RIFP, weather fax, RF Paint, WSPR)](#3-digital-modes)
 4. [Skimmers (CW, PSK, RTTY)](#4-skimmers)
 5. [Settings](#5-settings)
 6. [Solar system 3D view](#6-solar-system-3d-view)
@@ -639,7 +639,9 @@ you transmit composed images (3.10). **RIFP** carries pictures as numbered,
 checksummed packets over its own FSK modem rather than as an analogue scan, and
 is the one mode here that is not single sideband (3.11). **RF Paint** is a
 transmit-only mode that draws text and pictures directly onto the far station's
-waterfall (3.12).
+waterfall (3.12). **WSPR** is not a QSO mode at all — it is a beacon that
+measures propagation, and what it produces is a list of paths rather than
+contacts (3.15).
 
 ### 3.1 Entering the mode
 
@@ -1515,6 +1517,161 @@ and **Abort** stops it immediately. RF Paint goes through the normal transmit pa
 so the ham-band lockout and the usual transmit safety still apply. Because it is
 transmit-only, RF Paint receives nothing — you read other stations' paintings on
 your own waterfall like any other signal.
+
+---
+
+### 3.15 WSPR (Weak Signal Propagation Reporter)
+
+Choose **WSPR** from the DIGITAL row. This is the one mode here that is not
+trying to make a contact. A WSPR transmission is 110.6 seconds of four-tone FSK
+six hertz wide, carrying a callsign, a four-character grid and a power level and
+nothing else, sent in a two-minute slot. It decodes about ten decibels below
+FT8 — well under the noise — and what comes out of it is a measurement of a
+path, not a message anybody sent you.
+
+The dial goes to the band's WSPR frequency (14.095 600 MHz on 20 m, and so on);
+every transmission in the world sits in the 200 Hz window 1400–1600 Hz above it.
+The receiver's passband is narrowed to that window on purpose: with signals this
+weak, letting the QRSS beacons just below it work the AGC would cost you
+decodes.
+
+#### Receiving
+
+The **SPOTS** pane lists receptions, newest first, with the world map under it:
+
+| Column | What it is |
+| --- | --- |
+| `←` / `→` | `←` a beacon this station decoded; `→` a station that decoded *this* one |
+| Callsign, grid | The far end of the path |
+| km | Great-circle distance from your locator |
+| dB | Signal-to-noise in a 2500 Hz bandwidth, as WSPR reports it |
+| power | What the beacon declared it was radiating |
+
+The report colours are WSPR's own scale, not FT8's: green above −10 dB, cyan to
+−20, yellow to −26, and pink below that — because −25 dB here is a perfectly
+good path rather than a marginal one.
+
+A slot takes seconds of work to decode, so the status pane says **decoding…**
+rather than leaving you to wonder whether the band is shut.
+
+#### Transmitting
+
+Off until you ask for it: selecting a mode is not consent to put a carrier on
+the air. On the **WSPR Setup** page:
+
+- **Transmit** — the fraction of slots this station beacons in. **20%** is the
+  convention: enough to be heard, sparse enough that a hundred beacons can share
+  two hundred hertz. The slots are chosen from your callsign, so two stations
+  running sdroxide do not pick the same ones.
+- **Power** — what you actually radiate. Only the nineteen levels the message can
+  express are offered, because everyone who hears you uses this number to judge
+  the path: an optimistic figure here makes *their* measurements wrong too, not
+  just yours.
+- **Transmit frequency** — moves within the window on every transmission by
+  default, which is what makes 200 Hz shared by everybody work.
+
+WSPR's message carries a plain callsign and a 4-character locator and has room
+for nothing else, so a compound call (`PJ4/K1ABC`) or a 6-character grid cannot
+be transmitted. The setup page says so where you type it rather than silently
+sending something that is not your station. Receiving is unaffected — all three
+message types decode.
+
+One receive limitation worth knowing: a **Type-3** message spends its callsign
+field on a 15-bit hash so it can carry a six-character grid instead of four.
+That hash is not invertible, and sdroxide cannot currently compute it either, so
+such a station is listed as `<#0a3f7>` rather than by name. Its **grid arrives
+in the clear**, so the path is real, the map places it and the propagation heat
+map counts it — only the name is missing. Those spots are deliberately *not*
+uploaded to WSPRnet: posting a placeholder would put a station that does not
+exist into a database everybody reads.
+
+#### Band hopping
+
+**BAND HOP** moves the dial from band to band between slots, so one receiver
+samples the whole spectrum instead of one slice of it. Pick which bands the
+cycle visits on the setup page. Turning the VFO yourself pauses it and says so —
+a beacon and its operator fighting over the dial is the one thing this must not
+do — and applying the setup again resumes it. It never moves under a
+transmission, and a band the radio cannot reach is skipped silently.
+
+#### WSPRnet
+
+- **UPLOAD** sends what you decode to <https://wsprnet.org>. On by default: it
+  puts nothing on the air, and reporting what you hear is what makes a WSPR
+  receiver part of the network rather than a private curiosity. A slot that
+  decoded nothing is reported too, which is how the network tells a shut band
+  from a receiver that was switched off.
+- **WHO HEARD ME** polls wsprnet.org for reports of your own callsign. WSPR has
+  no acknowledgement of any kind, so this is the only way a beacon learns
+  anything about its own reach. Those reports appear in the list with a `→` and
+  place the *reporter* on the map — the far end of the path, which is the end
+  worth drawing.
+
+Both are on the **Spots** tab of the Settings dialog as well as the panel, and
+both use the callsign and grid from the General tab.
+
+---
+
+### 3.16 The propagation heat map
+
+Everything this station hears is evidence about the ionosphere, and it is all
+pooled into one picture: WSPR both ways, FT8/FT4 and JS8 decodes, and the
+logbook. The **PROP** layer on the [3D globe](#6-solar-system-3d-view) draws it,
+and the **PROP** chip above the flat map in the operating panel draws the same
+thing under the panel map.
+
+**What a bright patch means.** Each reception is placed at the **midpoint of its
+path** — the patch of ionosphere that bent the signal — and not at the far
+station. That is the whole design: a map of remote stations would tell you where
+radio amateurs live, which you already know. This tells you where the sky is
+working. A path longer than about 3000 km came down and went up again, so it
+gets a control point per hop.
+
+**Two displays:**
+
+- **ALL BANDS** gives each band its own hue and mixes them where two overlap, so
+  a patch that is open on both 20 m and 10 m reads as a blend rather than as
+  whichever band happened to win. This is the "what are conditions like" view and
+  it needs no configuration.
+- **ONE BAND** runs a single band through a blue → green → yellow → red ramp.
+
+**Signal reports are made comparable before they are pooled.** WSPR, FT8, FT4 and
+JS8 all quote SNR in a 2500 Hz bandwidth, but their decode floors are ten
+decibels apart — so what is stored is the margin above each mode's *own* floor.
+Without that, the most sensitive mode on the band would paint as the worst
+propagation on it. WSPR also declares its transmit power, so a 200 mW beacon is
+credited for the power it did not use. A logged QSO contributes a path and **no
+signal report at all**: an RST is not an SNR, and it counts towards how busy a
+cell is without ever moving its average.
+
+**Memory.** An observation's contribution halves every 45 minutes by default
+(adjustable in the PROP menu). The ionosphere's own memory is short, and an
+opening from two hours ago should not be arguing with one from two minutes ago.
+
+**What it cannot show.** Only paths this station has been one end of. Oceans
+light up because the midpoints of long paths fall there, which is the single
+biggest thing this adds to an ionosonde map — but Antarctica stays dark because
+nobody is transmitting from it. The legend gives the absolute path count the
+brightest cell stands for, so the colours are never relative without saying so.
+
+**The `HEARD ≥` row.** The globe's propagation panel gains a line under the
+ionosonde MUF: the highest frequency that has demonstrably got through near your
+QTH, normalised to a 3000 km path so short and long paths are comparable. It is
+a **floor**, not an estimate — the signal got through, so the ionosphere was at
+least this good; how much better is exactly what a reception report cannot say,
+because nobody transmits on the frequencies that would have failed. A cell needs
+two independent paths before it will claim anything, and paths under 300 km are
+excluded because they may never have touched the ionosphere at all.
+
+The two numbers sit together because they fail in opposite directions: the
+sounder is a real measurement with dreadful spatial coverage, and this covers the
+oceans but only bounds. When the observation is above the sounder, the panel says
+so — *the band is better than modelled* is the most actionable thing either
+number can tell you.
+
+The heat map is also relayed to the [browser's 3D tab](#8-web-operation), unlike
+the awards layer: it is live data about the station's own conditions, which is
+what that relay is for.
 
 ---
 
@@ -2456,6 +2613,19 @@ filters, the world map — is [§9.1](#91-spot-feeds-dx-cluster-pota-sota-psk-re
 FreeDV Reporter is a spot source too, but has its own tab —
 [5.6](#56-freedv-freedv-reporter).
 
+
+**WSPRnet.** Two independent halves, both using the callsign and grid from the
+General tab:
+
+- **Upload my WSPR decodes** — on by default. Every reception goes to
+  wsprnet.org, and so does a slot that decoded nothing, which is how the network
+  distinguishes a shut band from a receiver that was switched off. This puts
+  nothing on the air.
+- **Download who heard me** — off by default, because it is a poll of somebody
+  else's server on a timer. Turn it on and reports of your own callsign appear in
+  the WSPR panel with a `→`, and their reporters go on the map. See
+  [§3.15](#315-wspr-weak-signal-propagation-reporter).
+
 ### 5.6 FreeDV: FreeDV Reporter
 
 ![The FreeDV tab: FreeDV Reporter station, server and reporting settings](images/settings-freedv.jpg)
@@ -2859,9 +3029,11 @@ Switching the `QSO` layer off leaves AUTO on its normal loop.
 
 **Layers** — `ORBITS` (orbital paths, sampled from the real ephemeris, so they
 are the true eccentric orbits), `CLOUDS`, `PLANETS`, `CME`, `SUN OBS`, `LABELS`,
-`SMALL BODIES`, `QSO`, `SATS`, `AURORA` and `AWARDS`. All but `AWARDS` are on to
-begin with — that one puts a marker on all three hundred-odd DXCC entities, so
-it waits until you ask for it.
+`SMALL BODIES`, `QSO`, `SATS`, `AURORA`, `PROP` and `AWARDS`. All but `PROP` and
+`AWARDS` are on to begin with — those two each paint the whole planet (one with a
+marker on all three hundred-odd DXCC entities, the other with a wash of colour),
+so they wait until you ask for them. Switching either on stands the other down,
+because two full-globe washes at once is neither.
 
 `SUN OBS` is solar *observations* on the Sun's disk: the sunspot active regions
 and the flare source locations, which used to be two buttons and are one idea.
@@ -3196,6 +3368,14 @@ globe then is the hour being replayed, not the present, and the two are not
 mixed. The history is kept only while sdroxide runs, so a fresh start begins
 with an empty hour that fills as the decodes come in.
 
+**The PROP layer** paints the propagation heat map on the globe — where signals
+are actually getting through, band by band, from every mode this station runs.
+[§3.16](#316-the-propagation-heat-map) explains what a bright patch means and why
+it is placed where it is; the `PROP` chip in the menu bar picks between the
+all-bands and single-band displays, chooses which sources feed it, and sets how
+long it remembers. Its own `MUF` counterpart, the `HEARD ≥` row, appears in the
+propagation panel described below.
+
 **The AWARDS layer** paints your logbook's DXCC coverage on the Earth as a map
 of what is *missing*. Every entity in the bundled country file gets a marker at
 its nominal centre: orange and slowly breathing where you have never worked it,
@@ -3249,6 +3429,7 @@ that the time displayed is not the current real time.
 | Row | What it is |
 | --- | --- |
 | `MUF` | Maximum usable frequency for a 3000 km path near your QTH, interpolated from the ionosonde network. Green above 24 MHz, cyan above 14, yellow below. |
+| `HEARD ≥` | The highest frequency that has demonstrably got through near your QTH, from what this station has actually decoded, normalised to a 3000 km path. A **floor**, not an estimate — see [§3.16](#316-the-propagation-heat-map). Only appears once two independent paths agree. |
 | `Kp / A` | Planetary geomagnetic indices. Green when quiet, yellow from Kp 4, pink from Kp 5 (a storm — polar paths degrade and aurora becomes possible). |
 | `F10.7` | 10.7 cm solar radio flux in solar flux units, the standard proxy for ionisation. Under about 90 the high bands stay shut; over 150 they open up. |
 | `X-ray` | Current GOES soft X-ray class. Turns pink at M class and above, which is when the D layer starts absorbing HF on the daylit side. |
@@ -3936,12 +4117,12 @@ sdroxide stores its settings under the per-user config directory:
 | --- | --- | --- |
 | `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, plus the `[ui]` display preferences, the `[speech]` announcement settings ([§5.1](#51-general-station-audio-and-remote-access)) and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
 | `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/RX-888/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
-| `digi.json` | JSON | FT8/FT4 operator settings: your callsign and grid, TX period, auto-sequence, and message templates. |
+| `digi.json` | JSON | Digital-mode operator settings: your callsign and grid, FT8/FT4 TX period, auto-sequence and message templates, and the WSPR beacon's duty cycle, power and band-hop list. |
 | `memories.json` | JSON | Saved memory channels. |
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |
 | `session.json` | JSON | Where you left the radio: the dial frequency, the mode and the RX/TX antenna ports, restored the next time you start. Written by the engine as you tune, so `--freq`, `--mode`, `--antenna` and `--tx-antenna` override it for a run without changing it. |
 | `qso_log.json` | JSON | The logbook (digital and manual QSOs, with contest/QSL fields). |
-| `net.json` | JSON | Network cockpit: DX cluster / POTA / SOTA / PSK / FreeDV Reporter feed settings, and callsign-lookup / eQSL / QRZ / Club Log / LoTW credentials (stored in plaintext). |
+| `net.json` | JSON | Network cockpit: DX cluster / POTA / SOTA / PSK / FreeDV Reporter / WSPRnet feed settings, and callsign-lookup / eQSL / QRZ / Club Log / LoTW credentials (stored in plaintext). |
 | `tciserver.json` | JSON | Built-in TCI server: enabled, bind address, port, advertised device name, whether clients may transmit, and the client limit. |
 | `rigctld.json` | JSON | Built-in Hamlib rigctld server: enabled, bind address, port, reported rig name, whether clients may transmit, and the client limit. |
 | `wsjtx.json` | JSON | WSJT-X UDP broadcast: enabled, destination host and port, and the name clients see. |
@@ -4094,6 +4275,7 @@ using. Bind them under **Speech** on the Controls tab:
 | SPEC | Spectrum only (no demodulation). |
 | FT8 / FT4 | Automatic digital modes with decoding, QSO sequencing, and logging. |
 | JS8 | JS8 — conversational messaging on FT8's waveform. Four speeds (Normal 15 s / Fast 10 s / Turbo 6 s / Slow 30 s); directed queries, heartbeats and multi-frame free text. |
+| WSPR | Weak Signal Propagation Reporter — a two-minute beacon carrying a callsign, grid and power. Not a QSO mode: it measures paths, uploads them to WSPRnet, and feeds the propagation heat map. See [3.15](#315-wspr-weak-signal-propagation-reporter). |
 | PSK | PSK31 keyboard mode (BPSK31 / varicode). |
 | RTTY | RTTY keyboard mode (Baudot; selectable shift and baud). |
 | OLIVIA | Robust MFSK keyboard mode (selectable tones/bandwidth). |

@@ -18,7 +18,7 @@
 //! That is the same shape as [`crate::pump`], for the same reason.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -64,6 +64,8 @@ pub(crate) struct SolarLatest {
     /// The operator's satellite frequency overrides, likewise from the radio
     /// side: they are part of the station config the engine announces.
     pub sat_freqs: Option<SolarServerMsg>,
+    /// The propagation field, likewise built from what the radio decodes.
+    pub prop: Option<SolarServerMsg>,
 }
 
 impl SolarLatest {
@@ -76,6 +78,7 @@ impl SolarLatest {
             &self.events,
             &self.digi,
             &self.decodes,
+            &self.prop,
             &self.sat_freqs,
             &self.tles_amateur,
             &self.tles_geo,
@@ -126,6 +129,7 @@ impl SolarLatest {
             SolarServerMsg::Digi { .. } => &mut self.digi,
             SolarServerMsg::Decodes(_) => &mut self.decodes,
             SolarServerMsg::SatFreqs(_) => &mut self.sat_freqs,
+            SolarServerMsg::Propagation { .. } => &mut self.prop,
             // Per-connection handshake traffic is not part of a snapshot.
             SolarServerMsg::HelloAck { .. }
             | SolarServerMsg::Error(_)
@@ -139,10 +143,25 @@ impl SolarLatest {
     }
 }
 
+/// How often the propagation field is relayed, at most.
+///
+/// It is a few hundred kilobytes of grid and it moves on every decode; a
+/// viewer needs it to be roughly current, not to the second. Thirty seconds is
+/// well inside the field's own 45-minute memory.
+const PROP_RELAY_INTERVAL: Duration = Duration::from_secs(30);
+
 /// The viewer registry and the feed it keeps alive.
 pub(crate) struct SolarHub {
     tx: broadcast::Sender<Arc<SolarServerMsg>>,
     pub latest: Mutex<SolarLatest>,
+    /// The propagation field, folded from the decodes that pass through this
+    /// server.
+    ///
+    /// Built here rather than relayed from a client: the solar tab has its own
+    /// socket and no logbook, no decode window and no operator identity of its
+    /// own, so the only place that can turn a stream of decodes into a field is
+    /// the station itself.
+    prop: Mutex<(sdroxide_types::PropStore, Option<Instant>)>,
     /// Guards the feed handle and the viewer count together: they change as one
     /// (first viewer starts, last viewer stops) and must never disagree.
     feed: Mutex<FeedState>,
@@ -169,6 +188,7 @@ impl Default for SolarHub {
         SolarHub {
             tx: broadcast::channel(BROADCAST_CAP).0,
             latest: Mutex::new(SolarLatest::default()),
+            prop: Mutex::new((Default::default(), None)),
             feed: Mutex::new(FeedState {
                 viewers: 0,
                 feed: None,
@@ -189,6 +209,59 @@ impl SolarHub {
         self.latest.lock().unwrap().record(&msg);
         // An error here only means nobody is watching.
         let _ = self.tx.send(Arc::new(msg));
+    }
+
+    /// Fold decodes into the propagation field, relaying it if it is due.
+    ///
+    /// `grid` is the operator's own locator, without which there is no path to
+    /// speak of; the store forgets everything if it changes, which is what
+    /// keeps a field of paths from an address the station has left off the map.
+    pub(crate) fn observe_decodes(
+        &self,
+        decodes: &[sdroxide_types::Decode],
+        source: sdroxide_types::PropSource,
+        dial_hz: f64,
+        grid: &str,
+        now_utc: i64,
+    ) {
+        let mut g = self.prop.lock().unwrap();
+        g.0.set_home(grid);
+        g.0.observe_decodes(decodes, source, dial_hz, grid, now_utc);
+        self.relay_prop(&mut g, now_utc);
+    }
+
+    /// The same for WSPR receptions.
+    pub(crate) fn observe_wspr(
+        &self,
+        spots: &[sdroxide_types::WsprSpot],
+        grid: &str,
+        now_utc: i64,
+    ) {
+        let mut g = self.prop.lock().unwrap();
+        g.0.set_home(grid);
+        g.0.observe_wspr(spots, grid, now_utc);
+        self.relay_prop(&mut g, now_utc);
+    }
+
+    /// Send the field on, no more often than [`PROP_RELAY_INTERVAL`].
+    fn relay_prop(&self, g: &mut (sdroxide_types::PropStore, Option<Instant>), now_utc: i64) {
+        let due = g.1.is_none_or(|t| t.elapsed() >= PROP_RELAY_INTERVAL);
+        if !due {
+            return;
+        }
+        let field = g.0.field(now_utc);
+        // Only the live bands: a station on one band sends one plane rather
+        // than fourteen, thirteen of them empty.
+        let planes: Vec<(u8, sdroxide_types::BandPlane)> = sdroxide_types::Band::ALL
+            .iter()
+            .enumerate()
+            .filter_map(|(i, b)| field.plane(*b).map(|p| (i as u8, p.clone())))
+            .collect();
+        g.1 = Some(Instant::now());
+        if planes.is_empty() {
+            return;
+        }
+        self.publish(SolarServerMsg::Propagation { halflife_s: field.halflife_s, planes });
     }
 
     fn send_cmd(&self, cmd: FeedCmd) {

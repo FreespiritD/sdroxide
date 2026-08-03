@@ -1002,6 +1002,7 @@ impl DigiEngine for Js8Controller {
             call_queue: Vec::new(),
             clock_offset_s: self.clock.offset_s(),
             cw: None,
+            wspr: None,
         }
     }
 }

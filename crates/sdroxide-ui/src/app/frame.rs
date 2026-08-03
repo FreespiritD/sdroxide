@@ -137,6 +137,20 @@ impl eframe::App for SdroxideApp {
                     }
                     self.digi_decodes.truncate(200);
                 }
+                RadioEvent::WsprSpots(s) => {
+                    // Newest first, and de-duplicated against what is already
+                    // held: the same reception arrives twice whenever a slot we
+                    // decoded ourselves also comes back from WSPRnet, and two
+                    // rows for one beacon reads as the mode double-counting.
+                    for spot in s.into_iter().rev() {
+                        let key = spot.dedup_key();
+                        if self.wspr_spots.iter().any(|e| e.dedup_key() == key) {
+                            continue;
+                        }
+                        self.wspr_spots.insert(0, spot);
+                    }
+                    self.wspr_spots.truncate(crate::app::panels::wspr::WSPR_SPOT_ROWS);
+                }
                 RadioEvent::Ft8Status(s) => {
                     // Seed the editable config from the engine's persisted
                     // value once (later edits are UI-owned so typing sticks).
@@ -587,6 +601,8 @@ impl eframe::App for SdroxideApp {
                                     self.text_modem_panel(ui, &mut cmds, panel_h);
                                 } else if mode.is_js8() {
                                     self.js8_panel(ui, &mut cmds, panel_h);
+                                } else if mode.is_wspr() {
+                                    self.wspr_panel(ui, &mut cmds, panel_h);
                                 } else {
                                     self.digi_panel(ui, &mut cmds);
                                 }
@@ -728,7 +744,22 @@ impl eframe::App for SdroxideApp {
             // Only while the window is open: walking the whole logbook is not
             // free, and the closed window has nothing to paint it on.
             let awards = if self.solar.open { self.award_heat() } else { Default::default() };
-            self.solar.viewport(&ctx, &grid, traffic, awards, std::sync::Arc::clone(&self.sat_cfg));
+            // Same reasoning: the field is aged when it is read, and a closed
+            // window has nothing to age it for. The evidence itself keeps
+            // accumulating either way — it is fed from the panels, not here.
+            let prop = if self.solar.open {
+                self.prop.field(crate::time::now_unix())
+            } else {
+                Default::default()
+            };
+            self.solar.viewport(
+                &ctx,
+                &grid,
+                traffic,
+                awards,
+                prop,
+                std::sync::Arc::clone(&self.sat_cfg),
+            );
             self.view.solar3d = self.solar.persisted();
         }
 

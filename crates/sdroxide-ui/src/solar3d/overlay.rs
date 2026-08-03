@@ -15,7 +15,18 @@ use crate::view::solar_layer as layer;
 /// The star field and the heliographic graticule are not among them: they are
 /// the backdrop and the coordinate frame everything else is read against, so
 /// they are always drawn rather than being switches.
-const LAYERS: [(u32, &str, &str); 11] = [
+const LAYERS: [(u32, &str, &str); 12] = [
+    (
+        layer::PROPAGATION,
+        "PROP",
+        "Where signals are actually getting through, band by band. Every reception this \
+         station takes part in — WSPR, FT8/FT4, JS8, and the logbook — is placed at the \
+         midpoint of its path, which is the patch of ionosphere that bent it, rather than \
+         at the far station. So this is a map of the sky, not of where radio amateurs \
+         live.\n\nIt can only show paths this station has been one end of. Oceans light \
+         up because the midpoints of long paths fall there; Antarctica stays dark because \
+         nobody is transmitting from it. Off by default — it paints the whole planet.",
+    ),
     (layer::ORBITS, "ORBITS", "Orbital paths"),
     (
         layer::CLOUDS,
@@ -130,6 +141,7 @@ const M_WEATHER: usize = 3;
 const M_SCALE: usize = 4;
 const M_TIME: usize = 5;
 const M_ACTIVITY: usize = 6;
+const M_PROP: usize = 7;
 
 /// One menu chip's popup, wearing the same fade the main window's menus have: a
 /// popup opened and then forgotten takes itself away rather than sitting over
@@ -252,6 +264,14 @@ fn menu_bar(
                     chrome::menu_caption(ui, "Activity");
                     activity_controls(ui, st);
                 });
+
+                let on = st.layer(layer::PROPAGATION);
+                let btn = chrome::chip(ui, on, "PROP")
+                    .on_hover_text("What the propagation heat map is showing");
+                menu(ui, st, M_PROP, btn, |ui, st| {
+                    chrome::menu_caption(ui, "Propagation");
+                    prop_controls(ui, st);
+                });
             });
         });
     Some(area.response.rect)
@@ -321,6 +341,14 @@ fn layer_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
             let on = st.layer(bit);
             if chrome::chip(ui, on, label).on_hover_text(hint).clicked() {
                 st.set_layers(bit, !on);
+                // Propagation and awards both wash the entire planet, and two
+                // washes at once is neither. Switching one on stands the other
+                // down rather than stacking them.
+                if !on && (bit == layer::PROPAGATION || bit == layer::AWARDS) {
+                    let other =
+                        if bit == layer::PROPAGATION { layer::AWARDS } else { layer::PROPAGATION };
+                    st.set_layers(other, false);
+                }
             }
         }
     });
@@ -451,6 +479,161 @@ fn time_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
 /// The FT8/FT4 activity time-lapse: where in the last hour the globe's arcs
 /// are being replayed from, how long a trail they leave, and how fast the
 /// replay runs.
+/// What the propagation heat draws, and how long it remembers.
+fn prop_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
+    let on = st.layer(layer::PROPAGATION);
+    ui.horizontal_wrapped(|ui| {
+        if chrome::chip_accent(ui, on, "SHOW", theme::CYAN, theme::INK_ON_CYAN)
+            .on_hover_text("Paint the globe by what is getting through")
+            .clicked()
+        {
+            st.view.layers ^= layer::PROPAGATION;
+            // Two full-globe washes at once are unreadable, so picking one
+            // stands the other down rather than stacking them.
+            if st.view.layers & layer::PROPAGATION != 0 {
+                st.view.layers &= !layer::AWARDS;
+            }
+        }
+    });
+    if !on {
+        ui.label(
+            RichText::new(
+                "Shows only paths this station has been one end of, placed at the midpoint \
+                 of each — where the ionosphere did the work.",
+            )
+            .size(10.5)
+            .weak(),
+        );
+        return;
+    }
+
+    chrome::menu_caption(ui, "Display");
+    ui.horizontal_wrapped(|ui| {
+        let combined = st.view.prop_mode != 0;
+        if chrome::chip(ui, combined, "ALL BANDS")
+            .on_hover_text(
+                "Every band at once, one hue each, mixing where two overlap. The view for \
+                 'what are conditions like' rather than 'is twenty open'.",
+            )
+            .clicked()
+        {
+            st.view.prop_mode = 1;
+        }
+        if chrome::chip(ui, !combined, "ONE BAND")
+            .on_hover_text("One band, cold to hot: blue, green, yellow, red.")
+            .clicked()
+        {
+            st.view.prop_mode = 0;
+        }
+    });
+
+    let live = st.prop.live_bands();
+    if st.view.prop_mode == 0 {
+        chrome::menu_caption(ui, "Band");
+        ui.horizontal_wrapped(|ui| {
+            if live.is_empty() {
+                ui.label(RichText::new("nothing heard yet").size(10.5).weak());
+            }
+            for b in &live {
+                let i = sdroxide_types::Band::ALL.iter().position(|x| x == b).unwrap_or(0) as u8;
+                let sw = crate::colormap::band_color(*b);
+                if chrome::chip(
+                    ui,
+                    st.view.prop_band == i,
+                    RichText::new(b.label()).color(egui::Color32::from_rgb(sw[0], sw[1], sw[2])),
+                )
+                .clicked()
+                {
+                    st.view.prop_band = i;
+                }
+            }
+        });
+    } else {
+        // The legend, and the only place the colours are named. Only bands with
+        // something in them: a key full of dead bands is a key to nothing.
+        chrome::menu_caption(ui, "Bands");
+        ui.horizontal_wrapped(|ui| {
+            if live.is_empty() {
+                ui.label(RichText::new("nothing heard yet").size(10.5).weak());
+            }
+            for b in &live {
+                let i = sdroxide_types::Band::ALL.iter().position(|x| x == b).unwrap_or(0) as u8;
+                let bit = 1u16 << i;
+                let sw = crate::colormap::band_color(*b);
+                if chrome::chip(
+                    ui,
+                    st.view.prop_bands & bit != 0,
+                    RichText::new(b.label()).color(egui::Color32::from_rgb(sw[0], sw[1], sw[2])),
+                )
+                .clicked()
+                {
+                    st.view.prop_bands ^= bit;
+                }
+            }
+        });
+    }
+
+    chrome::menu_caption(ui, "Sources");
+    ui.horizontal_wrapped(|ui| {
+        let mut src = crate::prop_map::PropSources(st.view.prop_sources);
+        for s in sdroxide_types::PropSource::ALL {
+            if chrome::chip(ui, src.has(s), s.label())
+                .on_hover_text(match s {
+                    sdroxide_types::PropSource::Logged => {
+                        "Contacts in the logbook. A path that was open, with no signal report \
+                         worth the name — an RST is not an SNR, so these count towards how busy \
+                         a cell is and never towards its margin."
+                    }
+                    sdroxide_types::PropSource::WsprHeardUs => {
+                        "Stations that reported hearing this one, downloaded from WSPRnet. The \
+                         only feedback a transmitting beacon ever gets."
+                    }
+                    _ => {
+                        "Decodes this station made. Each is measured against its own mode's \
+                         floor, so a WSPR report and an FT4 one are comparable."
+                    }
+                })
+                .clicked()
+            {
+                src.toggle(s);
+                st.view.prop_sources = src.0;
+            }
+        }
+    });
+
+    chrome::menu_caption(ui, "Memory");
+    ui.horizontal_wrapped(|ui| {
+        ui.add(
+            egui::DragValue::new(&mut st.view.prop_halflife_min)
+                .speed(1.0)
+                .range(5.0..=240.0)
+                .prefix("half-life ")
+                .suffix(" min"),
+        )
+        .on_hover_text(
+            "How long a reception takes to count for half as much. The ionosphere's own \
+             memory is short — an opening two hours old should not be arguing with one \
+             from two minutes ago.",
+        );
+    });
+    // The absolute scale behind the colours. Without it the same colour means
+    // different densities on different evenings, and the picture is lying by
+    // omission about how much evidence is behind it.
+    let peak =
+        live.iter().filter_map(|b| st.prop.plane(*b)).map(|p| p.peak()).fold(0.0f32, f32::max);
+    if peak > 0.0 {
+        ui.label(
+            RichText::new(format!(
+                "brightest cell ≈ {peak:.0} paths · {} band{}",
+                live.len(),
+                if live.len() == 1 { "" } else { "s" }
+            ))
+            .size(10.5)
+            .weak(),
+        );
+    }
+}
+
 fn activity_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
     ui.horizontal_wrapped(|ui| {
         let hour = crate::digi_map::HISTORY_S as f64;
@@ -579,6 +762,32 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
         ),
         None => (None, 0, None, 0, None, 0),
     };
+    // Resolve the propagation field to pixels, once per change rather than per
+    // frame. Deliberately the same function the flat map calls: the two views
+    // upload identical bytes, so there is no way for them to disagree about
+    // what a cell means.
+    let (prop, prop_gen) = if st.layer(crate::view::solar_layer::PROPAGATION) {
+        let band = sdroxide_types::Band::ALL
+            .get(st.view.prop_band as usize)
+            .copied()
+            .unwrap_or(sdroxide_types::Band::M20);
+        let mode = if st.view.prop_mode == 0 {
+            crate::prop_map::PropMode::PerBand
+        } else {
+            crate::prop_map::PropMode::AllBands
+        };
+        let key = (st.prop.generation, st.view.prop_mode, st.view.prop_band, st.view.prop_bands);
+        if st.prop_rgba_key != Some(key) {
+            let (rgba, _, _) =
+                crate::prop_map::PropHeat::rgba(&st.prop, mode, band, st.view.prop_bands);
+            st.prop_rgba = std::sync::Arc::new(rgba);
+            st.prop_rgba_key = Some(key);
+            st.prop_gen = st.prop_gen.wrapping_add(1);
+        }
+        (Some(std::sync::Arc::clone(&st.prop_rgba)), st.prop_gen)
+    } else {
+        (None, st.prop_gen)
+    };
     ui.painter().add(crate::egui_wgpu::Callback::new_paint_callback(
         rect,
         super::gpu::SolarCallback {
@@ -590,6 +799,8 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
             aurora_gen,
             clouds,
             clouds_gen,
+            prop,
+            prop_gen,
         },
     ));
 
@@ -1389,6 +1600,25 @@ fn weather_panel(
             )),
             None => rows.push(("MUF".into(), "no sounder".into(), theme::LINE_LIT)),
         }
+        // What this station has actually heard get through, near the QTH.
+        //
+        // A floor, and labelled as one twice over — `HEARD ≥` and a `≥` on the
+        // value — because it is a different kind of statement from the row
+        // above it. The sounder measures and interpolates; this observes and
+        // bounds. Neither replaces the other: the sounder has dreadful spatial
+        // coverage and this has none at all over an ocean nobody works, and
+        // where they disagree the disagreement is the useful part.
+        if let Some(m) = st.prop.muf_at(lat, lon) {
+            rows.push((
+                "HEARD ≥".into(),
+                format!("≥ {:.1} MHz", m.floor_mhz),
+                match m.floor_mhz {
+                    f if f >= 24.0 => theme::GREEN,
+                    f if f >= 14.0 => theme::CYAN,
+                    _ => theme::YELLOW,
+                },
+            ));
+        }
     }
     if let Some(g) = &w.geomagnetic {
         let color = match g.kp {
@@ -1440,22 +1670,52 @@ fn weather_panel(
 
     // A one-line caveat under the MUF: it is interpolated from ionosondes that
     // may be a long way off, and saying so costs one line.
-    let note = st
+    let sounder = st
         .qth
-        .and_then(|(lat, lon)| sdroxide_solar::indices::estimate_muf(&w.ionosondes, lat, lon, now))
-        .map(|m| {
-            p.layout_no_wrap(
+        .and_then(|(lat, lon)| sdroxide_solar::indices::estimate_muf(&w.ionosondes, lat, lon, now));
+    let observed = st.qth.and_then(|(lat, lon)| st.prop.muf_at(lat, lon));
+    let mut notes: Vec<egui::text::Galley> = Vec::new();
+    if let Some(m) = &sounder {
+        notes.push(
+            (*p.layout_no_wrap(
                 format!("{} · {:.0} km", m.confidence(), m.nearest_km),
                 small.clone(),
                 theme::LINE_LIT,
-            )
-        });
+            ))
+            .clone(),
+        );
+    }
+    if let Some(o) = &observed {
+        notes.push(
+            (*p.layout_no_wrap(
+                format!("{} on {}", o.confidence(), o.band.label()),
+                small.clone(),
+                theme::LINE_LIT,
+            ))
+            .clone(),
+        );
+        // The one comparison worth more than either number on its own. The
+        // sounder is a model of a place it is not standing in; a path that got
+        // through is a fact. When the fact is above the model, the band is
+        // better than the model thinks — which is the most actionable thing
+        // this panel can say.
+        if sounder.as_ref().is_some_and(|m| o.floor_mhz > m.muf_mhz + 1.0) {
+            notes.push(
+                (*p.layout_no_wrap(
+                    "observed above the sounder — better than modelled".into(),
+                    small.clone(),
+                    theme::GREEN,
+                ))
+                .clone(),
+            );
+        }
+    }
 
     let pad = 10.0;
     let width = key_w + val_w + 18.0 + pad * 2.0;
-    let width = note.as_ref().map_or(width, |n| width.max(n.size().x + pad * 2.0));
+    let width = notes.iter().fold(width, |acc, n| acc.max(n.size().x + pad * 2.0));
     let height =
-        rows.len() as f32 * row_h + note.as_ref().map_or(0.0, |n| n.size().y + 4.0) + pad * 2.0;
+        rows.len() as f32 * row_h + notes.iter().map(|n| n.size().y + 4.0).sum::<f32>() + pad * 2.0;
     let panel = place.reserve(ui, egui::vec2(width, height))?;
 
     p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
@@ -1466,8 +1726,10 @@ fn weather_panel(
         p.galley(egui::pos2(panel.right() - pad - val.size().x, y), val.clone(), *color);
         y += row_h;
     }
-    if let Some(n) = note {
-        p.galley(egui::pos2(panel.left() + pad, y + 2.0), n, theme::LINE_LIT);
+    for n in notes {
+        let h = n.size().y + 4.0;
+        p.galley(egui::pos2(panel.left() + pad, y + 2.0), std::sync::Arc::new(n), theme::LINE_LIT);
+        y += h;
     }
     Some(panel)
 }

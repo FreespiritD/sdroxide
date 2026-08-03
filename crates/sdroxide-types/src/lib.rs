@@ -23,6 +23,8 @@ mod meters;
 mod mode;
 mod netcfg;
 mod pictures;
+mod prop_store;
+mod propagation;
 mod radio;
 mod rifp;
 mod rigctld;
@@ -42,6 +44,7 @@ mod voice;
 mod wefax;
 mod worldmask;
 mod wsjtx;
+mod wspr;
 
 pub use access::{AuthPhase, RemoteAccess};
 pub use awards::{
@@ -87,12 +90,19 @@ pub use meters::{Meters, TxMeters, TxTelemetry};
 pub use mode::{AgcMode, Mode, NrEngine, NrLevel, NrStrength};
 pub use netcfg::{
     ClusterConfig, Credentials, FeedConfig, FreeDvReporterConfig, LookupProvider, NetworkConfig,
-    PskConfig,
+    PskConfig, WsprNetConfig,
 };
 pub use pictures::{
     IMAGE_NAME_MAX, IMAGE_PAGE_MAX, IMAGE_SLOT_THUMB_EDGE, IMAGE_SLOTS, IMAGE_SOURCE_MAX_EDGE,
     IMAGE_THUMB_EDGE, IMAGE_UPLOAD_MAX, ImageEntry, ImageKind, ImageListing, ImagePresets,
     ImageSlotInfo, received_at, safe_name,
+};
+pub use prop_store::{PropSources, PropStore};
+pub use propagation::{
+    BandPlane, DEFAULT_HALFLIFE_S as PROP_DEFAULT_HALFLIFE_S, DEFAULT_HM_KM, GRID_CELLS,
+    GRID_H as PROP_GRID_H, GRID_W as PROP_GRID_W, MAX_HOP_KM, MAX_HOPS, MIN_MUF_PATH_KM,
+    MIN_MUF_PATHS, PropField, PropMuf, PropObservation, PropSource, REF_TX_DBM, SPLAT_SIGMA_KM,
+    cell_center, cell_of, fof2_floor_mhz, margin_db, muf3000_floor_mhz, obliquity_factor,
 };
 pub use radio::{
     Backend, CONVERTER_OFFSET_MAX_HZ, CONVERTER_PRESETS, CatConfig, CatFamily, DigiMode,
@@ -130,3 +140,9 @@ pub use ui::{LayoutMode, Speed, UiSettings};
 pub use voice::{VOICE_MAX_LEN_S, VOICE_SLOTS, VoiceSlotInfo, VoiceStatus, slot_label};
 pub use wefax::{WEFAX_STATIONS, WefaxChartMeta, WefaxIoc, WefaxLpm, WefaxStation, WefaxStatus};
 pub use wsjtx::WsjtxConfig;
+pub use wspr::{
+    BURST_S as WSPR_BURST_S, DEFAULT_TX_HZ as WSPR_DEFAULT_TX_HZ, POWERS_DBM as WSPR_POWERS_DBM,
+    SLOT_S as WSPR_SLOT_S, TX_OFFSET_S as WSPR_TX_OFFSET_S, WINDOW_HI_HZ as WSPR_WINDOW_HI_HZ,
+    WINDOW_LO_HZ as WSPR_WINDOW_LO_HZ, WsprSpot, WsprStatus, dbm_to_mw, power_label,
+    round_power_dbm,
+};

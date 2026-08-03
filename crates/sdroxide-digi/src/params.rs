@@ -34,6 +34,15 @@ impl DigiParams {
             // Symbol 0 is nominally 0.5 s into the slot (matches WSJT-X /
             // mfsk-core dt reference).
             Mode::Ft8 => DigiParams { mode, slot_s: 15.0, tx_offset_s: 0.5, burst_s: 12.64 },
+            // WSPR: 162 symbols of 8192/12000 s, starting one second into a
+            // two-minute slot. The burst fills all but nine seconds of it,
+            // which is why there is almost no latitude in when to key.
+            Mode::Wspr => DigiParams {
+                mode,
+                slot_s: sdroxide_types::WSPR_SLOT_S,
+                tx_offset_s: sdroxide_types::WSPR_TX_OFFSET_S,
+                burst_s: sdroxide_types::WSPR_BURST_S,
+            },
             other => {
                 debug_assert!(
                     false,

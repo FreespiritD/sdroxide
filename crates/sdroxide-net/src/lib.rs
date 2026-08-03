@@ -20,10 +20,12 @@ mod pskupload;
 mod socketio;
 mod sota;
 mod upload;
+mod wsprnet;
 
 pub use event::NetEvent;
 pub use manager::SpotManager;
 pub use pskupload::Report as PskReport;
+pub use wsprnet::{Item as WsprItem, Query as WsprQuery, Reporter as WsprReporter};
 
 // On-demand blocking helpers, exposed for tests / direct use.
 pub use freedvreporter::{ProbeStation, ProbeSummary, probe as freedv_reporter_probe};

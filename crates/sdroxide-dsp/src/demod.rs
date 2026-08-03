@@ -87,6 +87,7 @@ pub fn make_demod(mode: Mode, channel_rate: f64) -> Option<Box<dyn Demodulator>>
         | Mode::Dsb
         | Mode::Ft8
         | Mode::Js8
+        | Mode::Wspr
         | Mode::Ft4
         | Mode::Psk
         | Mode::Rtty

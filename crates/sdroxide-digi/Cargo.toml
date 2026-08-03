@@ -12,7 +12,7 @@ sdroxide-dsp.workspace = true
 sdroxide-rade.workspace = true
 # The JS8 candidate loop hands complex baseband between mfsk-core primitives.
 num-complex.workspace = true
-mfsk-core = { version = "0.8.0", default-features = false, features = ["std", "ft8", "ft4", "parallel", "fft-rustfft"] }
+mfsk-core = { version = "0.8.0", default-features = false, features = ["std", "ft8", "ft4", "wspr", "parallel", "fft-rustfft"] }
 crossbeam-channel.workspace = true
 tracing.workspace = true
 # RIFP: the manifest is JSON, the object is verified with SHA-256, and its

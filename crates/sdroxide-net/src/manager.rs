@@ -9,12 +9,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::Receiver;
-use sdroxide_types::{NetworkConfig, Spot, SpotKind, UploadResult, UploadTarget, grid_to_latlon};
+use sdroxide_types::{
+    NetworkConfig, Spot, SpotKind, UploadResult, UploadTarget, WsprSpot, grid_to_latlon,
+};
 
 use crate::cluster::ClusterHandle;
 use crate::event::{EventTx, FeedBatch, FeedTx, NetEvent};
 use crate::freedvreporter::ReporterHandle;
 use crate::poll::{self, PollHandle};
+use crate::wsprnet::{self, WsprPollHandle, WsprUploadHandle};
 use crate::{pota, pskreporter, sota};
 
 /// UTC seconds now (native-only wall clock).
@@ -48,6 +51,12 @@ pub struct SpotManager {
     /// the operator identity is known.
     psk_upload: Option<crate::pskupload::PskUploadHandle>,
 
+    /// WSPRnet upload worker (what we decoded), when reporting is on and the
+    /// operator identity is known.
+    wspr_upload: Option<WsprUploadHandle>,
+    /// WSPRnet download poller: who heard us.
+    wspr_heard_us: Option<WsprPollHandle>,
+
     freedv: Option<ReporterHandle>,
     /// What we last told the reporter. Replayed into a freshly rebuilt session
     /// so a config change never leaves the site showing a stale frequency.
@@ -75,6 +84,8 @@ impl SpotManager {
             sota: None,
             psk: None,
             psk_upload: None,
+            wspr_upload: None,
+            wspr_heard_us: None,
             op_call: String::new(),
             op_grid: String::new(),
             freedv: None,
@@ -100,6 +111,9 @@ impl SpotManager {
         if old.psk != self.cfg.psk {
             self.rebuild_psk();
             self.rebuild_psk_upload();
+        }
+        if old.wspr != self.cfg.wspr {
+            self.rebuild_wspr();
         }
         // The reporter sends its settings at connect, so a change to them has
         // to restart the session. The status message is the one field that can
@@ -139,6 +153,9 @@ impl SpotManager {
         self.rebuild_freedv();
         // Our callsign and grid *are* the PSK Reporter receiver record.
         self.rebuild_psk_upload();
+        // And they are the whole of WSPRnet's identity: the callsign in the
+        // query is the account.
+        self.rebuild_wspr();
     }
 
     // The engine pushes these on every tick of its ~100 Hz loop, so each one
@@ -185,6 +202,36 @@ impl SpotManager {
     pub fn psk_report(&self, report: crate::pskupload::Report) {
         if let Some(h) = &self.psk_upload {
             h.report(report);
+        }
+    }
+
+    /// Report what a WSPR slot decoded to WSPRnet.
+    ///
+    /// An empty slice is not nothing to say: `function=wsprstat` tells the
+    /// network this station was listening on `dial_hz` and heard silence, which
+    /// is how a shut band is told apart from a receiver that was switched off.
+    /// `tx_percent` rides along because the same request carries it.
+    pub fn wspr_report(&self, spots: &[WsprSpot], dial_hz: f64, tx_percent: u8) {
+        let Some(h) = &self.wspr_upload else { return };
+        if spots.is_empty() {
+            h.report(wsprnet::Item::Quiet { dial_hz, tx_percent });
+            return;
+        }
+        for s in spots {
+            // Only our own decodes get uploaded. A report that came back *from*
+            // WSPRnet must never be posted to it again — that would credit us
+            // with hearing something we did not.
+            if s.reporter.is_some() {
+                continue;
+            }
+            // Nor a callsign we could not resolve. A Type-3 message names its
+            // sender by a hash this station cannot invert, and posting the
+            // placeholder would put a station that does not exist into a
+            // database everybody else reads.
+            if s.call.starts_with("<#") {
+                continue;
+            }
+            h.report(wsprnet::Item::Spot(s.clone()));
         }
     }
 
@@ -382,6 +429,34 @@ impl SpotManager {
         };
         self.psk_upload =
             Some(crate::pskupload::spawn(&self.cfg.psk, station, self.event_tx.clone(), now_utc));
+    }
+
+    /// (Re)start both halves of the WSPRnet conversation.
+    ///
+    /// Both need the whole operator identity: the callsign is the account and
+    /// the grid is where the report is placed. Without either there is nothing
+    /// to say and nobody to say it as, so neither half starts — silently, since
+    /// a station that has not filled in its callsign yet is not an error.
+    fn rebuild_wspr(&mut self) {
+        // Dropping the uploader flushes what is pending first.
+        self.wspr_upload = None;
+        self.wspr_heard_us = None;
+        if self.op_call.is_empty() || self.op_grid.is_empty() {
+            return;
+        }
+        if self.cfg.wspr.upload {
+            let rx = wsprnet::Reporter { call: self.op_call.clone(), grid: self.op_grid.clone() };
+            self.wspr_upload = Some(wsprnet::spawn_upload(rx, self.event_tx.clone()));
+        }
+        if self.cfg.wspr.download_heard_us {
+            self.wspr_heard_us = Some(wsprnet::spawn_download(
+                self.op_call.clone(),
+                wsprnet::Query::HeardUs,
+                Duration::from_secs(self.cfg.wspr.download_interval_secs.max(60) as u64),
+                self.cfg.wspr.download_window_min.max(2),
+                self.event_tx.clone(),
+            ));
+        }
     }
 
     fn rebuild_freedv(&mut self) {

@@ -261,6 +261,9 @@ pub enum Prim {
     Ring,
     /// The sphere mesh again, as one slice through the cloud deck.
     Cloud,
+    /// The sphere mesh once more, just above the surface, carrying the
+    /// propagation heat as paint.
+    Prop,
     /// One sphere at the top of the troposphere, with the deck marched through
     /// it in the fragment shader instead of sliced.
     CloudVolume,
@@ -588,6 +591,11 @@ pub fn build(
     }
     grid(&mut s, &b);
     markers(&mut s, st, &b, &cam);
+    // Before the markers and the arcs above it, and before the awards: this is
+    // ground the rest of the layers stand on.
+    if st.layer(layer::PROPAGATION) {
+        prop_heat(&mut s, st, &b, &cam);
+    }
     if st.layer(layer::AWARDS) {
         award_heat(&mut s, st, &b, &cam, anim_t);
     }
@@ -1988,6 +1996,40 @@ const LAPSE_OLD: Color32 = Color32::from_rgb(0x5a, 0x3c, 0xa8);
 /// The positions are cty.dat's nominal entity centres, so this is "the entity
 /// is around there", not a border map. For an award chase that is exactly the
 /// resolution wanted: the target is the entity, not a spot inside it.
+/// The propagation heat: where signals are getting through, per band.
+///
+/// One sphere just clear of the surface. Everything that makes it a picture —
+/// which bands, what colours, how they mix where two overlap — was resolved on
+/// the CPU into the RGBA the shader samples, so this only has to decide *where*
+/// and *how strongly*. See `solar_prop.wgsl`.
+fn prop_heat(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
+    if st.prop.live_bands().is_empty() {
+        return;
+    }
+    let earth_px = cam.pixels_for(b.earth, b.earth_r);
+    // A surface field is legible as soon as the surface is: the same threshold
+    // the aurora uses, and far earlier than the awards layer's, which has three
+    // hundred discrete markers to place rather than a continuous wash.
+    let fade = ((earth_px - 3.0) / 12.0).clamp(0.0, 1.0);
+    if fade <= 0.0 {
+        return;
+    }
+    let (ex, ey, ez) = b.earth_basis;
+    s.draws.push((
+        Prim::Prop,
+        DrawData {
+            // Just above the surface — below the QTH ring and the traffic arcs,
+            // which is the order they should occlude in.
+            model: M4::from_basis(ex, ey, ez, b.earth, b.earth_r * 1.004).cols,
+            basis: M4::from_basis(ex, ey, ez, V3::ZERO, 1.0).cols,
+            tint: [1.0; 4],
+            tint2: [0.0; 4],
+            params: [fade, 0.0, 0.0, 0.0],
+            style: [0.0; 4],
+        },
+    ));
+}
+
 fn award_heat(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, anim_t: f32) {
     if st.awards.is_empty() {
         return;

@@ -117,6 +117,12 @@ impl eframe::App for SolarApp {
         if !std::sync::Arc::ptr_eq(&self.state.sat_cfg, &self.net.sat_cfg) {
             self.state.sat_cfg = std::sync::Arc::clone(&self.net.sat_cfg);
         }
+        // Same pointer comparison, same reason: the client replaces the whole
+        // field when a new one lands, so this is a word rather than a walk of a
+        // few hundred kilobytes.
+        if !std::sync::Arc::ptr_eq(&self.state.prop, &self.net.prop) {
+            self.state.prop = std::sync::Arc::clone(&self.net.prop);
+        }
 
         overlay::ui(ui, &mut self.state);
 

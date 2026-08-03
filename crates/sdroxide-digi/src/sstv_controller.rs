@@ -113,6 +113,7 @@ impl SstvController {
             call_queue: Vec::new(),
             clock_offset_s: None,
             cw: None,
+            wspr: None,
         }
     }
 }

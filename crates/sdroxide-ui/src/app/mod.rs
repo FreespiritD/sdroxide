@@ -234,6 +234,17 @@ pub struct SdroxideApp {
     /// Which decoded stations are currently up, and how brightly. Shared with
     /// the 3D globe so the flat map and the globe never disagree.
     digi_stations: crate::digi_map::DigiStations,
+    /// Every source's view of what is getting through, per band. Fed by the
+    /// decode list, the WSPR receptions and the logbook; drawn by the flat map
+    /// and the globe from this one copy so the two cannot disagree.
+    prop: crate::prop_map::PropStore,
+    /// The propagation field rendered to pixels, rebuilt only when it moves.
+    prop_heat: crate::prop_map::PropHeat,
+    /// WSPR receptions, newest first: what this station decoded, and — when the
+    /// WSPRnet download is on — who decoded this station. Capped at
+    /// [`crate::app::panels::wspr::WSPR_SPOT_ROWS`]; the propagation store keeps
+    /// the long view, this is only what the panel lists.
+    wspr_spots: Vec<sdroxide_types::WsprSpot>,
     /// Location of the decode row hovered this frame, shown on the map as a
     /// bright yellow dot. Frame-scoped (set by the decode list, read by the map).
     digi_hover_ll: Option<(f64, f64)>,
@@ -480,6 +491,9 @@ impl SdroxideApp {
             digi_preview: None,
             map_view: Default::default(),
             digi_stations: Default::default(),
+            prop: Default::default(),
+            prop_heat: Default::default(),
+            wspr_spots: Vec::new(),
             digi_hover_ll: None,
             digi_sort: DecodeSort::None,
             digi_sort_desc: true,

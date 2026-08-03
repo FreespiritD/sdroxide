@@ -303,8 +303,12 @@ impl SstvUi {
     pub(in crate::app) fn on_slot_source(&mut self, slot: u8, version: u32, png: &[u8]) {
         let slot = slot as usize;
         let Some(cell) = self.slots.get_mut(slot) else { return };
-        *cell = crate::sstv::load_source_bounded(png, 1024)
-            .map(|(rgb, sw, sh)| SstvSlot { src_rgb: rgb, sw, sh, version });
+        *cell = crate::sstv::load_source_bounded(png, 1024).map(|(rgb, sw, sh)| SstvSlot {
+            src_rgb: rgb,
+            sw,
+            sh,
+            version,
+        });
         if slot == self.selected_slot {
             self.preview_dirty = true;
         }
@@ -477,7 +481,12 @@ impl SstvUi {
     /// announces the presets, and the slot fills in when that comes back. That
     /// round trip is the point — it is what makes the browser tab and the
     /// console show the same five pictures.
-    pub(in crate::app) fn set_slot(&mut self, slot: usize, bytes: Vec<u8>, cmds: &mut Vec<Command>) {
+    pub(in crate::app) fn set_slot(
+        &mut self,
+        slot: usize,
+        bytes: Vec<u8>,
+        cmds: &mut Vec<Command>,
+    ) {
         self.selected_slot = slot;
         // Checked here as well as engine-side: pushing forty megabytes down the
         // socket only to have it refused at the far end is a poor experience,
@@ -1228,7 +1237,8 @@ impl SdroxideApp {
                         // A thumbnail stands in until the real one arrives, at
                         // the size the real one will be, so nothing jumps.
                         let tex = r.full.as_ref().unwrap_or(&r.thumb);
-                        let native = egui::vec2(f32::from(r.entry.width), f32::from(r.entry.height));
+                        let native =
+                            egui::vec2(f32::from(r.entry.width), f32::from(r.entry.height));
                         let native = if native.x > 0.0 { native } else { tex.size_vec2() };
                         let avail_w = ui.available_width().min(1000.0);
                         let scale = (avail_w / native.x.max(1.0)).clamp(1.0, 4.0);

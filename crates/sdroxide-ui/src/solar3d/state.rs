@@ -195,6 +195,23 @@ pub struct SolarUi {
     /// `/solar-ws` relay carries live data rather than the operator's records.
     /// The layer chip goes away with it rather than pretending to paint.
     pub awards: std::sync::Arc<Vec<sdroxide_types::EntitySlot>>,
+    /// The propagation field: which bands are getting through where, from every
+    /// mode this station runs. Republished by the host each frame.
+    ///
+    /// Behind an `Arc` because a couple of hundred kilobytes a plane crossing
+    /// into this window sixty times a second is the one part of this that would
+    /// cost anything.
+    pub prop: std::sync::Arc<sdroxide_types::PropField>,
+    /// The propagation field resolved to RGBA, and what it was resolved from.
+    ///
+    /// Cached here rather than rebuilt per frame: it costs ten thousand pixels
+    /// of colour arithmetic, and the field only moves when a decode lands. The
+    /// key is (field generation, mode, band, band mask) — everything the
+    /// picture depends on.
+    pub prop_rgba: std::sync::Arc<Vec<u8>>,
+    pub prop_rgba_key: Option<(u64, u8, u8, u16)>,
+    /// Bumped on every rebuild, so the GPU upload can skip an unchanged one.
+    pub prop_gen: u64,
     /// Where the activity time-lapse's replay head sits, in seconds before now.
     /// Zero is live, which is where it starts every run: a globe that came back
     /// up showing forty minutes ago would read as a stalled feed.
@@ -251,7 +268,7 @@ pub struct SolarUi {
 
 /// How many menu chips the overlay's bar has — the width of
 /// [`SolarUi::menu_since`].
-pub const MENUS: usize = 7;
+pub const MENUS: usize = 8;
 
 /// ASCII-case-insensitive substring test.
 ///
@@ -320,6 +337,10 @@ impl SolarUi {
             data: None,
             digi: DigiTraffic::default(),
             awards: Default::default(),
+            prop: Default::default(),
+            prop_rgba: Default::default(),
+            prop_rgba_key: None,
+            prop_gen: 0,
             lapse_back_s: 0.0,
             lapse_playing: false,
             search: String::new(),

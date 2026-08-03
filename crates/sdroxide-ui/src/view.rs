@@ -139,6 +139,14 @@ pub mod solar_layer {
     /// puts a marker on all three hundred-odd DXCC entities, which is a study
     /// aid rather than something to leave switched on over the orrery.
     pub const AWARDS: u32 = 1 << 11;
+    /// Where signals are actually getting through, per band — the propagation
+    /// heat map.
+    ///
+    /// Absent from [`ALL`] for the reason [`AWARDS`] is: it paints the whole
+    /// Earth and is a study aid rather than scenery. Because `ALL` therefore
+    /// does not change, [`PREVIOUS_ALL`] needs no new entry — adding one would
+    /// switch this on for everybody who upgrades.
+    pub const PROPAGATION: u32 = 1 << 14;
     /// Sunspot regions and flare sources together, as the `SUN OBS` chip shows
     /// them. Not a layer: [`SPOTS`] and [`FLARES`] are still drawn and tested
     /// separately, and both bits keep their positions so every settings file
@@ -267,6 +275,71 @@ pub struct Solar3dView {
     pub lapse_trail_min: f32,
     /// How many times real time the activity replay runs at.
     pub lapse_speed: f32,
+    /// Which propagation picture the heat layer draws: 0 = one band through the
+    /// blue→red ramp, 1 = every selected band at once, one hue each.
+    #[serde(default = "prop_mode_default")]
+    pub prop_mode: u8,
+    /// The band the per-band display shows, as an index into `Band::ALL`.
+    #[serde(default = "prop_band_default")]
+    pub prop_band: u8,
+    /// Which bands the combined display sums, one bit per `Band::ALL` index.
+    #[serde(default = "prop_bands_default")]
+    pub prop_bands: u16,
+    /// Half-life of an observation's contribution, in minutes. The ionosphere's
+    /// memory is short; an hour-old spot should not out-argue a two-minute one.
+    #[serde(default = "prop_halflife_default")]
+    pub prop_halflife_min: f32,
+    /// Which sources feed the propagation field, one bit per index into
+    /// `PropSource::ALL`.
+    ///
+    /// Lives here rather than beside the store because the globe's menu edits
+    /// it and the flat map reads it: one setting, both views, and no way for
+    /// them to be looking at different evidence.
+    #[serde(default = "prop_sources_default")]
+    pub prop_sources: u8,
+    /// Draw the propagation heat under the panel's flat map.
+    ///
+    /// Off by default. It is a study aid rather than something to leave on over
+    /// a decode list, and the same argument keeps the globe's layer out of its
+    /// default set.
+    #[serde(default)]
+    pub prop_on_map: bool,
+}
+
+/// Default for [`Solar3dView::prop_mode`] — the combined view, which reads
+/// without being configured first.
+fn prop_mode_default() -> u8 {
+    1
+}
+
+/// Default for [`Solar3dView::prop_band`] — 20 m, the band most stations sit on.
+fn prop_band_default() -> u8 {
+    sdroxide_types::Band::ALL.iter().position(|b| *b == sdroxide_types::Band::M20).unwrap_or(0)
+        as u8
+}
+
+/// Default for [`Solar3dView::prop_bands`] — every band with a hue, i.e. all of
+/// them except the general-coverage placeholder.
+fn prop_bands_default() -> u16 {
+    let mut m = 0u16;
+    for (i, b) in sdroxide_types::Band::ALL.iter().enumerate() {
+        if *b != sdroxide_types::Band::Gen {
+            m |= 1 << i;
+        }
+    }
+    m
+}
+
+/// Default for [`Solar3dView::prop_sources`] — everything. Each source is a
+/// real observation of a real path, and a map that quietly ignored the logbook
+/// would be a map of the last hour rather than of the station.
+fn prop_sources_default() -> u8 {
+    (1u8 << sdroxide_types::PropSource::ALL.len()) - 1
+}
+
+/// Default for [`Solar3dView::prop_halflife_min`].
+fn prop_halflife_default() -> f32 {
+    (sdroxide_types::PROP_DEFAULT_HALFLIFE_S / 60.0) as f32
 }
 
 impl Default for Solar3dView {
@@ -294,6 +367,12 @@ impl Default for Solar3dView {
             // smear into the next.
             lapse_trail_min: 10.0,
             lapse_speed: 60.0,
+            prop_mode: prop_mode_default(),
+            prop_band: prop_band_default(),
+            prop_bands: prop_bands_default(),
+            prop_sources: prop_sources_default(),
+            prop_halflife_min: prop_halflife_default(),
+            prop_on_map: false,
         }
     }
 }

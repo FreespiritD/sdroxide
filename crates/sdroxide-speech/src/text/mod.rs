@@ -139,6 +139,8 @@ impl<'a> Speaker<'a> {
             Mode::Rifp => "R I F P",
             Mode::Wefax => "wefax",
             Mode::Js8 => "J S eight",
+            // Pronounced "whisper" — the joke the name is built on.
+            Mode::Wspr => "whisper",
         }
     }
 

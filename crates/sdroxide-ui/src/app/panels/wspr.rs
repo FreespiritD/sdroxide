@@ -1,0 +1,461 @@
+//! The WSPR panel: what got through, and where the beacon is in its cycle.
+//!
+//! Two panes. `SPOTS` is the list of receptions — one row per beacon heard, or
+//! per station that heard *us* once the WSPRnet download is on — beside the same
+//! world map the FT8 panel draws, so the two modes place stations identically.
+//! `STATUS` is the beacon itself: the slot clock, the duty cycle, the band-hop
+//! schedule and whether the last upload went anywhere.
+//!
+//! There is no QSO pane because there is no QSO. Every control here is about
+//! measurement rather than contact, which is the whole difference between this
+//! mode and the one next to it.
+
+use eframe::egui::{self, Color32, RichText};
+use sdroxide_types::{Band, Command, WsprSpot, power_label};
+
+use crate::app::SdroxideApp;
+use crate::app::panels::widgets::row_cell;
+use crate::app::util::fmt_age;
+use crate::time::now_unix;
+
+/// How many receptions the panel keeps. Two hours of a busy 20 m evening.
+pub(in crate::app) const WSPR_SPOT_ROWS: usize = 400;
+
+/// A WSPR beacon is heard every few minutes at best — a duty cycle of twenty
+/// per cent means a given station transmits five times an hour. A map that
+/// emptied after the FT8 fade would be blank almost always, which reads as the
+/// mode not working rather than as the band being quiet. Ten minutes is about
+/// three chances to be heard again.
+const WSPR_STATION_FADE_S: f64 = 600.0;
+
+impl SdroxideApp {
+    pub(in crate::app) fn wspr_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<Command>,
+        panel_h: f32,
+    ) {
+        let pane = self.digi_pane(sdroxide_types::Mode::Wspr);
+        let phone = crate::layout::tier(ui.ctx()) == crate::layout::Tier::Phone;
+        // Two columns need room for two: below this the tab row picks one, the
+        // way a phone does. Squeezing both into 400 points gives a reception
+        // list too narrow to read a callsign in and a status pane too narrow to
+        // read a frequency in.
+        const TWO_COLUMN_MIN_W: f32 = 520.0;
+        if phone || ui.available_width() < TWO_COLUMN_MIN_W {
+            match pane {
+                0 => self.wspr_spot_list(ui, panel_h),
+                _ => self.wspr_status_pane(ui, cmds),
+            }
+            return;
+        }
+        // Two columns, each an explicit vertical `Ui`.
+        //
+        // `allocate_ui` inherits the *parent's* layout, so building the columns
+        // with it inside `horizontal_top` lays their contents out left-to-right
+        // as well — every reception row ends up on one line on top of the next.
+        // `ui.vertical` is what turns the direction back, and it is why every
+        // other split panel here is written this way.
+        let total_w = ui.available_width();
+        let left_w = (total_w * self.view.digi_split_fraction).clamp(240.0, total_w - 260.0);
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(left_w);
+                ui.set_height(panel_h);
+                self.wspr_spot_list(ui, panel_h);
+            });
+            let resp = crate::chrome::split_handle(ui, egui::vec2(7.0, panel_h), None);
+            if resp.dragged() {
+                let dx = resp.drag_delta().x;
+                self.view.digi_split_fraction = ((left_w + dx) / total_w).clamp(0.25, 0.75);
+            }
+            ui.vertical(|ui| {
+                ui.set_height(panel_h);
+                self.wspr_status_pane(ui, cmds);
+            });
+        });
+    }
+
+    /// The reception list, with the world map under it.
+    fn wspr_spot_list(&mut self, ui: &mut egui::Ui, panel_h: f32) {
+        let now = now_unix();
+        let my_grid =
+            self.digi_status.as_ref().map(|s| s.config.my_grid.clone()).unwrap_or_default();
+        let home = sdroxide_types::grid_to_latlon(&my_grid);
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("RECEPTIONS").size(9.5).strong().color(crate::theme::CYAN_DIM));
+            crate::chrome::row_tail(ui, |ui| {
+                let heard_us = self.wspr_spots.iter().filter(|s| s.is_heard_by_other()).count();
+                let label = if heard_us > 0 {
+                    format!("{} rx · {heard_us} heard us", self.wspr_spots.len() - heard_us)
+                } else {
+                    format!("{} rx", self.wspr_spots.len())
+                };
+                ui.label(RichText::new(label).size(10.0).color(Color32::from_gray(120)));
+            });
+        });
+
+        // The map takes the same draggable share of the pane the FT8 panel gives
+        // it, and is skipped entirely when there is not enough height for one —
+        // a map two rows tall is not a map.
+        let map_lo = crate::widgets::worldmap::MIN_HEIGHT;
+        let map_hi = (panel_h * 0.55).min(ui.available_width()).max(map_lo);
+        let map_budget = map_lo + (map_hi - map_lo) * self.view.digi_map_fraction;
+        let show_map = panel_h > map_lo * 2.0;
+
+        // The map's chip row has to be paid for out of the list's height, or it
+        // pushes the map past the bottom of the panel.
+        let ctrl_h = if show_map { crate::chrome::chip_height(ui, Some(9.5)) + 4.0 } else { 0.0 };
+        let list_h = if show_map {
+            (ui.available_height() - map_budget - ctrl_h - 8.0).max(60.0)
+        } else {
+            ui.available_height()
+        };
+        egui::ScrollArea::vertical()
+            .id_salt("wspr-receptions")
+            .max_height(list_h)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if self.wspr_spots.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new("listening — a WSPR slot is two minutes")
+                            .size(10.5)
+                            .italics()
+                            .color(Color32::from_gray(110)),
+                    );
+                    return;
+                }
+                for s in &self.wspr_spots {
+                    wspr_row(ui, s, home, now);
+                }
+            });
+
+        if show_map && map_budget >= crate::widgets::worldmap::MIN_HEIGHT {
+            let now_t = ui.input(|i| i.time);
+            self.digi_stations.set_fade_s(WSPR_STATION_FADE_S);
+            self.digi_stations.observe_wspr(&self.wspr_spots, now_t, now);
+            let stations = self.digi_stations.stations(now_t);
+            let heat = self.prop_texture(ui.ctx(), self.state.rx_freq_hz());
+            self.prop_map_controls(ui);
+            crate::widgets::worldmap::show(
+                ui,
+                &mut self.map_view,
+                home,
+                None,
+                None,
+                self.digi_hover_ll,
+                &stations,
+                &[],
+                heat,
+                self.digi_status.as_ref().map(|s| s.transmitting).unwrap_or(false),
+                map_budget,
+            );
+        }
+    }
+
+    /// The beacon's own state, and the two settings an operator reaches for
+    /// most: whether it transmits, and whether it moves between bands.
+    fn wspr_status_pane(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let status = self.digi_status.clone();
+        let w = status.as_ref().and_then(|s| s.wspr.clone()).unwrap_or_default();
+        let transmitting = status.as_ref().map(|s| s.transmitting).unwrap_or(false);
+        let cfg = &self.digi_cfg_edit;
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("WSPR").size(11.0).strong().color(crate::theme::CYAN));
+            ui.label(
+                RichText::new("weak-signal propagation beacon")
+                    .size(10.5)
+                    .color(crate::theme::CYAN_DIM),
+            );
+            crate::chrome::row_tail(ui, |ui| {
+                if transmitting {
+                    ui.label(RichText::new("● TX").size(11.0).strong().color(crate::theme::PINK));
+                } else if w.decoding {
+                    ui.label(RichText::new("decoding…").size(10.5).color(crate::theme::YELLOW));
+                }
+            });
+        });
+        ui.add_space(6.0);
+
+        crate::chrome::red_panel(ui, |ui| {
+            let dial = self.state.rx_freq_hz();
+            row(ui, "Band", &format!("{} · {:.6} MHz", Band::containing(dial).label(), dial / 1e6));
+            row(
+                ui,
+                "Last slot",
+                &if w.decoding {
+                    "decoding…".to_string()
+                } else if w.last_slot_spots == 0 {
+                    "nothing heard".to_string()
+                } else {
+                    format!(
+                        "{} beacon{}",
+                        w.last_slot_spots,
+                        if w.last_slot_spots == 1 { "" } else { "s" }
+                    )
+                },
+            );
+            // Whether the *next* slot transmits is decided before it starts, so
+            // this is a promise rather than a guess — see the controller's duty
+            // cycle.
+            let tx_txt = if cfg.wspr_tx_percent == 0 {
+                "receive only".to_string()
+            } else if w.tx_next {
+                format!("yes — {}, {}% duty", power_label(cfg.wspr_power_dbm), cfg.wspr_tx_percent)
+            } else {
+                format!("not this slot ({}% duty)", cfg.wspr_tx_percent)
+            };
+            row(ui, "Next slot", &tx_txt);
+            if let Some(hz) = w.next_dial_hz {
+                row(
+                    ui,
+                    "Hop next",
+                    &format!("{} · {:.4} MHz", Band::containing(hz).label(), hz / 1e6),
+                );
+            }
+            if let Some(why) = &w.hop_blocked {
+                ui.label(RichText::new(why).size(10.0).color(crate::theme::YELLOW));
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let hop = self.digi_cfg_edit.wspr_hop;
+            let resp = crate::chrome::chip(ui, hop, RichText::new("BAND HOP").size(10.5));
+            if resp.clicked() && self.digi_cfg_seeded {
+                self.digi_cfg_edit.wspr_hop = !hop;
+                cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
+            }
+            resp.on_hover_text(
+                "Move the dial from band to band between slots, so one receiver samples the \
+                 whole spectrum instead of one slice of it. Turning the VFO yourself pauses \
+                 it — press this twice to resume.",
+            );
+
+            let up = self.net_cfg_edit.wspr.upload;
+            let resp = crate::chrome::chip(ui, up, RichText::new("UPLOAD").size(10.5));
+            if resp.clicked() && self.net_cfg_seeded {
+                self.net_cfg_edit.wspr.upload = !up;
+                cmds.push(Command::SetNetworkConfig(self.net_cfg_edit.clone()));
+            }
+            resp.on_hover_text(
+                "Send what this station decodes to wsprnet.org. Reporting what you hear is \
+                 what makes a WSPR receiver part of the network; it puts nothing on the air.",
+            );
+
+            let dl = self.net_cfg_edit.wspr.download_heard_us;
+            let resp = crate::chrome::chip(ui, dl, RichText::new("WHO HEARD ME").size(10.5));
+            if resp.clicked() && self.net_cfg_seeded {
+                self.net_cfg_edit.wspr.download_heard_us = !dl;
+                cmds.push(Command::SetNetworkConfig(self.net_cfg_edit.clone()));
+            }
+            resp.on_hover_text(
+                "Ask wsprnet.org every few minutes which stations decoded this one. WSPR has \
+                 no acknowledgement of any kind, so this is the only way a beacon learns \
+                 anything about its own reach.",
+            );
+        });
+
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(
+                "Callsign, grid, transmit power and duty cycle are on the WSPR setup page.",
+            )
+            .size(10.0)
+            .color(Color32::from_gray(110)),
+        );
+        if self.digi_cfg_edit.wspr_tx_percent > 0 && !type1_capable(&self.digi_cfg_edit) {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(
+                    "This callsign and grid cannot be sent: WSPR carries a plain callsign and \
+                     a 4-character locator, so a compound call or a 6-character grid has \
+                     nowhere to go. Receiving is unaffected.",
+                )
+                .size(10.0)
+                .color(crate::theme::YELLOW),
+            );
+        }
+    }
+}
+
+/// Whether the operator identity fits WSPR's Type-1 message, which is the only
+/// one this station can transmit.
+fn type1_capable(cfg: &sdroxide_types::DigiConfig) -> bool {
+    let call = cfg.my_call.trim();
+    let grid = cfg.my_grid.trim();
+    !call.is_empty() && !call.contains('/') && grid.len() == 4
+}
+
+/// One reception. Reads left to right the way the operator asks the question:
+/// who, from where, how far, how well, on how much power.
+fn wspr_row(ui: &mut egui::Ui, s: &WsprSpot, home: Option<(f64, f64)>, now: i64) {
+    let heard_us = s.is_heard_by_other();
+    // The station at the far end of the path: the beacon we decoded, or the
+    // station that decoded us.
+    let (who, where_) = if heard_us {
+        (s.reporter.as_deref().unwrap_or("?"), s.reporter_grid.as_deref())
+    } else {
+        (s.call.as_str(), s.grid.as_deref())
+    };
+    let km = home
+        .zip(where_.and_then(sdroxide_types::grid_to_latlon))
+        .map(|(a, b)| sdroxide_types::distance_km(a, b));
+
+    let bg = if heard_us { crate::theme::TOME_BG } else { crate::theme::ROW_BG };
+    egui::Frame::new()
+        .fill(bg)
+        .inner_margin(egui::Margin { left: 6, right: 6, top: 3, bottom: 3 })
+        .show(ui, |ui| {
+            // Fixed-width columns, so the list reads down the page as well as
+            // across it: a callsign and a distance that shuffle sideways from
+            // row to row are far harder to scan than ones that line up.
+            const ROW_H: f32 = 19.0;
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.set_min_height(ROW_H);
+                ui.spacing_mut().item_spacing.x = 5.0;
+                // An arrow, because the direction is the whole meaning of the
+                // row: ← we heard them, → they heard us.
+                row_cell(
+                    ui,
+                    10.0,
+                    ROW_H,
+                    false,
+                    egui::Label::new(
+                        RichText::new(if heard_us { "→" } else { "←" }).size(11.0).strong().color(
+                            if heard_us { crate::theme::YELLOW } else { crate::theme::CYAN },
+                        ),
+                    ),
+                );
+                row_cell(
+                    ui,
+                    74.0,
+                    ROW_H,
+                    false,
+                    egui::Label::new(
+                        RichText::new(who).size(11.0).strong().color(crate::theme::TEXT_STRONG),
+                    )
+                    .truncate(),
+                );
+                row_cell(
+                    ui,
+                    46.0,
+                    ROW_H,
+                    false,
+                    egui::Label::new(
+                        RichText::new(where_.unwrap_or(""))
+                            .size(10.0)
+                            .color(crate::theme::CYAN_DIM),
+                    )
+                    .truncate(),
+                );
+                row_cell(
+                    ui,
+                    40.0,
+                    ROW_H,
+                    true,
+                    egui::Label::new(
+                        RichText::new(format!("{:+} dB", s.snr_db))
+                            .size(10.5)
+                            .strong()
+                            .color(snr_color(s.snr_db)),
+                    ),
+                );
+                row_cell(
+                    ui,
+                    52.0,
+                    ROW_H,
+                    true,
+                    egui::Label::new(
+                        RichText::new(km.map(|k| format!("{k:.0} km")).unwrap_or_default())
+                            .size(9.5)
+                            .color(Color32::from_gray(150)),
+                    ),
+                );
+                row_cell(
+                    ui,
+                    50.0,
+                    ROW_H,
+                    true,
+                    egui::Label::new(
+                        RichText::new(power_label(s.power_dbm))
+                            .size(9.5)
+                            .color(Color32::from_gray(130)),
+                    ),
+                );
+                // The age goes last and takes what is left, so a narrow panel
+                // drops it rather than squeezing the columns that matter.
+                crate::chrome::row_tail(ui, |ui| {
+                    ui.label(
+                        RichText::new(fmt_age(now - s.slot_utc))
+                            .size(9.5)
+                            .color(Color32::from_gray(110)),
+                    );
+                });
+            });
+        });
+}
+
+/// Colour a WSPR report by how much margin it had.
+///
+/// The scale is WSPR's, not FT8's: −29 dB is the decode floor here, so −20 is a
+/// good path and anything above −10 is a strong one. Using FT8's thresholds
+/// would paint the whole band red.
+fn snr_color(db: i16) -> Color32 {
+    match db {
+        d if d >= -10 => crate::theme::GREEN,
+        d if d >= -20 => crate::theme::CYAN,
+        d if d >= -26 => crate::theme::YELLOW,
+        _ => crate::theme::PINK,
+    }
+}
+
+/// A label/value line in the status card.
+fn row(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).size(10.0).color(crate::theme::CYAN_DIM));
+        crate::chrome::row_tail(ui, |ui| {
+            ui.label(RichText::new(value).size(10.5).color(crate::theme::TEXT));
+        });
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(call: &str, grid: &str) -> sdroxide_types::DigiConfig {
+        sdroxide_types::DigiConfig {
+            my_call: call.into(),
+            my_grid: grid.into(),
+            ..Default::default()
+        }
+    }
+
+    /// The warning has to fire on exactly the identities the transmitter will
+    /// refuse, or it is either noise or a silent failure.
+    #[test]
+    fn the_type_1_warning_matches_what_the_transmitter_can_actually_send() {
+        assert!(type1_capable(&cfg("K1ABC", "FN42")));
+        assert!(!type1_capable(&cfg("PJ4/K1ABC", "FN42")), "a compound call cannot be sent");
+        assert!(!type1_capable(&cfg("K1ABC", "FN42aa")), "a 6-character grid cannot be sent");
+        assert!(!type1_capable(&cfg("", "FN42")));
+        assert!(!type1_capable(&cfg("K1ABC", "")));
+    }
+
+    /// The colours are read at a glance to mean "how good was that path", so
+    /// they have to follow WSPR's floor rather than FT8's.
+    #[test]
+    fn the_report_colour_follows_wsprs_own_scale() {
+        assert_eq!(snr_color(-5), crate::theme::GREEN);
+        assert_eq!(snr_color(-18), crate::theme::CYAN);
+        assert_eq!(snr_color(-24), crate::theme::YELLOW);
+        // Below the nominal floor: remarkable, and coloured as such.
+        assert_eq!(snr_color(-28), crate::theme::PINK);
+    }
+}

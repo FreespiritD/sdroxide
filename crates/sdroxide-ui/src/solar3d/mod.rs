@@ -156,6 +156,7 @@ impl Solar3d {
         grid: &str,
         traffic: DigiTraffic,
         awards: Arc<Vec<sdroxide_types::EntitySlot>>,
+        prop: Arc<sdroxide_types::PropField>,
         sat_cfg: Arc<sdroxide_types::SatConfig>,
     ) {
         if !self.open {
@@ -190,6 +191,7 @@ impl Solar3d {
             st.set_qth(grid);
             st.digi = traffic;
             st.awards = awards;
+            st.prop = prop;
             st.sat_cfg = sat_cfg;
         }
 

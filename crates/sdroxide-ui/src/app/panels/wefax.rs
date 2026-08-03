@@ -416,16 +416,12 @@ impl SdroxideApp {
             ui.label(RichText::new("SAVED").color(theme::CYAN_DIM).size(9.5).strong());
             if self.wefax.total > 0 {
                 ui.label(
-                    RichText::new(format!("{}", self.wefax.total))
-                        .color(theme::LINE_LIT)
-                        .size(9.5),
+                    RichText::new(format!("{}", self.wefax.total)).color(theme::LINE_LIT).size(9.5),
                 );
             }
             if !dir.is_empty()
                 && crate::chrome::chip(ui, false, RichText::new("PATH").size(9.5))
-                    .on_hover_text(format!(
-                        "Charts are saved {where_}\n\nClick to copy the path"
-                    ))
+                    .on_hover_text(format!("Charts are saved {where_}\n\nClick to copy the path"))
                     .clicked()
             {
                 ui.ctx().copy_text(dir.clone());
@@ -770,8 +766,7 @@ impl SdroxideApp {
                     .show(ui, |ui| {
                         // Sized from the chart, not the texture: a thumbnail
                         // standing in must not shrink the window and then jump.
-                        let native =
-                            egui::vec2(f32::from(size.0.max(1)), f32::from(size.1.max(1)));
+                        let native = egui::vec2(f32::from(size.0.max(1)), f32::from(size.1.max(1)));
                         ui.add(egui::Image::new(&tex).fit_to_exact_size(native));
                     });
             });

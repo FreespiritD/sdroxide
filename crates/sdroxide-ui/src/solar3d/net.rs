@@ -49,6 +49,12 @@ pub struct SolarClient {
     data: Arc<Mutex<SolarData>>,
     /// Newest decode list, for the caller's own fade bookkeeping.
     pub decodes: Vec<sdroxide_types::Decode>,
+    /// The propagation field, reassembled from the planes the server sends.
+    ///
+    /// Rebuilt rather than merged: the server sends every live band each time,
+    /// so a band that has gone quiet disappears by being absent — which is the
+    /// only way this tab can learn that it closed.
+    pub prop: Arc<sdroxide_types::PropField>,
     pub my_grid: String,
     pub dx_grid: Option<String>,
     pub transmitting: bool,
@@ -81,6 +87,7 @@ impl SolarClient {
             auth: sdroxide_types::AuthPhase::Open,
             data: Arc::new(Mutex::new(SolarData::default())),
             decodes: Vec::new(),
+            prop: Default::default(),
             my_grid: String::new(),
             dx_grid: None,
             transmitting: false,
@@ -199,6 +206,19 @@ impl SolarClient {
                 self.transmitting = transmitting;
             }
             SolarServerMsg::Decodes(d) => self.decodes = d,
+            SolarServerMsg::Propagation { halflife_s, planes } => {
+                let mut f = sdroxide_types::PropField {
+                    halflife_s,
+                    generation: self.prop.generation.wrapping_add(1),
+                    ..Default::default()
+                };
+                for (i, plane) in planes {
+                    if let Some(slot) = f.planes.get_mut(i as usize) {
+                        *slot = Some(plane);
+                    }
+                }
+                self.prop = Arc::new(f);
+            }
             SolarServerMsg::SatFreqs(freqs) => {
                 self.sat_cfg = Arc::new(sdroxide_types::SatConfig { freqs, ..Default::default() });
             }

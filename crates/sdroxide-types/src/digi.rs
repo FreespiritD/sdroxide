@@ -361,6 +361,10 @@ pub struct DigiStatus {
     /// every other mode, so the panel that renders it is its own mode test.
     #[serde(default)]
     pub cw: Option<CwStatus>,
+    /// WSPR: where the beacon is in its two-minute cycle, and where hopping
+    /// will take it next. `None` in every other mode, as `cw` and `js8` are.
+    #[serde(default)]
+    pub wspr: Option<crate::WsprStatus>,
 }
 
 /// Live state of the CW decoder.
@@ -438,6 +442,7 @@ impl DigiStatus {
             call_queue: Vec::new(),
             clock_offset_s: None,
             cw: None,
+            wspr: None,
         }
     }
 }
@@ -909,6 +914,55 @@ pub struct DigiConfig {
     pub cw_speed_lock: bool,
     /// Give up on an incomplete incoming session after this many seconds.
     pub rifp_session_timeout_s: u32,
+
+    // ── WSPR ──
+    /// WSPR: percentage of two-minute slots to transmit in, 0–100.
+    ///
+    /// Zero — receive only — is the default, for the reason `js8_heartbeat_min`
+    /// gives: a beacon that starts transmitting because the operator selected a
+    /// mode is an on-air behaviour nobody consented to. Twenty is the
+    /// convention once it *is* switched on: enough to be heard, sparse enough
+    /// that a hundred beacons share the window.
+    #[serde(default)]
+    pub wspr_tx_percent: u8,
+    /// WSPR: the power actually radiated, in dBm, as the beacon will announce
+    /// it. Rounded to something the message can express by
+    /// [`crate::round_power_dbm`] before it goes out — the announcement is part
+    /// of everybody else's measurement, so it has to be true.
+    #[serde(default = "wspr_default_power")]
+    pub wspr_power_dbm: i16,
+    /// WSPR: move the dial from band to band between slots, so one receiver
+    /// samples the whole spectrum instead of one slice of it.
+    #[serde(default)]
+    pub wspr_hop: bool,
+    /// WSPR: which bands the hop cycle visits, one bit per index into
+    /// [`crate::Band::ALL`]. Ignored unless `wspr_hop`.
+    #[serde(default = "wspr_default_hop_bands")]
+    pub wspr_hop_bands: u16,
+    /// WSPR: upload what we decode to wsprnet.org.
+    ///
+    /// On by default, unlike transmitting: reporting what you hear is the
+    /// entire point of the network, it puts nothing on the air, and a receiver
+    /// that quietly kept its spots to itself would be missing the mode.
+    #[serde(default = "yes")]
+    pub wspr_upload: bool,
+}
+
+fn wspr_default_power() -> i16 {
+    // 5 W — the level the message can express exactly, and what a barefoot
+    // beacon on a shared transceiver usually ends up running.
+    37
+}
+
+fn wspr_default_hop_bands() -> u16 {
+    // 80/40/30/20/17/15/12/10 — the bands with a WSPR dial and enough traffic
+    // to be worth a slot. 160 m is left out of the default cycle because it is
+    // dead by day, and adding it costs a whole slot every time round.
+    use crate::Band;
+    [Band::M80, Band::M40, Band::M30, Band::M20, Band::M17, Band::M15, Band::M12, Band::M10]
+        .iter()
+        .filter_map(|b| Band::ALL.iter().position(|x| x == b))
+        .fold(0u16, |m, i| m | (1 << i))
 }
 
 fn cw_default_pitch() -> f32 {
@@ -982,6 +1036,11 @@ impl Default for DigiConfig {
             rifp_content_hint: String::new(),
             rifp_dither: true,
             rifp_session_timeout_s: 300,
+            wspr_tx_percent: 0,
+            wspr_power_dbm: wspr_default_power(),
+            wspr_hop: false,
+            wspr_hop_bands: wspr_default_hop_bands(),
+            wspr_upload: true,
         }
     }
 }

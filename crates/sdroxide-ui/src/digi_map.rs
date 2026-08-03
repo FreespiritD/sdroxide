@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use sdroxide_types::Decode;
+use sdroxide_types::{Decode, WsprSpot};
 
 use crate::solar3d::DigiTraffic;
 
@@ -103,6 +103,45 @@ impl DigiStations {
                 fresh.push(DigiHit { lat, lon, slot_utc: d.slot_utc });
             }
         }
+        self.retire(fresh, now_t, cutoff);
+    }
+
+    /// Fold in WSPR spots the same way [`DigiStations::observe`] folds in
+    /// decodes.
+    ///
+    /// Which end goes on the map is the whole of the difference. A spot we
+    /// decoded places the *transmitter*; a spot that came back from WSPRnet
+    /// saying somebody heard *us* places the **reporter**, because the
+    /// transmitter in that report is this station and a dot on our own QTH says
+    /// nothing. Either way the far end of the path is what is drawn, which is
+    /// what makes the two sets one picture rather than two.
+    pub fn observe_wspr(&mut self, spots: &[WsprSpot], now_t: f64, now_utc: i64) {
+        let cutoff = now_utc - HISTORY_S;
+        let mut fresh: Vec<DigiHit> = Vec::new();
+        for s in spots {
+            let grid =
+                if s.is_heard_by_other() { s.reporter_grid.as_deref() } else { s.grid.as_deref() };
+            let Some(grid) = grid.filter(|g| !g.is_empty()) else { continue };
+            let e = self.seen.entry(grid.to_string()).or_insert((i64::MIN, now_t));
+            if s.slot_utc > e.0 {
+                *e = (s.slot_utc, now_t);
+            }
+            if s.slot_utc <= cutoff || s.slot_utc > now_utc + 300 {
+                continue;
+            }
+            let key = (grid.to_string(), s.slot_utc);
+            if !self.recorded.contains(&key) {
+                let Some((lat, lon)) = sdroxide_types::grid_to_latlon(grid) else { continue };
+                self.recorded.insert(key);
+                fresh.push(DigiHit { lat, lon, slot_utc: s.slot_utc });
+            }
+        }
+        self.retire(fresh, now_t, cutoff);
+    }
+
+    /// Drop what has expired and append what is new. Shared by both `observe`
+    /// paths so the two can never disagree about when a dot goes out.
+    fn retire(&mut self, mut fresh: Vec<DigiHit>, now_t: f64, cutoff: i64) {
         let fade = self.fade_s;
         self.seen.retain(|_, &mut (_, seen)| now_t - seen < fade);
 
@@ -293,6 +332,74 @@ mod tests {
         assert!((half[0].2 - 0.5).abs() < 1e-6, "half-way fade was {}", half[0].2);
         observe(&mut s, &[], 901.0);
         assert!(s.stations(901.0).is_empty(), "it still has to expire eventually");
+    }
+
+    fn wspr(grid: &str, slot: i64) -> WsprSpot {
+        WsprSpot {
+            slot_utc: NOW + slot,
+            call: "AB1CD".into(),
+            grid: Some(grid.into()),
+            power_dbm: 37,
+            freq_hz: 14_097_100.0,
+            snr_db: -24,
+            dt: 0.3,
+            drift_hz: 0.0,
+            reporter: None,
+            reporter_grid: None,
+        }
+    }
+
+    /// A beacon we decoded places the transmitter, and it ages out the same way
+    /// a decode does — the two views have to agree about WSPR too.
+    #[test]
+    fn a_wspr_beacon_lights_its_own_grid_and_fades_like_a_decode() {
+        let mut s = DigiStations::default();
+        s.observe_wspr(&[wspr("FN42", 0)], 0.0, NOW);
+        assert_eq!(s.stations(0.0)[0].2, 1.0);
+        assert_eq!(s.history().len(), 1);
+        let half = s.stations(STATION_FADE_S / 2.0);
+        assert!((half[0].2 - 0.5).abs() < 1e-6, "half-way fade was {}", half[0].2);
+    }
+
+    /// A report of *us* being heard places the station that heard us. Placing
+    /// the transmitter would put a dot on our own QTH, which says nothing about
+    /// the path and is exactly the end we already know.
+    #[test]
+    fn a_report_of_us_places_the_reporter_not_our_own_grid() {
+        let mut s = DigiStations::default();
+        let heard = WsprSpot {
+            call: "K1ABC".into(),
+            grid: Some("FN42".into()),
+            reporter: Some("G0XYZ".into()),
+            reporter_grid: Some("IO91".into()),
+            ..wspr("FN42", 0)
+        };
+        s.observe_wspr(&[heard], 0.0, NOW);
+        let placed = s.stations(0.0);
+        assert_eq!(placed.len(), 1);
+        let (lat, lon, _) = placed[0];
+        // IO91 is southern England, not FN42 (New England).
+        assert!(lat > 50.0 && lat < 53.0 && lon > -3.0 && lon < 1.0, "placed at {lat},{lon}");
+    }
+
+    /// The two feeds share one history, so a beacon in the same grid as an FT8
+    /// decode in the same slot must not be counted twice.
+    #[test]
+    fn wspr_and_decodes_share_one_history_without_double_counting() {
+        let mut s = DigiStations::default();
+        s.observe(&[decode("FN42", 0)], 0.0, NOW);
+        s.observe_wspr(&[wspr("FN42", 0)], 1.0, NOW);
+        assert_eq!(s.history().len(), 1, "the same grid and slot was recorded twice");
+    }
+
+    #[test]
+    fn a_report_without_a_reporter_grid_places_nothing() {
+        let mut s = DigiStations::default();
+        let heard =
+            WsprSpot { reporter: Some("G0XYZ".into()), reporter_grid: None, ..wspr("FN42", 0) };
+        s.observe_wspr(&[heard], 0.0, NOW);
+        assert!(s.stations(0.0).is_empty(), "placed a reporter with no locator");
+        assert!(s.history().is_empty());
     }
 
     #[test]

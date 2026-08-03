@@ -188,6 +188,12 @@ pub enum RadioEvent {
         kind: crate::ImageKind,
         name: String,
     },
+    /// What a WSPR slot decoded — or, from the WSPRnet feed, who decoded us.
+    ///
+    /// Its own event rather than [`RadioEvent::Ft8Decodes`]: WSPR reports a
+    /// path, not a message, and the transmit power and drift that make it a
+    /// measurement have nowhere to live in a [`Decode`].
+    WsprSpots(Vec<crate::WsprSpot>),
     /// The scanner's settings, after a change or on connect — the same contract
     /// as [`RadioEvent::Memories`]. What the scanner is *doing* rides in
     /// [`crate::RadioState::scan`] instead, being small and constantly changing.

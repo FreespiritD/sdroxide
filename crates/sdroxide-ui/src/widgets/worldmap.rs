@@ -104,6 +104,10 @@ pub fn show(
     stations: &[(f64, f64, f32)],
     // Network spots with a known location: (lat, lon, rgb tint by kind).
     spots: &[(f64, f64, (u8, u8, u8))],
+    // Propagation heat, as an equirectangular RGBA image of the whole world
+    // (see `crate::prop_map::PropHeat`). Painted under the continents, so the
+    // coastline stays readable on top of it.
+    heat: Option<eframe::egui::TextureId>,
     tx_active: bool,
     max_h: f32,
 ) {
@@ -152,6 +156,39 @@ pub fn show(
     }
     let (clat, clon, lon_span) = (view.clat, view.clon, view.lon_span);
     let lat_span = lon_span * aspect;
+
+    // Propagation heat, first — under everything, because it is the ground the
+    // map is drawn on rather than a thing on the map.
+    //
+    // One textured quad rather than a per-cell fill: the projection is linear
+    // in latitude and longitude, so the whole world is an axis-aligned
+    // rectangle here, and the texture's own bilinear filtering is what turns
+    // 2.5° cells into soft shapes with no visible edges. The quad is repeated
+    // sideways to cover a view that straddles the antimeridian; the painter's
+    // clip rectangle trims what falls outside.
+    if let Some(tex) = heat {
+        let lon_to_x =
+            |lon: f64| rect.left() + (0.5 + ((lon - clon) / lon_span) as f32) * rect.width();
+        let lat_to_y =
+            |lat: f64| rect.top() + (0.5 - ((lat - clat) / lat_span) as f32) * rect.height();
+        let world = eframe::egui::Rect::from_min_max(
+            pos2(lon_to_x(-180.0), lat_to_y(90.0)),
+            pos2(lon_to_x(180.0), lat_to_y(-90.0)),
+        );
+        let world_w = world.width();
+        if world_w > 1.0 {
+            // Which copies of the world overlap what is on screen.
+            let first = ((rect.left() - world.right()) / world_w).floor() as i32;
+            let last = ((rect.right() - world.left()) / world_w).ceil() as i32;
+            let uv = eframe::egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            for k in first..=last {
+                let r = world.translate(vec2(k as f32 * world_w, 0.0));
+                if r.intersects(rect) {
+                    p.image(tex, r, uv, Color32::WHITE);
+                }
+            }
+        }
+    }
 
     // Render a dot grid sized to the available pixels (about one dot every
     // ~4 px), sampling the high-res land bitmap for crisp coastlines. Each cell

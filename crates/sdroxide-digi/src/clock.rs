@@ -33,11 +33,22 @@ impl ClockMonitor {
 
     /// Fold in one slot's decodes. Returns true if the estimate changed.
     pub fn observe(&mut self, decodes: &[Decode]) -> bool {
-        if decodes.len() < MIN_DECODES {
+        self.observe_dts(decodes.iter().map(|d| d.dt))
+    }
+
+    /// Fold in one slot's timing offsets directly.
+    ///
+    /// WSPR reaches this way: its decodes are [`sdroxide_types::WsprSpot`]s
+    /// rather than [`Decode`]s, and `dt` is the only field the estimate reads.
+    /// On a quiet band a WSPR slot rarely carries [`MIN_DECODES`] beacons, so
+    /// the estimate stays `None` for long stretches — which is the truth, and
+    /// better than a number drawn from one station's oscillator.
+    pub fn observe_dts(&mut self, dts: impl IntoIterator<Item = f32>) -> bool {
+        let mut dts: Vec<f32> = dts.into_iter().collect();
+        if dts.len() < MIN_DECODES {
             return false;
         }
         let before = self.offset_s();
-        let mut dts: Vec<f32> = decodes.iter().map(|d| d.dt).collect();
         self.recent.push_back(median(&mut dts));
         while self.recent.len() > SLOTS {
             self.recent.pop_front();

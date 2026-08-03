@@ -99,3 +99,96 @@ pub fn lut(index: usize) -> [u8; 256 * 4] {
         _ => gradient(&[(0.0, [0, 0, 0]), (1.0, [255, 255, 255])]),
     }
 }
+
+// ── Propagation ─────────────────────────────────────────────────────────────
+
+/// The propagation heat ramp: blue → green → yellow → red.
+///
+/// Not one of the waterfall palettes. Those start at black because a waterfall
+/// is mostly noise floor and the empty parts should recede; a propagation cell
+/// with no evidence is drawn with no alpha at all rather than in black, so this
+/// ramp spends its whole range on the four steps an operator reads as "barely",
+/// "workable", "good", "loud".
+///
+/// This is the one definition of that ramp. The globe samples it as a 256×1
+/// texture and the flat map indexes the same array on the CPU, so the two
+/// cannot drift apart — which they would within a week if the anchors were
+/// written out again in WGSL.
+pub fn prop_ramp() -> [u8; 256 * 4] {
+    gradient(&[
+        (0.00, [26, 62, 190]),  // blue
+        (0.35, [30, 180, 150]), // teal
+        (0.55, [60, 210, 70]),  // green
+        (0.78, [235, 220, 45]), // yellow
+        (1.00, [235, 45, 40]),  // red
+    ])
+}
+
+/// Look the ramp up at `t` in 0..1.
+pub fn prop_ramp_at(t: f32) -> [u8; 3] {
+    let lut = prop_ramp();
+    let i = ((t.clamp(0.0, 1.0) * 255.0) as usize) * 4;
+    [lut[i], lut[i + 1], lut[i + 2]]
+}
+
+/// A hue per band, for the all-bands propagation display.
+///
+/// Band is a categorical variable that happens to have an order, and running it
+/// around the hue circle low-to-high is how every propagation site in the hobby
+/// already draws it — so an operator reads this without being taught. A rainbow
+/// would be the wrong choice for a continuous quantity; the per-band display
+/// exists precisely for when the hues cannot be told apart, and the legend
+/// names each band beside its swatch rather than relying on hue recall.
+pub fn band_color(band: sdroxide_types::Band) -> [u8; 3] {
+    use sdroxide_types::Band;
+    match band {
+        Band::M160 => [176, 40, 40], // deep red
+        Band::M80 => [214, 92, 32],  // orange
+        Band::M60 => [222, 150, 40], // amber
+        Band::M40 => [226, 208, 52], // yellow
+        Band::M30 => [150, 214, 60], // yellow-green
+        Band::M20 => [58, 200, 96],  // green
+        Band::M17 => [46, 200, 170], // teal
+        Band::M15 => [52, 168, 226], // sky
+        Band::M12 => [70, 116, 232], // blue
+        Band::M10 => [122, 92, 236], // indigo
+        Band::M6 => [176, 84, 226],  // violet
+        Band::M2 => [226, 76, 190],  // magenta
+        Band::M70 => [236, 96, 140], // rose
+        // Not a band: nothing is ever binned here.
+        Band::Gen => [128, 128, 128],
+    }
+}
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+
+    /// The ramp has to actually run blue → green → yellow → red, because that
+    /// order is the whole of what it communicates.
+    #[test]
+    fn the_propagation_ramp_runs_cold_to_hot() {
+        let cold = prop_ramp_at(0.0);
+        let warm = prop_ramp_at(0.6);
+        let hot = prop_ramp_at(1.0);
+        assert!(cold[2] > cold[0], "the cold end is not blue: {cold:?}");
+        assert!(warm[1] > warm[0] && warm[1] > warm[2], "the middle is not green: {warm:?}");
+        assert!(hot[0] > hot[1] && hot[0] > hot[2], "the hot end is not red: {hot:?}");
+    }
+
+    /// Every band gets its own hue, or two bands on one cell would be
+    /// indistinguishable in the combined display.
+    #[test]
+    fn no_two_bands_share_a_colour() {
+        use sdroxide_types::Band;
+        let mut seen: Vec<[u8; 3]> = Vec::new();
+        for b in Band::ALL {
+            if b == Band::Gen {
+                continue;
+            }
+            let c = band_color(b);
+            assert!(!seen.contains(&c), "{} reuses {c:?}", b.label());
+            seen.push(c);
+        }
+    }
+}

@@ -9,6 +9,7 @@
 //! - [`text_modem`] — PSK, RTTY, Olivia, THOR, Contestia and Hellschreiber
 //! - [`js8`], [`fsq`] — the two keyboard modes with their own message model
 //! - [`sstv`], [`wefax`], [`rf_paint`] — the image modes
+//! - [`wspr`] — the propagation beacon: receptions and the beacon's own cycle
 //! - [`rade`] — FreeDV / RADE digital voice
 //! - [`setup`] — the digimode setup window the panels share
 //! - [`widgets`] — the row and station-card widgets several panels draw
@@ -24,6 +25,7 @@ pub(in crate::app) mod sstv;
 pub(in crate::app) mod text_modem;
 pub(in crate::app) mod wefax;
 pub(in crate::app) mod widgets;
+pub(in crate::app) mod wspr;
 
 use eframe::egui::{self, RichText};
 use sdroxide_types::{Band, Command, Mode};
@@ -46,6 +48,8 @@ pub(in crate::app) fn panel_panes(mode: Mode) -> &'static [&'static str] {
     match mode {
         Mode::Ft8 | Mode::Ft4 => &["DECODES", "QSO"],
         Mode::Js8 => &["HEARD", "CHAT"],
+        // No QSO pane, because there is no QSO: WSPR measures paths.
+        Mode::Wspr => &["SPOTS", "STATUS"],
         Mode::Fsq => &["HEARD", "TRAFFIC"],
         Mode::Sstv | Mode::Rifp => &["RECEIVE", "SEND"],
         Mode::Wefax => &["CHART", "SAVED"],
@@ -53,6 +57,127 @@ pub(in crate::app) fn panel_panes(mode: Mode) -> &'static [&'static str] {
         // The keyboard modes and RADE are one column already: receive above,
         // what you are sending below it.
         _ => &["PANEL"],
+    }
+}
+
+impl SdroxideApp {
+    /// Fold everything this frame knows into the propagation field, and hand
+    /// back the texture the map should paint under itself.
+    ///
+    /// One place, called by every panel that draws a map, so the flat map and
+    /// the globe are never fed different things. `None` when the operator has
+    /// the layer off or there is nothing to draw yet.
+    pub(in crate::app) fn prop_texture(
+        &mut self,
+        ctx: &egui::Context,
+        dial_hz: f64,
+    ) -> Option<eframe::egui::TextureId> {
+        let my_grid =
+            self.digi_status.as_ref().map(|s| s.config.my_grid.clone()).unwrap_or_default();
+        if my_grid.trim().is_empty() {
+            return None;
+        }
+        let now = crate::time::now_unix();
+        let v = self.view.solar3d;
+        self.prop.set_home(&my_grid);
+        self.prop.set_halflife_min(v.prop_halflife_min);
+        self.prop.set_sources(crate::prop_map::PropSources(v.prop_sources));
+
+        // Every slotted mode's decodes are observations of a path; which mode
+        // they came from only changes the decode floor they are measured
+        // against.
+        let mode = self.state.rx[0].mode;
+        let src = match mode {
+            Mode::Ft8 => Some(sdroxide_types::PropSource::Ft8),
+            Mode::Ft4 => Some(sdroxide_types::PropSource::Ft4),
+            Mode::Js8 => Some(sdroxide_types::PropSource::Js8),
+            _ => None,
+        };
+        if let Some(src) = src {
+            let decodes = std::mem::take(&mut self.digi_decodes);
+            self.prop.observe_decodes(&decodes, src, dial_hz, &my_grid, now);
+            self.digi_decodes = decodes;
+        }
+        let spots = std::mem::take(&mut self.wspr_spots);
+        self.prop.observe_wspr(&spots, &my_grid, now);
+        self.wspr_spots = spots;
+        let log = std::mem::take(&mut self.qso_log);
+        self.prop.observe_log(&log, &my_grid, now);
+        self.qso_log = log;
+
+        if !v.prop_on_map {
+            return None;
+        }
+        let field = self.prop.field(now);
+        let band = Band::ALL.get(v.prop_band as usize).copied().unwrap_or(Band::M20);
+        let heat_mode = if v.prop_mode == 0 {
+            crate::prop_map::PropMode::PerBand
+        } else {
+            crate::prop_map::PropMode::AllBands
+        };
+        self.prop_heat.texture(ctx, &field, heat_mode, band, v.prop_bands).map(|t| t.id())
+    }
+
+    /// The chip row that turns the flat map's propagation heat on and picks
+    /// what it shows. Drawn just above the map by every panel that has one.
+    pub(in crate::app) fn prop_map_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            let on = self.view.solar3d.prop_on_map;
+            let resp = crate::chrome::chip(ui, on, RichText::new("PROP").size(9.5));
+            if resp.clicked() {
+                self.view.solar3d.prop_on_map = !on;
+            }
+            resp.on_hover_text(
+                "Shade the map by where signals are actually getting through, on each band. \
+                 Every reception is placed at the midpoint of its path — the patch of \
+                 ionosphere that bent it — not at the far station, so this is a map of the \
+                 sky rather than of where radio amateurs live. It can only show paths this \
+                 station has taken part in.",
+            );
+            if !on {
+                return;
+            }
+            let combined = self.view.solar3d.prop_mode != 0;
+            if crate::chrome::chip(ui, combined, RichText::new("ALL BANDS").size(9.5))
+                .on_hover_text("Every band at once, one hue each — overall conditions.")
+                .clicked()
+            {
+                self.view.solar3d.prop_mode = 1;
+            }
+            if crate::chrome::chip(ui, !combined, RichText::new("ONE BAND").size(9.5))
+                .on_hover_text("One band, cold to hot: blue, green, yellow, red.")
+                .clicked()
+            {
+                self.view.solar3d.prop_mode = 0;
+            }
+            if !combined {
+                // Only bands with something in them: a picker full of dead
+                // bands is a picker of nothing.
+                for b in self.prop.peek().live_bands() {
+                    let i = Band::ALL.iter().position(|x| *x == b).unwrap_or(0) as u8;
+                    if crate::chrome::chip(
+                        ui,
+                        self.view.solar3d.prop_band == i,
+                        RichText::new(b.label()).size(9.5),
+                    )
+                    .clicked()
+                    {
+                        self.view.solar3d.prop_band = i;
+                    }
+                }
+            }
+            // The absolute scale behind the colours. Without it the same colour
+            // means different things on different evenings, and the map is
+            // lying by omission.
+            if self.prop_heat.peak_paths > 0.0 {
+                ui.label(
+                    RichText::new(format!("top ≈ {:.0} paths", self.prop_heat.peak_paths))
+                        .size(9.0)
+                        .color(eframe::egui::Color32::from_gray(110)),
+                );
+            }
+        });
     }
 }
 
@@ -72,6 +197,12 @@ pub(in crate::app) fn pane_index(mode: Mode, name: &str) -> usize {
 /// (matched by which band's edges the frequency falls within).
 pub(in crate::app) fn digi_freq_for_band(mode: Mode, band: Band) -> Option<f64> {
     let (lo, hi) = band.edges()?;
+    // WSPR's dials are already in the band plan, where `is_auto_digi` and the
+    // waterfall's band strip read them. A second copy here would be a second
+    // copy to keep right.
+    if mode.is_wspr() {
+        return sdroxide_types::WSPR_DIALS.iter().copied().find(|hz| (lo..=hi).contains(hz));
+    }
     digi_dial_freqs(mode).iter().find(|&&(_, hz)| (lo..=hi).contains(&hz)).map(|&(_, hz)| hz)
 }
 
@@ -236,6 +367,10 @@ impl SdroxideApp {
         self.text_tx.clear();
         self.digi_stations = Default::default();
         self.digi_preview = None;
+        // WSPR receptions belong to the band and the slot they came
+        // from; carried into another mode they would be a list of
+        // things the receiver is no longer listening for.
+        self.wspr_spots.clear();
         // The Hell raster is a continuous strip with no frame boundary, so
         // leaving it up across a mode change would splice unrelated text.
         self.hell.clear();

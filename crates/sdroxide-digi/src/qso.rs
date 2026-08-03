@@ -1001,6 +1001,7 @@ impl QsoMachine {
             call_queue: self.queue.iter().cloned().collect(),
             clock_offset_s: None,
             cw: None,
+            wspr: None,
         }
     }
 }

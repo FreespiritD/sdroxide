@@ -49,6 +49,8 @@ One binary, three ways to run it:
   messaging, heartbeats and multi-frame free text), the keyboard modes
   **PSK31**, **RTTY**,
   **Olivia**, **THOR** and **FSQ** (with directed messaging + images),
+  **WSPR** (transmit and receive, with WSPRnet reporting and optional band
+  hopping),
   **Hellschreiber** (all seven Feld Hell / FSK Hell variants, on a scrolling
   raster), image **SSTV** (Scottie, Martin, Robot), image **RIFP**
   (draft-dulaunoy-rifp-00 — packetised, checksummed pictures over a 4800-baud
@@ -111,6 +113,44 @@ a decode list and an auto-sequencing QSO panel:
   and persisted.
 - All decoding and encoding run server-side in the native engine, so native and
   browser clients behave identically.
+
+## WSPR
+
+Selecting **WSPR** opens a reception list beside the world map, and a beacon
+status pane. WSPR is not a QSO mode — a transmission carries a callsign, a grid
+and a power level and nothing else — so what the panel shows is measurements of
+paths rather than a conversation.
+
+- **Receive** decodes every two-minute slot. Each row is a beacon heard (`←`) or,
+  once "who heard me" is on, a station that heard *this* one (`→`), with its
+  locator, signal report, declared power and distance. Reports are coloured on
+  WSPR's own scale, where −25 dB is still a good path.
+- **Transmit** is off until you ask for it. Set a duty cycle (10–100% of slots)
+  and the power you actually radiate on the WSPR setup page; the beacon picks
+  its slots from your callsign, so two stations running sdroxide do not transmit
+  on top of each other, and it moves within the 200 Hz window each time.
+- **Band hopping** moves the dial between slots so one receiver samples the whole
+  spectrum. Turning the VFO yourself pauses it and says so.
+- **WSPRnet** — spots are uploaded as they are decoded (this is on by default; it
+  puts nothing on the air and it is what makes a receiver part of the network),
+  and **WHO HEARD ME** polls wsprnet.org for reports of your own callsign, which
+  is the only feedback a beacon ever gets.
+- Transmitting needs a plain callsign and a 4-character locator — the 50-bit
+  message has room for nothing else. A compound call or a 6-character grid is
+  said plainly rather than mangled; receiving is unaffected.
+
+## Propagation heat map
+
+Everything the station hears becomes evidence about the ionosphere, and the
+**PROP** layer on the 3D globe draws it: WSPR both ways, FT8/FT4 and JS8
+decodes, and the logbook.
+
+- Each reception is placed at the **midpoint of its path** — the patch of
+  ionosphere that bent it — rather than at the far station, so the picture is a
+  map of the sky rather than of where radio amateurs live. Long paths get a
+  control point per hop.
+- **ALL BANDS** gives every band its own hue, **ONE BAND** runs a
+  single band through a blue → green → yellow → red ramp. The same picture can be switched on under the flat map in the operating panel.
 
 ## PSK31 and RTTY
 

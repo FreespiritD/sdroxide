@@ -52,6 +52,7 @@ pub struct SolarResources {
     body_pipe: wgpu::RenderPipeline,
     aurora_pipe: wgpu::RenderPipeline,
     cloud_pipe: wgpu::RenderPipeline,
+    prop_pipe: wgpu::RenderPipeline,
     cloud_march_pipe: wgpu::RenderPipeline,
     cone_pipe: wgpu::RenderPipeline,
     ring_pipe: wgpu::RenderPipeline,
@@ -105,11 +106,14 @@ pub struct SolarResources {
     aurora_view: wgpu::TextureView,
     cloud_tex: wgpu::Texture,
     cloud_view: wgpu::TextureView,
+    prop_tex: wgpu::Texture,
+    prop_view: wgpu::TextureView,
     flash_buf: wgpu::Buffer,
     /// As `sun_gen`, for the OVATION grid. Its size is fixed, so a new grid is
     /// a texture write and never a bind-group rebuild.
     aurora_gen: u64,
     cloud_gen: u64,
+    prop_gen: u64,
     sampler: wgpu::Sampler,
 
     sample_count: u32,
@@ -158,6 +162,7 @@ fn build(rs: &RenderState) -> SolarResources {
     let body_sh = shader("solar-body", include_str!("../shaders/solar_body.wgsl"));
     let aurora_sh = shader("solar-aurora", include_str!("../shaders/solar_aurora.wgsl"));
     let cloud_sh = shader("solar-cloud", include_str!("../shaders/solar_cloud.wgsl"));
+    let prop_sh = shader("solar-prop", include_str!("../shaders/solar_prop.wgsl"));
     let cloud_march_sh =
         shader("solar-cloud-march", include_str!("../shaders/solar_cloud_march.wgsl"));
     let cone_sh = shader("solar-cone", include_str!("../shaders/solar_cone.wgsl"));
@@ -214,6 +219,7 @@ fn build(rs: &RenderState) -> SolarResources {
             },
             tex_entry(7),
             uniform_entry(8, false, std::mem::size_of::<Flashes>() as u64),
+            tex_entry(9),
         ],
     });
     let draw_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -374,6 +380,20 @@ fn build(rs: &RenderState) -> SolarResources {
         "solar-cloud",
         &draw_layout,
         &cloud_sh,
+        &[mesh_layout.clone()],
+        Some(premultiplied),
+        depth_state(false, wgpu::CompareFunction::Greater),
+        sample_count,
+    );
+    // Paint on the surface, not light standing above it: composited over, so
+    // the coastline shows through a heat cell rather than being added to. No
+    // depth write, so the layer never occludes the markers on top of it, but it
+    // still *tests* depth, which is what keeps the far side of the globe behind
+    // the near side.
+    let prop_pipe = make_pipe(
+        "solar-prop",
+        &draw_layout,
+        &prop_sh,
         &[mesh_layout.clone()],
         Some(premultiplied),
         depth_state(false, wgpu::CompareFunction::Greater),
@@ -552,6 +572,28 @@ fn build(rs: &RenderState) -> SolarResources {
     });
     let aurora_view = aurora_tex.create_view(&Default::default());
 
+    // The propagation heat, already resolved to colours by `prop_map`. Straight
+    // RGBA rather than a per-band array plus lookup tables: the flat map in the
+    // operating panel uploads these same bytes to egui, and one texture is the
+    // only way to be certain the two views cannot disagree. Created empty,
+    // which is transparent, which is what should be drawn before any traffic
+    // has been heard.
+    let prop_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("solar-prop-tex"),
+        size: wgpu::Extent3d {
+            width: sdroxide_types::PROP_GRID_W as u32,
+            height: sdroxide_types::PROP_GRID_H as u32,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let prop_view = prop_tex.create_view(&Default::default());
+
     // The cloud field: red is optical thickness, green is cloud-top height.
     // Created empty for the same reason as the aurora grid — zero is "no
     // cloud", which is the right thing to draw before the first mosaic lands —
@@ -601,6 +643,7 @@ fn build(rs: &RenderState) -> SolarResources {
         &border_view,
         &body_maps,
         &cloud_view,
+        &prop_view,
         &flash_buf,
         &sampler,
     );
@@ -610,6 +653,7 @@ fn build(rs: &RenderState) -> SolarResources {
         body_pipe,
         aurora_pipe,
         cloud_pipe,
+        prop_pipe,
         cloud_march_pipe,
         cone_pipe,
         ring_pipe,
@@ -657,8 +701,11 @@ fn build(rs: &RenderState) -> SolarResources {
         aurora_gen: 0,
         cloud_tex,
         cloud_view,
+        prop_tex,
+        prop_view,
         flash_buf,
         cloud_gen: 0,
+        prop_gen: 0,
         sampler,
         sample_count,
         blit_format: rs.target_format,
@@ -678,6 +725,7 @@ fn make_scene_bg(
     borders: &wgpu::TextureView,
     body_maps: &wgpu::TextureView,
     clouds: &wgpu::TextureView,
+    prop: &wgpu::TextureView,
     flashes: &wgpu::Buffer,
     sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
@@ -706,6 +754,7 @@ fn make_scene_bg(
                 resource: wgpu::BindingResource::TextureView(clouds),
             },
             wgpu::BindGroupEntry { binding: 8, resource: flashes.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(prop) },
         ],
     })
 }
@@ -1109,6 +1158,7 @@ impl SolarResources {
                 &self.border_view,
                 &self.body_map_view,
                 &self.cloud_view,
+                &self.prop_view,
                 &self.flash_buf,
                 &self.sampler,
             );
@@ -1171,6 +1221,44 @@ impl SolarResources {
         self.aurora_gen = generation;
     }
 
+    /// Replace the propagation heat.
+    ///
+    /// `rgba` is straight (non-premultiplied) RGBA8, row-major from the north
+    /// pole — exactly what `prop_map::PropHeat::rgba` produced for the flat
+    /// map. Nothing is recoloured here; see `solar_prop.wgsl` for why.
+    ///
+    /// Fixed size, so this never touches the bind group. 144 × 4 = 576 bytes a
+    /// row, which is not the 256-byte multiple `write_texture` insists on, so
+    /// the rows are padded — the same dance the aurora grid does.
+    pub fn set_prop(&mut self, queue: &wgpu::Queue, rgba: &[u8], generation: u64) {
+        let (w, h) = (sdroxide_types::PROP_GRID_W, sdroxide_types::PROP_GRID_H);
+        if self.prop_gen == generation || rgba.len() != w * h * 4 {
+            return;
+        }
+        let stride = ((w * 4) as u32).div_ceil(256) * 256;
+        let mut data = vec![0u8; stride as usize * h];
+        for row in 0..h {
+            let dst = row * stride as usize;
+            data[dst..dst + w * 4].copy_from_slice(&rgba[row * w * 4..(row + 1) * w * 4]);
+        }
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.prop_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride),
+                rows_per_image: Some(h as u32),
+            },
+            wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+        );
+        self.prop_gen = generation;
+    }
+
     /// Upload the cloud field. Fixed size, so this never touches the bind
     /// group; the generation guard keeps a megabyte off every frame.
     ///
@@ -1228,6 +1316,10 @@ pub struct SolarCallback {
     /// Latest cloud field, on the same terms.
     pub clouds: Option<std::sync::Arc<sdroxide_solar::CloudField>>,
     pub clouds_gen: u64,
+    /// The propagation heat, already resolved to RGBA. `Arc` for the same
+    /// reason as the rest: forty kilobytes must not be copied per frame.
+    pub prop: Option<std::sync::Arc<Vec<u8>>>,
+    pub prop_gen: u64,
 }
 
 impl CallbackTrait for SolarCallback {
@@ -1257,6 +1349,9 @@ impl CallbackTrait for SolarCallback {
         }
         if let Some(field) = &self.clouds {
             r.set_clouds(queue, field, self.clouds_gen);
+        }
+        if let Some(rgba) = &self.prop {
+            r.set_prop(queue, rgba, self.prop_gen);
         }
 
         queue.write_buffer(&r.globals_buf, 0, bytemuck::bytes_of(&self.scene.globals));
@@ -1380,6 +1475,11 @@ impl CallbackTrait for SolarCallback {
                         pass.set_vertex_buffer(0, r.sphere_vb.slice(..));
                         pass.set_index_buffer(r.sphere_ib.slice(..), wgpu::IndexFormat::Uint32);
                     }
+                    Prim::Prop => {
+                        pass.set_pipeline(&r.prop_pipe);
+                        pass.set_vertex_buffer(0, r.sphere_vb.slice(..));
+                        pass.set_index_buffer(r.sphere_ib.slice(..), wgpu::IndexFormat::Uint32);
+                    }
                     Prim::CloudVolume => {
                         pass.set_pipeline(&r.cloud_march_pipe);
                         pass.set_vertex_buffer(0, r.sphere_vb.slice(..));
@@ -1405,7 +1505,9 @@ impl CallbackTrait for SolarCallback {
             }
             pass.set_bind_group(1, &r.draw_bg, &[i as u32 * r.draw_stride]);
             let n = match prim {
-                Prim::Sphere | Prim::Aurora | Prim::Cloud | Prim::CloudVolume => r.sphere_indices,
+                Prim::Sphere | Prim::Aurora | Prim::Cloud | Prim::CloudVolume | Prim::Prop => {
+                    r.sphere_indices
+                }
                 Prim::Cone => r.cone_indices,
                 Prim::Ring => r.ring_indices,
                 Prim::Tail => r.plume_indices,

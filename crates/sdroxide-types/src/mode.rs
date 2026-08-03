@@ -61,12 +61,21 @@ pub enum Mode {
     /// directed commands and heartbeats, at one of four speeds chosen in setup.
     /// Appended for the same reason as [`Mode::Hell`].
     Js8,
+    /// WSPR — the Weak Signal Propagation Reporter beacon mode. 4-FSK at
+    /// 1.46 baud, 162 symbols filling 110.6 s of a two-minute slot, six hertz
+    /// wide, carrying nothing but a callsign, a grid and a power level.
+    ///
+    /// Slotted like FT8 but not a QSO mode at all: there is no addressing, no
+    /// exchange and nobody to answer. What comes out of it is a measurement of
+    /// a path, which is why its decodes are [`crate::WsprSpot`]s rather than
+    /// [`crate::Decode`]s. Appended for the same reason as [`Mode::Hell`].
+    Wspr,
 }
 
 impl Mode {
     /// Every mode, in the order they cycle and appear in the picker — which is
     /// deliberately *not* the enum's declaration order (see [`Mode::Hell`]).
-    pub const ALL: [Mode; 25] = [
+    pub const ALL: [Mode; 26] = [
         Mode::Lsb,
         Mode::Usb,
         Mode::Cw,
@@ -81,6 +90,7 @@ impl Mode {
         Mode::Ft8,
         Mode::Ft4,
         Mode::Js8,
+        Mode::Wspr,
         Mode::Psk,
         Mode::Rtty,
         Mode::Sstv,
@@ -98,10 +108,11 @@ impl Mode {
     /// slotted FT8/FT4 modes, the continuous keyboard modes, Hell, SSTV, RIFP,
     /// RF Paint). All are USB underneath except RIFP, which is FSK on the
     /// carrier.
-    pub const DIGITAL: [Mode; 14] = [
+    pub const DIGITAL: [Mode; 15] = [
         Mode::Ft8,
         Mode::Ft4,
         Mode::Js8,
+        Mode::Wspr,
         Mode::Psk,
         Mode::Rtty,
         Mode::Olivia,
@@ -122,6 +133,7 @@ impl Mode {
             Mode::Ft8
                 | Mode::Ft4
                 | Mode::Js8
+                | Mode::Wspr
                 | Mode::Psk
                 | Mode::Rtty
                 | Mode::Sstv
@@ -153,8 +165,20 @@ impl Mode {
     /// True for the slotted FT8/FT4 modes, as opposed to the continuous
     /// keyboard modems and the image modes. Drives the decode-list / callsign
     /// overlays that only make sense for a slot-based decoder.
+    ///
+    /// WSPR is slotted too and is deliberately *not* here: those overlays are
+    /// built from [`crate::Decode`]s, and WSPR produces [`crate::WsprSpot`]s.
+    /// Including it would buy an overlay that is always empty and a transmit
+    /// frequency picker for a mode whose tone offset does not move.
     pub fn is_slotted(self) -> bool {
         matches!(self, Mode::Ft8 | Mode::Ft4 | Mode::Js8)
+    }
+
+    /// True for WSPR. Its own controller and panel: it is slotted like FT8, but
+    /// there is no QSO to sequence and what it decodes is a list of paths rather
+    /// than a conversation.
+    pub fn is_wspr(self) -> bool {
+        matches!(self, Mode::Wspr)
     }
 
     /// True for JS8. Forks the digi panel to the conversation UI and uses its
@@ -258,6 +282,7 @@ impl Mode {
             Mode::Rifp => "RIFP",
             Mode::Wefax => "WEFAX",
             Mode::Js8 => "JS8",
+            Mode::Wspr => "WSPR",
         }
     }
 
@@ -295,6 +320,14 @@ impl Mode {
             // room for a receiver tuned a few hundred hertz off, which is the
             // normal state of affairs on a chart found by ear.
             Mode::Wefax => (500.0, 3300.0),
+            // WSPR lives in one 200 Hz window, 1400–1600 Hz above the dial, and
+            // the decoder searches nowhere else. Narrow rather than the usual
+            // digital 100–3300 on purpose: the QRSS beacons just below the
+            // window and anything else in a 3 kHz passband would work the AGC
+            // against signals ten dB under the noise, which is the whole range
+            // this mode operates in. 1200–1800 leaves room for a dial a few
+            // hundred hertz out without letting the neighbours in.
+            Mode::Wspr => (1200.0, 1800.0),
             // RIFP is not a sideband mode: the CPFSK carrier sits *on* the
             // dial and swings ±4 kHz, so the passband straddles it. 25 kHz is
             // the profile's recommended occupied bandwidth.
@@ -352,6 +385,7 @@ impl Mode {
             | Mode::Ft8
             | Mode::Ft4
             | Mode::Js8
+            | Mode::Wspr
             | Mode::Psk
             | Mode::Rtty
             | Mode::Sstv

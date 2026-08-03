@@ -47,6 +47,7 @@ pub fn mode_to_civ(m: Mode) -> u8 {
         | Mode::Digu
         | Mode::Ft8
         | Mode::Js8
+        | Mode::Wspr
         | Mode::Ft4
         | Mode::Psk
         | Mode::Rtty

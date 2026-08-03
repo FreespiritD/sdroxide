@@ -137,6 +137,7 @@ impl CwController {
             call_queue: Vec::new(),
             clock_offset_s: None,
             cw: Some(self.cw_status()),
+            wspr: None,
         }
     }
 }

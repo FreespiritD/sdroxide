@@ -42,7 +42,14 @@ use sdroxide_types::Decode;
 /// the station is decoding and every satellite frequency they have corrected —
 /// so a server that asks the control client for a password asks this one too,
 /// rather than leaving the same station's traffic on an open port.
-pub const SOLAR_PROTO_VERSION: u16 = 4;
+/// v5: the propagation heat — `SolarServerMsg::Propagation`, appended for the
+/// same reason and rejected for the same one. Only the *live* band planes
+/// travel (typically two to four), and at most every thirty seconds: the whole
+/// fourteen would be two megabytes and thirteen of them are usually empty.
+/// Unlike the awards layer this is deliberately *not* left blank in the browser
+/// — it is live data about the station's own conditions, which is exactly what
+/// this relay exists to carry.
+pub const SOLAR_PROTO_VERSION: u16 = 5;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SolarClientMsg {
@@ -155,6 +162,17 @@ pub enum SolarServerMsg {
     /// Those were not the credentials. Same contract as the radio protocol's:
     /// the socket stays open for another try, at the server's pace.
     AuthRejected(String),
+    /// The propagation field: which bands are getting through where.
+    ///
+    /// Only the bands that have anything in them, so a station working one band
+    /// sends one plane rather than fourteen. The viewer reassembles a
+    /// [`sdroxide_types::PropField`] from these and draws it with the same code
+    /// the native window does.
+    Propagation {
+        halflife_s: f64,
+        /// `(band index into `Band::ALL`, plane)`.
+        planes: Vec<(u8, sdroxide_types::BandPlane)>,
+    },
 }
 
 #[cfg(test)]
@@ -180,6 +198,24 @@ mod tests {
             m_prob: 15.0,
             x_prob: 1.0,
         };
+        // One band's field, as the relay carries it. Built through the public
+        // API rather than by hand so the test breaks if the layout changes
+        // without the version being bumped.
+        fn prop_plane() -> sdroxide_types::BandPlane {
+            let mut f = sdroxide_types::PropField::default();
+            let o = sdroxide_types::PropObservation::new(
+                (51.5, -0.1),
+                (40.7, -74.0),
+                14_097_100.0,
+                1_784_937_600,
+                sdroxide_types::PropSource::Wspr,
+                Some(9.0),
+            )
+            .expect("20 m is an amateur band");
+            f.deposit(&o, 1_784_937_600, sdroxide_types::DEFAULT_HM_KM);
+            f.plane(sdroxide_types::Band::M20).expect("just deposited").clone()
+        }
+
         let oval = AuroraOval {
             observed_unix: 1_784_937_600,
             forecast_unix: 1_784_940_000,
@@ -230,6 +266,7 @@ mod tests {
                     ),
                 ],
             )]),
+            SolarServerMsg::Propagation { halflife_s: 2700.0, planes: vec![(5, prop_plane())] },
             SolarServerMsg::AuthRequired,
             SolarServerMsg::AuthRejected("username or password not accepted".into()),
         ];

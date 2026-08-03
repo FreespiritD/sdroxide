@@ -338,6 +338,7 @@ pub fn digi_channels(mode: crate::Mode) -> Vec<DigiChannel> {
 
     let mut v = match mode {
         Mode::Js8 => plain(JS8_DIALS),
+        Mode::Wspr => plain(WSPR_DIALS),
         Mode::Ft8 => {
             let mut v = plain(FT8_DIALS);
             v.extend(

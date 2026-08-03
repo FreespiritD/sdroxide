@@ -21,7 +21,7 @@ impl SdroxideApp {
         // Per-mode parameters (RTTY/Olivia/THOR/FSQ) now live in each panel's
         // header, so this dialog only carries the shared identity + FT8/FT4
         // message templates.
-        let title = if mode.is_text_modem() || mode.is_hell() || mode.is_js8() {
+        let title = if mode.is_text_modem() || mode.is_hell() || mode.is_js8() || mode.is_wspr() {
             format!("{} Setup", mode.label())
         } else {
             "FT8 / FT4 Setup".to_string()
@@ -150,6 +150,13 @@ impl SdroxideApp {
                         changed |= ui.text_edit_singleline(&mut cfg.js8_status).changed();
                         ui.end_row();
                     }
+                    // WSPR shares the identity above and nothing below it: there
+                    // is no period to pick, no sequence to automate and no
+                    // message to template. Everything it *does* need is here.
+                    if mode.is_wspr() {
+                        wspr_rows(ui, cfg, &mut changed);
+                        return;
+                    }
                     ui.label("TX period");
                     ui.horizontal(|ui| {
                         changed |= ui.selectable_value(&mut cfg.tx_even, true, "Even").changed();
@@ -233,6 +240,12 @@ impl SdroxideApp {
                         ui.end_row();
                     }
                 });
+                if mode.is_wspr() {
+                    if changed {
+                        cmds.push(Command::SetDigiConfig(cfg.clone()));
+                    }
+                    return;
+                }
                 ui.separator();
                 ui.label(
                     RichText::new("Message templates  {MYCALL} {MYGRID} {DX} {REPORT}")
@@ -261,5 +274,137 @@ impl SdroxideApp {
             crate::chrome::paint_window_border(ctx, &r.response);
         }
         self.show_digi_settings = open;
+    }
+}
+
+/// The WSPR half of the setup grid: what the beacon announces, how often, and
+/// where.
+fn wspr_rows(ui: &mut egui::Ui, cfg: &mut sdroxide_types::DigiConfig, changed: &mut bool) {
+    use sdroxide_types::{Band, WSPR_POWERS_DBM, power_label, round_power_dbm};
+
+    ui.label("Transmit");
+    ui.horizontal(|ui| {
+        // A few sensible duty cycles rather than a free number, for the reason
+        // JS8's heartbeat interval is: air time is a commitment, and 20% is the
+        // convention that lets a hundred beacons share two hundred hertz.
+        for (pct, label) in
+            [(0u8, "Off"), (10, "10%"), (20, "20%"), (33, "33%"), (50, "50%"), (100, "100%")]
+        {
+            if crate::chrome::chip(ui, cfg.wspr_tx_percent == pct, label).clicked()
+                && cfg.wspr_tx_percent != pct
+            {
+                cfg.wspr_tx_percent = pct;
+                *changed = true;
+            }
+        }
+    });
+    ui.end_row();
+    ui.label("");
+    ui.label(
+        RichText::new(
+            "The fraction of two-minute slots this station beacons in, chosen slot by slot so \
+             two stations do not pick the same ones. Off — receive only — is the default: \
+             selecting a mode is not consent to transmit.",
+        )
+        .size(10.5)
+        .weak(),
+    );
+    ui.end_row();
+
+    ui.label("Power");
+    ui.horizontal(|ui| {
+        // Only the levels the 50-bit message can actually express. Announcing a
+        // power that is not one of these would mean announcing a different one,
+        // which corrupts everybody else's path measurement and not just ours.
+        let cur = round_power_dbm(cfg.wspr_power_dbm);
+        egui::ComboBox::from_id_salt("wspr-power")
+            .selected_text(format!("{} dBm — {}", cur, power_label(cur)))
+            .show_ui(ui, |ui| {
+                for p in WSPR_POWERS_DBM {
+                    if ui
+                        .selectable_label(cur == p, format!("{p} dBm — {}", power_label(p)))
+                        .clicked()
+                        && cfg.wspr_power_dbm != p
+                    {
+                        cfg.wspr_power_dbm = p;
+                        *changed = true;
+                    }
+                }
+            });
+    })
+    .response
+    .on_hover_text(
+        "What this station actually radiates. It goes out in the message and everyone who \
+         hears it uses it to judge the path, so an optimistic figure here makes every one of \
+         their measurements wrong as well as yours.",
+    );
+    ui.end_row();
+
+    ui.label("Band hopping");
+    *changed |= ui
+        .checkbox(&mut cfg.wspr_hop, "Move between bands each slot")
+        .on_hover_text(
+            "Sample the whole spectrum with one receiver instead of watching one band. \
+             Turning the VFO yourself pauses it — re-apply this dialog to resume.",
+        )
+        .changed();
+    ui.end_row();
+
+    if cfg.wspr_hop {
+        ui.label("Bands");
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            // Only bands that have a WSPR dial: the rest have nothing to hop to.
+            for (i, b) in Band::ALL.iter().enumerate() {
+                if !sdroxide_types::WSPR_DIALS.iter().any(|&hz| Band::containing(hz) == *b) {
+                    continue;
+                }
+                let bit = 1u16 << i;
+                let on = cfg.wspr_hop_bands & bit != 0;
+                if crate::chrome::chip(ui, on, b.label()).clicked() {
+                    cfg.wspr_hop_bands ^= bit;
+                    *changed = true;
+                }
+            }
+        });
+        ui.end_row();
+        if cfg.wspr_hop_bands == 0 {
+            ui.label("");
+            ui.label(
+                RichText::new("No bands selected — hopping has nowhere to go.")
+                    .size(10.5)
+                    .color(crate::theme::YELLOW),
+            );
+            ui.end_row();
+        }
+    }
+
+    ui.label("Transmit frequency");
+    *changed |= ui
+        .checkbox(&mut cfg.auto_tx_freq, "Move within the window each time")
+        .on_hover_text(
+            "Pick a different offset inside the 200 Hz window for every transmission. This is \
+             the WSPR convention: two hundred hertz shared by everyone only works if nobody \
+             parks in the middle of it. Off holds wherever you put the cursor.",
+        )
+        .changed();
+    ui.end_row();
+
+    // The one identity problem this mode has, said where the identity is typed
+    // rather than only where it fails.
+    let call = cfg.my_call.trim();
+    let grid = cfg.my_grid.trim();
+    if cfg.wspr_tx_percent > 0 && (call.contains('/') || (!grid.is_empty() && grid.len() != 4)) {
+        ui.label("");
+        ui.label(
+            RichText::new(
+                "WSPR's message carries a plain callsign and a 4-character locator and has \
+                 room for nothing else, so this station cannot transmit as entered. Receiving \
+                 is unaffected.",
+            )
+            .size(10.5)
+            .color(crate::theme::YELLOW),
+        );
+        ui.end_row();
     }
 }

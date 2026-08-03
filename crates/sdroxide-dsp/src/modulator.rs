@@ -27,6 +27,7 @@ pub fn make_modulator(mode: Mode, rate: f64) -> Option<Box<dyn Modulator>> {
         | Mode::Digl
         | Mode::Ft8
         | Mode::Js8
+        | Mode::Wspr
         | Mode::Ft4
         | Mode::Psk
         | Mode::Rtty

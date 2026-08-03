@@ -164,6 +164,44 @@ pub struct Credentials {
     pub password: String,
 }
 
+/// WSPRnet: what we tell it, and what we ask it.
+///
+/// Uploading is on by default and downloading is not, which looks backwards
+/// until you notice which one is the point of the mode. Reporting what you hear
+/// is what makes a WSPR receiver a member of the network rather than a private
+/// curiosity; it puts nothing on the air and costs one HTTP request per spot.
+/// Downloading is a poll of somebody else's server on a timer, so it waits to
+/// be asked for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WsprNetConfig {
+    /// Upload spots decoded here to wsprnet.org.
+    pub upload: bool,
+    /// Poll wsprnet.org for reports of our own callsign — who heard us.
+    ///
+    /// The only way a beacon learns anything about its own reach: WSPR has no
+    /// acknowledgement, so a transmitting station is otherwise talking into a
+    /// void.
+    pub download_heard_us: bool,
+    /// How often to ask, in seconds. Nothing is gained by asking faster than a
+    /// slot goes by, and the server would rather we did not.
+    pub download_interval_secs: u32,
+    /// How far back each poll looks, in minutes. Wide enough to cover a missed
+    /// poll or two without re-reading the day.
+    pub download_window_min: u32,
+}
+
+impl Default for WsprNetConfig {
+    fn default() -> Self {
+        WsprNetConfig {
+            upload: true,
+            download_heard_us: false,
+            download_interval_secs: 300,
+            download_window_min: 30,
+        }
+    }
+}
+
 /// The whole network-feature configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -201,6 +239,10 @@ pub struct NetworkConfig {
     pub auto_upload_eqsl: bool,
     pub auto_upload_qrz: bool,
     pub auto_upload_clublog: bool,
+
+    // ── WSPRnet ──
+    /// The WSPR network, both directions. Appended last, as the wire requires.
+    pub wspr: WsprNetConfig,
 }
 
 impl Default for NetworkConfig {
@@ -226,6 +268,7 @@ impl Default for NetworkConfig {
             auto_upload_eqsl: false,
             auto_upload_qrz: false,
             auto_upload_clublog: false,
+            wspr: WsprNetConfig::default(),
         }
     }
 }

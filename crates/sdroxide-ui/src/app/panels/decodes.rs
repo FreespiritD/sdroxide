@@ -749,6 +749,8 @@ impl SdroxideApp {
                 .filter(|s| self.spot_visible(s))
                 .filter_map(|s| s.loc.map(|(lat, lon)| (lat, lon, s.kind.color())))
                 .collect();
+            let heat = self.prop_texture(ui.ctx(), self.state.rx_freq_hz());
+            self.prop_map_controls(ui);
             crate::widgets::worldmap::show(
                 ui,
                 &mut self.map_view,
@@ -758,6 +760,7 @@ impl SdroxideApp {
                 hover_ll,
                 &stations,
                 &spot_dots,
+                heat,
                 tx_active,
                 map_budget,
             );

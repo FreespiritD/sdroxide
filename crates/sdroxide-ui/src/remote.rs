@@ -210,6 +210,7 @@ impl RemoteController {
             ServerMsg::Error(e) => self.pending.push_back(RadioEvent::ConnectionLost(e)),
             ServerMsg::Notice(n) => self.pending.push_back(RadioEvent::Notice(n)),
             ServerMsg::Ft8Decodes(d) => self.pending.push_back(RadioEvent::Ft8Decodes(d)),
+            ServerMsg::WsprSpots(s) => self.pending.push_back(RadioEvent::WsprSpots(s)),
             ServerMsg::Ft8Status(s) => self.pending.push_back(RadioEvent::Ft8Status(s)),
             ServerMsg::Ft8QsoLogged(r) => self.pending.push_back(RadioEvent::Ft8QsoLogged(r)),
             ServerMsg::SkimmerSpots(s) => self.pending.push_back(RadioEvent::SkimmerSpots(s)),

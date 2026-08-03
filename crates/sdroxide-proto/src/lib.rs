@@ -188,7 +188,14 @@ use sdroxide_types::{
 /// variants were also renamed `Rnn*`, which the wire cannot see (postcard is
 /// positional and this enum is persisted nowhere else) but the labels can: the
 /// chip reads "NR RNN Med" where it read "NR AI Med".
-pub const PROTO_VERSION: u16 = 43;
+/// v44: WSPR. `Mode::Wspr` is appended, as is `SpotKind::Wspr`, so no surviving
+/// discriminant moves — but `DigiConfig` gained five fields and `DigiStatus` a
+/// `wspr: Option<WsprStatus>`, and postcard is not self-describing, so every
+/// message carrying either changes layout and both ends have to agree. The new
+/// `ServerMsg::WsprSpots` carries what a slot decoded: a WSPR reception is a
+/// measurement of a path rather than a message somebody sent, so it travels as
+/// its own event instead of being squeezed into `Decode`.
+pub const PROTO_VERSION: u16 = 44;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -413,6 +420,13 @@ pub enum ServerMsg {
     /// the operator can correct a typo without redialling — but the server
     /// takes its time before it will judge another attempt.
     AuthRejected(String),
+    /// What a WSPR slot decoded.
+    ///
+    /// Not `Ft8Decodes`: a WSPR reception is a measurement of a path, not a
+    /// message addressed to anyone, and it carries the transmit power and drift
+    /// that make it one. Squeezing it into `Decode` would have meant throwing
+    /// both away. Appended last, so no surviving discriminant moves.
+    WsprSpots(Vec<sdroxide_types::WsprSpot>),
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {

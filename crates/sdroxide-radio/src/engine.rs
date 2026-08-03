@@ -16,7 +16,7 @@ use sdroxide_config::BandStacks;
 use sdroxide_digi::{
     CwController, DigiAction, DigiController, DigiEngine, FsqController, HellController,
     Js8Controller, RadeController, RfPaintController, RifpController, SstvController,
-    TextModemController, WefaxController,
+    TextModemController, WefaxController, WsprController,
 };
 use sdroxide_dsp::{
     Agc, AutoNotch, DcBlock, Ddc, DeepFilterNr, Demodulator, Duc, Modulator, MonoResampler,
@@ -1000,6 +1000,11 @@ struct Engine {
     digi_config: DigiConfig,
     /// True while the current TX burst is driven by the digi engine.
     digi_tx: bool,
+    /// WSPR band hopping has been stood down because the operator moved the
+    /// dial. Cleared when the setup is applied again, which is how it is turned
+    /// back on — the same bargain the scanner strikes in
+    /// [`Engine::stop_scan_for_operator`], and for the same reason.
+    hop_suspended: bool,
     /// Voice keyer: ten recorded messages plus whichever is being recorded or
     /// transmitted right now.
     voice: VoiceKeyer,
@@ -1356,6 +1361,7 @@ fn engine_thread(
         digi: None,
         digi_config,
         digi_tx: false,
+        hop_suspended: false,
         voice: VoiceKeyer::load(),
         images: crate::image_store::ImagePresetStore::load(),
         gallery: crate::image_store::GalleryWorker::new(),
@@ -2269,6 +2275,11 @@ impl Engine {
                     }
                     let _ = self.event_tx.send(RadioEvent::Ft8QsoLogged(r));
                 }
+                DigiAction::WsprSpots(spots) => {
+                    self.spots.wspr_report(&spots, dial, self.digi_config.wspr_tx_percent);
+                    let _ = self.event_tx.send(RadioEvent::WsprSpots(spots));
+                }
+                DigiAction::SetDial(hz) => self.wspr_hop(hz),
                 DigiAction::RadeCallsign { call, snr_db, freq_hz } => {
                     // A RADE station identified itself in its End-of-Over
                     // frame: report hearing it. The reporter pairs the report
@@ -2402,6 +2413,11 @@ impl Engine {
             // protocol. `make_digi_builds_a_js8_controller_for_js8` guards the
             // ordering.
             Box::new(Js8Controller::new(self.digi_config.clone(), tap_rate))
+        } else if mode.is_wspr() {
+            // Ahead of the fall-through for the same reason, and the symptom
+            // would be quieter still: WSPR is 4-FSK in the same passband, so an
+            // FT8 decoder handed its audio finds nothing and says nothing.
+            Box::new(WsprController::new(self.digi_config.clone(), tap_rate))
         } else {
             Box::new(DigiController::new(mode, self.digi_config.clone(), tap_rate))
         }
@@ -2989,6 +3005,10 @@ impl Engine {
                 if let Some(d) = self.digi.as_mut() {
                     d.set_config(c);
                 }
+                // Applying the setup is how a stood-down band hop is resumed —
+                // the operator has said what they want the beacon to do, which
+                // settles the argument over the dial that suspended it.
+                self.hop_suspended = false;
                 self.sync_cw_filter();
                 if let Err(e) = sdroxide_config::save_digi_config(&self.digi_config) {
                     warn!("saving digi config: {e}");
@@ -3966,6 +3986,7 @@ impl Engine {
                 sdroxide_net::NetEvent::Callsign(c) => RadioEvent::CallsignResult(c),
                 sdroxide_net::NetEvent::Upload(r) => RadioEvent::Upload(r),
                 sdroxide_net::NetEvent::Confirmations(r) => RadioEvent::Confirmations(r),
+                sdroxide_net::NetEvent::WsprSpots(s) => RadioEvent::WsprSpots(s),
             };
             let _ = self.event_tx.send(re);
         }
@@ -4187,6 +4208,59 @@ impl Engine {
         if self.state.scan.running {
             self.stop_scan(None);
         }
+        self.stop_hop_for_operator();
+    }
+
+    /// The same bargain for WSPR band hopping: a hand on the VFO wins.
+    ///
+    /// Stood down rather than switched off, so the setting the operator chose is
+    /// still the setting they chose — applying the WSPR setup again resumes it.
+    /// Silent when hopping was not running, and said once when it was: a beacon
+    /// that stopped moving with no explanation reads as the feature being
+    /// broken.
+    fn stop_hop_for_operator(&mut self) {
+        if self.hop_suspended || !self.digi_config.wspr_hop {
+            return;
+        }
+        if self.state.rx[0].mode != Mode::Wspr {
+            return;
+        }
+        self.hop_suspended = true;
+        self.notice(
+            "WSPR band hopping paused — you moved the dial. Apply the WSPR setup to resume.",
+        );
+    }
+
+    /// Move the dial because the WSPR beacon asked to hop bands.
+    ///
+    /// The controller proposes and this disposes. Refused while transmitting
+    /// (moving the dial under a carrier is never right), while the operator has
+    /// the tuning stood down, and for a frequency the front end cannot reach —
+    /// the last of those *silently*, because a device without 160 m would
+    /// otherwise post the same complaint every time the cycle came round to it.
+    fn wspr_hop(&mut self, hz: f64) {
+        if self.hop_suspended || self.tx_active || self.state.tx.ptt || self.digi_tx {
+            return;
+        }
+        if hz <= 0.0 {
+            return;
+        }
+        // Ask about the centre the front end would actually sit on, not the
+        // dial: on a radio that parks its LO clear of the VFO they differ, and
+        // it is the LO that has to be in range.
+        let offset = self.source.lo_offset_hz();
+        if ![hz + offset, hz - offset, hz].into_iter().any(|c| self.can_tune(c)) {
+            debug!(hz, "WSPR hop skipped: outside the receive range");
+            return;
+        }
+        match self.state.active_vfo {
+            Vfo::A => self.state.vfo_a_hz = hz,
+            Vfo::B => self.state.vfo_b_hz = hz,
+        }
+        self.state.band = Band::containing(hz);
+        self.keep_vfo_in_span();
+        self.update_tuning();
+        let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
     }
 
     fn poll_scanner(&mut self) {
@@ -5812,6 +5886,7 @@ fn rig_mode_class(m: Mode) -> u8 {
         | Mode::Ft8
         | Mode::Ft4
         | Mode::Js8
+        | Mode::Wspr
         | Mode::Psk
         | Mode::Rtty
         | Mode::Sstv

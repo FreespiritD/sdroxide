@@ -301,6 +301,14 @@ fn pump(
     }
 }
 
+/// UTC seconds now — the clock the propagation field stamps observations with.
+fn now_utc() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 fn handle_event(shared: &Shared, ev: RadioEvent) {
     // Two of these also feed the globe's QSO layer. Relayed unconditionally
     // rather than only while a map is open: `broadcast::send` with no receivers
@@ -310,6 +318,37 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
     match &ev {
         RadioEvent::Ft8Decodes(d) => {
             shared.solar.publish(SolarServerMsg::Decodes(d.clone()));
+            // …and into the propagation field, which the solar tab draws. The
+            // dial and the operator's locator come from the state and config
+            // this server already holds: the tab has neither.
+            let (grid, mode, dial) = {
+                let l = shared.latest.lock().unwrap();
+                (
+                    l.digi.as_ref().map(|s| s.config.my_grid.clone()).unwrap_or_default(),
+                    l.state.rx[0].mode,
+                    l.state.rx_freq_hz(),
+                )
+            };
+            let src = match mode {
+                sdroxide_types::Mode::Ft8 => Some(sdroxide_types::PropSource::Ft8),
+                sdroxide_types::Mode::Ft4 => Some(sdroxide_types::PropSource::Ft4),
+                sdroxide_types::Mode::Js8 => Some(sdroxide_types::PropSource::Js8),
+                _ => None,
+            };
+            if let Some(src) = src
+                && !grid.trim().is_empty()
+            {
+                shared.solar.observe_decodes(d, src, dial, &grid, now_utc());
+            }
+        }
+        RadioEvent::WsprSpots(spots) => {
+            let grid = {
+                let l = shared.latest.lock().unwrap();
+                l.digi.as_ref().map(|s| s.config.my_grid.clone()).unwrap_or_default()
+            };
+            if !grid.trim().is_empty() {
+                shared.solar.observe_wspr(spots, &grid, now_utc());
+            }
         }
         RadioEvent::Ft8Status(s) => {
             shared.solar.publish(SolarServerMsg::Digi {
@@ -360,6 +399,7 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
                 Some(ServerMsg::Ft8Status(s))
             }
             RadioEvent::Ft8QsoLogged(r) => Some(ServerMsg::Ft8QsoLogged(r)),
+            RadioEvent::WsprSpots(s) => Some(ServerMsg::WsprSpots(s)),
             RadioEvent::SkimmerSpots(s) => Some(ServerMsg::SkimmerSpots(s)),
             RadioEvent::SstvLine { image_id, y, rgb } => {
                 Some(ServerMsg::SstvLine { image_id, y, rgb })
