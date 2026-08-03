@@ -416,16 +416,19 @@ impl RxChain {
                 Some(r) => r.push(&self.audio_buf, &mut self.out_buf),
                 None => self.out_buf.extend_from_slice(&self.audio_buf),
             }
-            // Clamp after resampling so interpolation overshoot can't escape.
-            for s in &mut self.out_buf {
-                *s = s.clamp(-1.0, 1.0);
-            }
-            // Recorder tap: post-squelch, pre-volume/mute (see `rec_buf`).
+            // Recorder tap: post-squelch, pre-volume/mute (see `rec_buf`),
+            // clamped on the way in so interpolation overshoot can't escape
+            // into the file either.
             self.rec_buf.clear();
-            self.rec_buf.extend_from_slice(&self.out_buf);
+            self.rec_buf.extend(self.out_buf.iter().map(|s| s.clamp(-1.0, 1.0)));
             self.rec_buf_r.clear();
+            // Volume *then* clamp, never the other way round: clamping first
+            // would hard-clip a hot block at full scale and only then scale it
+            // down, baking in distortion that turning the AF knob down is
+            // supposed to avoid. Clamping last still catches the resampler's
+            // interpolation overshoot.
             for s in &mut self.out_buf {
-                *s *= vol;
+                *s = (*s * vol).clamp(-1.0, 1.0);
             }
             return (&self.out_buf, None);
         }
@@ -448,20 +451,19 @@ impl RxChain {
         };
         self.out_buf.reserve(lr.len() / 2);
         self.out_buf_r.reserve(lr.len() / 2);
-        for f in lr.chunks_exact(2) {
-            self.out_buf.push(f[0].clamp(-1.0, 1.0));
-            self.out_buf_r.push(f[1].clamp(-1.0, 1.0));
-        }
-        // Recorder tap: post-squelch, pre-volume/mute (see `rec_buf`).
         self.rec_buf.clear();
-        self.rec_buf.extend_from_slice(&self.out_buf);
         self.rec_buf_r.clear();
-        self.rec_buf_r.extend_from_slice(&self.out_buf_r);
-        for s in &mut self.out_buf {
-            *s *= vol;
-        }
-        for s in &mut self.out_buf_r {
-            *s *= vol;
+        self.rec_buf.reserve(lr.len() / 2);
+        self.rec_buf_r.reserve(lr.len() / 2);
+        for f in lr.chunks_exact(2) {
+            // Recorder tap: post-squelch, pre-volume/mute (see `rec_buf`).
+            self.rec_buf.push(f[0].clamp(-1.0, 1.0));
+            self.rec_buf_r.push(f[1].clamp(-1.0, 1.0));
+            // Volume before the clamp for the speakers, as in the mono branch
+            // above — clamping first would bake in distortion the AF knob is
+            // supposed to be able to avoid.
+            self.out_buf.push((f[0] * vol).clamp(-1.0, 1.0));
+            self.out_buf_r.push((f[1] * vol).clamp(-1.0, 1.0));
         }
         (&self.out_buf, Some(&self.out_buf_r))
     }

@@ -525,6 +525,15 @@ impl IqSource for SoapyRxSource {
             match stream.read(&mut [&mut scratch], 0) {
                 Ok(0) => break,
                 Ok(_) => continue,
+                // An overflow is what a whole over of unread samples looks
+                // like, so it is the expected *first* result here rather than
+                // a reason to stop: the samples it dropped are the stale ones
+                // being discarded anyway. Breaking on it would abandon the
+                // flush on exactly the case it exists for.
+                Err(e) if e.code == soapysdr::ErrorCode::Overflow => continue,
+                // Timeout is the ring reporting itself empty — the drain's
+                // normal exit. Anything else is the stream itself failing,
+                // which `read` is the one equipped to handle.
                 Err(_) => break,
             }
         }
