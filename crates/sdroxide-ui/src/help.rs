@@ -101,6 +101,12 @@ fn embedded_image(path: &str) -> Option<&'static [u8]> {
         "settings-radio-rtlsdr.jpg" => {
             &include_bytes!("../../../docs/images/settings-radio-rtlsdr.jpg")[..]
         }
+        "settings-radio-smartsdr.jpg" => {
+            &include_bytes!("../../../docs/images/settings-radio-smartsdr.jpg")[..]
+        }
+        "settings-radio-plutosdr.jpg" => {
+            &include_bytes!("../../../docs/images/settings-radio-plutosdr.jpg")[..]
+        }
         "settings-tle1.jpg" => &include_bytes!("../../../docs/images/settings-tle1.jpg")[..],
         "settings-tle2.jpg" => &include_bytes!("../../../docs/images/settings-tle2.jpg")[..],
         "settings-tle3.jpg" => &include_bytes!("../../../docs/images/settings-tle3.jpg")[..],

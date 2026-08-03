@@ -2033,6 +2033,8 @@ on the next open, so it does not need physically replugging either.
 
 #### 5.2.6 SmartSDR (FlexRadio network radios)
 
+![The Radio tab with the SmartSDR interface selected](images/settings-radio-smartsdr.jpg)
+
 With the **SmartSDR / FlexRadio (network)** interface, sdroxide drives a
 FLEX-6000 or FLEX-8000 over the LAN. It connects as a GUI client on TCP 4992,
 creates a panadapter and a **DAX IQ** stream, and receives raw complex baseband
@@ -2082,6 +2084,8 @@ from the radio's meters while you transmit.
 > `127.0.0.1:4992`.
 
 #### 5.2.7 PlutoSDR (ADALM-Pluto)
+
+![The Radio tab with the PlutoSDR interface selected](images/settings-radio-plutosdr.jpg)
 
 An **ADALM-Pluto** — the AD9361/AD9363 learning radio — driven directly over
 **IIOD**, the protocol its on-board daemon speaks on TCP port 30431. sdroxide
