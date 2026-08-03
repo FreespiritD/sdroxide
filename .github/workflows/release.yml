@@ -182,6 +182,19 @@ jobs:
           # licensed: the notice has to travel with the binary, not just live
           # in the source tree.
           cp crates/sdroxide-rx888/firmware/LICENSE.txt stage/sdroxide/LICENSE-rx888-firmware.txt
+          # ...and CMUdict, embedded for the spoken announcements'
+          # grapheme-to-phoneme. BSD-2-Clause, same argument.
+          cp crates/sdroxide-speech/assets/LICENSE-cmudict.txt stage/sdroxide/
+          # The speech voice. Unlike the two above this is not embedded — it is
+          # CC BY-NC-SA, which a GPL binary may not absorb, so it travels as a
+          # data file the program reads at run time. sdroxide looks for a
+          # "voices" directory beside the executable, which is what this is.
+          # The .deb gets the same files through cargo-deb's asset list.
+          mkdir -p stage/sdroxide/voices
+          cp assets/voices/en_US-hfc_female-medium.onnx \
+             assets/voices/en_US-hfc_female-medium.onnx.json \
+             assets/voices/en_US-hfc_female-medium.MODEL_CARD stage/sdroxide/voices/
+          cp assets/voices/LICENSE-voice.txt stage/sdroxide/
           # The .deb registers the menu entry itself; the portable tarball
           # carries the same files plus a script that installs them per-user.
           cp packaging/linux/sdroxide.desktop packaging/icons/sdroxide.svg stage/sdroxide/
@@ -248,6 +261,18 @@ jobs:
           LICENSE-rx888-firmware.txt covers the RX-888 FX3 firmware image that
           is bundled in the binary and uploaded to the receiver; it is MIT
           licensed and separate from sdroxide's own LICENSE.
+
+          Spoken announcements: the radio can read itself out — frequency,
+          mode, band, SWR while you tune up, FT8/JS8 messages addressed to you
+          — so it can be operated without seeing it. Switch it on under
+          Settings -> General -> Voice announcements. The voice runs on this
+          machine; nothing is sent anywhere.
+
+          The voice lives in the "voices" directory beside the program. It is
+          CC BY-NC-SA 4.0 (see LICENSE-voice.txt) rather than GPL, which is
+          why it is a separate data file and not part of the program itself.
+          LICENSE-cmudict.txt covers the pronunciation dictionary embedded in
+          the binary (BSD-2-Clause).
           EOF
           tar czf "out/$PKG.tar.gz" -C stage sdroxide
           cargo install cargo-deb --locked
@@ -272,6 +297,14 @@ jobs:
           cp LICENSE stage/sdroxide/LICENSE.txt
           # MIT notice for the FX3 firmware image embedded in the binary.
           cp crates/sdroxide-rx888/firmware/LICENSE.txt stage/sdroxide/LICENSE-rx888-firmware.txt
+          cp crates/sdroxide-speech/assets/LICENSE-cmudict.txt stage/sdroxide/
+          # The speech voice, in a "voices" directory beside the executable —
+          # see the Linux step for why it is a data file rather than embedded.
+          mkdir -p stage/sdroxide/voices
+          cp assets/voices/en_US-hfc_female-medium.onnx \
+             assets/voices/en_US-hfc_female-medium.onnx.json \
+             assets/voices/en_US-hfc_female-medium.MODEL_CARD stage/sdroxide/voices/
+          cp assets/voices/LICENSE-voice.txt stage/sdroxide/
           if [[ "${{ matrix.variant }}" == "cat" ]]; then
             cat > stage/sdroxide/README.txt <<'EOF'
           sdroxide — SDR transceiver (https://github.com/dividebysandwich/sdroxide)
@@ -321,6 +354,18 @@ jobs:
           LICENSE-rx888-firmware.txt covers the RX-888 FX3 firmware image that
           is bundled in the binary and uploaded to the receiver; it is MIT
           licensed and separate from sdroxide's own LICENSE.txt.
+
+          Spoken announcements: the radio can read itself out — frequency,
+          mode, band, SWR while you tune up, FT8/JS8 messages addressed to you
+          — so it can be operated without seeing it. Switch it on under
+          Settings -> General -> Voice announcements. The voice runs on this
+          machine; nothing is sent anywhere.
+
+          The voice lives in the "voices" directory beside the program. It is
+          CC BY-NC-SA 4.0 (see LICENSE-voice.txt) rather than GPL, which is
+          why it is a separate data file and not part of the program itself.
+          LICENSE-cmudict.txt covers the pronunciation dictionary embedded in
+          the binary (BSD-2-Clause).
           EOF
           7z a "out/$PKG.zip" ./stage/sdroxide > /dev/null
           # The MSI (fixed product identity) is only built for the default
@@ -344,6 +389,14 @@ jobs:
           cp target/release/sdroxide LICENSE stage/sdroxide/
           # MIT notice for the FX3 firmware image embedded in the binary.
           cp crates/sdroxide-rx888/firmware/LICENSE.txt stage/sdroxide/LICENSE-rx888-firmware.txt
+          cp crates/sdroxide-speech/assets/LICENSE-cmudict.txt stage/sdroxide/
+          # The speech voice, in a "voices" directory beside the executable —
+          # see the Linux step for why it is a data file rather than embedded.
+          mkdir -p stage/sdroxide/voices
+          cp assets/voices/en_US-hfc_female-medium.onnx \
+             assets/voices/en_US-hfc_female-medium.onnx.json \
+             assets/voices/en_US-hfc_female-medium.MODEL_CARD stage/sdroxide/voices/
+          cp assets/voices/LICENSE-voice.txt stage/sdroxide/
           if [[ "${{ matrix.variant }}" == "cat" ]]; then
             cat > stage/sdroxide/README.txt <<'EOF'
           sdroxide — SDR transceiver (https://github.com/dividebysandwich/sdroxide)
@@ -383,6 +436,18 @@ jobs:
           LICENSE-rx888-firmware.txt covers the RX-888 FX3 firmware image that
           is bundled in the binary and uploaded to the receiver; it is MIT
           licensed and separate from sdroxide's own LICENSE.
+
+          Spoken announcements: the radio can read itself out — frequency,
+          mode, band, SWR while you tune up, FT8/JS8 messages addressed to you
+          — so it can be operated without seeing it. Switch it on under
+          Settings -> General -> Voice announcements. The voice runs on this
+          machine; nothing is sent anywhere.
+
+          The voice lives in the "voices" directory beside the program. It is
+          CC BY-NC-SA 4.0 (see LICENSE-voice.txt) rather than GPL, which is
+          why it is a separate data file and not part of the program itself.
+          LICENSE-cmudict.txt covers the pronunciation dictionary embedded in
+          the binary (BSD-2-Clause).
           EOF
           tar czf "out/$PKG.tar.gz" -C stage sdroxide
           # The .app/.dmg (fixed bundle identity) is only built for the default
@@ -401,10 +466,20 @@ jobs:
             # alongside it. It has to be in place before codesign, which seals
             # the contents of Resources into the signature.
             cp crates/sdroxide-rx888/firmware/LICENSE.txt "$APP/Contents/Resources/LICENSE-rx888-firmware.txt"
+            cp crates/sdroxide-speech/assets/LICENSE-cmudict.txt "$APP/Contents/Resources/"
+            # The speech voice. In a bundle it goes under Resources, which is
+            # where sdroxide looks once it finds itself in Contents/MacOS.
+            # Also before codesign, for the same reason as the notices above.
+            mkdir -p "$APP/Contents/Resources/voices"
+            cp assets/voices/en_US-hfc_female-medium.onnx \
+               assets/voices/en_US-hfc_female-medium.onnx.json \
+               assets/voices/en_US-hfc_female-medium.MODEL_CARD "$APP/Contents/Resources/voices/"
+            cp assets/voices/LICENSE-voice.txt "$APP/Contents/Resources/"
             codesign --force -s - "$APP/Contents/MacOS/sdroxide"
             codesign --force -s - "$APP"
             cp LICENSE stage-dmg/
             cp crates/sdroxide-rx888/firmware/LICENSE.txt stage-dmg/LICENSE-rx888-firmware.txt
+            cp assets/voices/LICENSE-voice.txt crates/sdroxide-speech/assets/LICENSE-cmudict.txt stage-dmg/
             # The image is created at an explicit size and filled by hand
             # rather than handed to `hdiutil create -srcfolder`, whose own
             # sizing runs out of room mid-copy ("hdiutil: create failed - No
@@ -425,6 +500,7 @@ jobs:
             codesign --verify --strict "$mnt/sdroxide.app"
             cp LICENSE "$mnt/"
             cp crates/sdroxide-rx888/firmware/LICENSE.txt "$mnt/LICENSE-rx888-firmware.txt"
+            cp assets/voices/LICENSE-voice.txt crates/sdroxide-speech/assets/LICENSE-cmudict.txt "$mnt/"
             ln -s /Applications "$mnt/Applications"
             hdiutil detach "$mnt" || { sleep 5; hdiutil detach "$mnt" -force; }
             hdiutil convert rw.dmg -format UDZO -ov -o "out/$PKG.dmg"
@@ -515,6 +591,26 @@ jobs:
           to the receiver at open time. It is MIT licensed (© 2017-2020 Oscar
           Steila IK1XPV and the rx888-firmware contributors) and its notice
           ships as `LICENSE-rx888-firmware.txt` in every package.
+
+          ### Spoken announcements
+
+          The radio can read itself out — frequency once the dial stops moving,
+          mode and band as one phrase, band-edge warnings, the SWR while you
+          tune up, and FT8/JS8 messages addressed to you — so it can be operated
+          without seeing it. Switch it on under **Settings → General → Voice
+          announcements**. The window is also exposed to NVDA, Orca and
+          VoiceOver.
+
+          The neural voice runs on your own machine: nothing is sent anywhere
+          and no speech service has to be installed. It ships in a `voices`
+          directory beside the program (inside `Contents/Resources` in the macOS
+          bundle, `/usr/share/sdroxide/voices` from the `.deb`), and is
+          **CC BY-NC-SA 4.0** rather than GPL — which is why it is a separate
+          data file that sdroxide reads at run time rather than part of the
+          binary. Its notice ships as `LICENSE-voice.txt`, and
+          `LICENSE-cmudict.txt` covers the pronunciation dictionary embedded in
+          the binary (BSD-2-Clause). Extra Piper voices can be dropped into
+          `speech_voices/` in the config directory and picked in Settings.
 
           Every binary embeds the web client: run `sdroxide --server` and open
           `http://<host>:4950` in a browser. `sdroxide-web-*.zip` contains the

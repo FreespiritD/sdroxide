@@ -41,6 +41,36 @@
                           Source="crates/sdroxide-rx888/firmware/LICENSE.txt"
                           Name="LICENSE-rx888-firmware.txt" KeyPath="yes" />
                 </Component>
+                <!-- The spoken-announcement voice. CC BY-NC-SA rather than
+                     GPL, which is why it is a data file the program reads at
+                     run time and not something linked into sdroxide.exe: its
+                     notice ships beside it. sdroxide looks for voices in a
+                     "voices" directory next to the executable, which is what
+                     this installs. -->
+                <Component Id="VoiceLicenseFile" Guid="15C8C546-3DCB-4153-B15A-E4F886945ED6">
+                    <File Id="VoiceLicenseTxt"
+                          Source="assets/voices/LICENSE-voice.txt"
+                          Name="LICENSE-voice.txt" KeyPath="yes" />
+                </Component>
+                <!-- sdroxide.exe embeds CMUdict for grapheme-to-phoneme.
+                     BSD-2-Clause, so the notice travels with the binary for
+                     the same reason the RX-888 firmware's does. -->
+                <Component Id="CmudictLicenseFile" Guid="032C49BD-7CA0-4883-A75C-45B23FC0256E">
+                    <File Id="CmudictLicenseTxt"
+                          Source="crates/sdroxide-speech/assets/LICENSE-cmudict.txt"
+                          Name="LICENSE-cmudict.txt" KeyPath="yes" />
+                </Component>
+                <Directory Id="VoicesFolder" Name="voices">
+                    <Component Id="VoiceModel" Guid="C1052875-84CF-4257-8F03-24280E266EAC">
+                        <File Id="VoiceOnnx"
+                              Source="assets/voices/en_US-hfc_female-medium.onnx"
+                              KeyPath="yes" />
+                        <File Id="VoiceOnnxJson"
+                              Source="assets/voices/en_US-hfc_female-medium.onnx.json" />
+                        <File Id="VoiceModelCard"
+                              Source="assets/voices/en_US-hfc_female-medium.MODEL_CARD" />
+                    </Component>
+                </Directory>
                 <Component Id="PathEnv" Guid="603FD0CB-F87B-47EF-98D0-28669884B706">
                     <RegistryValue Root="HKLM" Key="Software\sdroxide" Name="PathEnv" Type="integer" Value="1" KeyPath="yes" />
                     <Environment Id="PathEntry" Name="PATH" Value="[INSTALLFOLDER]" Permanent="no" Part="last" Action="set" System="yes" />
@@ -76,6 +106,9 @@
             <ComponentRef Id="MainExe" />
             <ComponentRef Id="LicenseFile" />
             <ComponentRef Id="Rx888FirmwareLicenseFile" />
+            <ComponentRef Id="VoiceLicenseFile" />
+            <ComponentRef Id="CmudictLicenseFile" />
+            <ComponentRef Id="VoiceModel" />
             <ComponentRef Id="PathEnv" />
             <ComponentRef Id="StartMenuShortcut" />
             <ComponentRef Id="DesktopShortcut" />
