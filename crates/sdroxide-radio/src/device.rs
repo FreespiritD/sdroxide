@@ -158,6 +158,7 @@ impl SoapyDevice {
             lost: false,
             rx_gains,
             tx_gains,
+            tx_setup_needs_idle: false,
         };
         source.open_rx_stream()?;
         Ok(source)
@@ -203,6 +204,11 @@ pub struct SoapyRxSource {
     rx_gains: Vec<(String, f64)>,
     /// The same for the transmit side, re-asserted on every key-up.
     tx_gains: Vec<(String, f64)>,
+    /// This driver will not build a transmit stream while the receiver is
+    /// running, so key-down stands the receiver down first — see
+    /// [`SoapyRxSource::open_tx_stream`]. Latched on the first refusal rather
+    /// than assumed, because most drivers are happy either way.
+    tx_setup_needs_idle: bool,
 }
 
 /// Record a gain element's requested value, replacing any earlier one.
@@ -268,6 +274,59 @@ impl SoapyRxSource {
                 warn!("could not re-apply the {name} gain: {e}");
             }
         }
+    }
+
+    /// Create the transmit stream, standing the receiver down first if this
+    /// driver only lets streams be set up while none of them are running.
+    ///
+    /// # Why the receiver may have to go away first
+    ///
+    /// Setting up a stream is not necessarily independent of the streams that
+    /// already exist, even on hardware that transmits and receives at the same
+    /// time. SoapySX (SXceiver) refuses outright — "Streams can be setup only
+    /// if none of the streams are running" — because setting one up configures
+    /// its two ALSA PCMs and links them together, which ALSA only permits while
+    /// they are stopped. LimeSuite is quieter about it and no better: it stops
+    /// the running data threads to make room ("Stopping data stream to set up a
+    /// new stream") and restarts them underneath the receive stream. Others
+    /// (HackRF, PlutoSDR, bladeRF) only object to a second stream in the *same*
+    /// direction and do not care about this at all.
+    ///
+    /// So the cheap call is tried first, and on a refusal the receive stream is
+    /// closed, the transmit stream built while the device is idle, and the
+    /// receiver opened again before the transmitter is keyed — only *setup* is
+    /// what those drivers guard, so activating both afterwards is fine. Later
+    /// overs go straight to the idle path: repeating a call that has already
+    /// been refused costs a round trip and, over SoapyRemote, a socket pair and
+    /// a stream window per key-down.
+    fn open_tx_stream(&mut self) -> Result<soapysdr::TxStream<Complex32>> {
+        if !self.tx_setup_needs_idle {
+            match self.dev()?.tx_stream::<Complex32>(&[self.channel]) {
+                Ok(tx) => return Ok(tx),
+                Err(e) => {
+                    warn!(
+                        "the TX stream could not be set up while the receiver was running ({e}); \
+                         standing the receiver down for this and every later key-down"
+                    );
+                    self.tx_setup_needs_idle = true;
+                }
+            }
+        }
+        // Closing the receive stream is what leaves the device idle. On
+        // half-duplex hardware `tx_begin` has already closed it and it stays
+        // closed for the whole over, so there is nothing to put back.
+        let restore_rx = self.rx_stream.is_some();
+        self.rx_stream = None;
+        let tx = self.dev()?.tx_stream::<Complex32>(&[self.channel]);
+        if restore_rx {
+            // Back before the transmitter is keyed, and back even when the
+            // transmit stream could not be built either: a refused key-up must
+            // not cost the operator the receiver as well.
+            if let Err(e) = self.open_rx_stream() {
+                warn!("the receiver did not come back around the TX stream setup: {e}");
+            }
+        }
+        Ok(tx?)
     }
 
     /// Put the front end back the way it was after a call the driver refused,
@@ -441,11 +500,19 @@ impl IqSource for SoapyRxSource {
             self.rx_stream = None;
         }
         let dev = self.dev()?;
-        dev.set_sample_rate(Direction::Tx, self.channel, rate)?;
+        // Only reprogram the rate when the device is not already on it. The
+        // engine keys up at the rate the receiver is running at, so this is
+        // normally a no-op request — but not a no-op call: hardware that clocks
+        // both directions from one divider (the SX1255 does) reconfigures the
+        // whole front end here, and SoapySX warns that doing so while a stream
+        // runs can corrupt the I2S channel order.
+        if (dev.sample_rate(Direction::Tx, self.channel).unwrap_or(0.0) - rate).abs() > 1.0 {
+            dev.set_sample_rate(Direction::Tx, self.channel, rate)?;
+        }
         dev.set_frequency(Direction::Tx, self.channel, center_hz, ())?;
         let actual = dev.sample_rate(Direction::Tx, self.channel)?;
 
-        let mut tx = dev.tx_stream::<Complex32>(&[self.channel])?;
+        let mut tx = self.open_tx_stream()?;
         tx.activate(None)?;
         self.tx_stream = Some(tx);
         // After activation, so the direction change cannot undo it: switching
@@ -475,7 +542,12 @@ impl IqSource for SoapyRxSource {
     fn tx_end(&mut self) -> Result<()> {
         // Dropping the TX stream deactivates and closes it.
         self.tx_stream = None;
-        if !self.caps.full_duplex {
+        // Whatever the duplex, the receiver is whatever is missing here: half
+        // duplex handed its stream over at key-down (see `tx_begin`), and on a
+        // full-duplex device whose driver made us close it (`open_tx_stream`)
+        // it may not have come back. A device that has been stood down or given
+        // up on is not restarted from here — that is the reconnect's job.
+        if self.rx_stream.is_none() && self.dev.is_some() && !self.lost {
             // Reopen a fresh RX stream (see tx_begin).
             self.open_rx_stream()?;
         }
