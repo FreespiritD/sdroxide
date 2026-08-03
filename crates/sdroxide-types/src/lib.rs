@@ -142,7 +142,7 @@ pub use wefax::{WEFAX_STATIONS, WefaxChartMeta, WefaxIoc, WefaxLpm, WefaxStation
 pub use wsjtx::WsjtxConfig;
 pub use wspr::{
     BURST_S as WSPR_BURST_S, DEFAULT_TX_HZ as WSPR_DEFAULT_TX_HZ, POWERS_DBM as WSPR_POWERS_DBM,
-    SLOT_S as WSPR_SLOT_S, TX_OFFSET_S as WSPR_TX_OFFSET_S, WINDOW_HI_HZ as WSPR_WINDOW_HI_HZ,
-    WINDOW_LO_HZ as WSPR_WINDOW_LO_HZ, WsprSpot, WsprStatus, dbm_to_mw, power_label,
-    round_power_dbm,
+    POWERS_W as WSPR_POWERS_W, SLOT_S as WSPR_SLOT_S, TX_OFFSET_S as WSPR_TX_OFFSET_S,
+    WINDOW_HI_HZ as WSPR_WINDOW_HI_HZ, WINDOW_LO_HZ as WSPR_WINDOW_LO_HZ, WsprSpot, WsprStatus,
+    dbm_to_mw, power_dbm_for_watts, power_label, round_power_dbm,
 };

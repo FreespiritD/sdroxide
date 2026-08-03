@@ -48,8 +48,10 @@ pub(in crate::app) fn panel_panes(mode: Mode) -> &'static [&'static str] {
     match mode {
         Mode::Ft8 | Mode::Ft4 => &["DECODES", "QSO"],
         Mode::Js8 => &["HEARD", "CHAT"],
-        // No QSO pane, because there is no QSO: WSPR measures paths.
-        Mode::Wspr => &["SPOTS", "STATUS"],
+        // No QSO pane, because there is no QSO: WSPR measures paths. The map
+        // is its own pane rather than sharing one, so a narrow screen can show
+        // it whole instead of squeezing it under something else.
+        Mode::Wspr => &["SPOTS", "MAP", "STATUS"],
         Mode::Fsq => &["HEARD", "TRAFFIC"],
         Mode::Sstv | Mode::Rifp => &["RECEIVE", "SEND"],
         Mode::Wefax => &["CHART", "SAVED"],
@@ -105,17 +107,23 @@ impl SdroxideApp {
         self.prop.observe_log(&log, &my_grid, now);
         self.qso_log = log;
 
-        if !v.prop_on_map {
+        // The panel map's own display choice, from the panel's own settings —
+        // `Solar3dView` belongs to the globe window and is republished over
+        // every frame, so a setting the panel wrote there would not survive to
+        // the next one.
+        if !self.view.prop_on_map {
             return None;
         }
         let field = self.prop.field(now);
-        let band = Band::ALL.get(v.prop_band as usize).copied().unwrap_or(Band::M20);
-        let heat_mode = if v.prop_mode == 0 {
+        let band = Band::ALL.get(self.view.prop_map_band as usize).copied().unwrap_or(Band::M20);
+        let heat_mode = if self.view.prop_map_mode == 0 {
             crate::prop_map::PropMode::PerBand
         } else {
             crate::prop_map::PropMode::AllBands
         };
-        self.prop_heat.texture(ctx, &field, heat_mode, band, v.prop_bands).map(|t| t.id())
+        // Every live band: the compact chip row has no space for a mask, and
+        // picking bands apart is what the globe's menu is for.
+        self.prop_heat.texture(ctx, &field, heat_mode, band, u16::MAX).map(|t| t.id())
     }
 
     /// The chip row that turns the flat map's propagation heat on and picks
@@ -123,10 +131,10 @@ impl SdroxideApp {
     pub(in crate::app) fn prop_map_controls(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
-            let on = self.view.solar3d.prop_on_map;
+            let on = self.view.prop_on_map;
             let resp = crate::chrome::chip(ui, on, RichText::new("PROP").size(9.5));
             if resp.clicked() {
-                self.view.solar3d.prop_on_map = !on;
+                self.view.prop_on_map = !on;
             }
             resp.on_hover_text(
                 "Shade the map by where signals are actually getting through, on each band. \
@@ -138,18 +146,18 @@ impl SdroxideApp {
             if !on {
                 return;
             }
-            let combined = self.view.solar3d.prop_mode != 0;
+            let combined = self.view.prop_map_mode != 0;
             if crate::chrome::chip(ui, combined, RichText::new("ALL BANDS").size(9.5))
                 .on_hover_text("Every band at once, one hue each — overall conditions.")
                 .clicked()
             {
-                self.view.solar3d.prop_mode = 1;
+                self.view.prop_map_mode = 1;
             }
             if crate::chrome::chip(ui, !combined, RichText::new("ONE BAND").size(9.5))
                 .on_hover_text("One band, cold to hot: blue, green, yellow, red.")
                 .clicked()
             {
-                self.view.solar3d.prop_mode = 0;
+                self.view.prop_map_mode = 0;
             }
             if !combined {
                 // Only bands with something in them: a picker full of dead
@@ -158,12 +166,12 @@ impl SdroxideApp {
                     let i = Band::ALL.iter().position(|x| *x == b).unwrap_or(0) as u8;
                     if crate::chrome::chip(
                         ui,
-                        self.view.solar3d.prop_band == i,
+                        self.view.prop_map_band == i,
                         RichText::new(b.label()).size(9.5),
                     )
                     .clicked()
                     {
-                        self.view.solar3d.prop_band = i;
+                        self.view.prop_map_band = i;
                     }
                 }
             }

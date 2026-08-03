@@ -1,10 +1,16 @@
-//! The WSPR panel: what got through, and where the beacon is in its cycle.
+//! The WSPR panel: what got through, where it went, and what the beacon is
+//! doing.
 //!
-//! Two panes. `SPOTS` is the list of receptions — one row per beacon heard, or
-//! per station that heard *us* once the WSPRnet download is on — beside the same
-//! world map the FT8 panel draws, so the two modes place stations identically.
-//! `STATUS` is the beacon itself: the slot clock, the duty cycle, the band-hop
-//! schedule and whether the last upload went anywhere.
+//! Three panes. `SPOTS` is the list of receptions — one row per beacon heard,
+//! or per station that heard *us* once the WSPRnet download is on. `MAP` is the
+//! same world map the FT8 panel draws, so the two modes place stations
+//! identically, with the propagation-heat controls above it. `STATUS` is the
+//! beacon itself: the slot clock, the transmit duty cycle, the band-hop
+//! schedule and what is being reported to WSPRnet.
+//!
+//! Wide enough, the receptions run full height down the left and the map takes
+//! the top right with the status under it — the map is what an operator glances
+//! at, so it goes where a glance lands. Narrower, the tab row picks one.
 //!
 //! There is no QSO pane because there is no QSO. Every control here is about
 //! measurement rather than contact, which is the whole difference between this
@@ -45,6 +51,9 @@ impl SdroxideApp {
         if phone || ui.available_width() < TWO_COLUMN_MIN_W {
             match pane {
                 0 => self.wspr_spot_list(ui, panel_h),
+                1 => {
+                    self.wspr_map(ui, panel_h);
+                }
                 _ => self.wspr_status_pane(ui, cmds),
             }
             return;
@@ -56,6 +65,10 @@ impl SdroxideApp {
         // as well — every reception row ends up on one line on top of the next.
         // `ui.vertical` is what turns the direction back, and it is why every
         // other split panel here is written this way.
+        //
+        // The receptions run full height down the left, because that is the
+        // list you scroll; the map takes the top right, where it is the first
+        // thing in view, with the beacon's own state under it.
         let total_w = ui.available_width();
         let left_w = (total_w * self.view.digi_split_fraction).clamp(240.0, total_w - 260.0);
         ui.horizontal_top(|ui| {
@@ -71,13 +84,69 @@ impl SdroxideApp {
             }
             ui.vertical(|ui| {
                 ui.set_height(panel_h);
+                let map_h = self.wspr_map(ui, panel_h);
+                if map_h > 0.0 {
+                    ui.add_space(6.0);
+                }
                 self.wspr_status_pane(ui, cmds);
             });
         });
     }
 
-    /// The reception list, with the world map under it.
-    fn wspr_spot_list(&mut self, ui: &mut egui::Ui, panel_h: f32) {
+    /// The world map and the propagation-heat controls that belong with it.
+    ///
+    /// Returns the height it took, so the caller knows whether to leave a gap.
+    /// Zero when the panel is too short for a map — one two rows tall is not a
+    /// map, and the beacon's state is worth more than a smear.
+    fn wspr_map(&mut self, ui: &mut egui::Ui, panel_h: f32) -> f32 {
+        let map_lo = crate::widgets::worldmap::MIN_HEIGHT;
+        if panel_h < map_lo * 2.0 {
+            return 0.0;
+        }
+        let now = now_unix();
+        let my_grid =
+            self.digi_status.as_ref().map(|s| s.config.my_grid.clone()).unwrap_or_default();
+        let home = sdroxide_types::grid_to_latlon(&my_grid);
+
+        // The map gets a draggable share of the column, with the beacon's state
+        // keeping the rest.
+        let map_hi = (panel_h * 0.62).min(ui.available_width()).max(map_lo);
+        let map_budget = map_lo + (map_hi - map_lo) * self.view.digi_map_fraction;
+
+        // The heat controls live with the map rather than tucked under the
+        // list, because they are controls *for the map* — put anywhere else
+        // they read as unrelated chips and go unfound.
+        self.prop_map_controls(ui);
+
+        let now_t = ui.input(|i| i.time);
+        self.digi_stations.set_fade_s(WSPR_STATION_FADE_S);
+        self.digi_stations.observe_wspr(&self.wspr_spots, now_t, now);
+        let stations = self.digi_stations.stations(now_t);
+        let heat = self.prop_texture(ui.ctx(), self.state.rx_freq_hz());
+        crate::widgets::worldmap::show(
+            ui,
+            &mut self.map_view,
+            home,
+            None,
+            None,
+            self.digi_hover_ll,
+            &stations,
+            &[],
+            heat,
+            self.digi_status.as_ref().map(|s| s.transmitting).unwrap_or(false),
+            map_budget,
+        );
+        // Draggable edge under the map, as the FT8 panel has.
+        let resp = crate::chrome::split_handle(ui, egui::vec2(ui.available_width(), 7.0), None);
+        if resp.dragged() {
+            let df = resp.drag_delta().y / (map_hi - map_lo).max(1.0);
+            self.view.digi_map_fraction = (self.view.digi_map_fraction + df).clamp(0.0, 1.0);
+        }
+        map_budget + crate::chrome::chip_height(ui, Some(9.5)) + 11.0
+    }
+
+    /// The reception list, filling its column.
+    fn wspr_spot_list(&mut self, ui: &mut egui::Ui, _panel_h: f32) {
         let now = now_unix();
         let my_grid =
             self.digi_status.as_ref().map(|s| s.config.my_grid.clone()).unwrap_or_default();
@@ -96,25 +165,9 @@ impl SdroxideApp {
             });
         });
 
-        // The map takes the same draggable share of the pane the FT8 panel gives
-        // it, and is skipped entirely when there is not enough height for one —
-        // a map two rows tall is not a map.
-        let map_lo = crate::widgets::worldmap::MIN_HEIGHT;
-        let map_hi = (panel_h * 0.55).min(ui.available_width()).max(map_lo);
-        let map_budget = map_lo + (map_hi - map_lo) * self.view.digi_map_fraction;
-        let show_map = panel_h > map_lo * 2.0;
-
-        // The map's chip row has to be paid for out of the list's height, or it
-        // pushes the map past the bottom of the panel.
-        let ctrl_h = if show_map { crate::chrome::chip_height(ui, Some(9.5)) + 4.0 } else { 0.0 };
-        let list_h = if show_map {
-            (ui.available_height() - map_budget - ctrl_h - 8.0).max(60.0)
-        } else {
-            ui.available_height()
-        };
         egui::ScrollArea::vertical()
             .id_salt("wspr-receptions")
-            .max_height(list_h)
+            .max_height(ui.available_height())
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 if self.wspr_spots.is_empty() {
@@ -131,28 +184,6 @@ impl SdroxideApp {
                     wspr_row(ui, s, home, now);
                 }
             });
-
-        if show_map && map_budget >= crate::widgets::worldmap::MIN_HEIGHT {
-            let now_t = ui.input(|i| i.time);
-            self.digi_stations.set_fade_s(WSPR_STATION_FADE_S);
-            self.digi_stations.observe_wspr(&self.wspr_spots, now_t, now);
-            let stations = self.digi_stations.stations(now_t);
-            let heat = self.prop_texture(ui.ctx(), self.state.rx_freq_hz());
-            self.prop_map_controls(ui);
-            crate::widgets::worldmap::show(
-                ui,
-                &mut self.map_view,
-                home,
-                None,
-                None,
-                self.digi_hover_ll,
-                &stations,
-                &[],
-                heat,
-                self.digi_status.as_ref().map(|s| s.transmitting).unwrap_or(false),
-                map_budget,
-            );
-        }
     }
 
     /// The beacon's own state, and the two settings an operator reaches for
@@ -222,6 +253,108 @@ impl SdroxideApp {
         });
 
         ui.add_space(8.0);
+        // Transmit, where the operator is already looking.
+        //
+        // Whether an unattended beacon is on the air is the single thing about
+        // this mode worth being able to see and change at a glance, so it is a
+        // row of chips here and not in a dialog. The duty cycle is the setting
+        // *and* the switch: nought is receive-only, so there is no second
+        // control that could disagree with it about what this station is doing.
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(RichText::new("TRANSMIT").size(9.5).color(crate::theme::CYAN_DIM));
+            let cur = self.digi_cfg_edit.wspr_tx_percent;
+            for (pct, label) in [(0u8, "OFF"), (10, "10%"), (20, "20%"), (33, "33%"), (50, "50%")] {
+                // Off is the resting state and reads as one; anything else puts
+                // a carrier on the air, so it is accented like the other
+                // controls in this program that do.
+                let resp = if pct == 0 {
+                    crate::chrome::chip(ui, cur == 0, RichText::new(label).size(10.5))
+                } else {
+                    crate::chrome::chip_accent(
+                        ui,
+                        cur == pct,
+                        RichText::new(label).size(10.5),
+                        crate::theme::PINK,
+                        crate::theme::INK_ON_CYAN,
+                    )
+                };
+                if resp
+                    .on_hover_text(if pct == 0 {
+                        "Receive only.".to_string()
+                    } else {
+                        format!(
+                            "Beacon in {pct}% of two-minute slots at {}. The slots are drawn \
+                             from your callsign, so two stations running this program do not \
+                             transmit on top of each other.",
+                            power_label(self.digi_cfg_edit.wspr_power_dbm),
+                        )
+                    })
+                    .clicked()
+                    && cur != pct
+                    && self.digi_cfg_seeded
+                {
+                    self.digi_cfg_edit.wspr_tx_percent = pct;
+                    cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
+                }
+            }
+        });
+
+        // Power, in the unit an operator sets their radio in.
+        //
+        // A picker rather than a free number: WSPR's fifty-bit message can name
+        // exactly nineteen levels, so anything else would have to be rounded
+        // silently — and the figure goes out on the air, where everybody who
+        // hears it uses it to judge the path. Offering only what can be said is
+        // what keeps the announcement true.
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(RichText::new("POWER").size(9.5).color(crate::theme::CYAN_DIM));
+            let cur = sdroxide_types::round_power_dbm(self.digi_cfg_edit.wspr_power_dbm);
+            let mut chosen = None;
+            egui::ComboBox::from_id_salt("wspr-power")
+                .selected_text(RichText::new(power_label(cur)).size(10.5))
+                .width(84.0)
+                .show_ui(ui, |ui| {
+                    for p in sdroxide_types::WSPR_POWERS_DBM {
+                        if ui.selectable_label(cur == p, power_label(p)).clicked() {
+                            chosen = Some(p);
+                        }
+                    }
+                });
+            if let Some(p) = chosen
+                && p != self.digi_cfg_edit.wspr_power_dbm
+                && self.digi_cfg_seeded
+            {
+                self.digi_cfg_edit.wspr_power_dbm = p;
+                cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
+            }
+            ui.label(
+                RichText::new("what you actually radiate").size(9.5).color(Color32::from_gray(110)),
+            )
+            .on_hover_text(
+                "This goes out in the message, and everyone who hears you judges the path by \
+                 it — so an optimistic figure here makes their measurements wrong as well as \
+                 yours.",
+            );
+
+            // Moving inside the 200 Hz window is the WSPR convention, and it is
+            // the only other thing about a transmission worth a switch.
+            let auto = self.digi_cfg_edit.auto_tx_freq;
+            let resp = crate::chrome::chip(ui, auto, RichText::new("ROAM").size(10.5));
+            if resp.clicked() && self.digi_cfg_seeded {
+                self.digi_cfg_edit.auto_tx_freq = !auto;
+                cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
+            }
+            resp.on_hover_text(
+                "Pick a different offset inside the 200 Hz window for every transmission. \
+                 This is the convention: two hundred hertz shared by everyone only works if \
+                 nobody parks in the middle of it. Off holds where the cursor is.",
+            );
+        });
+
+        ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             let hop = self.digi_cfg_edit.wspr_hop;
@@ -260,13 +393,60 @@ impl SdroxideApp {
             );
         });
 
+        // The bands the hop cycle visits, shown only when it is running: a row
+        // of nine chips is a lot to carry for a station that is staying put.
+        if self.digi_cfg_edit.wspr_hop {
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                ui.label(RichText::new("BANDS").size(9.5).color(crate::theme::CYAN_DIM));
+                let mut mask = self.digi_cfg_edit.wspr_hop_bands;
+                let mut hit = false;
+                // Only bands with a WSPR dial: the rest have nothing to hop to.
+                for (i, b) in Band::ALL.iter().enumerate() {
+                    if !sdroxide_types::WSPR_DIALS.iter().any(|&hz| Band::containing(hz) == *b) {
+                        continue;
+                    }
+                    let bit = 1u16 << i;
+                    if crate::chrome::chip(ui, mask & bit != 0, RichText::new(b.label()).size(9.5))
+                        .clicked()
+                    {
+                        mask ^= bit;
+                        hit = true;
+                    }
+                }
+                if hit && self.digi_cfg_seeded {
+                    self.digi_cfg_edit.wspr_hop_bands = mask;
+                    cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
+                }
+                if mask == 0 {
+                    ui.label(
+                        RichText::new("none selected — hopping has nowhere to go")
+                            .size(9.5)
+                            .color(crate::theme::YELLOW),
+                    );
+                }
+            });
+        }
+
         ui.add_space(6.0);
+        // The identity is the station's, not this mode's, so it is not asked
+        // for twice — this only says where it is kept.
+        let call = self.digi_cfg_edit.my_call.trim();
+        let grid = self.digi_cfg_edit.my_grid.trim();
         ui.label(
-            RichText::new(
-                "Callsign, grid, transmit power and duty cycle are on the WSPR setup page.",
-            )
+            RichText::new(if call.is_empty() || grid.is_empty() {
+                "Set your callsign and grid on the General tab of Settings before transmitting."
+                    .to_string()
+            } else {
+                format!("Transmitting as {call} in {grid} — set on the General tab of Settings.")
+            })
             .size(10.0)
-            .color(Color32::from_gray(110)),
+            .color(if call.is_empty() || grid.is_empty() {
+                crate::theme::YELLOW
+            } else {
+                Color32::from_gray(110)
+            }),
         );
         if self.digi_cfg_edit.wspr_tx_percent > 0 && !type1_capable(&self.digi_cfg_edit) {
             ui.add_space(4.0);

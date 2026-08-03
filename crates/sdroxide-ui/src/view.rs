@@ -41,6 +41,28 @@ pub struct ViewState {
     /// lane at all).
     #[serde(default = "wide_waterfall_default")]
     pub wide_waterfall: bool,
+    /// Draw the propagation heat under the operating panel's flat map.
+    ///
+    /// Here and not in [`Solar3dView`], even though the globe has the same
+    /// idea, because that struct belongs to the globe window: the root pass
+    /// republishes it wholesale every frame (`view.solar3d = solar.persisted()`
+    /// in `frame`), so anything the panel wrote into it would be overwritten a
+    /// frame later — which showed up as the heat appearing for an instant and
+    /// vanishing. The two views keep their own display choice; the *field* they
+    /// draw is the one shared thing, and that lives in `PropStore`.
+    ///
+    /// Off by default: a study aid rather than something to leave switched on
+    /// over a decode list.
+    #[serde(default)]
+    pub prop_on_map: bool,
+    /// The panel map's display: 0 = one band through the ramp, 1 = every live
+    /// band at once, one hue each.
+    #[serde(default = "prop_map_mode_default")]
+    pub prop_map_mode: u8,
+    /// The band the panel map's single-band display shows, as an index into
+    /// `Band::ALL`.
+    #[serde(default = "prop_map_band_default")]
+    pub prop_map_band: u8,
     /// Which spot kinds are shown in the SPOTS list, on the panadapter and on
     /// the world map — indexed by `spot_kind_index`, so the chip order in the
     /// SPOTS window and this array have to stay in lockstep.
@@ -297,13 +319,6 @@ pub struct Solar3dView {
     /// them to be looking at different evidence.
     #[serde(default = "prop_sources_default")]
     pub prop_sources: u8,
-    /// Draw the propagation heat under the panel's flat map.
-    ///
-    /// Off by default. It is a study aid rather than something to leave on over
-    /// a decode list, and the same argument keeps the globe's layer out of its
-    /// default set.
-    #[serde(default)]
-    pub prop_on_map: bool,
 }
 
 /// Default for [`Solar3dView::prop_mode`] — the combined view, which reads
@@ -372,7 +387,6 @@ impl Default for Solar3dView {
             prop_bands: prop_bands_default(),
             prop_sources: prop_sources_default(),
             prop_halflife_min: prop_halflife_default(),
-            prop_on_map: false,
         }
     }
 }
@@ -391,6 +405,9 @@ impl Default for ViewState {
             spectrum_collapsed: false,
             waterfall_flip: false,
             wide_waterfall: wide_waterfall_default(),
+            prop_on_map: false,
+            prop_map_mode: prop_map_mode_default(),
+            prop_map_band: prop_map_band_default(),
             spot_kinds_shown: spot_kinds_default(),
             digi_panel_fraction: 0.46,
             digi_split_fraction: 0.52,
@@ -469,6 +486,18 @@ fn spot_kinds_default() -> [bool; SPOT_KINDS] {
     [true; SPOT_KINDS]
 }
 
+/// Default for [`ViewState::prop_map_mode`] — every band at once, which reads
+/// without being configured first.
+fn prop_map_mode_default() -> u8 {
+    1
+}
+
+/// Default for [`ViewState::prop_map_band`] — 20 m.
+fn prop_map_band_default() -> u8 {
+    sdroxide_types::Band::ALL.iter().position(|b| *b == sdroxide_types::Band::M20).unwrap_or(0)
+        as u8
+}
+
 /// Default for [`ViewState::js8_split_fraction`].
 fn js8_split_default() -> f32 {
     0.46
@@ -483,6 +512,29 @@ fn wefax_gallery_default() -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The operating panel's propagation settings must not live in
+    /// [`Solar3dView`].
+    ///
+    /// That struct belongs to the globe window, and the root pass republishes
+    /// it wholesale every frame — `view.solar3d = solar.persisted()`. A setting
+    /// the panel wrote there survived exactly one frame before the globe's copy
+    /// overwrote it, which is what turned the panel's PROP chip into a flicker.
+    /// This asserts the shape that made that impossible.
+    #[test]
+    fn the_panels_propagation_settings_survive_the_globe_republishing_its_own() {
+        let mut v = ViewState::default();
+        v.prop_on_map = true;
+        v.prop_map_mode = 0;
+        v.prop_map_band = 3;
+
+        // Exactly what `frame` does with what the globe window hands back.
+        v.solar3d = Solar3dView::default();
+
+        assert!(v.prop_on_map, "the globe's republish switched the panel's heat off");
+        assert_eq!(v.prop_map_mode, 0, "the globe's republish reset the panel's display");
+        assert_eq!(v.prop_map_band, 3, "the globe's republish reset the panel's band");
+    }
 
     /// eframe's storage is one blob per key, so a field added here has to be
     /// optional in the stored form or *every* existing panadapter view — zoom,

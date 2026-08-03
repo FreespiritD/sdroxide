@@ -125,10 +125,13 @@ paths rather than a conversation.
   once "who heard me" is on, a station that heard *this* one (`→`), with its
   locator, signal report, declared power and distance. Reports are coloured on
   WSPR's own scale, where −25 dB is still a good path.
-- **Transmit** is off until you ask for it. Set a duty cycle (10–100% of slots)
-  and the power you actually radiate on the WSPR setup page; the beacon picks
-  its slots from your callsign, so two stations running sdroxide do not transmit
-  on top of each other, and it moves within the 200 Hz window each time.
+- **Transmit** is off until you ask for it. The panel carries the duty cycle
+  (10–50% of slots) and the power you actually radiate, in watts — only the
+  nineteen levels WSPR's message can name are offered, because that figure goes
+  out on the air and everyone who hears you judges the path by it. The beacon
+  picks its slots from your callsign, so two stations running sdroxide do not
+  transmit on top of each other, and it moves within the 200 Hz window each
+  time. Callsign and grid come from Settings → General, like everywhere else.
 - **Band hopping** moves the dial between slots so one receiver samples the whole
   spectrum. Turning the VFO yourself pauses it and says so.
 - **WSPRnet** — spots are uploaded as they are decoded (this is on by default; it

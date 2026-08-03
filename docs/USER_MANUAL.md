@@ -1535,9 +1535,13 @@ The receiver's passband is narrowed to that window on purpose: with signals this
 weak, letting the QRSS beacons just below it work the AGC would cost you
 decodes.
 
+The panel has three panes. On a wide screen the receptions run full height down
+the left and the **map** takes the top right, with the beacon's status under it;
+narrower, the tab row picks one.
+
 #### Receiving
 
-The **SPOTS** pane lists receptions, newest first, with the world map under it:
+The **SPOTS** pane lists receptions, newest first:
 
 | Column | What it is |
 | --- | --- |
@@ -1554,21 +1558,44 @@ good path rather than a marginal one.
 A slot takes seconds of work to decode, so the status pane says **decoding…**
 rather than leaving you to wonder whether the band is shut.
 
+#### The map, and the propagation heat on it
+
+The **MAP** pane shows every station heard, fading over ten minutes — a WSPR
+beacon is heard every few minutes at best, so the FT8 map's two-minute fade
+would leave this one blank almost always.
+
+Above the map is the **PROP** chip. It shades the map by where signals are
+actually getting through; pressing it reveals the rest of the controls —
+`ALL BANDS` or `ONE BAND`, which band, and the absolute path count the brightest
+cell stands for. [§3.16](#316-the-propagation-heat-map) explains what the
+shading means. The same picture, with more control over it, is on the 3D globe.
+
+Drag the strip under the map to resize it against the status pane.
+
 #### Transmitting
 
 Off until you ask for it: selecting a mode is not consent to put a carrier on
-the air. On the **WSPR Setup** page:
+the air.
 
-- **Transmit** — the fraction of slots this station beacons in. **20%** is the
-  convention: enough to be heard, sparse enough that a hundred beacons can share
-  two hundred hertz. The slots are chosen from your callsign, so two stations
-  running sdroxide do not pick the same ones.
-- **Power** — what you actually radiate. Only the nineteen levels the message can
-  express are offered, because everyone who hears you uses this number to judge
-  the path: an optimistic figure here makes *their* measurements wrong too, not
-  just yours.
-- **Transmit frequency** — moves within the window on every transmission by
-  default, which is what makes 200 Hz shared by everybody work.
+Everything is in the `STATUS` pane; WSPR has no separate setup dialog.
+
+- **TRANSMIT** is the switch and the setting at once: `OFF` is receive-only, and
+  `10% / 20% / 33% / 50%` is the fraction of two-minute slots this station
+  beacons in. **20%** is the convention — enough to be heard, sparse enough that
+  a hundred beacons can share two hundred hertz. The slots are drawn from your
+  callsign, so two stations running sdroxide do not pick the same ones.
+- **POWER** is what you actually radiate, in watts. Only the nineteen levels
+  WSPR's fifty-bit message can name are offered — 1 mW through 1 kW in 1-2-5
+  steps — because the figure goes out on the air and everyone who hears you
+  judges the path by it. An optimistic number here makes *their* measurements
+  wrong as well as yours.
+- **ROAM** picks a different offset inside the 200 Hz window for every
+  transmission. On by default: two hundred hertz shared by everyone only works
+  if nobody parks in the middle of it.
+
+Your **callsign and grid come from the General tab of Settings** — the same
+identity the rest of the program reports under. The panel says which it is
+transmitting as, and says so in yellow if either is still blank.
 
 WSPR's message carries a plain callsign and a 4-character locator and has room
 for nothing else, so a compound call (`PJ4/K1ABC`) or a 6-character grid cannot
@@ -1588,8 +1615,9 @@ exist into a database everybody reads.
 #### Band hopping
 
 **BAND HOP** moves the dial from band to band between slots, so one receiver
-samples the whole spectrum instead of one slice of it. Pick which bands the
-cycle visits on the setup page. Turning the VFO yourself pauses it and says so —
+samples the whole spectrum instead of one slice of it. A row of band chips
+appears under it when it is on, for choosing which bands the cycle visits.
+Turning the VFO yourself pauses it and says so —
 a beacon and its operator fighting over the dial is the one thing this must not
 do — and applying the setup again resumes it. It never moves under a
 transmission, and a band the radio cannot reach is skipped silently.
@@ -1634,6 +1662,10 @@ gets a control point per hop.
   whichever band happened to win. This is the "what are conditions like" view and
   it needs no configuration.
 - **ONE BAND** runs a single band through a blue → green → yellow → red ramp.
+
+On the flat map the controls are the **PROP** chip above it; on the globe they
+are the `PROP` chip in the menu bar, which adds the source filter and the
+half-life. Both draw the same field.
 
 **Signal reports are made comparable before they are pooled.** WSPR, FT8, FT4 and
 JS8 all quote SNR in a 2500 Hz bandwidth, but their decode floors are ten

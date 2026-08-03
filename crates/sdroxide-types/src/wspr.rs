@@ -59,15 +59,53 @@ pub fn round_power_dbm(dbm: i16) -> i16 {
     }
 }
 
-/// Milliwatts for a dBm level, for the setup panel's "5 W" label beside "37".
+/// Milliwatts for a dBm level.
 pub fn dbm_to_mw(dbm: i16) -> f64 {
     10f64.powf(dbm as f64 / 10.0)
 }
 
-/// A human label for a power level: milliwatts under a watt, watts above.
+/// What each of [`POWERS_DBM`] is called in the units an operator sets their
+/// radio in.
+///
+/// A table rather than arithmetic, because the arithmetic is ugly exactly where
+/// it matters: 37 dBm is 5011.87 mW, and "5.0 W" is both what that means and
+/// what the front panel of every transmitter says. Rounding that out of a
+/// logarithm produces "5.0 W" here and "2.0 W" for 1995 mW while leaving 33 dBm
+/// reading "1995 mW" if the threshold falls the other way. These nineteen are
+/// fixed forever by the message format, so they are simply named.
+pub const POWER_LABELS: [&str; 19] = [
+    "1 mW", "2 mW", "5 mW", "10 mW", "20 mW", "50 mW", "100 mW", "200 mW", "500 mW", "1 W", "2 W",
+    "5 W", "10 W", "20 W", "50 W", "100 W", "200 W", "500 W", "1 kW",
+];
+
+/// Watts for each of [`POWERS_DBM`], for a picker that works in the unit the
+/// operator thinks in.
+pub const POWERS_W: [f64; 19] = [
+    0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0,
+    200.0, 500.0, 1000.0,
+];
+
+/// A human label for a power level, in watts or milliwatts as suits it.
 pub fn power_label(dbm: i16) -> String {
-    let mw = dbm_to_mw(dbm);
-    if mw < 1000.0 { format!("{mw:.0} mW") } else { format!("{:.1} W", mw / 1000.0) }
+    match POWERS_DBM.iter().position(|&p| p == dbm) {
+        Some(i) => POWER_LABELS[i].to_string(),
+        // Not one WSPR can express; say the number rather than pretend.
+        None => {
+            let mw = dbm_to_mw(dbm);
+            if mw < 1000.0 { format!("{mw:.0} mW") } else { format!("{:.1} W", mw / 1000.0) }
+        }
+    }
+}
+
+/// The nearest expressible level at or below `watts`.
+///
+/// Rounds *down* for the reason [`round_power_dbm`] does: announcing more power
+/// than is being radiated makes the path look worse to everyone who hears it.
+pub fn power_dbm_for_watts(watts: f64) -> i16 {
+    match POWERS_W.iter().rposition(|&w| w <= watts + 1e-9) {
+        Some(i) => POWERS_DBM[i],
+        None => POWERS_DBM[0],
+    }
 }
 
 /// One WSPR reception: a beacon this station decoded, or — when it came back
@@ -248,11 +286,46 @@ mod tests {
         assert_eq!(mine.dedup_key(), jittered.dedup_key());
     }
 
+    /// The labels are what a transmitter's front panel says, not what a
+    /// logarithm rounds to.
     #[test]
     fn power_reads_in_the_unit_an_operator_thinks_in() {
         assert_eq!(power_label(0), "1 mW");
         assert_eq!(power_label(23), "200 mW");
-        assert_eq!(power_label(37), "5.0 W");
-        assert_eq!(power_label(60), "1000.0 W");
+        assert_eq!(power_label(30), "1 W");
+        assert_eq!(power_label(33), "2 W");
+        assert_eq!(power_label(37), "5 W");
+        assert_eq!(power_label(60), "1 kW");
+        assert_eq!(POWER_LABELS.len(), POWERS_DBM.len());
+        assert_eq!(POWERS_W.len(), POWERS_DBM.len());
+    }
+
+    /// The watts table and the dBm table have to describe the same nineteen
+    /// levels, or a picker in watts would set a power the message cannot carry.
+    #[test]
+    fn the_watt_table_agrees_with_the_decibel_table() {
+        for (i, &dbm) in POWERS_DBM.iter().enumerate() {
+            let from_dbm = dbm_to_mw(dbm) / 1000.0;
+            let listed = POWERS_W[i];
+            // Within 1%: the dBm steps are 1-2-5 decades, which the round watt
+            // figures approximate to well under that.
+            assert!(
+                (from_dbm - listed).abs() / listed < 0.01,
+                "{dbm} dBm is {from_dbm} W, listed as {listed}"
+            );
+        }
+    }
+
+    #[test]
+    fn choosing_watts_never_claims_more_power_than_is_being_run() {
+        assert_eq!(power_dbm_for_watts(5.0), 37);
+        // 7 W is not expressible; 5 W is the honest neighbour.
+        assert_eq!(power_dbm_for_watts(7.0), 37);
+        assert_eq!(power_dbm_for_watts(0.2), 23);
+        // Below the lowest level it clamps up, because there is nothing else to
+        // say — but that is the one case where it over-declares, and it is a
+        // microwatt.
+        assert_eq!(power_dbm_for_watts(0.0), 0);
+        assert_eq!(power_dbm_for_watts(2000.0), 60);
     }
 }
