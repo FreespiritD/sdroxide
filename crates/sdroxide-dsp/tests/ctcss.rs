@@ -86,9 +86,19 @@ fn ctcss_signal(tone_hz: f64, secs: f64, noise_amp: f32) -> Vec<C32> {
 /// Run a signal through the real NFM demodulator and report what the
 /// sub-audible decoder made of it, plus the audio it produced.
 fn demodulate(iq: &[C32]) -> (Option<SubTone>, Vec<f32>) {
+    demodulate_in_blocks(iq, 2048)
+}
+
+/// As [`demodulate`], with the size of the blocks the caller feeds spelled out.
+///
+/// 2048 is a poor default to test only at: three of them are exactly one
+/// detector hop, so a decoder that quietly assumed its caller's block boundaries
+/// were its own would pass anyway. See
+/// [`the_tone_is_found_whatever_block_size_the_caller_uses`].
+fn demodulate_in_blocks(iq: &[C32], block: usize) -> (Option<SubTone>, Vec<f32>) {
     let mut demod = make_demod(Mode::Nfm, RATE).expect("NFM has a demodulator");
     let mut audio = Vec::new();
-    for chunk in iq.chunks(2048) {
+    for chunk in iq.chunks(block) {
         demod.process(chunk, &mut audio);
     }
     (demod.sub_tone(), audio)
@@ -163,6 +173,67 @@ fn a_transmission_already_in_progress_is_picked_up() {
     // No lead-in silence: the very first sample is already modulated.
     let (tone, _) = demodulate(&ctcss_signal(103.5, 1.6, 0.0));
     assert_eq!(tone, Some(SubTone::Ctcss(1035)));
+}
+
+/// Nothing about the block size the caller happens to use may reach the answer.
+///
+/// It did. The detector accumulated samples and then evaluated whatever the
+/// history held once the block was drained, so consecutive windows were a block
+/// apart rather than the hop apart its frequency check assumes — and that check
+/// compares angles, so a wrong spacing wraps into a plausible-looking offset
+/// instead of an obviously wrong one. The tone then passed or failed by
+/// coincidence. A live radio reads a SoapySDR transfer of a size nobody here
+/// chose, which is why this was reported from the air and not from this file:
+/// every size here was a multiple of 512, and 512, 1024, 2048 and 6144 samples
+/// all divide into the hop exactly.
+///
+/// So the sizes below are the awkward ones. 4096 straddles the hop, 16384
+/// carries several of them, and the rest are simply not round.
+#[test]
+fn the_tone_is_found_whatever_block_size_the_caller_uses() {
+    let iq = ctcss_signal(88.5, 2.5, 0.0);
+    for block in [512usize, 1024, 1500, 1920, 2048, 3000, 4096, 6144, 8192, 16384] {
+        let (tone, _) = demodulate_in_blocks(&iq, block);
+        assert_eq!(tone, Some(SubTone::Ctcss(885)), "{block}-sample blocks");
+    }
+}
+
+/// And every tone in the table has to survive an awkward block size, not just
+/// the one that happened to be tried. The old failure was a function of the
+/// tone's own frequency: some entries wrapped back inside tolerance and passed.
+#[test]
+fn an_awkward_block_size_costs_no_tone_in_the_table() {
+    for (hz, tenths) in
+        [(67.0, 670u16), (88.5, 885), (100.0, 1000), (103.5, 1035), (156.7, 1567), (254.1, 2541)]
+    {
+        let (tone, _) = demodulate_in_blocks(&ctcss_signal(hz, 2.5, 0.0), 16384);
+        assert_eq!(tone, Some(SubTone::Ctcss(tenths)), "{hz} Hz");
+    }
+}
+
+/// Once a repeater's tone has been identified it has to stay identified, block
+/// after block, for as long as it is transmitting. The squelch gate is driven
+/// straight off this, so a single window's worth of doubt is a hole in the
+/// audio.
+#[test]
+fn a_held_tone_is_reported_without_interruption() {
+    let iq = ctcss_signal(94.8, 4.0, 0.04);
+    let mut demod = make_demod(Mode::Nfm, RATE).expect("NFM has a demodulator");
+    let mut audio = Vec::new();
+    let mut acquired = None;
+    for (i, chunk) in iq.chunks(4096).enumerate() {
+        demod.process(chunk, &mut audio);
+        match (acquired, demod.sub_tone()) {
+            (None, t) => acquired = t.map(|t| (i, t)),
+            (Some((at, want)), got) => {
+                assert_eq!(got, Some(want), "block {i}: dropped a tone held since block {at}")
+            }
+        }
+    }
+    let (at, tone) = acquired.expect("the tone is found at all");
+    assert_eq!(tone, SubTone::Ctcss(948));
+    // 1.024 s of window plus two agreeing hops, in 4096-sample blocks.
+    assert!(at <= 16, "took {at} blocks to identify the tone");
 }
 
 /// A weak signal still gets its tone. Noise here is comparable to the carrier,

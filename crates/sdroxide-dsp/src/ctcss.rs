@@ -73,9 +73,11 @@ const MIN_AMPLITUDE: f32 = 0.015;
 /// noise on the low tones, where 0.5 % is only a third of a hertz.
 const TOLERANCE_FRAC: f64 = 0.005;
 const TOLERANCE_MIN_HZ: f64 = 1.0;
-/// Agreeing measurements before a tone is believed, and disagreeing ones before
-/// it is dropped. Asymmetric on purpose: slow to claim, slower to let go, so the
-/// readout doesn't flicker through a mobile flutter.
+/// Consecutive agreeing measurements before a tone is believed, and consecutive
+/// disagreeing ones before it is dropped. Asymmetric on purpose: slow to claim,
+/// slower to let go, so the readout doesn't flicker through a mobile flutter.
+/// At [`HOP`] per measurement that is a quarter-second to claim a tone and half
+/// a second of holding it through a signal that comes and goes.
 const CTCSS_LOCK_HITS: u32 = 2;
 const CTCSS_DROP_MISSES: u32 = 4;
 
@@ -272,6 +274,20 @@ impl SubToneDetect {
     }
 
     /// Feed discriminator output.
+    ///
+    /// The evaluation sits *inside* the sample loop, and has to. [`on_frequency`]
+    /// reads the tone's frequency out of how far its phase turned between two
+    /// windows, which is only a frequency if those windows really are [`HOP`]
+    /// samples apart. Draining the block first and evaluating afterwards would
+    /// instead measure every window against the end of the block — an advance
+    /// set by whatever the front end happened to hand over, which for a
+    /// SoapySDR read is a transfer size nobody here chose and which varies from
+    /// one call to the next. The residual that check computes is an angle, so a
+    /// wrong advance does not read as a wild frequency and get thrown out; it
+    /// wraps, and lands somewhere arbitrary but plausible. The tone then passes
+    /// or fails by coincidence, differently for each entry in the table.
+    ///
+    /// [`on_frequency`]: Self::on_frequency
     pub fn process(&mut self, audio: &[f32]) {
         self.decimated.clear();
         self.decim.process(audio, &mut self.decimated);
@@ -282,10 +298,10 @@ impl SubToneDetect {
             self.filled = (self.filled + 1).min(WINDOW);
             self.since_eval += 1;
             self.push_dcs(x);
-        }
-        while self.since_eval >= HOP && self.filled >= WINDOW {
-            self.since_eval -= HOP;
-            self.evaluate_ctcss();
+            if self.since_eval >= HOP && self.filled >= WINDOW {
+                self.since_eval = 0;
+                self.evaluate_ctcss();
+            }
         }
     }
 
@@ -329,20 +345,37 @@ impl SubToneDetect {
 
         self.prev_bins.copy_from_slice(&self.bins);
         self.have_prev = true;
+        self.update_lock(seen);
+    }
 
+    /// Fold one window's verdict into the lock.
+    ///
+    /// Two counters, and deliberately independent ones: `hits` is a run of
+    /// windows agreeing on a tone that is not locked yet, `misses` a run of
+    /// windows failing to confirm the tone that is. Both are runs — a window
+    /// that confirms the lock spends the misses standing against it outright.
+    /// Counting misses cumulatively instead would mean a signal that fluttered
+    /// at all lost its tone eventually no matter how many windows in between
+    /// found it, which is the opposite of what the hold is for.
+    fn update_lock(&mut self, seen: Option<SubTone>) {
         if seen.is_some() && seen == self.candidate {
-            self.hits += 1;
-            self.misses = 0;
-            if self.hits >= CTCSS_LOCK_HITS {
-                self.ctcss_locked = seen;
-            }
+            self.hits = self.hits.saturating_add(1);
         } else {
             self.candidate = seen;
             self.hits = 1;
-            if seen != self.ctcss_locked {
+        }
+        if self.candidate.is_some() && self.hits >= CTCSS_LOCK_HITS {
+            self.ctcss_locked = self.candidate;
+            self.misses = 0;
+        }
+        if self.ctcss_locked.is_some() {
+            if seen == self.ctcss_locked {
+                self.misses = 0;
+            } else {
                 self.misses += 1;
                 if self.misses >= CTCSS_DROP_MISSES {
                     self.ctcss_locked = None;
+                    self.misses = 0;
                 }
             }
         }
@@ -479,6 +512,73 @@ mod tests {
         assert!(!plausible_dcs_word(WORD_MASK));
         // Something with a real word's weight is allowed through.
         assert!(plausible_dcs_word(golay23_encode(0x213)));
+    }
+
+    const A: Option<SubTone> = Some(SubTone::Ctcss(885));
+    const B: Option<SubTone> = Some(SubTone::Ctcss(1035));
+
+    /// Drive the lock with a written-out run of window verdicts and report what
+    /// it ends up holding.
+    fn feed(verdicts: &[Option<SubTone>]) -> Option<SubTone> {
+        let mut d = SubToneDetect::new(48_000.0);
+        for &v in verdicts {
+            d.update_lock(v);
+        }
+        d.detected()
+    }
+
+    /// Two agreeing windows and no fewer: one window that liked the look of some
+    /// rumble must not put a tone on the readout.
+    #[test]
+    fn a_tone_needs_two_agreeing_windows() {
+        assert_eq!(feed(&[A]), None);
+        assert_eq!(feed(&[A, A]), A);
+        assert_eq!(feed(&[A, B]), None);
+    }
+
+    /// The reported fault: a repeater sending a continuous tone, identified and
+    /// then lost and then found again. Whatever makes a window miss — flutter,
+    /// a burst of noise, a passing car — the tone is still being transmitted,
+    /// and windows that do find it have to count for something.
+    #[test]
+    fn windows_that_find_the_tone_hold_it_against_ones_that_miss() {
+        let mut d = SubToneDetect::new(48_000.0);
+        d.update_lock(A);
+        d.update_lock(A);
+        assert_eq!(d.detected(), A, "locked after two agreeing windows");
+        // Every other window misses, for far longer than the hold alone covers.
+        for i in 0..64 {
+            d.update_lock(if i % 2 == 0 { None } else { A });
+            assert_eq!(d.detected(), A, "dropped the tone at window {i}");
+        }
+    }
+
+    /// The hold is not unconditional, though. A tone that has actually stopped
+    /// has to clear, or the squelch stays open on an empty channel.
+    #[test]
+    fn a_tone_that_stops_is_let_go_of() {
+        let mut d = SubToneDetect::new(48_000.0);
+        d.update_lock(A);
+        d.update_lock(A);
+        for _ in 0..CTCSS_DROP_MISSES - 1 {
+            d.update_lock(None);
+            assert_eq!(d.detected(), A, "let go too early");
+        }
+        d.update_lock(None);
+        assert_eq!(d.detected(), None);
+    }
+
+    /// A second system keying up on the same channel replaces the first, and on
+    /// its own evidence — the same two windows any tone needs.
+    #[test]
+    fn a_different_tone_takes_over_the_readout() {
+        let mut d = SubToneDetect::new(48_000.0);
+        d.update_lock(A);
+        d.update_lock(A);
+        d.update_lock(B);
+        assert_eq!(d.detected(), A, "one window of another tone proves nothing");
+        d.update_lock(B);
+        assert_eq!(d.detected(), B);
     }
 
     /// The window has to be long enough to separate the tightest standard pair,
