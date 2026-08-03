@@ -171,6 +171,63 @@ fn free_text_falls_back_sensibly() {
     assert_eq!(sp.message("K test"), "K test");
 }
 
+/// A RTTY weather bulletin, which is what most of the RTTY band actually is.
+///
+/// Baudot has no lower case, so capitalisation cannot be the signal for "spell
+/// this one out" — under the old rule every short word in this line was read
+/// letter by letter.
+#[test]
+fn a_weather_bulletin_is_read_as_words() {
+    let c = cfg();
+    let sp = Speaker::new(&c);
+    assert_eq!(
+        sp.message("GOOD MORNING PSE QSL 10100 KHZ"),
+        "good morning please Q S L ten thousand one hundred kilohertz"
+    );
+    // Units and quantities welded together, the way a bulletin writes them.
+    assert_eq!(sp.message("1013 HPA"), "one thousand thirteen hectopascals");
+    assert_eq!(sp.message("10100KHZ"), "ten thousand one hundred kilohertz");
+    assert_eq!(sp.message("WIND SW 5 TO 6"), "wind southwest five to six");
+    // A leading zero is a group, not a quantity: half past five, not 530 —
+    // welded to its unit or standing on its own.
+    assert_eq!(sp.message("0530UTC"), "zero five three zero U T C");
+    assert_eq!(sp.message("AT 0530 UTC"), "at zero five three zero U T C");
+    // The station's own callsigns still get spelled — that is the whole point
+    // of the exercise, and DWD signs with three of them.
+    assert_eq!(sp.message("DDK2"), "delta delta kilo two");
+    assert_eq!(sp.message("DDH7 DDK9"), "delta delta hotel seven delta delta kilo nine");
+}
+
+/// The separator between bulletins: over a minute of "romeo yankee" if it is
+/// read, and nothing lost if it is not.
+#[test]
+fn the_teleprinter_idle_is_not_read() {
+    let c = cfg();
+    let sp = Speaker::new(&c);
+    assert_eq!(sp.message("RYRYRYRYRYRYRYRYRYRYRYRYRYRYRYRY"), "");
+    assert_eq!(sp.message("RYRYRY DDK2 RYRYRY"), "delta delta kilo two");
+    // An empty message is what tells `TextPump` there is nothing to queue.
+    assert_eq!(sp.message("RY RY RY"), "");
+}
+
+/// Real English words that are not initialisms, and initialisms that are.
+#[test]
+fn spelling_is_earned_not_assumed() {
+    let c = cfg();
+    let sp = Speaker::new(&c);
+    // Unpronounceable: an initialism whatever the table knows about it.
+    assert_eq!(sp.message("SSB DWD"), "S S B D W D");
+    // The whole Q-code family, not just the listed ones.
+    assert_eq!(sp.message("QRK QSA"), "Q R K Q S A");
+    // Pronounceable, so a word — the dictionary downstream decides how it
+    // sounds, and spells it only if it has never seen it.
+    assert_eq!(sp.message("GOOD SEA GALE"), "good sea gale");
+    // Shorthand welded to a sign-off number is shorthand, not a station.
+    assert_eq!(sp.message("TNX73"), "thanks seventy three");
+    // A frequency in free text used to vanish at the sanitizer.
+    assert_eq!(sp.message("QSY 14.074"), "Q S Y fourteen point zero seven four");
+}
+
 /// The invariant the whole module exists to keep.
 ///
 /// Piper's phonemizer is a dictionary lookup: a token it does not know is
@@ -209,6 +266,9 @@ fn every_rule_honours_the_output_contract() {
             "DL/9A1AAA -12 +03 100%",
             "QSY 14.074 pse",
             "wx here 21C hi hi",
+            // The bulletin shapes: a compound token that leaks a digit past
+            // the contract is a frequency the operator never hears.
+            "DDK2 10100KHZ 1013HPA 0530UTC RYRYRYRY",
         ] {
             out.push(sp.message(msg));
         }

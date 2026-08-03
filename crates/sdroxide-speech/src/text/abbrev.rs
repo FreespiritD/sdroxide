@@ -12,7 +12,9 @@
 /// Multi-token entries, matched first and longest-first.
 ///
 /// Only where the pair means something the words separately do not.
-const PHRASES: &[(&str, &str)] = &[("hi hi", "hi hi"), ("cq dx", "C Q D X"), ("de", "from")];
+const PHRASES: &[(&str, &str)] =
+    // `HW` alone is "how copy", so `HW CPY` would otherwise be "how copy copy".
+    &[("hi hi", "hi hi"), ("cq dx", "C Q D X"), ("hw cpy", "how copy"), ("de", "from")];
 
 /// Single tokens. Uppercase keys; lookup is case-insensitive.
 ///
@@ -82,13 +84,79 @@ const WORDS: &[(&str, &str)] = &[
     ("XYL", "X Y L"),
     ("OP", "operator"),
     ("NAME", "name"),
+    ("CPY", "copy"),
+    ("MSG", "message"),
+    ("GD", "good"),
+    ("MNI", "many"),
+    ("DR", "dear"),
+    ("STN", "station"),
+    ("FREQ", "frequency"),
+    ("NR", "number"),
+    ("CONDX", "conditions"),
+    ("SIGS", "signals"),
+    ("XMTR", "transmitter"),
+    ("RCVR", "receiver"),
+    ("BCNU", "be seeing you"),
+    ("CUL", "see you later"),
+    ("CU", "see you"),
+    ("BTU", "back to you"),
+    ("WKD", "worked"),
+    ("OK", "okay"),
+    ("MR", "mister"),
     // Award and activity programmes.
     ("POTA", "pota"),
     ("SOTA", "sota"),
     ("IOTA", "iota"),
     ("WWFF", "W W F F"),
     ("SES", "special event station"),
+    // ── units ───────────────────────────────────────────────────────────
+    // A unit is a word, not an initialism: an operator hears "ten thousand
+    // one hundred kilohertz", never "one zero one zero zero K H Z". Without
+    // these the letter rules below would spell every one of them, because
+    // `KHZ` and `HPA` are shaped exactly like initialisms.
+    ("HZ", "hertz"),
+    ("KHZ", "kilohertz"),
+    ("MHZ", "megahertz"),
+    ("GHZ", "gigahertz"),
+    ("KW", "kilowatts"),
+    ("DB", "decibels"),
+    ("WPM", "words per minute"),
+    ("DEG", "degrees"),
+    ("KM", "kilometers"),
+    // Marine and aviation weather, which is most of what the RTTY bands
+    // actually carry: DWD, Northwood, the coast stations.
+    ("UTC", "U T C"),
+    ("GMT", "G M T"),
+    ("HPA", "hectopascals"),
+    ("KT", "knots"),
+    ("KTS", "knots"),
+    // Compass points. "S W" is a reading nobody wants in a wind direction,
+    // and a bulletin is where these overwhelmingly appear. `NW` is not here:
+    // it is already "now" above, which is what it means in a QSO, and a QSO
+    // is the older claim on it.
+    ("NE", "northeast"),
+    ("SE", "southeast"),
+    ("SW", "southwest"),
 ];
+
+/// Read as letters even though they are pronounceable.
+///
+/// The general rule below — an all-capitals token with no vowel is an
+/// initialism — cannot see these, because a vowel is exactly what they have.
+/// Every entry is something an operator says letter by letter anyway.
+///
+/// `AM` and `IF` are deliberately absent. Both are ordinary English words that
+/// turn up in the middle of a weather bulletin far more often than they turn up
+/// as a mode or an intermediate frequency, and the mode announcement has its
+/// own path through [`super::Speaker::mode`] that never reaches here.
+const LETTER_TOKENS: &[&str] = &[
+    "USB", "AGC", "ALC", "AFSK", "APRS", "ADIF", "ARRL", "IARU", "ITU", "EME", "ERP", "EIRP",
+    "UHF", "EHF", "ISS", "USA", "UK",
+];
+
+/// Vowels, for the "is this pronounceable" test. `Y` counts: without it `TRY`,
+/// `DRY` and `SKY` are spelled out, and they are words.
+const VOWELS: [char; 6] = ['A', 'E', 'I', 'O', 'U', 'Y'];
 
 /// The replacement for one token, if the table has one.
 ///
@@ -99,12 +167,16 @@ pub fn lookup(token: &str) -> Option<&'static str> {
 }
 
 /// A multi-token replacement starting at `words[i]`, and how many it consumed.
+///
+/// Trailing sentence punctuation does not break a match: `HW CPY?` is the
+/// phrase with a question mark on it, and the caller puts the punctuation back.
 pub fn lookup_phrase(words: &[&str], i: usize) -> Option<(&'static str, usize)> {
     for (key, val) in PHRASES {
         let n = key.split(' ').count();
         if i + n <= words.len() {
-            let matches =
-                key.split(' ').zip(&words[i..i + n]).all(|(k, w)| k.eq_ignore_ascii_case(w));
+            let matches = key.split(' ').zip(&words[i..i + n]).all(|(k, w)| {
+                k.eq_ignore_ascii_case(w.trim_end_matches(['.', ',', '!', '?', ':', ';']))
+            });
             if matches {
                 return Some((val, n));
             }
@@ -113,14 +185,43 @@ pub fn lookup_phrase(words: &[&str], i: usize) -> Option<(&'static str, usize)> 
     None
 }
 
-/// Whether a token is an all-capitals initialism worth spelling out.
+/// Whether a token is an initialism to spell rather than a word to say.
 ///
-/// One to five letters, no digits, and originally capitalised. Longer than that
-/// and it is more likely a shouted word than an initialism. A single capital
-/// counts: a lone `R` or `N` in a decoded line is a letter, not a word.
-pub fn is_initialism(token: &str) -> bool {
+/// # Why capitalisation is not the test
+///
+/// It used to be: one to five capitals meant "spell it". That works for FT8,
+/// where a message is a handful of tokens from a fixed vocabulary. It falls
+/// apart on RTTY, because **Baudot has no lower case** — every character a DWD
+/// weather bulletin sends arrives capitalised, so the rule spelled `G O O D`,
+/// `K H Z` and `S E A` right through the forecast.
+///
+/// So the question asked here is not "was it capitalised" but "can it be said":
+///
+/// - a lone capital is a letter — a bare `R` or `N` in a decoded line;
+/// - `Q` plus two letters is a Q-code, the whole family of them, said as
+///   letters whether or not the table above happens to list that one;
+/// - a token with no vowel in it cannot be pronounced, so it is an initialism
+///   by construction: `SSB`, `PSK`, `DWD`, `MSLP`;
+/// - the handful of pronounceable ones that are still read as letters are
+///   listed in `LETTER_TOKENS`.
+///
+/// Everything else is handed on as a word. That is the important half of the
+/// change: what this function declines, the dictionary decides — and a word it
+/// does not know is spelled out downstream anyway (see
+/// `synth::phonemes`), so an unlisted initialism still reads correctly
+/// while `GOOD` is simply said.
+pub fn reads_as_letters(token: &str) -> bool {
     let n = token.chars().count();
-    (1..=5).contains(&n) && token.chars().all(|c| c.is_ascii_uppercase())
+    if n == 0 || n > 5 || !token.chars().all(|c| c.is_ascii_uppercase()) {
+        return false;
+    }
+    if n == 1 {
+        return true;
+    }
+    if n == 3 && token.starts_with('Q') {
+        return true;
+    }
+    LETTER_TOKENS.contains(&token) || !token.contains(VOWELS)
 }
 
 /// Whether a token reads as an RST report — `599`, `5NN`, `579`.
@@ -187,13 +288,36 @@ mod tests {
 
     #[test]
     fn initialisms() {
-        assert!(is_initialism("RST"));
-        assert!(is_initialism("SSB"));
+        assert!(reads_as_letters("RST"));
+        assert!(reads_as_letters("SSB"));
         // A lone capital is a letter to spell, not a word.
-        assert!(is_initialism("K"));
-        assert!(!is_initialism("hello"));
-        assert!(!is_initialism("K1ABC"));
+        assert!(reads_as_letters("K"));
+        assert!(!reads_as_letters("hello"));
+        assert!(!reads_as_letters("K1ABC"));
         assert_eq!(spaced("RST"), "R S T");
+    }
+
+    /// The RTTY case: Baudot is upper case only, so capitalisation says
+    /// nothing and every one of these used to be spelled out.
+    #[test]
+    fn capitals_alone_do_not_mean_spell_it() {
+        for word in ["GOOD", "SEA", "WIND", "GALE", "NORTH", "LATER", "MAY", "SKY", "DRY"] {
+            assert!(!reads_as_letters(word), "{word} is a word, not an initialism");
+        }
+        // ...while the things that genuinely are initialisms still are.
+        for init in ["SSB", "PSK", "DWD", "MSLP", "TX", "USB", "QRK", "QSA", "N"] {
+            assert!(reads_as_letters(init), "{init} should be spelled out");
+        }
+    }
+
+    /// The vowel test cannot see a unit — `KHZ` is shaped exactly like an
+    /// initialism — so the table has to.
+    #[test]
+    fn units_are_words() {
+        assert_eq!(lookup("KHZ"), Some("kilohertz"));
+        assert_eq!(lookup("MHz"), Some("megahertz"));
+        assert_eq!(lookup("hpa"), Some("hectopascals"));
+        assert_eq!(lookup("PSE"), Some("please"));
     }
 
     #[test]

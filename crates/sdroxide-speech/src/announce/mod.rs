@@ -22,6 +22,7 @@
 
 pub mod decodes;
 pub mod digest;
+pub mod ft8;
 pub mod settle;
 pub mod swr;
 pub mod tail;
@@ -34,6 +35,7 @@ use crate::text::Speaker;
 
 use decodes::SeenDecodes;
 use digest::SpeechDigest;
+use ft8::QsoWatch;
 use settle::{SETTLE_FREQ_S, SETTLE_LEVEL_S, SETTLE_OFFSET_S, SETTLE_OOB_S, Settle};
 use swr::SwrWatch;
 use tail::TextPump;
@@ -136,6 +138,7 @@ pub struct Announcer {
     swr: SwrWatch,
     text: TextPump,
     seen: SeenDecodes,
+    qso: QsoWatch,
     /// Monotonic id handed to the sink with each utterance.
     seq: u64,
     /// The last thing said, for the repeat hotkey.
@@ -159,6 +162,7 @@ impl Announcer {
             swr: SwrWatch::new(),
             text: TextPump::new(),
             seen: SeenDecodes::default(),
+            qso: QsoWatch::new(),
             seq: 0,
             last_said: None,
             ducking: false,
@@ -282,6 +286,7 @@ impl Announcer {
                 self.seen.js8(&js8.messages, &self.cfg, &sp, now, &mut out);
             }
             self.seen.fsq(&st.fsq_messages, &self.cfg, &sp, now, &mut out);
+            self.qso.observe(st, &self.cfg, &sp, now, &mut out);
         }
         self.pump_text(st, s, now, &mut out);
         for u in out {
@@ -335,6 +340,7 @@ impl Announcer {
     /// messages may arrive again with new identities.
     pub fn reset_decodes(&mut self) {
         self.seen.clear();
+        self.qso.reset();
     }
 
     /// A reconnect, or a fresh engine: re-seed rather than announce the world.

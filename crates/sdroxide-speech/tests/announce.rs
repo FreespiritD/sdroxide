@@ -7,7 +7,7 @@
 use sdroxide_speech::announce::Announcer;
 use sdroxide_speech::sink::{RecordingSink, SpeechLog};
 use sdroxide_types::{
-    AgcMode, Band, CwStatus, Decode, DigiConfig, DigiStatus, Meters, Mode, RadioState,
+    AgcMode, Band, CwStatus, Decode, DigiConfig, DigiStatus, Meters, Mode, QsoStep, RadioState,
     SpeechSettings, TxMeters, Vfo,
 };
 
@@ -394,7 +394,172 @@ fn an_ft8_message_to_me_is_spoken_once() {
 
     let n = log.all().iter().filter(|t| t.contains("kilo one alpha bravo charlie")).count();
     assert_eq!(n, 1, "{:?}", log.all());
-    assert!(log.any("calling you"), "{:?}", log.all());
+    // What the message *was*, not merely that one arrived: this is their
+    // report of us, and it is the number the operator has to write down.
+    assert!(log.any("reports minus twelve"), "{:?}", log.all());
+    // And only that number. Ours of them belongs on the call that opened the
+    // contact, not appended to every message in it.
+    assert_eq!(log.all()[0].matches("minus twelve").count(), 1, "{:?}", log.all());
+}
+
+/// Every stage of an exchange says which stage it is.
+#[test]
+fn each_message_of_a_qso_reads_as_itself() {
+    for (msg, want) in [
+        ("OE3ABC K1ABC JN88", "kilo one alpha bravo charlie calling you"),
+        ("OE3ABC K1ABC -12", "kilo one alpha bravo charlie reports minus twelve"),
+        ("OE3ABC K1ABC R-12", "kilo one alpha bravo charlie confirms minus twelve"),
+        ("OE3ABC K1ABC RRR", "kilo one alpha bravo charlie rogers"),
+        ("OE3ABC K1ABC RR73", "kilo one alpha bravo charlie rogers and seventy three"),
+        ("OE3ABC K1ABC 73", "kilo one alpha bravo charlie says seventy three"),
+        ("OE3ABC K1ABC HW CPY", "kilo one alpha bravo charlie calling you, how copy"),
+    ] {
+        let (mut a, log, s) = harness();
+        step(&mut a, &s, 0.0);
+        let st = digi_with_call("OE3ABC");
+        a.on_ft8(&[decode(Some("OE3ABC"), "K1ABC", msg, 100)], &st, 1.0);
+        a.tick(&s, None, 1.0);
+        let said = log.all();
+        assert!(said.iter().any(|t| t.starts_with(want)), "{msg:?} was read as {said:?}");
+    }
+}
+
+// ── our own side of the exchange ────────────────────────────────────────
+
+/// An FT8 status, as the sequencer broadcasts one mid-QSO.
+fn ft8_status(call: &str, step: QsoStep, dx: Option<&str>, pending: Option<&str>) -> DigiStatus {
+    let mut st = digi_with_call(call);
+    st.mode = Mode::Ft8;
+    st.step = step;
+    st.dx_call = dx.map(str::to_string);
+    st.tx_next = pending.is_some();
+    st.tx_pending_msg = pending.map(str::to_string);
+    st
+}
+
+/// A whole contact, both sides of it, in the order the operator hears it.
+///
+/// This is the test the two complaints behind this code are really about: the
+/// old announcer said "kilo one alpha bravo charlie calling you, minus twelve"
+/// five times over and never once said the QSO had finished.
+#[test]
+fn a_whole_exchange_reads_as_a_conversation() {
+    let (mut a, log, s) = harness();
+    step(&mut a, &s, 0.0);
+
+    // A slot: their message, then the plan for ours, then the queue drains —
+    // fifteen seconds of it, in a real one.
+    let slot = |a: &mut Announcer, st: &DigiStatus, rx: Option<&str>, snr: i16, t: f64| {
+        if let Some(msg) = rx {
+            let mut d = decode(Some("OE3ABC"), "K1ABC", msg, 100 + t as i64);
+            d.snr_db = snr;
+            a.on_ft8(&[d], st, t);
+        }
+        a.on_digi(st, &s, t);
+        for k in 0..6 {
+            a.tick(&s, None, t + k as f64 * 0.05);
+        }
+    };
+
+    let cq = ft8_status("OE3ABC", QsoStep::CallingCq, None, Some("CQ OE3ABC JN88"));
+    // Sitting in FT8 with nothing to send: adopted, and silent.
+    slot(&mut a, &ft8_status("OE3ABC", QsoStep::Idle, None, None), None, 0, 1.0);
+    slot(&mut a, &cq, None, 0, 2.0);
+    let tx_rpt = ft8_status("OE3ABC", QsoStep::TxReport, Some("K1ABC"), Some("K1ABC OE3ABC -09"));
+    slot(&mut a, &tx_rpt, Some("OE3ABC K1ABC FN42"), -12, 3.0);
+    let tx_r = ft8_status("OE3ABC", QsoStep::TxRReport, Some("K1ABC"), Some("K1ABC OE3ABC R-09"));
+    slot(&mut a, &tx_r, Some("OE3ABC K1ABC -14"), -12, 4.0);
+    let tx_73 = ft8_status("OE3ABC", QsoStep::TxRr73, Some("K1ABC"), Some("K1ABC OE3ABC RR73"));
+    slot(&mut a, &tx_73, Some("OE3ABC K1ABC R-14"), -11, 5.0);
+    let done = ft8_status("OE3ABC", QsoStep::Confirming, Some("K1ABC"), None);
+    slot(&mut a, &done, Some("OE3ABC K1ABC 73"), -11, 6.0);
+
+    assert_eq!(
+        log.all(),
+        [
+            "calling C Q",
+            "kilo one alpha bravo charlie calling you, minus twelve",
+            "sending minus nine to kilo one alpha bravo charlie",
+            "kilo one alpha bravo charlie reports minus fourteen",
+            "sending roger minus nine",
+            "kilo one alpha bravo charlie confirms minus fourteen",
+            "sending roger roger seventy three",
+            // No number on a sign-off: nothing is decided after one.
+            "kilo one alpha bravo charlie says seventy three",
+            "Q S O with kilo one alpha bravo charlie complete",
+        ]
+    );
+}
+
+#[test]
+fn what_we_are_about_to_send_is_announced_once() {
+    let (mut a, log, s) = harness();
+    step(&mut a, &s, 0.0);
+    // Attaching mid-QSO adopts the state without reciting it.
+    a.on_digi(
+        &ft8_status("OE3ABC", QsoStep::TxReport, Some("K1ABC"), Some("K1ABC OE3ABC -12")),
+        &s,
+        1.0,
+    );
+    a.tick(&s, None, 1.0);
+    assert!(log.is_empty(), "recited the exchange on connect: {:?}", log.all());
+
+    // The plan changes: the exchange has advanced, and that is worth saying.
+    let st = ft8_status("OE3ABC", QsoStep::TxRReport, Some("K1ABC"), Some("K1ABC OE3ABC R-12"));
+    a.on_digi(&st, &s, 2.0);
+    a.tick(&s, None, 2.0);
+    assert!(log.any("sending roger minus twelve"), "{:?}", log.all());
+
+    // The same plan, slot after slot after slot: said once.
+    let before = log.len();
+    for (i, t) in [3.0, 4.0, 5.0].iter().enumerate() {
+        let _ = i;
+        a.on_digi(&st, &s, *t);
+        a.tick(&s, None, *t);
+    }
+    assert_eq!(log.len(), before, "repeated an unchanged plan: {:?}", log.all());
+}
+
+#[test]
+fn a_completed_qso_says_so() {
+    let (mut a, log, s) = harness();
+    step(&mut a, &s, 0.0);
+    a.on_digi(&ft8_status("OE3ABC", QsoStep::TxRr73, Some("K1ABC"), None), &s, 1.0);
+    a.tick(&s, None, 1.0);
+    log.take();
+
+    // `Confirming` is the sequencer's "logged".
+    let done = ft8_status("OE3ABC", QsoStep::Confirming, Some("K1ABC"), None);
+    a.on_digi(&done, &s, 2.0);
+    a.tick(&s, None, 2.0);
+    assert!(log.any("Q S O with kilo one alpha bravo charlie complete"), "{:?}", log.all());
+
+    // The re-send window holds the contact in `Confirming` for minutes; the
+    // contact only completes once.
+    log.take();
+    for t in [3.0, 4.0] {
+        a.on_digi(&done, &s, t);
+        a.tick(&s, None, t);
+    }
+    assert!(log.is_empty(), "said it again: {:?}", log.all());
+}
+
+/// The keyboard modes put the operator's own typing in `tx_pending_msg`.
+/// Reading it back to them is not an announcement.
+#[test]
+fn a_typed_buffer_is_not_a_transmission_plan() {
+    let (mut a, log, s) = harness();
+    step(&mut a, &s, 0.0);
+    let mut st = digi_with_call("OE3ABC");
+    st.mode = Mode::Rtty;
+    st.tx_next = true;
+    st.tx_pending_msg = Some("HELLO OM".into());
+    a.on_digi(&st, &s, 1.0);
+    a.tick(&s, None, 1.0);
+    st.tx_pending_msg = Some("HELLO OM ES 73".into());
+    a.on_digi(&st, &s, 2.0);
+    a.tick(&s, None, 2.0);
+    assert!(log.is_empty(), "read the operator's own typing back: {:?}", log.all());
 }
 
 #[test]

@@ -149,7 +149,16 @@ pub struct DecodeSpeech {
     pub js8_partial: bool,
     /// FSQ messages addressed to you.
     pub fsq: bool,
+    /// Your own side of an FT8 exchange: what the sequencer is about to send,
+    /// and the contact ending. Without it the operator hears half a
+    /// conversation — every message the other station sends, and no sign that
+    /// the QSO was ever finished and logged.
+    pub ft8_qso: bool,
     /// Append the signal report.
+    ///
+    /// Only where the message carries no report of its own: a decode that says
+    /// "reports minus twelve" is already a number, and ours belongs on the call
+    /// that started the contact, not on every message of it.
     pub include_snr: bool,
     /// Append the grid square.
     pub include_grid: bool,
@@ -164,6 +173,7 @@ impl Default for DecodeSpeech {
             js8_allcall: false,
             js8_partial: false,
             fsq: true,
+            ft8_qso: true,
             include_snr: true,
             include_grid: false,
         }

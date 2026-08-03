@@ -17,6 +17,7 @@ use std::collections::{HashSet, VecDeque};
 use sdroxide_types::{Decode, DigiConfig, FsqMsg, Js8Msg, SpeechSettings, cq_is_for_us};
 
 use super::digest::fnv1a;
+use super::ft8;
 use crate::queue::{Priority, Utterance};
 use crate::text::Speaker;
 
@@ -193,6 +194,10 @@ impl SeenDecodes {
 }
 
 /// How an FT8 decode is read out, by verbosity.
+///
+/// The shape is `<who> <what they said>` — see [`super::ft8`] for why the
+/// second half is worth the classification, and why our own signal report only
+/// rides along on the messages that carry no number of their own.
 fn render_call(d: &Decode, cfg: &SpeechSettings, sp: &Speaker<'_>, to_me: bool) -> String {
     let who = d.from.as_deref().unwrap_or("");
     let call = if who.is_empty() { String::new() } else { sp.callsign(who) };
@@ -201,14 +206,24 @@ fn render_call(d: &Decode, cfg: &SpeechSettings, sp: &Speaker<'_>, to_me: bool) 
         return if call.is_empty() { sp.message(&d.message) } else { call };
     }
 
-    let mut s = if call.is_empty() {
+    let payload = ft8::classify(&d.message);
+    let said = ft8::heard(&payload, to_me, sp);
+    let named = !call.is_empty();
+    let mut s = if !named {
         sp.message(&d.message)
-    } else if to_me {
-        format!("{call} calling you")
+    } else if said.is_empty() {
+        call
     } else {
-        format!("{call} calling C Q")
+        format!("{call} {said}")
     };
-    if cfg.decodes.include_snr {
+    // Free text is the message itself: nothing above it said what was in it.
+    if payload == ft8::Payload::Other && named {
+        let body = sp.message(ft8::payload_text(&d.message, d.to.as_deref().unwrap_or(""), who));
+        if !body.trim().is_empty() {
+            s.push_str(&format!(", {body}"));
+        }
+    }
+    if cfg.decodes.include_snr && !payload.has_report() && !payload.is_closing() {
         s.push_str(&format!(", {}", sp.snr(d.snr_db)));
     }
     if cfg.decodes.include_grid
@@ -217,7 +232,9 @@ fn render_call(d: &Decode, cfg: &SpeechSettings, sp: &Speaker<'_>, to_me: bool) 
     {
         s.push_str(&format!(", {}", sp.grid(g)));
     }
-    if cfg.is_verbose() {
+    // `Full` repeats the raw message under the reading of it — everything
+    // above is an interpretation, and this is the text it was made from.
+    if cfg.is_verbose() && payload != ft8::Payload::Other {
         s.push_str(&format!(", {}", sp.message(&d.message)));
     }
     s

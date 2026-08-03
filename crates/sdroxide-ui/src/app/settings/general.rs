@@ -263,7 +263,13 @@ pub(in crate::app) fn speech_settings(
                 ui.checkbox(&mut d.js8_allcall, "JS8 @ALLCALL too");
                 ui.end_row();
                 ui.checkbox(&mut d.fsq, "FSQ messages to me");
-                ui.checkbox(&mut d.include_snr, "Include the report");
+                ui.checkbox(&mut d.include_snr, "Include the report").on_hover_text(
+                    "Only where the message carries none of its own — a decode that already \
+                     reports a number does not also get ours",
+                );
+                ui.end_row();
+                ui.checkbox(&mut d.ft8_qso, "My own FT8 exchange")
+                    .on_hover_text("What the sequencer is about to send, and the contact ending");
                 ui.end_row();
             });
 

@@ -27,6 +27,7 @@
 //! never "oh".
 
 pub mod abbrev;
+pub mod filler;
 pub mod numbers;
 pub mod phonetic;
 
@@ -296,13 +297,28 @@ impl<'a> Speaker<'a> {
     /// The order matters: `73` has to be caught before the "bare integer" rule
     /// turns it into "seventy three" *as a number*, which happens to agree here
     /// but would not for `88`.
+    ///
+    /// # What gets spelled
+    ///
+    /// A decoded line is not a sentence written for a listener. It is upper
+    /// case whether or not anything in it is an initialism — Baudot has no
+    /// lower case at all — and it is a mixture of callsigns, shorthand, units
+    /// and ordinary prose. So the pass here spells only what it can *justify*
+    /// spelling: a token shaped like a callsign ([`phonetic::looks_like_callsign`]),
+    /// or one that cannot be pronounced ([`abbrev::reads_as_letters`]).
+    /// Anything else is handed on as a word, and the phonemizer spells it only
+    /// if the dictionary has never heard of it. That is what keeps `GOOD` a
+    /// word and `DDK2` a callsign in the same line of a DWD bulletin.
     pub fn message(&self, text: &str) -> String {
         let words: Vec<&str> = text.split_whitespace().collect();
         let mut out: Vec<String> = Vec::new();
         let mut i = 0;
         while i < words.len() {
             if let Some((phrase, used)) = abbrev::lookup_phrase(&words, i) {
-                out.push(phrase.to_string());
+                // The punctuation the phrase match ignored still carries the
+                // prosody, and it sat on the last token of the phrase.
+                let tail = if words[i + used - 1].ends_with(['.', '?', '!']) { "." } else { "" };
+                out.push(format!("{phrase}{tail}"));
                 i += used;
                 continue;
             }
@@ -320,7 +336,9 @@ impl<'a> Speaker<'a> {
         // rest.
         let core = raw.trim_end_matches(['.', ',', '!', '?', ':', ';']);
         let tail = if core.len() < raw.len() && raw.ends_with(['.', '?', '!']) { "." } else { "" };
-        if core.is_empty() {
+        // A teleprinter idle is not text. Dropping it costs nothing, and
+        // reading it costs the bulletin that follows.
+        if core.is_empty() || filler::is_filler(core) {
             return String::new();
         }
 
@@ -339,18 +357,73 @@ impl<'a> Speaker<'a> {
             phonetic::callsign(core, self.cfg.callsign_style)
         } else if phonetic::looks_like_grid(core) {
             phonetic::grid(core, self.cfg.callsign_style)
+        } else if is_zero_led_group(core) {
+            // A leading zero means a group of digits rather than a quantity:
+            // `0530` is half past five and `0000` is midnight, and neither is
+            // a number anybody would say as one. A signed `+03` is a report,
+            // and keeps the sign path below.
+            digits(core)
         } else if let Some(n) = parse_signed(core) {
             if n > 0 && core.starts_with('+') {
                 format!("plus {}", cardinal(n))
             } else {
                 cardinal(n)
             }
-        } else if abbrev::is_initialism(core) {
+        } else if let Some(s) = parse_decimal(core) {
+            s
+        } else if let Some(s) = self.compound(core) {
+            s
+        } else if abbrev::reads_as_letters(core) {
             abbrev::spaced(core)
         } else {
             core.to_ascii_lowercase()
         };
         format!("{body}{tail}")
+    }
+
+    /// Letters and digits welded together: `10100KHZ`, `1013HPA`, `0530UTC`,
+    /// `21C`.
+    ///
+    /// Nothing above claimed it, so it is not a callsign, a grid, a report or a
+    /// number — and yet it is the shape a bulletin writes a measurement in. Read
+    /// by parts: each digit run as a number, each letter run through the same
+    /// rules as any other token. `None` when the token is not that shape.
+    ///
+    /// This exists because of [`Self::sanitize`]. Left to fall through to the
+    /// "ordinary word" arm, `10100KHZ` would reach the contract with digits in
+    /// it, and the contract would delete them — leaving the operator a
+    /// confident "kilohertz" with no frequency attached.
+    fn compound(&self, core: &str) -> Option<String> {
+        if !core.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return None;
+        }
+        let mut out: Vec<String> = Vec::new();
+        let mut rest = core;
+        while !rest.is_empty() {
+            let alpha = rest.starts_with(|c: char| c.is_ascii_alphabetic());
+            let end = rest.find(|c: char| c.is_ascii_alphabetic() != alpha).unwrap_or(rest.len());
+            let (run, tail) = rest.split_at(end);
+            rest = tail;
+            out.push(if alpha {
+                let upper = run.to_ascii_uppercase();
+                match abbrev::lookup(run) {
+                    Some(sub) => sub.to_string(),
+                    None if abbrev::reads_as_letters(&upper) => abbrev::spaced(run),
+                    None => run.to_ascii_lowercase(),
+                }
+            } else if is_zero_led_group(run) {
+                digits(run)
+            } else {
+                match run.parse::<i64>() {
+                    Ok(n) => cardinal(n),
+                    // Longer than an i64 — a serial number, or noise.
+                    Err(_) => digits(run),
+                }
+            });
+        }
+        // One run is not a compound: that is an ordinary word or an ordinary
+        // number, and the rules above have already had their say.
+        (out.len() > 1).then(|| out.join(" "))
     }
 
     // ── the contract ────────────────────────────────────────────────────
@@ -403,6 +476,29 @@ impl<'a> Speaker<'a> {
     pub fn style(&self) -> CallsignStyle {
         self.cfg.callsign_style
     }
+}
+
+/// A decimal number token: `14.074`, `1.5`, `-0.5`.
+///
+/// Read like a dial — the fraction digit by digit, so "fourteen point zero
+/// seven four" cannot be confused with "fourteen point seventy four". A
+/// frequency written into free text (`QSY 14.074`) is the common case, and
+/// before this rule existed [`Speaker::sanitize`] threw the whole token away.
+fn parse_decimal(s: &str) -> Option<String> {
+    let body = s.strip_prefix(['+', '-']).unwrap_or(s);
+    let (int, frac) = body.split_once('.')?;
+    let digity = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
+    if !digity(int) || !digity(frac) {
+        return None;
+    }
+    let whole: i64 = int.parse().ok()?;
+    let sign = if s.starts_with('-') { "minus " } else { "" };
+    Some(format!("{sign}{} point {}", cardinal(whole), digits(frac)))
+}
+
+/// Digits with a leading zero: `0530`, `007`, `0000`.
+fn is_zero_led_group(s: &str) -> bool {
+    s.len() > 1 && s.starts_with('0') && s.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// A signed or unsigned integer token: `-12`, `+03`, `250`.

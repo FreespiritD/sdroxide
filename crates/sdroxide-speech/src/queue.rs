@@ -77,6 +77,9 @@ pub enum Key {
     BandEdge,
     /// The read-along text stream. Newest wins, always.
     Text,
+    /// What the FT8 sequencer is about to send. A plan the exchange has already
+    /// moved past is not worth hearing.
+    Ft8Tx,
     /// Answering a hotkey — never coalesced away, because the operator asked.
     OnDemand,
 }

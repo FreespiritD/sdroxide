@@ -126,28 +126,108 @@ pub fn grid(grid: &str, style: CallsignStyle) -> String {
     callsign(grid, style)
 }
 
-/// Whether a token looks like an amateur callsign.
+/// Whether a token looks like a callsign.
 ///
-/// Deliberately loose. Getting this wrong in one direction spells a word out
-/// letter by letter, which is merely slow; getting it wrong in the other reads
-/// a callsign as a word, which is useless. Requiring both a letter and a digit
-/// already excludes almost all English.
+/// # Shape, not just ingredients
+///
+/// This used to ask only whether a token mixed letters with digits inside a
+/// plausible length. On FT8 that is nearly always right, because almost nothing
+/// else in a message looks like that. On a RTTY bulletin it is wrong several
+/// times a line: `10100KHZ`, `1013HPA`, `24H` and `12UTC` are all letters and
+/// digits in a plausible length, and none of them is a callsign.
+///
+/// A callsign is not an arbitrary mixture — the ITU gives it a shape, and the
+/// shape is what is tested here:
+///
+/// - **amateur**: a prefix of one or two letters, or a digit and one or two
+///   letters (`K`, `DL`, `9A`, `3DA`), then the region digits, then a suffix of
+///   one to four letters. `K1ABC`, `9A1AAA`, `VP2E`, `2E0ABC`, `W100AW`.
+/// - **station**: three letters and one or two digits, with no suffix — the
+///   form the utility services use, and the reason `DDK2` and `DDH7` are
+///   spelled out rather than read as words.
+/// - either of those may carry up to two `/` parts (`DL/K1ABC/P`).
+///
+/// Getting this wrong in one direction spells a word out letter by letter,
+/// which is merely slow; in the other it reads a callsign as a word, which is
+/// useless. What the tightening gives up is the run of digits-and-letters that
+/// is *not* a callsign — and the token rules in `super` read those by their
+/// parts instead, so nothing is dropped either way.
 pub fn looks_like_callsign(token: &str) -> bool {
     let core = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '/');
-    if core.len() < 3 || core.len() > 12 {
+    if core.is_empty() || core.len() > 16 {
         return false;
     }
-    let mut has_alpha = false;
-    let mut has_digit = false;
-    for ch in core.chars() {
-        match ch {
-            'a'..='z' | 'A'..='Z' => has_alpha = true,
-            '0'..='9' => has_digit = true,
-            '/' => {}
-            _ => return false,
+    let mut base = false;
+    for (n, part) in core.split('/').enumerate() {
+        if n >= 3 || part.is_empty() {
+            return false;
+        }
+        if is_call_body(part) {
+            base = true;
+        } else if !is_call_affix(part) {
+            return false;
         }
     }
-    has_alpha && has_digit
+    base
+}
+
+/// The callsign proper, without any `/` part.
+fn is_call_body(part: &str) -> bool {
+    let Some(runs) = runs(part) else {
+        return false;
+    };
+    let alpha = |r: &(bool, usize), lo: usize, hi: usize| r.0 && (lo..=hi).contains(&r.1);
+    let digit = |r: &(bool, usize), lo: usize, hi: usize| !r.0 && (lo..=hi).contains(&r.1);
+
+    match runs.as_slice() {
+        // Prefix, region digits, suffix: the amateur form. Three region digits
+        // and a five-letter suffix are both special-event stretches of the
+        // rules, but they are on the air and they are still callsigns.
+        [p, d, s] if alpha(p, 1, 2) && digit(d, 1, 3) && alpha(s, 1, 5) => true,
+        // The same, behind a numeric prefix: 9A1AAA, 3DA0RS.
+        [n, p, d, s] if digit(n, 1, 1) && alpha(p, 1, 2) && digit(d, 1, 3) && alpha(s, 1, 5) => {
+            true
+        }
+        // Utility and broadcast stations: DDK2, DDH7, DDK9, CFH6. Two letters
+        // would take `RR73`, `TNX73` and `GUD73` with it, so this form asks
+        // for three — and even then not one the shorthand table knows, which
+        // is what keeps `CONDX` and a trailing number apart from a callsign.
+        [p, d]
+            if alpha(p, 3, 3)
+                && digit(d, 1, 2)
+                && super::abbrev::lookup(&part[..p.1]).is_none() =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
+/// A `/` part that is not itself a callsign: `/P`, `/MM`, `/QRP`, or the
+/// country prefix in `DL/K1ABC`.
+///
+/// Loose on purpose — it only ever applies next to a part that *did* pass
+/// [`is_call_body`], and no bare token reaches it.
+fn is_call_affix(part: &str) -> bool {
+    (1..=4).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+/// The token as alternating letter and digit runs — `(is_letters, length)`.
+/// `None` if anything else is in there.
+fn runs(part: &str) -> Option<Vec<(bool, usize)>> {
+    let mut out: Vec<(bool, usize)> = Vec::new();
+    for b in part.bytes() {
+        let alpha = match b {
+            b'a'..=b'z' | b'A'..=b'Z' => true,
+            b'0'..=b'9' => false,
+            _ => return None,
+        };
+        match out.last_mut() {
+            Some(last) if last.0 == alpha => last.1 += 1,
+            _ => out.push((alpha, 1)),
+        }
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// Whether a token looks like a 4- or 6-character Maidenhead locator.
@@ -198,16 +278,43 @@ mod tests {
 
     #[test]
     fn callsign_detection() {
-        for yes in ["K1ABC", "9A1AAA", "DL/K1ABC", "VP2E", "W1AW", "OE3ABC"] {
+        for yes in [
+            "K1ABC",
+            "9A1AAA",
+            "DL/K1ABC",
+            "VP2E",
+            "W1AW",
+            "OE3ABC",
+            "2E0ABC",
+            "3DA0RS",
+            "W100AW",
+            "K1ABC/P",
+            "DL/K1ABC/QRP",
+            // The utility stations, which is what a RTTY bulletin is signed
+            // with — DWD's own three.
+            "DDK2",
+            "DDH7",
+            "DDK9",
+        ] {
             assert!(looks_like_callsign(yes), "{yes} should look like a callsign");
         }
         for no in ["CQ", "the", "hello", "73", "ab"] {
             assert!(!looks_like_callsign(no), "{no} should not look like a callsign");
         }
-        // Shape alone cannot separate `RR73` from a callsign — it is letters
-        // and a digit in a plausible length. That is why `Speaker::token`
-        // consults the abbreviation table *before* asking this question.
-        assert!(looks_like_callsign("RR73"));
+    }
+
+    /// What a weather bulletin is full of. Every one of these passed the old
+    /// "has a letter and a digit" test and was read out letter by letter.
+    #[test]
+    fn bulletin_text_is_not_a_callsign() {
+        for no in ["10100KHZ", "1013HPA", "24H", "12UTC", "5MIN", "21C", "H24", "1200Z"] {
+            assert!(!looks_like_callsign(no), "{no} should not look like a callsign");
+        }
+        // Shorthand welded to a number is shorthand, not a station: the letter
+        // run is in the abbreviation table, so the station form declines it.
+        for no in ["RR73", "TNX73", "GUD73", "PSE73"] {
+            assert!(!looks_like_callsign(no), "{no} should not look like a callsign");
+        }
     }
 
     #[test]
