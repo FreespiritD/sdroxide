@@ -189,10 +189,51 @@ pub fn synthesize_symbols(
 
 /// Pack and encode a Type-1 message into channel symbols.
 ///
-/// `None` when it will not fit the layout — see [`synthesize`].
+/// The locator is shortened to the four characters the message carries, so a
+/// station that set a six-character one transmits rather than being refused —
+/// see [`sdroxide_types::wspr_grid4`].
+///
+/// `None` when it still will not fit the layout: a compound callsign, or a
+/// locator that is not one.
 pub fn symbols_for(callsign: &str, grid: &str, power_dbm: i32) -> Option<[u8; N_SYMBOLS]> {
-    let info = mfsk_core::msg::wspr::pack_type1(callsign, grid, power_dbm)?;
-    Some(wspr::encode_channel_symbols(&info))
+    Some(wspr::encode_channel_symbols(&pack(callsign, grid, power_dbm)?))
+}
+
+/// The fifty information bits, or `None` if this identity cannot be sent.
+///
+/// Both halves are upper-cased: the message packs them from an alphabet that
+/// has no lower case, so a callsign typed in lower case would be refused for
+/// looking like an invalid one rather than for being one.
+fn pack(callsign: &str, grid: &str, power_dbm: i32) -> Option<[u8; 50]> {
+    let g4 = sdroxide_types::wspr_grid4(grid)?;
+    mfsk_core::msg::wspr::pack_type1(&callsign.trim().to_uppercase(), &g4, power_dbm)
+}
+
+/// Why this identity cannot be transmitted, or `None` if it can.
+///
+/// The authority on the question, because it asks the packer rather than
+/// re-deriving its rules: anything that returns `None` here is exactly what the
+/// transmitter would refuse.
+pub fn why_not_sendable(callsign: &str, grid: &str, power_dbm: i32) -> Option<String> {
+    let call = callsign.trim();
+    let grid = grid.trim();
+    if call.is_empty() || grid.is_empty() {
+        return Some("Set your callsign and grid before transmitting.".into());
+    }
+    if pack(call, grid, power_dbm).is_some() {
+        return None;
+    }
+    if sdroxide_types::wspr_grid4(grid).is_none() {
+        return Some(format!(
+            "{grid} is not a Maidenhead locator, so there is nothing to transmit as. Two \
+             letters and two digits — JN47 — is what the message carries."
+        ));
+    }
+    // The grid packs, so it is the callsign the message cannot hold.
+    Some(format!(
+        "{call} cannot be sent: WSPR's message carries a plain callsign, and a compound one \
+         needs a layout this station cannot encode. Receiving is unaffected."
+    ))
 }
 
 #[cfg(test)]
@@ -319,9 +360,38 @@ mod tests {
     fn a_message_that_does_not_fit_type_1_is_refused_rather_than_mangled() {
         // Compound callsigns need the Type-2 layout, which has no packer.
         assert!(synthesize("PJ4/K1ABC", "FN42", 37, 12_000, 1500.0, 0.5).is_none());
-        // A six-character grid needs Type 3.
-        assert!(synthesize("K1ABC", "FN42aa", 37, 12_000, 1500.0, 0.5).is_none());
         assert!(synthesize("K1ABC", "FN42", 37, 12_000, 1500.0, 0.5).is_some());
+    }
+
+    /// A six-character locator is *not* a reason to refuse: its first four are
+    /// the four-character one, which is what the message carries.
+    #[test]
+    fn a_six_character_locator_transmits_as_its_first_four() {
+        let long = synthesize("K1ABC", "FN42aa", 37, 12_000, 1500.0, 0.5)
+            .expect("a longer locator is shortened, not refused");
+        let short = synthesize("K1ABC", "FN42", 37, 12_000, 1500.0, 0.5).expect("valid");
+        assert_eq!(long, short, "FN42aa and FN42 must go out as the same message");
+        // However it was typed.
+        let lower = synthesize("k1abc", " fn42cb ", 37, 12_000, 1500.0, 0.5).expect("valid");
+        assert_eq!(lower, short);
+    }
+
+    /// The reason given has to name the thing that is actually wrong, or it
+    /// sends the operator to fix the wrong field — which is what it did.
+    #[test]
+    fn the_refusal_says_which_half_of_the_identity_is_the_problem() {
+        assert!(why_not_sendable("K1ABC", "FN42", 37).is_none());
+        assert!(why_not_sendable("K1ABC", "FN42aa", 37).is_none(), "a long locator is fine");
+
+        let compound = why_not_sendable("PJ4/K1ABC", "FN42", 37).expect("cannot be sent");
+        assert!(compound.contains("PJ4/K1ABC"), "{compound}");
+        assert!(!compound.contains("locator"), "blamed the locator: {compound}");
+
+        let bad_grid = why_not_sendable("K1ABC", "somewhere", 37).expect("cannot be sent");
+        assert!(bad_grid.contains("locator"), "{bad_grid}");
+
+        let empty = why_not_sendable("", "", 37).expect("nothing to send as");
+        assert!(empty.contains("callsign"), "{empty}");
     }
 }
 

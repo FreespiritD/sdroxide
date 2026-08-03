@@ -245,6 +245,13 @@ impl WsprController {
             last_slot_spots: self.spots_last_slot,
             next_dial_hz: self.next_dial_hz,
             hop_blocked: self.hop_blocked.clone(),
+            // Asked of the packer rather than re-derived, so the panel says
+            // "cannot transmit" in exactly the cases the transmitter refuses.
+            tx_blocked: wspr::tx::why_not_sendable(
+                &self.cfg.my_call,
+                &self.cfg.my_grid,
+                round_power_dbm(self.cfg.wspr_power_dbm) as i32,
+            ),
         }
     }
 
@@ -366,11 +373,10 @@ impl DigiEngine for WsprController {
                 self.tx_fired_slot = idx;
                 let power = round_power_dbm(self.cfg.wspr_power_dbm);
                 let hz = self.tx_audio_hz(idx) as f64;
-                match wspr::tx::symbols_for(
-                    self.cfg.my_call.trim(),
-                    self.cfg.my_grid.trim(),
-                    power as i32,
-                ) {
+                // `symbols_for` shortens a longer locator itself, so a
+                // station set to a six-character grid transmits as its first
+                // four rather than being refused.
+                match wspr::tx::symbols_for(&self.cfg.my_call, &self.cfg.my_grid, power as i32) {
                     Some(symbols) => {
                         self.audio_hz = hz as f32;
                         self.burst =
@@ -378,19 +384,11 @@ impl DigiEngine for WsprController {
                         self.status_dirty = true;
                         actions.push(DigiAction::KeyTx);
                     }
-                    // A compound callsign or a six-character grid: WSPR's
-                    // Type-1 layout cannot carry either, and `mfsk-core` has no
-                    // packer for the layouts that can. Said once, loudly, rather
-                    // than transmitting something that is not this station.
-                    None => {
-                        self.hop_blocked = Some(format!(
-                            "cannot transmit as {} {}: WSPR sends a plain callsign and a \
-                             4-character grid",
-                            self.cfg.my_call.trim(),
-                            self.cfg.my_grid.trim()
-                        ));
-                        self.status_dirty = true;
-                    }
+                    // Nothing to say here: `status()` asks the packer the same
+                    // question every time it is built, so the panel is already
+                    // showing why. Saying it twice, in two different forms,
+                    // was how the two came to disagree.
+                    None => self.status_dirty = true,
                 }
             }
         }

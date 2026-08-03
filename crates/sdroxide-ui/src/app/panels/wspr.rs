@@ -439,7 +439,11 @@ impl SdroxideApp {
                 "Set your callsign and grid on the General tab of Settings before transmitting."
                     .to_string()
             } else {
-                format!("Transmitting as {call} in {grid} — set on the General tab of Settings.")
+                // The locator as it will go out: a six-character one is sent as
+                // its first four, and saying so here is less surprising than
+                // letting the operator find it on a spot page.
+                let sent = sdroxide_types::wspr_grid4(grid).unwrap_or_else(|| grid.to_string());
+                format!("Transmitting as {call} in {sent} — set on the General tab of Settings.")
             })
             .size(10.0)
             .color(if call.is_empty() || grid.is_empty() {
@@ -448,27 +452,17 @@ impl SdroxideApp {
                 Color32::from_gray(110)
             }),
         );
-        if self.digi_cfg_edit.wspr_tx_percent > 0 && !type1_capable(&self.digi_cfg_edit) {
+        // The engine's verdict, not the panel's guess: it is whatever the
+        // message packer actually refused, so it can never disagree with what
+        // the transmitter does. Shown only when transmitting is asked for —
+        // a receive-only station has nothing to fix.
+        if self.digi_cfg_edit.wspr_tx_percent > 0
+            && let Some(why) = &w.tx_blocked
+        {
             ui.add_space(4.0);
-            ui.label(
-                RichText::new(
-                    "This callsign and grid cannot be sent: WSPR carries a plain callsign and \
-                     a 4-character locator, so a compound call or a 6-character grid has \
-                     nowhere to go. Receiving is unaffected.",
-                )
-                .size(10.0)
-                .color(crate::theme::YELLOW),
-            );
+            ui.label(RichText::new(why).size(10.0).color(crate::theme::YELLOW));
         }
     }
-}
-
-/// Whether the operator identity fits WSPR's Type-1 message, which is the only
-/// one this station can transmit.
-fn type1_capable(cfg: &sdroxide_types::DigiConfig) -> bool {
-    let call = cfg.my_call.trim();
-    let grid = cfg.my_grid.trim();
-    !call.is_empty() && !call.contains('/') && grid.len() == 4
 }
 
 /// One reception. Reads left to right the way the operator asks the question:
@@ -608,25 +602,6 @@ fn row(ui: &mut egui::Ui, label: &str, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn cfg(call: &str, grid: &str) -> sdroxide_types::DigiConfig {
-        sdroxide_types::DigiConfig {
-            my_call: call.into(),
-            my_grid: grid.into(),
-            ..Default::default()
-        }
-    }
-
-    /// The warning has to fire on exactly the identities the transmitter will
-    /// refuse, or it is either noise or a silent failure.
-    #[test]
-    fn the_type_1_warning_matches_what_the_transmitter_can_actually_send() {
-        assert!(type1_capable(&cfg("K1ABC", "FN42")));
-        assert!(!type1_capable(&cfg("PJ4/K1ABC", "FN42")), "a compound call cannot be sent");
-        assert!(!type1_capable(&cfg("K1ABC", "FN42aa")), "a 6-character grid cannot be sent");
-        assert!(!type1_capable(&cfg("", "FN42")));
-        assert!(!type1_capable(&cfg("K1ABC", "")));
-    }
 
     /// The colours are read at a glance to mean "how good was that path", so
     /// they have to follow WSPR's floor rather than FT8's.

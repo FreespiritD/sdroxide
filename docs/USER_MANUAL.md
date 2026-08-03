@@ -1597,11 +1597,13 @@ Your **callsign and grid come from the General tab of Settings** — the same
 identity the rest of the program reports under. The panel says which it is
 transmitting as, and says so in yellow if either is still blank.
 
-WSPR's message carries a plain callsign and a 4-character locator and has room
-for nothing else, so a compound call (`PJ4/K1ABC`) or a 6-character grid cannot
-be transmitted. The setup page says so where you type it rather than silently
-sending something that is not your station. Receiving is unaffected — all three
-message types decode.
+WSPR's message carries a plain callsign and a **4-character** locator and has
+room for nothing else. A longer locator is simply shortened — `JN47cb` goes out
+as `JN47`, which is what the extra precision means anyway — and the panel shows
+which form it is transmitting as. A **compound callsign** (`PJ4/K1ABC`) genuinely
+cannot be sent: it needs a message layout this station cannot encode, and the
+panel says so rather than transmitting something that is not you. Receiving is
+unaffected either way — all three message types decode.
 
 One receive limitation worth knowing: a **Type-3** message spends its callsign
 field on a 15-bit hash so it can carry a six-character grid instead of four.

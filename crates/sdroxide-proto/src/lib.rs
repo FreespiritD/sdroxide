@@ -194,7 +194,10 @@ use sdroxide_types::{
 /// message carrying either changes layout and both ends have to agree. The new
 /// `ServerMsg::WsprSpots` carries what a slot decoded: a WSPR reception is a
 /// measurement of a path rather than a message somebody sent, so it travels as
-/// its own event instead of being squeezed into `Decode`.
+/// its own event instead of being squeezed into `Decode`. `WsprStatus` also
+/// carries `tx_blocked`, the engine's own answer to "can this station transmit
+/// as configured" — the panel used to work that out for itself and got it
+/// wrong, and one authority is the point.
 pub const PROTO_VERSION: u16 = 44;
 const VERSION_BYTE: u8 = 0x12;
 

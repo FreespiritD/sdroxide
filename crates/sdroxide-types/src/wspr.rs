@@ -108,6 +108,27 @@ pub fn power_dbm_for_watts(watts: f64) -> i16 {
     }
 }
 
+/// The four-character locator WSPR's message carries, from whatever the
+/// operator actually typed.
+///
+/// A six-character locator's first four characters *are* the four-character
+/// one, so `JN47cb` sends as `JN47` — the extra precision simply has nowhere to
+/// go in fifty bits, which is not a reason to refuse to transmit. Upper-cased
+/// on the way through, because the field is packed from `A`–`R` and the
+/// conventional way to write a locator lower-cases the last pair.
+///
+/// `None` only when the first four characters are not a locator at all: two
+/// letters in `A`–`R` followed by two digits.
+pub fn grid4(grid: &str) -> Option<String> {
+    let g: String = grid.trim().chars().take(4).collect::<String>().to_uppercase();
+    let b = g.as_bytes();
+    if b.len() != 4 {
+        return None;
+    }
+    let field = |c: u8| c.is_ascii_uppercase() && c <= b'R';
+    (field(b[0]) && field(b[1]) && b[2].is_ascii_digit() && b[3].is_ascii_digit()).then_some(g)
+}
+
 /// One WSPR reception: a beacon this station decoded, or — when it came back
 /// from WSPRnet — somebody else decoding one.
 ///
@@ -212,6 +233,15 @@ pub struct WsprStatus {
     /// Why the last hop did not happen, when one was refused. Shown rather than
     /// swallowed: a beacon that silently stopped hopping looks like a bug.
     pub hop_blocked: Option<String>,
+    /// Why this station cannot transmit as configured, if it cannot.
+    ///
+    /// Decided by the engine, which is the only place that knows: it is
+    /// whatever the message packer actually refuses. The panel used to work it
+    /// out for itself from the callsign and grid, and got it wrong — a six
+    /// character locator is perfectly sendable once its first four are taken.
+    /// A second copy of a rule is a second chance to disagree with it.
+    #[serde(default)]
+    pub tx_blocked: Option<String>,
 }
 
 #[cfg(test)]
@@ -242,6 +272,31 @@ mod tests {
         assert!(TX_OFFSET_S + BURST_S < SLOT_S, "{TX_OFFSET_S} + {BURST_S} does not fit {SLOT_S}");
         // 110.6 s is the figure every WSPR description quotes.
         assert!((BURST_S - 110.6).abs() < 0.05, "burst is {BURST_S} s");
+    }
+
+    /// The precision a six-character locator adds has nowhere to go in fifty
+    /// bits — which is a reason to drop it, not a reason to refuse to transmit.
+    #[test]
+    fn a_longer_locator_is_shortened_rather_than_refused() {
+        assert_eq!(grid4("JN47").as_deref(), Some("JN47"));
+        assert_eq!(grid4("JN47cb").as_deref(), Some("JN47"));
+        assert_eq!(grid4("JN47cb12").as_deref(), Some("JN47"));
+        // Conventionally written with a lower-case square, and typed however
+        // the operator felt like.
+        assert_eq!(grid4("jn47cb").as_deref(), Some("JN47"));
+        assert_eq!(grid4("  Jn47Cb  ").as_deref(), Some("JN47"));
+    }
+
+    /// Something that is not a locator has to be refused, or the message would
+    /// announce a position nobody is at.
+    #[test]
+    fn a_locator_that_is_not_one_is_refused() {
+        assert_eq!(grid4(""), None);
+        assert_eq!(grid4("JN4"), None, "too short to be a locator");
+        assert_eq!(grid4("J147"), None, "the field is two letters");
+        assert_eq!(grid4("JNXY"), None, "the square is two digits");
+        // The field letters only run to R.
+        assert_eq!(grid4("ZZ47"), None);
     }
 
     #[test]
