@@ -378,47 +378,168 @@ impl std::str::FromStr for Mode {
     }
 }
 
-/// Audio noise-reduction setting for the demodulated audio. Two engines are
-/// offered at three intensities each: a neural **RNNoise** denoiser (`Ai*`) and
-/// the classic spectral NR (`Low`/`Medium`/`High`). The button cycles
-/// Off → AI Low → AI Med → AI High → NR Low → NR Mid → NR High → Off.
+/// Which denoiser is running behind the NR chip.
 ///
-/// The spectral variants keep their original discriminant order so persisted
-/// configs and the wire protocol stay compatible; the neural variants are
-/// appended, and [`NrLevel::next`] imposes the display cycle order.
+/// Derived from [`NrLevel`] rather than stored: the wire carries the level, so a
+/// fifth engine would cost three appended `NrLevel` variants and nothing else.
+/// This type is never serialised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NrEngine {
+    /// RNNoise (`nnnoiseless`) — a recurrent per-band gain estimator.
+    Rnn,
+    /// DeepFilterNet3 (`deep_filter` / tract) — ERB gains plus a deep filter.
+    DeepFilter,
+    /// The spectral-bleach algorithm, ported to Rust in `sdroxide-dsp`.
+    SpecBleach,
+    /// The hand-written MCRA + log-MMSE spectral NR this program started with.
+    Spectral,
+}
+
+impl NrEngine {
+    /// Engine-row order in the NR picker: neural first, classical last.
+    pub const ALL: [NrEngine; 4] =
+        [NrEngine::Rnn, NrEngine::DeepFilter, NrEngine::SpecBleach, NrEngine::Spectral];
+
+    /// The tag the chips wear. The original spectral NR keeps the bare "NR" it
+    /// has always had, so an operator who never opens the picker sees exactly
+    /// the chip they saw before.
+    pub fn tag(self) -> &'static str {
+        match self {
+            NrEngine::Rnn => "RNN",
+            NrEngine::DeepFilter => "DFNR",
+            NrEngine::SpecBleach => "SPEC",
+            NrEngine::Spectral => "NR",
+        }
+    }
+
+    /// What the hover text calls it.
+    pub fn name(self) -> &'static str {
+        match self {
+            NrEngine::Rnn => "RNNoise — neural, speech-trained, cheap",
+            NrEngine::DeepFilter => "DeepFilterNet3 — neural, strongest, costliest",
+            NrEngine::SpecBleach => "Spectral bleach — adaptive spectral, masked",
+            NrEngine::Spectral => "Spectral NR — MCRA + log-MMSE",
+        }
+    }
+
+    /// This engine at `strength`.
+    pub fn at(self, s: NrStrength) -> NrLevel {
+        use NrEngine::*;
+        use NrStrength::*;
+        match (self, s) {
+            (Spectral, Low) => NrLevel::Low,
+            (Spectral, Med) => NrLevel::Medium,
+            (Spectral, High) => NrLevel::High,
+            (Rnn, Low) => NrLevel::RnnLow,
+            (Rnn, Med) => NrLevel::RnnMed,
+            (Rnn, High) => NrLevel::RnnHigh,
+            (SpecBleach, Low) => NrLevel::SpecLow,
+            (SpecBleach, Med) => NrLevel::SpecMed,
+            (SpecBleach, High) => NrLevel::SpecHigh,
+            (DeepFilter, Low) => NrLevel::DfLow,
+            (DeepFilter, Med) => NrLevel::DfMed,
+            (DeepFilter, High) => NrLevel::DfHigh,
+        }
+    }
+
+    /// The next engine in picker order, wrapping.
+    pub fn next(self) -> NrEngine {
+        let i = NrEngine::ALL.iter().position(|e| *e == self).unwrap_or(0);
+        NrEngine::ALL[(i + 1) % NrEngine::ALL.len()]
+    }
+}
+
+/// How hard whichever engine is selected is pushed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NrStrength {
+    Low,
+    Med,
+    High,
+}
+
+impl NrStrength {
+    pub const ALL: [NrStrength; 3] = [NrStrength::Low, NrStrength::Med, NrStrength::High];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            NrStrength::Low => "Low",
+            NrStrength::Med => "Med",
+            NrStrength::High => "High",
+        }
+    }
+}
+
+/// Audio noise-reduction setting for the demodulated audio: one of four engines
+/// at one of three intensities, or off. See [`NrEngine`].
+///
+/// **The declaration order is the wire format.** postcard encodes the
+/// discriminant positionally, so variants are only ever appended — the spectral
+/// group sits where it always did (1..3), the RNNoise group where proto v10 put
+/// it (4..6), and the two engines added in v43 follow. Nothing reads the
+/// declaration order but the wire: [`NrLevel::ALL`] and the picker impose the
+/// display order instead.
+///
+/// The RNNoise variants were called `Ai*` until v43. Renaming them cost nothing:
+/// this enum reaches disk through no name-based format — it rides postcard and
+/// is persisted nowhere else — so only the positions matter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum NrLevel {
     #[default]
     Off,
+    // Spectral NR (`SpectralNr`) — the original three, discriminants 1..3.
     Low,
     Medium,
     High,
-    AiLow,
-    AiMed,
-    AiHigh,
+    // RNNoise (`NeuralNr`) — appended in proto v10, discriminants 4..6.
+    RnnLow,
+    RnnMed,
+    RnnHigh,
+    // Spectral bleach (`SpecBleachNr`) — appended in v43, discriminants 7..9.
+    SpecLow,
+    SpecMed,
+    SpecHigh,
+    // DeepFilterNet3 (`DeepFilterNr`) — appended in v43, discriminants 10..12.
+    DfLow,
+    DfMed,
+    DfHigh,
 }
 
 impl NrLevel {
-    pub const ALL: [NrLevel; 7] = [
+    /// Every setting, in the order the picker lists them.
+    pub const ALL: [NrLevel; 13] = [
         NrLevel::Off,
-        NrLevel::AiLow,
-        NrLevel::AiMed,
-        NrLevel::AiHigh,
+        NrLevel::RnnLow,
+        NrLevel::RnnMed,
+        NrLevel::RnnHigh,
+        NrLevel::DfLow,
+        NrLevel::DfMed,
+        NrLevel::DfHigh,
+        NrLevel::SpecLow,
+        NrLevel::SpecMed,
+        NrLevel::SpecHigh,
         NrLevel::Low,
         NrLevel::Medium,
         NrLevel::High,
     ];
 
-    /// Suffix shown after "NR" on the toggle chip (Off shows just "NR").
+    /// Suffix shown after "NR" on the chip (Off shows just "NR"). The original
+    /// spectral NR keeps its bare "Low"/"Mid"/"High" — it is the one an operator
+    /// may already have muscle memory for.
     pub fn label(self) -> &'static str {
         match self {
             NrLevel::Off => "Off",
-            NrLevel::AiLow => "AI Low",
-            NrLevel::AiMed => "AI Med",
-            NrLevel::AiHigh => "AI High",
             NrLevel::Low => "Low",
             NrLevel::Medium => "Mid",
             NrLevel::High => "High",
+            NrLevel::RnnLow => "RNN Low",
+            NrLevel::RnnMed => "RNN Med",
+            NrLevel::RnnHigh => "RNN High",
+            NrLevel::SpecLow => "SPEC Low",
+            NrLevel::SpecMed => "SPEC Med",
+            NrLevel::SpecHigh => "SPEC High",
+            NrLevel::DfLow => "DFNR Low",
+            NrLevel::DfMed => "DFNR Med",
+            NrLevel::DfHigh => "DFNR High",
         }
     }
 
@@ -426,21 +547,66 @@ impl NrLevel {
         !matches!(self, NrLevel::Off)
     }
 
-    /// True for the neural (RNNoise) intensities.
-    pub fn is_ai(self) -> bool {
-        matches!(self, NrLevel::AiLow | NrLevel::AiMed | NrLevel::AiHigh)
+    /// Which denoiser this runs, or `None` when NR is off.
+    pub fn engine(self) -> Option<NrEngine> {
+        Some(match self {
+            NrLevel::Off => return None,
+            NrLevel::Low | NrLevel::Medium | NrLevel::High => NrEngine::Spectral,
+            NrLevel::RnnLow | NrLevel::RnnMed | NrLevel::RnnHigh => NrEngine::Rnn,
+            NrLevel::SpecLow | NrLevel::SpecMed | NrLevel::SpecHigh => NrEngine::SpecBleach,
+            NrLevel::DfLow | NrLevel::DfMed | NrLevel::DfHigh => NrEngine::DeepFilter,
+        })
     }
 
-    /// Cycle to the next setting: Off → AI Low/Med/High → NR Low/Mid/High → Off.
+    /// How hard it is pushed, or `None` when NR is off.
+    pub fn strength(self) -> Option<NrStrength> {
+        Some(match self {
+            NrLevel::Off => return None,
+            NrLevel::Low | NrLevel::RnnLow | NrLevel::SpecLow | NrLevel::DfLow => NrStrength::Low,
+            NrLevel::Medium | NrLevel::RnnMed | NrLevel::SpecMed | NrLevel::DfMed => {
+                NrStrength::Med
+            }
+            NrLevel::High | NrLevel::RnnHigh | NrLevel::SpecHigh | NrLevel::DfHigh => {
+                NrStrength::High
+            }
+        })
+    }
+
+    /// The same strength on a different engine. From `Off`, starts at Med — the
+    /// level worth trying first on every one of them.
+    pub fn with_engine(self, e: NrEngine) -> NrLevel {
+        e.at(self.strength().unwrap_or(NrStrength::Med))
+    }
+
+    /// The same engine at a different strength. From `Off`, picks RNNoise: the
+    /// cheapest engine that works on voice, and the one that needs no model.
+    pub fn with_strength(self, s: NrStrength) -> NrLevel {
+        self.engine().unwrap_or(NrEngine::Rnn).at(s)
+    }
+
+    /// One step for a button or a knob: Off → Low → Med → High → Off, *within
+    /// the engine already selected*. A single control cannot usefully walk
+    /// thirteen states, and the engine is a considered choice — something set
+    /// once from the picker, not something a footswitch changes underfoot.
+    ///
+    /// From Off this starts on RNNoise; the level is the whole state, so
+    /// switching off forgets which engine was on rather than adding a second
+    /// field to the wire to remember it.
     pub fn next(self) -> NrLevel {
-        match self {
-            NrLevel::Off => NrLevel::AiLow,
-            NrLevel::AiLow => NrLevel::AiMed,
-            NrLevel::AiMed => NrLevel::AiHigh,
-            NrLevel::AiHigh => NrLevel::Low,
-            NrLevel::Low => NrLevel::Medium,
-            NrLevel::Medium => NrLevel::High,
-            NrLevel::High => NrLevel::Off,
+        match self.strength() {
+            None => NrLevel::RnnLow,
+            Some(NrStrength::Low) => self.with_strength(NrStrength::Med),
+            Some(NrStrength::Med) => self.with_strength(NrStrength::High),
+            Some(NrStrength::High) => NrLevel::Off,
+        }
+    }
+
+    /// The next engine at the same strength, wrapping — the other half of what
+    /// the picker offers, for a control surface with a button to spare.
+    pub fn next_engine(self) -> NrLevel {
+        match self.engine() {
+            None => NrEngine::Rnn.at(NrStrength::Med),
+            Some(e) => self.with_engine(e.next()),
         }
     }
 
@@ -450,7 +616,7 @@ impl NrLevel {
     /// The over-factors are modest because the MCRA estimator is unbiased (it
     /// tracks the noise mean, not an under-estimated minimum), so ~1.0 already
     /// removes stationary noise; higher values are pure over-subtraction.
-    /// Neutral (unused) for Off and the neural variants.
+    /// Neutral (unused) for Off and for every other engine.
     pub fn params(self) -> (f32, f32) {
         match self {
             NrLevel::Low => (1.0, 0.30),
@@ -460,13 +626,40 @@ impl NrLevel {
         }
     }
 
-    /// Neural-NR wet/dry depth (0 = bypass, 1 = full RNNoise). Only meaningful
-    /// for the `Ai*` variants.
-    pub fn ai_mix(self) -> f32 {
+    /// Spectral-bleach tuning: `(reduction in dB, residue whitening 0..=1)`.
+    /// Whitening flattens what is left so the residue reads as even hiss rather
+    /// than as musical noise, which matters more the harder the reduction is
+    /// pushed. 20 dB is the top: the algorithm will take 40, and on a radio
+    /// signal that sounds like a swimming pool.
+    pub fn spec_params(self) -> (f32, f32) {
         match self {
-            NrLevel::AiLow => 0.55,
-            NrLevel::AiMed => 0.8,
-            NrLevel::AiHigh => 1.0,
+            NrLevel::SpecLow => (6.0, 0.00),
+            NrLevel::SpecMed => (12.0, 0.15),
+            NrLevel::SpecHigh => (20.0, 0.30),
+            _ => (0.0, 0.0),
+        }
+    }
+
+    /// RNNoise wet/dry depth (0 = bypass, 1 = full RNNoise). Only meaningful for
+    /// the `Rnn*` variants.
+    pub fn rnn_mix(self) -> f32 {
+        match self {
+            NrLevel::RnnLow => 0.55,
+            NrLevel::RnnMed => 0.8,
+            NrLevel::RnnHigh => 1.0,
+            _ => 0.0,
+        }
+    }
+
+    /// DeepFilterNet's attenuation limit, in dB — the most it may take out of
+    /// any band. A limit rather than a wet/dry blend because it is the knob the
+    /// network itself exposes: a capped mask still tracks the speech, where a
+    /// dry blend at 45 % puts 45 % of the noise back with it.
+    pub fn df_atten_db(self) -> f32 {
+        match self {
+            NrLevel::DfLow => 6.0,
+            NrLevel::DfMed => 12.0,
+            NrLevel::DfHigh => 24.0,
             _ => 0.0,
         }
     }
@@ -474,14 +667,21 @@ impl NrLevel {
     /// Make-up gain applied to the listener audio after noise reduction:
     /// suppression lowers the overall level (more so at higher settings), so a
     /// progressively larger boost keeps the perceived loudness roughly constant.
-    /// RNNoise preserves speech level far better than spectral subtraction, so
-    /// its make-up is gentle.
+    /// The neural engines preserve speech level far better than spectral
+    /// subtraction, so their make-up is gentle — DeepFilterNet is trained to
+    /// leave the speech where it found it and needs least of all.
     pub fn makeup_gain(self) -> f32 {
         match self {
             NrLevel::Off => 1.0,
-            NrLevel::AiLow => 1.0,
-            NrLevel::AiMed => 1.1,
-            NrLevel::AiHigh => 1.2,
+            NrLevel::RnnLow => 1.0,
+            NrLevel::RnnMed => 1.1,
+            NrLevel::RnnHigh => 1.2,
+            NrLevel::DfLow => 1.0,
+            NrLevel::DfMed => 1.05,
+            NrLevel::DfHigh => 1.15,
+            NrLevel::SpecLow => 1.15,
+            NrLevel::SpecMed => 1.4,
+            NrLevel::SpecHigh => 1.7,
             NrLevel::Low => 1.3,
             NrLevel::Medium => 1.7,
             NrLevel::High => 2.1,
@@ -528,5 +728,90 @@ impl AgcMode {
             AgcMode::Med => Some(500.0),
             AgcMode::Fast => Some(100.0),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The wire is the declaration order. Every discriminant that has ever been
+    /// on the wire is pinned here, so a variant inserted rather than appended
+    /// fails the build instead of silently renaming everyone's noise reduction.
+    #[test]
+    fn nr_discriminants_are_stable() {
+        assert_eq!(NrLevel::Off as u8, 0);
+        assert_eq!(NrLevel::Low as u8, 1);
+        assert_eq!(NrLevel::Medium as u8, 2);
+        assert_eq!(NrLevel::High as u8, 3);
+        // Were AiLow/AiMed/AiHigh before proto v43; the rename is invisible to
+        // postcard, the positions are not.
+        assert_eq!(NrLevel::RnnLow as u8, 4);
+        assert_eq!(NrLevel::RnnMed as u8, 5);
+        assert_eq!(NrLevel::RnnHigh as u8, 6);
+        assert_eq!(NrLevel::SpecLow as u8, 7);
+        assert_eq!(NrLevel::SpecMed as u8, 8);
+        assert_eq!(NrLevel::SpecHigh as u8, 9);
+        assert_eq!(NrLevel::DfLow as u8, 10);
+        assert_eq!(NrLevel::DfMed as u8, 11);
+        assert_eq!(NrLevel::DfHigh as u8, 12);
+    }
+
+    #[test]
+    fn nr_engine_and_strength_round_trip() {
+        for l in NrLevel::ALL {
+            let (Some(e), Some(s)) = (l.engine(), l.strength()) else {
+                assert_eq!(l, NrLevel::Off);
+                continue;
+            };
+            assert_eq!(e.at(s), l, "{l:?} did not round-trip through {e:?}/{s:?}");
+        }
+    }
+
+    #[test]
+    fn nr_all_lists_every_engine_at_every_strength_exactly_once() {
+        assert_eq!(NrLevel::ALL.len(), 1 + NrEngine::ALL.len() * NrStrength::ALL.len());
+        for e in NrEngine::ALL {
+            for s in NrStrength::ALL {
+                let want = e.at(s);
+                assert_eq!(
+                    NrLevel::ALL.iter().filter(|l| **l == want).count(),
+                    1,
+                    "{want:?} is not in ALL exactly once"
+                );
+            }
+        }
+    }
+
+    /// A button walks four states and comes back, without leaving its engine.
+    #[test]
+    fn nr_next_stays_on_its_engine() {
+        for e in NrEngine::ALL {
+            let mut l = e.at(NrStrength::Low);
+            for _ in 0..2 {
+                l = l.next();
+                assert_eq!(l.engine(), Some(e));
+            }
+            assert_eq!(l.next(), NrLevel::Off);
+        }
+    }
+
+    #[test]
+    fn nr_next_engine_holds_the_strength_and_wraps() {
+        let mut l = NrEngine::ALL[0].at(NrStrength::High);
+        for _ in 0..NrEngine::ALL.len() {
+            assert_eq!(l.strength(), Some(NrStrength::High));
+            l = l.next_engine();
+        }
+        assert_eq!(l, NrEngine::ALL[0].at(NrStrength::High), "next_engine did not wrap");
+    }
+
+    /// Reaching for a strength with NR off switches it on rather than doing
+    /// nothing, and reaching for an engine keeps the strength you had.
+    #[test]
+    fn nr_from_off_picks_sensible_defaults() {
+        assert_eq!(NrLevel::Off.with_strength(NrStrength::High), NrLevel::RnnHigh);
+        assert_eq!(NrLevel::Off.with_engine(NrEngine::DeepFilter), NrLevel::DfMed);
+        assert_eq!(NrLevel::SpecHigh.with_engine(NrEngine::Rnn), NrLevel::RnnHigh);
     }
 }

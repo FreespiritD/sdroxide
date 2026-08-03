@@ -8,8 +8,8 @@
 
 use eframe::egui::{self, Color32, ComboBox, DragValue, RichText, Slider};
 use sdroxide_types::{
-    AgcMode, Band, Command, DeviceCaps, Direction, GainElement, Mode, RadioState, RxId,
-    SkimmerKind, SubTone, Vfo,
+    AgcMode, Band, Command, DeviceCaps, Direction, GainElement, Mode, NrEngine, NrLevel,
+    NrStrength, RadioState, RxId, SkimmerKind, SubTone, Vfo,
 };
 
 use crate::widgets::{freq_display, smeter};
@@ -648,7 +648,9 @@ impl SdroxideApp {
         // slack. Which row leads changes with the rig and the state: the noise
         // row usually, the receive row once it carries both a front-end gain
         // rail and the manual-gain rail that appears with the AGC off.
-        let noise_row: f32 = 447.0
+        // The widest NR chip is now "NR DFNR High" — two characters more than
+        // the "NR AI High" this was sized for.
+        let noise_row: f32 = 462.0
             + match self.state.rx[0].mode {
                 Mode::Wfm => 40.0,
                 // The tone chip reads "D023N" at its widest, plus the dot that
@@ -824,20 +826,31 @@ impl SdroxideApp {
                 self.state.rx[0].auto_notch = !anc; // optimistic echo
                 cmds.push(Command::SetAutoNotch { rx: RxId::Main, on: !anc });
             }
-            // Noise reduction — cycles Off → AI Low/Med/High (neural
-            // RNNoise) → NR Low/Mid/High (spectral) → Off.
-            let nr = self.state.rx[0].noise_reduction;
-            let nr_label = if nr.is_on() { format!("NR {}", nr.label()) } else { "NR".to_string() };
-            if crate::chrome::chip(ui, nr.is_on(), nr_label)
-                        .on_hover_text(
-                            "Noise reduction (voice) — click to cycle: AI Low/Med/High (neural RNNoise), then NR Low/Mid/High (spectral), then Off",
-                        )
-                        .clicked()
-                    {
-                        let next = nr.next();
-                        self.state.rx[0].noise_reduction = next; // optimistic echo
-                        cmds.push(Command::SetNoiseReduction { rx: RxId::Main, level: next });
-                    }
+            // Noise reduction. The chip says what is running; the picker behind
+            // it chooses which of the four engines and how hard. A cycling chip
+            // was fine at seven states and two engines; at thirteen and four it
+            // is a dozen clicks to cross, and which engine to use is a
+            // considered choice rather than something to walk past on the way
+            // to the one you wanted.
+            if narrow {
+                // This row is itself inside the RX menu on a compact layout, and
+                // a popup opened from a popup counts as a click outside the
+                // first and closes it (see `sub_mode_picker`). So here the chip
+                // rides the strength and the picker is inlined below.
+                let nr = self.state.rx[0].noise_reduction;
+                let label =
+                    if nr.is_on() { format!("NR {}", nr.label()) } else { "NR".to_string() };
+                if crate::chrome::chip(ui, nr.is_on(), label)
+                    .on_hover_text("Noise reduction — click to cycle Off / Low / Med / High")
+                    .clicked()
+                {
+                    let next = nr.next();
+                    self.state.rx[0].noise_reduction = next; // optimistic echo
+                    cmds.push(Command::SetNoiseReduction { rx: RxId::Main, level: next });
+                }
+            } else {
+                self.nr_button(ui, cmds);
+            }
             let muted = self.state.rx[0].muted;
             if crate::chrome::chip_accent(ui, muted, "MUTE", crate::theme::PINK, Color32::WHITE)
                 .clicked()
@@ -865,13 +878,7 @@ impl SdroxideApp {
             let mono = self.state.recording_mono;
             let mono_chip = ui
                 .add_enabled_ui(!recording, |ui| {
-                    crate::chrome::chip_accent(
-                        ui,
-                        mono,
-                        "MONO",
-                        crate::theme::PINK,
-                        Color32::WHITE,
-                    )
+                    crate::chrome::chip_accent(ui, mono, "MONO", crate::theme::PINK, Color32::WHITE)
                 })
                 .inner
                 .on_hover_text(if mono {
@@ -903,6 +910,85 @@ impl SdroxideApp {
             // present before the audio opens. Only NFM carries either.
             if self.state.rx[0].mode == Mode::Nfm {
                 self.tone_button(ui, cmds);
+            }
+        });
+        if narrow {
+            // The engine picker the chip above cannot open from inside a menu.
+            self.nr_controls(ui, cmds);
+        }
+    }
+
+    /// The NR chip and the picker behind it: which denoiser, and how hard.
+    /// Fades out on its own, like the tone popup.
+    fn nr_button(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let nr = self.state.rx[0].noise_reduction;
+        let label = if nr.is_on() { format!("NR {}", nr.label()) } else { "NR".to_string() };
+        let hover = match nr.engine() {
+            Some(e) => {
+                format!("Noise reduction: {} — click to change engine or strength", e.name())
+            }
+            None => "Noise reduction (voice) — click to pick an engine".to_string(),
+        };
+        let btn = crate::chrome::chip(ui, nr.is_on(), label).on_hover_text(hover);
+
+        let popup_id = egui::Popup::default_response_id(&btn);
+        let now = ui.input(|i| i.time);
+        let alpha =
+            crate::chrome::popup_fade_alpha(ui.ctx(), popup_id, now, &mut self.nr_popup_since);
+        let resp = egui::Popup::from_toggle_button_response(&btn)
+            .frame(crate::chrome::window_frame_alpha(alpha))
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_opacity(alpha);
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                self.nr_controls(ui, cmds);
+            });
+        if let Some(r) = &resp {
+            crate::chrome::paint_popup_cut_border(ui.ctx(), &r.response, alpha);
+            // Hovering the popup keeps it up: the fade is for a menu left open
+            // and forgotten, not one being read.
+            if r.response.contains_pointer() {
+                self.nr_popup_since = Some(now);
+            }
+        }
+    }
+
+    /// The engine row and the strength row. Its own function because a menu has
+    /// to inline this rather than open it as a popup — see [`Self::rx_controls`].
+    fn nr_controls(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let nr = self.state.rx[0].noise_reduction;
+        let pick = |app: &mut Self, cmds: &mut Vec<Command>, level: NrLevel| {
+            app.state.rx[0].noise_reduction = level; // optimistic echo
+            cmds.push(Command::SetNoiseReduction { rx: RxId::Main, level });
+        };
+
+        crate::chrome::menu_caption(ui, "Engine");
+        ui.horizontal_wrapped(|ui| {
+            if crate::chrome::chip(ui, !nr.is_on(), "OFF")
+                .on_hover_text("No noise reduction — the decoders never saw it anyway")
+                .clicked()
+            {
+                pick(self, cmds, NrLevel::Off);
+            }
+            for e in NrEngine::ALL {
+                if crate::chrome::chip(ui, nr.engine() == Some(e), e.tag())
+                    .on_hover_text(e.name())
+                    .clicked()
+                {
+                    pick(self, cmds, nr.with_engine(e));
+                }
+            }
+        });
+
+        crate::chrome::menu_caption(ui, "Strength");
+        ui.horizontal_wrapped(|ui| {
+            for st in NrStrength::ALL {
+                // These work with NR off too: they switch it on at that strength
+                // on RNNoise, which is what reaching for "Med" on a dead chip
+                // means.
+                if crate::chrome::chip(ui, nr.strength() == Some(st), st.label()).clicked() {
+                    pick(self, cmds, nr.with_strength(st));
+                }
             }
         });
     }

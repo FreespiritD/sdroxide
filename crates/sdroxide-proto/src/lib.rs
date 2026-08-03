@@ -179,7 +179,16 @@ use sdroxide_types::{
 /// the receiver, plus an optional mono downmix — `Command::SetRecordingMono`
 /// (appended) and `RadioState.recording_mono` (changes the layout of every
 /// message carrying `RadioState`).
-pub const PROTO_VERSION: u16 = 42;
+/// v43: two more noise-reduction engines. `NrLevel` gained
+/// `Spec{Low,Med,High}` (a Rust port of libspecbleach's adaptive denoiser) and
+/// `Df{Low,Med,High}` (DeepFilterNet3), both appended so no surviving
+/// discriminant moves — but a v42 client cannot decode discriminants 7..12 at
+/// all, so it would report a protocol error rather than the truth, which is
+/// that the operator picked an engine it has never heard of. The `Ai*`
+/// variants were also renamed `Rnn*`, which the wire cannot see (postcard is
+/// positional and this enum is persisted nowhere else) but the labels can: the
+/// chip reads "NR RNN Med" where it read "NR AI Med".
+pub const PROTO_VERSION: u16 = 43;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

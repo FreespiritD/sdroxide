@@ -61,7 +61,8 @@ pub enum Command {
         db: f32,
     },
     SetNoiseBlanker(bool),
-    /// Spectral audio noise-reduction intensity for a receiver.
+    /// Audio noise reduction for a receiver: which engine, and how hard. A host
+    /// that cannot run the engine asked for answers with the one it can.
     SetNoiseReduction {
         rx: RxId,
         level: NrLevel,

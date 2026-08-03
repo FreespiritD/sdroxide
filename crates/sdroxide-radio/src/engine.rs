@@ -19,17 +19,17 @@ use sdroxide_digi::{
     TextModemController, WefaxController,
 };
 use sdroxide_dsp::{
-    Agc, AutoNotch, DcBlock, Ddc, Demodulator, Duc, Modulator, MonoResampler, NeuralNr,
-    NoiseBlanker, SpectralNr, SpectrumAnalyzer, StereoResampler, channel_target, make_demod,
-    make_modulator,
+    Agc, AutoNotch, DcBlock, Ddc, DeepFilterNr, Demodulator, Duc, Modulator, MonoResampler,
+    NeuralNr, NoiseBlanker, SpecBleachNr, SpectralNr, SpectrumAnalyzer, StereoResampler,
+    channel_target, make_demod, make_modulator,
 };
 use sdroxide_rigctld::{RigState, RigctldController};
 use sdroxide_skimmer::{SkimmerAction, SkimmerController};
 use sdroxide_tci::server::{ServerRequest, TciServerController, TciStateSnapshot};
 use sdroxide_types::{
     AgcMode, Band, BandStackEntry, Command, DeviceCaps, DigiConfig, Direction, ImageKind,
-    MemoryChannel, Meters, Mode, NrLevel, RadioEvent, RadioState, RigctldConfig, RxId, RxState,
-    ScanKind, ScanResume, SpectrumConfig, SpectrumFrame, TciServerConfig, TxMeters, Vfo,
+    MemoryChannel, Meters, Mode, NrEngine, NrLevel, RadioEvent, RadioState, RigctldConfig, RxId,
+    RxState, ScanKind, ScanResume, SpectrumConfig, SpectrumFrame, TciServerConfig, TxMeters, Vfo,
 };
 
 use crate::recorder::{Recorder, RecordingChannels};
@@ -168,14 +168,44 @@ pub fn start(source: Box<dyn IqSource>, caps: DeviceCaps, cfg: EngineConfig) -> 
     }
 }
 
+/// Build a DeepFilterNet denoiser into `slot` if it is not there and has not
+/// already failed.
+///
+/// The model load is expensive — an 8 MB archive unpacked and three graphs
+/// optimised — and it happens on the engine thread, so it is done once on the
+/// first block that asks for it and never retried: a model that would not load
+/// will not load next block either, and retrying would turn one glitch into a
+/// permanently broken receiver. Both NR sites share this.
+fn ensure_dfnr(slot: &mut Option<Box<DeepFilterNr>>, failed: &mut bool) {
+    if slot.is_some() || *failed {
+        return;
+    }
+    match DeepFilterNr::new() {
+        Ok(df) => *slot = Some(Box::new(df)),
+        Err(e) => {
+            warn!("DeepFilterNet noise reduction is unavailable: {e}");
+            *failed = true;
+        }
+    }
+}
+
+/// Whether this host can run DeepFilterNet at all, building the model to find
+/// out. Used to answer a selection before it reaches the audio thread, so the
+/// level the UI is shown is the level that will actually run.
+fn dfnr_available(slot: &mut Option<Box<DeepFilterNr>>, failed: &mut bool) -> bool {
+    ensure_dfnr(slot, failed);
+    slot.is_some()
+}
+
 /// Whether a receiver's demod may decode stereo right now.
 ///
-/// Noise reduction and the auto-notch disqualify it: `SpectralNr` carries a
-/// fixed one-frame latency and `NeuralNr` a full RNNoise frame, and both would
-/// run on the sum only. An 8–10 ms delay on one side of `L = M±S` is three
-/// cycles of phase error at 1 kHz — the matrix would collapse into a comb
-/// filter with a randomly wandering image. They are HF speech tools that buy
-/// nothing on a broadcast signal, so stereo simply yields to them.
+/// Noise reduction and the auto-notch disqualify it: every NR engine carries a
+/// latency — a frame for `SpectralNr`, an RNNoise frame for `NeuralNr`, a
+/// DeepFilterNet hop, three quarters of a 20 ms frame for `SpecBleachNr` — and
+/// all of them would run on the sum only. An 8–10 ms delay on one side of
+/// `L = M±S` is three cycles of phase error at 1 kHz — the matrix would collapse
+/// into a comb filter with a randomly wandering image. They are HF speech tools
+/// that buy nothing on a broadcast signal, so stereo simply yields to them.
 fn stereo_allowed(rx: &RxState) -> bool {
     rx.wfm_stereo && !rx.auto_notch && !rx.noise_reduction.is_on()
 }
@@ -201,8 +231,15 @@ struct RxChain {
     notch_on: bool,
     /// Spectral noise reduction on the listener audio (after the digital tap).
     nr: SpectralNr,
-    /// Neural (RNNoise) noise reduction — the alternative NR engine.
+    /// The libspecbleach port — the other classical engine.
+    sbnr: SpecBleachNr,
+    /// Neural (RNNoise) noise reduction.
     nnr: NeuralNr,
+    /// DeepFilterNet3. Built on first use: it unpacks an 8 MB model, which is
+    /// not worth spending on a receiver that may never select it. Stays `None`
+    /// once a load has failed, so a broken model is not retried every block.
+    dfnr: Option<Box<DeepFilterNr>>,
+    dfnr_failed: bool,
     nr_level: NrLevel,
     channel_buf: Vec<Complex32>,
     audio_buf: Vec<f32>,
@@ -242,7 +279,10 @@ impl RxChain {
             notch: AutoNotch::new(),
             notch_on: false,
             nr: SpectralNr::new(),
+            sbnr: SpecBleachNr::new(),
             nnr: NeuralNr::new(),
+            dfnr: None,
+            dfnr_failed: false,
             nr_level: NrLevel::Off,
             channel_buf: Vec::new(),
             audio_buf: Vec::new(),
@@ -357,29 +397,77 @@ impl RxChain {
             self.notch.process(&mut self.audio_buf);
         }
         if self.nr_level != rx.noise_reduction {
-            let prev = self.nr_level;
-            self.nr_level = rx.noise_reduction;
-            if self.nr_level.is_ai() {
-                // Reset only when switching *into* the neural engine.
-                if !prev.is_ai() {
-                    self.nnr.reset();
+            let (prev, now) = (self.nr_level, rx.noise_reduction);
+            self.nr_level = now;
+            // Reset only when the *engine* changes: an operator riding the
+            // strength should not restart a network's hidden state, or a noise
+            // estimator's, on every click.
+            let switched = prev.engine() != now.engine();
+            match now.engine() {
+                Some(NrEngine::Rnn) => {
+                    if switched {
+                        self.nnr.reset();
+                    }
+                    self.nnr.set_mix(now.rnn_mix());
                 }
-                self.nnr.set_mix(self.nr_level.ai_mix());
-            } else if self.nr_level.is_on() {
-                // Reset when switching into spectral from off or the neural engine.
-                if !prev.is_on() || prev.is_ai() {
-                    self.nr.reset();
+                Some(NrEngine::DeepFilter) => {
+                    if switched {
+                        ensure_dfnr(&mut self.dfnr, &mut self.dfnr_failed);
+                        if let Some(df) = self.dfnr.as_mut() {
+                            df.reset();
+                        }
+                    }
+                    if let Some(df) = self.dfnr.as_mut() {
+                        df.set_atten_lim_db(now.df_atten_db());
+                    }
                 }
-                let (over, floor) = self.nr_level.params();
-                self.nr.set_params(over, floor);
+                Some(NrEngine::SpecBleach) => {
+                    if switched {
+                        self.sbnr.reset();
+                    }
+                    let (db, whiten) = now.spec_params();
+                    self.sbnr.set_params(db, whiten);
+                }
+                Some(NrEngine::Spectral) => {
+                    if switched {
+                        self.nr.reset();
+                    }
+                    let (over, floor) = now.params();
+                    self.nr.set_params(over, floor);
+                }
+                None => {}
             }
         }
         if self.nr_level.is_on() {
-            if self.nr_level.is_ai() {
-                self.nnr.set_rate(demod.audio_rate());
-                self.nnr.process(&mut self.audio_buf);
-            } else {
-                self.nr.process(&mut self.audio_buf);
+            // Every engine but the original one is rate-aware, and the rate can
+            // move under us on a mode change, so it is re-asserted per block
+            // rather than on the level change. All of them no-op cheaply when
+            // nothing has moved.
+            let fs = demod.audio_rate();
+            match self.nr_level.engine() {
+                Some(NrEngine::Rnn) => {
+                    self.nnr.set_rate(fs);
+                    self.nnr.process(&mut self.audio_buf);
+                }
+                Some(NrEngine::DeepFilter) => match self.dfnr.as_mut() {
+                    Some(df) => {
+                        df.set_rate(fs);
+                        df.process(&mut self.audio_buf);
+                    }
+                    // The model would not load. The engine has already said so
+                    // and put the level back on RNNoise, but a block can arrive
+                    // in between; RNNoise is the honest stand-in.
+                    None => {
+                        self.nnr.set_rate(fs);
+                        self.nnr.process(&mut self.audio_buf);
+                    }
+                },
+                Some(NrEngine::SpecBleach) => {
+                    self.sbnr.set_rate(fs);
+                    self.sbnr.process(&mut self.audio_buf);
+                }
+                Some(NrEngine::Spectral) => self.nr.process(&mut self.audio_buf),
+                None => {}
             }
             // Suppression lowers the level; boost it back up per NR strength.
             let g = self.nr_level.makeup_gain();
@@ -609,7 +697,13 @@ impl StereoMixer {
     /// `left`/`right` are the speaker path (post AF-volume/mute); `rec_left`/
     /// `rec_right` are what the recorder sees instead, so turning down the AF
     /// knob or hitting mute doesn't touch the archived recording.
-    fn push(&mut self, left: &[f32], right: Option<&[f32]>, rec_left: &[f32], rec_right: Option<&[f32]>) {
+    fn push(
+        &mut self,
+        left: &[f32],
+        right: Option<&[f32]>,
+        rec_left: &[f32],
+        rec_right: Option<&[f32]>,
+    ) {
         self.main_q.extend_from_slice(left);
         let dual = match right {
             Some(s) => {
@@ -880,7 +974,10 @@ struct Engine {
     audio_notch: AutoNotch,
     audio_notch_on: bool,
     audio_nr: SpectralNr,
+    audio_sbnr: SpecBleachNr,
     audio_nnr: NeuralNr,
+    audio_dfnr: Option<Box<DeepFilterNr>>,
+    audio_dfnr_failed: bool,
     audio_nr_level: NrLevel,
     /// Digital-mode engine (slotted FT8/FT4 or continuous PSK/RTTY), present
     /// only while a digital mode is active.
@@ -1232,7 +1329,10 @@ fn engine_thread(
         audio_notch: AutoNotch::new(),
         audio_notch_on: false,
         audio_nr: SpectralNr::new(),
+        audio_sbnr: SpecBleachNr::new(),
         audio_nnr: NeuralNr::new(),
+        audio_dfnr: None,
+        audio_dfnr_failed: false,
         audio_nr_level: NrLevel::Off,
         digi: None,
         digi_config,
@@ -1776,25 +1876,68 @@ impl Engine {
         if self.audio_nr_level != nr_level {
             let prev = self.audio_nr_level;
             self.audio_nr_level = nr_level;
-            if nr_level.is_ai() {
-                if !prev.is_ai() {
-                    self.audio_nnr.reset();
+            let switched = prev.engine() != nr_level.engine();
+            match nr_level.engine() {
+                Some(NrEngine::Rnn) => {
+                    if switched {
+                        self.audio_nnr.reset();
+                    }
+                    self.audio_nnr.set_mix(nr_level.rnn_mix());
                 }
-                self.audio_nnr.set_rate(self.radio_fs);
-                self.audio_nnr.set_mix(nr_level.ai_mix());
-            } else if nr_level.is_on() {
-                if !prev.is_on() || prev.is_ai() {
-                    self.audio_nr.reset();
+                Some(NrEngine::DeepFilter) => {
+                    if switched {
+                        ensure_dfnr(&mut self.audio_dfnr, &mut self.audio_dfnr_failed);
+                        if let Some(df) = self.audio_dfnr.as_mut() {
+                            df.reset();
+                        }
+                    }
+                    if let Some(df) = self.audio_dfnr.as_mut() {
+                        df.set_atten_lim_db(nr_level.df_atten_db());
+                    }
                 }
-                let (over, floor) = nr_level.params();
-                self.audio_nr.set_params(over, floor);
+                Some(NrEngine::SpecBleach) => {
+                    if switched {
+                        self.audio_sbnr.reset();
+                    }
+                    let (db, whiten) = nr_level.spec_params();
+                    self.audio_sbnr.set_params(db, whiten);
+                }
+                Some(NrEngine::Spectral) => {
+                    if switched {
+                        self.audio_nr.reset();
+                    }
+                    let (over, floor) = nr_level.params();
+                    self.audio_nr.set_params(over, floor);
+                }
+                None => {}
             }
         }
         if self.audio_nr_level.is_on() {
-            if self.audio_nr_level.is_ai() {
-                self.audio_nnr.process(&mut self.audio_re);
-            } else {
-                self.audio_nr.process(&mut self.audio_re);
+            // Per block, not on the level change: `radio_fs` is reassigned when
+            // the interface is reopened, and the rate-aware engines would
+            // otherwise keep resampling for the rate the old device had.
+            let fs = self.radio_fs;
+            match self.audio_nr_level.engine() {
+                Some(NrEngine::Rnn) => {
+                    self.audio_nnr.set_rate(fs);
+                    self.audio_nnr.process(&mut self.audio_re);
+                }
+                Some(NrEngine::DeepFilter) => match self.audio_dfnr.as_mut() {
+                    Some(df) => {
+                        df.set_rate(fs);
+                        df.process(&mut self.audio_re);
+                    }
+                    None => {
+                        self.audio_nnr.set_rate(fs);
+                        self.audio_nnr.process(&mut self.audio_re);
+                    }
+                },
+                Some(NrEngine::SpecBleach) => {
+                    self.audio_sbnr.set_rate(fs);
+                    self.audio_sbnr.process(&mut self.audio_re);
+                }
+                Some(NrEngine::Spectral) => self.audio_nr.process(&mut self.audio_re),
+                None => {}
             }
             // Suppression lowers the level; boost it back up per NR strength.
             let g = self.audio_nr_level.makeup_gain();
@@ -2550,7 +2693,25 @@ impl Engine {
             SetMute { rx, muted } => self.state.rx[rx.index()].muted = muted,
             SetSquelch { rx, db } => self.state.rx[rx.index()].squelch_db = db,
             SetNoiseBlanker(on) => self.state.noise_blanker = on,
-            SetNoiseReduction { rx, level } => self.state.rx[rx.index()].noise_reduction = level,
+            SetNoiseReduction { rx, level } => {
+                // A remote client can ask for an engine this host cannot run.
+                // Answer with the truth rather than with silence: fall back to
+                // the same strength on RNNoise, say so once, and let the state
+                // broadcast correct every attached UI's optimistic echo.
+                let level = if level.engine() == Some(NrEngine::DeepFilter)
+                    && !dfnr_available(&mut self.audio_dfnr, &mut self.audio_dfnr_failed)
+                {
+                    let fallback = level.with_engine(NrEngine::Rnn);
+                    let _ = self.event_tx.send(RadioEvent::Notice(Some(format!(
+                        "DeepFilterNet could not be loaded on this host — using NR {} instead",
+                        fallback.label()
+                    ))));
+                    fallback
+                } else {
+                    level
+                };
+                self.state.rx[rx.index()].noise_reduction = level;
+            }
             SetAutoNotch { rx, on } => self.state.rx[rx.index()].auto_notch = on,
             SetWfmStereo { rx, on } => self.state.rx[rx.index()].wfm_stereo = on,
             SetToneSquelch { rx, tone } => self.state.rx[rx.index()].tone_sql = tone,
@@ -5849,6 +6010,38 @@ mod stereo_tests {
             last_stereo = r.is_some();
         }
         assert!(!last_stereo, "still decoding stereo after NR had been on for 3 s");
+    }
+
+    /// Every engine, through the real chain. The two NR call sites are near
+    /// duplicates, so a wiring mistake in one is invisible in the other; this
+    /// at least pins that each engine runs, keeps the block length, and hands
+    /// back finite audio. One chain for all twelve levels, so the
+    /// DeepFilterNet model is unpacked once.
+    #[test]
+    fn every_nr_engine_preserves_the_block() {
+        let dev_rate = 1_536_000.0;
+        let mut rx = RxState::with_mode(Mode::Usb);
+        rx.volume = 1.0;
+        let mut chain = RxChain::new(dev_rate, &rx, 48_000.0);
+        // Broadband noise is the honest input here: it is what NR is pointed at.
+        let mut seed = 0x5EEDu64;
+        let iq: Vec<Complex32> = (0..16_384 * 8)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let r = ((seed >> 40) as i32) as f32 / (1 << 23) as f32 - 1.0;
+                Complex32::new(r * 0.2, r * 0.2)
+            })
+            .collect();
+
+        for level in NrLevel::ALL {
+            rx.noise_reduction = level;
+            for block in iq.chunks(16_384) {
+                let (out, _) = chain.run(block, &rx, false);
+                assert!(out.iter().all(|s| s.is_finite()), "{level:?} produced non-finite audio");
+            }
+        }
     }
 }
 

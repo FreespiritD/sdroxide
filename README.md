@@ -55,8 +55,9 @@ One binary, three ways to run it:
   station picker, phasing and slant correction), and transmit-only **RF Paint**
   (spectrum painting of text and images onto the waterfall).
 - **Receiver** — hang AGC, draggable passband filter edges (on the spectrum and
-  the waterfall), noise blanker, auto-notch, **neural (RNNoise) or spectral noise
-  reduction**, squelch, a second sub-receiver, RIT/XIT, VFO A/B with split,
+  the waterfall), noise blanker, auto-notch, **four noise-reduction engines**
+  (RNNoise, DeepFilterNet3, a libspecbleach port and the built-in spectral NR,
+  three strengths each), squelch, a second sub-receiver, RIT/XIT, VFO A/B with split,
   per-band band stacks, and memory channels.
 - **Bandplan overlay** — a colour-coded strip along the bottom of the waterfall
   that labels allocations (ham bands, broadcast, CB, AM); it shows coarse bands

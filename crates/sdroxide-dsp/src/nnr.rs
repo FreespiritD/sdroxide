@@ -4,14 +4,9 @@
 //! (babble, non-stationary hiss, some tones).
 //!
 //! Wraps the pure-Rust [`nnnoiseless`] port of Xiph's RNNoise. RNNoise is fixed
-//! at **48 kHz** and **480-sample** frames, so this streams arbitrary input:
-//!
-//!  * resample the input to 48 kHz (identity when it already is — the common
-//!    voice-mode case),
-//!  * accumulate and denoise in 480-sample frames,
-//!  * resample the denoised audio back to the input rate,
-//!  * emit one output sample per input sample (a queue absorbs the framing /
-//!    resampler jitter; it zero-fills during the initial priming latency).
+//! at **48 kHz** and **480-sample** frames; the streaming, framing and
+//! resampling that arbitrary input needs around that belong to
+//! [`crate::frame48::Frame48`], shared with [`crate::DeepFilterNr`].
 //!
 //! RNNoise itself has no intensity knob, so the **Low/Med/High** setting is a
 //! wet/dry depth: the denoised frame is blended with the *dry* input. RNNoise
@@ -22,42 +17,27 @@
 //!
 //! Pure Rust, wasm-clean. In-place, same length in and out.
 
-use std::collections::VecDeque;
-
 use nnnoiseless::DenoiseState;
 
-use crate::resample::MonoResampler;
+use crate::frame48::Frame48;
 
 /// RNNoise frame length (samples at 48 kHz).
 const FRAME: usize = DenoiseState::FRAME_SIZE;
-/// RNNoise operating rate.
-const RNN_RATE: f64 = 48_000.0;
 /// RNNoise expects samples scaled to the `i16` range, not `[-1, 1]`.
 const SCALE: f32 = 32_768.0;
 
 pub struct NeuralNr {
     denoise: Box<DenoiseState<'static>>,
-    in_rate: f64,
-    /// `in_rate → 48 kHz` (None when already 48 kHz).
-    up: Option<MonoResampler>,
-    /// `48 kHz → in_rate` (None when already 48 kHz).
-    down: Option<MonoResampler>,
+    /// Resampling, framing and the one-in/one-out queue.
+    shell: Frame48,
     /// Wet/dry blend depth (0 = bypass, 1 = full RNNoise).
     mix: f32,
 
-    /// 48 kHz input samples awaiting a full frame.
-    acc: Vec<f32>,
     /// Previous 48 kHz input frame — the delay-matched dry signal.
     prev_frame: Vec<f32>,
     have_prev: bool,
-    /// Denoised 48 kHz samples awaiting downsample.
-    den: Vec<f32>,
-    /// Output samples at `in_rate`, ready to emit.
-    out: VecDeque<f32>,
 
     // Per-call scratch.
-    up_buf: Vec<f32>,
-    down_buf: Vec<f32>,
     frame_in: Vec<f32>,
     frame_out: Vec<f32>,
 }
@@ -66,18 +46,10 @@ impl NeuralNr {
     pub fn new() -> Self {
         NeuralNr {
             denoise: DenoiseState::new(),
-            // Default to 48 kHz so the common voice path needs no resampler.
-            in_rate: RNN_RATE,
-            up: None,
-            down: None,
+            shell: Frame48::new(FRAME),
             mix: 1.0,
-            acc: Vec::new(),
             prev_frame: vec![0.0; FRAME],
             have_prev: false,
-            den: Vec::new(),
-            out: VecDeque::new(),
-            up_buf: Vec::new(),
-            down_buf: Vec::new(),
             frame_in: vec![0.0; FRAME],
             frame_out: vec![0.0; FRAME],
         }
@@ -90,27 +62,22 @@ impl NeuralNr {
 
     /// Point the denoiser at a new input sample rate, rebuilding the resamplers
     /// and clearing state if it changed. Cheap no-op when the rate is unchanged.
+    /// Deliberately does *not* recreate the RNN — only [`NeuralNr::reset`] does.
     pub fn set_rate(&mut self, in_rate: f64) {
-        if (in_rate - self.in_rate).abs() < 0.01 {
-            return;
+        if self.shell.set_rate(in_rate) {
+            self.clear_dry();
         }
-        self.in_rate = in_rate;
-        self.rebuild();
     }
 
     /// Clear all streaming state (call when switching NR on so a stale ring
     /// doesn't glitch). Recreates the RNN so its hidden state starts fresh.
     pub fn reset(&mut self) {
         self.denoise = DenoiseState::new();
-        self.rebuild();
+        self.shell.reset();
+        self.clear_dry();
     }
 
-    fn rebuild(&mut self) {
-        self.up = MonoResampler::new(self.in_rate, RNN_RATE);
-        self.down = MonoResampler::new(RNN_RATE, self.in_rate);
-        self.acc.clear();
-        self.den.clear();
-        self.out.clear();
+    fn clear_dry(&mut self) {
         self.prev_frame.iter_mut().for_each(|x| *x = 0.0);
         self.have_prev = false;
     }
@@ -118,55 +85,31 @@ impl NeuralNr {
     /// Denoise `audio` in place. Same length in and out; introduces a priming
     /// latency (zero-filled) of roughly one frame plus the resampler delay.
     pub fn process(&mut self, audio: &mut [f32]) {
-        // 1. Up to 48 kHz.
-        self.up_buf.clear();
-        match self.up.as_mut() {
-            Some(r) => r.push(audio, &mut self.up_buf),
-            None => self.up_buf.extend_from_slice(audio),
-        }
-        self.acc.extend_from_slice(&self.up_buf);
-
-        // 2. Denoise whole 480-sample frames.
-        self.den.clear();
-        let mut consumed = 0;
-        while self.acc.len() - consumed >= FRAME {
-            let frame = &self.acc[consumed..consumed + FRAME];
-            consumed += FRAME;
+        // Destructured so the closure borrows only the fields it touches.
+        let Self { denoise, shell, mix, prev_frame, have_prev, frame_in, frame_out } = self;
+        let mix = *mix;
+        shell.process(audio, |frame, den| {
             // RNNoise works in i16 scale.
-            for (d, &s) in self.frame_in.iter_mut().zip(frame) {
+            for (d, &s) in frame_in.iter_mut().zip(frame) {
                 *d = s * SCALE;
             }
-            self.denoise.process_frame(&mut self.frame_out, &self.frame_in);
-            if self.have_prev {
+            denoise.process_frame(frame_out, frame_in);
+            if *have_prev {
                 // `frame_out` is the denoised *previous* input frame; blend it
                 // with that same (delay-matched) dry frame.
                 for i in 0..FRAME {
-                    let wet = self.frame_out[i] / SCALE;
-                    let dry = self.prev_frame[i];
-                    self.den.push(dry + self.mix * (wet - dry));
+                    let wet = frame_out[i] / SCALE;
+                    let dry = prev_frame[i];
+                    den.push(dry + mix * (wet - dry));
                 }
             } else {
                 // First frame out is priming garbage — emit silence, keeping the
                 // one-in/one-out sample count.
-                self.den.resize(self.den.len() + FRAME, 0.0);
+                den.resize(den.len() + FRAME, 0.0);
             }
-            self.prev_frame.copy_from_slice(frame);
-            self.have_prev = true;
-        }
-        self.acc.drain(..consumed);
-
-        // 3. Back down to the input rate.
-        self.down_buf.clear();
-        match self.down.as_mut() {
-            Some(r) => r.push(&self.den, &mut self.down_buf),
-            None => self.down_buf.extend_from_slice(&self.den),
-        }
-        self.out.extend(self.down_buf.drain(..));
-
-        // 4. One output per input sample; zero-fill while priming.
-        for s in audio.iter_mut() {
-            *s = self.out.pop_front().unwrap_or(0.0);
-        }
+            prev_frame.copy_from_slice(frame);
+            *have_prev = true;
+        });
     }
 }
 

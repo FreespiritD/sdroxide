@@ -45,7 +45,7 @@ or connects to a remote sdroxide server.
   (spectrum-painting) mode.
 - **Receive controls:** AGC (Off/Slow/Med/Fast), volume, mute, squelch, an
   impulse noise blanker, an adaptive auto-notch (constant-tone canceller),
-  noise reduction (neural RNNoise or spectral, three levels each), RIT, and a
+  noise reduction (four engines, three strengths each), RIT, and a
   draggable filter passband. On NFM, the CTCSS tone or DCS stream under the
   signal is decoded and shown, and can be made a condition of the squelch.
 - **Transmit** (on TX-capable rigs): PTT, TUNE, drive and tune-drive levels,
@@ -271,23 +271,39 @@ can't quietly add itself to the one you set here.
   noise. Toggle it on when a steady whistle is spoiling a voice signal. (Like NR,
   it affects only what you hear, not the digital decoders; leave it off for CW
   and data modes, whose signals *are* tones.)
-- **NR** — noise reduction on the audio, with two selectable engines. Click it
-  to cycle **Off → AI Low → AI Med → AI High → NR Low → NR Mid → NR High → Off**:
-  - **AI Low/Med/High** — a neural **RNNoise** denoiser. Trained on speech, it
-    recognises the *voice* and mutes everything else, so it clears non-stationary
-    junk that spectral NR can't — babble, wind, keyboard/shack noise, fluttering
-    hiss — with little of the underwater warble. The three levels are a
-    wet/dry depth: AI High is the full effect, AI Low a lighter touch.
-  - **NR Low/Mid/High** — the classic **spectral** noise reduction: it suppresses
+- **NR** — noise reduction on the audio, with four selectable engines. The chip
+  reads what is running (`NR RNN Med`, `NR DFNR High`, `NR SPEC Low`, `NR Mid`);
+  click it for a picker with an **Engine** row and a **Strength** row, so any
+  setting is two clicks away. A keyboard or MIDI binding cycles the *strength*
+  within whichever engine is selected — Off → Low → Med → High → Off — and never
+  changes the engine underneath you.
+  - **RNN** — a neural **RNNoise** denoiser. Trained on speech, it recognises the
+    *voice* and mutes everything else, so it clears non-stationary junk that
+    spectral NR can't — babble, wind, keyboard/shack noise, fluttering hiss —
+    with little of the underwater warble. Cheap, and the safe default. The three
+    strengths are a wet/dry depth: High is the full effect, Low a lighter touch.
+  - **DFNR** — **DeepFilterNet3**, the strongest of the four. It adds a learned
+    complex filter over the low bins on top of a band gain, so it recovers speech
+    the others have already given up on. It also costs the most CPU by a wide
+    margin, and the model is loaded the first time you select it — expect a
+    short break in the audio at that moment. The strengths are the most
+    attenuation it may apply: 6, 12 and 24 dB.
+  - **SPEC** — a Rust port of **libspecbleach**'s adaptive denoiser. Spectral,
+    but with a psychoacoustic model deciding where suppression would be audible,
+    and a *whitened* noise floor: rather than carving the residue into birdies it
+    flattens what is left into even hiss. Good on steady static where the neural
+    engines sound processed.
+  - **NR Low/Mid/High** — the built-in **spectral** noise reduction: it suppresses
     the stationary noise floor while letting the changing, speech-like parts
     through. Fast and predictable on steady static and hiss.
 
-  Both make voice quieter to listen to and easier to copy with less fatigue.
-  Higher settings remove more noise but can add faint artefacts on weak signals,
-  so pick the lowest level that cleans the audio; on a noisy voice signal, start
-  with **AI Med**. (NR affects only what you hear; the FT8/FT4/PSK/RTTY decoders
-  still receive the untouched signal, and a steady unmodulated carrier — a
-  heterodyne — is treated as noise and suppressed.)
+  All four make voice quieter to listen to and easier to copy with less fatigue.
+  Higher strengths remove more noise but can add faint artefacts on weak signals,
+  so pick the lowest that cleans the audio; on a noisy voice signal, start with
+  **DFNR Med**, and drop to **RNN Med** if the machine is struggling. (NR affects
+  only what you hear; the FT8/FT4/PSK/RTTY decoders still receive the untouched
+  signal, and a steady unmodulated carrier — a heterodyne — is treated as noise
+  and suppressed. Any NR engine also forces WFM to mono — see **ST** below.)
 - **ST** (WFM only) — broadcast **stereo**. It lights when the station's 19 kHz
   stereo pilot is locked, and needs nothing from you: mono and stereo stations
   are handled automatically, at the same volume, so there is no jump when one

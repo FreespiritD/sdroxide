@@ -49,7 +49,8 @@ pub enum Action {
     TuneCarrier,
     Mute,
     NoiseBlanker,
-    /// Advance noise reduction: Off → AI Low/Med/High → NR Low/Mid/High → Off.
+    /// Advance the noise-reduction strength: Off → Low → Med → High → Off, on
+    /// whichever engine is selected. The engine itself is picked from the UI.
     NoiseReductionCycle,
     AutoNotch,
     AgcCycle,

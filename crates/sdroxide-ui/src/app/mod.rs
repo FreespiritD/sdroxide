@@ -151,6 +151,8 @@ pub struct SdroxideApp {
     skimmer_popup_since: Option<f64>,
     /// Fade clock for the sub-audible tone popup, like `skimmer_popup_since`.
     tone_popup_since: Option<f64>,
+    /// Fade clock for the noise-reduction picker, like `tone_popup_since`.
+    nr_popup_since: Option<f64>,
     /// The layout in force last frame, so a change can re-apply the style
     /// metrics (chip padding, text sizes) exactly once instead of every frame.
     tier: crate::layout::Tier,
@@ -430,6 +432,7 @@ impl SdroxideApp {
             fft_popup_since: None,
             skimmer_popup_since: None,
             tone_popup_since: None,
+            nr_popup_since: None,
             // Corrected on the first frame, once the viewport size is known.
             tier: crate::layout::Tier::Desktop,
             ptt_held: false,
