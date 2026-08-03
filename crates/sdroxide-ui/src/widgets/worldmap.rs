@@ -5,8 +5,14 @@
 //! The map is centred on the operator's home grid (the world wraps around it
 //! rather than being shifted) and smoothly auto-zooms to frame home plus every
 //! decoded station, re-fitting whenever new stations appear.
+//!
+//! The auto-fit is a starting point, not a cage: drag (or one finger) pans,
+//! wheel and pinch zoom about the pointer, and a double-click hands the view
+//! back to the auto-fit.
 
-use eframe::egui::{Color32, Pos2, Sense, Ui, pos2, vec2};
+use eframe::egui::{
+    Align2, Color32, CursorIcon, FontId, PointerButton, Pos2, Response, Sense, Ui, Vec2, pos2, vec2,
+};
 use sdroxide_types::{great_circle_points, land_cell, land_mask_dims};
 
 use crate::theme;
@@ -18,6 +24,10 @@ pub const MIN_HEIGHT: f32 = 72.0;
 /// Never zoom tighter than this longitudinal span (degrees), so a single nearby
 /// contact doesn't blow the map up to street level.
 const MIN_LON_SPAN: f64 = 30.0;
+/// The floor for a zoom the user asked for by hand — lower than the auto-fit's,
+/// because "show me that corner of Europe" is a real request, but not unlimited:
+/// below this the land bitmap (1/6° per cell) is showing its own pixels.
+const MIN_USER_LON_SPAN: f64 = 5.0;
 /// Fraction of extra margin left around the outermost contact.
 const PAD: f64 = 1.4;
 /// Per-frame ease toward the target view (0..1); smaller = slower/smoother.
@@ -30,11 +40,60 @@ pub struct MapView {
     clon: f64,
     lon_span: f64,
     initialized: bool,
+    /// The user has panned or zoomed by hand: the auto-fit stops moving the
+    /// view under them until they double-click to hand it back.
+    manual: bool,
 }
 
 impl Default for MapView {
     fn default() -> Self {
-        MapView { clat: 20.0, clon: 0.0, lon_span: 360.0, initialized: false }
+        MapView { clat: 20.0, clon: 0.0, lon_span: 360.0, initialized: false, manual: false }
+    }
+}
+
+impl MapView {
+    /// The latitude window this zoom covers on a map of the given aspect
+    /// (height/width) — the projection is linear in both axes.
+    fn lat_span(&self, aspect: f64) -> f64 {
+        self.lon_span * aspect
+    }
+
+    /// Keep the view legal: the zoom inside its limits, and the latitude window
+    /// inside the poles so a pan cannot drift off into empty space above the
+    /// map. Longitude wraps instead of clamping — the world repeats sideways.
+    fn clamp(&mut self, aspect: f64) {
+        self.lon_span = self.lon_span.clamp(MIN_USER_LON_SPAN, 360.0);
+        let lat_span = self.lat_span(aspect);
+        self.clat = if lat_span >= 180.0 {
+            0.0
+        } else {
+            self.clat.clamp(-90.0 + lat_span / 2.0, 90.0 - lat_span / 2.0)
+        };
+        self.clon = wrap180(self.clon);
+    }
+
+    /// Drag the map by a fraction of its own size, grab-the-content sense: the
+    /// land under the pointer stays under it.
+    fn pan(&mut self, dx_frac: f64, dy_frac: f64, aspect: f64) {
+        self.clon = wrap180(self.clon - dx_frac * self.lon_span);
+        self.clat += dy_frac * self.lat_span(aspect);
+        self.clamp(aspect);
+    }
+
+    /// Zoom by `factor` (below 1 zooms *in*) about a point given as a fraction
+    /// of the map rect — (0,0) top-left, (1,1) bottom-right — keeping whatever
+    /// is under that point in place.
+    fn zoom_about(&mut self, factor: f64, fx: f64, fy: f64, aspect: f64) {
+        // Where the anchor sits relative to the centre, in view fractions, and
+        // the place it is currently over.
+        let (ax, ay) = (fx - 0.5, 0.5 - fy);
+        let lon_a = self.clon + ax * self.lon_span;
+        let lat_a = self.clat + ay * self.lat_span(aspect);
+        self.lon_span = (self.lon_span * factor).clamp(MIN_USER_LON_SPAN, 360.0);
+        // Re-centre so that place lands back under the same fraction.
+        self.clon = wrap180(lon_a - ax * self.lon_span);
+        self.clat = lat_a - ay * self.lat_span(aspect);
+        self.clamp(aspect);
     }
 }
 
@@ -54,6 +113,78 @@ fn centroid(pts: &[(f64, f64)]) -> Option<(f64, f64)> {
     let lon_ref = pts[0].1;
     let dlon = pts.iter().map(|p| wrap180(p.1 - lon_ref)).sum::<f64>() / n;
     Some((lat, wrap180(lon_ref + dlon)))
+}
+
+/// Mouse and touch control of the view: drag (or one finger) pans, wheel and
+/// pinch zoom about the pointer, double-click hands the view back to the
+/// auto-fit. Returns true while the user is actually moving it, so the caller
+/// can keep the frames coming.
+fn interact(ui: &Ui, view: &mut MapView, resp: &Response, aspect: f64) -> bool {
+    let rect = resp.rect;
+    let mut touched = false;
+    let frac = |p: Pos2| {
+        (((p.x - rect.left()) / rect.width()) as f64, ((p.y - rect.top()) / rect.height()) as f64)
+    };
+
+    // Two fingers zoom and slide the map: on a screen with no wheel there is no
+    // other way in.
+    //
+    // First in the chain, and it swallows the drag, for the reason the
+    // panadapter's pinch does: the browser keeps reporting a one-finger drag
+    // from the *first* finger down for the whole gesture, so without this a
+    // pinch would pan the map at the same time as it zoomed.
+    let multi = ui.input(|i| i.multi_touch());
+    let pinch = multi.filter(|mt| rect.contains(mt.center_pos));
+    if let Some(mt) = pinch {
+        if mt.zoom_delta > 0.0 && mt.zoom_delta != 1.0 {
+            // Fingers apart is zoom *in*, i.e. a smaller span.
+            let (fx, fy) = frac(mt.center_pos);
+            view.zoom_about(1.0 / mt.zoom_delta as f64, fx, fy, aspect);
+            touched = true;
+        }
+        let t = mt.translation_delta;
+        if t != Vec2::ZERO {
+            view.pan((t.x / rect.width()) as f64, (t.y / rect.height()) as f64, aspect);
+            touched = true;
+        }
+    } else if resp.dragged_by(PointerButton::Primary) {
+        let d = resp.drag_delta();
+        if d != Vec2::ZERO {
+            view.pan((d.x / rect.width()) as f64, (d.y / rect.height()) as f64, aspect);
+            touched = true;
+        }
+    }
+
+    // Wheel zoom about the pointer. `zoom_delta` carries a trackpad pinch and
+    // ctrl+wheel, which egui reports as a zoom factor rather than as scroll —
+    // but it also mirrors a two-finger pinch anywhere on screen, so it is only
+    // read when no touch gesture is running.
+    if let Some(pos) = resp.hover_pos().filter(|_| multi.is_none()) {
+        let (scroll, zoom) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
+        // Multiplicative, so a wheel click covers the same visual fraction at
+        // any zoom — the same rate the panadapter uses.
+        let factor = 0.998f64.powf(scroll as f64 * 2.0) / (zoom.max(0.01) as f64);
+        if (factor - 1.0).abs() > 1e-4 {
+            let (fx, fy) = frac(pos);
+            view.zoom_about(factor, fx, fy, aspect);
+            touched = true;
+        }
+    }
+
+    if touched {
+        view.manual = true;
+    }
+    // Double-click hands the view back: the auto-fit resumes and eases home
+    // from wherever the user left it.
+    if resp.double_clicked() {
+        view.manual = false;
+    }
+    if resp.dragged() {
+        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+    } else if resp.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::Grab);
+    }
+    touched
 }
 
 /// The view to ease toward: centred on home (else the contacts' centroid),
@@ -93,6 +224,9 @@ fn target_view(home: Option<(f64, f64)>, contacts: &[(f64, f64)], aspect: f64) -
 /// from the active DX). When `tx_active`, an animated pulse travels the home→dx
 /// path. `max_h` caps the height: on short windows the map shrinks (keeping its
 /// aspect, centered) rather than pushing the QSO controls off-screen.
+///
+/// Drag, wheel and pinch move the view by hand (see [`interact`]); doing so
+/// suspends the auto-fit until a double-click reframes it.
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
@@ -121,7 +255,7 @@ pub fn show(
     // 1:1 aspect so it never becomes taller than wide.
     let h = max_h.min(avail_w).max(MIN_HEIGHT);
     let w = avail_w;
-    let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click_and_drag());
     if !ui.is_rect_visible(rect) {
         return;
     }
@@ -143,16 +277,24 @@ pub fn show(
         view.clon = t_clon;
         view.lon_span = t_span;
         view.initialized = true;
+    } else if view.manual {
+        // The user is holding the view. Nothing eases it out from under them —
+        // but a resized panel changes the aspect, so it still has to stay legal.
+        view.clamp(aspect);
     } else {
         view.clat += (t_clat - view.clat) * EASE;
         view.clon = wrap180(view.clon + wrap180(t_clon - view.clon) * EASE);
         view.lon_span += (t_span - view.lon_span) * EASE;
+        let settled = (view.clat - t_clat).abs() < 0.05
+            && wrap180(t_clon - view.clon).abs() < 0.05
+            && (view.lon_span - t_span).abs() < 0.05;
+        if !settled {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+        }
     }
-    let settled = (view.clat - t_clat).abs() < 0.05
-        && wrap180(t_clon - view.clon).abs() < 0.05
-        && (view.lon_span - t_span).abs() < 0.05;
-    if !settled {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+    // Mouse/touch pan and zoom, applied on top of (and suspending) the auto-fit.
+    if interact(ui, view, &resp, aspect) {
+        ui.ctx().request_repaint();
     }
     let (clat, clon, lon_span) = (view.clat, view.clon, view.lon_span);
     let lat_span = lon_span * aspect;
@@ -323,6 +465,106 @@ pub fn show(
         }
     }
 
+    // Once the user has taken the view, say how to give it back — but only
+    // under the pointer, so an idle map stays a map and not a label.
+    if view.manual && resp.hovered() {
+        p.text(
+            pos2(rect.right() - 5.0, rect.bottom() - 4.0),
+            Align2::RIGHT_BOTTOM,
+            "DOUBLE-CLICK TO REFRAME",
+            FontId::proportional(9.0),
+            Color32::from_white_alpha(90),
+        );
+    }
+
     // Frame (red-accent, matching the QSO section panels).
     crate::chrome::paint_cut_border(&p, rect.shrink(0.5), theme::RED_DEEP, theme::BG_DEEP);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Aspect of a typical map: half as tall as it is wide.
+    const ASPECT: f64 = 0.5;
+
+    /// What the point at rect fraction (fx, fy) is over, in (lat, lon).
+    fn under(v: &MapView, fx: f64, fy: f64, aspect: f64) -> (f64, f64) {
+        (v.clat + (0.5 - fy) * v.lat_span(aspect), wrap180(v.clon + (fx - 0.5) * v.lon_span))
+    }
+
+    fn view(clat: f64, clon: f64, lon_span: f64) -> MapView {
+        MapView { clat, clon, lon_span, initialized: true, manual: false }
+    }
+
+    /// A drag moves the land with the pointer, not against it: grabbing the map
+    /// and pulling right brings what was to the west into view.
+    #[test]
+    fn a_drag_carries_the_land_with_it() {
+        let mut v = view(0.0, 0.0, 180.0);
+        // Half a map-width to the right.
+        v.pan(0.5, 0.0, ASPECT);
+        assert!((v.clon - -90.0).abs() < 1e-9, "clon = {}", v.clon);
+        // And a quarter of its height down: the centre moves north.
+        v.pan(0.0, 0.25, ASPECT);
+        assert!((v.clat - 22.5).abs() < 1e-9, "clat = {}", v.clat);
+    }
+
+    /// The point under the cursor is the fixed point of a wheel zoom — that is
+    /// the whole feel of "zoom in on *that*".
+    #[test]
+    fn zoom_keeps_what_is_under_the_cursor_under_it() {
+        for (fx, fy) in [(0.5, 0.5), (0.2, 0.8), (0.93, 0.07)] {
+            let mut v = view(15.0, 40.0, 200.0);
+            let before = under(&v, fx, fy, ASPECT);
+            v.zoom_about(0.4, fx, fy, ASPECT);
+            let after = under(&v, fx, fy, ASPECT);
+            assert!(
+                (after.0 - before.0).abs() < 1e-9 && wrap180(after.1 - before.1).abs() < 1e-9,
+                "({fx}, {fy}): {before:?} -> {after:?}"
+            );
+            assert!((v.lon_span - 80.0).abs() < 1e-9, "span = {}", v.lon_span);
+        }
+    }
+
+    /// Zoom stops at both ends: the whole world out, the bitmap's own pixels in.
+    #[test]
+    fn zoom_stops_at_its_limits() {
+        let mut v = view(0.0, 0.0, 360.0);
+        v.zoom_about(4.0, 0.5, 0.5, ASPECT);
+        assert!((v.lon_span - 360.0).abs() < 1e-9, "zoomed out past the world: {}", v.lon_span);
+        for _ in 0..40 {
+            v.zoom_about(0.5, 0.5, 0.5, ASPECT);
+        }
+        assert!(
+            (v.lon_span - MIN_USER_LON_SPAN).abs() < 1e-9,
+            "zoomed in past the mask: {}",
+            v.lon_span
+        );
+    }
+
+    /// Panning north cannot walk the window off the top of the world: the map
+    /// stops with the pole at its edge rather than showing empty space.
+    #[test]
+    fn a_pan_stops_at_the_poles() {
+        let mut v = view(0.0, 0.0, 90.0); // lat_span = 45
+        for _ in 0..20 {
+            v.pan(0.0, 0.5, ASPECT);
+        }
+        assert!((v.clat - (90.0 - 22.5)).abs() < 1e-9, "clat = {}", v.clat);
+        // Longitude has no such edge — it wraps, and stays in [-180, 180).
+        for _ in 0..20 {
+            v.pan(-0.5, 0.0, ASPECT);
+        }
+        assert!((-180.0..180.0).contains(&v.clon), "clon = {}", v.clon);
+    }
+
+    /// A view zoomed out far enough to hold both poles centres itself on the
+    /// equator instead of tipping to one side.
+    #[test]
+    fn a_whole_world_view_sits_on_the_equator() {
+        let mut v = view(40.0, 0.0, 360.0);
+        v.clamp(0.6); // lat_span = 216 > 180
+        assert_eq!(v.clat, 0.0);
+    }
 }
