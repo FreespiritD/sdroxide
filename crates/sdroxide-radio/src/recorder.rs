@@ -1,15 +1,14 @@
-//! Off-thread MP3 recorder for the receiver audio.
+//! Off-thread MP3 recorder for a QSO: RX in the left channel, TX in the right
+//! — or, in mono mode, both time-multiplexed onto a single channel.
 //!
-//! The engine's audio loop pushes interleaved L/R frames straight off the
-//! stereo mixer into a lock-free ring; a dedicated thread drains it, resamples
-//! to 48 kHz, and encodes to MP3 with the pure-Rust `shine_rs` encoder, writing
+//! The engine's audio loop pushes interleaved frames straight off the stereo
+//! mixer into a lock-free ring; a dedicated thread drains it, resamples to
+//! 48 kHz, and encodes to MP3 with the pure-Rust `shine_rs` encoder, writing
 //! to the file. Encoding and file I/O never touch the real-time audio thread.
 //!
-//! Always two channels, in every mode. Joint stereo costs almost nothing when
-//! the two are identical (which is the usual case — a mono demod duplicated to
-//! both ears), and recording a fixed channel count means WFM stereo coming and
-//! going, or the sub receiver being switched on, never has to reinitialise the
-//! encoder mid-file.
+//! A fixed channel count for the life of the recording (chosen at
+//! [`Recorder::start`]), so WFM stereo coming and going, or the sub receiver
+//! being switched on, never has to reinitialise the encoder mid-file.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -26,17 +25,43 @@ use shine_rs::encoder::{
 };
 use tracing::{info, warn};
 
-use sdroxide_dsp::StereoResampler;
+use sdroxide_dsp::{MonoResampler, StereoResampler};
 
 /// MP3 encode target — a universally-valid MPEG-1 Layer III rate.
 const MP3_RATE: i32 = 48_000;
-/// Constant bitrate (kbps). Ample for two channels of communications audio,
-/// and joint stereo spends almost none of it when L and R are identical.
+/// Constant bitrate (kbps). Ample for communications audio, and joint stereo
+/// spends almost none of it when L and R are identical.
 const MP3_BITRATE: i32 = 192;
 /// shine channel mode MPG_MD_JOINT_STEREO.
 const MODE_JOINT_STEREO: i32 = 1;
-/// Interleaved channels per frame.
-const CHANNELS: usize = 2;
+/// shine channel mode MPG_MD_MONO.
+const MODE_MONO: i32 = 3;
+
+/// How many interleaved channels a recording carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordingChannels {
+    /// RX in the left channel, TX in the right.
+    Stereo,
+    /// RX and TX time-multiplexed onto a single channel — for RX-only
+    /// listening, or anyone who doesn't want split-ear audio.
+    Mono,
+}
+
+impl RecordingChannels {
+    fn count(self) -> usize {
+        match self {
+            RecordingChannels::Stereo => 2,
+            RecordingChannels::Mono => 1,
+        }
+    }
+
+    fn shine_mode(self) -> i32 {
+        match self {
+            RecordingChannels::Stereo => MODE_JOINT_STEREO,
+            RecordingChannels::Mono => MODE_MONO,
+        }
+    }
+}
 
 /// A running recording. Feed it through the paired [`Producer`] (held by the
 /// mixer); drop-finalize by calling [`Recorder::stop`].
@@ -48,21 +73,25 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    /// Start recording interleaved stereo audio arriving at `in_rate` Hz per
-    /// channel to `path`. Returns the recorder plus the producer the caller
-    /// feeds L/R frames into. Fails only if the file can't be created (encoder
-    /// setup happens on the worker thread).
-    pub fn start(path: PathBuf, in_rate: f64) -> std::io::Result<(Recorder, Producer<f32>)> {
+    /// Start recording interleaved audio arriving at `in_rate` Hz per channel
+    /// to `path`, with `channels` interleaved channels per frame. Returns the
+    /// recorder plus the producer the caller feeds frames into. Fails only if
+    /// the file can't be created (encoder setup happens on the worker thread).
+    pub fn start(
+        path: PathBuf,
+        in_rate: f64,
+        channels: RecordingChannels,
+    ) -> std::io::Result<(Recorder, Producer<f32>)> {
         let file = File::create(&path)?;
         // ~4 s of slack so a brief disk stall drops nothing.
-        let cap = (in_rate as usize).max(MP3_RATE as usize) * 4 * CHANNELS;
+        let cap = (in_rate as usize).max(MP3_RATE as usize) * 4 * channels.count();
         let (prod, cons) = RingBuffer::<f32>::new(cap);
         let stop = Arc::new(AtomicBool::new(false));
         let stop_worker = stop.clone();
         let path_worker = path.clone();
         let join = std::thread::Builder::new()
             .name("mp3-recorder".into())
-            .spawn(move || encode_loop(cons, file, in_rate, stop_worker, path_worker))
+            .spawn(move || encode_loop(cons, file, in_rate, channels, stop_worker, path_worker))
             .expect("spawn recorder thread");
         info!(path = %path.display(), "recording started");
         Ok((Recorder { stop, join: Some(join), path }, prod))
@@ -83,13 +112,15 @@ fn encode_loop(
     mut cons: Consumer<f32>,
     file: File,
     in_rate: f64,
+    channels: RecordingChannels,
     stop: Arc<AtomicBool>,
     path: PathBuf,
 ) {
+    let ch = channels.count();
     let cfg = ShineConfig {
-        wave: ShineWave { channels: CHANNELS as i32, samplerate: MP3_RATE },
+        wave: ShineWave { channels: ch as i32, samplerate: MP3_RATE },
         mpeg: ShineMpeg {
-            mode: MODE_JOINT_STEREO,
+            mode: channels.shine_mode(),
             bitr: MP3_BITRATE,
             emph: 0,
             copyright: 0,
@@ -106,10 +137,13 @@ fn encode_loop(
     let spp = shine_samples_per_pass(&enc) as usize; // samples per channel per frame
 
     let mut file = BufWriter::new(file);
-    let mut resampler = StereoResampler::new(in_rate, MP3_RATE as f64);
+    // Exactly one of these is live, matching `ch`; `None` when the rates
+    // already match (see `StereoResampler`/`MonoResampler::new`).
+    let mut stereo_rs = (ch == 2).then(|| StereoResampler::new(in_rate, MP3_RATE as f64)).flatten();
+    let mut mono_rs = (ch == 1).then(|| MonoResampler::new(in_rate, MP3_RATE as f64)).flatten();
     let mut drained: Vec<f32> = Vec::new();
     let mut resampled: Vec<f32> = Vec::new();
-    let mut pending: Vec<f32> = Vec::new(); // 48 kHz interleaved L/R awaiting a frame
+    let mut pending: Vec<f32> = Vec::new(); // 48 kHz interleaved, awaiting a frame
     // shine takes one pointer per channel, so the frame is de-interleaved here.
     let mut pcm_l = vec![0i16; spp];
     let mut pcm_r = vec![0i16; spp];
@@ -126,38 +160,29 @@ fn encode_loop(
             std::thread::sleep(Duration::from_millis(5));
             continue;
         }
-        match resampler.as_mut() {
-            Some(r) => {
+        match (stereo_rs.as_mut(), mono_rs.as_mut()) {
+            (Some(r), _) => {
                 resampled.clear();
                 r.push(&drained, &mut resampled);
                 pending.extend_from_slice(&resampled);
             }
-            None => pending.extend_from_slice(&drained),
+            (None, Some(r)) => {
+                resampled.clear();
+                r.push(&drained, &mut resampled);
+                pending.extend_from_slice(&resampled);
+            }
+            (None, None) => pending.extend_from_slice(&drained),
         }
-        while pending.len() >= spp * CHANNELS {
-            encode_frame(
-                &mut file,
-                &mut enc,
-                &pending[..spp * CHANNELS],
-                &mut pcm_l,
-                &mut pcm_r,
-                &path,
-            );
-            pending.drain(..spp * CHANNELS);
+        while pending.len() >= spp * ch {
+            encode_frame(&mut file, &mut enc, &pending[..spp * ch], ch, &mut pcm_l, &mut pcm_r, &path);
+            pending.drain(..spp * ch);
         }
     }
 
     // Final partial frame (zero-padded) so no tail is dropped, then flush.
     if !pending.is_empty() {
-        pending.resize(spp * CHANNELS, 0.0);
-        encode_frame(
-            &mut file,
-            &mut enc,
-            &pending[..spp * CHANNELS],
-            &mut pcm_l,
-            &mut pcm_r,
-            &path,
-        );
+        pending.resize(spp * ch, 0.0);
+        encode_frame(&mut file, &mut enc, &pending[..spp * ch], ch, &mut pcm_l, &mut pcm_r, &path);
     }
     let (tail, n) = shine_flush(&mut enc);
     if n > 0 {
@@ -167,21 +192,30 @@ fn encode_loop(
     shine_close(enc);
 }
 
-/// De-interleave one frame of f32 L/R into per-channel i16 and encode it,
-/// writing the MP3 bytes.
+/// De-interleave one frame of f32 samples into per-channel i16 and encode it,
+/// writing the MP3 bytes. `pcm_r` is unused (but still sized) when `channels == 1`.
 fn encode_frame(
     file: &mut BufWriter<File>,
     enc: &mut shine_rs::ShineGlobalConfig,
     frame: &[f32],
+    channels: usize,
     pcm_l: &mut [i16],
     pcm_r: &mut [i16],
     path: &std::path::Path,
 ) {
-    for (i, lr) in frame.chunks_exact(CHANNELS).enumerate() {
-        pcm_l[i] = (lr[0].clamp(-1.0, 1.0) * 32767.0) as i16;
-        pcm_r[i] = (lr[1].clamp(-1.0, 1.0) * 32767.0) as i16;
-    }
-    match shine_encode_buffer(enc, &[pcm_l.as_ptr(), pcm_r.as_ptr()]) {
+    let result = if channels == 2 {
+        for (i, lr) in frame.chunks_exact(2).enumerate() {
+            pcm_l[i] = (lr[0].clamp(-1.0, 1.0) * 32767.0) as i16;
+            pcm_r[i] = (lr[1].clamp(-1.0, 1.0) * 32767.0) as i16;
+        }
+        shine_encode_buffer(enc, &[pcm_l.as_ptr(), pcm_r.as_ptr()])
+    } else {
+        for (i, &s) in frame.iter().enumerate() {
+            pcm_l[i] = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+        }
+        shine_encode_buffer(enc, &[pcm_l.as_ptr()])
+    };
+    match result {
         Ok((mp3, n)) => {
             if n > 0 {
                 if let Err(e) = file.write_all(mp3) {
@@ -203,7 +237,9 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("sdroxide-rec-test-{}.mp3", std::process::id()));
         let _ = std::fs::remove_file(&path);
-        let (rec, mut prod) = Recorder::start(path.clone(), 48_000.0).expect("start recorder");
+        let (rec, mut prod) =
+            Recorder::start(path.clone(), 48_000.0, RecordingChannels::Stereo)
+                .expect("start recorder");
 
         // ~1 s at 48 kHz: 1 kHz in the left ear, 400 Hz in the right, so the
         // two channels are genuinely different, fed as it drains.
@@ -224,6 +260,31 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert!(bytes.len() > 2_000, "mp3 suspiciously small: {} bytes", bytes.len());
         // First frame must start with an 11-bit MPEG sync word (0xFFE..).
+        assert_eq!(bytes[0], 0xFF, "no MP3 frame sync");
+        assert_eq!(bytes[1] & 0xE0, 0xE0, "no MP3 frame sync in byte 1");
+    }
+
+    #[test]
+    fn records_a_valid_mono_mp3() {
+        let path = std::env::temp_dir()
+            .join(format!("sdroxide-rec-test-mono-{}.mp3", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let (rec, mut prod) = Recorder::start(path.clone(), 48_000.0, RecordingChannels::Mono)
+            .expect("start recorder");
+
+        for i in 0..48_000 {
+            let t = i as f32 / 48_000.0;
+            let s = 0.5 * (std::f32::consts::TAU * 1000.0 * t).sin();
+            while prod.push(s).is_err() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        rec.stop();
+
+        let bytes = std::fs::read(&path).expect("read mp3");
+        let _ = std::fs::remove_file(&path);
+        assert!(bytes.len() > 1_000, "mp3 suspiciously small: {} bytes", bytes.len());
         assert_eq!(bytes[0], 0xFF, "no MP3 frame sync");
         assert_eq!(bytes[1] & 0xE0, 0xE0, "no MP3 frame sync in byte 1");
     }

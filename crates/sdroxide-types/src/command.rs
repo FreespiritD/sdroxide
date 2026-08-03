@@ -84,10 +84,15 @@ pub enum Command {
         enabled: bool,
         hz: i32,
     },
-    /// Start (`true`) or stop (`false`) recording the receiver audio to an MP3
-    /// file. The engine names the file (date/time/frequency/mode) and stores it
-    /// in the user's music directory (or the config dir as a fallback).
+    /// Start (`true`) or stop (`false`) recording both sides of the QSO (RX
+    /// left, TX right) to an MP3 file. The engine names the file (date/time/
+    /// frequency/mode) and stores it in the user's music directory (or the
+    /// config dir as a fallback).
     SetRecording(bool),
+    /// Whether the *next* recording mixes RX/TX down to a single channel
+    /// instead of splitting them left/right. No effect on a recording already
+    /// in progress.
+    SetRecordingMono(bool),
 
     // Transmit
     SetPtt(bool),

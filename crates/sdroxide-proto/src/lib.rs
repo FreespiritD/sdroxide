@@ -175,7 +175,11 @@ use sdroxide_types::{
 /// commands (`SetScannerConfig`, `SetScanning`, `ScanNext`, `ScanSkip`) drive
 /// it. The commands are appended, but the added `RadioState` field changes the
 /// layout of every message carrying one, postcard not being self-describing.
-pub const PROTO_VERSION: u16 = 41;
+/// v42: recording both sides of the QSO (RX left, TX right) instead of just
+/// the receiver, plus an optional mono downmix — `Command::SetRecordingMono`
+/// (appended) and `RadioState.recording_mono` (changes the layout of every
+/// message carrying `RadioState`).
+pub const PROTO_VERSION: u16 = 42;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

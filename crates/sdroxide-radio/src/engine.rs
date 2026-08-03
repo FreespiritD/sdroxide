@@ -32,7 +32,7 @@ use sdroxide_types::{
     ScanKind, ScanResume, SpectrumConfig, SpectrumFrame, TciServerConfig, TxMeters, Vfo,
 };
 
-use crate::recorder::Recorder;
+use crate::recorder::{Recorder, RecordingChannels};
 use crate::voice::VoiceKeyer;
 use crate::{Complex32, ControlUpdate, IqSource};
 
@@ -217,6 +217,12 @@ struct RxChain {
     out_buf_r: Vec<f32>,
     /// Resamples L and R together so the two can't drift a sample apart.
     stereo_rs: Option<StereoResampler>,
+    /// Post-squelch audio at `out_rate`, same shape as `out_buf`/`out_buf_r`,
+    /// but without the AF volume/mute scaling applied to those — the QSO
+    /// recorder taps this instead, so turning down the AF knob or hitting
+    /// mute doesn't touch the archived recording. See [`RxChain::take_rec_audio`].
+    rec_buf: Vec<f32>,
+    rec_buf_r: Vec<f32>,
 }
 
 impl RxChain {
@@ -246,6 +252,8 @@ impl RxChain {
             lr_out: Vec::new(),
             out_buf_r: Vec::new(),
             stereo_rs: None,
+            rec_buf: Vec::new(),
+            rec_buf_r: Vec::new(),
         };
         chain.build_for_mode(rx);
         chain
@@ -303,6 +311,8 @@ impl RxChain {
         self.out_buf.clear();
         self.out_buf_r.clear();
         if self.demod.is_none() {
+            self.rec_buf.clear();
+            self.rec_buf_r.clear();
             return (&self.out_buf, None);
         }
         let demod = self.demod.as_mut().expect("checked above");
@@ -382,23 +392,24 @@ impl RxChain {
         let tone_ok = rx.tone_sql.is_none_or(|want| demod.sub_tone() == Some(want));
         let open = demod.power_dbfs() >= rx.squelch_db && tone_ok;
         let sq_target = if open { 1.0 } else { 0.0 };
-        let vol = if rx.muted { 0.0 } else { rx.volume * rx.volume };
+        // AF volume/mute is applied further down, after the recorder tap is
+        // snapshotted — squelch is the only gate shared by both.
         if stereo {
             // A single loop over both: `sq_gain` advances per *sample*, so
             // gating the two channels in separate passes would run the gate
             // twice as fast and hand them different gains.
             for (m, sd) in self.audio_buf.iter_mut().zip(self.side_buf.iter_mut()) {
                 self.sq_gain += (sq_target - self.sq_gain) * 0.002;
-                let g = vol * self.sq_gain;
-                *m *= g;
-                *sd *= g;
+                *m *= self.sq_gain;
+                *sd *= self.sq_gain;
             }
         } else {
             for s in &mut self.audio_buf {
                 self.sq_gain += (sq_target - self.sq_gain) * 0.002;
-                *s *= vol * self.sq_gain;
+                *s *= self.sq_gain;
             }
         }
+        let vol = if rx.muted { 0.0 } else { rx.volume * rx.volume };
 
         if !stereo {
             match &mut self.resampler {
@@ -408,6 +419,13 @@ impl RxChain {
             // Clamp after resampling so interpolation overshoot can't escape.
             for s in &mut self.out_buf {
                 *s = s.clamp(-1.0, 1.0);
+            }
+            // Recorder tap: post-squelch, pre-volume/mute (see `rec_buf`).
+            self.rec_buf.clear();
+            self.rec_buf.extend_from_slice(&self.out_buf);
+            self.rec_buf_r.clear();
+            for s in &mut self.out_buf {
+                *s *= vol;
             }
             return (&self.out_buf, None);
         }
@@ -434,7 +452,26 @@ impl RxChain {
             self.out_buf.push(f[0].clamp(-1.0, 1.0));
             self.out_buf_r.push(f[1].clamp(-1.0, 1.0));
         }
+        // Recorder tap: post-squelch, pre-volume/mute (see `rec_buf`).
+        self.rec_buf.clear();
+        self.rec_buf.extend_from_slice(&self.out_buf);
+        self.rec_buf_r.clear();
+        self.rec_buf_r.extend_from_slice(&self.out_buf_r);
+        for s in &mut self.out_buf {
+            *s *= vol;
+        }
+        for s in &mut self.out_buf_r {
+            *s *= vol;
+        }
         (&self.out_buf, Some(&self.out_buf_r))
+    }
+
+    /// The recorder's copy of the last [`RxChain::run`] block: post-squelch,
+    /// pre-AF-volume/mute. Shape matches `run`'s return (second slice present
+    /// only in the stereo case).
+    fn take_rec_audio(&self) -> (&[f32], Option<&[f32]>) {
+        let right = (!self.rec_buf_r.is_empty()).then_some(self.rec_buf_r.as_slice());
+        (&self.rec_buf, right)
     }
 
     fn power_dbfs(&self) -> Option<f32> {
@@ -509,9 +546,24 @@ struct StereoMixer {
     main_q: Vec<f32>,
     sub_q: Vec<f32>,
     dropped: u64,
-    /// When recording, a copy of each interleaved L/R output frame is pushed
-    /// here.
+    /// When recording: RX in the left channel, TX audio in the right (or both
+    /// time-multiplexed onto a single channel — see `rec_mono`).
     rec_tap: Option<rtrb::Producer<f32>>,
+    /// Fed from `push`'s `rec_left`/`rec_right`, which the caller builds
+    /// independent of the speaker path's AF volume/mute — see `RxChain::run`.
+    /// Queued separately from `main_q`/`sub_q` so the two can drain at
+    /// different times without one starving the other.
+    rec_main_q: Vec<f32>,
+    rec_sub_q: Vec<f32>,
+    /// Resamples TX audio to `rec_tap`'s rate. `None` if they already match.
+    tx_rec_rs: Option<MonoResampler>,
+    tx_rec_scratch: Vec<f32>,
+    /// False while transmitting, so a full-duplex source's live RX push
+    /// doesn't land in the recording tap alongside `push_tx`'s TX audio.
+    rx_rec_enabled: bool,
+    /// Whether `rec_tap` was opened for a mono recording (one channel) rather
+    /// than stereo (two) — must match what `Recorder::start` configured.
+    rec_mono: bool,
 }
 
 /// Bound on per-channel queueing (≈¼ s at 48 kHz) so a stalled side can't
@@ -520,10 +572,25 @@ const MIXER_CAP: usize = 12_000;
 
 impl StereoMixer {
     fn new(out: rtrb::Producer<f32>) -> Self {
-        StereoMixer { out, main_q: Vec::new(), sub_q: Vec::new(), dropped: 0, rec_tap: None }
+        StereoMixer {
+            out,
+            main_q: Vec::new(),
+            sub_q: Vec::new(),
+            dropped: 0,
+            rec_tap: None,
+            rec_main_q: Vec::new(),
+            rec_sub_q: Vec::new(),
+            tx_rec_rs: None,
+            tx_rec_scratch: Vec::new(),
+            rx_rec_enabled: true,
+            rec_mono: false,
+        }
     }
 
-    fn push(&mut self, left: &[f32], right: Option<&[f32]>) {
+    /// `left`/`right` are the speaker path (post AF-volume/mute); `rec_left`/
+    /// `rec_right` are what the recorder sees instead, so turning down the AF
+    /// knob or hitting mute doesn't touch the archived recording.
+    fn push(&mut self, left: &[f32], right: Option<&[f32]>, rec_left: &[f32], rec_right: Option<&[f32]>) {
         self.main_q.extend_from_slice(left);
         let dual = match right {
             Some(s) => {
@@ -535,20 +602,56 @@ impl StereoMixer {
                 false
             }
         };
+        self.rec_main_q.extend_from_slice(rec_left);
+        let rec_dual = match rec_right {
+            Some(s) => {
+                self.rec_sub_q.extend_from_slice(s);
+                true
+            }
+            None => {
+                self.rec_sub_q.clear();
+                false
+            }
+        };
 
         let n = if dual { self.main_q.len().min(self.sub_q.len()) } else { self.main_q.len() };
-        if n > 0 {
-            // Recording tap: mono downmix of the finished samples, independent of
-            // whether the speaker ring has room (records even during underruns).
-            if let Some(rec) = self.rec_tap.as_mut() {
-                for i in 0..n {
-                    let l = self.main_q[i];
-                    let r = if dual { self.sub_q[i] } else { l };
-                    // Interleaved L/R, the same frames the speakers get.
-                    let _ = rec.push(l); // drop if the recorder stalls
-                    let _ = rec.push(r);
+        let rec_n = if rec_dual {
+            self.rec_main_q.len().min(self.rec_sub_q.len())
+        } else {
+            self.rec_main_q.len()
+        };
+
+        if rec_n > 0 {
+            // Recording tap: RX left, sub receiver (if any) right, silence
+            // otherwise. Suppressed by rx_rec_enabled while transmitting.
+            if self.rx_rec_enabled {
+                if let Some(rec) = self.rec_tap.as_mut() {
+                    let need = if self.rec_mono { 1 } else { 2 };
+                    for i in 0..rec_n {
+                        // Never write a partial frame: a ring with one free
+                        // slot pushing just the left sample would desync
+                        // every following sample by a channel.
+                        if rec.slots() < need {
+                            continue;
+                        }
+                        let l = self.rec_main_q[i];
+                        if self.rec_mono {
+                            let _ = rec.push(l);
+                        } else {
+                            let r = if rec_dual { self.rec_sub_q[i] } else { 0.0 };
+                            let _ = rec.push(l);
+                            let _ = rec.push(r);
+                        }
+                    }
                 }
             }
+            self.rec_main_q.drain(..rec_n);
+            if rec_dual {
+                self.rec_sub_q.drain(..rec_n);
+            }
+        }
+
+        if n > 0 {
             if self.out.slots() >= n * 2 {
                 for i in 0..n {
                     let l = self.main_q[i];
@@ -575,6 +678,44 @@ impl StereoMixer {
         if self.sub_q.len() > MIXER_CAP {
             let cut = self.sub_q.len() - MIXER_CAP;
             self.sub_q.drain(..cut);
+        }
+        if self.rec_main_q.len() > MIXER_CAP {
+            let cut = self.rec_main_q.len() - MIXER_CAP;
+            self.rec_main_q.drain(..cut);
+        }
+        if self.rec_sub_q.len() > MIXER_CAP {
+            let cut = self.rec_sub_q.len() - MIXER_CAP;
+            self.rec_sub_q.drain(..cut);
+        }
+    }
+
+    /// Recording tap for TX audio: right channel, silence in the left (or the
+    /// sole channel in mono). Resampled from `TX_MONITOR_RATE` to match
+    /// `rec_tap`.
+    fn push_tx(&mut self, tx: &[f32]) {
+        if self.rec_tap.is_none() {
+            return;
+        }
+        let samples: &[f32] = match self.tx_rec_rs.as_mut() {
+            Some(rs) => {
+                self.tx_rec_scratch.clear();
+                rs.push(tx, &mut self.tx_rec_scratch);
+                &self.tx_rec_scratch
+            }
+            None => tx,
+        };
+        let rec = self.rec_tap.as_mut().expect("checked above");
+        let need = if self.rec_mono { 1 } else { 2 };
+        for &s in samples {
+            if rec.slots() < need {
+                continue;
+            }
+            if self.rec_mono {
+                let _ = rec.push(s);
+            } else {
+                let _ = rec.push(0.0);
+                let _ = rec.push(s);
+            }
         }
     }
 }
@@ -837,6 +978,11 @@ struct Engine {
     /// Right channel of the main chain, non-empty only while WFM stereo is
     /// decoding and the sub receiver is off.
     main_play_r: Vec<f32>,
+    /// The recorder's copy of this block — see [`RxChain::take_rec_audio`].
+    /// Independent of `main_play`/`main_play_r` once AF volume/mute (and the
+    /// voice-keyer/digital-voice overrides) are applied to those.
+    main_play_rec: Vec<f32>,
+    main_play_r_rec: Vec<f32>,
     /// True while the current over is fed by a TCI client's audio stream.
     tci_tx: bool,
     /// Consecutive short TX blocks this over, for the dead-client unkey.
@@ -854,6 +1000,8 @@ struct Engine {
     /// Scratch real-audio buffers for audio mode.
     audio_re: Vec<f32>,
     audio_play: Vec<f32>,
+    /// The recorder's copy of `audio_play`, pre-volume/mute — see `main_play_rec`.
+    audio_play_rec: Vec<f32>,
     /// Resamples the radio's audio to the speaker rate in audio mode.
     audio_resampler: Option<MonoResampler>,
     /// Rebuilds the IQ source when the operator switches radio interface at
@@ -1107,6 +1255,8 @@ fn engine_thread(
         voice_play: Vec::new(),
         main_play: Vec::new(),
         main_play_r: Vec::new(),
+        main_play_rec: Vec::new(),
+        main_play_r_rec: Vec::new(),
         tci_tx: false,
         tci_tx_starved: 0,
         tci_last_snap: None,
@@ -1115,6 +1265,7 @@ fn engine_thread(
         audio_bw,
         audio_re: Vec::new(),
         audio_play: Vec::new(),
+        audio_play_rec: Vec::new(),
         audio_resampler,
         reopen: engine_cfg.reopen.map(|f| Arc::new(Mutex::new(f))),
         retry: None,
@@ -1417,6 +1568,13 @@ impl Engine {
         if let Some(r) = right {
             self.main_play_r.extend_from_slice(r);
         }
+        self.main_play_rec.clear();
+        self.main_play_r_rec.clear();
+        let (rec_audio, rec_right) = main.take_rec_audio();
+        self.main_play_rec.extend_from_slice(rec_audio);
+        if let Some(r) = rec_right {
+            self.main_play_r_rec.extend_from_slice(r);
+        }
 
         // Feed the digital-mode decoder from the clean tap (not the mixed,
         // possibly-muted output).
@@ -1436,17 +1594,29 @@ impl Engine {
             self.main_play.clear();
             self.main_play.extend_from_slice(&self.voice_prev_out);
             self.main_play_r.clear();
+            // Unscaled in both cases: preview audio was never subject to the
+            // AF knob to begin with.
+            self.main_play_rec.clear();
+            self.main_play_rec.extend_from_slice(&self.voice_prev_out);
+            self.main_play_r_rec.clear();
         } else if self.take_voice_audio(out_rate) {
             let rx0 = &self.state.rx[0];
             let vol = if rx0.muted { 0.0 } else { rx0.volume * rx0.volume };
             self.main_play.clear();
             self.main_play.extend(self.voice_play.iter().map(|s| s * vol));
             self.main_play_r.clear();
+            // Recorder gets the decoded speech unscaled — same reasoning as
+            // the demodulated-audio tap above.
+            self.main_play_rec.clear();
+            self.main_play_rec.extend_from_slice(&self.voice_play);
+            self.main_play_r_rec.clear();
         } else if self.mutes_analog_audio() {
             // Silenced in place rather than dropped: the block still has to
             // reach the mixer to keep the output paced.
             self.main_play.fill(0.0);
             self.main_play_r.fill(0.0);
+            self.main_play_rec.fill(0.0);
+            self.main_play_r_rec.fill(0.0);
         }
 
         let sub_audio: Option<&[f32]> = match (&mut self.sub, self.state.sub_rx_enabled) {
@@ -1467,8 +1637,16 @@ impl Engine {
             None if !self.main_play_r.is_empty() => Some(&self.main_play_r),
             None => None,
         };
+        // The recorder's right channel follows the same priority. The sub
+        // receiver's own volume/mute is left as-is here — its recording tap
+        // isn't what the reviewer's pre-volume concern was about.
+        let rec_right: Option<&[f32]> = match sub_audio {
+            Some(a) => Some(a),
+            None if !self.main_play_r_rec.is_empty() => Some(&self.main_play_r_rec),
+            None => None,
+        };
         if let Some(mixer) = self.mixer.as_mut() {
-            mixer.push(&self.main_play, right);
+            mixer.push(&self.main_play, right, &self.main_play_rec, rec_right);
         }
         // Feed the high-resolution channel spectrum from the DDC output.
         if let (Some(ca), Some(main)) = (self.channel_analyzer.as_mut(), self.main.as_ref()) {
@@ -1594,6 +1772,10 @@ impl Engine {
             Some(rs) => rs.push(&self.audio_re, &mut self.audio_play),
             None => self.audio_play.extend_from_slice(&self.audio_re),
         }
+        // Recorder tap: same signal, without the volume/mute scaling below —
+        // see `RxChain::rec_buf` for why.
+        self.audio_play_rec.clear();
+        self.audio_play_rec.extend_from_slice(&self.audio_play);
         if vol != 1.0 {
             for s in self.audio_play.iter_mut() {
                 *s *= vol;
@@ -1605,14 +1787,19 @@ impl Engine {
         if self.take_preview_audio(self.audio_out_rate, block) {
             self.audio_play.clear();
             self.audio_play.extend_from_slice(&self.voice_prev_out);
+            self.audio_play_rec.clear();
+            self.audio_play_rec.extend_from_slice(&self.voice_prev_out);
         } else if self.take_voice_audio(self.audio_out_rate) {
             self.audio_play.clear();
             self.audio_play.extend(self.voice_play.iter().map(|s| s * vol));
+            self.audio_play_rec.clear();
+            self.audio_play_rec.extend_from_slice(&self.voice_play);
         } else if self.mutes_analog_audio() {
             self.audio_play.fill(0.0);
+            self.audio_play_rec.fill(0.0);
         }
         if let Some(mixer) = self.mixer.as_mut() {
-            mixer.push(&self.audio_play, None);
+            mixer.push(&self.audio_play, None, &self.audio_play_rec, None);
         }
     }
 
@@ -2341,6 +2528,7 @@ impl Engine {
                     self.stop_recording();
                 }
             }
+            SetRecordingMono(on) => self.state.recording_mono = on,
             SetSubRx(on) => {
                 self.state.sub_rx_enabled = on;
                 if on && self.sub.is_none() && self.main.is_some() {
@@ -2871,10 +3059,12 @@ impl Engine {
         let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
     }
 
-    /// Begin recording the receiver audio to a new MP3 file. The filename
-    /// encodes the UTC date/time, dial frequency and mode; the file lands in the
-    /// user's music directory (or the config dir as a fallback). No-op if already
-    /// recording; reports a [`RadioEvent::Notice`] if it can't start.
+    /// Begin recording both sides of the QSO to a new MP3 file (RX left, TX
+    /// right — or a single mixed channel if `recording_mono` is set). The
+    /// filename encodes the UTC date/time, dial frequency and mode; the file
+    /// lands in the user's music directory (or the config dir as a fallback).
+    /// No-op if already recording; reports a [`RadioEvent::Notice`] if it
+    /// can't start.
     fn start_recording(&mut self) {
         if self.recorder.is_some() {
             return;
@@ -2895,9 +3085,17 @@ impl Engine {
         };
         let name = self.recording_filename();
         let path = dir.join(&name);
-        match Recorder::start(path, self.audio_out_rate) {
+        let channels = if self.state.recording_mono {
+            RecordingChannels::Mono
+        } else {
+            RecordingChannels::Stereo
+        };
+        match Recorder::start(path, self.audio_out_rate, channels) {
             Ok((rec, prod)) => {
-                self.mixer.as_mut().expect("checked above").rec_tap = Some(prod);
+                let mixer = self.mixer.as_mut().expect("checked above");
+                mixer.rec_tap = Some(prod);
+                mixer.rec_mono = self.state.recording_mono;
+                mixer.tx_rec_rs = MonoResampler::new(TX_MONITOR_RATE, self.audio_out_rate);
                 self.recorder = Some(rec);
                 self.state.recording = true;
                 self.state.recording_file = Some(name);
@@ -2913,6 +3111,7 @@ impl Engine {
     fn stop_recording(&mut self) {
         if let Some(mixer) = self.mixer.as_mut() {
             mixer.rec_tap = None; // stop feeding before the worker drains + closes
+            mixer.tx_rec_rs = None;
         }
         if let Some(rec) = self.recorder.take() {
             rec.stop();
@@ -4581,6 +4780,9 @@ impl Engine {
                     }
                     self.tx_center_hz = txf;
                     self.tx_active = true;
+                    if let Some(mixer) = self.mixer.as_mut() {
+                        mixer.rx_rec_enabled = false;
+                    }
                     // Start the TX monitor + the real-time pacer clean (no residue
                     // from a prior burst/over) and drop any stale mic audio so the
                     // feed can't start already behind.
@@ -4596,6 +4798,9 @@ impl Engine {
             }
             self.tx = None;
             self.tx_active = false;
+            if let Some(mixer) = self.mixer.as_mut() {
+                mixer.rx_rec_enabled = true;
+            }
             self.tx_pace = None;
             // Drop the transmit residue so the first receive frames aren't a
             // blend of TX samples and fresh RX.
@@ -4971,6 +5176,22 @@ impl Engine {
             let level = self.state.tx.tune_drive.clamp(0.0, 1.0);
             tx.mod_buf.resize(TX_AUDIO_BLOCK, Complex32::new(level, 0.0));
             self.mic_fifo.clear();
+            // The recording tap has no other source of TX audio during tune —
+            // without this the tap goes quiet for the tune's duration and
+            // drifts out of sync with RX, worse with every tune. Same audible
+            // tone `tx_block_audio`'s tune branch already generates.
+            if let Some(mixer) = self.mixer.as_mut() {
+                let mut tone = [0.0f32; TX_AUDIO_BLOCK];
+                let inc = std::f32::consts::TAU * 1000.0 / TX_MONITOR_RATE as f32;
+                for a in &mut tone {
+                    *a = self.tune_phase.cos() * level;
+                    self.tune_phase += inc;
+                    if self.tune_phase > std::f32::consts::TAU {
+                        self.tune_phase -= std::f32::consts::TAU;
+                    }
+                }
+                mixer.push_tx(&tone);
+            }
         } else {
             let mut audio = [0.0f32; TX_AUDIO_BLOCK];
             let take = self.mic_fifo.len().min(TX_AUDIO_BLOCK);
@@ -4982,6 +5203,9 @@ impl Engine {
             let mic_gain = if tci_tx { 1.0 } else { self.state.tx.mic_gain * 2.0 };
             for a in &mut audio {
                 *a = tx.dc.run(*a) * mic_gain;
+            }
+            if let Some(mixer) = self.mixer.as_mut() {
+                mixer.push_tx(&audio);
             }
             let modulator = tx.modulator.as_mut().expect("checked above");
             modulator.process(&audio, &mut tx.mod_buf);
@@ -5029,6 +5253,9 @@ impl Engine {
             Some(d) => d.fill_tx_block(&mut audio),
             None => true,
         };
+        if let Some(mixer) = self.mixer.as_mut() {
+            mixer.push_tx(&audio);
+        }
 
         tx.mod_buf.clear();
         // Every mode that reaches here rides single sideband, so the chain has
@@ -5154,6 +5381,10 @@ impl Engine {
         self.tx_mon_buf.clear();
         self.tx_mon_buf.extend(audio.iter().map(|&a| Complex32::new(a, 0.0)));
         self.tx_analyzer.process(&self.tx_mon_buf);
+
+        if let Some(mixer) = self.mixer.as_mut() {
+            mixer.push_tx(&audio);
+        }
 
         self.source.tx_write_audio(&audio)?;
 
