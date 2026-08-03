@@ -540,6 +540,269 @@ pub(in crate::app) fn settings_tci_tab(
     );
 }
 
+/// PlutoSDR interface: address, front-end settings, and the diagnostic report.
+///
+/// Two things about the layout are deliberate. The gain, AGC and ppm controls
+/// apply *as you move them* (they push `SetGain` straight through), while the
+/// address, sample rate and filter wait for Apply — the first group are things
+/// you adjust while listening to a signal, the second are things that rebuild
+/// the stream. And the tuning range is not stated here at all: a stock AD9363
+/// board and one unlocked to AD9364 differ by an octave and a half, so the
+/// number comes from the device, through Test connection.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::app) fn settings_pluto_tab(
+    ui: &mut egui::Ui,
+    devices: &[sdroxide_types::PlutoDevice],
+    radio_edit: &mut Option<sdroxide_types::RadioConfig>,
+    discover: &mut bool,
+    test: &mut bool,
+    copy_report: &mut bool,
+    test_result: &Option<Result<String, String>>,
+    cmds: &mut Vec<Command>,
+) {
+    use sdroxide_types::{PlutoAgc, PlutoConfig};
+    let Some(cfg) = radio_edit.as_mut() else {
+        ui.label("Radio configuration is only available in the native app.");
+        return;
+    };
+
+    egui::Grid::new("pluto-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Radios").on_hover_text(
+            "Asks the network for IIO devices, and also tries 192.168.2.1 directly — \
+             a Pluto on the end of a USB cable is often unreachable by multicast even \
+             though the address works.",
+        );
+        ui.horizontal(|ui| {
+            if ui.button("Discover").clicked() {
+                *discover = true;
+            }
+            let shown = cfg.pluto.selected_ip.clone().unwrap_or_else(|| "— none —".into());
+            ComboBox::from_id_salt("pluto_dev").width(340.0).selected_text(shown).show_ui(
+                ui,
+                |ui| {
+                    if devices.is_empty() {
+                        ui.label(RichText::new("no radios — press Discover").weak());
+                    }
+                    for d in devices {
+                        let sel = cfg.pluto.selected_ip.as_deref() == Some(d.ip.as_str());
+                        if ui.selectable_label(sel, d.label()).clicked() {
+                            cfg.pluto.selected_ip = Some(d.ip.clone());
+                            // The typed address wins over a selection, so a
+                            // click here has no visible effect until it is
+                            // cleared. Do that for the operator.
+                            cfg.pluto.address.clear();
+                        }
+                    }
+                },
+            );
+        });
+        ui.end_row();
+
+        ui.label("Address").on_hover_text(
+            "Overrides the selection above. The USB cable presents the Pluto as a \
+             network adapter, not a serial port, so this is an IP address even when \
+             the radio is on your desk.",
+        );
+        ui.add(
+            egui::TextEdit::singleline(&mut cfg.pluto.address)
+                .desired_width(220.0)
+                .hint_text(PlutoConfig::DEFAULT_ADDRESS),
+        );
+        ui.end_row();
+
+        ui.label("Sample rate").on_hover_text(
+            "Width of the spectrum sdroxide receives. The AD9361 reaches 61.44 Msps; \
+             the USB network link does not, which is what this list is scaled to. \
+             Takes effect on Apply.",
+        );
+        let shown = format!("{:.3} Msps", cfg.pluto.sample_rate_hz / 1e6);
+        ComboBox::from_id_salt("pluto_rate").selected_text(shown).show_ui(ui, |ui| {
+            for &r in &PlutoConfig::SAMPLE_RATES {
+                let sel = (cfg.pluto.sample_rate_hz - r).abs() < 1.0;
+                let mut label = format!("{:.3} Msps", r / 1e6);
+                if r >= 3_840_000.0 {
+                    label.push_str("  (more than USB 2 will carry)");
+                }
+                if ui.selectable_label(sel, label).clicked() {
+                    cfg.pluto.sample_rate_hz = r;
+                }
+            }
+        });
+        ui.end_row();
+
+        ui.label("Analog filter").on_hover_text(
+            "The AD9361's baseband filter. Leave at 0 for automatic, which opens it \
+             to nine tenths of the sample rate — wide on purpose, because the \
+             receiver parks its oscillator a quarter of a span off the dial to keep \
+             signals clear of the DC spike, and a narrow filter would cut off exactly \
+             the part it moved them to. Takes effect on Apply.",
+        );
+        let mut bw_khz = (cfg.pluto.rf_bandwidth_hz / 1000.0).round() as i64;
+        if ui
+            .add(DragValue::new(&mut bw_khz).range(0..=56_000).suffix(" kHz").custom_formatter(
+                |v, _| {
+                    if v <= 0.0 { "auto".to_string() } else { format!("{v:.0}") }
+                },
+            ))
+            .changed()
+        {
+            cfg.pluto.rf_bandwidth_hz = bw_khz.max(0) as f64 * 1000.0;
+        }
+        ui.end_row();
+
+        ui.label("AGC").on_hover_text(
+            "The AD9361 has four modes, not an on/off switch. Slow attack suits SSB \
+             and CW; fast attack suits bursty signals; manual is the setting for \
+             measurement and weak-signal digital modes. Applies immediately.",
+        );
+        let mut agc = cfg.pluto.agc;
+        enum_combo(ui, "pluto_agc", &mut agc, &PlutoAgc::ALL, PlutoAgc::label);
+        if agc != cfg.pluto.agc {
+            cfg.pluto.agc = agc;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: PlutoConfig::AGC_ELEMENT.to_string(),
+                db: agc.code(),
+            });
+        }
+        ui.end_row();
+
+        ui.label("RX gain").on_hover_text(
+            "Applies immediately — no reconnect. Ignored unless the AGC is set to \
+             manual, which is the AD9361's own behaviour, not sdroxide's.",
+        );
+        ui.add_enabled_ui(cfg.pluto.agc == PlutoAgc::Manual, |ui| {
+            if crate::chrome::slider(
+                ui,
+                Slider::new(&mut cfg.pluto.rx_gain_db, 0.0..=71.0).step_by(1.0).suffix(" dB"),
+            )
+            .changed()
+            {
+                cmds.push(Command::SetGain {
+                    dir: Direction::Rx,
+                    element: PlutoConfig::RF_GAIN_ELEMENT.to_string(),
+                    db: cfg.pluto.rx_gain_db,
+                });
+            }
+        });
+        ui.end_row();
+
+        ui.label("TX gain").on_hover_text(
+            "Negative because the AD9361 expresses transmit level as attenuation: \
+             0 dB is full output. Applies immediately. The transmitter is set to its \
+             quietest before this value is applied on connect, so nothing the \
+             previous program left behind can be live.",
+        );
+        if crate::chrome::slider(
+            ui,
+            Slider::new(&mut cfg.pluto.tx_gain_db, -89.75..=0.0).step_by(0.25).suffix(" dB"),
+        )
+        .changed()
+        {
+            cmds.push(Command::SetGain {
+                dir: Direction::Tx,
+                element: PlutoConfig::TX_GAIN_ELEMENT.to_string(),
+                db: cfg.pluto.tx_gain_db,
+            });
+        }
+        ui.end_row();
+
+        ui.label("Frequency correction").on_hover_text(
+            "Reference error in parts per million. Run with \
+             RUST_LOG=sdroxide_pluto=debug and the log prints the measured clock \
+             error after about 20 seconds — that is the number to enter. Applied by \
+             sdroxide, not written to the radio's own persistent trim. Applies \
+             immediately.",
+        );
+        let mut ppm = cfg.pluto.ppm;
+        if ui
+            .add(DragValue::new(&mut ppm).range(-200.0..=200.0).speed(0.1).suffix(" ppm"))
+            .changed()
+        {
+            cfg.pluto.ppm = ppm;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: PlutoConfig::PPM_ELEMENT.to_string(),
+                db: ppm,
+            });
+        }
+        ui.end_row();
+
+        ui.label("RX / TX port").on_hover_text(
+            "The AD9361's rf_port_select. A stock Pluto wires one of each, so leave \
+             these empty unless you have a board that does not. Takes effect on Apply.",
+        );
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut cfg.pluto.rx_port)
+                    .desired_width(120.0)
+                    .hint_text("A_BALANCED"),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut cfg.pluto.tx_port)
+                    .desired_width(80.0)
+                    .hint_text("A"),
+            );
+        });
+        ui.end_row();
+
+        ui.label("");
+        ui.horizontal(|ui| {
+            if ui
+                .button("Test connection")
+                .on_hover_text(
+                    "Opens the radio, reads what it says about itself, and reports the \
+                     tuning range this particular board has. Does not start a stream.",
+                )
+                .clicked()
+            {
+                *test = true;
+            }
+            if ui
+                .button("Copy diagnostic report")
+                .on_hover_text(
+                    "Copies the last session's protocol trace to the clipboard, for a \
+                     bug report.",
+                )
+                .clicked()
+            {
+                *copy_report = true;
+            }
+        });
+        ui.end_row();
+    });
+
+    match test_result {
+        Some(Ok(s)) => {
+            ui.label(
+                RichText::new(format!("Connected: {s}")).color(Color32::from_rgb(90, 200, 110)),
+            );
+        }
+        Some(Err(e)) => {
+            ui.label(RichText::new(format!("Failed: {e}")).color(Color32::from_rgb(230, 90, 80)));
+        }
+        None => {}
+    }
+
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new(
+            "Wideband IQ receive and transmit. Half duplex — receive stops for the \
+             length of an over, because the USB network link will not carry both at \
+             once. No SoapySDR and no libiio needed.",
+        )
+        .weak(),
+    );
+    ui.label(
+        RichText::new(
+            "Not yet verified against real hardware. If it misbehaves, please send the \
+             diagnostic report — it contains every command exchanged with the radio, \
+             and the first bytes of the sample stream.",
+        )
+        .color(crate::theme::YELLOW),
+    );
+}
+
 /// SmartSDR (FlexRadio) interface: radio selection, DAX IQ stream settings, and
 /// the diagnostic report.
 ///

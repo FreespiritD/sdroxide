@@ -6,6 +6,43 @@ use std::time::{Duration, Instant};
 use crate::{Complex32, Result};
 use sdroxide_types::Mode;
 
+/// Corner frequency of the front-end DC blocker. Low enough to be invisible at
+/// any device rate (10 ppm of a 2 Msps span), high enough to settle in ~8 ms.
+pub const DC_BLOCK_HZ: f64 = 20.0;
+
+/// Fraction of the span the LO is parked above the VFO on a zero-IF front end.
+/// A quarter keeps every channel filter clear of DC while leaving three
+/// quarters of the span *above* the VFO, which is where band activity sits.
+const LO_OFFSET_FRAC: f64 = 0.25;
+
+/// Below this rate offset tuning costs more span than it is worth, and the span
+/// is too narrow to escape DC by a useful margin anyway.
+const LO_OFFSET_MIN_RATE: f64 = 1_000_000.0;
+
+/// LO offset for a zero-IF front end — see [`IqSource::lo_offset_hz`].
+///
+/// `analog_bw` is the front end's filter bandwidth (0 if it reports none):
+/// parking the LO further out than the analog filter reaches would just
+/// attenuate the signal we moved out there, so such a device gets no offset
+/// and relies on the DC blocker alone.
+///
+/// This lives here rather than beside the SoapySDR device it was written for,
+/// because `device.rs` is behind the `soapy` feature and the policy is not: the
+/// native PlutoSDR backend is an AD9361, which is zero-IF for exactly the same
+/// reasons and wants exactly the same treatment. Keeping one copy also keeps
+/// the two from drifting into disagreeing about where the LO should sit.
+///
+/// The corollary for a backend that sets its own analog filter: set it *wide*.
+/// A device left at a filter narrower than a quarter of its span silently gets
+/// no offset at all, which looks identical to the offset not working.
+pub fn lo_offset_for(rate: f64, analog_bw: f64) -> f64 {
+    if rate < LO_OFFSET_MIN_RATE {
+        return 0.0;
+    }
+    let offset = rate * LO_OFFSET_FRAC;
+    if analog_bw > 0.0 && offset > analog_bw * 0.45 { 0.0 } else { offset }
+}
+
 /// A change a CAT-controlled rig reported out-of-band (the operator turned the
 /// dial or changed the mode on the radio itself).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -678,5 +715,38 @@ impl IqSource for FileSource {
 
     fn describe(&self) -> String {
         format!("IQ file {} ({:.3} Msps)", self.path, self.sample_rate / 1e6)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The zero-IF LO-offset policy, shared by every front end that has a DC
+    /// spike where the operator's VFO would otherwise sit — the SoapySDR
+    /// devices it was written for, and the native PlutoSDR backend.
+    #[test]
+    fn lo_offset_wants_span_and_an_analog_filter_wide_enough_to_reach_it() {
+        // A HackRF at the rate it settles on: the 1.75 MHz baseband filter
+        // passes a 500 kHz offset with room to spare.
+        assert_eq!(lo_offset_for(2_000_000.0, 1_750_000.0), 500_000.0);
+        // A front end whose filter is narrower than the offset would only
+        // attenuate what we moved out there — DC blocker alone.
+        assert_eq!(lo_offset_for(2_000_000.0, 200_000.0), 0.0);
+        // Too narrow a stream to spend a quarter of on an offset.
+        assert_eq!(lo_offset_for(768_000.0, 768_000.0), 0.0);
+        // A driver that reports no filter bandwidth: go by the rate.
+        assert_eq!(lo_offset_for(8_000_000.0, 0.0), 2_000_000.0);
+    }
+
+    /// The Pluto backend sets the AD9361's analog filter itself, to 0.9 of the
+    /// sample rate. That number is chosen against this function: any narrower
+    /// and the offset it is trying to enable would be silently discarded.
+    #[test]
+    fn an_analog_filter_at_nine_tenths_of_the_rate_keeps_the_offset() {
+        for rate in [1_000_000.0, 2_000_000.0, 3_840_000.0, 5_000_000.0f64] {
+            let offset = lo_offset_for(rate, rate * 0.9);
+            assert_eq!(offset, rate * 0.25, "the offset was dropped at {rate} sps");
+        }
     }
 }

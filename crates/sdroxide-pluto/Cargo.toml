@@ -1,0 +1,23 @@
+[package]
+name = "sdroxide-pluto"
+version.workspace = true
+edition.workspace = true
+
+# Native-only ADALM-Pluto (AD9361/AD9363 + Zynq) support over the IIOD protocol
+# its on-board `iiod` serves on TCP 30431 — pure-Rust sockets, no libiio and no
+# libusb, so it ships in every build variant. Must never be a dependency of any
+# wasm-targeted crate.
+[dependencies]
+sdroxide-types.workspace = true
+crossbeam-channel.workspace = true
+rtrb.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# The IIOD context description is XML. Same parser sdroxide-net already uses.
+roxmltree = "0.21.1"
+# Enumerate local IPv4 interfaces so the mDNS query goes out on each of them —
+# a Pluto's USB-gadget network is a separate interface from the LAN.
+network-interface = "2.0"
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

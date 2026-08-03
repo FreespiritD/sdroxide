@@ -21,8 +21,8 @@ pub use engine::{
 };
 pub use error::RadioError;
 pub use source::{
-    ControlUpdate, ConvertedSource, FileSource, IqSource, SigGenSource, override_caps_ranges,
-    shift_caps,
+    ControlUpdate, ConvertedSource, DC_BLOCK_HZ, FileSource, IqSource, SigGenSource, lo_offset_for,
+    override_caps_ranges, shift_caps,
 };
 
 // Re-exported so frontends can name handle types without direct deps.

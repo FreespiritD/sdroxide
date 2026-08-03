@@ -30,16 +30,21 @@ pub enum Backend {
     /// Appended last on purpose: this enum is serde-serialised into `radio.json`
     /// by variant name, but `ALL` fixes the order the UI offers.
     SmartSdr,
+    /// ADALM-Pluto (AD9361/AD9363) over the IIOD protocol — reached over the
+    /// network, which the USB cable provides as an Ethernet gadget. Appended
+    /// last, for the same reason as `SmartSdr` above.
+    Pluto,
 }
 
 impl Backend {
-    pub const ALL: [Backend; 8] = [
+    pub const ALL: [Backend; 9] = [
         Backend::Auto,
         Backend::Soapy,
         Backend::Cat,
         Backend::Hpsdr,
         Backend::Tci,
         Backend::SmartSdr,
+        Backend::Pluto,
         Backend::RtlSdr,
         Backend::Rx888,
     ];
@@ -51,6 +56,7 @@ impl Backend {
             Backend::Hpsdr => "HPSDR (network)",
             Backend::Tci => "TCI (network)",
             Backend::SmartSdr => "SmartSDR / FlexRadio (network)",
+            Backend::Pluto => "PlutoSDR (network)",
             Backend::RtlSdr => "RTL-SDR (USB)",
             Backend::Rx888 => "RX-888 (USB)",
         }
@@ -875,6 +881,215 @@ impl Rx888Config {
     pub const ADC_RATES: [f64; 4] = [16_200_000.0, 32_400_000.0, 64_800_000.0, 129_600_000.0];
 }
 
+/// AD9361 receive AGC mode. The names are the IIO `gain_control_mode` values,
+/// which is what actually goes on the wire.
+///
+/// SoapySDR can only say "AGC on" or "AGC off"; the part itself has four modes
+/// and they behave very differently on the air, which is one of the reasons
+/// this backend is native rather than a SoapySDR device string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PlutoAgc {
+    /// The gain slider is in charge.
+    Manual,
+    /// Rides slowly over a signal — the right default for SSB and CW, where a
+    /// fast AGC pumps on every syllable.
+    #[default]
+    SlowAttack,
+    /// Reacts within a burst. Wanted where signals appear suddenly and at very
+    /// different strengths.
+    FastAttack,
+    /// Digital AGC with an analog fast-attack safety net.
+    Hybrid,
+}
+
+impl PlutoAgc {
+    pub const ALL: [PlutoAgc; 4] =
+        [PlutoAgc::Manual, PlutoAgc::SlowAttack, PlutoAgc::FastAttack, PlutoAgc::Hybrid];
+
+    /// What the IIO attribute is set to.
+    pub fn iio_name(self) -> &'static str {
+        match self {
+            PlutoAgc::Manual => "manual",
+            PlutoAgc::SlowAttack => "slow_attack",
+            PlutoAgc::FastAttack => "fast_attack",
+            PlutoAgc::Hybrid => "hybrid",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PlutoAgc::Manual => "Manual",
+            PlutoAgc::SlowAttack => "Slow attack",
+            PlutoAgc::FastAttack => "Fast attack",
+            PlutoAgc::Hybrid => "Hybrid",
+        }
+    }
+
+    /// Numeric code carried on [`PlutoConfig::AGC_ELEMENT`], so the mode rides
+    /// the existing `SetGain` command instead of needing one of its own.
+    pub fn code(self) -> f64 {
+        match self {
+            PlutoAgc::Manual => 0.0,
+            PlutoAgc::SlowAttack => 1.0,
+            PlutoAgc::FastAttack => 2.0,
+            PlutoAgc::Hybrid => 3.0,
+        }
+    }
+
+    pub fn from_code(v: f64) -> PlutoAgc {
+        match v.round() as i32 {
+            0 => PlutoAgc::Manual,
+            2 => PlutoAgc::FastAttack,
+            3 => PlutoAgc::Hybrid,
+            _ => PlutoAgc::SlowAttack,
+        }
+    }
+}
+
+/// ADALM-Pluto (PlutoSDR) backend configuration.
+///
+/// The device is reached over the network — which the USB cable already
+/// provides, as an Ethernet gadget — so this is an address, not a serial.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlutoConfig {
+    /// `host[:port]`, defaulting to the USB gadget's device end. Blank falls
+    /// back to [`Self::selected_ip`], then to the default address.
+    pub address: String,
+    /// IP of the Pluto picked from a discovery scan (persisted selection).
+    pub selected_ip: Option<String>,
+    /// Sample rate in Hz. The AD9361 reaches 61.44 Msps; a USB 2.0 Ethernet
+    /// gadget does not, which is what [`Self::SAMPLE_RATES`] is scaled to.
+    pub sample_rate_hz: f64,
+    /// Analog filter bandwidth in Hz, or `0.0` for automatic (0.9 × the sample
+    /// rate). Automatic is deliberately wide: the engine parks the LO a quarter
+    /// of a span off the dial to keep the signal clear of a zero-IF part's DC
+    /// spike, and a narrow analog filter is what makes it give that up.
+    pub rf_bandwidth_hz: f64,
+    /// Receive gain in dB when the AGC is in manual.
+    pub rx_gain_db: f64,
+    pub agc: PlutoAgc,
+    /// Transmit gain in dB — negative, because the AD9361 expresses it as
+    /// attenuation. `0` is full output. The default is well down: this is a
+    /// transmitter, and a first key-up should not be a surprise.
+    pub tx_gain_db: f64,
+    /// `rf_port_select` for receive; empty leaves the device's own choice. A
+    /// Pluto wires only `A_BALANCED`, but the AD9361 has nine and a custom
+    /// board may use another.
+    pub rx_port: String,
+    /// `rf_port_select` for transmit; empty leaves the device's own choice.
+    pub tx_port: String,
+    /// Reference error in parts per million. Applied in software to every
+    /// requested LO — the device's own `xo_correction` is persistent, and
+    /// writing it would outlive the session.
+    pub ppm: f64,
+    /// Device-side buffer length in complex samples (advanced). 32768 is ~16 ms
+    /// at 2 Msps: long enough that the per-buffer round trip is not the
+    /// bottleneck, short enough that a retune is not visibly late.
+    pub buffer_samples: usize,
+}
+
+impl Default for PlutoConfig {
+    fn default() -> Self {
+        PlutoConfig {
+            address: PlutoConfig::DEFAULT_ADDRESS.into(),
+            selected_ip: None,
+            sample_rate_hz: 2_000_000.0,
+            rf_bandwidth_hz: 0.0,
+            rx_gain_db: 40.0,
+            agc: PlutoAgc::SlowAttack,
+            tx_gain_db: -20.0,
+            rx_port: String::new(),
+            tx_port: String::new(),
+            ppm: 0.0,
+            buffer_samples: 32768,
+        }
+    }
+}
+
+impl PlutoConfig {
+    /// Where an out-of-the-box Pluto lives: the device end of the USB Ethernet
+    /// gadget (the host takes 192.168.2.10 on the same link).
+    pub const DEFAULT_ADDRESS: &'static str = "192.168.2.1";
+
+    /// Gain elements this backend exposes. They live here rather than in
+    /// `sdroxide-pluto` so the (wasm-safe) settings UI can address them without
+    /// depending on the native backend crate — same reason as
+    /// [`HpsdrConfig::LNA_GAIN_ELEMENT`].
+    pub const RF_GAIN_ELEMENT: &'static str = "RF";
+    pub const TX_GAIN_ELEMENT: &'static str = "TXATT";
+    /// Pseudo-elements carrying settings that are not gains at all. They ride
+    /// the existing `SetGain` command so this backend needs no new `Command`
+    /// variant, and are deliberately absent from `DeviceCaps::gains` so nothing
+    /// renders them as sliders — the Pluto settings panel drives them directly.
+    pub const AGC_ELEMENT: &'static str = "AGC";
+    pub const PPM_ELEMENT: &'static str = "PPM";
+
+    /// Sample rates offered in the UI.
+    ///
+    /// The floor is the AD9361's own (521 ksps, through its internal FIR
+    /// decimator). The ceiling is not the part's 61.44 Msps but what a USB 2.0
+    /// Ethernet gadget will actually carry: 2 Msps of 16-bit I/Q is 64 Mbit/s
+    /// before framing, which is already most of the link.
+    pub const SAMPLE_RATES: [f64; 6] =
+        [521_000.0, 1_000_000.0, 2_000_000.0, 2_500_000.0, 3_840_000.0, 5_000_000.0];
+
+    /// The address to open: the typed one, else a discovered selection, else
+    /// the USB gadget's default.
+    pub fn target(&self) -> String {
+        let typed = self.address.trim();
+        if !typed.is_empty() {
+            return typed.to_string();
+        }
+        match self.selected_ip.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(ip) => ip.to_string(),
+            None => PlutoConfig::DEFAULT_ADDRESS.to_string(),
+        }
+    }
+
+    /// Apply the reference trim to a frequency, the same way
+    /// [`HpsdrConfig::apply_ppm`] does.
+    pub fn apply_ppm(hz: f64, ppm: f64) -> f64 {
+        hz * (1.0 + ppm / 1e6)
+    }
+}
+
+/// A Pluto found on the network (or confirmed at a typed address).
+///
+/// Wasm-safe so it can cross the `RadioController` trait to the settings UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlutoDevice {
+    pub ip: String,
+    /// mDNS instance or host name, when discovery supplied one.
+    pub hostname: String,
+    /// The `hw_model` context attribute, e.g.
+    /// "Analog Devices PlutoSDR Rev.B (Z7010-AD9364)".
+    pub model: String,
+    pub firmware: String,
+    pub serial: String,
+    /// libiio version the device's `iiod` reports.
+    pub iiod_version: String,
+}
+
+impl PlutoDevice {
+    /// One-line label for the selection UI.
+    pub fn label(&self) -> String {
+        let what = if self.model.is_empty() { "PlutoSDR" } else { self.model.as_str() };
+        let mut s = format!("{what}  ({})", self.ip);
+        if !self.firmware.is_empty() {
+            s.push_str(&format!("  firmware {}", self.firmware));
+        }
+        s
+    }
+
+    /// Whether the model string names the AD9364 — the 70 MHz–6 GHz part an
+    /// unlocked Pluto reports. Only a hint for the label; the real limits are
+    /// read off the device when it is opened.
+    pub fn is_ad9364(&self) -> bool {
+        self.model.contains("AD9364")
+    }
+}
+
 /// Named converters for [`RadioConfig::converter_offset_hz`], with the offset
 /// each one puts on the dial in Hz.
 ///
@@ -1041,6 +1256,7 @@ pub struct RadioConfig {
     pub smartsdr: SmartSdrConfig,
     pub rtlsdr: RtlSdrConfig,
     pub rx888: Rx888Config,
+    pub pluto: PlutoConfig,
 }
 
 #[cfg(test)]
@@ -1090,6 +1306,56 @@ mod tests {
         let up: RadioConfig =
             serde_json::from_str(r#"{"converter_offset_hz": 125000000.0}"#).expect("parses");
         assert_eq!(up.converter_offset_hz, 125_000_000.0);
+    }
+
+    /// Every `radio.json` written before this backend existed has to keep
+    /// working, and has to land on a Pluto configuration that would actually
+    /// open — the USB gadget's address, not an empty string.
+    #[test]
+    fn pluto_settings_default_for_every_older_config() {
+        for json in [r#"{}"#, r#"{"backend": "Tci"}"#, r#"{"rx888": {"ppm": 1.5}}"#] {
+            let cfg: RadioConfig = serde_json::from_str(json).expect("parses");
+            assert_eq!(cfg.pluto.target(), PlutoConfig::DEFAULT_ADDRESS, "after loading {json}");
+            assert_eq!(cfg.pluto.agc, PlutoAgc::SlowAttack);
+        }
+        // And the new variant round-trips by name, which is how `Backend` is
+        // stored — appending it must not have renumbered anything.
+        let pluto: RadioConfig = serde_json::from_str(r#"{"backend": "Pluto"}"#).expect("parses");
+        assert_eq!(pluto.backend, Backend::Pluto);
+        for b in Backend::ALL {
+            let json = serde_json::to_string(&b).expect("serialises");
+            assert_eq!(serde_json::from_str::<Backend>(&json).expect("round trip"), b);
+        }
+    }
+
+    /// A discovered radio and a typed address are two different things, and the
+    /// typed one has to win — that is the whole reason both fields exist.
+    #[test]
+    fn a_typed_pluto_address_beats_a_discovered_one() {
+        let mut cfg = PlutoConfig { address: String::new(), ..PlutoConfig::default() };
+        assert_eq!(cfg.target(), PlutoConfig::DEFAULT_ADDRESS);
+        cfg.selected_ip = Some("10.0.0.9".into());
+        assert_eq!(cfg.target(), "10.0.0.9");
+        cfg.address = "  pluto.local  ".into();
+        assert_eq!(cfg.target(), "pluto.local");
+    }
+
+    /// The AGC mode rides `SetGain` as a number, so the encoding has to survive
+    /// the round trip or the radio ends up in a mode nobody chose.
+    #[test]
+    fn agc_modes_survive_the_pseudo_gain_element_encoding() {
+        for mode in PlutoAgc::ALL {
+            assert_eq!(PlutoAgc::from_code(mode.code()), mode, "{}", mode.label());
+        }
+        // The IIO spellings are what goes on the wire; a typo here is a mode
+        // the device rejects.
+        assert_eq!(PlutoAgc::Manual.iio_name(), "manual");
+        assert_eq!(PlutoAgc::SlowAttack.iio_name(), "slow_attack");
+        assert_eq!(PlutoAgc::FastAttack.iio_name(), "fast_attack");
+        assert_eq!(PlutoAgc::Hybrid.iio_name(), "hybrid");
+        // Anything unrecognised lands on the safe default rather than manual,
+        // which on an unknown band would be a deaf or overloaded receiver.
+        assert_eq!(PlutoAgc::from_code(99.0), PlutoAgc::SlowAttack);
     }
 
     /// The sign is the whole feature. An upconverter moves the hardware *up*

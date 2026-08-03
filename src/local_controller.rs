@@ -164,6 +164,23 @@ impl RadioController for LocalController {
         Some(crate::smartsdr_source::diagnostics_or_hint())
     }
 
+    fn discover_pluto(&self) -> Vec<sdroxide_types::PlutoDevice> {
+        sdroxide_pluto::discover_default()
+    }
+
+    fn test_pluto(&self, address: &str) -> Result<String, String> {
+        sdroxide_pluto::test_connection(address, std::time::Duration::from_secs(3))
+    }
+
+    fn pluto_diagnostics(&self) -> Option<String> {
+        Some(match sdroxide_pluto::diagnostics() {
+            Some(t) => t,
+            None => "No PlutoSDR session has run yet — press Test connection or \
+                     Apply / reconnect first."
+                .to_string(),
+        })
+    }
+
     fn radio_config(&self) -> Option<RadioConfig> {
         Some(sdroxide_config::load_radio_config())
     }

@@ -4,6 +4,7 @@ mod gui_main;
 mod hpsdr_source;
 mod local_controller;
 mod null_source;
+mod pluto_source;
 mod rtlsdr_source;
 mod rx888_source;
 mod server_main;
@@ -787,6 +788,7 @@ fn open_configured_source(
         Backend::Hpsdr => open_hpsdr_source(radio, cli.center_hz()),
         Backend::Tci => open_tci_source(radio, cli.center_hz()),
         Backend::SmartSdr => open_smartsdr_source(radio, cli.center_hz()),
+        Backend::Pluto => open_pluto_source(radio, cli.center_hz()),
         Backend::RtlSdr => open_rtlsdr_source(radio, cli.center_hz()),
         Backend::Rx888 => open_rx888_source(radio, cli.center_hz()),
         Backend::Soapy => open_soapy_source(cli, settings),
@@ -965,6 +967,71 @@ fn rx888_caps(src: &rx888_source::Rx888Source) -> DeviceCaps {
                 step_db: 0.5,
             },
         ],
+        ..DeviceCaps::default()
+    }
+}
+
+/// Build the PlutoSDR source from radio.json. The address is the operator's
+/// typed one, else a persisted discovery selection, else the USB gadget's
+/// default — see [`sdroxide_types::PlutoConfig::target`].
+fn open_pluto_source(
+    radio: &RadioConfig,
+    center_hz: f64,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let address = radio.pluto.target();
+    let src = pluto_source::PlutoSource::open(&address, &radio.pluto, center_hz)
+        .with_context(|| format!("opening PlutoSDR at {address}"))?;
+    let caps = pluto_caps(&src);
+    Ok((Box::new(src), caps))
+}
+
+/// Capabilities for a PlutoSDR: wideband IQ, transmit-capable, half duplex.
+///
+/// Everything here except the duplex flag is read off the device rather than
+/// written down, because the two boards this backend serves genuinely differ: a
+/// stock AD9363 covers 325 MHz–3.8 GHz and one unlocked to AD9364 covers
+/// 70 MHz–6 GHz, and the receive gain range moves with frequency. Quoting
+/// either set of numbers as a constant would leave half the Plutos in
+/// circulation refusing frequencies they can reach.
+///
+/// The AD9361 *is* a full-duplex part, and `full_duplex` is still left false: a
+/// Pluto is normally reached over a USB 2.0 Ethernet gadget, which will not
+/// carry a megasample-per-second stream both ways at once. Receive is torn down
+/// for the length of an over so the whole link is available to transmit.
+fn pluto_caps(src: &pluto_source::PlutoSource) -> DeviceCaps {
+    use sdroxide_types::{Direction, GainElement, PlutoConfig};
+    let limits = src.limits();
+    DeviceCaps {
+        driver: "pluto".into(),
+        label: src.describe(),
+        rx_channels: 1,
+        tx_channels: 1,
+        full_duplex: false,
+        audio_mode: false,
+        freq_ranges_rx: vec![limits.rx_lo_hz],
+        freq_ranges_tx: vec![limits.tx_lo_hz],
+        sample_rates: PlutoConfig::SAMPLE_RATES.to_vec(),
+        rate_ranges: vec![limits.sample_rate_hz],
+        gains: vec![
+            GainElement {
+                name: PlutoConfig::RF_GAIN_ELEMENT.into(),
+                direction: Direction::Rx,
+                min_db: limits.rx_gain_db.0,
+                max_db: limits.rx_gain_db.1,
+                step_db: limits.rx_gain_db.2,
+            },
+            // Transmit "gain" is the AD9361's attenuator, so this range is
+            // negative: 0 dB is full output.
+            GainElement {
+                name: PlutoConfig::TX_GAIN_ELEMENT.into(),
+                direction: Direction::Tx,
+                min_db: limits.tx_gain_db.0,
+                max_db: limits.tx_gain_db.1,
+                step_db: limits.tx_gain_db.2,
+            },
+        ],
+        antennas_rx: limits.rx_ports.clone(),
+        antennas_tx: limits.tx_ports.clone(),
         ..DeviceCaps::default()
     }
 }

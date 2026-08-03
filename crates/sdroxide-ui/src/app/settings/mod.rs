@@ -33,8 +33,8 @@ use self::net::{
     settings_freedv_tab,
 };
 use self::radio::{
-    settings_cat_tab, settings_hpsdr_tab, settings_rtlsdr_tab, settings_rx888_tab,
-    settings_smartsdr_tab, settings_tci_tab,
+    settings_cat_tab, settings_hpsdr_tab, settings_pluto_tab, settings_rtlsdr_tab,
+    settings_rx888_tab, settings_smartsdr_tab, settings_tci_tab,
 };
 use self::servers::{settings_rigctld_tab, settings_tci_server_tab, settings_wsjtx_tab};
 use self::tle::settings_tle_tab;
@@ -109,6 +109,12 @@ pub(in crate::app) struct SettingsIo<'a> {
     smartsdr_test: &'a mut bool,
     /// Copy the last SmartSDR session's protocol trace to the clipboard.
     smartsdr_copy_report: &'a mut bool,
+    /// Ask mDNS for IIO devices, and try the USB gadget's address (~1.5 s,
+    /// blocking).
+    pluto_discover: &'a mut bool,
+    pluto_test: &'a mut bool,
+    /// Copy the last PlutoSDR session's protocol trace to the clipboard.
+    pluto_copy_report: &'a mut bool,
     apply_iface: &'a mut bool,
     ui_edit: &'a mut sdroxide_types::UiSettings,
     /// Who may connect to this machine's server, or `None` where this client
@@ -266,6 +272,9 @@ impl SdroxideApp {
         let mut smartsdr_discover = false;
         let mut smartsdr_test = false;
         let mut smartsdr_copy_report = false;
+        let mut pluto_discover = false;
+        let mut pluto_test = false;
+        let mut pluto_copy_report = false;
         let mut apply_iface = false;
         let mut radio_edit = self.radio_cfg.clone();
         let mut converter_hz = self.converter_edit_hz;
@@ -308,6 +317,9 @@ impl SdroxideApp {
         iface_opts.push(sdroxide_types::Backend::Cat);
         iface_opts.push(sdroxide_types::Backend::Tci);
         iface_opts.push(sdroxide_types::Backend::SmartSdr);
+        // Pure-Rust IIOD over TCP — no libiio, no libusb — so like the two USB
+        // backends below it is in every build variant.
+        iface_opts.push(sdroxide_types::Backend::Pluto);
         // Ungated, unlike SoapySDR: the RTL-SDR driver is pure Rust and needs
         // no system library, so it is compiled into every build variant.
         iface_opts.push(sdroxide_types::Backend::RtlSdr);
@@ -349,6 +361,9 @@ impl SdroxideApp {
                         smartsdr_discover: &mut smartsdr_discover,
                         smartsdr_test: &mut smartsdr_test,
                         smartsdr_copy_report: &mut smartsdr_copy_report,
+                        pluto_discover: &mut pluto_discover,
+                        pluto_test: &mut pluto_test,
+                        pluto_copy_report: &mut pluto_copy_report,
                         apply_iface: &mut apply_iface,
                         ui_edit: &mut ui_edit,
                         access_edit: owns_server.then_some(&mut access_edit),
@@ -510,6 +525,23 @@ impl SdroxideApp {
             let report = self
                 .ctrl
                 .smartsdr_diagnostics()
+                .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
+            ctx.copy_text(report);
+        }
+        if pluto_discover {
+            // An mDNS query plus a direct try of the USB gadget's address
+            // (~1.5 s); after the closure so it can take `&self.ctrl`.
+            self.pluto_devices = self.ctrl.discover_pluto();
+        }
+        if pluto_test {
+            if let Some(cfg) = &radio_edit {
+                self.pluto_test_result = Some(self.ctrl.test_pluto(&cfg.pluto.target()));
+            }
+        }
+        if pluto_copy_report {
+            let report = self
+                .ctrl
+                .pluto_diagnostics()
                 .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
             ctx.copy_text(report);
         }
@@ -865,6 +897,16 @@ impl SdroxideApp {
                         io.smartsdr_test,
                         io.smartsdr_copy_report,
                         &self.smartsdr_test_result,
+                    ),
+                    Backend::Pluto => settings_pluto_tab(
+                        ui,
+                        &self.pluto_devices,
+                        io.radio_edit,
+                        io.pluto_discover,
+                        io.pluto_test,
+                        io.pluto_copy_report,
+                        &self.pluto_test_result,
+                        cmds,
                     ),
                     Backend::RtlSdr => settings_rtlsdr_tab(
                         ui,

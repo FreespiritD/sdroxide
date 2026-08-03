@@ -96,9 +96,10 @@ pub use pictures::{
 pub use radio::{
     Backend, CONVERTER_OFFSET_MAX_HZ, CONVERTER_PRESETS, CatConfig, CatFamily, DigiMode,
     FREQ_RANGE_MAX_HZ, HpsdrConfig, HpsdrDevice, HpsdrFilterBoard, LineState, ModeControl, Parity,
-    PttMethod, RadioConfig, RtlSdrAgc, RtlSdrConfig, RtlSdrDevice, RtlSdrHfMode, Rx888Config,
-    Rx888Device, SerialConfig, SmartSdrConfig, SmartSdrDevice, SoundFormat, StopBits, TciConfig,
-    converter_preset_name, format_freq_ranges, parse_freq_ranges,
+    PlutoAgc, PlutoConfig, PlutoDevice, PttMethod, RadioConfig, RtlSdrAgc, RtlSdrConfig,
+    RtlSdrDevice, RtlSdrHfMode, Rx888Config, Rx888Device, SerialConfig, SmartSdrConfig,
+    SmartSdrDevice, SoundFormat, StopBits, TciConfig, converter_preset_name, format_freq_ranges,
+    parse_freq_ranges,
 };
 pub use rifp::{
     RIFP_CALLING_HZ, RIFP_MAP_MAX_CHUNKS, RifpEncoding, RifpMeta, RifpProfile, RifpSession,

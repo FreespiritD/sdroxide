@@ -134,6 +134,10 @@ pub struct SdroxideApp {
     smartsdr_devices: Vec<sdroxide_types::SmartSdrDevice>,
     /// Result of the last SmartSDR "Test connection".
     smartsdr_test_result: Option<Result<String, String>>,
+    /// PlutoSDRs found by the last "Discover" (mDNS plus the gadget address).
+    pluto_devices: Vec<sdroxide_types::PlutoDevice>,
+    /// Result of the last PlutoSDR "Test connection".
+    pluto_test_result: Option<Result<String, String>>,
     seen_first_state: bool,
     show_memories: bool,
     show_scanner: bool,
@@ -421,6 +425,8 @@ impl SdroxideApp {
             tci_test_result: None,
             smartsdr_devices: Vec::new(),
             smartsdr_test_result: None,
+            pluto_devices: Vec::new(),
+            pluto_test_result: None,
             seen_first_state: false,
             show_memories: false,
             show_scanner: false,

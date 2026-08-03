@@ -339,6 +339,37 @@ pub trait RadioController {
         Err("not supported on this client".into())
     }
 
+    /// Scan for PlutoSDRs (native local client only). Blocking for a couple of
+    /// seconds — the settings UI calls it on demand from a "Discover" button,
+    /// not per frame.
+    ///
+    /// Asks mDNS *and* opens the USB gadget's default address, because a Pluto
+    /// on the end of a USB cable often has no reachable mDNS responder. Default
+    /// empty: a browser client cannot see the server's network.
+    fn discover_pluto(&self) -> Vec<crate::PlutoDevice> {
+        Vec::new()
+    }
+
+    /// Test a PlutoSDR at `address` (`host[:port]`). Blocking, on demand.
+    ///
+    /// Reads the front-end limits as well as the identity, so the answer states
+    /// the tuning range *this* board has — a stock AD9363 and one unlocked to
+    /// AD9364 differ by an octave and a half, and only the device knows which
+    /// it is. Default: unsupported (remote client).
+    fn test_pluto(&self, _address: &str) -> Result<String, String> {
+        Err("not supported on this client".into())
+    }
+
+    /// The most recent PlutoSDR session trace, for a bug report.
+    ///
+    /// This backend has not been verified against hardware, so the settings UI
+    /// offers the trace as copyable text rather than expecting a user to
+    /// reproduce a fault with the right `RUST_LOG` filter set. `None` when no
+    /// session has run.
+    fn pluto_diagnostics(&self) -> Option<String> {
+        None
+    }
+
     /// The most recent SmartSDR session trace, for a bug report.
     ///
     /// This backend has not been verified against hardware, so the settings UI

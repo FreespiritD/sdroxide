@@ -1681,6 +1681,9 @@ radio. Everything below the selector changes to match the choice:
   [5.2.6](#526-smartsdr-flexradio-network-radios).
 - **RTL-SDR (USB)** — an RTL2832U dongle, driven by sdroxide's own USB driver
   with no SoapySDR involved. See [5.2.5](#525-rtl-sdr-usb-dongles).
+- **PlutoSDR (network)** — an ADALM-Pluto, driven by sdroxide's own IIOD client
+  with no SoapySDR and no libiio involved. See
+  [5.2.7](#527-plutosdr-adalm-pluto).
 
 There is no auto-detect: you pick the interface, and an interface that cannot be
 opened falls back to a silent source rather than guessing at another one.
@@ -2077,6 +2080,124 @@ from the radio's meters while you transmit.
 > wire-level radio simulator ships in the source tree. Run
 > `cargo run -p sdroxide-smartsdr --example sim`, then point this tab at
 > `127.0.0.1:4992`.
+
+#### 5.2.7 PlutoSDR (ADALM-Pluto)
+
+An **ADALM-Pluto** — the AD9361/AD9363 learning radio — driven directly over
+**IIOD**, the protocol its on-board daemon speaks on TCP port 30431. sdroxide
+implements that protocol itself, so **there is nothing to install**: no
+SoapySDR, no libiio, no driver package. It is in every build, including the
+standard Windows and macOS packages.
+
+Wideband IQ receive *and* transmit.
+
+**A Pluto is a network device, even on a USB cable.** This surprises people, so
+it is worth stating plainly: plugging the Pluto in does not create a serial port
+— it creates a **network adapter**. The radio takes `192.168.2.1` on that link
+and your computer takes `192.168.2.10`. That is why this tab asks for an address
+rather than for a serial number, and why a Pluto on your Ethernet LAN is
+configured in exactly the same way as one on your desk.
+
+- **Radios** and **Discover** — asks the network for IIO devices (`_iio._tcp`,
+  which is what the Pluto's own daemon advertises) *and* tries `192.168.2.1`
+  directly. The direct try matters: multicast across a USB gadget link is
+  exactly the sort of traffic a host firewall drops without saying so, and the
+  address works even when the announcement never arrives. Each answer is opened
+  and identified, so nothing is listed on the strength of an announcement alone.
+- **Address** — overrides the selection. `192.168.2.1` is the default; a
+  hostname (`pluto.local`) or a `host:port` works too. If you have used libiio
+  before: `ip:192.168.2.1` is accepted, and a `usb:` URI is refused with an
+  explanation, because this backend reaches the radio over the network the USB
+  cable already provides.
+- **Test connection** — opens the radio, reads what it says about itself, and
+  reports the model, the firmware version, and **the tuning range this
+  particular board has**. Worth pressing once (see AD9363 vs AD9364 below). It
+  does not start a stream.
+- **Sample rate** — the AD9361 reaches 61.44 Msps; the USB network link does
+  not. 2 Msps of 16-bit I/Q is already 64 Mbit/s before framing, which is most
+  of a USB 2.0 link, so the list stops where it does. Anything above 3.84 Msps
+  is marked, and is realistic only over Ethernet. Takes effect on **Apply /
+  reconnect**.
+- **Analog filter** — the AD9361's baseband filter, or `auto`, which opens it to
+  nine tenths of the sample rate. Wide on purpose: the receiver parks its
+  oscillator a quarter of a span off your dial to keep signals clear of the DC
+  spike a zero-IF radio has, and a filter narrower than that offset would cut
+  off exactly the part it moved them to. If you narrow this by hand and the
+  radio seems to get *worse* around the dial frequency, that is why.
+- **AGC** — four modes, because the AD9361 has four and they behave differently
+  on the air. **Slow attack** is the default and suits SSB and CW, where a fast
+  loop pumps on every syllable. **Fast attack** suits signals that appear
+  suddenly and at very different strengths. **Manual** is the setting for
+  measurement and weak-signal digital modes. **Hybrid** is a digital loop with
+  an analog fast-attack safety net. (SoapySDR can only say "AGC on" or "AGC
+  off"; this is one of the reasons the native backend exists.)
+- **RX gain** — 0–71 dB, applied as you move it. Ignored unless the AGC is in
+  manual — that is the chip's behaviour, not sdroxide's, which is why the slider
+  greys out in the other modes.
+- **TX gain** — negative, because the AD9361 states transmit level as
+  *attenuation*: `0 dB` is full output and `−89.75 dB` is as close to off as the
+  part gets. Applied as you move it. On connect the transmitter is set to its
+  quietest *first* and your value applied second, so nothing the previous
+  program left in the attenuator is ever live.
+- **Frequency correction** — reference error in parts per million, applied by
+  sdroxide to every frequency it asks for. It is deliberately **not** written to
+  the radio's own `xo_correction`, which is persistent and would outlive the
+  session and surprise the next program to open the radio. Run with
+  `RUST_LOG=sdroxide_pluto=debug` and the log prints the measured clock error
+  after about twenty seconds — that is the number to enter.
+- **RX / TX port** — the AD9361's `rf_port_select`. A stock Pluto wires one of
+  each (`A_BALANCED` and `A`), so leave these empty unless you have a board that
+  does not.
+
+**AD9363 or AD9364.** A stock Pluto is an AD9363 and covers **325 MHz–3.8 GHz**;
+a great many have had the well-known firmware change applied, which turns them
+into an AD9364 covering **70 MHz–6 GHz** with a 56 MHz filter. sdroxide does not
+ask you which you have and does not guess — it reads the limits off the device
+every time it connects, so the band buttons and the transmit gate follow the
+radio you actually own. Press **Test connection** to see which it reported. (If
+a firmware publishes no limits at all, sdroxide says so rather than quoting the
+fallback figures as fact.)
+
+**Half duplex.** The AD9361 genuinely is a full-duplex part, and sdroxide still
+stops receive for the length of an over. The reason is the link, not the chip: a
+USB 2.0 Ethernet gadget will not carry a megasample-per-second stream in both
+directions at once, and trying produces a transmission full of holes. The whole
+link goes to transmit while you are keyed, exactly as the HPSDR backend does.
+
+**Transmit, the first time.** Set TX gain to its minimum, key into a **dummy
+load**, and check the signal is where the dial says before you raise it. The
+transmit path of an AD9361 can be fed either by a DMA buffer or by four on-chip
+tone generators, and the tone generators win by default; sdroxide silences them
+on every key-up, but a steady carrier where your modulation should be is the
+symptom to report if that ever fails.
+
+> **Help wanted — this backend has not been verified against real hardware.**
+> The protocol is implemented from libiio's own client and daemon sources, and
+> tested against an in-process fake `iiod`, which proves the client is
+> self-consistent but not that a Pluto agrees with it.
+>
+> Every session records a **protocol trace** — each IIOD command and its reply,
+> the device's context description with the sample layouts the decoders were
+> built from, and the first bytes of the sample stream verbatim. It is always
+> recording, so there is no log level to set in advance and nothing to reproduce
+> twice: press **Copy diagnostic report** and paste it into an issue.
+>
+> The first-bytes line is the one that matters most. The way `iiod` frames a
+> buffer — a length, then the channel mask, then the data — is the part of this
+> that cannot be checked without a device on the other end, and that one line
+> settles it.
+>
+> From the source tree you can get the same information plus a live signal
+> check:
+>
+> ```
+> RUST_LOG=sdroxide_pluto=debug cargo run -p sdroxide-pluto --example probe -- 192.168.2.1
+> ```
+>
+> It prints the limits the radio published, streams for two seconds, and reports
+> the measured rate and signal level. A plausible rate with a level of zero
+> means the link works and the sample layout does not; an implausible rate means
+> the framing is wrong.
 
 
 ### 5.3 UI: display preferences
@@ -3730,7 +3851,7 @@ sdroxide stores its settings under the per-user config directory:
 | File | Format | Contents |
 | --- | --- | --- |
 | `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, plus the `[ui]` display preferences and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
-| `radio.json` | JSON | Radio backend: SoapySDR vs CAT, serial/CAT settings, sound format, and the radio's sound-card device names. |
+| `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/RX-888/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
 | `digi.json` | JSON | FT8/FT4 operator settings: your callsign and grid, TX period, auto-sequence, and message templates. |
 | `memories.json` | JSON | Saved memory channels. |
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |

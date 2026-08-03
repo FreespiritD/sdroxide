@@ -4,40 +4,13 @@ use tracing::{info, warn};
 
 use sdroxide_types::{DeviceCaps, GainElement};
 
-use crate::{Complex32, IqSource, RadioError, Result};
-
-/// Corner frequency of the front-end DC blocker. Low enough to be invisible at
-/// any device rate (10 ppm of a 2 Msps span), high enough to settle in ~8 ms.
-const DC_BLOCK_HZ: f64 = 20.0;
-
-/// Fraction of the span the LO is parked above the VFO on a zero-IF front end.
-/// A quarter keeps every channel filter clear of DC while leaving three
-/// quarters of the span *above* the VFO, which is where band activity sits.
-const LO_OFFSET_FRAC: f64 = 0.25;
-
-/// Below this rate offset tuning costs more span than it is worth, and the span
-/// is too narrow to escape DC by a useful margin anyway.
-const LO_OFFSET_MIN_RATE: f64 = 1_000_000.0;
+use crate::{Complex32, DC_BLOCK_HZ, IqSource, RadioError, Result, lo_offset_for};
 
 /// How many times a failing RX stream is rebuilt in place before the source
 /// gives up and asks to be reopened. One rebuild covers a front end knocked
 /// over by a call it refused; a stream still failing after that is a device
 /// problem a fresh stream cannot fix.
 const STREAM_REBUILD_LIMIT: u32 = 2;
-
-/// LO offset for an open RX stream — see [`IqSource::lo_offset_hz`].
-///
-/// `analog_bw` is the front end's filter bandwidth (0 if it reports none):
-/// parking the LO further out than the analog filter reaches would just
-/// attenuate the signal we moved out there, so such a device gets no offset
-/// and relies on the DC blocker alone.
-fn lo_offset_for(rate: f64, analog_bw: f64) -> f64 {
-    if rate < LO_OFFSET_MIN_RATE {
-        return 0.0;
-    }
-    let offset = rate * LO_OFFSET_FRAC;
-    if analog_bw > 0.0 && offset > analog_bw * 0.45 { 0.0 } else { offset }
-}
 
 /// One enumerated device: its label plus the args string that opens it.
 #[derive(Debug, Clone)]
@@ -709,19 +682,5 @@ mod tests {
         // behind it — otherwise a stream restart would re-apply the old one.
         remember_gain(&mut gains, "AMP", 0.0);
         assert_eq!(gains, vec![("AMP".to_string(), 0.0), ("LNA".to_string(), 24.0)]);
-    }
-
-    #[test]
-    fn lo_offset_wants_span_and_an_analog_filter_wide_enough_to_reach_it() {
-        // A HackRF at the rate it settles on: the 1.75 MHz baseband filter
-        // passes a 500 kHz offset with room to spare.
-        assert_eq!(lo_offset_for(2_000_000.0, 1_750_000.0), 500_000.0);
-        // A front end whose filter is narrower than the offset would only
-        // attenuate what we moved out there — DC blocker alone.
-        assert_eq!(lo_offset_for(2_000_000.0, 200_000.0), 0.0);
-        // Too narrow a stream to spend a quarter of on an offset.
-        assert_eq!(lo_offset_for(768_000.0, 768_000.0), 0.0);
-        // A driver that reports no filter bandwidth: go by the rate.
-        assert_eq!(lo_offset_for(8_000_000.0, 0.0), 2_000_000.0);
     }
 }

@@ -4350,6 +4350,7 @@ dependencies = [
  "sdroxide-dsp",
  "sdroxide-hpsdr",
  "sdroxide-net",
+ "sdroxide-pluto",
  "sdroxide-proto",
  "sdroxide-radio",
  "sdroxide-rtlsdr",
@@ -4468,6 +4469,20 @@ dependencies = [
  "tracing",
  "tungstenite 0.30.0",
  "ureq",
+]
+
+[[package]]
+name = "sdroxide-pluto"
+version = "0.9.0"
+dependencies = [
+ "crossbeam-channel",
+ "network-interface",
+ "roxmltree",
+ "rtrb",
+ "sdroxide-types",
+ "thiserror 2.0.19",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

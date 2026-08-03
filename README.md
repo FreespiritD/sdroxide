@@ -36,7 +36,8 @@ One binary, three ways to run it:
 
 - **Radios** - CAT/Audio, CAT/Stereo IQ, TCI (SunSDR), OpenHPSDR P1 and P2
   (Hermes Lite 2, Apache Labs), SoapySDR (HackRF, etc.), RTL-SDR (native support), 
-  RX-888 (native support), SmartSDR (FlexRadio - experimental!)
+  RX-888 (native support), SmartSDR (FlexRadio - experimental!), PlutoSDR (native 
+  support, experimental!)
 - **Panadapter** — GPU (wgpu) waterfall + spectrum line, wheel-zoom around the
   cursor, drag-to-pan, per-digit frequency readout, selectable colormaps,
   peak-hold, and a **one-click auto-contrast** ("FIT") that picks the display
@@ -288,7 +289,7 @@ other ham software). See the [User Manual](docs/USER_MANUAL.md) for setup steps.
 
 ## Radio backends
 
-sdroxide can drive six kinds of radio, selected on the **Radio** tab of the
+sdroxide can drive eight kinds of radio, selected on the **Radio** tab of the
 Settings window. Backend, serial, and radio-audio changes apply live when you
 press **Apply / reconnect**. A radio that isn't there yet at startup — or that
 drops mid-session — is retried in the background and attaches by itself, so
@@ -316,8 +317,26 @@ starting sdroxide before the rig is fine:
   converted to complex baseband on the host, which is why retuning anywhere in
   HF is instantaneous, and why it wants a modern CPU and a real USB 3 port.
   Receive only; the VHF/UHF tuner is not driven.
+- **PlutoSDR (network)** — an ADALM-Pluto, driven directly over the **IIOD**
+  protocol its on-board daemon serves. **No SoapySDR and no libiio**, so it
+  works in every build including the standard `.msi` and `.dmg`. Wideband IQ
+  receive *and* transmit.
+
+  A Pluto is a network device even on a USB cable — the cable presents an
+  Ethernet gadget — so it is reached at an address (`192.168.2.1` out of the
+  box) rather than by a serial number, and one on the LAN works the same way.
+  Press **Discover** to ask the network, or type the address; **Test
+  connection** reports what the board says about itself.
+
+  The AD9361's four AGC modes, receive gain, transmit attenuation and both RF
+  ports are on the Radio tab. Tuning limits are read off the device, so a stock
+  AD9363 board (325 MHz–3.8 GHz) and one unlocked to AD9364 (70 MHz–6 GHz) are
+  both reported correctly without a setting. Half duplex: receive stops for the
+  length of an over, because a USB 2.0 gadget will not carry a
+  megasample-per-second stream both ways at once. Not yet hardware-verified —
+  see the user manual, §5.2.7.
 - **SoapySDR** — any [SoapySDR](https://github.com/pothosware/SoapySDR) device
-  (wideband IQ) — HackRF, Airspy, PlutoSDR and friends. See below.
+  (wideband IQ) — HackRF, Airspy, LimeSDR and friends. See below.
 - **OpenHPSDR** — Hermes/Metis-family Ethernet SDRs on the LAN (Protocol 1 and
   2). Press **Discover** to scan for devices, or enter the IP manually; pick a
   DDC sample rate (48 kHz–1536 kHz). Not yet hardware-verified — testers can run
@@ -335,10 +354,10 @@ starting sdroxide before the rig is fine:
   transmit is DAX audio the radio modulates. DAX IQ tops out at **192 kHz**,
   which is this backend's widest span.
 
-The wideband-IQ backends (RTL-SDR, SoapySDR, HPSDR, TCI, SmartSDR) drive the
-full panadapter, the CW/PSK/RTTY skimmers, and internal demodulation; a CAT rig
-feeding demodulated audio shows only a narrow audio-band slice. RTL-SDR is
-receive-only; the others can transmit.
+The wideband-IQ backends (RTL-SDR, RX-888, SoapySDR, HPSDR, TCI, SmartSDR,
+PlutoSDR) drive the full panadapter, the CW/PSK/RTTY skimmers, and internal
+demodulation; a CAT rig feeding demodulated audio shows only a narrow audio-band
+slice. RTL-SDR and RX-888 are receive-only; the others can transmit.
 
 Whichever backend you pick, a **converter offset** on the same tab handles an
 external frequency converter: an HF upconverter (Ham It Up, SpyVerter), a
