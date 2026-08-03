@@ -522,6 +522,7 @@ impl eframe::App for SdroxideApp {
                         &mut clicked_spot,
                         self.input.cfg.wheel,
                         wf_tuning,
+                        show_panel,
                         &mut cmds,
                     );
                 });
@@ -649,6 +650,7 @@ impl eframe::App for SdroxideApp {
                         &mut clicked_spot,
                         self.input.cfg.wheel,
                         wf_tuning,
+                        show_panel,
                         &mut cmds,
                     );
                 });

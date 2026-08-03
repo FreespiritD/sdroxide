@@ -291,10 +291,22 @@ fn draw_seg(
     }
 }
 
+/// Fraction of the waterfall the strip may take while an operating panel is
+/// sharing the height with it. Past this it is dropped entirely: with a panel
+/// below, what is left of the waterfall *is* the signal being worked, and the
+/// allocation labels are not worth a fifth of it — especially in the digital
+/// modes, where the view is locked to one sub-band the strip has nothing new to
+/// say about.
+const PANEL_MAX_FRAC: f32 = 0.10;
+
 /// Draw the bandplan strip along the oldest edge of the waterfall rect — its
 /// bottom normally, its top when the waterfall is flipped — so the strip never
 /// covers the newest rows.
-pub fn overlay(p: &Painter, view: &ViewState, wf: &Rect) {
+///
+/// `panel_below` — a mode panel (FT8's decodes, JS8's chat, CW's keyboard …) is
+/// taking part of the height, so the strip has to fit in [`PANEL_MAX_FRAC`] of
+/// what is left or step aside.
+pub fn overlay(p: &Painter, view: &ViewState, wf: &Rect, panel_below: bool) {
     let span = view.span();
     if span <= 0.0 || wf.height() < 24.0 {
         return;
@@ -311,6 +323,9 @@ pub fn overlay(p: &Painter, view: &ViewState, wf: &Rect) {
     let n_digi = digi_rows.len().min(MAX_DIGI_ROWS).min(fit);
 
     let total_h = base_h + n_digi as f32 * digi_h;
+    if panel_below && total_h > wf.height() * PANEL_MAX_FRAC {
+        return;
+    }
     // The allocation row sits outermost, on the waterfall's oldest edge, with
     // the digi rows stacked inwards from it.
     let flip = view.waterfall_flip;

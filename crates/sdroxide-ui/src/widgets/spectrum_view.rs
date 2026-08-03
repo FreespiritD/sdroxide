@@ -629,6 +629,10 @@ pub fn show_ext(
     // Shift), whether left-drag tunes, and the click-tune rounding.
     wheel: WheelSettings,
     wf: WfTuning,
+    // The mode's operating panel is on screen under the panadapter, so the
+    // waterfall is only part of the height. Keeps the bandplan strip from
+    // eating what little of it is left — see `bandplan::overlay`.
+    panel_below: bool,
     cmds: &mut Vec<Command>,
 ) {
     let cursor_hz = cursor.map(|c| c.hz);
@@ -1267,7 +1271,7 @@ pub fn show_ext(
     ));
 
     // Bandplan strip along the bottom of the waterfall (over the GPU layer).
-    crate::widgets::bandplan::overlay(&painter, view, &wf_rect);
+    crate::widgets::bandplan::overlay(&painter, view, &wf_rect, panel_below);
 
     // --- VFO markers + passband shading -----------------------------------
     let in_view = |hz: f64| (view.view_lo_hz..=view.view_hi_hz).contains(&hz);
