@@ -292,6 +292,12 @@ pub struct Session {
     pub tune_drive: f32,
     /// Mic gain, 0.0..=1.0.
     pub mic_gain: f32,
+    /// Whether a recording mixes RX/TX down to one channel instead of putting
+    /// RX left and TX right. A preference the operator sets once and expects to
+    /// still hold next time, not something the engine moves on its own — but it
+    /// rides here rather than in `config.toml` because the UI is the only thing
+    /// that sets it, and the engine is what owns writing it back.
+    pub recording_mono: bool,
 }
 
 impl Default for Session {
@@ -316,6 +322,7 @@ impl Default for Session {
             drive: radio.tx.drive,
             tune_drive: radio.tx.tune_drive,
             mic_gain: radio.tx.mic_gain,
+            recording_mono: radio.recording_mono,
         }
     }
 }
@@ -852,6 +859,7 @@ mod tests {
             drive: 0.4,
             tune_drive: 0.2,
             mic_gain: 0.6,
+            recording_mono: true,
         };
         let back: Session = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
@@ -871,6 +879,7 @@ mod tests {
         assert_eq!(old.drive, radio.tx.drive);
         assert_eq!(old.tune_drive, radio.tx.tune_drive);
         assert_eq!(old.mic_gain, radio.tx.mic_gain);
+        assert_eq!(old.recording_mono, radio.recording_mono);
     }
 
     /// The first run, and every run before this file existed, has to land where

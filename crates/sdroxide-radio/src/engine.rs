@@ -307,12 +307,17 @@ impl RxChain {
     /// (empty when this chain produces no audio, e.g. SPEC); the second is the
     /// right channel, present only while WFM stereo is actually being decoded —
     /// otherwise the caller plays the first slice in both ears.
-    fn run(&mut self, iq: &[Complex32], rx: &RxState) -> (&[f32], Option<&[f32]>) {
+    ///
+    /// `want_rec` asks for the pre-volume recorder tap ([`RxChain::rec_buf`])
+    /// to be filled as well. It is off whenever nothing is recording, which is
+    /// most of the time — the tap is a second copy of every block, and there is
+    /// no reason to make it for a file nobody opened.
+    fn run(&mut self, iq: &[Complex32], rx: &RxState, want_rec: bool) -> (&[f32], Option<&[f32]>) {
         self.out_buf.clear();
         self.out_buf_r.clear();
+        self.rec_buf.clear();
+        self.rec_buf_r.clear();
         if self.demod.is_none() {
-            self.rec_buf.clear();
-            self.rec_buf_r.clear();
             return (&self.out_buf, None);
         }
         let demod = self.demod.as_mut().expect("checked above");
@@ -419,9 +424,9 @@ impl RxChain {
             // Recorder tap: post-squelch, pre-volume/mute (see `rec_buf`),
             // clamped on the way in so interpolation overshoot can't escape
             // into the file either.
-            self.rec_buf.clear();
-            self.rec_buf.extend(self.out_buf.iter().map(|s| s.clamp(-1.0, 1.0)));
-            self.rec_buf_r.clear();
+            if want_rec {
+                self.rec_buf.extend(self.out_buf.iter().map(|s| s.clamp(-1.0, 1.0)));
+            }
             // Volume *then* clamp, never the other way round: clamping first
             // would hard-clip a hot block at full scale and only then scale it
             // down, baking in distortion that turning the AF knob down is
@@ -451,21 +456,33 @@ impl RxChain {
         };
         self.out_buf.reserve(lr.len() / 2);
         self.out_buf_r.reserve(lr.len() / 2);
-        self.rec_buf.clear();
-        self.rec_buf_r.clear();
-        self.rec_buf.reserve(lr.len() / 2);
-        self.rec_buf_r.reserve(lr.len() / 2);
         for f in lr.chunks_exact(2) {
-            // Recorder tap: post-squelch, pre-volume/mute (see `rec_buf`).
-            self.rec_buf.push(f[0].clamp(-1.0, 1.0));
-            self.rec_buf_r.push(f[1].clamp(-1.0, 1.0));
             // Volume before the clamp for the speakers, as in the mono branch
             // above — clamping first would bake in distortion the AF knob is
             // supposed to be able to avoid.
             self.out_buf.push((f[0] * vol).clamp(-1.0, 1.0));
             self.out_buf_r.push((f[1] * vol).clamp(-1.0, 1.0));
         }
+        // Recorder tap: post-squelch, pre-volume/mute (see `rec_buf`). A second
+        // pass rather than a branch in the loop above, so the common case of
+        // not recording walks `lr` exactly once.
+        if want_rec {
+            self.rec_buf.reserve(lr.len() / 2);
+            self.rec_buf_r.reserve(lr.len() / 2);
+            for f in lr.chunks_exact(2) {
+                self.rec_buf.push(f[0].clamp(-1.0, 1.0));
+                self.rec_buf_r.push(f[1].clamp(-1.0, 1.0));
+            }
+        }
         (&self.out_buf, Some(&self.out_buf_r))
+    }
+
+    /// The speaker-path audio from the last [`RxChain::run`] — the same slice
+    /// `run` returned. Exists so a caller can hold this and the recorder tap at
+    /// once: `run`'s own return keeps the chain mutably borrowed, which rules
+    /// out asking for [`RxChain::take_rec_audio`] alongside it.
+    fn out_audio(&self) -> &[f32] {
+        &self.out_buf
     }
 
     /// The recorder's copy of the last [`RxChain::run`] block: post-squelch,
@@ -632,9 +649,13 @@ impl StereoMixer {
                     for i in 0..rec_n {
                         // Never write a partial frame: a ring with one free
                         // slot pushing just the left sample would desync
-                        // every following sample by a channel.
+                        // every following sample by a channel. Give up on the
+                        // rest of the block rather than skipping samples one
+                        // at a time — a stalled recorder should cost a clean
+                        // gap, not a stutter stitched out of whatever happened
+                        // to fit.
                         if rec.slots() < need {
-                            continue;
+                            break;
                         }
                         let l = self.rec_main_q[i];
                         if self.rec_mono {
@@ -709,8 +730,10 @@ impl StereoMixer {
         let rec = self.rec_tap.as_mut().expect("checked above");
         let need = if self.rec_mono { 1 } else { 2 };
         for &s in samples {
+            // Whole frames only, and a clean gap rather than a stutter — see
+            // the matching guard in `push`.
             if rec.slots() < need {
-                continue;
+                break;
             }
             if self.rec_mono {
                 let _ = rec.push(s);
@@ -1156,10 +1179,10 @@ fn engine_thread(
     // CAT rig reporting its own) is a difference like any other, and gets
     // written even if nothing is touched afterwards.
     let session = engine_cfg.remember_session.then(sdroxide_config::load_session);
-    // Volume, RX gain, AGC mode, drive and mic gain have no command-line
-    // override, so the remembered session (if any) always wins over the
-    // hardcoded defaults `RadioState::default()` / `engine_cfg.initial_mode`
-    // set above.
+    // Volume, RX gain, AGC mode, drive, mic gain and the recording channel
+    // layout have no command-line override, so the remembered session (if any)
+    // always wins over the hardcoded defaults `RadioState::default()` /
+    // `engine_cfg.initial_mode` set above.
     if let Some(s) = session.as_ref() {
         state.rx[0].volume = s.volume;
         state.rx[0].manual_gain_db = s.rx_gain_db;
@@ -1167,6 +1190,7 @@ fn engine_thread(
         state.tx.drive = s.drive;
         state.tx.tune_drive = s.tune_drive;
         state.tx.mic_gain = s.mic_gain;
+        state.recording_mono = s.recording_mono;
     }
     // The command line outranks the remembered session, exactly as it does for
     // the dial and the mode.
@@ -1558,6 +1582,7 @@ impl Drop for Engine {
 
 impl Engine {
     fn run_audio(&mut self, iq: &[Complex32]) {
+        let want_rec = self.recorder.is_some();
         let Some(main) = self.main.as_mut() else { return };
         let out_rate = main.out_rate;
         // Copied out rather than borrowed: a digital-voice mode may replace
@@ -1565,17 +1590,19 @@ impl Engine {
         // would otherwise be borrowed against the chain.
         self.main_play.clear();
         self.main_play_r.clear();
-        let (audio, right) = main.run(iq, &self.state.rx[0]);
+        let (audio, right) = main.run(iq, &self.state.rx[0], want_rec);
         self.main_play.extend_from_slice(audio);
         if let Some(r) = right {
             self.main_play_r.extend_from_slice(r);
         }
         self.main_play_rec.clear();
         self.main_play_r_rec.clear();
-        let (rec_audio, rec_right) = main.take_rec_audio();
-        self.main_play_rec.extend_from_slice(rec_audio);
-        if let Some(r) = rec_right {
-            self.main_play_r_rec.extend_from_slice(r);
+        if want_rec {
+            let (rec_audio, rec_right) = main.take_rec_audio();
+            self.main_play_rec.extend_from_slice(rec_audio);
+            if let Some(r) = rec_right {
+                self.main_play_r_rec.extend_from_slice(r);
+            }
         }
 
         // Feed the digital-mode decoder from the clean tap (not the mixed,
@@ -1599,8 +1626,10 @@ impl Engine {
             // Unscaled in both cases: preview audio was never subject to the
             // AF knob to begin with.
             self.main_play_rec.clear();
-            self.main_play_rec.extend_from_slice(&self.voice_prev_out);
             self.main_play_r_rec.clear();
+            if want_rec {
+                self.main_play_rec.extend_from_slice(&self.voice_prev_out);
+            }
         } else if self.take_voice_audio(out_rate) {
             let rx0 = &self.state.rx[0];
             let vol = if rx0.muted { 0.0 } else { rx0.volume * rx0.volume };
@@ -1610,8 +1639,10 @@ impl Engine {
             // Recorder gets the decoded speech unscaled — same reasoning as
             // the demodulated-audio tap above.
             self.main_play_rec.clear();
-            self.main_play_rec.extend_from_slice(&self.voice_play);
             self.main_play_r_rec.clear();
+            if want_rec {
+                self.main_play_rec.extend_from_slice(&self.voice_play);
+            }
         } else if self.mutes_analog_audio() {
             // Silenced in place rather than dropped: the block still has to
             // reach the mixer to keep the output paced.
@@ -1621,15 +1652,20 @@ impl Engine {
             self.main_play_r_rec.fill(0.0);
         }
 
-        let sub_audio: Option<&[f32]> = match (&mut self.sub, self.state.sub_rx_enabled) {
-            (Some(sub), true) => {
-                // A silent sub (SPEC) degrades to mono rather than stalling.
-                let has_audio = sub.demod.is_some();
-                let (a, _) = sub.run(iq, &self.state.rx[1]);
-                has_audio.then_some(a)
-            }
-            _ => None,
-        };
+        // Both taps come out of one borrow: `run`'s own return would keep the
+        // chain mutably borrowed, leaving no way to ask for the recorder tap
+        // as well.
+        let (sub_audio, sub_rec): (Option<&[f32]>, Option<&[f32]>) =
+            match (&mut self.sub, self.state.sub_rx_enabled) {
+                (Some(sub), true) => {
+                    // A silent sub (SPEC) degrades to mono rather than stalling.
+                    let has_audio = sub.demod.is_some();
+                    sub.run(iq, &self.state.rx[1], want_rec);
+                    let sub: &RxChain = sub;
+                    (has_audio.then(|| sub.out_audio()), has_audio.then(|| sub.take_rec_audio().0))
+                }
+                _ => (None, None),
+            };
 
         // Both want the right ear. The sub receiver wins: switching it on is an
         // explicit request for that ear, whereas WFM stereo is automatic — so
@@ -1639,10 +1675,11 @@ impl Engine {
             None if !self.main_play_r.is_empty() => Some(&self.main_play_r),
             None => None,
         };
-        // The recorder's right channel follows the same priority. The sub
-        // receiver's own volume/mute is left as-is here — its recording tap
-        // isn't what the reviewer's pre-volume concern was about.
-        let rec_right: Option<&[f32]> = match sub_audio {
+        // The recorder's right channel follows the same priority, and takes the
+        // sub's own pre-volume tap rather than its speaker audio — otherwise a
+        // stereo recording would pair a pre-volume left with a post-volume
+        // right, and turning the sub down would quietly thin the archive.
+        let rec_right: Option<&[f32]> = match sub_rec {
             Some(a) => Some(a),
             None if !self.main_play_r_rec.is_empty() => Some(&self.main_play_r_rec),
             None => None,
@@ -1775,9 +1812,13 @@ impl Engine {
             None => self.audio_play.extend_from_slice(&self.audio_re),
         }
         // Recorder tap: same signal, without the volume/mute scaling below —
-        // see `RxChain::rec_buf` for why.
+        // see `RxChain::rec_buf` for why, and for why it is skipped entirely
+        // when nothing is recording.
+        let want_rec = self.recorder.is_some();
         self.audio_play_rec.clear();
-        self.audio_play_rec.extend_from_slice(&self.audio_play);
+        if want_rec {
+            self.audio_play_rec.extend_from_slice(&self.audio_play);
+        }
         if vol != 1.0 {
             for s in self.audio_play.iter_mut() {
                 *s *= vol;
@@ -1790,12 +1831,16 @@ impl Engine {
             self.audio_play.clear();
             self.audio_play.extend_from_slice(&self.voice_prev_out);
             self.audio_play_rec.clear();
-            self.audio_play_rec.extend_from_slice(&self.voice_prev_out);
+            if want_rec {
+                self.audio_play_rec.extend_from_slice(&self.voice_prev_out);
+            }
         } else if self.take_voice_audio(self.audio_out_rate) {
             self.audio_play.clear();
             self.audio_play.extend(self.voice_play.iter().map(|s| s * vol));
             self.audio_play_rec.clear();
-            self.audio_play_rec.extend_from_slice(&self.voice_play);
+            if want_rec {
+                self.audio_play_rec.extend_from_slice(&self.voice_play);
+            }
         } else if self.mutes_analog_audio() {
             self.audio_play.fill(0.0);
             self.audio_play_rec.fill(0.0);
@@ -4318,6 +4363,7 @@ impl Engine {
             drive: self.state.tx.drive,
             tune_drive: self.state.tx.tune_drive,
             mic_gain: self.state.tx.mic_gain,
+            recording_mono: self.state.recording_mono,
         };
         if now == *saved {
             return;
@@ -5740,17 +5786,38 @@ mod stereo_tests {
 
         let iq = wfm_stereo_iq(dev_rate, 6.0);
         let (mut left, mut right) = (Vec::new(), Vec::new());
+        let (mut rec_left, mut rec_right) = (Vec::new(), Vec::new());
         for block in iq.chunks(16_384) {
-            let (l, r) = chain.run(block, &rx);
+            let (l, r) = chain.run(block, &rx, true);
             // Once stereo is up the chain must deliver both ears every block.
-            if let Some(r) = r {
-                assert_eq!(l.len(), r.len(), "L/R block lengths diverged");
-                left.extend_from_slice(l);
-                right.extend_from_slice(r);
+            // A block can be stereo and still carry no samples, the resampler
+            // not having filled a chunk yet; `run` reports that as `Some(&[])`
+            // where the recorder tap reports `None`. Both mean "nothing here",
+            // so there is nothing to compare either.
+            let stereo_block = match r {
+                Some(r) if !r.is_empty() => {
+                    assert_eq!(l.len(), r.len(), "L/R block lengths diverged");
+                    left.extend_from_slice(l);
+                    right.extend_from_slice(r);
+                    true
+                }
+                _ => false,
+            };
+            if stereo_block {
+                let (rl, rr) = chain.take_rec_audio();
+                rec_left.extend_from_slice(rl);
+                rec_right.extend_from_slice(rr.expect("a stereo block must tap both ears"));
             }
         }
         assert!(chain.stereo_locked(), "pilot never locked through the chain");
         assert!(!left.is_empty(), "chain never produced a stereo block");
+
+        // The speaker path and the recorder tap are built in separate passes
+        // over the same matrixed block, so they can drift apart without anything
+        // else noticing. At volume 1.0 the only difference between them is the
+        // scaling that isn't happening, so they must agree sample for sample.
+        assert_eq!(rec_left, left, "recorder tap diverged from the left speaker");
+        assert_eq!(rec_right, right, "recorder tap diverged from the right speaker");
 
         let tail = left.len() * 3 / 4;
         let pl = goertzel(&left[tail..], 1_000.0, out_rate);
@@ -5769,7 +5836,7 @@ mod stereo_tests {
         let mut chain = RxChain::new(dev_rate, &rx, 48_000.0);
         let iq = wfm_stereo_iq(dev_rate, 3.0);
         for block in iq.chunks(16_384) {
-            let _ = chain.run(block, &rx);
+            let _ = chain.run(block, &rx, false);
         }
         assert!(chain.stereo_locked());
 
@@ -5778,7 +5845,7 @@ mod stereo_tests {
         rx.noise_reduction = NrLevel::Medium;
         let mut last_stereo = true;
         for block in iq.chunks(16_384) {
-            let (_, r) = chain.run(block, &rx);
+            let (_, r) = chain.run(block, &rx, false);
             last_stereo = r.is_some();
         }
         assert!(!last_stereo, "still decoding stereo after NR had been on for 3 s");
