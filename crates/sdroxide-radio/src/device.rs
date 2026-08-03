@@ -510,6 +510,26 @@ impl IqSource for SoapyRxSource {
         Ok(())
     }
 
+    /// On full-duplex hardware the RX stream stays active for the whole over,
+    /// so the driver keeps buffering internally; flush it with zero-timeout
+    /// reads so the first post-TX block isn't a stale backlog. Half-duplex
+    /// hardware already gets a fresh, empty stream from `tx_end` above.
+    fn discard_pending_rx(&mut self) {
+        if !self.caps.full_duplex {
+            return;
+        }
+        let Some(stream) = self.rx_stream.as_mut() else { return };
+        let mut scratch = [Complex32::new(0.0, 0.0); 4096];
+        // Bounded: a driver that never reports empty must not spin forever.
+        for _ in 0..64 {
+            match stream.read(&mut [&mut scratch], 0) {
+                Ok(0) => break,
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+    }
+
     fn set_tx_gain_element(&mut self, name: &str, db: f64) -> Result<()> {
         self.dev()?.set_gain_element(Direction::Tx, self.channel, name, db)?;
         remember_gain(&mut self.tx_gains, name, db);

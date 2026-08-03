@@ -162,4 +162,8 @@ impl IqSource for HpsdrSource {
         self.handle.tx_end();
         Ok(())
     }
+
+    fn discard_pending_rx(&mut self) {
+        self.handle.discard_pending_rx();
+    }
 }

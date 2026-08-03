@@ -312,6 +312,11 @@ impl IqSource for AudioCatSource {
         Ok(())
     }
 
+    fn discard_pending_rx(&mut self) {
+        // The capture callback keeps filling this ring during TX too.
+        while self.in_consumer.pop().is_ok() {}
+    }
+
     fn tx_telemetry(&mut self) -> Option<TxTelemetry> {
         // The CI-V thread polls SWR at ~5 Hz; latch its latest reading so the
         // engine's 100 ms meter tick always has a value to show.
