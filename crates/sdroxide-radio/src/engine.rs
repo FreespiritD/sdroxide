@@ -4520,6 +4520,20 @@ impl Engine {
         let _ = self.event_tx.send(RadioEvent::Scanner(self.scan_cfg.clone()));
     }
 
+    /// Refuse a transmit request, and *say so*.
+    ///
+    /// This used to be a `warn!` and nothing else, which meant an unattended
+    /// beacon whose rails refused every slot sat there looking like it was
+    /// working: the mode said it would transmit, the log said why it did not,
+    /// and the two never met. A refusal the operator cannot see is
+    /// indistinguishable from a bug in whatever asked to key.
+    fn deny_tx(&mut self, reason: &str) {
+        warn!("TX refused: {reason}");
+        self.state.tx.ptt = false;
+        self.state.tx.tune = false;
+        self.notice(&format!("transmit refused — {reason}"));
+    }
+
     fn notice(&self, text: &str) {
         let _ = self.event_tx.send(RadioEvent::Notice(Some(text.to_string())));
     }
@@ -5053,22 +5067,19 @@ impl Engine {
             }
             self.stop_voice_preview();
             let txf = self.state.tx_freq_hz();
-            let deny = |reason: &str, state: &mut RadioState| {
-                warn!("TX refused: {reason}");
-                state.tx.ptt = false;
-                state.tx.tune = false;
-            };
             if !self.caps.is_transmit_capable() {
-                return deny("device is not transmit capable", &mut self.state);
+                return self.deny_tx("this device cannot transmit");
             }
             if !self.caps.may_tx_hz(txf) {
-                return deny("frequency outside the device TX range", &mut self.state);
+                return self.deny_tx(&format!(
+                    "{:.6} MHz is outside this radio's transmit range",
+                    txf / 1e6
+                ));
             }
             if self.tx_ham_only && Band::containing(txf) == Band::Gen {
-                return deny(
+                return self.deny_tx(
                     "outside amateur bands (set tx_ham_only = false in config.toml, or pass \
                      --oob-tx, if you are licensed to transmit here)",
-                    &mut self.state,
                 );
             }
             // Assert the app's current mode and power levels to the rig before
@@ -5102,7 +5113,7 @@ impl Engine {
                     self.tx_pace = None;
                     self.mic_fifo.clear();
                 }
-                Err(e) => deny(&format!("tx_begin failed: {e}"), &mut self.state),
+                Err(e) => self.deny_tx(&format!("the radio refused to key: {e}")),
             }
         } else {
             if let Err(e) = self.source.tx_end() {

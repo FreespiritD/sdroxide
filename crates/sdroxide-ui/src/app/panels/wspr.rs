@@ -192,7 +192,15 @@ impl SdroxideApp {
         let status = self.digi_status.clone();
         let w = status.as_ref().and_then(|s| s.wspr.clone()).unwrap_or_default();
         let transmitting = status.as_ref().map(|s| s.transmitting).unwrap_or(false);
-        let cfg = &self.digi_cfg_edit;
+        // What the *radio* is set to, not what this window last asked for.
+        //
+        // The chips below edit `digi_cfg_edit` and send a command; the engine
+        // echoes its own config back in the status. Reading the edit buffer for
+        // the readouts made the panel report the operator's intention as though
+        // it were the station's state — so a setting that never reached the
+        // engine looked applied, and the duty cycle could sit there reading 50%
+        // beside an engine-supplied "not this slot" that would never change.
+        let live = status.as_ref().map(|s| s.config.clone()).unwrap_or_default();
 
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("WSPR").size(11.0).strong().color(crate::theme::CYAN));
@@ -232,14 +240,30 @@ impl SdroxideApp {
             // Whether the *next* slot transmits is decided before it starts, so
             // this is a promise rather than a guess — see the controller's duty
             // cycle.
-            let tx_txt = if cfg.wspr_tx_percent == 0 {
+            let tx_txt = if live.wspr_tx_percent == 0 {
                 "receive only".to_string()
             } else if w.tx_next {
-                format!("yes — {}, {}% duty", power_label(cfg.wspr_power_dbm), cfg.wspr_tx_percent)
+                format!(
+                    "beaconing — {}, {}% duty",
+                    power_label(live.wspr_power_dbm),
+                    live.wspr_tx_percent
+                )
             } else {
-                format!("not this slot ({}% duty)", cfg.wspr_tx_percent)
+                format!("listening ({}% duty)", live.wspr_tx_percent)
             };
             row(ui, "Next slot", &tx_txt);
+            // The one place the two copies can be seen to differ. A command
+            // that did not reach the engine is otherwise invisible: the chips
+            // would show the new setting and the beacon would keep to the old.
+            if live.wspr_tx_percent != self.digi_cfg_edit.wspr_tx_percent
+                || live.wspr_power_dbm != self.digi_cfg_edit.wspr_power_dbm
+            {
+                ui.label(
+                    RichText::new("waiting for the radio to take the change…")
+                        .size(10.0)
+                        .color(crate::theme::YELLOW),
+                );
+            }
             if let Some(hz) = w.next_dial_hz {
                 row(
                     ui,

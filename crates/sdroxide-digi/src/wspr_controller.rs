@@ -466,6 +466,76 @@ mod tests {
         WsprController::new(cfg, 48_000.0)
     }
 
+    /// Drive the controller across `slots` two-minute slots, two seconds into
+    /// each, and report which ones it asked to key in.
+    fn slots_keyed(c: &mut WsprController, from_unix: f64, slots: i64) -> Vec<i64> {
+        let mut keyed = Vec::new();
+        for k in 0..slots {
+            let t = from_unix + k as f64 * 120.0 + 2.0;
+            let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(t);
+            for a in c.poll(now, 14_095_600.0) {
+                if matches!(a, DigiAction::KeyTx) {
+                    keyed.push(k);
+                }
+            }
+            // The burst would otherwise still be playing on the next slot.
+            c.abort_tx();
+        }
+        keyed
+    }
+
+    /// The end-to-end question: a station told to beacon must actually key.
+    ///
+    /// Every part of this was unit-tested and every part passed — the duty
+    /// draw, the transmit window, the message packing — which is exactly why
+    /// this one exists: it drives the whole gate the way a running slot does.
+    #[test]
+    fn a_beacon_at_fifty_percent_actually_keys_about_half_the_slots() {
+        let mut c = ctrl(cfg(50));
+        // A real slot boundary, not slot zero.
+        let start = 1_785_760_440.0;
+        let keyed = slots_keyed(&mut c, start, 40);
+        assert!(!keyed.is_empty(), "a 50% beacon never keyed in 40 slots");
+        assert!(
+            (12..=28).contains(&keyed.len()),
+            "50% duty keyed {} of 40 slots: {keyed:?}",
+            keyed.len()
+        );
+    }
+
+    /// And it keys in the slots it promised. The panel shows `tx_next` before
+    /// the slot arrives, so a promise it does not keep is worse than no promise.
+    #[test]
+    fn the_slots_it_keys_are_the_ones_it_said_it_would() {
+        let c = ctrl(cfg(50));
+        let start_idx = (1_785_760_440.0f64 / 120.0).floor() as i64;
+        let promised: Vec<i64> = (0..40).filter(|k| c.transmits_in(start_idx + k)).collect();
+        drop(c);
+
+        let mut c = ctrl(cfg(50));
+        let keyed = slots_keyed(&mut c, 1_785_760_440.0, 40);
+        assert_eq!(keyed, promised, "keyed slots differ from the promised ones");
+    }
+
+    /// A station that cannot express its identity must not silently sit there:
+    /// it keys nothing, and `tx_blocked` says why.
+    #[test]
+    fn a_compound_callsign_keys_nothing_and_says_so() {
+        let mut c = ctrl(DigiConfig { my_call: "PJ4/K1ABC".into(), ..cfg(100) });
+        let keyed = slots_keyed(&mut c, 1_785_760_440.0, 6);
+        assert!(keyed.is_empty(), "keyed with an unsendable callsign");
+        assert!(c.status().wspr.expect("wspr status").tx_blocked.is_some());
+    }
+
+    /// A six-character locator is sendable, so it must key like any other.
+    #[test]
+    fn a_six_character_locator_keys_normally() {
+        let mut c = ctrl(DigiConfig { my_grid: "FN42aa".into(), ..cfg(100) });
+        let keyed = slots_keyed(&mut c, 1_785_760_440.0, 6);
+        assert_eq!(keyed.len(), 6, "a 100% beacon skipped slots: {keyed:?}");
+        assert!(c.status().wspr.expect("wspr status").tx_blocked.is_none());
+    }
+
     #[test]
     fn a_beacon_with_no_duty_cycle_never_transmits() {
         let c = ctrl(cfg(0));
