@@ -308,9 +308,11 @@ impl SdroxideApp {
                         "Receive only.".to_string()
                     } else {
                         format!(
-                            "Beacon in {pct}% of two-minute slots at {}. The slots are drawn \
-                             from your callsign, so two stations running this program do not \
-                             transmit on top of each other.",
+                            "Beacon in one two-minute slot out of every {} — {pct}% of them, \
+                             evenly spaced — at {}. Which slot the cycle starts on is drawn from \
+                             your callsign, so two stations running this program do not start \
+                             together.",
+                            (100 + pct as u32 / 2) / pct as u32,
                             power_label(self.digi_cfg_edit.wspr_power_dbm),
                         )
                     })

@@ -5,11 +5,12 @@
 //! instead are three things FT8 does not:
 //!
 //! * **A duty cycle.** A beacon transmits in a fraction of slots, not all of
-//!   them, and the choice has to be made the same way by everybody or the
-//!   window fills up. It is drawn deterministically from the slot index and the
-//!   operator's callsign — deterministic so the panel can say "transmitting
-//!   next slot" before it happens, and salted with the callsign so two stations
-//!   running this program do not pick the same slots.
+//!   them, and it spends that fraction evenly: one slot in two at 50%, one in
+//!   ten at 10%, rather than a coin flip per slot that clumps. Computed from
+//!   the slot index and the operator's callsign — deterministic so the panel
+//!   can say "transmitting next slot" before it happens, and salted with the
+//!   callsign so two stations running this program do not start their cycle on
+//!   the same slot.
 //! * **Band hopping.** One receiver can sample the whole spectrum by moving
 //!   between slots. The controller only ever *asks*: [`DigiAction::SetDial`]
 //!   goes to the engine, which owns the VFO and refuses when the operator has
@@ -176,20 +177,40 @@ impl WsprController {
 
     /// Whether this station beacons in slot `idx`.
     ///
-    /// A hash of the slot index and the callsign, compared against the duty
-    /// cycle. Deterministic, so the status can promise the next slot honestly
-    /// and so a restart does not re-roll the schedule; salted with the callsign
-    /// so two stations running this program transmit in different slots rather
-    /// than on top of each other.
+    /// The duty cycle is *spaced*, not drawn per slot. A fair coin at 50% is
+    /// half the slots on average and still gives runs of three and gaps of
+    /// four, which on an unattended beacon reads as a fault — and spends its
+    /// transmissions in a clump instead of across the propagation the interval
+    /// exists to sample. So: `pct` slots in every hundred, as evenly as the
+    /// fraction allows. One in two at 50%, one in five at 20%, one in ten at
+    /// 10%.
+    ///
+    /// The phase is salted with the callsign so two stations running this
+    /// program do not start their cycle on the same slot. A fixed cadence can
+    /// only offer that as a phase difference — where two phases do line up the
+    /// stations share slots — but sharing a slot is not the collision it would
+    /// be in a sequenced mode: the two land on different tones, because
+    /// [`Self::tx_audio_hz`] draws those per slot from the same salt, and a
+    /// WSPR receiver decodes the whole two hundred hertz window at once.
+    ///
+    /// Deterministic either way, so the panel can promise the next slot before
+    /// it starts and a restart does not re-roll the schedule.
     fn transmits_in(&self, idx: i64) -> bool {
-        let pct = self.cfg.wspr_tx_percent.min(100) as u64;
+        let pct = self.cfg.wspr_tx_percent.min(100) as i64;
         if pct == 0 || self.cfg.my_call.trim().is_empty() || self.cfg.my_grid.trim().is_empty() {
             return false;
         }
         if pct >= 100 {
             return true;
         }
-        slot_draw(idx, &self.cfg.my_call) % 100 < pct
+        // Bresenham over a hundred-slot cycle: slot `k` keys when the running
+        // total of slots owed crosses an integer. It divides evenly when the
+        // percentage divides a hundred and stays even when it does not — 33%
+        // takes every third slot and a fourth once per cycle, rather than
+        // doubling up somewhere to make the count.
+        let phase = (slot_draw(0, &self.cfg.my_call) % 100) as i64;
+        let k = idx.wrapping_add(phase).rem_euclid(100);
+        (k + 1) * pct / 100 > k * pct / 100
     }
 
     /// A transmit tone offset inside the window.
@@ -582,20 +603,51 @@ mod tests {
         assert!((0..100).all(|i| ctrl(cfg(100)).transmits_in(i)), "100% left gaps");
     }
 
-    /// Two stations must not pick the same slots, or every sdroxide beacon on
-    /// the band would transmit at once and hear nothing.
+    /// The reason this file was rewritten: at 50% the beacon sat out three or
+    /// four slots and then keyed three in a row, which is what a fair coin per
+    /// slot does and what an operator watching it reads as broken.
+    ///
+    /// Evenly spaced means the gaps are all the same length, or — when the
+    /// percentage does not divide a hundred — all within one slot of each other.
     #[test]
-    fn two_stations_do_not_transmit_in_the_same_slots() {
+    fn the_beacon_spaces_its_slots_evenly_instead_of_clumping() {
+        for (pct, want) in [(10u8, 10i64), (20, 5), (33, 3), (50, 2)] {
+            let c = ctrl(cfg(pct));
+            let keyed: Vec<i64> = (0..1000).filter(|&i| c.transmits_in(i)).collect();
+            let gaps: Vec<i64> = keyed.windows(2).map(|w| w[1] - w[0]).collect();
+            let (lo, hi) = (*gaps.iter().min().unwrap(), *gaps.iter().max().unwrap());
+            assert!(
+                hi - lo <= 1,
+                "{pct}% keyed with gaps from {lo} to {hi} slots — that is a clump, not a cadence"
+            );
+            assert_eq!(lo, want, "{pct}% should key about one slot in {want}, got one in {lo}");
+        }
+    }
+
+    /// Two stations must not start their cycle on the same slot, or every
+    /// sdroxide beacon on the band would key together.
+    ///
+    /// A fixed cadence can only offer this as a phase difference, so that is
+    /// what is asserted. Where two phases *do* line up the stations share slots
+    /// — survivable here in a way it would not be in a sequenced mode, because
+    /// the per-slot tone draw is salted the same way and a WSPR receiver
+    /// decodes the whole window at once.
+    #[test]
+    fn two_stations_do_not_start_their_cycle_on_the_same_slot() {
         let a = ctrl(cfg(20));
         let b = ctrl(DigiConfig { my_call: "G0XYZ".into(), ..cfg(20) });
-        let both = (0..5000).filter(|&i| a.transmits_in(i) && b.transmits_in(i)).count();
-        let each = (0..5000).filter(|&i| a.transmits_in(i)).count();
-        // Independent 20% draws collide in ~4% of slots; identical schedules
-        // would collide in all 20%.
-        assert!(
-            both < each / 2,
-            "schedules overlap in {both} of {each} slots — they are not independent"
-        );
+        let first =
+            |c: &WsprController| (0..100).find(|&i| c.transmits_in(i)).expect("never keyed");
+        assert_ne!(first(&a), first(&b), "two callsigns drew the same phase");
+        // And where a pair does share a slot, the tones are far enough apart to
+        // be separate signals: the window is 200 Hz and a beacon is ~6 Hz wide.
+        let c = ctrl(DigiConfig { my_call: "VK7ZZ".into(), ..cfg(20) });
+        for i in (0..500).filter(|&i| a.transmits_in(i) && c.transmits_in(i)) {
+            assert!(
+                (a.tx_audio_hz(i) - c.tx_audio_hz(i)).abs() > 10.0,
+                "two stations sharing slot {i} landed within 10 Hz of each other"
+            );
+        }
     }
 
     /// The panel promises the next slot before it happens, so the promise has to
