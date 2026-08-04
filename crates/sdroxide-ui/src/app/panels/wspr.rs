@@ -17,12 +17,14 @@
 //! mode and the one next to it.
 
 use eframe::egui::{self, Color32, RichText};
-use sdroxide_types::{Band, Command, WsprSpot, power_label};
+use sdroxide_types::{
+    Band, Command, WSPR_BURST_S, WSPR_SLOT_S, WSPR_TX_OFFSET_S, WsprSpot, power_label,
+};
 
 use crate::app::SdroxideApp;
 use crate::app::panels::widgets::row_cell;
 use crate::app::util::fmt_age;
-use crate::time::now_unix;
+use crate::time::{now_unix, now_unix_f64};
 
 /// How many receptions the panel keeps. Two hours of a busy 20 m evening.
 pub(in crate::app) const WSPR_SPOT_ROWS: usize = 400;
@@ -172,12 +174,6 @@ impl SdroxideApp {
             .show(ui, |ui| {
                 if self.wspr_spots.is_empty() {
                     ui.add_space(8.0);
-                    ui.label(
-                        RichText::new("listening — a WSPR slot is two minutes")
-                            .size(10.5)
-                            .italics()
-                            .color(Color32::from_gray(110)),
-                    );
                     return;
                 }
                 for s in &self.wspr_spots {
@@ -202,6 +198,13 @@ impl SdroxideApp {
         // beside an engine-supplied "not this slot" that would never change.
         let live = status.as_ref().map(|s| s.config.clone()).unwrap_or_default();
 
+        // The slot clock runs on the wall clock rather than on anything
+        // arriving, so this pane has to ask for its own frames. A quarter of a
+        // second is a pixel or two of a two-minute bar — enough to read as
+        // moving, and the same rate the window already idles at.
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+        let into_slot = slot_phase_s(now_unix_f64(), w.slot_utc);
+
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("WSPR").size(11.0).strong().color(crate::theme::CYAN));
             ui.label(
@@ -210,6 +213,20 @@ impl SdroxideApp {
                     .color(crate::theme::CYAN_DIM),
             );
             crate::chrome::row_tail(ui, |ui| {
+                // What is left of the slot, at the end of the row where the eye
+                // comes back to it. It is the one figure here that means
+                // something in every slot — receiving, transmitting or
+                // decoding — so it is not conditional on any of them.
+                let left = (WSPR_SLOT_S - into_slot).max(0.0).round() as i64;
+                ui.label(
+                    RichText::new(format!("{}:{:02}", left / 60, left % 60))
+                        .size(10.5)
+                        .color(Color32::from_gray(140)),
+                )
+                .on_hover_text(
+                    "Time left in this two-minute slot. At the end of it the recording goes to \
+                     the decoder and the next transmit decision lands.",
+                );
                 if transmitting {
                     ui.label(RichText::new("● TX").size(11.0).strong().color(crate::theme::PINK));
                 } else if w.decoding {
@@ -217,6 +234,8 @@ impl SdroxideApp {
                 }
             });
         });
+        ui.add_space(4.0);
+        slot_bar(ui, into_slot, transmitting, w.decoding);
         ui.add_space(6.0);
 
         crate::chrome::red_panel(ui, |ui| {
@@ -491,6 +510,69 @@ impl SdroxideApp {
     }
 }
 
+/// How far into the two-minute slot the clock is, in seconds.
+///
+/// The engine's `slot_utc` is the slot whose audio is actually being recorded,
+/// so it is the anchor whenever this window's clock agrees that we are inside
+/// it. When the two disagree — a remote UI on a machine some way off the
+/// radio's clock, or before the first status has arrived — the local UTC
+/// boundary is used instead. A WSPR slot *is* a two-minute block of UTC, so a
+/// clock that is wrong then draws a bar quietly wrong by the same amount,
+/// rather than one that pins at full for a while and jumps.
+fn slot_phase_s(now: f64, engine_slot_utc: i64) -> f64 {
+    let into = now - engine_slot_utc as f64;
+    if engine_slot_utc > 0 && (0.0..WSPR_SLOT_S).contains(&into) {
+        into
+    } else {
+        now.rem_euclid(WSPR_SLOT_S)
+    }
+}
+
+/// The slot clock: how far through the WSPR turn this station is, whichever way
+/// round it is spending it.
+///
+/// A beacon spends most of its slots listening, and what an operator wants to
+/// know while it does is when this one ends — that is when the recording goes
+/// to the decoder and when the next transmit decision lands. A bar that only
+/// appeared under a carrier would be missing in exactly the state it is most
+/// use in, so it is always drawn and the colour says what is happening: pink on
+/// the air, yellow working out what was heard, dim cyan listening.
+fn slot_bar(ui: &mut egui::Ui, into_slot: f64, transmitting: bool, decoding: bool) {
+    let (bar, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 5.0), egui::Sense::hover());
+    let p = ui.painter_at(bar);
+    p.rect_filled(bar, 0.0, Color32::from_gray(24));
+
+    let frac = (into_slot / WSPR_SLOT_S).clamp(0.0, 1.0) as f32;
+    let mut fill = bar;
+    fill.set_width(bar.width() * frac);
+    p.rect_filled(
+        fill,
+        0.0,
+        if transmitting {
+            crate::theme::PINK
+        } else if decoding {
+            crate::theme::YELLOW
+        } else {
+            crate::theme::CYAN_DIM
+        },
+    );
+
+    // While keyed, a mark where the carrier stops. The burst is 110.6 s of the
+    // 120 and starts a second in, so without it the last eight seconds read as
+    // a transmission that ended early rather than as the gap they are. Painted
+    // over the fill, and only while transmitting: in a receive slot the
+    // recording runs the whole two minutes and the mark would mean nothing.
+    if transmitting {
+        let x = bar.left() + bar.width() * ((WSPR_TX_OFFSET_S + WSPR_BURST_S) / WSPR_SLOT_S) as f32;
+        p.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(x, bar.top()), egui::vec2(1.0, bar.height())),
+            0.0,
+            Color32::from_gray(150),
+        );
+    }
+}
+
 /// One reception. Reads left to right the way the operator asks the question:
 /// who, from where, how far, how well, on how much power.
 fn wspr_row(ui: &mut egui::Ui, s: &WsprSpot, home: Option<(f64, f64)>, now: i64) {
@@ -638,5 +720,45 @@ mod tests {
         assert_eq!(snr_color(-24), crate::theme::YELLOW);
         // Below the nominal floor: remarkable, and coloured as such.
         assert_eq!(snr_color(-28), crate::theme::PINK);
+    }
+
+    /// A real slot boundary: 1_785_760_440 is divisible by 120.
+    const SLOT: i64 = 1_785_760_440;
+
+    #[test]
+    fn the_bar_measures_from_the_slot_the_engine_says_it_is_recording() {
+        assert_eq!(slot_phase_s(SLOT as f64, SLOT), 0.0);
+        assert_eq!(slot_phase_s(SLOT as f64 + 43.5, SLOT), 43.5);
+        // Right up to the boundary, and not past it.
+        assert!(slot_phase_s(SLOT as f64 + 119.9, SLOT) > 119.0);
+    }
+
+    /// A window whose clock is nowhere near the radio's must not pin the bar at
+    /// full and then jump: it falls back to its own UTC boundary, which is what
+    /// a WSPR slot is defined by, and is then wrong by exactly the clock error.
+    #[test]
+    fn a_clock_that_disagrees_with_the_engine_still_gets_a_moving_bar() {
+        // Six minutes — three slots — ahead of the one the engine reported.
+        let now = SLOT as f64 + 360.0 + 20.0;
+        assert_eq!(slot_phase_s(now, SLOT), 20.0);
+        // And behind it, where the difference would otherwise be negative.
+        assert_eq!(slot_phase_s(SLOT as f64 - 100.0, SLOT), 20.0);
+    }
+
+    /// Before any status has arrived there is no slot to anchor to, and the bar
+    /// still has to move — a beacon that has just been selected is listening.
+    #[test]
+    fn with_no_engine_slot_yet_the_bar_runs_off_the_local_boundary() {
+        assert_eq!(slot_phase_s(SLOT as f64 + 61.0, 0), 61.0);
+    }
+
+    /// Whatever the two clocks are doing, the fraction the bar draws is one.
+    #[test]
+    fn the_phase_is_always_inside_the_slot() {
+        for k in -10..600 {
+            let now = SLOT as f64 + k as f64 * 7.3;
+            let p = slot_phase_s(now, SLOT);
+            assert!((0.0..WSPR_SLOT_S).contains(&p), "{p} is not a position in a slot");
+        }
     }
 }
