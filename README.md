@@ -836,3 +836,14 @@ one specific cloud hosted LLM.
 * Observe the project license. This is a GPLv3 project. Changing the license 
 would violate the terms of several of the used libraries.
 
+One part goes further than GPLv3, and it is worth knowing about before you
+deploy rather than after. CW decoding uses the
+[DeepCW](https://github.com/e04/deepcw-engine) model, which is **AGPL-3.0-only**
+and is linked into the binary rather than read as a data file — so its terms
+cover the built program as a whole. The practical difference is AGPL section 13:
+**running `sdroxide --server` and letting other people use that instance over a
+network counts as conveying it to them, so they have to be offered the
+Corresponding Source.** Using sdroxide on your own machine changes nothing. The
+model is confined to the `sdroxide-deepcw` crate, and the wasm web client links
+none of it.
+

@@ -185,6 +185,11 @@ jobs:
           # ...and CMUdict, embedded for the spoken announcements'
           # grapheme-to-phoneme. BSD-2-Clause, same argument.
           cp crates/sdroxide-speech/assets/LICENSE-cmudict.txt stage/sdroxide/
+          # ...and the DeepCW model, embedded for the CW decoder. This one is
+          # AGPL-3.0-only, which is stronger than sdroxide's own GPL and adds a
+          # network clause, so the notice matters more here than for the two
+          # above rather than less.
+          cp crates/sdroxide-deepcw/LICENSE stage/sdroxide/LICENSE-deepcw.txt
           # The speech voice. Unlike the two above this is not embedded — it is
           # CC BY-NC-SA, which a GPL binary may not absorb, so it travels as a
           # data file the program reads at run time. sdroxide looks for a
@@ -273,6 +278,13 @@ jobs:
           why it is a separate data file and not part of the program itself.
           LICENSE-cmudict.txt covers the pronunciation dictionary embedded in
           the binary (BSD-2-Clause).
+
+          CW decoding uses the DeepCW neural model, which is embedded in the
+          binary and is AGPL-3.0-only (see LICENSE-deepcw.txt) — a stronger
+          copyleft than sdroxide's own GPL. Because it is linked in rather than
+          read as a data file, that licence covers this binary as a whole, and
+          its section 13 applies: if you run sdroxide as a server and let other
+          people use it over a network, you have to offer them the source.
           EOF
           tar czf "out/$PKG.tar.gz" -C stage sdroxide
           cargo install cargo-deb --locked
@@ -298,6 +310,8 @@ jobs:
           # MIT notice for the FX3 firmware image embedded in the binary.
           cp crates/sdroxide-rx888/firmware/LICENSE.txt stage/sdroxide/LICENSE-rx888-firmware.txt
           cp crates/sdroxide-speech/assets/LICENSE-cmudict.txt stage/sdroxide/
+          # AGPL notice for the DeepCW model embedded in the binary.
+          cp crates/sdroxide-deepcw/LICENSE stage/sdroxide/LICENSE-deepcw.txt
           # The speech voice, in a "voices" directory beside the executable —
           # see the Linux step for why it is a data file rather than embedded.
           mkdir -p stage/sdroxide/voices
@@ -366,6 +380,13 @@ jobs:
           why it is a separate data file and not part of the program itself.
           LICENSE-cmudict.txt covers the pronunciation dictionary embedded in
           the binary (BSD-2-Clause).
+
+          CW decoding uses the DeepCW neural model, which is embedded in the
+          binary and is AGPL-3.0-only (see LICENSE-deepcw.txt) — a stronger
+          copyleft than sdroxide's own GPL. Because it is linked in rather than
+          read as a data file, that licence covers this binary as a whole, and
+          its section 13 applies: if you run sdroxide as a server and let other
+          people use it over a network, you have to offer them the source.
           EOF
           7z a "out/$PKG.zip" ./stage/sdroxide > /dev/null
           # The MSI (fixed product identity) is only built for the default
@@ -390,6 +411,8 @@ jobs:
           # MIT notice for the FX3 firmware image embedded in the binary.
           cp crates/sdroxide-rx888/firmware/LICENSE.txt stage/sdroxide/LICENSE-rx888-firmware.txt
           cp crates/sdroxide-speech/assets/LICENSE-cmudict.txt stage/sdroxide/
+          # AGPL notice for the DeepCW model embedded in the binary.
+          cp crates/sdroxide-deepcw/LICENSE stage/sdroxide/LICENSE-deepcw.txt
           # The speech voice, in a "voices" directory beside the executable —
           # see the Linux step for why it is a data file rather than embedded.
           mkdir -p stage/sdroxide/voices
@@ -448,6 +471,13 @@ jobs:
           why it is a separate data file and not part of the program itself.
           LICENSE-cmudict.txt covers the pronunciation dictionary embedded in
           the binary (BSD-2-Clause).
+
+          CW decoding uses the DeepCW neural model, which is embedded in the
+          binary and is AGPL-3.0-only (see LICENSE-deepcw.txt) — a stronger
+          copyleft than sdroxide's own GPL. Because it is linked in rather than
+          read as a data file, that licence covers this binary as a whole, and
+          its section 13 applies: if you run sdroxide as a server and let other
+          people use it over a network, you have to offer them the source.
           EOF
           tar czf "out/$PKG.tar.gz" -C stage sdroxide
           # The .app/.dmg (fixed bundle identity) is only built for the default
@@ -467,6 +497,7 @@ jobs:
             # the contents of Resources into the signature.
             cp crates/sdroxide-rx888/firmware/LICENSE.txt "$APP/Contents/Resources/LICENSE-rx888-firmware.txt"
             cp crates/sdroxide-speech/assets/LICENSE-cmudict.txt "$APP/Contents/Resources/"
+            cp crates/sdroxide-deepcw/LICENSE "$APP/Contents/Resources/LICENSE-deepcw.txt"
             # The speech voice. In a bundle it goes under Resources, which is
             # where sdroxide looks once it finds itself in Contents/MacOS.
             # Also before codesign, for the same reason as the notices above.
@@ -480,6 +511,7 @@ jobs:
             cp LICENSE stage-dmg/
             cp crates/sdroxide-rx888/firmware/LICENSE.txt stage-dmg/LICENSE-rx888-firmware.txt
             cp assets/voices/LICENSE-voice.txt crates/sdroxide-speech/assets/LICENSE-cmudict.txt stage-dmg/
+            cp crates/sdroxide-deepcw/LICENSE stage-dmg/LICENSE-deepcw.txt
             # The image is created at an explicit size and filled by hand
             # rather than handed to `hdiutil create -srcfolder`, whose own
             # sizing runs out of room mid-copy ("hdiutil: create failed - No
@@ -501,6 +533,7 @@ jobs:
             cp LICENSE "$mnt/"
             cp crates/sdroxide-rx888/firmware/LICENSE.txt "$mnt/LICENSE-rx888-firmware.txt"
             cp assets/voices/LICENSE-voice.txt crates/sdroxide-speech/assets/LICENSE-cmudict.txt "$mnt/"
+            cp crates/sdroxide-deepcw/LICENSE "$mnt/LICENSE-deepcw.txt"
             ln -s /Applications "$mnt/Applications"
             hdiutil detach "$mnt" || { sleep 5; hdiutil detach "$mnt" -force; }
             hdiutil convert rw.dmg -format UDZO -ov -o "out/$PKG.dmg"
@@ -611,6 +644,23 @@ jobs:
           `LICENSE-cmudict.txt` covers the pronunciation dictionary embedded in
           the binary (BSD-2-Clause). Extra Piper voices can be dropped into
           `speech_voices/` in the config directory and picked in Settings.
+
+          ### CW decoding
+
+          CW is decoded by [DeepCW](https://github.com/e04/deepcw-engine), a
+          neural model embedded in every binary. It reads the spectrogram
+          directly instead of fitting a timing model to the envelope, which is
+          why it keeps copying well below the point where a classic decoder
+          gives up, and why it copies hand-sent CW whose timing no fit would
+          accept. The band skimmer uses the same model on every signal it finds.
+
+          The model and its reference implementation are **AGPL-3.0-only**, a
+          stronger copyleft than sdroxide's GPL, and it is linked into the
+          binary rather than read as a data file — so it covers the release as a
+          whole. In particular AGPL section 13 applies: **if you run
+          `sdroxide --server` and other people use that instance over a
+          network, you must offer them the Corresponding Source.** The notice
+          ships as `LICENSE-deepcw.txt` in every package.
 
           Every binary embeds the web client: run `sdroxide --server` and open
           `http://<host>:4950` in a browser. `sdroxide-web-*.zip` contains the

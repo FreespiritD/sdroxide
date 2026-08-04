@@ -176,6 +176,11 @@ assets = [
     # The binary embeds the RX-888's FX3 firmware image, which is MIT licensed
     # rather than GPL like the rest: its notice has to ship with the package.
     ["crates/sdroxide-rx888/firmware/LICENSE.txt", "usr/share/doc/sdroxide/LICENSE-rx888-firmware.txt", "644"],
+    # The DeepCW model, embedded for the CW decoder. AGPL-3.0-only, which is
+    # stronger than this package's GPL and carries a network clause, so its
+    # notice ships too — and unlike the ones above it constrains the package
+    # rather than merely crediting a part of it.
+    ["crates/sdroxide-deepcw/LICENSE", "usr/share/doc/sdroxide/LICENSE-deepcw.txt", "644"],
 ]
 
 # SoapySDR .deb: links libSoapySDR, so recommend the driver modules (apt
