@@ -1571,7 +1571,7 @@ impl SdroxideApp {
     }
 
     fn windows_module(&mut self, ui: &mut egui::Ui) {
-        crate::chrome::module(ui, "System", 285.0, |ui| {
+        crate::chrome::module(ui, "System", system_row_w(ui), |ui| {
             self.windows_controls(ui, false);
         });
     }
@@ -1579,26 +1579,27 @@ impl SdroxideApp {
     /// The window buttons — the body of the System box, and of the SYS menu.
     /// See [`crate::chrome::control_row`] for `narrow`.
     fn windows_controls(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        let [log, spots, awards, bands, mem, scan_label, settings, help] = SYSTEM_CHIPS;
         crate::chrome::control_row(ui, narrow, |ui| {
-            if crate::chrome::chip(ui, self.show_logbook, "LOG")
+            if crate::chrome::chip(ui, self.show_logbook, log)
                 .on_hover_text("Logbook — all QSOs (digital + manual)")
                 .clicked()
             {
                 self.show_logbook = !self.show_logbook;
             }
-            if crate::chrome::chip(ui, self.show_spots, "SPOTS")
+            if crate::chrome::chip(ui, self.show_spots, spots)
                 .on_hover_text("Live spots — DX cluster, POTA, SOTA, PSK Reporter")
                 .clicked()
             {
                 self.show_spots = !self.show_spots;
             }
-            if crate::chrome::chip(ui, self.show_awards, "AWARDS")
+            if crate::chrome::chip(ui, self.show_awards, awards)
                 .on_hover_text("Award tracking — DXCC / WAS / WAZ / grids")
                 .clicked()
             {
                 self.show_awards = !self.show_awards;
             }
-            if crate::chrome::chip(ui, self.show_bands, "BANDS")
+            if crate::chrome::chip(ui, self.show_bands, bands)
                 .on_hover_text(
                     "Band conditions — the published forecast beside what has \
                      actually been heard on each band",
@@ -1607,7 +1608,7 @@ impl SdroxideApp {
             {
                 self.show_bands = !self.show_bands;
             }
-            if crate::chrome::chip(ui, self.show_memories, "MEM")
+            if crate::chrome::chip(ui, self.show_memories, mem)
                 .on_hover_text("Memory channels")
                 .clicked()
             {
@@ -1620,12 +1621,12 @@ impl SdroxideApp {
                 crate::chrome::chip_accent(
                     ui,
                     true,
-                    "SCAN",
+                    scan_label,
                     if scan.holding { crate::theme::GREEN } else { crate::theme::CYAN },
                     Color32::BLACK,
                 )
             } else {
-                crate::chrome::chip(ui, self.show_scanner, "SCAN")
+                crate::chrome::chip(ui, self.show_scanner, scan_label)
             };
             if scan_chip
                 .on_hover_text(if scan.holding {
@@ -1639,13 +1640,13 @@ impl SdroxideApp {
             {
                 self.show_scanner = !self.show_scanner;
             }
-            if crate::chrome::chip(ui, self.show_settings, "⚙ SETTINGS")
+            if crate::chrome::chip(ui, self.show_settings, settings)
                 .on_hover_text("Settings — device gains, antennas, audio devices")
                 .clicked()
             {
                 self.show_settings = !self.show_settings;
             }
-            if crate::chrome::chip(ui, self.help.open, "? HELP")
+            if crate::chrome::chip(ui, self.help.open, help)
                 .on_hover_text("User manual (F1)")
                 .clicked()
             {
@@ -1653,6 +1654,28 @@ impl SdroxideApp {
             }
         });
     }
+}
+
+/// The System box's chips, in the order they are drawn.
+///
+/// One list, read by both the box that reserves the width and the row that
+/// draws into it. `windows_controls` destructures it, so a chip added to the
+/// row without a label added here does not compile — which is what keeps the
+/// reservation honest. A box reserved narrower than its contents does not clip
+/// them: the row simply carries on past the box, and whatever crosses the
+/// window edge is lost. That is how SCAN, SETTINGS and HELP came to vanish on
+/// the layouts where the strip put this box near the end of a row.
+const SYSTEM_CHIPS: [&str; 8] =
+    ["LOG", "SPOTS", "AWARDS", "BANDS", "MEM", "SCAN", "⚙ SETTINGS", "? HELP"];
+
+/// Width the System box needs for [`SYSTEM_CHIPS`]: the chips, the gaps between
+/// them, and the box's own side margins. Measured against the live style rather
+/// than fixed, because a touched layout pads every chip out past its desktop
+/// width — see `the_system_box_fits_its_chips`.
+fn system_row_w(ui: &egui::Ui) -> f32 {
+    let chips: f32 = SYSTEM_CHIPS.iter().map(|l| crate::chrome::chip_width(ui, l, None)).sum();
+    let gaps = ui.spacing().item_spacing.x * (SYSTEM_CHIPS.len() - 1) as f32;
+    chips + gaps + 2.0 * crate::chrome::MODULE_MARGIN_X
 }
 
 /// The band + mode + digital chip rows: the body of the band/mode popup.
@@ -1904,6 +1927,69 @@ mod tests {
         let (size, box_w) = tablet_box(&f, 1024.0);
         assert_eq!(size, 40.0, "a 1024 pt tablet has room for the design size");
         assert!(box_w + 8.0 + SMETER_W <= 1024.0 - 36.0, "{box_w} + meter overflowed");
+    }
+
+    /// Reserve the System box the way [`SdroxideApp::windows_module`] does and
+    /// draw its chips into it the way `windows_controls` does. Hands back the
+    /// width the box left for its contents, and how far each chip reached into
+    /// it, both measured from the box's inner left edge.
+    fn system_box_and_chips(tier: crate::layout::Tier) -> (f32, Vec<(&'static str, f32)>) {
+        let ctx = egui::Context::default();
+        crate::layout::set_tier(&ctx, tier);
+        crate::theme::apply_metrics(&ctx, tier);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(2560.0, 1440.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = None;
+        let _ = ctx.run_ui(input, |ui| {
+            // The strip's own spacing, which the chips inherit — the style's is
+            // narrower, and measuring against it would under-reserve the gaps.
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+            let mut chips = Vec::new();
+            let room = crate::chrome::module(ui, "System", system_row_w(ui), |ui| {
+                // Read before the row is drawn: egui grows a Ui's max_rect to
+                // cover content that overflowed it, so afterwards it reports
+                // what the row took rather than what the box offered.
+                let (left, room) = (ui.max_rect().left(), ui.max_rect().width());
+                ui.horizontal(|ui| {
+                    for label in SYSTEM_CHIPS {
+                        let right = crate::chrome::chip(ui, false, label).rect.right();
+                        chips.push((label, right - left));
+                    }
+                });
+                room
+            });
+            out = Some((room, chips));
+        });
+        out.expect("the box was drawn")
+    }
+
+    /// Every chip in the System box has to fit inside the width the box reserved
+    /// for it.
+    ///
+    /// A module reserves its width before its contents are drawn, and a row that
+    /// does not fit is not clipped to the box — it carries on past it, and
+    /// whatever crosses the window edge is simply gone. The box was sized 285 pt
+    /// by hand for five chips and kept that literal through three more (BANDS,
+    /// SCAN, and the widened SETTINGS), by which point the row needed twice the
+    /// box: SCAN, SETTINGS and HELP fell off the right-hand edge on any layout
+    /// that left the box near the end of a row. Nothing about the chips said so
+    /// — they were drawn every frame, just past the edge of the window.
+    #[test]
+    fn the_system_box_fits_its_chips() {
+        for tier in [crate::layout::Tier::Desktop, crate::layout::Tier::Tablet] {
+            let (room, chips) = system_box_and_chips(tier);
+            for (label, right) in chips {
+                assert!(
+                    right <= room + 0.5,
+                    "{tier:?}: {label} reaches {right} pt into a box with room for {room}"
+                );
+            }
+        }
     }
 
     /// Open the band/mode menu on a `screen`-sized viewport and measure the

@@ -206,6 +206,10 @@ pub fn module<R>(ui: &mut Ui, caption: &str, width: f32, add: impl FnOnce(&mut U
     module_h(ui, caption, width, MODULE_H, add)
 }
 
+/// A module's inner margin on each side. What a caller measuring its own
+/// contents has to add on top of them to arrive at the `width` to reserve.
+pub const MODULE_MARGIN_X: f32 = 8.0;
+
 /// Like [`module`] but with an explicit box `height` (e.g. [`MODULE_TALL_H`]).
 pub fn module_h<R>(
     ui: &mut Ui,
@@ -224,9 +228,14 @@ pub fn module_h<R>(
             egui::Frame::new()
                 .fill(theme::FILL)
                 .stroke(Stroke::new(1.0, theme::LINE_LIT))
-                .inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 3 })
+                .inner_margin(egui::Margin {
+                    left: MODULE_MARGIN_X as i8,
+                    right: MODULE_MARGIN_X as i8,
+                    top: 4,
+                    bottom: 3,
+                })
                 .show(ui, |ui| {
-                    ui.set_width(width - 16.0);
+                    ui.set_width(width - 2.0 * MODULE_MARGIN_X);
                     // Fill the full module height so every box — captioned or
                     // bare — ends up exactly `height` tall.
                     ui.set_min_height(height - 7.0);
