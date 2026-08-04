@@ -228,13 +228,15 @@ fn menu_bar(
                 // wider they are already on screen, and a chip that opens a
                 // copy of what is beside it is a chip that does nothing.
                 if phone {
-                    let btn = chrome::chip(ui, false, "WEATHER")
-                        .on_hover_text("The aurora and the propagation numbers");
+                    let btn = chrome::chip(ui, false, "WEATHER").on_hover_text(
+                        "The aurora, the propagation numbers and which bands are open",
+                    );
                     menu(ui, st, M_WEATHER, btn, |ui, st| {
                         chrome::menu_caption(ui, "Space weather");
                         let aurora = aurora_panel(ui, st, data, Place::Inline, sim_now).is_some();
                         let prop = weather_panel(ui, st, data, Place::Inline, sim_now).is_some();
-                        if !aurora && !prop {
+                        let bands = bands_panel(ui, st, Place::Inline).is_some();
+                        if !aurora && !prop && !bands {
                             ui.label(
                                 RichText::new("nothing measured yet")
                                     .color(theme::CYAN_DIM)
@@ -829,8 +831,10 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     if !phone {
         let aurora = aurora_panel(ui, st, data, Place::Corner { scene: rect, top }, sim_now as i64);
         let below = aurora.map_or(top, |r| r.bottom() + 8.0);
-        let _ =
+        let weather =
             weather_panel(ui, st, data, Place::Corner { scene: rect, top: below }, sim_now as i64);
+        let below = weather.map_or(below, |r| r.bottom() + 8.0);
+        let _ = bands_panel(ui, st, Place::Corner { scene: rect, top: below });
     }
     // The bottom-right stack, from the corner up: the date, then the award key
     // above whatever the date left.
@@ -1950,6 +1954,158 @@ fn aurora_panel(
 
     if let Some(f) = footer {
         p.galley(egui::pos2(panel.left() + pad, y + 2.0), f, theme::LINE_LIT);
+    }
+    Some(panel)
+}
+
+/// How open each band is, as one bar per band.
+///
+/// The same question the heat map answers geographically, reduced to a number
+/// per band so it can be read without turning the globe: **how much of the
+/// world is this band getting through to right now**. A bar chart because the
+/// answer is a comparison — an operator picking a band wants the shape of the
+/// spectrum, not five figures to subtract from each other — and in band order
+/// rather than ranked, so that shape is the familiar one and the bars do not
+/// swap places every time a decode lands.
+///
+/// What is measured is [`BandPlane::reach`]: the share of the world with
+/// evidence in it, area-weighted. Deliberately not a path count. Forty contacts
+/// into one corner of Europe are one direction open, and a count would call
+/// that the best band of the evening.
+///
+/// It inherits the propagation field's memory exactly, because it is read off
+/// that field rather than accumulated beside it: whatever the half-life is set
+/// to is how long a band stays on this chart after it shuts.
+fn bands_panel(ui: &mut egui::Ui, st: &SolarUi, place: Place) -> Option<egui::Rect> {
+    use sdroxide_types::Band;
+
+    // Only bands with something in them. A chart of dead bands is a chart of
+    // where this station has not been listening, which is not what it claims
+    // to be — see the footer, which says so out loud.
+    let rows: Vec<(Band, f32)> = st
+        .prop
+        .live_bands()
+        .into_iter()
+        .filter_map(|b| st.prop.plane(b).map(|p| (b, p.reach())))
+        .filter(|(_, reach)| *reach > 0.0)
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+
+    // Autoranged in decades rather than normalised to the best band, and the
+    // top of the scale is printed underneath. Normalising would draw the same
+    // full bar for a band working a quarter of the planet and for one that has
+    // heard a single neighbour, and the chart would silently change meaning
+    // every time the leader changed.
+    const SCALE_STEPS: [f32; 5] = [0.01, 0.03, 0.10, 0.30, 1.00];
+    let best = rows.iter().map(|(_, r)| *r).fold(0.0f32, f32::max);
+    let scale = SCALE_STEPS.iter().copied().find(|s| best <= *s).unwrap_or(1.0);
+    // Two significant figures wherever the value happens to sit: a band down to
+    // its last cell is worth a hundredth of a per cent, and rounding that to
+    // "0.0 %" would print a band that is open as a band that is not.
+    let pct = |v: f32| {
+        let v = v * 100.0;
+        match v {
+            v if v >= 10.0 => format!("{v:.0} %"),
+            v if v >= 1.0 => format!("{v:.1} %"),
+            v => format!("{v:.2} %"),
+        }
+    };
+
+    // The narrowest the bars are allowed to be before the box grows for them.
+    const MIN_BAR_W: f32 = 74.0;
+    const BAR_H: f32 = 7.0;
+    let font = egui::FontId::proportional(11.5);
+    let small = egui::FontId::proportional(10.0);
+    // Laid out before a place for it is reserved, for the reason the two panels
+    // above it do the same.
+    let p = ui.painter().clone();
+    let laid: Vec<_> = rows
+        .iter()
+        .map(|(band, reach)| {
+            let c = crate::colormap::band_color(*band);
+            let hue = egui::Color32::from_rgb(c[0], c[1], c[2]);
+            (
+                p.layout_no_wrap(band.label().into(), small.clone(), hue),
+                p.layout_no_wrap(pct(*reach), font.clone(), theme::CYAN),
+                hue,
+                *reach,
+            )
+        })
+        .collect();
+    let key_w = laid.iter().map(|(k, ..)| k.size().x).fold(0.0f32, f32::max);
+    let val_w = laid.iter().map(|(_, v, ..)| v.size().x).fold(0.0f32, f32::max);
+    let row_h = laid.iter().map(|(_, v, ..)| v.size().y + 3.0).fold(BAR_H + 5.0, f32::max);
+
+    let title = p.layout_no_wrap("BANDS OPEN".into(), small.clone(), theme::CYAN_DIM);
+    let notes = [
+        format!("full bar = {} of the world", pct(scale)),
+        format!(
+            "where this station's own paths went · {:.0} min memory",
+            st.prop.halflife_s / 60.0
+        ),
+    ]
+    .map(|t| p.layout_no_wrap(t, small.clone(), theme::LINE_LIT));
+
+    let pad = 10.0;
+    // The footer is the longest line in the box and always has been, so rather
+    // than leave the chart short in a box sized by a sentence, the bars take
+    // whatever width that sentence bought.
+    let gap = 8.0;
+    let width = (key_w + MIN_BAR_W + val_w + gap * 2.0 + 4.0)
+        .max(title.size().x)
+        .max(notes.iter().map(|n| n.size().x).fold(0.0f32, f32::max))
+        + pad * 2.0;
+    let height = title.size().y
+        + 5.0
+        + rows.len() as f32 * row_h
+        + notes.iter().map(|n| n.size().y + 3.0).sum::<f32>()
+        + 3.0
+        + pad * 2.0;
+    let panel = place.reserve(ui, egui::vec2(width, height))?;
+
+    p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
+    chrome::paint_cut_border(&p, panel, theme::LINE_LIT, egui::Color32::TRANSPARENT);
+
+    let mut y = panel.top() + pad;
+    let title_h = title.size().y;
+    p.galley(egui::pos2(panel.left() + pad, y), title, theme::CYAN_DIM);
+    y += title_h + 5.0;
+    let bar_x = panel.left() + pad + key_w + gap;
+    let bar_w = (panel.right() - pad - val_w - gap - bar_x).max(MIN_BAR_W);
+    for (key, val, hue, reach) in laid {
+        let key_y = y + (row_h - key.size().y) * 0.5;
+        p.galley(egui::pos2(panel.left() + pad, key_y), key, hue);
+        // An unlit socket behind every bar, the same as the aurora forecast
+        // strip: without it a quiet band reads as missing rather than as quiet.
+        let top = y + (row_h - BAR_H) * 0.5;
+        p.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(bar_x, top), egui::vec2(bar_w, BAR_H)),
+            0,
+            theme::LINE.gamma_multiply(0.55),
+        );
+        // The band's own hue: what the combined view paints it in on the globe,
+        // and what the legend names it by. The chart and the map share one key,
+        // so neither has to be learned twice.
+        let w = (reach / scale).clamp(0.0, 1.0) * bar_w;
+        p.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(bar_x, top), egui::vec2(w.max(1.0), BAR_H)),
+            0,
+            hue,
+        );
+        p.galley(
+            egui::pos2(panel.right() - pad - val.size().x, y + (row_h - val.size().y) * 0.5),
+            val,
+            theme::CYAN,
+        );
+        y += row_h;
+    }
+    y += 3.0;
+    for n in notes {
+        let h = n.size().y + 3.0;
+        p.galley(egui::pos2(panel.left() + pad, y), n, theme::LINE_LIT);
+        y += h;
     }
     Some(panel)
 }

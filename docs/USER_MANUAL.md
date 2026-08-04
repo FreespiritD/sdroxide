@@ -89,7 +89,8 @@ or connects to a remote sdroxide server.
   an arrival estimate when one is headed our way, the live auroral oval standing
   over the globe with a Kp forecast for tonight, live amateur-satellite orbits
   with click-through pass predictions, your FT8 contacts arcing between stations,
-  and a propagation panel with MUF, Kp/A, F10.7 and the current GOES X-ray level.
+  a propagation panel with MUF, Kp/A, F10.7 and the current GOES X-ray level,
+  and a bar chart of how open each band is right now.
 - **Spoken announcements:** the radio reads itself out — frequency, mode, band,
   split, AGC, the transmit levels, band-edge warnings, the SWR while you tune up,
   and FT8/JS8 messages addressed to you — so it can be operated without seeing
@@ -1702,6 +1703,28 @@ sounder is a real measurement with dreadful spatial coverage, and this covers th
 oceans but only bounds. When the observation is above the sounder, the panel says
 so — *the band is better than modelled* is the most actionable thing either
 number can tell you.
+
+**The `BANDS OPEN` chart.** The same field, read per band instead of per place,
+in a box under the propagation numbers on the globe: one bar for each band with
+anything in it, showing **how much of the world that band is currently getting
+through to**. It is the map's answer to "which band should I be on" without
+having to turn the globe and compare patches by eye.
+
+What the bar measures is *reach* — the share of the Earth's surface with
+evidence on it, weighted by area so a polar cell does not count for more than an
+equatorial one. Deliberately **not** a count of contacts: forty decodes out of
+one corner of Europe are one direction open, and a count would call that the
+best band of the evening. The number beside each bar is that share, and the
+footer gives the top of the scale, which auto-ranges in steps (1 %, 3 %, 10 %,
+30 %) rather than stretching the best band to a full bar — a chart normalised to
+its own leader would draw the same picture on a dead night as on a good one.
+
+Bands stay in frequency order so the shape of the chart is the familiar
+spectrum, and each bar takes the hue the ALL BANDS view paints that band in. It
+inherits the heat map's memory exactly, because it is read off the same decayed
+field: whatever the half-life is set to is how long a band lingers here after it
+shuts. The same caveat applies as to the map itself — a band nobody has listened
+to has no evidence and no bar, which the footer says out loud.
 
 The heat map is also relayed to the [browser's 3D tab](#8-web-operation), unlike
 the awards layer: it is live data about the station's own conditions, which is
@@ -3467,6 +3490,12 @@ that the time displayed is not the current real time.
 | `Kp / A` | Planetary geomagnetic indices. Green when quiet, yellow from Kp 4, pink from Kp 5 (a storm — polar paths degrade and aurora becomes possible). |
 | `F10.7` | 10.7 cm solar radio flux in solar flux units, the standard proxy for ionisation. Under about 90 the high bands stay shut; over 150 they open up. |
 | `X-ray` | Current GOES soft X-ray class. Turns pink at M class and above, which is when the D layer starts absorbing HF on the daylit side. |
+
+**Bands-open chart** — under the propagation numbers: one bar per band, showing
+how much of the world each band is getting through to right now, read off the
+same propagation field and with the same memory. See
+[§3.16](#316-the-propagation-heat-map) for what the bars measure and why it is
+not a contact count.
 
 The line under the MUF says how far away the nearest contributing ionosonde is
 and how much to trust the number. MUF is interpolated, not measured at your

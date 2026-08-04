@@ -70,3 +70,18 @@ fn uniform_structs_are_16_byte_multiples() {
         }
     }
 }
+
+/// The propagation shader filters the heat with a 4×4 cubic, which means it has
+/// to know how many texels the grid has. A silent mismatch would not fail to
+/// compile — it would smear the map by the ratio, which nobody would read as a
+/// bug in a constant.
+#[test]
+fn the_propagation_shader_knows_the_size_of_the_grid_it_filters() {
+    let src = include_str!("../src/shaders/solar_prop.wgsl");
+    for (name, want) in
+        [("GRID_W", sdroxide_types::PROP_GRID_W), ("GRID_H", sdroxide_types::PROP_GRID_H)]
+    {
+        let decl = format!("const {name} = {want}.0;");
+        assert!(src.contains(&decl), "solar_prop.wgsl should declare `{decl}`");
+    }
+}

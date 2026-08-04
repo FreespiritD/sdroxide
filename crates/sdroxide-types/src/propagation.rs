@@ -277,8 +277,26 @@ pub const GRID_CELLS: usize = GRID_W * GRID_H;
 /// honest rather than decorative, and it is also what makes the map read as a
 /// field instead of a scatter of cells.
 pub const SPLAT_SIGMA_KM: f64 = 400.0;
-/// Past this the kernel is not worth evaluating.
-const SPLAT_CUTOFF_KM: f64 = 2.0 * SPLAT_SIGMA_KM;
+/// Where the kernel stops, and — see [`splat_kernel`] — reaches zero.
+pub const SPLAT_CUTOFF_KM: f64 = 2.0 * SPLAT_SIGMA_KM;
+
+/// The deposit kernel at great-circle distance `d_km`, peaking at 1.
+///
+/// A Gaussian lowered by its own value at the cutoff and rescaled back to a
+/// peak of one, so that it *arrives* at zero rather than being chopped off
+/// there. A plain truncated Gaussian still stands 13 % tall where it stops, and
+/// on a 2.5° grid that step draws a hard rim around every splat — a circle
+/// quantised to whole cells, which is exactly the polygon a smooth field should
+/// never show. Fading it out costs one subtraction and removes the edge
+/// outright, which no amount of filtering downstream can do.
+pub fn splat_kernel(d_km: f64) -> f64 {
+    if d_km >= SPLAT_CUTOFF_KM {
+        return 0.0;
+    }
+    let g = |d: f64| (-(d * d) / (2.0 * SPLAT_SIGMA_KM * SPLAT_SIGMA_KM)).exp();
+    let pedestal = g(SPLAT_CUTOFF_KM);
+    ((g(d_km) - pedestal) / (1.0 - pedestal)).max(0.0)
+}
 
 /// Weight below which a cell is treated as empty and cleared.
 const EPS: f32 = 1e-3;
@@ -360,6 +378,38 @@ impl BandPlane {
     /// The largest weight in the plane, for normalising a display.
     pub fn peak(&self) -> f32 {
         self.weight.iter().copied().fold(0.0, f32::max)
+    }
+
+    /// The share of the world this band is demonstrably getting through, from 0
+    /// to 1.
+    ///
+    /// A cell counts wherever any weight survives — which is to say within the
+    /// deposit kernel's reach of a control point, and that kernel is the
+    /// positional uncertainty of a control point rather than decoration. So
+    /// this is "the patch of ionosphere this band worked through, to the
+    /// accuracy a reception report can place it".
+    ///
+    /// Saturating, which is the whole difference between it and a path count:
+    /// forty contacts through one patch of sky say the band is open in one
+    /// direction, and a count would call that forty times as open as one
+    /// contact. It answers *how widely* rather than *how much*.
+    ///
+    /// Area-weighted by `cos(lat)`: on an equirectangular grid a polar cell is
+    /// a sliver and an equatorial one is not, and counting cells would make the
+    /// Arctic the largest place on Earth.
+    pub fn reach(&self) -> f32 {
+        let (mut lit, mut all) = (0.0f64, 0.0f64);
+        for row in 0..GRID_H {
+            let (lat, _) = cell_center(row, 0);
+            let area = lat.to_radians().cos().max(0.0);
+            all += area * GRID_W as f64;
+            for col in 0..GRID_W {
+                if self.weight[row * GRID_W + col] > 0.0 {
+                    lit += area;
+                }
+            }
+        }
+        if all <= 0.0 { 0.0 } else { (lit / all) as f32 }
     }
 
     /// True where nothing survives.
@@ -522,10 +572,7 @@ fn splat(plane: &mut BandPlane, lat: f64, lon: f64, share: f32, margin: Option<f
             let col = ((c0 as i64 + dc).rem_euclid(GRID_W as i64)) as usize;
             let (cl, cn) = cell_center(row, col);
             let d = crate::distance_km((lat, lon), (cl, cn));
-            if d > SPLAT_CUTOFF_KM {
-                continue;
-            }
-            let w = share * (-(d * d) / (2.0 * SPLAT_SIGMA_KM * SPLAT_SIGMA_KM)).exp() as f32;
+            let w = share * splat_kernel(d) as f32;
             if w <= 0.0 {
                 continue;
             }
@@ -830,6 +877,91 @@ mod tests {
         assert!(polar > equator * 2, "equator {equator}, 80 °N {polar}");
         // And it stays bounded rather than running away at the pole itself.
         assert!(count(89.0) < GRID_CELLS, "the kernel covered the whole globe");
+    }
+
+    /// The kernel has to reach zero where it stops. A truncated Gaussian is
+    /// still 13 % tall at 2σ, and that step is a hard rim around every splat.
+    #[test]
+    fn the_deposit_kernel_fades_out_rather_than_stopping_dead() {
+        assert!((splat_kernel(0.0) - 1.0).abs() < 1e-6, "the peak moved");
+        assert_eq!(splat_kernel(SPLAT_CUTOFF_KM), 0.0);
+        assert_eq!(splat_kernel(SPLAT_CUTOFF_KM * 2.0), 0.0);
+        // Approaching the cutoff from inside, it is already negligible — which
+        // is what "no edge" means.
+        let last = splat_kernel(SPLAT_CUTOFF_KM - 1.0);
+        assert!(last > 0.0 && last < 0.002, "the kernel steps off a cliff at {last}");
+        // Still monotonically falling, so it is a splat and not a ring.
+        let mut prev = f64::INFINITY;
+        for i in 0..=40 {
+            let k = splat_kernel(SPLAT_CUTOFF_KM * i as f64 / 40.0);
+            assert!(k <= prev, "the kernel rose at {i}");
+            prev = k;
+        }
+    }
+
+    // ── reach ──────────────────────────────────────────────────────────────
+
+    /// One report lights the sky it could have come through and no more: a disc
+    /// the size of the kernel, which is a fraction of a per cent of the world.
+    #[test]
+    fn one_observation_reaches_about_the_kernels_own_footprint() {
+        let mut f = PropField::default();
+        f.deposit(&obs((51.5, -0.1), (55.75, 37.6), 14.1, PropSource::Ft8), 0, DEFAULT_HM_KM);
+        let reach = f.plane(Band::M20).unwrap().reach();
+        // π·800 km² against the Earth's 5.1·10⁸ km² is about 0.4 %.
+        assert!(
+            (0.002..0.008).contains(&reach),
+            "one splat reached {:.3} % of the world",
+            reach * 100.0
+        );
+    }
+
+    /// Reach saturates where a path count would not. Twenty contacts into the
+    /// same patch of sky are one direction, however busy the evening was.
+    #[test]
+    fn working_the_same_place_repeatedly_does_not_widen_the_reach() {
+        let mut f = PropField::default();
+        let same = obs((51.5, -0.1), (55.75, 37.6), 14.1, PropSource::Ft8);
+        f.deposit(&same, 0, DEFAULT_HM_KM);
+        let one = f.plane(Band::M20).unwrap().reach();
+        for _ in 0..20 {
+            f.deposit(&same, 0, DEFAULT_HM_KM);
+        }
+        let twenty = f.plane(Band::M20).unwrap().reach();
+        assert!((twenty - one).abs() < 1e-6, "{one} became {twenty}");
+
+        // A path in the other direction does widen it, which is the point.
+        f.deposit(&obs((51.5, -0.1), (-33.9, 151.2), 14.1, PropSource::Ft8), 0, DEFAULT_HM_KM);
+        assert!(
+            f.plane(Band::M20).unwrap().reach() > twenty * 2.0,
+            "a second direction added nothing"
+        );
+    }
+
+    /// The reach is measured on a sphere, not on the map it is stored as: a
+    /// polar splat covers many more cells and no more world.
+    #[test]
+    fn a_polar_splat_does_not_reach_further_than_an_equatorial_one() {
+        let reach_at = |lat: f64| {
+            let mut plane = BandPlane::new(0);
+            splat(&mut plane, lat, 0.0, 1.0, Some(5.0), 0.0);
+            plane.reach()
+        };
+        let equator = reach_at(0.0);
+        let polar = reach_at(80.0);
+        assert!(polar < equator * 1.6, "equator {equator}, 80 °N {polar}");
+        assert!(polar > equator * 0.4, "equator {equator}, 80 °N {polar}");
+    }
+
+    /// Reach is only as old as the field is: it is read off the same decayed
+    /// weights, so a band that has gone quiet stops claiming anything.
+    #[test]
+    fn reach_expires_with_the_evidence_behind_it() {
+        let mut f = PropField::default();
+        f.deposit(&obs((51.5, -0.1), (55.75, 37.6), 14.1, PropSource::Ft8), 0, DEFAULT_HM_KM);
+        assert!(f.plane(Band::M20).unwrap().reach() > 0.0);
+        f.decay(DEFAULT_HALFLIFE_S as i64 * 40);
+        assert!(f.plane(Band::M20).is_none(), "the plane outlived its evidence");
     }
 
     /// One path is not evidence — a mis-typed locator would otherwise assert an

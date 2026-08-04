@@ -8,9 +8,9 @@
 // are not merely consistent by convention, they are the same pixels, and there
 // is no second copy of the colour rules to drift.
 //
-// What is left here is what only the GPU can do: put it on a sphere, let the
-// sampler's bilinear filtering turn 2.5° cells into smooth shapes, and light it
-// like paint rather than like emission.
+// What is left here is what only the GPU can do: put it on a sphere, filter
+// 2.5° cells into smooth shapes, and light it like paint rather than like
+// emission.
 //
 // Paint, not light: the aurora adds to what is behind it because a curtain is
 // glowing air you see through. Heat is a property *of* the ground, so it
@@ -52,6 +52,66 @@ struct VsOut {
     @location(2) world: vec3<f32>,
 };
 
+// The propagation grid: 2.5° cells, row-major from the north pole. Must match
+// `PROP_GRID_W`/`PROP_GRID_H`, which a test in `tests/shaders.rs` checks.
+const GRID_W = 144.0;
+const GRID_H = 72.0;
+
+// Cubic B-spline weights for the four texels around a fractional position.
+//
+// Chosen over Catmull-Rom, the other cubic reached for here, because these
+// weights are all non-negative: an interpolating filter overshoots at an edge
+// and would ring a dark halo around every hot patch. This one does not pass
+// through its samples — it smooths them — which is the right trade for a field
+// whose cells are already a 400 km smear of something known no better.
+fn cubic(v: f32) -> vec4<f32> {
+    let n = 1.0 - v;
+    return vec4(
+        n * n * n,
+        4.0 + 3.0 * v * v * v - 6.0 * v * v,
+        4.0 + 3.0 * n * n * n - 6.0 * n * n,
+        v * v * v,
+    ) / 6.0;
+}
+
+// The heat at `uv`, filtered so the grid does not show through it.
+//
+// Hardware bilinear filtering of a 2.5° grid is not enough on a globe: a cell
+// is ten pixels across, and a bilinear patch has a kink in its gradient at
+// every cell boundary, so a smooth field reads as a quilt of quadrilaterals.
+// This is a 4×4 cubic instead, which is continuous in its curvature and shows
+// no seam at all.
+//
+// Four samples rather than sixteen: each neighbouring pair of texels is folded
+// into one bilinear tap placed off-centre so the hardware's own lerp produces
+// the pair's weighted sum. The taps land within two texels of the fragment, and
+// nothing is done to keep them in range on purpose — the sampler repeats in `u`
+// so the antimeridian wraps, and clamps in `v` so a tap past the pole reads the
+// polar row, which is what a plain sample does there too.
+//
+// The tap coordinates jump between texels, so the derivatives the hardware
+// infers from them are meaningless. That is safe only because this texture has
+// a single mip level: there is no other level for a bad derivative to select.
+fn sample_heat(uv: vec2<f32>) -> vec4<f32> {
+    let tc = uv * vec2(GRID_W, GRID_H) - 0.5;
+    let base = floor(tc);
+    let f = tc - base;
+    let wx = cubic(f.x);
+    let wy = cubic(f.y);
+    // Weight of each folded pair, and where inside the pair the tap must sit.
+    let gx = vec2(wx.x + wx.y, wx.z + wx.w);
+    let gy = vec2(wy.x + wy.y, wy.z + wy.w);
+    let px = (vec2(base.x - 1.0 + wx.y / gx.x, base.x + 1.0 + wx.w / gx.y) + 0.5) / GRID_W;
+    let py = (vec2(base.y - 1.0 + wy.y / gy.x, base.y + 1.0 + wy.w / gy.y) + 0.5) / GRID_H;
+
+    let top = gx.x * textureSample(prop_tex, samp, vec2(px.x, py.x))
+            + gx.y * textureSample(prop_tex, samp, vec2(px.y, py.x));
+    let bot = gx.x * textureSample(prop_tex, samp, vec2(px.x, py.y))
+            + gx.y * textureSample(prop_tex, samp, vec2(px.y, py.y));
+    // The sixteen weights sum to one, so the pairs need no renormalising.
+    return gy.x * top + gy.y * bot;
+}
+
 @vertex
 fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>) -> VsOut {
     var o: VsOut;
@@ -67,8 +127,10 @@ fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>) -> VsOut {
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
     // The grid is row-major from the north pole and starts at 180° W, which is
     // the sphere's own UV convention, so no remapping is needed — the reason
-    // `PropField` is laid out that way.
-    let c = textureSample(prop_tex, samp, in.uv);
+    // `PropField` is laid out that way. A cell holds the value at its own
+    // centre, so the sampler's half-texel offset is already right and there is
+    // nothing to shift, unlike the aurora grid next door.
+    let c = sample_heat(in.uv);
     var a = c.a * d.params.x;
 
     // Fade the shell out where it is edge-on. A sphere's silhouette is where a
