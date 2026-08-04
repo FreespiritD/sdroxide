@@ -6,9 +6,14 @@ default-members = [".", "crates/sdroxide-types", "crates/sdroxide-proto", "crate
 [workspace.package]
 version = "1.0.0"
 edition = "2024"
-# The native binary links mfsk-core (GPL-3.0-or-later) for FT8/FT4, so the
-# built binary is GPL-3.0-or-later. The GPL dependency is confined to the
-# sdroxide-digi crate; the wasm remote client links none of it.
+# The native binary links mfsk-core (GPL-3.0-or-later) for FT8/FT4 and the
+# DeepCW model (AGPL-3.0-only) for CW, so the built binary carries both. AGPL is
+# the stronger of the two and it adds §13: whoever is offered the program over a
+# network has to be offered its source. Anyone running sdroxide-server for remote
+# clients is doing exactly that.
+#
+# Both are confined to one crate each — sdroxide-digi and sdroxide-deepcw — and
+# the wasm remote client links neither.
 license = "GPL-3.0-or-later"
 
 # DSP is unusably slow unoptimized; keep deps and the sample-rate-hot crates
@@ -32,6 +37,11 @@ opt-level = 2
 [profile.dev.package.sdroxide-rade]
 opt-level = 2
 
+# DeepCW's STFT runs ahead of every inference; unoptimized it costs more than
+# the network it feeds.
+[profile.dev.package.sdroxide-deepcw]
+opt-level = 2
+
 [workspace.dependencies]
 sdroxide-types = { path = "crates/sdroxide-types" }
 sdroxide-proto = { path = "crates/sdroxide-proto" }
@@ -51,6 +61,7 @@ sdroxide-rtlsdr = { path = "crates/sdroxide-rtlsdr" }
 sdroxide-rx888 = { path = "crates/sdroxide-rx888" }
 sdroxide-pluto = { path = "crates/sdroxide-pluto" }
 sdroxide-net = { path = "crates/sdroxide-net" }
+sdroxide-deepcw = { path = "crates/sdroxide-deepcw" }
 
 serde = { version = "1", features = ["derive"] }
 num-complex = "0.4"

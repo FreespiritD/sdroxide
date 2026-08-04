@@ -7,6 +7,10 @@
 //! in the native binary — the wasm remote client links none of it (all
 //! decode/encode runs server-side). Keep it that way: `sdroxide-types` and
 //! `sdroxide-dsp` are deliberately free of both.
+//!
+//! The CW panel additionally links `sdroxide-deepcw`, which is AGPL-3.0-only.
+//! That crate is the only AGPL in the tree; see its manifest for what §13 means
+//! for anything that links it.
 
 pub mod clock;
 pub mod controller;

@@ -1,0 +1,19 @@
+[package]
+name = "sdroxide-deepcw"
+version.workspace = true
+edition.workspace = true
+license = "AGPL-3.0-only"
+
+# AGPL, and deliberately so — this crate carries a port of DeepCW
+# (https://github.com/e04/deepcw-engine) together with its trained model, both
+# of which are AGPL-3.0-only. Nothing else in the workspace is AGPL; keep the
+# reverse dependencies of this crate in mind before adding one, because §13
+# follows the combined work out over the network.
+
+[dependencies]
+sdroxide-dsp.workspace = true
+rustfft.workspace = true
+tracing.workspace = true
+crossbeam-channel.workspace = true
+rten = { version = "0.25", default-features = false, features = ["onnx_format"] }
+rten-tensor = "0.25"

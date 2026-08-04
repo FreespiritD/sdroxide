@@ -9,6 +9,8 @@ edition.workspace = true
 [dependencies]
 sdroxide-types.workspace = true
 sdroxide-dsp.workspace = true
+# AGPL-3.0-only, and it reaches through — see crates/sdroxide-deepcw/Cargo.toml.
+sdroxide-deepcw.workspace = true
 num-complex.workspace = true
 rustfft.workspace = true
 crossbeam-channel.workspace = true

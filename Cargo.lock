@@ -4988,6 +4988,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sdroxide-deepcw"
+version = "1.0.0"
+dependencies = [
+ "crossbeam-channel",
+ "rten",
+ "rten-tensor",
+ "rustfft",
+ "sdroxide-dsp",
+ "tracing",
+]
+
+[[package]]
 name = "sdroxide-digi"
 version = "1.0.0"
 dependencies = [
@@ -4999,6 +5011,7 @@ dependencies = [
  "image",
  "mfsk-core",
  "num-complex",
+ "sdroxide-deepcw",
  "sdroxide-dsp",
  "sdroxide-rade",
  "sdroxide-types",
@@ -5195,6 +5208,7 @@ dependencies = [
  "crossbeam-channel",
  "num-complex",
  "rustfft",
+ "sdroxide-deepcw",
  "sdroxide-dsp",
  "sdroxide-types",
  "tracing",

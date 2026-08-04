@@ -1,15 +1,24 @@
 //! The CW skimmer core: a streaming STFT over a wide complex-baseband window,
-//! per-bin on/off-keying envelope detection with an adaptive noise floor, light
-//! signal tracking, and a per-track [`MorseDecoder`]. Produces one
-//! [`SkimmerSpot`] per tracked CW signal.
+//! per-bin on/off-keying envelope detection with an adaptive noise floor, and
+//! light signal tracking. Produces one [`SkimmerSpot`] per tracked CW signal.
+//!
+//! Finding the signals and reading them are two separate jobs here, and only the
+//! second one changed when DeepCW arrived. The STFT below still decides where
+//! the stations are, how strong they are and what frequency to put the marker
+//! on — all of which it does from bin power alone, and none of which a character
+//! model has an opinion about. The text comes from [`crate::deep`], which lifts
+//! each station's slice out of a second transform at the model's own resolution
+//! and hands it to a pool of decoders.
 
 use std::sync::Arc;
 
 use rustfft::{Fft, FftPlanner};
-use sdroxide_dsp::{Complex32 as C32, CwDecoder};
+use sdroxide_deepcw::Pool;
+use sdroxide_dsp::Complex32 as C32;
 use sdroxide_types::{SkimmerKind, SkimmerSpot};
 
 use crate::callsign::find_callsign;
+use crate::deep::DeepFront;
 
 // A 4096-pt window over the ~200 kHz skim rate is ~20 ms / ~49 Hz per bin —
 // close to a CW signal's own bandwidth, so the carrier lands in one bin with
@@ -46,29 +55,50 @@ const DC_GUARD: i64 = 3;
 /// Frames a track must be detected before it's reported (rejects noise blips;
 /// one dit at 20 WPM is ~12 frames at this hop).
 const MIN_HITS: u32 = 8;
-/// Track pruning (ms): empties (noise blips) go fast; decoded tracks linger.
+/// Track pruning (ms). A blip that never became a signal goes quickly; anything
+/// that did is kept long enough to be worth keeping.
+///
+/// The middle case exists because the model needs several seconds of a station
+/// before it will say anything at all. A track that has been keying but has no
+/// text yet is not a failure, it is one that has not been read yet, and pruning
+/// it on the old empty-track timer would drop every station that paused inside
+/// its first few seconds — before it had ever had a chance to decode.
 const PRUNE_EMPTY_MS: f64 = 1200.0;
+const PRUNE_PENDING_MS: f64 = 9000.0;
 const PRUNE_DECODED_MS: f64 = 8000.0;
 /// A track counts as "active" (currently keying) within this of its last mark.
 const ACTIVE_MS: f64 = 1500.0;
 /// Bound on simultaneous tracks.
 const MAX_TRACKS: usize = 256;
-/// How often each track's envelope is re-fitted. Far slower than the panel
-/// decoder's default: a spot is worth having a second late, and this runs over
-/// every signal in a 200 kHz window at once.
-const TRACK_HOP_S: f32 = 0.5;
 /// Rolling decoded text kept per track.
 const MAX_TEXT: usize = 64;
+
+/// Spin up the model and its threads, or report why not and carry on without.
+///
+/// A skimmer that finds and marks signals but cannot read them is still worth
+/// having, so a model that will not load is a downgrade rather than a failure.
+fn build_deep(skim_rate: f64) -> Option<(DeepFront, Pool)> {
+    // Inference is the only thing here worth spreading, and it is not worth the
+    // whole machine: the skimmer shares it with a receiver.
+    let threads = std::thread::available_parallelism().map_or(2, |n| n.get() / 2).clamp(1, 4);
+    match Pool::new(threads) {
+        Ok(pool) => Some((DeepFront::new(skim_rate, FFT_SIZE), pool)),
+        Err(e) => {
+            tracing::error!("DeepCW unavailable, the CW skimmer will mark signals only: {e}");
+            None
+        }
+    }
+}
 
 struct Track {
     id: u64,
     bin: i64, // signed offset bin from DC (negative = below center)
-    /// The shared envelope-domain Morse engine, fed this bin's magnitude once
-    /// per STFT frame. It fits its own decision threshold, speed and spacing to
-    /// the track, which is what a single global key-on ratio could never do
-    /// across signals that differ by 40 dB and 3:1 in speed.
-    dec: CwDecoder,
+    /// Whatever the model last made of this station, and the speed implied by
+    /// how fast the text arrived. Both are replaced wholesale each time a decode
+    /// comes back rather than accumulated, because the model re-reads its whole
+    /// window every round and may revise what it said last time.
     text: String,
+    wpm: u16,
     last_on_ms: f64,
     snr_db: i16,
     /// Frames this track has been keyed (for confirmation).
@@ -104,6 +134,10 @@ pub struct CwSkimmer {
     now_ms: f64,
     tracks: Vec<Track>,
     next_id: u64,
+    /// The model's front end, and the threads that run it. `None` if the model
+    /// would not load, in which case the skimmer still finds and marks signals
+    /// but reports no text for them.
+    deep: Option<(DeepFront, Pool)>,
     /// Centers seen last frame, so a track spawns only on a peak that persists
     /// (a single-frame noise blip never becomes a track).
     prev_centers: Vec<i64>,
@@ -137,6 +171,7 @@ impl CwSkimmer {
             now_ms: 0.0,
             tracks: Vec::new(),
             next_id: 1,
+            deep: build_deep(skim_rate),
             prev_centers: Vec::new(),
         }
     }
@@ -155,6 +190,9 @@ impl CwSkimmer {
         self.inbuf.clear();
         self.read_pos = 0;
         self.frames = 0;
+        if let Some((front, _)) = self.deep.as_mut() {
+            front.reset();
+        }
     }
 
     /// Feed a block of complex baseband IQ (skim-rate, centered on skim_center).
@@ -176,6 +214,54 @@ impl CwSkimmer {
         if self.read_pos >= FFT_SIZE {
             self.inbuf.drain(..self.read_pos);
             self.read_pos = 0;
+        }
+        self.run_deep(iq);
+    }
+
+    /// Keep the model fed and collect whatever it has finished.
+    fn run_deep(&mut self, iq: &[C32]) {
+        let Some((front, pool)) = self.deep.as_mut() else { return };
+
+        // Strongest first, so that when there are more stations than slots the
+        // ones that get read are the ones most likely to be readable.
+        let mut live: Vec<(u64, i64, i16)> =
+            self.tracks.iter().map(|t| (t.id, t.bin, t.snr_db)).collect();
+        live.sort_unstable_by(|a, b| b.2.cmp(&a.2));
+        let live: Vec<(u64, i64)> = live.into_iter().map(|(id, bin, _)| (id, bin)).collect();
+        front.sync(&live);
+        front.process(iq);
+
+        for (id, window) in front.due() {
+            // A refused job is left unmarked and comes back next round.
+            if !pool.submit(id, window) {
+                break;
+            }
+            front.mark_submitted(id);
+        }
+
+        for (id, decoded) in pool.poll() {
+            front.complete(id);
+            let decoded = match decoded {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!("DeepCW: {e}");
+                    continue;
+                }
+            };
+            let Some(track) = self.tracks.iter_mut().find(|t| t.id == id) else { continue };
+            let text = decoded.normalized();
+            if text.is_empty() {
+                continue;
+            }
+            if let Some(wpm) = decoded.wpm() {
+                track.wpm = wpm.round().clamp(0.0, 99.0) as u16;
+            }
+            // Keep the tail: a spot is a rolling read-out, not a transcript.
+            track.text =
+                match text.char_indices().nth(text.chars().count().saturating_sub(MAX_TEXT)) {
+                    Some((cut, _)) => text[cut..].to_string(),
+                    None => text,
+                };
         }
     }
 
@@ -259,13 +345,11 @@ impl CwSkimmer {
                 let k = self.bin_index(off);
                 let km = self.bin_index(off - 1);
                 let kp = self.bin_index(off + 1);
-                let mut dec = CwDecoder::new(1000.0 / self.frame_ms);
-                dec.set_hop_s(TRACK_HOP_S);
                 self.tracks.push(Track {
                     id,
                     bin: off,
-                    dec,
                     text: String::new(),
+                    wpm: 0,
                     last_on_ms: self.now_ms,
                     snr_db: 0,
                     hits: 0,
@@ -298,23 +382,17 @@ impl CwSkimmer {
                 t.pk[1] = 0.9 * t.pk[1] + 0.1 * self.power[k];
                 t.pk[2] = 0.9 * t.pk[2] + 0.1 * self.power[kp];
             }
-            // Amplitude, not power: the decoder's thresholds and noise model are
-            // an envelope's.
-            let fresh = t.dec.push(&[p.sqrt()]);
-            if !fresh.is_empty() {
-                t.text.push_str(&fresh);
-                if t.text.chars().count() > MAX_TEXT {
-                    let drop = t.text.chars().count() - MAX_TEXT;
-                    let cut = t.text.char_indices().nth(drop).map_or(t.text.len(), |(i, _)| i);
-                    t.text.drain(..cut);
-                }
-            }
         }
 
         // Prune stale tracks.
         self.tracks.retain(|t| {
             let age = now - t.last_on_ms;
-            if t.text.is_empty() { age < PRUNE_EMPTY_MS } else { age < PRUNE_DECODED_MS }
+            let keep = match (t.text.is_empty(), t.hits >= MIN_HITS) {
+                (false, _) => PRUNE_DECODED_MS,
+                (true, true) => PRUNE_PENDING_MS,
+                (true, false) => PRUNE_EMPTY_MS,
+            };
+            age < keep
         });
     }
 
@@ -331,8 +409,10 @@ impl CwSkimmer {
                     return None;
                 }
                 let text = t.text.trim_end();
-                let wpm = t.dec.wpm().round().clamp(0.0, 99.0) as u16;
-                if !(8..=45).contains(&wpm) || text.is_empty() {
+                // A wider range than a timing decoder would need: this speed is
+                // measured from how fast text arrived, so a station that pauses
+                // reads slower than its fist.
+                if !(5..=60).contains(&t.wpm) || text.is_empty() {
                     return None;
                 }
                 // Quadratic peak interpolation over the smoothed 3-bin shape
@@ -356,7 +436,7 @@ impl CwSkimmer {
                     callsign,
                     text: text.to_string(),
                     snr_db: t.snr_db,
-                    wpm,
+                    wpm: t.wpm,
                     active: (self.now_ms - t.last_on_ms) < ACTIVE_MS,
                 })
             })
@@ -367,14 +447,7 @@ impl CwSkimmer {
     pub fn debug_dump(&self) {
         for t in &self.tracks {
             if t.hits >= 3 {
-                eprintln!(
-                    "bin{} hits{} wpm{:.0} cost{:.3} text={:?}",
-                    t.bin,
-                    t.hits,
-                    t.dec.wpm(),
-                    t.dec.cost(),
-                    t.text
-                );
+                eprintln!("bin{} hits{} wpm{} text={:?}", t.bin, t.hits, t.wpm, t.text);
             }
         }
     }
@@ -453,6 +526,24 @@ mod tests {
         iq
     }
 
+    /// Let the model catch up. Decoding happens on a pool of threads now, so a
+    /// test that stops feeding IQ has to wait for what is still in flight.
+    fn settle(sk: &mut CwSkimmer) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut idle = 0;
+        while std::time::Instant::now() < deadline && idle < 60 {
+            let before = sk.spots().len();
+            sk.process(&[]);
+            let quiet = sk.deep.as_ref().is_none_or(|(_, pool)| pool.in_flight() == 0);
+            if quiet && sk.spots().len() == before {
+                idle += 1;
+            } else {
+                idle = 0;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn decodes_a_single_cw_tone() {
         let rate = 192_000.0;
@@ -464,6 +555,7 @@ mod tests {
         for chunk in iq.chunks(8192) {
             sk.process(chunk);
         }
+        settle(&mut sk);
         sk.debug_dump();
         let spots = sk.spots();
         assert!(!spots.is_empty(), "no spots decoded");
@@ -504,6 +596,7 @@ mod tests {
         for chunk in iq.chunks(8192) {
             sk.process(chunk);
         }
+        settle(&mut sk);
         let spots = sk.spots();
         let hit = spots.iter().find(|s| s.text.contains("W1AW"));
         assert!(hit.is_some(), "strong signal in high noise did not decode: {spots:?}");
@@ -548,6 +641,7 @@ mod tests {
         for chunk in mixed.chunks(8192) {
             sk.process(chunk);
         }
+        settle(&mut sk);
         sk.debug_dump();
         let spots = sk.spots();
         for (_, off, wpm, _) in want {
@@ -585,6 +679,7 @@ mod tests {
                 ddc.process(chunk, &mut buf);
                 sk.process(&buf);
             }
+            settle(&mut sk);
             let spots = sk.spots();
             assert!(!spots.is_empty(), "off {off}: no spots");
             let want = center + off;

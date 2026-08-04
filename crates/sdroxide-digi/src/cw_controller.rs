@@ -16,10 +16,18 @@
 //! at `cw_pitch_hz` above the dial and the keyer transmits there, because in CW
 //! those are the same frequency: you answer a station on the frequency you
 //! heard it on, and the waterfall cursor that picks one picks the other.
+//!
+//! The text comes from DeepCW, which reads the spectrogram with a neural net
+//! and copies several dB further down than a timing fit reaches. It answers only
+//! that one question, though — it has no notion of speed, signal-to-noise, or
+//! where the tone actually is. So the classic [`CwRx`] front end stays, running
+//! alongside for exactly those readouts, and its AFC is also what tells the
+//! tuner where to find the signal.
 
 use std::collections::VecDeque;
 use std::time::SystemTime;
 
+use sdroxide_deepcw::{Tuner, Worker};
 use sdroxide_dsp::{CwRx, CwTx, MonoResampler};
 use sdroxide_types::{CwStatus, DigiConfig, DigiStatus, Mode, QsoStep, TranscriptLine};
 
@@ -50,6 +58,15 @@ pub struct CwController {
     rx: CwRx,
     rx_rs: Option<MonoResampler>,
     rx_text: String,
+    /// The tail DeepCW has decoded but not settled on. Shown after `rx_text`
+    /// and replaced wholesale each time, so the last word or two visibly firms
+    /// up instead of appearing late.
+    rx_pending: String,
+    /// `None` only if the model would not load, in which case the classic
+    /// decoder's text is used instead of leaving the panel blank.
+    deep: Option<Worker>,
+    tuner: Tuner,
+    deep_scratch: Vec<f32>,
 
     // TX
     tx: CwTx,
@@ -77,10 +94,21 @@ impl CwController {
         let pitch = cfg.cw_pitch_hz;
         let mut rx = CwRx::new(CW_RATE, pitch);
         rx.set_speed_lock(cfg.cw_speed_lock.then_some(cfg.cw_wpm));
+        let deep = match Worker::new() {
+            Ok(w) => Some(w),
+            Err(e) => {
+                tracing::error!("DeepCW unavailable, falling back to the timing decoder: {e}");
+                None
+            }
+        };
         CwController {
             rx,
             rx_rs: MonoResampler::new(tap_rate, CW_RATE),
             rx_text: String::new(),
+            rx_pending: String::new(),
+            deep,
+            tuner: Tuner::new(tap_rate, pitch as f64),
+            deep_scratch: Vec::new(),
             tx: CwTx::new(CW_RATE, pitch as f64, cfg.cw_wpm),
             tx_rs: MonoResampler::new(CW_RATE, OUT_RATE),
             tx48: VecDeque::new(),
@@ -96,6 +124,66 @@ impl CwController {
             last_cw: CwStatus::default(),
             cfg,
         }
+    }
+
+    /// Append settled text to the receive window, keeping it word-separated and
+    /// bounded.
+    fn append_rx(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        // DeepCW commits whole words with the edges trimmed, so the separator
+        // between one commit and the next has to be put back.
+        if !self.rx_text.is_empty()
+            && !self.rx_text.ends_with(' ')
+            && !text.starts_with(' ')
+            && self.deep.is_some()
+        {
+            self.rx_text.push(' ');
+        }
+        self.rx_text.push_str(text);
+        if self.rx_text.len() > RX_TEXT_CAP {
+            let cut = self.rx_text.len() - RX_TEXT_CAP;
+            let cut = (cut..self.rx_text.len())
+                .find(|&i| self.rx_text.is_char_boundary(i))
+                .unwrap_or(self.rx_text.len());
+            self.rx_text.drain(..cut);
+        }
+        self.status_dirty = true;
+    }
+
+    /// Collect whatever the model finished since the last poll.
+    fn drain_deep(&mut self) {
+        let updates = self.deep.as_ref().map(Worker::poll).unwrap_or_default();
+        for update in updates {
+            match update {
+                Ok(update) => {
+                    self.append_rx(&update.committed);
+                    if self.rx_pending != update.pending {
+                        self.rx_pending = update.pending;
+                        self.status_dirty = true;
+                    }
+                }
+                // One failed inference is not fatal; the next window is a fresh
+                // attempt at the same audio.
+                Err(e) => tracing::warn!("DeepCW: {e}"),
+            }
+        }
+    }
+
+    /// The receive window as the panel should show it: settled text, then the
+    /// tail that is still moving.
+    fn rx_display(&self) -> String {
+        if self.rx_pending.is_empty() {
+            return self.rx_text.clone();
+        }
+        let mut out = String::with_capacity(self.rx_text.len() + self.rx_pending.len() + 1);
+        out.push_str(&self.rx_text);
+        if !out.is_empty() && !out.ends_with(' ') {
+            out.push(' ');
+        }
+        out.push_str(&self.rx_pending);
+        out
     }
 
     fn cw_status(&self) -> CwStatus {
@@ -127,7 +215,7 @@ impl CwController {
             tx_watchdog: false,
             transcript: Vec::<TranscriptLine>::new(),
             config: self.cfg.clone(),
-            text_rx: self.rx_text.clone(),
+            text_rx: self.rx_display(),
             tx_sent: self.tx.sent_chars(),
             fsq_heard: Vec::new(),
             fsq_messages: Vec::new(),
@@ -160,25 +248,35 @@ impl DigiEngine for CwController {
             Some(r) => r.push(tap, &mut self.scratch),
             None => self.scratch.extend_from_slice(tap),
         }
-        let decoded = self.rx.process(&self.scratch);
-        if !decoded.is_empty() {
-            self.rx_text.push_str(&decoded);
-            if self.rx_text.len() > RX_TEXT_CAP {
-                let cut = self.rx_text.len() - RX_TEXT_CAP;
-                let cut = (cut..self.rx_text.len())
-                    .find(|&i| self.rx_text.is_char_boundary(i))
-                    .unwrap_or(self.rx_text.len());
-                self.rx_text.drain(..cut);
-            }
-            self.status_dirty = true;
-        }
+        // The classic front end runs either way: it is where speed, SNR, lock
+        // and the tone offset come from, and it is cheap next to the model.
+        let classic = self.rx.process(&self.scratch);
+
+        let Some(deep) = self.deep.as_ref() else {
+            self.append_rx(&classic);
+            return;
+        };
+
+        // Follow the tone the AFC settled on rather than the pitch the operator
+        // dialled, so a drifting or mistuned signal still lands mid-band.
+        self.tuner.set_tone(self.rx.tone_hz() as f64);
+        self.deep_scratch.clear();
+        self.tuner.push(tap, &mut self.deep_scratch);
+        deep.push(&self.deep_scratch);
     }
 
     fn poll(&mut self, _now: SystemTime, _dial_hz: f64) -> Vec<DigiAction> {
         let mut actions = Vec::new();
+        self.drain_deep();
         if self.tx_active && !self.keyed {
             self.keyed = true;
             self.status_dirty = true;
+            // Nothing more will arrive for this over, so settle the tail now
+            // rather than leaving the last word unconfirmed until they come
+            // back to us.
+            if let Some(deep) = self.deep.as_ref() {
+                deep.flush();
+            }
             actions.push(DigiAction::KeyTx);
         }
         // The decoder's readouts change continuously; only a change worth
@@ -240,6 +338,10 @@ impl DigiEngine for CwController {
         // The decoder heard nothing but our own sending for the length of that
         // over; its window is stale and its speed fit is ours, not theirs.
         self.rx.reset();
+        if let Some(deep) = self.deep.as_ref() {
+            deep.reset();
+        }
+        self.rx_pending.clear();
         self.status_dirty = true;
     }
 
@@ -261,6 +363,7 @@ impl DigiEngine for CwController {
     fn set_config(&mut self, cfg: DigiConfig) {
         if (cfg.cw_pitch_hz - self.cfg.cw_pitch_hz).abs() > 0.5 {
             self.rx.set_pitch(cfg.cw_pitch_hz);
+            self.tuner.set_tone(cfg.cw_pitch_hz as f64);
         }
         self.rx.set_speed_lock(cfg.cw_speed_lock.then_some(cfg.cw_wpm));
         self.tx.set_params(cfg.cw_pitch_hz as f64, cfg.cw_wpm, cfg.cw_farnsworth_wpm);
@@ -274,6 +377,12 @@ impl DigiEngine for CwController {
         let hz = hz.clamp(200.0, 3000.0);
         self.cfg.cw_pitch_hz = hz;
         self.rx.set_pitch(hz);
+        self.tuner.set_tone(hz as f64);
+        // The old frequency's audio is still buffered and is not this signal.
+        if let Some(deep) = self.deep.as_ref() {
+            deep.reset();
+        }
+        self.rx_pending.clear();
         self.tx.set_params(hz as f64, self.cfg.cw_wpm, self.cfg.cw_farnsworth_wpm);
         self.status_dirty = true;
     }
@@ -325,6 +434,27 @@ mod tests {
         DigiConfig { my_call: "W1AW".into(), cw_wpm: 25.0, ..Default::default() }
     }
 
+    /// Settle the receive window: the model decodes on its own thread, so the
+    /// text a test wants has to be waited for rather than read straight back.
+    fn settle(c: &mut CwController) -> String {
+        if let Some(deep) = c.deep.as_ref() {
+            deep.flush();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut idle = 0;
+        while std::time::Instant::now() < deadline && idle < 100 {
+            let before = c.rx_display();
+            c.poll(SystemTime::now(), 14_030_000.0);
+            if c.rx_display() == before {
+                idle += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            } else {
+                idle = 0;
+            }
+        }
+        c.rx_display().trim().to_string()
+    }
+
     /// Transmit what the operator types, receive it back through the decoder.
     /// The controller sits between two halves that have to agree about pitch
     /// and speed, and this is the cheapest way to keep it honest.
@@ -364,7 +494,9 @@ mod tests {
         for blk in lead.chunks(1920) {
             rx.on_rx_audio(blk);
         }
-        assert_eq!(rx.rx_text.trim(), "CQ DE W1AW K");
+        assert_eq!(settle(&mut rx), "CQ DE W1AW K");
+        // The classic front end is still running, and is still where the speed
+        // readout comes from.
         assert!((rx.rx.wpm() - 25.0).abs() < 2.0, "read {} WPM", rx.rx.wpm());
     }
 

@@ -6,6 +6,7 @@
 mod callsign;
 mod controller;
 mod cw;
+mod deep;
 mod digi;
 
 pub use controller::{SkimmerAction, SkimmerController};

@@ -4,11 +4,17 @@ version.workspace = true
 edition.workspace = true
 # GPL because it links mfsk-core (GPL-3.0-or-later). Isolated here so the
 # permissive crates and the wasm client link no GPL code.
+#
+# The CW panel also links sdroxide-deepcw, which is AGPL-3.0-only. That is a
+# stronger licence than this one and it reaches through: a build containing this
+# crate carries AGPL §13, so anyone offered the program over a network has to be
+# offered its source too.
 license = "GPL-3.0-or-later"
 
 [dependencies]
 sdroxide-types.workspace = true
 sdroxide-dsp.workspace = true
+sdroxide-deepcw.workspace = true
 sdroxide-rade.workspace = true
 # The JS8 candidate loop hands complex baseband between mfsk-core primitives.
 num-complex.workspace = true

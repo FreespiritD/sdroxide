@@ -2464,15 +2464,30 @@ impl Engine {
         } else {
             self.main.as_ref().map(|c| c.audio_rate()).unwrap_or(48_000.0)
         };
-        if want && !have {
-            self.digi = Some(self.make_digi(mode, tap_rate));
-            self.sync_audio_tap();
-            if !self.audio_mode {
-                // High-resolution channel spectrum: 16k-point FFT over the
-                // ~50 kHz channel ≈ 3 Hz/bin, enough to resolve 6.25 Hz FT8 tones.
+        // The high-resolution channel analyzer replaces the panadapter's whole
+        // frame with a 3.7 kHz window on the dial, which is what a digital mode
+        // wants and the opposite of what CW does. A CW operator is working the
+        // band: tuning across it, watching the skimmer mark stations either side,
+        // choosing where to call. Narrowing the display to the passband would
+        // take the band away and leave pan and zoom with nothing to move over,
+        // because the frame itself would no longer contain it.
+        let want_channel = want && mode.is_digital() && !self.audio_mode;
+        match (want_channel, self.channel_analyzer.is_some()) {
+            (true, false) => {
+                // 16k-point FFT over the ~50 kHz channel ≈ 3 Hz/bin, enough to
+                // resolve 6.25 Hz FT8 tones.
                 let ch_rate = self.main.as_ref().map(|c| c.channel_rate()).unwrap_or(48_000.0);
                 self.channel_analyzer = Some(SpectrumAnalyzer::new(16_384, ch_rate, 0.10));
             }
+            // Covers arriving in CW from a digital mode, where the analyzer is
+            // already up and nothing else would take it down.
+            (false, true) => self.channel_analyzer = None,
+            _ => {}
+        }
+
+        if want && !have {
+            self.digi = Some(self.make_digi(mode, tap_rate));
+            self.sync_audio_tap();
             info!(?mode, tap_rate, "digital-mode engine started");
             // CW enters with the operator's saved pitch, which need not be the
             // 700 Hz the mode's default passband is centred on.
