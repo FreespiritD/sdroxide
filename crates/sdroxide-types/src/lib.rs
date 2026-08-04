@@ -71,7 +71,9 @@ pub use digi::{
     cq_is_for_us, fmt_report, qso_log_to_adif, qso_log_to_text, utc_ymd_hms, worked_before,
     ymd_hms_to_unix,
 };
-pub use entity::{EntityInfo, EntityPlace, all_entities, resolve_callsign, resolve_prefix};
+pub use entity::{
+    EntityInfo, EntityPlace, all_entities, resolve_callsign, resolve_place, resolve_prefix,
+};
 pub use geo::{
     distance_km, great_circle_points, grid_bearing, grid_distance_km, grid_to_latlon, is_land,
     land_cell, land_mask_dims,
@@ -90,7 +92,7 @@ pub use meters::{Meters, TxMeters, TxTelemetry};
 pub use mode::{AgcMode, Mode, NrEngine, NrLevel, NrStrength};
 pub use netcfg::{
     ClusterConfig, Credentials, FeedConfig, FreeDvReporterConfig, LookupProvider, NetworkConfig,
-    PskConfig, WsprNetConfig,
+    PskConfig, RbnConfig, WsprNetConfig,
 };
 pub use pictures::{
     IMAGE_NAME_MAX, IMAGE_PAGE_MAX, IMAGE_SLOT_THUMB_EDGE, IMAGE_SLOTS, IMAGE_SOURCE_MAX_EDGE,
@@ -101,8 +103,9 @@ pub use prop_store::{PropSources, PropStore};
 pub use propagation::{
     BandPlane, DEFAULT_HALFLIFE_S as PROP_DEFAULT_HALFLIFE_S, DEFAULT_HM_KM, GRID_CELLS,
     GRID_H as PROP_GRID_H, GRID_W as PROP_GRID_W, MAX_HOP_KM, MAX_HOPS, MIN_MUF_PATH_KM,
-    MIN_MUF_PATHS, PropField, PropMuf, PropObservation, PropSource, REF_TX_DBM, SPLAT_SIGMA_KM,
-    cell_center, cell_of, fof2_floor_mhz, margin_db, muf3000_floor_mhz, obliquity_factor,
+    MIN_MUF_PATHS, PropField, PropMuf, PropObservation, PropPath, PropSource, REF_TX_DBM,
+    SPLAT_SIGMA_KM, cell_center, cell_of, fof2_floor_mhz, margin_db, muf3000_floor_mhz,
+    obliquity_factor,
 };
 pub use radio::{
     Backend, CONVERTER_OFFSET_MAX_HZ, CONVERTER_PRESETS, CatConfig, CatFamily, DigiMode,

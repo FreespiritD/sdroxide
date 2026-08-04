@@ -133,6 +133,46 @@ pub(in crate::app) fn load_broadcast_stations() -> Vec<sdroxide_types::Broadcast
     sdroxide_types::broadcast::builtin().to_vec()
 }
 
+// ── Band conditions ──────────────────────────────────────────────────────────
+//
+// Fetched here rather than by the 3D view, and this is the one product of the
+// solar feed that works that way. The verdicts colour the band menu, which is
+// on screen for the whole session — waiting for a window most operators never
+// open would have left the feature blank for them.
+//
+// It is still one request an hour: this shares the solar disk cache and its
+// validators with the feed's own copy, so with the 3D view open the second of
+// the two is a conditional GET that comes back 304. The publisher asks for
+// hourly at most and that is what is honoured.
+
+/// Fetch (or reuse) the published band conditions on a worker thread.
+///
+/// Off the UI thread because it is a network round trip; the app picks the
+/// result up from the receiver on a later frame. `None` means the thread could
+/// not be spawned at all — an expired cache and an unreachable server both
+/// arrive as `Ok(None)` on the channel instead, and leave the last known
+/// verdicts on screen with their age.
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::app) fn spawn_band_conditions_fetch()
+-> Option<std::sync::mpsc::Receiver<Option<sdroxide_solar::BandConditions>>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("band-conditions".into())
+        .spawn(move || {
+            let _ = tx.send(sdroxide_solar::band_conditions_cached());
+        })
+        .ok()?;
+    Some(rx)
+}
+
+/// The browser has no disk cache and no HTTP client of its own; a viewer's
+/// verdicts arrive over the solar relay instead.
+#[cfg(target_arch = "wasm32")]
+pub(in crate::app) fn spawn_band_conditions_fetch()
+-> Option<std::sync::mpsc::Receiver<Option<sdroxide_solar::BandConditions>>> {
+    None
+}
+
 /// The result of a background schedule download.
 pub(in crate::app) type ScheduleFetch = Result<Vec<sdroxide_types::BroadcastStation>, String>;
 

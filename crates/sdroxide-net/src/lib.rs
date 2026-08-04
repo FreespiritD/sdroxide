@@ -17,6 +17,7 @@ mod poll;
 mod pota;
 mod pskreporter;
 mod pskupload;
+mod rbn;
 mod socketio;
 mod sota;
 mod upload;

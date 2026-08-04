@@ -42,6 +42,50 @@ impl Default for ClusterConfig {
     }
 }
 
+/// The Reverse Beacon Network's aggregated skimmer feed.
+///
+/// Speaks the same telnet protocol as a DX cluster node and is deliberately a
+/// separate config anyway, because it is not one: RBN carries every signal
+/// every skimmer hears, several times each, and the spots go to the
+/// propagation map rather than into the spot list. Merging the two settings
+/// would invite pointing a cluster at RBN's port, and RBN asks specifically
+/// that its feed never be re-injected into the cluster network.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RbnConfig {
+    pub enabled: bool,
+    pub host: String,
+    /// 7000 for the CW/RTTY skimmers, 7001 for the FT8/FT4 ones.
+    pub port: u16,
+    /// Login callsign. RBN wants a real one; falls back to the operator
+    /// callsign when empty, as the cluster does.
+    pub login: String,
+    /// Commands sent after login, one per line. The place to narrow the
+    /// firehose — a DX Spider node accepts `set/filter` lines, and an operator
+    /// who only cares about their own continent should say so here rather than
+    /// download the world and discard it.
+    pub commands: Vec<String>,
+}
+
+impl Default for RbnConfig {
+    fn default() -> Self {
+        RbnConfig {
+            // On by default, unlike every other feed here, because this one
+            // costs the operator nothing and answers a question they always
+            // have. It puts nothing on the air, needs no account, and is the
+            // only thing that can tell a station monitoring one band what the
+            // other nine are doing. A callsign is still required to connect —
+            // see `SpotManager::rebuild_rbn` — so a fresh install with no
+            // operator identity set opens no socket.
+            enabled: true,
+            host: "telnet.reversebeacon.net".into(),
+            port: 7000,
+            login: String::new(),
+            commands: Vec::new(),
+        }
+    }
+}
+
 /// A polled HTTP spot feed (POTA / SOTA).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -243,6 +287,11 @@ pub struct NetworkConfig {
     // ── WSPRnet ──
     /// The WSPR network, both directions. Appended last, as the wire requires.
     pub wspr: WsprNetConfig,
+
+    // ── Reverse Beacon Network ──
+    /// The skimmer firehose, which feeds the propagation map rather than the
+    /// spot list. Appended last, as the wire requires.
+    pub rbn: RbnConfig,
 }
 
 impl Default for NetworkConfig {
@@ -269,6 +318,7 @@ impl Default for NetworkConfig {
             auto_upload_qrz: false,
             auto_upload_clublog: false,
             wspr: WsprNetConfig::default(),
+            rbn: RbnConfig::default(),
         }
     }
 }

@@ -483,6 +483,16 @@ fn time_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
 /// replay runs.
 /// What the propagation heat draws, and how long it remembers.
 fn prop_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
+    // A popup sizes itself to its content, and with the layer switched off this
+    // one's content is a single chip — which wrapped the explanation underneath
+    // it into a column the width of the word SHOW. Ask for a readable width up
+    // front so the box is the same size whether the layer is on or off, and so
+    // the source chips below get a row rather than a stack. Clamped to the
+    // viewport because this window opens on phones too; `popup_body` caps the
+    // outer width at the same figure.
+    let screen_w = ui.ctx().content_rect().width();
+    ui.set_min_width((screen_w - 24.0).clamp(160.0, 330.0));
+
     let on = st.layer(layer::PROPAGATION);
     ui.horizontal_wrapped(|ui| {
         if chrome::chip_accent(ui, on, "SHOW", theme::CYAN, theme::INK_ON_CYAN)
@@ -500,8 +510,10 @@ fn prop_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
     if !on {
         ui.label(
             RichText::new(
-                "Shows only paths this station has been one end of, placed at the midpoint \
-                 of each — where the ionosphere did the work.",
+                "Paints the globe by what is getting through, on each band. Every reception \
+                 is placed at the midpoint of its path — where the ionosphere did the work — \
+                 rather than at the far station. Built from what this station hears, plus \
+                 the world's skimmers when the Reverse Beacon Network is switched on.",
             )
             .size(10.5)
             .weak(),
@@ -589,6 +601,13 @@ fn prop_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
                     sdroxide_types::PropSource::WsprHeardUs => {
                         "Stations that reported hearing this one, downloaded from WSPRnet. The \
                          only feedback a transmitting beacon ever gets."
+                    }
+                    sdroxide_types::PropSource::Rbn => {
+                        "Reverse Beacon Network skimmers: what everyone else is hearing, on \
+                         every band, including the ones this radio is not on. Coarser than \
+                         the rest — an RBN line carries no locators, so both ends are placed \
+                         at their country's centre, which is close for a small country and \
+                         badly out for a large one. Switch on under Settings → Spots."
                     }
                     _ => {
                         "Decodes this station made. Each is measured against its own mode's \

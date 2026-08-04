@@ -38,6 +38,34 @@ pub fn parse_unix(s: &str) -> Option<i64> {
     Some(ymd_hms_to_unix(y, mo, da, h, mi, se))
 }
 
+/// Parse `04 Aug 2026 0529 GMT` — HamQSL's `<updated>` stamp.
+///
+/// Its own parser because it shares no shape at all with the ISO-ish family
+/// [`parse_unix`] accepts: day first, a named month, and a four-digit time
+/// with no separator. Bending that one to take this as well would make it
+/// accept a good deal that is not a timestamp.
+pub fn parse_dmy_hhmm(s: &str) -> Option<i64> {
+    const MONTHS: [&str; 12] =
+        ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+    let mut t = s.split_whitespace();
+    let da: u32 = t.next()?.parse().ok()?;
+    let mon = t.next()?.to_ascii_uppercase();
+    let mo = MONTHS.iter().position(|m| *m == mon)? as u32 + 1;
+    let y: i64 = t.next()?.parse().ok()?;
+    // "0529", and occasionally "05:29" — take both rather than lose the whole
+    // stamp to a punctuation change.
+    let hm = t.next()?.replace(':', "");
+    if hm.len() != 4 || !hm.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let h: u32 = hm[..2].parse().ok()?;
+    let mi: u32 = hm[2..].parse().ok()?;
+    if !(1..=31).contains(&da) || h > 23 || mi > 59 {
+        return None;
+    }
+    Some(ymd_hms_to_unix(y, mo, da, h, mi, 0))
+}
+
 /// `YYYY-MM-DD` for a query parameter.
 pub fn ymd(unix: i64) -> String {
     let (y, m, d, _, _, _) = utc_ymd_hms(unix);

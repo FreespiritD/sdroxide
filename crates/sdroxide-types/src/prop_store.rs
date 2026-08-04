@@ -21,7 +21,9 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::propagation::{DEFAULT_HM_KM, PropField, PropObservation, PropSource, margin_db};
+use crate::propagation::{
+    DEFAULT_HM_KM, PropField, PropObservation, PropPath, PropSource, margin_db,
+};
 use crate::{Band, Decode, QsoRecord, WsprSpot, grid_to_latlon};
 
 /// Which sources feed the field.
@@ -60,6 +62,10 @@ impl PropSources {
 /// Bounds the de-duplication set. Ten thousand is several hours of a busy band;
 /// past that the earliest are long outside the decay window anyway, so
 /// re-counting one would change nothing visible.
+///
+/// Only the sources that re-present a rolling list every frame are in here —
+/// see [`PropStore::deposit`] for why a push feed is not, and why letting one
+/// in would have made this figure meaningless.
 const MAX_RECORDED: usize = 10_000;
 
 /// The propagation field, and what has already been folded into it.
@@ -206,6 +212,34 @@ impl PropStore {
         }
     }
 
+    /// Fold in paths a spotting network demonstrated between two other
+    /// stations.
+    ///
+    /// The one entry point whose paths need not touch this station at all, so
+    /// unlike every other `observe_*` it does not read `home` and works before
+    /// the operator has entered a locator. That is the whole point of it: what
+    /// the rest of the world is hearing is exactly the evidence a station
+    /// monitoring one band cannot collect for itself.
+    ///
+    /// Positions come from the caller and are only as good as the caller made
+    /// them — [`PropSource::Rbn`] paths are placed from country centres. The
+    /// map keeps them on their own layer for that reason.
+    ///
+    /// Each batch is folded straight in without going through the
+    /// de-duplication set: a push feed delivers every path exactly once, so
+    /// there is nothing to de-duplicate, and running its volume through that
+    /// set would evict the keys the other sources depend on. See
+    /// [`PropStore::deposit`].
+    pub fn observe_paths(&mut self, paths: &[PropPath], source: PropSource, now_utc: i64) {
+        if !self.sources.has(source) {
+            return;
+        }
+        for p in paths {
+            let margin = p.snr_db.map(|snr| margin_db(source, snr, None));
+            self.deposit(p.tx, p.rx, p.freq_hz, p.at_utc, source, margin, now_utc);
+        }
+    }
+
     /// Fold in the logbook — every contact is a path that was open once.
     ///
     /// Keyed on the book's length, so a book of ten thousand contacts is walked
@@ -294,6 +328,30 @@ impl PropStore {
                 self.recorded.remove(&old);
             }
         }
+        self.deposit(tx, rx, freq_hz, at_utc, source, margin, now_utc);
+    }
+
+    /// Deposit without the de-duplication bookkeeping, for a caller whose
+    /// observations are unique by construction.
+    ///
+    /// The set above exists because most sources here hand over the same
+    /// rolling list on every frame. A push feed does not: each batch is
+    /// delivered once and then dropped. Putting those through the set would be
+    /// worse than useless — RBN alone produces thousands of keys a minute,
+    /// which at any sane cap would evict every *other* source's keys within a
+    /// few minutes and start double-counting the decodes the set is actually
+    /// there to protect.
+    #[allow(clippy::too_many_arguments)]
+    fn deposit(
+        &mut self,
+        tx: (f64, f64),
+        rx: (f64, f64),
+        freq_hz: f64,
+        at_utc: i64,
+        source: PropSource,
+        margin: Option<f32>,
+        now_utc: i64,
+    ) {
         let Some(obs) = PropObservation::new(tx, rx, freq_hz, at_utc, source, margin) else {
             return;
         };
@@ -527,6 +585,107 @@ mod tests {
         }
         assert!(s.recorded.len() <= MAX_RECORDED, "{} keys retained", s.recorded.len());
         assert_eq!(s.recorded.len(), s.order.len());
+    }
+
+    /// A skimmer network's paths touch this station at neither end, and the
+    /// store must still take them — a map of what everyone else is hearing is
+    /// the entire reason this entry point exists.
+    #[test]
+    fn a_path_between_two_other_stations_is_folded_without_a_home() {
+        let tokyo = grid_to_latlon("PM95").unwrap();
+        let sydney = grid_to_latlon("QF56").unwrap();
+        let mut s = PropStore::default();
+        let mut src = PropSources::default();
+        if !src.has(PropSource::Rbn) {
+            src.toggle(PropSource::Rbn);
+        }
+        s.set_sources(src);
+        // No `set_home` at all: the operator has not entered a locator.
+        s.observe_paths(
+            &[PropPath {
+                tx: tokyo,
+                rx: sydney,
+                freq_hz: 14_025_000.0,
+                at_utc: NOW,
+                snr_db: Some(19.0),
+                key: "VK2ABC>JA1XYZ".into(),
+            }],
+            PropSource::Rbn,
+            NOW,
+        );
+        assert!(s.field.plane(Band::M20).unwrap().peak() > 0.0, "the path was dropped");
+    }
+
+    /// A push feed's volume must not push the other sources out of the
+    /// de-duplication set.
+    ///
+    /// The set is bounded, and RBN alone produces more keys in three minutes
+    /// than it holds. If its paths went through it, the decode list — which
+    /// really is re-presented on every frame — would lose its key and be
+    /// counted again, and a station sitting in the window would heat its path
+    /// over and over. Whichever way that failed it would look like propagation
+    /// rather than like a bug.
+    #[test]
+    fn a_firehose_does_not_evict_the_keys_the_decode_list_depends_on() {
+        let mut s = PropStore::default();
+        let mut src = PropSources::default();
+        if !src.has(PropSource::Rbn) {
+            src.toggle(PropSource::Rbn);
+        }
+        s.set_sources(src);
+
+        // One decode, folded once.
+        let d = [decode(FAR, NOW, -12)];
+        s.observe_decodes(&d, PropSource::Ft8, 14_074_000.0, HOME, NOW);
+        let after_decode = s.field.plane(Band::M20).unwrap().peak();
+
+        // Then more skimmer paths than the whole set can hold.
+        let flood: Vec<PropPath> = (0..(MAX_RECORDED + 1000))
+            .map(|i| PropPath {
+                tx: grid_to_latlon(FAR).unwrap(),
+                rx: grid_to_latlon(HOME).unwrap(),
+                freq_hz: 7_025_000.0,
+                at_utc: NOW + i as i64,
+                snr_db: Some(19.0),
+                key: format!("SKIM{i}>DX{i}"),
+            })
+            .collect();
+        s.observe_paths(&flood, PropSource::Rbn, NOW);
+        assert!(s.recorded.len() <= MAX_RECORDED);
+
+        // The decode is still known, so re-presenting it changes nothing.
+        s.observe_decodes(&d, PropSource::Ft8, 14_074_000.0, HOME, NOW);
+        assert_eq!(
+            s.field.plane(Band::M20).unwrap().peak(),
+            after_decode,
+            "the flood evicted the decode's key and it was counted twice"
+        );
+        // ...and the flood itself landed, on its own band.
+        assert!(s.field.plane(Band::M40).unwrap().peak() > 0.0);
+    }
+
+    /// RBN is the coarsest source here, so it has to be switchable off on its
+    /// own — and the persisted bitmask predates it, so "off" is what an older
+    /// settings file means.
+    #[test]
+    fn rbn_is_skipped_when_its_source_is_disabled() {
+        let mut s = PropStore::default();
+        // The mask a settings file written before RBN existed carries.
+        s.set_sources(PropSources((1 << 6) - 1));
+        assert!(!PropSources((1 << 6) - 1).has(PropSource::Rbn));
+        s.observe_paths(
+            &[PropPath {
+                tx: grid_to_latlon(FAR).unwrap(),
+                rx: grid_to_latlon(HOME).unwrap(),
+                freq_hz: 14_025_000.0,
+                at_utc: NOW,
+                snr_db: Some(19.0),
+                key: "W3LPL>DL9XYZ".into(),
+            }],
+            PropSource::Rbn,
+            NOW,
+        );
+        assert!(s.peek().live_bands().is_empty());
     }
 
     #[test]

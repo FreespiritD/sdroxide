@@ -76,36 +76,41 @@ impl SdroxideApp {
     ) -> Option<eframe::egui::TextureId> {
         let my_grid =
             self.digi_status.as_ref().map(|s| s.config.my_grid.clone()).unwrap_or_default();
-        if my_grid.trim().is_empty() {
-            return None;
-        }
         let now = crate::time::now_unix();
         let v = self.view.solar3d;
-        self.prop.set_home(&my_grid);
         self.prop.set_halflife_min(v.prop_halflife_min);
         self.prop.set_sources(crate::prop_map::PropSources(v.prop_sources));
 
-        // Every slotted mode's decodes are observations of a path; which mode
-        // they came from only changes the decode floor they are measured
-        // against.
-        let mode = self.state.rx[0].mode;
-        let src = match mode {
-            Mode::Ft8 => Some(sdroxide_types::PropSource::Ft8),
-            Mode::Ft4 => Some(sdroxide_types::PropSource::Ft4),
-            Mode::Js8 => Some(sdroxide_types::PropSource::Js8),
-            _ => None,
-        };
-        if let Some(src) = src {
-            let decodes = std::mem::take(&mut self.digi_decodes);
-            self.prop.observe_decodes(&decodes, src, dial_hz, &my_grid, now);
-            self.digi_decodes = decodes;
+        // Everything below this needs to know where "here" is: each of these
+        // sources reports one end of a path and takes the other from the
+        // operator's own locator. A skimmer network does not — those paths are
+        // folded as they arrive and are the one thing on this map that works
+        // before the locator is filled in.
+        if !my_grid.trim().is_empty() {
+            self.prop.set_home(&my_grid);
+
+            // Every slotted mode's decodes are observations of a path; which
+            // mode they came from only changes the decode floor they are
+            // measured against.
+            let mode = self.state.rx[0].mode;
+            let src = match mode {
+                Mode::Ft8 => Some(sdroxide_types::PropSource::Ft8),
+                Mode::Ft4 => Some(sdroxide_types::PropSource::Ft4),
+                Mode::Js8 => Some(sdroxide_types::PropSource::Js8),
+                _ => None,
+            };
+            if let Some(src) = src {
+                let decodes = std::mem::take(&mut self.digi_decodes);
+                self.prop.observe_decodes(&decodes, src, dial_hz, &my_grid, now);
+                self.digi_decodes = decodes;
+            }
+            let spots = std::mem::take(&mut self.wspr_spots);
+            self.prop.observe_wspr(&spots, &my_grid, now);
+            self.wspr_spots = spots;
+            let log = std::mem::take(&mut self.qso_log);
+            self.prop.observe_log(&log, &my_grid, now);
+            self.qso_log = log;
         }
-        let spots = std::mem::take(&mut self.wspr_spots);
-        self.prop.observe_wspr(&spots, &my_grid, now);
-        self.wspr_spots = spots;
-        let log = std::mem::take(&mut self.qso_log);
-        self.prop.observe_log(&log, &my_grid, now);
-        self.qso_log = log;
 
         // The panel map's own display choice, from the panel's own settings —
         // `Solar3dView` belongs to the globe window and is republished over
@@ -140,8 +145,10 @@ impl SdroxideApp {
                 "Shade the map by where signals are actually getting through, on each band. \
                  Every reception is placed at the midpoint of its path — the patch of \
                  ionosphere that bent it — not at the far station, so this is a map of the \
-                 sky rather than of where radio amateurs live. It can only show paths this \
-                 station has taken part in.",
+                 sky rather than of where radio amateurs live. Built from paths this \
+                 station has taken part in, plus — when the Reverse Beacon Network is \
+                 switched on under Settings → Spots — what the world's skimmers are \
+                 hearing, which covers the bands this radio is not on.",
             );
             if !on {
                 return;

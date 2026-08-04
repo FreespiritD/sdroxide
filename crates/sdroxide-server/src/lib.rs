@@ -350,6 +350,11 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
                 shared.solar.observe_wspr(spots, &grid, now_utc());
             }
         }
+        RadioEvent::PropPaths(paths) => {
+            // No grid needed and none asked for: these paths touch this station
+            // at neither end, which is exactly why they are worth having.
+            shared.solar.observe_paths(paths, sdroxide_types::PropSource::Rbn, now_utc());
+        }
         RadioEvent::Ft8Status(s) => {
             shared.solar.publish(SolarServerMsg::Digi {
                 my_grid: s.config.my_grid.clone(),
@@ -474,6 +479,11 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
                 latest.tle_subs = s.clone();
                 Some(ServerMsg::TleSubStatus(s))
             }
+            // Handled above, and deliberately not forwarded: the skimmer
+            // firehose is a hundred times the spot list's traffic, and the
+            // solar relay already carries what it adds up to. See
+            // `RadioEvent::PropPaths`.
+            RadioEvent::PropPaths(_) => None,
         }
     };
     // The satellite half of the station config also drives this machine's own

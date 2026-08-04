@@ -3987,6 +3987,7 @@ impl Engine {
                 sdroxide_net::NetEvent::Upload(r) => RadioEvent::Upload(r),
                 sdroxide_net::NetEvent::Confirmations(r) => RadioEvent::Confirmations(r),
                 sdroxide_net::NetEvent::WsprSpots(s) => RadioEvent::WsprSpots(s),
+                sdroxide_net::NetEvent::PropPaths(p) => RadioEvent::PropPaths(p),
             };
             let _ = self.event_tx.send(re);
         }

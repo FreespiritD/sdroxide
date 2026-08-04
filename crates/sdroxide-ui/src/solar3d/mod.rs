@@ -147,6 +147,22 @@ impl Solar3d {
         self.lock().view.cloud_march = on;
     }
 
+    /// The published band conditions, if this window's feed has fetched them.
+    ///
+    /// The one product of this feed the *main* window reads, because it is the
+    /// one that answers a question asked from the band menu rather than from
+    /// here. `None` whenever the window has not been open, and that is not a
+    /// problem: the main window fetches these itself on its own hourly timer
+    /// (see `app::persist::spawn_band_conditions_fetch`) and both go through
+    /// the same disk cache, so this is only ever the fresher of two copies
+    /// rather than the only one.
+    pub fn band_conditions(&self) -> Option<sdroxide_solar::BandConditions> {
+        let st = self.lock();
+        let shared = st.data.as_ref()?;
+        let d = shared.lock().unwrap_or_else(|e| e.into_inner());
+        d.weather.band_conditions.clone()
+    }
+
     /// Emit the window for this frame (or not, when closed). Call once per root
     /// pass, after the main UI. `grid` is the operator's Maidenhead locator and
     /// `awards` the log's DXCC coverage for the "what is still missing" layer.

@@ -17,6 +17,7 @@ use crate::cluster::ClusterHandle;
 use crate::event::{EventTx, FeedBatch, FeedTx, NetEvent};
 use crate::freedvreporter::ReporterHandle;
 use crate::poll::{self, PollHandle};
+use crate::rbn::RbnHandle;
 use crate::wsprnet::{self, WsprPollHandle, WsprUploadHandle};
 use crate::{pota, pskreporter, sota};
 
@@ -38,6 +39,9 @@ pub struct SpotManager {
     dial_bits: Arc<AtomicU64>,
 
     cluster: Option<ClusterHandle>,
+    /// The Reverse Beacon Network reader. Emits paths, not spots, so unlike
+    /// every other feed here it has no entry in `by_kind`.
+    rbn: Option<RbnHandle>,
     pota: Option<PollHandle>,
     sota: Option<PollHandle>,
     psk: Option<PollHandle>,
@@ -80,6 +84,7 @@ impl SpotManager {
             last_snapshot: Vec::new(),
             dial_bits: Arc::new(AtomicU64::new(14_074_000f64.to_bits())),
             cluster: None,
+            rbn: None,
             pota: None,
             sota: None,
             psk: None,
@@ -101,6 +106,9 @@ impl SpotManager {
         let old = std::mem::replace(&mut self.cfg, cfg);
         if old.cluster != self.cfg.cluster {
             self.rebuild_cluster();
+        }
+        if old.rbn != self.cfg.rbn {
+            self.rebuild_rbn();
         }
         if old.pota != self.cfg.pota {
             self.rebuild_pota();
@@ -149,6 +157,10 @@ impl SpotManager {
         // The cluster logs in with the callsign; the reporter sends both.
         if call_changed && self.cfg.cluster.login.trim().is_empty() {
             self.rebuild_cluster();
+        }
+        // RBN logs in the same way, and wants a real callsign.
+        if call_changed && self.cfg.rbn.login.trim().is_empty() {
+            self.rebuild_rbn();
         }
         self.rebuild_freedv();
         // Our callsign and grid *are* the PSK Reporter receiver record.
@@ -364,6 +376,34 @@ impl SpotManager {
         }
     }
 
+    /// (Re)start the RBN reader.
+    ///
+    /// No `by_kind` entry to clear: RBN produces paths, and a path already
+    /// folded into the propagation field is not something a feed owns and can
+    /// take back. Switching RBN off stops new evidence arriving and lets what
+    /// is there decay, which is what switching off a source should do.
+    fn rebuild_rbn(&mut self) {
+        self.rbn = None; // drop stops the thread
+        if !self.cfg.rbn.enabled || self.cfg.rbn.host.trim().is_empty() {
+            return;
+        }
+        let login = if self.cfg.rbn.login.trim().is_empty() {
+            self.op_call.trim().to_string()
+        } else {
+            self.cfg.rbn.login.trim().to_string()
+        };
+        // RBN wants a real callsign and will not send spots without one. Since
+        // this feed is on by default, "no operator identity yet" is a state a
+        // fresh install genuinely passes through — connecting anyway would open
+        // a socket that could only ever sit at the prompt. `set_operator`
+        // rebuilds when the callsign arrives.
+        if login.is_empty() {
+            return;
+        }
+        self.rbn =
+            Some(RbnHandle::connect(self.cfg.rbn.clone(), login, now_utc, self.event_tx.clone()));
+    }
+
     fn rebuild_pota(&mut self) {
         self.pota = None;
         self.by_kind.remove(&SpotKind::Pota);
@@ -484,5 +524,52 @@ impl SpotManager {
 impl Default for SpotManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RBN is the one feed here that is on out of the box, so "the operator has
+    /// not said who they are yet" is a state a fresh install really passes
+    /// through — and RBN will not send a spot to a session that never gave a
+    /// callsign. Connecting anyway would leave a socket sitting at the prompt.
+    #[test]
+    fn rbn_waits_for_a_callsign_before_connecting() {
+        let mut m = SpotManager::new();
+        assert!(m.cfg.rbn.enabled, "RBN is meant to be on by default");
+
+        m.set_config(NetworkConfig::default());
+        assert!(m.rbn.is_none(), "connected to RBN with no callsign to log in as");
+
+        // The identity arrives — from the digi config, on a later tick.
+        m.set_operator("OE1TEST", "JN88");
+        assert!(m.rbn.is_some(), "the callsign arrived and RBN did not start");
+    }
+
+    /// The override is what an operator uses when their RBN login differs from
+    /// the callsign they are operating as.
+    #[test]
+    fn an_explicit_login_does_not_need_the_operator_identity() {
+        let mut m = SpotManager::new();
+        let mut cfg = NetworkConfig::default();
+        cfg.rbn.login = "  OE1TEST  ".into();
+        m.set_config(cfg);
+        assert!(m.rbn.is_some(), "an explicit login should have been enough");
+    }
+
+    /// Switching it off has to stop the thread, not merely stop reading it.
+    #[test]
+    fn disabling_rbn_drops_the_connection() {
+        let mut m = SpotManager::new();
+        m.set_operator("OE1TEST", "JN88");
+        m.set_config(NetworkConfig::default());
+        assert!(m.rbn.is_some());
+
+        let mut off = NetworkConfig::default();
+        off.rbn.enabled = false;
+        m.set_config(off);
+        assert!(m.rbn.is_none(), "the reader outlived being switched off");
     }
 }

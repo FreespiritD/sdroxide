@@ -269,6 +269,7 @@ impl eframe::App for SdroxideApp {
                 RadioEvent::StationConfig(c) => {
                     if !self.net_cfg_seeded {
                         self.net_cluster_cmds = c.net.cluster.commands.join("\n");
+                        self.net_rbn_cmds = c.net.rbn.commands.join("\n");
                         self.net_cfg_edit = c.net.clone();
                         self.net_cfg_seeded = true;
                     }
@@ -304,6 +305,21 @@ impl eframe::App for SdroxideApp {
                 RadioEvent::CallsignResult(info) => self.apply_callsign(info),
                 RadioEvent::Upload(r) => self.on_upload_result(r),
                 RadioEvent::Confirmations(recs) => self.apply_confirmations(recs),
+                // Folded here rather than queued for the map's own pass: these
+                // arrive whether or not a map is on screen, and a queue nobody
+                // drained would grow all session. The display settings are
+                // applied first because they decide whether this source counts
+                // at all — `prop_texture` does the same before its own folds.
+                RadioEvent::PropPaths(paths) => {
+                    let v = self.view.solar3d;
+                    self.prop.set_halflife_min(v.prop_halflife_min);
+                    self.prop.set_sources(crate::prop_map::PropSources(v.prop_sources));
+                    self.prop.observe_paths(
+                        &paths,
+                        sdroxide_types::PropSource::Rbn,
+                        crate::time::now_unix(),
+                    );
+                }
             }
         }
         // A switched-off skimmer stops emitting, so its last boxes would sit on
@@ -312,6 +328,7 @@ impl eframe::App for SdroxideApp {
             self.skimmer_spots.retain(|s| self.state.skimmer.enabled(s.kind));
         }
         self.poll_adif_import();
+        self.refresh_band_conditions(now);
 
         // A server that asks for a password gets the whole window until it has
         // one. Nothing below this point has anything to draw — no capabilities,
@@ -734,6 +751,7 @@ impl eframe::App for SdroxideApp {
         self.logbook_window(&ctx);
         self.spots_window(&ctx, &mut cmds);
         self.awards_window(&ctx);
+        self.bands_window(&ctx);
         self.help.ui(&ctx);
         // Last, so it lands on top of everything else that opened this frame.
         self.oob_tx_window(&ctx);

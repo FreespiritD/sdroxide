@@ -198,6 +198,17 @@ pub enum RadioEvent {
     /// as [`RadioEvent::Memories`]. What the scanner is *doing* rides in
     /// [`crate::RadioState::scan`] instead, being small and constantly changing.
     Scanner(crate::ScannerConfig),
+    /// Paths a spotting network demonstrated between two other stations —
+    /// the Reverse Beacon Network's skimmers.
+    ///
+    /// The one event here that is deliberately **not** forwarded to a remote
+    /// client. A few hundred of these arrive every five seconds, which is two
+    /// orders of magnitude more traffic than the spot list, and the useful form
+    /// of them is not the paths but the field they add up to. The engine host
+    /// folds them into its own store and the solar relay ships the *result* —
+    /// a handful of `BandPlane`s — to every viewer, which is both smaller and
+    /// the thing a map actually draws.
+    PropPaths(Vec<crate::PropPath>),
 }
 
 /// Snapshot of the frontend's switchable sound devices (native clients).

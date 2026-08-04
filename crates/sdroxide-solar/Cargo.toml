@@ -17,6 +17,11 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 # chrono comes in with default features off too, so there is no `clock`, no
 # `wasmbind` and no js-sys — it builds for wasm32 unchanged.
 sgp4 = { version = "2.4.0", default-features = false, features = ["alloc", "std"] }
+# HamQSL's band-conditions feed is the one product here that is XML rather than
+# JSON. Pure Rust, no I/O, already in the lock file via sdroxide-net, and it
+# parses rather than pattern-matches — the alternative was hand-scanning for
+# tags, which breaks the first time an attribute order changes.
+roxmltree = "0.21.1"
 
 # The network and filesystem half (src/feed.rs, src/cache.rs). The browser
 # build gets the same data relayed over the server's WebSocket instead, so none

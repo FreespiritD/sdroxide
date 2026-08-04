@@ -5219,6 +5219,7 @@ version = "0.9.0"
 dependencies = [
  "crossbeam-channel",
  "image",
+ "roxmltree",
  "sdroxide-config",
  "sdroxide-types",
  "serde",

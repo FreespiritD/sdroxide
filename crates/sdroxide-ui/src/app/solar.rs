@@ -4,6 +4,10 @@
 //! [`crate::solar3d`]) and cannot borrow [`SdroxideApp`], so the traffic layer
 //! it draws — who is being heard on the digital modes right now — is built
 //! here each frame and handed over by value.
+//!
+//! Band conditions go the other way, and are here for that reason: they are the
+//! one piece of space weather the *main* window shows, so the main window keeps
+//! them current itself rather than waiting for the 3D view to be opened.
 
 use eframe::egui;
 
@@ -11,7 +15,7 @@ use eframe::egui;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::time::now_unix;
 
-use crate::app::SdroxideApp;
+use crate::app::{SdroxideApp, persist};
 
 impl SdroxideApp {
     /// The FT8/FT4 activity to plot on the 3D globe: the same decoded stations
@@ -73,6 +77,53 @@ impl SdroxideApp {
             });
         }
         traffic
+    }
+
+    /// Keep the band-conditions verdicts and the day/night flag current.
+    ///
+    /// Called once a frame, and cheap on almost all of them: the fetch is a
+    /// worker thread polled without blocking, and the ephemeris runs once a
+    /// minute rather than sixty times a second for an answer that changes twice
+    /// a day.
+    pub(in crate::app) fn refresh_band_conditions(&mut self, now_t: f64) {
+        // A fetch that finished. `None` on the channel means the worker had
+        // nothing usable — an expired cache and an unreachable server both
+        // land here — so the last known verdicts stay up, with their age.
+        if let Some(rx) = &self.band_conditions_fetch
+            && let Ok(result) = rx.try_recv()
+        {
+            self.band_conditions_fetch = None;
+            if result.is_some() {
+                self.band_conditions = result;
+            }
+        }
+        // Ask again on the hour. The worker returns the cached copy without a
+        // request when it is still current, so this interval is when to *look*
+        // rather than when to fetch — the publisher's limit is enforced there.
+        if self.band_conditions_fetch.is_none() && now_t >= self.band_conditions_due {
+            self.band_conditions_due = now_t + 3600.0;
+            self.band_conditions_fetch = persist::spawn_band_conditions_fetch();
+        }
+        // While the 3D view is open its own feed refreshes the same document,
+        // and its copy is at least as fresh as this one.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.solar.open
+            && let Some(c) = self.solar.band_conditions()
+        {
+            self.band_conditions = Some(c);
+        }
+
+        if now_t - self.daylight_at < 60.0 {
+            return;
+        }
+        self.daylight_at = now_t;
+        // No locator, no day or night: the published table is stated for both
+        // and picking one at random would be a coin toss shown as a fact. The
+        // daytime column is the fallback only because something has to be
+        // chosen for the case where nothing is drawn from it anyway.
+        self.daylight = sdroxide_types::grid_to_latlon(&self.my_grid()).is_none_or(|(lat, lon)| {
+            sdroxide_solar::is_daylight_at(lat, lon, crate::time::now_unix())
+        });
     }
 
     /// The ☀ 3D chip: the solar-system view, in whichever window the platform

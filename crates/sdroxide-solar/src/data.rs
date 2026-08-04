@@ -61,10 +61,18 @@ pub enum Source {
     /// The visible half of it: the low cloud the infrared cannot see, on
     /// whichever side of the planet the Sun is up.
     CloudsVis,
+    /// N0NBH's calculated band conditions — the only source here that is one
+    /// person's server rather than an institution's, and the only one whose
+    /// publisher states a polling limit. See [`crate::indices::BAND_CONDITIONS_URL`].
+    ///
+    /// Appended last: `SourceStatus` travels to the browser as a vector indexed
+    /// by [`Source::index`], so the position of every existing entry is part of
+    /// the wire format.
+    BandConditions,
 }
 
 impl Source {
-    pub const ALL: [Source; 14] = [
+    pub const ALL: [Source; 15] = [
         Source::Sun,
         Source::Cme,
         Source::Flare,
@@ -79,6 +87,7 @@ impl Source {
         Source::KpForecast,
         Source::Clouds,
         Source::CloudsVis,
+        Source::BandConditions,
     ];
 
     pub fn label(self) -> &'static str {
@@ -97,6 +106,7 @@ impl Source {
             Source::KpForecast => "Kp+3d",
             Source::Clouds => "CLOUD",
             Source::CloudsVis => "CLOUD/V",
+            Source::BandConditions => "BANDS",
         }
     }
 
@@ -150,6 +160,12 @@ impl Source {
             // that most of the fetches that find nothing new are cheap ones.
             Source::Clouds => 600,
             Source::CloudsVis => 600,
+            // The publisher's own limit, not a tuning choice: the HamQSL FAQ
+            // asks for hourly at most, because the flux figures behind these
+            // verdicts update hourly and because the feed runs on shared
+            // hosting the author has said he will withdraw it from if it
+            // attracts complaints. Do not shorten this.
+            Source::BandConditions => 3600,
         }
     }
 
@@ -171,6 +187,7 @@ impl Source {
             Source::KpForecast => 109,
             Source::Clouds => 127,
             Source::CloudsVis => 137,
+            Source::BandConditions => 149,
         }
     }
 }

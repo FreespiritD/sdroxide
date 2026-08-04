@@ -633,8 +633,9 @@ impl SdroxideApp {
         // and it opens on every layout, so it is the one that has to be held
         // inside the screen in both directions rather than hang off it.
         let (state, caps) = (&self.state, &self.caps);
+        let (conditions, daylight) = (self.band_conditions.as_ref(), self.daylight);
         crate::chrome::fading_menu_popup(ui, &btn, &mut self.mode_popup_since, |ui| {
-            band_mode_menu(ui, mode, state, caps.as_ref(), cmds);
+            band_mode_menu(ui, mode, state, caps.as_ref(), conditions, daylight, cmds);
         });
     }
 
@@ -1597,6 +1598,15 @@ impl SdroxideApp {
             {
                 self.show_awards = !self.show_awards;
             }
+            if crate::chrome::chip(ui, self.show_bands, "BANDS")
+                .on_hover_text(
+                    "Band conditions — the published forecast beside what has \
+                     actually been heard on each band",
+                )
+                .clicked()
+            {
+                self.show_bands = !self.show_bands;
+            }
             if crate::chrome::chip(ui, self.show_memories, "MEM")
                 .on_hover_text("Memory channels")
                 .clicked()
@@ -1655,6 +1665,11 @@ fn band_mode_menu(
     mode: Mode,
     state: &RadioState,
     caps: Option<&DeviceCaps>,
+    // Passed in rather than read off the app, so the layout test above can
+    // still build this menu without one. `None` is the normal state until the
+    // solar window has been opened once, and colours nothing.
+    conditions: Option<&sdroxide_solar::BandConditions>,
+    daylight: bool,
     cmds: &mut Vec<Command>,
 ) {
     crate::chrome::menu_caption(ui, "Band");
@@ -1690,7 +1705,26 @@ fn band_mode_menu(
                     None => !digital && state.band == b,
                 }
             };
-            if crate::chrome::chip_enabled(ui, enabled, active, b.label()).clicked() {
+            // The published forecast, where there is one. Colour only: the
+            // chip still says what band it is, and a band nothing is published
+            // about — 160 m, 60 m, and everything above 10 m — looks exactly
+            // as it did before rather than being given a verdict it has not
+            // got. The words, the source and the age are in the tooltip.
+            let verdict = conditions.and_then(|c| c.for_band(b, daylight));
+            let tint = verdict
+                .map(sdroxide_solar::BandRating::of)
+                .and_then(crate::app::bands::rating_color);
+            let resp = crate::chrome::chip_enabled_tinted(ui, enabled, active, b.label(), tint);
+            let resp = match verdict {
+                Some(v) => resp.on_hover_text(format!(
+                    "{}: {v} ({}) — forecast by HAMQSL.com from the solar indices, \
+                     not a measurement of your own path.",
+                    b.label(),
+                    if daylight { "daytime" } else { "night" },
+                )),
+                None => resp,
+            };
+            if resp.clicked() {
                 match digi_hz {
                     Some(hz) => cmds.push(Command::SetVfo { vfo: state.active_vfo, hz }),
                     None => cmds.push(Command::SetBand(b)),
@@ -1888,7 +1922,7 @@ mod tests {
             let btn = crate::chrome::chip(ui, false, "20m · USB");
             let id = egui::Popup::default_response_id(&btn);
             crate::chrome::menu_popup(ui, &btn, |ui| {
-                band_mode_menu(ui, state.rx[0].mode, &state, None, &mut Vec::new());
+                band_mode_menu(ui, state.rx[0].mode, &state, None, None, true, &mut Vec::new());
             });
             id
         };

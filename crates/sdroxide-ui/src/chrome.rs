@@ -598,6 +598,32 @@ pub fn chip_enabled(ui: &mut Ui, enabled: bool, selected: bool, label: &str) -> 
         .inner
 }
 
+/// [`chip_enabled`], with the label carrying a colour while it is unselected.
+///
+/// For a row where each chip has a status of its own — the band menu, where
+/// every band has published conditions — and the reader is choosing between
+/// them. Only while unselected: a selected chip is already filled with the
+/// accent, and a second colour inside it would be read as a different state
+/// rather than the same one. `None` leaves the chip exactly as it was, which
+/// is what a band with nothing published must look like.
+pub fn chip_enabled_tinted(
+    ui: &mut Ui,
+    enabled: bool,
+    selected: bool,
+    label: &str,
+    tint: Option<Color32>,
+) -> Response {
+    let size = vec2(chip_width(ui, label, None), chip_height(ui, None));
+    let text = match tint.filter(|_| !selected) {
+        Some(c) => RichText::new(label).color(c),
+        None => RichText::new(label),
+    };
+    ui.allocate_ui(size, |ui| {
+        ui.add_enabled_ui(enabled, |ui| chip_impl(ui, selected, text, None, Sense::click())).inner
+    })
+    .inner
+}
+
 /// Chip with an explicit accent fill when selected (e.g. PTT red).
 pub fn chip_accent(
     ui: &mut Ui,

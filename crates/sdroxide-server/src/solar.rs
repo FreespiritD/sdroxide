@@ -243,6 +243,23 @@ impl SolarHub {
         self.relay_prop(&mut g, now_utc);
     }
 
+    /// The same for paths between two other stations.
+    ///
+    /// No `set_home`, and deliberately: these paths are not measured from here,
+    /// so they neither need the operator's locator nor should be forgotten when
+    /// it changes. A skimmer network's view of the ionosphere is the same view
+    /// whoever is watching it.
+    pub(crate) fn observe_paths(
+        &self,
+        paths: &[sdroxide_types::PropPath],
+        source: sdroxide_types::PropSource,
+        now_utc: i64,
+    ) {
+        let mut g = self.prop.lock().unwrap();
+        g.0.observe_paths(paths, source, now_utc);
+        self.relay_prop(&mut g, now_utc);
+    }
+
     /// Send the field on, no more often than [`PROP_RELAY_INTERVAL`].
     fn relay_prop(&self, g: &mut (sdroxide_types::PropStore, Option<Instant>), now_utc: i64) {
         let due = g.1.is_none_or(|t| t.elapsed() >= PROP_RELAY_INTERVAL);

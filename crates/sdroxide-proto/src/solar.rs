@@ -49,7 +49,14 @@ use sdroxide_types::Decode;
 /// Unlike the awards layer this is deliberately *not* left blank in the browser
 /// — it is live data about the station's own conditions, which is exactly what
 /// this relay exists to carry.
-pub const SOLAR_PROTO_VERSION: u16 = 5;
+/// v6: band conditions. Two decode-breaking changes at once, and one bump
+/// covers both. [`SpaceWeather`] gained a `band_conditions` field, which moves
+/// the postcard layout of every [`SolarServerMsg::Weather`]; and
+/// `sdroxide_solar::Source::ALL` grew by one, which changes the length and the
+/// indexing of [`SolarServerMsg::Status`]. An older viewer would mis-decode the
+/// first and mis-attribute every age in the second, so it is rejected at the
+/// handshake rather than left to draw a plausible wrong picture.
+pub const SOLAR_PROTO_VERSION: u16 = 6;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SolarClientMsg {
@@ -225,7 +232,10 @@ mod tests {
             SolarServerMsg::HelloAck { proto: SOLAR_PROTO_VERSION },
             SolarServerMsg::Error("no feed".into()),
             SolarServerMsg::Pong,
-            SolarServerMsg::Status(vec![SourceStatus::default(); 14]),
+            SolarServerMsg::Status(vec![
+                SourceStatus::default();
+                sdroxide_solar::Source::ALL.len()
+            ]),
             SolarServerMsg::Weather {
                 weather: SpaceWeather::default(),
                 aurora_power: None,
@@ -293,7 +303,10 @@ mod tests {
     /// its own array from a stale constant would silently mis-attribute ages.
     #[test]
     fn the_status_vector_matches_the_source_list() {
-        let m = SolarServerMsg::Status(vec![SourceStatus::default(); 14]);
+        let m = SolarServerMsg::Status(vec![
+            SourceStatus::default();
+            sdroxide_solar::Source::ALL.len()
+        ]);
         let SolarServerMsg::Status(v) = &m else { unreachable!() };
         assert_eq!(v.len(), sdroxide_solar::Source::ALL.len());
     }

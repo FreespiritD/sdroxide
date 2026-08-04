@@ -51,6 +51,22 @@ pub enum PropSource {
     /// A contact in the logbook. Carries a path and no signal report worth the
     /// name.
     Logged,
+    /// A Reverse Beacon Network skimmer spot: somebody else's receiver heard
+    /// somebody else's transmitter.
+    ///
+    /// The only source here whose paths do not touch this station at all, and
+    /// the only one whose endpoints are not locators. An RBN line carries two
+    /// callsigns and no grids, so both ends are placed at their DXCC entity's
+    /// nominal centre — see [`crate::resolve_place`]. That is accurate enough
+    /// for a small country and badly wrong for a large one, which is why this
+    /// is a separate source with its own switch rather than more of the same
+    /// evidence.
+    ///
+    /// Appended last deliberately: [`PropSources`](crate::PropSources) is a
+    /// persisted bitmask over `ALL`, so a settings file written before this
+    /// existed loads with RBN off, which is the right default for a source
+    /// this coarse.
+    Rbn,
 }
 
 impl PropSource {
@@ -65,6 +81,13 @@ impl PropSource {
             PropSource::Js8 => -24.0,
             PropSource::Ft8 => -21.0,
             PropSource::Ft4 => -17.0,
+            // A CW skimmer decodes down to a few dB S/N in its own narrow
+            // bandwidth — a few hundred hertz, not the 2500 the other figures
+            // are referenced to. Restating that floor in 2500 Hz costs about
+            // 7 dB, which puts it here. Unlike the others this is an estimate
+            // rather than a published protocol threshold: skimmer bandwidth
+            // varies with the decoder, and RBN does not say which was used.
+            PropSource::Rbn => -4.0,
             // Nothing to compare against: see `margin_db`.
             PropSource::Logged => 0.0,
         }
@@ -89,17 +112,19 @@ impl PropSource {
             PropSource::Ft4 => "FT4",
             PropSource::Js8 => "JS8",
             PropSource::Logged => "Log",
+            PropSource::Rbn => "RBN",
         }
     }
 
     /// Every source, for the filter chips.
-    pub const ALL: [PropSource; 6] = [
+    pub const ALL: [PropSource; 7] = [
         PropSource::Wspr,
         PropSource::WsprHeardUs,
         PropSource::Ft8,
         PropSource::Ft4,
         PropSource::Js8,
         PropSource::Logged,
+        PropSource::Rbn,
     ];
 }
 
@@ -197,6 +222,33 @@ impl PropObservation {
         let along = crate::great_circle_points(self.tx, self.rx, 2 * hops);
         (0..hops).filter_map(|k| along.get(2 * k + 1).copied()).collect()
     }
+}
+
+/// One path somebody else's network demonstrated, ready to be folded in.
+///
+/// The wire and channel form of an observation whose endpoints were resolved
+/// somewhere other than the propagation store — today that means the Reverse
+/// Beacon Network, where a reader thread turns two callsigns into two positions
+/// and hands the result on. Deliberately *not* a [`PropObservation`]: the band,
+/// the path length and the margin all depend on things the store owns (which
+/// sources are enabled, what the mode's floor is), so this carries only what
+/// the reader actually knew.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PropPath {
+    /// Transmitter position, degrees.
+    pub tx: (f64, f64),
+    /// Receiver position, degrees.
+    pub rx: (f64, f64),
+    pub freq_hz: f64,
+    /// Unix seconds the reception happened at.
+    pub at_utc: i64,
+    /// Signal-to-noise as the network reported it, before any floor
+    /// correction. `None` where the report carries nothing that is an SNR.
+    pub snr_db: Option<f32>,
+    /// What makes this path distinct, for de-duplication — normally
+    /// `"SPOTTER>DX"`. A firehose repeats the same path many times a minute
+    /// and each repeat must be folded once.
+    pub key: String,
 }
 
 /// The longest ground range a single F2 hop covers, in km.
@@ -415,6 +467,33 @@ impl BandPlane {
     /// True where nothing survives.
     pub fn is_empty(&self) -> bool {
         self.peak() <= 0.0
+    }
+
+    /// How much evidence there is, as a decayed count of contributing paths.
+    ///
+    /// The companion to [`BandPlane::reach`] and not a substitute for it: this
+    /// says *how much* got through and that says *how widely*. A pile-up on one
+    /// bearing scores high here and low there, and reading only one of the two
+    /// is how a busy contest corner comes to look like an open band.
+    ///
+    /// Fractional because it decays: a path counted an hour ago is worth less
+    /// than half a path now.
+    pub fn total_paths(&self) -> f32 {
+        self.paths.iter().sum()
+    }
+
+    /// The best decode margin anywhere in the plane, dB above the mode's own
+    /// floor.
+    ///
+    /// `None` where nothing carrying a margin has been deposited — a plane
+    /// built only from logged contacts has paths and no signal reports, and
+    /// inventing a zero for it would rank it alongside a band that was
+    /// genuinely marginal.
+    pub fn best_margin_db(&self) -> Option<f32> {
+        (0..GRID_CELLS)
+            .filter(|&i| self.margin_w[i] > 0.0)
+            .map(|i| self.margin[i])
+            .fold(None, |best: Option<f32>, m| Some(best.map_or(m, |b| b.max(m))))
     }
 }
 

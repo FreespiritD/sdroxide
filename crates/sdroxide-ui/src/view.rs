@@ -352,6 +352,38 @@ fn prop_sources_default() -> u8 {
     (1u8 << sdroxide_types::PropSource::ALL.len()) - 1
 }
 
+impl Solar3dView {
+    /// Bring a stored view forward to the sources this build knows about.
+    ///
+    /// `prop_sources` is a bitmask over `PropSource::ALL`, so a settings file
+    /// written before a source was added has that source's bit clear — which
+    /// is indistinguishable, on the wire, from the operator having switched it
+    /// off. It is distinguishable by what it *was*: with `n` sources, "all of
+    /// them" is exactly `2ⁿ - 1`, and anything less is a deliberate choice. So
+    /// a mask that was all-on for a shorter list is carried forward as all-on
+    /// rather than as a filter nobody set.
+    ///
+    /// Without this, enabling the Reverse Beacon Network in settings would
+    /// show nothing at all until the operator also found a chip they never
+    /// touched — the feed would look broken when it was only hidden.
+    fn migrate_prop_sources(&mut self) {
+        let now = prop_sources_default();
+        for shorter in 1..sdroxide_types::PropSource::ALL.len() {
+            if self.prop_sources == (1u8 << shorter) - 1 {
+                self.prop_sources = now;
+                return;
+            }
+        }
+    }
+}
+
+impl ViewState {
+    /// Called once, on the state restored from disk, before anything reads it.
+    pub fn migrate(&mut self) {
+        self.solar3d.migrate_prop_sources();
+    }
+}
+
 /// Default for [`Solar3dView::prop_halflife_min`].
 fn prop_halflife_default() -> f32 {
     (sdroxide_types::PROP_DEFAULT_HALFLIFE_S / 60.0) as f32
@@ -558,6 +590,31 @@ mod tests {
         // for everyone who upgrades, and it would look like the feeds broke.
         assert!(v.wide_waterfall, "the full-band strip stays on offer after an upgrade");
         assert_eq!(v.spot_kinds_shown, [true; SPOT_KINDS], "no spot kind is hidden by upgrading");
+    }
+
+    /// The same trap as the spot filters above, one layer down: a propagation
+    /// source added after a settings file was written must not read as one the
+    /// operator switched off, or the feed looks broken when it is only hidden.
+    #[test]
+    fn an_all_on_source_mask_from_a_shorter_list_stays_all_on() {
+        let all_now = prop_sources_default();
+        // What a build with six sources wrote when everything was enabled.
+        let mut v = ViewState::default();
+        v.solar3d.prop_sources = (1 << 6) - 1;
+        v.migrate();
+        assert_eq!(v.solar3d.prop_sources, all_now, "an upgrade hid a source");
+
+        // A mask the operator actually narrowed is left exactly as it is —
+        // migrating that would override a deliberate choice.
+        let mut v = ViewState::default();
+        v.solar3d.prop_sources = 0b010_1101;
+        v.migrate();
+        assert_eq!(v.solar3d.prop_sources, 0b010_1101, "a chosen filter was overwritten");
+
+        // And a current all-on mask is already correct.
+        let mut v = ViewState::default();
+        v.migrate();
+        assert_eq!(v.solar3d.prop_sources, all_now);
     }
 
     /// The chips write into the persisted view, so a stored blob has to bring

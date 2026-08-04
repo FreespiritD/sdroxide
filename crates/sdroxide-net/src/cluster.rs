@@ -151,7 +151,7 @@ fn run(
     }
 }
 
-fn wants_login(s: &str) -> bool {
+pub(crate) fn wants_login(s: &str) -> bool {
     let l = s.to_ascii_lowercase();
     l.contains("login")
         || l.contains("enter your call")
@@ -161,14 +161,23 @@ fn wants_login(s: &str) -> bool {
 }
 
 fn send_login(stream: &mut TcpStream, login: &str, cfg: &ClusterConfig) {
+    send_login_to(stream, login, &cfg.commands, "dx cluster");
+}
+
+/// Send the callsign at a node's prompt, then any post-login commands.
+///
+/// Shared with the RBN reader, which logs in exactly the same way at exactly
+/// the same kind of prompt — the two differ in what they do with the spot
+/// lines, not in how they get to them.
+pub(crate) fn send_login_to(stream: &mut TcpStream, login: &str, commands: &[String], what: &str) {
     let call = login.trim();
     if call.is_empty() {
-        warn!("dx cluster: no login callsign configured");
+        warn!("{what}: no login callsign configured");
         return;
     }
-    debug!("dx cluster: logging in as {call}");
+    debug!("{what}: logging in as {call}");
     let _ = stream.write_all(format!("{call}\r\n").as_bytes());
-    for cmd in &cfg.commands {
+    for cmd in commands {
         let c = cmd.trim();
         if !c.is_empty() {
             let _ = stream.write_all(format!("{c}\r\n").as_bytes());
@@ -187,7 +196,12 @@ fn merge_spot(spots: &mut Vec<Spot>, spot: Spot) {
 }
 
 /// Parse a `DX de <spotter>: <freq_khz> <dxcall> <comment...> <time>` line.
-fn parse_dx_line(line: &str, now: i64) -> Option<Spot> {
+///
+/// Also the RBN reader's entry point: a skimmer line is this shape exactly
+/// (`DX de EA5WU-#: 7018.3 RW1M CW 19 dB 18 WPM CQ 2259Z`), and what that
+/// reader needs beyond it — the `-#` marker and the `dB` figure — it takes
+/// off the parsed spot rather than by parsing the line a second time.
+pub(crate) fn parse_dx_line(line: &str, now: i64) -> Option<Spot> {
     // Cluster nodes append alert BEL bytes (and occasionally other control /
     // non-UTF-8 bytes) to spot lines; map them to spaces so they don't show as
     // tofu and don't glue onto the trailing time token.

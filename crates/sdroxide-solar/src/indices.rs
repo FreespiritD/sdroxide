@@ -16,6 +16,14 @@ pub const KP_URL: &str = "https://services.swpc.noaa.gov/products/noaa-planetary
 pub const XRAY_URL: &str =
     "https://services.swpc.noaa.gov/json/goes/primary/xray-flares-latest.json";
 pub const IONOSONDE_URL: &str = "https://prop.kc2g.com/api/stations.json";
+/// N0NBH's band-conditions feed, the one product here that is somebody's
+/// personal server rather than an institution's.
+///
+/// Its FAQ asks for hourly polling at most ("that is the update period") and
+/// warns that the feed exists only as long as the author's ISP tolerates it.
+/// [`crate::Source::BandConditions`] honours that; do not shorten it. Credit to
+/// HAMQSL.com is requested and is shown wherever the verdicts are.
+pub const BAND_CONDITIONS_URL: &str = "https://www.hamqsl.com/solarxml.php";
 
 /// 10.7 cm solar radio flux, the standard proxy for ionising solar output.
 /// Under about 70 is a dead band; over 150 opens the high bands.
@@ -122,6 +130,121 @@ impl MufEstimate {
     }
 }
 
+/// How good a verdict is, without the words.
+///
+/// The feed states conditions in English, and English is what should be shown;
+/// this is only so a colour can be chosen without every caller matching on
+/// strings. [`BandRating::Unknown`] is deliberate and is not an error: a
+/// phenomenon the feed describes some other way ("50MHz ES", "High MUF") still
+/// has text worth printing, and inventing a grade for it would be worse than
+/// printing it plain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BandRating {
+    Good,
+    Fair,
+    Poor,
+    Closed,
+    Unknown,
+}
+
+impl BandRating {
+    pub fn of(verdict: &str) -> BandRating {
+        let v = verdict.trim().to_ascii_lowercase();
+        if v.contains("closed") {
+            BandRating::Closed
+        } else if v.contains("good") {
+            BandRating::Good
+        } else if v.contains("fair") || v.contains("moderate") {
+            BandRating::Fair
+        } else if v.contains("poor") {
+            BandRating::Poor
+        } else {
+            BandRating::Unknown
+        }
+    }
+}
+
+/// One HF verdict as the feed states it: a band *group*, a time of day, and a
+/// word.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HfBandCondition {
+    /// The group name verbatim — `"80m-40m"`, `"30m-20m"`, `"17m-15m"`,
+    /// `"12m-10m"`. Kept as the feed's own string rather than mapped to an
+    /// enum here: the publisher may regroup, and a group this build does not
+    /// recognise should still be displayable.
+    pub group: String,
+    pub day: bool,
+    pub verdict: String,
+}
+
+/// One VHF phenomenon: sporadic-E for a region, or the auroral band.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VhfCondition {
+    /// `"E-Skip"`, `"vhf-aurora"`.
+    pub phenomenon: String,
+    /// `"europe"`, `"north_america"`, `"europe_6m"`, `"northern_hemi"`, …
+    pub location: String,
+    pub status: String,
+}
+
+/// N0NBH's calculated band conditions, as published.
+///
+/// **What this is not**: a statement about this station, this path, or this
+/// antenna. It is one globally-computed verdict per band group per half of the
+/// day, derived from the solar indices, and it is shown labelled with its
+/// source and its age for exactly that reason. The propagation field built
+/// from real receptions is the measurement; this is the forecast.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct BandConditions {
+    pub hf: Vec<HfBandCondition>,
+    pub vhf: Vec<VhfCondition>,
+    /// When the publisher says the figures were calculated.
+    pub observed_unix: i64,
+}
+
+impl BandConditions {
+    /// The verdict for `band`, or `None` where the feed says nothing about it.
+    ///
+    /// `None` is the common case at both ends of the spectrum and must render
+    /// as blank rather than as a guess: the four groups published cover 80 m
+    /// through 10 m and nothing else, so 160 m, 60 m and everything above
+    /// 10 m have no verdict here at all. 60 m in particular sits *inside* the
+    /// published range and is still not covered — it is not part of the
+    /// "80m-40m" group, and folding it in would be inventing data.
+    pub fn for_band(&self, band: sdroxide_types::Band, daylight: bool) -> Option<&str> {
+        let group = band_group(band)?;
+        self.hf
+            .iter()
+            .find(|c| c.day == daylight && c.group.eq_ignore_ascii_case(group))
+            .map(|c| c.verdict.as_str())
+    }
+
+    /// The same, graded.
+    pub fn rating_for_band(
+        &self,
+        band: sdroxide_types::Band,
+        daylight: bool,
+    ) -> Option<BandRating> {
+        self.for_band(band, daylight).map(BandRating::of)
+    }
+}
+
+/// Which published group a band belongs to, if any.
+fn band_group(band: sdroxide_types::Band) -> Option<&'static str> {
+    use sdroxide_types::Band;
+    match band {
+        Band::M80 | Band::M40 => Some("80m-40m"),
+        Band::M30 | Band::M20 => Some("30m-20m"),
+        Band::M17 | Band::M15 => Some("17m-15m"),
+        Band::M12 | Band::M10 => Some("12m-10m"),
+        // Not published. 160 m and 60 m are below and inside the range
+        // respectively; 6 m and up are covered — if at all — by the sporadic-E
+        // and aurora entries, which are about a phenomenon rather than a band
+        // and are not interchangeable with a Good/Fair/Poor verdict.
+        Band::M160 | Band::M60 | Band::M6 | Band::M2 | Band::M70 | Band::Gen => None,
+    }
+}
+
 /// Everything in this module, as one snapshot.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SpaceWeather {
@@ -129,6 +252,9 @@ pub struct SpaceWeather {
     pub geomagnetic: Option<GeomagneticIndex>,
     pub xray: Option<XrayLevel>,
     pub ionosondes: Vec<Ionosonde>,
+    /// N0NBH's calculated verdicts. Appended last: this rides inside
+    /// `SolarServerMsg::Weather`, so its position is part of the wire format.
+    pub band_conditions: Option<BandConditions>,
 }
 
 // ── Parsers ─────────────────────────────────────────────────────────────────
@@ -203,6 +329,73 @@ struct RawSounding {
 
 /// Minimum autoscaling confidence to accept a sounding.
 const MIN_CONFIDENCE: f64 = 20.0;
+
+/// Parse HamQSL's `<solar><solardata>` document.
+///
+/// Defensive in the same way the JSON feeds here are: an element that has
+/// changed shape costs that one verdict, never the document. A feed that came
+/// back as an error page, or with no `<calculatedconditions>` at all, yields
+/// `None` so the last cached copy stays on screen rather than being replaced
+/// by an empty one.
+///
+/// The `<fof2>`, `<muffactor>` and `<muf>` elements are deliberately ignored:
+/// they are frequently empty or `NoRpt`, and this program has a real MUF from
+/// the ionosonde network a few lines up.
+pub fn parse_band_conditions(xml: &str) -> Option<BandConditions> {
+    let doc = match roxmltree::Document::parse(xml) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("band conditions parse failed: {e}");
+            return None;
+        }
+    };
+    let mut out = BandConditions::default();
+    for n in doc.descendants() {
+        match n.tag_name().name() {
+            "updated" => {
+                out.observed_unix =
+                    n.text().and_then(timefmt::parse_dmy_hhmm).unwrap_or(out.observed_unix);
+            }
+            "band" => {
+                let (Some(group), Some(time), Some(verdict)) =
+                    (n.attribute("name"), n.attribute("time"), n.text())
+                else {
+                    continue;
+                };
+                let day = match time.trim().to_ascii_lowercase().as_str() {
+                    "day" => true,
+                    "night" => false,
+                    // A third time of day is not something this understands
+                    // well enough to file under either.
+                    other => {
+                        tracing::debug!("band conditions: unknown time {other:?}");
+                        continue;
+                    }
+                };
+                out.hf.push(HfBandCondition {
+                    group: group.trim().to_string(),
+                    day,
+                    verdict: verdict.trim().to_string(),
+                });
+            }
+            "phenomenon" => {
+                let (Some(name), Some(status)) = (n.attribute("name"), n.text()) else {
+                    continue;
+                };
+                out.vhf.push(VhfCondition {
+                    phenomenon: name.trim().to_string(),
+                    location: n.attribute("location").unwrap_or("").trim().to_string(),
+                    status: status.trim().to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+    // A document with neither is not this document — most likely an error page
+    // or a captive portal, and replacing good cached verdicts with nothing
+    // would be the worst of both.
+    (!out.hf.is_empty() || !out.vhf.is_empty()).then_some(out)
+}
 
 pub fn parse_ionosondes(json: &str) -> Vec<Ionosonde> {
     let raw: Vec<RawSounding> = match serde_json::from_str(json) {
@@ -296,6 +489,114 @@ pub fn estimate_muf(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The real document, as fetched.
+    const HAMQSL: &str = include_str!("../tests/fixtures/hamqsl.xml");
+
+    #[test]
+    fn parses_the_published_band_conditions() {
+        let c = parse_band_conditions(HAMQSL).expect("the real document must parse");
+        // Four groups, each stated for both halves of the day.
+        assert_eq!(c.hf.len(), 8, "{:?}", c.hf);
+        assert_eq!(c.vhf.len(), 5);
+        assert!(c.observed_unix > 1_700_000_000, "the update stamp was not read");
+        for group in ["80m-40m", "30m-20m", "17m-15m", "12m-10m"] {
+            for day in [true, false] {
+                assert!(
+                    c.hf.iter().any(|h| h.group == group && h.day == day),
+                    "{group} has no {} verdict",
+                    if day { "daytime" } else { "night" }
+                );
+            }
+        }
+        let es = c.vhf.iter().find(|v| v.phenomenon == "E-Skip" && v.location == "europe");
+        assert!(es.is_some(), "the European sporadic-E entry is missing");
+    }
+
+    /// A band group covers two bands, and both must read the same verdict —
+    /// that is what "80m-40m" means.
+    #[test]
+    fn both_bands_of_a_group_read_the_same_verdict() {
+        use sdroxide_types::Band;
+        let c = parse_band_conditions(HAMQSL).unwrap();
+        for (a, b) in [
+            (Band::M80, Band::M40),
+            (Band::M30, Band::M20),
+            (Band::M17, Band::M15),
+            (Band::M12, Band::M10),
+        ] {
+            for day in [true, false] {
+                assert_eq!(c.for_band(a, day), c.for_band(b, day));
+                assert!(c.for_band(a, day).is_some(), "{a:?} has no verdict");
+            }
+        }
+    }
+
+    /// The bands the feed says nothing about must say nothing. Inventing a
+    /// verdict for 160 m or 6 m from the neighbouring group would be the one
+    /// way this feature could actively mislead.
+    #[test]
+    fn unpublished_bands_have_no_verdict_rather_than_a_guess() {
+        use sdroxide_types::Band;
+        let c = parse_band_conditions(HAMQSL).unwrap();
+        for b in [Band::M160, Band::M60, Band::M6, Band::M2, Band::M70, Band::Gen] {
+            assert_eq!(c.for_band(b, true), None, "{b:?} was given a verdict");
+            assert_eq!(c.for_band(b, false), None, "{b:?} was given a verdict");
+            assert_eq!(c.rating_for_band(b, true), None);
+        }
+    }
+
+    /// Day and night are different answers, and reading the wrong one is a
+    /// silent error — the words are the same shape either way.
+    #[test]
+    fn day_and_night_are_kept_apart() {
+        use sdroxide_types::Band;
+        let xml = r#"<solar><solardata>
+            <calculatedconditions>
+              <band name="80m-40m" time="day">Poor</band>
+              <band name="80m-40m" time="night">Good</band>
+            </calculatedconditions>
+        </solardata></solar>"#;
+        let c = parse_band_conditions(xml).unwrap();
+        assert_eq!(c.for_band(Band::M40, true), Some("Poor"));
+        assert_eq!(c.for_band(Band::M40, false), Some("Good"));
+        assert_eq!(c.rating_for_band(Band::M40, true), Some(BandRating::Poor));
+        assert_eq!(c.rating_for_band(Band::M40, false), Some(BandRating::Good));
+    }
+
+    #[test]
+    fn a_page_that_is_not_this_document_yields_nothing_to_show() {
+        assert_eq!(parse_band_conditions("<html><body>502 Bad Gateway</body></html>"), None);
+        assert_eq!(parse_band_conditions("not xml at all <<<"), None);
+        assert_eq!(parse_band_conditions("<solar><solardata></solardata></solar>"), None);
+    }
+
+    /// One malformed entry must not cost the rest of the document.
+    #[test]
+    fn a_broken_entry_costs_only_itself() {
+        let xml = r#"<solar><solardata>
+            <calculatedconditions>
+              <band time="day">Poor</band>
+              <band name="30m-20m">Fair</band>
+              <band name="30m-20m" time="teatime">Fair</band>
+              <band name="30m-20m" time="day">Good</band>
+            </calculatedconditions>
+        </solardata></solar>"#;
+        let c = parse_band_conditions(xml).unwrap();
+        assert_eq!(c.hf.len(), 1);
+        assert_eq!(c.for_band(sdroxide_types::Band::M20, true), Some("Good"));
+    }
+
+    #[test]
+    fn verdicts_are_graded_without_losing_their_words() {
+        assert_eq!(BandRating::of("Good"), BandRating::Good);
+        assert_eq!(BandRating::of("fair"), BandRating::Fair);
+        assert_eq!(BandRating::of("Poor"), BandRating::Poor);
+        assert_eq!(BandRating::of("Band Closed"), BandRating::Closed);
+        // Something the publisher words differently keeps its text and gets no
+        // invented grade.
+        assert_eq!(BandRating::of("50MHz ES"), BandRating::Unknown);
+    }
 
     #[test]
     fn parses_the_flux_summary() {

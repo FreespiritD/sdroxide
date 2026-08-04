@@ -20,6 +20,7 @@
 //! `pub(in crate::app)`, which is as wide as anything here ever gets.
 
 pub(in crate::app) mod awards;
+pub(in crate::app) mod bands;
 pub(in crate::app) mod frame;
 pub(in crate::app) mod logbook;
 pub(in crate::app) mod net;
@@ -235,9 +236,31 @@ pub struct SdroxideApp {
     /// the 3D globe so the flat map and the globe never disagree.
     digi_stations: crate::digi_map::DigiStations,
     /// Every source's view of what is getting through, per band. Fed by the
-    /// decode list, the WSPR receptions and the logbook; drawn by the flat map
-    /// and the globe from this one copy so the two cannot disagree.
+    /// decode list, the WSPR receptions, the logbook and — when it is switched
+    /// on — the Reverse Beacon Network; drawn by the flat map and the globe
+    /// from this one copy so the two cannot disagree.
     prop: crate::prop_map::PropStore,
+    /// N0NBH's published band conditions: a forecast, not a measurement.
+    ///
+    /// Fetched hourly in the background from the first frame, because the band
+    /// menu shows them and the band menu is always there. `None` only until the
+    /// first fetch lands, or when there is no cached copy and no network.
+    band_conditions: Option<sdroxide_solar::BandConditions>,
+    /// The in-flight fetch, if there is one.
+    band_conditions_fetch:
+        Option<std::sync::mpsc::Receiver<Option<sdroxide_solar::BandConditions>>>,
+    /// Frame clock reading after which another fetch is due. The worker decides
+    /// whether that turns into a request or a cache read; this only decides
+    /// when to ask it.
+    band_conditions_due: f64,
+    /// Whether the Sun is up at the operator's own locator, recomputed a few
+    /// times a minute. Which half of the published table to read.
+    daylight: bool,
+    /// When `daylight` was last worked out, so the ephemeris is not run on
+    /// every frame for an answer that changes twice a day.
+    daylight_at: f64,
+    /// The BANDS window.
+    show_bands: bool,
     /// The propagation field rendered to pixels, rebuilt only when it moves.
     prop_heat: crate::prop_map::PropHeat,
     /// WSPR receptions, newest first: what this station decoded, and — when the
@@ -323,6 +346,9 @@ pub struct SdroxideApp {
     /// Editable "extra cluster commands" (one per line), split into
     /// `net_cfg_edit.cluster.commands` on apply.
     net_cluster_cmds: String,
+    /// The same for the RBN reader's post-login commands, which is where an
+    /// operator narrows the skimmer firehose to their own continent.
+    net_rbn_cmds: String,
     /// Rolling upload/lookup result log for the spots window (newest first).
     net_log: Vec<String>,
     /// Inbox for an ADIF file chosen via the native "Import" dialog (a picker
@@ -402,8 +428,9 @@ impl SdroxideApp {
         if let Some(rs) = &cc.wgpu_render_state {
             waterfall_gpu::init(rs);
         }
-        let view: ViewState =
+        let mut view: ViewState =
             cc.storage.and_then(|s| eframe::get_value(s, "view")).unwrap_or_default();
+        view.migrate();
         // Copied out before `view` is moved into the struct below.
         #[cfg(not(target_arch = "wasm32"))]
         let solar3d_view = view.solar3d;
@@ -490,6 +517,12 @@ impl SdroxideApp {
             digi_cfg_seeded: false,
             digi_preview: None,
             map_view: Default::default(),
+            band_conditions: None,
+            band_conditions_fetch: None,
+            band_conditions_due: 0.0,
+            daylight: true,
+            daylight_at: f64::NEG_INFINITY,
+            show_bands: false,
             digi_stations: Default::default(),
             prop: Default::default(),
             prop_heat: Default::default(),
@@ -526,6 +559,7 @@ impl SdroxideApp {
             tci_srv_seeded: false,
             tci_srv_status: None,
             net_cluster_cmds: String::new(),
+            net_rbn_cmds: String::new(),
             net_log: Vec::new(),
             adif_import_inbox: Arc::new(Mutex::new(None)),
             pending_lookups: Vec::new(),

@@ -26,6 +26,15 @@ pub enum NetEvent {
     /// [`Spot`] would discard exactly the fields that make it a measurement of a
     /// path rather than an invitation to work someone.
     WsprSpots(Vec<sdroxide_types::WsprSpot>),
+    /// Paths a spotting network demonstrated between two *other* stations —
+    /// today the Reverse Beacon Network's skimmers.
+    ///
+    /// Not [`NetEvent::Spots`] for the same reason `WsprSpots` is not: these
+    /// are measurements rather than invitations, and there are thousands of
+    /// them a minute. They go to the propagation field, which is the one
+    /// consumer that wants every last one of them, and never to the spot list,
+    /// which would be buried.
+    PropPaths(Vec<sdroxide_types::PropPath>),
 }
 
 /// A feed thread's full current view of its own spots (replaces the prior set

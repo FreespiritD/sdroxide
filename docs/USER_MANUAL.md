@@ -192,7 +192,11 @@ Click the **Band / Mode** button (which reads, for example, `20M · USB`) to ope
 popup with three rows:
 
 - **BAND:** `160M 80M 60M 40M 30M 20M 17M 15M 12M 10M 6M 2M GEN`. Each band
-  remembers your last frequency, mode, and filter.
+  remembers your last frequency, mode, and filter. Once band conditions have
+  been fetched the chips are tinted by the published forecast — green Good,
+  yellow Fair, pink Poor — and hovering one gives it in words. Bands the
+  forecast does not cover are left uncoloured; see
+  [§3.17](#317-band-conditions).
 - **MODE:** `LSB USB CW AM SAM NFM WFM DIGU DIGL DSB SPEC`.
 - **DIGITAL:** `FT8 FT4 PSK RTTY OLIVIA THOR FSQ HELL SSTV RIFP RFPAINT RADE` (see
   [Digital modes](#3-digital-modes)).
@@ -1647,9 +1651,10 @@ both use the callsign and grid from the General tab.
 
 Everything this station hears is evidence about the ionosphere, and it is all
 pooled into one picture: WSPR both ways, FT8/FT4 and JS8 decodes, and the
-logbook. The **PROP** layer on the [3D globe](#6-solar-system-3d-view) draws it,
-and the **PROP** chip above the flat map in the operating panel draws the same
-thing under the panel map.
+logbook. With the [Reverse Beacon Network](#55-spots-spot-feeds) switched on, so
+is everything *everyone else* hears. The **PROP** layer on the
+[3D globe](#6-solar-system-3d-view) draws it, and the **PROP** chip above the
+flat map in the operating panel draws the same thing under the panel map.
 
 **What a bright patch means.** Each reception is placed at the **midpoint of its
 path** — the patch of ionosphere that bent the signal — and not at the far
@@ -1683,11 +1688,40 @@ cell is without ever moving its average.
 (adjustable in the PROP menu). The ionosphere's own memory is short, and an
 opening from two hours ago should not be arguing with one from two minutes ago.
 
-**What it cannot show.** Only paths this station has been one end of. Oceans
-light up because the midpoints of long paths fall there, which is the single
-biggest thing this adds to an ionosonde map — but Antarctica stays dark because
-nobody is transmitting from it. The legend gives the absolute path count the
-brightest cell stands for, so the colours are never relative without saying so.
+**What it cannot show.** Without the Reverse Beacon Network, only paths this
+station has been one end of — so a band the radio is not listening to has no
+evidence at all, however open it is. Oceans light up because the midpoints of
+long paths fall there, which is the single biggest thing this adds to an
+ionosonde map — but Antarctica stays dark because nobody is transmitting from
+it. The legend gives the absolute path count the brightest cell stands for, so
+the colours are never relative without saying so.
+
+**The Reverse Beacon Network layer.** **RBN is on by default** (under
+[Settings → Spots](#55-spots-spot-feeds), and it needs only the callsign from
+the General tab). It reads the network of CW and RTTY skimmers that listen to
+whole bands continuously, worldwide, and feeds every spot they publish into this
+same field. That is the one thing that fills in the bands this radio is not on:
+while you work 20 m, the map can still tell you 15 m is open to South America,
+because a few hundred other receivers just heard it.
+
+The difference is not subtle. Monitoring 20 m FT8 alone, the propagation field
+knows about one band; with RBN running it knows about seven within a minute —
+including a 40 m that the published forecast calls "Poor" and the skimmers show
+as the busiest band on the air. Where the forecast and the measurement disagree,
+the measurement is the one that was actually observed.
+
+It comes with a real limitation, and the map keeps it on its own switchable
+source for that reason. **An RBN line carries two callsigns and no locators**,
+and the network publishes no machine-readable list of where its skimmers are —
+so both ends of every RBN path are placed at their DXCC entity's nominal centre.
+For San Marino that is within the blur the map already applies; for the United
+States or Russia it can be two thousand kilometres out. Turn the **RBN** chip off
+in the globe's PROP menu to see the field without it.
+
+RBN spots never appear in the spot list. There are thousands a minute, they
+would bury every human spot in the window, and they are measurements rather than
+invitations to call anyone. Narrow the feed with a `set/filter` line in the RBN
+settings if you only care about one continent.
 
 **The `HEARD ≥` row.** The globe's propagation panel gains a line under the
 ionosonde MUF: the highest frequency that has demonstrably got through near your
@@ -1729,6 +1763,59 @@ to has no evidence and no bar, which the footer says out loud.
 The heat map is also relayed to the [browser's 3D tab](#8-web-operation), unlike
 the awards layer: it is live data about the station's own conditions, which is
 what that relay is for.
+
+### 3.17 Band conditions
+
+The heat map answers "what has got through". The **BANDS** window (the `BANDS`
+chip in the System box) puts that next to a second, different answer: the
+**calculated band conditions** published by N0NBH at
+[hamqsl.com](https://www.hamqsl.com/), which are a forecast from the solar
+indices rather than a measurement of anything.
+
+| Column | What it is |
+| --- | --- |
+| `CONDX` | The published verdict — Good, Fair or Poor — for this band, for whichever half of the day it is at your QTH |
+| `PATHS` | Decayed count of receptions in this band's field: *how much* got through |
+| `REACH` | Share of the world with evidence on it: *how widely* it got through |
+| `BEST` | Best decode margin anywhere in the band, dB above the mode's own floor |
+
+`PATHS` and `REACH` are both there because either alone misleads: a contest
+pile-up is a great many paths through one small piece of sky, and a band quietly
+open everywhere is the reverse.
+
+The same verdicts colour the band chips in the **band/mode menu**, so choosing a
+band shows its forecast where you are already looking. Green is Good, yellow
+Fair, pink Poor. Hovering gives the verdict in words along with its source.
+
+**Three things this deliberately does not do.**
+
+- **Bands with no published verdict stay blank.** The feed covers four groups —
+  80/40 m, 30/20 m, 17/15 m and 12/10 m — and nothing else. 160 m, 60 m, 6 m,
+  2 m and 70 cm have no `CONDX` and no chip colour, and never will: filling them
+  in from a neighbouring group would be inventing data. 60 m sits *inside* the
+  published frequency range and is still not covered.
+- **A band with no paths is not called closed.** An empty row means nothing was
+  decoded, which may mean the band was shut or only that nobody was on it. Those
+  two look identical from here.
+- **The forecast is global, not yours.** It is computed from the solar indices
+  for the whole planet and says nothing about your antenna, your noise floor or
+  any particular path. Where it and the measured columns disagree, the
+  measurement is right.
+
+Day or night is worked out from the Sun's elevation at your own locator, so the
+correct half of the published table is read wherever you are.
+
+**Where the numbers come from.** [hamqsl.com](https://www.hamqsl.com/), fetched
+in the background once an hour for as long as the program is running. This is
+the one exception to the rule that sdroxide's space-weather requests happen only
+while the [3D view](#6-solar-system-3d-view) is open: the band menu is always
+there, so these have to be too. It stays one request an hour — the two share a
+cache, so with the 3D view open the second one comes back "not modified" —
+and hourly is the interval the publisher asks for.
+
+The document is cached on disk, so the last verdicts are on screen immediately
+at startup and survive being offline. Everywhere they appear they are labelled
+with their age.
 
 ---
 
@@ -2656,6 +2743,19 @@ filters, the world map — is [§9.1](#91-spot-feeds-dx-cluster-pota-sota-psk-re
   **Port** (commonly 7300/7373/8000). **Login call** overrides the operator
   callsign if needed, and **Commands** (one per line, e.g. `SET/FT8`) are sent
   after login to set node-side filters.
+- **Reverse Beacon Network** — the worldwide network of CW/RTTY skimmers,
+  **on by default**. It puts nothing on the air, needs no account, and logs in
+  with the callsign from the General tab — nothing to set up, and nothing
+  happens until that callsign exists. Port `7000` is the CW and RTTY feed,
+  `7001` the FT8/FT4 one. **Login call** overrides the operator callsign, and
+  **Commands** narrows the feed (`set/filter cont=eu` and the like).
+
+  RBN is not a spot feed and its spots do not appear in the SPOTS window: there
+  are thousands a minute and they are measurements rather than invitations. They
+  go to the [propagation heat map](#316-the-propagation-heat-map), which is what
+  lets it show bands this radio is not listening to. Read that section for the
+  one real caveat — RBN lines carry no locators, so paths are placed from
+  country centres.
 - **POTA / SOTA / PSK Reporter** — tick each feed to poll it. **POTA activator
   spots** and **SOTA spots** show current activators; **PSK Reporter (current
   band)** shows who is being heard on the band you are on. **Max age (s)** drops
@@ -3518,10 +3618,13 @@ Arrival is a straight-line constant-speed estimate from the fitted cone. Proper
 forecasts model the CME's drag against the solar wind and are typically good to 
 about ±6 hours; treat this the same way.
 
-**Where the data comes from.** This is the only part of sdroxide that makes
-outbound internet connections, and it only does so **while this window is
-open** — closing it stops the background fetcher entirely, and never opening it
-means no request is ever made. Five hosts are contacted:
+**Where the data comes from.** Everything on this list is fetched **only while
+this window is open** — closing it stops the background fetcher entirely, and
+never opening it means no request is ever made. The one exception is the band
+conditions row: those colour the band menu in the main window, so they are
+fetched hourly for as long as the program is running, whether or not this window
+has ever been opened. The two share a cache, so it stays one request an hour
+either way. The hosts contacted:
 
 | Host | Data | Refresh |
 | --- | --- | --- |
@@ -3531,7 +3634,12 @@ means no request is ever made. Five hosts are contacted:
 | `services.swpc.noaa.gov` | The OVATION auroral oval grid, auroral hemispheric power, and the three-day planetary K forecast | 15–60 min |
 | `nowcoast.noaa.gov` | Global infrared and visible cloud mosaics (NOAA/NESDIS GMGSI, served by nowCOAST) | 10 min |
 | `prop.kc2g.com` | Ionosonde soundings for the MUF estimate (GIRO network, aggregated by KC2G) | 15 min |
+| `www.hamqsl.com` | Calculated band conditions (N0NBH) — see [§3.17](#317-band-conditions). **Fetched whether or not this window is open** | 1 h |
 | `celestrak.org` | Orbital element sets: the listings you subscribe to (the amateur group and the ISS by default), plus QO-100 | 6 h |
+
+`hamqsl.com` is the one entry here that is a single operator's server rather than
+an institution's, and its published request is hourly polling at most. That is
+the interval used, and it is not adjustable.
 
 Everything fetched is cached under `solar/` in the config directory and is
 loaded *before* the first network request, so the window opens instantly with
@@ -3753,7 +3861,7 @@ row of menu chips:
 | **SUB** | The second receiver's frequency, mode, filter and level (only while it is running) |
 | **TX** | TUNE, the voice keyer, and the drive, tune and mic levels |
 | **DISP** | FIT, PEAK, SPEC, WIDE, the skimmers, and the spectrum floor/ceiling and FFT size |
-| **SYS** | LOG, SPOTS, AWARDS, MEM, SETTINGS, HELP |
+| **SYS** | LOG, SPOTS, AWARDS, BANDS, MEM, SETTINGS, HELP |
 
 A menu stays open until you tap outside it or tap its chip again — the top-bar
 popups do not fade away on a touch screen the way they do under a mouse, because

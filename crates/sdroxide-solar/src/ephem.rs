@@ -336,6 +336,32 @@ pub fn subsolar_point(jd: f64) -> (f64, f64) {
     (to_sun.z.clamp(-1.0, 1.0).asin().to_degrees(), to_sun.y.atan2(to_sun.x).to_degrees())
 }
 
+/// The Sun's elevation above the horizon at a place, in degrees.
+///
+/// Negative below. Geometric: no refraction, no solar radius, no terrain — the
+/// half-degree or so those are worth is well inside what anything here asks of
+/// it.
+pub fn solar_elevation_deg(lat_deg: f64, lon_deg: f64, unix_s: f64) -> f64 {
+    let (sub_lat, sub_lon) = subsolar_point(julian_day(unix_s));
+    let here = geodetic_to_body(lat_deg, lon_deg);
+    let sun = geodetic_to_body(sub_lat, sub_lon);
+    // Both are unit vectors from the centre, so their dot product is the cosine
+    // of the angle between them — and the Sun's elevation at `here` is ninety
+    // degrees less that angle.
+    90.0 - here.dot(sun).clamp(-1.0, 1.0).acos().to_degrees()
+}
+
+/// Is the Sun up at this place?
+///
+/// The dividing line an HF band-conditions table means by "day" and "night".
+/// Taken at the geometric horizon rather than at civil twilight: the D layer
+/// that decides whether 80 m is a local band or a DX one follows the Sun
+/// itself, and picking a twilight definition would be inventing precision the
+/// underlying verdicts do not have.
+pub fn is_daylight_at(lat_deg: f64, lon_deg: f64, unix_s: i64) -> bool {
+    solar_elevation_deg(lat_deg, lon_deg, unix_s as f64) > 0.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,6 +595,39 @@ mod tests {
         assert!((b.z.lat_deg() - (90.0 - e)).abs() < 1e-9, "pole at {}", b.z.lat_deg());
         // ...and at ecliptic longitude 90°.
         assert!((wrap180(b.z.lon_deg() - 90.0)).abs() < 1e-9);
+    }
+
+    /// Day and night are opposite sides of the planet, and the Sun is directly
+    /// overhead at the subsolar point. Checked against the geometry rather than
+    /// against a table, so this stays true whatever the ephemeris is refined to.
+    #[test]
+    fn the_sun_is_up_where_it_is_overhead_and_down_opposite() {
+        for unix in [1_784_937_600i64, 1_772_000_000, 1_800_000_000, 1_760_500_000] {
+            let (lat, lon) = subsolar_point(julian_day(unix as f64));
+            let el = solar_elevation_deg(lat, lon, unix as f64);
+            assert!((el - 90.0).abs() < 0.01, "overhead elevation was {el} at {unix}");
+            assert!(is_daylight_at(lat, lon, unix));
+            // The antipode is midnight.
+            let (alat, alon) = (-lat, wrap180(lon + 180.0));
+            let ael = solar_elevation_deg(alat, alon, unix as f64);
+            assert!((ael + 90.0).abs() < 0.01, "antipodal elevation was {ael} at {unix}");
+            assert!(!is_daylight_at(alat, alon, unix));
+        }
+    }
+
+    /// The polar night is the sharpest case a day/night split has to get right.
+    #[test]
+    fn the_poles_follow_the_season_rather_than_the_clock() {
+        // Northern midsummer and midwinter. Whatever the hour, the North Pole
+        // is lit in June and dark in December.
+        for h in [0i64, 6, 12, 18] {
+            let june = 1_718_884_800 + h * 3600; // 2024-06-20
+            let dec = 1_734_696_000 + h * 3600; // 2024-12-20
+            assert!(is_daylight_at(89.5, 0.0, june), "north pole dark at midsummer +{h}h");
+            assert!(!is_daylight_at(89.5, 0.0, dec), "north pole lit at midwinter +{h}h");
+            assert!(!is_daylight_at(-89.5, 0.0, june), "south pole lit at its midwinter +{h}h");
+            assert!(is_daylight_at(-89.5, 0.0, dec), "south pole dark at its midsummer +{h}h");
+        }
     }
 
     #[test]

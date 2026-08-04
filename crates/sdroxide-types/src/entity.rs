@@ -185,9 +185,13 @@ impl Cty {
     }
 }
 
-/// Resolve the DXCC entity + zones for a callsign. Handles `/` portable calls
-/// heuristically (the shorter added part is treated as the location prefix).
-pub fn resolve_callsign(call: &str) -> Option<EntityInfo> {
+/// The country file entry a callsign resolves to, or `None`.
+///
+/// Shared by [`resolve_callsign`] and [`resolve_place`] so the two can never
+/// disagree about which entity a call belongs to — one of them naming the
+/// country and the other placing it somewhere else would be worse than either
+/// failing.
+fn lookup(call: &str) -> Option<&'static Pfx> {
     let cty = cty();
     let up = call.trim().to_ascii_uppercase();
     if up.is_empty() {
@@ -195,13 +199,32 @@ pub fn resolve_callsign(call: &str) -> Option<EntityInfo> {
     }
     // Exact full-call override first.
     if let Some(p) = cty.exact.get(up.as_str()) {
-        return Some(cty.info(p));
+        return Some(p);
     }
     let key = dxcc_key(&up);
     if let Some(p) = cty.exact.get(key.as_str()) {
-        return Some(cty.info(p));
+        return Some(p);
     }
-    cty.longest_prefix(&key).map(|p| cty.info(p))
+    cty.longest_prefix(&key)
+}
+
+/// Resolve the DXCC entity + zones for a callsign. Handles `/` portable calls
+/// heuristically (the shorter added part is treated as the location prefix).
+pub fn resolve_callsign(call: &str) -> Option<EntityInfo> {
+    lookup(call).map(|p| cty().info(p))
+}
+
+/// Place a callsign on the planet: its entity's nominal centre.
+///
+/// The coarsest useful answer to "where is this station", and the only one
+/// available for a spot that carries no locator — which is every line the
+/// Reverse Beacon Network sends. For a small entity the centre is within the
+/// blur the propagation map already applies; for one the size of the United
+/// States it can be two thousand kilometres out. Callers that place paths from
+/// this must say so rather than let it pass as a measurement.
+pub fn resolve_place(call: &str) -> Option<EntityPlace> {
+    let p = lookup(call)?;
+    cty().places.get(p.ent).copied()
 }
 
 /// Resolve a token meant to *be* a prefix rather than to be a callsign: an

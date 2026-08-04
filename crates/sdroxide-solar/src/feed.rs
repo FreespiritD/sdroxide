@@ -500,6 +500,11 @@ fn refresh(
             clouds::Band::Visible.cache_name().to_string(),
             CLOUD_LIMIT,
         ),
+        Source::BandConditions => (
+            indices::BAND_CONDITIONS_URL.to_string(),
+            BAND_CONDITIONS_CACHE.to_string(),
+            JSON_LIMIT,
+        ),
     };
 
     match http_get(agent, &url, &cache.validators(&url), limit) {
@@ -562,6 +567,7 @@ fn refresh(
                 Parsed::Kp(v) => d.weather.geomagnetic = Some(v),
                 Parsed::Xray(v) => d.weather.xray = Some(v),
                 Parsed::Ionosondes(v) => d.weather.ionosondes = v,
+                Parsed::BandConditions(v) => d.weather.band_conditions = Some(v),
                 Parsed::SatGeo(v) => d.sats_geo = v,
                 Parsed::Aurora(v) => {
                     d.aurora = Some(Arc::new(v));
@@ -609,6 +615,7 @@ enum Parsed {
     AuroraPower(HemisphericPower),
     KpForecast(Vec<KpPoint>),
     Cloud(clouds::Plane),
+    BandConditions(indices::BandConditions),
     None,
 }
 
@@ -657,6 +664,10 @@ fn parse(src: Source, bytes: &[u8], channel: SdoChannel, now: i64, frame_unix: i
                     let v = aurora::parse_kp_forecast(text);
                     return if v.is_empty() { Parsed::None } else { Parsed::KpForecast(v) };
                 }
+                Source::BandConditions => {
+                    return indices::parse_band_conditions(text)
+                        .map_or(Parsed::None, Parsed::BandConditions);
+                }
                 Source::Sun | Source::Clouds | Source::CloudsVis => unreachable!(),
             };
             parsed.unwrap_or_else(|e| {
@@ -665,6 +676,81 @@ fn parse(src: Source, bytes: &[u8], channel: SdoChannel, now: i64, frame_unix: i
             })
         }
     }
+}
+
+/// Cached name for the band-conditions document, shared by the feed's own
+/// fetch and the standalone one below so the two cannot end up with separate
+/// copies of the same file.
+const BAND_CONDITIONS_CACHE: &str = "hamqsl.xml";
+
+/// The published band conditions, fetched if the cached copy has expired.
+///
+/// Blocking, and meant to be called from a worker thread. Standalone rather
+/// than one more [`Source`] on the feed because of *where it is read*: the
+/// verdicts colour the band menu in the main window, which is on screen for the
+/// whole session, so unlike everything else in this module they cannot wait for
+/// the 3D view to be opened. Everything else here is looked at only inside that
+/// window and stops when it closes.
+///
+/// It shares the disk cache and the validators with the feed's copy, so with
+/// the 3D view open the second of the two requests in an hour is a conditional
+/// GET that comes back 304 — and with it closed there is exactly one. That
+/// matters here more than elsewhere: this is a single operator's server and its
+/// published request is hourly polling at most.
+///
+/// Returns the cached document when the network is unreachable, and `None` only
+/// when there is no usable copy at all.
+pub fn band_conditions_cached() -> Option<indices::BandConditions> {
+    fn cached(cache: &Cache) -> Option<indices::BandConditions> {
+        cache.read_string(BAND_CONDITIONS_CACHE).as_deref().and_then(parse_bc)
+    }
+
+    let url = indices::BAND_CONDITIONS_URL;
+    let mut cache = Cache::open();
+
+    // The publisher's interval. Nothing is gained by asking sooner: the flux
+    // figures behind these verdicts are recomputed hourly.
+    //
+    // Conditional on there actually being something to serve. The index and the
+    // document are two files, and a copy that was deleted, truncated or half
+    // written leaves the first saying "fresh" about a second that cannot be
+    // read — in which case the interval is protecting nothing and skipping the
+    // fetch would blank the band menu for an hour.
+    if now_unix() - cache.fetched_at(url) < Source::BandConditions.period()
+        && let Some(c) = cached(&cache)
+    {
+        return Some(c);
+    }
+
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(TIMEOUT))
+        .user_agent(concat!("sdroxide/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into();
+    match http_get(&agent, url, &cache.validators(url), JSON_LIMIT) {
+        // 304: what is on disk is current.
+        Ok(None) => {
+            cache.touch(url, now_unix());
+            cached(&cache)
+        }
+        Ok(Some((bytes, validators, _))) => {
+            let parsed = std::str::from_utf8(&bytes).ok().and_then(parse_bc);
+            // Only cache what parsed. An error page written over a good
+            // document would survive the restart that a failed fetch does not.
+            if parsed.is_some() {
+                cache.write(BAND_CONDITIONS_CACHE, url, &bytes, validators);
+            }
+            parsed.or_else(|| cached(&cache))
+        }
+        Err(e) => {
+            tracing::warn!("band conditions fetch failed: {e}");
+            cached(&cache)
+        }
+    }
+}
+
+fn parse_bc(text: &str) -> Option<indices::BandConditions> {
+    indices::parse_band_conditions(text)
 }
 
 /// Conditional GET. `Ok(None)` means 304 Not Modified.
