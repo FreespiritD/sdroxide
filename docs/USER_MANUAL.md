@@ -96,7 +96,7 @@ or connects to a remote sdroxide server.
   and FT8/JS8 messages addressed to you — so it can be operated without seeing
   it. The voice ships with the program and runs on your own machine. The window
   is also exposed to NVDA, Orca and VoiceOver. See
-  [5.1](#51-general-station-audio-and-remote-access).
+  [5.3](#53-ui-display-preferences-and-voice-announcements).
 - **Remote and web operation:** run headless as a server and control it from a
   browser or from a second sdroxide instance over the network, behind a username
   and password.
@@ -407,7 +407,7 @@ passband. The grips work on both the spectrum and the waterfall.
 
 The **waterfall colour scheme** and the **spectrum background gradient** are set
 on the **UI** tab of the Settings window (see
-[§5.3](#53-ui-display-preferences)). The colour scheme is one of
+[§5.3](#53-ui-display-preferences-and-voice-announcements)). The colour scheme is one of
 `Classic`, `Viridis`, `Gray`, `Icom`, `Neon`, `Synthwave`, `Matrix`, or `Tron`;
 the gradient fills the spectrum area from a top colour down to a bottom colour
 (default dark red → black) and can be turned off.
@@ -1871,9 +1871,9 @@ window opens the same dialog on its Spots tab). Nine tabs run across the top:
 
 | Tab | What it holds |
 | --- | --- |
-| **General** | Your callsign and grid, the sound devices, and who may connect remotely. [5.1](#51-general-station-audio-and-remote-access) |
+| **General** | Which version this is, your callsign and grid, the sound devices, and who may connect remotely. [5.1](#51-general-station-audio-and-remote-access) |
 | **Radio** | Which rig sdroxide talks to, and how. [5.2](#52-radio-choosing-and-configuring-the-rig) |
-| **UI** | Frame rate, waterfall palette, spectrum background, 3D cloud rendering. [5.3](#53-ui-display-preferences) |
+| **UI** | Frame rate, waterfall palette, spectrum background, 3D cloud rendering, and the spoken announcements. [5.3](#53-ui-display-preferences-and-voice-announcements) |
 | **Controls** | Keyboard, mouse and MIDI bindings. [5.4](#54-controls-keyboard-mouse-and-midi) |
 | **Spots** | DX cluster, POTA, SOTA and PSK Reporter feeds, and the broadcast station list. [5.5](#55-spots-spot-feeds) |
 | **FreeDV** | FreeDV Reporter (qso.freedv.org). [5.6](#56-freedv-freedv-reporter) |
@@ -1907,6 +1907,10 @@ section of the General tab is only shown there.
 ### 5.1 General: station, audio and remote access
 
 ![The General tab: callsign, grid square, and your own speakers and microphone](images/settings-general.jpg)
+
+At the top is **SDRoxide** and the version number this copy was built from —
+the one to quote in a bug report, so there is no need to go looking for the
+binary to ask it.
 
 **Station** — your **Callsign** and **Grid square**. This is the identity the
 whole program uses: FT8/FT4 exchanges, the SSTV image header, the logbook, the
@@ -1970,80 +1974,6 @@ started with `--connect`, and the 3D view's tab. See
 Like every other password sdroxide stores — the cluster login, QRZ, eQSL — it is
 kept in the clear, so `config.toml` is worth the same file permissions as the
 rest of your config directory.
-
-#### Voice announcements
-
-The last section of the General tab reads the radio out loud, so it can be
-operated without seeing it. Tick **Speak changes to the radio** to switch it on;
-it is off until you ask for it.
-
-The voice is a neural one that ships with sdroxide and runs on your own machine.
-Nothing is sent anywhere, no speech service has to be installed, and it works
-with no network at all.
-
-- **Voice** — **Shipped voice**, or any other Piper voice you have dropped into
-  `speech_voices/` in the config directory (an `.onnx` and its `.onnx.json`,
-  side by side). Changing it restarts the voice, which takes a moment.
-- **Speed** — 0.5× to 2×. The voice stretches or compresses its own phrasing
-  rather than being played faster, so the pitch does not change. Past about 2×
-  it stops getting shorter — that is a limit of the voice, not of the slider.
-- **Volume** — independent of the AF gain.
-- **Output** — which sound device announcements come out of. Because speech has
-  its own output stream it can be a *different* device from the receiver:
-  announcements in the room, the band in the headphones.
-- **Detail** — **Terse** says only what changed; **Normal** adds the numbers
-  that go with it; **Full** adds units, band segments, and the settings that
-  normally stay quiet.
-- **Duck receiver** — dip the receiver while an announcement plays, and by how
-  much. This never reaches a recording, but anyone listening to your station
-  remotely does hear the dip.
-- **Test** speaks a sample line. Beside it is the voice that loaded, or why one
-  did not.
-
-**What to announce**, the collapsing section below, is a switch per category.
-The defaults are what most operators want: frequency, mode and band, VFO and
-split, AGC, the drive/tune/mic levels, transmit and receive, RIT and XIT,
-memories and scanning, band-edge warnings, and the engine's own messages.
-Filters, squelch and noise reduction are off, because they move constantly while
-chasing a signal.
-
-Some behaviour worth knowing, because it is deliberate:
-
-- **The frequency waits for the dial to stop.** Scrolling says nothing until you
-  let go, then reads the frequency once. Spin two kilohertz up and back and it
-  stays quiet, because you settled where you already were.
-- **One button press is one phrase.** A band change moves band, frequency and
-  mode together and is read as "forty meters, seven point one zero zero, L S B",
-  not as three separate announcements.
-- **Leaving an amateur band warns once**, on the way out, and keying up outside
-  one warns immediately rather than waiting for the dial to settle.
-- **SWR is read out while TUNE is held** — every two seconds by default, with
-  the best match reached announced when you let go. A match that goes above 3:1
-  interrupts with a warning, and clears again below 2.5:1. On a rig with no SWR
-  bridge you are told so once and then left in peace.
-- **Speech stops while you transmit**, since it goes to your speakers and
-  therefore into your microphone. High-SWR warnings still get through.
-- **Decoded messages**: FT8 calls addressed to you, JS8 and FSQ messages
-  addressed to you. Ordinary CQs are not read — a busy evening on twenty metres
-  is a hundred a minute — but you can switch them on.
-- **Reading CW and RTTY aloud** is off by default. A decoder produces text
-  faster than speech reads it, so anything that falls too far behind the live
-  audio is dropped rather than queued: you hear what is being sent now, not what
-  was sent a minute ago. CW is only read while the decoder reports lock.
-
-Callsigns are read in phonetics — "kilo one alpha bravo charlie" — because a
-callsign is the one thing that must not be misheard. Frequencies are read the
-way an operator reads a dial, digit by digit after the decimal point, and always
-"zero", never "oh". Both can be changed under **How things are read**.
-
-Keys for **Speak status**, **Repeat last announcement**, **Stop speaking** and
-**Announcements on/off** are on the Controls tab
-([5.4](#54-controls-keyboard-mouse-and-midi)) under **Speech**. They have no
-defaults; bind the ones you want.
-
-sdroxide also exposes its whole window to the platform screen reader — NVDA on
-Windows, Orca on Linux, VoiceOver on macOS — so the controls can be navigated
-and read as well as heard.
 
 ### 5.2 Radio: choosing and configuring the rig
 
@@ -2585,11 +2515,12 @@ symptom to report if that ever fails.
 > the framing is wrong.
 
 
-### 5.3 UI: display preferences
+### 5.3 UI: display preferences and voice announcements
 
 ![The UI tab: frame rate, scroll/spectrum speed, palette, and spectrum background](images/settings-ui.jpg)
 
-The **UI** tab holds display preferences, stored in `config.toml` under `[ui]`:
+The **UI** tab holds display preferences, stored in `config.toml` under `[ui]`, and the
+spoken announcements below them under `[speech]`:
 
 - **Layout** — which control strip the window wears. **Auto** picks one from the
   window size and is what you want; **Desktop**, **Tablet** and **Phone** force
@@ -2619,6 +2550,80 @@ Under **3D view**:
   lightning glows out *through* the storm making it rather than only brightening
   its outside — at several times the cost per pixel. Both draw the same weather;
   this only chooses how much the GPU spends on the light in it.
+
+#### Voice announcements
+
+The last section of the UI tab reads the radio out loud, so it can be operated
+without seeing it. Tick **Speak changes to the radio** to switch it on; it is
+off until you ask for it.
+
+The voice is a neural one that ships with sdroxide and runs on your own machine.
+Nothing is sent anywhere, no speech service has to be installed, and it works
+with no network at all.
+
+- **Voice** — **Shipped voice**, or any other Piper voice you have dropped into
+  `speech_voices/` in the config directory (an `.onnx` and its `.onnx.json`,
+  side by side). Changing it restarts the voice, which takes a moment.
+- **Speed** — 0.5× to 2×. The voice stretches or compresses its own phrasing
+  rather than being played faster, so the pitch does not change. Past about 2×
+  it stops getting shorter — that is a limit of the voice, not of the slider.
+- **Volume** — independent of the AF gain.
+- **Output** — which sound device announcements come out of. Because speech has
+  its own output stream it can be a *different* device from the receiver:
+  announcements in the room, the band in the headphones.
+- **Detail** — **Terse** says only what changed; **Normal** adds the numbers
+  that go with it; **Full** adds units, band segments, and the settings that
+  normally stay quiet.
+- **Duck receiver** — dip the receiver while an announcement plays, and by how
+  much. This never reaches a recording, but anyone listening to your station
+  remotely does hear the dip.
+- **Test** speaks a sample line. Beside it is the voice that loaded, or why one
+  did not.
+
+**What to announce**, the collapsing section below, is a switch per category.
+The defaults are what most operators want: frequency, mode and band, VFO and
+split, AGC, the drive/tune/mic levels, transmit and receive, RIT and XIT,
+memories and scanning, band-edge warnings, and the engine's own messages.
+Filters, squelch and noise reduction are off, because they move constantly while
+chasing a signal.
+
+Some behaviour worth knowing, because it is deliberate:
+
+- **The frequency waits for the dial to stop.** Scrolling says nothing until you
+  let go, then reads the frequency once. Spin two kilohertz up and back and it
+  stays quiet, because you settled where you already were.
+- **One button press is one phrase.** A band change moves band, frequency and
+  mode together and is read as "forty meters, seven point one zero zero, L S B",
+  not as three separate announcements.
+- **Leaving an amateur band warns once**, on the way out, and keying up outside
+  one warns immediately rather than waiting for the dial to settle.
+- **SWR is read out while TUNE is held** — every two seconds by default, with
+  the best match reached announced when you let go. A match that goes above 3:1
+  interrupts with a warning, and clears again below 2.5:1. On a rig with no SWR
+  bridge you are told so once and then left in peace.
+- **Speech stops while you transmit**, since it goes to your speakers and
+  therefore into your microphone. High-SWR warnings still get through.
+- **Decoded messages**: FT8 calls addressed to you, JS8 and FSQ messages
+  addressed to you. Ordinary CQs are not read — a busy evening on twenty metres
+  is a hundred a minute — but you can switch them on.
+- **Reading CW and RTTY aloud** is off by default. A decoder produces text
+  faster than speech reads it, so anything that falls too far behind the live
+  audio is dropped rather than queued: you hear what is being sent now, not what
+  was sent a minute ago. CW is only read while the decoder reports lock.
+
+Callsigns are read in phonetics — "kilo one alpha bravo charlie" — because a
+callsign is the one thing that must not be misheard. Frequencies are read the
+way an operator reads a dial, digit by digit after the decimal point, and always
+"zero", never "oh". Both can be changed under **How things are read**.
+
+Keys for **Speak status**, **Repeat last announcement**, **Stop speaking** and
+**Announcements on/off** are on the Controls tab
+([5.4](#54-controls-keyboard-mouse-and-midi)) under **Speech**. They have no
+defaults; bind the ones you want.
+
+sdroxide also exposes its whole window to the platform screen reader — NVDA on
+Windows, Orca on Linux, VoiceOver on macOS — so the controls can be navigated
+and read as well as heard.
 
 ### 5.4 Controls: keyboard, mouse and MIDI
 
@@ -3354,7 +3359,7 @@ mountain range. Altitudes are fractions of the radius the globe is *drawn* at,
 so the deck stays glued to the surface at any setting of the **body** scale.
 
 **Cloud rendering** on the UI settings tab
-([5.3](#53-ui-display-preferences)) chooses how the deck
+([5.3](#53-ui-display-preferences-and-voice-announcements)) chooses how the deck
 is drawn. *Layered* stacks slices through the troposphere and is the cheap
 option. *Volumetric* walks a ray through it instead, so the Sun casts the cloud
 tops onto the deck below and a flash glows out *through* the storm making it
@@ -3843,7 +3848,7 @@ row; on a narrow screen they cannot shrink, only wrap, so the strip would eat
 the screen and the widest boxes would still run off the side of it. Below about
 1100 points wide the strip is replaced by menus, and below about 600 — or on
 anything shorter than 440 points, which is a phone held sideways — by a compact
-strip. **Settings → UI → Layout** ([5.3](#53-ui-display-preferences)) forces a
+strip. **Settings → UI → Layout** ([5.3](#53-ui-display-preferences-and-voice-announcements)) forces a
 particular one; **Auto** is the default and picks from the window.
 
 The same rule applies to the native app, so dragging a desktop window narrow
@@ -4286,7 +4291,7 @@ sdroxide stores its settings under the per-user config directory:
 
 | File | Format | Contents |
 | --- | --- | --- |
-| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, plus the `[ui]` display preferences, the `[speech]` announcement settings ([§5.1](#51-general-station-audio-and-remote-access)) and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
+| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, plus the `[ui]` display preferences, the `[speech]` announcement settings ([§5.3](#53-ui-display-preferences-and-voice-announcements)) and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
 | `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/RX-888/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
 | `digi.json` | JSON | Digital-mode operator settings: your callsign and grid, FT8/FT4 TX period, auto-sequence and message templates, and the WSPR beacon's duty cycle, power and band-hop list. |
 | `memories.json` | JSON | Saved memory channels. |
@@ -4421,7 +4426,7 @@ changes, filter width and much else bound to keys, mouse buttons or a MIDI
 controller — on the **Controls** tab; see [5.4](#54-controls-keyboard-mouse-and-midi).
 F1 is the exception: it always opens the manual, so it is not rebindable.
 
-The spoken-announcement actions ([5.1](#51-general-station-audio-and-remote-access))
+The spoken-announcement actions ([5.3](#53-ui-display-preferences-and-voice-announcements))
 ship with no default keys, since any choice would take a key somebody is already
 using. Bind them under **Speech** on the Controls tab:
 
@@ -4467,4 +4472,4 @@ disabled in the selector.
 
 `Classic` (PowerSDR-style), `Viridis`, `Gray`, `Icom` (Icom-style palette,
 peaking at red with no white blow-out), `Neon`, `Synthwave`, `Matrix`, and
-`Tron`. Chosen on the **UI** tab of the Settings window ([5.3](#53-ui-display-preferences)).
+`Tron`. Chosen on the **UI** tab of the Settings window ([5.3](#53-ui-display-preferences-and-voice-announcements)).

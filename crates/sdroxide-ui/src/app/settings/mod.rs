@@ -44,7 +44,8 @@ use crate::app::persist::{persist_speech_settings, persist_ui_settings};
 use crate::theme::ThemedScroll as _;
 
 /// Settings dialog tabs: General (station identity + audio devices), the radio
-/// interface and its settings, display/UI preferences, control inputs
+/// interface and its settings, display/UI preferences and spoken
+/// announcements, control inputs
 /// (keyboard/mouse bindings), the network cockpit (spot feeds + uploads), and
 /// the built-in TCI server.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -696,6 +697,18 @@ impl SdroxideApp {
 
         match io.tab {
             SettingsTab::General => {
+                // Which build this is, taken from the crate metadata at compile
+                // time — so a bug report can name the version without the
+                // operator having to find the binary.
+                ui.label(
+                    RichText::new(format!("SDRoxide {}", env!("CARGO_PKG_VERSION")))
+                        .size(15.0)
+                        .strong(),
+                );
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+
                 ui.label(RichText::new("Station").size(14.0).strong().color(crate::theme::CYAN));
                 ui.add_space(6.0);
                 if !io.digi_seeded {
@@ -776,18 +789,6 @@ impl SdroxideApp {
                         });
                     }
                 }
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(6.0);
-                general::speech_settings(
-                    ui,
-                    io.speech_edit,
-                    io.speech_voices,
-                    self.audio_devices.as_ref().map(|d| d.outputs.as_slice()).unwrap_or(&[]),
-                    io.speech_status,
-                    io.speech_test,
-                );
 
                 if let Some(access) = io.access_edit.as_deref_mut() {
                     ui.add_space(10.0);
@@ -1018,7 +1019,20 @@ impl SdroxideApp {
                     ui.label(RichText::new("Switches the live radio without restarting.").weak());
                 });
             }
-            SettingsTab::Ui => settings_ui_tab(ui, io.ui_edit, io.solar_cloud_march.as_deref_mut()),
+            SettingsTab::Ui => {
+                settings_ui_tab(ui, io.ui_edit, io.solar_cloud_march.as_deref_mut());
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui_tab::speech_settings(
+                    ui,
+                    io.speech_edit,
+                    io.speech_voices,
+                    self.audio_devices.as_ref().map(|d| d.outputs.as_slice()).unwrap_or(&[]),
+                    io.speech_status,
+                    io.speech_test,
+                );
+            }
             SettingsTab::Spots => {
                 if !net_seeded_note(ui, io.net_seeded) {
                     return;
