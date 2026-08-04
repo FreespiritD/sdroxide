@@ -409,6 +409,14 @@ pub fn fading_menu_popup<R>(
 /// - Height is scrolled rather than truncated, for the same reason: a menu
 ///   taller than a phone in landscape would otherwise have its bottom quietly
 ///   cut off, with no way to reach it.
+///
+/// Both sizes are handed to a child `Ui` rather than taken from the popup's
+/// own: egui gives an `Area`'s `Ui` the size that area came out as on the
+/// *previous* frame, and a `ScrollArea` fills whatever it is offered and
+/// scrolls the rest. A menu whose content grew — a layer switched back on, a
+/// band appearing — would then be capped at the room it had while it was
+/// smaller, and every frame after that re-measures the same cap, so it never
+/// grows back. Sizing the body against the screen breaks that ratchet.
 fn popup_body<R>(
     ui: &mut Ui,
     btn: &Response,
@@ -426,17 +434,18 @@ fn popup_body<R>(
     // 24 = the frame's 11 pt inner margin either side, plus a couple of points
     // so the cut-corner border is not flush against the screen edge.
     let max_w = (screen.width() - 24.0).clamp(160.0, 430.0);
+    let max_h = screen.height() * 0.6;
     let resp = egui::Popup::from_toggle_button_response(btn)
         .frame(window_frame_alpha(alpha))
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.set_opacity(alpha);
-            ui.set_max_width(max_w);
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-            egui::ScrollArea::vertical()
-                .max_height(screen.height() * 0.6)
-                .show_themed(ui, add)
-                .inner
+            let body = Rect::from_min_size(ui.max_rect().min, vec2(max_w, max_h));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
+                egui::ScrollArea::vertical().max_height(max_h).show_themed(ui, add).inner
+            })
+            .inner
         });
     if let Some(r) = &resp {
         paint_popup_cut_border(ui.ctx(), &r.response, alpha);
