@@ -89,6 +89,12 @@ pub struct SdroxideApp {
     sent_cfg: Option<SpectrumConfig>,
     desired_cfg: Option<SpectrumConfig>,
     desired_at: f64,
+    /// The visible span last handed to the skimmers, the one waiting to be, and
+    /// when it settled. Separate from `sent_cfg` because the spectrum viewport
+    /// carries deliberate slack and this must not.
+    sent_skim_view: Option<(f64, f64)>,
+    desired_skim_view: Option<(f64, f64)>,
+    desired_skim_view_at: f64,
     /// egui time of the last received spectrum frame, for stall detection.
     last_spectrum_at: f64,
     /// Waterfall time-scroll state: wall-clock (UTC secs) of the last tick and
@@ -453,6 +459,9 @@ impl SdroxideApp {
             sent_cfg: None,
             desired_cfg: None,
             desired_at: 0.0,
+            sent_skim_view: None,
+            desired_skim_view: None,
+            desired_skim_view_at: 0.0,
             last_spectrum_at: 0.0,
             wf_last_now: 0.0,
             wf_row_accum: 0.0,

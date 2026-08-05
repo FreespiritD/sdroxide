@@ -143,6 +143,9 @@ pub struct DigiSkimmer {
     kind: SkimmerKind,
     skim_rate: f64,
     skim_center_hz: f64,
+    /// The operator's visible waterfall window in absolute Hz, or `None` for
+    /// the whole skim window. See [`DigiSkimmer::set_view`].
+    view: Option<(f64, f64)>,
     fft: Arc<dyn Fft<f32>>,
     window: Vec<f32>,
     inbuf: Vec<C32>,
@@ -189,6 +192,7 @@ impl DigiSkimmer {
             kind,
             skim_rate,
             skim_center_hz,
+            view: None,
             fft,
             window,
             inbuf: Vec::with_capacity(FFT_SIZE * 4),
@@ -216,6 +220,34 @@ impl DigiSkimmer {
         if (center_hz - self.skim_center_hz).abs() > 1.0 {
             self.skim_center_hz = center_hz;
             self.reset();
+        }
+    }
+
+    /// Limit the skimmer to the operator's visible waterfall window; see
+    /// [`crate::cw::CwSkimmer::set_view`], which this mirrors. Carriers outside
+    /// it are not confirmed, not tracked and not demodulated, and any track
+    /// already outside is dropped along with its decoder.
+    pub fn set_view(&mut self, view: Option<(f64, f64)>) {
+        if self.view == view {
+            return;
+        }
+        self.view = view;
+        let Some((lo, hi)) = view else { return };
+        let bin_hz = self.skim_rate / FFT_SIZE as f64;
+        let center = self.skim_center_hz;
+        let visible = |bin: i64| {
+            let hz = center + bin as f64 * bin_hz;
+            hz >= lo && hz <= hi
+        };
+        self.tracks.retain(|t| visible(t.bin));
+        self.confirm.retain(|&(bin, _)| visible(bin));
+    }
+
+    /// Whether an absolute frequency is on screen.
+    fn in_view(&self, abs_hz: f64) -> bool {
+        match self.view {
+            Some((lo, hi)) => abs_hz >= lo && abs_hz <= hi,
+            None => true,
         }
     }
 
@@ -307,12 +339,13 @@ impl DigiSkimmer {
             if self.smooth_power[k] > self.floor[k] * SMOOTH_ON {
                 let abs_hz = self.skim_center_hz + off as f64 * bin_hz;
                 // Restrict each skimmer to its mode's well-known calling sub-bands
-                // (PSK31 / RTTY areas per band) — not the whole digi segment.
+                // (PSK31 / RTTY areas per band) — not the whole digi segment —
+                // and to what the operator can actually see.
                 let in_band = match self.kind {
                     SkimmerKind::Rtty => is_rtty_segment(abs_hz),
                     _ => is_psk_segment(abs_hz),
                 };
-                if in_band {
+                if in_band && self.in_view(abs_hz) {
                     cands.push((self.smooth_power[k], off));
                 }
             }
@@ -513,6 +546,32 @@ mod tests {
                 C32::new(a * ph.cos() as f32 + n * rng(), a * ph.sin() as f32 + n * rng())
             })
             .collect()
+    }
+
+    #[test]
+    /// The PSK/RTTY skimmer is gated to the visible window too — and clearing
+    /// the view puts the whole skim window back.
+    #[test]
+    fn only_signals_inside_the_view_are_tracked() {
+        let rate = 192_000.0;
+        let center = 14_070_000.0;
+        let off = 2_000.0;
+        let iq = synth_psk("CQ CQ DE AB1CD K ", off, rate);
+
+        let mut hidden = DigiSkimmer::new(SkimmerKind::Psk, rate, center);
+        hidden.set_view(Some((center + 20_000.0, center + 60_000.0)));
+        for chunk in iq.chunks(8192) {
+            hidden.process(chunk);
+        }
+        assert!(hidden.spots().is_empty(), "spotted a carrier outside the view");
+
+        let mut shown = DigiSkimmer::new(SkimmerKind::Psk, rate, center);
+        shown.set_view(Some((center + 20_000.0, center + 60_000.0)));
+        shown.set_view(None);
+        for chunk in iq.chunks(8192) {
+            shown.process(chunk);
+        }
+        assert!(!shown.spots().is_empty(), "no spots with the view cleared");
     }
 
     #[test]

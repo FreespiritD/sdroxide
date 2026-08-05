@@ -142,6 +142,14 @@ pub enum Command {
 
     // Display
     SetSpectrumCfg(SpectrumConfig),
+    /// The window the operator can actually see on the waterfall, in absolute
+    /// Hz — `None` for "everything the skim window covers".
+    ///
+    /// Distinct from [`SpectrumConfig::viewport`], which is deliberately padded
+    /// with slack so panning does not force a reconfiguration that would clear
+    /// the waterfall history. This one is the real on-screen span, and it is
+    /// what decides which signals the skimmers spend time decoding.
+    SetSkimmerView(Option<(f64, f64)>),
 
     // Digital modes (FT8/FT4)
     SetDigiConfig(DigiConfig),

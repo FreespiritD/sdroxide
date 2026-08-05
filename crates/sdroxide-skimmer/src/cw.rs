@@ -192,6 +192,9 @@ impl Track {
 pub struct CwSkimmer {
     skim_rate: f64,
     skim_center_hz: f64,
+    /// The operator's visible waterfall window in absolute Hz, or `None` for
+    /// the whole skim window. See [`CwSkimmer::set_view`].
+    view: Option<(f64, f64)>,
     fft: Arc<dyn Fft<f32>>,
     window: Vec<f32>,
     inbuf: Vec<C32>,
@@ -256,6 +259,7 @@ impl CwSkimmer {
         CwSkimmer {
             skim_rate,
             skim_center_hz,
+            view: None,
             fft,
             window,
             inbuf: Vec::with_capacity(FFT_SIZE * 4),
@@ -323,6 +327,41 @@ impl CwSkimmer {
             self.skim_center_hz = center_hz;
             self.reset();
         }
+    }
+
+    /// Limit the skimmer to the operator's visible waterfall window.
+    ///
+    /// The skim window is a fixed 192 kHz slice of the front end, but the
+    /// operator is usually looking at a fraction of it. Reading Morse off a
+    /// station nobody can see costs a DeepCW inference every few seconds and
+    /// puts its spot somewhere off-screen, so signals outside the window are
+    /// neither tracked nor decoded. Tracks already outside it are dropped —
+    /// which also releases their model buffers, since the decoder is fed from
+    /// `tracks` — so panning away stops the work rather than merely hiding it.
+    ///
+    /// `None` restores the whole skim window, which is what a headless server
+    /// with nobody watching gets.
+    pub fn set_view(&mut self, view: Option<(f64, f64)>) {
+        if self.view == view {
+            return;
+        }
+        self.view = view;
+        let Some((lo, hi)) = view else { return };
+        let bin_hz = self.skim_rate / FFT_SIZE as f64;
+        let center = self.skim_center_hz;
+        let visible = |bin: i64| {
+            let hz = center + bin as f64 * bin_hz;
+            hz >= lo && hz <= hi
+        };
+        self.tracks.retain(|t| visible(t.bin));
+        self.prev_centers.retain(|&c| visible(c));
+    }
+
+    /// Whether a bin offset from the skim center is on screen.
+    fn in_view(&self, off: i64) -> bool {
+        let Some((lo, hi)) = self.view else { return true };
+        let hz = self.skim_center_hz + off as f64 * self.skim_rate / FFT_SIZE as f64;
+        hz >= lo && hz <= hi
     }
 
     /// Forget every track and re-prime the noise floor (band moved, or the
@@ -482,7 +521,7 @@ impl CwSkimmer {
         cands.clear();
         for k in 0..n {
             let off = self.offset_bin(k);
-            if off.abs() < DC_GUARD {
+            if off.abs() < DC_GUARD || !self.in_view(off) {
                 continue;
             }
             let p = self.power[k];
@@ -1021,6 +1060,71 @@ mod tests {
             let err = hit.freq_hz - (center + off);
             assert!(err.abs() < 60.0, "{call} spotted {err:+.0} Hz off");
         }
+    }
+
+    #[test]
+    /// A station off the edge of the waterfall is not tracked at all.
+    ///
+    /// The point is the decoder time, not where the box lands: an off-screen
+    /// track costs a DeepCW inference every few seconds for a spot the operator
+    /// cannot see.
+    #[test]
+    fn only_signals_inside_the_view_are_tracked() {
+        let rate = 192_000.0;
+        let center = 14_020_000.0;
+        let (seen, hidden) = (5_000.0, -60_000.0);
+        let mut iq = synth("CQ DE W1AW", seen, 20.0, rate, 0.02);
+        for (a, b) in iq.iter_mut().zip(synth("CQ DE K2ABC", hidden, 20.0, rate, 0.0).iter()) {
+            *a += *b;
+        }
+
+        let mut sk = skimmer(rate, center, CwSkimmerDecoder::Timing);
+        sk.set_view(Some((center + seen - 2_000.0, center + seen + 2_000.0)));
+        feed(&mut sk, &iq);
+        settle(&mut sk);
+        let spots = sk.spots();
+        assert!(!spots.is_empty(), "the visible station was not decoded");
+        for s in &spots {
+            assert!(
+                (s.freq_hz - (center + hidden)).abs() > 1_000.0,
+                "spotted an off-screen station at {}",
+                s.freq_hz
+            );
+        }
+    }
+
+    /// Panning away from a station stops the work, rather than just hiding it.
+    #[test]
+    fn panning_away_drops_the_tracks_it_leaves_behind() {
+        let rate = 192_000.0;
+        let center = 14_020_000.0;
+        let off = 5_000.0;
+        let iq = synth("CQ DE W1AW", off, 20.0, rate, 0.02);
+
+        let mut sk = skimmer(rate, center, CwSkimmerDecoder::Timing);
+        feed(&mut sk, &iq);
+        settle(&mut sk);
+        assert!(!sk.spots().is_empty(), "nothing was tracked, so nothing to drop");
+
+        sk.set_view(Some((center + 50_000.0, center + 90_000.0)));
+        assert!(sk.spots().is_empty(), "a track survived the pan away from it");
+    }
+
+    /// Clearing the view goes back to skimming the whole window — what a
+    /// headless server with nobody watching gets.
+    #[test]
+    fn clearing_the_view_restores_the_whole_window() {
+        let rate = 192_000.0;
+        let center = 14_020_000.0;
+        let off = 5_000.0;
+        let iq = synth("CQ DE W1AW", off, 20.0, rate, 0.02);
+
+        let mut sk = skimmer(rate, center, CwSkimmerDecoder::Timing);
+        sk.set_view(Some((center + 50_000.0, center + 90_000.0)));
+        sk.set_view(None);
+        feed(&mut sk, &iq);
+        settle(&mut sk);
+        assert!(!sk.spots().is_empty(), "no spots with the view cleared");
     }
 
     #[test]

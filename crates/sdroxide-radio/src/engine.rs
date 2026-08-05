@@ -1051,6 +1051,9 @@ struct Engine {
     skim_ddc: Option<Ddc>,
     skimmer: Option<SkimmerController>,
     skim_buf: Vec<Complex32>,
+    /// The client's visible waterfall window, in absolute Hz; `None` until a
+    /// client says otherwise (a headless server skims the whole window).
+    skim_view: Option<(f64, f64)>,
     /// The operator's persisted skimmer preference. Distinct from
     /// `state.skimmer`, which is the *live* setting and is forced off on an
     /// audio-mode source — this is what a wideband source gets restored to.
@@ -1378,6 +1381,7 @@ fn engine_thread(
         skim_ddc: None,
         skimmer: None,
         skim_buf: Vec::new(),
+        skim_view: None,
         skim_cfg,
         scan_cfg,
         scan: None,
@@ -2994,6 +2998,15 @@ impl Engine {
                 self.memories.retain(|m| m.id != id);
                 self.save_memories();
             }
+            SetSkimmerView(view) => {
+                // Reject a degenerate window rather than skimming nothing at
+                // all: a client mid-layout can briefly report a zero-width view.
+                let view = view.filter(|(lo, hi)| hi > lo && lo.is_finite() && hi.is_finite());
+                if self.skim_view != view {
+                    self.skim_view = view;
+                    self.sync_skimmer_view();
+                }
+            }
             SetSpectrumCfg(new_cfg) => {
                 let rebuild = new_cfg.fft_size != self.cfg.fft_size;
                 self.cfg = new_cfg;
@@ -3421,6 +3434,7 @@ impl Engine {
                 self.skimmer =
                     Some(SkimmerController::new(rate, self.state.center_hz, self.state.skimmer));
                 self.skim_ddc = Some(ddc);
+                self.sync_skimmer_view();
                 info!(rate, "skimmer started");
             }
             (false, true) => {
@@ -3430,6 +3444,17 @@ impl Engine {
                 info!("skimmer stopped");
             }
             _ => {}
+        }
+    }
+
+    /// Hand the running skimmers the window the operator can actually see, so
+    /// they only spend decoder time on signals that are on screen.
+    ///
+    /// Re-sent on a retune as well as on a pan: `set_center` clears the tracks,
+    /// and the view has to be back in place before the new ones are spawned.
+    fn sync_skimmer_view(&self) {
+        if let Some(sk) = self.skimmer.as_ref() {
+            sk.set_view(self.skim_view);
         }
     }
 
@@ -5859,6 +5884,7 @@ impl Engine {
                 if let Some(sk) = self.skimmer.as_ref() {
                     sk.set_center(center_hz);
                 }
+                self.sync_skimmer_view();
                 true
             }
             Err(e) => {

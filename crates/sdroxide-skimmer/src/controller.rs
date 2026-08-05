@@ -29,6 +29,7 @@ struct Iq(Vec<C32>);
 enum Ctl {
     Center(f64),
     Config(SkimmerSettings),
+    View(Option<(f64, f64)>),
     Stop,
 }
 
@@ -84,6 +85,11 @@ impl SkimmerController {
                                     rtty.reset();
                                 }
                                 cfg = next;
+                            }
+                            Ok(Ctl::View(v)) => {
+                                cw.set_view(v);
+                                psk.set_view(v);
+                                rtty.set_view(v);
                             }
                             Ok(Ctl::Stop) | Err(_) => break,
                         },
@@ -141,6 +147,14 @@ impl SkimmerController {
     /// Apply new per-kind enables / squelches to the running worker.
     pub fn set_config(&self, cfg: SkimmerSettings) {
         let _ = self.ctl_tx.send(Ctl::Config(cfg));
+    }
+
+    /// Narrow every skimmer to the operator's visible waterfall window, in
+    /// absolute Hz. `None` skims the whole window. Rides the control channel
+    /// because a pan must not be dropped behind a backed-up IQ queue: the
+    /// skimmers would carry on decoding a stretch of band nobody is looking at.
+    pub fn set_view(&self, view: Option<(f64, f64)>) {
+        let _ = self.ctl_tx.send(Ctl::View(view));
     }
 
     /// Drain any spot snapshots produced since the last poll. Non-blocking.
