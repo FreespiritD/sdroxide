@@ -331,6 +331,16 @@ pub trait RadioController {
         Vec::new()
     }
 
+    /// List the RSPs the SDRplay API service reports (native local client
+    /// only). Blocking but brief — the service answers from its own device
+    /// table — and safe while one is streaming: enumeration takes the API's
+    /// device lock only long enough to read the list. Default empty: a browser
+    /// client cannot reach the server's SDRplay service, and neither can a
+    /// machine without the vendor API installed.
+    fn list_sdrplay(&self) -> Vec<crate::SdrPlayDevice> {
+        Vec::new()
+    }
+
     /// Test a TCI server connection at `address` (`host:port`). Blocking — the
     /// settings UI calls this on demand (a "Test connection" button). Returns a
     /// success summary or an error message. Default: unsupported (remote client).

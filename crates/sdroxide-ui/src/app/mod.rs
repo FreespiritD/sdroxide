@@ -144,6 +144,8 @@ pub struct SdroxideApp {
     hpsdr_devices: Vec<sdroxide_types::HpsdrDevice>,
     rtlsdr_devices: Vec<sdroxide_types::RtlSdrDevice>,
     rx888_devices: Vec<sdroxide_types::Rx888Device>,
+    /// RSPs the SDRplay API service reported on the last Rescan.
+    sdrplay_devices: Vec<sdroxide_types::SdrPlayDevice>,
     /// Result of the last TCI "Test connection" (Ok summary / Err message).
     tci_test_result: Option<Result<String, String>>,
     /// FlexRadios found by the last SmartSDR "Discover" listen.
@@ -480,6 +482,7 @@ impl SdroxideApp {
             hpsdr_devices: Vec::new(),
             rtlsdr_devices: Vec::new(),
             rx888_devices: Vec::new(),
+            sdrplay_devices: Vec::new(),
             tci_test_result: None,
             smartsdr_devices: Vec::new(),
             smartsdr_test_result: None,

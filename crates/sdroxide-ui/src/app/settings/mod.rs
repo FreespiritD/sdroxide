@@ -34,7 +34,7 @@ use self::net::{
 };
 use self::radio::{
     settings_cat_tab, settings_hpsdr_tab, settings_pluto_tab, settings_rtlsdr_tab,
-    settings_rx888_tab, settings_smartsdr_tab, settings_tci_tab,
+    settings_rx888_tab, settings_sdrplay_tab, settings_smartsdr_tab, settings_tci_tab,
 };
 use self::servers::{settings_rigctld_tab, settings_tci_server_tab, settings_wsjtx_tab};
 use self::tle::settings_tle_tab;
@@ -105,6 +105,9 @@ pub(in crate::app) struct SettingsIo<'a> {
     /// no device is opened — so it cannot disturb a running stream.
     rtlsdr_rescan: &'a mut bool,
     rx888_rescan: &'a mut bool,
+    /// Ask the SDRplay API service for its device list. Brief and
+    /// non-invasive, so it cannot disturb a running stream.
+    sdrplay_rescan: &'a mut bool,
     tci_test: &'a mut bool,
     /// Listen for FlexRadio discovery broadcasts (a couple of seconds, blocking).
     smartsdr_discover: &'a mut bool,
@@ -285,6 +288,7 @@ impl SdroxideApp {
         let mut hpsdr_discover = false;
         let mut rtlsdr_rescan = false;
         let mut rx888_rescan = false;
+        let mut sdrplay_rescan = false;
         let mut tci_test = false;
         let mut smartsdr_discover = false;
         let mut smartsdr_test = false;
@@ -344,6 +348,11 @@ impl SdroxideApp {
         // Same reasoning as the RTL-SDR: pure Rust over `nusb`, no system
         // library, so it is in every build variant.
         iface_opts.push(sdroxide_types::Backend::Rx888);
+        // Also in every build variant, but for a different reason: nothing is
+        // linked at build time — the vendor's sdrplay_api library is found
+        // with dlopen at runtime, and opening explains what to install when
+        // it is absent.
+        iface_opts.push(sdroxide_types::Backend::SdrPlay);
 
         let mut tab = self.settings_tab;
         let mut open = self.show_settings;
@@ -402,6 +411,7 @@ impl SdroxideApp {
                             hpsdr_discover: &mut hpsdr_discover,
                             rtlsdr_rescan: &mut rtlsdr_rescan,
                             rx888_rescan: &mut rx888_rescan,
+                            sdrplay_rescan: &mut sdrplay_rescan,
                             tci_test: &mut tci_test,
                             smartsdr_discover: &mut smartsdr_discover,
                             smartsdr_test: &mut smartsdr_test,
@@ -544,6 +554,9 @@ impl SdroxideApp {
             // USB enumeration only — no device is opened, so this is safe to
             // press at any time, including while a dongle is streaming.
             self.rtlsdr_devices = self.ctrl.list_rtlsdr();
+        }
+        if sdrplay_rescan {
+            self.sdrplay_devices = self.ctrl.list_sdrplay();
         }
         if rx888_rescan {
             self.rx888_devices = self.ctrl.list_rx888();
@@ -992,6 +1005,14 @@ impl SdroxideApp {
                         &self.rx888_devices,
                         io.radio_edit,
                         io.rx888_rescan,
+                        io.apply_iface,
+                        cmds,
+                    ),
+                    Backend::SdrPlay => settings_sdrplay_tab(
+                        ui,
+                        &self.sdrplay_devices,
+                        io.radio_edit,
+                        io.sdrplay_rescan,
                         io.apply_iface,
                         cmds,
                     ),

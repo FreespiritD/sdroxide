@@ -34,10 +34,15 @@ pub enum Backend {
     /// network, which the USB cable provides as an Ethernet gadget. Appended
     /// last, for the same reason as `SmartSdr` above.
     Pluto,
+    /// SDRplay RSP family (RSP1/1A/1B/2/duo/dx), driven through the vendor's
+    /// `sdrplay_api` service — the one RSP protocol there is; no open USB
+    /// protocol exists for anything after the original RSP1. Appended last,
+    /// for the same reason as `SmartSdr` above.
+    SdrPlay,
 }
 
 impl Backend {
-    pub const ALL: [Backend; 9] = [
+    pub const ALL: [Backend; 10] = [
         Backend::Auto,
         Backend::Soapy,
         Backend::Cat,
@@ -47,6 +52,7 @@ impl Backend {
         Backend::Pluto,
         Backend::RtlSdr,
         Backend::Rx888,
+        Backend::SdrPlay,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -59,6 +65,7 @@ impl Backend {
             Backend::Pluto => "PlutoSDR (network)",
             Backend::RtlSdr => "RTL-SDR (USB)",
             Backend::Rx888 => "RX-888 (USB)",
+            Backend::SdrPlay => "SDRplay RSP (USB)",
         }
     }
 }
@@ -1090,6 +1097,316 @@ impl PlutoDevice {
     }
 }
 
+/// Which RSP the `sdrplay_api` service says a device is, from the `hwVer`
+/// byte it reports. The numbering is the API's, not sequential — RSP1A is 255
+/// because it was added after the RSP2 had already taken 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SdrPlayModel {
+    Rsp1,
+    Rsp1a,
+    Rsp1b,
+    Rsp2,
+    RspDuo,
+    RspDx,
+    RspDxR2,
+    Unknown,
+}
+
+impl SdrPlayModel {
+    pub fn from_hw_ver(hw_ver: u8) -> SdrPlayModel {
+        match hw_ver {
+            1 => SdrPlayModel::Rsp1,
+            2 => SdrPlayModel::Rsp2,
+            3 => SdrPlayModel::RspDuo,
+            4 => SdrPlayModel::RspDx,
+            6 => SdrPlayModel::Rsp1b,
+            7 => SdrPlayModel::RspDxR2,
+            255 => SdrPlayModel::Rsp1a,
+            _ => SdrPlayModel::Unknown,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SdrPlayModel::Rsp1 => "RSP1",
+            SdrPlayModel::Rsp1a => "RSP1A",
+            SdrPlayModel::Rsp1b => "RSP1B",
+            SdrPlayModel::Rsp2 => "RSP2",
+            SdrPlayModel::RspDuo => "RSPduo",
+            SdrPlayModel::RspDx => "RSPdx",
+            SdrPlayModel::RspDxR2 => "RSPdx R2",
+            SdrPlayModel::Unknown => "RSP (unknown model)",
+        }
+    }
+
+    /// Highest LNA state the model has in *any* band — the settings slider's
+    /// range. State 0 is maximum gain; each step up switches more attenuation
+    /// in front of the tuner. Some bands have fewer states than this; the
+    /// driver clamps per band and reports what it settled on, the same way the
+    /// RTL-SDR backend snaps its tuner gain.
+    pub fn max_lna_state(self) -> u8 {
+        match self {
+            SdrPlayModel::Rsp1 => 3,
+            SdrPlayModel::Rsp1a | SdrPlayModel::Rsp1b => 9,
+            SdrPlayModel::Rsp2 => 8,
+            SdrPlayModel::RspDuo => 9,
+            SdrPlayModel::RspDx | SdrPlayModel::RspDxR2 => 27,
+            // An unknown model still has the API-guaranteed minimum.
+            SdrPlayModel::Unknown => 3,
+        }
+    }
+
+    /// Whether the model has a switchable bias tee. The original RSP1 is the
+    /// only one without.
+    pub fn has_bias_tee(self) -> bool {
+        !matches!(self, SdrPlayModel::Rsp1 | SdrPlayModel::Unknown)
+    }
+
+    /// Whether the model has the FM-broadcast notch filter.
+    pub fn has_rf_notch(self) -> bool {
+        !matches!(self, SdrPlayModel::Rsp1 | SdrPlayModel::Unknown)
+    }
+
+    /// Whether the model has the separate DAB notch filter.
+    pub fn has_dab_notch(self) -> bool {
+        matches!(
+            self,
+            SdrPlayModel::Rsp1a
+                | SdrPlayModel::Rsp1b
+                | SdrPlayModel::RspDuo
+                | SdrPlayModel::RspDx
+                | SdrPlayModel::RspDxR2
+        )
+    }
+
+    /// Whether the model has the RSPdx HDR mode (a second, higher-linearity
+    /// signal path below 2 MHz).
+    pub fn has_hdr(self) -> bool {
+        matches!(self, SdrPlayModel::RspDx | SdrPlayModel::RspDxR2)
+    }
+
+    /// Antenna ports the operator can choose between, for `DeviceCaps`. Empty
+    /// means one fixed port — the selector stays hidden, like every other
+    /// single-port backend. The RSPduo's choice depends on which tuner is in
+    /// use: tuner 1 has both a 50 Ω and a Hi-Z port, tuner 2 only its own.
+    pub fn antennas(self, duo_tuner: SdrPlayDuoTuner) -> &'static [&'static str] {
+        match self {
+            SdrPlayModel::Rsp2 => &["Antenna A", "Antenna B", "Hi-Z"],
+            SdrPlayModel::RspDx | SdrPlayModel::RspDxR2 => {
+                &["Antenna A", "Antenna B", "Antenna C"]
+            }
+            SdrPlayModel::RspDuo => match duo_tuner {
+                SdrPlayDuoTuner::Tuner1 => &["50 Ohm port", "Hi-Z port"],
+                SdrPlayDuoTuner::Tuner2 => &[],
+            },
+            _ => &[],
+        }
+    }
+}
+
+/// RSP hardware AGC loop rate. The loop runs in the tuner's IF stage, driven
+/// by the API service; `Off` hands the IF gain slider back to the operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SdrPlayAgc {
+    Off,
+    Hz5,
+    #[default]
+    Hz50,
+    Hz100,
+}
+
+impl SdrPlayAgc {
+    pub const ALL: [SdrPlayAgc; 4] =
+        [SdrPlayAgc::Off, SdrPlayAgc::Hz5, SdrPlayAgc::Hz50, SdrPlayAgc::Hz100];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SdrPlayAgc::Off => "Off (manual IF gain)",
+            SdrPlayAgc::Hz5 => "5 Hz",
+            SdrPlayAgc::Hz50 => "50 Hz",
+            SdrPlayAgc::Hz100 => "100 Hz",
+        }
+    }
+
+    /// Numeric code carried on [`SdrPlayConfig::AGC_ELEMENT`], so the mode
+    /// rides the existing `SetGain` command instead of needing one of its own.
+    /// The values are the API's own `sdrplay_api_AgcControlT` numbers — note
+    /// they are not in speed order — so the two ends cannot drift.
+    pub fn code(self) -> f64 {
+        match self {
+            SdrPlayAgc::Off => 0.0,
+            SdrPlayAgc::Hz100 => 1.0,
+            SdrPlayAgc::Hz50 => 2.0,
+            SdrPlayAgc::Hz5 => 3.0,
+        }
+    }
+
+    pub fn from_code(v: f64) -> SdrPlayAgc {
+        match v.round() as i32 {
+            0 => SdrPlayAgc::Off,
+            1 => SdrPlayAgc::Hz100,
+            3 => SdrPlayAgc::Hz5,
+            // Anything unrecognised lands on the safe default rather than
+            // manual, which on an unknown band would be a deaf or overloaded
+            // receiver.
+            _ => SdrPlayAgc::Hz50,
+        }
+    }
+}
+
+/// Which RSPduo tuner to run (single-tuner mode; the second tuner idles).
+/// Changing it reopens the device — the choice is fixed when the tuner is
+/// selected, before streaming starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SdrPlayDuoTuner {
+    #[default]
+    Tuner1,
+    Tuner2,
+}
+
+impl SdrPlayDuoTuner {
+    pub const ALL: [SdrPlayDuoTuner; 2] = [SdrPlayDuoTuner::Tuner1, SdrPlayDuoTuner::Tuner2];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SdrPlayDuoTuner::Tuner1 => "Tuner 1 (50 Ohm / Hi-Z)",
+            SdrPlayDuoTuner::Tuner2 => "Tuner 2 (50 Ohm)",
+        }
+    }
+}
+
+/// SDRplay RSP settings (`radio.json`). Receive only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SdrPlayConfig {
+    /// Pin a particular receiver by its API serial; empty means "the first one
+    /// found".
+    pub serial: String,
+    /// Effective complex sample rate in Hz. At and above 2 Msps this is the
+    /// ADC rate; below, the ADC runs at 2 Msps and the service decimates.
+    pub sample_rate_hz: f64,
+    /// Analog IF bandwidth in kHz, or 0 for automatic — the widest filter that
+    /// fits inside the sample rate.
+    pub bw_khz: u32,
+    /// IF gain *reduction* in dB, 20..=59 — the RSP's native unit, where 20 is
+    /// maximum gain. Only obeyed while the AGC is off.
+    pub if_gr_db: i32,
+    /// LNA state, 0..=model max. 0 is maximum gain; each step switches more
+    /// front-end attenuation in.
+    pub lna_state: u8,
+    pub agc: SdrPlayAgc,
+    /// AGC target level in dBFS.
+    pub agc_setpoint_dbfs: i32,
+    /// Reference trim, parts per million, applied by the device itself.
+    pub ppm: f64,
+    /// Bias tee: ~4.7 V DC on the antenna port for a remote LNA. Off by
+    /// default — putting phantom power on someone's feedline uninvited is not
+    /// a good default.
+    pub bias_tee: bool,
+    /// FM broadcast-band notch filter.
+    pub rf_notch: bool,
+    /// DAB-band notch filter.
+    pub dab_notch: bool,
+    /// Chosen antenna port, by the names [`SdrPlayModel::antennas`] publishes.
+    /// Empty leaves the device's default.
+    pub antenna: String,
+    /// RSPduo only: which tuner to run.
+    pub duo_tuner: SdrPlayDuoTuner,
+    /// RSPdx only: HDR mode below 2 MHz.
+    pub hdr: bool,
+}
+
+impl Default for SdrPlayConfig {
+    fn default() -> Self {
+        SdrPlayConfig {
+            serial: String::new(),
+            sample_rate_hz: 2_000_000.0,
+            bw_khz: 0,
+            if_gr_db: 40,
+            lna_state: 0,
+            agc: SdrPlayAgc::Hz50,
+            agc_setpoint_dbfs: -60,
+            ppm: 0.0,
+            bias_tee: false,
+            rf_notch: false,
+            dab_notch: false,
+            antenna: String::new(),
+            duo_tuner: SdrPlayDuoTuner::Tuner1,
+            hdr: false,
+        }
+    }
+}
+
+impl SdrPlayConfig {
+    /// Gain elements this backend exposes. They live here rather than in
+    /// `sdroxide-sdrplay` so the (wasm-safe) settings UI can address them
+    /// without depending on the native backend crate — same reason as
+    /// [`HpsdrConfig::LNA_GAIN_ELEMENT`]. Both are carried as *negative*
+    /// values (like the RX-888 attenuator) so more slider is more gain:
+    /// `IF` is −(gain reduction dB), `LNA` is −(LNA state).
+    pub const IF_GAIN_ELEMENT: &'static str = "IF";
+    pub const LNA_ELEMENT: &'static str = "LNA";
+    /// Pseudo-elements carrying settings that are not gains at all. They ride
+    /// the existing `SetGain` command so this backend needs no new `Command`
+    /// variant, and are deliberately absent from `DeviceCaps::gains` so
+    /// nothing renders them as sliders — the SDRplay settings panel drives
+    /// them directly. The AGC encoding lives beside the enum it carries
+    /// ([`SdrPlayAgc::code`]) so the two ends cannot drift.
+    pub const AGC_ELEMENT: &'static str = "AGC";
+    pub const AGC_SETPOINT_ELEMENT: &'static str = "AGCSP";
+    pub const PPM_ELEMENT: &'static str = "PPM";
+    pub const BIAS_TEE_ELEMENT: &'static str = "BIASTEE";
+    pub const RF_NOTCH_ELEMENT: &'static str = "RFNOTCH";
+    pub const DAB_NOTCH_ELEMENT: &'static str = "DABNOTCH";
+    pub const HDR_ELEMENT: &'static str = "HDR";
+
+    /// IF gain reduction limits, in dB, from the API (`NORMAL_MIN_GR` and
+    /// `MAX_BB_GR`).
+    pub const IF_GR_MIN: i32 = 20;
+    pub const IF_GR_MAX: i32 = 59;
+
+    /// Sample rates offered in the UI. Below 2 Msps the ADC still runs at
+    /// 2 Msps and the API decimates; above 6.048 Msps the ADC trades
+    /// resolution for speed (12 bits up to 6.048, 10 to 8.064, 8 beyond).
+    pub const SAMPLE_RATES: [f64; 10] = [
+        250_000.0,
+        500_000.0,
+        1_000_000.0,
+        2_000_000.0,
+        3_000_000.0,
+        4_000_000.0,
+        5_000_000.0,
+        6_000_000.0,
+        8_000_000.0,
+        10_000_000.0,
+    ];
+
+    /// Analog IF bandwidths the tuner has, in kHz — the values of
+    /// `sdrplay_api_Bw_MHzT`.
+    pub const BANDWIDTHS_KHZ: [u32; 8] = [200, 300, 600, 1536, 5000, 6000, 7000, 8000];
+}
+
+/// An RSP the `sdrplay_api` service reports. Wasm-safe so it can cross the
+/// `RadioController` trait to the settings UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SdrPlayDevice {
+    /// The API's serial string — what [`SdrPlayConfig::serial`] pins.
+    pub serial: String,
+    /// The raw `hwVer` byte; [`Self::model`] decodes it.
+    pub hw_ver: u8,
+}
+
+impl SdrPlayDevice {
+    pub fn model(&self) -> SdrPlayModel {
+        SdrPlayModel::from_hw_ver(self.hw_ver)
+    }
+
+    /// One-line label for the selection UI.
+    pub fn label(&self) -> String {
+        format!("{}  (serial {})", self.model().label(), self.serial)
+    }
+}
+
 /// Named converters for [`RadioConfig::converter_offset_hz`], with the offset
 /// each one puts on the dial in Hz.
 ///
@@ -1257,6 +1574,7 @@ pub struct RadioConfig {
     pub rtlsdr: RtlSdrConfig,
     pub rx888: Rx888Config,
     pub pluto: PlutoConfig,
+    pub sdrplay: SdrPlayConfig,
 }
 
 #[cfg(test)]
@@ -1326,6 +1644,69 @@ mod tests {
             let json = serde_json::to_string(&b).expect("serialises");
             assert_eq!(serde_json::from_str::<Backend>(&json).expect("round trip"), b);
         }
+    }
+
+    /// Every `radio.json` written before this backend existed has to keep
+    /// working, and has to land on an SDRplay configuration that would
+    /// actually open and hear something.
+    #[test]
+    fn sdrplay_settings_default_for_every_older_config() {
+        for json in [r#"{}"#, r#"{"backend": "Pluto"}"#, r#"{"rx888": {"ppm": 1.5}}"#] {
+            let cfg: RadioConfig = serde_json::from_str(json).expect("parses");
+            assert_eq!(cfg.sdrplay.sample_rate_hz, 2_000_000.0, "after loading {json}");
+            assert_eq!(cfg.sdrplay.agc, SdrPlayAgc::Hz50);
+            assert!(!cfg.sdrplay.bias_tee, "no uninvited DC on the antenna after {json}");
+        }
+        // And the new variant round-trips by name, which is how `Backend` is
+        // stored — appending it must not have renumbered anything.
+        let sdrplay: RadioConfig =
+            serde_json::from_str(r#"{"backend": "SdrPlay"}"#).expect("parses");
+        assert_eq!(sdrplay.backend, Backend::SdrPlay);
+        for b in Backend::ALL {
+            let json = serde_json::to_string(&b).expect("serialises");
+            assert_eq!(serde_json::from_str::<Backend>(&json).expect("round trip"), b);
+        }
+    }
+
+    /// The AGC mode rides `SetGain` as the API's own numeric values, which are
+    /// not in speed order — a hand-rolled "obvious" mapping here would set a
+    /// different loop rate than the label says.
+    #[test]
+    fn sdrplay_agc_modes_survive_the_pseudo_gain_element_encoding() {
+        for mode in SdrPlayAgc::ALL {
+            assert_eq!(SdrPlayAgc::from_code(mode.code()), mode, "{}", mode.label());
+        }
+        // The API's numbering: 0 disable, 1 = 100 Hz, 2 = 50 Hz, 3 = 5 Hz.
+        assert_eq!(SdrPlayAgc::Off.code(), 0.0);
+        assert_eq!(SdrPlayAgc::Hz100.code(), 1.0);
+        assert_eq!(SdrPlayAgc::Hz50.code(), 2.0);
+        assert_eq!(SdrPlayAgc::Hz5.code(), 3.0);
+        assert_eq!(SdrPlayAgc::from_code(99.0), SdrPlayAgc::Hz50);
+    }
+
+    /// The `hwVer` byte is the only thing that says which RSP is on the other
+    /// end, and its numbering is historical rather than sequential — RSP1A is
+    /// 255, RSP1B is 6, and 5 does not exist.
+    #[test]
+    fn sdrplay_models_decode_from_the_api_hw_ver() {
+        assert_eq!(SdrPlayModel::from_hw_ver(1), SdrPlayModel::Rsp1);
+        assert_eq!(SdrPlayModel::from_hw_ver(2), SdrPlayModel::Rsp2);
+        assert_eq!(SdrPlayModel::from_hw_ver(3), SdrPlayModel::RspDuo);
+        assert_eq!(SdrPlayModel::from_hw_ver(4), SdrPlayModel::RspDx);
+        assert_eq!(SdrPlayModel::from_hw_ver(6), SdrPlayModel::Rsp1b);
+        assert_eq!(SdrPlayModel::from_hw_ver(7), SdrPlayModel::RspDxR2);
+        assert_eq!(SdrPlayModel::from_hw_ver(255), SdrPlayModel::Rsp1a);
+        assert_eq!(SdrPlayModel::from_hw_ver(5), SdrPlayModel::Unknown);
+        // Model-gated UI depends on these staying honest.
+        assert!(!SdrPlayModel::Rsp1.has_bias_tee());
+        assert!(SdrPlayModel::Rsp1b.has_dab_notch());
+        assert!(!SdrPlayModel::Rsp1b.has_hdr());
+        assert!(SdrPlayModel::RspDx.has_hdr());
+        // Antenna lists: single-port models hide the selector entirely.
+        assert!(SdrPlayModel::Rsp1b.antennas(SdrPlayDuoTuner::Tuner1).is_empty());
+        assert_eq!(SdrPlayModel::Rsp2.antennas(SdrPlayDuoTuner::Tuner1).len(), 3);
+        assert_eq!(SdrPlayModel::RspDuo.antennas(SdrPlayDuoTuner::Tuner1).len(), 2);
+        assert!(SdrPlayModel::RspDuo.antennas(SdrPlayDuoTuner::Tuner2).is_empty());
     }
 
     /// A discovered radio and a typed address are two different things, and the

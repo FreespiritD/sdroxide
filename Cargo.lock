@@ -4943,6 +4943,7 @@ dependencies = [
  "sdroxide-radio",
  "sdroxide-rtlsdr",
  "sdroxide-rx888",
+ "sdroxide-sdrplay",
  "sdroxide-server",
  "sdroxide-smartsdr",
  "sdroxide-tci",
@@ -5176,6 +5177,18 @@ dependencies = [
  "thiserror 2.0.19",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "sdroxide-sdrplay"
+version = "1.0.0"
+dependencies = [
+ "crossbeam-channel",
+ "libloading 0.8.9",
+ "rtrb",
+ "sdroxide-types",
+ "thiserror 2.0.19",
+ "tracing",
 ]
 
 [[package]]

@@ -7,6 +7,7 @@ mod null_source;
 mod pluto_source;
 mod rtlsdr_source;
 mod rx888_source;
+mod sdrplay_source;
 mod server_main;
 mod smartsdr_source;
 mod tci_source;
@@ -557,6 +558,7 @@ fn probe(cli: &Cli, settings: &Settings) -> anyhow::Result<()> {
     // dongle, and may this user have it?".
     probe_rtlsdr();
     probe_rx888();
+    probe_sdrplay();
     probe_soapy(cli, settings)
 }
 
@@ -591,6 +593,24 @@ fn probe_rx888() {
             };
             println!("  {}: {}  [{}]", i, d.label(), link);
         }
+    }
+    println!();
+}
+
+fn probe_sdrplay() {
+    // Unlike the USB probes this one can fail three different ways, each with
+    // a different fix, so the failure text is the whole point of printing it.
+    match sdroxide_sdrplay::try_list() {
+        Ok(devices) if devices.is_empty() => {
+            println!("No SDRplay RSPs reported by the SDRplay API service.");
+        }
+        Ok(devices) => {
+            println!("=== SDRplay RSP (vendor API service) ===");
+            for (i, d) in devices.iter().enumerate() {
+                println!("  {}: {}", i, d.label());
+            }
+        }
+        Err(e) => println!("SDRplay: {e}"),
     }
     println!();
 }
@@ -791,6 +811,7 @@ fn open_configured_source(
         Backend::Pluto => open_pluto_source(radio, cli.center_hz()),
         Backend::RtlSdr => open_rtlsdr_source(radio, cli.center_hz()),
         Backend::Rx888 => open_rx888_source(radio, cli.center_hz()),
+        Backend::SdrPlay => open_sdrplay_source(radio, cli.center_hz()),
         Backend::Soapy => open_soapy_source(cli, settings),
         Backend::Auto => {
             #[cfg(feature = "soapy")]
@@ -967,6 +988,60 @@ fn rx888_caps(src: &rx888_source::Rx888Source) -> DeviceCaps {
                 step_db: 0.5,
             },
         ],
+        ..DeviceCaps::default()
+    }
+}
+
+/// Build the SDRplay RSP source from radio.json. The device is picked by the
+/// API's serial, or the first one found when none is configured.
+fn open_sdrplay_source(
+    radio: &RadioConfig,
+    center_hz: f64,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let src = sdrplay_source::SdrPlaySource::open(&radio.sdrplay, center_hz)
+        .context("opening SDRplay RSP")?;
+    let caps = sdrplay_caps(&src);
+    Ok((Box::new(src), caps))
+}
+
+/// Capabilities for an SDRplay RSP: wideband IQ, receive only, 1 kHz–2 GHz on
+/// every model.
+///
+/// The two real gain elements are both *negated reductions* — `IF` is −(IF
+/// gain reduction), `LNA` is −(LNA state) — so the sliders read the usual way
+/// round: right is louder. The LNA range is the model's best band; bands with
+/// fewer states get clamped by the driver, which reports the state it kept.
+/// The switches (AGC, notches, bias tee, HDR) ride pseudo-elements that are
+/// deliberately not listed here, so only the SDRplay settings panel renders
+/// them.
+fn sdrplay_caps(src: &sdrplay_source::SdrPlaySource) -> DeviceCaps {
+    use sdroxide_types::{Direction, GainElement, SdrPlayConfig};
+    let model = src.model();
+    DeviceCaps {
+        driver: "sdrplay".into(),
+        label: src.describe(),
+        rx_channels: 1,
+        tx_channels: 0,
+        audio_mode: false,
+        freq_ranges_rx: vec![(1_000.0, 2_000_000_000.0)],
+        sample_rates: SdrPlayConfig::SAMPLE_RATES.to_vec(),
+        gains: vec![
+            GainElement {
+                name: SdrPlayConfig::IF_GAIN_ELEMENT.into(),
+                direction: Direction::Rx,
+                min_db: -(SdrPlayConfig::IF_GR_MAX as f64),
+                max_db: -(SdrPlayConfig::IF_GR_MIN as f64),
+                step_db: 1.0,
+            },
+            GainElement {
+                name: SdrPlayConfig::LNA_ELEMENT.into(),
+                direction: Direction::Rx,
+                min_db: -(model.max_lna_state() as f64),
+                max_db: 0.0,
+                step_db: 1.0,
+            },
+        ],
+        antennas_rx: src.antennas().to_vec(),
         ..DeviceCaps::default()
     }
 }

@@ -148,6 +148,10 @@ impl RadioController for LocalController {
         sdroxide_rtlsdr::list()
     }
 
+    fn list_sdrplay(&self) -> Vec<sdroxide_types::SdrPlayDevice> {
+        sdroxide_sdrplay::list()
+    }
+
     fn test_tci(&self, address: &str) -> Result<String, String> {
         sdroxide_tci::test_connection(address, std::time::Duration::from_secs(3))
     }

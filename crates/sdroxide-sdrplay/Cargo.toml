@@ -1,0 +1,19 @@
+[package]
+name = "sdroxide-sdrplay"
+version.workspace = true
+edition.workspace = true
+
+# Native-only SDRplay RSP support (RSP1/1A/1B/2/duo/dx) through the vendor's
+# closed `sdrplay_api` service — the one protocol those devices speak; no open
+# USB protocol exists for anything after the original RSP1. The library is
+# found with dlopen at *runtime*, so nothing is linked at build time and this
+# crate builds everywhere; on a machine without the vendor API it enumerates
+# nothing and opening explains what to install. Must never be a dependency of
+# any wasm-targeted crate.
+[dependencies]
+sdroxide-types.workspace = true
+crossbeam-channel.workspace = true
+rtrb.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+libloading.workspace = true

@@ -78,10 +78,11 @@ or connects to a remote sdroxide server.
 - **Award tracking** — live DXCC / WAS / WAZ / grid tallies, worked vs confirmed.
 - **Wideband skimmers** — a CW skimmer plus PSK31 and RTTY skimmers that decode
   many signals at once and label them on the waterfall.
-- **Six radio backends:** SoapySDR devices, OpenHPSDR (Hermes/Metis) Ethernet
+- **Many radio backends:** SoapySDR devices, OpenHPSDR (Hermes/Metis) Ethernet
   SDRs, a TCI server (ExpertSDR3/Thetis), a SmartSDR radio (FlexRadio
-  FLEX-6000/8000), RTL-SDR and RX-888 receivers over USB, or a CAT-controlled
-  radio with audio over a USB sound card (demodulated audio or stereo IQ).
+  FLEX-6000/8000), RTL-SDR, RX-888 and SDRplay RSP receivers over USB, a
+  PlutoSDR, or a CAT-controlled radio with audio over a USB sound card
+  (demodulated audio or stereo IQ).
 - **Memory channels** and per-band memory of your last frequency/mode/filter.
 - **Solar system 3D view** — the Sun, the Earth and the Moon, the
   other seven planets and eighteen of their moons with their orbits, live NASA
@@ -2419,6 +2420,70 @@ symptom to report if that ever fails.
 > the framing is wrong.
 
 
+#### 5.2.8 SDRplay RSP (USB)
+
+The **SDRplay RSP (USB)** interface drives any RSP — RSP1, RSP1A, RSP1B, RSP2,
+RSPduo, RSPdx, RSPdx R2 — natively, with no SoapySDR in the path. Receive
+only, 1 kHz–2 GHz, up to 10 Msps of complex IQ.
+
+**This SDR needs a vendor package.** The **SDRplay API** is required. This is a
+userland library plus a background service that owns the hardware. Install it
+from [sdrplay.com/api](https://www.sdrplay.com/api/) (v3.x) and make sure the
+service is running — on Linux `sudo systemctl enable --now sdrplay`; the
+Windows and macOS installers start automatically. SDR Oxide finds the library
+at runtime, so every build has this backend, and `sdroxide --probe` tells you
+which piece is missing when the device list stays empty: the library, the
+service, or the device.
+
+- **Receiver** — which RSP to open, by the serial the API reports. **Rescan**
+  asks the service for its device list; nothing is opened, so it is safe while
+  receiving.
+- **Sample rate** — the effective complex rate. Below 2 Msps the ADC still
+  runs at 2 Msps and the service decimates, which is the normal way to run a
+  narrow span. Above 6.048 Msps the ADC trades resolution for speed (12 bits
+  up to 6.048 Msps, 10 to 8.064, 8 beyond) — worth knowing before picking
+  10 Msps for weak-signal work. Takes effect on **Apply / reconnect**.
+- **IF bandwidth** — the tuner's analog filter. *Auto* picks the widest one
+  that fits the sample rate, which is what you want unless a strong
+  off-channel neighbour argues otherwise.
+- **AGC** — the RSP's own hardware IF-gain loop, run by the service at 5, 50
+  or 100 Hz, with an adjustable **set point** in dBFS. *Off* hands the IF gain
+  slider back to you — the setting for measurement and weak-signal digital
+  modes. While a loop runs, the IF slider greys out and the gain readout
+  follows what the loop actually did, not what the slider last said.
+- **IF gain reduction** — the RSP's native gain unit, and deliberately kept
+  that way so numbers translate directly from SDRuno/SDR++ practice: **20 dB
+  is maximum gain**, 59 dB minimum.
+- **LNA state** — the front-end attenuation ladder: state 0 is maximum gain,
+  each step switches more attenuation in. How many states exist depends on the
+  model *and the band* (an RSP1B has ten on VHF but seven on HF); pick more
+  than the current band has and the driver clamps, keeps your choice, and
+  restores it when you tune somewhere it fits.
+- **Frequency correction** — reference error in parts per million, applied by
+  the device itself.
+- **FM broadcast / DAB notch** — hardware notch filters over 88–108 MHz and
+  165–230 MHz, for when a local broadcaster overloads everything else. Models
+  that lack one simply do not show the row.
+- **Antenna** — on the RSP2 (A / B / Hi-Z), RSPdx and RSPdx R2 (A / B / C),
+  and the RSPduo's tuner 1 (50 Ω / Hi-Z). Applied live; the Hi-Z inputs have
+  a shorter LNA ladder, which the clamping above absorbs.
+- **Tuner** (RSPduo) — which of the two tuners to run, one at a time, chosen
+  when the device opens. Dual-tuner and master/slave operation are not
+  supported.
+- **HDR mode** (RSPdx / RSPdx R2) — the high-dynamic-range path below 2 MHz.
+- **Bias tee** — about 4.7 V DC up the coax for an active antenna (every model
+  except the original RSP1).
+
+> **The bias tee puts DC on the feedline.** The same standing warning as the
+> RTL-SDR applies: never enable it with a transceiver, a DC-grounded antenna,
+> or a preamplifier powered from somewhere else on the other end of the cable.
+
+If the service reports the ADC **overloaded**, sdroxide shows it on screen and
+in the log: raise the LNA state, lower the IF gain, or turn the AGC on. If the
+RSP is unplugged — or the service restarted under sdroxide — it notices within
+a few seconds and reconnects by itself when the device returns.
+
+
 ### 5.3 UI: display preferences and voice announcements
 
 ![The UI tab: frame rate, scroll/spectrum speed, palette, and spectrum background](images/settings-ui.jpg)
@@ -4335,7 +4400,7 @@ sdroxide stores its settings under the per-user config directory:
 | File | Format | Contents |
 | --- | --- | --- |
 | `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, plus the `[ui]` display preferences, the `[speech]` announcement settings ([§5.3](#53-ui-display-preferences-and-voice-announcements)) and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
-| `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/RX-888/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
+| `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/RX-888/SDRplay/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
 | `digi.json` | JSON | Digital-mode operator settings: your callsign and grid, FT8/FT4 TX period, auto-sequence and message templates, and the WSPR beacon's duty cycle, power and band-hop list. |
 | `memories.json` | JSON | Saved memory channels. |
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |

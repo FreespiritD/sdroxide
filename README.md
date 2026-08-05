@@ -36,8 +36,8 @@ One binary, three ways to run it:
 
 - **Radios** - CAT/Audio, CAT/Stereo IQ, TCI (SunSDR), OpenHPSDR P1 and P2
   (Hermes Lite 2, Apache Labs), SoapySDR (HackRF, etc.), RTL-SDR (native support), 
-  RX-888 (native support), SmartSDR (FlexRadio - experimental!), PlutoSDR (native 
-  support, experimental!)
+  RX-888 (native support), SDRplay RSP (native, via the vendor API service),
+  SmartSDR (FlexRadio - experimental!), PlutoSDR (native support, experimental!)
 - **Panadapter** — GPU (wgpu) waterfall + spectrum line, wheel-zoom around the
   cursor, drag-to-pan, per-digit frequency readout, selectable colormaps,
   peak-hold, and a **one-click auto-contrast** ("FIT") that picks the display
@@ -369,6 +369,23 @@ starting sdroxide before the rig is fine:
   converted to complex baseband on the host, which is why retuning anywhere in
   HF is instantaneous, and why it wants a modern CPU and a real USB 3 port.
   Receive only; the VHF/UHF tuner is not driven.
+- **SDRplay RSP (USB)** — any SDRplay RSP (RSP1, RSP1A, RSP1B, RSP2, RSPduo,
+  RSPdx, RSPdx R2), driven natively through the vendor's **SDRplay API
+  service** — no SoapySDR in the path. The RSPs after the original RSP1 have
+  no open USB protocol, so this is the one backend that needs a vendor
+  package: install the [SDRplay API](https://www.sdrplay.com/api/) (v3.x) and
+  make sure its service is running (Linux: `sudo systemctl enable --now
+  sdrplay`). Nothing is linked at build time — sdroxide finds the library at
+  runtime, so every build variant has the backend and simply reports what to
+  install when it is missing (`sdroxide --probe` says which piece is absent).
+
+  Receive only, 1 kHz–2 GHz, up to 10 Msps. The RSP gain model is exposed the
+  way the hardware means it: an **IF gain reduction** slider, an **LNA state**
+  step control (clamped per band, honestly reported back), and the RSP's own
+  hardware **AGC** with an adjustable set point. FM-broadcast and DAB notch
+  filters, bias tee, RSP2/RSPdx antenna selection, RSPduo tuner selection and
+  RSPdx HDR mode are available on the Radio tab, and only the rows the selected
+  model actually supports are shown.
 - **PlutoSDR (network)** — an ADALM-Pluto, driven directly over the **IIOD**
   protocol its on-board daemon serves. **No SoapySDR and no libiio**, so it
   works in every build including the standard `.msi` and `.dmg`. Wideband IQ
@@ -406,10 +423,11 @@ starting sdroxide before the rig is fine:
   transmit is DAX audio the radio modulates. DAX IQ tops out at **192 kHz**,
   which is this backend's widest span.
 
-The wideband-IQ backends (RTL-SDR, RX-888, SoapySDR, HPSDR, TCI, SmartSDR,
-PlutoSDR) drive the full panadapter, the CW/PSK/RTTY skimmers, and internal
-demodulation; a CAT rig feeding demodulated audio shows only a narrow audio-band
-slice. RTL-SDR and RX-888 are receive-only; the others can transmit.
+The wideband-IQ backends (RTL-SDR, RX-888, SDRplay, SoapySDR, HPSDR, TCI,
+SmartSDR, PlutoSDR) drive the full panadapter, the CW/PSK/RTTY skimmers, and
+internal demodulation; a CAT rig feeding demodulated audio shows only a narrow
+audio-band slice. RTL-SDR, RX-888 and SDRplay are receive-only; the others can
+transmit.
 
 Whichever backend you pick, a **converter offset** on the same tab handles an
 external frequency converter: an HF upconverter (Ham It Up, SpyVerter), a
@@ -731,6 +749,16 @@ sdroxide uploads re-enumerates at SuperSpeed. So a receiver reported as "USB
 afterwards, that is a real cable or port problem, and sdroxide clamps the sample
 rate and says so on screen rather than silently dropping samples. `--probe`
 reports the link speed.
+
+### SDRplay RSP prerequisites
+
+SDR Oxide does not interface with the USB device itself. It talks to the [SDRplay API](https://www.sdrplay.com/api/)
+(v3.x) — a userland library plus a background service that owns the hardware,
+and whose installer sets up its own USB permissions. Install it, make sure the
+service is running (Linux: `sudo systemctl enable --now sdrplay`; the Windows
+and macOS installers start it themselves), and the RSP appears under Rescan in
+**Settings → Radio → SDRplay RSP (USB)**. If it doesn't, `sdroxide --probe`
+says which piece is missing — the library, the service, or the device.
 
 ## Running
 

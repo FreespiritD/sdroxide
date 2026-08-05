@@ -1304,3 +1304,393 @@ pub(in crate::app) fn settings_rx888_tab(
         .weak(),
     );
 }
+
+/// SDRplay RSP interface: device, rate, and the RSP's gain model (IF gain
+/// reduction + LNA state + hardware AGC), with the rows a given model lacks
+/// hidden.
+pub(in crate::app) fn settings_sdrplay_tab(
+    ui: &mut egui::Ui,
+    devices: &[sdroxide_types::SdrPlayDevice],
+    radio_edit: &mut Option<sdroxide_types::RadioConfig>,
+    rescan: &mut bool,
+    apply: &mut bool,
+    cmds: &mut Vec<Command>,
+) {
+    use sdroxide_types::{SdrPlayAgc, SdrPlayConfig, SdrPlayDuoTuner, SdrPlayModel};
+    let Some(cfg) = radio_edit.as_mut() else {
+        ui.label("Radio configuration is only available in the native app.");
+        return;
+    };
+
+    // Device, rate, bandwidth and RSPduo tuner rebuild the session; the rest
+    // rides `SetGain` (or `SetAntenna`) straight to the running device.
+    let before = (
+        cfg.sdrplay.serial.clone(),
+        cfg.sdrplay.sample_rate_hz,
+        cfg.sdrplay.bw_khz,
+        cfg.sdrplay.duo_tuner,
+    );
+
+    // Which rows to draw comes from the *selected* device's model. With
+    // nothing enumerated (service down, mid-replug) fall back to showing the
+    // RSP1A/1B feature set: the driver ignores a switch the real hardware
+    // lacks, whereas a hidden switch cannot be un-hidden by an operator whose
+    // service just isn't running yet.
+    let model = devices
+        .iter()
+        .find(|d| d.serial == cfg.sdrplay.serial)
+        .or(devices.first())
+        .map(|d| d.model())
+        .unwrap_or(SdrPlayModel::Rsp1b);
+
+    egui::Grid::new("sdrplay-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Receiver");
+        ui.horizontal(|ui| {
+            if ui
+                .button("Rescan")
+                .on_hover_text(
+                    "Ask the SDRplay API service for its device list. Nothing is \
+                     opened, so this is safe to press while receiving.",
+                )
+                .clicked()
+            {
+                *rescan = true;
+            }
+            let shown = if cfg.sdrplay.serial.is_empty() {
+                "— first one found —".to_string()
+            } else {
+                cfg.sdrplay.serial.clone()
+            };
+            ComboBox::from_id_salt("sdrplay_dev").width(300.0).selected_text(shown).show_ui(
+                ui,
+                |ui| {
+                    if devices.is_empty() {
+                        ui.label(
+                            RichText::new(
+                                "no RSPs — press Rescan (needs the SDRplay API service)",
+                            )
+                            .weak(),
+                        );
+                    }
+                    ui.selectable_value(
+                        &mut cfg.sdrplay.serial,
+                        String::new(),
+                        "— first one found —",
+                    );
+                    for d in devices {
+                        ui.selectable_value(&mut cfg.sdrplay.serial, d.serial.clone(), d.label());
+                    }
+                },
+            );
+        });
+        ui.end_row();
+
+        ui.label("Sample rate").on_hover_text(
+            "Rates below 2 Msps run the ADC at 2 Msps and decimate in the \
+             service. Takes effect on Apply.",
+        );
+        let shown = format!("{:.3} Msps", cfg.sdrplay.sample_rate_hz / 1e6);
+        ComboBox::from_id_salt("sdrplay_rate").selected_text(shown).show_ui(ui, |ui| {
+            for &r in &SdrPlayConfig::SAMPLE_RATES {
+                let sel = (cfg.sdrplay.sample_rate_hz - r).abs() < 1.0;
+                let mut label = format!("{:.3} Msps", r / 1e6);
+                if r > 6_048_000.0 {
+                    // The ADC trades resolution for speed past 6.048 Msps.
+                    label.push_str("  (reduced ADC resolution)");
+                }
+                if ui.selectable_label(sel, label).clicked() {
+                    cfg.sdrplay.sample_rate_hz = r;
+                }
+            }
+        });
+        ui.end_row();
+
+        ui.label("IF bandwidth").on_hover_text(
+            "The tuner's analog filter. Auto picks the widest one that fits \
+             the sample rate. Takes effect on Apply.",
+        );
+        let shown = if cfg.sdrplay.bw_khz == 0 {
+            "Auto".to_string()
+        } else {
+            format!("{} kHz", cfg.sdrplay.bw_khz)
+        };
+        ComboBox::from_id_salt("sdrplay_bw").selected_text(shown).show_ui(ui, |ui| {
+            if ui.selectable_label(cfg.sdrplay.bw_khz == 0, "Auto").clicked() {
+                cfg.sdrplay.bw_khz = 0;
+            }
+            for &khz in &SdrPlayConfig::BANDWIDTHS_KHZ {
+                // Filters wider than the rate would only alias; don't offer them.
+                if (khz as f64) * 1000.0 > cfg.sdrplay.sample_rate_hz {
+                    continue;
+                }
+                if ui
+                    .selectable_label(cfg.sdrplay.bw_khz == khz, format!("{khz} kHz"))
+                    .clicked()
+                {
+                    cfg.sdrplay.bw_khz = khz;
+                }
+            }
+        });
+        ui.end_row();
+
+        ui.label("AGC").on_hover_text(
+            "The RSP's own IF-gain loop, run by the API service. Off hands the \
+             IF gain slider back to you — the setting for measurement and \
+             weak-signal digital modes.",
+        );
+        let mut agc = cfg.sdrplay.agc;
+        enum_combo(ui, "sdrplay_agc", &mut agc, &SdrPlayAgc::ALL, SdrPlayAgc::label);
+        if agc != cfg.sdrplay.agc {
+            cfg.sdrplay.agc = agc;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: SdrPlayConfig::AGC_ELEMENT.to_string(),
+                db: agc.code(),
+            });
+        }
+        ui.end_row();
+
+        if cfg.sdrplay.agc != SdrPlayAgc::Off {
+            ui.label("AGC set point").on_hover_text(
+                "Signal level the loop holds the ADC at. Lower leaves more \
+                 headroom for signals off-channel.",
+            );
+            if ui
+                .add(
+                    Slider::new(&mut cfg.sdrplay.agc_setpoint_dbfs, -72..=-20).suffix(" dBFS"),
+                )
+                .changed()
+            {
+                cmds.push(Command::SetGain {
+                    dir: Direction::Rx,
+                    element: SdrPlayConfig::AGC_SETPOINT_ELEMENT.to_string(),
+                    db: cfg.sdrplay.agc_setpoint_dbfs as f64,
+                });
+            }
+            ui.end_row();
+        }
+
+        ui.label("IF gain reduction").on_hover_text(
+            "The RSP's native gain unit: 20 dB is maximum gain, 59 dB minimum. \
+             Applies immediately. Ignored while the AGC is running — the loop \
+             owns this value then, and the S-meter shows what it settled on.",
+        );
+        ui.add_enabled_ui(cfg.sdrplay.agc == SdrPlayAgc::Off, |ui| {
+            if ui
+                .add(
+                    Slider::new(
+                        &mut cfg.sdrplay.if_gr_db,
+                        SdrPlayConfig::IF_GR_MIN..=SdrPlayConfig::IF_GR_MAX,
+                    )
+                    .suffix(" dB"),
+                )
+                .changed()
+            {
+                cmds.push(Command::SetGain {
+                    dir: Direction::Rx,
+                    element: SdrPlayConfig::IF_GAIN_ELEMENT.to_string(),
+                    db: -(cfg.sdrplay.if_gr_db as f64),
+                });
+            }
+        });
+        ui.end_row();
+
+        ui.label("LNA state").on_hover_text(
+            "Front-end attenuation in steps: 0 is maximum gain, each step up \
+             switches more attenuation in. Some bands have fewer steps — the \
+             driver clamps and keeps your choice for when you tune back. \
+             Applies immediately.",
+        );
+        let max_lna = model.max_lna_state();
+        if ui
+            .add(Slider::new(&mut cfg.sdrplay.lna_state, 0..=max_lna))
+            .on_hover_text("0 = max gain")
+            .changed()
+        {
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: SdrPlayConfig::LNA_ELEMENT.to_string(),
+                db: -(cfg.sdrplay.lna_state as f64),
+            });
+        }
+        ui.end_row();
+
+        ui.label("Frequency correction").on_hover_text(
+            "Reference error in parts per million, applied by the device \
+             itself. Applies immediately.",
+        );
+        let mut ppm = cfg.sdrplay.ppm;
+        if ui
+            .add(DragValue::new(&mut ppm).speed(0.1).range(-200.0..=200.0).suffix(" ppm"))
+            .changed()
+        {
+            cfg.sdrplay.ppm = ppm;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: SdrPlayConfig::PPM_ELEMENT.to_string(),
+                db: ppm,
+            });
+        }
+        ui.end_row();
+
+        if model == SdrPlayModel::RspDuo {
+            ui.label("Tuner").on_hover_text(
+                "Which of the RSPduo's two tuners to run (one at a time). \
+                 Takes effect on Apply.",
+            );
+            let mut tuner = cfg.sdrplay.duo_tuner;
+            enum_combo(
+                ui,
+                "sdrplay_duo_tuner",
+                &mut tuner,
+                &SdrPlayDuoTuner::ALL,
+                SdrPlayDuoTuner::label,
+            );
+            if tuner != cfg.sdrplay.duo_tuner {
+                cfg.sdrplay.duo_tuner = tuner;
+                // The port list belongs to the tuner; a remembered tuner-1
+                // port name means nothing on tuner 2.
+                cfg.sdrplay.antenna = String::new();
+            }
+            ui.end_row();
+        }
+
+        let antennas = model.antennas(cfg.sdrplay.duo_tuner);
+        if !antennas.is_empty() {
+            ui.label("Antenna").on_hover_text("Applies immediately.");
+            let shown = if cfg.sdrplay.antenna.is_empty() {
+                antennas[0].to_string()
+            } else {
+                cfg.sdrplay.antenna.clone()
+            };
+            ComboBox::from_id_salt("sdrplay_antenna").selected_text(shown).show_ui(ui, |ui| {
+                for &a in antennas {
+                    if ui.selectable_label(cfg.sdrplay.antenna == a, a).clicked() {
+                        cfg.sdrplay.antenna = a.to_string();
+                        cmds.push(Command::SetAntenna {
+                            dir: Direction::Rx,
+                            name: a.to_string(),
+                        });
+                    }
+                }
+            });
+            ui.end_row();
+        }
+
+        if model.has_rf_notch() {
+            ui.label("FM broadcast notch");
+            let mut on = cfg.sdrplay.rf_notch;
+            if ui
+                .checkbox(&mut on, "Enable")
+                .on_hover_text(
+                    "Hardware notch over the 88–108 MHz broadcast band, for \
+                     when a local transmitter overloads everything else. \
+                     Applies immediately.",
+                )
+                .changed()
+            {
+                cfg.sdrplay.rf_notch = on;
+                cmds.push(Command::SetGain {
+                    dir: Direction::Rx,
+                    element: SdrPlayConfig::RF_NOTCH_ELEMENT.to_string(),
+                    db: if on { 1.0 } else { 0.0 },
+                });
+            }
+            ui.end_row();
+        }
+
+        if model.has_dab_notch() {
+            ui.label("DAB notch");
+            let mut on = cfg.sdrplay.dab_notch;
+            if ui
+                .checkbox(&mut on, "Enable")
+                .on_hover_text(
+                    "Hardware notch over the 165–230 MHz DAB band. Applies \
+                     immediately.",
+                )
+                .changed()
+            {
+                cfg.sdrplay.dab_notch = on;
+                cmds.push(Command::SetGain {
+                    dir: Direction::Rx,
+                    element: SdrPlayConfig::DAB_NOTCH_ELEMENT.to_string(),
+                    db: if on { 1.0 } else { 0.0 },
+                });
+            }
+            ui.end_row();
+        }
+
+        if model.has_hdr() {
+            ui.label("HDR mode");
+            let mut on = cfg.sdrplay.hdr;
+            if ui
+                .checkbox(&mut on, "Enable below 2 MHz")
+                .on_hover_text(
+                    "The RSPdx's high-dynamic-range path for LF/MF. Not yet \
+                     verified against hardware. Applies immediately.",
+                )
+                .changed()
+            {
+                cfg.sdrplay.hdr = on;
+                cmds.push(Command::SetGain {
+                    dir: Direction::Rx,
+                    element: SdrPlayConfig::HDR_ELEMENT.to_string(),
+                    db: if on { 1.0 } else { 0.0 },
+                });
+            }
+            ui.end_row();
+        }
+
+        if model.has_bias_tee() {
+            ui.label("Bias tee");
+            let mut on = cfg.sdrplay.bias_tee;
+            if ui
+                .checkbox(&mut on, "Feed ~4.7 V DC up the coax")
+                .on_hover_text("Powers an active antenna or preamp down the coax.")
+                .changed()
+            {
+                cfg.sdrplay.bias_tee = on;
+                cmds.push(Command::SetGain {
+                    dir: Direction::Rx,
+                    element: SdrPlayConfig::BIAS_TEE_ELEMENT.to_string(),
+                    db: if on { 1.0 } else { 0.0 },
+                });
+            }
+            ui.end_row();
+        }
+    });
+
+    if cfg.sdrplay.bias_tee && model.has_bias_tee() {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(
+                "Bias tee is ON. Never connect a transceiver, a grounded antenna, \
+                 or a preamp powered from elsewhere while this is enabled — the DC \
+                 goes straight down the feedline.",
+            )
+            .color(crate::theme::YELLOW),
+        );
+    }
+
+    if before
+        != (
+            cfg.sdrplay.serial.clone(),
+            cfg.sdrplay.sample_rate_hz,
+            cfg.sdrplay.bw_khz,
+            cfg.sdrplay.duo_tuner,
+        )
+    {
+        *apply = true;
+    }
+
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "Receive only, 1 kHz–2 GHz. Needs the vendor's SDRplay API service \
+             (sdrplay.com/api) — the RSPs after the original RSP1 have no open \
+             protocol. Device, sample rate, bandwidth and RSPduo tuner take \
+             effect on Apply; everything else applies as you change it.",
+        )
+        .weak(),
+    );
+}

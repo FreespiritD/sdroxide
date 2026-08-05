@@ -60,6 +60,7 @@ sdroxide-smartsdr = { path = "crates/sdroxide-smartsdr" }
 sdroxide-rtlsdr = { path = "crates/sdroxide-rtlsdr" }
 sdroxide-rx888 = { path = "crates/sdroxide-rx888" }
 sdroxide-pluto = { path = "crates/sdroxide-pluto" }
+sdroxide-sdrplay = { path = "crates/sdroxide-sdrplay" }
 sdroxide-net = { path = "crates/sdroxide-net" }
 sdroxide-deepcw = { path = "crates/sdroxide-deepcw" }
 
@@ -77,6 +78,10 @@ rtrb = "0.3"
 # Pure-Rust USB — the RTL-SDR backend's only dependency. No libusb, so it needs
 # no system library on any target and ships in every build variant.
 nusb = "0.2.5"
+# Runtime dlopen, for the SDRplay backend's closed vendor library. Nothing is
+# linked at build time, so this too ships in every build variant and simply
+# reports "not installed" where the vendor API is absent.
+libloading = "0.8"
 
 [package]
 name = "sdroxide"
@@ -101,6 +106,7 @@ sdroxide-smartsdr.workspace = true
 sdroxide-rtlsdr.workspace = true
 sdroxide-rx888.workspace = true
 sdroxide-pluto.workspace = true
+sdroxide-sdrplay.workspace = true
 sdroxide-ui = { workspace = true, features = ["remote"] }
 # `accesskit` is one of eframe's defaults, and turning the defaults off
 # silently switched it back off: without it the whole widget tree is
