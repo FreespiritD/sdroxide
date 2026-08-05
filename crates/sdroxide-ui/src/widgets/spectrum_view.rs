@@ -146,6 +146,7 @@ impl SpectrumSmooth {
 }
 
 // --- skimmer spot boxes ---------------------------------------------------
+/// Widest a box may grow; a CW message tail longer than this scrolls.
 const SPOT_BOX_W: f32 = 236.0;
 const SPOT_BOX_H: f32 = 19.0;
 /// Font size for the box's callsign / message text.
@@ -184,9 +185,11 @@ fn spot_color(spot: &SkimmerSpot, hovered: bool) -> Color32 {
     }
 }
 
-/// The on-screen width a box needs to hold just its callsign (used by the
-/// fit-to-text FT8 boxes, which show the callsign only).
-fn spot_content_width(p: &egui::Painter, spot: &SkimmerSpot) -> f32 {
+/// The on-screen width a box needs to hold its content, capped at
+/// [`SPOT_BOX_W`]. In `callsign_only` mode (FT8) that is just the callsign;
+/// otherwise (CW) the callsign plus the current message tail, so the box hugs
+/// its text and the tail only starts scrolling once the box is genuinely full.
+fn spot_content_width(p: &egui::Painter, spot: &SkimmerSpot, callsign_only: bool) -> f32 {
     let mut w = 2.0 * SPOT_PAD;
     if let Some(call) = &spot.callsign {
         w += p
@@ -194,7 +197,17 @@ fn spot_content_width(p: &egui::Painter, spot: &SkimmerSpot) -> f32 {
             .size()
             .x;
     }
-    w.clamp(30.0, 240.0)
+    if !callsign_only {
+        if spot.callsign.is_some() {
+            w += 6.0;
+        }
+        let text = if spot.text.is_empty() { "…" } else { spot.text.as_str() };
+        w += p
+            .layout_no_wrap(text.to_string(), FontId::monospace(SPOT_MSG_PT), Color32::WHITE)
+            .size()
+            .x;
+    }
+    w.clamp(30.0, SPOT_BOX_W)
 }
 
 /// Lay skimmer spots out into staggered lanes over the waterfall. Each box sits
@@ -203,16 +216,16 @@ fn spot_content_width(p: &egui::Painter, spot: &SkimmerSpot) -> f32 {
 /// x through the box's right edge — clears the previous box, so nearby signals
 /// stack vertically instead of overlapping. Off-view / past-cap spots are omitted.
 ///
-/// When `fit` is set, each box is sized to its text (used for FT8 station boxes,
-/// whose message is a complete fixed string); otherwise a fixed width is used
-/// (the CW skimmer, whose message is a live-growing tail).
+/// Boxes are sized to their content (capped at [`SPOT_BOX_W`]): in
+/// `callsign_only` mode (FT8 station boxes) that is just the callsign;
+/// otherwise the callsign plus the CW skimmer's live-growing message tail.
 fn layout_spots(
     p: &egui::Painter,
     view: &ViewState,
     rect: &Rect,
     wf_rect: &Rect,
     spots: &[SkimmerSpot],
-    fit: bool,
+    callsign_only: bool,
 ) -> Vec<SpotBox> {
     let mut vis: Vec<(f32, usize)> = spots
         .iter()
@@ -225,7 +238,7 @@ fn layout_spots(
     let mut lane_right: Vec<f32> = Vec::new();
     let mut out = Vec::with_capacity(vis.len());
     for (xc, idx) in vis {
-        let box_w = if fit { spot_content_width(p, &spots[idx]) } else { SPOT_BOX_W };
+        let box_w = spot_content_width(p, &spots[idx], callsign_only);
         let box_left = xc + SPOT_LEADER;
         // Footprint spans the signal tick through the box's right edge, so a
         // later box's tick can't land on top of an earlier box in the lane.
@@ -684,8 +697,8 @@ pub fn show_ext(
     let wf_rect = Rect::from_min_max(pos2(rect.left(), scale_rect.bottom()), rect.max);
 
     // Skimmer boxes are laid out up front so the click hit-test (below) and the
-    // draw pass (bottom) agree on their rects. FT8 (digital) boxes fit their
-    // text; CW skimmer boxes use a fixed width for their live-growing tail.
+    // draw pass (bottom) agree on their rects. Boxes fit their text: callsign
+    // only for FT8 (digital), callsign + message tail for the CW skimmer.
     let spot_boxes = layout_spots(&painter, view, &rect, &wf_rect, skimmer, click_sets_offset);
     let net_boxes = layout_net_spots(&painter, view, &rect, &wf_rect, net_spots);
 
