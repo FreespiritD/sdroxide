@@ -856,8 +856,13 @@ mod tests {
         // A file written before one of the fields existed still loads.
         let cfg: sdroxide_types::SkimmerSettings =
             serde_json::from_str(r#"{"enabled":[false,false,true]}"#).unwrap();
+        let default = sdroxide_types::SkimmerSettings::default();
         assert_eq!(cfg.enabled, [false, false, true]);
-        assert_eq!(cfg.squelch_db, sdroxide_types::SkimmerSettings::default().squelch_db);
+        assert_eq!(cfg.squelch_db, default.squelch_db);
+        // A `skimmer.json` from before the CW decoder was the operator's choice
+        // still opens, on the decoder it used to have.
+        assert_eq!(cfg.cw_decoder, sdroxide_types::CwSkimmerDecoder::Neural);
+        assert_eq!(cfg.cw_slots, default.cw_slots);
     }
 
     #[test]

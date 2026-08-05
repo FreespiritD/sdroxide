@@ -34,10 +34,18 @@ pub struct Pool {
 }
 
 impl Pool {
-    /// Spawn `threads` decoders. Clamped to at least one.
+    /// Spawn `threads` decoders, sharing one inference pool of the same size.
+    /// Clamped to at least one.
+    ///
+    /// The two numbers are deliberately the same. `threads` decides how many
+    /// windows may be *in* the model at once; the inference pool decides how many
+    /// cores they may use between them. Left to itself rten gives every decode
+    /// the whole machine, so without the second bound the first one multiplies
+    /// rather than caps — see [`Decoder::with_thread_pool`].
     pub fn new(threads: usize) -> Result<Self, Error> {
         crate::model::preload()?;
         let threads = threads.max(1);
+        let infer = Arc::new(crate::ThreadPool::with_num_threads(threads));
 
         // Room for a round of work and a little slack, so a caller submitting a
         // batch is not refused halfway through it.
@@ -50,11 +58,12 @@ impl Pool {
             let jobs: Receiver<Job> = job_rx.clone();
             let results = result_tx.clone();
             let counter = Arc::clone(&in_flight);
+            let infer = Arc::clone(&infer);
             handles.push(
                 std::thread::Builder::new()
                     .name(format!("sdroxide-deepcw-{n}"))
                     .spawn(move || {
-                        let mut decoder = match Decoder::new() {
+                        let mut decoder = match Decoder::with_thread_pool(infer) {
                             Ok(d) => d,
                             Err(e) => {
                                 tracing::error!("DeepCW pool thread: {e}");

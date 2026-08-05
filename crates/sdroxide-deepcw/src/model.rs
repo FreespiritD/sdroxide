@@ -11,9 +11,10 @@
 //! one process-wide instance is shared because the graph is immutable during a
 //! run and rten takes `&self`.
 
+use std::sync::Arc;
 use std::sync::OnceLock;
 
-use rten::{Model, ValueOrView};
+use rten::{Model, RunOptions, ThreadPool, ValueOrView};
 use rten_tensor::NdTensor;
 use rten_tensor::prelude::*;
 
@@ -117,11 +118,30 @@ impl Window {
 pub struct Decoder {
     net: &'static Network,
     spectrogram: Spectrogram,
+    /// Where inference runs, or the process-wide pool if `None`.
+    pool: Option<Arc<ThreadPool>>,
 }
 
 impl Decoder {
+    /// A decoder that runs on rten's process-wide pool, which is sized to the
+    /// physical core count. Right for a caller decoding one signal at a time,
+    /// where finishing sooner is the whole point.
     pub fn new() -> Result<Self, Error> {
-        Ok(Decoder { net: shared()?, spectrogram: Spectrogram::new() })
+        Ok(Decoder { net: shared()?, spectrogram: Spectrogram::new(), pool: None })
+    }
+
+    /// A decoder that runs on `pool` instead.
+    ///
+    /// rten parallelises *within* one inference over a global pool sized to the
+    /// machine, and it has no idea how many other inferences are in flight. Run
+    /// several concurrently — which is exactly what a skimmer does — and each one
+    /// asks for every core, so four decodes on a sixteen-core machine put
+    /// sixty-four-way demand on it and spend real time contending instead of
+    /// decoding. Handing every worker the *same* explicitly sized pool caps the
+    /// total at that size however many decodes are running, and still lets a lone
+    /// decode on a quiet band spread across all of it.
+    pub fn with_thread_pool(pool: Arc<ThreadPool>) -> Result<Self, Error> {
+        Ok(Decoder { net: shared()?, spectrogram: Spectrogram::new(), pool: Some(pool) })
     }
 
     /// Decode `audio`, which must be mono at [`spectrogram::SAMPLE_RATE`] with
@@ -150,10 +170,11 @@ impl Decoder {
         let frames = spec.len() / BINS;
         let input = NdTensor::from_data([1, 1, frames, BINS], spec);
 
+        let opts = self.pool.clone().map(|p| RunOptions::default().with_thread_pool(Some(p)));
         let mut outputs = self
             .net
             .model
-            .run(vec![(self.net.input, ValueOrView::from(input.view()))], &[self.net.output], None)
+            .run(vec![(self.net.input, ValueOrView::from(input.view()))], &[self.net.output], opts)
             .map_err(|e| Error::Run(e.to_string()))?;
 
         let value = outputs.pop().ok_or_else(|| Error::Run("model returned no output".into()))?;
@@ -277,6 +298,164 @@ mod tests {
             (0..(spectrogram::SAMPLE_RATE * 10.0) as usize).map(|_| rng.normal() * 0.1).collect();
         let got = d.decode(&audio).expect("decode").normalized();
         assert!(got.len() < 8, "noise decoded to {got:?}");
+    }
+
+    /// CPU consumed by this process and every thread in it, in seconds. See the
+    /// note on the skimmer's own cost harness: wall time cannot tell 25 ms on one
+    /// core from 25 ms on sixteen, and the difference is the whole question.
+    #[cfg(target_os = "linux")]
+    fn cpu_seconds() -> f64 {
+        let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+        let after = stat.rfind(')').map_or("", |i| &stat[i + 2..]);
+        let f: Vec<&str> = after.split_whitespace().collect();
+        let at = |i: usize| -> f64 { f.get(i).and_then(|v| v.parse().ok()).unwrap_or(0.0) };
+        (at(11) + at(12)) / 100.0
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn cpu_seconds() -> f64 {
+        f64::NAN
+    }
+
+    /// What one inference costs, by window length and by how many cores it is
+    /// allowed to use.
+    ///
+    /// The first table sizes the window trade-off: the model has no time
+    /// subsampling, so cost is linear in window length with the attention term
+    /// growing on top of that. The second sizes the fan-out: if CPU per decode
+    /// climbs with pool width while wall time stops falling, the extra threads
+    /// are contending rather than working, and a skimmer running several decodes
+    /// at once is paying for it several times over.
+    #[test]
+    #[ignore = "a measurement, not an assertion; needs --release to mean anything"]
+    fn inference_cost_by_window_and_threads() {
+        use std::sync::Arc;
+
+        let mut text = String::new();
+        for _ in 0..4 {
+            text.push_str(MSG);
+            text.push(' ');
+        }
+        let audio = test_signal::render(&text, 25.0, 800.0, 20.0, 7);
+        let window = |secs: f64| -> Window {
+            let n = (spectrogram::SAMPLE_RATE * secs) as usize;
+            let from = audio.len().saturating_sub(n);
+            Window::Spectrogram(Spectrogram::new().compute(&audio[from..]))
+        };
+
+        let time = |d: &mut Decoder, w: &Window| -> (f64, f64) {
+            for _ in 0..3 {
+                d.decode_window(w).expect("decode");
+            }
+            let cpu0 = cpu_seconds();
+            let wall = std::time::Instant::now();
+            const N: u32 = 8;
+            for _ in 0..N {
+                d.decode_window(w).expect("decode");
+            }
+            let wall = wall.elapsed().as_secs_f64() / N as f64;
+            ((cpu_seconds() - cpu0) / N as f64, wall)
+        };
+
+        let mut by_window = Vec::new();
+        for secs in [5.0, 8.0, 10.0, 12.0, 20.0] {
+            let w = window(secs);
+            let frames = match &w {
+                Window::Spectrogram(s) => s.len() / BINS,
+                _ => 0,
+            };
+            let mut d = Decoder::with_thread_pool(Arc::new(ThreadPool::with_num_threads(1)))
+                .expect("decoder");
+            let (cpu, wall) = time(&mut d, &w);
+            by_window.push((secs, frames, wall, cpu));
+        }
+        let base = by_window.iter().find(|r| r.0 == 12.0).map_or(1.0, |r| r.3);
+        println!("\n  one thread, by window length:");
+        println!(
+            "{:>9}{:>9}{:>11}{:>11}{:>10}",
+            "window", "frames", "wall ms", "cpu ms", "vs 12 s"
+        );
+        for (secs, frames, wall, cpu) in by_window {
+            println!(
+                "{secs:>8.0}s{frames:>9}{:>11.1}{:>11.1}{:>10.2}",
+                wall * 1e3,
+                cpu * 1e3,
+                cpu / base
+            );
+        }
+
+        println!("\n  12 s window, by inference pool width:");
+        println!("{:>9}{:>11}{:>11}{:>13}", "threads", "wall ms", "cpu ms", "efficiency");
+        let w = window(12.0);
+        for n in [1usize, 2, 4, 8, 16] {
+            let mut d = Decoder::with_thread_pool(Arc::new(ThreadPool::with_num_threads(n)))
+                .expect("decoder");
+            let (cpu, wall) = time(&mut d, &w);
+            println!(
+                "{n:>9}{:>11.1}{:>11.1}{:>13.2}",
+                wall * 1e3,
+                cpu * 1e3,
+                cpu / wall / n as f64
+            );
+        }
+        let mut d = Decoder::new().expect("decoder");
+        let (cpu, wall) = time(&mut d, &w);
+        println!("{:>9}{:>11.1}{:>11.1}", "global", wall * 1e3, cpu * 1e3);
+    }
+
+    /// How much of a transmission the model still copies when it is given less
+    /// of it to look at.
+    ///
+    /// The skimmer holds a rolling window per station and re-reads the whole
+    /// thing each time, so the window length sets both the cost and how much
+    /// context the model gets. `deepcw_matrix` cannot answer this — it always
+    /// feeds a whole rendered message — so this scores the *trailing* N seconds
+    /// against the part of the text that actually falls inside them, which is
+    /// what a rolling buffer holds.
+    #[test]
+    #[ignore = "reporting harness, not a pass/fail test"]
+    fn accuracy_by_window_length() {
+        const WINDOWS: [f64; 7] = [5.0, 6.0, 8.0, 10.0, 12.0, 16.0, 20.0];
+        let snrs = [20.0f32, 10.0, 3.0, 0.0, -6.0, -9.0];
+        // Long enough that even the widest window is a strict tail of it.
+        let mut text = String::new();
+        for _ in 0..3 {
+            text.push_str(MSG);
+            text.push(' ');
+        }
+        let sent = text.trim();
+
+        println!("\n  copy accuracy on the trailing N seconds, 25 WPM");
+        print!("{:>8}", "SNR dB");
+        for w in WINDOWS {
+            print!("{w:>8.0}s");
+        }
+        println!();
+        for snr in snrs {
+            let audio = test_signal::render(sent, 25.0, 800.0, snr, 11);
+            print!("{snr:>8.0}");
+            for w in WINDOWS {
+                let n = (spectrogram::SAMPLE_RATE * w) as usize;
+                let from = audio.len().saturating_sub(n);
+                let mut d = Decoder::new().expect("decoder");
+                let got = d.decode(&audio[from..]).expect("decode").normalized();
+                // Where the window cuts into the text is not known in advance, so
+                // score against whichever tail of the message it matches best.
+                // Guessing the cut from the ratio of durations instead puts a
+                // character or two of alignment error into every cell and buries
+                // the effect being measured.
+                let chars: Vec<char> = sent.chars().collect();
+                let best = (0..chars.len())
+                    .map(|cut| {
+                        let want: String = chars[cut..].iter().collect();
+                        test_signal::accuracy(want.trim(), &got)
+                    })
+                    .fold(0.0f32, f32::max);
+                print!("{best:>9.2}");
+            }
+            println!();
+        }
+        println!("  (ratios of the 12 s column are what a shorter skimmer window costs)");
     }
 
     /// Prints the speed × SNR accuracy surface. Not a pass/fail test — run it

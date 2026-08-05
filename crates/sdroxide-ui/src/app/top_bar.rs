@@ -8,8 +8,8 @@
 
 use eframe::egui::{self, Color32, ComboBox, DragValue, RichText, Slider};
 use sdroxide_types::{
-    AgcMode, Band, Command, DeviceCaps, Direction, GainElement, Mode, NrEngine, NrLevel,
-    NrStrength, RadioState, RxId, SkimmerKind, SubTone, Vfo,
+    AgcMode, Band, Command, CwSkimmerDecoder, DeviceCaps, Direction, GainElement, Mode, NrEngine,
+    NrLevel, NrStrength, RadioState, RxId, SkimmerKind, SubTone, Vfo,
 };
 
 use crate::widgets::{freq_display, smeter};
@@ -1425,6 +1425,42 @@ impl SdroxideApp {
                             .color(Color32::from_gray(150)),
                     );
                 }
+
+                // Which decoder reads the CW, and — for the neural one, the only
+                // one whose cost depends on it — how many stations at once.
+                if wideband && cfg.enabled(SkimmerKind::Cw) {
+                    ui.add_space(2.0);
+                    crate::chrome::menu_caption(ui, "CW decoder");
+                    ui.horizontal_wrapped(|ui| {
+                        for d in CwSkimmerDecoder::ALL {
+                            if crate::chrome::chip(ui, cfg.cw_decoder == d, d.label())
+                                .on_hover_text(d.hint())
+                                .clicked()
+                            {
+                                cfg.cw_decoder = d;
+                            }
+                        }
+                    });
+                    if cfg.cw_decoder == CwSkimmerDecoder::Neural {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("stations").size(10.0).color(crate::theme::CYAN_DIM),
+                            );
+                            for n in sdroxide_types::CW_SLOT_CHOICES {
+                                if crate::chrome::chip(ui, cfg.cw_slots == n, &n.to_string())
+                                    .on_hover_text(
+                                        "How many signals the model reads at once. \
+                                         The rest keep their marker but carry no text.",
+                                    )
+                                    .clicked()
+                                {
+                                    cfg.cw_slots = n;
+                                }
+                            }
+                        });
+                    }
+                }
+
                 if cfg != self.state.skimmer {
                     cmds.push(Command::SetSkimmerConfig(cfg));
                 }

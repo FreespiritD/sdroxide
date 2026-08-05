@@ -45,6 +45,51 @@ impl SkimmerKind {
     }
 }
 
+/// Which decoder reads the CW the skimmer finds.
+///
+/// Finding the signals and reading them are separate jobs, and only the second
+/// one is expensive. The neural decoder copies several dB below where a timing
+/// fit falls apart and reads hand-sent CW that no fit would accept, but it is a
+/// Conformer run once per station per interval, and on a busy band that is real
+/// work. The timing decoder reads the envelope the detector has already
+/// computed, so it costs almost nothing on top of finding the signal at all —
+/// and it needs about 8 dB SNR, where the model reaches −6.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CwSkimmerDecoder {
+    /// DeepCW, the neural decoder.
+    #[default]
+    Neural,
+    /// The envelope-timing decoder in `sdroxide-dsp`.
+    Timing,
+}
+
+impl CwSkimmerDecoder {
+    /// Every decoder, in UI order.
+    pub const ALL: [CwSkimmerDecoder; 2] = [CwSkimmerDecoder::Neural, CwSkimmerDecoder::Timing];
+
+    /// The tag the chips wear.
+    pub fn label(self) -> &'static str {
+        match self {
+            CwSkimmerDecoder::Neural => "NEURAL",
+            CwSkimmerDecoder::Timing => "TIMING",
+        }
+    }
+
+    /// What the hover text says the choice costs.
+    pub fn hint(self) -> &'static str {
+        match self {
+            CwSkimmerDecoder::Neural => "Reads weak and hand-sent CW; costs real CPU per station",
+            CwSkimmerDecoder::Timing => "Nearly free, but needs a clean signal (~8 dB SNR)",
+        }
+    }
+}
+
+/// Most stations the neural decoder reads at once, by name.
+///
+/// The detector tracks far more than any of these; the ones past the cap keep
+/// their marker and their frequency and simply carry no text.
+pub const CW_SLOT_CHOICES: [u8; 4] = [8, 16, 32, 64];
+
 /// Which skimmers run, and how hard each squelches its own spots. Owned by the
 /// engine (it lives in [`crate::RadioState`]), edited from the SKIM popup and
 /// persisted across restarts (`skimmer.json`).
@@ -57,17 +102,41 @@ pub struct SkimmerSettings {
     /// Per [`SkimmerKind::index`]: the minimum SNR (dB) a track must reach
     /// before it is reported as a spot. `0` reports whatever decodes.
     pub squelch_db: [i16; 3],
+    /// Which decoder reads the CW skimmer's signals.
+    pub cw_decoder: CwSkimmerDecoder,
+    /// How many stations the neural decoder reads at once. Ignored by the
+    /// timing decoder, which reads every track it is given.
+    pub cw_slots: u8,
 }
+
+/// Default for [`SkimmerSettings::cw_slots`], and the value the old fixed cap
+/// had.
+pub const CW_SLOTS_DEFAULT: u8 = 32;
 
 impl Default for SkimmerSettings {
     fn default() -> Self {
-        SkimmerSettings { enabled: [true; 3], squelch_db: [0; 3] }
+        SkimmerSettings {
+            enabled: [true; 3],
+            squelch_db: [0; 3],
+            cw_decoder: CwSkimmerDecoder::Neural,
+            cw_slots: CW_SLOTS_DEFAULT,
+        }
     }
 }
 
 impl SkimmerSettings {
     /// Nothing running — the state for devices without a wideband IQ stream.
-    pub const OFF: SkimmerSettings = SkimmerSettings { enabled: [false; 3], squelch_db: [0; 3] };
+    ///
+    /// The decoder choice matches [`Default`] rather than being meaningful here:
+    /// this is what the engine substitutes when the source has no IQ to skim, and
+    /// an operator swapping to such a radio and back should find their setting
+    /// where they left it.
+    pub const OFF: SkimmerSettings = SkimmerSettings {
+        enabled: [false; 3],
+        squelch_db: [0; 3],
+        cw_decoder: CwSkimmerDecoder::Neural,
+        cw_slots: CW_SLOTS_DEFAULT,
+    };
 
     pub fn enabled(&self, kind: SkimmerKind) -> bool {
         self.enabled[kind.index()]

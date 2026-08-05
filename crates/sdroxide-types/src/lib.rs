@@ -125,7 +125,9 @@ pub use satcfg::{
     SatLink, TleSubStatus, TleSubscription, fmt_mhz as fmt_sat_mhz, parse_tle_block,
 };
 pub use scanner::{SCAN_STEPS_HZ, ScanKind, ScanResume, ScanState, ScannerConfig};
-pub use skimmer::{SkimmerKind, SkimmerSettings, SkimmerSpot};
+pub use skimmer::{
+    CW_SLOT_CHOICES, CW_SLOTS_DEFAULT, CwSkimmerDecoder, SkimmerKind, SkimmerSettings, SkimmerSpot,
+};
 pub use spectrum::{SpectrumConfig, SpectrumFrame};
 pub use speech::{
     CallsignStyle, CategoryFlags, DecodeSpeech, FreqStyle, SpeechSettings, TextSpeech, TuneSpeech,

@@ -198,7 +198,14 @@ use sdroxide_types::{
 /// carries `tx_blocked`, the engine's own answer to "can this station transmit
 /// as configured" — the panel used to work that out for itself and got it
 /// wrong, and one authority is the point.
-pub const PROTO_VERSION: u16 = 44;
+/// v45: the CW skimmer's decoder is the operator's choice. `SkimmerSettings`
+/// gained `cw_decoder` (DeepCW or the envelope-timing decoder) and `cw_slots`
+/// (how many stations the neural one reads at once), so a receiver that cannot
+/// spare the cores for a Conformer per station can still skim. Both are
+/// appended, but `SkimmerSettings` is a field of `RadioState` as well as the
+/// payload of `Command::SetSkimmerConfig`, and postcard is not self-describing:
+/// the layout of every state broadcast changes and both ends have to agree.
+pub const PROTO_VERSION: u16 = 45;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

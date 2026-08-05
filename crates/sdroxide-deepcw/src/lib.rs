@@ -36,6 +36,9 @@ mod tuner;
 pub use ctc::{BLANK, CHARS, CharSpan, Decoded, FrameSpan};
 pub use model::{Decoder, Error, Window, preload};
 pub use pool::{Job, Pool};
+/// rten's thread pool, re-exported so callers can bound where inference runs
+/// without depending on rten themselves. See [`Decoder::with_thread_pool`].
+pub use rten::ThreadPool;
 pub use spectrogram::{
     BIN_HZ, BINS, CENTER_BIN, CENTER_FREQ_HZ, FRAME_S, MIN_SAMPLES, SAMPLE_RATE, WINDOW_S,
 };

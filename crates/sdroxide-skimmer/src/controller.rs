@@ -54,7 +54,7 @@ impl SkimmerController {
                 // segments, so their spot sets never overlap. A skimmer the
                 // operator switched off is skipped entirely — no DSP, no spots.
                 let mut cfg = cfg;
-                let mut cw = CwSkimmer::new(skim_rate, skim_center_hz);
+                let mut cw = CwSkimmer::with_config(skim_rate, skim_center_hz, &cfg);
                 let mut psk = DigiSkimmer::new(SkimmerKind::Psk, skim_rate, skim_center_hz);
                 let mut rtty = DigiSkimmer::new(SkimmerKind::Rtty, skim_rate, skim_center_hz);
                 let mut since = 0usize;
@@ -67,6 +67,10 @@ impl SkimmerController {
                                 rtty.set_center(hz);
                             }
                             Ok(Ctl::Config(next)) => {
+                                // The CW skimmer has settings of its own beyond
+                                // whether it runs — which decoder reads its
+                                // signals, and how many at once.
+                                cw.set_config(&next);
                                 // Drop the tracks of a skimmer being switched
                                 // off, so switching it back on starts from a
                                 // clean band instead of replaying a stale one.
