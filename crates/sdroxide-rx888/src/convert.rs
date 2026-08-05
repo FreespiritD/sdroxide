@@ -14,9 +14,15 @@
 /// With the randomizer enabled and this step missing, the result is not subtly
 /// wrong — it is full-scale noise, because the top bit flips on half of all
 /// samples.
+///
+/// Written branchlessly: bit 0 is broadcast to a full-width mask, with bit 0
+/// itself cleared from it so the flag survives the XOR. A conditional here
+/// would read more plainly, but this runs once per sample at the ADC's full
+/// 32 Msps and a per-sample branch is what stops the conversion loop below
+/// from vectorising.
 #[inline]
 pub fn derandomize(sample: i16) -> i16 {
-    if sample & 1 != 0 { sample ^ !1i16 } else { sample }
+    sample ^ ((sample & 1).wrapping_neg() & !1i16)
 }
 
 /// Full scale for a 16-bit signed sample.
@@ -30,29 +36,56 @@ const SCALE: f32 = 1.0 / 32768.0;
 /// straggler is therefore carried into the next call, exactly as the RTL-SDR
 /// backend carries a lone I or Q byte.
 ///
-/// `out` is cleared first and refilled, so the caller can reuse one buffer.
+/// `out` is resized to hold exactly the samples produced and every element is
+/// overwritten, so the caller can reuse one buffer. Sizing rather than clearing
+/// and pushing is deliberate: a steady stream of equal-sized bulk transfers
+/// leaves the length untouched from call to call, so the buffer is written once
+/// instead of being zeroed and then filled.
 pub fn to_f32(bytes: &[u8], randomized: bool, carry: &mut Option<u8>, out: &mut Vec<f32>) {
-    out.clear();
-    out.reserve(bytes.len().div_ceil(2));
-
     let mut rest = bytes;
+    // A carried byte pairs with the first byte here, producing one sample that
+    // sits ahead of everything the bulk loop below converts.
+    let mut lead = None;
     if let Some(lo) = carry.take() {
         if let Some((hi, tail)) = rest.split_first() {
-            out.push(sample(lo, *hi, randomized));
+            lead = Some(sample(lo, *hi, randomized));
             rest = tail;
         } else {
             // Nothing arrived to pair with it; keep holding on.
             *carry = Some(lo);
+            out.clear();
             return;
         }
     }
 
-    let mut chunks = rest.chunks_exact(2);
-    for c in &mut chunks {
-        out.push(sample(c[0], c[1], randomized));
+    let (pairs, odd) = rest.as_chunks::<2>();
+    out.resize(pairs.len() + usize::from(lead.is_some()), 0.0);
+    let (head, body) = out.split_at_mut(usize::from(lead.is_some()));
+    if let Some(v) = lead {
+        head[0] = v;
     }
-    if let Some(&lo) = chunks.remainder().first() {
+    convert(body, pairs, randomized);
+    if let Some(&lo) = odd.first() {
         *carry = Some(lo);
+    }
+}
+
+/// The bulk of the work: whole little-endian pairs to scaled `f32`.
+///
+/// `randomized` is tested once for the whole block rather than once per sample
+/// so that each loop is a straight-line stride over a slice of known length —
+/// which is what lets the compiler widen it into vector loads and converts.
+#[inline]
+fn convert(dst: &mut [f32], src: &[[u8; 2]], randomized: bool) {
+    debug_assert_eq!(dst.len(), src.len());
+    if randomized {
+        for (d, p) in dst.iter_mut().zip(src) {
+            *d = derandomize(i16::from_le_bytes(*p)) as f32 * SCALE;
+        }
+    } else {
+        for (d, p) in dst.iter_mut().zip(src) {
+            *d = i16::from_le_bytes(*p) as f32 * SCALE;
+        }
     }
 }
 
@@ -148,6 +181,40 @@ mod tests {
         assert!((out[0] - 0.99997).abs() < 1e-4, "{}", out[0]);
         to_f32(&i16::MIN.to_le_bytes(), false, &mut None, &mut out);
         assert_eq!(out[0], -1.0);
+    }
+
+    /// What the unpack costs per second of ADC output.
+    ///
+    /// The RX-888 clocks 32 Msps of 16-bit real samples, so this loop sees
+    /// 64 MB/s no matter what the receiver downstream is doing — it is a fixed
+    /// tax on every session. The figure to watch is the last column: anything
+    /// much above a few percent of a core means the conversion stopped
+    /// vectorising and went back to one sample at a time.
+    #[test]
+    #[ignore = "a measurement, not an assertion; needs --release to mean anything"]
+    fn unpack_cost_per_second_of_adc() {
+        use std::time::Instant;
+
+        const SPS: usize = 32_400_000;
+        // One bulk transfer's worth, sized as the streamer sizes them.
+        let bytes: Vec<u8> = (0..1 << 20).map(|i| (i * 7) as u8).collect();
+        let samples_per_call = bytes.len() / 2;
+        let calls = SPS / samples_per_call;
+
+        println!("{:>12}{:>12}{:>16}", "randomized", "ms/s of RF", "% of one core");
+        for randomized in [false, true] {
+            let mut out = Vec::new();
+            // Warm the buffer to its steady-state length first: the point of
+            // the measurement is the loop, not the one-off allocation.
+            to_f32(&bytes, randomized, &mut None, &mut out);
+
+            let t = Instant::now();
+            for _ in 0..calls {
+                to_f32(&bytes, randomized, &mut None, &mut out);
+            }
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            println!("{randomized:>12}{ms:>12.2}{:>16.2}", ms / 10.0);
+        }
     }
 
     #[test]
