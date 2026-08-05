@@ -1649,6 +1649,8 @@ both use the callsign and grid from the General tab.
 
 ### 3.16 The propagation heat map
 
+![Propagation heatmap](images/propagation.jpg)
+
 Everything this station hears is evidence about the ionosphere, and it is all
 pooled into one picture: WSPR both ways, FT8/FT4 and JS8 decodes, and the
 logbook. With the [Reverse Beacon Network](#55-spots-spot-feeds) switched on, so
@@ -1765,6 +1767,8 @@ the awards layer: it is live data about the station's own conditions, which is
 what that relay is for.
 
 ### 3.17 Band conditions
+
+![Band Conditions](images/bandconditions.jpg)
 
 The heat map answers "what has got through". The **BANDS** window (the `BANDS`
 chip in the System box) puts that next to a second, different answer: the

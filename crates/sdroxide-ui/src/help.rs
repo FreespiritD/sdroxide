@@ -110,6 +110,8 @@ fn embedded_image(path: &str) -> Option<&'static [u8]> {
         "settings-tle1.jpg" => &include_bytes!("../../../docs/images/settings-tle1.jpg")[..],
         "settings-tle2.jpg" => &include_bytes!("../../../docs/images/settings-tle2.jpg")[..],
         "settings-tle3.jpg" => &include_bytes!("../../../docs/images/settings-tle3.jpg")[..],
+        "propagation.jpg" => &include_bytes!("../../../docs/images/propagation.jpg")[..],
+        "bandconditions.jpg" => &include_bytes!("../../../docs/images/bandconditions.jpg")[..],
         "3d-sun.jpg" => &include_bytes!("../../../docs/images/3d-sun.jpg")[..],
         "3d-earth.jpg" => &include_bytes!("../../../docs/images/3d-earth.jpg")[..],
         "3d-cme.jpg" => &include_bytes!("../../../docs/images/3d-cme.jpg")[..],
