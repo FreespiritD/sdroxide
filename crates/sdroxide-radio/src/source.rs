@@ -97,6 +97,24 @@ pub trait IqSource: Send {
     /// 0 means a timeout (caller should just retry).
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize>;
 
+    /// Read only what the front end already has waiting, returning `Ok(0)`
+    /// rather than waiting for more.
+    ///
+    /// This is what a full-duplex over uses. The engine runs on one thread, and
+    /// during an over that thread owes the transmitter a block of samples every
+    /// 10 ms; whatever it spends inside a receive call comes out of that budget.
+    /// [`Self::read`] is allowed to block for as long as the samples take to
+    /// arrive — on a slow front end that is far longer than a transmit block —
+    /// so the receive side of an over has to ask for what is there and no more.
+    ///
+    /// Default: [`Self::read`], which is right for every source that either
+    /// cannot transmit or paces itself elsewhere (a file, the signal generator,
+    /// a network rig with its own queue). Only SoapySDR devices report full
+    /// duplex, so only that implementation needs to override this.
+    fn read_available(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        self.read(buf)
+    }
+
     /// Human-readable description for logs/UI.
     fn describe(&self) -> String;
 
@@ -440,6 +458,10 @@ impl IqSource for ConvertedSource {
 
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
         self.inner.read(buf)
+    }
+
+    fn read_available(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        self.inner.read_available(buf)
     }
 
     fn set_gain_element(&mut self, name: &str, db: f64) -> Result<()> {

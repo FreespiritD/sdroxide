@@ -12,6 +12,50 @@ use crate::{Complex32, DC_BLOCK_HZ, IqSource, RadioError, Result, lo_offset_for}
 /// problem a fresh stream cannot fix.
 const STREAM_REBUILD_LIMIT: u32 = 2;
 
+/// The most signal to ask for in one receive read, in seconds.
+///
+/// A read blocks for as long as the samples it was asked for take to arrive,
+/// and the timeout does not necessarily bound that: SoapySX passes the request
+/// straight to `snd_pcm_readi` on a blocking PCM and only looks at the timeout
+/// to decide whether the call is non-blocking at all. So the *count* asked for
+/// is the wait, and a fixed count is a wait that grows without limit as the
+/// sample rate falls — the engine's 16384-sample buffer is 8 ms at 2 Msps but
+/// two thirds of a second at the SXceiver's slowest rate of 25 ksps, which is
+/// the whole engine loop: waterfall, controls, digital modes and, during a
+/// full-duplex over, the transmit feed all stop for that long.
+///
+/// Bounding the request by time instead gives every rate the same slice.
+/// Nothing changes above ~820 ksps, where the buffer is the smaller of the two.
+const RX_READ_SECS: f64 = 0.02;
+
+/// Silence written into a full-duplex transmit ring at key-down, in seconds.
+///
+/// The transmitter starts draining the ring the moment it is running, which on
+/// hardware whose two directions share a clock is as soon as the *receiver*
+/// starts — SoapySX links its two ALSA PCMs, so activating either one starts
+/// both. The engine paces its feed to real time with a cushion of a few tens of
+/// milliseconds, and the transmit resampler hands over its output in bursts of
+/// about that size, so without a floor underneath it the ring sits close to
+/// empty and the first scheduling hiccup on a small machine empties it.
+///
+/// An empty ring is not a gap, it is a skip: SoapySX answers an underrun by
+/// forwarding the stream past everything that should have played, so what the
+/// operator hears on the air is not a dropout but the over reduced to chirps.
+///
+/// Zeros are safe to send — SoapySX keys the PA from each sample's magnitude
+/// (its `threshold` stream argument), so silence leaves it unkeyed.
+const TX_PRIME_SECS: f64 = 0.05;
+
+/// How many samples to ask for in one read at `rate`, rounded up to whole
+/// transfer units so a driver that skips in whole periods — SoapySX rounds both
+/// its overrun and underrun skips to a multiple of the ALSA period — keeps
+/// finding the reads where it expects them. `mtu` of 0 means the driver did not
+/// say, so the figure is used as it comes out.
+fn rx_chunk(rate: f64, mtu: usize) -> usize {
+    let want = (rate * RX_READ_SECS).ceil().max(1.0) as usize;
+    if mtu == 0 { want } else { want.div_ceil(mtu) * mtu }
+}
+
 /// One enumerated device: its label plus the args string that opens it.
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
@@ -152,6 +196,8 @@ impl SoapyDevice {
             center_hz,
             lo_offset,
             dc: ComplexDcBlock::new(DC_BLOCK_HZ, actual_rate),
+            // Refined against the stream's own transfer unit once it exists.
+            read_chunk: rx_chunk(actual_rate, 0),
             overflows: 0,
             tx_underflows: 0,
             stream_failures: 0,
@@ -187,6 +233,10 @@ pub struct SoapyRxSource {
     /// the spectrum display, both DDCs, the skimmer and the TCI IQ feed all see
     /// a clean stream. See [`ComplexDcBlock`].
     dc: ComplexDcBlock,
+    /// The largest read to hand the driver, in samples — see [`RX_READ_SECS`].
+    /// Recomputed on every stream restart, because the rate may have moved and
+    /// the transfer unit belongs to the stream rather than to the device.
+    read_chunk: usize,
     overflows: u64,
     tx_underflows: u64,
     /// Consecutive read failures since the last block of samples arrived; reset
@@ -238,6 +288,7 @@ impl SoapyRxSource {
         dev.set_frequency(Direction::Rx, self.channel, self.center_hz, ())?;
         let mut stream = dev.rx_stream::<Complex32>(&[self.channel])?;
         stream.activate(None)?;
+        self.read_chunk = rx_chunk(self.sample_rate, stream.mtu().unwrap_or(0));
         self.rx_stream = Some(stream);
         self.reassert_gains(Direction::Rx);
         info!(rate = self.sample_rate, center = self.center_hz, "RX stream active");
@@ -359,6 +410,63 @@ impl SoapyRxSource {
             }
         }
     }
+
+    /// The body behind both [`IqSource::read`] and [`IqSource::read_available`]:
+    /// one read of at most [`Self::read_chunk`] samples, waiting `timeout_us`
+    /// for them (`0` = take what is already there and return).
+    fn read_within(&mut self, buf: &mut [Complex32], timeout_us: i64) -> Result<usize> {
+        // No RX stream: transmitting on half-duplex hardware, or the front end
+        // has been given up on / stood down. Neither has samples, and the
+        // second must not spin the engine's loop while it waits to be reopened.
+        let lost = self.lost;
+        // Asking for more than this is asking to block for longer than the rest
+        // of the engine can spare — see `RX_READ_SECS`. `rx_chunk` never returns
+        // zero, so this is short only when the caller's buffer is.
+        let want = self.read_chunk.min(buf.len());
+        let Some(stream) = self.rx_stream.as_mut() else {
+            if lost {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            return Ok(0);
+        };
+        let n = match stream.read(&mut [&mut buf[..want]], timeout_us) {
+            Ok(n) => n,
+            Err(e) if e.code == soapysdr::ErrorCode::Timeout => 0,
+            // Overflow = samples dropped because we read too slowly.
+            // Recoverable: log and keep streaming.
+            Err(e) if e.code == soapysdr::ErrorCode::Overflow => {
+                self.overflows += 1;
+                if self.overflows.is_power_of_two() {
+                    tracing::warn!(count = self.overflows, "RX overflow (samples dropped)");
+                }
+                0
+            }
+            // Anything else is the stream itself failing — a dongle pulled out
+            // of its socket, or a front end left broken by a call it refused.
+            // Rebuilding it in place is usually enough; a stream that keeps
+            // failing anyway is given up on rather than rebuilt in a loop, and
+            // asks to be reopened instead of taking the engine down with it.
+            Err(e) => {
+                warn!(attempt = self.stream_failures + 1, "RX stream failed: {e}");
+                self.stream_failures += 1;
+                if self.stream_failures > STREAM_REBUILD_LIMIT {
+                    self.rx_stream = None;
+                    self.lost = true;
+                } else {
+                    self.recover("a stream failure");
+                }
+                return Ok(0);
+            }
+        };
+        if n > 0 {
+            self.stream_failures = 0; // it is delivering again
+        }
+        // Deliberately not reset across a dropped block or a TX cycle: the
+        // offset is a property of the hardware, not of the stream, so carrying
+        // the estimate avoids a re-convergence transient on every resume.
+        self.dc.process(&mut buf[..n]);
+        Ok(n)
+    }
 }
 
 impl IqSource for SoapyRxSource {
@@ -396,53 +504,14 @@ impl IqSource for SoapyRxSource {
     }
 
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
-        // No RX stream: transmitting on half-duplex hardware, or the front end
-        // has been given up on / stood down. Neither has samples, and the
-        // second must not spin the engine's loop while it waits to be reopened.
-        let lost = self.lost;
-        let Some(stream) = self.rx_stream.as_mut() else {
-            if lost {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            return Ok(0);
-        };
-        let n = match stream.read(&mut [buf], 200_000) {
-            Ok(n) => n,
-            Err(e) if e.code == soapysdr::ErrorCode::Timeout => 0,
-            // Overflow = samples dropped because we read too slowly.
-            // Recoverable: log and keep streaming.
-            Err(e) if e.code == soapysdr::ErrorCode::Overflow => {
-                self.overflows += 1;
-                if self.overflows.is_power_of_two() {
-                    tracing::warn!(count = self.overflows, "RX overflow (samples dropped)");
-                }
-                0
-            }
-            // Anything else is the stream itself failing — a dongle pulled out
-            // of its socket, or a front end left broken by a call it refused.
-            // Rebuilding it in place is usually enough; a stream that keeps
-            // failing anyway is given up on rather than rebuilt in a loop, and
-            // asks to be reopened instead of taking the engine down with it.
-            Err(e) => {
-                warn!(attempt = self.stream_failures + 1, "RX stream failed: {e}");
-                self.stream_failures += 1;
-                if self.stream_failures > STREAM_REBUILD_LIMIT {
-                    self.rx_stream = None;
-                    self.lost = true;
-                } else {
-                    self.recover("a stream failure");
-                }
-                return Ok(0);
-            }
-        };
-        if n > 0 {
-            self.stream_failures = 0; // it is delivering again
-        }
-        // Deliberately not reset across a dropped block or a TX cycle: the
-        // offset is a property of the hardware, not of the stream, so carrying
-        // the estimate avoids a re-convergence transient on every resume.
-        self.dc.process(&mut buf[..n]);
-        Ok(n)
+        self.read_within(buf, 200_000)
+    }
+
+    /// Take only what is already waiting. See the trait method: during a
+    /// full-duplex over this call shares a thread with the transmit feed, so it
+    /// must not wait for samples that have not arrived yet.
+    fn read_available(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        self.read_within(buf, 0)
     }
 
     fn lo_offset_hz(&self) -> f64 {
@@ -514,6 +583,17 @@ impl IqSource for SoapyRxSource {
 
         let mut tx = self.open_tx_stream()?;
         tx.activate(None)?;
+        // Put a floor of silence under the transmit ring before the modulator
+        // has produced anything — see `TX_PRIME_SECS`. Half-duplex hardware
+        // does not need it: nothing is clocking the transmitter until the write
+        // that keys it.
+        if self.caps.full_duplex {
+            let n = (actual * TX_PRIME_SECS).ceil().max(0.0) as usize;
+            let silence = vec![Complex32::new(0.0, 0.0); n];
+            if let Err(e) = tx.write_all(&[&silence], None, false, 500_000) {
+                warn!("the transmit ring could not be pre-filled: {e}");
+            }
+        }
         self.tx_stream = Some(tx);
         // After activation, so the direction change cannot undo it: switching
         // the RF path is what drops the amplifier state in the first place.
@@ -754,5 +834,35 @@ mod tests {
         // behind it — otherwise a stream restart would re-apply the old one.
         remember_gain(&mut gains, "AMP", 0.0);
         assert_eq!(gains, vec![("AMP".to_string(), 0.0), ("LNA".to_string(), 24.0)]);
+    }
+
+    /// A read is as long as the samples it asks for take to arrive, so the ask
+    /// has to be bounded in time rather than in samples. The SXceiver's slowest
+    /// rate is the case this exists for: 16384 samples there is 655 ms in one
+    /// call, which during a full-duplex over is 65 transmit blocks the engine
+    /// never gets round to writing.
+    #[test]
+    fn a_read_asks_for_the_same_slice_of_time_at_every_rate() {
+        for (rate, mtu) in [(25_000.0, 256), (600_000.0, 256), (2_048_000.0, 1024)] {
+            let secs = rx_chunk(rate, mtu) as f64 / rate;
+            assert!(
+                (RX_READ_SECS..RX_READ_SECS + 0.005).contains(&secs),
+                "{rate} sps asks for {secs} s"
+            );
+        }
+    }
+
+    /// Whole transfer units, because SoapySX rounds the samples it skips on an
+    /// overrun to a multiple of the ALSA period and says so: an application
+    /// reading in period-sized blocks stays aligned across the skip.
+    #[test]
+    fn a_read_is_a_whole_number_of_transfer_units() {
+        assert_eq!(rx_chunk(25_000.0, 256) % 256, 0);
+        assert_eq!(rx_chunk(600_000.0, 256) % 256, 0);
+        // A transfer unit larger than the slice still gets one whole unit —
+        // never a partial one, and never zero.
+        assert_eq!(rx_chunk(25_000.0, 65_536), 65_536);
+        // A driver that does not report one is taken at its word.
+        assert_eq!(rx_chunk(25_000.0, 0), 500);
     }
 }

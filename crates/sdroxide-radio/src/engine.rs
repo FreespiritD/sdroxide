@@ -1554,9 +1554,14 @@ fn engine_thread(
                 let _ = engine.event_tx.send(RadioEvent::ConnectionLost(e.to_string()));
                 return;
             }
-            // Full-duplex hardware keeps receiving during TX.
+            // Full-duplex hardware keeps receiving during TX — but only from
+            // what has already arrived. This thread owes the transmitter a
+            // block every 10 ms, and a receive read that waits for samples
+            // spends that budget: the transmit ring empties, and hardware that
+            // answers an underrun by skipping ahead (SoapySX does) puts the
+            // over on the air as chirps. See `IqSource::read_available`.
             if engine.caps.full_duplex && !engine.audio_mode {
-                if let Ok(n @ 1..) = engine.source.read(&mut buf) {
+                if let Ok(n @ 1..) = engine.source.read_available(&mut buf) {
                     engine.run_audio(&buf[..n]);
                 }
             }
