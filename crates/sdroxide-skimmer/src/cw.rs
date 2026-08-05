@@ -42,9 +42,15 @@ const ON_RATIO: f32 = 10.0;
 /// The median of a region is a noise bin as long as CW signals stay sparse in
 /// it, so a signal — however strong or persistent — can't inflate the floor.
 const REGION_BINS: usize = 64;
-/// |FFT|² of Gaussian noise is exponential, whose median is `ln 2`·mean; scale
-/// the region median back up to estimate the mean noise the thresholds expect.
-const MEDIAN_TO_MEAN: f32 = 1.4427;
+/// Frames between noise-floor updates.
+///
+/// One full window of fresh samples: at 75% overlap, consecutive frames share
+/// three quarters of their input, so re-running the region medians every frame
+/// mostly re-reads noise it has already measured. Updating once per
+/// `FFT_SIZE / HOP` frames costs a quarter as much and draws each estimate from
+/// independent samples; [`crate::noise::stride_alpha`] keeps the floor's time
+/// constant in seconds unchanged.
+const FLOOR_EVERY: u32 = (FFT_SIZE / HOP) as u32;
 /// A peak must be the strongest bin within ±this window to count — enforces a
 /// minimum signal spacing and rejects a strong signal's own leakage sidelobes.
 const PEAK_SPACING: usize = 8; // ~±390 Hz at 49 Hz/bin
@@ -197,7 +203,9 @@ pub struct CwSkimmer {
     /// Per-bin noise floor (the region median scaled to a mean), time-smoothed.
     noise: Vec<f32>,
     /// Reused scratch for the per-region median (one region's power values).
-    med_scratch: Vec<f32>,
+    /// Scratch for the per-region median floor estimate (one region's power, as
+    /// bit patterns — see [`crate::noise::update_regions`]).
+    med_scratch: Vec<u32>,
     /// Reused per-frame scratch (avoids re-allocating every frame).
     cands: Vec<(f32, i64)>,
     centers: Vec<i64>,
@@ -448,21 +456,19 @@ impl CwSkimmer {
         // of a region is always a noise bin — a signal, however strong or
         // persistent, cannot pull the median up and trap the floor. Scale the
         // median to a mean (thresholds expect the mean) and smooth over time.
-        let smooth = if self.frames < WARMUP { 0.3 } else { 0.05 };
-        let mut med = std::mem::take(&mut self.med_scratch);
-        for base in (0..n).step_by(REGION_BINS) {
-            med.clear();
-            med.extend_from_slice(&self.power[base..(base + REGION_BINS).min(n)]);
-            let mid = med.len() / 2;
-            med.select_nth_unstable_by(mid, |a, b| {
-                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            let est = med[mid] * MEDIAN_TO_MEAN;
-            for k in base..(base + REGION_BINS).min(n) {
-                self.noise[k] += smooth * (est - self.noise[k]);
-            }
+        if self.frames % FLOOR_EVERY == 0 {
+            let smooth = if self.frames < WARMUP { 0.3 } else { 0.05 };
+            let mut med = std::mem::take(&mut self.med_scratch);
+            crate::noise::update_regions(
+                &mut self.noise,
+                &self.power,
+                &mut med,
+                REGION_BINS,
+                crate::noise::stride_alpha(smooth, FLOOR_EVERY),
+                false,
+            );
+            self.med_scratch = med;
         }
-        self.med_scratch = med;
         if self.frames < WARMUP {
             return; // priming only — no detection yet
         }

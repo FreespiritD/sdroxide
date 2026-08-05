@@ -34,9 +34,15 @@ const SMOOTH_ON: f32 = 5.0;
 /// set by the quieter rest of the window; the median is a noise bin (signals are
 /// sparse and narrow) so a carrier can't inflate its own floor either.
 const REGION_BINS: usize = 64;
-/// |FFT|² of Gaussian noise is exponential (median = `ln 2`·mean); scale the
-/// region median up to the mean the threshold is calibrated against.
-const MEDIAN_TO_MEAN: f32 = 1.4427;
+/// Frames between noise-floor updates.
+///
+/// One full window of fresh samples: at 75%+ overlap, consecutive frames share
+/// most of their input, so re-running the region medians every frame re-reads
+/// the same noise over and over for an estimate that barely moves. Updating
+/// once per `FFT_SIZE / HOP` frames costs a sixteenth as much *and* draws each
+/// estimate from independent samples; [`crate::noise::stride_alpha`] keeps the
+/// floor's time constant in seconds unchanged.
+const FLOOR_EVERY: u32 = (FFT_SIZE / HOP) as u32;
 /// Envelope key-off ratio, for a track's activity/SNR metering.
 const OFF_RATIO: f32 = 4.0;
 /// Fraction of a carrier's own power a tone `shift` away must reach to count as
@@ -147,8 +153,9 @@ pub struct DigiSkimmer {
     /// carrier and an alternating RTTY mark/space pair both read as steady
     /// energy (the raw RTTY tones each drop out at the baud rate).
     smooth_power: Vec<f32>,
-    /// Scratch for the per-region median floor estimate (one region's power).
-    pscratch: Vec<f32>,
+    /// Scratch for the per-region median floor estimate (one region's power,
+    /// as bit patterns — see [`crate::noise::update_regions`]).
+    pscratch: Vec<u32>,
     /// Per-bin noise floor (each region's median, scaled to a mean), smoothed.
     floor: Vec<f32>,
     cands: Vec<(f32, i64)>,
@@ -189,7 +196,7 @@ impl DigiSkimmer {
             scratch: vec![C32::default(); FFT_SIZE],
             power: vec![0.0; FFT_SIZE],
             smooth_power: vec![0.0; FFT_SIZE],
-            pscratch: vec![0.0; FFT_SIZE],
+            pscratch: Vec::with_capacity(REGION_BINS),
             floor: vec![0.0; FFT_SIZE],
             cands: Vec::with_capacity(512),
             centers: Vec::with_capacity(128),
@@ -265,20 +272,16 @@ impl DigiSkimmer {
         // itself; and because the floor is local, a noisy patch of the band no
         // longer inherits a too-low floor from the quieter rest of the window
         // (which let noise / faint non-digimode signals decode).
-        let seed = self.frames == 0;
-        let smooth = if self.frames < WARMUP { 0.3 } else { 0.1 };
-        for base in (0..n).step_by(REGION_BINS) {
-            let end = (base + REGION_BINS).min(n);
-            let region = &mut self.pscratch[..end - base];
-            region.copy_from_slice(&self.power[base..end]);
-            let mid = region.len() / 2;
-            region.select_nth_unstable_by(mid, |a, b| {
-                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            let est = region[mid] * MEDIAN_TO_MEAN;
-            for f in &mut self.floor[base..end] {
-                *f = if seed { est } else { *f + smooth * (est - *f) };
-            }
+        if self.frames % FLOOR_EVERY == 0 {
+            let smooth = if self.frames < WARMUP { 0.3 } else { 0.1 };
+            crate::noise::update_regions(
+                &mut self.floor,
+                &self.power,
+                &mut self.pscratch,
+                REGION_BINS,
+                crate::noise::stride_alpha(smooth, FLOOR_EVERY),
+                self.frames == 0,
+            );
         }
         if self.frames < WARMUP {
             return;

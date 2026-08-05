@@ -8,6 +8,7 @@ mod controller;
 mod cw;
 mod deep;
 mod digi;
+mod noise;
 
 pub use controller::{SkimmerAction, SkimmerController};
 pub use cw::CwSkimmer;
