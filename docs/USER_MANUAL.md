@@ -14,7 +14,7 @@ or connects to a remote sdroxide server.
 
 1. [Feature overview](#1-feature-overview)
 2. [Basic operation](#2-basic-operation)
-3. [Digital modes (FT8, FT4, PSK31, RTTY, Olivia, THOR, FSQ, Hellschreiber, SSTV, RIFP, weather fax, RF Paint, WSPR)](#3-digital-modes)
+3. [Digital modes (FT8, FT4, PSK31, RTTY, Olivia, THOR, FSQ, Hellschreiber, SSTV, RIFP, weather fax, JS8, RF Paint, WSPR)](#3-digital-modes)
 4. [Skimmers (CW, PSK, RTTY)](#4-skimmers)
 5. [Settings](#5-settings)
 6. [Solar system 3D view](#6-solar-system-3d-view)
@@ -196,7 +196,7 @@ popup with three rows:
   been fetched the chips are tinted by the published forecast — green Good,
   yellow Fair, pink Poor — and hovering one gives it in words. Bands the
   forecast does not cover are left uncoloured; see
-  [§3.17](#317-band-conditions).
+  [§2.15](#215-band-conditions).
 - **MODE:** `LSB USB CW AM SAM NFM WFM DIGU DIGL DSB SPEC`.
 - **DIGITAL:** `FT8 FT4 PSK RTTY OLIVIA THOR FSQ HELL SSTV RIFP RFPAINT RADE` (see
   [Digital modes](#3-digital-modes)).
@@ -629,38 +629,105 @@ you pause you can watch the sending catch up.
 > decode perfectly well but cannot be keyed this way — its CW keying is the
 > rig's own.
 
+### 2.15 Band conditions
+
+![Band Conditions](images/bandconditions.jpg)
+
+The [propagation heat map](#68-the-propagation-heat-map) answers "what has got
+through". The **BANDS** window (the `BANDS` chip in the System box) puts that
+next to a second, different answer: the **calculated band conditions** published
+by N0NBH at [hamqsl.com](https://www.hamqsl.com/), which are a forecast from the
+solar indices rather than a measurement of anything.
+
+| Column | What it is |
+| --- | --- |
+| `CONDX` | The published verdict — Good, Fair or Poor — for this band, for whichever half of the day it is at your QTH |
+| `PATHS` | Decayed count of receptions in this band's field: *how much* got through |
+| `REACH` | Share of the world with evidence on it: *how widely* it got through |
+| `BEST` | Best decode margin anywhere in the band, dB above the mode's own floor |
+
+`PATHS` and `REACH` are both there because either alone misleads: a contest
+pile-up is a great many paths through one small piece of sky, and a band quietly
+open everywhere is the reverse.
+
+The same verdicts colour the band chips in the **band/mode menu**, so choosing a
+band shows its forecast where you are already looking. Green is Good, yellow
+Fair, pink Poor. Hovering gives the verdict in words along with its source.
+
+**Three things this deliberately does not do.**
+
+- **Bands with no published verdict stay blank.** The feed covers four groups —
+  80/40 m, 30/20 m, 17/15 m and 12/10 m — and nothing else. 160 m, 60 m, 6 m,
+  2 m and 70 cm have no `CONDX` and no chip colour, and never will: filling them
+  in from a neighbouring group would be inventing data. 60 m sits *inside* the
+  published frequency range and is still not covered.
+- **A band with no paths is not called closed.** An empty row means nothing was
+  decoded, which may mean the band was shut or only that nobody was on it. Those
+  two look identical from here.
+- **The forecast is global, not yours.** It is computed from the solar indices
+  for the whole planet and says nothing about your antenna, your noise floor or
+  any particular path. Where it and the measured columns disagree, the
+  measurement is right.
+
+Day or night is worked out from the Sun's elevation at your own locator, so the
+correct half of the published table is read wherever you are.
+
+**Where the numbers come from.** [hamqsl.com](https://www.hamqsl.com/), fetched
+in the background once an hour for as long as the program is running. This is
+the one exception to the rule that sdroxide's space-weather requests happen only
+while the [3D view](#6-solar-system-3d-view) is open: the band menu is always
+there, so these have to be too. It stays one request an hour — the two share a
+cache, so with the 3D view open the second one comes back "not modified" —
+and hourly is the interval the publisher asks for.
+
+The document is cached on disk, so the last verdicts are on screen immediately
+at startup and survive being offline. Everywhere they appear they are labelled
+with their age.
+
 ---
 
 ## 3. Digital modes
 
-sdroxide has several families of digital mode. **FT8** and **FT4** are automatic,
-timeslot-based modes with QSO sequencing, a world map, and automatic logging
-(3.1–3.6). **PSK31**, **RTTY**, **Olivia**, **THOR** and **FSQ** are live keyboard
-modes: you tune onto a signal, read the decoded text, and type a reply that
-transmits as you go (3.7–3.8). **Hellschreiber** is a facsimile mode with no
-decoder at all — it paints letters onto a scrolling strip and you read them by
-eye (3.9). **SSTV** is an image mode: received pictures build up in a gallery and
-you transmit composed images (3.10). **RIFP** carries pictures as numbered,
+sdroxide has several families of digital mode. What they all share — how a mode
+is entered, the calling-frequency buttons, and the bands with more than one
+agreed frequency — is in 3.1. **FT8** and **FT4** are automatic, timeslot-based
+modes with QSO sequencing, a world map, and automatic logging; they and the
+logbook they write into — which also serves every other mode and your manual
+QSOs — are 3.2. **PSK31**, **RTTY**, **Olivia**, **THOR** and **FSQ** are live
+keyboard modes: you tune onto a signal, read the decoded text, and type a reply
+that transmits as you go (3.3–3.4). **Hellschreiber** is a facsimile mode with
+no decoder at all — it paints letters onto a scrolling strip and you read them
+by eye (3.5). **SSTV** is an image mode: received pictures build up in a gallery
+and you transmit composed images (3.6). **RIFP** carries pictures as numbered,
 checksummed packets over its own FSK modem rather than as an analogue scan, and
-is the one mode here that is not single sideband (3.11). **RF Paint** is a
-transmit-only mode that draws text and pictures directly onto the far station's
-waterfall (3.12). **WSPR** is not a QSO mode at all — it is a beacon that
-measures propagation, and what it produces is a list of paths rather than
-contacts (3.15).
+is the one mode here that is not single sideband (3.7). **Weather fax** receives
+the charts the meteorological services broadcast on short wave, and transmits
+nothing (3.8). **JS8** uses FT8's waveform but carries a conversation instead of
+a contest exchange (3.9). **RF Paint** is a transmit-only mode that draws text
+and pictures directly onto the far station's waterfall (3.10). **WSPR** is not a
+QSO mode at all — it is a beacon that measures propagation, and what it produces
+is a list of paths rather than contacts (3.11).
 
-### 3.1 Entering the mode
+### 3.1 General considerations
 
-Open the Band/Mode popup and choose **FT8** or **FT4** from the DIGITAL row. The
-panadapter locks to the digital sub-band (the audio range just above the dial),
-and the FT8/FT4 operating panel appears in the lower part of the window. A
-draggable divider sets how much height the panel gets.
+Every digital mode is entered the same way: open the Band/Mode popup and choose
+the mode from the **DIGITAL** row. The panadapter locks to the digital sub-band
+(the audio range just above the dial), and the mode's operating panel appears in
+the lower part of the window; a draggable divider sets how much height the
+panel gets.
 
-![The FT8 operating panel](images/07-ft8-panel.png)
+While in a digital mode a **FREQUENCIES** row of band buttons — labelled for
+the mode: **FT8 FREQUENCIES**, **PSK FREQUENCIES**, and so on — appears in the
+Band/Mode popup. Click one to jump the dial to the standard calling frequency
+for that band; a button highlights when the dial is already on it.
 
-While in a digital mode a **FT8 FREQUENCIES** (or **FT4 FREQUENCIES**) row of
-band buttons appears in the Band/Mode popup. Click one to jump the dial to the
-standard calling frequency for that band; a button highlights when the dial is
-already on it.
+Two more things hold across the modes. Your **callsign and grid** are one
+identity for the whole program: the General settings tab and the FT8/FT4 setup
+window ([3.2.1](#321-one-time-setup-your-callsign-and-grid)) edit the same
+values, and they fill the keyboard modes' CQ macros, the FT8/FT4 exchange, and
+everything the station reports or uploads. And every digital transmission goes
+through the normal transmit path, so the ham-band lockout and the usual
+transmit safety apply in every mode.
 
 #### Bands with more than one agreed frequency
 
@@ -688,7 +755,16 @@ band plan, and a few of them land in Region 1's CW or phone segments (1.845,
 — but check your own band plan before you key, because sdroxide will not stop
 you.
 
-### 3.2 One-time setup: your callsign and grid
+### 3.2 FT8 and FT4
+
+**FT8** and **FT4** are the automatic modes: timeslot-based, with QSO
+sequencing, a world map, a transcript, and automatic logging. Choose one from
+the DIGITAL row ([3.1](#31-general-considerations)) and the FT8/FT4 operating
+panel appears in the lower part of the window.
+
+![The FT8 operating panel](images/07-ft8-panel.png)
+
+#### 3.2.1 One-time setup: your callsign and grid
 
 Click **SETUP** in the QSO area to open the **FT8 / FT4 Setup** window:
 
@@ -700,7 +776,7 @@ Click **SETUP** in the QSO area to open the **FT8 / FT4 Setup** window:
   continue with no progress, and how many unanswered calls to one station are
   worth making. Both 0 to disable.
 - **DXpedition** — which side of an FT8 pile-up you are on: **Normal**,
-  **Hound**, or **Fox** (see [DXpedition mode](#341-dxpedition-mode-hound-and-fox)).
+  **Hound**, or **Fox** (see [DXpedition mode](#324-dxpedition-mode-hound-and-fox)).
   **Fox signals** sets how many stations a Fox works at once.
 - **Message templates** — the CQ / Grid / Report / R+Report / RR73 / 73 lines,
   using the placeholders `{MYCALL}`, `{MYGRID}`, `{DX}`, and `{REPORT}`. The
@@ -710,7 +786,7 @@ Click **SETUP** in the QSO area to open the **FT8 / FT4 Setup** window:
 
 These settings are saved to `digi.json` (see [configuration files](#11-configuration-files)).
 
-### 3.3 The operating panel
+#### 3.2.2 The operating panel
 
 The panel has two halves:
 
@@ -733,7 +809,7 @@ The panel has two halves:
   calling you is not calling CQ, and may well be a dupe, but it is the one row
   in the list you owe an answer to.
 - **QSO** (right) — a **⇵** frequency button when the band has more than one
-  agreed frequency for the mode ([3.1](#31-entering-the-mode)), a world map
+  agreed frequency for the mode ([3.1](#31-general-considerations)), a world map
   (your location, the station you are working, and
   a transmit indicator), a station card showing the current step
   (`Idle`, `Wait CQ`, `Calling CQ`, `Tx Grid`, `Tx Report`, `Tx R+Report`,
@@ -751,7 +827,7 @@ what actually went on the air — addressing a compound call sends your own
 callsign hashed (`DL/W1AW <AB1CD> RR73`), which drops the signal report, and
 free text is cut to 13 characters.
 
-### 3.4 Working stations
+#### 3.2.3 Working stations
 
 - **Answer a call:** click **REPLY** on a decode. sdroxide adopts that station,
   picks the opposite time slot, and runs the exchange automatically. If they
@@ -854,7 +930,7 @@ Transmission happens automatically in your chosen time slot (FT8 slots are 15 s,
 FT4 slots are 7.5 s) and goes through the normal transmit path, so the ham-band
 lockout and transmit safety still apply.
 
-#### 3.4.1 DXpedition mode (Hound and Fox)
+#### 3.2.4 DXpedition mode (Hound and Fox)
 
 FT8's answer to a rare-entity pile-up. One station — the **Fox** — transmits up
 to five signals at once in the low part of the passband and works a queue of
@@ -889,7 +965,7 @@ sharing the transmitter's power, so more signals means each one is weaker.
 Contacts are logged as their `RR73` goes out; where a caller is waiting, that
 `RR73` shares its signal with the report opening the next contact.
 
-### 3.5 Reporting what you hear
+#### 3.2.5 Reporting what you hear
 
 Enable **Upload my FT8/FT4 decodes** on the Network settings tab to report every
 station you decode to [pskreporter.info](https://pskreporter.info), where your
@@ -902,7 +978,7 @@ line is shown on your station's page. The **Collector** host and port are there
 for testing: port 14739 is the project's test collector, which accepts reports
 without publishing them.
 
-### 3.6 Logging and the logbook
+#### 3.2.6 Logging and the logbook
 
 Completed FT8/FT4 QSOs are logged automatically. Open the full logbook with the
 **LOG** button (System module).
@@ -938,7 +1014,7 @@ one-click upload buttons and award tracking.
 
 The log is stored in `qso_log.json`.
 
-### 3.7 PSK31 and RTTY
+### 3.3 PSK31 and RTTY
 
 Choose **PSK** or **RTTY** from the DIGITAL row of the Band/Mode popup. As with
 FT8/FT4 the panadapter switches to a zoomed sub-band waterfall, but the lower
@@ -976,7 +1052,7 @@ panel is a live **messaging area** instead of a QSO sequencer.
 signals across each band's PSK/RTTY calling sub-bands. Clicking a label from any
 mode switches to PSK or RTTY, tunes onto the signal, and opens this panel.
 
-### 3.8 Olivia, THOR and FSQ
+### 3.4 Olivia, THOR and FSQ
 
 Three more keyboard modes are on the DIGITAL row. **Olivia** and **THOR** reuse
 the same messaging panel as PSK/RTTY; each mode's submode is chosen on its setup
@@ -1014,7 +1090,7 @@ These three modems are native-Rust and self-contained. On-air interoperability
 with fldigi is being validated; the first release targets clean-to-moderate
 signals.
 
-### 3.9 Hellschreiber
+### 3.5 Hellschreiber
 
 Choose **HELL** from the DIGITAL row for **Hellschreiber** — the oldest digital
 mode still in regular amateur use, and the only one you read with your eyes
@@ -1109,7 +1185,7 @@ more here than the numbers do. Check them against a current plan for your region
 
 ---
 
-### 3.10 SSTV
+### 3.6 SSTV
 
 Choose **SSTV** from the DIGITAL row to send and receive pictures. The panel has
 a received-image gallery on the left and a transmit compositor on the right, with
@@ -1176,7 +1252,7 @@ Band buttons tune to that band's common SSTV calling frequency (for example
 > conditions — clean signals decode well; weak or drifting signals may slant or
 > show noise (ongoing refinement).
 
-### 3.11 RIFP (Radio Image Framing Protocol)
+### 3.7 RIFP (Radio Image Framing Protocol)
 
 Choose **RIFP** from the DIGITAL row to send and receive pictures over
 [draft-dulaunoy-rifp-00](https://datatracker.ietf.org/doc/draft-dulaunoy-rifp/) —
@@ -1237,7 +1313,7 @@ between the two modes.
 - The counters read **frames** (valid), **bad** (failed their CRC and were not
   recovered) and **pictures** (complete and verified).
 - Received pictures are saved as PNG under `~/.config/sdroxide/sstv_rx/`,
-  alongside the SSTV ones — and are deleted the same way (3.10): right-click a
+  alongside the SSTV ones — and are deleted the same way (3.6): right-click a
   thumbnail, or **Delete…** in the enlarged window.
 
 **Transmitting:** identical to SSTV — pick a slot, load an image, type its
@@ -1245,7 +1321,7 @@ message, press **TX**. The status line shows which frame of how many is going
 out and how long is left. Your callsign travels as the protocol's Sender ID
 extension.
 
-### 3.12 Weather fax (WEFAX / radiofax)
+### 3.8 Weather fax (WEFAX / radiofax)
 
 Choose **WEFAX** from the DIGITAL row to receive the weather charts the
 meteorological services broadcast on short wave — surface analyses, wave
@@ -1356,7 +1432,7 @@ listed alongside the new ones, so nothing you have already received disappears.
 Deleting one takes both copies, so a chart that was in the old directory too
 does not reappear on the next listing.
 
-### 3.13 JS8
+### 3.9 JS8
 
 Choose **JS8** from the DIGITAL row. JS8 uses FT8's waveform — the same eight
 tones in the same 79-symbol frame — but carries a conversation instead of a
@@ -1485,7 +1561,7 @@ Relayed messages and stored-message requests are decoded and shown, but this
 station will not act on them — forwarding traffic on someone else's behalf is a
 decision for the operator.
 
-### 3.14 RF Paint (spectrum painting)
+### 3.10 RF Paint (spectrum painting)
 
 Choose **RFPAINT** from the DIGITAL row for **RF Paint** — a transmit-only mode
 that draws text and pictures **directly onto a receiver's waterfall**. There is no
@@ -1525,7 +1601,7 @@ your own waterfall like any other signal.
 
 ---
 
-### 3.15 WSPR (Weak Signal Propagation Reporter)
+### 3.11 WSPR (Weak Signal Propagation Reporter)
 
 Choose **WSPR** from the DIGITAL row. This is the one mode here that is not
 trying to make a contact. A WSPR transmission is 110.6 seconds of four-tone FSK
@@ -1572,7 +1648,7 @@ would leave this one blank almost always.
 Above the map is the **PROP** chip. It shades the map by where signals are
 actually getting through; pressing it reveals the rest of the controls —
 `ALL BANDS` or `ONE BAND`, which band, and the absolute path count the brightest
-cell stands for. [§3.16](#316-the-propagation-heat-map) explains what the
+cell stands for. [§6.8](#68-the-propagation-heat-map) explains what the
 shading means. The same picture, with more control over it, is on the 3D globe.
 
 Drag the strip under the map to resize it against the status pane.
@@ -1647,182 +1723,6 @@ both use the callsign and grid from the General tab.
 
 ---
 
-### 3.16 The propagation heat map
-
-![Propagation heatmap](images/propagation.jpg)
-
-Everything this station hears is evidence about the ionosphere, and it is all
-pooled into one picture: WSPR both ways, FT8/FT4 and JS8 decodes, and the
-logbook. With the [Reverse Beacon Network](#55-spots-spot-feeds) switched on, so
-is everything *everyone else* hears. The **PROP** layer on the
-[3D globe](#6-solar-system-3d-view) draws it, and the **PROP** chip above the
-flat map in the operating panel draws the same thing under the panel map.
-
-**What a bright patch means.** Each reception is placed at the **midpoint of its
-path** — the patch of ionosphere that bent the signal — and not at the far
-station. That is the whole design: a map of remote stations would tell you where
-radio amateurs live, which you already know. This tells you where the sky is
-working. A path longer than about 3000 km came down and went up again, so it
-gets a control point per hop.
-
-**Two displays:**
-
-- **ALL BANDS** gives each band its own hue and mixes them where two overlap, so
-  a patch that is open on both 20 m and 10 m reads as a blend rather than as
-  whichever band happened to win. This is the "what are conditions like" view and
-  it needs no configuration.
-- **ONE BAND** runs a single band through a blue → green → yellow → red ramp.
-
-On the flat map the controls are the **PROP** chip above it; on the globe they
-are the `PROP` chip in the menu bar, which adds the source filter and the
-half-life. Both draw the same field.
-
-**Signal reports are made comparable before they are pooled.** WSPR, FT8, FT4 and
-JS8 all quote SNR in a 2500 Hz bandwidth, but their decode floors are ten
-decibels apart — so what is stored is the margin above each mode's *own* floor.
-Without that, the most sensitive mode on the band would paint as the worst
-propagation on it. WSPR also declares its transmit power, so a 200 mW beacon is
-credited for the power it did not use. A logged QSO contributes a path and **no
-signal report at all**: an RST is not an SNR, and it counts towards how busy a
-cell is without ever moving its average.
-
-**Memory.** An observation's contribution halves every 45 minutes by default
-(adjustable in the PROP menu). The ionosphere's own memory is short, and an
-opening from two hours ago should not be arguing with one from two minutes ago.
-
-**What it cannot show.** Without the Reverse Beacon Network, only paths this
-station has been one end of — so a band the radio is not listening to has no
-evidence at all, however open it is. Oceans light up because the midpoints of
-long paths fall there, which is the single biggest thing this adds to an
-ionosonde map — but Antarctica stays dark because nobody is transmitting from
-it. The legend gives the absolute path count the brightest cell stands for, so
-the colours are never relative without saying so.
-
-**The Reverse Beacon Network layer.** **RBN is on by default** (under
-[Settings → Spots](#55-spots-spot-feeds), and it needs only the callsign from
-the General tab). It reads the network of CW and RTTY skimmers that listen to
-whole bands continuously, worldwide, and feeds every spot they publish into this
-same field. That is the one thing that fills in the bands this radio is not on:
-while you work 20 m, the map can still tell you 15 m is open to South America,
-because a few hundred other receivers just heard it.
-
-The difference is not subtle. Monitoring 20 m FT8 alone, the propagation field
-knows about one band; with RBN running it knows about seven within a minute —
-including a 40 m that the published forecast calls "Poor" and the skimmers show
-as the busiest band on the air. Where the forecast and the measurement disagree,
-the measurement is the one that was actually observed.
-
-It comes with a real limitation, and the map keeps it on its own switchable
-source for that reason. **An RBN line carries two callsigns and no locators**,
-and the network publishes no machine-readable list of where its skimmers are —
-so both ends of every RBN path are placed at their DXCC entity's nominal centre.
-For San Marino that is within the blur the map already applies; for the United
-States or Russia it can be two thousand kilometres out. Turn the **RBN** chip off
-in the globe's PROP menu to see the field without it.
-
-RBN spots never appear in the spot list. There are thousands a minute, they
-would bury every human spot in the window, and they are measurements rather than
-invitations to call anyone. Narrow the feed with a `set/filter` line in the RBN
-settings if you only care about one continent.
-
-**The `HEARD ≥` row.** The globe's propagation panel gains a line under the
-ionosonde MUF: the highest frequency that has demonstrably got through near your
-QTH, normalised to a 3000 km path so short and long paths are comparable. It is
-a **floor**, not an estimate — the signal got through, so the ionosphere was at
-least this good; how much better is exactly what a reception report cannot say,
-because nobody transmits on the frequencies that would have failed. A cell needs
-two independent paths before it will claim anything, and paths under 300 km are
-excluded because they may never have touched the ionosphere at all.
-
-The two numbers sit together because they fail in opposite directions: the
-sounder is a real measurement with dreadful spatial coverage, and this covers the
-oceans but only bounds. When the observation is above the sounder, the panel says
-so — *the band is better than modelled* is the most actionable thing either
-number can tell you.
-
-**The `BANDS OPEN` chart.** The same field, read per band instead of per place,
-in a box under the propagation numbers on the globe: one bar for each band with
-anything in it, showing **how much of the world that band is currently getting
-through to**. It is the map's answer to "which band should I be on" without
-having to turn the globe and compare patches by eye.
-
-What the bar measures is *reach* — the share of the Earth's surface with
-evidence on it, weighted by area so a polar cell does not count for more than an
-equatorial one. Deliberately **not** a count of contacts: forty decodes out of
-one corner of Europe are one direction open, and a count would call that the
-best band of the evening. The number beside each bar is that share, and the
-footer gives the top of the scale, which auto-ranges in steps (1 %, 3 %, 10 %,
-30 %) rather than stretching the best band to a full bar — a chart normalised to
-its own leader would draw the same picture on a dead night as on a good one.
-
-Bands stay in frequency order so the shape of the chart is the familiar
-spectrum, and each bar takes the hue the ALL BANDS view paints that band in. It
-inherits the heat map's memory exactly, because it is read off the same decayed
-field: whatever the half-life is set to is how long a band lingers here after it
-shuts. The same caveat applies as to the map itself — a band nobody has listened
-to has no evidence and no bar, which the footer says out loud.
-
-The heat map is also relayed to the [browser's 3D tab](#8-web-operation), unlike
-the awards layer: it is live data about the station's own conditions, which is
-what that relay is for.
-
-### 3.17 Band conditions
-
-![Band Conditions](images/bandconditions.jpg)
-
-The heat map answers "what has got through". The **BANDS** window (the `BANDS`
-chip in the System box) puts that next to a second, different answer: the
-**calculated band conditions** published by N0NBH at
-[hamqsl.com](https://www.hamqsl.com/), which are a forecast from the solar
-indices rather than a measurement of anything.
-
-| Column | What it is |
-| --- | --- |
-| `CONDX` | The published verdict — Good, Fair or Poor — for this band, for whichever half of the day it is at your QTH |
-| `PATHS` | Decayed count of receptions in this band's field: *how much* got through |
-| `REACH` | Share of the world with evidence on it: *how widely* it got through |
-| `BEST` | Best decode margin anywhere in the band, dB above the mode's own floor |
-
-`PATHS` and `REACH` are both there because either alone misleads: a contest
-pile-up is a great many paths through one small piece of sky, and a band quietly
-open everywhere is the reverse.
-
-The same verdicts colour the band chips in the **band/mode menu**, so choosing a
-band shows its forecast where you are already looking. Green is Good, yellow
-Fair, pink Poor. Hovering gives the verdict in words along with its source.
-
-**Three things this deliberately does not do.**
-
-- **Bands with no published verdict stay blank.** The feed covers four groups —
-  80/40 m, 30/20 m, 17/15 m and 12/10 m — and nothing else. 160 m, 60 m, 6 m,
-  2 m and 70 cm have no `CONDX` and no chip colour, and never will: filling them
-  in from a neighbouring group would be inventing data. 60 m sits *inside* the
-  published frequency range and is still not covered.
-- **A band with no paths is not called closed.** An empty row means nothing was
-  decoded, which may mean the band was shut or only that nobody was on it. Those
-  two look identical from here.
-- **The forecast is global, not yours.** It is computed from the solar indices
-  for the whole planet and says nothing about your antenna, your noise floor or
-  any particular path. Where it and the measured columns disagree, the
-  measurement is right.
-
-Day or night is worked out from the Sun's elevation at your own locator, so the
-correct half of the published table is read wherever you are.
-
-**Where the numbers come from.** [hamqsl.com](https://www.hamqsl.com/), fetched
-in the background once an hour for as long as the program is running. This is
-the one exception to the rule that sdroxide's space-weather requests happen only
-while the [3D view](#6-solar-system-3d-view) is open: the band menu is always
-there, so these have to be too. It stays one request an hour — the two share a
-cache, so with the 3D view open the second one comes back "not modified" —
-and hourly is the interval the publisher asks for.
-
-The document is cached on disk, so the last verdicts are on screen immediately
-at startup and survive being offline. Everywhere they appear they are labelled
-with their age.
-
----
-
 ## 4. Skimmers
 
 The skimmers decode many signals at once across a wide (~192 kHz) window and
@@ -1845,9 +1745,9 @@ label each one on the waterfall. There are three: **CW**, **PSK31**, and
   showing the callsign (once resolved, for CW) and a rolling tail of decoded
   text. Boxes fade out a few seconds after a signal stops.
 - **Click a skimmer box** to tune to that signal and switch to its mode — CW for
-  a CW spot (which lands it on the CW panel's cursor, [2.13](#214-cw-decoding-and-keyboard-sending)),
+  a CW spot (which lands it on the CW panel's cursor, [2.14](#214-cw-decoding-and-keyboard-sending)),
   PSK or RTTY for a digimode spot (which also opens the messaging panel,
-  [3.7](#37-psk31-and-rtty)).
+  [3.3](#33-psk31-and-rtty)).
 
 **Band-aware gating.** To avoid noise and false decodes, each skimmer only runs
 where its mode is used: the CW skimmer in CW sub-bands, and the PSK and RTTY
@@ -2761,7 +2661,7 @@ filters, the world map — is [§9.1](#91-spot-feeds-dx-cluster-pota-sota-psk-re
 
   RBN is not a spot feed and its spots do not appear in the SPOTS window: there
   are thousands a minute and they are measurements rather than invitations. They
-  go to the [propagation heat map](#316-the-propagation-heat-map), which is what
+  go to the [propagation heat map](#68-the-propagation-heat-map), which is what
   lets it show bands this radio is not listening to. Read that section for the
   one real caveat — RBN lines carry no locators, so paths are placed from
   country centres.
@@ -2790,7 +2690,7 @@ General tab:
 - **Download who heard me** — off by default, because it is a poll of somebody
   else's server on a timer. Turn it on and reports of your own callsign appear in
   the WSPR panel with a `→`, and their reporters go on the map. See
-  [§3.15](#315-wspr-weak-signal-propagation-reporter).
+  [§3.11](#311-wspr-weak-signal-propagation-reporter).
 
 ### 5.6 FreeDV: FreeDV Reporter
 
@@ -3154,6 +3054,8 @@ QSO, the auroral oval, a satellite footprint crossing at 3 a.m.
 
 ![The Earth with the FT8 coastlines, the QTH ring and the sub-solar point](images/3d-earth.jpg)
 
+### 6.1 Navigating: the camera, targets and the auto tour
+
 **Mouse:**
 
 | Action | Effect |
@@ -3193,6 +3095,8 @@ contact pulls back until both ends and the whole arc are in the picture. When
 the QSO ends the camera rejoins the tour at whichever viewpoint is nearest.
 Switching the `QSO` layer off leaves AUTO on its normal loop.
 
+### 6.2 The layers
+
 **Layers** — `ORBITS` (orbital paths, sampled from the real ephemeris, so they
 are the true eccentric orbits), `CLOUDS`, `PLANETS`, `CME`, `SUN OBS`, `LABELS`,
 `SMALL BODIES`, `QSO`, `SATS`, `AURORA`, `PROP` and `AWARDS`. All but `PROP` and
@@ -3209,6 +3113,8 @@ means the DX cluster.
 The star field and the heliographic graticule (the solar rotation axis, equator
 and parallels) have no buttons: they are the backdrop and the coordinate frame
 everything else is read against, and are always drawn.
+
+### 6.3 The planets, moons and small bodies
 
 **The PLANETS layer** adds the rest of the solar system: the seven other
 planets, eighteen major moons, and Saturn's and Uranus's rings. Names are shown
@@ -3305,6 +3211,8 @@ Outside 2026–2076 the arcs simply run on, which is a two-body extrapolation of
 perturbed orbit and decays quickly. Scrub the clock past either end and the info
 card says so rather than letting the body sit there looking authoritative.
 
+### 6.4 Clouds
+
 **The CLOUDS layer** puts the weather on the globe, live, from NOAA/NESDIS's
 Global Mosaic of Geostationary Satellite Imagery — GOES-East and GOES-West, both
 Meteosats and Himawari, stitched into one picture of the planet every hour.
@@ -3370,6 +3278,8 @@ tops onto the deck below and a flash glows out *through* the storm making it
 rather than only brightening its outside — at several times the cost per pixel.
 Both draw the same weather.
 
+### 6.5 The aurora
+
 **The AURORA layer** puts the auroral oval on the globe, live, from NOAA's
 OVATION model — a 1°×1° grid of the probability of seeing aurora, issued every
 few minutes and valid about forty minutes ahead.
@@ -3420,6 +3330,8 @@ unit of Kp) and it says nothing about cloud, moonlight or how dark your sky is;
 geomagnetic latitude is also several degrees from geographic at most longitudes.
 The oval on the globe needs none of those caveats, so prefer it when the two
 seem to disagree.
+
+### 6.6 Satellites
 
 **The SATS layer** puts amateur-radio satellites in orbit around the globe, live,
 propagated with SGP4 from CelesTrak element sets. Ten popular ones are drawn by
@@ -3501,6 +3413,8 @@ the built-in table. They belong to the station, so the browser's 3D view shows
 them too — it is fed by the same engine — and a correction made at the shack
 machine is on screen in every open tab.
 
+### 6.7 Your QSOs on the globe
+
 **The QSO layer** puts your FT8/FT4 traffic on the globe. Every station decoded
 in the last two minutes is a white dot that fades as it ages — the same set the
 flat map in the FT8 panel shows, so the two never disagree. Behind them, every
@@ -3534,13 +3448,128 @@ globe then is the hour being replayed, not the present, and the two are not
 mixed. The history is kept only while sdroxide runs, so a fresh start begins
 with an empty hour that fills as the decodes come in.
 
-**The PROP layer** paints the propagation heat map on the globe — where signals
-are actually getting through, band by band, from every mode this station runs.
-[§3.16](#316-the-propagation-heat-map) explains what a bright patch means and why
-it is placed where it is; the `PROP` chip in the menu bar picks between the
-all-bands and single-band displays, chooses which sources feed it, and sets how
-long it remembers. Its own `MUF` counterpart, the `HEARD ≥` row, appears in the
-propagation panel described below.
+### 6.8 The propagation heat map
+
+![Propagation heatmap](images/propagation.jpg)
+
+**The PROP layer** paints where signals are actually getting through, band by
+band, from every mode this station runs. Everything this station hears is
+evidence about the ionosphere, and it is all pooled into one picture: WSPR both
+ways, FT8/FT4 and JS8 decodes, and the logbook. With the
+[Reverse Beacon Network](#55-spots-spot-feeds) switched on, so is everything
+*everyone else* hears. The **PROP** chip above the flat map in the FT8 and WSPR
+operating panels draws the same thing under the panel map.
+
+**What a bright patch means.** Each reception is placed at the **midpoint of its
+path** — the patch of ionosphere that bent the signal — and not at the far
+station. That is the whole design: a map of remote stations would tell you where
+radio amateurs live, which you already know. This tells you where the sky is
+working. A path longer than about 3000 km came down and went up again, so it
+gets a control point per hop.
+
+**Two displays:**
+
+- **ALL BANDS** gives each band its own hue and mixes them where two overlap, so
+  a patch that is open on both 20 m and 10 m reads as a blend rather than as
+  whichever band happened to win. This is the "what are conditions like" view and
+  it needs no configuration.
+- **ONE BAND** runs a single band through a blue → green → yellow → red ramp.
+
+On the flat map the controls are the **PROP** chip above it; on the globe they
+are the `PROP` chip in the menu bar, which adds the source filter and the
+half-life. Both draw the same field.
+
+**Signal reports are made comparable before they are pooled.** WSPR, FT8, FT4 and
+JS8 all quote SNR in a 2500 Hz bandwidth, but their decode floors are ten
+decibels apart — so what is stored is the margin above each mode's *own* floor.
+Without that, the most sensitive mode on the band would paint as the worst
+propagation on it. WSPR also declares its transmit power, so a 200 mW beacon is
+credited for the power it did not use. A logged QSO contributes a path and **no
+signal report at all**: an RST is not an SNR, and it counts towards how busy a
+cell is without ever moving its average.
+
+**Memory.** An observation's contribution halves every 45 minutes by default
+(adjustable in the PROP menu). The ionosphere's own memory is short, and an
+opening from two hours ago should not be arguing with one from two minutes ago.
+
+**What it cannot show.** Without the Reverse Beacon Network, only paths this
+station has been one end of — so a band the radio is not listening to has no
+evidence at all, however open it is. Oceans light up because the midpoints of
+long paths fall there, which is the single biggest thing this adds to an
+ionosonde map — but Antarctica stays dark because nobody is transmitting from
+it. The legend gives the absolute path count the brightest cell stands for, so
+the colours are never relative without saying so.
+
+**The Reverse Beacon Network layer.** **RBN is on by default** (under
+[Settings → Spots](#55-spots-spot-feeds), and it needs only the callsign from
+the General tab). It reads the network of CW and RTTY skimmers that listen to
+whole bands continuously, worldwide, and feeds every spot they publish into this
+same field. That is the one thing that fills in the bands this radio is not on:
+while you work 20 m, the map can still tell you 15 m is open to South America,
+because a few hundred other receivers just heard it.
+
+The difference is not subtle. Monitoring 20 m FT8 alone, the propagation field
+knows about one band; with RBN running it knows about seven within a minute —
+including a 40 m that the published forecast calls "Poor" and the skimmers show
+as the busiest band on the air. Where the forecast and the measurement disagree,
+the measurement is the one that was actually observed.
+
+It comes with a real limitation, and the map keeps it on its own switchable
+source for that reason. **An RBN line carries two callsigns and no locators**,
+and the network publishes no machine-readable list of where its skimmers are —
+so both ends of every RBN path are placed at their DXCC entity's nominal centre.
+For San Marino that is within the blur the map already applies; for the United
+States or Russia it can be two thousand kilometres out. Turn the **RBN** chip off
+in the globe's PROP menu to see the field without it.
+
+RBN spots never appear in the spot list. There are thousands a minute, they
+would bury every human spot in the window, and they are measurements rather than
+invitations to call anyone. Narrow the feed with a `set/filter` line in the RBN
+settings if you only care about one continent.
+
+**The `HEARD ≥` row.** The [propagation panel](#612-the-propagation-panel) gains
+a line under the ionosonde MUF: the highest frequency that has demonstrably got
+through near your QTH, normalised to a 3000 km path so short and long paths are
+comparable. It is a **floor**, not an estimate — the signal got through, so the
+ionosphere was at least this good; how much better is exactly what a reception
+report cannot say, because nobody transmits on the frequencies that would have
+failed. A cell needs two independent paths before it will claim anything, and
+paths under 300 km are excluded because they may never have touched the
+ionosphere at all.
+
+The two numbers sit together because they fail in opposite directions: the
+sounder is a real measurement with dreadful spatial coverage, and this covers the
+oceans but only bounds. When the observation is above the sounder, the panel says
+so — *the band is better than modelled* is the most actionable thing either
+number can tell you.
+
+**The `BANDS OPEN` chart.** The same field, read per band instead of per place,
+in a box under the propagation numbers on the globe: one bar for each band with
+anything in it, showing **how much of the world that band is currently getting
+through to**. It is the map's answer to "which band should I be on" without
+having to turn the globe and compare patches by eye.
+
+What the bar measures is *reach* — the share of the Earth's surface with
+evidence on it, weighted by area so a polar cell does not count for more than an
+equatorial one. Deliberately **not** a count of contacts: forty decodes out of
+one corner of Europe are one direction open, and a count would call that the
+best band of the evening. The number beside each bar is that share, and the
+footer gives the top of the scale, which auto-ranges in steps (1 %, 3 %, 10 %,
+30 %) rather than stretching the best band to a full bar — a chart normalised to
+its own leader would draw the same picture on a dead night as on a good one.
+
+Bands stay in frequency order so the shape of the chart is the familiar
+spectrum, and each bar takes the hue the ALL BANDS view paints that band in. It
+inherits the heat map's memory exactly, because it is read off the same decayed
+field: whatever the half-life is set to is how long a band lingers here after it
+shuts. The same caveat applies as to the map itself — a band nobody has listened
+to has no evidence and no bar, which the footer says out loud.
+
+The heat map is also relayed to the [browser's 3D tab](#8-web-operation), unlike
+the awards layer: it is live data about the station's own conditions, which is
+what that relay is for.
+
+### 6.9 The awards layer
 
 **The AWARDS layer** paints your logbook's DXCC coverage on the Earth as a map
 of what is *missing*. Every entity in the bundled country file gets a marker at
@@ -3556,6 +3585,8 @@ part of the view before it draws — three hundred markers on a planet a few
 pixels across is noise, not information — and it is off by default. In the
 browser tab it is absent entirely: the logbook lives in the main window, and the
 relay carries live data rather than your records.
+
+### 6.10 The Sun
 
 **Sun** — which SDO product wraps the Sun:
 
@@ -3574,6 +3605,18 @@ you are seeing a cached picture, pink when there is nothing at all. It always
 tells you what you are actually looking at; a cached image is never presented as
 a live one.
 
+Sunspot markers are sized by each region's real spot area and coloured by NOAA's
+own next-24-hour flare probability — grey for quiet, yellow for likely, pink for
+a region worth watching. Regions on the far side of the Sun are hidden by the
+Sun itself, as they should be. CME cones grow from the Sun at the measured
+speed, so the picture is a direct read-out of where the plasma has got to; a
+cone drawn faint has its direction estimated from the source region rather than
+fitted, and cones are coloured cyan through pink with increasing speed.
+
+![CME trajectory cones seen from outside the Earth's orbit](images/3d-cme.jpg)
+
+### 6.11 Scale and time
+
 **Scale** — the Earth is 23 000 times smaller than its distance from the Sun, so
 at true scale it is invisible whenever the Sun is in frame. `body` exaggerates
 Earth and Moon radius (default 20×) and `moon orbit` stretches the
@@ -3590,12 +3633,14 @@ all, forwards and backwards.
 with the `±6h`/`±24h` buttons turns it yellow and relabels it `SIM`, denoting  
 that the time displayed is not the current real time.
 
+### 6.12 The propagation panel
+
 **Propagation panel** — top right, the numbers worth checking before you call CQ:
 
 | Row | What it is |
 | --- | --- |
 | `MUF` | Maximum usable frequency for a 3000 km path near your QTH, interpolated from the ionosonde network. Green above 24 MHz, cyan above 14, yellow below. |
-| `HEARD ≥` | The highest frequency that has demonstrably got through near your QTH, from what this station has actually decoded, normalised to a 3000 km path. A **floor**, not an estimate — see [§3.16](#316-the-propagation-heat-map). Only appears once two independent paths agree. |
+| `HEARD ≥` | The highest frequency that has demonstrably got through near your QTH, from what this station has actually decoded, normalised to a 3000 km path. A **floor**, not an estimate — see [§6.8](#68-the-propagation-heat-map). Only appears once two independent paths agree. |
 | `Kp / A` | Planetary geomagnetic indices. Green when quiet, yellow from Kp 4, pink from Kp 5 (a storm — polar paths degrade and aurora becomes possible). |
 | `F10.7` | 10.7 cm solar radio flux in solar flux units, the standard proxy for ionisation. Under about 90 the high bands stay shut; over 150 they open up. |
 | `X-ray` | Current GOES soft X-ray class. Turns pink at M class and above, which is when the D layer starts absorbing HF on the daylit side. |
@@ -3603,7 +3648,7 @@ that the time displayed is not the current real time.
 **Bands-open chart** — under the propagation numbers: one bar per band, showing
 how much of the world each band is getting through to right now, read off the
 same propagation field and with the same memory. See
-[§3.16](#316-the-propagation-heat-map) for what the bars measure and why it is
+[§6.8](#68-the-propagation-heat-map) for what the bars measure and why it is
 not a contact count.
 
 The line under the MUF says how far away the nearest contributing ionosonde is
@@ -3612,6 +3657,8 @@ location, and the ionosphere changes sharply across the day/night terminator —
 a value drawn from sounders 3000 km away on the other side of it is a guess, and
 the panel says so rather than hiding it. When no sounder is in range it reads
 `no sounder`.
+
+### 6.13 Readouts and the CME arrival banner
 
 **Readouts** — the card at the bottom left gives UTC, the sub-solar point, the
 solar disk's B0 and L0 angles, the Sun's elevation and azimuth from your QTH
@@ -3627,8 +3674,10 @@ Arrival is a straight-line constant-speed estimate from the fitted cone. Proper
 forecasts model the CME's drag against the solar wind and are typically good to 
 about ±6 hours; treat this the same way.
 
-**Where the data comes from.** Everything on this list is fetched **only while
-this window is open** — closing it stops the background fetcher entirely, and
+### 6.14 Where the data comes from
+
+Everything on this list is fetched **only while this window is open** —
+closing it stops the background fetcher entirely, and
 never opening it means no request is ever made. The one exception is the band
 conditions row: those colour the band menu in the main window, so they are
 fetched hourly for as long as the program is running, whether or not this window
@@ -3643,7 +3692,7 @@ either way. The hosts contacted:
 | `services.swpc.noaa.gov` | The OVATION auroral oval grid, auroral hemispheric power, and the three-day planetary K forecast | 15–60 min |
 | `nowcoast.noaa.gov` | Global infrared and visible cloud mosaics (NOAA/NESDIS GMGSI, served by nowCOAST) | 10 min |
 | `prop.kc2g.com` | Ionosonde soundings for the MUF estimate (GIRO network, aggregated by KC2G) | 15 min |
-| `www.hamqsl.com` | Calculated band conditions (N0NBH) — see [§3.17](#317-band-conditions). **Fetched whether or not this window is open** | 1 h |
+| `www.hamqsl.com` | Calculated band conditions (N0NBH) — see [§2.15](#215-band-conditions). **Fetched whether or not this window is open** | 1 h |
 | `celestrak.org` | Orbital element sets: the listings you subscribe to (the amateur group and the ISS by default), plus QO-100 | 6 h |
 
 `hamqsl.com` is the one entry here that is a single operator's server rather than
@@ -3659,16 +3708,6 @@ The OVATION grid is issued every five minutes but fetched every thirty: it is
 not move far in half an hour. Nothing is hidden by that — the aurora panel says
 what the picture is valid for, so a half-hour-old forecast is labelled as one
 rather than presented as this instant's sky.
-
-Sunspot markers are sized by each region's real spot area and coloured by NOAA's
-own next-24-hour flare probability — grey for quiet, yellow for likely, pink for
-a region worth watching. Regions on the far side of the Sun are hidden by the
-Sun itself, as they should be. CME cones grow from the Sun at the measured
-speed, so the picture is a direct read-out of where the plasma has got to; a
-cone drawn faint has its direction estimated from the source region rather than
-fitted, and cones are coloured cyan through pink with increasing speed.
-
-![CME trajectory cones seen from outside the Earth's orbit](images/3d-cme.jpg)
 
 *Credits: solar imagery courtesy of NASA/SDO and the AIA and HMI science teams;
 CME and flare data from NASA CCMC's DONKI; sunspot regions, geomagnetic indices,
@@ -4455,7 +4494,7 @@ using. Bind them under **Speech** on the Controls tab:
 | SPEC | Spectrum only (no demodulation). |
 | FT8 / FT4 | Automatic digital modes with decoding, QSO sequencing, and logging. |
 | JS8 | JS8 — conversational messaging on FT8's waveform. Four speeds (Normal 15 s / Fast 10 s / Turbo 6 s / Slow 30 s); directed queries, heartbeats and multi-frame free text. |
-| WSPR | Weak Signal Propagation Reporter — a two-minute beacon carrying a callsign, grid and power. Not a QSO mode: it measures paths, uploads them to WSPRnet, and feeds the propagation heat map. See [3.15](#315-wspr-weak-signal-propagation-reporter). |
+| WSPR | Weak Signal Propagation Reporter — a two-minute beacon carrying a callsign, grid and power. Not a QSO mode: it measures paths, uploads them to WSPRnet, and feeds the propagation heat map. See [3.11](#311-wspr-weak-signal-propagation-reporter). |
 | PSK | PSK31 keyboard mode (BPSK31 / varicode). |
 | RTTY | RTTY keyboard mode (Baudot; selectable shift and baud). |
 | OLIVIA | Robust MFSK keyboard mode (selectable tones/bandwidth). |
