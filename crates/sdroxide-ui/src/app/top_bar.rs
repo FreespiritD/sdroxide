@@ -353,7 +353,7 @@ impl SdroxideApp {
 
             // Big frequency readout, centred vertically by measured height.
             let mut new_hz = None;
-            ui.allocate_ui_with_layout(
+            let readout = ui.allocate_ui_with_layout(
                 egui::vec2(readout_w, full_h),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
@@ -367,6 +367,21 @@ impl SdroxideApp {
                     );
                 },
             );
+            // When the VFO sits exactly on a stored memory, say which one.
+            // Painted rather than laid out, so the readout never shifts as it
+            // appears — anchored to the bottom of the box, not the digit row
+            // (`readout.response.rect` is the *used* rect, which ends at the
+            // digits), so it clears their ink instead of hugging the baseline.
+            if let Some(name) = self.memory_name_at_vfo() {
+                let r = readout.response.rect;
+                ui.painter().text(
+                    egui::pos2(r.left(), r.top() + full_h),
+                    egui::Align2::LEFT_BOTTOM,
+                    name,
+                    egui::FontId::proportional(10.0),
+                    crate::theme::CYAN_DIM,
+                );
+            }
             if let Some(hz) = new_hz {
                 cmds.push(Command::SetVfo { vfo: active, hz });
             }
@@ -474,6 +489,17 @@ impl SdroxideApp {
     /// The band/mode chip's label, e.g. `20m · USB`.
     fn band_mode_label(&self) -> String {
         format!("{} · {}", self.state.band.label(), self.state.rx[0].mode.label())
+    }
+
+    /// The name of the stored memory channel the active VFO is parked on, if
+    /// any: same frequency to the Hz the readout shows, and same mode.
+    fn memory_name_at_vfo(&self) -> Option<&str> {
+        let hz = self.state.active_freq_hz().round() as i64;
+        let mode = self.state.rx[0].mode;
+        self.memories
+            .iter()
+            .find(|m| m.mode == mode && m.freq_hz.round() as i64 == hz)
+            .map(|m| m.name.as_str())
     }
 
     /// The VFO that is *not* being tuned, as a MHz label.
