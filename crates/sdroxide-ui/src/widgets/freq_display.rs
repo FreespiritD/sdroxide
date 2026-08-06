@@ -1,5 +1,7 @@
 //! PowerSDR-style frequency readout: each digit tunes with the scroll wheel,
-//! or click upper/lower half to increment/decrement.
+//! or click upper/lower half to increment/decrement. Compact layouts use
+//! [`show_typed`] instead — the same dial, but a tap on it opens a type-in
+//! field rather than nudging whichever place value was under the finger.
 
 use eframe::egui::{self, Color32, Label, RichText, Sense, Ui};
 use sdroxide_types::WheelSettings;
@@ -9,6 +11,8 @@ use sdroxide_types::WheelSettings;
 pub const DIGIT_SIZE: f32 = 40.0;
 /// Smooth-scroll points per tuning step.
 const SCROLL_STEP: f32 = 30.0;
+/// The lit digits' amber, shared by both readouts and the type-in field.
+const DIGIT_INK: Color32 = Color32::from_rgb(255, 209, 66);
 
 /// Shows `hz` as a 10-digit tunable readout. Returns `Some(new_hz)` on change.
 ///
@@ -34,8 +38,7 @@ pub fn show(ui: &mut Ui, id: egui::Id, hz: f64, wheel: WheelSettings, size: f32)
             let step = 10i64.pow(p);
             let digit = (freq / step) % 10;
             let leading_zero = p > 0 && freq < step;
-            let color =
-                if leading_zero { Color32::from_gray(70) } else { Color32::from_rgb(255, 209, 66) };
+            let color = if leading_zero { Color32::from_gray(70) } else { DIGIT_INK };
 
             let resp = ui
                 .add(
@@ -47,11 +50,7 @@ pub fn show(ui: &mut Ui, id: egui::Id, hz: f64, wheel: WheelSettings, size: f32)
                 .on_hover_cursor(egui::CursorIcon::ResizeVertical);
 
             if resp.hovered() {
-                ui.painter().hline(
-                    resp.rect.x_range(),
-                    resp.rect.bottom() - 1.0,
-                    (2.0, Color32::from_rgb(255, 209, 66)),
-                );
+                ui.painter().hline(resp.rect.x_range(), resp.rect.bottom() - 1.0, (2.0, DIGIT_INK));
                 let scroll = if wheel.digit_wheel {
                     let s = ui.input(|i| i.smooth_scroll_delta.y);
                     if wheel.invert { -s } else { s }
@@ -86,4 +85,172 @@ pub fn show(ui: &mut Ui, id: egui::Id, hz: f64, wheel: WheelSettings, size: f32)
     });
 
     (freq != orig).then_some(freq as f64)
+}
+
+/// The readout for a compact layout: the same lit dial, but one click target.
+///
+/// Per-digit halves are mouse furniture. On the small screens the compact
+/// tiers dress, a fingertip covers two or three digits, and a mis-tap tunes
+/// the rig by whichever place value happened to be underneath — so here a tap
+/// anywhere on the number opens a type-in field prefilled with the frequency
+/// in MHz. Enter tunes, Escape or a tap elsewhere leaves the VFO alone.
+/// Losing the per-digit targets is also what lets the compact boxes shrink
+/// the digits below comfortable clicking size.
+///
+/// Returns `Some(new_hz)` when a typed frequency is committed.
+pub fn show_typed(ui: &mut Ui, id: egui::Id, hz: f64, size: f32) -> Option<f64> {
+    let edit_id = id.with("edit");
+    match ui.data(|d| d.get_temp::<String>(edit_id)) {
+        Some(text) => edit_field(ui, id, edit_id, text, size),
+        None => {
+            show_dial(ui, id, edit_id, hz, size);
+            None
+        }
+    }
+}
+
+/// The dial in its resting state: the digits of [`show`], drawn without their
+/// per-digit senses, behind one whole-row click target that opens the editor.
+fn show_dial(ui: &mut Ui, id: egui::Id, edit_id: egui::Id, hz: f64, size: f32) {
+    let freq = hz.round().max(0.0) as i64;
+    let row = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 1.0;
+            for p in (0..10u32).rev() {
+                if p < 9 && (p + 1) % 3 == 0 {
+                    ui.add(Label::new(
+                        RichText::new(".").monospace().size(size).color(Color32::from_gray(110)),
+                    ));
+                }
+                let step = 10i64.pow(p);
+                let digit = (freq / step) % 10;
+                let leading_zero = p > 0 && freq < step;
+                let color = if leading_zero { Color32::from_gray(70) } else { DIGIT_INK };
+                ui.add(Label::new(
+                    RichText::new(format!("{digit}")).monospace().size(size).color(color),
+                ));
+            }
+            ui.add(Label::new(
+                RichText::new(" Hz").size(size * 0.3).color(Color32::from_gray(140)),
+            ));
+        })
+        .response;
+
+    let resp = ui
+        .interact(row.rect, id.with("dial"), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::Text)
+        .on_hover_text("Tap to type a frequency");
+    if resp.hovered() {
+        ui.painter().hline(row.rect.x_range(), row.rect.bottom() - 1.0, (2.0, DIGIT_INK));
+    }
+    if resp.clicked() {
+        ui.data_mut(|d| {
+            d.insert_temp(edit_id, format_mhz(hz));
+            // Marks the editor's first frame, when it takes focus and selects
+            // the prefill so typing replaces it.
+            d.insert_temp(id.with("fresh"), true);
+        });
+    }
+}
+
+/// The type-in field the dial turns into, in the dial's own font and ink.
+fn edit_field(
+    ui: &mut Ui,
+    id: egui::Id,
+    edit_id: egui::Id,
+    mut text: String,
+    size: f32,
+) -> Option<f64> {
+    let field_id = id.with("field");
+    let mut out = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 1.0;
+        // Sized so the box the dial sits in does not move when it turns into
+        // the editor: the field spans what the ten digits spanned.
+        let digits_w = ui
+            .painter()
+            .layout_no_wrap(
+                "0.000.000.000".to_owned(),
+                egui::FontId::monospace(size),
+                Color32::WHITE,
+            )
+            .size()
+            .x;
+        let resp = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .id(field_id)
+                .font(egui::FontId::monospace(size))
+                .text_color(DIGIT_INK)
+                .margin(egui::Margin::ZERO)
+                .desired_width(digits_w),
+        );
+        ui.add(Label::new(RichText::new(" MHz").size(size * 0.3).color(Color32::from_gray(140))));
+
+        if ui.data_mut(|d| d.remove_temp::<bool>(id.with("fresh"))).is_some() {
+            resp.request_focus();
+            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), field_id) {
+                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(text.chars().count()),
+                )));
+                state.store(ui.ctx(), field_id);
+            }
+        }
+
+        // Enter, Escape and a tap elsewhere all drop focus and close the
+        // editor; only Enter carrying a parsable number tunes anything.
+        let done = resp.lost_focus();
+        if done && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            out = parse_mhz(&text);
+        }
+        if done {
+            ui.data_mut(|d| d.remove_temp::<String>(edit_id));
+        } else {
+            ui.data_mut(|d| d.insert_temp(edit_id, text));
+        }
+    });
+    out
+}
+
+/// `hz` as the MHz string the editor is prefilled with — "14.074", not
+/// "14.074000", so the digits the operator is about to replace are the ones
+/// that carry information.
+fn format_mhz(hz: f64) -> String {
+    let s = format!("{:.6}", hz.max(0.0) / 1e6);
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// A typed MHz value as Hz. Accepts the decimal comma half the world types.
+/// `None` — nothing to tune to — for anything unparsable or out of all range.
+fn parse_mhz(s: &str) -> Option<f64> {
+    let mhz: f64 = s.trim().replace(',', ".").parse().ok()?;
+    let hz = (mhz * 1e6).round();
+    (hz.is_finite() && (0.0..1e10).contains(&hz)).then_some(hz)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_frequencies_parse_as_mhz() {
+        assert_eq!(parse_mhz("14.074"), Some(14_074_000.0));
+        assert_eq!(parse_mhz(" 7,1 "), Some(7_100_000.0), "decimal comma");
+        assert_eq!(parse_mhz("0.4776"), Some(477_600.0));
+        assert_eq!(parse_mhz(""), None);
+        assert_eq!(parse_mhz("ten"), None);
+        assert_eq!(parse_mhz("-7.1"), None, "a negative frequency is a typo");
+        assert_eq!(parse_mhz("1e7"), None, "10 THz is out of every range");
+    }
+
+    #[test]
+    fn the_prefill_round_trips_and_sheds_trailing_zeros() {
+        assert_eq!(format_mhz(14_074_000.0), "14.074");
+        assert_eq!(format_mhz(7_000_000.0), "7");
+        assert_eq!(format_mhz(477_612.0), "0.477612");
+        assert_eq!(format_mhz(0.0), "0");
+        for hz in [14_074_000.0, 7_000_000.0, 477_612.0] {
+            assert_eq!(parse_mhz(&format_mhz(hz)), Some(hz), "prefill for {hz} did not round-trip");
+        }
+    }
 }

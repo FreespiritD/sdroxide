@@ -597,7 +597,34 @@ fn chip_padding(ui: &Ui) -> egui::Vec2 {
 /// Angled chip: a selectable button with cut top-left and bottom-right corners.
 /// Selected chips fill cyan with dark ink, like the reference nav pills.
 pub fn chip(ui: &mut Ui, selected: bool, text: impl Into<RichText>) -> Response {
-    chip_impl(ui, selected, text.into(), None, Sense::click())
+    chip_impl(ui, selected, text.into(), None, Sense::click(), None)
+}
+
+/// A chip stretched to an exact `size` rather than hugging its label — for the
+/// compact strip's button grid, whose rows divide the width they were given
+/// between them instead of clustering at one end of it. The label stays
+/// centred; everything else matches [`chip`].
+pub fn chip_sized(
+    ui: &mut Ui,
+    selected: bool,
+    text: impl Into<RichText>,
+    size: egui::Vec2,
+) -> Response {
+    chip_impl(ui, selected, text.into(), None, Sense::click(), Some(size))
+}
+
+/// [`chip_hold`] at an exact size — the compact strip's PTT, which is drawn
+/// bigger than its label needs because it is the one control worth a whole
+/// thumb.
+pub fn chip_hold_sized(
+    ui: &mut Ui,
+    selected: bool,
+    text: impl Into<RichText>,
+    fill: Color32,
+    ink: Color32,
+    size: egui::Vec2,
+) -> Response {
+    chip_impl(ui, selected, text.into(), Some((fill, ink)), Sense::click_and_drag(), Some(size))
 }
 
 /// A chip that may be greyed out, in a row that is allowed to wrap.
@@ -649,8 +676,10 @@ pub fn chip_enabled_tinted(
     };
     let resp = ui
         .allocate_ui(size, |ui| {
-            ui.add_enabled_ui(enabled, |ui| chip_impl(ui, selected, text, None, Sense::click()))
-                .inner
+            ui.add_enabled_ui(enabled, |ui| {
+                chip_impl(ui, selected, text, None, Sense::click(), None)
+            })
+            .inner
         })
         .inner;
     if underline {
@@ -673,7 +702,7 @@ pub fn chip_accent(
     fill: Color32,
     ink: Color32,
 ) -> Response {
-    chip_impl(ui, selected, text.into(), Some((fill, ink)), Sense::click())
+    chip_impl(ui, selected, text.into(), Some((fill, ink)), Sense::click(), None)
 }
 
 /// An accent chip that reports being *held* rather than clicked — for a control
@@ -687,7 +716,7 @@ pub fn chip_hold(
     fill: Color32,
     ink: Color32,
 ) -> Response {
-    chip_impl(ui, selected, text.into(), Some((fill, ink)), Sense::click_and_drag())
+    chip_impl(ui, selected, text.into(), Some((fill, ink)), Sense::click_and_drag(), None)
 }
 
 fn chip_impl(
@@ -696,6 +725,7 @@ fn chip_impl(
     text: RichText,
     accent: Option<(Color32, Color32)>,
     sense: Sense,
+    exact: Option<egui::Vec2>,
 ) -> Response {
     let galley = WidgetText::from(text).into_galley(
         ui,
@@ -704,7 +734,7 @@ fn chip_impl(
         FontSelection::Style(TextStyle::Button),
     );
     let padding = chip_padding(ui);
-    let size = galley.size() + padding * 2.0;
+    let size = exact.unwrap_or(galley.size() + padding * 2.0);
     let (rect, resp) = ui.allocate_exact_size(size, sense);
 
     if ui.is_rect_visible(rect) {

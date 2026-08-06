@@ -18,6 +18,8 @@ pub enum Tier {
     /// The full eight-module control strip.
     Desktop,
     /// Frequency readout and S-meter at full size, everything else in menus.
+    /// On a screen too short for those two rows (see [`short_tablet`]) the
+    /// bar collapses further, to the single-row strip.
     Tablet,
     /// Compact readout and meter, menus, and the waterfall alone below.
     Phone,
@@ -96,6 +98,28 @@ pub fn tier_for(size: egui::Vec2, mode: LayoutMode) -> Tier {
     }
 }
 
+/// Below this height a tablet-tier viewport is "short": the tablet top bar —
+/// a full-width frequency box stacked over a row of meter and menu chips,
+/// some 170 pt of chrome — would take a quarter of a 1280x720 panel before
+/// the waterfall got anything. Short viewports get the single-row strip
+/// instead; everything taller keeps the stacked layout and its full-size
+/// readout. Between 720 (the screen the strip was asked for) and 768 (the
+/// most common laptop height, which has the room for the stack).
+pub const SHORT_H: f32 = 740.0;
+
+/// Whether the tablet tier's top bar should be the single-row strip rather
+/// than the stacked layout — see [`SHORT_H`]. Pure function of the size and
+/// override so it can be tested beside [`tier_for`].
+pub fn short_tablet_for(size: egui::Vec2, mode: LayoutMode) -> bool {
+    tier_for(size, mode) == Tier::Tablet && size.y < SHORT_H
+}
+
+/// [`short_tablet_for`] against the live viewport and the tier in force
+/// (which already folds the operator's override in).
+pub fn short_tablet(ctx: &egui::Context) -> bool {
+    tier(ctx) == Tier::Tablet && ctx.content_rect().height() < SHORT_H
+}
+
 /// Where the tier lives between [`set_tier`] and [`tier`].
 fn tier_id() -> egui::Id {
     egui::Id::new("sdroxide-tier")
@@ -156,6 +180,21 @@ mod tests {
         // Desktops.
         assert_eq!(tier_for(vec2(1440.0, 900.0), auto), Tier::Desktop);
         assert_eq!(tier_for(vec2(1920.0, 1080.0), auto), Tier::Desktop);
+    }
+
+    #[test]
+    fn only_short_tablet_viewports_get_the_single_row_strip() {
+        let auto = LayoutMode::Auto;
+        // The screen the strip was asked for, and a squat ultrawide window.
+        assert!(short_tablet_for(vec2(1280.0, 720.0), auto));
+        assert!(short_tablet_for(vec2(1920.0, 600.0), auto));
+        // Mid-sized viewports keep the stacked tablet layout.
+        assert!(!short_tablet_for(vec2(1280.0, 800.0), auto), "800 pt tall is mid-sized");
+        assert!(!short_tablet_for(vec2(1024.0, 768.0), auto), "a 768 line laptop has the room");
+        assert!(!short_tablet_for(vec2(768.0, 1024.0), auto), "portrait tablet");
+        // The other tiers have layouts of their own, however short.
+        assert!(!short_tablet_for(vec2(852.0, 393.0), auto), "landscape phone");
+        assert!(!short_tablet_for(vec2(1920.0, 1080.0), auto), "desktop");
     }
 
     #[test]

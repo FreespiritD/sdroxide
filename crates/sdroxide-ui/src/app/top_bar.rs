@@ -5,6 +5,14 @@
 //! RX filter, sub-RX, TX, the skimmer and display popups, and the window
 //! buttons. Each pushes [`Command`]s rather than touching the controller, so
 //! the whole strip is a pure function of the state it draws from.
+//!
+//! Only the desktop draws that full strip. A tablet keeps the readout and the
+//! S-meter at full size and folds everything else into menus; a phone stacks
+//! a compact readout, the meter and one row of menu chips. And a tablet-tier
+//! window too *short* for even two stacked rows — a 1280x720 panel — gets the
+//! single-row strip: the VFO box (a type-in readout over an S-meter bar)
+//! beside a thumb-sized PTT and two rows of menu buttons stretched to the
+//! edge of the screen.
 
 use eframe::egui::{self, Color32, ComboBox, DragValue, RichText, Slider};
 use sdroxide_types::{
@@ -42,6 +50,18 @@ const PHONE_SMETER_MIN_W: f32 = 80.0;
 /// would draw the ends of the scale below a 40 pt box. See
 /// `the_phone_smeter_keeps_its_scale_inside_its_box`.
 const PHONE_SMETER_MAX_W: f32 = 220.0;
+/// Digit sizes of the single-row strip's readout. It is a type-in field — tap
+/// and type, no per-digit targets — so the floor is about reading the
+/// frequency, not hitting one digit of it.
+const STRIP_DIGIT_MIN: f32 = 18.0;
+const STRIP_DIGIT_MAX: f32 = 30.0;
+/// Vertical gap between the strip's two button rows — and so, with two chip
+/// heights, what sets the height of everything on the strip.
+const STRIP_ROW_GAP: f32 = 6.0;
+/// Text size of the strip's PTT label. The chip around it is padded wider
+/// than any grid button and stands the strip's full height, because it is the
+/// one control worth a whole thumb.
+const STRIP_PTT_TEXT: f32 = 17.0;
 
 /// What a digit size costs the frequency readout, and what size fits a width.
 ///
@@ -88,6 +108,77 @@ impl ReadoutFit {
     }
 }
 
+/// The geometry of the short-screen single-row strip, planned before anything
+/// is drawn.
+///
+/// Everything on the strip shares one height — two grid rows of chips — and
+/// the width splits three ways: the VFO box hugs its readout, the PTT hugs its
+/// label, and the button grid stretches over whatever is left, which is what
+/// makes the buttons scale with the screen.
+struct ShortStrip {
+    /// Digit size the readout gets.
+    digit: f32,
+    /// The VFO box, outer width.
+    box_w: f32,
+    /// The one shared height: two chip rows and the gap between them.
+    box_h: f32,
+    /// The button grid's width, and the uniform cell width of each of its rows.
+    grid_w: f32,
+    cell1_w: f32,
+    cell2_w: f32,
+}
+
+/// The measured widths and heights [`plan_short_strip`] works from — taken
+/// off the live style when the strip is drawn, and given as plain numbers by
+/// the layout tests.
+struct StripChips {
+    /// A grid chip's height.
+    chip_h: f32,
+    /// The active-VFO tag's width.
+    tag_w: f32,
+    /// The band/mode chip's width at its current label.
+    bm_w: f32,
+    /// The PTT's width; 0 for a rig that cannot transmit.
+    ptt_w: f32,
+    /// Each grid row: its cell count, and the width its widest label's chip
+    /// measures on its own.
+    row1: (usize, f32),
+    row2: (usize, f32),
+}
+
+/// Plan the strip for `avail` points of row. A free function of measured
+/// numbers so the arithmetic can be tested without an app around it. `gap`
+/// separates the strip's three blocks, `cell_gap` the grid's cells.
+fn plan_short_strip(
+    avail: f32,
+    fit: &ReadoutFit,
+    c: &StripChips,
+    gap: f32,
+    cell_gap: f32,
+) -> ShortStrip {
+    let box_h = 2.0 * c.chip_h + STRIP_ROW_GAP;
+    // Equal cells sized by the row's widest label, so stretching the rows to
+    // the same width never squeezes one chip below its own text.
+    let row_min = |(n, w): (usize, f32)| n as f32 * w + (n - 1) as f32 * cell_gap;
+    let grid_min = row_min(c.row1).max(row_min(c.row2));
+    let gaps = if c.ptt_w > 0.0 { 2.0 } else { 1.0 } * gap;
+    // The digits get whatever the PTT and the grid at its minimum leave over —
+    // box margins, the VFO tag and its gap already spoken for — with a few
+    // points of slack so rounding never wraps the row.
+    let overhead = 16.0 + c.tag_w + 6.0;
+    let digit = fit
+        .fit(avail - c.ptt_w - grid_min - gaps - overhead - 4.0)
+        .clamp(STRIP_DIGIT_MIN, STRIP_DIGIT_MAX);
+    // The box hugs the wider of its rows: the readout above, or the band/mode
+    // chip plus the meter at its narrowest below.
+    let inner = (c.tag_w + 6.0 + fit.width(digit)).max(c.bm_w + 6.0 + PHONE_SMETER_MIN_W);
+    let box_w = inner + 16.0;
+    // The buttons take every point the box and the PTT left on the row.
+    let grid_w = (avail - box_w - c.ptt_w - gaps - 4.0).max(grid_min);
+    let cell = |(n, _): (usize, f32)| (grid_w - (n - 1) as f32 * cell_gap) / n as f32;
+    ShortStrip { digit, box_w, box_h, grid_w, cell1_w: cell(c.row1), cell2_w: cell(c.row2) }
+}
+
 impl SdroxideApp {
     pub(in crate::app) fn top_bar(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
@@ -96,6 +187,15 @@ impl SdroxideApp {
         // second; the rest follow and wrap to further rows.
         let tier = crate::layout::tier(ui.ctx());
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true), |ui| {
+            // A tablet-tier window too *short* for even the two stacked
+            // compact rows — a 1280x720 panel — gets the single-row strip:
+            // everything beside everything, and the height goes to the
+            // waterfall. Taller tablet windows keep the stacked layout below,
+            // with its full-size readout.
+            if crate::layout::short_tablet(ui.ctx()) {
+                self.short_strip(ui, cmds);
+                return;
+            }
             let band_mode_shown = self.freq_module(ui, cmds, tier);
             // A window too narrow for the boxes gets them as menus instead.
             // Wrapping alone cannot save it: a module reserves its width before
@@ -163,6 +263,141 @@ impl SdroxideApp {
         w
     }
 
+    /// The strip a short tablet-tier window wears: everything on one row.
+    ///
+    /// The VFO box — a type-in readout over an S-meter bar — then PTT at
+    /// thumb size, then the menu buttons in two rows (RX and VFO above; TX,
+    /// DISP and SYS below) stretched to the edge of the screen. On a screen
+    /// under [`crate::layout::SHORT_H`] it stands in for the stacked tablet
+    /// rows — a full-width frequency box above the meter and the menu chips —
+    /// which would cost a 720 pt screen a quarter of its height before the
+    /// waterfall got any.
+    fn short_strip(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let tx_capable = self.caps.as_ref().is_some_and(|c| c.is_transmit_capable());
+        let sub = self.state.sub_rx_enabled;
+        let gap = ui.spacing().item_spacing.x;
+        let chip_h = crate::chrome::chip_height(ui, None);
+        let fit = ReadoutFit::measure(ui);
+
+        let active = self.state.active_vfo;
+        let tag = match active {
+            Vfo::A => "A",
+            Vfo::B => "B",
+        };
+        let tag_w = crate::chrome::text_width(ui, tag, egui::FontId::proportional(13.0));
+        let bm_w = crate::chrome::chip_width(ui, &self.band_mode_label(), Some(BAND_MODE_TEXT));
+        let ptt_w = if tx_capable {
+            crate::chrome::chip_width(ui, "PTT", Some(STRIP_PTT_TEXT)) + 14.0
+        } else {
+            0.0
+        };
+        let widest = |labels: &[&str]| {
+            labels.iter().map(|l| crate::chrome::chip_width(ui, l, None)).fold(0.0, f32::max)
+        };
+        let chips = StripChips {
+            chip_h,
+            tag_w,
+            bm_w,
+            ptt_w,
+            row1: if sub {
+                (3, widest(&["RX", "VFO", "SUB"]))
+            } else {
+                (2, widest(&["RX", "VFO"]))
+            },
+            row2: if tx_capable {
+                (3, widest(&["TX", "DISP", "SYS"]))
+            } else {
+                (2, widest(&["DISP", "SYS"]))
+            },
+        };
+        let plan = plan_short_strip(ui.available_width(), &fit, &chips, gap, gap);
+
+        // The VFO box. The A/B selector and the other VFO's frequency are in
+        // the VFO menu (see [`Self::vfo_menu`]); the box shows which VFO the
+        // dial is, the dial itself, and — under it — the band/mode chip beside
+        // the meter.
+        crate::chrome::module_bare_h(ui, plan.box_w, plan.box_h, |ui| {
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(tag).size(13.0).strong().color(crate::theme::CYAN));
+                    if let Some(hz) = freq_display::show_typed(
+                        ui,
+                        egui::Id::new("main-freq"),
+                        self.state.active_freq_hz(),
+                        plan.digit,
+                    ) {
+                        cmds.push(Command::SetVfo { vfo: active, hz });
+                    }
+                });
+                let meter_h = ui.available_height();
+                ui.horizontal(|ui| {
+                    self.band_mode_button(ui, cmds);
+                    // The meter takes whatever width the chip left and
+                    // whatever height the readout did. Bar or trace only — a
+                    // strip this shape cannot hold the needle's arc, see
+                    // [`smeter::SmeterStyle::compact`].
+                    let style = self.view.smeter_style;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), meter_h),
+                        egui::Layout::left_to_right(egui::Align::Min),
+                        |ui| {
+                            let resp = smeter::show(ui, self.meters.as_ref(), style.compact())
+                                .on_hover_text("Click to cycle meter face: bar / trace");
+                            if resp.clicked() {
+                                self.view.smeter_style = style.next_compact();
+                            }
+                        },
+                    );
+                });
+            });
+        });
+
+        if tx_capable {
+            let resp = crate::chrome::chip_hold_sized(
+                ui,
+                self.state.tx.ptt,
+                RichText::new("PTT").size(STRIP_PTT_TEXT).strong(),
+                crate::theme::PINK,
+                Color32::WHITE,
+                egui::vec2(ptt_w, plan.box_h),
+            )
+            .on_hover_text("Hold to transmit");
+            self.apply_held_ptt(&resp, cmds);
+        }
+
+        // The menu buttons, stretched over the rest of the row.
+        ui.allocate_ui_with_layout(
+            egui::vec2(plan.grid_w, plan.box_h),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(gap, STRIP_ROW_GAP);
+                let cell1 = egui::vec2(plan.cell1_w, chip_h);
+                ui.horizontal(|ui| {
+                    let btn = crate::chrome::chip_sized(ui, false, "RX", cell1);
+                    self.rx_menu(ui, btn, cmds);
+                    let btn = crate::chrome::chip_sized(ui, self.state.split, "VFO", cell1);
+                    self.vfo_menu(ui, btn, cmds, true);
+                    if sub {
+                        let btn = crate::chrome::chip_sized(ui, true, "SUB", cell1);
+                        self.sub_menu(ui, btn, cmds);
+                    }
+                });
+                let cell2 = egui::vec2(plan.cell2_w, chip_h);
+                ui.horizontal(|ui| {
+                    if tx_capable {
+                        let btn = crate::chrome::chip_sized(ui, self.state.tx.tune, "TX", cell2);
+                        self.tx_menu(ui, btn, cmds);
+                    }
+                    let btn = crate::chrome::chip_sized(ui, false, "DISP", cell2);
+                    self.disp_menu(ui, btn, cmds);
+                    let btn = crate::chrome::chip_sized(ui, false, "SYS", cell2);
+                    self.sys_menu(ui, btn, cmds);
+                });
+            },
+        );
+    }
+
     /// The compact control strip: PTT under a thumb, and one menu chip per
     /// control box the layout gave up.
     ///
@@ -182,20 +417,53 @@ impl SdroxideApp {
         if tx_capable {
             self.held_ptt(ui, cmds);
         }
+        let btn = crate::chrome::chip(ui, false, "RX");
+        self.rx_menu(ui, btn, cmds);
+        let btn = crate::chrome::chip(ui, self.state.split, "VFO");
+        // The tablet's full frequency box already carries the A/B selector
+        // and the other VFO's frequency; the phone box shows only a tag.
+        self.vfo_menu(ui, btn, cmds, tier == crate::layout::Tier::Phone);
+        if self.state.sub_rx_enabled {
+            let btn = crate::chrome::chip(ui, true, "SUB");
+            self.sub_menu(ui, btn, cmds);
+        }
+        if tx_capable {
+            let btn = crate::chrome::chip(ui, self.state.tx.tune, "TX");
+            self.tx_menu(ui, btn, cmds);
+        }
+        let btn = crate::chrome::chip(ui, false, "DISP");
+        self.disp_menu(ui, btn, cmds);
+        let btn = crate::chrome::chip(ui, false, "SYS");
+        self.sys_menu(ui, btn, cmds);
+    }
 
-        let btn = crate::chrome::chip(ui, false, "RX")
-            .on_hover_text("Volume, gain, AGC, squelch and the noise controls");
+    /// The RX menu: the receiver and filter/noise controls. Takes the chip it
+    /// hangs off — the phone's hugging chip or the tablet's stretched one —
+    /// and dresses it with its hover text, so the two strips cannot drift.
+    fn rx_menu(&mut self, ui: &mut egui::Ui, btn: egui::Response, cmds: &mut Vec<Command>) {
+        let btn = btn.on_hover_text("Volume, gain, AGC, squelch and the noise controls");
         crate::chrome::menu_popup(ui, &btn, |ui| {
             crate::chrome::menu_caption(ui, "Receiver");
             self.rx_controls(ui, cmds, true);
         });
+    }
 
-        let btn = crate::chrome::chip(ui, self.state.split, "VFO")
-            .on_hover_text("VFO A/B, split, and the RIT/XIT offsets");
+    /// The VFO menu: the utility chips and the RIT/XIT offsets.
+    ///
+    /// With `selector`, the A/B chips and the other VFO's frequency lead it —
+    /// for the layouts whose frequency box shows only which VFO is being
+    /// tuned (the phone box, the short strip). The tablet's full box already
+    /// carries both, and would show them twice.
+    fn vfo_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        btn: egui::Response,
+        cmds: &mut Vec<Command>,
+        selector: bool,
+    ) {
+        let btn = btn.on_hover_text("VFO A/B, split, and the RIT/XIT offsets");
         crate::chrome::menu_popup(ui, &btn, |ui| {
-            // On a phone the frequency box shows only which VFO is being tuned;
-            // the selector and the other VFO's frequency live here.
-            if tier == crate::layout::Tier::Phone {
+            if selector {
                 crate::chrome::menu_caption(ui, "VFO");
                 let active = self.state.active_vfo;
                 ui.horizontal(|ui| {
@@ -211,46 +479,51 @@ impl SdroxideApp {
             crate::chrome::menu_caption(ui, "Tuning");
             self.vfo_controls(ui, cmds, true);
         });
+    }
 
-        if self.state.sub_rx_enabled {
-            let btn = crate::chrome::chip(ui, true, "SUB")
-                .on_hover_text("The second receiver's frequency, mode, filter and level");
-            crate::chrome::menu_popup(ui, &btn, |ui| {
-                crate::chrome::menu_caption(ui, "Sub receiver");
-                self.sub_controls(ui, cmds, true);
-            });
-        }
+    /// The SUB menu, shown only while the second receiver runs.
+    fn sub_menu(&mut self, ui: &mut egui::Ui, btn: egui::Response, cmds: &mut Vec<Command>) {
+        let btn = btn.on_hover_text("The second receiver's frequency, mode, filter and level");
+        crate::chrome::menu_popup(ui, &btn, |ui| {
+            crate::chrome::menu_caption(ui, "Sub receiver");
+            self.sub_controls(ui, cmds, true);
+        });
+    }
 
-        if tx_capable {
-            let btn = crate::chrome::chip(ui, self.state.tx.tune, "TX")
-                .on_hover_text("Tune, the voice keyer, and the drive and mic levels");
-            crate::chrome::menu_popup(ui, &btn, |ui| {
-                crate::chrome::menu_caption(ui, "Transmit");
-                // PTT is on the strip already; TUNE rides with the levels it is
-                // set up with.
-                self.tx_controls(ui, cmds, true, false);
-                if crate::chrome::chip_accent(
-                    ui,
-                    self.state.tx.tune,
-                    RichText::new(" TUNE ").size(15.0),
-                    crate::theme::YELLOW,
-                    crate::theme::INK_ON_CYAN,
-                )
-                .clicked()
-                {
-                    cmds.push(Command::SetTune(!self.state.tx.tune));
-                }
-            });
-        }
+    /// The TX menu: tune, the voice keyer, and the drive and mic levels.
+    fn tx_menu(&mut self, ui: &mut egui::Ui, btn: egui::Response, cmds: &mut Vec<Command>) {
+        let btn = btn.on_hover_text("Tune, the voice keyer, and the drive and mic levels");
+        crate::chrome::menu_popup(ui, &btn, |ui| {
+            crate::chrome::menu_caption(ui, "Transmit");
+            // PTT is on the strip already; TUNE rides with the levels it is
+            // set up with.
+            self.tx_controls(ui, cmds, true, false);
+            if crate::chrome::chip_accent(
+                ui,
+                self.state.tx.tune,
+                RichText::new(" TUNE ").size(15.0),
+                crate::theme::YELLOW,
+                crate::theme::INK_ON_CYAN,
+            )
+            .clicked()
+            {
+                cmds.push(Command::SetTune(!self.state.tx.tune));
+            }
+        });
+    }
 
-        let btn = crate::chrome::chip(ui, false, "DISP")
-            .on_hover_text("Waterfall contrast, FFT size, peak hold and the skimmers");
+    /// The DISP menu: waterfall, spectrum and skimmer controls.
+    fn disp_menu(&mut self, ui: &mut egui::Ui, btn: egui::Response, cmds: &mut Vec<Command>) {
+        let btn = btn.on_hover_text("Waterfall contrast, FFT size, peak hold and the skimmers");
         crate::chrome::menu_popup(ui, &btn, |ui| {
             crate::chrome::menu_caption(ui, "Display");
             self.display_controls(ui, cmds, true);
         });
+    }
 
-        let btn = crate::chrome::chip(ui, false, "SYS").on_hover_text(
+    /// The SYS menu: the window buttons.
+    fn sys_menu(&mut self, ui: &mut egui::Ui, btn: egui::Response, _cmds: &mut Vec<Command>) {
+        let btn = btn.on_hover_text(
             "Logbook, spots, awards, memories, the scanner, settings and the manual",
         );
         crate::chrome::menu_popup(ui, &btn, |ui| {
@@ -276,6 +549,11 @@ impl SdroxideApp {
             Color32::WHITE,
         )
         .on_hover_text("Hold to transmit");
+        self.apply_held_ptt(&resp, cmds);
+    }
+
+    /// Key or unkey from a held PTT chip's response.
+    fn apply_held_ptt(&mut self, resp: &egui::Response, cmds: &mut Vec<Command>) {
         let down = resp.is_pointer_button_down_on();
         // Against our own last edge, not the engine's echo: the echo lags a
         // round trip, and comparing to it would re-send the same command every
@@ -422,7 +700,9 @@ impl SdroxideApp {
     ///
     /// The A/B chips and the inactive VFO's frequency are in the VFO menu
     /// instead. At this width they cost more than the digits can spare, and a
-    /// readout too small to read is worse than a selector one tap away.
+    /// readout too small to read is worse than a selector one tap away. The
+    /// readout is the type-in kind: at this size a fingertip covers three
+    /// digits, so per-digit tuning would be a lottery.
     fn freq_module_compact(
         &mut self,
         ui: &mut egui::Ui,
@@ -468,11 +748,10 @@ impl SdroxideApp {
             ui.spacing_mut().item_spacing.x = 0.0; // control every gap explicitly
             ui.label(RichText::new(tag).size(13.0).strong().color(crate::theme::CYAN));
             ui.add_space(6.0);
-            let new_hz = freq_display::show(
+            let new_hz = freq_display::show_typed(
                 ui,
                 egui::Id::new("main-freq"),
                 self.state.active_freq_hz(),
-                self.input.cfg.wheel,
                 size,
             );
             if let Some(hz) = new_hz {
@@ -1968,6 +2247,14 @@ mod tests {
         assert!(box_w + 8.0 + SMETER_W <= content, "{box_w} + meter overflowed {content}");
     }
 
+    #[test]
+    fn a_landscape_tablet_gets_the_full_size_digits() {
+        let f = shipped();
+        let (size, box_w) = tablet_box(&f, 1024.0);
+        assert_eq!(size, 40.0, "a 1024 pt tablet has room for the design size");
+        assert!(box_w + 8.0 + SMETER_W <= 1024.0 - 36.0, "{box_w} + meter overflowed");
+    }
+
     /// The needle's radius is set by the box *width* (its arc is a chord
     /// across it), so the arc gets taller as the box gets wider. A meter
     /// stretched across a phone would draw the ends of its scale below its own
@@ -1986,12 +2273,65 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_landscape_tablet_gets_the_full_size_digits() {
+    /// Metrics measured from the touched layout the short strip is laid out
+    /// with: a chip stands 41 pt; "VFO" fills a 56 pt chip and "DISP" a 62 pt
+    /// one; the band/mode chip runs to 101 pt at its widest label; the PTT
+    /// comes out 76 pt wide; the active-VFO tag 9 pt.
+    const T_CHIP_H: f32 = 41.0;
+    const T_CELL1: f32 = 56.0;
+    const T_CELL2: f32 = 62.0;
+    const T_BM_W: f32 = 101.0;
+    const T_PTT_W: f32 = 76.0;
+
+    fn a_short_strip(avail: f32, tx: bool, sub: bool) -> ShortStrip {
         let f = shipped();
-        let (size, box_w) = tablet_box(&f, 1024.0);
-        assert_eq!(size, 40.0, "a 1024 pt tablet has room for the design size");
-        assert!(box_w + 8.0 + SMETER_W <= 1024.0 - 36.0, "{box_w} + meter overflowed");
+        let chips = StripChips {
+            chip_h: T_CHIP_H,
+            tag_w: 9.0,
+            bm_w: T_BM_W,
+            ptt_w: if tx { T_PTT_W } else { 0.0 },
+            row1: if sub { (3, T_CELL1) } else { (2, T_CELL1) },
+            row2: if tx { (3, T_CELL2) } else { (2, T_CELL2) },
+        };
+        plan_short_strip(avail, &f, &chips, 8.0, 8.0)
+    }
+
+    /// 600 pt is the narrowest viewport the tablet tier dresses; less the top
+    /// panel's and `angled_frame`'s margins the strip gets 564. The box, the
+    /// PTT and the grid at its minimum all have to land on the one row the
+    /// strip is — a block that wrapped would take the very height the strip
+    /// exists to give back.
+    #[test]
+    fn the_short_strip_fits_the_narrowest_short_window() {
+        for (tx, sub) in [(true, false), (true, true), (false, false)] {
+            let p = a_short_strip(564.0, tx, sub);
+            let ptt = if tx { T_PTT_W + 8.0 } else { 0.0 };
+            let total = p.box_w + 8.0 + ptt + p.grid_w;
+            assert!(total <= 564.0, "tx={tx} sub={sub}: the strip wants {total} of 564");
+            assert!(p.digit >= STRIP_DIGIT_MIN, "tx={tx} sub={sub}: digits fell to {}", p.digit);
+            // Stretched cells never squeeze a chip below its own label.
+            assert!(
+                p.cell1_w + 0.5 >= T_CELL1 && p.cell2_w + 0.5 >= T_CELL2,
+                "tx={tx} sub={sub}: cells squeezed to {} / {}",
+                p.cell1_w,
+                p.cell2_w
+            );
+        }
+    }
+
+    /// The screen the strip was drawn for: 1280x720. The readout reaches its
+    /// cap and every point the box and the PTT do not take goes to the
+    /// buttons — which is what "the buttons scale to fit the width" means —
+    /// on a strip nearly half the height of the stacked rows it replaced.
+    #[test]
+    fn on_a_720p_screen_the_buttons_take_the_slack() {
+        let p = a_short_strip(1280.0 - 36.0, true, false);
+        assert_eq!(p.digit, STRIP_DIGIT_MAX, "room to spare caps the digits");
+        assert!(p.cell1_w > 2.0 * T_CELL1, "row 1 cells stayed at {}", p.cell1_w);
+        assert!(p.cell2_w > 2.0 * T_CELL2, "row 2 cells stayed at {}", p.cell2_w);
+        // Everything on the strip shares this height. The old tablet layout
+        // stacked a 74 pt frequency box over a 74 pt meter-and-menus row.
+        assert!(p.box_h <= 90.0, "the strip stands {} pt", p.box_h);
     }
 
     /// Reserve the System box the way [`SdroxideApp::windows_module`] does and
