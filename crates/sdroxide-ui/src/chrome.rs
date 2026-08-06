@@ -616,7 +616,8 @@ pub fn chip_enabled(ui: &mut Ui, enabled: bool, selected: bool, label: &str) -> 
         .inner
 }
 
-/// [`chip_enabled`], with the label carrying a colour while it is unselected.
+/// [`chip_enabled`], with the label carrying a colour while it is unselected,
+/// and an optional accent line along the chip's bottom edge.
 ///
 /// For a row where each chip has a status of its own — the band menu, where
 /// every band has published conditions — and the reader is choosing between
@@ -624,22 +625,44 @@ pub fn chip_enabled(ui: &mut Ui, enabled: bool, selected: bool, label: &str) -> 
 /// accent, and a second colour inside it would be read as a different state
 /// rather than the same one. `None` leaves the chip exactly as it was, which
 /// is what a band with nothing published must look like.
+///
+/// The underline marks a chip with something to offer beyond its neighbours —
+/// the band menu draws it under the bands where the current mode has a
+/// standard frequency defined, against the ones a click merely takes to the
+/// band. Drawn inside the chip rather than under it, so a wrapped row's
+/// spacing does not have to make room for it, and stopping short of the cut
+/// bottom-right corner so it follows the chip's own outline. On a selected
+/// chip it vanishes into the accent fill, which reads correctly: selection
+/// already says the chip has been taken up on the offer.
 pub fn chip_enabled_tinted(
     ui: &mut Ui,
     enabled: bool,
     selected: bool,
     label: &str,
     tint: Option<Color32>,
+    underline: bool,
 ) -> Response {
     let size = vec2(chip_width(ui, label, None), chip_height(ui, None));
     let text = match tint.filter(|_| !selected) {
         Some(c) => RichText::new(label).color(c),
         None => RichText::new(label),
     };
-    ui.allocate_ui(size, |ui| {
-        ui.add_enabled_ui(enabled, |ui| chip_impl(ui, selected, text, None, Sense::click())).inner
-    })
-    .inner
+    let resp = ui
+        .allocate_ui(size, |ui| {
+            ui.add_enabled_ui(enabled, |ui| chip_impl(ui, selected, text, None, Sense::click()))
+                .inner
+        })
+        .inner;
+    if underline {
+        let r = resp.rect;
+        let cut = CHIP_CUT.min(r.height() * 0.35);
+        let y = r.bottom() - 2.0;
+        ui.painter().line_segment(
+            [pos2(r.left() + 2.0, y), pos2(r.right() - cut, y)],
+            Stroke::new(2.0, theme::CYAN),
+        );
+    }
+    resp
 }
 
 /// Chip with an explicit accent fill when selected (e.g. PTT red).

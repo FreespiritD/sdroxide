@@ -207,8 +207,7 @@ pub(in crate::app) fn pane_index(mode: Mode, name: &str) -> usize {
     panel_panes(mode).iter().position(|p| *p == name).unwrap_or(0)
 }
 
-/// Standard FT8/FT4 dial frequencies per HF/6 m band.
-/// The standard FT8/FT4 dial frequency for `band`, if one exists for `mode`
+/// The standard dial frequency for `band`, if one exists for `mode`
 /// (matched by which band's edges the frequency falls within).
 pub(in crate::app) fn digi_freq_for_band(mode: Mode, band: Band) -> Option<f64> {
     let (lo, hi) = band.edges()?;
@@ -274,6 +273,10 @@ fn digi_dial_freqs(mode: Mode) -> &'static [(&'static str, f64)] {
             ("20m", 14_236_000.0),
             ("15m", 21_313_000.0),
             ("10m", 28_330_000.0),
+            // No published 2 m calling frequency exists — FreeDV's own
+            // suggested-frequency list stops at HF — but there is real RADE
+            // activity on the band; 144.200 is where it gathers.
+            ("2m", 144_200_000.0),
         ],
         // SSTV calling frequencies (USB).
         Mode::Sstv => &[
@@ -282,6 +285,11 @@ fn digi_dial_freqs(mode: Mode) -> &'static [(&'static str, f64)] {
             ("20m", 14_230_000.0),
             ("15m", 21_340_000.0),
             ("10m", 28_680_000.0),
+            // The Region 1 image-mode calling frequency and the narrow-band
+            // SSTV activity centre. Deliberately not the FM SSTV channel
+            // (433.400): this mode demodulates a USB passband.
+            ("2m", 144_500_000.0),
+            ("70cm", 432_500_000.0),
         ],
         // Olivia activity centres (USB dial).
         Mode::Olivia => &[
@@ -364,6 +372,10 @@ fn digi_dial_freqs(mode: Mode) -> &'static [(&'static str, f64)] {
             ("12m", 24_915_000.0),
             ("10m", 28_074_000.0),
             ("6m", 50_313_000.0),
+            ("2m", 144_174_000.0),
+            // The European convention, mirroring 144.174; North American
+            // activity sits elsewhere (432.065 among others).
+            ("70cm", 432_174_000.0),
         ],
     }
 }

@@ -1761,34 +1761,30 @@ fn band_mode_menu(
     let digital = mode.is_digital();
     ui.horizontal_wrapped(|ui| {
         for b in Band::ALL {
-            // In a digital mode, a band button tunes to that band's FT8/FT4
-            // dial frequency (SetVfo keeps the mode); otherwise it's a normal
-            // band change. Bands with no standard digital frequency are
-            // disabled. RF Paint has no calling frequency, so its band buttons
-            // jump to the band's default frequency while staying in RF Paint —
-            // every band the radio can reach is available.
-            let digi_hz = if mode.is_rf_paint() {
-                Some(b.default_entry().0)
-            } else if digital {
-                digi_freq_for_band(mode, b)
-            } else {
-                None
+            // In a digital mode, a band button tunes to the band's standard
+            // dial frequency where the mode has one (SetVfo keeps the mode),
+            // and the chip carries a cyan underline saying so. A band without
+            // one — every band, in RF Paint's case — jumps to the band's
+            // default frequency instead, still keeping the mode: any band can
+            // be picked in any mode, standard frequency or not. Outside the
+            // digital modes a click is a normal band change through the band
+            // stack.
+            let std_hz = if digital { digi_freq_for_band(mode, b) } else { None };
+            let digi_hz = match std_hz {
+                Some(hz) => Some(hz),
+                None if digital => Some(b.default_entry().0),
+                None => None,
             };
             // A radio that publishes no tuning range keeps every band button:
             // `may_rx_hz` reads an empty range list as "the driver didn't say",
             // and greying out the whole bar would be a worse guess than
             // offering a band the radio turns out not to reach.
-            let cap_ok = caps.is_none_or(|c| {
+            let enabled = caps.is_none_or(|c| {
                 b.edges().is_none_or(|(lo, hi)| c.may_rx_hz(lo) || c.may_rx_hz(hi))
             });
-            let enabled = cap_ok && (!digital || digi_hz.is_some());
-            let active = if mode.is_rf_paint() {
-                state.band == b
-            } else {
-                match digi_hz {
-                    Some(hz) => (state.active_freq_hz() - hz).abs() < 500.0,
-                    None => !digital && state.band == b,
-                }
+            let active = match std_hz {
+                Some(hz) => (state.active_freq_hz() - hz).abs() < 500.0,
+                None => state.band == b,
             };
             // The published forecast, where there is one. Colour only: the
             // chip still says what band it is, and a band nothing is published
@@ -1799,7 +1795,14 @@ fn band_mode_menu(
             let tint = verdict
                 .map(sdroxide_solar::BandRating::of)
                 .and_then(crate::app::bands::rating_color);
-            let resp = crate::chrome::chip_enabled_tinted(ui, enabled, active, b.label(), tint);
+            let resp = crate::chrome::chip_enabled_tinted(
+                ui,
+                enabled,
+                active,
+                b.label(),
+                tint,
+                std_hz.is_some(),
+            );
             let resp = match verdict {
                 Some(v) => resp.on_hover_text(format!(
                     "{}: {v} ({}) — forecast by HAMQSL.com from the solar indices, \

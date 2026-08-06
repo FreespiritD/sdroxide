@@ -192,12 +192,14 @@ WSPR, QRSS, PSK, RTTY, SSTV, RIFP, FREEDV** — each in its own colour.
 Click the **Band / Mode** button (which reads, for example, `20M · USB`) to open a
 popup with three rows:
 
-- **BAND:** `160M 80M 60M 40M 30M 20M 17M 15M 12M 10M 6M 2M GEN`. Each band
+- **BAND:** `160M 80M 60M 40M 30M 20M 17M 15M 12M 10M 6M 2M 70CM GEN`. Each band
   remembers your last frequency, mode, and filter. Once band conditions have
   been fetched the chips are tinted by the published forecast — green Good,
   yellow Fair, pink Poor — and hovering one gives it in words. Bands the
   forecast does not cover are left uncoloured; see
-  [§2.15](#215-band-conditions).
+  [§2.15](#215-band-conditions). In a digital mode, the bands where that mode
+  has a standard calling frequency carry a cyan underline; see
+  [§3.1](#31-general-considerations).
 - **MODE:** `LSB USB CW AM SAM NFM WFM DIGU DIGL DSB SPEC`.
 - **DIGITAL:** `FT8 FT4 PSK RTTY OLIVIA THOR FSQ HELL SSTV RIFP RFPAINT RADE` (see
   [Digital modes](#3-digital-modes)).
@@ -717,10 +719,13 @@ the mode from the **DIGITAL** row. The panadapter locks to the digital sub-band
 the lower part of the window; a draggable divider sets how much height the
 panel gets.
 
-While in a digital mode a **FREQUENCIES** row of band buttons — labelled for
-the mode: **FT8 FREQUENCIES**, **PSK FREQUENCIES**, and so on — appears in the
-Band/Mode popup. Click one to jump the dial to the standard calling frequency
-for that band; a button highlights when the dial is already on it.
+While in a digital mode the **BAND** row of the Band/Mode popup doubles as a
+frequency picker. Bands where the mode has a standard calling frequency carry
+a **cyan underline**: clicking one jumps the dial straight to that frequency,
+staying in the mode, and the button highlights when the dial is already on it.
+Every band is available in every mode — clicking a band without an underline
+jumps to that band's default frequency, also staying in the mode, and you tune
+from there.
 
 Two more things hold across the modes. Your **callsign and grid** are one
 identity for the whole program: the General settings tab and the FT8/FT4 setup
@@ -1201,7 +1206,9 @@ until a mode has been detected. Selecting a specific mode instead pins both the
 receive decoder and the transmit compositor to that mode.
 
 Band buttons tune to that band's common SSTV calling frequency (for example
-14.230 MHz on 20 m, 7.171 on 40 m, 3.730 on 80 m), staying in SSTV.
+14.230 MHz on 20 m, 7.171 on 40 m, 3.730 on 80 m — and above HF, 144.500 on
+2 m and 432.500 on 70 cm, the narrow-band SSTV activity centre), staying in
+SSTV.
 
 **Receiving:**
 
