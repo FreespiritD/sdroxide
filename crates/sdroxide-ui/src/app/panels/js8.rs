@@ -438,8 +438,10 @@ impl SdroxideApp {
             .map(|m| (m.from.as_str(), m))
             .collect();
         let me = self.js8_me(js8);
-        // Dropping the last three columns is what keeps the row readable when
-        // the split is dragged narrow; the message then gets the space instead.
+        // A narrow column — the split dragged in, or a phone's whole screen —
+        // takes the row on two lines instead: the fixed columns alone would
+        // otherwise run the REPLY button off the right edge. The geography the
+        // wide row gives columns rides the message line's dim tail there.
         let wide = col_w > 430.0;
 
         // Staged, because the row closures borrow `self` immutably.
@@ -492,6 +494,62 @@ impl SdroxideApp {
                     let mut reply = false;
                     let mut reply_left: Option<f32> = None;
 
+                    // Everything the row shows, built once and placed by
+                    // whichever of the two layouts below runs.
+                    let grid_txt = grid.clone().unwrap_or_default();
+                    let dist_txt = dist_km.map(|km| format!("{km:.0} km")).unwrap_or_default();
+                    let snr_lbl = egui::Label::new(
+                        RichText::new(format!("{:+}", h.snr_db))
+                            .monospace()
+                            .size(13.0)
+                            .color(snr_color(h.snr_db)),
+                    );
+                    let call_lbl = egui::Label::new(
+                        RichText::new(&h.call).size(15.0).strong().color(if to_me {
+                            crate::theme::YELLOW
+                        } else if dupe {
+                            Color32::from_gray(105)
+                        } else if calling {
+                            crate::theme::GREEN
+                        } else {
+                            crate::theme::TEXT_STRONG
+                        }),
+                    )
+                    .truncate();
+                    let badge_lbl =
+                        egui::Label::new(RichText::new(badge).size(9.5).strong().color(badge_col));
+                    let cont_lbl = egui::Label::new(
+                        RichText::new(continent).monospace().size(11.0).strong().color(if dupe {
+                            Color32::from_gray(85)
+                        } else {
+                            crate::theme::continent_color(continent)
+                        }),
+                    );
+                    let said = msg.map(js8_msg_summary).unwrap_or_default();
+                    let msg_lbl = egui::Label::new(
+                        RichText::new(said).monospace().size(12.5).color(if dupe {
+                            Color32::from_gray(95)
+                        } else {
+                            crate::theme::TEXT
+                        }),
+                    )
+                    .truncate();
+                    let reply_btn = |ui: &mut egui::Ui| {
+                        crate::chrome::chip_accent(
+                            ui,
+                            false,
+                            RichText::new("REPLY").size(12.0).strong(),
+                            if to_me {
+                                crate::theme::YELLOW
+                            } else if calling {
+                                crate::theme::GREEN
+                            } else {
+                                crate::theme::CYAN
+                            },
+                            crate::theme::INK_ON_CYAN,
+                        )
+                    };
+
                     let inner = egui::Frame::new()
                         .fill(if to_me {
                             crate::theme::TOME_BG
@@ -503,21 +561,79 @@ impl SdroxideApp {
                         .inner_margin(egui::Margin { left: 11, right: 6, top: 6, bottom: 6 })
                         .show(ui, |ui| {
                             let ch = 22.0;
+                            if !wide {
+                                // Two lines: who (and REPLY) above, what they
+                                // last said below with grid and distance in the
+                                // tail. The audio-frequency column drops; the
+                                // hover card still carries it.
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                ui.horizontal(|ui| {
+                                    ui.set_min_height(ch);
+                                    ui.spacing_mut().item_spacing.x = 7.0;
+                                    row_cell(ui, 28.0, ch, true, snr_lbl);
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let resp = reply_btn(ui);
+                                            reply = resp.clicked();
+                                            reply_left = Some(resp.rect.left());
+                                            ui.with_layout(
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                |ui| {
+                                                    // The callsign gets what the
+                                                    // badges leave, and truncates
+                                                    // before it pushes them out.
+                                                    let call_w = (ui.available_width()
+                                                        - (34.0 + 24.0 + 2.0 * 7.0))
+                                                        .max(40.0);
+                                                    row_cell(ui, call_w, ch, false, call_lbl);
+                                                    row_cell(ui, 34.0, ch, false, badge_lbl);
+                                                    row_cell(ui, 24.0, ch, false, cont_lbl);
+                                                },
+                                            );
+                                        },
+                                    );
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 7.0;
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let tail = [grid_txt.as_str(), dist_txt.as_str()]
+                                                .iter()
+                                                .filter(|s| !s.is_empty())
+                                                .copied()
+                                                .collect::<Vec<_>>()
+                                                .join(" · ");
+                                            if !tail.is_empty() {
+                                                ui.label(
+                                                    RichText::new(tail)
+                                                        .monospace()
+                                                        .size(11.0)
+                                                        // Dimmer for a grid the database
+                                                        // supplied rather than the air.
+                                                        .color(if looked_up {
+                                                            Color32::from_gray(110)
+                                                        } else {
+                                                            crate::theme::CYAN_DIM
+                                                        }),
+                                                );
+                                            }
+                                            ui.with_layout(
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                |ui| {
+                                                    ui.add(msg_lbl);
+                                                },
+                                            );
+                                        },
+                                    );
+                                });
+                                return;
+                            }
                             ui.horizontal(|ui| {
                                 ui.set_min_height(ch);
                                 ui.spacing_mut().item_spacing.x = 7.0;
-                                row_cell(
-                                    ui,
-                                    28.0,
-                                    ch,
-                                    true,
-                                    egui::Label::new(
-                                        RichText::new(format!("{:+}", h.snr_db))
-                                            .monospace()
-                                            .size(13.0)
-                                            .color(snr_color(h.snr_db)),
-                                    ),
-                                );
+                                row_cell(ui, 28.0, ch, true, snr_lbl);
                                 row_cell(
                                     ui,
                                     40.0,
@@ -530,126 +646,51 @@ impl SdroxideApp {
                                             .color(Color32::from_gray(120)),
                                     ),
                                 );
+                                row_cell(ui, 92.0, ch, false, call_lbl);
+                                row_cell(ui, 34.0, ch, false, badge_lbl);
+                                row_cell(ui, 24.0, ch, false, cont_lbl);
                                 row_cell(
                                     ui,
-                                    92.0,
+                                    50.0,
                                     ch,
                                     false,
                                     egui::Label::new(
-                                        RichText::new(&h.call).size(15.0).strong().color(
-                                            if to_me {
-                                                crate::theme::YELLOW
-                                            } else if dupe {
-                                                Color32::from_gray(105)
-                                            } else if calling {
-                                                crate::theme::GREEN
+                                        RichText::new(&grid_txt)
+                                            .monospace()
+                                            .size(12.0)
+                                            // Dimmer for a grid the database
+                                            // supplied rather than the air.
+                                            .color(if looked_up {
+                                                Color32::from_gray(110)
                                             } else {
-                                                crate::theme::TEXT_STRONG
-                                            },
-                                        ),
-                                    )
-                                    .truncate(),
-                                );
-                                row_cell(
-                                    ui,
-                                    34.0,
-                                    ch,
-                                    false,
-                                    egui::Label::new(
-                                        RichText::new(badge).size(9.5).strong().color(badge_col),
+                                                crate::theme::CYAN_DIM
+                                            }),
                                     ),
                                 );
-                                if wide {
-                                    row_cell(
-                                        ui,
-                                        24.0,
-                                        ch,
-                                        false,
-                                        egui::Label::new(
-                                            RichText::new(continent)
-                                                .monospace()
-                                                .size(11.0)
-                                                .strong()
-                                                .color(if dupe {
-                                                    Color32::from_gray(85)
-                                                } else {
-                                                    crate::theme::continent_color(continent)
-                                                }),
-                                        ),
-                                    );
-                                    row_cell(
-                                        ui,
-                                        50.0,
-                                        ch,
-                                        false,
-                                        egui::Label::new(
-                                            RichText::new(grid.clone().unwrap_or_default())
-                                                .monospace()
-                                                .size(12.0)
-                                                // Dimmer for a grid the database
-                                                // supplied rather than the air.
-                                                .color(if looked_up {
-                                                    Color32::from_gray(110)
-                                                } else {
-                                                    crate::theme::CYAN_DIM
-                                                }),
-                                        ),
-                                    );
-                                    row_cell(
-                                        ui,
-                                        58.0,
-                                        ch,
-                                        true,
-                                        egui::Label::new(
-                                            RichText::new(
-                                                dist_km
-                                                    .map(|km| format!("{km:.0} km"))
-                                                    .unwrap_or_default(),
-                                            )
+                                row_cell(
+                                    ui,
+                                    58.0,
+                                    ch,
+                                    true,
+                                    egui::Label::new(
+                                        RichText::new(&dist_txt)
                                             .monospace()
                                             .size(11.0)
                                             .color(crate::theme::YELLOW),
-                                        ),
-                                    );
-                                }
+                                    ),
+                                );
                                 // What they last said fills the rest, with the
                                 // REPLY button pinned right.
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        let resp = crate::chrome::chip_accent(
-                                            ui,
-                                            false,
-                                            RichText::new("REPLY").size(12.0).strong(),
-                                            if to_me {
-                                                crate::theme::YELLOW
-                                            } else if calling {
-                                                crate::theme::GREEN
-                                            } else {
-                                                crate::theme::CYAN
-                                            },
-                                            crate::theme::INK_ON_CYAN,
-                                        );
+                                        let resp = reply_btn(ui);
                                         reply = resp.clicked();
                                         reply_left = Some(resp.rect.left());
                                         ui.with_layout(
                                             egui::Layout::left_to_right(egui::Align::Center),
                                             |ui| {
-                                                let said =
-                                                    msg.map(js8_msg_summary).unwrap_or_default();
-                                                ui.add(
-                                                    egui::Label::new(
-                                                        RichText::new(said)
-                                                            .monospace()
-                                                            .size(12.5)
-                                                            .color(if dupe {
-                                                                Color32::from_gray(95)
-                                                            } else {
-                                                                crate::theme::TEXT
-                                                            }),
-                                                    )
-                                                    .truncate(),
-                                                );
+                                                ui.add(msg_lbl);
                                             },
                                         );
                                     },

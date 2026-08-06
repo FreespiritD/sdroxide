@@ -207,6 +207,13 @@ impl SdroxideApp {
                 Some(DecodeRow { idx: i, d, dist_km, cq, novelty, to_me })
             })
             .collect();
+        // Whether a row still has the width for the one-line layout. Its fixed
+        // columns, margins and buttons come to ~510 points before the message
+        // gets one — right of a phone's whole screen, which is where the REPLY
+        // button used to end up. Under this the row takes two lines instead.
+        // Width, not tier: a phone at a larger OS scale factor and a desktop
+        // pane dragged narrow are the same problem.
+        let narrow = ui.available_width() < 600.0;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show_themed(ui, |ui| {
             let mut gi = 0;
             while gi < items.len() {
@@ -293,6 +300,93 @@ impl SdroxideApp {
                     // top of the button and swallows its clicks).
                     let mut reply_left: Option<f32> = None;
 
+                    // Everything the row shows, built once and placed by
+                    // whichever of the two layouts below runs.
+                    let dist_txt = dist_km.map(|km| format!("{km:.0} km")).unwrap_or_default();
+                    let snr_lbl = egui::Label::new(
+                        RichText::new(format!("{:+}", d.snr_db))
+                            .monospace()
+                            .size(13.0)
+                            .color(snr_color(d.snr_db)),
+                    );
+                    // Audio frequency (one-line layout only).
+                    let freq_lbl = egui::Label::new(
+                        RichText::new(format!("{:.0}", d.audio_hz))
+                            .monospace()
+                            .size(12.0)
+                            .color(Color32::from_gray(120)),
+                    );
+                    // Callsign — wider proportional (button) font.
+                    let call_lbl =
+                        egui::Label::new(RichText::new(&who).size(15.0).strong().color(if to_me {
+                            crate::theme::YELLOW
+                        } else if d.from.is_none() || dupe {
+                            Color32::from_gray(105)
+                        } else if cq {
+                            crate::theme::GREEN
+                        } else {
+                            crate::theme::TEXT_STRONG
+                        }))
+                        .truncate();
+                    // What they'd be worth: new entity / band / grid / call, or
+                    // a dupe already in the log for this band.
+                    let badge_lbl =
+                        egui::Label::new(RichText::new(badge).size(9.5).strong().color(badge_col));
+                    // Continent — the band's opening, readable down the column
+                    // without reading a single callsign.
+                    let cont_lbl = egui::Label::new(
+                        RichText::new(continent).monospace().size(11.0).strong().color(if dupe {
+                            Color32::from_gray(85)
+                        } else {
+                            crate::theme::continent_color(continent)
+                        }),
+                    );
+                    let grid_lbl = egui::Label::new(
+                        RichText::new(&grid).monospace().size(12.0).color(crate::theme::CYAN_DIM),
+                    );
+                    // Distance (km, great-circle from my grid).
+                    let dist_lbl = egui::Label::new(
+                        RichText::new(&dist_txt).monospace().size(11.0).color(crate::theme::YELLOW),
+                    );
+                    let msg_lbl = egui::Label::new(
+                        RichText::new(&d.message).monospace().size(12.5).color(if dupe {
+                            Color32::from_gray(95)
+                        } else {
+                            crate::theme::TEXT
+                        }),
+                    )
+                    .truncate();
+                    // REPLY and the queue button, drawn right-to-left so they
+                    // pin to the right edge in either layout. The queue chip
+                    // marks a station for later; pressing it again drops the
+                    // station, so one button both queues and un-queues.
+                    let buttons = |ui: &mut egui::Ui| {
+                        let resp = crate::chrome::chip_accent(
+                            ui,
+                            false,
+                            RichText::new("REPLY").size(12.0).strong(),
+                            if to_me {
+                                crate::theme::YELLOW
+                            } else if cq {
+                                crate::theme::GREEN
+                            } else {
+                                crate::theme::CYAN
+                            },
+                            crate::theme::INK_ON_CYAN,
+                        );
+                        let qresp = crate::chrome::chip(
+                            ui,
+                            queued,
+                            RichText::new(if queued { "＋" } else { "+" }).size(12.0).strong(),
+                        )
+                        .on_hover_text(if queued {
+                            "Queued — click to remove"
+                        } else {
+                            "Work this station after the current one"
+                        });
+                        (resp, qresp)
+                    };
+
                     let inner = egui::Frame::new()
                         .fill(if to_me {
                             crate::theme::TOME_BG
@@ -308,171 +402,105 @@ impl SdroxideApp {
                             // proportional font), grid, and the message filling the
                             // rest with a right-pinned REPLY button.
                             let ch = 22.0;
-                            ui.horizontal(|ui| {
-                                ui.set_min_height(ch);
-                                ui.spacing_mut().item_spacing.x = 7.0;
-                                let cell =
-                                    |ui: &mut egui::Ui,
-                                     w: f32,
-                                     align_right: bool,
-                                     lbl: egui::Label| {
-                                        row_cell(ui, w, ch, align_right, lbl)
-                                    };
-                                // SNR.
-                                cell(
-                                    ui,
-                                    28.0,
-                                    true,
-                                    egui::Label::new(
-                                        RichText::new(format!("{:+}", d.snr_db))
-                                            .monospace()
-                                            .size(13.0)
-                                            .color(snr_color(d.snr_db)),
-                                    ),
-                                );
-                                // Audio frequency.
-                                cell(
-                                    ui,
-                                    40.0,
-                                    true,
-                                    egui::Label::new(
-                                        RichText::new(format!("{:.0}", d.audio_hz))
-                                            .monospace()
-                                            .size(12.0)
-                                            .color(Color32::from_gray(120)),
-                                    ),
-                                );
-                                // Callsign — wider proportional (button) font.
-                                cell(
-                                    ui,
-                                    98.0,
-                                    false,
-                                    egui::Label::new(
-                                        RichText::new(&who).size(15.0).strong().color(if to_me {
-                                            crate::theme::YELLOW
-                                        } else if d.from.is_none() || dupe {
-                                            Color32::from_gray(105)
-                                        } else if cq {
-                                            crate::theme::GREEN
-                                        } else {
-                                            crate::theme::TEXT_STRONG
-                                        }),
-                                    )
-                                    .truncate(),
-                                );
-                                // What they'd be worth: new entity / band / grid /
-                                // call, or a dupe already in the log for this band.
-                                cell(
-                                    ui,
-                                    34.0,
-                                    false,
-                                    egui::Label::new(
-                                        RichText::new(badge).size(9.5).strong().color(badge_col),
-                                    ),
-                                );
-                                // Continent — the band's opening, readable down
-                                // the column without reading a single callsign.
-                                cell(
-                                    ui,
-                                    24.0,
-                                    false,
-                                    egui::Label::new(
-                                        RichText::new(continent)
-                                            .monospace()
-                                            .size(11.0)
-                                            .strong()
-                                            .color(if dupe {
-                                                Color32::from_gray(85)
-                                            } else {
-                                                crate::theme::continent_color(continent)
-                                            }),
-                                    ),
-                                );
-                                // Grid.
-                                cell(
-                                    ui,
-                                    44.0,
-                                    false,
-                                    egui::Label::new(
-                                        RichText::new(&grid)
-                                            .monospace()
-                                            .size(12.0)
-                                            .color(crate::theme::CYAN_DIM),
-                                    ),
-                                );
-                                // Distance (km, great-circle from my grid).
-                                cell(
-                                    ui,
-                                    58.0,
-                                    true,
-                                    egui::Label::new(
-                                        RichText::new(
-                                            dist_km
-                                                .map(|km| format!("{km:.0} km"))
-                                                .unwrap_or_default(),
-                                        )
-                                        .monospace()
-                                        .size(11.0)
-                                        .color(crate::theme::YELLOW),
-                                    ),
-                                );
-                                // Message fills the remaining width; REPLY and the
-                                // queue button pinned right.
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        let resp = crate::chrome::chip_accent(
-                                            ui,
-                                            false,
-                                            RichText::new("REPLY").size(12.0).strong(),
-                                            if to_me {
-                                                crate::theme::YELLOW
-                                            } else if cq {
-                                                crate::theme::GREEN
-                                            } else {
-                                                crate::theme::CYAN
-                                            },
-                                            crate::theme::INK_ON_CYAN,
-                                        );
-                                        reply = resp.clicked();
-                                        // Mark for later. Pressing it again drops
-                                        // the station, so one button both queues
-                                        // and un-queues.
-                                        let qresp = crate::chrome::chip(
-                                            ui,
-                                            queued,
-                                            RichText::new(if queued { "＋" } else { "+" })
-                                                .size(12.0)
-                                                .strong(),
-                                        )
-                                        .on_hover_text(if queued {
-                                            "Queued — click to remove"
-                                        } else {
-                                            "Work this station after the current one"
-                                        });
-                                        queue = qresp.clicked();
-                                        reply_left = Some(resp.rect.left().min(qresp.rect.left()));
-                                        ui.with_layout(
-                                            egui::Layout::left_to_right(egui::Align::Center),
-                                            |ui| {
-                                                ui.add(
-                                                    egui::Label::new(
-                                                        RichText::new(&d.message)
-                                                            .monospace()
-                                                            .size(12.5)
-                                                            .color(if dupe {
-                                                                Color32::from_gray(95)
-                                                            } else {
-                                                                crate::theme::TEXT
-                                                            }),
-                                                    )
-                                                    .truncate(),
+                            let cell =
+                                |ui: &mut egui::Ui, w: f32, align_right: bool, lbl: egui::Label| {
+                                    row_cell(ui, w, ch, align_right, lbl)
+                                };
+                            if narrow {
+                                // Two lines: who (and the buttons) above, what
+                                // they said below. The audio-frequency column
+                                // drops — clicking the row tunes there anyway —
+                                // and grid + distance move into the message
+                                // line's dim tail.
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                ui.horizontal(|ui| {
+                                    ui.set_min_height(ch);
+                                    ui.spacing_mut().item_spacing.x = 7.0;
+                                    cell(ui, 28.0, true, snr_lbl);
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let (resp, qresp) = buttons(ui);
+                                            reply = resp.clicked();
+                                            queue = qresp.clicked();
+                                            reply_left =
+                                                Some(resp.rect.left().min(qresp.rect.left()));
+                                            ui.with_layout(
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                |ui| {
+                                                    // The callsign gets what the
+                                                    // badges leave, and truncates
+                                                    // before it pushes them out.
+                                                    let call_w = (ui.available_width()
+                                                        - (34.0 + 24.0 + 2.0 * 7.0))
+                                                        .max(40.0);
+                                                    cell(ui, call_w, false, call_lbl);
+                                                    cell(ui, 34.0, false, badge_lbl);
+                                                    cell(ui, 24.0, false, cont_lbl);
+                                                },
+                                            );
+                                        },
+                                    );
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 7.0;
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let tail = [grid.as_str(), dist_txt.as_str()]
+                                                .iter()
+                                                .filter(|s| !s.is_empty())
+                                                .copied()
+                                                .collect::<Vec<_>>()
+                                                .join(" · ");
+                                            if !tail.is_empty() {
+                                                ui.label(
+                                                    RichText::new(tail)
+                                                        .monospace()
+                                                        .size(11.0)
+                                                        .color(crate::theme::CYAN_DIM),
                                                 );
-                                            },
-                                        );
-                                    },
-                                );
-                            });
+                                            }
+                                            ui.with_layout(
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                |ui| {
+                                                    ui.add(msg_lbl);
+                                                },
+                                            );
+                                        },
+                                    );
+                                });
+                            } else {
+                                ui.horizontal(|ui| {
+                                    ui.set_min_height(ch);
+                                    ui.spacing_mut().item_spacing.x = 7.0;
+                                    cell(ui, 28.0, true, snr_lbl);
+                                    cell(ui, 40.0, true, freq_lbl);
+                                    cell(ui, 98.0, false, call_lbl);
+                                    cell(ui, 34.0, false, badge_lbl);
+                                    cell(ui, 24.0, false, cont_lbl);
+                                    cell(ui, 44.0, false, grid_lbl);
+                                    cell(ui, 58.0, true, dist_lbl);
+                                    // Message fills the remaining width; REPLY and
+                                    // the queue button pinned right.
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let (resp, qresp) = buttons(ui);
+                                            reply = resp.clicked();
+                                            queue = qresp.clicked();
+                                            reply_left =
+                                                Some(resp.rect.left().min(qresp.rect.left()));
+                                            ui.with_layout(
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                |ui| {
+                                                    ui.add(msg_lbl);
+                                                },
+                                            );
+                                        },
+                                    );
+                                });
+                            }
                         });
 
                     let r = inner.response.rect;
