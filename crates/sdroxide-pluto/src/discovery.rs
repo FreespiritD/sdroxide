@@ -91,13 +91,18 @@ pub fn discover(timeout: Duration) -> Vec<PlutoDevice> {
 /// the answer states the tuning range this particular board has rather than the
 /// one its family might.
 pub fn test_connection(address: &str, timeout: Duration) -> std::result::Result<String, String> {
-    test_inner(address, timeout).map_err(|e| e.to_string())
-}
-
-fn test_inner(address: &str, timeout: Duration) -> Result<String> {
-    let addr = crate::net::resolve(address)?;
     let trace = Trace::new();
     crate::trace::remember(&trace);
+    test_inner(address, timeout, &trace).map_err(|e| {
+        // Keep the failure in the remembered trace: the session report has to
+        // say why it stopped, not just where.
+        trace.note(format!("!! test failed: {e}"));
+        e.to_string()
+    })
+}
+
+fn test_inner(address: &str, timeout: Duration, trace: &Trace) -> Result<String> {
+    let addr = crate::net::resolve(address)?;
     let mut conn = Connection::connect(addr, timeout, trace.clone())?;
     let version = conn.version()?;
     let ctx = Context::parse(&conn.print_xml()?)?;

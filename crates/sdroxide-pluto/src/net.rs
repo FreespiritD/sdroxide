@@ -149,6 +149,22 @@ impl PlutoHandle {
     pub fn open(address: &str, cfg: &PlutoConfig, center_hz: f64) -> Result<PlutoHandle> {
         let trace = Trace::new();
         crate::trace::remember(&trace);
+        let result = PlutoHandle::open_traced(address, cfg, center_hz, &trace);
+        if let Err(e) = &result {
+            // The trace outlives the failed attempt, and a session report that
+            // stops mid-sequence without saying why has to be diagnosed by
+            // matching line numbers against the source. Been there.
+            trace.note(format!("!! open failed: {e}"));
+        }
+        result
+    }
+
+    fn open_traced(
+        address: &str,
+        cfg: &PlutoConfig,
+        center_hz: f64,
+        trace: &Trace,
+    ) -> Result<PlutoHandle> {
         let addr = resolve(address)?;
         trace.note(format!("opening {addr} (from {address:?})"));
         tracing::info!(

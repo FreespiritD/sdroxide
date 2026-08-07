@@ -197,7 +197,10 @@ pub struct Context {
 
 impl Context {
     pub fn parse(xml: &str) -> Result<Context> {
-        let doc = roxmltree::Document::parse(xml)
+        // Real `iiod` prepends libiio's internal DTD subset to the description,
+        // and roxmltree refuses documents with a DTD unless told otherwise.
+        let opts = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
+        let doc = roxmltree::Document::parse_with_options(xml, opts)
             .map_err(|e| Error::Xml(format!("cannot parse the context description: {e}")))?;
         let root = doc.root_element();
         if root.tag_name().name() != "context" {
@@ -499,6 +502,43 @@ mod tests {
         assert_eq!(buf, [0xFF, 0x7F]);
         f.encode(-9.0, &mut buf);
         assert_eq!(buf, [0x01, 0x80]);
+    }
+
+    /// Verbatim from libiio `context.c` (`xml_header`): the internal DTD subset
+    /// every real `iiod` prepends to the description it serves over `PRINT`.
+    /// [`PLUTO_XML`] deliberately lacks it, which is exactly how a parser that
+    /// chokes on it passes every fixture test and fails on hardware.
+    const LIBIIO_HEADER: &str = concat!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
+        "<!DOCTYPE context [",
+        "<!ELEMENT context (device | context-attribute)*>",
+        "<!ELEMENT context-attribute EMPTY>",
+        "<!ELEMENT device (channel | attribute | debug-attribute | buffer-attribute)*>",
+        "<!ELEMENT channel (scan-element?, attribute*)>",
+        "<!ELEMENT attribute EMPTY>",
+        "<!ELEMENT scan-element EMPTY>",
+        "<!ELEMENT debug-attribute EMPTY>",
+        "<!ELEMENT buffer-attribute EMPTY>",
+        "<!ATTLIST context name CDATA #REQUIRED description CDATA #IMPLIED>",
+        "<!ATTLIST context-attribute name CDATA #REQUIRED value CDATA #REQUIRED>",
+        "<!ATTLIST device id CDATA #REQUIRED name CDATA #IMPLIED>",
+        "<!ATTLIST channel id CDATA #REQUIRED name CDATA #IMPLIED type (input|output) #REQUIRED>",
+        "<!ATTLIST scan-element index CDATA #REQUIRED format CDATA #REQUIRED scale CDATA #IMPLIED>",
+        "<!ATTLIST attribute name CDATA #REQUIRED filename CDATA #IMPLIED>",
+        "<!ATTLIST debug-attribute name CDATA #REQUIRED>",
+        "<!ATTLIST buffer-attribute name CDATA #REQUIRED>",
+        "]>",
+    );
+
+    #[test]
+    fn a_context_with_the_libiio_dtd_parses() {
+        let xml = format!(
+            "{LIBIIO_HEADER}{}",
+            PLUTO_XML.trim_start_matches("<?xml version=\"1.0\" encoding=\"utf-8\"?>")
+        );
+        let ctx = Context::parse(&xml).expect("a real iiod PRINT payload must parse");
+        assert!(ctx.is_ad9364());
+        assert_eq!(ctx.device("cf-ad9361-lpc").unwrap().scan_channels().len(), 2);
     }
 
     /// An IIO device that is not a Pluto has to say so, and say what it is.
