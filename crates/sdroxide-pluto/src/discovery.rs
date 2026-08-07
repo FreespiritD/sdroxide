@@ -92,7 +92,7 @@ pub fn discover(timeout: Duration) -> Vec<PlutoDevice> {
 /// one its family might.
 pub fn test_connection(address: &str, timeout: Duration) -> std::result::Result<String, String> {
     let trace = Trace::new();
-    crate::trace::remember(&trace);
+    crate::trace::remember_probe(&trace);
     test_inner(address, timeout, &trace).map_err(|e| {
         // Keep the failure in the remembered trace: the session report has to
         // say why it stopped, not just where.

@@ -146,19 +146,52 @@ pub(crate) fn ascii_head(bytes: &[u8], n: usize) -> String {
     bytes.iter().take(n).map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }).collect()
 }
 
-/// Where the always-on trace of the most recent session lives, so the settings
-/// UI can offer it as copyable text after the connection has already failed and
-/// the handle has been dropped. Mirrors `sdroxide-smartsdr`'s diagnostics.
-static LAST_SESSION: Mutex<Option<Trace>> = Mutex::new(None);
+/// Where the always-on traces of the most recent sessions live, so the settings
+/// UI can offer them as copyable text after the connection has already failed
+/// and the handle has been dropped. Mirrors `sdroxide-smartsdr`'s diagnostics.
+///
+/// Open sessions and connection tests get separate slots. With one slot, a
+/// "Test connection" click while a radio session was live (or after it died)
+/// replaced the streaming trace with eight attribute reads — exactly the
+/// evidence a streaming bug report needs, destroyed by the tester's most
+/// natural next move. A field report was lost to this.
+static LAST_OPEN: Mutex<Option<Trace>> = Mutex::new(None);
+static LAST_PROBE: Mutex<Option<Trace>> = Mutex::new(None);
 
+/// Remember an open (streaming) session's trace. The stored clone shares the
+/// live buffer, so the slot keeps filling for as long as the session runs.
 pub(crate) fn remember(trace: &Trace) {
-    *LAST_SESSION.lock().unwrap_or_else(|e| e.into_inner()) = Some(trace.clone());
+    *LAST_OPEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(trace.clone());
 }
 
-/// The most recent session trace, for a bug report. `None` before the first
-/// connection attempt.
+/// Remember a connection test's trace, in its own slot so it cannot displace
+/// the evidence of an open session.
+pub(crate) fn remember_probe(trace: &Trace) {
+    *LAST_PROBE.lock().unwrap_or_else(|e| e.into_inner()) = Some(trace.clone());
+}
+
+/// The most recent session traces, for a bug report: the open session first —
+/// it is the one with streaming evidence — then the most recent connection
+/// test. `None` before the first attempt of either kind.
 pub fn diagnostics() -> Option<String> {
-    LAST_SESSION.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|t| t.dump())
+    let open = LAST_OPEN.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let probe = LAST_PROBE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if open.is_none() && probe.is_none() {
+        return None;
+    }
+    let mut out = String::new();
+    if let Some(t) = open {
+        out.push_str("### radio session (open / stream)\n");
+        out.push_str(&t.dump());
+    }
+    if let Some(t) = probe {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("### connection test\n");
+        out.push_str(&t.dump());
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -204,5 +237,25 @@ mod tests {
     #[test]
     fn an_empty_trace_still_dumps() {
         assert!(Trace::new().dump().contains("context description was never read"));
+    }
+
+    /// The mistake this guards against: a tester whose stream is misbehaving
+    /// presses "Test connection" to check the radio is alive, and that click
+    /// used to replace the streaming trace — the entire point of the report —
+    /// with eight attribute reads.
+    #[test]
+    fn a_connection_test_does_not_displace_an_open_sessions_trace() {
+        let open = Trace::new();
+        open.note("streaming evidence");
+        remember(&open);
+        let probe = Trace::new();
+        probe.note("eight attribute reads");
+        remember_probe(&probe);
+        let d = diagnostics().expect("both slots filled");
+        let open_at = d.find("radio session").expect("open section present");
+        let probe_at = d.find("connection test").expect("probe section present");
+        assert!(open_at < probe_at, "the open session must come first:\n{d}");
+        assert!(d.contains("streaming evidence"), "{d}");
+        assert!(d.contains("eight attribute reads"), "{d}");
     }
 }

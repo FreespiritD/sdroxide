@@ -520,17 +520,7 @@ pub(in crate::app) fn settings_tci_tab(
         }
         ui.end_row();
     });
-    match test_result {
-        Some(Ok(s)) => {
-            ui.label(
-                RichText::new(format!("Connected: {s}")).color(Color32::from_rgb(90, 200, 110)),
-            );
-        }
-        Some(Err(e)) => {
-            ui.label(RichText::new(format!("Failed: {e}")).color(Color32::from_rgb(230, 90, 80)));
-        }
-        None => {}
-    }
+    test_result_line(ui, test_result);
     ui.add_space(6.0);
     ui.label(
         RichText::new(
@@ -538,6 +528,34 @@ pub(in crate::app) fn settings_tci_tab(
         )
         .weak(),
     );
+}
+
+/// The outcome line under a "Test connection" button.
+///
+/// A successful test gets a second, weak line pointing at Apply / reconnect:
+/// the test opens its own short-lived connection and the engine keeps running
+/// whatever interface it had, but a green "Connected" on its own reads as
+/// "done". A field report came from exactly that gap — a tested Pluto, an
+/// unpressed Apply, and a blank screen.
+fn test_result_line(ui: &mut egui::Ui, result: &Option<Result<String, String>>) {
+    match result {
+        Some(Ok(s)) => {
+            ui.label(
+                RichText::new(format!("Connected: {s}")).color(Color32::from_rgb(90, 200, 110)),
+            );
+            ui.label(
+                RichText::new(
+                    "That was only a check — press Apply / reconnect below to start \
+                     using this radio.",
+                )
+                .weak(),
+            );
+        }
+        Some(Err(e)) => {
+            ui.label(RichText::new(format!("Failed: {e}")).color(Color32::from_rgb(230, 90, 80)));
+        }
+        None => {}
+    }
 }
 
 /// PlutoSDR interface: address, front-end settings, and the diagnostic report.
@@ -772,17 +790,7 @@ pub(in crate::app) fn settings_pluto_tab(
         ui.end_row();
     });
 
-    match test_result {
-        Some(Ok(s)) => {
-            ui.label(
-                RichText::new(format!("Connected: {s}")).color(Color32::from_rgb(90, 200, 110)),
-            );
-        }
-        Some(Err(e)) => {
-            ui.label(RichText::new(format!("Failed: {e}")).color(Color32::from_rgb(230, 90, 80)));
-        }
-        None => {}
-    }
+    test_result_line(ui, test_result);
 
     ui.add_space(6.0);
     ui.label(
@@ -941,17 +949,7 @@ pub(in crate::app) fn settings_smartsdr_tab(
         ui.end_row();
     });
 
-    match test_result {
-        Some(Ok(s)) => {
-            ui.label(
-                RichText::new(format!("Connected: {s}")).color(Color32::from_rgb(90, 200, 110)),
-            );
-        }
-        Some(Err(e)) => {
-            ui.label(RichText::new(format!("Failed: {e}")).color(Color32::from_rgb(230, 90, 80)));
-        }
-        None => {}
-    }
+    test_result_line(ui, test_result);
 
     ui.add_space(6.0);
     ui.label(
@@ -1366,10 +1364,8 @@ pub(in crate::app) fn settings_sdrplay_tab(
                 |ui| {
                     if devices.is_empty() {
                         ui.label(
-                            RichText::new(
-                                "no RSPs — press Rescan (needs the SDRplay API service)",
-                            )
-                            .weak(),
+                            RichText::new("no RSPs — press Rescan (needs the SDRplay API service)")
+                                .weak(),
                         );
                     }
                     ui.selectable_value(
@@ -1423,10 +1419,7 @@ pub(in crate::app) fn settings_sdrplay_tab(
                 if (khz as f64) * 1000.0 > cfg.sdrplay.sample_rate_hz {
                     continue;
                 }
-                if ui
-                    .selectable_label(cfg.sdrplay.bw_khz == khz, format!("{khz} kHz"))
-                    .clicked()
-                {
+                if ui.selectable_label(cfg.sdrplay.bw_khz == khz, format!("{khz} kHz")).clicked() {
                     cfg.sdrplay.bw_khz = khz;
                 }
             }
@@ -1456,9 +1449,7 @@ pub(in crate::app) fn settings_sdrplay_tab(
                  headroom for signals off-channel.",
             );
             if ui
-                .add(
-                    Slider::new(&mut cfg.sdrplay.agc_setpoint_dbfs, -72..=-20).suffix(" dBFS"),
-                )
+                .add(Slider::new(&mut cfg.sdrplay.agc_setpoint_dbfs, -72..=-20).suffix(" dBFS"))
                 .changed()
             {
                 cmds.push(Command::SetGain {
@@ -1567,10 +1558,7 @@ pub(in crate::app) fn settings_sdrplay_tab(
                 for &a in antennas {
                     if ui.selectable_label(cfg.sdrplay.antenna == a, a).clicked() {
                         cfg.sdrplay.antenna = a.to_string();
-                        cmds.push(Command::SetAntenna {
-                            dir: Direction::Rx,
-                            name: a.to_string(),
-                        });
+                        cmds.push(Command::SetAntenna { dir: Direction::Rx, name: a.to_string() });
                     }
                 }
             });
