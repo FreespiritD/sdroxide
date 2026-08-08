@@ -191,6 +191,7 @@ impl RemoteController {
             ServerMsg::WideSpectrum(f) => self.pending.push_back(RadioEvent::WideSpectrum(f)),
             ServerMsg::Meters(m) => self.pending.push_back(RadioEvent::Meters(m)),
             ServerMsg::Memories(m) => self.pending.push_back(RadioEvent::Memories(m)),
+            ServerMsg::MemoryFolders(f) => self.pending.push_back(RadioEvent::MemoryFolders(f)),
             ServerMsg::Scanner(c) => self.pending.push_back(RadioEvent::Scanner(c)),
             ServerMsg::RxAudio { payload, .. } => {
                 if let Some(bridge) = self.audio.as_mut() {

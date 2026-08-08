@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use sdroxide_types::{
     CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, ImageEntry, ImageKind, ImageListing,
-    ImagePresets, MemoryChannel, Meters, QsoRecord, RadioState, RifpMeta, RifpStatus, SkimmerSpot,
-    SpectrumFrame, Spot, SstvMode, SstvStatus, StationConfig, TleSubStatus, UploadResult,
-    VoiceStatus,
+    ImagePresets, MemoryChannel, MemoryFolder, Meters, QsoRecord, RadioState, RifpMeta, RifpStatus,
+    SkimmerSpot, SpectrumFrame, Spot, SstvMode, SstvStatus, StationConfig, TleSubStatus,
+    UploadResult, VoiceStatus,
 };
 
 /// Bump on any incompatible change to the message enums (this includes the
@@ -205,7 +205,13 @@ use sdroxide_types::{
 /// appended, but `SkimmerSettings` is a field of `RadioState` as well as the
 /// payload of `Command::SetSkimmerConfig`, and postcard is not self-describing:
 /// the layout of every state broadcast changes and both ends have to agree.
-pub const PROTO_VERSION: u16 = 45;
+/// v46: memory folders — `MemoryChannel` gained `folder`, which changes the
+/// layout of every `Memories` message, postcard not being self-describing. The
+/// folder list itself rides the new `ServerMsg::MemoryFolders` (appended last,
+/// so no surviving discriminant moves), and four appended `Command`s
+/// (`CreateMemoryFolder` / `RenameMemoryFolder` / `DeleteMemoryFolder` /
+/// `MoveMemoryToFolder`) manage them.
+pub const PROTO_VERSION: u16 = 46;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -437,6 +443,9 @@ pub enum ServerMsg {
     /// that make it one. Squeezing it into `Decode` would have meant throwing
     /// both away. Appended last, so no surviving discriminant moves.
     WsprSpots(Vec<sdroxide_types::WsprSpot>),
+    /// The memory folders, replayed on connect and re-sent on every change,
+    /// exactly as `Memories` is. Appended last, for the usual reason.
+    MemoryFolders(Vec<MemoryFolder>),
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {

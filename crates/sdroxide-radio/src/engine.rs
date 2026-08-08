@@ -28,8 +28,9 @@ use sdroxide_skimmer::{SkimmerAction, SkimmerController};
 use sdroxide_tci::server::{ServerRequest, TciServerController, TciStateSnapshot};
 use sdroxide_types::{
     AgcMode, Band, BandStackEntry, Command, DeviceCaps, DigiConfig, Direction, ImageKind,
-    MemoryChannel, Meters, Mode, NrEngine, NrLevel, RadioEvent, RadioState, RigctldConfig, RxId,
-    RxState, ScanKind, ScanResume, SpectrumConfig, SpectrumFrame, TciServerConfig, TxMeters, Vfo,
+    MemoryChannel, MemoryFolder, Meters, Mode, NrEngine, NrLevel, RadioEvent, RadioState,
+    RigctldConfig, RxId, RxState, ScanKind, ScanResume, SpectrumConfig, SpectrumFrame,
+    TciServerConfig, TxMeters, Vfo,
 };
 
 use crate::recorder::{Recorder, RecordingChannels};
@@ -967,6 +968,7 @@ struct Engine {
     cal_offset_db: f32,
     stacks: BandStacks,
     memories: Vec<MemoryChannel>,
+    mem_folders: Vec<MemoryFolder>,
     mic: Option<MicParams>,
     mic_resampler: Option<MonoResampler>,
     mic_fifo: Vec<f32>,
@@ -1282,6 +1284,7 @@ fn engine_thread(
     };
 
     let memories = sdroxide_config::load_memories();
+    let mem_folders = sdroxide_config::load_memory_folders();
     let scan_cfg = sdroxide_config::load_scanner_config();
     let stacks = sdroxide_config::load_bandstacks();
     let digi_config = sdroxide_config::load_digi_config();
@@ -1289,6 +1292,7 @@ fn engine_thread(
     info!(source = %source.describe(), "engine started");
     let _ = event_tx.send(RadioEvent::Capabilities(caps.clone()));
     let _ = event_tx.send(RadioEvent::Memories(memories.clone()));
+    let _ = event_tx.send(RadioEvent::MemoryFolders(mem_folders.clone()));
     let _ = event_tx.send(RadioEvent::Scanner(scan_cfg.clone()));
     // Surface any warning captured while opening the source (e.g. radio audio
     // device unavailable / mono card chosen for IQ) so the UI can show it
@@ -1339,6 +1343,7 @@ fn engine_thread(
         cal_offset_db: engine_cfg.cal_offset_db,
         stacks,
         memories,
+        mem_folders,
         mic: engine_cfg.mic,
         mic_resampler: None,
         mic_fifo: Vec::new(),
@@ -2985,6 +2990,7 @@ impl Engine {
                     mode: rx.mode,
                     filter_lo: rx.filter_lo,
                     filter_hi: rx.filter_hi,
+                    folder: None,
                 });
                 self.save_memories();
             }
@@ -3002,6 +3008,36 @@ impl Engine {
             DeleteMemory(id) => {
                 self.memories.retain(|m| m.id != id);
                 self.save_memories();
+            }
+            CreateMemoryFolder { name } => {
+                let id = self.mem_folders.iter().map(|f| f.id).max().unwrap_or(0) + 1;
+                self.mem_folders.push(MemoryFolder { id, name });
+                self.save_mem_folders();
+            }
+            RenameMemoryFolder { id, name } => {
+                if let Some(f) = self.mem_folders.iter_mut().find(|f| f.id == id) {
+                    f.name = name;
+                    self.save_mem_folders();
+                }
+            }
+            DeleteMemoryFolder(id) => {
+                // The folder's contents go back to the top level: deleting a
+                // folder is never a way to delete a memory.
+                self.mem_folders.retain(|f| f.id != id);
+                for m in self.memories.iter_mut().filter(|m| m.folder == Some(id)) {
+                    m.folder = None;
+                }
+                self.save_mem_folders();
+                self.save_memories();
+            }
+            MoveMemoryToFolder { id, folder } => {
+                // Refuse a dangling folder id rather than filing the memory
+                // under a folder no window would ever show.
+                let exists = folder.is_none_or(|f| self.mem_folders.iter().any(|x| x.id == f));
+                if exists && let Some(m) = self.memories.iter_mut().find(|m| m.id == id) {
+                    m.folder = folder;
+                    self.save_memories();
+                }
             }
             SetSkimmerView(view) => {
                 // Reject a degenerate window rather than skimming nothing at
@@ -4701,6 +4737,13 @@ impl Engine {
             warn!("saving memories: {e}");
         }
         let _ = self.event_tx.send(RadioEvent::Memories(self.memories.clone()));
+    }
+
+    fn save_mem_folders(&mut self) {
+        if let Err(e) = sdroxide_config::save_memory_folders(&self.mem_folders) {
+            warn!("saving memory folders: {e}");
+        }
+        let _ = self.event_tx.send(RadioEvent::MemoryFolders(self.mem_folders.clone()));
     }
 
     /// The frequency window the receivers can reach: the device passband. Both

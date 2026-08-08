@@ -8,9 +8,72 @@
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
-use sdroxide_types::Command;
+use sdroxide_types::{Command, MemoryChannel, MemoryFolder};
 
 use crate::app::SdroxideApp;
+
+/// What a drag out of the memory list carries: the memory's id. Its own type
+/// so no unrelated drag could ever be mistaken for one.
+struct DraggedMemory(u32);
+
+/// Wrap `add` in a frame that accepts a dragged memory, and say which memory
+/// was dropped on it this frame, if any. While a drag is live every target
+/// shows a faint outline, and the one under the pointer answers in cyan —
+/// hand-rolled rather than `dnd_drop_zone`, which repaints the frame in the
+/// widget palette and would put a button-grey slab behind every folder.
+fn mem_drop_target<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> (R, Option<u32>) {
+    let dragging = egui::DragAndDrop::has_payload_of_type::<DraggedMemory>(ui.ctx());
+    let out = egui::Frame::default().inner_margin(4.0).corner_radius(4.0).show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        add(ui)
+    });
+    if dragging {
+        let stroke = if out.response.dnd_hover_payload::<DraggedMemory>().is_some() {
+            egui::Stroke::new(1.5, crate::theme::CYAN)
+        } else {
+            egui::Stroke::new(1.0, crate::theme::LINE_LIT)
+        };
+        ui.painter().rect_stroke(out.response.rect, 4.0, stroke, egui::StrokeKind::Inside);
+    }
+    let dropped = out.response.dnd_release_payload::<DraggedMemory>().map(|p| p.0);
+    (out.inner, dropped)
+}
+
+/// One memory: recall, name/frequency/mode, delete. The label is the drag
+/// handle — deliberately not the whole row, whose drag sense would sit over
+/// the buttons and turn a sloppy RCL or DEL press into a drag.
+fn memory_row(ui: &mut egui::Ui, m: &MemoryChannel, cmds: &mut Vec<Command>) {
+    ui.horizontal(|ui| {
+        if crate::chrome::chip(ui, false, "RCL").on_hover_text("Recall").clicked() {
+            cmds.push(Command::RecallMemory(m.id));
+        }
+        ui.dnd_drag_source(egui::Id::new(("mem-drag", m.id)), DraggedMemory(m.id), |ui| {
+            ui.label(
+                RichText::new(format!(
+                    "{:<12} {:>12.6} MHz  {}",
+                    m.name,
+                    m.freq_hz / 1e6,
+                    m.mode.label()
+                ))
+                .monospace(),
+            );
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if crate::chrome::chip_accent(
+                ui,
+                false,
+                RichText::new("DEL").size(11.0),
+                crate::theme::PINK,
+                Color32::WHITE,
+            )
+            .on_hover_text("Delete")
+            .clicked()
+            {
+                cmds.push(Command::DeleteMemory(m.id));
+            }
+        });
+    });
+}
 
 impl SdroxideApp {
     pub(in crate::app) fn memories_window(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
@@ -19,55 +82,159 @@ impl SdroxideApp {
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)
-            .default_width(crate::layout::window_w(ctx, 340.0))
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.mem_name);
-                    let name_ok = !self.mem_name.trim().is_empty();
-                    if ui.add_enabled(name_ok, egui::Button::new("Store")).clicked() {
-                        cmds.push(Command::StoreMemory { name: self.mem_name.trim().to_string() });
-                        self.mem_name.clear();
-                    }
-                });
-                ui.separator();
-                if self.memories.is_empty() {
-                    ui.label(RichText::new("no memories yet").color(Color32::from_gray(120)));
-                }
-                for m in &self.memories {
-                    ui.horizontal(|ui| {
-                        if crate::chrome::chip(ui, false, "RCL").on_hover_text("Recall").clicked() {
-                            cmds.push(Command::RecallMemory(m.id));
-                        }
-                        ui.label(
-                            RichText::new(format!(
-                                "{:<12} {:>12.6} MHz  {}",
-                                m.name,
-                                m.freq_hz / 1e6,
-                                m.mode.label()
-                            ))
-                            .monospace(),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if crate::chrome::chip_accent(
-                                ui,
-                                false,
-                                RichText::new("DEL").size(11.0),
-                                crate::theme::PINK,
-                                Color32::WHITE,
-                            )
-                            .on_hover_text("Delete")
-                            .clicked()
-                            {
-                                cmds.push(Command::DeleteMemory(m.id));
-                            }
-                        });
-                    });
-                }
-            });
+            .default_width(crate::layout::window_w(ctx, 400.0))
+            // A real starting height, and a floor under what egui remembers:
+            // the window used to hug its (often short) list and come up a few
+            // rows tall. See the voice keyer below for why the minimum matters
+            // as much as the default.
+            .default_height(crate::layout::window_h(ctx, 460.0))
+            .min_height(crate::layout::window_h(ctx, 280.0))
+            .show(ctx, |ui| self.memories_ui(ui, cmds));
         if let Some(r) = &resp {
             crate::chrome::paint_window_border(ctx, &r.response);
         }
         self.show_memories = open;
+    }
+
+    fn memories_ui(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.mem_name)
+                    .hint_text("memory name")
+                    .desired_width(ui.available_width() - 100.0),
+            );
+            let name_ok = !self.mem_name.trim().is_empty();
+            if ui.add_enabled(name_ok, egui::Button::new("Store")).clicked() {
+                cmds.push(Command::StoreMemory { name: self.mem_name.trim().to_string() });
+                self.mem_name.clear();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.mem_folder_name)
+                    .hint_text("folder name")
+                    .desired_width(ui.available_width() - 100.0),
+            );
+            let name_ok = !self.mem_folder_name.trim().is_empty();
+            if ui.add_enabled(name_ok, egui::Button::new("New folder")).clicked() {
+                cmds.push(Command::CreateMemoryFolder {
+                    name: self.mem_folder_name.trim().to_string(),
+                });
+                self.mem_folder_name.clear();
+            }
+        });
+        ui.separator();
+        if self.memories.is_empty() && self.mem_folders.is_empty() {
+            ui.label(RichText::new("no memories yet").color(Color32::from_gray(120)));
+        } else if !self.mem_folders.is_empty() {
+            ui.label(
+                RichText::new("drag a memory onto a folder to file it, below them to unfile it")
+                    .weak()
+                    .size(11.0),
+            );
+        }
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let folders = self.mem_folders.clone();
+            for f in &folders {
+                self.folder_section(ui, f, cmds);
+            }
+            // The top level: everything unfiled — including anything whose
+            // folder has gone from under it — and, while a drag is live, the
+            // place to drop a memory to take it out of its folder.
+            let (_, dropped) = mem_drop_target(ui, |ui| {
+                let known = |id: u32| folders.iter().any(|f| f.id == id);
+                let mut any = false;
+                for m in &self.memories {
+                    if m.folder.is_none_or(|id| !known(id)) {
+                        memory_row(ui, m, cmds);
+                        any = true;
+                    }
+                }
+                if !any && egui::DragAndDrop::has_payload_of_type::<DraggedMemory>(ui.ctx()) {
+                    ui.label(RichText::new("drop here to unfile").weak().size(11.0));
+                }
+            });
+            if let Some(id) = dropped
+                && self.memories.iter().any(|m| m.id == id && m.folder.is_some())
+            {
+                cmds.push(Command::MoveMemoryToFolder { id, folder: None });
+            }
+        });
+    }
+
+    /// One folder of the memory list: a collapsible section whose header
+    /// carries the rename and delete controls, the whole of it a drop target.
+    fn folder_section(&mut self, ui: &mut egui::Ui, f: &MemoryFolder, cmds: &mut Vec<Command>) {
+        let count = self.memories.iter().filter(|m| m.folder == Some(f.id)).count();
+        let (_, dropped) = mem_drop_target(ui, |ui| {
+            let state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                ui.make_persistent_id(("mem-folder", f.id)),
+                true,
+            );
+            state
+                .show_header(ui, |ui| {
+                    let editing = matches!(&self.mem_folder_edit, Some((id, _)) if *id == f.id);
+                    if editing {
+                        let (_, text) = self.mem_folder_edit.as_mut().expect("checked above");
+                        let edit = ui.add(egui::TextEdit::singleline(text).desired_width(150.0));
+                        if self.mem_folder_focus {
+                            edit.request_focus();
+                            self.mem_folder_focus = false;
+                        }
+                        // Escape abandons the edit; Enter or clicking away
+                        // commits it (Enter surrenders focus in egui).
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            self.mem_folder_edit = None;
+                        } else if edit.lost_focus() {
+                            let (id, name) = self.mem_folder_edit.take().expect("checked above");
+                            let name = name.trim().to_string();
+                            if !name.is_empty() && name != f.name {
+                                cmds.push(Command::RenameMemoryFolder { id, name });
+                            }
+                        }
+                    } else {
+                        ui.label(RichText::new(&f.name).strong());
+                        ui.label(RichText::new(format!("({count})")).weak().size(11.0));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if crate::chrome::chip_accent(
+                            ui,
+                            false,
+                            RichText::new("DEL").size(11.0),
+                            crate::theme::PINK,
+                            Color32::WHITE,
+                        )
+                        .on_hover_text("Delete folder — its memories move to the top level")
+                        .clicked()
+                        {
+                            cmds.push(Command::DeleteMemoryFolder(f.id));
+                        }
+                        if crate::chrome::chip(ui, false, RichText::new("REN").size(11.0))
+                            .on_hover_text("Rename folder")
+                            .clicked()
+                        {
+                            self.mem_folder_edit = Some((f.id, f.name.clone()));
+                            self.mem_folder_focus = true;
+                        }
+                    });
+                })
+                .body(|ui| {
+                    if count == 0 {
+                        ui.label(RichText::new("empty — drop memories here").weak().size(11.0));
+                    }
+                    for m in &self.memories {
+                        if m.folder == Some(f.id) {
+                            memory_row(ui, m, cmds);
+                        }
+                    }
+                });
+        });
+        if let Some(id) = dropped
+            && self.memories.iter().any(|m| m.id == id && m.folder != Some(f.id))
+        {
+            cmds.push(Command::MoveMemoryToFolder { id, folder: Some(f.id) });
+        }
     }
 
     /// The voice keyer: ten recorded messages with record / transmit / erase

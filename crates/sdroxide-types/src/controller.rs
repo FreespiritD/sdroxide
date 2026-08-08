@@ -1,7 +1,7 @@
 use crate::{
-    CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, MemoryChannel, Meters, QsoRecord,
-    RadioState, RifpMeta, RifpStatus, SkimmerSpot, SpectrumFrame, Spot, SstvMode, SstvStatus,
-    UploadResult, VoiceStatus,
+    CallsignInfo, Command, Decode, DeviceCaps, DigiStatus, MemoryChannel, MemoryFolder, Meters,
+    QsoRecord, RadioState, RifpMeta, RifpStatus, SkimmerSpot, SpectrumFrame, Spot, SstvMode,
+    SstvStatus, UploadResult, VoiceStatus,
 };
 
 /// Events flowing engine → UI.
@@ -17,6 +17,11 @@ pub enum RadioEvent {
     WideSpectrum(SpectrumFrame),
     Meters(Meters),
     Memories(Vec<MemoryChannel>),
+    /// The memory folders, announced beside [`RadioEvent::Memories`] at startup
+    /// and after every change. A separate event rather than a field of it:
+    /// which folder a memory sits in rides in the [`MemoryChannel`] itself, so
+    /// the two lists change independently.
+    MemoryFolders(Vec<MemoryFolder>),
     ConnectionLost(String),
     /// A non-fatal, persistent status/warning for the operator (e.g. the radio
     /// audio input was unavailable or a mono card was selected for IQ). `None`

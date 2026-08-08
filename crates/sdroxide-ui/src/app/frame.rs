@@ -118,6 +118,7 @@ impl eframe::App for SdroxideApp {
                     self.meters = Some(m);
                 }
                 RadioEvent::Memories(m) => self.memories = m,
+                RadioEvent::MemoryFolders(f) => self.mem_folders = f,
                 RadioEvent::Scanner(c) => self.scanner = c,
                 RadioEvent::ConnectionLost(e) => {
                     self.speech.announcer.on_error(&e, now);

@@ -104,12 +104,25 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>, audio_caps: A
     let tx_codec =
         if audio_caps.opus_encode { AudioCodec::Opus48kMono } else { AudioCodec::Pcm16_48k };
 
-    let (caps, state, memories, scanner, digi, voice, images, notice, station, tle_subs) = {
+    let (
+        caps,
+        state,
+        memories,
+        mem_folders,
+        scanner,
+        digi,
+        voice,
+        images,
+        notice,
+        station,
+        tle_subs,
+    ) = {
         let latest = shared.latest.lock().unwrap();
         (
             latest.caps.clone(),
             latest.state.clone(),
             latest.memories.clone(),
+            latest.mem_folders.clone(),
             latest.scanner.clone(),
             latest.digi.clone(),
             latest.voice.clone(),
@@ -124,6 +137,7 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>, audio_caps: A
         return;
     }
     let _ = socket.send(msg(&ServerMsg::Memories(memories))).await;
+    let _ = socket.send(msg(&ServerMsg::MemoryFolders(mem_folders))).await;
     let _ = socket.send(msg(&ServerMsg::Scanner(scanner))).await;
     // The operator config, which the engine announced once at startup. Without
     // this replay the client's callsign and grid come up empty and greyed out.

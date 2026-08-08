@@ -419,6 +419,16 @@ pub fn save_memories(memories: &[sdroxide_types::MemoryChannel]) -> Result<(), C
     save_json("memories.json", &memories)
 }
 
+/// The memory folders. Their own file rather than a new shape for
+/// `memories.json`, so a list written before folders existed still loads.
+pub fn load_memory_folders() -> Vec<sdroxide_types::MemoryFolder> {
+    load_json("memory_folders.json")
+}
+
+pub fn save_memory_folders(folders: &[sdroxide_types::MemoryFolder]) -> Result<(), ConfigError> {
+    save_json("memory_folders.json", &folders)
+}
+
 /// Radio backend config (SoapySDR vs CAT rig; serial + sound-card settings).
 pub fn load_radio_config() -> sdroxide_types::RadioConfig {
     load_json("radio.json")

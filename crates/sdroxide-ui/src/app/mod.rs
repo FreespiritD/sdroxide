@@ -40,8 +40,8 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 use sdroxide_types::{
-    AudioDevices, CallsignInfo, Decode, DeviceCaps, DigiStatus, MemoryChannel, Meters,
-    NetworkConfig, QsoRecord, RadioController, RadioState, SkimmerSpot, SpectrumConfig,
+    AudioDevices, CallsignInfo, Decode, DeviceCaps, DigiStatus, MemoryChannel, MemoryFolder,
+    Meters, NetworkConfig, QsoRecord, RadioController, RadioState, SkimmerSpot, SpectrumConfig,
     SpectrumFrame, Spot, UploadTarget,
 };
 
@@ -75,6 +75,7 @@ pub struct SdroxideApp {
     wide_wf: crate::widgets::wide_spectrum::WideWaterfall,
     meters: Option<Meters>,
     memories: Vec<MemoryChannel>,
+    mem_folders: Vec<MemoryFolder>,
     /// The scanner's settings, mirrored from the engine and edited in place —
     /// the whole struct goes back on any change, the way the skimmer's does.
     scanner: sdroxide_types::ScannerConfig,
@@ -182,6 +183,13 @@ pub struct SdroxideApp {
     /// sends one command per edge rather than one per frame.
     ptt_held: bool,
     mem_name: String,
+    /// Name being typed into the memories window's "new folder" field.
+    mem_folder_name: String,
+    /// Folder rename in progress: (folder id, text as typed). UI-owned until
+    /// the edit commits, exactly like `voice_name_edit`.
+    mem_folder_edit: Option<(u32, String)>,
+    /// One-shot: focus the rename field on the frame after REN was clicked.
+    mem_folder_focus: bool,
     // Skimmer (CW etc.) spots, newest merge-by-id.
     skimmer_spots: Vec<SkimmerSpot>,
     /// Per-spot last-active timestamp (egui seconds), so a box fades out over
@@ -452,6 +460,7 @@ impl SdroxideApp {
             wide_wf: Default::default(),
             meters: None,
             memories: Vec::new(),
+            mem_folders: Vec::new(),
             scanner: sdroxide_types::ScannerConfig::default(),
             view,
             peaks: spectrum_view::PeakHold::default(),
@@ -504,6 +513,9 @@ impl SdroxideApp {
             tier: crate::layout::Tier::Desktop,
             ptt_held: false,
             mem_name: String::new(),
+            mem_folder_name: String::new(),
+            mem_folder_edit: None,
+            mem_folder_focus: false,
             skimmer_spots: Vec::new(),
             skimmer_active_at: std::collections::HashMap::new(),
             digi_decodes: Vec::new(),

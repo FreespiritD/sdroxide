@@ -78,6 +78,9 @@ pub(crate) struct Latest {
     pub caps: DeviceCaps,
     pub state: RadioState,
     pub memories: Vec<MemoryChannel>,
+    /// The memory folders, cached and replayed on connect for the same reason
+    /// as `memories`.
+    pub mem_folders: Vec<sdroxide_types::MemoryFolder>,
     /// The scanner's settings, announced at startup and on every change, and
     /// replayed on connect for the same reason as `memories`: a client that
     /// attaches later would otherwise open the scanner window on defaults it
@@ -381,6 +384,10 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             RadioEvent::Memories(m) => {
                 latest.memories = m.clone();
                 Some(ServerMsg::Memories(m))
+            }
+            RadioEvent::MemoryFolders(f) => {
+                latest.mem_folders = f.clone();
+                Some(ServerMsg::MemoryFolders(f))
             }
             RadioEvent::Scanner(c) => {
                 latest.scanner = c.clone();

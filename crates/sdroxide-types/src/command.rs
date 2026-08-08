@@ -393,4 +393,26 @@ pub enum Command {
     /// tap the same mixer; the client therefore sends this only when it owns
     /// the engine rather than when it is somebody else's remote.
     SetAudioDuck(f32),
+
+    // Memory folders. Appended for the usual reason: postcard numbers variants
+    // by position.
+    /// Create a folder in the memory list. Echoed back to every client as
+    /// [`crate::RadioEvent::MemoryFolders`], the way memories are.
+    CreateMemoryFolder {
+        name: String,
+    },
+    /// Rename a folder.
+    RenameMemoryFolder {
+        id: u32,
+        name: String,
+    },
+    /// Delete a folder. The memories filed under it move back to the top
+    /// level — deleting a folder is never a way to delete a memory.
+    DeleteMemoryFolder(u32),
+    /// File a memory under a folder (`Some`), or back at the top level
+    /// (`None`). Refused for a folder id that doesn't exist.
+    MoveMemoryToFolder {
+        id: u32,
+        folder: Option<u32>,
+    },
 }

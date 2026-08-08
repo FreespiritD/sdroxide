@@ -510,6 +510,16 @@ Open **MEM** (System module) for the memory channels window. Type a name and
 press **Store** to save the current frequency and mode. Each saved row has a
 **RCL** (recall) button and a **DEL** (delete) button.
 
+Memories can be sorted into folders. Type a name into the second field and
+press **New folder**, then drag a memory row onto the folder to file it under
+that folder — and drop it on the area below the folders to take it out again.
+Every folder header has a **REN** button (rename in place — Enter or clicking
+away keeps the new name, Escape abandons it) and a **DEL** button, which
+deletes only the folder: the memories filed under it move back to the top
+level. Folders collapse and expand with the arrow at the left of their header,
+and a memory scan works through every memory regardless of the folder it
+sits in.
+
 ![The memory channels window](images/06-memories.png)
 
 ---
