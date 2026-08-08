@@ -331,7 +331,7 @@ can't quietly add itself to the one you set here.
   signal you want to listen to for a long time.
 - **Tone** (NFM only) — the **CTCSS tone or DCS code** under the signal. Analog
   FM systems carry a sub-audible tone below the voice so a receiver can ignore
-  traffic that is not theirs, and the chip shows what is arriving: `88.5` for a
+  traffic that is not theirs, and the button shows what is arriving: `88.5` for a
   CTCSS tone, or `DCS` for a digital coded squelch stream. On an idle or
   toneless channel it just reads `TONE`.
 
@@ -341,11 +341,11 @@ can't quietly add itself to the one you set here.
   roughly a second after a repeater keys up, and expect it to stay for about
   half a second after it drops.
 
-  Clicking the chip opens the **tone squelch** picker: choose a tone and the
+  Clicking the button opens the **tone squelch** picker: choose a tone and the
   audio only opens when *that* tone is present, which is how you sit on a busy
   shared channel and hear one system. **USE 88.5** arms whatever is being
   received right now, which is usually what you want; **OFF** goes back to plain
-  carrier squelch. While a tone squelch is armed the chip turns yellow, and it
+  carrier squelch. While a tone squelch is armed the button turns yellow, and it
   lights when the required tone actually arrives. Note that the ordinary **SQL**
   slider still applies — tone squelch is an extra condition on the same gate,
   not a replacement.
@@ -567,7 +567,7 @@ the channel to the skip list. Touching the dial, changing band, recalling a
 memory or transmitting all stop the scan where it is — as on any scanner, and so
 that the radio is not fighting you for the VFO.
 
-The **SCAN** chip in the System module lights while a scan is running, in cyan
+The **SCAN** button in the System module lights while a scan is running, in cyan
 while it is sweeping and green while it is stopped on something, so you can
 close the window and still see what it is doing. Settings are remembered in
 `scanner.json`.
@@ -647,7 +647,7 @@ you pause you can watch the sending catch up.
 ![Band Conditions](images/bandconditions.jpg)
 
 The [propagation heat map](#68-the-propagation-heat-map) answers "what has got
-through". The **BANDS** window (the `BANDS` chip in the System box) puts that
+through". The **BANDS** window (the `BANDS` button in the System box) puts that
 next to a second, different answer: the **calculated band conditions** published
 by N0NBH at [hamqsl.com](https://www.hamqsl.com/), which are a forecast from the
 solar indices rather than a measurement of anything.
@@ -671,7 +671,7 @@ Fair, pink Poor. Hovering gives the verdict in words along with its source.
 
 - **Bands with no published verdict stay blank.** The feed covers four groups —
   80/40 m, 30/20 m, 17/15 m and 12/10 m — and nothing else. 160 m, 60 m, 6 m,
-  2 m and 70 cm have no `CONDX` and no chip colour, and never will: filling them
+  2 m and 70 cm have no `CONDX` and no button colour, and never will: filling them
   in from a neighbouring group would be inventing data. 60 m sits *inside* the
   published frequency range and is still not covered.
 - **A band with no paths is not called closed.** An empty row means nothing was
@@ -703,7 +703,7 @@ with their age.
 
 The **SAT** button in the System box opens the satellite window: pick a bird,
 lock on, and every voice and digital mode works through it with Doppler
-corrected continuously. The chip glows green while a lock is running, because
+corrected continuously. The button glows green while a lock is running, because
 the correction keeps being applied whether or not the window is open.
 
 **The picker** lists every satellite the station tracks — the amateur group
@@ -3623,7 +3623,7 @@ band, from every mode this station runs. Everything this station hears is
 evidence about the ionosphere, and it is all pooled into one picture: WSPR both
 ways, FT8/FT4 and JS8 decodes, and the logbook. With the
 [Reverse Beacon Network](#55-spots-spot-feeds) switched on, so is everything
-*everyone else* hears. The **PROP** chip above the flat map in the FT8 and WSPR
+*everyone else* hears. The **PROP** button above the flat map in the FT8 and WSPR
 operating panels draws the same thing under the panel map.
 
 **What a bright patch means.** Each reception is placed at the **midpoint of its
@@ -3641,8 +3641,8 @@ gets a control point per hop.
   it needs no configuration.
 - **ONE BAND** runs a single band through a blue → green → yellow → red ramp.
 
-On the flat map the controls are the **PROP** chip above it; on the globe they
-are the `PROP` chip in the menu bar, which adds the source filter and the
+On the flat map the controls are the **PROP** button above it; on the globe they
+are the `PROP` button in the menu bar, which adds the source filter and the
 half-life. Both draw the same field.
 
 **Signal reports are made comparable before they are pooled.** WSPR, FT8, FT4 and
@@ -3685,7 +3685,7 @@ source for that reason. **An RBN line carries two callsigns and no locators**,
 and the network publishes no machine-readable list of where its skimmers are —
 so both ends of every RBN path are placed at their DXCC entity's nominal centre.
 For San Marino that is within the blur the map already applies; for the United
-States or Russia it can be two thousand kilometres out. Turn the **RBN** chip off
+States or Russia it can be two thousand kilometres out. Turn the **RBN** button off
 in the globe's PROP menu to see the field without it.
 
 RBN spots never appear in the spot list. There are thousands a minute, they
@@ -4067,7 +4067,7 @@ gets the same treatment.
 digits shrink a little in portrait so both fit one row — and the rest becomes a
 row of menu chips:
 
-| Chip | What it holds |
+| Button | What it holds |
 | --- | --- |
 | **PTT** | Keys the transmitter. Hold it down; letting go unkeys. |
 | **RX** | Volume, front-end gain, AGC, squelch, NB, ANC, NR |
@@ -4077,13 +4077,13 @@ row of menu chips:
 | **DISP** | FIT, PEAK, SPEC, WIDE, the skimmers, and the spectrum floor/ceiling and FFT size |
 | **SYS** | LOG, SPOTS, AWARDS, BANDS, MEM, SETTINGS, HELP |
 
-A menu stays open until you tap outside it or tap its chip again — the top-bar
+A menu stays open until you tap outside it or tap its button again — the top-bar
 popups do not fade away on a touch screen the way they do under a mouse, because
 there is no hovering pointer to hold them open.
 
 **On a phone** the readout shrinks too, and the A/B selector and the other VFO's
 frequency move into the **VFO** menu; a small `A` or `B` before the digits says
-which one you are tuning. The band/mode chip stays beside the digits where the
+which one you are tuning. The band/mode button stays beside the digits where the
 width allows and moves to the menu row where it does not. The S-meter becomes a
 short strip, giving up exactly the width the menu chips need so they stay on its
 row rather than wrapping — and it wears the **bar** face, because the needle's
@@ -4124,7 +4124,7 @@ third of a phone's height is not enough to work a mode *and* watch a band —
 split that way, both were too small to use.
 
 In FT8 and FT4 the count of stations decoded in the last slot sits at the right
-of the chip row, so it reads from all three views, and answering somebody from
+of the button row, so it reads from all three views, and answering somebody from
 the decode list switches to **QSO** by itself — you started an exchange, so the
 panel shows you the exchange. In SSTV the live picture and the received gallery
 stack one above the other instead of sharing the width.
@@ -4323,7 +4323,7 @@ are on the air at any moment. Each carries a UTC window and, where the broadcast
 does not run daily, a day mask; the list is re-filtered against the clock every
 minute. Entries with no window — the longwave transmitters, the standard-time
 stations, the round-the-clock private shortwave stations — are always shown. Turn
-the whole category off with the **BC** chip in the SPOTS window.
+the whole category off with the **BC** button in the SPOTS window.
 
 A band is still busy at prime time (the 31 m band carries 50–95 transmissions at
 midday UTC), so zoom in or use **IN VIEW** when the labels crowd each other —
