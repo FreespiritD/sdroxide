@@ -1920,7 +1920,7 @@ impl SdroxideApp {
     /// The window buttons — the body of the System box, and of the SYS menu.
     /// See [`crate::chrome::control_row`] for `narrow`.
     fn windows_controls(&mut self, ui: &mut egui::Ui, narrow: bool) {
-        let [log, spots, awards, bands, mem, scan_label, settings, help] = SYSTEM_CHIPS;
+        let [log, spots, awards, bands, sat_label, mem, scan_label, settings, help] = SYSTEM_CHIPS;
         crate::chrome::control_row(ui, narrow, |ui| {
             if crate::chrome::chip(ui, self.show_logbook, log)
                 .on_hover_text("Logbook — all QSOs (digital + manual)")
@@ -1948,6 +1948,29 @@ impl SdroxideApp {
                 .clicked()
             {
                 self.show_bands = !self.show_bands;
+            }
+            // Accented while a satellite lock is running, like the scanner:
+            // Doppler is being applied whether or not the window is open, and
+            // that has to be visible.
+            let sat_chip = if self.sat_track.is_some() {
+                crate::chrome::chip_accent(
+                    ui,
+                    true,
+                    sat_label,
+                    crate::theme::GREEN,
+                    Color32::BLACK,
+                )
+            } else {
+                crate::chrome::chip(ui, self.show_sat, sat_label)
+            };
+            if sat_chip
+                .on_hover_text(match &self.sat_track {
+                    Some(t) => format!("Satellite — locked on {}", t.name),
+                    None => "Satellite — lock on and operate with Doppler correction".into(),
+                })
+                .clicked()
+            {
+                self.show_sat = !self.show_sat;
             }
             if crate::chrome::chip(ui, self.show_memories, mem)
                 .on_hover_text("Memory channels")
@@ -2006,8 +2029,8 @@ impl SdroxideApp {
 /// them: the row simply carries on past the box, and whatever crosses the
 /// window edge is lost. That is how SCAN, SETTINGS and HELP came to vanish on
 /// the layouts where the strip put this box near the end of a row.
-const SYSTEM_CHIPS: [&str; 8] =
-    ["LOG", "SPOTS", "AWARDS", "BANDS", "MEM", "SCAN", "⚙ SETTINGS", "? HELP"];
+const SYSTEM_CHIPS: [&str; 9] =
+    ["LOG", "SPOTS", "AWARDS", "BANDS", "SAT", "MEM", "SCAN", "⚙ SETTINGS", "? HELP"];
 
 /// Width the System box needs for [`SYSTEM_CHIPS`]: the chips, the gaps between
 /// them, and the box's own side margins. Measured against the live style rather

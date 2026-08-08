@@ -88,7 +88,8 @@ fn build() -> Vec<SatFreqs> {
                     P::range(432.125, 432.175),
                     P::range(145.925, 145.975),
                 )
-                .note("inverting"),
+                .note("inverting")
+                .inverting(),
                 down("Mode A beacon", "CW", P::at(29.502)),
                 down("Mode B beacon", "CW", P::at(145.972)),
             ],
@@ -103,7 +104,8 @@ fn build() -> Vec<SatFreqs> {
                     P::range(145.900, 146.000),
                     P::range(435.800, 435.900),
                 )
-                .note("inverting; LSB up, USB down"),
+                .note("inverting; LSB up, USB down")
+                .inverting(),
                 down("Beacon", "CW", P::at(435.795)),
             ],
         ),
@@ -125,7 +127,8 @@ fn build() -> Vec<SatFreqs> {
                     P::range(435.130, 435.150),
                     P::range(145.950, 145.970),
                 )
-                .note("inverting; transponder runs in eclipse, telemetry in sunlight"),
+                .note("inverting; transponder runs in eclipse, telemetry in sunlight")
+                .inverting(),
                 down("Telemetry", "BPSK 1k2", P::at(145.935)),
             ],
         ),
@@ -139,7 +142,8 @@ fn build() -> Vec<SatFreqs> {
                     P::range(435.100, 435.140),
                     P::range(145.855, 145.895),
                 )
-                .note("inverting"),
+                .note("inverting")
+                .inverting(),
                 down("Telemetry / SSDV", "BPSK 1k2", P::at(145.840)),
             ],
         ),
@@ -153,7 +157,8 @@ fn build() -> Vec<SatFreqs> {
                     P::range(145.935, 145.995),
                     P::range(435.610, 435.670),
                 )
-                .note("inverting; a high, slow orbit, so passes run long"),
+                .note("inverting; a high, slow orbit, so passes run long")
+                .inverting(),
                 down("Beacon", "CW", P::at(435.605)),
             ],
         ),
@@ -167,7 +172,8 @@ fn build() -> Vec<SatFreqs> {
                     P::range(435.170, 435.190),
                     P::range(145.860, 145.880),
                 )
-                .note("inverting"),
+                .note("inverting")
+                .inverting(),
                 down("CW beacon", "CW", P::at(145.845)),
             ],
         ),
@@ -205,7 +211,8 @@ fn build() -> Vec<SatFreqs> {
                     P::range(435.270, 435.290),
                     P::range(145.915, 145.935),
                 )
-                .note("inverting"),
+                .note("inverting")
+                .inverting(),
                 down("CW beacon", "CW", P::at(145.910)),
             ],
         ),
@@ -300,6 +307,24 @@ mod tests {
         // The three APT birds, which is what the 137 MHz antenna is for.
         assert_eq!(builtin_for(25338).unwrap().links[0].downlink, Some(Passband::at(137.620)));
         assert_eq!(builtin_for(33591).unwrap().links[0].downlink, Some(Passband::at(137.100)));
+    }
+
+    /// The inversion flag drives the satellite lock's transmit mapping, so a
+    /// link whose note says "inverting" without the structured flag would tune
+    /// the uplink to the wrong end of the passband.
+    #[test]
+    fn every_note_that_says_inverting_sets_the_flag() {
+        for s in builtin() {
+            for l in &s.links {
+                let says = l.note.starts_with("inverting");
+                assert_eq!(l.inverting, says, "{}: {} note vs flag", s.name, l.label);
+            }
+        }
+        // The reference cases, both ways round.
+        let rs44 = builtin_for(44909).unwrap();
+        assert!(rs44.links[0].inverting, "RS-44's transponder is inverting");
+        let qo = builtin_for(crate::satellites::QO100_NORAD).unwrap();
+        assert!(!qo.links[0].inverting, "QO-100's NB transponder is not");
     }
 
     /// Every satellite in [`crate::satellites::POPULAR`] — the ones drawn by

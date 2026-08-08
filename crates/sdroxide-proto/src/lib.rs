@@ -215,7 +215,13 @@ use sdroxide_types::{
 /// `rtty: Option<RttyMemory>` (baud / shift / reverse / AFC), captured when a
 /// memory is stored in RTTY mode and re-applied on recall. Changes the layout
 /// of every `Memories` message, postcard not being self-describing.
-pub const PROTO_VERSION: u16 = 47;
+/// v48: the satellite lock. Two appended `Command`s (`SetSatLock`,
+/// `SetRotatorConfig`) and two appended `ServerMsg`s (`SatTrack`,
+/// `RotatorStatus`), so no surviving discriminant moves — but `SatLink` gained
+/// `inverting` and `StationConfig` gained `rotator`, and postcard is not
+/// self-describing, so every message carrying either (`SetSatConfig`, the
+/// `StationConfig` bundle) changes layout and both ends have to agree.
+pub const PROTO_VERSION: u16 = 48;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -450,6 +456,20 @@ pub enum ServerMsg {
     /// The memory folders, replayed on connect and re-sent on every change,
     /// exactly as `Memories` is. Appended last, for the usual reason.
     MemoryFolders(Vec<MemoryFolder>),
+    /// What the satellite lock is doing — look angles, range, the Doppler
+    /// corrections as applied. The latest one is cached by the server and
+    /// replayed on connect, so a client arriving mid-pass sees the lock
+    /// immediately rather than at the next tick. `None` when the lock is
+    /// released. Appended last, for the usual reason.
+    SatTrack(Option<Box<sdroxide_types::SatTrackStatus>>),
+    /// The rotctld client's health, mirrored from the engine's
+    /// `RadioEvent::RotatorStatus`. Appended last, for the usual reason.
+    RotatorStatus {
+        connected: bool,
+        az_deg: f64,
+        el_deg: f64,
+        error: Option<String>,
+    },
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {

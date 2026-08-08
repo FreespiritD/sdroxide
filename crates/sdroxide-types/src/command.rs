@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgcMode, Band, DigiConfig, Direction, ImageKind, Mode, NetworkConfig, NrLevel, QsoStep,
-    RigctldConfig, RxId, SatConfig, SkimmerSettings, SpectrumConfig, SstvMode, TciServerConfig,
-    UploadTarget, Vfo, WsjtxConfig,
+    RigctldConfig, RotatorConfig, RxId, SatConfig, SatLockConfig, SkimmerSettings, SpectrumConfig,
+    SstvMode, TciServerConfig, UploadTarget, Vfo, WsjtxConfig,
 };
 
 /// The single control vocabulary. The GUI, the WebSocket protocol, and the
@@ -415,4 +415,17 @@ pub enum Command {
         id: u32,
         folder: Option<u32>,
     },
+
+    // The satellite lock. Appended for the usual reason: postcard numbers
+    // variants by position.
+    /// Lock onto a satellite (`Some`) or release the lock (`None`). While
+    /// locked the engine propagates the orbit, applies Doppler to the signal
+    /// path, derives the uplink from the transponder mapping, and answers with
+    /// a stream of [`crate::RadioEvent::SatTrack`]. Boxed because the config
+    /// carries strings and every other variant would otherwise pay for them.
+    SetSatLock(Option<Box<SatLockConfig>>),
+    /// Configure the rotctld client a lock steers the antenna through.
+    /// Persisted engine-side and echoed to every client in the
+    /// [`crate::RadioEvent::StationConfig`] bundle, like the servers.
+    SetRotatorConfig(RotatorConfig),
 }

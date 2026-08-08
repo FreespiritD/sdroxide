@@ -50,7 +50,7 @@ pub use indices::{
     SpaceWeather, VhfCondition, XrayLevel,
 };
 pub use planets::{Moon, Planet, Surface};
-pub use satellites::{Pass, PassSearch, SatState, Satellite};
+pub use satellites::{Observation, Pass, PassSearch, SatState, Satellite};
 pub use satfreq::{Passband, SatFreqs, SatLink};
 pub use smallbody::{Class as SmallClass, SmallBody, Tail, Tails};
 pub use swpc::ActiveRegion;

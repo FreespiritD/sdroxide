@@ -697,6 +697,82 @@ The document is cached on disk, so the last verdicts are on screen immediately
 at startup and survive being offline. Everywhere they appear they are labelled
 with their age.
 
+### 2.16 Satellite operation (SAT)
+
+The **SAT** chip in the System box opens the satellite window: pick a bird,
+lock on, and every voice and digital mode works through it with Doppler
+corrected continuously. The chip glows green while a lock is running, because
+the correction keeps being applied whether or not the window is open.
+
+**The picker** lists every satellite the station tracks — the amateur group
+subscription, anything you pasted into the TLE tab
+([5.9](#59-tle-satellites-and-their-frequencies)), and the curated set — with
+a search box and, once your grid locator is set, live elevation and the next
+pass for each. Pick one and its published links appear: transponders,
+repeaters, beacons, each with its passbands and mode, inverting transponders
+marked `inv`. **TUNE** just sets the dial and mode to the link, nothing more.
+**LOCK ON** is the mode itself.
+
+**What a lock does.** The engine — not the screen — propagates the orbit with
+SGP4 a few times a second and:
+
+- **Corrects receive Doppler in the DSP.** The dial and the waterfall stay on
+  the published frequency; the receiver quietly follows the moving signal. A
+  NOAA APT pass, which sweeps several kilohertz, holds still on the waterfall
+  while the correction readout sweeps instead — through zero exactly at
+  closest approach.
+- **Derives your uplink from the transponder.** Tune anywhere in the downlink
+  passband and the transmit frequency follows the published mapping —
+  reversed across an inverting transponder, with the sideband flipped for
+  SSB, fixed for an FM bird. Split and VFO B are ignored while locked; XIT
+  still works as a manual trim on the mapped uplink.
+- **Pre-corrects transmit Doppler**, and keeps correcting *during* the over —
+  the shift rides the transmitted IQ, so a long SSB over or an FT8 burst
+  stays on frequency at the satellite from key-down to key-up.
+- **Steers the antenna**, if a rotator is configured
+  ([2.16.1](#2161-rotator-control)): tracks above your horizon, swings onto
+  the rise azimuth in the last minute before AOS, parks after LOS.
+
+The window shows it all live: azimuth and elevation with a compass point,
+range and range rate, both corrections in hertz, the nominal downlink and the
+computed uplink, and the pass in progress or the next one. Locks survive stale
+elements gracefully — corrections are suspended (never frozen) and resume by
+themselves when a TLE refresh brings a fresher set.
+
+The [3D view](#66-satellites) joins in: the locked bird is highlighted with a
+line drawn from your QTH to it — the sightline your antenna points along —
+and with **AUTO** the camera flies to frame you and the satellite together and
+holds the shot through the pass. The pass window there gets a **LOCK ON**
+button of its own, so a satellite found by searching the globe is one click
+from being operated.
+
+Locking needs your **grid locator** (Settings ▸ General) and current element
+sets (Settings ▸ TLE). On a CAT rig the lock still tracks, predicts and
+steers the rotator, but Doppler stays uncorrected — riding a serial dial a few
+times a second is not something most rigs enjoy; an IQ front end does it for
+free in the DDC. And if satellite software is steering the dial through the
+built-in rigctld server at the same time, the window warns you: two Doppler
+corrections is one too many.
+
+#### 2.16.1 Rotator control
+
+sdroxide points motorized antennas as a **Hamlib rotctld client** — configure
+it in Settings ▸ Servers. Run a daemon next to the hardware, for example:
+
+```bash
+rotctld -m 603 -r /dev/ttyUSB0    # a Yaesu GS-232B interface
+rotctld -m 202 -r /dev/ttyUSB0    # an EasyComm II controller (SatNOGS-style)
+rotctld -m 1                      # Hamlib's dummy rotator, for trying it out
+```
+
+One protocol reaches everything Hamlib drives — GS-232, EasyComm, SPID,
+AlfaSpid and the rest — without sdroxide needing a serial driver per
+controller. The settings are the daemon's address, a minimum elevation below
+which the rotator parks (set it to your local roofline), an azimuth offset for
+a rotator whose north is off, the smallest movement worth commanding (motors
+last longer not chasing tenths of a degree), and an optional park position.
+The status line shows where the hardware actually reports itself pointing.
+
 ---
 
 ## 3. Digital modes
@@ -3484,7 +3560,11 @@ Anything you have to know before keying up — a CTCSS tone, an inverting
 transponder, a bird that only runs to a schedule — is spelled out under the
 table and repeated as a tooltip on the link name. Remember that these are the
 nominal frequencies: Doppler moves a LEO downlink by several kilohertz across a
-pass, upwards on the way in and downwards on the way out.
+pass, upwards on the way in and downwards on the way out. The **LOCK ON**
+button above the table hands the satellite to
+[satellite mode](#216-satellite-operation-sat), which corrects for exactly
+that — the locked bird is highlighted on the globe with a line drawn from your
+QTH to it, and with AUTO the camera frames the two of you through the pass.
 
 The built-in list covers the satellites drawn by default plus a few more, and it
 is reference data transcribed from the AMSAT list rather than anything derived

@@ -173,6 +173,20 @@ pub struct SolarUi {
     /// Set by the overlay's ↻ button; drained by the root pass, which owns the
     /// feed handle the child pass cannot reach.
     pub refresh_requested: bool,
+    /// The engine's satellite lock, pushed by the host each frame: the
+    /// catalogue number the scene highlights, draws the QTH line to, and the
+    /// AUTO camera frames. `None` in the browser tab, which nothing pushes it
+    /// into yet.
+    pub sat_lock: Option<u64>,
+    /// Set by the pass window's LOCK button; drained by the root pass, which
+    /// owns the command path to the engine. Native only, like
+    /// `close_requested`: the browser tab's `/solar-ws` relay carries no
+    /// commands, so the button is not even drawn there.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub lock_requested: Option<u64>,
+    /// The matching UNLOCK, same contract.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub unlock_requested: bool,
     /// Operator QTH as configured (Maidenhead) and its decoded (lat, lon).
     pub qth_grid: String,
     pub qth: Option<(f64, f64)>,
@@ -331,6 +345,11 @@ impl SolarUi {
             #[cfg(not(target_arch = "wasm32"))]
             close_requested: false,
             refresh_requested: false,
+            sat_lock: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            lock_requested: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            unlock_requested: false,
             qth_grid: String::new(),
             qth: None,
             sim_offset_s: 0.0,

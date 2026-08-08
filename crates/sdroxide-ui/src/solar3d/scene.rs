@@ -668,7 +668,10 @@ fn satellites(
         // A search match is drawn whether or not it otherwise would be: looking
         // for a satellite that is not on screen is the main reason to search.
         let hit = st.sat_hit(&sat.name, sat.norad_id);
-        if !(show_all || sat.popular || hit) {
+        // The locked satellite likewise: the engine is correcting Doppler
+        // against this one *right now*, so it is on screen no matter what.
+        let locked = st.sat_lock == Some(sat.norad_id);
+        if !(show_all || sat.popular || hit || locked) {
             continue;
         }
         let Some(state) = sat.at(unix_s) else { continue };
@@ -679,17 +682,21 @@ fn satellites(
         let geo = sat.period_min > 1300.0;
         // A match is pulled out of that scheme entirely rather than merely
         // brightened: against ninety cyan dots, "a bit lighter" is not findable,
-        // and yellow is the one accent nothing else in this layer uses.
-        let color = match (hit, geo) {
-            (true, _) => theme::YELLOW,
-            (false, true) => theme::GREEN,
-            (false, false) => theme::CYAN_DIM,
+        // and yellow is the one accent nothing else in this layer uses. The
+        // locked bird outranks even that, in the one colour louder still.
+        let color = match (locked, hit, geo) {
+            (true, ..) => theme::PINK,
+            (false, true, _) => theme::YELLOW,
+            (false, false, true) => theme::GREEN,
+            (false, false, false) => theme::CYAN_DIM,
         };
-        let ringed = sat.popular || hit;
+        let ringed = sat.popular || hit || locked;
 
         s.sprites.push(SpriteInst {
             center: pos.arr(),
-            size_px: if hit {
+            size_px: if locked {
+                11.0
+            } else if hit {
                 10.0
             } else if sat.popular {
                 7.0
@@ -705,7 +712,13 @@ fn satellites(
         // match all land here; a ninety-satellite group without does not.
         if ringed {
             let path = sat.orbit(unix_s, 96);
-            let (w_px, alpha) = if hit { (2.4, 0.9) } else { (1.3, 0.4) };
+            let (w_px, alpha) = if locked {
+                (2.6, 0.95)
+            } else if hit {
+                (2.4, 0.9)
+            } else {
+                (1.3, 0.4)
+            };
             for w in path.windows(2) {
                 s.lines.push(seg(
                     place(w[0].0, w[0].1),
@@ -716,12 +729,33 @@ fn satellites(
             }
         }
 
+        // The sightline from the operator to the locked bird: a straight
+        // chord, not a great-circle arc — this is where the antenna points.
+        // Dashed so it reads as a pointer rather than another orbit.
+        if locked {
+            if let Some((lat, lon)) = st.qth {
+                let home = b.earth + b.surface_dir(lat, lon) * b.earth_r;
+                const DASHES: usize = 12;
+                for k in 0..DASHES {
+                    let t0 = (k as f32 + 0.15) / DASHES as f32;
+                    let t1 = (k as f32 + 0.85) / DASHES as f32;
+                    s.lines.push(seg(
+                        home + (pos - home) * t0,
+                        home + (pos - home) * t1,
+                        2.0,
+                        lin(theme::PINK, 0.85 * fade),
+                    ));
+                }
+            }
+        }
+
         // A match is labelled even with the LABELS layer off and even when it
         // is not one of the curated few — the name is what was searched for, so
-        // withholding it would defeat the search. The floor is lower than the
+        // withholding it would defeat the search. The locked bird gets the
+        // same treatment for the same reason. The floor is lower than the
         // ordinary one but not absent: on an Earth twelve pixels across there
         // is nothing for a label to point at.
-        let labelled = if hit {
+        let labelled = if hit || locked {
             earth_px > 12.0
         } else {
             st.layer(layer::LABELS) && sat.popular && earth_px > 24.0

@@ -214,6 +214,21 @@ pub enum RadioEvent {
     /// a handful of `BandPlane`s — to every viewer, which is both smaller and
     /// the thing a map actually draws.
     PropPaths(Vec<crate::PropPath>),
+    /// What the satellite lock is doing: look angles, range, the Doppler
+    /// corrections as applied. `Some` a couple of times a second while a lock
+    /// is active, `None` once when it is released. Appended last, for the
+    /// usual reason.
+    SatTrack(Option<Box<crate::SatTrackStatus>>),
+    /// The rotctld client's health: whether the daemon is reachable and where
+    /// it reports the antenna pointing. Emitted on transitions and slowly
+    /// while connected — the commanded target rides
+    /// [`RadioEvent::SatTrack`] instead, this is what the hardware answered.
+    RotatorStatus {
+        connected: bool,
+        az_deg: f64,
+        el_deg: f64,
+        error: Option<String>,
+    },
 }
 
 /// Snapshot of the frontend's switchable sound devices (native clients).

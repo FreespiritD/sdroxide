@@ -213,6 +213,133 @@ pub(in crate::app) fn settings_rigctld_tab(
     );
 }
 
+/// The rotctld *client* — the one interface on this tab where sdroxide dials
+/// out instead of listening. Driven by the satellite lock's az/el.
+pub(in crate::app) fn settings_rotator_tab(
+    ui: &mut egui::Ui,
+    cfg: &mut sdroxide_types::RotatorConfig,
+    seeded: bool,
+    status: &Option<(bool, f64, f64, Option<String>)>,
+    apply: &mut bool,
+) {
+    ui.label(
+        RichText::new("Antenna rotator (rotctld client)")
+            .size(14.0)
+            .strong()
+            .color(crate::theme::CYAN),
+    );
+    ui.add_space(4.0);
+    if !seeded {
+        ui.label(RichText::new("Waiting for the station's rotator configuration…").weak());
+        return;
+    }
+    ui.label(
+        RichText::new(
+            "Points a motorized antenna at the satellite you are locked onto, through a Hamlib \
+             rotctld daemon (run e.g. \u{201c}rotctld -m 603 -r /dev/ttyUSB0\u{201d} for a GS-232B \
+             rotator, or \u{201c}rotctld -m 1\u{201d} to try it without hardware). One daemon covers \
+             every rotator Hamlib drives — EasyComm, GS-232, SPID and the rest.",
+        )
+        .weak(),
+    );
+    ui.add_space(6.0);
+    ui.checkbox(&mut cfg.enabled, "Enable");
+    ui.add_space(6.0);
+    ui.add_enabled_ui(cfg.enabled, |ui| {
+        egui::Grid::new("rotator-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Host");
+            ui.add(
+                egui::TextEdit::singleline(&mut cfg.host)
+                    .desired_width(160.0)
+                    .hint_text("127.0.0.1"),
+            );
+            ui.end_row();
+
+            ui.label("Port");
+            ui.add(egui::DragValue::new(&mut cfg.port).range(1..=65535))
+                .on_hover_text("4533 is rotctld's default");
+            ui.end_row();
+
+            ui.label("Min elevation");
+            ui.add(egui::DragValue::new(&mut cfg.min_el_deg).range(0.0..=45.0).suffix("°"))
+                .on_hover_text(
+                    "Below this the rotator parks instead of tracking — set it to your local \
+                     horizon or roofline",
+                );
+            ui.end_row();
+
+            ui.label("Azimuth offset");
+            ui.add(egui::DragValue::new(&mut cfg.az_offset_deg).range(-180.0..=180.0).suffix("°"))
+                .on_hover_text("Added to every command, for a rotator whose north is off");
+            ui.end_row();
+
+            ui.label("Min movement");
+            ui.add(egui::DragValue::new(&mut cfg.min_move_deg).range(0.1..=10.0).suffix("°"))
+                .on_hover_text(
+                    "Steps smaller than this are not sent — chasing tenths of a degree wears \
+                     motors for nothing",
+                );
+            ui.end_row();
+
+            ui.label("Park position");
+            let mut has_park = cfg.park.is_some();
+            if ui
+                .checkbox(&mut has_park, "drive to a position when idle")
+                .on_hover_text("Off leaves the antenna wherever the last pass ended")
+                .changed()
+            {
+                cfg.park = has_park.then_some((0.0, 0.0));
+            }
+            ui.end_row();
+
+            if let Some((az, el)) = cfg.park.as_mut() {
+                ui.label("");
+                ui.horizontal(|ui| {
+                    ui.label("az");
+                    ui.add(egui::DragValue::new(az).range(0.0..=360.0).suffix("°"));
+                    ui.label("el");
+                    ui.add(egui::DragValue::new(el).range(0.0..=90.0).suffix("°"));
+                });
+                ui.end_row();
+            }
+        });
+    });
+
+    ui.add_space(8.0);
+    match status {
+        Some((true, az, el, _)) => {
+            ui.label(
+                RichText::new(format!("● Connected — antenna at {az:.0}° az, {el:.0}° el"))
+                    .color(Color32::from_rgb(90, 200, 110)),
+            );
+        }
+        Some((false, _, _, Some(e))) => {
+            ui.label(RichText::new(format!("Failed: {e}")).color(Color32::from_rgb(230, 90, 80)));
+        }
+        Some((false, _, _, None)) => {
+            ui.label(RichText::new("Not connected.").weak());
+        }
+        None if cfg.enabled => {
+            ui.label(RichText::new("Status unknown — press APPLY.").weak());
+        }
+        None => {}
+    }
+
+    ui.add_space(8.0);
+    if crate::chrome::chip_accent(
+        ui,
+        false,
+        RichText::new(" APPLY ").strong(),
+        crate::theme::GREEN,
+        crate::theme::INK_ON_CYAN,
+    )
+    .on_hover_text("Persist and (re)connect to the daemon")
+    .clicked()
+    {
+        *apply = true;
+    }
+}
+
 pub(in crate::app) fn settings_tci_server_tab(
     ui: &mut egui::Ui,
     cfg: &mut sdroxide_types::TciServerConfig,

@@ -116,6 +116,11 @@ pub(crate) struct Latest {
     /// What each TLE subscription's cached listing holds, alongside the config
     /// it annotates.
     pub tle_subs: Vec<sdroxide_types::TleSubStatus>,
+    /// The satellite lock's latest status. Replayed on connect because a lock
+    /// is a *condition*: a client attaching mid-pass has to see it now, not at
+    /// the next half-second tick — and above all must not offer to start a
+    /// lock that is already running.
+    pub sat_track: Option<Box<sdroxide_types::SatTrackStatus>>,
 }
 
 pub(crate) struct Shared {
@@ -485,6 +490,13 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             RadioEvent::TleSubStatus(s) => {
                 latest.tle_subs = s.clone();
                 Some(ServerMsg::TleSubStatus(s))
+            }
+            RadioEvent::SatTrack(t) => {
+                latest.sat_track = t.clone();
+                Some(ServerMsg::SatTrack(t))
+            }
+            RadioEvent::RotatorStatus { connected, az_deg, el_deg, error } => {
+                Some(ServerMsg::RotatorStatus { connected, az_deg, el_deg, error })
             }
             // Handled above, and deliberately not forwarded: the skimmer
             // firehose is a hundred times the spot list's traffic, and the

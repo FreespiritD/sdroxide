@@ -77,6 +77,16 @@ pub fn max_body_scale(moon_orbit_scale: f32) -> f32 {
     0.45 * moon_orbit_scale * MOON_DIST / (EARTH_R + MOON_R)
 }
 
+/// A satellite-lock change requested inside the 3D window, handed back to the
+/// root pass — which owns the command path to the engine that this window,
+/// living behind an `Arc<Mutex<..>>`, cannot reach.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LockChange {
+    Lock(u64),
+    Unlock,
+}
+
 /// App-side handle to the solar-system window.
 ///
 /// Native only: it owns a [`sdroxide_solar::SolarFeed`] and a child viewport,
@@ -166,6 +176,11 @@ impl Solar3d {
     /// Emit the window for this frame (or not, when closed). Call once per root
     /// pass, after the main UI. `grid` is the operator's Maidenhead locator and
     /// `awards` the log's DXCC coverage for the "what is still missing" layer.
+    /// `sat_lock` is the engine's satellite lock, by catalogue number.
+    ///
+    /// Returns a lock change requested inside the window (the pass window's
+    /// LOCK/UNLOCK button) — the root pass owns the command path this window
+    /// cannot reach.
     pub fn viewport(
         &mut self,
         ctx: &egui::Context,
@@ -174,7 +189,8 @@ impl Solar3d {
         awards: Arc<Vec<sdroxide_types::EntitySlot>>,
         prop: Arc<sdroxide_types::PropField>,
         sat_cfg: Arc<sdroxide_types::SatConfig>,
-    ) {
+        sat_lock: Option<u64>,
+    ) -> Option<LockChange> {
         if !self.open {
             // Dropping the feed disconnects the worker's channel, which is how
             // it learns to stop. Closing the window therefore ends all network
@@ -187,7 +203,7 @@ impl Solar3d {
                 self.feed_tles.clear();
                 self.feed_subs.clear();
             }
-            return;
+            return None;
         }
 
         if !self.gpu_ready {
@@ -209,6 +225,7 @@ impl Solar3d {
             st.awards = awards;
             st.prop = prop;
             st.sat_cfg = sat_cfg;
+            st.sat_lock = sat_lock;
         }
 
         let state = Arc::clone(&self.state);
@@ -232,9 +249,14 @@ impl Solar3d {
 
         // egui tears the window down when we stop emitting the viewport — do
         // *not* send `ViewportCommand::Close` as well.
-        let (close, refresh) = {
+        let (close, refresh, lock_req, unlock_req) = {
             let mut st = self.lock();
-            (std::mem::take(&mut st.close_requested), std::mem::take(&mut st.refresh_requested))
+            (
+                std::mem::take(&mut st.close_requested),
+                std::mem::take(&mut st.refresh_requested),
+                std::mem::take(&mut st.lock_requested),
+                std::mem::take(&mut st.unlock_requested),
+            )
         };
         if close {
             self.open = false;
@@ -242,6 +264,10 @@ impl Solar3d {
         if refresh {
             self.refresh();
         }
+        if unlock_req {
+            return Some(LockChange::Unlock);
+        }
+        lock_req.map(LockChange::Lock)
     }
 
     /// Start the data feed on first open, and forward channel/resolution

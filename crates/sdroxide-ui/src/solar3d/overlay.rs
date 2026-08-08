@@ -762,7 +762,7 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     let dt =
         if st.last_frame_time <= 0.0 { 1.0 / 60.0 } else { (anim - st.last_frame_time) as f32 };
     st.last_frame_time = anim;
-    advance_tour(ui, st, sim_now, dt);
+    advance_tour(ui, st, data, sim_now, dt);
     advance_lapse(ui, st, dt);
     reframe(st, sim_now);
     let mut scene = super::scene::build(st, data, sim_now, px, anim as f32);
@@ -1180,6 +1180,42 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
                             .color(theme::LINE_LIT)
                             .size(10.0),
                     );
+                }
+            }
+
+            // Lock on from right here — the main window activates satellite
+            // mode when the root pass drains the request. Browser tab: the
+            // relay carries no commands, so the button would be a lie.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ui.add_space(6.0);
+                if st.sat_lock == Some(id) {
+                    if chrome::chip_accent(
+                        ui,
+                        true,
+                        egui::RichText::new(" ● LOCKED — UNLOCK ").strong(),
+                        theme::GREEN,
+                        theme::INK_ON_CYAN,
+                    )
+                    .on_hover_text("Release the satellite lock")
+                    .clicked()
+                    {
+                        st.unlock_requested = true;
+                    }
+                } else if chrome::chip_accent(
+                    ui,
+                    false,
+                    egui::RichText::new(" LOCK ON ").strong(),
+                    theme::GREEN,
+                    theme::INK_ON_CYAN,
+                )
+                .on_hover_text(
+                    "Track this satellite in the main window: Doppler-corrected RX and TX, \
+                     transponder-mapped uplink, rotator steering",
+                )
+                .clicked()
+                {
+                    st.lock_requested = Some(id);
                 }
             }
 
@@ -2287,7 +2323,11 @@ fn impact_banner(ui: &egui::Ui, data: Option<&SolarData>, rect: egui::Rect, now:
 
 /// Fly the AUTO tour, using real elapsed time so the pacing is frame-rate
 /// independent.
-fn advance_tour(ui: &egui::Ui, st: &mut SolarUi, sim_now: f64, dt: f32) {
+///
+/// `data` is the frame's snapshot, passed in because the caller already holds
+/// the [`SolarData`] guard for the whole pass — taking the mutex again here
+/// would be this thread waiting on itself.
+fn advance_tour(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_now: f64, dt: f32) {
     if !st.view.auto {
         // Hand the pivot back to the focus chips.
         st.focus_override = None;
@@ -2302,10 +2342,25 @@ fn advance_tour(ui: &egui::Ui, st: &mut SolarUi, sim_now: f64, dt: f32) {
         .then(|| st.qth.zip(st.digi.dx))
         .flatten()
         .map(|(home, dx)| super::camera::QsoPath { home, dx });
+    // The satellite lock outranks the contact, under the same layer rule: the
+    // camera only chases what is actually drawn.
+    let sat = st
+        .layer(crate::view::solar_layer::SATS)
+        .then(|| st.sat_lock.zip(st.qth))
+        .flatten()
+        .and_then(|(id, home)| {
+            let state = data?.satellites().find(|s| s.norad_id == id)?.at(sim_now)?;
+            Some(super::camera::SatPath {
+                home,
+                sat_world: b.earth
+                    + super::math::V3::from_f64(state.dir_ecliptic)
+                        * (b.earth_r * state.radii as f32),
+            })
+        });
     // `Tour` is `Copy`, so step a local and write it back rather than fighting
     // the borrow of `st.view` inside it.
     let mut tour = st.tour;
-    let pivot = tour.step(&mut st.view, &b, dt, qso);
+    let pivot = tour.step(&mut st.view, &b, dt, qso, sat);
     st.tour = tour;
     st.focus_override = Some(pivot);
     ui.ctx().request_repaint();

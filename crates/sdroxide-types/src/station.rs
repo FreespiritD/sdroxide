@@ -1,11 +1,11 @@
 //! The persisted configuration that belongs to the *station* rather than to
 //! the screen in front of it.
 //!
-//! Five files, all written next to each other in the config directory and all
+//! Six files, all written next to each other in the config directory and all
 //! owned by the engine: the network cockpit (`net.json`), the two built-in
 //! control servers (`rigctld.json`, `tciserver.json`), the WSJT-X UDP
-//! broadcast (`wsjtx.json`) and the operator's satellite additions
-//! (`satellites.json`).
+//! broadcast (`wsjtx.json`), the operator's satellite additions
+//! (`satellites.json`) and the antenna-rotator client (`rotator.json`).
 //!
 //! They are bundled into one announcement because they answer one question —
 //! "what is this station set up to do?" — and because a remote client has to
@@ -21,10 +21,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{NetworkConfig, RigctldConfig, SatConfig, TciServerConfig, WsjtxConfig};
+use crate::{NetworkConfig, RigctldConfig, RotatorConfig, SatConfig, TciServerConfig, WsjtxConfig};
 
 /// Everything the engine host persists on the station's behalf, as one
-/// snapshot. See the module docs for why these five travel together.
+/// snapshot. See the module docs for why these six travel together.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StationConfig {
@@ -39,4 +39,6 @@ pub struct StationConfig {
     /// Element sets the operator added, the listings they subscribe to, and
     /// their satellite frequency overrides.
     pub sat: SatConfig,
+    /// The rotctld client a satellite lock steers the antenna through.
+    pub rotator: RotatorConfig,
 }

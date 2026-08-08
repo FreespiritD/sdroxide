@@ -32,6 +32,7 @@ sdroxide-tci.workspace = true
 # The built-in rigctld server: control-only, so unlike TCI it carries no
 # streams — the engine just publishes state and drains requests.
 sdroxide-rigctld = { path = "../sdroxide-rigctld" }
+sdroxide-rotator = { path = "../sdroxide-rotator" }
 sdroxide-wsjtx = { path = "../sdroxide-wsjtx" }
 # SSTV: encode received images to PNG for the config store, decode composed
 # TX images (PNG) back to RGB. Minimal formats to keep the build lean.

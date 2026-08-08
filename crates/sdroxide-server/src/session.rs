@@ -116,6 +116,7 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>, audio_caps: A
         notice,
         station,
         tle_subs,
+        sat_track,
     ) = {
         let latest = shared.latest.lock().unwrap();
         (
@@ -130,6 +131,7 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>, audio_caps: A
             latest.notice.clone(),
             latest.station.clone(),
             latest.tle_subs.clone(),
+            latest.sat_track.clone(),
         )
     };
     let ack = ServerMsg::HelloAck { proto: PROTO_VERSION, caps, state, rx_codec, tx_codec };
@@ -161,6 +163,11 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>, audio_caps: A
     if let Some(s) = station {
         let _ = socket.send(msg(&ServerMsg::StationConfig(s))).await;
         let _ = socket.send(msg(&ServerMsg::TleSubStatus(tle_subs))).await;
+    }
+    // The satellite lock is a condition too: a client attaching mid-pass has
+    // to see it immediately, and must not offer to start one that is running.
+    if sat_track.is_some() {
+        let _ = socket.send(msg(&ServerMsg::SatTrack(sat_track))).await;
     }
     // A standing condition rather than an event: whoever attaches next has to
     // know the radio is refusing tunes or reconnecting, not just whoever

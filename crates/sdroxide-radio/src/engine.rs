@@ -19,7 +19,7 @@ use sdroxide_digi::{
     TextModemController, WefaxController, WsprController,
 };
 use sdroxide_dsp::{
-    Agc, AutoNotch, DcBlock, Ddc, DeepFilterNr, Demodulator, Duc, Modulator, MonoResampler,
+    Agc, AutoNotch, DcBlock, Ddc, DeepFilterNr, Demodulator, Duc, Modulator, MonoResampler, Nco,
     NeuralNr, NoiseBlanker, SpecBleachNr, SpectralNr, SpectrumAnalyzer, StereoResampler,
     channel_target, make_demod, make_modulator,
 };
@@ -860,6 +860,15 @@ struct TxChain {
     modulator: Option<Box<dyn Modulator>>,
     dc: DcBlock,
     duc: Duc,
+    /// The DUC's output rate — what `sat_nco` has to be programmed against.
+    tx_rate: f64,
+    /// Satellite lock: the TX Doppler correction (plus any transponder drift
+    /// since key-down) mixed onto the upconverted IQ. An NCO rather than a
+    /// hardware retune because `tx_begin` sets the TX LO exactly once per
+    /// over, and the correction has to keep moving through a long one —
+    /// phase-continuous, so the retunes are inaudible. `None` while no lock
+    /// is shifting this over.
+    sat_nco: Option<Nco>,
     mod_buf: Vec<Complex32>,
     tx_buf: Vec<Complex32>,
     alc_peak: f32,
@@ -912,6 +921,11 @@ fn pace_tx_block(tx_pace: &mut Option<(Instant, u64)>) {
     }
 }
 
+/// Unix seconds as a float — the time base the satellite propagator runs on.
+fn unix_now_f64() -> f64 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
 /// Convert Unix seconds to a UTC civil date-time `(year, month, day, hour, min,
 /// sec)`. Howard Hinnant's `civil_from_days` algorithm — exact, no leap-second
 /// or timezone handling (UTC), and no external crate.
@@ -937,12 +951,42 @@ impl TxChain {
             modulator: make_modulator(mode, 48_000.0),
             dc: DcBlock::new(100.0, 48_000.0),
             duc: Duc::new(48_000.0, tx_rate),
+            tx_rate,
+            sat_nco: None,
             mod_buf: Vec::new(),
             tx_buf: Vec::new(),
             alc_peak: 0.0,
         }
     }
 }
+
+/// A satellite lock in progress: the parsed propagator, who is watching from
+/// where, and the numbers most recently computed from them.
+struct ActiveSatLock {
+    cfg: sdroxide_types::SatLockConfig,
+    sat: sdroxide_solar::Satellite,
+    /// Observer geodetic (lat, lon), degrees.
+    observer: (f64, f64),
+    /// The latest computation — what `update_tuning`, the TX path and the
+    /// status stream all read.
+    track: sdroxide_types::SatTrackStatus,
+    next_calc: Instant,
+    next_emit: Instant,
+    /// Unix time after which the slow work runs again: the next-pass summary,
+    /// and — once the elements have gone stale — another look at the caches.
+    next_slow_unix: f64,
+}
+
+/// How often the lock's geometry is recomputed. LEO Doppler at UHF moves at up
+/// to ~75 Hz/s near closest approach; five recomputes a second keep the applied
+/// correction within ~15 Hz of the truth, and the NCO retunes are free.
+const SAT_CALC_INTERVAL: Duration = Duration::from_millis(200);
+/// How often the [`RadioEvent::SatTrack`] stream goes out — readout rate, not
+/// correction rate.
+const SAT_EMIT_INTERVAL: Duration = Duration::from_millis(500);
+/// The slow lane: pass prediction is a search, not a lookup, and stale-element
+/// recovery reads the TLE caches off disk. Neither belongs at 5 Hz.
+const SAT_SLOW_INTERVAL_S: f64 = 300.0;
 
 struct Engine {
     source: Box<dyn IqSource>,
@@ -1189,6 +1233,19 @@ struct Engine {
     /// A running [`Command::RefreshTleSubs`], joined when it finishes so the
     /// fetched status reaches the clients that asked for it.
     tle_refresh: Option<std::thread::JoinHandle<Vec<sdroxide_types::TleSubStatus>>>,
+    /// The satellite lock, when one is active — see [`Engine::poll_sat_track`]
+    /// for the tracking loop and `start_sat_lock` for how one begins.
+    sat_lock: Option<ActiveSatLock>,
+    /// The rotctld client's config as persisted (`rotator.json`), announced in
+    /// the station bundle the way the servers' are.
+    rot_cfg: sdroxide_types::RotatorConfig,
+    /// The rotctld client itself, when enabled. `poll_sat_track` feeds it;
+    /// `poll_rotator_status` reads its health back for the clients.
+    rotator: Option<sdroxide_rotator::RotctldClient>,
+    /// What was last told to the clients, and when az/el may next go out —
+    /// connection transitions bypass the throttle, movement does not.
+    rot_last_status: Option<sdroxide_rotator::RotStatus>,
+    next_rot_emit: Instant,
     /// What was last written to `session.json`, so the periodic check only
     /// touches the disk when the operator has actually moved. `None` when this
     /// engine does not remember its session (see
@@ -1439,6 +1496,11 @@ fn engine_thread(
         net_cfg: sdroxide_types::NetworkConfig::default(),
         sat_cfg: sdroxide_types::SatConfig::default(),
         tle_refresh: None,
+        sat_lock: None,
+        rot_cfg: sdroxide_types::RotatorConfig::default(),
+        rotator: None,
+        rot_last_status: None,
+        next_rot_emit: Instant::now(),
         session,
         want_antenna,
     };
@@ -1483,10 +1545,13 @@ fn engine_thread(
     // WSJT-X UDP broadcast is likewise off unless the operator turned it on.
     engine.wsjtx_cfg = sdroxide_config::load_wsjtx_config();
     engine.sync_wsjtx();
-    // The satellite additions are not acted on here — the tracker lives in the
-    // UI — but this is where they are persisted, so this is where they are
-    // announced from.
+    // The satellite additions: the display tracker lives in the UI, but the
+    // element sets are persisted here — and the satellite *lock*, when the
+    // operator engages one, runs here too (see `poll_sat_track`).
     engine.sat_cfg = sdroxide_config::load_sat_config();
+    // The rotctld client a satellite lock steers the antenna through.
+    engine.rot_cfg = sdroxide_config::load_rotator_config();
+    engine.sync_rotator();
     // Seed clients with the whole station configuration up front, for the same
     // reason as the operator config above: a settings dialog that has not been
     // told what the station is set to would show defaults, and applying those
@@ -1549,6 +1614,8 @@ fn engine_thread(
         engine.poll_spots();
         engine.poll_images();
         engine.poll_tle_refresh();
+        engine.poll_sat_track();
+        engine.poll_rotator_status();
         // Attach (or re-attach) the configured radio on its own when the
         // front-end is only a stand-in — no trip through Settings.
         engine.poll_reconnect();
@@ -3421,6 +3488,25 @@ impl Engine {
                 self.start_tle_refresh();
                 return;
             }
+
+            // The satellite lock answers through its own status stream; the
+            // dial move it makes emits `State` from inside the handler.
+            SetSatLock(cfg) => {
+                match cfg {
+                    Some(cfg) => self.start_sat_lock(*cfg),
+                    None => self.stop_sat_lock(),
+                }
+                return;
+            }
+            SetRotatorConfig(cfg) => {
+                if let Err(e) = sdroxide_config::save_rotator_config(&cfg) {
+                    warn!("saving rotator config: {e}");
+                }
+                self.rot_cfg = cfg;
+                self.sync_rotator();
+                self.emit_station_config();
+                return;
+            }
         }
         let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
     }
@@ -4009,6 +4095,7 @@ impl Engine {
                 tci_server: self.tci_cfg.clone(),
                 wsjtx: self.wsjtx_cfg.clone(),
                 sat: self.sat_cfg.clone(),
+                rotator: self.rot_cfg.clone(),
             },
         )));
     }
@@ -4053,6 +4140,331 @@ impl Engine {
             }
         };
         let _ = self.event_tx.send(RadioEvent::TleSubStatus(status));
+    }
+
+    // ── Satellite lock ──────────────────────────────────────────────────────
+
+    /// Begin (or re-shape) a satellite lock: resolve the element set and the
+    /// observer, put the dial on the nominal downlink, and run the first
+    /// computation synchronously so the answer to `SetSatLock` is a live
+    /// status rather than a promise of one.
+    fn start_sat_lock(&mut self, cfg: sdroxide_types::SatLockConfig) {
+        let Some(sat) = self.resolve_sat_tle(&cfg) else {
+            let _ = self.event_tx.send(RadioEvent::Notice(Some(format!(
+                "No current elements for {} — refresh the TLE subscriptions in Settings ▸ TLE",
+                cfg.name
+            ))));
+            return;
+        };
+        let observer =
+            cfg.observer.or_else(|| sdroxide_types::grid_to_latlon(&self.digi_config.my_grid));
+        let Some(observer) = observer else {
+            let _ = self.event_tx.send(RadioEvent::Notice(Some(
+                "The satellite lock needs your grid locator — set it in Settings ▸ General".into(),
+            )));
+            return;
+        };
+        if self.audio_mode && cfg.doppler {
+            let _ = self.event_tx.send(RadioEvent::Notice(Some(
+                "CAT rig: satellite tracking runs, but Doppler correction needs an IQ front end"
+                    .into(),
+            )));
+        }
+        self.stop_scan_for_operator();
+        // The dial goes to the nominal downlink through the normal tuning
+        // path, so the span check and a possible hardware retune behave
+        // exactly as a hand tune would. Only on a *new* lock: the same config
+        // arrives again whenever a client flips its doppler or rotator
+        // switch, and yanking the dial back to where the lock started would
+        // undo the operator's tuning across the passband.
+        let same_bird = self.sat_lock.as_ref().is_some_and(|l| l.cfg.norad_id == cfg.norad_id);
+        if cfg.downlink_hz > 0.0 && !same_bird {
+            self.state.active_vfo = Vfo::A;
+            self.state.vfo_a_hz = cfg.downlink_hz;
+            self.state.band = Band::containing(cfg.downlink_hz);
+            self.keep_vfo_in_span();
+        }
+        let track = sdroxide_types::SatTrackStatus {
+            norad_id: cfg.norad_id,
+            name: cfg.name.clone(),
+            downlink_hz: self.state.active_freq_hz(),
+            ..Default::default()
+        };
+        self.sat_lock = Some(ActiveSatLock {
+            cfg,
+            sat,
+            observer,
+            track,
+            // Everything due immediately: the first `poll_sat_track` below
+            // computes, applies and emits in one go.
+            next_calc: Instant::now(),
+            next_emit: Instant::now(),
+            next_slow_unix: 0.0,
+        });
+        self.update_tuning();
+        let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
+        self.poll_sat_track();
+    }
+
+    /// Release the lock: take the corrections out of the signal path and say
+    /// so, symmetric with the status stream a live lock produces.
+    fn stop_sat_lock(&mut self) {
+        if self.sat_lock.take().is_none() {
+            return;
+        }
+        if let Some(tx) = self.tx.as_mut() {
+            tx.sat_nco = None;
+        }
+        self.update_tuning();
+        // The antenna stops chasing a satellite nobody is locked to.
+        self.drive_rotator();
+        let _ = self.event_tx.send(RadioEvent::SatTrack(None));
+    }
+
+    /// Find the freshest element set for a lock's catalogue number: an
+    /// explicit TLE the client sent, the operator's pasted sets, and every
+    /// enabled subscription's cached listing all compete, newest epoch wins.
+    /// Newest-wins is what lets a lock recover from stale elements the moment
+    /// a subscription refresh lands on disk.
+    fn resolve_sat_tle(
+        &self,
+        cfg: &sdroxide_types::SatLockConfig,
+    ) -> Option<sdroxide_solar::Satellite> {
+        use sdroxide_solar::satellites::{parse_pasted_tles, parse_subscribed_tles};
+        let mut best: Option<sdroxide_solar::Satellite> = None;
+        let mut consider = |s: sdroxide_solar::Satellite| {
+            if s.norad_id == cfg.norad_id
+                && best.as_ref().is_none_or(|b| s.epoch_unix > b.epoch_unix)
+            {
+                best = Some(s);
+            }
+        };
+        if let Some((l1, l2)) = &cfg.tle {
+            for s in parse_pasted_tles(&format!("{}\n{l1}\n{l2}", cfg.name)) {
+                consider(s);
+            }
+        }
+        for s in parse_pasted_tles(&self.sat_cfg.tle_text()) {
+            consider(s);
+        }
+        let cache = sdroxide_solar::cache::Cache::open();
+        for sub in self.sat_cfg.live_subs().filter(|s| s.wants(cfg.norad_id)) {
+            if let Some(text) = sdroxide_solar::tlesub::cached_text(&cache, sub) {
+                for s in parse_subscribed_tles(&text) {
+                    consider(s);
+                }
+            }
+        }
+        best
+    }
+
+    /// The tracking loop: recompute the geometry a few times a second, keep
+    /// the RX DDC and the TX NCO on the current correction, and stream the
+    /// status. Called every engine tick; a cheap no-op until the interval is
+    /// due or when no lock is active.
+    fn poll_sat_track(&mut self) {
+        let now = Instant::now();
+        if !self.sat_lock.as_ref().is_some_and(|l| now >= l.next_calc) {
+            return;
+        }
+        // Taken out wholesale so the borrow checker lets the slow lane consult
+        // `resolve_sat_tle` (which reads `sat_cfg`) — put back before the
+        // tuning update, which reads the lock again.
+        let mut lock = self.sat_lock.take().expect("checked above");
+        lock.next_calc = now + SAT_CALC_INTERVAL;
+        let unix = unix_now_f64();
+
+        // Slow lane: the pass summary, and — once the elements have gone
+        // stale — another look at the caches, which is how a lock survives a
+        // TLE refresh instead of dying with its element set.
+        if unix >= lock.next_slow_unix {
+            lock.next_slow_unix = unix + SAT_SLOW_INTERVAL_S;
+            if lock.sat.at(unix).is_none() {
+                if let Some(fresh) = self.resolve_sat_tle(&lock.cfg) {
+                    if fresh.epoch_unix > lock.sat.epoch_unix {
+                        lock.sat = fresh;
+                    }
+                }
+            }
+            lock.track.next_pass = match lock.sat.next_passes(
+                lock.observer.0,
+                lock.observer.1,
+                unix,
+                48.0 * 3600.0,
+                1,
+            ) {
+                sdroxide_solar::PassSearch::Passes(p) => {
+                    p.first().map(|p| sdroxide_types::SatPass {
+                        rise_unix: p.rise_unix,
+                        set_unix: p.set_unix,
+                        rise_az: p.rise_az,
+                        set_az: p.set_az,
+                        max_el: p.max_el,
+                        max_el_unix: p.max_el_unix,
+                    })
+                }
+                _ => None,
+            };
+        }
+
+        let was_active = lock.track.corrections_active;
+        match lock.sat.observe(unix, lock.observer.0, lock.observer.1) {
+            Some(o) => {
+                // The DDC rides `rx_freq_hz` (dial + RIT), so that is the
+                // frequency the RX correction scales with; the uplink maps
+                // from the dial alone — RIT is a receive trim and must not
+                // move the transmitter, that is what XIT is for.
+                let f_down = self.state.rx_freq_hz();
+                let f_up = lock.cfg.uplink.map(|u| {
+                    u.uplink_for(self.state.active_freq_hz()) + self.state.xit.effective_hz()
+                });
+                let t = &mut lock.track;
+                t.az_deg = o.az_deg;
+                t.el_deg = o.el_deg;
+                t.range_km = o.range_km;
+                t.range_rate_km_s = o.range_rate_km_s;
+                t.downlink_hz = self.state.active_freq_hz();
+                t.uplink_hz = f_up;
+                t.visible = o.el_deg > 0.0;
+                t.stale_elements = false;
+                t.corrections_active = lock.cfg.doppler && !self.audio_mode;
+                (t.doppler_rx_hz, t.doppler_tx_hz) = if t.corrections_active {
+                    (
+                        sdroxide_types::doppler_rx_hz(f_down, o.range_rate_km_s),
+                        f_up.map_or(0.0, |f| sdroxide_types::doppler_tx_hz(f, o.range_rate_km_s)),
+                    )
+                } else {
+                    (0.0, 0.0)
+                };
+            }
+            None => {
+                // Stale or decayed elements: a kilohertz of yesterday's
+                // correction is worse than none, so the corrections drop to
+                // zero rather than freezing — and the status says why.
+                let t = &mut lock.track;
+                t.stale_elements = true;
+                t.corrections_active = false;
+                t.doppler_rx_hz = 0.0;
+                t.doppler_tx_hz = 0.0;
+            }
+        }
+
+        let apply = lock.track.corrections_active || was_active;
+        if now >= lock.next_emit {
+            lock.next_emit = now + SAT_EMIT_INTERVAL;
+            let _ = self.event_tx.send(RadioEvent::SatTrack(Some(Box::new(lock.track.clone()))));
+        }
+        self.sat_lock = Some(lock);
+        if apply {
+            self.update_tuning();
+            self.update_sat_tx_nco();
+        }
+        self.drive_rotator();
+    }
+
+    /// (Re)build the rotctld client to match the config. Rebuilding on every
+    /// change is fine: the client is a thread and a socket, and a config edit
+    /// is a human-speed event.
+    fn sync_rotator(&mut self) {
+        self.rotator = None;
+        self.rot_last_status = None;
+        if self.rot_cfg.enabled {
+            self.rotator = Some(sdroxide_rotator::RotctldClient::start(self.rot_cfg.clone()));
+        } else {
+            // Say the client has gone, so a status line does not keep showing
+            // the last position of a client that no longer exists.
+            let _ = self.event_tx.send(RadioEvent::RotatorStatus {
+                connected: false,
+                az_deg: 0.0,
+                el_deg: 0.0,
+                error: None,
+            });
+        }
+    }
+
+    /// Feed the rotator from the lock's geometry: track above the configured
+    /// horizon, pre-position onto the rise azimuth in the last minute before
+    /// AOS, park otherwise. The client dedups, so calling this at the
+    /// tracking rate costs nothing.
+    fn drive_rotator(&mut self) {
+        let Some(rot) = self.rotator.as_ref() else { return };
+        let lock = self.sat_lock.as_ref().filter(|l| l.cfg.rotator);
+        let Some(l) = lock else {
+            rot.park();
+            return;
+        };
+        let t = &l.track;
+        if t.stale_elements {
+            rot.park();
+            return;
+        }
+        if t.el_deg >= self.rot_cfg.min_el_deg.max(0.0) {
+            rot.set_target(t.az_deg, t.el_deg);
+            return;
+        }
+        // Below the horizon: swing onto the rise azimuth just before AOS so
+        // the pass is not spent catching up with the antenna.
+        if let Some(p) = &t.next_pass {
+            let to_rise = p.rise_unix as f64 - unix_now_f64();
+            if (0.0..60.0).contains(&to_rise) {
+                rot.set_target(p.rise_az, 0.0);
+                return;
+            }
+        }
+        rot.park();
+    }
+
+    /// Relay the rotctld client's health to the clients: connection changes
+    /// immediately, position movement at a readout rate.
+    fn poll_rotator_status(&mut self) {
+        let Some(rot) = self.rotator.as_ref() else { return };
+        let st = rot.status();
+        let now = Instant::now();
+        let transition = self
+            .rot_last_status
+            .as_ref()
+            .is_none_or(|p| p.connected != st.connected || p.error != st.error);
+        let moved = now >= self.next_rot_emit && self.rot_last_status.as_ref() != Some(&st);
+        if transition || moved {
+            self.next_rot_emit = now + Duration::from_secs(2);
+            self.rot_last_status = Some(st.clone());
+            let _ = self.event_tx.send(RadioEvent::RotatorStatus {
+                connected: st.connected,
+                az_deg: st.az_deg,
+                el_deg: st.el_deg,
+                error: st.error,
+            });
+        }
+    }
+
+    /// The receive Doppler correction currently in force, Hz — zero unless a
+    /// lock is active with corrections running.
+    fn sat_rx_doppler_hz(&self) -> f64 {
+        match &self.sat_lock {
+            Some(l) if l.track.corrections_active => l.track.doppler_rx_hz,
+            _ => 0.0,
+        }
+    }
+
+    /// Keep the transmit-side NCO on the current correction: TX Doppler plus
+    /// however far the transponder mapping has moved since key-down (the
+    /// operator tuning across the passband mid-over). A no-op between overs —
+    /// the chain only exists while transmitting.
+    fn update_sat_tx_nco(&mut self) {
+        let shift = match self.sat_lock.as_ref() {
+            Some(l) if l.track.corrections_active => {
+                l.track.doppler_tx_hz + l.track.uplink_hz.map_or(0.0, |f| f - self.tx_center_hz)
+            }
+            _ => 0.0,
+        };
+        let Some(tx) = self.tx.as_mut() else { return };
+        if shift == 0.0 && tx.sat_nco.is_none() {
+            return;
+        }
+        match tx.sat_nco.as_mut() {
+            Some(n) => n.set_freq(shift, tx.tx_rate),
+            None => tx.sat_nco = Some(Nco::new(shift, tx.tx_rate)),
+        }
     }
 
     /// Drain the picture worker: a normalised upload lands in a slot, a listing
@@ -5156,7 +5568,16 @@ impl Engine {
             self.update_display_center();
             return;
         }
-        let main_offset = self.state.rx_freq_hz() - self.state.center_hz;
+        let mut main_offset = self.state.rx_freq_hz() - self.state.center_hz;
+        // A satellite lock rides its Doppler correction on the DDC rather than
+        // the dial: the operator keeps reading the published frequency while
+        // the NCO follows the moving signal. Clamped so a dial parked at the
+        // very edge of the span cannot be pushed out of the usable bandwidth.
+        let doppler = self.sat_rx_doppler_hz();
+        if doppler != 0.0 {
+            let lim = 0.48 * self.state.sample_rate;
+            main_offset = (main_offset + doppler).clamp(-lim, lim);
+        }
         self.reseat_sub_freq();
         let sub_offset = self.state.sub_rx_hz - self.state.center_hz;
         if let Some(c) = self.main.as_mut() {
@@ -5198,7 +5619,25 @@ impl Engine {
                 self.emit_voice_status();
             }
             self.stop_voice_preview();
-            let txf = self.state.tx_freq_hz();
+            // While a satellite lock is active the transmit frequency is the
+            // transponder's answer to the dial, not the dial itself — split
+            // and VFO B are ignored rather than rewritten. XIT survives as
+            // the operator's trim on the mapped uplink. The safety rails
+            // below then vet the real uplink, which is the point: an
+            // out-of-band transponder pairing is caught here.
+            let txf = match self.sat_lock.as_ref() {
+                Some(l) => match l.cfg.uplink {
+                    Some(u) => {
+                        u.uplink_for(self.state.active_freq_hz()) + self.state.xit.effective_hz()
+                    }
+                    None => {
+                        return self.deny_tx(
+                            "this satellite lock is receive-only — the chosen link has no uplink",
+                        );
+                    }
+                },
+                None => self.state.tx_freq_hz(),
+            };
             if !self.caps.is_transmit_capable() {
                 return self.deny_tx("this device cannot transmit");
             }
@@ -5231,9 +5670,27 @@ impl Engine {
                     // No modulator/DUC when the device transmits raw audio (a CAT
                     // rig, or a TCI rig with wideband-IQ RX + audio TX).
                     if !self.audio_mode && !self.caps.tx_audio {
-                        self.tx = Some(TxChain::new(self.state.rx[0].mode, tx_rate));
+                        // Across an inverting transponder the sideband flips:
+                        // transmit LSB to come out of the downlink as the USB
+                        // it is being listened to on.
+                        let mut mode = self.state.rx[0].mode;
+                        let inverting = self
+                            .sat_lock
+                            .as_ref()
+                            .is_some_and(|l| l.cfg.uplink.is_some_and(|u| u.inverting));
+                        if inverting {
+                            mode = match mode {
+                                Mode::Usb => Mode::Lsb,
+                                Mode::Lsb => Mode::Usb,
+                                m => m,
+                            };
+                        }
+                        self.tx = Some(TxChain::new(mode, tx_rate));
                     }
                     self.tx_center_hz = txf;
+                    // Seed the TX-side Doppler NCO before the first block goes
+                    // out, so even a short over starts corrected.
+                    self.update_sat_tx_nco();
                     self.tx_active = true;
                     if let Some(mixer) = self.mixer.as_mut() {
                         mixer.rx_rec_enabled = false;
@@ -5689,6 +6146,12 @@ impl Engine {
 
         tx.tx_buf.clear();
         tx.duc.process(&tx.mod_buf, &mut tx.tx_buf);
+        // Satellite lock: shift the over by the TX Doppler correction (plus
+        // any transponder drift since key-down). Before the analyzer tap, so
+        // the wideband display shows the signal where it actually goes out.
+        if let Some(nco) = tx.sat_nco.as_mut() {
+            nco.mix_in_place(&mut tx.tx_buf);
+        }
         if !tx.tx_buf.is_empty() {
             self.source.tx_write(&tx.tx_buf)?;
             // The upconverted IQ feeds the wideband display at its RF position.
@@ -5746,6 +6209,11 @@ impl Engine {
 
         tx.tx_buf.clear();
         tx.duc.process(&tx.mod_buf, &mut tx.tx_buf);
+        // Satellite lock: same TX Doppler shift as the voice path — an FT8
+        // burst through a transponder needs it just as much.
+        if let Some(nco) = tx.sat_nco.as_mut() {
+            nco.mix_in_place(&mut tx.tx_buf);
+        }
         if !tx.tx_buf.is_empty() {
             self.source.tx_write(&tx.tx_buf)?;
             self.analyzer.process(&tx.tx_buf); // wideband RF display

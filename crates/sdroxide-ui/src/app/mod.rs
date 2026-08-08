@@ -26,6 +26,7 @@ pub(in crate::app) mod logbook;
 pub(in crate::app) mod net;
 pub(in crate::app) mod panels;
 pub(in crate::app) mod persist;
+pub(in crate::app) mod sat;
 pub(in crate::app) mod scanner;
 pub(in crate::app) mod settings;
 pub(in crate::app) mod solar;
@@ -424,6 +425,20 @@ pub struct SdroxideApp {
     sat_cfg_seeded: bool,
     sat_ui: SatEditState,
     sat_sub_status: Vec<sdroxide_types::TleSubStatus>,
+    /// The engine's satellite lock, mirrored from [`RadioEvent::SatTrack`].
+    /// `Some` while a lock is active — the SAT window's live pane, the top-bar
+    /// accent and the 3D view's highlight all read this one field.
+    sat_track: Option<sdroxide_types::SatTrackStatus>,
+    /// The SAT window and everything it remembers between frames.
+    show_sat: bool,
+    sat_win: sat::SatWinState,
+    /// The rotctld client's health, mirrored from
+    /// [`RadioEvent::RotatorStatus`].
+    rotator_status: Option<(bool, f64, f64, Option<String>)>,
+    /// The rotator settings dialog's working copy, seeded once like the
+    /// server configs.
+    rot_cfg_edit: sdroxide_types::RotatorConfig,
+    rot_cfg_seeded: bool,
     /// Weather fax: the chart being painted and the gallery of saved ones.
     wefax: crate::wefax::WefaxUi,
     /// Whether the operator has dismissed the out-of-band transmit warning
@@ -611,6 +626,12 @@ impl SdroxideApp {
             sat_cfg: Default::default(),
             sat_cfg_edit: Default::default(),
             sat_cfg_seeded: false,
+            sat_track: None,
+            show_sat: false,
+            sat_win: Default::default(),
+            rotator_status: None,
+            rot_cfg_edit: Default::default(),
+            rot_cfg_seeded: false,
             sat_ui: Default::default(),
             sat_sub_status: Vec::new(),
             wefax: Default::default(),

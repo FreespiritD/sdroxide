@@ -5131,6 +5131,7 @@ dependencies = [
  "sdroxide-dsp",
  "sdroxide-net",
  "sdroxide-rigctld",
+ "sdroxide-rotator",
  "sdroxide-skimmer",
  "sdroxide-solar",
  "sdroxide-tci",
@@ -5145,6 +5146,15 @@ dependencies = [
 
 [[package]]
 name = "sdroxide-rigctld"
+version = "1.0.0"
+dependencies = [
+ "crossbeam-channel",
+ "sdroxide-types",
+ "tracing",
+]
+
+[[package]]
+name = "sdroxide-rotator"
 version = "1.0.0"
 dependencies = [
  "crossbeam-channel",
@@ -5292,6 +5302,7 @@ dependencies = [
 name = "sdroxide-types"
 version = "1.0.0"
 dependencies = [
+ "postcard",
  "serde",
  "serde_json",
 ]

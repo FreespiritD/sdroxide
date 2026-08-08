@@ -447,6 +447,85 @@ impl Satellite {
     }
 }
 
+/// A satellite as seen from a ground station: where to point, how far, and how
+/// fast the distance is changing.
+///
+/// This is the *operating* view, as opposed to [`SatState`], which is the
+/// *display* view. The difference that matters is `range_rate_km_s`: Doppler
+/// correction needs the radial velocity toward the observer, which
+/// [`Satellite::at`] collapses into a scalar speed. The look angles here come
+/// from the true topocentric geometry rather than [`SatState::az_el_from`]'s
+/// sub-satellite-point approximation — the two agree to a fraction of a
+/// degree, but this one comes for free once the vectors exist.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Observation {
+    /// Degrees clockwise from true north.
+    pub az_deg: f64,
+    /// Degrees above the horizon; negative below it.
+    pub el_deg: f64,
+    pub range_km: f64,
+    /// Positive receding. `-range_rate/c` scaled by the frequency is the
+    /// receive Doppler correction.
+    pub range_rate_km_s: f64,
+}
+
+/// The Earth's rotation rate, rad/s — needed to carry a velocity from the
+/// inertial TEME frame into the rotating ECEF frame.
+const OMEGA_EARTH: f64 = 7.292_115e-5;
+
+impl Satellite {
+    /// The full topocentric look from a ground observer, or `None` under the
+    /// same conditions [`Satellite::at`] gives it: a decayed orbit, or
+    /// elements too old to trust — which for an *operating* quantity like
+    /// Doppler is a feature, not a gap.
+    pub fn observe(&self, unix_s: f64, lat_deg: f64, lon_deg: f64) -> Option<Observation> {
+        if self.element_age_s(unix_s).abs() > MAX_ELEMENT_AGE_S as f64 {
+            return None;
+        }
+        let minutes = (unix_s - self.epoch_unix as f64) / 60.0;
+        let p = self.constants.propagate(sgp4::MinutesSinceEpoch(minutes)).ok()?;
+        let teme_r = vec3(p.position[0], p.position[1], p.position[2]);
+        let teme_v = vec3(p.velocity[0], p.velocity[1], p.velocity[2]);
+        if !teme_r.len().is_finite() || teme_r.len() < EARTH_R_KM * 0.9 {
+            return None;
+        }
+
+        let jd = ephem::julian_day(unix_s);
+        let r = teme_to_ecef(teme_r, jd);
+        // A velocity does not rotate into a rotating frame the way a position
+        // does: the frame itself moves, and the transport term ω⊕ × r it
+        // contributes is up to half a kilometre per second — a couple of
+        // hundred hertz of Doppler at UHF, so not ignorable.
+        let v = teme_to_ecef(teme_v, jd) - vec3(0.0, 0.0, OMEGA_EARTH).cross(r);
+
+        // The observer, on the spherical Earth the rest of this module uses.
+        // The flattening this ignores moves the answer by less than the
+        // day-old element set already has.
+        let (lat, lon) = (lat_deg.to_radians(), lon_deg.to_radians());
+        let up = vec3(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+        let obs = up * EARTH_R_KM;
+
+        let rho = r - obs;
+        let range = rho.len();
+        if range <= 0.0 || !range.is_finite() {
+            return None;
+        }
+        // The observer is fixed in ECEF, so the relative velocity is `v`.
+        let range_rate = rho.dot(v) / range;
+
+        let east = vec3(-lon.sin(), lon.cos(), 0.0);
+        let north = up.cross(east);
+        let az = rho.dot(east).atan2(rho.dot(north)).to_degrees();
+        let el = (rho.dot(up) / range).clamp(-1.0, 1.0).asin().to_degrees();
+        Some(Observation {
+            az_deg: (az + 360.0) % 360.0,
+            el_deg: el,
+            range_km: range,
+            range_rate_km_s: range_rate,
+        })
+    }
+}
+
 /// TEME → ECEF: a rotation by Greenwich sidereal time about the polar axis.
 ///
 /// Mean rather than apparent sidereal time, and polar motion is ignored; both
@@ -764,5 +843,87 @@ mod tests {
 
         assert!(parse_tles("").is_empty());
         assert!(parse_tles("not a tle at all").is_empty());
+    }
+
+    /// QO-100 is the observation reference case too: from Vienna the slant
+    /// range to a geostationary bird at 25.9°E is a known constant, and its
+    /// range rate is (nearly) zero — a wrong Earth-rotation term in the
+    /// velocity conversion shows up here as hundreds of metres per second.
+    #[test]
+    fn qo100_observation_matches_the_known_geometry() {
+        let qo = &parse_tles(QO100)[0];
+        let o = qo.observe(NOW, OBS.0, OBS.1).expect("QO-100 must observe");
+        assert!((o.range_km - 38_300.0).abs() < 800.0, "range {} km", o.range_km);
+        assert!(o.range_rate_km_s.abs() < 0.05, "range rate {} km/s", o.range_rate_km_s);
+        // The topocentric look angles agree with the display approximation.
+        let (az, el) = qo.at(NOW).unwrap().az_el_from(OBS.0, OBS.1);
+        assert!((o.az_deg - az).abs() < 1.0, "azimuth {} vs {}", o.az_deg, az);
+        assert!((o.el_deg - el).abs() < 1.0, "elevation {} vs {}", o.el_deg, el);
+    }
+
+    /// The shape of a LEO Doppler curve: fastest at the horizon, zero at
+    /// culmination (closest approach), approaching before it and receding
+    /// after. A sign error anywhere in `observe` breaks one of these.
+    #[test]
+    fn iss_range_rate_peaks_at_the_horizon_and_nulls_at_culmination() {
+        let sats = parse_tles(AMATEUR);
+        let iss = sats.iter().find(|s| s.norad_id == 25544).unwrap();
+
+        // Over a day, the extreme radial velocity has to approach — but never
+        // exceed — the orbital velocity itself.
+        let mut peak = 0.0f64;
+        for k in 0..1440 {
+            if let Some(o) = iss.observe(NOW + k as f64 * 60.0, OBS.0, OBS.1) {
+                peak = peak.max(o.range_rate_km_s.abs());
+            }
+        }
+        assert!((4.5..8.0).contains(&peak), "peak |range rate| {peak} km/s");
+
+        let PassSearch::Passes(passes) = iss.next_passes(OBS.0, OBS.1, NOW, 48.0 * 3600.0, 3)
+        else {
+            panic!("no passes");
+        };
+        for p in &passes {
+            let at = |t: f64| iss.observe(t, OBS.0, OBS.1).unwrap().range_rate_km_s;
+            // Culmination is closest approach: the radial velocity crosses
+            // zero there. The peak time is quantized to the second and the
+            // rate turns over at up to ~0.15 km/s per second, hence the slack.
+            assert!(at(p.max_el_unix as f64).abs() < 0.35, "at peak: {}", at(p.max_el_unix as f64));
+            assert!(at(p.max_el_unix as f64 - 60.0) < 0.0, "not approaching before the peak");
+            assert!(at(p.max_el_unix as f64 + 60.0) > 0.0, "not receding after the peak");
+        }
+    }
+
+    /// The range rate must *be* the derivative of the range — checked
+    /// numerically across a whole pass. This is the test a Doppler sign flip
+    /// or a dropped transport term cannot get past.
+    #[test]
+    fn range_rate_is_the_derivative_of_range() {
+        let sats = parse_tles(AMATEUR);
+        let iss = sats.iter().find(|s| s.norad_id == 25544).unwrap();
+        let PassSearch::Passes(passes) = iss.next_passes(OBS.0, OBS.1, NOW, 48.0 * 3600.0, 1)
+        else {
+            panic!("no passes");
+        };
+        let p = &passes[0];
+        for k in 0..=20 {
+            let t = p.rise_unix as f64 + (p.set_unix - p.rise_unix) as f64 * k as f64 / 20.0;
+            let o = iss.observe(t, OBS.0, OBS.1).unwrap();
+            let before = iss.observe(t - 1.0, OBS.0, OBS.1).unwrap().range_km;
+            let after = iss.observe(t + 1.0, OBS.0, OBS.1).unwrap().range_km;
+            let numeric = (after - before) / 2.0;
+            assert!(
+                (o.range_rate_km_s - numeric).abs() < 0.01,
+                "at t+{k}: analytic {} vs numeric {numeric}",
+                o.range_rate_km_s
+            );
+        }
+    }
+
+    #[test]
+    fn observation_is_refused_for_stale_elements() {
+        let qo = &parse_tles(QO100)[0];
+        assert!(qo.observe(qo.epoch_unix as f64 + 40.0 * 86_400.0, OBS.0, OBS.1).is_none());
+        assert!(qo.observe(NOW, OBS.0, OBS.1).is_some());
     }
 }

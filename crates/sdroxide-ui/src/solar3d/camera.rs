@@ -290,6 +290,60 @@ pub fn qso_frame(p: QsoPath, b: &Bodies) -> Option<(Pose, (V3, f32))> {
     ))
 }
 
+// ── The satellite being worked ──────────────────────────────────────────────
+
+/// The two ends of a satellite lock to frame: the operator's QTH (latitude,
+/// longitude, degrees) and the satellite's position in world space — computed
+/// by the caller, which is the only place the tracker's data is at hand.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SatPath {
+    pub home: (f64, f64),
+    pub sat_world: V3,
+}
+
+/// Shortest slant range the satellite view frames as if it were this long, as
+/// a multiple of the Earth's rendered radius. An overhead LEO pass is a chord
+/// a few hundred kilometres long — invisible at any distance that also shows
+/// the planet it is happening over.
+const SAT_MIN_SPAN: f32 = 0.35;
+
+/// Camera pose and pivot that frame a satellite lock: the QTH, the satellite,
+/// and the line between them, seen from off to one side — the satellite
+/// sibling of [`qso_frame`], without the arc bulge (the line is a sightline,
+/// not a great circle).
+///
+/// `None` for a satellite the tracker has lost (inside the Earth, NaN).
+pub fn sat_frame(p: SatPath, b: &Bodies) -> Option<(Pose, (V3, f32))> {
+    let a = b.surface_dir(p.home.0, p.home.1);
+    let home = b.earth + a * b.earth_r;
+    let rel = p.sat_world - b.earth;
+    let r = rel.len();
+    if !r.is_finite() || r < b.earth_r * 0.5 {
+        return None;
+    }
+    let c = rel * (1.0 / r);
+
+    // The plane holding both ends. Degenerate when the satellite stands
+    // exactly over the QTH — any side view is then as good as any other.
+    let n = a.cross(c);
+    let normal = if n.len() > 1e-4 { n.normalize() } else { any_perp(a) };
+    let s = a + c;
+    let mid = if s.len() > 1e-4 { s.normalize() } else { normal.cross(a).normalize() };
+
+    // Pivot on the sightline's midpoint, so QTH and satellite straddle the
+    // frame's centre — for QO-100 that is 3⅓ Earth radii out, for an overhead
+    // ISS it is barely off the surface, and both are correct.
+    let pivot = (home + p.sat_world) * 0.5;
+    let dir = mid * QSO_TILT.cos() + normal * QSO_TILT.sin();
+    let span = (home - pivot).len().max((p.sat_world - pivot).len()).max(b.earth_r * SAT_MIN_SPAN);
+    let dist = (span / ((FOV_Y * 0.5).tan() * QSO_FILL)).max(b.earth_r * QSO_MIN_DIST);
+
+    Some((
+        Pose::new(dir.y.atan2(dir.x), dir.z.clamp(-1.0, 1.0).asin(), dist),
+        (pivot, span.max(b.earth_r * 0.15)),
+    ))
+}
+
 /// Some unit vector perpendicular to `v`, for the cases where the geometry
 /// itself singles none out.
 fn any_perp(v: V3) -> V3 {
@@ -468,13 +522,16 @@ impl Tour {
     /// `qso` is the contact being worked, if any. A contact pre-empts the tour
     /// entirely — the camera flies to it and holds it until the contact ends,
     /// because a path being worked *now* is the one thing on this globe worth
-    /// watching more than the scripted loop.
+    /// watching more than the scripted loop. `sat` is the satellite lock, and
+    /// it outranks even the contact: an operator locked onto a bird is
+    /// working *through* it, so the bird is the show.
     pub fn step(
         &mut self,
         view: &mut crate::view::Solar3dView,
         b: &Bodies,
         dt: f32,
         qso: Option<QsoPath>,
+        sat: Option<SatPath>,
     ) -> (V3, f32) {
         if std::mem::take(&mut self.resume_pending) {
             self.resume_near(view, b);
@@ -492,8 +549,9 @@ impl Tour {
 
         // A contact that has no framing — both ends in the same place — is no
         // contact as far as the camera is concerned; the arc is not drawn for
-        // one either.
-        let frame = qso.and_then(|p| qso_frame(p, b));
+        // one either. The satellite leg reuses the whole contact mechanism:
+        // same hand-over, same sway, same held-forever dwell.
+        let frame = sat.and_then(|p| sat_frame(p, b)).or_else(|| qso.and_then(|p| qso_frame(p, b)));
         let want = if frame.is_some() { Leg::Qso } else { Leg::Station };
         if want != self.leg {
             // Hand over from wherever the camera is at this instant, mid-flight
@@ -749,7 +807,7 @@ mod tests {
         let mut tour = Tour::default();
         let (mut poses, mut names, mut eyes) = (Vec::new(), Vec::new(), Vec::new());
         for _ in 0..(seconds / dt) as usize {
-            let pivot = tour.step(&mut st.view, &b, dt, None);
+            let pivot = tour.step(&mut st.view, &b, dt, None, None);
             st.focus_override = Some(pivot);
             poses.push(Pose::new(st.view.yaw, st.view.pitch, st.view.dist));
             eyes.push(Camera::from_view(&st, &b, [1600.0, 900.0]).eye);
@@ -851,9 +909,9 @@ mod tests {
         let mut tour = Tour::default();
 
         // Settle at station 0 (Sun), then advance to station 1 (Earth).
-        let mut pivot = tour.step(&mut st.view, &b, 1.0 / 60.0, None);
+        let mut pivot = tour.step(&mut st.view, &b, 1.0 / 60.0, None, None);
         while tour.index == 0 {
-            pivot = tour.step(&mut st.view, &b, 0.05, None);
+            pivot = tour.step(&mut st.view, &b, 0.05, None, None);
         }
         assert_eq!(tour.station().focus, Focus::Earth);
         // The first frame of the new move must still be at the Sun, not at the
@@ -863,7 +921,7 @@ mod tests {
         let mut prev = pivot.0;
         let mut worst = 0.0f32;
         for _ in 0..(TRANSITION_S / 0.02) as usize + 4 {
-            let p = tour.step(&mut st.view, &b, 0.02, None).0;
+            let p = tour.step(&mut st.view, &b, 0.02, None, None).0;
             worst = worst.max((p - prev).len());
             prev = p;
         }
@@ -919,7 +977,7 @@ mod tests {
         st.view.dist = target.ln_dist.exp();
         tour.index = 0;
         tour.request_resume();
-        tour.step(&mut st.view, &b, 1.0 / 60.0, None);
+        tour.step(&mut st.view, &b, 1.0 / 60.0, None, None);
         assert_eq!(tour.index, 4, "resumed at {} instead", tour.station().name);
     }
 
@@ -930,9 +988,9 @@ mod tests {
         let mut st = SolarUi::new(Solar3dView::default());
         let b = scene::bodies(&st, 1_784_937_600.0);
         let mut tour = Tour::default();
-        tour.step(&mut st.view, &b, 1.0 / 60.0, None);
+        tour.step(&mut st.view, &b, 1.0 / 60.0, None, None);
         let before = Pose::new(st.view.yaw, st.view.pitch, st.view.dist);
-        tour.step(&mut st.view, &b, 5.0, None);
+        tour.step(&mut st.view, &b, 5.0, None, None);
         let after = Pose::new(st.view.yaw, st.view.pitch, st.view.dist);
         assert!(tour.elapsed <= 0.3, "elapsed jumped to {}", tour.elapsed);
         assert!(
@@ -967,7 +1025,7 @@ mod tests {
         let dt = 1.0 / 60.0;
         // Long enough for the flight in (3.2 s) and a good part of the sway.
         for _ in 0..(12.0 / dt) as usize {
-            let pivot = tour.step(&mut st.view, &b, dt, Some(path));
+            let pivot = tour.step(&mut st.view, &b, dt, Some(path), None);
             st.focus_override = Some(pivot);
         }
         assert_eq!(tour.leg_name(), "QSO PATH");
@@ -989,6 +1047,83 @@ mod tests {
     /// A point on (or above) the globe, the way the arc is drawn.
     fn on_globe(b: &Bodies, lat: f64, lon: f64, lift: f32) -> V3 {
         b.earth + b.surface_dir(lat, lon) * (b.earth_r * lift)
+    }
+
+    // ── The satellite view ──────────────────────────────────────────────────
+
+    /// Fly the tour with a satellite lock in progress until it has settled.
+    fn settled_on_sat(path: SatPath) -> (SolarUi, Bodies, Camera) {
+        let mut st = SolarUi::new(Solar3dView::default());
+        st.view.auto = true;
+        let b = scene::bodies(&st, 1_784_937_600.0);
+        let mut tour = Tour::default();
+        let dt = 1.0 / 60.0;
+        for _ in 0..(12.0 / dt) as usize {
+            let pivot = tour.step(&mut st.view, &b, dt, None, Some(path));
+            st.focus_override = Some(pivot);
+        }
+        let cam = Camera::from_view(&st, &b, [1600.0, 900.0]);
+        (st, b, cam)
+    }
+
+    /// A satellite `lift` Earth radii from the centre, `sep` degrees of ground
+    /// track away from the Vienna QTH along its meridian.
+    fn sat_at(b: &Bodies, sep: f64, lift: f32) -> SatPath {
+        SatPath { home: (48.2, 16.4), sat_world: on_globe(b, 48.2 - sep, 16.4, lift) }
+    }
+
+    /// Both ends of the lock — the QTH and the satellite — have to be on
+    /// screen, from an overhead LEO pass through a horizon-grazing one to a
+    /// geostationary bird a fifth of the way to the Moon.
+    #[test]
+    fn the_satellite_view_frames_the_qth_and_the_bird() {
+        let probe = SolarUi::new(Solar3dView::default());
+        let bp = scene::bodies(&probe, 1_784_937_600.0);
+        for (what, sep, lift) in [
+            ("ISS overhead", 0.3, 1.066),
+            ("ISS mid-pass", 8.0, 1.066),
+            ("LEO near the horizon", 18.0, 1.13),
+            ("QO-100", 42.0, 6.61),
+        ] {
+            let path = sat_at(&bp, sep, lift);
+            let (_, b, cam) = settled_on_sat(path);
+            let home = on_globe(&b, path.home.0, path.home.1, 1.0);
+            for (name, p) in [("QTH", home), ("satellite", path.sat_world)] {
+                let (x, y) = ndc(&cam, p)
+                    .unwrap_or_else(|| panic!("{what}: the {name} is behind the camera"));
+                assert!(
+                    x.abs() < 0.98 && y.abs() < 0.98,
+                    "{what}: the {name} is off screen at ({x:.2}, {y:.2})"
+                );
+            }
+            assert!((cam.eye - b.earth).len() > b.earth_r * 1.05, "{what}: eye inside the globe");
+        }
+    }
+
+    /// A locked satellite outranks a contact in progress: the operator is
+    /// working *through* the bird, so the bird is the show.
+    #[test]
+    fn the_satellite_lock_preempts_the_contact() {
+        let mut st = SolarUi::new(Solar3dView::default());
+        st.view.auto = true;
+        let b = scene::bodies(&st, 1_784_937_600.0);
+        let mut tour = Tour::default();
+        let qso = Some(path_of(60.0));
+        let sat = Some(sat_at(&b, 8.0, 1.066));
+        let dt = 1.0 / 60.0;
+        for _ in 0..(8.0 / dt) as usize {
+            let pivot = tour.step(&mut st.view, &b, dt, qso, sat);
+            st.focus_override = Some(pivot);
+        }
+        // The pivot sits on the QTH–satellite sightline, not up on the
+        // contact arc's midpoint 30° south.
+        let want = (on_globe(&b, 48.2, 16.4, 1.0) + sat.unwrap().sat_world) * 0.5;
+        let got = st.focus_override.unwrap().0;
+        assert!(
+            (got - want).len() < b.earth_r * 0.1,
+            "pivot is {} Gm from the sightline midpoint — the contact won",
+            (got - want).len()
+        );
     }
 
     /// Whether any part of the Earth's horizon is in the frame — the test of
@@ -1138,7 +1273,7 @@ mod tests {
         let mut tour = Tour::default();
         let path = QsoPath { home: (48.2, 16.4), dx: (48.200_01, 16.400_01) };
         for _ in 0..600 {
-            tour.step(&mut st.view, &b, 1.0 / 60.0, Some(path));
+            tour.step(&mut st.view, &b, 1.0 / 60.0, Some(path), None);
         }
         assert_ne!(tour.leg_name(), "QSO PATH");
     }
@@ -1157,7 +1292,7 @@ mod tests {
 
         let mut eyes: Vec<V3> = Vec::new();
         let frame = |tour: &mut Tour, st: &mut SolarUi, qso, eyes: &mut Vec<V3>| {
-            let pivot = tour.step(&mut st.view, &b, dt, qso);
+            let pivot = tour.step(&mut st.view, &b, dt, qso, None);
             st.focus_override = Some(pivot);
             eyes.push(Camera::from_view(st, &b, [1600.0, 900.0]).eye);
         };

@@ -116,6 +116,12 @@ pub struct SatLink {
     /// Anything an operator has to know before keying up: a CTCSS tone, an
     /// inverting transponder, a duty schedule.
     pub note: String,
+    /// A linear transponder that reverses the passband: the high end of the
+    /// downlink answers the low end of the uplink, and sidebands flip. Most
+    /// linear birds are built this way — it cancels the transponder's own
+    /// Doppler asymmetry. Structured rather than left in `note`, because the
+    /// satellite lock derives the transmit frequency from it.
+    pub inverting: bool,
 }
 
 impl SatLink {
@@ -142,6 +148,12 @@ impl SatLink {
 
     pub fn note(mut self, note: &str) -> SatLink {
         self.note = note.into();
+        self
+    }
+
+    /// Mark the link's transponder as inverting.
+    pub fn inverting(mut self) -> SatLink {
+        self.inverting = true;
         self
     }
 

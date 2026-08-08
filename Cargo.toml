@@ -54,6 +54,7 @@ sdroxide-ui = { path = "crates/sdroxide-ui" }
 sdroxide-cat = { path = "crates/sdroxide-cat" }
 sdroxide-midi = { path = "crates/sdroxide-midi" }
 sdroxide-rigctld = { path = "crates/sdroxide-rigctld" }
+sdroxide-rotator = { path = "crates/sdroxide-rotator" }
 sdroxide-hpsdr = { path = "crates/sdroxide-hpsdr" }
 sdroxide-tci = { path = "crates/sdroxide-tci" }
 sdroxide-smartsdr = { path = "crates/sdroxide-smartsdr" }

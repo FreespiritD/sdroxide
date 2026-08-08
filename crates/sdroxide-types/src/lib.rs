@@ -28,7 +28,9 @@ mod propagation;
 mod radio;
 mod rifp;
 mod rigctld;
+mod rotator;
 mod satcfg;
+mod satlock;
 mod scanner;
 mod skimmer;
 mod spectrum;
@@ -120,9 +122,13 @@ pub use rifp::{
     RifpSize, RifpStatus,
 };
 pub use rigctld::RigctldConfig;
+pub use rotator::RotatorConfig;
 pub use satcfg::{
     CELESTRAK_GROUPS, CelestrakGroup, CustomTle, OrbitRings, Passband, SatConfig, SatFreqs,
     SatLink, TleSubStatus, TleSubscription, fmt_mhz as fmt_sat_mhz, parse_tle_block,
+};
+pub use satlock::{
+    C_KM_S, SatLockConfig, SatPass, SatTrackStatus, SatUplink, doppler_rx_hz, doppler_tx_hz,
 };
 pub use scanner::{SCAN_STEPS_HZ, ScanKind, ScanResume, ScanState, ScannerConfig};
 pub use skimmer::{

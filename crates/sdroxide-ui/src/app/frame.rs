@@ -291,8 +291,16 @@ impl eframe::App for SdroxideApp {
                         self.sat_cfg = std::sync::Arc::new(c.sat.clone());
                         self.sat_cfg_seeded = true;
                     }
+                    if !self.rot_cfg_seeded {
+                        self.rot_cfg_edit = c.rotator.clone();
+                        self.rot_cfg_seeded = true;
+                    }
                 }
                 RadioEvent::TleSubStatus(s) => self.on_tle_sub_status(s),
+                RadioEvent::SatTrack(t) => self.sat_track = t.map(|t| *t),
+                RadioEvent::RotatorStatus { connected, az_deg, el_deg, error } => {
+                    self.rotator_status = Some((connected, az_deg, el_deg, error));
+                }
                 RadioEvent::ImageSaved(e) => match e.kind {
                     sdroxide_types::ImageKind::Sstv => self.sstv.on_saved(e, &ctx),
                     sdroxide_types::ImageKind::Wefax => self.wefax.on_saved(e, &ctx),
@@ -777,6 +785,7 @@ impl eframe::App for SdroxideApp {
         self.spots_window(&ctx, &mut cmds);
         self.awards_window(&ctx);
         self.bands_window(&ctx);
+        self.sat_window(&ctx, &mut cmds);
         self.help.ui(&ctx);
         // Last, so it lands on top of everything else that opened this frame.
         self.oob_tx_window(&ctx);
@@ -795,15 +804,29 @@ impl eframe::App for SdroxideApp {
             } else {
                 Default::default()
             };
-            self.solar.viewport(
+            let lock_change = self.solar.viewport(
                 &ctx,
                 &grid,
                 traffic,
                 awards,
                 prop,
                 std::sync::Arc::clone(&self.sat_cfg),
+                self.sat_track.as_ref().map(|t| t.norad_id),
             );
             self.view.solar3d = self.solar.persisted();
+            // The pass window's LOCK button lands here: the 3D window has no
+            // command path of its own, so the request is drained and acted on
+            // where one exists.
+            match lock_change {
+                Some(crate::solar3d::LockChange::Lock(id)) => {
+                    self.sat_lock_request(id, &mut cmds);
+                }
+                Some(crate::solar3d::LockChange::Unlock) => {
+                    cmds.push(Command::SetSatLock(None));
+                    self.sat_win.sent = None;
+                }
+                None => {}
+            }
         }
 
         // Debounced spectrum-config updates with pan hysteresis.

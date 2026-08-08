@@ -577,6 +577,16 @@ pub fn save_sat_config(cfg: &sdroxide_types::SatConfig) -> Result<(), ConfigErro
     save_json("satellites.json", cfg)
 }
 
+/// The rotctld client a satellite lock steers the antenna through. Owned by
+/// the engine, like the server configs above.
+pub fn load_rotator_config() -> sdroxide_types::RotatorConfig {
+    load_json("rotator.json")
+}
+
+pub fn save_rotator_config(cfg: &sdroxide_types::RotatorConfig) -> Result<(), ConfigError> {
+    save_json("rotator.json", cfg)
+}
+
 // ── Broadcast station schedules ──────────────────────────────────────────────
 //
 // Three layers, in the order they win:
