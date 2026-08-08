@@ -22,10 +22,15 @@ use sdroxide_radio::{Complex32, DC_BLOCK_HZ, IqSource, Result, lo_offset_for};
 use sdroxide_types::{PlutoAgc, PlutoConfig};
 
 /// How long the device may deliver nothing before the connection counts as
-/// dead and the engine starts reconnecting. The same five seconds the HPSDR
-/// backend allows: this is a network rig, and a Pluto that has just been
-/// re-plugged takes a while to bring its interface back up.
-const SILENCE_BEFORE_REOPEN: Duration = Duration::from_secs(5);
+/// dead and the engine starts reconnecting. This is a network rig, and a Pluto
+/// that has just been re-plugged takes a while to bring its interface back up.
+///
+/// The backstop, not the primary detector: the IIOD layer gives up on a silent
+/// socket two seconds sooner and says *why*, so what reaches this point is a
+/// stream that stopped without the connection failing. It was five seconds,
+/// which is shorter than a stall the link recovers from on its own — so a
+/// hiccup the read layer had already absorbed still cost a teardown here.
+const SILENCE_BEFORE_REOPEN: Duration = Duration::from_secs(10);
 
 pub struct PlutoSource {
     handle: PlutoHandle,

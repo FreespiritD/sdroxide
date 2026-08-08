@@ -96,6 +96,9 @@ struct DeviceState {
     tx_buffer_opens: usize,
     rx_buffer_open: bool,
     tx_buffer_open: bool,
+    /// Pause in the middle of the next `READBUF` payload, once. Models the
+    /// intermittent gap a Pluto on a USB gadget produces every few minutes.
+    stall_next_readbuf: bool,
 }
 
 /// The sample-rate floor a stock Pluto publishes — and refuses.
@@ -131,9 +134,19 @@ struct Fake {
 
 impl Fake {
     fn start() -> Fake {
+        Fake::start_with(DeviceState::default())
+    }
+
+    /// A device that goes quiet in the middle of one buffer and then carries on
+    /// — the fault that used to end the stream and force a reopen.
+    fn start_that_stalls_mid_buffer() -> Fake {
+        Fake::start_with(DeviceState { stall_next_readbuf: true, ..DeviceState::default() })
+    }
+
+    fn start_with(initial: DeviceState) -> Fake {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
-        let state = Arc::new(Mutex::new(DeviceState::default()));
+        let state = Arc::new(Mutex::new(initial));
         let stop = Arc::new(AtomicBool::new(false));
         let connections = Arc::new(AtomicUsize::new(0));
         {
@@ -259,6 +272,22 @@ fn serve(sock: TcpStream, state: Arc<Mutex<DeviceState>>, stop: Arc<AtomicBool>)
                 }
                 let value =
                     String::from_utf8_lossy(&payload).trim_end_matches('\0').trim().to_string();
+                // The receive gain register belongs to the AD9361 unless the
+                // gain-control mode is manual; writing it in an attack mode is
+                // `-EOPNOTSUPP`, not a silently ignored write.
+                if key == "ad9361-phy/INPUT/voltage0/hardwaregain"
+                    && state
+                        .lock()
+                        .expect("lock")
+                        .get(&key.replace("hardwaregain", "gain_control_mode"))
+                        != Some("manual")
+                {
+                    let _ = writer.write_all(b"-95\n");
+                    if writer.flush().is_err() {
+                        break;
+                    }
+                    continue;
+                }
                 let rate = key.ends_with("/sampling_frequency");
                 // The AD9361 clock-chain rule: a rate at or below the printed
                 // floor cannot be realised, however confidently the device
@@ -321,8 +350,22 @@ fn serve(sock: TcpStream, state: Arc<Mutex<DeviceState>>, stop: Arc<AtomicBool>)
                 // because that is the shape the protocol allows and the client
                 // has to survive it.
                 let split = (data.len() / 2) & !3;
-                let ok = write_chunk(&mut writer, &data[..split])
-                    && write_chunk(&mut writer, &data[split..]);
+                let stall = {
+                    let mut g = state.lock().expect("lock");
+                    std::mem::take(&mut g.stall_next_readbuf)
+                };
+                let ok = if stall {
+                    // The same bytes in the same order — only the timing
+                    // differs. The pause falls *inside* the first chunk's
+                    // payload, which is the position that matters: a read that
+                    // gives up there has consumed an unknown number of bytes
+                    // and cannot simply be retried from the top.
+                    stalled_chunk(&mut writer, &data[..split])
+                        && write_chunk(&mut writer, &data[split..])
+                } else {
+                    write_chunk(&mut writer, &data[..split])
+                        && write_chunk(&mut writer, &data[split..])
+                };
                 if ok {
                     let _ = writer.write_all(b"0\n");
                 }
@@ -357,6 +400,25 @@ fn write_chunk(writer: &mut TcpStream, data: &[u8]) -> bool {
         .is_ok()
 }
 
+/// The same chunk, with the device going quiet part-way through its payload for
+/// longer than one socket poll interval.
+fn stalled_chunk(writer: &mut TcpStream, data: &[u8]) -> bool {
+    let half = (data.len() / 2) & !3;
+    let sent = writer
+        .write_all(format!("{}\n00000003\n", data.len()).as_bytes())
+        .and_then(|()| writer.write_all(&data[..half]))
+        .and_then(|()| writer.flush())
+        .is_ok();
+    if !sent {
+        return false;
+    }
+    // Longer than any single socket timeout this client has ever used, so the
+    // read really does come back empty-handed — and long enough that the
+    // five-second timeout this code shipped with would have failed here.
+    std::thread::sleep(STALL);
+    writer.write_all(&data[half..]).is_ok()
+}
+
 /// `["iio:device0", "INPUT", "voltage0", "hardwaregain"]` →
 /// `"ad9361-phy/INPUT/voltage0/hardwaregain"`, so the fake keys on names a
 /// reader recognises rather than on `iio:deviceN`.
@@ -373,8 +435,19 @@ fn attr_key(words: &[&str]) -> String {
     parts.join("/")
 }
 
-fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+/// How long the fake goes quiet mid-buffer in
+/// [`a_gap_in_the_middle_of_a_buffer_does_not_end_the_stream`]. Six seconds is
+/// chosen against the field report: the socket timeout that used to end the
+/// stream was five, so the gap that produced `EAGAIN` there was at least that
+/// long, and a shorter stall here would pass with or without the fix.
+const STALL: Duration = Duration::from_secs(6);
+
+fn wait_for(what: &str, cond: impl FnMut() -> bool) {
+    wait_up_to(Duration::from_secs(5), what, cond);
+}
+
+fn wait_up_to(how_long: Duration, what: &str, mut cond: impl FnMut() -> bool) {
+    let deadline = Instant::now() + how_long;
     while Instant::now() < deadline {
         if cond() {
             return;
@@ -460,6 +533,93 @@ fn a_rate_floor_the_device_prints_but_will_not_accept_is_still_reached() {
     let status = handle.open_status().expect("a raised rate is worth a notice");
     assert!(status.contains("1.000 Msps requested"), "{status}");
     assert!(status.contains("2.083 Msps"), "{status}");
+}
+
+/// The AD9361 owns the receive gain register in every mode but manual, and
+/// answers `-EOPNOTSUPP` to a write rather than ignoring it. Since slow attack
+/// is the default AGC, sending the gain unconditionally aborted the open on any
+/// radio the operator had not pinned to manual — and pinning it to manual is
+/// what left the receiver at a fixed 40 dB of an available 71, looking deaf.
+#[test]
+fn an_attack_mode_does_not_take_the_gain_write_that_would_abort_the_open() {
+    let fake = Fake::start();
+    let cfg = PlutoConfig { agc: PlutoAgc::SlowAttack, rx_gain_db: 40.0, ..config() };
+    let handle = PlutoHandle::open(&fake.address(), &cfg, 435_000_000.0)
+        .expect("the default AGC must not abort the open");
+
+    let g = fake.state.lock().expect("lock");
+    assert_eq!(g.get("ad9361-phy/INPUT/voltage0/gain_control_mode"), Some("slow_attack"));
+    assert!(
+        g.writes_of("ad9361-phy/INPUT/voltage0/hardwaregain").is_empty(),
+        "the gain must not be written while an attack mode owns it"
+    );
+    drop(g);
+
+    // Switching to manual replays the held gain, so the operator's setting is
+    // deferred rather than discarded.
+    handle.set_agc_mode("manual");
+    wait_for("the held gain to be replayed", || {
+        fake.state.lock().unwrap().get("ad9361-phy/INPUT/voltage0/hardwaregain").is_some()
+    });
+    let g = fake.state.lock().expect("lock");
+    assert_eq!(g.get("ad9361-phy/INPUT/voltage0/gain_control_mode"), Some("manual"));
+    assert!(
+        g.get("ad9361-phy/INPUT/voltage0/hardwaregain").unwrap().starts_with("40"),
+        "{:?}",
+        g.get("ad9361-phy/INPUT/voltage0/hardwaregain")
+    );
+}
+
+/// A gap in the data is not a broken connection. The socket's receive timeout
+/// fires on an ordinary stall, and letting it through ended the stream and
+/// forced a full reopen — every one to five minutes, on a link with no errors
+/// and no dropped packets.
+#[test]
+fn a_gap_in_the_middle_of_a_buffer_does_not_end_the_stream() {
+    let fake = Fake::start_that_stalls_mid_buffer();
+    let mut handle =
+        PlutoHandle::open(&fake.address(), &config(), 435_000_000.0).expect("open the fake Pluto");
+
+    let mut buf = vec![0f32; 4096];
+    let mut got = 0;
+    wait_up_to(STALL + Duration::from_secs(5), "samples across the stall", || {
+        got = handle.rx_read(&mut buf);
+        got > 0
+    });
+    assert!(handle.is_alive(), "a stall must not take the connection down");
+    // The samples either side of the gap are still the ones the device sent,
+    // in the right order — a retry that lost its place would interleave I and Q.
+    assert!((buf[0] - (SAMPLE_I as f32 / 2048.0)).abs() < 1e-6, "I was {}", buf[0]);
+    assert!((buf[1] - (SAMPLE_Q as f32 / 2048.0)).abs() < 1e-6, "Q was {}", buf[1]);
+    handle.release();
+}
+
+/// `rf_port_select` is refused while the receive buffer is running, and the
+/// engine re-asserts the antenna on every retune. A radio with one wired port
+/// therefore logged a rejected write each time the dial moved, for a change
+/// that was never a change.
+#[test]
+fn selecting_the_port_already_selected_writes_nothing() {
+    let fake = Fake::start();
+    let mut handle =
+        PlutoHandle::open(&fake.address(), &config(), 435_000_000.0).expect("open the fake Pluto");
+    let already = handle.rx_port().to_string();
+    assert_eq!(already, "A_BALANCED");
+
+    let tx_already = handle.tx_port().to_string();
+    handle.set_rx_port(&already);
+    handle.set_tx_port(&tx_already);
+    std::thread::sleep(Duration::from_millis(50));
+    let g = fake.state.lock().expect("lock");
+    assert!(g.writes_of("ad9361-phy/INPUT/voltage0/rf_port_select").is_empty(), "no-op RX port");
+    assert!(g.writes_of("ad9361-phy/OUTPUT/voltage0/rf_port_select").is_empty(), "no-op TX port");
+    drop(g);
+
+    // A real change still goes through.
+    handle.set_rx_port("B_BALANCED");
+    wait_for("the port change", || {
+        !fake.state.lock().unwrap().writes_of("ad9361-phy/INPUT/voltage0/rf_port_select").is_empty()
+    });
 }
 
 #[test]

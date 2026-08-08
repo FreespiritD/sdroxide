@@ -199,7 +199,7 @@ impl PlutoHandle {
         };
         let bandwidth = phy.set_bandwidth(&mut control, want_bw)?;
         phy.set_agc_mode(&mut control, cfg.agc.iio_name())?;
-        phy.set_rx_gain(&mut control, cfg.rx_gain_db)?;
+        phy.set_rx_gain(&mut control, cfg.agc.iio_name(), cfg.rx_gain_db)?;
         if !cfg.rx_port.trim().is_empty() {
             phy.set_rx_port(&mut control, cfg.rx_port.trim())?;
         }
@@ -224,6 +224,23 @@ impl PlutoHandle {
         let mut warnings: Vec<String> = Vec::new();
         if let Some(n) = phy.limits.assumption_notice() {
             warnings.push(n);
+        }
+        // A dial left outside this board's range — a restored session from a
+        // different radio is the usual way — is clamped by `set_rx_lo`, and
+        // silently receiving 20 MHz from where the operator is looking is
+        // indistinguishable from a broken receiver. Say it instead.
+        let (lo_min, lo_max) = phy.limits.rx_lo_hz;
+        if center_hz < lo_min || center_hz > lo_max {
+            let msg = format!(
+                "PlutoSDR: {:.6} MHz is outside this board's {:.3}–{:.3} MHz tuning range, so \
+                 it is receiving at {:.6} MHz instead — retune inside the range",
+                center_hz / 1e6,
+                lo_min / 1e6,
+                lo_max / 1e6,
+                center_hz.clamp(lo_min, lo_max) / 1e6,
+            );
+            tracing::warn!("{msg}");
+            warnings.push(msg);
         }
         if (rate - cfg.sample_rate_hz).abs() > 1.0 {
             let msg = format!(
@@ -383,12 +400,27 @@ impl PlutoHandle {
         &self.tx_port
     }
 
+    /// Select the receive port, if it is not the one already selected.
+    ///
+    /// The no-op guard is not an optimisation. `rf_port_select` is refused
+    /// (`-EINVAL`) while the receive buffer is running, and the engine re-asserts
+    /// the antenna on every retune — so a radio with exactly one wired port
+    /// logged a rejected write each time the operator touched the dial, for a
+    /// change that was never a change.
     pub fn set_rx_port(&mut self, port: &str) {
+        if self.rx_port == port {
+            return;
+        }
         self.rx_port = port.to_string();
         let _ = self.ctrl.send(Ctrl::RxPort(port.to_string()));
     }
 
+    /// Select the transmit port, if it is not the one already selected. Same
+    /// reasoning as [`Self::set_rx_port`].
     pub fn set_tx_port(&mut self, port: &str) {
+        if self.tx_port == port {
+            return;
+        }
         self.tx_port = port.to_string();
         let _ = self.ctrl.send(Ctrl::TxPort(port.to_string()));
     }
@@ -552,6 +584,9 @@ fn control_thread(
     let phy = &shared.phy;
     let mut ppm = cfg.ppm;
     let mut rx_gain_db = cfg.rx_gain_db;
+    // Tracked because the receive gain register is only writable in manual —
+    // see `Phy::set_rx_gain`. Seeded from what `open` actually set.
+    let mut agc_mode = cfg.agc.iio_name().to_string();
     // Seeded from where `open` left the oscillator, so a ppm trim made before
     // the operator has touched the dial still moves it.
     let mut rx_hz = center_hz;
@@ -567,15 +602,19 @@ fn control_thread(
                 phy.set_rx_lo(&mut conn, PlutoConfig::apply_ppm(hz, ppm))
             }
             Ctrl::RxGain(db) => {
+                // Remembered whatever the mode is, so a slider moved while an
+                // attack mode is running still takes effect on the way back
+                // into manual rather than being thrown away.
                 rx_gain_db = db;
-                phy.set_rx_gain(&mut conn, db)
+                phy.set_rx_gain(&mut conn, &agc_mode, db)
             }
             Ctrl::AgcMode(mode) => phy.set_agc_mode(&mut conn, &mode).and_then(|()| {
-                // Manual gain is ignored while an attack mode is running, so
-                // the value the operator last chose has to be replayed on the
-                // way back into manual — otherwise the radio resumes at
+                agc_mode = mode;
+                // The gain register is the AD9361's while an attack mode runs,
+                // so the value the operator last chose has to be replayed on
+                // the way back into manual — otherwise the radio resumes at
                 // whatever level the AGC happened to leave behind.
-                if mode == "manual" { phy.set_rx_gain(&mut conn, rx_gain_db) } else { Ok(()) }
+                phy.set_rx_gain(&mut conn, &agc_mode, rx_gain_db)
             }),
             Ctrl::RxPort(p) => phy.set_rx_port(&mut conn, &p),
             Ctrl::TxPort(p) => phy.set_tx_port(&mut conn, &p),

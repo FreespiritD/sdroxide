@@ -803,12 +803,29 @@ fn open_configured_source(
     cli: &Cli,
     settings: &Settings,
 ) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    // `--rate` reaches only the backends that have somewhere to put it. Saying
+    // so is the point: it used to be accepted and silently dropped, which reads
+    // as "the flag works and the radio ignored it". Once per run, not once per
+    // reconnect — this is called again every time the engine reopens.
+    if let Some(rate) = cli.rate {
+        if !matches!(radio.backend, Backend::Soapy | Backend::Pluto | Backend::Auto) {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                tracing::warn!(
+                    "--rate {:.3} Msps does not apply to the {} interface — set its sample \
+                     rate in radio.json instead",
+                    rate / 1e6,
+                    radio.backend.label()
+                );
+            });
+        }
+    }
     match radio.backend {
         Backend::Cat => open_cat_source(radio),
         Backend::Hpsdr => open_hpsdr_source(radio, cli.center_hz()),
         Backend::Tci => open_tci_source(radio, cli.center_hz()),
         Backend::SmartSdr => open_smartsdr_source(radio, cli.center_hz()),
-        Backend::Pluto => open_pluto_source(radio, cli.center_hz()),
+        Backend::Pluto => open_pluto_source(radio, cli.center_hz(), cli.rate),
         Backend::RtlSdr => open_rtlsdr_source(radio, cli.center_hz()),
         Backend::Rx888 => open_rx888_source(radio, cli.center_hz()),
         Backend::SdrPlay => open_sdrplay_source(radio, cli.center_hz()),
@@ -1049,12 +1066,29 @@ fn sdrplay_caps(src: &sdrplay_source::SdrPlaySource) -> DeviceCaps {
 /// Build the PlutoSDR source from radio.json. The address is the operator's
 /// typed one, else a persisted discovery selection, else the USB gadget's
 /// default — see [`sdroxide_types::PlutoConfig::target`].
+///
+/// `rate_override` is `--rate`, which for this backend takes precedence over
+/// the configured rate: on a headless install the command line is the part of
+/// the configuration that lives in the unit file, and a flag that is accepted
+/// and then quietly ignored is worse than one that does not exist.
 fn open_pluto_source(
     radio: &RadioConfig,
     center_hz: f64,
+    rate_override: Option<f64>,
 ) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
-    let address = radio.pluto.target();
-    let src = pluto_source::PlutoSource::open(&address, &radio.pluto, center_hz)
+    let mut cfg = radio.pluto.clone();
+    if let Some(rate) = rate_override.filter(|r| r.is_finite() && *r > 0.0) {
+        if (rate - cfg.sample_rate_hz).abs() > 1.0 {
+            tracing::info!(
+                "PlutoSDR: --rate {:.3} Msps overrides the {:.3} Msps in radio.json",
+                rate / 1e6,
+                cfg.sample_rate_hz / 1e6
+            );
+        }
+        cfg.sample_rate_hz = rate;
+    }
+    let address = cfg.target();
+    let src = pluto_source::PlutoSource::open(&address, &cfg, center_hz)
         .with_context(|| format!("opening PlutoSDR at {address}"))?;
     let caps = pluto_caps(&src);
     Ok((Box::new(src), caps))

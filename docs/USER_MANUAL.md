@@ -2435,6 +2435,13 @@ configured in exactly the same way as one on your desk.
   of a USB 2.0 link, so the list stops where it does. Anything above 3.84 Msps
   is marked, and is realistic only over Ethernet. Takes effect on **Apply /
   reconnect**.
+
+  **A stock Pluto cannot go below about 2.084 Msps.** With the AD9361's
+  internal FIR decimator bypassed — which is how the radio arrives, and how
+  sdroxide leaves it — the lowest rate the chip's clock tree can produce is
+  25 MHz ÷ 12. The rates under that are still offered, because a board someone
+  has loaded a filter into can honour them, but on an ordinary Pluto they are
+  rounded up and the connection message says so. They are marked in the list.
 - **Analog filter** — the AD9361's baseband filter, or `auto`, which opens it to
   nine tenths of the sample rate. Wide on purpose: the receiver parks its
   oscillator a quarter of a span off your dial to keep signals clear of the DC
@@ -2448,9 +2455,11 @@ configured in exactly the same way as one on your desk.
   measurement and weak-signal digital modes. **Hybrid** is a digital loop with
   an analog fast-attack safety net. (SoapySDR can only say "AGC on" or "AGC
   off"; this is one of the reasons the native backend exists.)
-- **RX gain** — 0–71 dB, applied as you move it. Ignored unless the AGC is in
-  manual — that is the chip's behaviour, not sdroxide's, which is why the slider
-  greys out in the other modes.
+- **RX gain** — 0–71 dB, applied as you move it. It only reaches the radio when
+  the AGC is in manual: in the other modes the AD9361 owns that register and
+  refuses the write outright, which is why the slider greys out. A value you set
+  in manual is remembered and reapplied the next time you switch back, so
+  changing AGC mode does not lose it.
 - **TX gain** — negative, because the AD9361 states transmit level as
   *attenuation*: `0 dB` is full output and `−89.75 dB` is as close to off as the
   part gets. Applied as you move it. On connect the transmitter is set to its
@@ -4529,6 +4538,88 @@ sdroxide stores its settings under the per-user config directory:
 
 Every file has sensible defaults, so a missing or partial file always loads. You
 normally edit these through the GUI rather than by hand.
+
+### 11.1 Choosing the radio interface without a GUI
+
+Settings → Radio is the normal way to pick an interface, and a remote or browser
+client deliberately cannot use it: which radio the engine talks to is a property
+of the machine the radio is plugged into ([§8.2](#82-what-works-in-the-browser)).
+On a headless server — a container, a systemd unit, a box with no display — that
+leaves `radio.json`, so here is what it contains.
+
+Only the keys you want to change need to be present. Everything else falls back
+to its default, and a partial file is normal rather than a special case.
+
+```jsonc
+{
+  "backend": "Pluto",          // which interface to open — see the list below
+  "converter_offset_hz": 0.0,  // external up/down-converter in the antenna line
+  "freq_ranges_rx": [],        // tuning ranges you state yourself, in Hz
+  "freq_ranges_tx": [],        //   e.g. [[144000000.0, 146000000.0]]
+  "radio_audio_in": null,      // sound-card names, for the CAT interface only
+  "radio_audio_out": null,
+  "pluto": { "address": "192.168.2.1", "sample_rate_hz": 2500000.0 }
+}
+```
+
+`backend` is one of:
+
+| Value | Interface | Its settings live in |
+| --- | --- | --- |
+| `"Soapy"` | SoapySDR device | `device_args` in `config.toml` |
+| `"Cat"` | CAT control + sound card | `"cat"` |
+| `"Hpsdr"` | OpenHPSDR network radio | `"hpsdr"` |
+| `"Tci"` | TCI over WebSocket | `"tci"` |
+| `"SmartSdr"` | FlexRadio SmartSDR | `"smartsdr"` |
+| `"Pluto"` | ADALM-Pluto over IIOD | `"pluto"` |
+| `"RtlSdr"` | RTL-SDR dongle | `"rtlsdr"` |
+| `"Rx888"` | RX-888 Mk2 | `"rx888"` |
+| `"SdrPlay"` | SDRplay RSP | `"sdrplay"` |
+
+The per-interface object is only read when `backend` names it, so leaving the
+others out — or leaving them configured for a radio you have unplugged — changes
+nothing. The keys of each are the settings on that interface's tab in
+[§5.2](#52-radio-choosing-and-configuring-the-rig), and the defaults are what the
+tab shows before you touch it. `"pluto"`, for example, takes `address`,
+`sample_rate_hz`, `rf_bandwidth_hz`, `rx_gain_db`, `agc` (`"Manual"`,
+`"SlowAttack"`, `"FastAttack"` or `"Hybrid"`), `tx_gain_db`, `rx_port`,
+`tx_port`, `ppm` and `buffer_samples`.
+
+To see the whole file with every default filled in, start sdroxide once and read
+what it wrote: it saves a complete `radio.json` on exit, and that file is the
+authoritative list of keys for the version you are running.
+
+A worked example — a Pluto on a headless server, reached over its USB gadget
+link:
+
+```json
+{
+  "backend": "Pluto",
+  "pluto": {
+    "address": "192.168.2.1",
+    "sample_rate_hz": 2500000.0,
+    "agc": "SlowAttack",
+    "rx_gain_db": 40.0
+  }
+}
+```
+
+```ini
+# /etc/systemd/system/sdroxide.service
+[Service]
+ExecStart=/opt/sdroxide/sdroxide --server --port 4950
+```
+
+No `--device`, `--freq` or `--rate` is needed once the file is in place;
+`--device` configures SoapySDR only, and `--rate` reaches the SoapySDR and
+PlutoSDR interfaces but not the rest — where it does not apply, sdroxide says so
+in the log rather than ignoring it silently.
+
+One trap worth knowing if you clone a working install: `session.json` remembers
+the dial frequency, and a frequency that was valid on the previous radio may be
+outside the new one's range. The engine says so on connect rather than sitting
+there silently — but if a freshly cloned server comes up receiving nothing, the
+remembered frequency is the first thing to check.
 
 Two things are kept outside the config directory, because they are things you
 will want to open in an ordinary file manager rather than program state:

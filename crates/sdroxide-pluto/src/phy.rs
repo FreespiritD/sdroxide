@@ -361,6 +361,10 @@ impl Phy {
         conn.write_attr(&self.phy_id, Some(TX_LO), "frequency", &format!("{}", hz.round() as i64))
     }
 
+    /// The one gain-control mode in which the operator, rather than the
+    /// AD9361, owns the receive gain register.
+    pub const MANUAL_AGC: &'static str = "manual";
+
     /// `manual`, `slow_attack`, `fast_attack` or `hybrid`. An unknown mode is
     /// refused here rather than on the wire so the message names the modes the
     /// device actually offers.
@@ -374,10 +378,27 @@ impl Phy {
         conn.write_attr(&self.phy_id, Some(RX_CHAN), "gain_control_mode", mode)
     }
 
-    /// Receive gain in dB. Only has an effect in `manual` mode; the AD9361
-    /// silently ignores it otherwise, which is why the caller sets the mode
-    /// first.
-    pub fn set_rx_gain(&self, conn: &mut Connection, db: f64) -> Result<()> {
+    /// Receive gain in dB — **only writable while the gain-control mode is
+    /// `manual`**, which is why `mode` is a parameter rather than something the
+    /// caller is trusted to have checked.
+    ///
+    /// In any attack mode the AD9361 owns this register and the driver answers
+    /// `-EOPNOTSUPP` (-95) rather than ignoring the write. Since the default
+    /// AGC here is slow attack, sending it unconditionally aborted the open on
+    /// every radio that had not been switched to manual — and the workaround,
+    /// pinning the AGC to manual, left the receiver at a fixed 40 dB of an
+    /// available 71 and looking deaf.
+    ///
+    /// Skipping is not the same as losing the value: the caller keeps it and
+    /// replays it on the way back into manual (see `control_thread`).
+    pub fn set_rx_gain(&self, conn: &mut Connection, mode: &str, db: f64) -> Result<()> {
+        if mode != Phy::MANUAL_AGC {
+            tracing::debug!(
+                "PlutoSDR: holding the {db:.1} dB receive gain — the AGC is in {mode}, where \
+                 the AD9361 owns that register"
+            );
+            return Ok(());
+        }
         let db = db.clamp(self.limits.rx_gain_db.0, self.limits.rx_gain_db.1);
         conn.write_attr(&self.phy_id, Some(RX_CHAN), "hardwaregain", &format!("{db:.6}"))
     }

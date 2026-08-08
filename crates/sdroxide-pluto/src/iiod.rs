@@ -28,6 +28,11 @@
 //! takes it in. [`Connection::read_buf`] therefore reads the mask on every
 //! group, not just the first.
 //!
+//! **A gap in the data is not a broken connection.** See [`Patient`]: the
+//! receive timeout that keeps a dead link from wedging a thread also fires on an
+//! ordinary stall, and letting it through would leave a half-read message with
+//! no way to say how much had already been consumed.
+//!
 //! **`WRITE`'s length counts the bytes that follow**, and libiio appends a
 //! trailing NUL to attribute strings. Writing `"40"` is three bytes, not two;
 //! a length that disagrees with what follows desynchronises the connection for
@@ -43,7 +48,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
 use crate::trace::Trace;
@@ -51,11 +56,24 @@ use crate::trace::Trace;
 /// The port `iiod` listens on.
 pub const DEFAULT_PORT: u16 = 30431;
 
-/// How long a single socket operation may block before the connection counts as
-/// stalled. Generous: a `READBUF` legitimately waits for the device to fill a
-/// buffer, which at the lowest offered rate (521 ksps, 32768 samples) is 63 ms,
-/// and `iiod` on a busy Zynq is not always prompt.
-const IO_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long one socket read may block before [`Patient`] looks at the clock
+/// again. This is a polling granularity, not a deadline — see [`IO_DEADLINE`].
+const IO_POLL: Duration = Duration::from_secs(1);
+
+/// How long a read may go without a single byte before the connection counts as
+/// dead.
+///
+/// Sits just inside the engine's silence watchdog (`SILENCE_BEFORE_REOPEN` in
+/// `pluto_source`), so that when a link really has gone the failure is reported
+/// by the layer that knows what happened rather than by a watchdog that only
+/// knows nothing arrived. The gap between the two is deliberate: a stall
+/// shorter than this is absorbed here and costs nothing, where it used to end
+/// the stream and force a full reopen.
+const IO_DEADLINE: Duration = Duration::from_secs(8);
+
+/// How long a write may block. Commands are tiny, so this only ever fires when
+/// the link itself has gone.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Server-side timeout handed to `TIMEOUT`, in ms. Shorter than [`IO_TIMEOUT`]
 /// so a device that stops producing is reported by the server as an error we
@@ -63,13 +81,64 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// about whether the *device* or the *link* is at fault.
 const SERVER_TIMEOUT_MS: u32 = 3_000;
 
+/// A socket read that waits out a gap in the data instead of failing on it.
+///
+/// The socket carries a receive timeout so a dead link cannot wedge a thread
+/// forever, and that timeout surfaces as `EAGAIN`/`WouldBlock`. Left to
+/// propagate, it ends the read *mid-message*: `read_exact` does not say how many
+/// bytes it had already taken, so the only safe response is to abandon the
+/// connection. That is why a transient stall used to tear down the whole stream
+/// and reopen it — a Pluto on a USB gadget produces one every few minutes, on a
+/// link with no errors and no dropped packets.
+///
+/// Retrying *here*, underneath `BufReader`, is what makes recovery safe: the
+/// framing layers above never see a partial read, so nothing has to reason about
+/// how far into a payload the gap fell.
+struct Patient {
+    inner: TcpStream,
+    trace: Trace,
+}
+
+/// Errors that mean "nothing yet", as opposed to "this connection is finished".
+fn is_transient(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{Interrupted, TimedOut, WouldBlock};
+    // WouldBlock is what a receive timeout raises on Unix, TimedOut on Windows.
+    matches!(e.kind(), WouldBlock | TimedOut | Interrupted)
+}
+
+impl Read for Patient {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let start = Instant::now();
+        let mut stalled = false;
+        loop {
+            match self.inner.read(buf) {
+                Err(ref e) if is_transient(e) && start.elapsed() < IO_DEADLINE => {
+                    stalled = true;
+                }
+                outcome => {
+                    if stalled {
+                        // One line per stall, not per poll: this is the record
+                        // of an intermittent fault whose cause is not yet
+                        // known, so how long each gap lasted is the evidence.
+                        let waited = start.elapsed().as_secs_f64();
+                        let how = if outcome.is_ok() { "resumed" } else { "gave up" };
+                        self.trace.note(format!("~~ read stalled {waited:.1}s and then {how}"));
+                        tracing::debug!("PlutoSDR: read stalled {waited:.1}s and then {how}");
+                    }
+                    return outcome;
+                }
+            }
+        }
+    }
+}
+
 /// One TCP connection to `iiod`.
 ///
 /// IIOD is strictly request/response per connection, so a blocking `READBUF`
 /// blocks everything else on the same socket. That is why [`crate::net`] opens
 /// three of these — control, RX and TX — rather than multiplexing one.
 pub struct Connection {
-    reader: BufReader<TcpStream>,
+    reader: BufReader<Patient>,
     writer: TcpStream,
     trace: Trace,
     /// Whether the head of a buffer response has been traced yet. Only the
@@ -89,14 +158,16 @@ impl Connection {
         trace.note(format!("connecting to {addr}"));
         let sock = TcpStream::connect_timeout(&addr, connect_timeout)
             .map_err(|e| Error::from_connect(e, addr))?;
-        sock.set_read_timeout(Some(IO_TIMEOUT)).map_err(|e| Error::io("set_read_timeout", e))?;
-        sock.set_write_timeout(Some(IO_TIMEOUT)).map_err(|e| Error::io("set_write_timeout", e))?;
+        sock.set_read_timeout(Some(IO_POLL)).map_err(|e| Error::io("set_read_timeout", e))?;
+        sock.set_write_timeout(Some(WRITE_TIMEOUT))
+            .map_err(|e| Error::io("set_write_timeout", e))?;
         // Attribute writes are tiny and latency-sensitive (a retune is one), and
         // Nagle would hold them back waiting for company that never comes.
         let _ = sock.set_nodelay(true);
         let writer = sock.try_clone().map_err(|e| Error::io("clone socket", e))?;
+        let patient = Patient { inner: sock, trace: trace.clone() };
         let mut conn = Connection {
-            reader: BufReader::with_capacity(64 * 1024, sock),
+            reader: BufReader::with_capacity(64 * 1024, patient),
             writer,
             trace,
             traced_head: false,
