@@ -134,6 +134,36 @@ impl SdroxideApp {
             );
         }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            // While a memory is being dragged, holding it near the top or
+            // bottom edge crawls the list, so a folder outside the visible
+            // area can still be reached. Instant scrolling (no animation):
+            // this runs every frame, and easing would fight the next frame's
+            // delta. The repaint request keeps it crawling while the pointer
+            // sits still at the edge, which is the whole gesture.
+            if egui::DragAndDrop::has_payload_of_type::<DraggedMemory>(ui.ctx())
+                && let Some(pos) = ui.ctx().pointer_interact_pos()
+            {
+                const MARGIN: f32 = 28.0;
+                const SPEED: f32 = 600.0; // pt/s right at the edge
+                let view = ui.clip_rect();
+                if pos.x >= view.left() - 40.0 && pos.x <= view.right() + 40.0 {
+                    let step = SPEED * ui.input(|i| i.stable_dt).min(0.1);
+                    let delta = if pos.y < view.top() + MARGIN {
+                        ((view.top() + MARGIN - pos.y) / MARGIN).min(1.0) * step
+                    } else if pos.y > view.bottom() - MARGIN {
+                        -((pos.y - (view.bottom() - MARGIN)) / MARGIN).min(1.0) * step
+                    } else {
+                        0.0
+                    };
+                    if delta != 0.0 {
+                        ui.scroll_with_delta_animation(
+                            egui::vec2(0.0, delta),
+                            egui::style::ScrollAnimation::none(),
+                        );
+                        ui.ctx().request_repaint();
+                    }
+                }
+            }
             let folders = self.mem_folders.clone();
             for f in &folders {
                 self.folder_section(ui, f, cmds);
