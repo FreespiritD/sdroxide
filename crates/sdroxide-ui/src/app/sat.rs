@@ -486,10 +486,16 @@ impl SdroxideApp {
                 .then_with(|| list.entries[a.0].name.cmp(&list.entries[b.0].name))
         });
 
-        egui::ScrollArea::vertical().max_height(190.0).show(ui, |ui| {
-            egui::Grid::new("sat-list").num_columns(3).spacing([14.0, 2.0]).striped(true).show(
-                ui,
-                |ui| {
+        // Full width, not content width: the grid hugs its text otherwise and
+        // leaves half the window empty with the scrollbar in the middle.
+        egui::ScrollArea::vertical().max_height(190.0).auto_shrink([false, true]).show(ui, |ui| {
+            let col_w = ((ui.available_width() - 2.0 * 14.0) / 3.0).max(80.0);
+            egui::Grid::new("sat-list")
+                .num_columns(3)
+                .min_col_width(col_w)
+                .spacing([14.0, 2.0])
+                .striped(true)
+                .show(ui, |ui| {
                     ui.label(dim("SATELLITE"));
                     ui.label(dim("NORAD"));
                     ui.label(dim("PASS"));
@@ -498,9 +504,14 @@ impl SdroxideApp {
                         let e = &list.entries[*i];
                         let selected = win.selected == Some(e.norad_id);
                         let name = RichText::new(&e.name).size(11.0);
+                        // A selected row sits on the cyan selection fill, and
+                        // egui keeps the label's own color there — so it has
+                        // to be the dark on-cyan ink explicitly, the same ink
+                        // the accent chips use. The accents are for
+                        // unselected rows alone.
                         let name = match el {
+                            _ if selected => name.color(theme::INK_ON_CYAN).strong(),
                             Some(el) if *el > 0.0 => name.color(theme::GREEN).strong(),
-                            _ if selected => name.color(theme::CYAN).strong(),
                             _ => name,
                         };
                         if ui.selectable_label(selected, name).clicked() {
@@ -527,8 +538,7 @@ impl SdroxideApp {
                         ui.label(pass.size(10.0));
                         ui.end_row();
                     }
-                },
-            );
+                });
         });
 
         let Some(id) = win.selected else {
@@ -559,40 +569,50 @@ impl SdroxideApp {
         }
         win.link_idx = win.link_idx.min(links.len() - 1);
 
-        egui::Grid::new("sat-links").num_columns(4).spacing([14.0, 2.0]).show(ui, |ui| {
-            ui.label(dim("LINK"));
-            ui.label(dim("DOWNLINK (MHz)"));
-            ui.label(dim("UPLINK (MHz)"));
-            ui.label(dim("MODE"));
-            ui.end_row();
-            for (i, l) in links.iter().enumerate() {
-                let sel = i == win.link_idx;
-                let mut label = RichText::new(&l.label).size(10.5);
-                if sel {
-                    label = label.color(theme::CYAN).strong();
-                }
-                let resp = ui.selectable_label(sel, label);
-                if !l.note.is_empty() {
-                    resp.clone().on_hover_text(&l.note);
-                }
-                if resp.clicked() {
-                    win.link_idx = i;
-                }
-                ui.label(
-                    RichText::new(l.downlink.map_or_else(|| "—".into(), |b| b.to_string()))
-                        .size(10.5)
-                        .color(theme::GREEN),
-                );
-                ui.label(
-                    RichText::new(l.uplink.map_or_else(|| "—".into(), |b| b.to_string()))
-                        .size(10.5)
-                        .color(theme::YELLOW),
-                );
-                let mode = if l.inverting { format!("{} · inv", l.mode) } else { l.mode.clone() };
-                ui.label(RichText::new(mode).size(10.5));
+        // Spread across the window like the list above, for the same reason.
+        let link_col_w = ((ui.available_width() - 3.0 * 14.0) / 4.0).max(70.0);
+        egui::Grid::new("sat-links")
+            .num_columns(4)
+            .min_col_width(link_col_w)
+            .spacing([14.0, 2.0])
+            .show(ui, |ui| {
+                ui.label(dim("LINK"));
+                ui.label(dim("DOWNLINK (MHz)"));
+                ui.label(dim("UPLINK (MHz)"));
+                ui.label(dim("MODE"));
                 ui.end_row();
-            }
-        });
+                for (i, l) in links.iter().enumerate() {
+                    let sel = i == win.link_idx;
+                    // The selected row sits on the cyan selection fill and
+                    // keeps the label's own color, so that color has to be
+                    // the dark on-cyan ink or it vanishes into the fill.
+                    let mut label = RichText::new(&l.label).size(10.5);
+                    if sel {
+                        label = label.color(theme::INK_ON_CYAN).strong();
+                    }
+                    let resp = ui.selectable_label(sel, label);
+                    if !l.note.is_empty() {
+                        resp.clone().on_hover_text(&l.note);
+                    }
+                    if resp.clicked() {
+                        win.link_idx = i;
+                    }
+                    ui.label(
+                        RichText::new(l.downlink.map_or_else(|| "—".into(), |b| b.to_string()))
+                            .size(10.5)
+                            .color(theme::GREEN),
+                    );
+                    ui.label(
+                        RichText::new(l.uplink.map_or_else(|| "—".into(), |b| b.to_string()))
+                            .size(10.5)
+                            .color(theme::YELLOW),
+                    );
+                    let mode =
+                        if l.inverting { format!("{} · inv", l.mode) } else { l.mode.clone() };
+                    ui.label(RichText::new(mode).size(10.5));
+                    ui.end_row();
+                }
+            });
         let link = &links[win.link_idx];
         if !link.note.is_empty() {
             ui.label(dim(&format!("{} — {}", link.label, link.note)));

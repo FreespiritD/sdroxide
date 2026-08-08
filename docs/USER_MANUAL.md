@@ -699,7 +699,9 @@ with their age.
 
 ### 2.16 Satellite operation (SAT)
 
-The **SAT** chip in the System box opens the satellite window: pick a bird,
+![Satellite mode window](images/satellite.jpg)
+
+The **SAT** button in the System box opens the satellite window: pick a bird,
 lock on, and every voice and digital mode works through it with Doppler
 corrected continuously. The chip glows green while a lock is running, because
 the correction keeps being applied whether or not the window is open.
@@ -755,6 +757,8 @@ built-in rigctld server at the same time, the window warns you: two Doppler
 corrections is one too many.
 
 #### 2.16.1 Rotator control
+
+![Rotator setup](images/rotator.jpg)
 
 sdroxide points motorized antennas as a **Hamlib rotctld client** — configure
 it in Settings ▸ Servers. Run a daemon next to the hardware, for example:
