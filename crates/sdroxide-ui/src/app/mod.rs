@@ -41,8 +41,8 @@ use std::sync::{Arc, Mutex};
 use eframe::egui;
 use sdroxide_types::{
     AudioDevices, CallsignInfo, Decode, DeviceCaps, DigiStatus, MemoryChannel, MemoryFolder,
-    Meters, NetworkConfig, QsoRecord, RadioController, RadioState, SkimmerSpot, SpectrumConfig,
-    SpectrumFrame, Spot, UploadTarget,
+    Meters, Mode, NetworkConfig, QsoRecord, RadioController, RadioState, SkimmerSpot,
+    SpectrumConfig, SpectrumFrame, Spot, UploadTarget,
 };
 
 use crate::view::ViewState;
@@ -96,6 +96,10 @@ pub struct SdroxideApp {
     sent_skim_view: Option<(f64, f64)>,
     desired_skim_view: Option<(f64, f64)>,
     desired_skim_view_at: f64,
+    /// The (mode, dial) the digital sub-band view was last fitted for. In the
+    /// free-roaming digital modes (everything but FT8/FT4/JS8/WSPR) the fit is
+    /// applied only when this changes, so zoom/pan survive between frames.
+    digi_view_fit: Option<(Mode, f64)>,
     /// egui time of the last received spectrum frame, for stall detection.
     last_spectrum_at: f64,
     /// Waterfall time-scroll state: wall-clock (UTC secs) of the last tick and
@@ -473,6 +477,7 @@ impl SdroxideApp {
             sent_skim_view: None,
             desired_skim_view: None,
             desired_skim_view_at: 0.0,
+            digi_view_fit: None,
             last_spectrum_at: 0.0,
             wf_last_now: 0.0,
             wf_row_accum: 0.0,

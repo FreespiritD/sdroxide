@@ -451,19 +451,40 @@ impl eframe::App for SdroxideApp {
             if self.view.pre_digi_view.is_none() {
                 self.view.pre_digi_view = Some((self.view.view_lo_hz, self.view.view_hi_hz));
             }
-            // Lock the view to the digital sub-band (audio 0..3.5 kHz above dial).
             let dial = self.state.rx_freq_hz();
-            if self.state.rx[0].mode.is_rf_paint() {
-                // Zoom tight onto the 300..3300 Hz painting band so incoming
-                // pictures are large enough to read on the waterfall.
-                self.view.view_lo_hz = dial + 150.0;
-                self.view.view_hi_hz = dial + 3450.0;
-            } else {
-                self.view.view_lo_hz = dial - 200.0;
-                self.view.view_hi_hz = dial + 3500.0;
-            }
-            let audio_hz = self.digi_status.as_ref().map(|s| s.audio_hz).unwrap_or(1500.0);
             let mode = self.state.rx[0].mode;
+            // The digital sub-band (audio 0..3.5 kHz above dial); for RF Paint,
+            // tight onto the 300..3300 Hz painting band so incoming pictures
+            // are large enough to read on the waterfall. RIFP straddles the
+            // dial rather than sitting above it, so its window is symmetric
+            // and as wide as the profile's channel.
+            let (sub_lo, sub_hi) = if mode.is_carrier_centered() {
+                let half = (self.state.rx[0].filter_hi - self.state.rx[0].filter_lo).abs() as f64
+                    * 0.5
+                    * 1.2;
+                (dial - half, dial + half)
+            } else if mode.is_rf_paint() {
+                (dial + 150.0, dial + 3450.0)
+            } else {
+                (dial - 200.0, dial + 3500.0)
+            };
+            // The slotted modes and WSPR work a fixed, narrow allocation, so
+            // their view stays locked to the sub-band. Every other digital mode
+            // roams the band (SSTV, Hell, wefax…), so the sub-band is only the
+            // *starting* view there — zoom and pan stay live, and the fit is
+            // re-applied on a mode change or a QSY that takes the sub-band
+            // off-screen. Tuning that keeps it in view (a drag-tune, a nudge)
+            // keeps the operator's zoom.
+            let locked = mode.is_slotted() || mode.is_wspr();
+            let mode_changed = self.digi_view_fit.map(|(m, _)| m) != Some(mode);
+            let dial_moved = self.digi_view_fit.map(|(_, d)| d) != Some(dial);
+            let sub_visible = self.view.view_lo_hz < sub_hi && self.view.view_hi_hz > sub_lo;
+            if locked || mode_changed || (dial_moved && !sub_visible) {
+                self.view.view_lo_hz = sub_lo;
+                self.view.view_hi_hz = sub_hi;
+            }
+            self.digi_view_fit = Some((mode, dial));
+            let audio_hz = self.digi_status.as_ref().map(|s| s.audio_hz).unwrap_or(1500.0);
             let is_text = mode.is_text_modem();
             // RTTY shows mark/space tuning lines; Olivia the tone-bank edges;
             // PSK just the centre marker.
@@ -636,6 +657,9 @@ impl eframe::App for SdroxideApp {
                 self.view.view_lo_hz = lo;
                 self.view.view_hi_hz = hi;
             }
+            // Forget the digital fit: coming back to the same mode and dial
+            // must fit the sub-band afresh, not keep this voice-mode view.
+            self.digi_view_fit = None;
             // The full-band strip, above the panadapter and only when a front
             // end actually supplies one — and the operator has left the Display
             // module's WIDE chip on. Never on a phone: 96 pt of strip is a

@@ -2533,8 +2533,9 @@ impl Engine {
     }
 
     /// Build the display spectrum frame. In digital modes it comes from the
-    /// high-resolution channel analyzer (VFO-centered), zoomed to the FT8
-    /// audio passband; otherwise from the full-rate device analyzer.
+    /// high-resolution channel analyzer (VFO-centered) while the requested
+    /// viewport fits inside the DDC channel; otherwise from the full-rate
+    /// device analyzer.
     /// Build a full-band frame, if the source has one waiting.
     ///
     /// The source hands over dBFS bins covering its whole Nyquist band; the
@@ -2591,26 +2592,36 @@ impl Engine {
         if let Some(ca) = self.channel_analyzer.as_mut() {
             let vfo = self.state.rx_freq_hz();
             let ch_rate = self.main.as_ref().map(|c| c.channel_rate()).unwrap_or(48_000.0);
-            // Show the FT8 sub-band (dial-200 .. dial+3500 Hz) at full res —
-            // except for RIFP, whose signal straddles the dial rather than
-            // sitting above it, so the window has to be symmetric and as wide
-            // as the profile's channel.
-            let viewport = if self.state.rx[0].mode.is_carrier_centered() {
-                let half = (self.state.rx[0].filter_hi - self.state.rx[0].filter_lo).abs() as f64
-                    * 0.5
-                    * 1.2;
-                Some((vfo - half, vfo + half))
-            } else {
-                Some((vfo - 200.0, vfo + 3500.0))
-            };
-            return ca.make_frame(
-                vfo,
-                ch_rate,
-                self.cfg.db_floor,
-                self.cfg.db_ceil,
-                DISPLAY_BINS,
-                viewport,
-            );
+            // The client's viewport — the zoomed/panned digital waterfall,
+            // which the UI fits to the mode's sub-band on entry. Without one,
+            // the fixed-allocation modes still get their FT8 sub-band (a
+            // viewport-less client shows the right frame from the first one),
+            // while the free-roaming modes get the full device span — for
+            // them None is what a fully zoomed-out view sends, and it must
+            // not snap back to the sub-band.
+            let mode = self.state.rx[0].mode;
+            let full = self.state.sample_rate;
+            let (vp_lo, vp_hi) = self.cfg.viewport.unwrap_or_else(|| {
+                if mode.is_slotted() || mode.is_wspr() {
+                    (vfo - 200.0, vfo + 3500.0)
+                } else {
+                    (self.state.center_hz - full / 2.0, self.state.center_hz + full / 2.0)
+                }
+            });
+            // The channel analyzer only sees the DDC output (vfo ± ch_rate/2).
+            // While the requested window fits inside, serve it at channel
+            // resolution; a wider view falls through to the device analyzer,
+            // which is coarser but actually contains the rest of the band.
+            if vp_lo >= vfo - ch_rate / 2.0 && vp_hi <= vfo + ch_rate / 2.0 {
+                return ca.make_frame(
+                    vfo,
+                    ch_rate,
+                    self.cfg.db_floor,
+                    self.cfg.db_ceil,
+                    DISPLAY_BINS,
+                    Some((vp_lo, vp_hi)),
+                );
+            }
         }
         self.analyzer.make_frame(
             self.state.center_hz,
