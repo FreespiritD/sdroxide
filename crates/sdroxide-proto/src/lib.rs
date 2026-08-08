@@ -211,7 +211,11 @@ use sdroxide_types::{
 /// so no surviving discriminant moves), and four appended `Command`s
 /// (`CreateMemoryFolder` / `RenameMemoryFolder` / `DeleteMemoryFolder` /
 /// `MoveMemoryToFolder`) manage them.
-pub const PROTO_VERSION: u16 = 46;
+/// v47: an RTTY memory carries its modem setup — `MemoryChannel` gained
+/// `rtty: Option<RttyMemory>` (baud / shift / reverse / AFC), captured when a
+/// memory is stored in RTTY mode and re-applied on recall. Changes the layout
+/// of every `Memories` message, postcard not being self-describing.
+pub const PROTO_VERSION: u16 = 47;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

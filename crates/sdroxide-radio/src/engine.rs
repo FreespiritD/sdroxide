@@ -2994,6 +2994,14 @@ impl Engine {
             StoreMemory { name } => {
                 let id = self.memories.iter().map(|m| m.id).max().unwrap_or(0) + 1;
                 let rx = &self.state.rx[0];
+                // An RTTY memory carries the modem setup too: the frequency of
+                // a 50 baud / 450 Hz reverse broadcast is useless without it.
+                let rtty = (rx.mode == Mode::Rtty).then(|| sdroxide_types::RttyMemory {
+                    baud: self.digi_config.rtty_baud,
+                    shift_hz: self.digi_config.rtty_shift_hz,
+                    reverse: self.digi_config.rtty_reverse,
+                    afc: self.digi_config.rtty_afc,
+                });
                 self.memories.push(MemoryChannel {
                     id,
                     name,
@@ -3002,18 +3010,42 @@ impl Engine {
                     filter_lo: rx.filter_lo,
                     filter_hi: rx.filter_hi,
                     folder: None,
+                    rtty,
                 });
                 self.save_memories();
             }
             RecallMemory(id) => {
                 self.stop_scan_for_operator();
                 if let Some(m) = self.memories.iter().find(|m| m.id == id).cloned() {
+                    // Into the config *before* the mode switch: entering RTTY
+                    // builds the modem from `digi_config`, and it has to be
+                    // born with the memory's setup rather than the previous one.
+                    if let Some(r) = m.rtty {
+                        let c = &mut self.digi_config;
+                        (c.rtty_baud, c.rtty_shift_hz) = (r.baud, r.shift_hz);
+                        (c.rtty_reverse, c.rtty_afc) = (r.reverse, r.afc);
+                    }
                     self.apply_entry(BandStackEntry {
                         freq_hz: m.freq_hz,
                         mode: m.mode,
                         filter_lo: m.filter_lo,
                         filter_hi: m.filter_hi,
                     });
+                    if m.rtty.is_some() {
+                        // Already in RTTY when recalled: the mode didn't change,
+                        // so no rebuild happened and the live modem still holds
+                        // the old setup.
+                        if let Some(d) = self.digi.as_mut() {
+                            d.set_config(self.digi_config.clone());
+                        }
+                        // Persisted and echoed like any other setup change, so
+                        // the panel's controls and the next start agree with
+                        // what the modem is now doing.
+                        if let Err(e) = sdroxide_config::save_digi_config(&self.digi_config) {
+                            warn!("saving digi config: {e}");
+                        }
+                        self.emit_digi_status();
+                    }
                 }
             }
             DeleteMemory(id) => {

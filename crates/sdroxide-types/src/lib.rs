@@ -87,7 +87,7 @@ pub use js8::{
     HB_BAND_HI_HZ, HB_BAND_LO_HZ, HB_SLOT_HZ, Js8FrameInfo, Js8FrameKind, Js8Heard, Js8Msg,
     Js8Speed, Js8Status,
 };
-pub use memory::{BandStackEntry, MemoryChannel, MemoryFolder};
+pub use memory::{BandStackEntry, MemoryChannel, MemoryFolder, RttyMemory};
 pub use meters::{Meters, TxMeters, TxTelemetry};
 pub use mode::{AgcMode, Mode, NrEngine, NrLevel, NrStrength};
 pub use netcfg::{
