@@ -1001,7 +1001,10 @@ impl Default for PlutoConfig {
         PlutoConfig {
             address: PlutoConfig::DEFAULT_ADDRESS.into(),
             selected_ip: None,
-            sample_rate_hz: 2_000_000.0,
+            // Above `NO_FIR_FLOOR_HZ`, so a stock Pluto can actually produce
+            // it. The 2 Msps this used to be could not be, and an out-of-the-box
+            // radio refused to open at its own default settings.
+            sample_rate_hz: 2_500_000.0,
             rf_bandwidth_hz: 0.0,
             rx_gain_db: 40.0,
             agc: PlutoAgc::SlowAttack,
@@ -1038,8 +1041,24 @@ impl PlutoConfig {
     /// decimator). The ceiling is not the part's 61.44 Msps but what a USB 2.0
     /// Ethernet gadget will actually carry: 2 Msps of 16-bit I/Q is 64 Mbit/s
     /// before framing, which is already most of the link.
+    ///
+    /// The entries below [`Self::NO_FIR_FLOOR_HZ`] need a FIR configuration
+    /// loaded into the part, which sdroxide does not do — a stock Pluto rounds
+    /// them all up to that floor and says so on connect. They are still offered
+    /// because a board someone else has configured, or an IIO device that is
+    /// not a Pluto at all, can honour them.
     pub const SAMPLE_RATES: [f64; 6] =
         [521_000.0, 1_000_000.0, 2_000_000.0, 2_500_000.0, 3_840_000.0, 5_000_000.0];
+
+    /// The lowest rate an AD936x can produce with its FIR decimator bypassed,
+    /// which is how a Pluto arrives and how sdroxide leaves it.
+    ///
+    /// The part's clock-chain solver accepts a rate only if `rate × 12` clears
+    /// the ADC's 25 MHz minimum, so the true floor is 25 MHz / 12 = 2083333.33
+    /// Hz — and the driver publishes that range through integer division, so it
+    /// advertises 2083333 and then refuses it. This is the first integer that
+    /// actually works.
+    pub const NO_FIR_FLOOR_HZ: f64 = 2_083_334.0;
 
     /// The address to open: the typed one, else a discovered selection, else
     /// the USB gadget's default.
@@ -1192,9 +1211,7 @@ impl SdrPlayModel {
     pub fn antennas(self, duo_tuner: SdrPlayDuoTuner) -> &'static [&'static str] {
         match self {
             SdrPlayModel::Rsp2 => &["Antenna A", "Antenna B", "Hi-Z"],
-            SdrPlayModel::RspDx | SdrPlayModel::RspDxR2 => {
-                &["Antenna A", "Antenna B", "Antenna C"]
-            }
+            SdrPlayModel::RspDx | SdrPlayModel::RspDxR2 => &["Antenna A", "Antenna B", "Antenna C"],
             SdrPlayModel::RspDuo => match duo_tuner {
                 SdrPlayDuoTuner::Tuner1 => &["50 Ohm port", "Hi-Z port"],
                 SdrPlayDuoTuner::Tuner2 => &[],

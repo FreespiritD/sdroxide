@@ -39,7 +39,9 @@ const CONTEXT_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
       <attribute name="gain_control_mode" filename="in_voltage0_gain_control_mode" />
       <attribute name="gain_control_mode_available" filename="in_voltage0_gain_control_mode_available" />
       <attribute name="rf_bandwidth" filename="in_voltage0_rf_bandwidth" />
+      <attribute name="rf_bandwidth_available" filename="in_voltage0_rf_bandwidth_available" />
       <attribute name="sampling_frequency" filename="in_voltage0_sampling_frequency" />
+      <attribute name="sampling_frequency_available" filename="in_voltage0_sampling_frequency_available" />
     </channel>
     <channel id="voltage0" type="output">
       <attribute name="rf_port_select" filename="out_voltage0_rf_port_select" />
@@ -95,6 +97,20 @@ struct DeviceState {
     rx_buffer_open: bool,
     tx_buffer_open: bool,
 }
+
+/// The sample-rate floor a stock Pluto publishes — and refuses.
+///
+/// The AD9361's clock-chain solver takes a rate only if `rate × 12` reaches the
+/// ADC's 25 MHz minimum, so the true floor is 25 MHz / 12 = 2083333.33 Hz. The
+/// driver prints that range through integer division, which truncates it to
+/// 2083333 — four hertz below what it will actually accept. Writing back the
+/// number the device just published therefore earns `-EINVAL`.
+///
+/// This fixture used to advertise no rate range at all, which left the client's
+/// own fallback floor (521 kHz, only reachable with the FIR decimator loaded)
+/// in charge and hid the collision completely: every test passed while every
+/// real Pluto failed to open.
+const AD9361_RATE_FLOOR: i64 = 2_083_333;
 
 impl DeviceState {
     fn get(&self, key: &str) -> Option<&str> {
@@ -167,8 +183,12 @@ fn default_attr(key: &str) -> &'static str {
         "ad9361-phy/OUTPUT/voltage0/rf_port_select_available" => "A B",
         "ad9361-phy/INPUT/voltage0/rf_port_select" => "A_BALANCED",
         "ad9361-phy/OUTPUT/voltage0/rf_port_select" => "A",
-        "ad9361-phy/INPUT/voltage0/sampling_frequency" => "2000000",
-        "ad9361-phy/OUTPUT/voltage0/sampling_frequency" => "2000000",
+        // The ranges a real Pluto publishes, verbatim — including the floor
+        // that is a truncated quotient (see AD9361_RATE_FLOOR).
+        "ad9361-phy/INPUT/voltage0/sampling_frequency_available" => "[2083333 1 61440000]",
+        "ad9361-phy/INPUT/voltage0/rf_bandwidth_available" => "[200000 1 56000000]",
+        "ad9361-phy/INPUT/voltage0/sampling_frequency" => "2500000",
+        "ad9361-phy/OUTPUT/voltage0/sampling_frequency" => "2500000",
         "ad9361-phy/INPUT/voltage0/rf_bandwidth" => "1800000",
         _ => "0",
     }
@@ -239,8 +259,30 @@ fn serve(sock: TcpStream, state: Arc<Mutex<DeviceState>>, stop: Arc<AtomicBool>)
                 }
                 let value =
                     String::from_utf8_lossy(&payload).trim_end_matches('\0').trim().to_string();
-                state.lock().expect("lock").attrs.push((key, value));
-                writer.write_all(format!("{len}\n").as_bytes()).is_ok()
+                let rate = key.ends_with("/sampling_frequency");
+                // The AD9361 clock-chain rule: a rate at or below the printed
+                // floor cannot be realised, however confidently the device
+                // published that floor. Refused, and not recorded — the
+                // register does not move.
+                if rate && value.parse::<i64>().is_ok_and(|v| v <= AD9361_RATE_FLOOR) {
+                    writer.write_all(b"-22\n").is_ok()
+                } else {
+                    let mut g = state.lock().expect("lock");
+                    // Receive and transmit hang off one clock tree, so setting
+                    // either rate moves both. Modelled here because the
+                    // transmit interpolator is sized from the read-back value,
+                    // and a fake that let the two drift would bless a client
+                    // that transmits on the wrong frequency.
+                    if rate {
+                        g.attrs.push((
+                            "ad9361-phy/OUTPUT/voltage0/sampling_frequency".to_string(),
+                            value.clone(),
+                        ));
+                    }
+                    g.attrs.push((key, value));
+                    drop(g);
+                    writer.write_all(format!("{len}\n").as_bytes()).is_ok()
+                }
             }
             Some("OPEN") => {
                 let mut g = state.lock().expect("lock");
@@ -342,9 +384,14 @@ fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
     panic!("timed out waiting for {what}");
 }
 
+/// A rate a real AD9361 can actually produce — above the 2.083 Msps floor it
+/// has whenever the FIR decimator is bypassed, which is how a stock Pluto
+/// comes.
+const RATE: f64 = 2_500_000.0;
+
 fn config() -> PlutoConfig {
     PlutoConfig {
-        sample_rate_hz: 2_000_000.0,
+        sample_rate_hz: RATE,
         rx_gain_db: 40.0,
         agc: PlutoAgc::Manual,
         tx_gain_db: -30.0,
@@ -359,7 +406,7 @@ fn a_pluto_comes_up_and_streams() {
     let mut handle =
         PlutoHandle::open(&fake.address(), &config(), 435_000_000.0).expect("open the fake Pluto");
 
-    assert_eq!(handle.sample_rate_hz, 2_000_000.0);
+    assert_eq!(handle.sample_rate_hz, RATE);
     assert!(handle.model.contains("AD9364"));
     assert_eq!(handle.firmware, "v0.39");
     // The limits are the ones the device published, not the fallback table.
@@ -389,6 +436,32 @@ fn a_pluto_comes_up_and_streams() {
     handle.release();
 }
 
+/// The field failure this guards against: the operator picks a rate at or below
+/// the device's floor, sdroxide clamps it up to the 2083333 the device
+/// published, and the device answers `-EINVAL` to the very number it just
+/// printed. Nothing after that write ever ran — no buffer was opened, no sample
+/// arrived, and the screen stayed on "waiting for spectrum" while the radio sat
+/// there perfectly reachable.
+#[test]
+fn a_rate_floor_the_device_prints_but_will_not_accept_is_still_reached() {
+    let fake = Fake::start();
+    let cfg = PlutoConfig { sample_rate_hz: 1_000_000.0, ..config() };
+    let handle = PlutoHandle::open(&fake.address(), &cfg, 435_000_000.0)
+        .expect("a device that refuses its own published floor must still come up");
+
+    // One hertz above the published floor: the smallest rate actually inside
+    // the real range, and what the hardware settles on.
+    assert_eq!(handle.sample_rate_hz, (AD9361_RATE_FLOOR + 1) as f64);
+    let g = fake.state.lock().expect("lock");
+    assert_eq!(g.get("ad9361-phy/INPUT/voltage0/sampling_frequency"), Some("2083334"));
+    drop(g);
+    // The rate asked for is not the rate delivered — twice over — so the open
+    // has to say so rather than let it pass as the operator's own setting.
+    let status = handle.open_status().expect("a raised rate is worth a notice");
+    assert!(status.contains("1.000 Msps requested"), "{status}");
+    assert!(status.contains("2.083 Msps"), "{status}");
+}
+
 #[test]
 fn the_front_end_is_configured_in_an_order_that_works() {
     let fake = Fake::start();
@@ -401,9 +474,9 @@ fn the_front_end_is_configured_in_an_order_that_works() {
     // The analog filter is opened up to 0.9 × the rate, so the engine's
     // quarter-span LO offset still clears it. Leaving the AD9361 default here
     // is what makes that offset silently do nothing.
-    assert_eq!(g.get("ad9361-phy/INPUT/voltage0/rf_bandwidth"), Some("1800000"));
-    assert_eq!(g.get("ad9361-phy/OUTPUT/voltage0/rf_bandwidth"), Some("1800000"));
-    assert_eq!(g.get("ad9361-phy/INPUT/voltage0/sampling_frequency"), Some("2000000"));
+    assert_eq!(g.get("ad9361-phy/INPUT/voltage0/rf_bandwidth"), Some("2250000"));
+    assert_eq!(g.get("ad9361-phy/OUTPUT/voltage0/rf_bandwidth"), Some("2250000"));
+    assert_eq!(g.get("ad9361-phy/INPUT/voltage0/sampling_frequency"), Some("2500000"));
     assert_eq!(g.get("ad9361-phy/INPUT/voltage0/gain_control_mode"), Some("manual"));
     assert_eq!(g.get("ad9361-phy/OUTPUT/altvoltage0/frequency"), Some("435000000"));
 
@@ -423,7 +496,7 @@ fn transmitting_takes_the_link_and_gives_it_back() {
     wait_for("the receive buffer", || fake.state.lock().unwrap().rx_buffer_open);
 
     let rate = handle.tx_begin(145_500_000.0);
-    assert_eq!(rate, 2_000_000.0);
+    assert_eq!(rate, RATE);
 
     // Full-scale I, silence in Q — a tone this crate's encoder has to put on
     // the wire as +32767 in the I slot.

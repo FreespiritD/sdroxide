@@ -266,14 +266,57 @@ impl Phy {
     /// tree, so this moves both; the transmit rate is read back rather than
     /// assumed.
     pub fn set_sample_rate(&self, conn: &mut Connection, hz: f64) -> Result<f64> {
-        let hz = hz.clamp(self.limits.sample_rate_hz.0, self.limits.sample_rate_hz.1);
-        conn.write_attr(
-            &self.phy_id,
-            Some(RX_CHAN),
-            "sampling_frequency",
-            &format!("{}", hz.round() as i64),
-        )?;
+        let (min, max) = self.limits.sample_rate_hz;
+        let want = hz.clamp(min, max).round() as i64;
+        self.write_on_a_floor(conn, RX_CHAN, "sampling_frequency", want, min)?;
         self.sample_rate(conn)
+    }
+
+    /// Write an integer attribute that may be sitting exactly on the floor the
+    /// device published, retrying one step up when the device then rejects its
+    /// own stated minimum as out of range.
+    ///
+    /// IIO prints an `_available` range through integer division, so a floor
+    /// that is really a fraction arrives a hair low — and the driver that
+    /// printed it still enforces the true value. An AD9361 with its FIR
+    /// bypassed publishes `[2083333 1 61440000]` for a real minimum of
+    /// 25 MHz / 12 = 2083333.33: its clock-chain solver accepts a rate only if
+    /// `rate × 12` clears the ADC's 25 MHz floor, and 2083333 × 12 is four
+    /// hertz short. So a stock Pluto refuses the rate it just asked for, and
+    /// every sdroxide sample rate at or below 2.083 Msps — which was all three
+    /// of the lowest offered, including the default — died here with EINVAL
+    /// before a single buffer was opened.
+    ///
+    /// One retry is enough and no more is justified: truncation cannot lose as
+    /// much as a whole unit, so the next integer up is necessarily inside the
+    /// real range. It is only ever attempted when the value *is* the published
+    /// floor and the device called it invalid.
+    fn write_on_a_floor(
+        &self,
+        conn: &mut Connection,
+        chan: (bool, &str),
+        attr: &str,
+        value: i64,
+        floor: f64,
+    ) -> Result<()> {
+        /// The errno a driver answers when a value is outside what it accepts.
+        const EINVAL: i64 = -22;
+        let attempt = conn.write_attr(&self.phy_id, Some(chan), attr, &value.to_string());
+        // Only the floor itself is a candidate: anywhere else in the range an
+        // EINVAL means what it says.
+        let on_the_floor = (value as f64 - floor).abs() < 1.0;
+        match attempt {
+            Err(Error::Remote { code: EINVAL, .. }) if on_the_floor => {
+                tracing::info!(
+                    "PlutoSDR: {attr} {value} was refused as out of range even though the \
+                     device published it as the minimum — its true floor is a fraction above \
+                     that, so trying {}",
+                    value + 1
+                );
+                conn.write_attr(&self.phy_id, Some(chan), attr, &(value + 1).to_string())
+            }
+            other => other,
+        }
     }
 
     pub fn sample_rate(&self, conn: &mut Connection) -> Result<f64> {

@@ -631,7 +631,9 @@ pub(in crate::app) fn settings_pluto_tab(
         ui.label("Sample rate").on_hover_text(
             "Width of the spectrum sdroxide receives. The AD9361 reaches 61.44 Msps; \
              the USB network link does not, which is what this list is scaled to. \
-             Takes effect on Apply.",
+             The lowest rates need a filter configuration loaded into the AD9361, \
+             which sdroxide does not do — a stock Pluto runs them at about 2.084 \
+             Msps instead and says so when it connects. Takes effect on Apply.",
         );
         let shown = format!("{:.3} Msps", cfg.pluto.sample_rate_hz / 1e6);
         ComboBox::from_id_salt("pluto_rate").selected_text(shown).show_ui(ui, |ui| {
@@ -640,6 +642,8 @@ pub(in crate::app) fn settings_pluto_tab(
                 let mut label = format!("{:.3} Msps", r / 1e6);
                 if r >= 3_840_000.0 {
                     label.push_str("  (more than USB 2 will carry)");
+                } else if r < PlutoConfig::NO_FIR_FLOOR_HZ {
+                    label.push_str("  (a stock Pluto runs at 2.084)");
                 }
                 if ui.selectable_label(sel, label).clicked() {
                     cfg.pluto.sample_rate_hz = r;
