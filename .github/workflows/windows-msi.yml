@@ -1,0 +1,130 @@
+name: Windows MSI
+
+# Manual-only: builds just the Windows .msi installer — the standard
+# (non-SoapySDR) variant, identical to what the release workflow produces —
+# so a test installer can be handed to someone without building every
+# platform. The .msi is uploaded as a run artifact; no release is created.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # audiopus_sys bundles a libopus whose CMakeLists predates CMake 3.5; the
+  # CMake 4.x on the Windows runners refuses to configure it without this
+  # override (CMake 3.x ignores the variable).
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
+jobs:
+  # The job ids and rust-cache keys deliberately match release.yml so the two
+  # workflows restore each other's caches.
+  web:
+    name: web client (wasm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web-dist
+      - name: Install trunk
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSfL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xzf - -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build web client
+        working-directory: crates/sdroxide-web
+        run: trunk build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: crates/sdroxide-web/dist
+          if-no-files-found: error
+
+  build:
+    name: windows msi
+    needs: web
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # `submodules` pulls vendor/rade_c, which the RADE codec is built from.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Compute version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            RELEASE_VERSION="$GITHUB_REF_NAME"
+          else
+            RELEASE_VERSION="dev-${GITHUB_SHA::7}"
+          fi
+          CARGO_VERSION=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)
+          {
+            echo "RELEASE_VERSION=$RELEASE_VERSION"
+            echo "CARGO_VERSION=$CARGO_VERSION"
+            echo "PKG=sdroxide-$RELEASE_VERSION-windows-x86_64"
+          } >> "$GITHUB_ENV"
+
+      # RADE's Opus dependency is built with autotools, which MSVC cannot
+      # drive and whose static library MSVC cannot link. Windows therefore
+      # builds the `x86_64-pc-windows-gnu` target inside MSYS2/MinGW — same
+      # as the release workflow.
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-clang
+            autoconf
+            automake
+            libtool
+      - name: Use the MSYS2 toolchain
+        run: |
+          echo "CARGO_BUILD_TARGET=x86_64-pc-windows-gnu" >> "$GITHUB_ENV"
+          echo "D:/a/_temp/msys64/mingw64/bin" >> "$GITHUB_PATH"
+          echo "D:/a/_temp/msys64/usr/bin" >> "$GITHUB_PATH"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-x86_64-cat
+
+      # The embed-web feature bakes these files into the binary via rust-embed.
+      - name: Fetch web client
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: crates/sdroxide-web/dist
+
+      - name: Build
+        run: cargo build --release --locked -p sdroxide --no-default-features --features embed-web
+
+      - name: Build MSI
+        run: |
+          mkdir -p out
+          # CARGO_BUILD_TARGET (the MSYS2/MinGW toolchain, set above) makes
+          # cargo write to a target-specific directory rather than
+          # target/release.
+          BIN_DIR="target/$CARGO_BUILD_TARGET/release"
+          dotnet tool install --global wix --version 5.0.2
+          wix build packaging/windows/main.wxs -arch x64 \
+            -d Version="$CARGO_VERSION" -d BinDir="$BIN_DIR" \
+            -o "out/$PKG.msi"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG }}-msi
+          path: out/*.msi
+          if-no-files-found: error
