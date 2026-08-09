@@ -811,8 +811,12 @@ impl SdroxideApp {
                             {
                                 *io.apply_iface = true;
                             }
-                            ui.label(
-                                RichText::new("Reconnects the radio without restarting.").weak(),
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new("Reconnects the radio without restarting.")
+                                        .weak(),
+                                )
+                                .wrap(),
                             );
                         });
                     }
@@ -1052,7 +1056,14 @@ impl SdroxideApp {
                     {
                         *io.apply_iface = true;
                     }
-                    ui.label(RichText::new("Switches the live radio without restarting.").weak());
+                    // Labels in a horizontal row default to Extend; wrap so a
+                    // narrow window doesn't push this under the scrollbar.
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new("Switches the live radio without restarting.").weak(),
+                        )
+                        .wrap(),
+                    );
                 });
             }
             SettingsTab::Ui => {

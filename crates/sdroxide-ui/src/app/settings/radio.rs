@@ -1166,24 +1166,32 @@ pub(in crate::app) fn settings_rx888_tab(
                         );
                     }
                 });
-            ui.label(
-                egui::RichText::new(format!(
-                    "0–{:.1} MHz coverage, {:.0} MB/s over USB",
-                    rate / 2e6,
-                    rate * 2.0 / 1e6
-                ))
-                .weak(),
+            // Inside a grid (and a horizontal row) labels default to Extend,
+            // which pushes the row off the window edge instead of wrapping.
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!(
+                        "0–{:.1} MHz coverage, {:.0} MB/s over USB",
+                        rate / 2e6,
+                        rate * 2.0 / 1e6
+                    ))
+                    .weak(),
+                )
+                .wrap(),
             );
         });
         ui.end_row();
         ui.label("");
-        ui.label(
-            egui::RichText::new(
-                "129.6 Msps needs a SuperSpeed link and a fast host; 64.8 is the \
-                 safe default. Changing it reopens the receiver automatically, \
-                 which takes a moment but needs no restart.",
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(
+                    "129.6 Msps needs a SuperSpeed link and a fast host; 64.8 is the \
+                     safe default. Changing it reopens the receiver automatically, \
+                     which takes a moment but needs no restart.",
+                )
+                .weak(),
             )
-            .weak(),
+            .wrap(),
         );
         ui.end_row();
 
