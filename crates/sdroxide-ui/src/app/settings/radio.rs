@@ -465,7 +465,7 @@ pub(in crate::app) fn settings_rtlsdr_tab(
                  or a preamp powered from elsewhere while this is enabled — the DC \
                  goes straight down the feedline.",
             )
-            .color(crate::theme::YELLOW),
+            .color(crate::theme::YELLOW()),
         );
     }
 
@@ -811,7 +811,7 @@ pub(in crate::app) fn settings_pluto_tab(
              diagnostic report — it contains every command exchanged with the radio, \
              and the first bytes of the sample stream.",
         )
-        .color(crate::theme::YELLOW),
+        .color(crate::theme::YELLOW()),
     );
 }
 
@@ -979,7 +979,7 @@ impl SdroxideApp {
             ui.label("no device");
             return;
         };
-        ui.label(RichText::new(&caps.label).size(14.0).strong().color(crate::theme::CYAN));
+        ui.label(RichText::new(&caps.label).size(14.0).strong().color(crate::theme::CYAN()));
         ui.add_space(6.0);
         if caps.gains.iter().all(|g| g.direction != Direction::Rx) {
             ui.label(RichText::new("This rig has no software-adjustable gains.").weak());
@@ -1660,7 +1660,7 @@ pub(in crate::app) fn settings_sdrplay_tab(
                  or a preamp powered from elsewhere while this is enabled — the DC \
                  goes straight down the feedline.",
             )
-            .color(crate::theme::YELLOW),
+            .color(crate::theme::YELLOW()),
         );
     }
 

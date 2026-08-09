@@ -31,7 +31,7 @@ pub(in crate::app) fn station_card(
     let dim = Color32::from_gray(140);
     match d.from.as_deref() {
         Some(call) => {
-            ui.label(RichText::new(call).size(16.0).strong().color(crate::theme::TEXT_STRONG));
+            ui.label(RichText::new(call).size(16.0).strong().color(crate::theme::TEXT_STRONG()));
         }
         None if d.free_text => {
             ui.label(RichText::new("free text").size(13.0).italics().color(dim));
@@ -76,7 +76,7 @@ pub(in crate::app) fn station_card(
         if let Some(b) = bearing {
             line.push_str(&format!(" · {b:.0}°"));
         }
-        ui.label(RichText::new(line).size(12.0).color(crate::theme::YELLOW));
+        ui.label(RichText::new(line).size(12.0).color(crate::theme::YELLOW()));
     }
 
     ui.separator();
@@ -84,13 +84,13 @@ pub(in crate::app) fn station_card(
     // acting on, spelled out rather than compressed into a four-letter badge.
     let band_label = if band.is_empty() { "this band".to_string() } else { band.to_string() };
     let (worked, col) = if novelty.new_dxcc {
-        ("New entity — never worked, on any band".to_string(), crate::theme::PINK)
+        ("New entity — never worked, on any band".to_string(), crate::theme::PINK())
     } else if novelty.new_dxcc_band {
-        (format!("New entity on {band_label}"), crate::theme::YELLOW)
+        (format!("New entity on {band_label}"), crate::theme::YELLOW())
     } else if novelty.new_grid {
-        ("New grid square".to_string(), crate::theme::CYAN)
+        ("New grid square".to_string(), crate::theme::CYAN())
     } else if novelty.new_call {
-        ("Not worked before".to_string(), crate::theme::CYAN_DIM)
+        ("Not worked before".to_string(), crate::theme::CYAN_DIM())
     } else if novelty.dupe {
         (format!("Worked before on {band_label}"), Color32::from_gray(130))
     } else {
@@ -106,11 +106,11 @@ pub(in crate::app) fn station_card(
                 format!("Calling CQ {target} — not aimed at you")
             })
             .size(11.5)
-            .color(if cq_for_us { crate::theme::GREEN } else { dim }),
+            .color(if cq_for_us { crate::theme::GREEN() } else { dim }),
         );
     }
     if queued {
-        ui.label(RichText::new("In the call queue").size(11.5).color(crate::theme::GREEN));
+        ui.label(RichText::new("In the call queue").size(11.5).color(crate::theme::GREEN()));
     }
     ui.label(
         RichText::new(format!("{:+} dB · {:.0} Hz · DT {:+.1} s", d.snr_db, d.audio_hz, d.dt))
@@ -145,11 +145,11 @@ pub(in crate::app) fn row_cell(
 /// Colour a decode's SNR: green for strong, cyan mid, dimmed for weak.
 pub(in crate::app) fn snr_color(snr_db: i16) -> Color32 {
     if snr_db >= 0 {
-        crate::theme::GREEN
+        crate::theme::GREEN()
     } else if snr_db >= -12 {
-        crate::theme::CYAN
+        crate::theme::CYAN()
     } else {
-        crate::theme::CYAN_DIM
+        crate::theme::CYAN_DIM()
     }
 }
 
@@ -199,13 +199,13 @@ pub(in crate::app) fn sstv_section<R>(
     // contents out side by side instead of stacked.
     ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Min), |ui| {
         egui::Frame::new()
-            .fill(crate::theme::ROW_BG)
-            .stroke(egui::Stroke::new(1.0, crate::theme::LINE_LIT))
+            .fill(crate::theme::ROW_BG())
+            .stroke(egui::Stroke::new(1.0, crate::theme::LINE_LIT()))
             .inner_margin(egui::Margin { left: 8, right: 8, top: 5, bottom: 7 })
             .show(ui, |ui| {
                 ui.set_min_size(egui::vec2(size.x - 16.0, size.y - 12.0));
                 ui.set_max_width(size.x - 16.0);
-                ui.label(RichText::new(title).size(9.5).strong().color(crate::theme::CYAN_DIM));
+                ui.label(RichText::new(title).size(9.5).strong().color(crate::theme::CYAN_DIM()));
                 ui.add_space(3.0);
                 add(ui)
             })

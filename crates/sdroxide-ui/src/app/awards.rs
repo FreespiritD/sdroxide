@@ -23,8 +23,8 @@ fn award_summary<K>(
     let (w, c) = sdroxide_types::counts(map);
     ui.horizontal(|ui| {
         ui.add_sized([90.0, 20.0], egui::Label::new(RichText::new(name).strong()));
-        ui.label(RichText::new(format!("{w} worked")).color(crate::theme::YELLOW).monospace());
-        ui.label(RichText::new(format!("{c} confirmed")).color(crate::theme::GREEN).monospace());
+        ui.label(RichText::new(format!("{w} worked")).color(crate::theme::YELLOW()).monospace());
+        ui.label(RichText::new(format!("{c} confirmed")).color(crate::theme::GREEN()).monospace());
     });
 }
 
@@ -39,9 +39,9 @@ fn award_cell_grid(
         ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
         for (label, st) in items {
             let (bg, fg) = if st.confirmed {
-                (crate::theme::GREEN, Color32::from_rgb(8, 18, 12))
+                (crate::theme::GREEN(), Color32::from_rgb(8, 18, 12))
             } else if st.worked {
-                (crate::theme::YELLOW, Color32::from_rgb(20, 16, 6))
+                (crate::theme::YELLOW(), Color32::from_rgb(20, 16, 6))
             } else {
                 (Color32::from_gray(38), Color32::from_gray(110))
             };
@@ -112,6 +112,7 @@ impl SdroxideApp {
             .default_width(crate::layout::window_w(ctx, 540.0))
             .default_height(crate::layout::window_h(ctx, 560.0))
             .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Band").size(11.0).color(Color32::from_gray(150)));
                     for b in bands {
@@ -135,7 +136,7 @@ impl SdroxideApp {
                         RichText::new("Worked All States")
                             .size(12.0)
                             .strong()
-                            .color(crate::theme::CYAN),
+                            .color(crate::theme::CYAN()),
                     );
                     award_cell_grid(
                         ui,
@@ -150,7 +151,7 @@ impl SdroxideApp {
                         RichText::new("CQ Zones (WAZ)")
                             .size(12.0)
                             .strong()
-                            .color(crate::theme::CYAN),
+                            .color(crate::theme::CYAN()),
                     );
                     award_cell_grid(
                         ui,
@@ -165,11 +166,14 @@ impl SdroxideApp {
                         RichText::new("DXCC entities")
                             .size(12.0)
                             .strong()
-                            .color(crate::theme::CYAN),
+                            .color(crate::theme::CYAN()),
                     );
                     for (name, st) in &awards.dxcc {
-                        let col =
-                            if st.confirmed { crate::theme::GREEN } else { crate::theme::YELLOW };
+                        let col = if st.confirmed {
+                            crate::theme::GREEN()
+                        } else {
+                            crate::theme::YELLOW()
+                        };
                         ui.label(
                             RichText::new(format!(
                                 "{} {name}",

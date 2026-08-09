@@ -413,7 +413,9 @@ on the **UI** tab of the Settings window (see
 [§5.3](#53-ui-display-preferences-and-voice-announcements)). The colour scheme is one of
 `Classic`, `Viridis`, `Gray`, `Icom`, `Neon`, `Synthwave`, `Matrix`, or `Tron`;
 the gradient fills the spectrum area from a top colour down to a bottom colour
-(default dark red → black) and can be turned off.
+(default dark red → black) and can be turned off. The same tab also themes the
+UI itself — colour theme, button shape and window shape — independently of the
+waterfall's palette; the screenshots in this manual show the **Default** theme.
 
 You can also resize the split between the spectrum line and the waterfall by
 dragging the frequency-scale strip between them.
@@ -2606,6 +2608,18 @@ spoken announcements below them under `[speech]`:
   it, to see how the compact strips look without a phone to hand, or to keep the
   menus in a small desktop window rather than a strip wrapped over three rows.
   See [8.4](#84-phones-and-tablets) for what each one shows.
+- **Theme** — the colour scheme for the whole UI: **Default** (the navy, cyan
+  and hot pink every screenshot in this manual shows), **Green phosphor** and
+  **Amber phosphor** (monochrome CRT looks), **Teal / orange**, or **Rainbow**
+  (the accents spread across the spectrum). Applied the moment it is picked, no
+  restart. The phosphor themes keep transmit, SWR and error indications red on
+  purpose — whether RF is leaving the antenna is never left to a shade of
+  green. Content colours (the waterfall palette below, the band plan, the map)
+  are their own and do not change with the theme.
+- **Button style** / **Window style** — the shape the buttons and the floating
+  windows wear, chosen separately: **Angled** (the classic cut-corner look),
+  **Rectangular**, **Rounded**, **Gradient** (a vertical shaded fill), or
+  **3D bevel** (a raised lit edge). Also applied immediately.
 - **Screen update rate** — the GUI/spectrum frame rate (30, 60, or 90 fps).
   Higher looks smoother and costs more CPU/GPU.
 - **Waterfall scroll speed** — how fast the waterfall scrolls: **Slow** (5
@@ -4513,7 +4527,7 @@ sdroxide stores its settings under the per-user config directory:
 
 | File | Format | Contents |
 | --- | --- | --- |
-| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, plus the `[ui]` display preferences, the `[speech]` announcement settings ([§5.3](#53-ui-display-preferences-and-voice-announcements)) and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
+| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, plus the `[ui]` display preferences (including `theme`, `button_style` and `window_style`), the `[speech]` announcement settings ([§5.3](#53-ui-display-preferences-and-voice-announcements)) and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
 | `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/RX-888/SDRplay/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
 | `digi.json` | JSON | Digital-mode operator settings: your callsign and grid, FT8/FT4 TX period, auto-sequence and message templates, and the WSPR beacon's duty cycle, power and band-hop list. |
 | `memories.json` | JSON | Saved memory channels. |

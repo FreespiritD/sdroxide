@@ -33,7 +33,7 @@ pub(in crate::app) fn settings_tle_tab(ui: &mut egui::Ui, io: &mut SettingsIo) {
         RichText::new("Satellites: element sets and frequencies")
             .size(14.0)
             .strong()
-            .color(theme::CYAN),
+            .color(theme::CYAN()),
     );
     ui.add_space(4.0);
     if !io.sat_seeded {
@@ -52,7 +52,7 @@ pub(in crate::app) fn settings_tle_tab(ui: &mut egui::Ui, io: &mut SettingsIo) {
     );
     if !io.sat_ui.note.is_empty() {
         ui.add_space(4.0);
-        ui.label(RichText::new(&io.sat_ui.note).color(theme::YELLOW).size(11.0));
+        ui.label(RichText::new(&io.sat_ui.note).color(theme::YELLOW()).size(11.0));
     }
 
     ui.add_space(10.0);
@@ -104,7 +104,7 @@ fn settings_tle_subscriptions(ui: &mut egui::Ui, io: &mut SettingsIo) {
             });
             ui.horizontal(|ui| {
                 ui.add_space(24.0);
-                ui.label(RichText::new("Orbits").color(theme::CYAN_DIM).size(9.5).strong())
+                ui.label(RichText::new("Orbits").color(theme::CYAN_DIM()).size(9.5).strong())
                     .on_hover_text(
                         "Which satellites in this listing get an orbit ring and a label. A whole \
                          group wants \"curated\": ninety rings at once is unreadable, and none \
@@ -150,12 +150,12 @@ fn settings_tle_subscriptions(ui: &mut egui::Ui, io: &mut SettingsIo) {
                 // Status: what the last fetch actually did. Matched by URL
                 // rather than by position — the two lists are edited apart.
                 let (text, color) = match (sub.problem(), st) {
-                    (Some(p), _) => (p.to_string(), theme::PINK),
-                    (None, None) => ("not fetched yet".to_string(), theme::LINE_LIT),
+                    (Some(p), _) => (p.to_string(), theme::ALERT()),
+                    (None, None) => ("not fetched yet".to_string(), theme::LINE_LIT()),
                     (None, Some(s)) => match &s.error {
-                        Some(e) => (e.clone(), theme::PINK),
+                        Some(e) => (e.clone(), theme::ALERT()),
                         None if s.fetched_unix == 0 => {
-                            ("not fetched yet".to_string(), theme::LINE_LIT)
+                            ("not fetched yet".to_string(), theme::LINE_LIT())
                         }
                         None => (
                             format!(
@@ -163,7 +163,7 @@ fn settings_tle_subscriptions(ui: &mut egui::Ui, io: &mut SettingsIo) {
                                 s.count,
                                 sdroxide_solar::timefmt::age(now_unix() - s.fetched_unix)
                             ),
-                            theme::GREEN,
+                            theme::GREEN(),
                         ),
                     },
                 };
@@ -185,8 +185,8 @@ fn settings_tle_subscriptions(ui: &mut egui::Ui, io: &mut SettingsIo) {
             ui,
             false,
             RichText::new(" UPDATE NOW ").strong(),
-            theme::GREEN,
-            theme::INK_ON_CYAN,
+            theme::GREEN(),
+            theme::INK_ON_CYAN(),
         )
         .on_hover_text("Ask the radio engine to fetch every enabled subscription now")
         .clicked()
@@ -196,7 +196,7 @@ fn settings_tle_subscriptions(ui: &mut egui::Ui, io: &mut SettingsIo) {
     });
 
     ui.add_space(6.0);
-    ui.label(RichText::new("CelesTrak groups").color(theme::CYAN_DIM).size(10.0).strong());
+    ui.label(RichText::new("CelesTrak groups").color(theme::CYAN_DIM()).size(10.0).strong());
     ui.horizontal_wrapped(|ui| {
         for g in sdroxide_types::CELESTRAK_GROUPS {
             let have = io.sat_edit.has_sub(g.url);
@@ -237,7 +237,7 @@ fn settings_tle_pasted(ui: &mut egui::Ui, io: &mut SettingsIo) {
                 );
                 match t.problem() {
                     Some(p) => {
-                        ui.label(RichText::new(p).color(theme::PINK).size(10.5));
+                        ui.label(RichText::new(p).color(theme::ALERT()).size(10.5));
                     }
                     None => {
                         let age = tle_epoch_age(t, now);
@@ -250,7 +250,7 @@ fn settings_tle_pasted(ui: &mut egui::Ui, io: &mut SettingsIo) {
                                     t.norad_id().unwrap_or(0),
                                     sdroxide_solar::timefmt::age(a)
                                 ),
-                                theme::PINK,
+                                theme::ALERT(),
                             ),
                             Some(a) if a > 3 * 86_400 => (
                                 format!(
@@ -258,7 +258,7 @@ fn settings_tle_pasted(ui: &mut egui::Ui, io: &mut SettingsIo) {
                                     t.norad_id().unwrap_or(0),
                                     sdroxide_solar::timefmt::age(a)
                                 ),
-                                theme::YELLOW,
+                                theme::YELLOW(),
                             ),
                             Some(a) => (
                                 format!(
@@ -266,10 +266,10 @@ fn settings_tle_pasted(ui: &mut egui::Ui, io: &mut SettingsIo) {
                                     t.norad_id().unwrap_or(0),
                                     sdroxide_solar::timefmt::age(a)
                                 ),
-                                theme::GREEN,
+                                theme::GREEN(),
                             ),
                             None => {
-                                (format!("NORAD {}", t.norad_id().unwrap_or(0)), theme::LINE_LIT)
+                                (format!("NORAD {}", t.norad_id().unwrap_or(0)), theme::LINE_LIT())
                             }
                         };
                         ui.label(RichText::new(text).color(color).size(10.5));
@@ -395,13 +395,13 @@ fn settings_tle_freqs(ui: &mut egui::Ui, io: &mut SettingsIo) {
                 if ui.button(if open { "▼" } else { "▶" }).clicked() {
                     io.sat_ui.open_freq = (!open).then_some(i);
                 }
-                ui.label(RichText::new(format!("NORAD {}", f.norad_id)).color(theme::CYAN_DIM));
+                ui.label(RichText::new(format!("NORAD {}", f.norad_id)).color(theme::CYAN_DIM()));
                 ui.add(
                     egui::TextEdit::singleline(&mut f.name).desired_width(180.0).hint_text("name"),
                 );
                 ui.label(
                     RichText::new(format!("{} link(s)", f.links.len()))
-                        .color(theme::LINE_LIT)
+                        .color(theme::LINE_LIT())
                         .size(10.5),
                 );
                 if ui.button("✕").on_hover_text("Remove this satellite's entry").clicked() {
@@ -414,7 +414,7 @@ fn settings_tle_freqs(ui: &mut egui::Ui, io: &mut SettingsIo) {
             let mut drop_link = None;
             egui::Grid::new("sat-links").num_columns(6).spacing([8.0, 4.0]).show(ui, |ui| {
                 for h in ["LINK", "DOWNLINK", "UPLINK", "MODE", "NOTE", ""] {
-                    ui.label(RichText::new(h).color(theme::CYAN_DIM).size(9.5).strong());
+                    ui.label(RichText::new(h).color(theme::CYAN_DIM()).size(9.5).strong());
                 }
                 ui.end_row();
                 for (k, l) in f.links.iter_mut().enumerate() {

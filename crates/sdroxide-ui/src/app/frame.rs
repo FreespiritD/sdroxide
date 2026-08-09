@@ -64,6 +64,18 @@ impl eframe::App for SdroxideApp {
             // so the new metrics land next frame; ask for one straight away.
             ctx.request_repaint();
         }
+        // Same idea for the theme and chrome styles: the settings dialog wrote
+        // them into `ui_settings` at the end of last frame, and the top of the
+        // frame is the one place a visuals rewrite cannot race the settings
+        // window's ScrollPalette push/pop.
+        let look =
+            (self.ui_settings.theme, self.ui_settings.button_style, self.ui_settings.window_style);
+        if self.applied_look != look {
+            self.applied_look = look;
+            crate::theme::set_look(look.0, look.1, look.2);
+            crate::theme::apply_visuals(&ctx);
+            ctx.request_repaint();
+        }
         while let Some(ev) = self.ctrl.poll_event() {
             match ev {
                 RadioEvent::Capabilities(c) => {
@@ -382,11 +394,11 @@ impl eframe::App for SdroxideApp {
         egui::Panel::top(egui::Id::new("topbar"))
             .frame(
                 egui::Frame::new()
-                    .fill(crate::theme::BG_DEEP)
+                    .fill(crate::theme::BG_DEEP())
                     .inner_margin(egui::Margin::symmetric(8, 6)),
             )
             .show(ui, |ui| {
-                crate::chrome::angled_frame(ui, crate::theme::PINK, |ui| {
+                crate::chrome::angled_frame(ui, crate::theme::PINK(), |ui| {
                     self.top_bar(ui, &mut cmds);
                 });
             });
@@ -616,7 +628,7 @@ impl eframe::App for SdroxideApp {
                 let hresp = crate::chrome::split_handle(
                     ui,
                     egui::vec2(width, handle_h),
-                    Some(crate::theme::PANEL),
+                    Some(crate::theme::PANEL()),
                 );
                 if hresp.dragged() {
                     // Drag down shrinks the panel (waterfall grows), drag up grows it.
@@ -628,10 +640,10 @@ impl eframe::App for SdroxideApp {
             if show_panel {
                 ui.allocate_ui(egui::vec2(width, panel_h), |ui| {
                     egui::Frame::new()
-                        .fill(crate::theme::BG_DEEP)
+                        .fill(crate::theme::BG_DEEP())
                         .inner_margin(egui::Margin { left: 0, right: 0, top: 6, bottom: 0 })
                         .show(ui, |ui| {
-                            crate::chrome::angled_frame(ui, crate::theme::PINK, |ui| {
+                            crate::chrome::angled_frame(ui, crate::theme::PINK(), |ui| {
                                 if mode.is_rade() {
                                     self.rade_panel(ui, &mut cmds, panel_h);
                                 } else if mode.is_wefax() {
@@ -749,7 +761,7 @@ impl eframe::App for SdroxideApp {
                     let hresp = crate::chrome::split_handle(
                         ui,
                         egui::vec2(width, 7.0),
-                        Some(crate::theme::PANEL),
+                        Some(crate::theme::PANEL()),
                     );
                     if hresp.dragged() {
                         let d = hresp.drag_delta().y / ui.available_height().max(1.0);
@@ -759,10 +771,10 @@ impl eframe::App for SdroxideApp {
                 }
                 ui.allocate_ui(egui::vec2(width, panel_h), |ui| {
                     egui::Frame::new()
-                        .fill(crate::theme::BG_DEEP)
+                        .fill(crate::theme::BG_DEEP())
                         .inner_margin(egui::Margin { left: 0, right: 0, top: 6, bottom: 0 })
                         .show(ui, |ui| {
-                            crate::chrome::angled_frame(ui, crate::theme::PINK, |ui| {
+                            crate::chrome::angled_frame(ui, crate::theme::PINK(), |ui| {
                                 self.cw_panel(ui, &mut cmds, panel_h);
                             });
                         });
@@ -960,6 +972,7 @@ impl SdroxideApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
                 ui.set_max_width(crate::layout::window_w(ctx, 430.0));
                 ui.label(
                     RichText::new(
@@ -967,7 +980,7 @@ impl SdroxideApp {
                          off: it will key the transmitter on any frequency the hardware \
                          supports.",
                     )
-                    .color(crate::theme::TEXT_STRONG)
+                    .color(crate::theme::TEXT_STRONG())
                     .size(13.0),
                 );
                 ui.add_space(6.0);
@@ -978,7 +991,7 @@ impl SdroxideApp {
                          you are about to key on — a MARS/CAP or commercial licence, an \
                          experimental permit, or a dummy load.",
                     )
-                    .color(crate::theme::TEXT),
+                    .color(crate::theme::TEXT()),
                 );
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
@@ -986,8 +999,8 @@ impl SdroxideApp {
                         ui,
                         false,
                         RichText::new("  I UNDERSTAND  ").strong(),
-                        crate::theme::PINK,
-                        crate::theme::TEXT_STRONG,
+                        crate::theme::ALERT(),
+                        crate::theme::TEXT_STRONG(),
                     )
                     .clicked()
                     {
@@ -995,7 +1008,7 @@ impl SdroxideApp {
                     }
                     ui.label(
                         RichText::new("Restart without --oob-tx to put the lockout back.")
-                            .color(crate::theme::LINE_LIT)
+                            .color(crate::theme::LINE_LIT())
                             .size(10.5),
                     );
                 });

@@ -33,7 +33,6 @@ const S9_DBM: f32 = -73.0;
 const SWR_MAX: f32 = 9.0;
 
 const RED: Color32 = Color32::from_rgb(255, 60, 70);
-const CYAN: Color32 = Color32::from_rgb(0, 208, 244);
 /// Readout text: the headline value and the smaller sub-reading beside it.
 const READOUT: Color32 = Color32::from_rgb(0xe6, 0xf6, 0xff);
 const SUBDUED: Color32 = Color32::from_rgb(0x84, 0x9e, 0xb6);
@@ -502,7 +501,7 @@ fn reading(meters: Option<&Meters>) -> Reading {
         scale: s_scale(),
         frac: frac_of(dbm),
         chip: primary,
-        accent: CYAN,
+        accent: crate::theme::CYAN(),
         right: secondary,
         right_strong: false,
     }
@@ -541,7 +540,7 @@ fn border(ui: &Ui, rect: Rect) {
     ui.painter_at(rect).rect_stroke(
         rect,
         0.0,
-        Stroke::new(1.0, crate::theme::LINE_LIT),
+        Stroke::new(1.0, crate::theme::LINE_LIT()),
         StrokeKind::Inside,
     );
 }

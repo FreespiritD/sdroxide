@@ -524,13 +524,13 @@ fn rifp_chunk_map(ui: &mut egui::Ui, session: &sdroxide_types::RifpSession) {
             p.rect_filled(
                 egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(cw.max(1.0), 10.0)),
                 0.0,
-                crate::theme::GREEN,
+                crate::theme::GREEN(),
             );
         }
     } else if session.total > 0 {
         let mut fill = rect;
         fill.set_width(rect.width() * (session.have as f32 / session.total as f32).clamp(0.0, 1.0));
-        p.rect_filled(fill, 2.0, crate::theme::GREEN);
+        p.rect_filled(fill, 2.0, crate::theme::GREEN());
     }
     p.rect_stroke(
         rect,
@@ -550,7 +550,7 @@ fn sstv_level_bar(ui: &mut egui::Ui, level: f32) {
     let frac = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
     let mut fill = rect;
     fill.set_width(rect.width() * frac);
-    let col = if frac > 0.06 { crate::theme::GREEN } else { Color32::from_gray(45) };
+    let col = if frac > 0.06 { crate::theme::GREEN() } else { Color32::from_gray(45) };
     p.rect_filled(fill, 2.0, col);
     p.rect_stroke(
         rect,
@@ -675,8 +675,8 @@ impl SdroxideApp {
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
                     egui::Frame::new()
-                        .fill(crate::theme::ROW_BG)
-                        .stroke(egui::Stroke::new(1.0, crate::theme::LINE_LIT))
+                        .fill(crate::theme::ROW_BG())
+                        .stroke(egui::Stroke::new(1.0, crate::theme::LINE_LIT()))
                         .inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 7 })
                         .show(ui, |ui| {
                             ui.set_min_width(left_w - 16.0);
@@ -692,7 +692,7 @@ impl SdroxideApp {
                                     RichText::new("SSTV")
                                         .size(12.0)
                                         .strong()
-                                        .color(crate::theme::CYAN),
+                                        .color(crate::theme::CYAN()),
                                 );
                                 self.digi_freq_chip(ui, cmds);
                                 let auto_label = if self.sstv.auto {
@@ -727,14 +727,14 @@ impl SdroxideApp {
                                         RichText::new(format!("● TX {:.0}%", progress * 100.0))
                                             .size(11.0)
                                             .strong()
-                                            .color(crate::theme::PINK),
+                                            .color(crate::theme::ALERT()),
                                     );
                                 } else if st.rx_active {
                                     ui.label(
                                         RichText::new(format!("● RX {:.0}%", st.progress * 100.0))
                                             .size(11.0)
                                             .strong()
-                                            .color(crate::theme::GREEN),
+                                            .color(crate::theme::GREEN()),
                                     );
                                 } else if let Some(m) = st.detected {
                                     ui.label(
@@ -985,7 +985,7 @@ impl SdroxideApp {
                                 ui.painter().rect_stroke(
                                     resp.rect,
                                     2.0,
-                                    egui::Stroke::new(2.5, crate::theme::CYAN),
+                                    egui::Stroke::new(2.5, crate::theme::CYAN()),
                                     egui::StrokeKind::Outside,
                                 );
                             }
@@ -1000,7 +1000,7 @@ impl SdroxideApp {
                                 egui::Align2::CENTER_CENTER,
                                 format!("{}", i + 1),
                                 egui::FontId::proportional(10.0),
-                                if sel { crate::theme::CYAN } else { Color32::from_gray(170) },
+                                if sel { crate::theme::CYAN() } else { Color32::from_gray(170) },
                             );
                             let resp = resp.on_hover_text(
                                 "Click to edit this slot's message · double-click to load an image",
@@ -1042,7 +1042,7 @@ impl SdroxideApp {
                         }
                     });
                     if let Some(err) = &self.sstv.pick_error {
-                        ui.label(RichText::new(err).size(10.0).color(crate::theme::YELLOW));
+                        ui.label(RichText::new(err).size(10.0).color(crate::theme::YELLOW()));
                     }
                     ui.add_space(6.0);
 
@@ -1053,7 +1053,7 @@ impl SdroxideApp {
                     let preview_h = (ui.available_height() * 0.45).clamp(80.0, 260.0);
                     egui::Frame::new()
                         .fill(Color32::from_gray(6))
-                        .stroke(egui::Stroke::new(1.0, crate::theme::LINE_LIT))
+                        .stroke(egui::Stroke::new(1.0, crate::theme::LINE_LIT()))
                         .inner_margin(2.0)
                         .show(ui, |ui| {
                             ui.set_min_size(egui::vec2(inner_w, preview_h));
@@ -1134,7 +1134,7 @@ impl SdroxideApp {
                                     ui,
                                     can_tx,
                                     RichText::new("   TX   ").size(16.0).strong(),
-                                    crate::theme::PINK,
+                                    crate::theme::ALERT(),
                                     Color32::WHITE,
                                 )
                             })
@@ -1233,6 +1233,7 @@ impl SdroxideApp {
                     ])
                     .frame(crate::chrome::window_frame())
                     .show(&ctx, |ui| {
+                        crate::chrome::window_body_bg(ui);
                         // Scale up to fill the window width (preserving aspect).
                         // A thumbnail stands in until the real one arrives, at
                         // the size the real one will be, so nothing jumps.
@@ -1248,7 +1249,7 @@ impl SdroxideApp {
                                 ui.label(
                                     RichText::new("no longer in the store")
                                         .size(10.0)
-                                        .color(crate::theme::YELLOW),
+                                        .color(crate::theme::YELLOW()),
                                 );
                             } else if r.full.is_none() {
                                 ui.label(RichText::new("loading full size…").size(10.0).weak());
@@ -1267,8 +1268,8 @@ impl SdroxideApp {
                                     ui,
                                     true,
                                     "Delete — sure?",
-                                    crate::theme::PINK,
-                                    crate::theme::INK_ON_CYAN,
+                                    crate::theme::PINK(),
+                                    crate::theme::INK_ON_CYAN(),
                                 )
                                 .on_hover_text("Click again to delete it for good")
                             } else {
@@ -1352,7 +1353,7 @@ impl SdroxideApp {
         let mut changed = false;
 
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("RIFP").size(12.0).strong().color(crate::theme::CYAN));
+            ui.label(RichText::new("RIFP").size(12.0).strong().color(crate::theme::CYAN()));
             // Outside the enabled scope: which frequency to sit on has nothing
             // to do with whether the operator's digi config has loaded yet.
             self.digi_freq_chip(ui, cmds);
@@ -1412,7 +1413,7 @@ impl SdroxideApp {
                     ))
                     .size(10.5)
                     .strong()
-                    .color(crate::theme::PINK),
+                    .color(crate::theme::ALERT()),
                 )
                 .on_hover_text(format!(
                     "RIFP assigns no frequency, and sdroxide will transmit it wherever you tune. \
@@ -1535,7 +1536,7 @@ impl SdroxideApp {
                     ))
                     .size(11.0)
                     .strong()
-                    .color(crate::theme::PINK),
+                    .color(crate::theme::ALERT()),
                 );
             }
             if let Some(enc) = st.tx_encoding {
@@ -1571,7 +1572,7 @@ impl SdroxideApp {
                     format!("{from} {}", s.have)
                 };
                 let colour =
-                    if s.have_manifest { crate::theme::GREEN } else { crate::theme::YELLOW };
+                    if s.have_manifest { crate::theme::GREEN() } else { crate::theme::YELLOW() };
                 ui.label(RichText::new(label).size(10.5).strong().color(colour)).on_hover_text(
                     if s.have_manifest {
                         format!("session {} · idle {} s", s.session, s.idle_s)
@@ -1592,7 +1593,7 @@ impl SdroxideApp {
             }
         });
         if let Some(err) = &st.last_error {
-            ui.label(RichText::new(err).size(10.0).color(crate::theme::YELLOW));
+            ui.label(RichText::new(err).size(10.0).color(crate::theme::YELLOW()));
         }
         if changed && seeded {
             cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));

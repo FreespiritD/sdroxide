@@ -362,6 +362,6 @@ pub fn overlay(p: &Painter, view: &ViewState, wf: &Rect, panel_below: bool) {
     p.hline(
         wf.x_range(),
         if flip { strip_bottom } else { strip_top },
-        Stroke::new(1.0, theme::LINE_LIT),
+        Stroke::new(1.0, theme::LINE_LIT()),
     );
 }

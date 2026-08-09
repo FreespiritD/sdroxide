@@ -38,9 +38,9 @@ const DIM_INK: Color32 = Color32::from_gray(110);
 /// one, and the words are printed either way.
 pub(in crate::app) fn rating_color(r: BandRating) -> Option<Color32> {
     match r {
-        BandRating::Good => Some(crate::theme::GREEN),
-        BandRating::Fair => Some(crate::theme::YELLOW),
-        BandRating::Poor => Some(crate::theme::PINK),
+        BandRating::Good => Some(crate::theme::GREEN()),
+        BandRating::Fair => Some(crate::theme::YELLOW()),
+        BandRating::Poor => Some(crate::theme::PINK()),
         BandRating::Closed => Some(DIM_INK),
         BandRating::Unknown => None,
     }
@@ -65,7 +65,10 @@ impl SdroxideApp {
             .resizable(true)
             .default_width(crate::layout::window_w(ctx, 520.0))
             .default_height(crate::layout::window_h(ctx, 460.0))
-            .show(ctx, |ui| self.bands_body(ui));
+            .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
+                self.bands_body(ui)
+            });
         if let Some(r) = &resp {
             crate::chrome::paint_window_border(ctx, &r.response);
         }
@@ -80,7 +83,7 @@ impl SdroxideApp {
             ui.label(
                 RichText::new(if self.daylight { "☀ DAYLIGHT" } else { "☾ NIGHT" })
                     .size(10.0)
-                    .color(crate::theme::CYAN_DIM),
+                    .color(crate::theme::CYAN_DIM()),
             );
             match conditions_age(self) {
                 Some(a) => {

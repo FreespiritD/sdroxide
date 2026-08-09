@@ -53,7 +53,7 @@ impl SdroxideApp {
         ctx.request_repaint_after(Duration::from_millis(200));
 
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("WEFAX").size(12.0).strong().color(theme::CYAN));
+            ui.label(RichText::new("WEFAX").size(12.0).strong().color(theme::CYAN()));
             self.wefax_station_chip(ui, cmds);
 
             // START / STOP. Starting by hand is the normal way in: a chart runs
@@ -68,8 +68,8 @@ impl SdroxideApp {
                 ui,
                 st.receiving,
                 RichText::new(face).strong(),
-                if st.receiving { theme::PINK } else { theme::GREEN },
-                theme::INK_ON_CYAN,
+                if st.receiving { theme::PINK() } else { theme::GREEN() },
+                theme::INK_ON_CYAN(),
             )
             .on_hover_text(hint)
             .clicked()
@@ -79,13 +79,13 @@ impl SdroxideApp {
 
             // What the receiver is making of the signal.
             let (text, colour) = if st.phasing {
-                ("phasing…".to_string(), theme::YELLOW)
+                ("phasing…".to_string(), theme::YELLOW())
             } else if st.receiving {
-                (format!("{} lines", st.lines), theme::GREEN)
+                (format!("{} lines", st.lines), theme::GREEN())
             } else if self.wefax.has_live() {
-                (format!("{} lines held", self.wefax.live_size().1), theme::CYAN_DIM)
+                (format!("{} lines held", self.wefax.live_size().1), theme::CYAN_DIM())
             } else {
-                ("listening".to_string(), theme::LINE_LIT)
+                ("listening".to_string(), theme::LINE_LIT())
             };
             ui.label(RichText::new(text).color(colour).size(11.0));
 
@@ -95,7 +95,7 @@ impl SdroxideApp {
             let off = st.subcarrier_hz - 1900.0;
             ui.label(
                 RichText::new(format!("{:+.0} Hz", off))
-                    .color(if off.abs() < 120.0 { theme::GREEN } else { theme::YELLOW })
+                    .color(if off.abs() < 120.0 { theme::GREEN() } else { theme::YELLOW() })
                     .size(11.0)
                     .monospace(),
             )
@@ -113,7 +113,7 @@ impl SdroxideApp {
             let seeded = self.digi_cfg_seeded;
             let mut changed = false;
 
-            ui.label(RichText::new("LPM").color(theme::CYAN_DIM).size(9.5).strong());
+            ui.label(RichText::new("LPM").color(theme::CYAN_DIM()).size(9.5).strong());
             for l in sdroxide_types::WefaxLpm::ALL {
                 let on = self.digi_cfg_edit.wefax_lpm == l;
                 if crate::chrome::chip(ui, on, l.label()).clicked() && !on {
@@ -122,7 +122,7 @@ impl SdroxideApp {
                 }
             }
             ui.add_space(8.0);
-            ui.label(RichText::new("IOC").color(theme::CYAN_DIM).size(9.5).strong());
+            ui.label(RichText::new("IOC").color(theme::CYAN_DIM()).size(9.5).strong());
             for i in sdroxide_types::WefaxIoc::ALL {
                 let on = self.digi_cfg_edit.wefax_ioc == i;
                 if crate::chrome::chip(ui, on, i.value().to_string())
@@ -161,7 +161,7 @@ impl SdroxideApp {
             ui.add_space(8.0);
             // Phase nudge: for a chart whose phasing pulse was missed, which is
             // every chart you tune into halfway through.
-            ui.label(RichText::new("PHASE").color(theme::CYAN_DIM).size(9.5).strong());
+            ui.label(RichText::new("PHASE").color(theme::CYAN_DIM()).size(9.5).strong());
             // Labelled with the shift itself rather than with arrows. The
             // media glyphs this used to wear (⏪ ◀ ▶ ⏩) are not in Chakra
             // Petch, and the fallback the browser substitutes measures
@@ -178,7 +178,7 @@ impl SdroxideApp {
             }
 
             ui.add_space(8.0);
-            ui.label(RichText::new("SLANT").color(theme::CYAN_DIM).size(9.5).strong());
+            ui.label(RichText::new("SLANT").color(theme::CYAN_DIM()).size(9.5).strong());
             let mut ppm = self.digi_cfg_edit.wefax_slant_ppm;
             if ui
                 .add(
@@ -204,7 +204,7 @@ impl SdroxideApp {
             // to finish before being allowed to look at the top of it is the
             // single most irritating thing about receiving fax.
             ui.add_space(8.0);
-            ui.label(RichText::new("VIEW").color(theme::CYAN_DIM).size(9.5).strong());
+            ui.label(RichText::new("VIEW").color(theme::CYAN_DIM()).size(9.5).strong());
             use crate::wefax::Zoom;
             let zoom = self.wefax.zoom;
             for (face, z, hint) in [
@@ -223,7 +223,7 @@ impl SdroxideApp {
             // rate is not what the station is actually sending — 90 taken for
             // 120 makes it a third too tall — and this pulls it back while the
             // operator works out which rate that is.
-            ui.label(RichText::new("HEIGHT").color(theme::CYAN_DIM).size(9.5).strong());
+            ui.label(RichText::new("HEIGHT").color(theme::CYAN_DIM()).size(9.5).strong());
             let mut aspect = self.wefax.aspect;
             if ui
                 .add(
@@ -359,7 +359,7 @@ impl SdroxideApp {
                                         "Tune a fax schedule in USB and wait for a start tone, or \
                                      press START to begin mid-chart.",
                                     )
-                                    .color(theme::LINE_LIT)
+                                    .color(theme::LINE_LIT())
                                     .size(11.5),
                                 );
                                 });
@@ -413,10 +413,12 @@ impl SdroxideApp {
         // clipboard when you are about to go and look at it over there.
         let where_ = self.store_where(&dir);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("SAVED").color(theme::CYAN_DIM).size(9.5).strong());
+            ui.label(RichText::new("SAVED").color(theme::CYAN_DIM()).size(9.5).strong());
             if self.wefax.total > 0 {
                 ui.label(
-                    RichText::new(format!("{}", self.wefax.total)).color(theme::LINE_LIT).size(9.5),
+                    RichText::new(format!("{}", self.wefax.total))
+                        .color(theme::LINE_LIT())
+                        .size(9.5),
                 );
             }
             if !dir.is_empty()
@@ -437,7 +439,7 @@ impl SdroxideApp {
                 } else {
                     format!("Finished charts are saved {where_} and collect here.")
                 })
-                .color(theme::LINE_LIT)
+                .color(theme::LINE_LIT())
                 .size(10.0),
             );
             return;
@@ -474,7 +476,11 @@ impl SdroxideApp {
                                 Some(m) => {
                                     ui.label(
                                         RichText::new(m.when_label())
-                                            .color(if selected { theme::CYAN } else { theme::TEXT })
+                                            .color(if selected {
+                                                theme::CYAN()
+                                            } else {
+                                                theme::TEXT()
+                                            })
                                             .size(10.0)
                                             .monospace(),
                                     );
@@ -485,7 +491,7 @@ impl SdroxideApp {
                                         RichText::new(m.where_label().unwrap_or_else(|| {
                                             format!("{} × {}", c.size.0, c.size.1)
                                         }))
-                                        .color(theme::CYAN_DIM)
+                                        .color(theme::CYAN_DIM())
                                         .size(9.5),
                                     );
                                 }
@@ -493,7 +499,7 @@ impl SdroxideApp {
                                 // did not name: show what there is rather than
                                 // inventing a date for it.
                                 None => {
-                                    ui.label(RichText::new(&c.name).color(theme::TEXT).size(9.5));
+                                    ui.label(RichText::new(&c.name).color(theme::TEXT()).size(9.5));
                                 }
                             }
                         },
@@ -505,7 +511,7 @@ impl SdroxideApp {
                             2.0,
                             egui::Stroke::new(
                                 1.0,
-                                if selected { theme::CYAN } else { theme::LINE_LIT },
+                                if selected { theme::CYAN() } else { theme::LINE_LIT() },
                             ),
                             egui::StrokeKind::Inside,
                         );
@@ -524,7 +530,7 @@ impl SdroxideApp {
                     // is the target for opening it, and a delete sharing that
                     // target would be pressed by accident.
                     resp.context_menu(|ui| {
-                        ui.label(RichText::new(c.title()).color(theme::CYAN_DIM).size(10.0));
+                        ui.label(RichText::new(c.title()).color(theme::CYAN_DIM()).size(10.0));
                         if ui.button("Delete this chart").clicked() {
                             delete = Some(c.name.clone());
                             ui.close();
@@ -541,7 +547,7 @@ impl SdroxideApp {
                     // holding thumbnails somewhere.
                     ui.label(
                         RichText::new(format!("{older} older in the store"))
-                            .color(theme::LINE_LIT)
+                            .color(theme::LINE_LIT())
                             .size(9.5),
                     );
                 } else if older > 0 {
@@ -605,10 +611,11 @@ impl SdroxideApp {
             .frame(crate::chrome::window_frame())
             .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
             .show(|ui| {
+                crate::chrome::window_body_bg(ui);
                 ui.set_max_width(420.0);
                 for s in WEFAX_STATIONS {
                     ui.label(
-                        RichText::new(s.name).color(crate::theme::CYAN_DIM).size(10.0).strong(),
+                        RichText::new(s.name).color(crate::theme::CYAN_DIM()).size(10.0).strong(),
                     );
                     ui.horizontal_wrapped(|ui| {
                         for &f in s.carriers_khz {
@@ -633,7 +640,7 @@ impl SdroxideApp {
                          which is done for you. Schedules change and stations close — treat this \
                          as where to start looking, not a timetable.",
                     )
-                    .color(crate::theme::LINE_LIT)
+                    .color(crate::theme::LINE_LIT())
                     .size(10.0),
                 );
             });
@@ -699,6 +706,7 @@ impl SdroxideApp {
                 crate::layout::window_h(ctx, 640.0),
             ])
             .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
                 ui.horizontal(|ui| {
                     // Newer is up the list, older is down it.
                     if crate::chrome::chip(ui, false, "◀ NEWER")
@@ -709,7 +717,7 @@ impl SdroxideApp {
                     }
                     ui.label(
                         RichText::new(format!("{} of {n}", i + 1))
-                            .color(crate::theme::CYAN_DIM)
+                            .color(crate::theme::CYAN_DIM())
                             .size(10.0),
                     );
                     if crate::chrome::chip(ui, false, "OLDER ▶")
@@ -722,13 +730,13 @@ impl SdroxideApp {
                     if gone {
                         ui.label(
                             RichText::new("no longer in the store")
-                                .color(crate::theme::YELLOW)
+                                .color(crate::theme::YELLOW())
                                 .size(10.0),
                         );
                     } else if !loaded {
                         ui.label(
                             RichText::new("loading full size…")
-                                .color(crate::theme::CYAN_DIM)
+                                .color(crate::theme::CYAN_DIM())
                                 .size(10.0),
                         );
                     } else if savable
@@ -745,8 +753,8 @@ impl SdroxideApp {
                             ui,
                             true,
                             RichText::new("SURE?").size(9.5),
-                            crate::theme::PINK,
-                            crate::theme::INK_ON_CYAN,
+                            crate::theme::PINK(),
+                            crate::theme::INK_ON_CYAN(),
                         )
                         .on_hover_text("Click again to delete this chart for good")
                     } else {
@@ -756,7 +764,7 @@ impl SdroxideApp {
                     if del.clicked() {
                         pressed_delete = true;
                     }
-                    ui.label(RichText::new(&name).color(crate::theme::LINE_LIT).size(10.0))
+                    ui.label(RichText::new(&name).color(crate::theme::LINE_LIT()).size(10.0))
                         .on_hover_text("The file this chart was saved as");
                 });
                 ui.add_space(4.0);

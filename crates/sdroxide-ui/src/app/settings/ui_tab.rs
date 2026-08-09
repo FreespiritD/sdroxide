@@ -19,12 +19,36 @@ pub(in crate::app) fn settings_ui_tab(
     cfg: &mut sdroxide_types::UiSettings,
     cloud_march: Option<&mut bool>,
 ) {
-    use sdroxide_types::{LayoutMode, Speed, UiSettings};
-    ui.label(RichText::new("Display").size(14.0).strong().color(crate::theme::CYAN));
+    use sdroxide_types::{ChromeStyle, LayoutMode, Speed, UiSettings, UiTheme};
+    ui.label(RichText::new("Display").size(14.0).strong().color(crate::theme::CYAN()));
     ui.add_space(6.0);
     egui::Grid::new("ui-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
         ui.label("Layout");
         enum_combo(ui, "ui-layout", &mut cfg.layout, &LayoutMode::ALL, LayoutMode::label);
+        ui.end_row();
+
+        ui.label("Theme");
+        enum_combo(ui, "ui-theme", &mut cfg.theme, &UiTheme::ALL, UiTheme::label);
+        ui.end_row();
+
+        ui.label("Button style");
+        enum_combo(
+            ui,
+            "ui-btn-style",
+            &mut cfg.button_style,
+            &ChromeStyle::ALL,
+            ChromeStyle::label,
+        );
+        ui.end_row();
+
+        ui.label("Window style");
+        enum_combo(
+            ui,
+            "ui-win-style",
+            &mut cfg.window_style,
+            &ChromeStyle::ALL,
+            ChromeStyle::label,
+        );
         ui.end_row();
 
         ui.label("Screen update rate");
@@ -74,6 +98,9 @@ pub(in crate::app) fn settings_ui_tab(
              desktop, menus on a tablet, and on a phone a compact readout with the \
              waterfall alone below it. Force one to see how it looks — or to keep the \
              menus in a small desktop window.\n\n\
+             Theme recolours the whole UI and the styles reshape its buttons and \
+             windows — all applied immediately. The phosphor themes keep transmit \
+             and error indications red on purpose.\n\n\
              Higher frame rates look smoother but cost more CPU/GPU. Spectrum speed \
              sets how quickly the trace reacts (slower = smoother/more averaged). The \
              background gradient fills the spectrum area from the top colour down to \
@@ -84,7 +111,7 @@ pub(in crate::app) fn settings_ui_tab(
 
     let Some(cloud_march) = cloud_march else { return };
     ui.add_space(14.0);
-    ui.label(RichText::new("3D view").size(14.0).strong().color(crate::theme::CYAN));
+    ui.label(RichText::new("3D view").size(14.0).strong().color(crate::theme::CYAN()));
     ui.add_space(6.0);
     egui::Grid::new("ui-grid-3d").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
         ui.label("Cloud rendering");
@@ -124,7 +151,7 @@ pub(in crate::app) fn speech_settings(
     status: &SpeechStatus,
     test: &mut bool,
 ) {
-    ui.label(RichText::new("Voice announcements").size(14.0).strong().color(crate::theme::CYAN));
+    ui.label(RichText::new("Voice announcements").size(14.0).strong().color(crate::theme::CYAN()));
     ui.add_space(6.0);
     ui.checkbox(&mut cfg.enabled, "Speak changes to the radio")
         .on_hover_text("Reads out what changed, so the radio can be operated without seeing it");

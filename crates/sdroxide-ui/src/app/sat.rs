@@ -184,7 +184,10 @@ impl SdroxideApp {
             .resizable(true)
             .default_width(crate::layout::window_w(ctx, 480.0))
             .default_height(crate::layout::window_h(ctx, 520.0))
-            .show(ctx, |ui| self.sat_body(ui, &mut win, cmds));
+            .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
+                self.sat_body(ui, &mut win, cmds)
+            });
         if let Some(r) = &resp {
             crate::chrome::paint_window_border(ctx, &r.response);
         }
@@ -211,14 +214,14 @@ impl SdroxideApp {
         t: &sdroxide_types::SatTrackStatus,
     ) {
         use sdroxide_solar::satellites::compass;
-        let dim = |s: &str| RichText::new(s).size(9.5).color(theme::CYAN_DIM);
+        let dim = |s: &str| RichText::new(s).size(9.5).color(theme::CYAN_DIM());
 
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(format!("● LOCKED — {}", t.name))
                     .size(13.0)
                     .strong()
-                    .color(if t.visible { theme::GREEN } else { theme::YELLOW }),
+                    .color(if t.visible { theme::GREEN() } else { theme::YELLOW() }),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if crate::chrome::chip(ui, false, "UNLOCK")
@@ -244,7 +247,7 @@ impl SdroxideApp {
                 RichText::new(format!("{:+.1}°", t.el_deg))
                     .size(12.5)
                     .strong()
-                    .color(if t.el_deg > 0.0 { theme::GREEN } else { theme::TEXT }),
+                    .color(if t.el_deg > 0.0 { theme::GREEN() } else { theme::TEXT() }),
             );
             ui.end_row();
 
@@ -265,7 +268,7 @@ impl SdroxideApp {
             ui.label(
                 RichText::new(format!("{} MHz", fmt_mhz(t.downlink_hz)))
                     .size(11.5)
-                    .color(theme::GREEN),
+                    .color(theme::GREEN()),
             );
             ui.label(dim("DOPPLER RX"));
             ui.label(RichText::new(fmt_hz_signed(t.doppler_rx_hz)).size(11.5));
@@ -274,7 +277,7 @@ impl SdroxideApp {
             if let Some(up) = t.uplink_hz {
                 ui.label(dim("UPLINK"));
                 ui.label(
-                    RichText::new(format!("{} MHz", fmt_mhz(up))).size(11.5).color(theme::YELLOW),
+                    RichText::new(format!("{} MHz", fmt_mhz(up))).size(11.5).color(theme::YELLOW()),
                 );
                 ui.label(dim("DOPPLER TX"));
                 ui.label(RichText::new(fmt_hz_signed(t.doppler_tx_hz)).size(11.5));
@@ -321,13 +324,13 @@ impl SdroxideApp {
             ui.label(
                 RichText::new("⚠ Elements stale — corrections suspended until a TLE refresh")
                     .size(10.5)
-                    .color(theme::YELLOW),
+                    .color(theme::YELLOW()),
             );
         } else if !t.corrections_active && win.sent.as_ref().is_none_or(|c| c.doppler) {
             ui.label(
                 RichText::new("Doppler correction needs an IQ front end — a CAT rig tracks only")
                     .size(10.5)
-                    .color(theme::CYAN_DIM),
+                    .color(theme::CYAN_DIM()),
             );
         }
         if let Some(s) = &self.rigctld_status {
@@ -340,7 +343,7 @@ impl SdroxideApp {
                         if s.clients == 1 { "" } else { "s" }
                     ))
                     .size(10.5)
-                    .color(theme::YELLOW),
+                    .color(theme::YELLOW()),
                 );
             }
         }
@@ -348,11 +351,11 @@ impl SdroxideApp {
             if win.sent.as_ref().is_some_and(|c| c.rotator) {
                 let line = if *connected {
                     RichText::new(format!("Rotator: antenna at {az:.0}° az {el:.0}° el"))
-                        .color(theme::CYAN_DIM)
+                        .color(theme::CYAN_DIM())
                 } else {
                     match err {
-                        Some(e) => RichText::new(format!("Rotator: {e}")).color(theme::YELLOW),
-                        None => RichText::new("Rotator: not connected").color(theme::CYAN_DIM),
+                        Some(e) => RichText::new(format!("Rotator: {e}")).color(theme::YELLOW()),
+                        None => RichText::new("Rotator: not connected").color(theme::CYAN_DIM()),
                     }
                 };
                 ui.label(line.size(10.5));
@@ -387,7 +390,7 @@ impl SdroxideApp {
     /// The picker: every satellite the station tracks, searchable, with the
     /// published links of the chosen one and the TUNE / LOCK actions.
     fn sat_picker(&mut self, ui: &mut egui::Ui, win: &mut SatWinState, cmds: &mut Vec<Command>) {
-        let dim = |s: &str| RichText::new(s).size(9.5).color(theme::CYAN_DIM);
+        let dim = |s: &str| RichText::new(s).size(9.5).color(theme::CYAN_DIM());
         let now = crate::time::now_unix();
         let qth = sdroxide_types::grid_to_latlon(&self.my_grid());
 
@@ -414,7 +417,7 @@ impl SdroxideApp {
                 ui.label(
                     RichText::new("set your grid for passes (Settings ▸ General)")
                         .size(9.5)
-                        .color(theme::YELLOW),
+                        .color(theme::YELLOW()),
                 );
             }
         });
@@ -510,8 +513,8 @@ impl SdroxideApp {
                         // the accent chips use. The accents are for
                         // unselected rows alone.
                         let name = match el {
-                            _ if selected => name.color(theme::INK_ON_CYAN).strong(),
-                            Some(el) if *el > 0.0 => name.color(theme::GREEN).strong(),
+                            _ if selected => name.color(theme::INK_ON_CYAN()).strong(),
+                            Some(el) if *el > 0.0 => name.color(theme::GREEN()).strong(),
                             _ => name,
                         };
                         if ui.selectable_label(selected, name).clicked() {
@@ -521,18 +524,18 @@ impl SdroxideApp {
                         ui.label(RichText::new(e.norad_id.to_string()).size(10.0));
                         let pass = match (el, &e.pass, &e.sat) {
                             (Some(el), _, _) if *el > 0.0 => {
-                                RichText::new(format!("● up now, {el:.0}°")).color(theme::GREEN)
+                                RichText::new(format!("● up now, {el:.0}°")).color(theme::GREEN())
                             }
                             (_, Some((_, PassMemo::Pass(p))), _) => {
                                 RichText::new(in_words(p.rise_unix - now))
                             }
                             (_, Some((_, PassMemo::Always)), _) => {
-                                RichText::new("always visible").color(theme::GREEN)
+                                RichText::new("always visible").color(theme::GREEN())
                             }
                             (_, Some((_, PassMemo::Never)), _) => {
-                                RichText::new("not from here").color(theme::CYAN_DIM)
+                                RichText::new("not from here").color(theme::CYAN_DIM())
                             }
-                            (_, None, None) => RichText::new("no elements").color(theme::YELLOW),
+                            (_, None, None) => RichText::new("no elements").color(theme::YELLOW()),
                             (_, None, Some(_)) => RichText::new("…"),
                         };
                         ui.label(pass.size(10.0));
@@ -588,7 +591,7 @@ impl SdroxideApp {
                     // the dark on-cyan ink or it vanishes into the fill.
                     let mut label = RichText::new(&l.label).size(10.5);
                     if sel {
-                        label = label.color(theme::INK_ON_CYAN).strong();
+                        label = label.color(theme::INK_ON_CYAN()).strong();
                     }
                     let resp = ui.selectable_label(sel, label);
                     if !l.note.is_empty() {
@@ -600,12 +603,12 @@ impl SdroxideApp {
                     ui.label(
                         RichText::new(l.downlink.map_or_else(|| "—".into(), |b| b.to_string()))
                             .size(10.5)
-                            .color(theme::GREEN),
+                            .color(theme::GREEN()),
                     );
                     ui.label(
                         RichText::new(l.uplink.map_or_else(|| "—".into(), |b| b.to_string()))
                             .size(10.5)
-                            .color(theme::YELLOW),
+                            .color(theme::YELLOW()),
                     );
                     let mode =
                         if l.inverting { format!("{} · inv", l.mode) } else { l.mode.clone() };
@@ -640,8 +643,8 @@ impl SdroxideApp {
                 ui,
                 locked_here,
                 RichText::new(if locked_here { " LOCKED " } else { " LOCK ON " }).strong(),
-                theme::GREEN,
-                theme::INK_ON_CYAN,
+                theme::GREEN(),
+                theme::INK_ON_CYAN(),
             )
             .on_hover_text(
                 "Track this satellite: Doppler correction on RX and TX, transponder-mapped \

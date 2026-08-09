@@ -395,6 +395,7 @@ impl SdroxideApp {
             .min_height(crate::layout::window_h(ctx, 300.0))
             .vscroll(true)
             .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
                 bars.restore(ui);
                 // The tabs that are wider than the window get a scrollbar
                 // instead of widening it: the Controls tables and the TLE
@@ -736,7 +737,7 @@ impl SdroxideApp {
                 ui.separator();
                 ui.add_space(6.0);
 
-                ui.label(RichText::new("Station").size(14.0).strong().color(crate::theme::CYAN));
+                ui.label(RichText::new("Station").size(14.0).strong().color(crate::theme::CYAN()));
                 ui.add_space(6.0);
                 if !io.digi_seeded {
                     ui.label(
@@ -1194,8 +1195,8 @@ impl SdroxideApp {
                     ui,
                     false,
                     RichText::new(" APPLY ").strong(),
-                    crate::theme::GREEN,
-                    crate::theme::INK_ON_CYAN,
+                    crate::theme::GREEN(),
+                    crate::theme::INK_ON_CYAN(),
                 )
                 .on_hover_text("Persist and (re)connect the feeds")
                 .clicked()
@@ -1269,8 +1270,8 @@ impl SdroxideApp {
                         ui,
                         false,
                         RichText::new(" APPLY ").strong(),
-                        crate::theme::GREEN,
-                        crate::theme::INK_ON_CYAN,
+                        crate::theme::GREEN(),
+                        crate::theme::INK_ON_CYAN(),
                     )
                     .clicked()
                     {

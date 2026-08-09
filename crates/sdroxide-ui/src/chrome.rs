@@ -2,9 +2,10 @@
 //! corner accents — the shapes egui's rounded-rect widgets can't draw.
 
 use eframe::egui::{
-    self, Color32, FontSelection, Painter, Pos2, Rect, Response, RichText, Sense, Shape, Stroke,
-    TextStyle, Ui, WidgetText, pos2, vec2,
+    self, Color32, CornerRadius, FontSelection, Mesh, Painter, Pos2, Rect, Response, RichText,
+    Sense, Shape, Stroke, StrokeKind, TextStyle, Ui, WidgetText, pos2, vec2,
 };
+use sdroxide_types::ChromeStyle;
 
 use crate::theme::{self, ThemedScroll};
 
@@ -44,8 +45,15 @@ pub fn angled_frame<R>(ui: &mut Ui, accent: Color32, add: impl FnOnce(&mut Ui) -
         if a.is_finite() && a > 50.0 { a } else { ui.ctx().content_rect().width() - 24.0 }
     };
     let margin = 10i8;
+    // The Gradient style needs a fill sized to the frame's final rect, which
+    // is only known after the content ran — so reserve a slot in the paint
+    // list now, leave the frame's own fill transparent, and set the gradient
+    // into the slot afterwards, where it renders *under* the content.
+    let grad_slot =
+        (theme::window_style() == ChromeStyle::Gradient).then(|| ui.painter().add(Shape::Noop));
     let inner = egui::Frame::new()
-        .fill(theme::PANEL)
+        .fill(if grad_slot.is_some() { Color32::TRANSPARENT } else { theme::PANEL() })
+        .corner_radius(window_corner_radius())
         .inner_margin(egui::Margin::symmetric(margin, 8))
         .show(ui, |ui| {
             // Pin to the panel width (both min and max) so wrapping happens at
@@ -56,18 +64,55 @@ pub fn angled_frame<R>(ui: &mut Ui, accent: Color32, add: impl FnOnce(&mut Ui) -
             ui.set_max_width(w);
             add(ui)
         });
-    paint_cut_border(ui.painter(), inner.response.rect, accent, theme::BG_DEEP);
+    if let Some(slot) = grad_slot {
+        ui.painter().set(slot, panel_gradient(inner.response.rect));
+    }
+    paint_cut_border(ui.painter(), inner.response.rect, accent, theme::BG_DEEP());
     inner.inner
 }
 
-/// Frame for a floating window: flat panel fill, square corners (the cut
-/// corners are painted on top afterwards by [`paint_window_border`]), with a
-/// roomy content margin.
+/// The Gradient window style's fill for `rect`: the panel colour, lit a touch
+/// at the top and falling off dark at the bottom.
+fn panel_gradient(rect: Rect) -> Shape {
+    let panel = theme::PANEL();
+    grad_rect(rect, lerp(panel, Color32::WHITE, 0.06), lerp(panel, Color32::BLACK, 0.45))
+}
+
+/// Restyle a floating window's body for the current window style — call it
+/// first thing inside the body closure of every `egui::Window` framed with
+/// [`window_frame`].
+///
+/// A no-op for most styles. For Gradient it paints the body gradient (an
+/// `egui::Frame` cannot fill with one, and a window's frame belongs to egui,
+/// so the body's own first shape is the only slot under the widgets we can
+/// reach); Bevel gets a subtle sheen along the top edge. Sized from the
+/// body's `max_rect` grown back over [`window_frame`]'s 11 pt margin — on the
+/// frame a window is resized its rect lags one frame behind, which egui's own
+/// window-size memory makes invisible in practice.
+pub fn window_body_bg(ui: &mut Ui) {
+    let r = ui.max_rect().expand(11.0);
+    match theme::window_style() {
+        ChromeStyle::Gradient => {
+            ui.painter().add(panel_gradient(r));
+        }
+        ChromeStyle::Bevel => {
+            let mut sheen = r;
+            sheen.set_height((r.height() * 0.2).min(26.0));
+            ui.painter().add(grad_rect(sheen, Color32::from_white_alpha(14), Color32::TRANSPARENT));
+        }
+        _ => {}
+    }
+}
+
+/// Frame for a floating window: flat panel fill with a roomy content margin,
+/// shaped by the current window style — square for most styles (the Angled
+/// cuts are painted on top afterwards by [`paint_window_border`]), rounded
+/// under the Rounded style.
 pub fn window_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(theme::PANEL)
+        .fill(theme::PANEL())
         .inner_margin(egui::Margin::same(11))
-        .corner_radius(egui::CornerRadius::ZERO)
+        .corner_radius(window_corner_radius())
 }
 
 /// Paint the pink cut-corner border around a floating window (top-right +
@@ -75,12 +120,55 @@ pub fn window_frame() -> egui::Frame {
 /// window's own layer so it sits over the panel fill.
 pub fn paint_window_border(ctx: &egui::Context, resp: &Response) {
     let p = ctx.layer_painter(resp.layer_id);
-    paint_cut_border(&p, resp.rect, theme::PINK, theme::PANEL);
+    paint_cut_border(&p, resp.rect, theme::PINK(), theme::PANEL());
 }
 
 /// Multiply a colour's alpha by `a` (for fading chrome in/out).
 fn fade(c: Color32, a: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * a.clamp(0.0, 1.0)) as u8)
+}
+
+/// Linear blend from `a` to `b`, all four channels. Colours are premultiplied,
+/// where a straight per-channel lerp is the correct blend.
+fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let ch = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    Color32::from_rgba_premultiplied(
+        ch(a.r(), b.r()),
+        ch(a.g(), b.g()),
+        ch(a.b(), b.b()),
+        ch(a.a(), b.a()),
+    )
+}
+
+/// A rect filled with a vertical `top` → `bottom` gradient — the fill the
+/// Gradient chrome style uses. egui has no gradient shape of its own, so this
+/// is a two-triangle mesh with the colours on the vertices.
+fn grad_rect(rect: Rect, top: Color32, bottom: Color32) -> Shape {
+    let mut mesh = Mesh::default();
+    mesh.colored_vertex(rect.left_top(), top);
+    mesh.colored_vertex(rect.right_top(), top);
+    mesh.colored_vertex(rect.right_bottom(), bottom);
+    mesh.colored_vertex(rect.left_bottom(), bottom);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    Shape::mesh(mesh)
+}
+
+/// The corner radius a Rounded-style window wears. Matches what
+/// [`crate::theme::apply_visuals`] gives egui's own windows and menus.
+const ROUND_WINDOW_R: u8 = 6;
+/// The corner radius a Rounded-style chip wears.
+const ROUND_CHIP_R: f32 = 5.0;
+
+/// The corner radius for the current window style — rounded only under
+/// `Rounded`; every other style keeps square fills (Angled paints its cuts on
+/// top).
+fn window_corner_radius() -> CornerRadius {
+    match theme::window_style() {
+        ChromeStyle::Rounded => CornerRadius::same(ROUND_WINDOW_R),
+        _ => CornerRadius::ZERO,
+    }
 }
 
 /// A floating-window frame (flat panel, square corners) with its fill faded to
@@ -94,7 +182,7 @@ pub fn window_frame_alpha(alpha: f32) -> egui::Frame {
 /// Paint the pink top-right/bottom-left cut border of a popup, faded to `alpha`.
 pub fn paint_popup_cut_border(ctx: &egui::Context, resp: &Response, alpha: f32) {
     let p = ctx.layer_painter(resp.layer_id);
-    paint_cut_border(&p, resp.rect, fade(theme::PINK, alpha), fade(theme::PANEL, alpha));
+    paint_cut_border(&p, resp.rect, fade(theme::PINK(), alpha), fade(theme::PANEL(), alpha));
 }
 
 /// Fade timing for an auto-dismissing popup: full opacity for `HOLD` seconds
@@ -138,9 +226,45 @@ pub fn popup_fade_alpha(
     }
 }
 
-/// Cut-corner border: masks the two corners with `mask` (the surrounding
-/// background) and strokes the six-sided outline.
+/// The border every panel and floating window wears, in the current window
+/// style. Kept under its historic name — it *was* only the cut-corner border,
+/// and its ~30 callers all still mean "give this rect the app's frame chrome".
+///
+/// `mask` is the surrounding background, used only by the Angled style to
+/// cover the square fill corners so the cut reads as a real bevel; the other
+/// styles get their shape from the frame fill itself.
 pub fn paint_cut_border(p: &Painter, rect: Rect, color: Color32, mask: Color32) {
+    match theme::window_style() {
+        ChromeStyle::Angled => paint_angled_border(p, rect, color, mask),
+        ChromeStyle::Rectangular | ChromeStyle::Gradient => {
+            p.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.2, color), StrokeKind::Inside);
+        }
+        ChromeStyle::Rounded => {
+            p.rect_stroke(
+                rect,
+                CornerRadius::same(ROUND_WINDOW_R),
+                Stroke::new(1.2, color),
+                StrokeKind::Inside,
+            );
+        }
+        ChromeStyle::Bevel => {
+            // Raised 3D edge: lit where the light falls (top + left), shaded
+            // opposite. The hairline accent outline stays so the frame keeps
+            // its colour identity from across the room.
+            let rr = rect.shrink(1.0);
+            let light = Stroke::new(2.0, lerp(color, Color32::WHITE, 0.4));
+            let dark = Stroke::new(2.0, lerp(color, Color32::BLACK, 0.55));
+            p.line_segment([rr.left_bottom(), rr.left_top()], light);
+            p.line_segment([rr.left_top(), rr.right_top()], light);
+            p.line_segment([rr.right_top(), rr.right_bottom()], dark);
+            p.line_segment([rr.right_bottom(), rr.left_bottom()], dark);
+        }
+    }
+}
+
+/// The classic look: masks the two corners with `mask` and strokes the
+/// six-sided outline.
+fn paint_angled_border(p: &Painter, rect: Rect, color: Color32, mask: Color32) {
     let cut = FRAME_CUT.min(rect.height() * 0.4);
     let (l, r, t, b) = (rect.left(), rect.right(), rect.top(), rect.bottom());
 
@@ -179,7 +303,7 @@ pub fn hazard_stripes(p: &Painter, rect: Rect, stripe_w: f32) {
     let mut x = rect.left() - h;
     let mut k = 0i32;
     while x < rect.right() + stripe_w {
-        let color = if k % 2 == 0 { theme::YELLOW } else { dark };
+        let color = if k % 2 == 0 { theme::YELLOW() } else { dark };
         clip.add(Shape::convex_polygon(
             vec![
                 pos2(x, rect.bottom()),
@@ -226,8 +350,8 @@ pub fn module_h<R>(
         |ui| {
             ui.set_width(width);
             egui::Frame::new()
-                .fill(theme::FILL)
-                .stroke(Stroke::new(1.0, theme::LINE_LIT))
+                .fill(theme::FILL())
+                .stroke(Stroke::new(1.0, theme::LINE_LIT()))
                 .inner_margin(egui::Margin {
                     left: MODULE_MARGIN_X as i8,
                     right: MODULE_MARGIN_X as i8,
@@ -242,7 +366,7 @@ pub fn module_h<R>(
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(
                         RichText::new(caption.to_uppercase())
-                            .color(theme::CYAN_DIM)
+                            .color(theme::CYAN_DIM())
                             .size(9.5)
                             .strong(),
                     );
@@ -277,8 +401,8 @@ pub fn module_bare_h<R>(ui: &mut Ui, width: f32, height: f32, add: impl FnOnce(&
         |ui| {
             ui.set_width(width);
             egui::Frame::new()
-                .fill(theme::FILL)
-                .stroke(Stroke::new(1.0, theme::LINE_LIT))
+                .fill(theme::FILL())
+                .stroke(Stroke::new(1.0, theme::LINE_LIT()))
                 .inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 5 })
                 .show(ui, |ui| {
                     ui.set_width(width - 16.0);
@@ -319,7 +443,7 @@ pub fn module_bare_flush_h<R>(
         |ui| {
             ui.set_width(width);
             egui::Frame::new()
-                .fill(theme::FILL)
+                .fill(theme::FILL())
                 .inner_margin(egui::Margin::ZERO)
                 .show(ui, |ui| {
                     ui.set_width(width);
@@ -440,6 +564,7 @@ fn popup_body<R>(
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.set_opacity(alpha);
+            window_body_bg(ui);
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
             let body = Rect::from_min_size(ui.max_rect().min, vec2(max_w, max_h));
             ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
@@ -463,7 +588,7 @@ fn popup_body<R>(
 /// A section caption inside a menu popup — the same small cyan label the
 /// module boxes wear, so a menu reads as the box it replaced.
 pub fn menu_caption(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text.to_uppercase()).color(theme::CYAN_DIM).size(9.5).strong());
+    ui.label(RichText::new(text.to_uppercase()).color(theme::CYAN_DIM()).size(9.5).strong());
 }
 
 /// Small L-shaped corner accents (page decoration, reference-style).
@@ -483,8 +608,8 @@ pub fn corner_brackets(p: &Painter, rect: Rect, color: Color32) {
 /// width and draws a red left-accent bar.
 pub fn red_panel<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     let inner = egui::Frame::new()
-        .fill(theme::ROW_BG)
-        .stroke(Stroke::new(1.0, theme::RED_DEEP))
+        .fill(theme::ROW_BG())
+        .stroke(Stroke::new(1.0, theme::RED_DEEP()))
         .inner_margin(egui::Margin { left: 9, right: 7, top: 6, bottom: 6 })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -495,7 +620,7 @@ pub fn red_panel<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     ui.painter().rect_filled(
         Rect::from_min_max(r.left_top(), pos2(r.left() + 2.5, r.bottom())),
         0.0,
-        theme::PINK,
+        theme::PINK(),
     );
     inner.inner
 }
@@ -508,8 +633,8 @@ pub fn slider(ui: &mut Ui, slider: egui::Slider<'_>) -> Response {
     // than in the theme so the handful of raw `Slider`s elsewhere keep theirs.
     let rail = if crate::layout::tier(ui.ctx()).touch() { 12.0 } else { 6.0 };
     ui.scope(|ui| {
-        ui.visuals_mut().widgets.inactive.bg_fill = theme::INPUT_BG;
-        ui.visuals_mut().widgets.hovered.bg_fill = theme::INPUT_BG;
+        ui.visuals_mut().widgets.inactive.bg_fill = theme::INPUT_BG();
+        ui.visuals_mut().widgets.hovered.bg_fill = theme::INPUT_BG();
         ui.spacing_mut().slider_rail_height = rail;
         ui.add(slider)
     })
@@ -545,7 +670,7 @@ pub fn split_handle(ui: &mut Ui, size: egui::Vec2, bg: Option<Color32>) -> Respo
     if let Some(bg) = bg {
         p.rect_filled(rect, 0.0, bg);
     }
-    let col = if hot { theme::CYAN } else { Color32::from_gray(70) };
+    let col = if hot { theme::CYAN() } else { Color32::from_gray(70) };
     let (cx, cy) = (rect.center().x, rect.center().y);
     for d in [-16.0f32, 0.0, 16.0] {
         let seg = if columns {
@@ -684,11 +809,16 @@ pub fn chip_enabled_tinted(
         .inner;
     if underline {
         let r = resp.rect;
-        let cut = CHIP_CUT.min(r.height() * 0.35);
+        // Stop short of the cut corner so the line follows the chip's own
+        // outline — only the Angled style has one to dodge.
+        let cut = match theme::button_style() {
+            ChromeStyle::Angled => CHIP_CUT.min(r.height() * 0.35),
+            _ => 0.0,
+        };
         let y = r.bottom() - 2.0;
         ui.painter().line_segment(
             [pos2(r.left() + 2.0, y), pos2(r.right() - cut, y)],
-            Stroke::new(2.0, theme::CYAN),
+            Stroke::new(2.0, theme::CYAN()),
         );
     }
     resp
@@ -719,6 +849,20 @@ pub fn chip_hold(
     chip_impl(ui, selected, text.into(), Some((fill, ink)), Sense::click_and_drag(), None)
 }
 
+/// The classic chip shape: corners cut on the top-left and bottom-right (the
+/// matching diagonal to the frames' top-right/bottom-left).
+fn chip_outline(rect: Rect, cut: f32) -> Vec<Pos2> {
+    let (l, r, t, b) = (rect.left(), rect.right(), rect.top(), rect.bottom());
+    vec![
+        pos2(l + cut, t),
+        pos2(r, t),
+        pos2(r, b - cut),
+        pos2(r - cut, b),
+        pos2(l, b),
+        pos2(l, t + cut),
+    ]
+}
+
 fn chip_impl(
     ui: &mut Ui,
     selected: bool,
@@ -739,25 +883,46 @@ fn chip_impl(
 
     if ui.is_rect_visible(rect) {
         let v = ui.style().interact_selectable(&resp, selected);
-        let cut = CHIP_CUT.min(size.y * 0.35);
-        let (l, r, t, b) = (rect.left(), rect.right(), rect.top(), rect.bottom());
-        // Cut corners on the top-left and bottom-right (matching diagonal).
-        let outline = vec![
-            pos2(l + cut, t),
-            pos2(r, t),
-            pos2(r, b - cut),
-            pos2(r - cut, b),
-            pos2(l, b),
-            pos2(l, t + cut),
-        ];
 
         let (fill, stroke, ink) = if selected {
-            let (fill, ink) = accent.unwrap_or((theme::CYAN, theme::INK_ON_CYAN));
+            let (fill, ink) = accent.unwrap_or((theme::CYAN(), theme::INK_ON_CYAN()));
             (fill, Stroke::new(1.0, fill), ink)
         } else {
             (v.bg_fill, v.bg_stroke, v.fg_stroke.color)
         };
-        ui.painter().add(Shape::convex_polygon(outline, fill, stroke));
+
+        let p = ui.painter();
+        match theme::button_style() {
+            ChromeStyle::Angled => {
+                let cut = CHIP_CUT.min(size.y * 0.35);
+                p.add(Shape::convex_polygon(chip_outline(rect, cut), fill, stroke));
+            }
+            ChromeStyle::Rectangular => {
+                p.rect(rect, CornerRadius::ZERO, fill, stroke, StrokeKind::Inside);
+            }
+            ChromeStyle::Rounded => {
+                let radius = ROUND_CHIP_R.min(size.y * 0.35) as u8;
+                p.rect(rect, CornerRadius::same(radius), fill, stroke, StrokeKind::Inside);
+            }
+            ChromeStyle::Gradient => {
+                p.add(grad_rect(
+                    rect,
+                    lerp(fill, Color32::WHITE, 0.22),
+                    lerp(fill, Color32::BLACK, 0.30),
+                ));
+                p.rect_stroke(rect, CornerRadius::ZERO, stroke, StrokeKind::Inside);
+            }
+            ChromeStyle::Bevel => {
+                p.rect(rect, CornerRadius::ZERO, fill, stroke, StrokeKind::Inside);
+                let rr = rect.shrink(0.75);
+                let light = Stroke::new(1.5, lerp(fill, Color32::WHITE, 0.35));
+                let dark = Stroke::new(1.5, lerp(fill, Color32::BLACK, 0.5));
+                p.line_segment([rr.left_bottom(), rr.left_top()], light);
+                p.line_segment([rr.left_top(), rr.right_top()], light);
+                p.line_segment([rr.right_top(), rr.right_bottom()], dark);
+                p.line_segment([rr.right_bottom(), rr.left_bottom()], dark);
+            }
+        }
 
         let text_pos = Pos2 {
             x: rect.center().x - galley.size().x / 2.0,
@@ -875,5 +1040,24 @@ mod tests {
                 r.right()
             );
         }
+    }
+
+    /// The Angled chip outline is the app's signature shape and must never
+    /// drift: these are the six points [`chip_impl`] has always painted.
+    #[test]
+    fn angled_chip_outline_is_the_historic_shape() {
+        let rect = Rect::from_min_max(pos2(10.0, 20.0), pos2(80.0, 44.0));
+        let cut = CHIP_CUT; // 24 pt tall, so the 0.35 height cap does not bite
+        assert_eq!(
+            chip_outline(rect, cut),
+            vec![
+                pos2(15.0, 20.0),
+                pos2(80.0, 20.0),
+                pos2(80.0, 39.0),
+                pos2(75.0, 44.0),
+                pos2(10.0, 44.0),
+                pos2(10.0, 25.0),
+            ]
+        );
     }
 }

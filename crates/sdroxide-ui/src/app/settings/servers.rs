@@ -28,7 +28,7 @@ pub(in crate::app) fn settings_wsjtx_tab(
     seeded: bool,
     apply: &mut bool,
 ) {
-    ui.label(RichText::new("WSJT-X UDP broadcast").size(14.0).strong().color(crate::theme::CYAN));
+    ui.label(RichText::new("WSJT-X UDP broadcast").size(14.0).strong().color(crate::theme::CYAN()));
     ui.add_space(4.0);
     if !seeded {
         ui.label(RichText::new("Waiting for the station's WSJT-X broadcast configuration…").weak());
@@ -78,8 +78,8 @@ pub(in crate::app) fn settings_wsjtx_tab(
         ui,
         false,
         RichText::new(" APPLY ").strong(),
-        crate::theme::GREEN,
-        crate::theme::INK_ON_CYAN,
+        crate::theme::GREEN(),
+        crate::theme::INK_ON_CYAN(),
     )
     .on_hover_text("Persist and (re)open the broadcast socket")
     .clicked()
@@ -97,7 +97,9 @@ pub(in crate::app) fn settings_rigctld_tab(
 ) {
     use sdroxide_types::RigctldConfig;
 
-    ui.label(RichText::new("Hamlib rigctld server").size(14.0).strong().color(crate::theme::CYAN));
+    ui.label(
+        RichText::new("Hamlib rigctld server").size(14.0).strong().color(crate::theme::CYAN()),
+    );
     ui.add_space(4.0);
     if !seeded {
         ui.label(RichText::new("Waiting for the station's rigctld configuration…").weak());
@@ -192,8 +194,8 @@ pub(in crate::app) fn settings_rigctld_tab(
         ui,
         false,
         RichText::new(" APPLY ").strong(),
-        crate::theme::GREEN,
-        crate::theme::INK_ON_CYAN,
+        crate::theme::GREEN(),
+        crate::theme::INK_ON_CYAN(),
     )
     .on_hover_text("Persist and (re)bind the server")
     .clicked()
@@ -226,7 +228,7 @@ pub(in crate::app) fn settings_rotator_tab(
         RichText::new("Antenna rotator (rotctld client)")
             .size(14.0)
             .strong()
-            .color(crate::theme::CYAN),
+            .color(crate::theme::CYAN()),
     );
     ui.add_space(4.0);
     if !seeded {
@@ -330,8 +332,8 @@ pub(in crate::app) fn settings_rotator_tab(
         ui,
         false,
         RichText::new(" APPLY ").strong(),
-        crate::theme::GREEN,
-        crate::theme::INK_ON_CYAN,
+        crate::theme::GREEN(),
+        crate::theme::INK_ON_CYAN(),
     )
     .on_hover_text("Persist and (re)connect to the daemon")
     .clicked()
@@ -354,7 +356,7 @@ pub(in crate::app) fn settings_tci_server_tab(
         return;
     }
 
-    ui.label(RichText::new("Built-in TCI server").size(14.0).strong().color(crate::theme::CYAN));
+    ui.label(RichText::new("Built-in TCI server").size(14.0).strong().color(crate::theme::CYAN()));
     ui.add_space(6.0);
     ui.checkbox(&mut cfg.enabled, "Enable");
     ui.add_space(6.0);
@@ -443,8 +445,8 @@ pub(in crate::app) fn settings_tci_server_tab(
         ui,
         false,
         RichText::new(" APPLY ").strong(),
-        crate::theme::GREEN,
-        crate::theme::INK_ON_CYAN,
+        crate::theme::GREEN(),
+        crate::theme::INK_ON_CYAN(),
     )
     .on_hover_text("Persist and (re)bind the server")
     .clicked()

@@ -244,6 +244,7 @@ impl SdroxideApp {
             .default_width(crate::layout::window_w(ctx, 720.0))
             .default_height(crate::layout::window_h(ctx, 560.0))
             .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
                 ui.horizontal(|ui| {
                     let adding = self.log_edit.as_ref().is_some_and(|f| f.id == 0);
                     if crate::chrome::chip(ui, adding, "+ NEW ENTRY").clicked() {
@@ -324,8 +325,8 @@ impl SdroxideApp {
         {
             let f = self.log_edit.as_mut().unwrap();
             egui::Frame::new()
-                .fill(crate::theme::ROW_BG)
-                .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP))
+                .fill(crate::theme::ROW_BG())
+                .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP()))
                 .inner_margin(egui::Margin::same(9))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -334,14 +335,14 @@ impl SdroxideApp {
                             RichText::new(if f.id == 0 { "NEW QSO" } else { "EDIT QSO" })
                                 .size(11.0)
                                 .strong()
-                                .color(crate::theme::CYAN),
+                                .color(crate::theme::CYAN()),
                         );
                         if dupe {
                             ui.label(
                                 RichText::new(format!("⚠ WORKED BEFORE ({dupe_band})"))
                                     .size(11.0)
                                     .strong()
-                                    .color(crate::theme::PINK),
+                                    .color(crate::theme::PINK()),
                             );
                         }
                     });
@@ -445,8 +446,8 @@ impl SdroxideApp {
                             ui,
                             false,
                             RichText::new(" SAVE ").strong(),
-                            crate::theme::GREEN,
-                            crate::theme::INK_ON_CYAN,
+                            crate::theme::GREEN(),
+                            crate::theme::INK_ON_CYAN(),
                         )
                         .clicked()
                         {
@@ -530,7 +531,7 @@ impl SdroxideApp {
             // Session header.
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&day).size(12.0).strong().color(crate::theme::CYAN));
+                ui.label(RichText::new(&day).size(12.0).strong().color(crate::theme::CYAN()));
                 ui.label(
                     RichText::new(format!(
                         "{}–{} UTC · {} QSO",
@@ -546,7 +547,7 @@ impl SdroxideApp {
             for &idx in group {
                 let r = &self.qso_log[idx];
                 let inner = egui::Frame::new()
-                    .fill(crate::theme::ROW_BG)
+                    .fill(crate::theme::ROW_BG())
                     .inner_margin(egui::Margin { left: 10, right: 6, top: 5, bottom: 5 })
                     .show(ui, |ui| {
                         ui.set_min_height(22.0);
@@ -580,7 +581,7 @@ impl SdroxideApp {
                                     RichText::new(&r.call)
                                         .size(14.0)
                                         .strong()
-                                        .color(crate::theme::TEXT_STRONG),
+                                        .color(crate::theme::TEXT_STRONG()),
                                 )
                                 .truncate(),
                             );
@@ -617,13 +618,13 @@ impl SdroxideApp {
                                     RichText::new(r.grid.as_deref().unwrap_or(""))
                                         .monospace()
                                         .size(11.5)
-                                        .color(crate::theme::CYAN_DIM),
+                                        .color(crate::theme::CYAN_DIM()),
                                 ),
                             );
                             // QSL / confirmation status: green ✓ when confirmed,
                             // dim ↑ when uploaded-but-unconfirmed, else blank.
                             let (qsl_txt, qsl_col) = if r.is_confirmed() {
-                                ("✓", crate::theme::GREEN)
+                                ("✓", crate::theme::GREEN())
                             } else if r.lotw_sent || r.eqsl_sent || r.qrz_sent || r.clublog_sent {
                                 ("↑", Color32::from_gray(140))
                             } else {
@@ -670,7 +671,7 @@ impl SdroxideApp {
                                         ui,
                                         false,
                                         RichText::new("DEL").size(11.0),
-                                        crate::theme::PINK,
+                                        crate::theme::PINK(),
                                         Color32::WHITE,
                                     )
                                     .on_hover_text("Delete this entry")
@@ -719,7 +720,7 @@ impl SdroxideApp {
                         egui::pos2(rr.left() + 2.0, rr.bottom()),
                     ),
                     0.0,
-                    crate::theme::CYAN_DIM,
+                    crate::theme::CYAN_DIM(),
                 );
                 ui.add_space(2.0);
             }

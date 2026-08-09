@@ -43,7 +43,7 @@ impl SdroxideApp {
         // the edge of a phone rather than moving it to the next line.
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
-            ui.label(RichText::new("Speed").size(10.5).strong().color(crate::theme::CYAN_DIM));
+            ui.label(RichText::new("Speed").size(10.5).strong().color(crate::theme::CYAN_DIM()));
             for b in [2.0f32, 3.0, 4.5, 6.0] {
                 let sel = (cfg.fsq_baud - b).abs() < 0.05;
                 let lbl =
@@ -54,7 +54,7 @@ impl SdroxideApp {
                 }
             }
             ui.add_space(8.0);
-            ui.label(RichText::new("Call").size(10.5).strong().color(crate::theme::CYAN_DIM));
+            ui.label(RichText::new("Call").size(10.5).strong().color(crate::theme::CYAN_DIM()));
             if ui
                 .add(egui::TextEdit::singleline(&mut cfg.fsq_call).desired_width(76.0))
                 .on_hover_text(
@@ -97,7 +97,7 @@ impl SdroxideApp {
 
         // Header row. Label matches the RTTY/PSK panels (11 pt cyan).
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("FSQ").size(11.0).strong().color(crate::theme::CYAN));
+            ui.label(RichText::new("FSQ").size(11.0).strong().color(crate::theme::CYAN()));
             ui.label(RichText::new(format!("{audio_hz:.0} Hz")).monospace());
             if crate::chrome::chip(ui, false, "−").clicked() {
                 cmds.push(Command::SetDigiAudioFreq((audio_hz - 10.0).clamp(200.0, 3500.0)));
@@ -111,7 +111,7 @@ impl SdroxideApp {
             self.fsq_params_row(ui, cmds);
             crate::chrome::row_tail(ui, |ui| {
                 if transmitting {
-                    ui.label(RichText::new("● TX").color(crate::theme::PINK).strong());
+                    ui.label(RichText::new("● TX").color(crate::theme::ALERT()).strong());
                 }
                 if crate::chrome::chip(ui, self.fsq_show_contacts, "CONTACTS").clicked() {
                     self.fsq_show_contacts = !self.fsq_show_contacts;
@@ -141,7 +141,7 @@ impl SdroxideApp {
                     let images_h = scrollable - heard_h;
 
                     ui.label(
-                        RichText::new("HEARD").size(10.5).strong().color(crate::theme::CYAN_DIM),
+                        RichText::new("HEARD").size(10.5).strong().color(crate::theme::CYAN_DIM()),
                     );
                     egui::ScrollArea::vertical()
                         .id_salt("fsq-heard")
@@ -171,7 +171,7 @@ impl SdroxideApp {
                             RichText::new("IMAGE")
                                 .size(10.5)
                                 .strong()
-                                .color(crate::theme::CYAN_DIM),
+                                .color(crate::theme::CYAN_DIM()),
                         );
                         // Unlike SSTV and wefax, nothing here is on a disk to
                         // delete: an FSQ picture is a texture this client made
@@ -231,8 +231,8 @@ impl SdroxideApp {
                     let rx_h = (avail_h - controls_h).max(24.0);
                     ui.allocate_ui(egui::vec2(ui.available_width(), rx_h), |ui| {
                         egui::Frame::new()
-                            .fill(crate::theme::ROW_BG)
-                            .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP))
+                            .fill(crate::theme::ROW_BG())
+                            .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP()))
                             .inner_margin(6.0)
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
@@ -253,14 +253,14 @@ impl SdroxideApp {
                                                     "★ {} → {}: {}",
                                                     m.from, m.to, m.text
                                                 ))
-                                                .color(crate::theme::CYAN)
+                                                .color(crate::theme::CYAN())
                                                 .monospace(),
                                             );
                                         }
                                         ui.label(
                                             RichText::new(&text_rx)
                                                 .monospace()
-                                                .color(crate::theme::GREEN),
+                                                .color(crate::theme::GREEN()),
                                         );
                                     });
                             });
@@ -276,7 +276,7 @@ impl SdroxideApp {
                         ui.label(
                             RichText::new(format!("{tgt}:"))
                                 .monospace()
-                                .color(crate::theme::CYAN_DIM),
+                                .color(crate::theme::CYAN_DIM()),
                         );
                         let resp = ui.add(
                             egui::TextEdit::singleline(&mut self.text_tx)
@@ -287,8 +287,8 @@ impl SdroxideApp {
                             ui,
                             false,
                             " SEND ",
-                            crate::theme::PINK,
-                            crate::theme::INK_ON_CYAN,
+                            crate::theme::ALERT(),
+                            crate::theme::INK_ON_CYAN(),
                         )
                         .clicked()
                             || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
@@ -343,6 +343,7 @@ impl SdroxideApp {
             .resizable(false)
             .default_width(crate::layout::window_w(ctx, 320.0))
             .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.fsq_new_contact)
@@ -385,8 +386,8 @@ impl SdroxideApp {
                                 ui,
                                 false,
                                 "DEL",
-                                crate::theme::PINK,
-                                crate::theme::INK_ON_CYAN,
+                                crate::theme::PINK(),
+                                crate::theme::INK_ON_CYAN(),
                             )
                             .clicked()
                             {

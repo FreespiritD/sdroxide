@@ -148,7 +148,7 @@ fn draw_scroll_preview(
     p.rect_stroke(
         rect,
         2.0,
-        egui::Stroke::new(1.0, crate::theme::LINE_LIT),
+        egui::Stroke::new(1.0, crate::theme::LINE_LIT()),
         egui::StrokeKind::Inside,
     );
 }
@@ -186,7 +186,7 @@ fn draw_image_box(
     p.rect_stroke(
         rect,
         2.0,
-        egui::Stroke::new(1.0, crate::theme::LINE_LIT),
+        egui::Stroke::new(1.0, crate::theme::LINE_LIT()),
         egui::StrokeKind::Inside,
     );
 }
@@ -215,9 +215,9 @@ impl SdroxideApp {
 
         // Header: title, transmit-speed slider, and the transmit indicator.
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("RF PAINT").size(11.0).strong().color(crate::theme::CYAN));
+            ui.label(RichText::new("RF PAINT").size(11.0).strong().color(crate::theme::CYAN()));
             ui.add_space(12.0);
-            ui.label(RichText::new("Scan speed").size(10.5).color(crate::theme::CYAN_DIM));
+            ui.label(RichText::new("Scan speed").size(10.5).color(crate::theme::CYAN_DIM()));
             let mut speed = self.digi_cfg_edit.rf_paint_speed;
             ui.spacing_mut().slider_width = 150.0;
             let resp = ui
@@ -246,7 +246,7 @@ impl SdroxideApp {
                         RichText::new(format!("● TX {:.0}%", progress * 100.0))
                             .size(11.0)
                             .strong()
-                            .color(crate::theme::PINK),
+                            .color(crate::theme::ALERT()),
                     );
                 }
             });
@@ -260,7 +260,7 @@ impl SdroxideApp {
             if transmitting {
                 let mut fill = bar;
                 fill.set_width(bar.width() * progress);
-                p.rect_filled(fill, 0.0, crate::theme::PINK);
+                p.rect_filled(fill, 0.0, crate::theme::ALERT());
             }
         }
         ui.add_space(4.0);
@@ -286,7 +286,9 @@ impl SdroxideApp {
                     );
                     ui.add_space(6.0);
                     ui.label(
-                        RichText::new("PREVIEW WATERFALL").size(8.5).color(crate::theme::CYAN_DIM),
+                        RichText::new("PREVIEW WATERFALL")
+                            .size(8.5)
+                            .color(crate::theme::CYAN_DIM()),
                     );
                     ui.add_space(2.0);
                     let prev_h = (ui.available_height() - 40.0).max(44.0);
@@ -304,7 +306,7 @@ impl SdroxideApp {
                             ui,
                             true,
                             "  TRANSMIT  ",
-                            crate::theme::PINK,
+                            crate::theme::ALERT(),
                             Color32::WHITE,
                         )
                         .clicked()
@@ -338,7 +340,9 @@ impl SdroxideApp {
                     }
                     ui.add_space(6.0);
                     ui.label(
-                        RichText::new("PREVIEW WATERFALL").size(8.5).color(crate::theme::CYAN_DIM),
+                        RichText::new("PREVIEW WATERFALL")
+                            .size(8.5)
+                            .color(crate::theme::CYAN_DIM()),
                     );
                     ui.add_space(2.0);
                     let prev_h = (ui.available_height() - 40.0).max(40.0);
@@ -356,7 +360,7 @@ impl SdroxideApp {
                             ui,
                             true,
                             "  TRANSMIT  ",
-                            crate::theme::PINK,
+                            crate::theme::ALERT(),
                             Color32::WHITE,
                         )
                         .clicked()

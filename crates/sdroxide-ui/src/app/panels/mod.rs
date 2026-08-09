@@ -557,10 +557,11 @@ impl SdroxideApp {
             .frame(crate::chrome::window_frame())
             .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
             .show(|ui| {
+                crate::chrome::window_body_bg(ui);
                 ui.set_max_width(300.0);
                 ui.label(
                     RichText::new(format!("{} · {}", mode.label(), band.label()))
-                        .color(crate::theme::CYAN_DIM)
+                        .color(crate::theme::CYAN_DIM())
                         .size(9.5)
                         .strong(),
                 );
@@ -573,7 +574,7 @@ impl SdroxideApp {
                     }
                     let mut rich = RichText::new(text).size(12.0);
                     if c.outside_r1_data_segment(mode) {
-                        rich = rich.color(crate::theme::YELLOW);
+                        rich = rich.color(crate::theme::YELLOW());
                     }
                     let row = ui.selectable_label(on, rich);
                     if c.outside_r1_data_segment(mode) {
@@ -590,7 +591,7 @@ impl SdroxideApp {
                     ui.add_space(2.0);
                     ui.label(
                         RichText::new("Amber: outside the Region 1 data segment.")
-                            .color(crate::theme::LINE_LIT)
+                            .color(crate::theme::LINE_LIT())
                             .size(10.0),
                     );
                 }
@@ -615,7 +616,7 @@ impl SdroxideApp {
         let resp = ui
             .add(egui::Slider::new(&mut sq, 0.0..=1.0).show_value(false))
             .on_hover_text("Decode squelch — raise to stop decoding noise");
-        ui.label(RichText::new("SQL").size(10.0).color(crate::theme::CYAN_DIM));
+        ui.label(RichText::new("SQL").size(10.0).color(crate::theme::CYAN_DIM()));
         if resp.changed() && self.digi_cfg_seeded {
             self.digi_cfg_edit.digi_squelch = sq;
             cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));

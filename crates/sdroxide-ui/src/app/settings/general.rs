@@ -43,7 +43,7 @@ pub(in crate::app) fn device_combo(
 /// APPLY: the server re-reads the file for every sign-in, so there is no
 /// separate step for an APPLY to stand for.
 pub(in crate::app) fn remote_access_settings(ui: &mut egui::Ui, access: &mut RemoteAccess) {
-    ui.label(RichText::new("Remote access").size(14.0).strong().color(crate::theme::CYAN));
+    ui.label(RichText::new("Remote access").size(14.0).strong().color(crate::theme::CYAN()));
     ui.add_space(6.0);
     ui.label(
         RichText::new(
@@ -75,10 +75,12 @@ pub(in crate::app) fn remote_access_settings(ui: &mut egui::Ui, access: &mut Rem
                     "Clients must give the password. Leaving the username empty is fine.",
                 )
                 .size(11.5)
-                .color(crate::theme::GREEN),
+                .color(crate::theme::GREEN()),
             );
         } else {
-            ui.label(RichText::new("Clients must sign in.").size(11.5).color(crate::theme::GREEN));
+            ui.label(
+                RichText::new("Clients must sign in.").size(11.5).color(crate::theme::GREEN()),
+            );
         }
     } else {
         ui.label(
@@ -87,7 +89,7 @@ pub(in crate::app) fn remote_access_settings(ui: &mut egui::Ui, access: &mut Rem
                  your callsign. Set a password before forwarding the port.",
             )
             .size(11.5)
-            .color(crate::theme::YELLOW),
+            .color(crate::theme::YELLOW()),
         );
     }
     ui.add_space(4.0);

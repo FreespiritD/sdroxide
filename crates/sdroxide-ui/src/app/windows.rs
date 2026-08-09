@@ -29,9 +29,9 @@ fn mem_drop_target<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -
     });
     if dragging {
         let stroke = if out.response.dnd_hover_payload::<DraggedMemory>().is_some() {
-            egui::Stroke::new(1.5, crate::theme::CYAN)
+            egui::Stroke::new(1.5, crate::theme::CYAN())
         } else {
-            egui::Stroke::new(1.0, crate::theme::LINE_LIT)
+            egui::Stroke::new(1.0, crate::theme::LINE_LIT())
         };
         ui.painter().rect_stroke(out.response.rect, 4.0, stroke, egui::StrokeKind::Inside);
     }
@@ -70,7 +70,7 @@ fn memory_row(ui: &mut egui::Ui, m: &MemoryChannel, cmds: &mut Vec<Command>) {
                 ui,
                 false,
                 RichText::new("DEL").size(11.0),
-                crate::theme::PINK,
+                crate::theme::PINK(),
                 Color32::WHITE,
             )
             .on_hover_text("Delete")
@@ -96,7 +96,10 @@ impl SdroxideApp {
             // as much as the default.
             .default_height(crate::layout::window_h(ctx, 460.0))
             .min_height(crate::layout::window_h(ctx, 280.0))
-            .show(ctx, |ui| self.memories_ui(ui, cmds));
+            .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
+                self.memories_ui(ui, cmds)
+            });
         if let Some(r) = &resp {
             crate::chrome::paint_window_border(ctx, &r.response);
         }
@@ -239,7 +242,7 @@ impl SdroxideApp {
                             ui,
                             false,
                             RichText::new("DEL").size(11.0),
-                            crate::theme::PINK,
+                            crate::theme::PINK(),
                             Color32::WHITE,
                         )
                         .on_hover_text("Delete folder — its memories move to the top level")
@@ -314,6 +317,7 @@ impl SdroxideApp {
             .default_width(crate::layout::window_w(ctx, 600.0))
             .min_width(crate::layout::window_w(ctx, 600.0))
             .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
                 ui.label(
                     RichText::new(
                         "REC records from your microphone, PLAY lets you listen to what you \
@@ -337,7 +341,7 @@ impl SdroxideApp {
                             ui.label(
                                 RichText::new(format!("{:>2}", i + 1))
                                     .monospace()
-                                    .color(crate::theme::CYAN_DIM),
+                                    .color(crate::theme::CYAN_DIM()),
                             );
 
                             // The slot label. Only the row being typed into is
@@ -378,7 +382,7 @@ impl SdroxideApp {
                                         ui,
                                         is_rec,
                                         RichText::new("REC").size(11.5),
-                                        crate::theme::PINK,
+                                        crate::theme::ALERT(),
                                         Color32::WHITE,
                                     )
                                 })
@@ -443,7 +447,7 @@ impl SdroxideApp {
                                         is_play,
                                         RichText::new(if is_play { "STOP" } else { "TX" })
                                             .size(11.5),
-                                        crate::theme::PINK,
+                                        crate::theme::ALERT(),
                                         Color32::WHITE,
                                     )
                                 })
@@ -469,16 +473,16 @@ impl SdroxideApp {
                             // record / listen / transmit this row owns.
                             ui.horizontal(|ui| {
                                 let (text, colour) = if is_rec {
-                                    (format!("● {pos:.1} s"), crate::theme::PINK)
+                                    (format!("● {pos:.1} s"), crate::theme::ALERT())
                                 } else if is_play {
                                     (
                                         format!("▶ {pos:.1} / {:.1} s", slot.len_s),
-                                        crate::theme::PINK,
+                                        crate::theme::ALERT(),
                                     )
                                 } else if is_prev {
                                     (
                                         format!("▶ {pos:.1} / {:.1} s", slot.len_s),
-                                        crate::theme::CYAN,
+                                        crate::theme::CYAN(),
                                     )
                                 } else if slot.is_empty() {
                                     ("—".to_string(), Color32::from_gray(110))
@@ -499,7 +503,7 @@ impl SdroxideApp {
                                             ui,
                                             false,
                                             RichText::new("DEL").size(11.0),
-                                            crate::theme::PINK,
+                                            crate::theme::PINK(),
                                             Color32::WHITE,
                                         )
                                     })

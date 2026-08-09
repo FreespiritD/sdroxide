@@ -239,7 +239,7 @@ fn menu_bar(
                         if !aurora && !prop && !bands {
                             ui.label(
                                 RichText::new("nothing measured yet")
-                                    .color(theme::CYAN_DIM)
+                                    .color(theme::CYAN_DIM())
                                     .size(10.5),
                             );
                         }
@@ -284,7 +284,7 @@ fn menu_bar(
 /// one row per planet with its own moons beside it.
 fn view_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
     chrome::menu_caption(ui, "View");
-    if chrome::chip_accent(ui, st.view.auto, "▶ AUTO", theme::CYAN, theme::INK_ON_CYAN)
+    if chrome::chip_accent(ui, st.view.auto, "▶ AUTO", theme::CYAN(), theme::INK_ON_CYAN())
         .on_hover_text(
             "Fly a spline through a set of framed viewpoints. Any mouse input cancels it.",
         )
@@ -304,7 +304,7 @@ fn view_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
                 // Moons are dimmer, so a row reads as "this planet, and the
                 // things that go round it".
                 let text = if f.is_satellite() {
-                    RichText::new(f.short()).size(11.5).color(theme::CYAN_DIM)
+                    RichText::new(f.short()).size(11.5).color(theme::CYAN_DIM())
                 } else {
                     RichText::new(f.short()).size(13.0)
                 };
@@ -321,7 +321,7 @@ fn view_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
              of where they really are, and up to six for Miranda, whose orbit plane \
              swings too fast for a circle to follow.",
         )
-        .color(theme::LINE_LIT)
+        .color(theme::LINE_LIT())
         .size(10.0),
     );
     if let Some(f) = chosen {
@@ -381,16 +381,16 @@ fn sun_controls(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, n
         // Say what is actually being shown. Presenting hours-old cached data as
         // if it were current is the one thing this readout must not do.
         let (text, color) = match data {
-            None => ("starting…".to_string(), theme::CYAN_DIM),
+            None => ("starting…".to_string(), theme::CYAN_DIM()),
             Some(d) => {
                 let s = d.status(Source::Sun);
                 match (s.age_secs(now), &s.last_error) {
-                    (Some(age), None) => (timefmt::age(age), theme::GREEN),
+                    (Some(age), None) => (timefmt::age(age), theme::GREEN()),
                     (Some(age), Some(_)) => {
-                        (format!("{} · offline", timefmt::age(age)), theme::YELLOW)
+                        (format!("{} · offline", timefmt::age(age)), theme::YELLOW())
                     }
-                    (None, Some(_)) => ("offline".to_string(), theme::PINK),
-                    (None, None) => ("…".to_string(), theme::CYAN_DIM),
+                    (None, Some(_)) => ("offline".to_string(), theme::ALERT()),
+                    (None, None) => ("…".to_string(), theme::CYAN_DIM()),
                 }
             }
         };
@@ -495,7 +495,7 @@ fn prop_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
 
     let on = st.layer(layer::PROPAGATION);
     ui.horizontal_wrapped(|ui| {
-        if chrome::chip_accent(ui, on, "SHOW", theme::CYAN, theme::INK_ON_CYAN)
+        if chrome::chip_accent(ui, on, "SHOW", theme::CYAN(), theme::INK_ON_CYAN())
             .on_hover_text("Paint the globe by what is getting through")
             .clicked()
         {
@@ -669,8 +669,8 @@ fn activity_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
             ui,
             st.lapse_playing,
             if st.lapse_playing { "⏸ REPLAY" } else { "▶ REPLAY" },
-            theme::CYAN,
-            theme::INK_ON_CYAN,
+            theme::CYAN(),
+            theme::INK_ON_CYAN(),
         )
         .on_hover_text("Replay the last hour of decodes, over and over")
         .clicked()
@@ -718,13 +718,13 @@ fn activity_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
 
         let hits = st.digi.history.len();
         let (text, color) = if !st.layer(layer::QSO) {
-            ("QSO layer off".to_string(), theme::YELLOW)
+            ("QSO layer off".to_string(), theme::YELLOW())
         } else if hits == 0 {
-            ("no decodes yet".to_string(), theme::CYAN_DIM)
+            ("no decodes yet".to_string(), theme::CYAN_DIM())
         } else if st.lapse_live() {
-            (format!("{hits} in the hour"), theme::GREEN)
+            (format!("{hits} in the hour"), theme::GREEN())
         } else {
-            (format!("−{:.0} min", st.lapse_back_s / 60.0), theme::CYAN)
+            (format!("−{:.0} min", st.lapse_back_s / 60.0), theme::CYAN())
         };
         ui.label(RichText::new(text).color(color).size(10.5));
     });
@@ -869,7 +869,7 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
             egui::Align2::RIGHT_TOP,
             "QTH not set — enter your grid square in Settings",
             egui::FontId::proportional(12.5),
-            theme::YELLOW,
+            theme::YELLOW(),
         );
     }
 }
@@ -935,7 +935,7 @@ fn draw_labels(
             p.rect_filled(
                 text_rect.expand2(egui::vec2(4.0, 2.0)),
                 0,
-                theme::FILL.gamma_multiply(0.85),
+                theme::FILL().gamma_multiply(0.85),
             );
             if clicked {
                 hit = Some(l.click);
@@ -944,7 +944,7 @@ fn draw_labels(
 
         // A dark halo, so a label stays readable over the bright solar disk as
         // well as over empty space.
-        let color = if hovered { theme::TEXT_STRONG } else { l.color };
+        let color = if hovered { theme::TEXT_STRONG() } else { l.color };
         let shadow = egui::Color32::from_black_alpha(color.a().saturating_sub(40));
         p.text(
             pos + egui::vec2(1.0, 1.0),
@@ -1011,13 +1011,13 @@ fn pick_bodies(
     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     // A reticle, so it is obvious what the click will grab.
     let r = pick.radius_px.clamp(9.0, 90.0);
-    ui.painter().circle_stroke(pos, r, egui::Stroke::new(1.2, theme::CYAN.gamma_multiply(0.8)));
+    ui.painter().circle_stroke(pos, r, egui::Stroke::new(1.2, theme::CYAN().gamma_multiply(0.8)));
     ui.painter().text(
         pos + egui::vec2(0.0, -r - 4.0),
         egui::Align2::CENTER_BOTTOM,
         pick.focus.short(),
         egui::FontId::proportional(11.0),
-        theme::CYAN,
+        theme::CYAN(),
     );
     if resp.clicked() && !consumed {
         st.set_focus(pick.focus);
@@ -1088,12 +1088,13 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
         .frame(chrome::window_frame())
         .default_pos(ui.max_rect().center() - egui::vec2(230.0, 120.0))
         .show(ui.ctx(), |ui| {
+            crate::chrome::window_body_bg(ui);
             ui.label(
                 RichText::new(format!(
                     "elements {} old · SGP4",
                     timefmt::age(sat.element_age_s(sim_now) as i64)
                 ))
-                .color(theme::CYAN_DIM)
+                .color(theme::CYAN_DIM())
                 .size(10.0),
             );
             ui.add_space(4.0);
@@ -1102,7 +1103,7 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
                 PassSearch::AlwaysVisible { elevation, azimuth } => {
                     ui.label(
                         RichText::new("Geostationary — always above your horizon.")
-                            .color(theme::GREEN)
+                            .color(theme::GREEN())
                             .size(12.5),
                     );
                     ui.label(
@@ -1110,13 +1111,13 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
                             "Point at {azimuth:.0}° ({}), elevation {elevation:.0}°.",
                             compass(*azimuth)
                         ))
-                        .color(theme::TEXT),
+                        .color(theme::TEXT()),
                     );
                 }
                 PassSearch::NeverVisible => {
                     ui.label(
                         RichText::new("No passes in the next 48 hours from your QTH.")
-                            .color(theme::YELLOW),
+                            .color(theme::YELLOW()),
                     );
                 }
                 PassSearch::Passes(passes) => {
@@ -1125,7 +1126,7 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
                         |ui| {
                             for h in ["START", "END", "DUR", "AOS", "LOS", "MAX EL"] {
                                 ui.label(
-                                    RichText::new(h).color(theme::CYAN_DIM).size(9.5).strong(),
+                                    RichText::new(h).color(theme::CYAN_DIM()).size(9.5).strong(),
                                 );
                             }
                             ui.end_row();
@@ -1134,11 +1135,11 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
                                 // The one happening now, or next, is the one the
                                 // operator cares about.
                                 let color = if soon < 0.0 {
-                                    theme::GREEN
+                                    theme::GREEN()
                                 } else if soon < 3600.0 {
-                                    theme::YELLOW
+                                    theme::YELLOW()
                                 } else {
-                                    theme::TEXT
+                                    theme::TEXT()
                                 };
                                 ui.label(RichText::new(timefmt::ymd_hm(p.rise_unix)).color(color));
                                 ui.label(RichText::new(hhmm(p.set_unix)).color(color));
@@ -1165,9 +1166,9 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
                                 ui.label(
                                     RichText::new(format!("{:.0}°  {}", p.max_el, p.quality()))
                                         .color(match p.max_el {
-                                            e if e >= 30.0 => theme::GREEN,
-                                            e if e >= 15.0 => theme::TEXT,
-                                            _ => theme::CYAN_DIM,
+                                            e if e >= 30.0 => theme::GREEN(),
+                                            e if e >= 15.0 => theme::TEXT(),
+                                            _ => theme::CYAN_DIM(),
                                         }),
                                 );
                                 ui.end_row();
@@ -1177,7 +1178,7 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new("AOS/LOS are azimuths at the horizon. Times are UTC.")
-                            .color(theme::LINE_LIT)
+                            .color(theme::LINE_LIT())
                             .size(10.0),
                     );
                 }
@@ -1194,8 +1195,8 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
                         ui,
                         true,
                         egui::RichText::new(" ● LOCKED — UNLOCK ").strong(),
-                        theme::GREEN,
-                        theme::INK_ON_CYAN,
+                        theme::GREEN(),
+                        theme::INK_ON_CYAN(),
                     )
                     .on_hover_text("Release the satellite lock")
                     .clicked()
@@ -1206,8 +1207,8 @@ fn pass_window(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_no
                     ui,
                     false,
                     egui::RichText::new(" LOCK ON ").strong(),
-                    theme::GREEN,
-                    theme::INK_ON_CYAN,
+                    theme::GREEN(),
+                    theme::INK_ON_CYAN(),
                 )
                 .on_hover_text(
                     "Track this satellite in the main window: Doppler-corrected RX and TX, \
@@ -1247,7 +1248,7 @@ fn freq_table(
         ui.add_space(6.0);
         ui.label(
             RichText::new("No frequencies on file for this one — add them in Settings ▸ TLE.")
-                .color(theme::LINE_LIT)
+                .color(theme::LINE_LIT())
                 .size(10.0),
         );
         return;
@@ -1257,26 +1258,28 @@ fn freq_table(
     ui.separator();
     ui.add_space(4.0);
     let heading = if mine { "FREQUENCIES  ·  YOURS" } else { "FREQUENCIES" };
-    ui.label(RichText::new(heading).color(theme::CYAN_DIM).size(9.5).strong());
+    ui.label(RichText::new(heading).color(theme::CYAN_DIM()).size(9.5).strong());
     // The published designator can differ from what the element set calls it;
     // showing it means a table entry keyed to the wrong catalogue number is
     // visible rather than quietly presenting the wrong satellite's frequencies.
     if !freqs.name.trim().is_empty() && !freqs.name.eq_ignore_ascii_case(tracked_name) {
         ui.label(
-            RichText::new(format!("published as {}", freqs.name)).color(theme::LINE_LIT).size(10.0),
+            RichText::new(format!("published as {}", freqs.name))
+                .color(theme::LINE_LIT())
+                .size(10.0),
         );
     }
     ui.add_space(2.0);
 
     egui::Grid::new("solar-freq-grid").num_columns(4).spacing([14.0, 3.0]).show(ui, |ui| {
         for h in ["LINK", "DOWNLINK (MHz)", "UPLINK (MHz)", "MODE"] {
-            ui.label(RichText::new(h).color(theme::CYAN_DIM).size(9.5).strong());
+            ui.label(RichText::new(h).color(theme::CYAN_DIM()).size(9.5).strong());
         }
         ui.end_row();
         for l in freqs.links.iter().filter(|l| !l.is_empty()) {
-            let mut label = RichText::new(&l.label).color(theme::TEXT);
+            let mut label = RichText::new(&l.label).color(theme::TEXT());
             if !l.note.is_empty() {
-                label = label.color(theme::TEXT_STRONG);
+                label = label.color(theme::TEXT_STRONG());
             }
             let resp = ui.label(label);
             if !l.note.is_empty() {
@@ -1285,13 +1288,13 @@ fn freq_table(
             // The downlink is what gets tuned first, so it leads.
             ui.label(
                 RichText::new(l.downlink.map_or_else(|| "—".into(), |b| b.to_string()))
-                    .color(theme::GREEN),
+                    .color(theme::GREEN()),
             );
             ui.label(
                 RichText::new(l.uplink.map_or_else(|| "—".into(), |b| b.to_string()))
-                    .color(theme::YELLOW),
+                    .color(theme::YELLOW()),
             );
-            ui.label(RichText::new(&l.mode).color(theme::TEXT));
+            ui.label(RichText::new(&l.mode).color(theme::TEXT()));
             ui.end_row();
         }
     });
@@ -1300,13 +1303,13 @@ fn freq_table(
     // they go on screen rather than only in a tooltip.
     for l in freqs.links.iter().filter(|l| !l.note.is_empty() && !l.is_empty()) {
         ui.label(
-            RichText::new(format!("{} — {}", l.label, l.note)).color(theme::LINE_LIT).size(10.0),
+            RichText::new(format!("{} — {}", l.label, l.note)).color(theme::LINE_LIT()).size(10.0),
         );
     }
     ui.add_space(2.0);
     ui.label(
         RichText::new("Doppler shifts these by a few kHz across a LEO pass.")
-            .color(theme::LINE_LIT)
+            .color(theme::LINE_LIT())
             .size(10.0),
     );
 }
@@ -1366,17 +1369,17 @@ fn clock(ui: &egui::Ui, rect: egui::Rect, sim_now: f64, scrubbed: bool) -> Optio
         return None;
     }
 
-    ui.painter().rect_filled(panel, 0, theme::BG_DEEP.gamma_multiply(0.72));
+    ui.painter().rect_filled(panel, 0, theme::BG_DEEP().gamma_multiply(0.72));
     chrome::paint_cut_border(
         ui.painter(),
         panel,
-        if scrubbed { theme::YELLOW } else { theme::LINE_LIT },
+        if scrubbed { theme::YELLOW() } else { theme::LINE_LIT() },
         egui::Color32::TRANSPARENT,
     );
 
     // Unlit dots at a low alpha are what make this read as a physical display
     // rather than as text in a blocky face.
-    let on = if scrubbed { theme::YELLOW } else { theme::CYAN };
+    let on = if scrubbed { theme::YELLOW() } else { theme::CYAN() };
     let off = on.gamma_multiply(0.11);
     let origin = panel.min + pad;
     let p = ui.painter();
@@ -1440,13 +1443,13 @@ fn date_readout(ui: &egui::Ui, st: &SolarUi, rect: egui::Rect, sim_now: f64) -> 
 
     let font = egui::FontId::proportional(11.5);
     let label_font = egui::FontId::proportional(9.5);
-    let on = if scrubbed { theme::YELLOW } else { theme::CYAN };
+    let on = if scrubbed { theme::YELLOW() } else { theme::CYAN() };
     let p = ui.painter();
     let laid: Vec<_> = rows
         .iter()
         .map(|(label, date)| {
             (
-                p.layout_no_wrap((*label).into(), label_font.clone(), theme::CYAN_DIM),
+                p.layout_no_wrap((*label).into(), label_font.clone(), theme::CYAN_DIM()),
                 p.layout_no_wrap(date.clone(), font.clone(), on),
             )
         })
@@ -1465,11 +1468,11 @@ fn date_readout(ui: &egui::Ui, st: &SolarUi, rect: egui::Rect, sim_now: f64) -> 
         return None;
     }
 
-    p.rect_filled(panel, 0, theme::BG_DEEP.gamma_multiply(0.72));
+    p.rect_filled(panel, 0, theme::BG_DEEP().gamma_multiply(0.72));
     chrome::paint_cut_border(
         p,
         panel,
-        if scrubbed { theme::YELLOW } else { theme::LINE_LIT },
+        if scrubbed { theme::YELLOW() } else { theme::LINE_LIT() },
         egui::Color32::TRANSPARENT,
     );
     let mut y = panel.top() + pad.y;
@@ -1477,7 +1480,7 @@ fn date_readout(ui: &egui::Ui, st: &SolarUi, rect: egui::Rect, sim_now: f64) -> 
         // Labels on the baseline of the date they name, dates right-aligned so
         // the two rows line up whatever length the day-of-month comes out.
         let label_y = y + (row_h - 2.0) - label.size().y;
-        p.galley(egui::pos2(panel.left() + pad.x, label_y), label, theme::CYAN_DIM);
+        p.galley(egui::pos2(panel.left() + pad.x, label_y), label, theme::CYAN_DIM());
         p.galley(egui::pos2(panel.right() - pad.x - date.size().x, y), date, on);
         y += row_h;
     }
@@ -1557,7 +1560,7 @@ fn find_box(
         .fixed_pos(area.min)
         .show(ui.ctx(), |ui| {
             egui::Frame::new()
-                .fill(theme::BG_DEEP.gamma_multiply(0.72))
+                .fill(theme::BG_DEEP().gamma_multiply(0.72))
                 .inner_margin(egui::Margin::symmetric(8, 5))
                 .show(ui, |ui| {
                     ui.set_width(width - 16.0);
@@ -1566,12 +1569,12 @@ fn find_box(
                         // 🔍 and × over ⌕ and ✕: the latter pair is in none of
                         // the bundled faces — not Chakra Petch, not egui's
                         // Ubuntu/Noto Emoji fallbacks — so both drew as tofu.
-                        ui.label(RichText::new("🔍").color(theme::CYAN_DIM).size(12.0));
+                        ui.label(RichText::new("🔍").color(theme::CYAN_DIM()).size(12.0));
                         let edit = ui.add(
                             egui::TextEdit::singleline(&mut st.search)
                                 .desired_width(width - 62.0)
                                 .hint_text(hint)
-                                .text_color(theme::TEXT_STRONG),
+                                .text_color(theme::TEXT_STRONG()),
                         );
                         // Enter on a single match commits to it. A body wins a
                         // tie against a satellite only when it is the sole
@@ -1597,7 +1600,7 @@ fn find_box(
                     });
                     if !query.is_empty() {
                         let (text, colour) = match (sat_hits, body_hits.len()) {
-                            (0, 0) => ("no match".to_string(), theme::PINK),
+                            (0, 0) => ("no match".to_string(), theme::ALERT()),
                             // Named outright when there is exactly one, because
                             // "1 of 40" is a worse answer than "Apophis".
                             (0, 1) => (
@@ -1605,13 +1608,13 @@ fn find_box(
                                     "{} — ↵ to fly there",
                                     sdroxide_solar::smallbody::BODIES[body_hits[0]].designation
                                 ),
-                                theme::YELLOW,
+                                theme::YELLOW(),
                             ),
-                            (s, 0) => (format!("{s} of {sat_total} tracked"), theme::YELLOW),
-                            (0, b) => (format!("{b} of {body_total} bodies"), theme::YELLOW),
+                            (s, 0) => (format!("{s} of {sat_total} tracked"), theme::YELLOW()),
+                            (0, b) => (format!("{b} of {body_total} bodies"), theme::YELLOW()),
                             (s, b) => (
                                 format!("{s} of {sat_total} tracked · {b} of {body_total} bodies"),
-                                theme::YELLOW,
+                                theme::YELLOW(),
                             ),
                         };
                         ui.label(RichText::new(text).color(colour).size(10.0));
@@ -1652,12 +1655,12 @@ fn weather_panel(
                 "MUF".into(),
                 format!("{:.1} MHz", m.muf_mhz),
                 match m.muf_mhz {
-                    f if f >= 24.0 => theme::GREEN,
-                    f if f >= 14.0 => theme::CYAN,
-                    _ => theme::YELLOW,
+                    f if f >= 24.0 => theme::GREEN(),
+                    f if f >= 14.0 => theme::CYAN(),
+                    _ => theme::YELLOW(),
                 },
             )),
-            None => rows.push(("MUF".into(), "no sounder".into(), theme::LINE_LIT)),
+            None => rows.push(("MUF".into(), "no sounder".into(), theme::LINE_LIT())),
         }
         // What this station has actually heard get through, near the QTH.
         //
@@ -1672,18 +1675,18 @@ fn weather_panel(
                 "HEARD ≥".into(),
                 format!("≥ {:.1} MHz", m.floor_mhz),
                 match m.floor_mhz {
-                    f if f >= 24.0 => theme::GREEN,
-                    f if f >= 14.0 => theme::CYAN,
-                    _ => theme::YELLOW,
+                    f if f >= 24.0 => theme::GREEN(),
+                    f if f >= 14.0 => theme::CYAN(),
+                    _ => theme::YELLOW(),
                 },
             ));
         }
     }
     if let Some(g) = &w.geomagnetic {
         let color = match g.kp {
-            k if k >= 5.0 => theme::PINK,
-            k if k >= 4.0 => theme::YELLOW,
-            _ => theme::GREEN,
+            k if k >= 5.0 => theme::PINK(),
+            k if k >= 4.0 => theme::YELLOW(),
+            _ => theme::GREEN(),
         };
         rows.push(("Kp / A".into(), format!("{:.1} / {:.0}", g.kp, g.a_index), color));
     }
@@ -1692,9 +1695,9 @@ fn weather_panel(
             "F10.7".into(),
             format!("{:.0} sfu", f.sfu),
             match f.sfu {
-                v if v >= 150.0 => theme::GREEN,
-                v if v >= 90.0 => theme::CYAN,
-                _ => theme::YELLOW,
+                v if v >= 150.0 => theme::GREEN(),
+                v if v >= 90.0 => theme::CYAN(),
+                _ => theme::YELLOW(),
             },
         ));
     }
@@ -1702,7 +1705,7 @@ fn weather_panel(
         rows.push((
             "X-ray".into(),
             x.class.clone(),
-            if x.causes_hf_absorption() { theme::PINK } else { theme::CYAN_DIM },
+            if x.causes_hf_absorption() { theme::PINK() } else { theme::CYAN_DIM() },
         ));
     }
     if rows.is_empty() {
@@ -1718,7 +1721,7 @@ fn weather_panel(
         .iter()
         .map(|(k, v, c)| {
             (
-                p.layout_no_wrap(k.clone(), small.clone(), theme::CYAN_DIM),
+                p.layout_no_wrap(k.clone(), small.clone(), theme::CYAN_DIM()),
                 p.layout_no_wrap(v.clone(), font.clone(), *c),
             )
         })
@@ -1739,7 +1742,7 @@ fn weather_panel(
             (*p.layout_no_wrap(
                 format!("{} · {:.0} km", m.confidence(), m.nearest_km),
                 small.clone(),
-                theme::LINE_LIT,
+                theme::LINE_LIT(),
             ))
             .clone(),
         );
@@ -1749,7 +1752,7 @@ fn weather_panel(
             (*p.layout_no_wrap(
                 format!("{} on {}", o.confidence(), o.band.label()),
                 small.clone(),
-                theme::LINE_LIT,
+                theme::LINE_LIT(),
             ))
             .clone(),
         );
@@ -1763,7 +1766,7 @@ fn weather_panel(
                 (*p.layout_no_wrap(
                     "observed above the sounder — better than modelled".into(),
                     small.clone(),
-                    theme::GREEN,
+                    theme::GREEN(),
                 ))
                 .clone(),
             );
@@ -1777,17 +1780,21 @@ fn weather_panel(
         rows.len() as f32 * row_h + notes.iter().map(|n| n.size().y + 4.0).sum::<f32>() + pad * 2.0;
     let panel = place.reserve(ui, egui::vec2(width, height))?;
 
-    p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
-    chrome::paint_cut_border(&p, panel, theme::LINE_LIT, egui::Color32::TRANSPARENT);
+    p.rect_filled(panel, 0, theme::FILL().gamma_multiply(0.82));
+    chrome::paint_cut_border(&p, panel, theme::LINE_LIT(), egui::Color32::TRANSPARENT);
     let mut y = panel.top() + pad;
     for ((key, val), (_, _, color)) in laid.iter().zip(&rows) {
-        p.galley(egui::pos2(panel.left() + pad, y + 2.0), key.clone(), theme::CYAN_DIM);
+        p.galley(egui::pos2(panel.left() + pad, y + 2.0), key.clone(), theme::CYAN_DIM());
         p.galley(egui::pos2(panel.right() - pad - val.size().x, y), val.clone(), *color);
         y += row_h;
     }
     for n in notes {
         let h = n.size().y + 4.0;
-        p.galley(egui::pos2(panel.left() + pad, y + 2.0), std::sync::Arc::new(n), theme::LINE_LIT);
+        p.galley(
+            egui::pos2(panel.left() + pad, y + 2.0),
+            std::sync::Arc::new(n),
+            theme::LINE_LIT(),
+        );
         y += h;
     }
     Some(panel)
@@ -1818,9 +1825,9 @@ fn aurora_panel(
         return None;
     }
     let kp_color = |kp: f64| match kp {
-        k if k >= 5.0 => theme::PINK,
-        k if k >= 4.0 => theme::YELLOW,
-        _ => theme::GREEN,
+        k if k >= 5.0 => theme::PINK(),
+        k if k >= 4.0 => theme::YELLOW(),
+        _ => theme::GREEN(),
     };
 
     // Both hemispheres are reported throughout: without a QTH neither is more
@@ -1830,9 +1837,9 @@ fn aurora_panel(
     if let Some(power) = &d.aurora_power {
         let worst = power.north_gw.max(power.south_gw);
         let color = match HemisphericPower::index(worst) {
-            8..=10 => theme::PINK,
-            6..=7 => theme::YELLOW,
-            _ => theme::GREEN,
+            8..=10 => theme::PINK(),
+            6..=7 => theme::YELLOW(),
+            _ => theme::GREEN(),
         };
         rows.push((
             "power N/S".into(),
@@ -1858,15 +1865,15 @@ fn aurora_panel(
         let (n, s) = (edge(true), edge(false));
         if n.is_some() || s.is_some() {
             let show = |e: Option<String>| e.unwrap_or_else(|| "—".into());
-            rows.push(("edge N/S".into(), format!("{} / {}", show(n), show(s)), theme::CYAN));
+            rows.push(("edge N/S".into(), format!("{} / {}", show(n), show(s)), theme::CYAN()));
         }
         if let Some((lat, lon)) = st.qth {
             let pct = oval.probability(lat, lon);
             let color = match pct {
-                p if p >= 25.0 => theme::PINK,
-                p if p >= aurora::EDGE_PCT => theme::YELLOW,
-                p if p >= aurora::NOISE_FLOOR_PCT => theme::GREEN,
-                _ => theme::LINE_LIT,
+                p if p >= 25.0 => theme::PINK(),
+                p if p >= aurora::EDGE_PCT => theme::YELLOW(),
+                p if p >= aurora::NOISE_FLOOR_PCT => theme::GREEN(),
+                _ => theme::LINE_LIT(),
             };
             rows.push((st.qth_grid.clone(), format!("{pct:.0} %"), color));
         }
@@ -1912,7 +1919,7 @@ fn aurora_panel(
         .iter()
         .map(|(k, v, c)| {
             (
-                p.layout_no_wrap(k.clone(), small.clone(), theme::CYAN_DIM),
+                p.layout_no_wrap(k.clone(), small.clone(), theme::CYAN_DIM()),
                 p.layout_no_wrap(v.clone(), font.clone(), *c),
             )
         })
@@ -1928,11 +1935,11 @@ fn aurora_panel(
         p.layout_no_wrap(
             format!("valid {} · {} old", timefmt::ymd_hm(o.forecast_unix), timefmt::age(age)),
             small.clone(),
-            theme::LINE_LIT,
+            theme::LINE_LIT(),
         )
     });
 
-    let title = p.layout_no_wrap("AURORA".into(), small.clone(), theme::CYAN_DIM);
+    let title = p.layout_no_wrap("AURORA".into(), small.clone(), theme::CYAN_DIM());
     let pad = 10.0;
     let strip_w =
         if bins.is_empty() { 0.0 } else { bins.len() as f32 * (BAR_W + BAR_GAP) - BAR_GAP };
@@ -1949,15 +1956,15 @@ fn aurora_panel(
 
     let panel = place.reserve(ui, egui::vec2(width, height))?;
 
-    p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
-    chrome::paint_cut_border(&p, panel, theme::LINE_LIT, egui::Color32::TRANSPARENT);
+    p.rect_filled(panel, 0, theme::FILL().gamma_multiply(0.82));
+    chrome::paint_cut_border(&p, panel, theme::LINE_LIT(), egui::Color32::TRANSPARENT);
 
     let mut y = panel.top() + pad;
     let title_h = title.size().y;
-    p.galley(egui::pos2(panel.left() + pad, y), title, theme::CYAN_DIM);
+    p.galley(egui::pos2(panel.left() + pad, y), title, theme::CYAN_DIM());
     y += title_h + 5.0;
     for ((key, val), (_, _, color)) in laid.iter().zip(&rows) {
-        p.galley(egui::pos2(panel.left() + pad, y + 2.0), key.clone(), theme::CYAN_DIM);
+        p.galley(egui::pos2(panel.left() + pad, y + 2.0), key.clone(), theme::CYAN_DIM());
         p.galley(egui::pos2(panel.right() - pad - val.size().x, y), val.clone(), *color);
         y += row_h;
     }
@@ -1973,7 +1980,7 @@ fn aurora_panel(
             p.rect_filled(
                 egui::Rect::from_min_max(egui::pos2(x, y), egui::pos2(x + BAR_W, base)),
                 0,
-                theme::LINE.gamma_multiply(0.55),
+                theme::LINE().gamma_multiply(0.55),
             );
             p.rect_filled(
                 egui::Rect::from_min_max(
@@ -1995,20 +2002,20 @@ fn aurora_panel(
             egui::Align2::LEFT_TOP,
             stamp(bins[0].unix),
             small.clone(),
-            theme::LINE_LIT,
+            theme::LINE_LIT(),
         );
         p.text(
             egui::pos2(panel.left() + pad + strip_w, base + 2.0),
             egui::Align2::RIGHT_TOP,
             stamp(bins[bins.len() - 1].unix),
             small.clone(),
-            theme::LINE_LIT,
+            theme::LINE_LIT(),
         );
         y = base + 12.0;
     }
 
     if let Some(f) = footer {
-        p.galley(egui::pos2(panel.left() + pad, y + 2.0), f, theme::LINE_LIT);
+        p.galley(egui::pos2(panel.left() + pad, y + 2.0), f, theme::LINE_LIT());
     }
     Some(panel)
 }
@@ -2083,7 +2090,7 @@ fn bands_panel(ui: &mut egui::Ui, st: &SolarUi, place: Place) -> Option<egui::Re
             let hue = egui::Color32::from_rgb(c[0], c[1], c[2]);
             (
                 p.layout_no_wrap(band.label().into(), small.clone(), hue),
-                p.layout_no_wrap(pct(*reach), font.clone(), theme::CYAN),
+                p.layout_no_wrap(pct(*reach), font.clone(), theme::CYAN()),
                 hue,
                 *reach,
             )
@@ -2093,7 +2100,7 @@ fn bands_panel(ui: &mut egui::Ui, st: &SolarUi, place: Place) -> Option<egui::Re
     let val_w = laid.iter().map(|(_, v, ..)| v.size().x).fold(0.0f32, f32::max);
     let row_h = laid.iter().map(|(_, v, ..)| v.size().y + 3.0).fold(BAR_H + 5.0, f32::max);
 
-    let title = p.layout_no_wrap("BANDS OPEN".into(), small.clone(), theme::CYAN_DIM);
+    let title = p.layout_no_wrap("BANDS OPEN".into(), small.clone(), theme::CYAN_DIM());
     let notes = [
         format!("full bar = {} of the world", pct(scale)),
         format!(
@@ -2101,7 +2108,7 @@ fn bands_panel(ui: &mut egui::Ui, st: &SolarUi, place: Place) -> Option<egui::Re
             st.prop.halflife_s / 60.0
         ),
     ]
-    .map(|t| p.layout_no_wrap(t, small.clone(), theme::LINE_LIT));
+    .map(|t| p.layout_no_wrap(t, small.clone(), theme::LINE_LIT()));
 
     let pad = 10.0;
     // The footer is the longest line in the box and always has been, so rather
@@ -2120,12 +2127,12 @@ fn bands_panel(ui: &mut egui::Ui, st: &SolarUi, place: Place) -> Option<egui::Re
         + pad * 2.0;
     let panel = place.reserve(ui, egui::vec2(width, height))?;
 
-    p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
-    chrome::paint_cut_border(&p, panel, theme::LINE_LIT, egui::Color32::TRANSPARENT);
+    p.rect_filled(panel, 0, theme::FILL().gamma_multiply(0.82));
+    chrome::paint_cut_border(&p, panel, theme::LINE_LIT(), egui::Color32::TRANSPARENT);
 
     let mut y = panel.top() + pad;
     let title_h = title.size().y;
-    p.galley(egui::pos2(panel.left() + pad, y), title, theme::CYAN_DIM);
+    p.galley(egui::pos2(panel.left() + pad, y), title, theme::CYAN_DIM());
     y += title_h + 5.0;
     let bar_x = panel.left() + pad + key_w + gap;
     let bar_w = (panel.right() - pad - val_w - gap - bar_x).max(MIN_BAR_W);
@@ -2138,7 +2145,7 @@ fn bands_panel(ui: &mut egui::Ui, st: &SolarUi, place: Place) -> Option<egui::Re
         p.rect_filled(
             egui::Rect::from_min_size(egui::pos2(bar_x, top), egui::vec2(bar_w, BAR_H)),
             0,
-            theme::LINE.gamma_multiply(0.55),
+            theme::LINE().gamma_multiply(0.55),
         );
         // The band's own hue: what the combined view paints it in on the globe,
         // and what the legend names it by. The chart and the map share one key,
@@ -2152,14 +2159,14 @@ fn bands_panel(ui: &mut egui::Ui, st: &SolarUi, place: Place) -> Option<egui::Re
         p.galley(
             egui::pos2(panel.right() - pad - val.size().x, y + (row_h - val.size().y) * 0.5),
             val,
-            theme::CYAN,
+            theme::CYAN(),
         );
         y += row_h;
     }
     y += 3.0;
     for n in notes {
         let h = n.size().y + 3.0;
-        p.galley(egui::pos2(panel.left() + pad, y), n, theme::LINE_LIT);
+        p.galley(egui::pos2(panel.left() + pad, y), n, theme::LINE_LIT());
         y += h;
     }
     Some(panel)
@@ -2178,8 +2185,8 @@ fn award_panel(ui: &egui::Ui, st: &SolarUi, rect: egui::Rect, bottom: f32) {
     let (missing, worked, confirmed) = sdroxide_types::coverage_counts(&st.awards);
     let rows = [
         ("missing", missing, egui::Color32::from_rgb(0xff, 0x5a, 0x28)),
-        ("worked", worked, theme::YELLOW),
-        ("confirmed", confirmed, theme::GREEN),
+        ("worked", worked, theme::YELLOW()),
+        ("confirmed", confirmed, theme::GREEN()),
     ];
 
     let p = ui.painter();
@@ -2187,9 +2194,9 @@ fn award_panel(ui: &egui::Ui, st: &SolarUi, rect: egui::Rect, bottom: f32) {
     let cap = egui::FontId::proportional(9.5);
     let galleys: Vec<_> = rows
         .iter()
-        .map(|(label, n, _)| p.layout_no_wrap(format!("{label}  {n}"), font.clone(), theme::TEXT))
+        .map(|(label, n, _)| p.layout_no_wrap(format!("{label}  {n}"), font.clone(), theme::TEXT()))
         .collect();
-    let title = p.layout_no_wrap("DXCC COVERAGE".into(), cap, theme::CYAN_DIM);
+    let title = p.layout_no_wrap("DXCC COVERAGE".into(), cap, theme::CYAN_DIM());
 
     const SWATCH: f32 = 9.0;
     let w = galleys.iter().map(|g| g.size().x).fold(title.size().x, f32::max) + SWATCH + 26.0;
@@ -2198,18 +2205,18 @@ fn award_panel(ui: &egui::Ui, st: &SolarUi, rect: egui::Rect, bottom: f32) {
     if !rect.contains_rect(panel) {
         return; // too small a window to be worth crowding
     }
-    p.rect_filled(panel, 0, theme::FILL.gamma_multiply(0.82));
-    chrome::paint_cut_border(p, panel, theme::LINE_LIT, egui::Color32::TRANSPARENT);
+    p.rect_filled(panel, 0, theme::FILL().gamma_multiply(0.82));
+    chrome::paint_cut_border(p, panel, theme::LINE_LIT(), egui::Color32::TRANSPARENT);
 
     let mut y = panel.top() + 7.0;
     let x = panel.left() + 10.0;
     let title_h = title.size().y;
-    p.galley(egui::pos2(x, y), title, theme::CYAN_DIM);
+    p.galley(egui::pos2(x, y), title, theme::CYAN_DIM());
     y += title_h + 4.0;
     for (g, (_, _, color)) in galleys.into_iter().zip(rows) {
         let dy = g.size().y + 3.0;
         p.circle_filled(egui::pos2(x + SWATCH * 0.5, y + g.size().y * 0.5), SWATCH * 0.42, color);
-        p.galley(egui::pos2(x + SWATCH + 8.0, y), g, theme::TEXT);
+        p.galley(egui::pos2(x + SWATCH + 8.0, y), g, theme::TEXT());
         y += dy;
     }
 }
@@ -2244,14 +2251,14 @@ fn clouds_note(ui: &egui::Ui, st: &SolarUi, data: Option<&SolarData>, rect: egui
     );
 
     let p = ui.painter();
-    let galley = p.layout_no_wrap(text, egui::FontId::proportional(10.5), theme::LINE_LIT);
+    let galley = p.layout_no_wrap(text, egui::FontId::proportional(10.5), theme::LINE_LIT());
     if galley.size().x > rect.width() - 40.0 {
         return;
     }
     p.galley(
         egui::pos2(rect.left() + 14.0, rect.bottom() - galley.size().y - 8.0),
         galley,
-        theme::LINE_LIT,
+        theme::LINE_LIT(),
     );
 }
 
@@ -2293,7 +2300,7 @@ fn impact_banner(ui: &egui::Ui, data: Option<&SolarData>, rect: egui::Rect, now:
     // to be noticed without being read first.
     const TAB_W: f32 = 22.0;
     let font = egui::FontId::proportional(13.0);
-    let galley = ui.painter().layout_no_wrap(text, font, theme::TEXT_STRONG);
+    let galley = ui.painter().layout_no_wrap(text, font, theme::TEXT_STRONG());
     let size = galley.size() + egui::vec2(28.0 + TAB_W * 2.0, 15.0);
     if size.x > rect.width() - 24.0 {
         return;
@@ -2303,7 +2310,7 @@ fn impact_banner(ui: &egui::Ui, data: Option<&SolarData>, rect: egui::Rect, now:
         size,
     );
     let p = ui.painter();
-    p.rect_filled(banner, 0, theme::CQ_BG.gamma_multiply(0.94));
+    p.rect_filled(banner, 0, theme::CQ_BG().gamma_multiply(0.94));
     for tab in [
         egui::Rect::from_min_size(banner.min, egui::vec2(TAB_W, banner.height())),
         egui::Rect::from_min_size(
@@ -2313,11 +2320,11 @@ fn impact_banner(ui: &egui::Ui, data: Option<&SolarData>, rect: egui::Rect, now:
     ] {
         chrome::hazard_stripes(p, tab, 7.0);
     }
-    chrome::paint_cut_border(p, banner, theme::PINK, egui::Color32::TRANSPARENT);
+    chrome::paint_cut_border(p, banner, theme::PINK(), egui::Color32::TRANSPARENT);
     p.galley(
         egui::pos2(banner.left() + TAB_W + 14.0, banner.top() + 7.0),
         galley,
-        theme::TEXT_STRONG,
+        theme::TEXT_STRONG(),
     );
 }
 

@@ -51,6 +51,81 @@ impl LayoutMode {
     }
 }
 
+/// Colour theme for the UI chrome. Every theme recolours the same set of
+/// roles (backgrounds, borders, accents, text); content colours — waterfall
+/// palettes, band plan, map — are untouched. The phosphor themes are
+/// monochrome on purpose, except that transmit/SWR/error indications stay red
+/// so an operator never has to wonder whether RF is leaving the antenna.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UiTheme {
+    GreenPhosphor,
+    AmberPhosphor,
+    TealOrange,
+    Rainbow,
+    /// The classic navy/cyan/pink look. Declared last because serde demands
+    /// the catch-all be the final variant: it also swallows an unrecognised
+    /// value in a hand-edited config, so a typo degrades to the default theme
+    /// instead of throwing the whole config away.
+    #[default]
+    #[serde(other)]
+    Default,
+}
+
+impl UiTheme {
+    pub const ALL: [UiTheme; 5] = [
+        UiTheme::Default,
+        UiTheme::GreenPhosphor,
+        UiTheme::AmberPhosphor,
+        UiTheme::TealOrange,
+        UiTheme::Rainbow,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UiTheme::Default => "Default",
+            UiTheme::GreenPhosphor => "Green phosphor",
+            UiTheme::AmberPhosphor => "Amber phosphor",
+            UiTheme::TealOrange => "Teal / orange",
+            UiTheme::Rainbow => "Rainbow",
+        }
+    }
+}
+
+/// The shape a piece of chrome wears — one list serves both the buttons and
+/// the windows, each chosen separately.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChromeStyle {
+    Rectangular,
+    Rounded,
+    Gradient,
+    Bevel,
+    /// The classic cut-corner look. Last for the same reason as
+    /// [`UiTheme::Default`]: the serde catch-all must be the final variant.
+    #[default]
+    #[serde(other)]
+    Angled,
+}
+
+impl ChromeStyle {
+    pub const ALL: [ChromeStyle; 5] = [
+        ChromeStyle::Angled,
+        ChromeStyle::Rectangular,
+        ChromeStyle::Rounded,
+        ChromeStyle::Gradient,
+        ChromeStyle::Bevel,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ChromeStyle::Angled => "Angled",
+            ChromeStyle::Rectangular => "Rectangular",
+            ChromeStyle::Rounded => "Rounded",
+            ChromeStyle::Gradient => "Gradient",
+            ChromeStyle::Bevel => "3D bevel",
+        }
+    }
+}
+
 /// User display preferences. All have defaults so a missing `[ui]` table loads.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -71,6 +146,12 @@ pub struct UiSettings {
     pub gradient_bottom: [u8; 3],
     /// Which layout the window wears, or `Auto` to pick from the viewport.
     pub layout: LayoutMode,
+    /// Colour theme for the UI chrome.
+    pub theme: UiTheme,
+    /// The shape buttons wear.
+    pub button_style: ChromeStyle,
+    /// The shape floating windows and popups wear.
+    pub window_style: ChromeStyle,
 }
 
 impl Default for UiSettings {
@@ -84,6 +165,9 @@ impl Default for UiSettings {
             gradient_top: [64, 0, 0],   // dark red
             gradient_bottom: [0, 0, 0], // black
             layout: LayoutMode::Auto,
+            theme: UiTheme::Default,
+            button_style: ChromeStyle::Angled,
+            window_style: ChromeStyle::Angled,
         }
     }
 }

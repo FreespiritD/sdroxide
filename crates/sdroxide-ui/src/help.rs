@@ -360,6 +360,7 @@ impl Help {
             .min_width(crate::layout::window_w(ctx, 560.0))
             .min_height(crate::layout::window_h(ctx, 360.0))
             .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
                 // egui's resizable window never shrinks and grows every frame to
                 // `max(desired_size, last_content_size)` (see egui resize.rs). We
                 // allocate each column to exactly the available width/height, and
@@ -389,7 +390,7 @@ impl Help {
                             Layout::top_down(Align::Min),
                             |ui| {
                                 egui::Frame::new()
-                                    .fill(theme::BG_DEEP)
+                                    .fill(theme::BG_DEEP())
                                     .inner_margin(egui::Margin {
                                         left: 8,
                                         right: 8,
@@ -401,7 +402,7 @@ impl Help {
                                         ui.set_width(NAV_W - 16.0);
                                         ui.label(
                                             RichText::new("CONTENTS")
-                                                .color(theme::CYAN_DIM)
+                                                .color(theme::CYAN_DIM())
                                                 .size(10.0)
                                                 .strong(),
                                         );
@@ -430,7 +431,7 @@ impl Help {
                         ui.painter().vline(
                             drect.center().x,
                             drect.y_range(),
-                            Stroke::new(1.0, theme::LINE_LIT),
+                            Stroke::new(1.0, theme::LINE_LIT()),
                         );
                     }
 
@@ -534,11 +535,11 @@ fn nav_item(ui: &mut Ui, entry: &NavEntry, active: bool) -> bool {
     let indent = if entry.level >= 3 { 15.0 } else { 2.0 };
     let size = if entry.level >= 3 { 12.0 } else { 13.0 };
     let color = if active {
-        theme::CYAN
+        theme::CYAN()
     } else if entry.level >= 3 {
-        theme::TEXT
+        theme::TEXT()
     } else {
-        theme::TEXT_STRONG
+        theme::TEXT_STRONG()
     };
     let avail = ui.available_width();
     let text_w = (avail - indent - 10.0).max(40.0);
@@ -550,14 +551,14 @@ fn nav_item(ui: &mut Ui, entry: &NavEntry, active: bool) -> bool {
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
         if active {
-            p.rect_filled(rect, 0.0, theme::FILL);
+            p.rect_filled(rect, 0.0, theme::FILL());
             p.rect_filled(
                 Rect::from_min_max(rect.left_top(), pos2(rect.left() + 3.0, rect.bottom())),
                 0.0,
-                theme::YELLOW,
+                theme::YELLOW(),
             );
         } else if resp.hovered() {
-            p.rect_filled(rect, 0.0, theme::ROW_HOVER);
+            p.rect_filled(rect, 0.0, theme::ROW_HOVER());
         }
         let ty = rect.center().y - galley.size().y / 2.0;
         p.galley(pos2(rect.left() + indent + 6.0, ty), galley, color);
@@ -609,7 +610,7 @@ fn draw_block(
             });
         }
         Block::Paragraph(inl) => {
-            draw_inline(ui, inl, theme::TEXT, false, actions);
+            draw_inline(ui, inl, theme::TEXT(), false, actions);
             ui.add_space(7.0);
         }
         Block::Bullets(items) => {
@@ -617,8 +618,8 @@ fn draw_block(
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.add_space(8.0);
-                    ui.label(RichText::new("▸ ").color(theme::YELLOW).strong());
-                    draw_inline(ui, item, theme::TEXT, false, actions);
+                    ui.label(RichText::new("▸ ").color(theme::YELLOW()).strong());
+                    draw_inline(ui, item, theme::TEXT(), false, actions);
                 });
                 ui.add_space(2.0);
             }
@@ -629,8 +630,8 @@ fn draw_block(
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.add_space(8.0);
-                    ui.label(RichText::new(format!("{num}. ")).color(theme::CYAN).strong());
-                    draw_inline(ui, item, theme::TEXT, false, actions);
+                    ui.label(RichText::new(format!("{num}. ")).color(theme::CYAN()).strong());
+                    draw_inline(ui, item, theme::TEXT(), false, actions);
                 });
                 ui.add_space(2.0);
             }
@@ -639,30 +640,30 @@ fn draw_block(
         Block::Quote(inl) => {
             ui.add_space(4.0);
             let inner = egui::Frame::new()
-                .fill(theme::CQ_BG)
+                .fill(theme::CQ_BG())
                 .inner_margin(egui::Margin { left: 13, right: 10, top: 7, bottom: 7 })
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width() - 23.0);
-                    draw_inline(ui, inl, theme::TEXT_STRONG, false, actions);
+                    draw_inline(ui, inl, theme::TEXT_STRONG(), false, actions);
                 });
             let r = inner.response.rect;
             ui.painter().rect_filled(
                 Rect::from_min_max(r.left_top(), pos2(r.left() + 3.0, r.bottom())),
                 0.0,
-                theme::YELLOW,
+                theme::YELLOW(),
             );
             ui.add_space(7.0);
         }
         Block::Code(code) => {
             ui.add_space(3.0);
             egui::Frame::new()
-                .fill(theme::INPUT_BG)
-                .stroke(Stroke::new(1.0, theme::LINE))
+                .fill(theme::INPUT_BG())
+                .stroke(Stroke::new(1.0, theme::LINE()))
                 .inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 6 })
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width() - 20.0);
                     for line in code.lines() {
-                        ui.label(RichText::new(line).monospace().color(theme::GREEN));
+                        ui.label(RichText::new(line).monospace().color(theme::GREEN()));
                     }
                 });
             ui.add_space(6.0);
@@ -681,19 +682,19 @@ fn draw_block(
                     let nat = tex.size_vec2();
                     let w = nat.x.min(ui.available_width() - 8.0).min(900.0);
                     egui::Frame::new()
-                        .stroke(Stroke::new(1.0, theme::LINE_LIT))
+                        .stroke(Stroke::new(1.0, theme::LINE_LIT()))
                         .inner_margin(3)
                         .show(ui, |ui| {
                             ui.add(egui::Image::new(tex).max_width(w).corner_radius(0));
                         });
                 }
                 None => {
-                    ui.colored_label(theme::PINK, format!("[missing image: {path}]"));
+                    ui.colored_label(theme::ALERT(), format!("[missing image: {path}]"));
                 }
             }
             if !alt.is_empty() {
                 ui.add_space(3.0);
-                ui.label(RichText::new(alt.as_str()).italics().color(theme::CYAN_DIM).size(11.5));
+                ui.label(RichText::new(alt.as_str()).italics().color(theme::CYAN_DIM()).size(11.5));
             }
             ui.add_space(9.0);
         }
@@ -726,12 +727,12 @@ fn draw_table(
         vec![(inner / cols as f32).max(80.0); cols]
     };
 
-    egui::Frame::new().stroke(Stroke::new(1.0, theme::LINE_LIT)).inner_margin(0).show(ui, |ui| {
+    egui::Frame::new().stroke(Stroke::new(1.0, theme::LINE_LIT())).inner_margin(0).show(ui, |ui| {
         ui.set_width(total);
         // Header row.
-        table_row(ui, header, &col_w, spacing, theme::FILL, true, actions, idx);
+        table_row(ui, header, &col_w, spacing, theme::FILL(), true, actions, idx);
         for (ri, row) in rows.iter().enumerate() {
-            let fill = if ri % 2 == 0 { theme::ROW_BG } else { theme::PANEL };
+            let fill = if ri % 2 == 0 { theme::ROW_BG() } else { theme::PANEL() };
             table_row(ui, row, &col_w, spacing, fill, false, actions, idx);
         }
     });
@@ -763,8 +764,11 @@ fn table_row(
                             Layout::top_down(Align::Min),
                             |ui| {
                                 ui.set_width(w);
-                                let (color, strong) =
-                                    if header { (theme::CYAN, true) } else { (theme::TEXT, false) };
+                                let (color, strong) = if header {
+                                    (theme::CYAN(), true)
+                                } else {
+                                    (theme::TEXT(), false)
+                                };
                                 draw_inline(ui, cell, color, strong, actions);
                             },
                         );
@@ -815,9 +819,9 @@ fn cut_outline(rect: Rect, cut: f32) -> Vec<egui::Pos2> {
 /// document title, 2 is a section, 3 a subsection.
 fn draw_header(ui: &mut Ui, level: u8, text: &str) -> Response {
     let (size, bar_h, accent, fill, txt_col) = match level {
-        1 => (23.0, 50.0, theme::CYAN, theme::FILL, theme::TEXT_STRONG),
-        2 => (17.0, 37.0, theme::PINK, theme::FILL, theme::CYAN),
-        _ => (14.5, 29.0, theme::YELLOW, theme::ROW_BG, theme::TEXT_STRONG),
+        1 => (23.0, 50.0, theme::CYAN(), theme::FILL(), theme::TEXT_STRONG()),
+        2 => (17.0, 37.0, theme::PINK(), theme::FILL(), theme::CYAN()),
+        _ => (14.5, 29.0, theme::YELLOW(), theme::ROW_BG(), theme::TEXT_STRONG()),
     };
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(w, bar_h), Sense::hover());
@@ -836,12 +840,12 @@ fn draw_header(ui: &mut Ui, level: u8, text: &str) -> Response {
         let (l, r, t, b) = (rect.left(), rect.right(), rect.top(), rect.bottom());
         p.add(Shape::convex_polygon(
             vec![pos2(r - cut, t), pos2(r, t), pos2(r, t + cut)],
-            theme::PANEL,
+            theme::PANEL(),
             Stroke::NONE,
         ));
         p.add(Shape::convex_polygon(
             vec![pos2(l, b - cut), pos2(l + cut, b), pos2(l, b)],
-            theme::PANEL,
+            theme::PANEL(),
             Stroke::NONE,
         ));
         p.add(Shape::closed_line(cut_outline(rect, cut), Stroke::new(1.4, accent)));
@@ -879,7 +883,7 @@ fn draw_runs(
     for span in inl {
         match span {
             Inline::Text(t) => {
-                let col = if strong && base == theme::TEXT { theme::TEXT_STRONG } else { base };
+                let col = if strong && base == theme::TEXT() { theme::TEXT_STRONG() } else { base };
                 let mut rt = RichText::new(t).color(col);
                 if strong {
                     rt = rt.strong();
@@ -895,8 +899,8 @@ fn draw_runs(
                 ui.label(
                     RichText::new(format!("\u{00a0}{c}\u{00a0}"))
                         .monospace()
-                        .color(theme::CYAN)
-                        .background_color(theme::INPUT_BG),
+                        .color(theme::CYAN())
+                        .background_color(theme::INPUT_BG()),
                 );
             }
             Inline::Bold(v) => draw_runs(ui, v, true, italic, base, actions),
@@ -904,7 +908,7 @@ fn draw_runs(
             Inline::Link { text, href } => {
                 let label = plain_text(text);
                 let resp = ui.add(
-                    egui::Label::new(RichText::new(label).color(theme::CYAN).underline())
+                    egui::Label::new(RichText::new(label).color(theme::CYAN()).underline())
                         .sense(Sense::click()),
                 );
                 if resp.hovered() {

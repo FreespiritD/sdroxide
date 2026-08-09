@@ -65,7 +65,9 @@ impl SdroxideApp {
         // spent repeating it.
         if !phone {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("DECODES").size(9.5).strong().color(crate::theme::CYAN_DIM));
+                ui.label(
+                    RichText::new("DECODES").size(9.5).strong().color(crate::theme::CYAN_DIM()),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         RichText::new(format!("{} rx", self.digi_decodes.len()))
@@ -78,7 +80,7 @@ impl SdroxideApp {
         // Per-turn ordering + a CQ-only filter for the decode list.
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(RichText::new("Sort").size(9.5).color(crate::theme::CYAN_DIM));
+            ui.label(RichText::new("Sort").size(9.5).color(crate::theme::CYAN_DIM()));
             for (m, base) in [
                 (DecodeSort::None, "None"),
                 (DecodeSort::Signal, "SNR"),
@@ -247,9 +249,9 @@ impl SdroxideApp {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 5.0;
                     let (ptxt, pcol) = if even {
-                        ("EVEN", crate::theme::CYAN)
+                        ("EVEN", crate::theme::CYAN())
                     } else {
-                        ("ODD", crate::theme::YELLOW)
+                        ("ODD", crate::theme::YELLOW())
                     };
                     ui.label(RichText::new(ptxt).size(9.0).strong().color(pcol));
                     ui.label(
@@ -272,12 +274,14 @@ impl SdroxideApp {
                     // What this station would be worth working: one badge, and
                     // a dupe fades the row back so the new ones carry the eye.
                     let (badge, badge_col) = match novelty.highlight() {
-                        Some(sdroxide_types::Highlight::NewDxcc) => ("DXCC", crate::theme::PINK),
+                        Some(sdroxide_types::Highlight::NewDxcc) => ("DXCC", crate::theme::PINK()),
                         Some(sdroxide_types::Highlight::NewDxccBand) => {
-                            ("BAND", crate::theme::YELLOW)
+                            ("BAND", crate::theme::YELLOW())
                         }
-                        Some(sdroxide_types::Highlight::NewGrid) => ("GRID", crate::theme::CYAN),
-                        Some(sdroxide_types::Highlight::NewCall) => ("NEW", crate::theme::CYAN_DIM),
+                        Some(sdroxide_types::Highlight::NewGrid) => ("GRID", crate::theme::CYAN()),
+                        Some(sdroxide_types::Highlight::NewCall) => {
+                            ("NEW", crate::theme::CYAN_DIM())
+                        }
                         Some(sdroxide_types::Highlight::Dupe) => ("DUPE", Color32::from_gray(85)),
                         None => ("", Color32::TRANSPARENT),
                     };
@@ -319,13 +323,13 @@ impl SdroxideApp {
                     // Callsign — wider proportional (button) font.
                     let call_lbl =
                         egui::Label::new(RichText::new(&who).size(15.0).strong().color(if to_me {
-                            crate::theme::YELLOW
+                            crate::theme::YELLOW()
                         } else if d.from.is_none() || dupe {
                             Color32::from_gray(105)
                         } else if cq {
-                            crate::theme::GREEN
+                            crate::theme::GREEN()
                         } else {
-                            crate::theme::TEXT_STRONG
+                            crate::theme::TEXT_STRONG()
                         }))
                         .truncate();
                     // What they'd be worth: new entity / band / grid / call, or
@@ -342,20 +346,20 @@ impl SdroxideApp {
                         }),
                     );
                     let grid_lbl = egui::Label::new(
-                        RichText::new(&grid).monospace().size(12.0).color(crate::theme::CYAN_DIM),
+                        RichText::new(&grid).monospace().size(12.0).color(crate::theme::CYAN_DIM()),
                     );
                     // Distance (km, great-circle from my grid).
                     let dist_lbl = egui::Label::new(
-                        RichText::new(&dist_txt).monospace().size(11.0).color(crate::theme::YELLOW),
+                        RichText::new(&dist_txt)
+                            .monospace()
+                            .size(11.0)
+                            .color(crate::theme::YELLOW()),
                     );
-                    let msg_lbl = egui::Label::new(
-                        RichText::new(&d.message).monospace().size(12.5).color(if dupe {
-                            Color32::from_gray(95)
-                        } else {
-                            crate::theme::TEXT
-                        }),
-                    )
-                    .truncate();
+                    let msg_lbl =
+                        egui::Label::new(RichText::new(&d.message).monospace().size(12.5).color(
+                            if dupe { Color32::from_gray(95) } else { crate::theme::TEXT() },
+                        ))
+                        .truncate();
                     // REPLY and the queue button, drawn right-to-left so they
                     // pin to the right edge in either layout. The queue chip
                     // marks a station for later; pressing it again drops the
@@ -366,13 +370,13 @@ impl SdroxideApp {
                             false,
                             RichText::new("REPLY").size(12.0).strong(),
                             if to_me {
-                                crate::theme::YELLOW
+                                crate::theme::YELLOW()
                             } else if cq {
-                                crate::theme::GREEN
+                                crate::theme::GREEN()
                             } else {
-                                crate::theme::CYAN
+                                crate::theme::CYAN()
                             },
-                            crate::theme::INK_ON_CYAN,
+                            crate::theme::INK_ON_CYAN(),
                         );
                         let qresp = crate::chrome::chip(
                             ui,
@@ -389,11 +393,11 @@ impl SdroxideApp {
 
                     let inner = egui::Frame::new()
                         .fill(if to_me {
-                            crate::theme::TOME_BG
+                            crate::theme::TOME_BG()
                         } else if cq {
-                            crate::theme::CQ_BG
+                            crate::theme::CQ_BG()
                         } else {
-                            crate::theme::ROW_BG
+                            crate::theme::ROW_BG()
                         })
                         .inner_margin(egui::Margin { left: 11, right: 6, top: 6, bottom: 6 })
                         .show(ui, |ui| {
@@ -458,7 +462,7 @@ impl SdroxideApp {
                                                     RichText::new(tail)
                                                         .monospace()
                                                         .size(11.0)
-                                                        .color(crate::theme::CYAN_DIM),
+                                                        .color(crate::theme::CYAN_DIM()),
                                                 );
                                             }
                                             ui.with_layout(
@@ -509,11 +513,11 @@ impl SdroxideApp {
                     // (DX, EU, JA …) that names us, which is a better prospect than
                     // a plain CQ anyone in the world is free to answer.
                     let (accent, aw) = if to_me {
-                        (crate::theme::YELLOW, 4.0)
+                        (crate::theme::YELLOW(), 4.0)
                     } else if cq {
-                        (crate::theme::PINK, if d.cq_to.is_some() { 4.0 } else { 2.5 })
+                        (crate::theme::PINK(), if d.cq_to.is_some() { 4.0 } else { 2.5 })
                     } else {
-                        (crate::theme::CYAN_DIM, 2.5)
+                        (crate::theme::CYAN_DIM(), 2.5)
                     };
                     ui.painter().rect_filled(
                         egui::Rect::from_min_max(
@@ -542,7 +546,7 @@ impl SdroxideApp {
                         ui.painter().rect_stroke(
                             r,
                             0.0,
-                            egui::Stroke::new(1.0, crate::theme::YELLOW),
+                            egui::Stroke::new(1.0, crate::theme::YELLOW()),
                             egui::StrokeKind::Inside,
                         );
                     } else if to_me {
@@ -550,14 +554,14 @@ impl SdroxideApp {
                         ui.painter().rect_stroke(
                             r,
                             0.0,
-                            egui::Stroke::new(1.4, crate::theme::YELLOW),
+                            egui::Stroke::new(1.4, crate::theme::YELLOW()),
                             egui::StrokeKind::Inside,
                         );
                     } else if row.hovered() {
                         ui.painter().rect_stroke(
                             r,
                             0.0,
-                            egui::Stroke::new(1.0, crate::theme::CYAN_DIM),
+                            egui::Stroke::new(1.0, crate::theme::CYAN_DIM()),
                             egui::StrokeKind::Inside,
                         );
                     }
@@ -665,7 +669,7 @@ impl SdroxideApp {
                 .max_rect(zone(0.0))
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
             |ui| {
-                ui.label(RichText::new("QSO").size(9.5).strong().color(crate::theme::CYAN_DIM));
+                ui.label(RichText::new("QSO").size(9.5).strong().color(crate::theme::CYAN_DIM()));
                 self.digi_freq_chip(ui, cmds);
             },
         );
@@ -813,14 +817,15 @@ impl SdroxideApp {
                         // green says so, since "Confirming" on its own reads like
                         // an exchange still in progress.
                         let done = s.step == sdroxide_types::QsoStep::Confirming;
-                        let step_col = if done { crate::theme::GREEN } else { crate::theme::CYAN };
+                        let step_col =
+                            if done { crate::theme::GREEN() } else { crate::theme::CYAN() };
                         ui.label(RichText::new(s.step.label()).size(13.0).strong().color(step_col));
                         if done {
                             ui.label(
                                 RichText::new("✓ QSO COMPLETE")
                                     .size(11.0)
                                     .strong()
-                                    .color(crate::theme::GREEN),
+                                    .color(crate::theme::GREEN()),
                             )
                             .on_hover_text(
                                 "The contact is complete and in the log. It is held here for a \
@@ -830,7 +835,10 @@ impl SdroxideApp {
                         }
                         if s.transmitting {
                             ui.label(
-                                RichText::new("● TX").size(13.0).strong().color(crate::theme::PINK),
+                                RichText::new("● TX")
+                                    .size(13.0)
+                                    .strong()
+                                    .color(crate::theme::ALERT()),
                             );
                         }
                         if s.config.dxped_mode != sdroxide_types::DxpedMode::Normal
@@ -840,7 +848,7 @@ impl SdroxideApp {
                                 RichText::new(s.config.dxped_mode.label().to_uppercase())
                                     .size(11.0)
                                     .strong()
-                                    .color(crate::theme::PINK),
+                                    .color(crate::theme::PINK()),
                             )
                             .on_hover_text(
                                 "DXpedition mode. The transmit frequency is held out of the \
@@ -855,7 +863,7 @@ impl SdroxideApp {
                                 RichText::new("WATCHDOG")
                                     .size(11.0)
                                     .strong()
-                                    .color(crate::theme::YELLOW),
+                                    .color(crate::theme::YELLOW()),
                             )
                             .on_hover_text(
                                 "Transmitting stopped: no reply and no action for the watchdog \
@@ -881,8 +889,8 @@ impl SdroxideApp {
                                 let health = sdroxide_types::clock_health(off);
                                 let col = match health {
                                     Good => Color32::from_gray(140),
-                                    Marginal => crate::theme::YELLOW,
-                                    Bad => crate::theme::PINK,
+                                    Marginal => crate::theme::YELLOW(),
+                                    Bad => crate::theme::PINK(),
                                 };
                                 let txt = RichText::new(format!("DT {off:+.1} s")).size(11.0);
                                 ui.label(if health == Good {
@@ -915,11 +923,11 @@ impl SdroxideApp {
                                     RichText::new(dx)
                                         .size(17.0)
                                         .strong()
-                                        .color(crate::theme::TEXT_STRONG),
+                                        .color(crate::theme::TEXT_STRONG()),
                                 );
                                 if let Some(g) = &s.dx_grid {
                                     ui.label(
-                                        RichText::new(g).size(13.0).color(crate::theme::CYAN_DIM),
+                                        RichText::new(g).size(13.0).color(crate::theme::CYAN_DIM()),
                                     );
                                 }
                                 if let (Some(hg), Some(dg)) = (
@@ -939,7 +947,7 @@ impl SdroxideApp {
                                                         km, brg
                                                     ))
                                                     .size(12.0)
-                                                    .color(crate::theme::YELLOW),
+                                                    .color(crate::theme::YELLOW()),
                                                 );
                                             },
                                         );
@@ -975,10 +983,11 @@ impl SdroxideApp {
                     RichText::new(format!("PILE-UP {}", fox_queue.len()))
                         .size(9.5)
                         .strong()
-                        .color(crate::theme::CYAN_DIM),
+                        .color(crate::theme::CYAN_DIM()),
                 );
                 for c in &fox_queue {
-                    let col = if c.working { crate::theme::GREEN } else { Color32::from_gray(150) };
+                    let col =
+                        if c.working { crate::theme::GREEN() } else { Color32::from_gray(150) };
                     ui.label(RichText::new(&c.call).size(11.5).strong().color(col)).on_hover_text(
                         format!(
                             "{} · {:+} dB{}",
@@ -1002,11 +1011,11 @@ impl SdroxideApp {
                     RichText::new(format!("QUEUE {}", call_queue.len()))
                         .size(9.5)
                         .strong()
-                        .color(crate::theme::CYAN_DIM),
+                        .color(crate::theme::CYAN_DIM()),
                 );
                 for (i, q) in call_queue.iter().enumerate() {
                     // The one going next is the one worth reading first.
-                    let col = if i == 0 { crate::theme::GREEN } else { Color32::from_gray(150) };
+                    let col = if i == 0 { crate::theme::GREEN() } else { Color32::from_gray(150) };
                     if crate::chrome::chip(ui, false, RichText::new(&q.call).size(11.5).color(col))
                         .on_hover_text(format!(
                             "{} · {:+} dB · {:.0} Hz{}\nClick to remove",
@@ -1052,8 +1061,8 @@ impl SdroxideApp {
     fn transcript(&mut self, ui: &mut egui::Ui, status: Option<&sdroxide_types::DigiStatus>) {
         ui.allocate_ui(egui::vec2(ui.available_width(), ui.available_height()), |ui| {
             let inner = egui::Frame::new()
-                .fill(crate::theme::ROW_BG)
-                .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP))
+                .fill(crate::theme::ROW_BG())
+                .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP()))
                 .inner_margin(egui::Margin { left: 9, right: 7, top: 6, bottom: 6 })
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -1069,13 +1078,13 @@ impl SdroxideApp {
                                     // Pink marks traffic that isn't ours: the
                                     // station we called is working someone else.
                                     let (tag, col) = if line.done {
-                                        ("✓", crate::theme::GREEN)
+                                        ("✓", crate::theme::GREEN())
                                     } else if line.overheard {
-                                        ("·", crate::theme::PINK)
+                                        ("·", crate::theme::PINK())
                                     } else if line.tx {
-                                        ("»", crate::theme::YELLOW)
+                                        ("»", crate::theme::YELLOW())
                                     } else {
-                                        ("«", crate::theme::GREEN)
+                                        ("«", crate::theme::GREEN())
                                     };
                                     let txt = RichText::new(format!("{tag} {}", line.text))
                                         .monospace()
@@ -1085,7 +1094,7 @@ impl SdroxideApp {
                                     // completion line needs more than colour to
                                     // stand out at the end of a run of them.
                                     ui.label(if line.done {
-                                        txt.strong().background_color(crate::theme::DONE_BG)
+                                        txt.strong().background_color(crate::theme::DONE_BG())
                                     } else {
                                         txt
                                     });
@@ -1115,7 +1124,7 @@ impl SdroxideApp {
             ui.painter().rect_filled(
                 egui::Rect::from_min_max(r.left_top(), egui::pos2(r.left() + 2.5, r.bottom())),
                 0.0,
-                crate::theme::PINK,
+                crate::theme::PINK(),
             );
         });
     }
@@ -1143,8 +1152,8 @@ impl SdroxideApp {
                     ui,
                     false,
                     RichText::new("  CALL CQ  ").size(15.0).strong(),
-                    crate::theme::GREEN,
-                    crate::theme::INK_ON_CYAN,
+                    crate::theme::GREEN(),
+                    crate::theme::INK_ON_CYAN(),
                 )
             });
             if cq.inner.clicked() {
@@ -1157,7 +1166,7 @@ impl SdroxideApp {
                 ui,
                 false,
                 RichText::new(" STOP TX ").size(15.0).strong(),
-                crate::theme::PINK,
+                crate::theme::ALERT(),
                 Color32::WHITE,
             )
             .clicked()
@@ -1200,8 +1209,8 @@ impl SdroxideApp {
                 ui,
                 false,
                 RichText::new("SEND").size(11.0).strong(),
-                crate::theme::CYAN,
-                crate::theme::INK_ON_CYAN,
+                crate::theme::CYAN(),
+                crate::theme::INK_ON_CYAN(),
             );
             let entered = entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if (send.clicked() || entered) && !self.digi_free_text.trim().is_empty() {

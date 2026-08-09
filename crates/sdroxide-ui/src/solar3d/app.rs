@@ -47,6 +47,12 @@ impl SolarApp {
     /// own QTH still draw. Only the live products go missing, and the overlay's
     /// freshness readouts already say so.
     pub fn new(cc: &eframe::CreationContext<'_>, url: &str) -> Result<Self, String> {
+        // The browser's solar tab is its own egui instance, so it reads the
+        // operator's theme out of the shared storage before applying — the
+        // native 3D window instead shares the main app's context and atomics
+        // and never gets here.
+        let ui = crate::app::persist::load_ui_settings(cc.storage);
+        crate::theme::set_look(ui.theme, ui.button_style, ui.window_style);
         crate::theme::apply(&cc.egui_ctx);
         if let Some(rs) = cc.wgpu_render_state.as_ref() {
             super::gpu::init(rs);

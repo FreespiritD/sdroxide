@@ -165,7 +165,7 @@ impl SdroxideApp {
 
         // ── Header: speed, tuning, queue depth ──────────────────────────────
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("JS8").size(11.0).strong().color(crate::theme::CYAN));
+            ui.label(RichText::new("JS8").size(11.0).strong().color(crate::theme::CYAN()));
             for speed in Js8Speed::ALL {
                 if crate::chrome::chip(ui, js8.speed == speed, speed.label()).clicked()
                     && js8.speed != speed
@@ -208,7 +208,7 @@ impl SdroxideApp {
                 ui.label(
                     RichText::new(format!("{}:{:02}", left / 60, left % 60))
                         .monospace()
-                        .color(crate::theme::CYAN_DIM),
+                        .color(crate::theme::CYAN_DIM()),
                 )
                 .on_hover_text("Until the next heartbeat");
             }
@@ -218,7 +218,9 @@ impl SdroxideApp {
             // sub-band convention working.
             if let Some(hz) = js8.hb_hz {
                 ui.label(
-                    RichText::new(format!("HB {hz:.0} Hz")).monospace().color(crate::theme::GREEN),
+                    RichText::new(format!("HB {hz:.0} Hz"))
+                        .monospace()
+                        .color(crate::theme::GREEN()),
                 )
                 .on_hover_text(format!(
                     "The last beacon went out at {hz:.0} Hz — a free slot in the {:.0}–{:.0} Hz \
@@ -237,7 +239,7 @@ impl SdroxideApp {
                     self.show_digi_settings = !self.show_digi_settings;
                 }
                 if transmitting {
-                    ui.label(RichText::new("● TX").color(crate::theme::PINK).strong());
+                    ui.label(RichText::new("● TX").color(crate::theme::ALERT()).strong());
                 }
                 // A long message takes minutes, not seconds. Saying so while it
                 // is going out is the difference between "stuck" and "working".
@@ -250,7 +252,7 @@ impl SdroxideApp {
                             js8.tx_frames_total
                         ))
                         .monospace()
-                        .color(crate::theme::YELLOW),
+                        .color(crate::theme::YELLOW()),
                     );
                 }
                 self.digi_squelch_slider(ui, cmds);
@@ -282,7 +284,9 @@ impl SdroxideApp {
             // ── Left: who is on the band ────────────────────────────────────
             ui.vertical(|ui| {
                 ui.set_width(left_w);
-                ui.label(RichText::new("HEARD").size(10.5).strong().color(crate::theme::CYAN_DIM));
+                ui.label(
+                    RichText::new("HEARD").size(10.5).strong().color(crate::theme::CYAN_DIM()),
+                );
                 self.js8_heard_list(ui, &js8, avail_h - 18.0, left_w);
             });
 
@@ -478,12 +482,14 @@ impl SdroxideApp {
                         band,
                     );
                     let (badge, badge_col) = match novelty.highlight() {
-                        Some(sdroxide_types::Highlight::NewDxcc) => ("DXCC", crate::theme::PINK),
+                        Some(sdroxide_types::Highlight::NewDxcc) => ("DXCC", crate::theme::PINK()),
                         Some(sdroxide_types::Highlight::NewDxccBand) => {
-                            ("BAND", crate::theme::YELLOW)
+                            ("BAND", crate::theme::YELLOW())
                         }
-                        Some(sdroxide_types::Highlight::NewGrid) => ("GRID", crate::theme::CYAN),
-                        Some(sdroxide_types::Highlight::NewCall) => ("NEW", crate::theme::CYAN_DIM),
+                        Some(sdroxide_types::Highlight::NewGrid) => ("GRID", crate::theme::CYAN()),
+                        Some(sdroxide_types::Highlight::NewCall) => {
+                            ("NEW", crate::theme::CYAN_DIM())
+                        }
                         Some(sdroxide_types::Highlight::Dupe) => ("DUPE", Color32::from_gray(85)),
                         None => ("", Color32::TRANSPARENT),
                     };
@@ -506,13 +512,13 @@ impl SdroxideApp {
                     );
                     let call_lbl = egui::Label::new(
                         RichText::new(&h.call).size(15.0).strong().color(if to_me {
-                            crate::theme::YELLOW
+                            crate::theme::YELLOW()
                         } else if dupe {
                             Color32::from_gray(105)
                         } else if calling {
-                            crate::theme::GREEN
+                            crate::theme::GREEN()
                         } else {
-                            crate::theme::TEXT_STRONG
+                            crate::theme::TEXT_STRONG()
                         }),
                     )
                     .truncate();
@@ -526,37 +532,34 @@ impl SdroxideApp {
                         }),
                     );
                     let said = msg.map(js8_msg_summary).unwrap_or_default();
-                    let msg_lbl = egui::Label::new(
-                        RichText::new(said).monospace().size(12.5).color(if dupe {
-                            Color32::from_gray(95)
-                        } else {
-                            crate::theme::TEXT
-                        }),
-                    )
-                    .truncate();
+                    let msg_lbl =
+                        egui::Label::new(RichText::new(said).monospace().size(12.5).color(
+                            if dupe { Color32::from_gray(95) } else { crate::theme::TEXT() },
+                        ))
+                        .truncate();
                     let reply_btn = |ui: &mut egui::Ui| {
                         crate::chrome::chip_accent(
                             ui,
                             false,
                             RichText::new("REPLY").size(12.0).strong(),
                             if to_me {
-                                crate::theme::YELLOW
+                                crate::theme::YELLOW()
                             } else if calling {
-                                crate::theme::GREEN
+                                crate::theme::GREEN()
                             } else {
-                                crate::theme::CYAN
+                                crate::theme::CYAN()
                             },
-                            crate::theme::INK_ON_CYAN,
+                            crate::theme::INK_ON_CYAN(),
                         )
                     };
 
                     let inner = egui::Frame::new()
                         .fill(if to_me {
-                            crate::theme::TOME_BG
+                            crate::theme::TOME_BG()
                         } else if calling {
-                            crate::theme::CQ_BG
+                            crate::theme::CQ_BG()
                         } else {
-                            crate::theme::ROW_BG
+                            crate::theme::ROW_BG()
                         })
                         .inner_margin(egui::Margin { left: 11, right: 6, top: 6, bottom: 6 })
                         .show(ui, |ui| {
@@ -615,7 +618,7 @@ impl SdroxideApp {
                                                         .color(if looked_up {
                                                             Color32::from_gray(110)
                                                         } else {
-                                                            crate::theme::CYAN_DIM
+                                                            crate::theme::CYAN_DIM()
                                                         }),
                                                 );
                                             }
@@ -663,7 +666,7 @@ impl SdroxideApp {
                                             .color(if looked_up {
                                                 Color32::from_gray(110)
                                             } else {
-                                                crate::theme::CYAN_DIM
+                                                crate::theme::CYAN_DIM()
                                             }),
                                     ),
                                 );
@@ -676,7 +679,7 @@ impl SdroxideApp {
                                         RichText::new(&dist_txt)
                                             .monospace()
                                             .size(11.0)
-                                            .color(crate::theme::YELLOW),
+                                            .color(crate::theme::YELLOW()),
                                     ),
                                 );
                                 // What they last said fills the rest, with the
@@ -700,11 +703,11 @@ impl SdroxideApp {
 
                     let r = inner.response.rect;
                     let (accent, aw) = if to_me {
-                        (crate::theme::YELLOW, 4.0)
+                        (crate::theme::YELLOW(), 4.0)
                     } else if calling {
-                        (crate::theme::PINK, 2.5)
+                        (crate::theme::PINK(), 2.5)
                     } else {
-                        (crate::theme::CYAN_DIM, 2.5)
+                        (crate::theme::CYAN_DIM(), 2.5)
                     };
                     ui.painter().rect_filled(
                         egui::Rect::from_min_max(
@@ -731,14 +734,14 @@ impl SdroxideApp {
                         ui.painter().rect_stroke(
                             r,
                             0.0,
-                            egui::Stroke::new(1.4, crate::theme::YELLOW),
+                            egui::Stroke::new(1.4, crate::theme::YELLOW()),
                             egui::StrokeKind::Inside,
                         );
                     } else if row.hovered() {
                         ui.painter().rect_stroke(
                             r,
                             0.0,
-                            egui::Stroke::new(1.0, crate::theme::CYAN_DIM),
+                            egui::Stroke::new(1.0, crate::theme::CYAN_DIM()),
                             egui::StrokeKind::Inside,
                         );
                     }
@@ -782,7 +785,7 @@ impl SdroxideApp {
                         !m.from.is_empty() && self.js8_target.eq_ignore_ascii_case(&m.from);
                     let to_me = js8_personally_addressed(m);
                     let inner = egui::Frame::new()
-                        .fill(if to_me { crate::theme::TOME_BG } else { crate::theme::ROW_BG })
+                        .fill(if to_me { crate::theme::TOME_BG() } else { crate::theme::ROW_BG() })
                         .inner_margin(egui::Margin { left: 8, right: 5, top: 3, bottom: 3 })
                         .show(ui, |ui| {
                             ui.horizontal_wrapped(|ui| {
@@ -794,21 +797,21 @@ impl SdroxideApp {
                                     RichText::new(format!("{h:02}:{mi:02}")).monospace().weak(),
                                 );
                                 if to_me {
-                                    ui.label(RichText::new("★").color(crate::theme::YELLOW));
+                                    ui.label(RichText::new("★").color(crate::theme::YELLOW()));
                                 }
                                 let who = if m.from.is_empty() { "…" } else { &m.from };
                                 ui.label(
                                     RichText::new(format!("{who}:")).monospace().strong().color(
                                         if to_me {
-                                            crate::theme::CYAN
+                                            crate::theme::CYAN()
                                         } else {
-                                            crate::theme::CYAN_DIM
+                                            crate::theme::CYAN_DIM()
                                         },
                                     ),
                                 );
                                 if let Some(c) = &m.cmd {
                                     ui.label(
-                                        RichText::new(c).monospace().color(crate::theme::PINK),
+                                        RichText::new(c).monospace().color(crate::theme::PINK()),
                                     );
                                 }
                                 let body = RichText::new(&m.text).monospace();
@@ -830,7 +833,7 @@ impl SdroxideApp {
                             egui::pos2(r.left() + if to_me { 3.0 } else { 2.0 }, r.bottom()),
                         ),
                         0.0,
-                        if to_me { crate::theme::YELLOW } else { crate::theme::CYAN_DIM },
+                        if to_me { crate::theme::YELLOW() } else { crate::theme::CYAN_DIM() },
                     );
                     let mut row = ui.interact(r, ui.id().with(("js8m", i)), egui::Sense::click());
                     // Drafted only for the row under the cursor: the log holds
@@ -852,9 +855,9 @@ impl SdroxideApp {
                             egui::Stroke::new(
                                 1.0,
                                 if selected {
-                                    crate::theme::YELLOW
+                                    crate::theme::YELLOW()
                                 } else {
-                                    crate::theme::CYAN_DIM
+                                    crate::theme::CYAN_DIM()
                                 },
                             ),
                             egui::StrokeKind::Inside,
@@ -956,7 +959,9 @@ impl SdroxideApp {
         // get their width, and the text box takes whatever is left over.
         let target = if has_target { self.js8_target.clone() } else { "@ALLCALL".to_string() };
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{target}:")).monospace().color(crate::theme::CYAN_DIM));
+            ui.label(
+                RichText::new(format!("{target}:")).monospace().color(crate::theme::CYAN_DIM()),
+            );
             let mut send = false;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Stop lives next to send: they are the two things you reach
@@ -968,8 +973,8 @@ impl SdroxideApp {
                     ui,
                     false,
                     " SEND ",
-                    crate::theme::PINK,
-                    crate::theme::INK_ON_CYAN,
+                    crate::theme::ALERT(),
+                    crate::theme::INK_ON_CYAN(),
                 )
                 .clicked();
                 // Before pressing send, say how long it will take. JS8's most

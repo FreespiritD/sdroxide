@@ -320,7 +320,7 @@ impl SdroxideApp {
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(tag).size(13.0).strong().color(crate::theme::CYAN));
+                    ui.label(RichText::new(tag).size(13.0).strong().color(crate::theme::CYAN()));
                     if let Some(hz) = freq_display::show_typed(
                         ui,
                         egui::Id::new("main-freq"),
@@ -358,7 +358,7 @@ impl SdroxideApp {
                 ui,
                 self.state.tx.ptt,
                 RichText::new("PTT").size(STRIP_PTT_TEXT).strong(),
-                crate::theme::PINK,
+                crate::theme::ALERT(),
                 Color32::WHITE,
                 egui::vec2(ptt_w, plan.box_h),
             )
@@ -502,8 +502,8 @@ impl SdroxideApp {
                 ui,
                 self.state.tx.tune,
                 RichText::new(" TUNE ").size(15.0),
-                crate::theme::YELLOW,
-                crate::theme::INK_ON_CYAN,
+                crate::theme::YELLOW(),
+                crate::theme::INK_ON_CYAN(),
             )
             .clicked()
             {
@@ -545,7 +545,7 @@ impl SdroxideApp {
             ui,
             self.state.tx.ptt,
             RichText::new(" PTT ").size(15.0).strong(),
-            crate::theme::PINK,
+            crate::theme::ALERT(),
             Color32::WHITE,
         )
         .on_hover_text("Hold to transmit");
@@ -657,7 +657,7 @@ impl SdroxideApp {
                     egui::Align2::LEFT_BOTTOM,
                     name,
                     egui::FontId::proportional(10.0),
-                    crate::theme::CYAN_DIM,
+                    crate::theme::CYAN_DIM(),
                 );
             }
             if let Some(hz) = new_hz {
@@ -746,7 +746,7 @@ impl SdroxideApp {
         let box_w = fixed + fit.width(size) + if band_mode { 8.0 + bm_w } else { 0.0 };
         crate::chrome::module_bare_h(ui, box_w, PHONE_FREQ_H, |ui| {
             ui.spacing_mut().item_spacing.x = 0.0; // control every gap explicitly
-            ui.label(RichText::new(tag).size(13.0).strong().color(crate::theme::CYAN));
+            ui.label(RichText::new(tag).size(13.0).strong().color(crate::theme::CYAN()));
             ui.add_space(6.0);
             let new_hz = freq_display::show_typed(
                 ui,
@@ -1158,7 +1158,7 @@ impl SdroxideApp {
                 self.nr_button(ui, cmds);
             }
             let muted = self.state.rx[0].muted;
-            if crate::chrome::chip_accent(ui, muted, "MUTE", crate::theme::PINK, Color32::WHITE)
+            if crate::chrome::chip_accent(ui, muted, "MUTE", crate::theme::ALERT(), Color32::WHITE)
                 .clicked()
             {
                 cmds.push(Command::SetMute { rx: RxId::Main, muted: !muted });
@@ -1169,7 +1169,7 @@ impl SdroxideApp {
                 ui,
                 recording,
                 "REC",
-                crate::theme::PINK,
+                crate::theme::ALERT(),
                 Color32::WHITE,
             )
             .on_hover_text(match &self.state.recording_file {
@@ -1184,7 +1184,13 @@ impl SdroxideApp {
             let mono = self.state.recording_mono;
             let mono_chip = ui
                 .add_enabled_ui(!recording, |ui| {
-                    crate::chrome::chip_accent(ui, mono, "MONO", crate::theme::PINK, Color32::WHITE)
+                    crate::chrome::chip_accent(
+                        ui,
+                        mono,
+                        "MONO",
+                        crate::theme::ALERT(),
+                        Color32::WHITE,
+                    )
                 })
                 .inner
                 .on_hover_text(if mono {
@@ -1246,6 +1252,7 @@ impl SdroxideApp {
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| {
                 ui.set_opacity(alpha);
+                crate::chrome::window_body_bg(ui);
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                 self.nr_controls(ui, cmds);
             });
@@ -1337,7 +1344,7 @@ impl SdroxideApp {
                 ui,
                 heard == armed,
                 label,
-                crate::theme::YELLOW,
+                crate::theme::YELLOW(),
                 Color32::BLACK,
             ),
             None => crate::chrome::chip(ui, heard.is_some(), label),
@@ -1353,6 +1360,7 @@ impl SdroxideApp {
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| {
                 ui.set_opacity(alpha);
+                crate::chrome::window_body_bg(ui);
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                 crate::chrome::menu_caption(ui, "Tone squelch");
                 self.tone_controls(ui, cmds, heard, armed);
@@ -1396,7 +1404,7 @@ impl SdroxideApp {
         });
         ui.separator();
         egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-            ui.label(RichText::new("CTCSS").size(10.0).color(crate::theme::CYAN_DIM));
+            ui.label(RichText::new("CTCSS").size(10.0).color(crate::theme::CYAN_DIM()));
             egui::Grid::new("ctcss-grid").spacing([3.0, 3.0]).show(ui, |ui| {
                 for (i, &tenths) in sdroxide_types::CTCSS_TONES.iter().enumerate() {
                     let t = SubTone::Ctcss(tenths);
@@ -1409,7 +1417,7 @@ impl SdroxideApp {
                 }
             });
             ui.add_space(6.0);
-            ui.label(RichText::new("DCS").size(10.0).color(crate::theme::CYAN_DIM));
+            ui.label(RichText::new("DCS").size(10.0).color(crate::theme::CYAN_DIM()));
             if crate::chrome::chip(ui, armed == Some(SubTone::Dcs), "ANY DCS")
                 .on_hover_text(
                     "Open on any DCS-coded signal. Which of the 104 codes it carries cannot be \
@@ -1537,8 +1545,14 @@ impl SdroxideApp {
                 self.state.rx[1].volume = vol; // optimistic echo
                 cmds.push(Command::SetVolume { rx: RxId::Sub, v: vol });
             }
-            if crate::chrome::chip_accent(ui, rx1.muted, "MUTE", crate::theme::PINK, Color32::WHITE)
-                .clicked()
+            if crate::chrome::chip_accent(
+                ui,
+                rx1.muted,
+                "MUTE",
+                crate::theme::ALERT(),
+                Color32::WHITE,
+            )
+            .clicked()
             {
                 cmds.push(Command::SetMute { rx: RxId::Sub, muted: !rx1.muted });
             }
@@ -1569,7 +1583,7 @@ impl SdroxideApp {
                     ui,
                     tx.ptt,
                     RichText::new(" PTT ").size(15.0).strong(),
-                    crate::theme::PINK,
+                    crate::theme::ALERT(),
                     Color32::WHITE,
                 )
                 .clicked()
@@ -1580,8 +1594,8 @@ impl SdroxideApp {
                     ui,
                     tx.tune,
                     RichText::new(" TUNE ").size(15.0),
-                    crate::theme::YELLOW,
-                    crate::theme::INK_ON_CYAN,
+                    crate::theme::YELLOW(),
+                    crate::theme::INK_ON_CYAN(),
                 )
                 .clicked()
                 {
@@ -1603,8 +1617,8 @@ impl SdroxideApp {
                     ui,
                     playing || self.show_voice,
                     RichText::new(" ▶ ").size(15.0),
-                    if playing { crate::theme::PINK } else { crate::theme::CYAN },
-                    if playing { Color32::WHITE } else { crate::theme::INK_ON_CYAN },
+                    if playing { crate::theme::ALERT() } else { crate::theme::CYAN() },
+                    if playing { Color32::WHITE } else { crate::theme::INK_ON_CYAN() },
                 )
                 .on_hover_text(hover)
                 .clicked()
@@ -1663,6 +1677,7 @@ impl SdroxideApp {
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| {
                 ui.set_opacity(alpha);
+                crate::chrome::window_body_bg(ui);
                 ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
                 crate::chrome::menu_caption(ui, "Skimmers");
                 self.skimmer_controls(ui, cmds);
@@ -1705,7 +1720,9 @@ impl SdroxideApp {
                             {
                                 cfg.set_enabled(kind, !cfg.enabled(kind));
                             }
-                            ui.label(RichText::new("sql").size(10.0).color(crate::theme::CYAN_DIM));
+                            ui.label(
+                                RichText::new("sql").size(10.0).color(crate::theme::CYAN_DIM()),
+                            );
                             let mut sql = cfg.squelch_db(kind);
                             if ui
                                 .add(
@@ -1749,7 +1766,9 @@ impl SdroxideApp {
                     if cfg.cw_decoder == CwSkimmerDecoder::Neural {
                         ui.horizontal(|ui| {
                             ui.label(
-                                RichText::new("stations").size(10.0).color(crate::theme::CYAN_DIM),
+                                RichText::new("stations")
+                                    .size(10.0)
+                                    .color(crate::theme::CYAN_DIM()),
                             );
                             for n in sdroxide_types::CW_SLOT_CHOICES {
                                 if crate::chrome::chip(ui, cfg.cw_slots == n, &n.to_string())
@@ -1854,6 +1873,7 @@ impl SdroxideApp {
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                 .show(|ui| {
                     ui.set_opacity(alpha);
+                    crate::chrome::window_body_bg(ui);
                     ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
                     self.spectrum_controls(ui);
                 });
@@ -1957,7 +1977,7 @@ impl SdroxideApp {
                     ui,
                     true,
                     sat_label,
-                    crate::theme::GREEN,
+                    crate::theme::GREEN(),
                     Color32::BLACK,
                 )
             } else {
@@ -1986,7 +2006,7 @@ impl SdroxideApp {
                     ui,
                     true,
                     scan_label,
-                    if scan.holding { crate::theme::GREEN } else { crate::theme::CYAN },
+                    if scan.holding { crate::theme::GREEN() } else { crate::theme::CYAN() },
                     Color32::BLACK,
                 )
             } else {

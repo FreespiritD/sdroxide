@@ -65,7 +65,7 @@ pub(in crate::app) fn settings_controls_tab(
     let cfg = &mut *io.input_edit;
     let key_capture = &mut *io.key_capture;
 
-    ui.label(RichText::new("Keyboard").size(14.0).strong().color(crate::theme::CYAN));
+    ui.label(RichText::new("Keyboard").size(14.0).strong().color(crate::theme::CYAN()));
     ui.add_space(4.0);
     ui.label(
         RichText::new(
@@ -186,7 +186,7 @@ pub(in crate::app) fn settings_controls_tab(
     ui.add_space(10.0);
     ui.separator();
     ui.add_space(6.0);
-    ui.label(RichText::new("Panadapter mouse").size(14.0).strong().color(crate::theme::CYAN));
+    ui.label(RichText::new("Panadapter mouse").size(14.0).strong().color(crate::theme::CYAN()));
     ui.add_space(6.0);
 
     let w = &mut cfg.wheel;
@@ -237,7 +237,7 @@ pub(in crate::app) fn settings_controls_tab(
     ui.add_space(10.0);
     ui.separator();
     ui.add_space(6.0);
-    ui.label(RichText::new("Mouse buttons").size(14.0).strong().color(crate::theme::CYAN));
+    ui.label(RichText::new("Mouse buttons").size(14.0).strong().color(crate::theme::CYAN()));
     ui.add_space(4.0);
     ui.label(
         RichText::new(
@@ -325,7 +325,7 @@ fn settings_midi_section(
 ) {
     use sdroxide_types::{ActionKind, ButtonMode, MidiBinding, RelativeMode};
 
-    ui.label(RichText::new("MIDI controller").size(14.0).strong().color(crate::theme::CYAN));
+    ui.label(RichText::new("MIDI controller").size(14.0).strong().color(crate::theme::CYAN()));
     ui.add_space(4.0);
     if !status.supported {
         ui.label(

@@ -32,6 +32,7 @@ impl SdroxideApp {
             .resizable(false)
             .default_width(crate::layout::window_w(ctx, 420.0))
             .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
                 // Edit the UI-owned copy so keystrokes aren't clobbered by the
                 // engine's status echo; persist on any change.
                 let cfg = &mut self.digi_cfg_edit;

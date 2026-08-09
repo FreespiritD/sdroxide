@@ -1221,6 +1221,40 @@ mod tests {
         assert!(!nasty.to_string_lossy().contains(".."));
     }
 
+    /// A typo in a hand-edited theme name must cost only the theme, never the
+    /// whole config: `Settings::load` falls back to full defaults on any parse
+    /// error, so the theme/style enums carry a serde catch-all that swallows
+    /// unknown values instead of erroring.
+    #[test]
+    fn an_unknown_theme_degrades_to_the_default_without_losing_the_config() {
+        let s: Settings = toml::from_str(
+            "sample_rate = 123456.0\n\
+             [ui]\n\
+             theme = \"HotDogStand\"\n\
+             button_style = \"Bouncy\"\n\
+             window_style = \"Rounded\"\n",
+        )
+        .expect("an unknown theme name must still parse");
+        assert_eq!(s.sample_rate, 123456.0, "the rest of the config must survive");
+        assert_eq!(s.ui.theme, sdroxide_types::UiTheme::Default);
+        assert_eq!(s.ui.button_style, sdroxide_types::ChromeStyle::Angled);
+        assert_eq!(s.ui.window_style, sdroxide_types::ChromeStyle::Rounded);
+    }
+
+    /// And the round trip: what `save_ui_settings` writes, `load` reads back.
+    #[test]
+    fn theme_and_styles_survive_a_toml_round_trip() {
+        let mut s = Settings::default();
+        s.ui.theme = sdroxide_types::UiTheme::AmberPhosphor;
+        s.ui.button_style = sdroxide_types::ChromeStyle::Bevel;
+        s.ui.window_style = sdroxide_types::ChromeStyle::Gradient;
+        let text = toml::to_string_pretty(&s).unwrap();
+        let back: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(back.ui.theme, sdroxide_types::UiTheme::AmberPhosphor);
+        assert_eq!(back.ui.button_style, sdroxide_types::ChromeStyle::Bevel);
+        assert_eq!(back.ui.window_style, sdroxide_types::ChromeStyle::Gradient);
+    }
+
     #[test]
     fn a_short_download_is_not_a_schedule() {
         // The guard that stops a captive portal's login page replacing the real

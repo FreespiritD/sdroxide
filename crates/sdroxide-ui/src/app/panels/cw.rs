@@ -41,7 +41,7 @@ impl SdroxideApp {
         // Header: where we are listening, what is being heard there, and how
         // fast we send.
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("CW").size(11.0).strong().color(crate::theme::CYAN));
+            ui.label(RichText::new("CW").size(11.0).strong().color(crate::theme::CYAN()));
             ui.label(
                 RichText::new(format!("{pitch:.0} Hz")).size(11.0).color(Color32::from_gray(150)),
             )
@@ -63,14 +63,14 @@ impl SdroxideApp {
             ui.painter_at(lamp).circle_filled(
                 lamp.center(),
                 4.5,
-                if cw.locked { crate::theme::GREEN } else { Color32::from_gray(48) },
+                if cw.locked { crate::theme::GREEN() } else { Color32::from_gray(48) },
             );
             if cw.locked {
                 ui.label(
                     RichText::new(format!("{:.0} WPM", cw.wpm))
                         .size(11.0)
                         .strong()
-                        .color(crate::theme::GREEN),
+                        .color(crate::theme::GREEN()),
                 )
                 .on_hover_text("Sending speed read off the signal");
                 ui.label(
@@ -86,7 +86,7 @@ impl SdroxideApp {
                     ui.label(
                         RichText::new(format!("{off:+.0} Hz"))
                             .size(10.5)
-                            .color(crate::theme::YELLOW),
+                            .color(crate::theme::YELLOW()),
                     )
                     .on_hover_text(
                         "How far off the cursor the signal actually is. The decoder \
@@ -99,7 +99,9 @@ impl SdroxideApp {
 
             crate::chrome::row_tail(ui, |ui| {
                 if transmitting {
-                    ui.label(RichText::new("● TX").size(11.0).strong().color(crate::theme::PINK));
+                    ui.label(
+                        RichText::new("● TX").size(11.0).strong().color(crate::theme::ALERT()),
+                    );
                     ui.add_space(6.0);
                 }
                 self.cw_speed_controls(ui, cmds);
@@ -118,8 +120,8 @@ impl SdroxideApp {
 
         ui.allocate_ui(egui::vec2(ui.available_width(), rx_h), |ui| {
             egui::Frame::new()
-                .fill(crate::theme::ROW_BG)
-                .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP))
+                .fill(crate::theme::ROW_BG())
+                .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP()))
                 .inner_margin(egui::Margin { left: 8, right: 7, top: 6, bottom: 6 })
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -142,7 +144,7 @@ impl SdroxideApp {
                                         RichText::new(&rx_text)
                                             .monospace()
                                             .size(12.5)
-                                            .color(crate::theme::GREEN),
+                                            .color(crate::theme::GREEN()),
                                     )
                                     .wrap(),
                                 );
@@ -170,7 +172,7 @@ impl SdroxideApp {
                     0.0,
                     egui::TextFormat {
                         font_id: mono.clone(),
-                        color: crate::theme::GREEN,
+                        color: crate::theme::GREEN(),
                         ..Default::default()
                     },
                 );
@@ -181,7 +183,7 @@ impl SdroxideApp {
                     0.0,
                     egui::TextFormat {
                         font_id: mono.clone(),
-                        color: crate::theme::TEXT_STRONG,
+                        color: crate::theme::TEXT_STRONG(),
                         ..Default::default()
                     },
                 );
@@ -191,8 +193,8 @@ impl SdroxideApp {
         let resp = ui
             .allocate_ui(egui::vec2(ui.available_width(), input_h), |ui| {
                 egui::Frame::new()
-                    .fill(crate::theme::ROW_BG)
-                    .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP))
+                    .fill(crate::theme::ROW_BG())
+                    .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP()))
                     .inner_margin(egui::Margin::symmetric(6, 4))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -237,7 +239,7 @@ impl SdroxideApp {
                 ui,
                 tx_on,
                 RichText::new(label).size(14.0).strong(),
-                crate::theme::PINK,
+                crate::theme::ALERT(),
                 Color32::WHITE,
             )
             .on_hover_text("Hold the key down between characters, so nothing typed waits")
@@ -249,8 +251,8 @@ impl SdroxideApp {
                 ui,
                 false,
                 RichText::new(" CALL CQ ").size(13.0).strong(),
-                crate::theme::GREEN,
-                crate::theme::INK_ON_CYAN,
+                crate::theme::GREEN(),
+                crate::theme::INK_ON_CYAN(),
             )
             .clicked()
             {
@@ -308,6 +310,7 @@ impl SdroxideApp {
             .frame(crate::chrome::window_frame())
             .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
             .show(|ui| {
+                crate::chrome::window_body_bg(ui);
                 ui.set_max_width(180.0);
                 if ui.selectable_label(!fw_on, "Off — normal spacing").clicked() {
                     pick_fw = Some(0.0);
@@ -338,6 +341,7 @@ impl SdroxideApp {
             .frame(crate::chrome::window_frame())
             .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
             .show(|ui| {
+                crate::chrome::window_body_bg(ui);
                 ui.set_max_width(140.0);
                 for w in WPM_STEPS {
                     if ui.selectable_label((wpm - w).abs() < 0.5, format!("{w:.0} WPM")).clicked() {

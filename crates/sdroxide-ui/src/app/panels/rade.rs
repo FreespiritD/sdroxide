@@ -21,13 +21,15 @@ impl SdroxideApp {
         let transmitting = status.as_ref().map(|s| s.transmitting).unwrap_or(false);
 
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("RADE").size(11.0).strong().color(crate::theme::CYAN));
+            ui.label(RichText::new("RADE").size(11.0).strong().color(crate::theme::CYAN()));
             ui.label(
-                RichText::new("FreeDV V1 digital voice").size(10.5).color(crate::theme::CYAN_DIM),
+                RichText::new("FreeDV V1 digital voice").size(10.5).color(crate::theme::CYAN_DIM()),
             );
             crate::chrome::row_tail(ui, |ui| {
                 if transmitting {
-                    ui.label(RichText::new("● TX").size(11.0).strong().color(crate::theme::PINK));
+                    ui.label(
+                        RichText::new("● TX").size(11.0).strong().color(crate::theme::ALERT()),
+                    );
                     ui.add_space(8.0);
                 }
                 // Silence the raw signal, leaving only decoded speech audible.
@@ -54,7 +56,7 @@ impl SdroxideApp {
             ui.painter_at(lamp).circle_filled(
                 lamp.center(),
                 5.5,
-                if lit { crate::theme::GREEN } else { Color32::from_gray(48) },
+                if lit { crate::theme::GREEN() } else { Color32::from_gray(48) },
             );
             ui.label(
                 RichText::new(if transmitting {
@@ -67,7 +69,7 @@ impl SdroxideApp {
                 .size(12.0)
                 .strong()
                 .color(if lit {
-                    crate::theme::GREEN
+                    crate::theme::GREEN()
                 } else {
                     Color32::from_gray(130)
                 }),
@@ -78,7 +80,7 @@ impl SdroxideApp {
                 ui.label(
                     RichText::new(format!("SNR {:.0} dB", rade.snr_db))
                         .size(12.0)
-                        .color(crate::theme::TEXT_STRONG),
+                        .color(crate::theme::TEXT_STRONG()),
                 );
                 ui.add_space(12.0);
                 ui.label(
@@ -107,7 +109,7 @@ impl SdroxideApp {
             if level > 0.0 && !transmitting {
                 let mut fill = bar;
                 fill.set_width(bar.width() * level);
-                p.rect_filled(fill, 0.0, crate::theme::CYAN);
+                p.rect_filled(fill, 0.0, crate::theme::CYAN());
             }
         }
         ui.add_space(12.0);
@@ -120,8 +122,8 @@ impl SdroxideApp {
                 ui,
                 transmitting,
                 RichText::new(label).size(13.0).strong(),
-                crate::theme::PINK,
-                crate::theme::TEXT_STRONG,
+                crate::theme::ALERT(),
+                crate::theme::TEXT_STRONG(),
             );
             if resp.clicked() {
                 cmds.push(Command::DigiTxActive(!transmitting));
@@ -153,7 +155,7 @@ impl SdroxideApp {
                     rade.dropped
                 ))
                 .size(10.5)
-                .color(crate::theme::YELLOW),
+                .color(crate::theme::YELLOW()),
             );
         }
     }

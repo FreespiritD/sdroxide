@@ -32,14 +32,14 @@ pub(in crate::app) fn persist_qso_log(_log: &[QsoRecord]) {
 
 // ── UI/display preferences (native: config.toml [ui]; wasm: eframe storage) ──
 #[cfg(not(target_arch = "wasm32"))]
-pub(in crate::app) fn load_ui_settings(
+pub(crate) fn load_ui_settings(
     _storage: Option<&dyn eframe::Storage>,
 ) -> sdroxide_types::UiSettings {
     sdroxide_config::load_ui_settings()
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(in crate::app) fn load_ui_settings(
+pub(crate) fn load_ui_settings(
     storage: Option<&dyn eframe::Storage>,
 ) -> sdroxide_types::UiSettings {
     storage.and_then(|s| eframe::get_value(s, "ui_settings")).unwrap_or_default()

@@ -155,7 +155,9 @@ impl SdroxideApp {
         let home = sdroxide_types::grid_to_latlon(&my_grid);
 
         ui.horizontal(|ui| {
-            ui.label(RichText::new("RECEPTIONS").size(9.5).strong().color(crate::theme::CYAN_DIM));
+            ui.label(
+                RichText::new("RECEPTIONS").size(9.5).strong().color(crate::theme::CYAN_DIM()),
+            );
             crate::chrome::row_tail(ui, |ui| {
                 let heard_us = self.wspr_spots.iter().filter(|s| s.is_heard_by_other()).count();
                 let label = if heard_us > 0 {
@@ -206,11 +208,11 @@ impl SdroxideApp {
         let into_slot = slot_phase_s(now_unix_f64(), w.slot_utc);
 
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("WSPR").size(11.0).strong().color(crate::theme::CYAN));
+            ui.label(RichText::new("WSPR").size(11.0).strong().color(crate::theme::CYAN()));
             ui.label(
                 RichText::new("weak-signal propagation beacon")
                     .size(10.5)
-                    .color(crate::theme::CYAN_DIM),
+                    .color(crate::theme::CYAN_DIM()),
             );
             crate::chrome::row_tail(ui, |ui| {
                 // What is left of the slot, at the end of the row where the eye
@@ -228,9 +230,11 @@ impl SdroxideApp {
                      the decoder and the next transmit decision lands.",
                 );
                 if transmitting {
-                    ui.label(RichText::new("● TX").size(11.0).strong().color(crate::theme::PINK));
+                    ui.label(
+                        RichText::new("● TX").size(11.0).strong().color(crate::theme::ALERT()),
+                    );
                 } else if w.decoding {
-                    ui.label(RichText::new("decoding…").size(10.5).color(crate::theme::YELLOW));
+                    ui.label(RichText::new("decoding…").size(10.5).color(crate::theme::YELLOW()));
                 }
             });
         });
@@ -280,7 +284,7 @@ impl SdroxideApp {
                 ui.label(
                     RichText::new("waiting for the radio to take the change…")
                         .size(10.0)
-                        .color(crate::theme::YELLOW),
+                        .color(crate::theme::YELLOW()),
                 );
             }
             if let Some(hz) = w.next_dial_hz {
@@ -291,7 +295,7 @@ impl SdroxideApp {
                 );
             }
             if let Some(why) = &w.hop_blocked {
-                ui.label(RichText::new(why).size(10.0).color(crate::theme::YELLOW));
+                ui.label(RichText::new(why).size(10.0).color(crate::theme::YELLOW()));
             }
         });
 
@@ -305,7 +309,7 @@ impl SdroxideApp {
         // control that could disagree with it about what this station is doing.
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(RichText::new("TRANSMIT").size(9.5).color(crate::theme::CYAN_DIM));
+            ui.label(RichText::new("TRANSMIT").size(9.5).color(crate::theme::CYAN_DIM()));
             let cur = self.digi_cfg_edit.wspr_tx_percent;
             for (pct, label) in [(0u8, "OFF"), (10, "10%"), (20, "20%"), (33, "33%"), (50, "50%")] {
                 // Off is the resting state and reads as one; anything else puts
@@ -318,8 +322,8 @@ impl SdroxideApp {
                         ui,
                         cur == pct,
                         RichText::new(label).size(10.5),
-                        crate::theme::PINK,
-                        crate::theme::INK_ON_CYAN,
+                        crate::theme::PINK(),
+                        crate::theme::INK_ON_CYAN(),
                     )
                 };
                 if resp
@@ -355,7 +359,7 @@ impl SdroxideApp {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(RichText::new("POWER").size(9.5).color(crate::theme::CYAN_DIM));
+            ui.label(RichText::new("POWER").size(9.5).color(crate::theme::CYAN_DIM()));
             let cur = sdroxide_types::round_power_dbm(self.digi_cfg_edit.wspr_power_dbm);
             let mut chosen = None;
             egui::ComboBox::from_id_salt("wspr-power")
@@ -444,7 +448,7 @@ impl SdroxideApp {
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
-                ui.label(RichText::new("BANDS").size(9.5).color(crate::theme::CYAN_DIM));
+                ui.label(RichText::new("BANDS").size(9.5).color(crate::theme::CYAN_DIM()));
                 let mut mask = self.digi_cfg_edit.wspr_hop_bands;
                 let mut hit = false;
                 // Only bands with a WSPR dial: the rest have nothing to hop to.
@@ -468,7 +472,7 @@ impl SdroxideApp {
                     ui.label(
                         RichText::new("none selected — hopping has nowhere to go")
                             .size(9.5)
-                            .color(crate::theme::YELLOW),
+                            .color(crate::theme::YELLOW()),
                     );
                 }
             });
@@ -492,7 +496,7 @@ impl SdroxideApp {
             })
             .size(10.0)
             .color(if call.is_empty() || grid.is_empty() {
-                crate::theme::YELLOW
+                crate::theme::YELLOW()
             } else {
                 Color32::from_gray(110)
             }),
@@ -505,7 +509,7 @@ impl SdroxideApp {
             && let Some(why) = &w.tx_blocked
         {
             ui.add_space(4.0);
-            ui.label(RichText::new(why).size(10.0).color(crate::theme::YELLOW));
+            ui.label(RichText::new(why).size(10.0).color(crate::theme::YELLOW()));
         }
     }
 }
@@ -550,11 +554,11 @@ fn slot_bar(ui: &mut egui::Ui, into_slot: f64, transmitting: bool, decoding: boo
         fill,
         0.0,
         if transmitting {
-            crate::theme::PINK
+            crate::theme::ALERT()
         } else if decoding {
-            crate::theme::YELLOW
+            crate::theme::YELLOW()
         } else {
-            crate::theme::CYAN_DIM
+            crate::theme::CYAN_DIM()
         },
     );
 
@@ -588,7 +592,7 @@ fn wspr_row(ui: &mut egui::Ui, s: &WsprSpot, home: Option<(f64, f64)>, now: i64)
         .zip(where_.and_then(sdroxide_types::grid_to_latlon))
         .map(|(a, b)| sdroxide_types::distance_km(a, b));
 
-    let bg = if heard_us { crate::theme::TOME_BG } else { crate::theme::ROW_BG };
+    let bg = if heard_us { crate::theme::TOME_BG() } else { crate::theme::ROW_BG() };
     egui::Frame::new()
         .fill(bg)
         .inner_margin(egui::Margin { left: 6, right: 6, top: 3, bottom: 3 })
@@ -610,7 +614,7 @@ fn wspr_row(ui: &mut egui::Ui, s: &WsprSpot, home: Option<(f64, f64)>, now: i64)
                     false,
                     egui::Label::new(
                         RichText::new(if heard_us { "→" } else { "←" }).size(11.0).strong().color(
-                            if heard_us { crate::theme::YELLOW } else { crate::theme::CYAN },
+                            if heard_us { crate::theme::YELLOW() } else { crate::theme::CYAN() },
                         ),
                     ),
                 );
@@ -620,7 +624,7 @@ fn wspr_row(ui: &mut egui::Ui, s: &WsprSpot, home: Option<(f64, f64)>, now: i64)
                     ROW_H,
                     false,
                     egui::Label::new(
-                        RichText::new(who).size(11.0).strong().color(crate::theme::TEXT_STRONG),
+                        RichText::new(who).size(11.0).strong().color(crate::theme::TEXT_STRONG()),
                     )
                     .truncate(),
                 );
@@ -632,7 +636,7 @@ fn wspr_row(ui: &mut egui::Ui, s: &WsprSpot, home: Option<(f64, f64)>, now: i64)
                     egui::Label::new(
                         RichText::new(where_.unwrap_or(""))
                             .size(10.0)
-                            .color(crate::theme::CYAN_DIM),
+                            .color(crate::theme::CYAN_DIM()),
                     )
                     .truncate(),
                 );
@@ -690,19 +694,19 @@ fn wspr_row(ui: &mut egui::Ui, s: &WsprSpot, home: Option<(f64, f64)>, now: i64)
 /// would paint the whole band red.
 fn snr_color(db: i16) -> Color32 {
     match db {
-        d if d >= -10 => crate::theme::GREEN,
-        d if d >= -20 => crate::theme::CYAN,
-        d if d >= -26 => crate::theme::YELLOW,
-        _ => crate::theme::PINK,
+        d if d >= -10 => crate::theme::GREEN(),
+        d if d >= -20 => crate::theme::CYAN(),
+        d if d >= -26 => crate::theme::YELLOW(),
+        _ => crate::theme::PINK(),
     }
 }
 
 /// A label/value line in the status card.
 fn row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(10.0).color(crate::theme::CYAN_DIM));
+        ui.label(RichText::new(label).size(10.0).color(crate::theme::CYAN_DIM()));
         crate::chrome::row_tail(ui, |ui| {
-            ui.label(RichText::new(value).size(10.5).color(crate::theme::TEXT));
+            ui.label(RichText::new(value).size(10.5).color(crate::theme::TEXT()));
         });
     });
 }
@@ -715,11 +719,11 @@ mod tests {
     /// they have to follow WSPR's floor rather than FT8's.
     #[test]
     fn the_report_colour_follows_wsprs_own_scale() {
-        assert_eq!(snr_color(-5), crate::theme::GREEN);
-        assert_eq!(snr_color(-18), crate::theme::CYAN);
-        assert_eq!(snr_color(-24), crate::theme::YELLOW);
+        assert_eq!(snr_color(-5), crate::theme::GREEN());
+        assert_eq!(snr_color(-18), crate::theme::CYAN());
+        assert_eq!(snr_color(-24), crate::theme::YELLOW());
         // Below the nominal floor: remarkable, and coloured as such.
-        assert_eq!(snr_color(-28), crate::theme::PINK);
+        assert_eq!(snr_color(-28), crate::theme::PINK());
     }
 
     /// A real slot boundary: 1_785_760_440 is divisible by 120.

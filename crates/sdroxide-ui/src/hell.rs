@@ -195,7 +195,7 @@ impl HellUi {
         p.rect_stroke(
             rect,
             2.0,
-            egui::Stroke::new(1.0, crate::theme::LINE_LIT),
+            egui::Stroke::new(1.0, crate::theme::LINE_LIT()),
             egui::StrokeKind::Inside,
         );
     }

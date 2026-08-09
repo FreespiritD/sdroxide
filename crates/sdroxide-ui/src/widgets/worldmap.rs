@@ -260,7 +260,7 @@ pub fn show(
         return;
     }
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, 0.0, theme::INPUT_BG);
+    p.rect_filled(rect, 0.0, theme::INPUT_BG());
 
     // ── Ease the view toward the target (fit home + all contacts) ──
     let aspect = (rect.height() / rect.width()) as f64;
@@ -419,18 +419,18 @@ pub fn show(
     if let Some((lat, lon)) = home {
         let c = project(lat, lon);
         p.circle_filled(c, dot_r + 3.0, Color32::from_rgba_unmultiplied(70, 224, 125, 60));
-        p.circle_filled(c, 2.6, theme::GREEN);
+        p.circle_filled(c, 2.6, theme::GREEN());
     }
     if let Some((lat, lon)) = dx {
         let c = project(lat, lon);
         p.circle_filled(c, dot_r + 3.5, Color32::from_rgba_unmultiplied(255, 42, 85, 70));
-        p.circle_filled(c, 3.0, theme::PINK);
+        p.circle_filled(c, 3.0, theme::PINK());
     }
     // Bright yellow dot for the decode row hovered in the table (drawn on top).
     if let Some((lat, lon)) = hover {
         let c = project(lat, lon);
         p.circle_filled(c, dot_r + 4.0, Color32::from_rgba_unmultiplied(255, 238, 0, 80));
-        p.circle_filled(c, 3.2, theme::YELLOW);
+        p.circle_filled(c, 3.2, theme::YELLOW());
     }
 
     // Animated pulse travelling home → dx while we transmit toward the contact.
@@ -478,7 +478,7 @@ pub fn show(
     }
 
     // Frame (red-accent, matching the QSO section panels).
-    crate::chrome::paint_cut_border(&p, rect.shrink(0.5), theme::RED_DEEP, theme::BG_DEEP);
+    crate::chrome::paint_cut_border(&p, rect.shrink(0.5), theme::RED_DEEP(), theme::BG_DEEP());
 }
 
 #[cfg(test)]

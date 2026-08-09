@@ -22,7 +22,10 @@ impl SdroxideApp {
             .frame(crate::chrome::window_frame())
             .resizable(true)
             .default_width(crate::layout::window_w(ctx, 420.0))
-            .show(ctx, |ui| self.scanner_body(ui, &mut cfg, cmds));
+            .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
+                self.scanner_body(ui, &mut cfg, cmds)
+            });
         if let Some(r) = &resp {
             crate::chrome::paint_window_border(ctx, &r.response);
         }
@@ -55,7 +58,7 @@ impl SdroxideApp {
                     ui,
                     scan.running,
                     label,
-                    crate::theme::GREEN,
+                    crate::theme::GREEN(),
                     egui::Color32::BLACK,
                 )
                 .clicked()
@@ -122,7 +125,7 @@ impl SdroxideApp {
                     "That range is empty — the high edge has to be at least one \
                                channel above the low one.",
                 )
-                .color(crate::theme::PINK),
+                .color(crate::theme::ALERT()),
             );
         }
     }
@@ -249,9 +252,9 @@ impl SdroxideApp {
             }
             let here = self.state.active_freq_hz() / 1e6;
             let (text, colour) = if scan.holding {
-                (format!("holding {here:.6} MHz"), crate::theme::GREEN)
+                (format!("holding {here:.6} MHz"), crate::theme::GREEN())
             } else {
-                (format!("scanning · {here:.6} MHz"), crate::theme::CYAN)
+                (format!("scanning · {here:.6} MHz"), crate::theme::CYAN())
             };
             ui.label(RichText::new(text).color(colour).strong());
             crate::chrome::row_tail(ui, |ui| {

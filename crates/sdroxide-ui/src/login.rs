@@ -175,8 +175,8 @@ pub fn screen(
         ui.vertical_centered(|ui| {
             ui.add_space(lead);
             egui::Frame::new()
-                .fill(crate::theme::PANEL.gamma_multiply(0.94))
-                .stroke(egui::Stroke::new(1.0, crate::theme::LINE_LIT))
+                .fill(crate::theme::PANEL().gamma_multiply(0.94))
+                .stroke(egui::Stroke::new(1.0, crate::theme::LINE_LIT()))
                 .inner_margin(egui::Margin::symmetric(if touch { 16 } else { 20 }, 16))
                 .show(ui, |ui| {
                     ui.set_width(card_w);
@@ -215,7 +215,7 @@ fn card(
 ) {
     let field_h = if touch { 30.0 } else { 22.0 };
 
-    ui.label(RichText::new("SDR OXIDE").size(17.0).strong().color(crate::theme::CYAN));
+    ui.label(RichText::new("SDR OXIDE").size(17.0).strong().color(crate::theme::CYAN()));
     ui.add_space(12.0);
 
     ui.add_enabled_ui(!checking, |ui| {
@@ -273,15 +273,15 @@ fn card(
             ui,
             false,
             RichText::new(label).strong().size(if touch { 15.0 } else { 13.0 }),
-            crate::theme::GREEN,
-            crate::theme::INK_ON_CYAN,
+            crate::theme::GREEN(),
+            crate::theme::INK_ON_CYAN(),
         );
         *submit |= button.clicked() && !checking;
     });
 
     if let Some(why) = refused {
         ui.add_space(10.0);
-        ui.label(RichText::new(why).size(12.0).color(crate::theme::PINK));
+        ui.label(RichText::new(why).size(12.0).color(crate::theme::ALERT()));
     } else if checking {
         ui.add_space(10.0);
         ui.label(

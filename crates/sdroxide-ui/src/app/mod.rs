@@ -25,7 +25,7 @@ pub(in crate::app) mod frame;
 pub(in crate::app) mod logbook;
 pub(in crate::app) mod net;
 pub(in crate::app) mod panels;
-pub(in crate::app) mod persist;
+pub(crate) mod persist;
 pub(in crate::app) mod sat;
 pub(in crate::app) mod scanner;
 pub(in crate::app) mod settings;
@@ -126,6 +126,11 @@ pub struct SdroxideApp {
     /// Display preferences (frame rate, waterfall + spectrum speed), loaded from
     /// config at startup, edited in the UI tab, persisted on change.
     ui_settings: sdroxide_types::UiSettings,
+    /// The theme and chrome styles last written into the egui context, so the
+    /// top-of-frame check in `frame.rs` can re-apply the visuals the moment
+    /// the settings dialog changes any of them — no restart.
+    applied_look:
+        (sdroxide_types::UiTheme, sdroxide_types::ChromeStyle, sdroxide_types::ChromeStyle),
     /// Spoken announcements: the state machine that decides what to say, and
     /// the synthesizer that says it. Always present — switched off, it holds a
     /// null sink and costs a comparison per event.
@@ -459,6 +464,14 @@ pub struct SdroxideApp {
 
 impl SdroxideApp {
     pub fn new(cc: &eframe::CreationContext<'_>, ctrl: Box<dyn RadioController>) -> Self {
+        // The look must be selected before `theme::apply` reads it, or the
+        // first frame flashes the default theme.
+        let ui_settings = load_ui_settings(cc.storage);
+        crate::theme::set_look(
+            ui_settings.theme,
+            ui_settings.button_style,
+            ui_settings.window_style,
+        );
         crate::theme::apply(&cc.egui_ctx);
         if let Some(rs) = &cc.wgpu_render_state {
             waterfall_gpu::init(rs);
@@ -501,7 +514,8 @@ impl SdroxideApp {
             audio_devices_queried: false,
             soapy_supported,
             settings_tab: SettingsTab::General,
-            ui_settings: load_ui_settings(cc.storage),
+            ui_settings,
+            applied_look: (ui_settings.theme, ui_settings.button_style, ui_settings.window_style),
             speech: speech::SpeechRuntime::new(load_speech_settings(cc.storage)),
             speech_voices: Vec::new(),
             radio_cfg: None,

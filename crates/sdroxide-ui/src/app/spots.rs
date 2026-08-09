@@ -63,7 +63,7 @@ fn spot_row(ui: &mut egui::Ui, s: &Spot, now_utc: i64, needed: bool) -> egui::Re
     let kind_col = Color32::from_rgb(r, g, b);
     let gray = Color32::from_gray(150);
     let inner = egui::Frame::new()
-        .fill(crate::theme::ROW_BG)
+        .fill(crate::theme::ROW_BG())
         .inner_margin(egui::Margin { left: 8, right: 6, top: 4, bottom: 4 })
         .show(ui, |ui| {
             ui.set_min_height(22.0);
@@ -90,7 +90,10 @@ fn spot_row(ui: &mut egui::Ui, s: &Spot, now_utc: i64, needed: bool) -> egui::Re
                     ui,
                     132.0,
                     egui::Label::new(
-                        RichText::new(&s.call).size(14.0).strong().color(crate::theme::TEXT_STRONG),
+                        RichText::new(&s.call)
+                            .size(14.0)
+                            .strong()
+                            .color(crate::theme::TEXT_STRONG()),
                     )
                     .truncate(),
                 );
@@ -126,7 +129,7 @@ fn spot_row(ui: &mut egui::Ui, s: &Spot, now_utc: i64, needed: bool) -> egui::Re
                         ui,
                         36.0,
                         egui::Label::new(
-                            RichText::new("NEW").size(10.0).strong().color(crate::theme::GREEN),
+                            RichText::new("NEW").size(10.0).strong().color(crate::theme::GREEN()),
                         ),
                     );
                 }
@@ -308,6 +311,7 @@ impl SdroxideApp {
             .default_width(crate::layout::window_w(ctx, 580.0))
             .default_height(crate::layout::window_h(ctx, 480.0))
             .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
                 ui.horizontal(|ui| {
                     for (i, (kind, label)) in labels.iter().enumerate() {
                         let chip = crate::chrome::chip(ui, self.view.spot_kinds_shown[i], *label);
@@ -337,12 +341,12 @@ impl SdroxideApp {
                 });
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 5.0;
-                    ui.label(RichText::new("⌕").color(crate::theme::CYAN_DIM).size(14.0));
+                    ui.label(RichText::new("⌕").color(crate::theme::CYAN_DIM()).size(14.0));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.spot_search)
                             .desired_width(200.0)
                             .hint_text("call, station, site, frequency")
-                            .text_color(crate::theme::TEXT_STRONG),
+                            .text_color(crate::theme::TEXT_STRONG()),
                     );
                     if !self.spot_search.trim().is_empty()
                         && ui.button("✕").on_hover_text("Clear the search").clicked()
@@ -372,8 +376,8 @@ impl SdroxideApp {
                     // every spot held — "3 of 5" when three categories are off
                     // would look like the search had lost the rest.
                     let (text, colour) = match rows.len() {
-                        0 => ("no match".to_string(), crate::theme::PINK),
-                        n => (format!("{n} of {}", visible.len()), crate::theme::YELLOW),
+                        0 => ("no match".to_string(), crate::theme::ALERT()),
+                        n => (format!("{n} of {}", visible.len()), crate::theme::YELLOW()),
                     };
                     ui.label(RichText::new(text).color(colour).size(10.0));
                 }

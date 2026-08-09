@@ -12,7 +12,7 @@ use eframe::egui::{self, Color32, RichText};
 /// Section heading for the Spots / Uploads settings tabs.
 pub(in crate::app) fn net_heading(ui: &mut egui::Ui, text: &str) {
     ui.add_space(6.0);
-    ui.label(RichText::new(text).size(12.0).strong().color(crate::theme::CYAN));
+    ui.label(RichText::new(text).size(12.0).strong().color(crate::theme::CYAN()));
 }
 
 /// A labelled single-line text field for the network settings tabs.
@@ -69,7 +69,7 @@ pub(in crate::app) fn settings_freedv_tab(
     status: &Option<String>,
     apply: &mut bool,
 ) {
-    ui.label(RichText::new("FreeDV Reporter").size(14.0).strong().color(crate::theme::CYAN));
+    ui.label(RichText::new("FreeDV Reporter").size(14.0).strong().color(crate::theme::CYAN()));
     ui.add_space(6.0);
     ui.checkbox(&mut net.freedv_reporter.enabled, "Enable").on_hover_text(
         "Connects whenever enabled. Your station is only shown to others while the radio is \
@@ -141,8 +141,8 @@ pub(in crate::app) fn settings_freedv_tab(
         ui,
         false,
         RichText::new(" APPLY ").strong(),
-        crate::theme::GREEN,
-        crate::theme::INK_ON_CYAN,
+        crate::theme::GREEN(),
+        crate::theme::INK_ON_CYAN(),
     )
     .on_hover_text("Persist and (re)connect")
     .clicked()
@@ -176,12 +176,12 @@ pub(in crate::app) fn broadcast_stations_settings(
             RichText::new(season.to_uppercase())
                 .monospace()
                 .size(11.0)
-                .color(crate::theme::TEXT_STRONG),
+                .color(crate::theme::TEXT_STRONG()),
         );
         let (text, colour) = if fetching {
-            ("downloading…".to_string(), crate::theme::YELLOW)
+            ("downloading…".to_string(), crate::theme::YELLOW())
         } else if cached {
-            ("downloaded".to_string(), crate::theme::GREEN)
+            ("downloaded".to_string(), crate::theme::GREEN())
         } else {
             ("using the built-in copy".to_string(), Color32::from_gray(150))
         };
@@ -192,7 +192,7 @@ pub(in crate::app) fn broadcast_stations_settings(
         // in use, so the only thing lost is freshness.
         ui.label(
             RichText::new(format!("⚠ Download failed: {e}. Using the built-in schedule."))
-                .color(crate::theme::YELLOW)
+                .color(crate::theme::YELLOW())
                 .size(11.0),
         );
     }
