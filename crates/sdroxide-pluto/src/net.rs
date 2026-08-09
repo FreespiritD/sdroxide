@@ -116,6 +116,9 @@ pub struct PlutoHandle {
     rx: Consumer<f32>,
     tx: Producer<f32>,
     joins: Vec<JoinHandle<()>>,
+    /// One per connection, for waking its thread out of a blocked read on the
+    /// way out. See [`PlutoHandle::release`].
+    shutdowns: Vec<std::net::TcpStream>,
     shared: Arc<Shared>,
 
     /// Actual RX sample rate in Hz, after the hardware rounded the request.
@@ -299,6 +302,12 @@ impl PlutoHandle {
             Error::Msg(format!("the transmit connection to {addr} was refused ({e})"))
         })?;
 
+        // Taken before the connections are handed to their threads: after that
+        // the only way to reach a socket is through the thread that is blocked
+        // on it, which is precisely the situation these exist to break.
+        let shutdowns: Vec<std::net::TcpStream> =
+            [&control, &rx_conn, &tx_conn].iter().filter_map(|c| c.shutdown_handle()).collect();
+
         let (ctrl_tx, ctrl_rx) = crossbeam_channel::unbounded();
         let rx_shared = Arc::clone(&shared);
         let tx_shared = Arc::clone(&shared);
@@ -317,6 +326,7 @@ impl PlutoHandle {
             rx: rx_cons,
             tx: tx_prod,
             joins,
+            shutdowns,
             shared,
             sample_rate_hz: rate,
             tx_rate_hz: tx_rate,
@@ -524,6 +534,19 @@ impl PlutoHandle {
     ///
     /// Idempotent, and leaves the handle callable: `rx_read` returns nothing and
     /// `is_alive` returns false, which is what the reopen path expects.
+    ///
+    /// # Why the sockets are shut down and not just flagged
+    ///
+    /// This runs on the engine thread — `reopen_source` and `poll_reconnect`
+    /// both call it before opening the replacement — and it joins three threads
+    /// that spend their lives blocked in reads. A thread only notices `alive`
+    /// between reads, so on a link that stalls, joining one could take as long
+    /// as `IO_DEADLINE`: eight seconds of frozen audio and an unresponsive
+    /// window, at exactly the moment the operator is trying to recover. Shutting
+    /// the socket down makes the blocked read return immediately.
+    ///
+    /// On a healthy link this changes nothing, which is why it never showed up
+    /// over USB.
     pub fn release(&mut self) {
         if self.released {
             return;
@@ -533,6 +556,9 @@ impl PlutoHandle {
         self.shared.rx_enabled.store(false, Ordering::Relaxed);
         self.shared.tx_enabled.store(false, Ordering::Relaxed);
         let _ = self.ctrl.send(Ctrl::Shutdown);
+        for sock in &self.shutdowns {
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+        }
         for j in self.joins.drain(..) {
             let _ = j.join();
         }

@@ -376,6 +376,18 @@ impl Connection {
         let _ = self.write_all_raw("EXIT\r\n");
     }
 
+    /// A handle on this connection's socket for the sole purpose of shutting it
+    /// down from another thread.
+    ///
+    /// Setting a flag is not enough to stop a thread that is blocked in a read:
+    /// it only looks at the flag between reads, and a read waits up to
+    /// [`IO_DEADLINE`]. Shutting the socket down makes that read return at once,
+    /// which is what keeps closing a radio from taking eight seconds — see
+    /// `PlutoHandle::release`.
+    pub fn shutdown_handle(&self) -> Option<TcpStream> {
+        self.writer.try_clone().ok()
+    }
+
     // ---- framing --------------------------------------------------------
 
     fn send(&mut self, cmd: &str) -> Result<()> {

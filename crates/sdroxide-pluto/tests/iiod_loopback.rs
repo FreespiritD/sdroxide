@@ -594,6 +594,32 @@ fn a_gap_in_the_middle_of_a_buffer_does_not_end_the_stream() {
     handle.release();
 }
 
+/// Closing a radio must not wait for a read that is in the middle of a stall.
+///
+/// `release` runs on the engine thread, ahead of opening the replacement, and
+/// it joins the three threads that live inside reads. Without shutting their
+/// sockets down first, a stalled link makes that join take as long as the read
+/// deadline — seconds of frozen audio and an unresponsive window at exactly the
+/// moment the operator is trying to recover. It never showed over USB, where
+/// reads return every few milliseconds.
+#[test]
+fn releasing_does_not_wait_out_a_stalled_read() {
+    let fake = Fake::start_that_stalls_mid_buffer();
+    let mut handle =
+        PlutoHandle::open(&fake.address(), &config(), 435_000_000.0).expect("open the fake Pluto");
+    // Long enough to be inside the stalled read, far short of its end.
+    std::thread::sleep(Duration::from_millis(300));
+
+    let started = Instant::now();
+    handle.release();
+    let took = started.elapsed();
+    assert!(
+        took < STALL / 2,
+        "release waited {took:?} for a read stalled {STALL:?} — it must break the read, \
+         not outlive it"
+    );
+}
+
 /// `rf_port_select` is refused while the receive buffer is running, and the
 /// engine re-asserts the antenna on every retune. A radio with one wired port
 /// therefore logged a rejected write each time the dial moved, for a change
