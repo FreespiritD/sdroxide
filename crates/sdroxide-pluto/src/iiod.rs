@@ -376,6 +376,13 @@ impl Connection {
         let _ = self.write_all_raw("EXIT\r\n");
     }
 
+    /// Put a line in this connection's session trace — for decisions that
+    /// belong in a diagnostic report but are not wire traffic, such as which
+    /// scan elements were left disabled and why.
+    pub(crate) fn note(&self, what: impl AsRef<str>) {
+        self.trace.note(what);
+    }
+
     /// A handle on this connection's socket for the sole purpose of shutting it
     /// down from another thread.
     ///

@@ -85,6 +85,39 @@ const CONTEXT_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
   </device>
 </context>"#;
 
+/// The same context as served by a Pluto+: 2R2T firmware, so both DMA buffers
+/// carry four scan elements — two chains' worth of I/Q. This is the shape the
+/// HamGeek Pluto+ field report showed, and it used to be refused outright.
+fn pluto_plus_xml() -> String {
+    let xml = CONTEXT_XML
+        .replace(
+            r#"<scan-element index="1" format="le:s12/16&gt;&gt;0" />
+    </channel>"#,
+            r#"<scan-element index="1" format="le:s12/16&gt;&gt;0" />
+    </channel>
+    <channel id="voltage2" type="input">
+      <scan-element index="2" format="le:s12/16&gt;&gt;0" />
+    </channel>
+    <channel id="voltage3" type="input">
+      <scan-element index="3" format="le:s12/16&gt;&gt;0" />
+    </channel>"#,
+        )
+        .replace(
+            r#"<scan-element index="1" format="le:s16/16&gt;&gt;0" />
+    </channel>"#,
+            r#"<scan-element index="1" format="le:s16/16&gt;&gt;0" />
+    </channel>
+    <channel id="voltage2" type="output">
+      <scan-element index="2" format="le:s16/16&gt;&gt;0" />
+    </channel>
+    <channel id="voltage3" type="output">
+      <scan-element index="3" format="le:s16/16&gt;&gt;0" />
+    </channel>"#,
+        );
+    assert_eq!(xml.matches("voltage3").count(), 2, "the 2R2T surgery must have taken");
+    xml
+}
+
 /// What the fake device remembers, so the test can assert on what the client
 /// actually did to it.
 #[derive(Default)]
@@ -96,6 +129,10 @@ struct DeviceState {
     tx_buffer_opens: usize,
     rx_buffer_open: bool,
     tx_buffer_open: bool,
+    /// The channel mask of every `OPEN` on the receive buffer, verbatim.
+    rx_open_masks: Vec<String>,
+    /// … and on the transmit buffer.
+    tx_open_masks: Vec<String>,
     /// Pause in the middle of the next `READBUF` payload, once. Models the
     /// intermittent gap a Pluto on a USB gadget produces every few minutes.
     stall_next_readbuf: bool,
@@ -134,16 +171,24 @@ struct Fake {
 
 impl Fake {
     fn start() -> Fake {
-        Fake::start_with(DeviceState::default())
+        Fake::start_with(DeviceState::default(), CONTEXT_XML.to_string())
     }
 
     /// A device that goes quiet in the middle of one buffer and then carries on
     /// — the fault that used to end the stream and force a reopen.
     fn start_that_stalls_mid_buffer() -> Fake {
-        Fake::start_with(DeviceState { stall_next_readbuf: true, ..DeviceState::default() })
+        Fake::start_with(
+            DeviceState { stall_next_readbuf: true, ..DeviceState::default() },
+            CONTEXT_XML.to_string(),
+        )
     }
 
-    fn start_with(initial: DeviceState) -> Fake {
+    /// A fake Pluto+: the same device behaviour behind a 2R2T context.
+    fn start_pluto_plus() -> Fake {
+        Fake::start_with(DeviceState::default(), pluto_plus_xml())
+    }
+
+    fn start_with(initial: DeviceState, xml: String) -> Fake {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let state = Arc::new(Mutex::new(initial));
@@ -153,6 +198,7 @@ impl Fake {
             let state = Arc::clone(&state);
             let stop = Arc::clone(&stop);
             let connections = Arc::clone(&connections);
+            let xml = Arc::new(xml);
             std::thread::spawn(move || {
                 for sock in listener.incoming() {
                     if stop.load(Ordering::Relaxed) {
@@ -162,7 +208,8 @@ impl Fake {
                     connections.fetch_add(1, Ordering::Relaxed);
                     let state = Arc::clone(&state);
                     let stop = Arc::clone(&stop);
-                    std::thread::spawn(move || serve(sock, state, stop));
+                    let xml = Arc::clone(&xml);
+                    std::thread::spawn(move || serve(sock, state, stop, xml));
                 }
             });
         }
@@ -221,7 +268,7 @@ const SAMPLE_I: i16 = 2047;
 const SAMPLE_Q: i16 = -2048;
 const SAMPLE_BYTES: [u8; 4] = [0xFF, 0x07, 0x00, 0x08];
 
-fn serve(sock: TcpStream, state: Arc<Mutex<DeviceState>>, stop: Arc<AtomicBool>) {
+fn serve(sock: TcpStream, state: Arc<Mutex<DeviceState>>, stop: Arc<AtomicBool>, xml: Arc<String>) {
     let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
     let mut writer = sock.try_clone().expect("clone");
     let mut reader = BufReader::new(sock);
@@ -243,9 +290,7 @@ fn serve(sock: TcpStream, state: Arc<Mutex<DeviceState>>, stop: Arc<AtomicBool>)
         let ok = match words.first().copied() {
             Some("VERSION") => writer.write_all(b"0.25 (git tag:v0.25)\n").is_ok(),
             Some("TIMEOUT") => writer.write_all(b"0\n").is_ok(),
-            Some("PRINT") => writer
-                .write_all(format!("{}\n{CONTEXT_XML}\n", CONTEXT_XML.len()).as_bytes())
-                .is_ok(),
+            Some("PRINT") => writer.write_all(format!("{}\n{xml}\n", xml.len()).as_bytes()).is_ok(),
             Some("READ") => {
                 let key = attr_key(&words[1..]);
                 let value = {
@@ -314,13 +359,18 @@ fn serve(sock: TcpStream, state: Arc<Mutex<DeviceState>>, stop: Arc<AtomicBool>)
                 }
             }
             Some("OPEN") => {
+                // `OPEN <dev> <samples> <mask> [CYCLIC]` — keep the mask, so a
+                // test can assert which scan elements the client enabled.
+                let mask = words.get(3).unwrap_or(&"").to_string();
                 let mut g = state.lock().expect("lock");
                 if words[1] == "iio:device3" {
                     g.rx_buffer_opens += 1;
                     g.rx_buffer_open = true;
+                    g.rx_open_masks.push(mask);
                 } else {
                     g.tx_buffer_opens += 1;
                     g.tx_buffer_open = true;
+                    g.tx_open_masks.push(mask);
                 }
                 drop(g);
                 writer.write_all(b"0\n").is_ok()
@@ -506,6 +556,58 @@ fn a_pluto_comes_up_and_streams() {
     assert!((buf[1] - (SAMPLE_Q as f32 / 2048.0)).abs() < 1e-6, "Q was {}", buf[1]);
     assert!((buf[1] - -1.0).abs() < 1e-6);
 
+    handle.release();
+}
+
+/// The Pluto+ field failure: 2R2T firmware puts four scan elements on each DMA
+/// buffer — two chains' worth of I/Q — and this driver used to refuse the whole
+/// radio over it ("has 4 scan elements, not the 2 (I and Q) this driver
+/// decodes"). The first pair is a perfectly good radio, and `OPEN`'s channel
+/// mask exists to enable a subset: the buffer must come up with bits 0 and 1
+/// set and nothing else, receive the first chain, and transmit on it too.
+#[test]
+fn a_2r2t_pluto_plus_streams_its_first_pair_and_leaves_the_second_disabled() {
+    let fake = Fake::start_pluto_plus();
+    let mut handle = PlutoHandle::open(&fake.address(), &config(), 435_000_000.0)
+        .expect("a 2R2T Pluto+ must open");
+
+    let mut buf = vec![0f32; 4096];
+    let mut got = 0;
+    wait_for("samples", || {
+        got = handle.rx_read(&mut buf);
+        got > 0
+    });
+    // Two-element sample sets, decoded exactly as on a stock Pluto — only the
+    // enabled pair travels the wire.
+    assert!((buf[0] - (SAMPLE_I as f32 / 2048.0)).abs() < 1e-6, "I was {}", buf[0]);
+    assert!((buf[1] - (SAMPLE_Q as f32 / 2048.0)).abs() < 1e-6, "Q was {}", buf[1]);
+
+    handle.tx_begin(435_000_000.0);
+    let iq: Vec<f32> = (0..8192).map(|i| if i % 2 == 0 { 1.0 } else { 0.0 }).collect();
+    handle.tx_write(&iq);
+    wait_for("a transmit buffer", || !fake.state.lock().unwrap().tx_payloads.is_empty());
+
+    {
+        let g = fake.state.lock().expect("lock");
+        assert!(!g.rx_open_masks.is_empty());
+        for mask in g.rx_open_masks.iter().chain(&g.tx_open_masks) {
+            assert_eq!(mask, "00000003", "the second pair must stay disabled");
+        }
+        // The encoder writes two-element sets as well: full-scale I, silent Q.
+        assert_eq!(
+            &g.tx_payloads[0][..4],
+            &[0xFF, 0x7F, 0x00, 0x00],
+            "first sample was {:?}",
+            &g.tx_payloads[0][..4]
+        );
+    }
+
+    // A report from such a device has to say which chain it was using.
+    let trace = handle.trace().dump();
+    assert!(trace.contains("dual-channel (2R2T)"), "{trace}");
+    assert!(trace.contains("voltage2, voltage3 disabled"), "{trace}");
+
+    handle.tx_end();
     handle.release();
 }
 

@@ -27,7 +27,7 @@
 //! different things — receive `hardwaregain` is gain in dB, transmit
 //! `hardwaregain` is *attenuation* expressed as negative dB.
 
-use crate::context::{Context, ScanFormat};
+use crate::context::{Context, Device, ScanFormat};
 use crate::error::{Error, Result};
 use crate::iiod::Connection;
 
@@ -126,7 +126,9 @@ pub struct Phy {
     pub phy_id: String,
     pub rx_buffer_id: String,
     pub tx_buffer_id: String,
-    /// Scan-element layouts in sample order for the receive buffer.
+    /// Wire layouts of the two *enabled* scan elements — I then Q — on the
+    /// receive buffer. A 2R2T device's second pair is never enabled, so it
+    /// never appears here.
     pub rx_scan: Vec<ScanFormat>,
     /// … and for the transmit buffer.
     pub tx_scan: Vec<ScanFormat>,
@@ -146,24 +148,11 @@ impl Phy {
         let rx = ctx.require(RX_BUFFER, addr)?;
         let tx = ctx.require(TX_BUFFER, addr)?;
 
-        let rx_scan: Vec<ScanFormat> =
-            rx.scan_channels().iter().filter_map(|c| c.scan.map(|(_, f)| f)).collect();
-        let tx_scan: Vec<ScanFormat> =
-            tx.scan_channels().iter().filter_map(|c| c.scan.map(|(_, f)| f)).collect();
-        // I and Q. A buffer with any other count is not something the complex
-        // baseband contract can be met from, and guessing would produce a
-        // plausible-looking spectrum made of nonsense.
-        if rx_scan.len() != 2 {
-            return Err(Error::Unsupported(format!(
-                "{RX_BUFFER} has {} scan elements, not the 2 (I and Q) this driver decodes",
-                rx_scan.len()
-            )));
-        }
-        if tx_scan.len() != 2 {
-            return Err(Error::Unsupported(format!(
-                "{TX_BUFFER} has {} scan elements, not the 2 (I and Q) this driver encodes",
-                tx_scan.len()
-            )));
+        let (rx_scan, rx_note) = iq_pair(RX_BUFFER, rx)?;
+        let (tx_scan, tx_note) = iq_pair(TX_BUFFER, tx)?;
+        for note in [&rx_note, &tx_note].into_iter().flatten() {
+            tracing::info!("PlutoSDR: {note}");
+            conn.note(note);
         }
         let dds_channels: Vec<String> = tx
             .channels
@@ -456,6 +445,58 @@ impl Phy {
     }
 }
 
+/// The scan elements a buffer is actually opened with: the I/Q pair at scan
+/// indices 0 and 1.
+///
+/// A stock Pluto's buffers carry exactly those two. A 2R2T firmware — a Pluto+,
+/// or any AD936x build with both chains compiled in — publishes four, two
+/// chains' worth of I and Q, and refusing such a device would be wrong twice
+/// over: the first pair is a perfectly good radio, and `OPEN`'s channel mask
+/// exists precisely to enable a subset. This driver always opens buffers with
+/// mask bits 0 and 1 set, so only the first pair travels the wire and the
+/// decoders see exactly the layout returned here; the extra elements stay
+/// disabled. The second value is a sentence for the session trace when
+/// elements were left disabled, so a report from such a device says which
+/// chain it was using.
+///
+/// What cannot be accepted is a device with fewer than two elements — that
+/// cannot carry complex baseband at all — or one whose first pair does not sit
+/// at indices 0 and 1, because the mask would then enable something other than
+/// what is decoded.
+fn iq_pair(name: &str, dev: &Device) -> Result<(Vec<ScanFormat>, Option<String>)> {
+    let scans = dev.scan_channels();
+    if scans.len() < 2 {
+        return Err(Error::Unsupported(format!(
+            "{name} has {} scan element(s), not the I and Q an I/Q stream needs",
+            scans.len()
+        )));
+    }
+    let indices = (
+        scans[0].scan.expect("scan_channels keeps only scan elements").0,
+        scans[1].scan.expect("scan_channels keeps only scan elements").0,
+    );
+    if indices != (0, 1) {
+        return Err(Error::Unsupported(format!(
+            "{name}'s first scan elements sit at indices {} and {}, not 0 and 1 — the \
+             channel mask this driver opens buffers with (bits 0 and 1) would not select \
+             them",
+            indices.0, indices.1
+        )));
+    }
+    let note = (scans.len() > 2).then(|| {
+        let disabled: Vec<&str> = scans[2..].iter().map(|c| c.id.as_str()).collect();
+        format!(
+            "{name} has {} scan elements — a dual-channel (2R2T) firmware such as a \
+             Pluto+. Enabling only the first I/Q pair ({} and {}) and leaving {} disabled",
+            scans.len(),
+            scans[0].id,
+            scans[1].id,
+            disabled.join(", ")
+        )
+    });
+    Ok((scans.iter().take(2).map(|c| c.scan.expect("checked above").1).collect(), note))
+}
+
 // ---- attribute helpers --------------------------------------------------
 
 fn read_f64(conn: &mut Connection, dev: &str, chan: (bool, &str), attr: &str) -> Result<f64> {
@@ -517,6 +558,60 @@ fn parse_range(text: &str) -> Option<(f64, f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::Channel;
+
+    /// A capture/DMA buffer device whose scan elements sit at `indices`.
+    fn buffer(indices: &[u32]) -> Device {
+        Device {
+            id: "iio:device4".into(),
+            name: "cf-ad9361-lpc".into(),
+            attrs: Vec::new(),
+            channels: indices
+                .iter()
+                .map(|&i| Channel {
+                    id: format!("voltage{i}"),
+                    name: None,
+                    output: false,
+                    attrs: Vec::new(),
+                    scan: Some((i, ScanFormat::parse("le:s12/16>>0").expect("format"))),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_stock_pluto_buffer_is_its_own_iq_pair() {
+        let (scan, note) = iq_pair("cf-ad9361-lpc", &buffer(&[0, 1])).expect("pair");
+        assert_eq!(scan.len(), 2);
+        assert!(note.is_none(), "a stock buffer needs no explaining: {note:?}");
+    }
+
+    /// A Pluto+ runs 2R2T firmware: four scan elements, two chains' worth of
+    /// I/Q. Refusing it was the bug — the first pair is a perfectly good radio,
+    /// and the `OPEN` mask (bits 0 and 1) enables exactly that pair.
+    #[test]
+    fn a_2r2t_buffer_uses_the_first_pair_and_notes_the_rest() {
+        let (scan, note) = iq_pair("cf-ad9361-lpc", &buffer(&[0, 1, 2, 3])).expect("pair");
+        assert_eq!(scan.len(), 2);
+        let note = note.expect("a disabled pair is worth a line in the report");
+        assert!(note.contains("4 scan elements"), "{note}");
+        assert!(note.contains("voltage0 and voltage1"), "{note}");
+        assert!(note.contains("voltage2, voltage3"), "{note}");
+    }
+
+    #[test]
+    fn too_few_scan_elements_are_refused() {
+        let err = iq_pair("cf-ad9361-lpc", &buffer(&[0])).expect_err("one element");
+        assert!(err.to_string().contains("1 scan element"), "{err}");
+    }
+
+    /// The mask `open_buffer` sends is literally bits 0 and 1; a device whose
+    /// first pair sits elsewhere would stream elements we would mis-decode.
+    #[test]
+    fn a_pair_off_indices_zero_and_one_is_refused() {
+        let err = iq_pair("cf-ad9361-lpc", &buffer(&[2, 3])).expect_err("wrong indices");
+        assert!(err.to_string().contains("2 and 3"), "{err}");
+    }
 
     #[test]
     fn ranges_are_min_step_max_in_that_order() {

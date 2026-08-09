@@ -16,8 +16,10 @@ use crate::error::Error;
 use crate::iiod::Connection;
 use crate::net::{STATS_INTERVAL, Shared, TX_BUFFER_SAMPLES};
 
-/// I and Q. Both buffers are checked for exactly this many scan elements at
-/// open time, so it is a constant here rather than a guess.
+/// I and Q. `Phy::probe` guarantees both buffers carry an I/Q pair at scan
+/// indices 0 and 1, and every buffer is opened with only those two enabled —
+/// a 2R2T device's second pair stays disabled and off the wire — so this is a
+/// constant rather than a guess.
 const IQ_CHANNELS: usize = 2;
 
 /// `-EAGAIN`: the server's own device timeout expired with nothing to hand
