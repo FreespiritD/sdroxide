@@ -464,26 +464,63 @@ pub struct Api {
     pub update: unsafe extern "C" fn(Handle, TunerSelect, Reason, ReasonExt1) -> ErrT,
 }
 
-/// Library names to try, most specific first.
+/// Library names/paths to try, most specific first.
 #[cfg(target_os = "linux")]
-const LIB_NAMES: &[&str] = &["libsdrplay_api.so.3", "libsdrplay_api.so"];
+fn lib_candidates() -> Vec<std::ffi::OsString> {
+    ["libsdrplay_api.so.3", "libsdrplay_api.so"].iter().map(Into::into).collect()
+}
 #[cfg(target_os = "macos")]
-const LIB_NAMES: &[&str] = &[
-    "libsdrplay_api.dylib",
-    "/usr/local/lib/libsdrplay_api.dylib",
-    "/usr/local/lib/libsdrplay_api.so.3",
-];
+fn lib_candidates() -> Vec<std::ffi::OsString> {
+    [
+        "libsdrplay_api.dylib",
+        "/usr/local/lib/libsdrplay_api.dylib",
+        "/usr/local/lib/libsdrplay_api.so.3",
+    ]
+    .iter()
+    .map(Into::into)
+    .collect()
+}
+/// The vendor installer puts the DLL in `<Install_Dir>\x64` under Program
+/// Files — a directory that is on nobody's DLL search path — and records
+/// `Install_Dir` in the registry. Loading by bare name only works when some
+/// other program's installer copied the DLL somewhere public, so the registry
+/// pointer is the load-bearing entry here; the Program Files guesses cover a
+/// service that was installed but did not (or could not) write the key.
 #[cfg(target_os = "windows")]
-const LIB_NAMES: &[&str] = &["sdrplay_api.dll"];
+fn lib_candidates() -> Vec<std::ffi::OsString> {
+    use std::path::PathBuf;
+    let mut out: Vec<std::ffi::OsString> = vec!["sdrplay_api.dll".into()];
+    let arch = if cfg!(target_pointer_width = "64") { "x64" } else { "x86" };
+    let mut push_install_dir = |dir: PathBuf| {
+        out.push(dir.join(arch).join("sdrplay_api.dll").into_os_string());
+        out.push(dir.join("sdrplay_api.dll").into_os_string());
+    };
+    let hklm = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE);
+    // Both hives: which one the installer wrote depends on its bitness.
+    for key in ["SOFTWARE\\SDRplay\\Service\\API", "SOFTWARE\\WOW6432Node\\SDRplay\\Service\\API"] {
+        if let Ok(dir) = hklm.open_subkey(key).and_then(|k| k.get_value::<String, _>("Install_Dir"))
+        {
+            push_install_dir(PathBuf::from(dir));
+        }
+    }
+    for var in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(pf) = std::env::var_os(var) {
+            push_install_dir(PathBuf::from(pf).join("SDRplay").join("API"));
+        }
+    }
+    out
+}
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-const LIB_NAMES: &[&str] = &["libsdrplay_api.so.3", "libsdrplay_api.so"];
+fn lib_candidates() -> Vec<std::ffi::OsString> {
+    ["libsdrplay_api.so.3", "libsdrplay_api.so"].iter().map(Into::into).collect()
+}
 
 impl Api {
     /// Load the vendor library, or say why not (used verbatim in the UI).
     pub fn load() -> Result<Api, String> {
         let mut last = String::new();
-        for name in LIB_NAMES {
-            match unsafe { libloading::Library::new(name) } {
+        for name in lib_candidates() {
+            match unsafe { libloading::Library::new(&name) } {
                 Ok(lib) => return unsafe { Api::from_lib(lib) },
                 Err(e) => last = e.to_string(),
             }

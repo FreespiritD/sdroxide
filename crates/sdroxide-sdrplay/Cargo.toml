@@ -17,3 +17,6 @@ rtrb.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 libloading.workspace = true
+
+[target."cfg(windows)".dependencies]
+winreg = "0.56.0"

@@ -166,8 +166,8 @@ impl IqSource for SdrPlaySource {
     fn current_gains(&self) -> Vec<(String, f64)> {
         let gr = self.handle.effective_if_gr_db().unwrap_or(self.if_gr_db);
         vec![
-            (SdrPlayConfig::IF_GAIN_ELEMENT.to_string(), -(gr as f64)),
             (SdrPlayConfig::LNA_ELEMENT.to_string(), -(self.handle.lna_state() as f64)),
+            (SdrPlayConfig::IF_GAIN_ELEMENT.to_string(), -(gr as f64)),
         ]
     }
 

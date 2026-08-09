@@ -1309,7 +1309,10 @@ pub struct SdrPlayConfig {
     /// maximum gain. Only obeyed while the AGC is off.
     pub if_gr_db: i32,
     /// LNA state, 0..=model max. 0 is maximum gain; each step switches more
-    /// front-end attenuation in.
+    /// front-end attenuation in. The default is deliberately mid-table, not
+    /// 0: state 0 on a real antenna drives the ADC straight into overload,
+    /// and the IF AGC cannot rescue that — its whole 20..59 dB range sits
+    /// *after* the front end. 4 is also what SoapySDRPlay3 defaults to.
     pub lna_state: u8,
     pub agc: SdrPlayAgc,
     /// AGC target level in dBFS.
@@ -1340,7 +1343,7 @@ impl Default for SdrPlayConfig {
             sample_rate_hz: 2_000_000.0,
             bw_khz: 0,
             if_gr_db: 40,
-            lna_state: 0,
+            lna_state: 4,
             agc: SdrPlayAgc::Hz50,
             agc_setpoint_dbfs: -60,
             ppm: 0.0,

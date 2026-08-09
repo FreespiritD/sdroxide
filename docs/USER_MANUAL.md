@@ -2564,7 +2564,11 @@ service, or the device.
   each step switches more attenuation in. How many states exist depends on the
   model *and the band* (an RSP1B has ten on VHF but seven on HF); pick more
   than the current band has and the driver clamps, keeps your choice, and
-  restores it when you tune somewhere it fits.
+  restores it when you tune somewhere it fits. The default is state 4, not 0:
+  full front-end gain on a real antenna drives the ADC straight into overload,
+  which no amount of IF gain reduction can undo. This is also the control
+  behind the main window's **Gain** slider — the IF gain belongs to the
+  hardware AGC whenever a loop is running, the LNA is always yours.
 - **Frequency correction** — reference error in parts per million, applied by
   the device itself.
 - **FM broadcast / DAB notch** — hardware notch filters over 88–108 MHz and

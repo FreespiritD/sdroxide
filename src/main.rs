@@ -1031,6 +1031,12 @@ fn open_sdrplay_source(
 /// The switches (AGC, notches, bias tee, HDR) ride pseudo-elements that are
 /// deliberately not listed here, so only the SDRplay settings panel renders
 /// them.
+///
+/// The LNA is listed first — the first element is the main window's Gain
+/// slider, and the LNA is the only gain the operator always owns: with the
+/// hardware AGC on (the default) the service holds the IF gain, and a slider
+/// the AGC snaps back is worse than none. It is also the control that
+/// actually clears an overloaded front end, which the IF gain never can.
 fn sdrplay_caps(src: &sdrplay_source::SdrPlaySource) -> DeviceCaps {
     use sdroxide_types::{Direction, GainElement, SdrPlayConfig};
     let model = src.model();
@@ -1044,17 +1050,17 @@ fn sdrplay_caps(src: &sdrplay_source::SdrPlaySource) -> DeviceCaps {
         sample_rates: SdrPlayConfig::SAMPLE_RATES.to_vec(),
         gains: vec![
             GainElement {
-                name: SdrPlayConfig::IF_GAIN_ELEMENT.into(),
-                direction: Direction::Rx,
-                min_db: -(SdrPlayConfig::IF_GR_MAX as f64),
-                max_db: -(SdrPlayConfig::IF_GR_MIN as f64),
-                step_db: 1.0,
-            },
-            GainElement {
                 name: SdrPlayConfig::LNA_ELEMENT.into(),
                 direction: Direction::Rx,
                 min_db: -(model.max_lna_state() as f64),
                 max_db: 0.0,
+                step_db: 1.0,
+            },
+            GainElement {
+                name: SdrPlayConfig::IF_GAIN_ELEMENT.into(),
+                direction: Direction::Rx,
+                min_db: -(SdrPlayConfig::IF_GR_MAX as f64),
+                max_db: -(SdrPlayConfig::IF_GR_MIN as f64),
                 step_db: 1.0,
             },
         ],

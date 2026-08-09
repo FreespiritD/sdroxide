@@ -31,6 +31,25 @@ fn supported_format(f: SampleFormat) -> bool {
     )
 }
 
+/// Configs to try opening, in order: the best pick from the advertised
+/// ranges, then the device's own default. The default matters on Windows:
+/// WASAPI in shared mode only promises the mix format it reports as the
+/// default, and a config assembled from the advertised ranges can still come
+/// back "Stream configuration is not supported in shared mode".
+fn config_candidates(
+    picked: Option<(cpal::StreamConfig, SampleFormat)>,
+    default: Result<cpal::SupportedStreamConfig, cpal::Error>,
+) -> Vec<(cpal::StreamConfig, SampleFormat)> {
+    let mut tries: Vec<(cpal::StreamConfig, SampleFormat)> = picked.into_iter().collect();
+    if let Ok(def) = default {
+        let pair = (def.config(), def.sample_format());
+        if supported_format(pair.1) && !tries.contains(&pair) {
+            tries.push(pair);
+        }
+    }
+    tries
+}
+
 /// Pick the best (config, format) from `ranges`: prefer f32 (no conversion) at
 /// `preferred_rate`, then any supported format at that rate, then anything.
 /// `want_channels` biases toward configs with at least that many channels.
@@ -458,24 +477,35 @@ pub fn start_input(
     let host = cpal::default_host();
     let device = pick_device(&host, device_name, false)?;
 
-    let (config, fmt) = device
+    let picked = device
         .supported_input_configs()
         .ok()
-        .and_then(|configs| choose_config(configs, preferred_rate, 1))
-        .ok_or(AudioError::NoConfig)?;
-    let rate = config.sample_rate;
-    let channels = config.channels;
-
-    let (producer, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize);
-    let stream = spawn_input(&device, &config, fmt, false, producer)?;
-
-    info!(
-        rate,
-        format = ?fmt,
-        device = device.description().map(|d| d.to_string()).unwrap_or_default(),
-        "mic input running"
-    );
-    Ok((AudioInput { _stream: stream, sample_rate: rate as f64, channels }, consumer))
+        .and_then(|configs| choose_config(configs, preferred_rate, 1));
+    let mut last = AudioError::NoConfig;
+    for (config, fmt) in config_candidates(picked, device.default_input_config()) {
+        let rate = config.sample_rate;
+        let channels = config.channels;
+        let (producer, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize);
+        match spawn_input(&device, &config, fmt, false, producer) {
+            Ok(stream) => {
+                info!(
+                    rate,
+                    format = ?fmt,
+                    device = device.description().map(|d| d.to_string()).unwrap_or_default(),
+                    "mic input running"
+                );
+                return Ok((
+                    AudioInput { _stream: stream, sample_rate: rate as f64, channels },
+                    consumer,
+                ));
+            }
+            Err(e) => {
+                warn!("mic input {channels}ch {rate} Hz {fmt:?} refused: {e}");
+                last = e;
+            }
+        }
+    }
+    Err(last)
 }
 
 /// Like [`start_input`] but keeps the first TWO channels interleaved (L, R) —
@@ -488,12 +518,10 @@ pub fn start_input_stereo(
     let host = cpal::default_host();
     let device = pick_device(&host, device_name, false)?;
 
-    let (config, fmt) = device
+    let picked = device
         .supported_input_configs()
         .ok()
-        .and_then(|configs| choose_config(configs, preferred_rate, 2))
-        .ok_or(AudioError::NoConfig)?;
-    let rate = config.sample_rate;
+        .and_then(|configs| choose_config(configs, preferred_rate, 2));
     // Report the TRUE hardware channel count, not cpal's — the ALSA plug layer
     // upmixes a mono mic to a fake 2-channel config, which would otherwise slip
     // past the caller's mono-for-IQ guard. Fall back to cpal's count when the
@@ -501,12 +529,26 @@ pub fn start_input_stereo(
     let hw_channels = alsa_cards()
         .get(&device_card_id(&device).unwrap_or_default())
         .and_then(|c| hw_capture_channels(&c.index));
-    let channels = hw_channels.unwrap_or(config.channels);
-
-    let (producer, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize * 2);
-    let stream = spawn_input(&device, &config, fmt, true, producer)?;
-    info!(rate, stream_channels = config.channels, hw_channels = channels, format = ?fmt, "radio IQ input running");
-    Ok((AudioInput { _stream: stream, sample_rate: rate as f64, channels }, consumer))
+    let mut last = AudioError::NoConfig;
+    for (config, fmt) in config_candidates(picked, device.default_input_config()) {
+        let rate = config.sample_rate;
+        let channels = hw_channels.unwrap_or(config.channels);
+        let (producer, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize * 2);
+        match spawn_input(&device, &config, fmt, true, producer) {
+            Ok(stream) => {
+                info!(rate, stream_channels = config.channels, hw_channels = channels, format = ?fmt, "radio IQ input running");
+                return Ok((
+                    AudioInput { _stream: stream, sample_rate: rate as f64, channels },
+                    consumer,
+                ));
+            }
+            Err(e) => {
+                warn!("radio IQ input {}ch {rate} Hz {fmt:?} refused: {e}", config.channels);
+                last = e;
+            }
+        }
+    }
+    Err(last)
 }
 
 /// Open an output device by name (`None` = system default), preferring
@@ -521,28 +563,37 @@ pub fn start_output(
     let host = cpal::default_host();
     let device = pick_device(&host, device_name, true)?;
 
-    let (config, fmt) = device
+    let picked = device
         .supported_output_configs()
         .ok()
-        .and_then(|configs| choose_config(configs, preferred_rate, 2))
-        .ok_or(AudioError::NoConfig)?;
-    let rate = config.sample_rate;
-    let channels = config.channels;
-
-    let (producer, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize * 2);
-    let underruns = Arc::new(AtomicU64::new(0));
-
-    let stream = spawn_output(&device, &config, fmt, consumer, underruns.clone())?;
-
-    info!(
-        rate,
-        channels,
-        format = ?fmt,
-        device = device.description().map(|d| d.to_string()).unwrap_or_default(),
-        "audio output running"
-    );
-
-    Ok((AudioOutput { _stream: stream, sample_rate: rate as f64, channels, underruns }, producer))
+        .and_then(|configs| choose_config(configs, preferred_rate, 2));
+    let mut last = AudioError::NoConfig;
+    for (config, fmt) in config_candidates(picked, device.default_output_config()) {
+        let rate = config.sample_rate;
+        let channels = config.channels;
+        let (producer, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize * 2);
+        let underruns = Arc::new(AtomicU64::new(0));
+        match spawn_output(&device, &config, fmt, consumer, underruns.clone()) {
+            Ok(stream) => {
+                info!(
+                    rate,
+                    channels,
+                    format = ?fmt,
+                    device = device.description().map(|d| d.to_string()).unwrap_or_default(),
+                    "audio output running"
+                );
+                return Ok((
+                    AudioOutput { _stream: stream, sample_rate: rate as f64, channels, underruns },
+                    producer,
+                ));
+            }
+            Err(e) => {
+                warn!("audio output {channels}ch {rate} Hz {fmt:?} refused: {e}");
+                last = e;
+            }
+        }
+    }
+    Err(last)
 }
 
 #[cfg(test)]
