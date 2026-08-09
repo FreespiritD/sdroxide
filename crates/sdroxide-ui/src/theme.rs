@@ -248,6 +248,134 @@ const RAINBOW: Palette = Palette {
 /// Indexed by [`theme_index`].
 static PALETTES: [Palette; 5] = [DEFAULT, GREEN_PHOSPHOR, AMBER_PHOSPHOR, TEAL_ORANGE, RAINBOW];
 
+/// The S-meter instrument's colours: the face wash, the backlight bloom, the
+/// cool-side (below the red-line) inks, the bar's recessed rail, and the cool
+/// half of the S/ALC ramps. Kept apart from [`Palette`] because these are one
+/// widget's instrument face, not roles the rest of the UI shares.
+///
+/// Only the cool side lives here on purpose: everything past S9 / past 3:1 —
+/// the needle's red-line, the TX backlight, the hot tick/label inks, the
+/// amber-to-red ramp tops — stays red in every theme, the same rule that keeps
+/// [`ALERT`] red.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeterPalette {
+    pub face_top: Color32,
+    pub face_bot: Color32,
+    /// Specular hairline along the top of the glass.
+    pub glass: Color32,
+    /// Backlight bloom behind the scale on receive (transmit's stays red).
+    pub backlight: Color32,
+    /// Readout text: the headline value and the sub-reading beside it.
+    pub readout: Color32,
+    pub subdued: Color32,
+    pub tick_minor: Color32,
+    pub tick_major: Color32,
+    pub label: Color32,
+    pub grid_line: Color32,
+    pub grid_label: Color32,
+    /// The bar face's recessed trough (top/bottom of its wash) and its edge.
+    pub rail_top: Color32,
+    pub rail_bot: Color32,
+    pub rail_edge: Color32,
+    /// The cool half of the S and ALC ramps: floor → mid → ice at S9.
+    pub ramp_lo: Color32,
+    pub ramp_mid: Color32,
+    pub ramp_hi: Color32,
+}
+
+/// The historic instrument: navy glass, cyan backlight, ice at S9.
+const METER_DEFAULT: MeterPalette = MeterPalette {
+    face_top: c(0x111b2b),
+    face_bot: c(0x03060c),
+    glass: c(0x2c4460),
+    backlight: c(0x1c7496),
+    readout: c(0xe6f6ff),
+    subdued: c(0x849eb6),
+    tick_minor: c(0x54708a),
+    tick_major: c(0xcfe6f5),
+    label: c(0xbdd6e8),
+    grid_line: c(0x1b2a3e),
+    grid_label: c(0x637c92),
+    rail_top: c(0x04070d),
+    rail_bot: c(0x131f2f),
+    rail_edge: c(0x1e2e42),
+    ramp_lo: c(0x16627e),
+    ramp_mid: c(0x1da8cf),
+    ramp_hi: c(0x8eecff),
+};
+
+const METER_GREEN: MeterPalette = MeterPalette {
+    face_top: c(0x0c2112),
+    face_bot: c(0x020803),
+    glass: c(0x2c6040),
+    backlight: c(0x1c9654),
+    readout: c(0xd9ffe6),
+    subdued: c(0x74b68b),
+    tick_minor: c(0x4f8a63),
+    tick_major: c(0xccf5d8),
+    label: c(0xb0e8c4),
+    grid_line: c(0x14301d),
+    grid_label: c(0x5d9270),
+    rail_top: c(0x040d07),
+    rail_bot: c(0x132f1d),
+    rail_edge: c(0x1e422c),
+    ramp_lo: c(0x167e46),
+    ramp_mid: c(0x1dcf74),
+    ramp_hi: c(0x8effc0),
+};
+
+const METER_AMBER: MeterPalette = MeterPalette {
+    face_top: c(0x211809),
+    face_bot: c(0x080502),
+    glass: c(0x60482c),
+    backlight: c(0x96661c),
+    readout: c(0xffefd6),
+    subdued: c(0xb69a74),
+    tick_minor: c(0x8a734f),
+    tick_major: c(0xf5e3c6),
+    label: c(0xe8d4b0),
+    grid_line: c(0x30240f),
+    grid_label: c(0x92795d),
+    rail_top: c(0x0d0904),
+    rail_bot: c(0x2f2313),
+    rail_edge: c(0x42331e),
+    ramp_lo: c(0x7e5216),
+    ramp_mid: c(0xcf8e1d),
+    ramp_hi: c(0xffe28e),
+};
+
+const METER_TEAL: MeterPalette = MeterPalette {
+    face_top: c(0x0c2320),
+    face_bot: c(0x030b0a),
+    glass: c(0x2c605a),
+    backlight: c(0x1c9688),
+    readout: c(0xdcfff8),
+    subdued: c(0x84b6ac),
+    tick_minor: c(0x548a82),
+    tick_major: c(0xccf5ec),
+    label: c(0xb0e8de),
+    grid_line: c(0x143733),
+    grid_label: c(0x5d928a),
+    rail_top: c(0x040d0c),
+    rail_bot: c(0x132f2b),
+    rail_edge: c(0x1e423d),
+    ramp_lo: c(0x167e72),
+    ramp_mid: c(0x1dcfba),
+    ramp_hi: c(0x8effef),
+};
+
+/// Indexed by [`theme_index`], like [`PALETTES`]. Rainbow keeps the historic
+/// navy instrument: its grounds are the default's, and the meter already
+/// reads in the accents the ramps give it.
+static METER_PALETTES: [MeterPalette; 5] =
+    [METER_DEFAULT, METER_GREEN, METER_AMBER, METER_TEAL, METER_DEFAULT];
+
+/// The current theme's S-meter instrument colours.
+#[inline]
+pub fn meter_palette() -> &'static MeterPalette {
+    &METER_PALETTES[THEME.load(Ordering::Relaxed) as usize]
+}
+
 /// Indexed by [`style_index`].
 const STYLE_ORDER: [ChromeStyle; 5] = [
     ChromeStyle::Angled,
@@ -708,6 +836,36 @@ mod tests {
             (p.alert, 0xff2a55, "alert"),
         ] {
             assert_eq!(got, c(want), "default palette field {name} drifted");
+        }
+    }
+
+    /// The default S-meter instrument must stay the historic one: these are
+    /// the exact values of the constants `widgets::smeter` carried before the
+    /// instrument followed the theme. Rainbow shares them by design.
+    #[test]
+    fn default_meter_palette_is_the_historic_instrument() {
+        let m = &METER_PALETTES[theme_index(UiTheme::Default) as usize];
+        assert_eq!(METER_PALETTES[theme_index(UiTheme::Rainbow) as usize], *m);
+        for (got, want, name) in [
+            (m.face_top, 0x111b2b, "face_top"),
+            (m.face_bot, 0x03060c, "face_bot"),
+            (m.glass, 0x2c4460, "glass"),
+            (m.backlight, 0x1c7496, "backlight"),
+            (m.readout, 0xe6f6ff, "readout"),
+            (m.subdued, 0x849eb6, "subdued"),
+            (m.tick_minor, 0x54708a, "tick_minor"),
+            (m.tick_major, 0xcfe6f5, "tick_major"),
+            (m.label, 0xbdd6e8, "label"),
+            (m.grid_line, 0x1b2a3e, "grid_line"),
+            (m.grid_label, 0x637c92, "grid_label"),
+            (m.rail_top, 0x04070d, "rail_top"),
+            (m.rail_bot, 0x131f2f, "rail_bot"),
+            (m.rail_edge, 0x1e2e42, "rail_edge"),
+            (m.ramp_lo, 0x16627e, "ramp_lo"),
+            (m.ramp_mid, 0x1da8cf, "ramp_mid"),
+            (m.ramp_hi, 0x8eecff, "ramp_hi"),
+        ] {
+            assert_eq!(got, c(want), "default meter palette field {name} drifted");
         }
     }
 

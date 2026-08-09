@@ -33,28 +33,53 @@ const S9_DBM: f32 = -73.0;
 const SWR_MAX: f32 = 9.0;
 
 const RED: Color32 = Color32::from_rgb(255, 60, 70);
-/// Readout text: the headline value and the smaller sub-reading beside it.
-const READOUT: Color32 = Color32::from_rgb(0xe6, 0xf6, 0xff);
-const SUBDUED: Color32 = Color32::from_rgb(0x84, 0x9e, 0xb6);
-/// Instrument face: a dark navy wash, lighter at the top.
-const FACE_TOP: Color32 = Color32::from_rgb(0x11, 0x1b, 0x2b);
-const FACE_BOT: Color32 = Color32::from_rgb(0x03, 0x06, 0x0c);
-/// The backlight bloom behind the scale, on receive and on transmit.
-const BACKLIGHT: Color32 = Color32::from_rgb(0x1c, 0x74, 0x96);
+/// The transmit backlight — red in every theme, like [`RED`] and the hot inks
+/// below. The themed half of the instrument lives in
+/// [`crate::theme::MeterPalette`]; everything that means "past the red-line"
+/// or "transmitting" deliberately does not.
 const BACKLIGHT_TX: Color32 = Color32::from_rgb(0x8e, 0x1e, 0x2c);
 
-/// Tick and label inks, cool (below the red-line) and hot (above it).
-const TICK_MINOR: [Color32; 2] =
-    [Color32::from_rgb(0x54, 0x70, 0x8a), Color32::from_rgb(0x93, 0x4e, 0x52)];
-const TICK_MAJOR: [Color32; 2] =
-    [Color32::from_rgb(0xcf, 0xe6, 0xf5), Color32::from_rgb(0xff, 0x92, 0x8a)];
-const LABEL: [Color32; 2] =
-    [Color32::from_rgb(0xbd, 0xd6, 0xe8), Color32::from_rgb(0xff, 0x7d, 0x74)];
+/// The current theme's instrument colours: face wash, backlight, cool-side
+/// inks and ramps.
+fn meter() -> &'static crate::theme::MeterPalette {
+    crate::theme::meter_palette()
+}
+
+/// Readout text: the headline value and the smaller sub-reading beside it.
+/// Uppercase like the constants these were before the instrument followed the
+/// theme, matching the `theme::` accessors.
+#[allow(non_snake_case)]
+fn READOUT() -> Color32 {
+    meter().readout
+}
+#[allow(non_snake_case)]
+fn SUBDUED() -> Color32 {
+    meter().subdued
+}
+
+/// Tick and label inks, cool (below the red-line, themed) and hot (above it,
+/// always red).
+#[allow(non_snake_case)]
+fn TICK_MINOR() -> [Color32; 2] {
+    [meter().tick_minor, Color32::from_rgb(0x93, 0x4e, 0x52)]
+}
+#[allow(non_snake_case)]
+fn TICK_MAJOR() -> [Color32; 2] {
+    [meter().tick_major, Color32::from_rgb(0xff, 0x92, 0x8a)]
+}
+#[allow(non_snake_case)]
+fn LABEL() -> [Color32; 2] {
+    [meter().label, Color32::from_rgb(0xff, 0x7d, 0x74)]
+}
 /// Trace-view gridlines and the axis labels beside them, cool and hot.
-const GRID_LINE: [Color32; 2] =
-    [Color32::from_rgb(0x1b, 0x2a, 0x3e), Color32::from_rgb(0x47, 0x23, 0x2b)];
-const GRID_LABEL: [Color32; 2] =
-    [Color32::from_rgb(0x63, 0x7c, 0x92), Color32::from_rgb(0xbb, 0x60, 0x5d)];
+#[allow(non_snake_case)]
+fn GRID_LINE() -> [Color32; 2] {
+    [meter().grid_line, Color32::from_rgb(0x47, 0x23, 0x2b)]
+}
+#[allow(non_snake_case)]
+fn GRID_LABEL() -> [Color32; 2] {
+    [meter().grid_label, Color32::from_rgb(0xbb, 0x60, 0x5d)]
+}
 
 /// Position on the S-scale for `dbm`, 0.0 (S0) … 1.0 (S9+60).
 fn frac_of(dbm: f32) -> f32 {
@@ -133,34 +158,46 @@ pub fn show(ui: &mut Ui, meters: Option<&Meters>, style: SmeterStyle) -> Respons
 /// A colour ramp stop, positioned in scale-fraction space.
 type Stop = (f32, Color32);
 
-/// S-meter ramp: cool blues climbing to ice at S9, then the over-S9 half in
-/// amber through to red.
-const S_STOPS: &[Stop] = &[
-    (0.00, Color32::from_rgb(0x16, 0x62, 0x7e)),
-    (0.26, Color32::from_rgb(0x1d, 0xa8, 0xcf)),
-    (0.4737, Color32::from_rgb(0x8e, 0xec, 0xff)),
-    (0.4738, Color32::from_rgb(0xff, 0xd2, 0x3f)),
-    (0.74, Color32::from_rgb(0xff, 0x8a, 0x3f)),
-    (1.00, Color32::from_rgb(0xff, 0x2a, 0x55)),
-];
+/// S-meter ramp: the theme's cool side climbing to ice at S9, then the
+/// over-S9 half in amber through to red — the warning half is the same in
+/// every theme.
+fn s_stops() -> Vec<Stop> {
+    let m = meter();
+    vec![
+        (0.00, m.ramp_lo),
+        (0.26, m.ramp_mid),
+        (0.4737, m.ramp_hi),
+        (0.4738, Color32::from_rgb(0xff, 0xd2, 0x3f)),
+        (0.74, Color32::from_rgb(0xff, 0x8a, 0x3f)),
+        (1.00, Color32::from_rgb(0xff, 0x2a, 0x55)),
+    ]
+}
 
 /// SWR ramp: green while the match is good, amber as it approaches 3:1, and
-/// the whole upper half — everything past 3:1 — in red.
-const SWR_STOPS: &[Stop] = &[
-    (0.00, Color32::from_rgb(0x3f, 0xe0, 0x86)),
-    (0.32, Color32::from_rgb(0x9d, 0xe0, 0x5c)),
-    (0.4999, Color32::from_rgb(0xff, 0xc0, 0x3a)),
-    (0.50, Color32::from_rgb(0xff, 0x3c, 0x46)),
-    (1.00, Color32::from_rgb(0xd6, 0x0c, 0x2e)),
-];
+/// the whole upper half — everything past 3:1 — in red. Deliberately the same
+/// in every theme: green-means-safe and red-means-stop are not up for
+/// restyling.
+fn swr_stops() -> Vec<Stop> {
+    vec![
+        (0.00, Color32::from_rgb(0x3f, 0xe0, 0x86)),
+        (0.32, Color32::from_rgb(0x9d, 0xe0, 0x5c)),
+        (0.4999, Color32::from_rgb(0xff, 0xc0, 0x3a)),
+        (0.50, Color32::from_rgb(0xff, 0x3c, 0x46)),
+        (1.00, Color32::from_rgb(0xd6, 0x0c, 0x2e)),
+    ]
+}
 
-/// Drive/ALC ramp, used when the rig reports no SWR bridge.
-const ALC_STOPS: &[Stop] = &[
-    (0.00, Color32::from_rgb(0x1d, 0xa8, 0xcf)),
-    (0.70, Color32::from_rgb(0x8e, 0xec, 0xff)),
-    (0.86, Color32::from_rgb(0xff, 0xd2, 0x3f)),
-    (1.00, Color32::from_rgb(0xff, 0x2a, 0x55)),
-];
+/// Drive/ALC ramp, used when the rig reports no SWR bridge. Its cool side is
+/// themed like the S ramp's.
+fn alc_stops() -> Vec<Stop> {
+    let m = meter();
+    vec![
+        (0.00, m.ramp_mid),
+        (0.70, m.ramp_hi),
+        (0.86, Color32::from_rgb(0xff, 0xd2, 0x3f)),
+        (1.00, Color32::from_rgb(0xff, 0x2a, 0x55)),
+    ]
+}
 
 fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
@@ -360,7 +397,7 @@ struct Scale {
     kind: ScaleKind,
     ticks: Vec<Tick>,
     grid: Vec<Grid>,
-    stops: &'static [Stop],
+    stops: Vec<Stop>,
 }
 
 fn grid_at(f: f32, label: &str, hot: bool) -> Grid {
@@ -394,7 +431,7 @@ fn s_scale() -> Scale {
         grid_at(frac_of(S9_DBM), "9", false),
         grid_at(frac_of(S9_DBM + 30.0), "+30", true),
     ];
-    Scale { kind: ScaleKind::S, ticks, grid, stops: S_STOPS }
+    Scale { kind: ScaleKind::S, ticks, grid, stops: s_stops() }
 }
 
 /// 1:1 … 9:1, logarithmic, with 3:1 at mid-travel and everything past it hot.
@@ -428,7 +465,7 @@ fn swr_scale() -> Scale {
         grid_at(swr_frac(3.0), "3", true),
         grid_at(swr_frac(5.0), "5", true),
     ];
-    Scale { kind: ScaleKind::Swr, ticks, grid, stops: SWR_STOPS }
+    Scale { kind: ScaleKind::Swr, ticks, grid, stops: swr_stops() }
 }
 
 /// 0…100 % drive, the fallback when the rig has no SWR bridge.
@@ -446,7 +483,7 @@ fn alc_scale() -> Scale {
         grid_at(0.75, "75", false),
         grid_at(0.95, "95", true),
     ];
-    Scale { kind: ScaleKind::Alc, ticks, grid, stops: ALC_STOPS }
+    Scale { kind: ScaleKind::Alc, ticks, grid, stops: alc_stops() }
 }
 
 /// What the instrument is currently displaying: the scale to draw, where the
@@ -517,20 +554,17 @@ fn reading(meters: Option<&Meters>) -> Reading {
 fn face(ui: &mut Ui, size: Vec2, tx: bool) -> (Rect, Response) {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let p = ui.painter_at(rect);
-    grad_v(&p, rect, FACE_TOP, FACE_BOT);
+    let m = meter();
+    grad_v(&p, rect, m.face_top, m.face_bot);
     // Backlight bloom rising from behind the scale, and a hairline of specular
     // along the top edge so the glass reads as glass.
     glow(
         &p,
         pos2(rect.center().x, rect.top() + rect.height() * 0.72),
         rect.width() * 0.52,
-        if tx { BACKLIGHT_TX.linear_multiply(0.34) } else { BACKLIGHT.linear_multiply(0.30) },
+        if tx { BACKLIGHT_TX.linear_multiply(0.34) } else { m.backlight.linear_multiply(0.30) },
     );
-    p.hline(
-        rect.x_range(),
-        rect.top() + 0.5,
-        Stroke::new(1.0, Color32::from_rgb(0x2c, 0x44, 0x60).linear_multiply(0.7)),
-    );
+    p.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, m.glass.linear_multiply(0.7)));
     (rect, resp)
 }
 
@@ -573,7 +607,7 @@ fn header_pt(k: f32) -> (f32, f32) {
 /// drift from what `header` actually paints.
 fn header_h(p: &Painter, rect: Rect, k: f32) -> f32 {
     let (chip_pt, _) = header_pt(k);
-    let text_h = p.layout_no_wrap("0".to_owned(), FontId::monospace(chip_pt), READOUT).size().y;
+    let text_h = p.layout_no_wrap("0".to_owned(), FontId::monospace(chip_pt), READOUT()).size().y;
     // 3·k down from the top, the chip's own 1.5 pt of padding either side of the
     // text, then 2·k of clearance under it.
     rect.top() + 3.0 * k + text_h + 3.0 + 2.0 * k
@@ -586,7 +620,7 @@ fn header(p: &Painter, rect: Rect, r: &Reading, k: f32) -> Rect {
     let (chip_pt, strong_pt) = header_pt(k);
     let chip_rect = chip(p, pos2(rect.left() + 6.0 * k, head_y), &r.chip, r.accent, chip_pt);
     if !r.right.is_empty() {
-        let (pt, ink) = if r.right_strong { (strong_pt, READOUT) } else { (chip_pt, SUBDUED) };
+        let (pt, ink) = if r.right_strong { (strong_pt, READOUT()) } else { (chip_pt, SUBDUED()) };
         // The secondary reading goes only where there is room for it beside the
         // headline one. In a box narrow enough for the two to meet, the chip is
         // the one worth keeping — it carries the signal report, and the pair
@@ -685,27 +719,23 @@ fn peak_hold(ui: &Ui, id: Id, frac: f32) -> Option<f32> {
 /// One labelled bar row: a recessed trough, a gradient fill with a lit leading
 /// edge, and the peak marker riding on top.
 fn bar_row(p: &Painter, rect: Rect, scale: &Scale, frac: f32, peak: Option<f32>) {
-    grad_v(p, rect, Color32::from_rgb(0x04, 0x07, 0x0d), Color32::from_rgb(0x13, 0x1f, 0x2f));
-    p.rect_stroke(
-        rect,
-        0.0,
-        Stroke::new(1.0, Color32::from_rgb(0x1e, 0x2e, 0x42)),
-        StrokeKind::Inside,
-    );
+    let m = meter();
+    grad_v(p, rect, m.rail_top, m.rail_bot);
+    p.rect_stroke(rect, 0.0, Stroke::new(1.0, m.rail_edge), StrokeKind::Inside);
     let inner = rect.shrink(1.0);
     // The unlit remainder of the rail keeps the ramp's hue, so the red zone is
     // visible before the bar ever reaches it.
-    grad_h(p, inner, 0.0, 1.0, |f| ramp(scale.stops, f).linear_multiply(0.16));
+    grad_h(p, inner, 0.0, 1.0, |f| ramp(&scale.stops, f).linear_multiply(0.16));
 
     let x = inner.left() + inner.width() * frac.clamp(0.0, 1.0);
     if x > inner.left() {
         let fill = Rect::from_min_max(inner.min, pos2(x, inner.bottom()));
-        grad_h(p, fill, 0.0, frac, |f| ramp(scale.stops, f));
+        grad_h(p, fill, 0.0, frac, |f| ramp(&scale.stops, f));
         // Lit leading edge: a bar this small reads much faster with one.
         p.vline(
             x - 0.5,
             Rangef::new(inner.top(), inner.bottom()),
-            Stroke::new(1.5, shade(ramp(scale.stops, frac), 0.65)),
+            Stroke::new(1.5, shade(ramp(&scale.stops, frac), 0.65)),
         );
     }
     if let Some(pk) = peak {
@@ -713,7 +743,7 @@ fn bar_row(p: &Painter, rect: Rect, scale: &Scale, frac: f32, peak: Option<f32>)
         p.vline(
             px,
             Rangef::new(inner.top(), inner.bottom()),
-            Stroke::new(1.5, shade(ramp(scale.stops, pk), 0.55)),
+            Stroke::new(1.5, shade(ramp(&scale.stops, pk), 0.55)),
         );
     }
 }
@@ -729,13 +759,13 @@ fn bar_ticks(p: &Painter, bar: Rect, bounds: Rect, scale: &Scale, k: f32, num_to
         p.vline(
             x,
             Rangef::new(bar.bottom() + 2.0 * k, bar.bottom() + 2.0 * k + len),
-            Stroke::new(1.0, if t.major { TICK_MAJOR[hot] } else { TICK_MINOR[hot] }),
+            Stroke::new(1.0, if t.major { TICK_MAJOR()[hot] } else { TICK_MINOR()[hot] }),
         );
         if let Some(label) = &t.label {
-            let g = p.layout_no_wrap(label.clone(), FontId::monospace(9.0 * k), LABEL[hot]);
+            let g = p.layout_no_wrap(label.clone(), FontId::monospace(9.0 * k), LABEL()[hot]);
             let x = (x - g.size().x * 0.5)
                 .clamp(bounds.left() + 1.0, bounds.right() - g.size().x - 1.0);
-            p.galley(pos2(x, num_top), g, LABEL[hot]);
+            p.galley(pos2(x, num_top), g, LABEL()[hot]);
         }
     }
 }
@@ -773,7 +803,7 @@ fn show_bar(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
                 Align2::RIGHT_CENTER,
                 text,
                 FontId::monospace(9.5 * k),
-                SUBDUED,
+                SUBDUED(),
             );
         };
         row_label(drive_rect, "ALC");
@@ -862,7 +892,7 @@ fn show_needle(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
     let arc = Arc { pivot: pos2(rect.center().x, rect.top() + 13.0 * k + rad), rad, half };
     let band = 2.6 * k;
     let rail = (rad - band, rad + band);
-    let col = |f: f32| ramp(r.scale.stops, f);
+    let col = |f: f32| ramp(&r.scale.stops, f);
 
     // Rail: the whole span dimmed, the travelled part lit, with a bloom under
     // the lit part so the instrument looks illuminated rather than printed.
@@ -875,8 +905,11 @@ fn show_needle(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
     for t in &r.scale.ticks {
         let a = arc.ang(t.f);
         let hot = usize::from(t.hot);
-        let (len, w, ink) =
-            if t.major { (6.0 * k, 1.4, TICK_MAJOR[hot]) } else { (3.5 * k, 1.0, TICK_MINOR[hot]) };
+        let (len, w, ink) = if t.major {
+            (6.0 * k, 1.4, TICK_MAJOR()[hot])
+        } else {
+            (3.5 * k, 1.0, TICK_MINOR()[hot])
+        };
         p.line_segment([arc.at(tick_out - len, a), arc.at(tick_out, a)], Stroke::new(w, ink));
         if let Some(label) = &t.label {
             p.text(
@@ -884,7 +917,7 @@ fn show_needle(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
                 Align2::CENTER_CENTER,
                 label,
                 FontId::monospace(9.0 * k),
-                LABEL[hot],
+                LABEL()[hot],
             );
         }
     }
@@ -960,7 +993,7 @@ fn show_trace(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
     let k = (rect.height() / 72.0).clamp(0.55, 2.0);
     let r = reading(meters);
     let hist = trace_history(ui, resp.id, r.frac, r.scale.kind);
-    let col = |f: f32| ramp(r.scale.stops, f);
+    let col = |f: f32| ramp(&r.scale.stops, f);
 
     // A gutter on the right carries the level axis, so the newest sample sits
     // right up against the scale it is read on.
@@ -977,7 +1010,7 @@ fn show_trace(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
     let mut secs = 5.0;
     while secs < span_s {
         let x = plot.right() - plot.width() * secs / span_s;
-        p.vline(x, Rangef::new(plot.top(), plot.bottom()), Stroke::new(1.0, GRID_LINE[0]));
+        p.vline(x, Rangef::new(plot.top(), plot.bottom()), Stroke::new(1.0, GRID_LINE()[0]));
         secs += 5.0;
     }
 
@@ -988,13 +1021,13 @@ fn show_trace(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
             continue;
         }
         let hot = usize::from(g.hot);
-        p.hline(Rangef::new(plot.left(), plot.right()), y, Stroke::new(1.0, GRID_LINE[hot]));
+        p.hline(Rangef::new(plot.left(), plot.right()), y, Stroke::new(1.0, GRID_LINE()[hot]));
         p.text(
             pos2(plot.right() + 3.0 * k, y),
             Align2::LEFT_CENTER,
             &g.label,
             FontId::monospace(8.5 * k),
-            GRID_LABEL[hot],
+            GRID_LABEL()[hot],
         );
     }
 
@@ -1027,7 +1060,7 @@ fn show_trace(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
     }
     p.add(Shape::mesh(fill));
     p.add(Shape::mesh(feather));
-    p.add(Shape::line(ridge, Stroke::new(1.5, READOUT.linear_multiply(0.75))));
+    p.add(Shape::line(ridge, Stroke::new(1.5, READOUT().linear_multiply(0.75))));
 
     // "Now": a hairline across the plot at the live level and a lit cap at the
     // axis, so the current reading is findable without tracing the line.
