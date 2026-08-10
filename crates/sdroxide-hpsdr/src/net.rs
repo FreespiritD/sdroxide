@@ -38,12 +38,21 @@ pub const LNA_GAIN_DEFAULT_DB: f64 = 20.0;
 /// `sdroxide-types` so the wasm-safe settings UI can name the same element.
 pub const LNA_GAIN_ELEMENT: &str = sdroxide_types::HpsdrConfig::LNA_GAIN_ELEMENT;
 
-/// Whether a board name reported by discovery is a Hermes-Lite, the only
-/// Protocol 1 family whose front-end gain this crate knows how to command
-/// (register `0x14`, C4). Other P1 boards use that register for Alex/attenuator
+/// Whether a board name reported by discovery is a Hermes-Lite.
+///
+/// The Hermes-Lite gateware repurposes several Protocol 1 register fields that
+/// mean something else entirely on a Metis/Hermes/Angelia board — the front-end
+/// gain in register `0x0A` and the PA/T-R bits in register `0x09` among them —
+/// so every one of those writes is gated on this.
+pub fn board_is_hermes_lite(board: &str) -> bool {
+    board.starts_with("Hermes-Lite")
+}
+
+/// Whether a board has a front-end gain this crate knows how to command
+/// (register `0x0A`, C4). Other P1 boards use that register for Alex/attenuator
 /// settings, so we must not write it there.
 pub fn board_has_lna_gain(board: &str) -> bool {
-    board.starts_with("Hermes-Lite")
+    board_is_hermes_lite(board)
 }
 
 /// Clamp a dB value to the LNA range and encode it as the 6-bit wire value.
@@ -352,6 +361,9 @@ pub(crate) struct ThreadCtx {
     pub filter_board: HpsdrFilterBoard,
     /// Conjugate I/Q in both directions (see `HpsdrConfig::invert_spectrum`).
     pub invert_spectrum: bool,
+    /// Switch on the Hermes-Lite's onboard PA (see `HpsdrConfig::pa_enable`).
+    /// Ignored on boards that are not a Hermes-Lite.
+    pub pa_enable: bool,
     pub tx: Consumer<f32>,
     pub ctrl: Receiver<Ctrl>,
 }
@@ -419,6 +431,7 @@ impl HpsdrBoard {
         lna_gain_db: f64,
         filter_board: HpsdrFilterBoard,
         invert_spectrum: bool,
+        pa_enable: bool,
     ) -> Result<HpsdrBoard, HpsdrError> {
         tracing::info!("HPSDR: opening {ip}, requested RX rate {sample_rate_hz:.0} Hz");
         let (board, protocol) = match discovery::probe(ip, Duration::from_millis(800)) {
@@ -492,6 +505,20 @@ impl HpsdrBoard {
                 filter_board.label()
             );
         }
+        // The setting that decides whether a keyed Hermes-Lite makes any power
+        // at all, so it is stated at every open rather than left to be inferred.
+        if board_is_hermes_lite(&board) {
+            if pa_enable {
+                tracing::info!("HPSDR: onboard PA ENABLED — transmit goes out of the antenna jack");
+            } else {
+                tracing::info!(
+                    "HPSDR: onboard PA DISABLED — transmit appears at the low-power RF1 output \
+                     only and the T/R relay stays in receive, so the antenna jack makes no power. \
+                     Turn the PA on in Settings → Device unless an external amplifier is driven \
+                     from RF1."
+                );
+            }
+        }
 
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
         socket.set_read_timeout(Some(Duration::from_millis(2)))?;
@@ -522,6 +549,7 @@ impl HpsdrBoard {
             lna_gain_db,
             filter_board,
             invert_spectrum,
+            pa_enable,
             tx: tx_cons,
             ctrl: ctrl_rx,
         };

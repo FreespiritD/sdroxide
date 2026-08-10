@@ -293,6 +293,16 @@ pub(in crate::app) fn settings_hpsdr_tab(
             });
         ui.end_row();
 
+        ui.label("Power amplifier");
+        ui.checkbox(&mut cfg.hpsdr.pa_enable, "Use the Hermes-Lite 2's onboard PA").on_hover_text(
+            "On by default, and what you want unless an external amplifier is driven from the \
+             board's low-power RF1 output. With it off the radio still keys — the T/R relay \
+             throws and any accessory board follows — but the antenna jack makes no power at \
+             all, and the relay is deliberately held in receive. Ignored on boards other than a \
+             Hermes-Lite.",
+        );
+        ui.end_row();
+
         ui.label("Invert spectrum");
         ui.checkbox(&mut cfg.hpsdr.invert_spectrum, "Swap I/Q").on_hover_text(
             "Mirror the board's spectrum about the tuned frequency, on transmit as well \

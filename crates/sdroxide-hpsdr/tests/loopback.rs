@@ -6,8 +6,8 @@
 //! port is unavailable.
 
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -31,6 +31,10 @@ fn p1_loopback_rx() {
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_r = stop.clone();
+    // Every C&C block the host sends us on EP2, so the test can check what the
+    // board is actually told rather than only what comes back.
+    let cc_seen: Arc<Mutex<Vec<[u8; 5]>>> = Arc::new(Mutex::new(Vec::new()));
+    let cc_radio = Arc::clone(&cc_seen);
 
     // Fake radio: reply to discovery as an HL2 (Protocol 1), and once it has seen
     // the host's streaming socket, stream EP6 frames carrying I=0.5, Q=-0.25.
@@ -57,6 +61,16 @@ fn p1_loopback_rx() {
                     // Any non-discovery packet (start command / EP2) reveals the
                     // host's streaming socket.
                     host = Some(src);
+                    // EP2: pull the C&C block out of both OZY frames.
+                    if n == 1032 && d[3] == 0x02 {
+                        let mut seen = cc_radio.lock().unwrap();
+                        for f in 0..2 {
+                            let fr = 8 + f * 512;
+                            if d[fr] == 0x7F && d[fr + 1] == 0x7F && d[fr + 2] == 0x7F {
+                                seen.push(d[fr + 3..fr + 8].try_into().unwrap());
+                            }
+                        }
+                    }
                 }
             }
             if let Some(h) = host {
@@ -91,6 +105,7 @@ fn p1_loopback_rx() {
         sdroxide_hpsdr::LNA_GAIN_DEFAULT_DB,
         sdroxide_types::HpsdrFilterBoard::None,
         false,
+        true,
     )
     .expect("open loopback connection");
     assert_eq!(board.protocol(), 1, "detected as Protocol 1");
@@ -118,6 +133,24 @@ fn p1_loopback_rx() {
     assert!(got >= 2, "received I/Q from the fake radio");
     assert!((out[0] - 0.5).abs() < 0.01, "I ~= 0.5, got {}", out[0]);
     assert!((out[1] + 0.25).abs() < 0.01, "Q ~= -0.25, got {}", out[1]);
+
+    // End to end, the thing that decides whether a keyed Hermes-Lite makes any
+    // power: register 0x09 must reach the board with the PA bit set. It went
+    // out as C2 = 0 — "PA off" — for as long as this backend had a transmitter,
+    // which keys the radio and puts nothing on the antenna.
+    let drive: Vec<[u8; 5]> = cc_seen
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .filter(|cc| cc[0] & 0xFE == 0x12) // register 0x09, MOX bit masked off
+        .collect();
+    assert!(!drive.is_empty(), "the drive register is in the rotation");
+    for cc in &drive {
+        assert_eq!(cc[2] & 0x08, 0x08, "PA enabled in {cc:02X?}");
+        assert_eq!(cc[2] & 0x04, 0, "T/R relay left free to switch in {cc:02X?}");
+        assert_eq!(cc[1], 255, "full drive level in {cc:02X?}");
+    }
 
     stop.store(true, Ordering::Relaxed);
     drop(handle);

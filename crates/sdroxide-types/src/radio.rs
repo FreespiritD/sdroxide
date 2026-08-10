@@ -404,6 +404,18 @@ pub struct HpsdrConfig {
     /// that works.
     #[serde(default = "HpsdrConfig::default_invert_spectrum")]
     pub invert_spectrum: bool,
+    /// Switch on the Hermes-Lite 2's onboard power amplifier (register `0x09`
+    /// bit 19). Ignored on every other board — the bit is a Hermes-Lite
+    /// repurposing of an Apollo/Alex field.
+    ///
+    /// **On by default**, because with it off the board keys — the T/R relay
+    /// throws, the PTT line and any accessory board follow — and puts out no
+    /// power at all at the antenna jack. Turn it off only to drive an external
+    /// amplifier from the low-power RF1 output, which also parks the T/R relay
+    /// in receive (register `0x09` bit 18) so the antenna connector stays on
+    /// the receiver.
+    #[serde(default = "HpsdrConfig::default_pa_enable")]
+    pub pa_enable: bool,
     /// Crystal/TCXO error in ppm, applied to RX/TX frequency before it's sent
     /// to the board's NCO.
     #[serde(default)]
@@ -427,6 +439,7 @@ impl Default for HpsdrConfig {
             lna_gain_db: Self::default_lna_gain_db(),
             filter_board: HpsdrFilterBoard::None,
             invert_spectrum: Self::default_invert_spectrum(),
+            pa_enable: Self::default_pa_enable(),
             ppm: 0.0,
             ddc: 0,
         }
@@ -453,6 +466,13 @@ impl HpsdrConfig {
     /// Hermes-Lite 2 boards deliver a conjugated stream, so inversion is the
     /// working default. See [`HpsdrConfig::invert_spectrum`].
     pub fn default_invert_spectrum() -> bool {
+        true
+    }
+
+    /// A Hermes-Lite 2 with its PA switched off transmits nothing at the
+    /// antenna jack, so the amplifier is on unless the operator says otherwise.
+    /// See [`HpsdrConfig::pa_enable`].
+    pub fn default_pa_enable() -> bool {
         true
     }
 

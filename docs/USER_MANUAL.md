@@ -2393,6 +2393,13 @@ involved:
   the receiver goes deaf. Start around +20 dB and work from there. The same
   control also appears as **Gain** next to the volume slider in the main window,
   and on the **Device** tab.
+- **Power amplifier** — switches on the Hermes Lite 2's onboard PA. **On by
+  default**, and what you want unless an external amplifier is driven from the
+  board's low-power RF1 output. With it off the radio still keys — the T/R relay
+  throws, the PTT line closes and any accessory board follows — but the antenna
+  jack makes no power at all, and the relay is deliberately held in receive so
+  the antenna connector stays on the receiver. Ignored on boards other than a
+  Hermes Lite.
 - **Invert spectrum (Swap I/Q)** — mirrors the board's spectrum about the tuned
   frequency, on transmit as well as receive. **On by default**, because a
   Hermes Lite 2 needs it. Turn it *off* only if signals appear on the wrong side
@@ -2424,8 +2431,11 @@ Receive is wideband IQ, so the full panadapter and the skimmers work.
 > the first RX datagram's structure, and a periodic *RX throughput* line
 > (datagrams/samples/ksps). A plausible ksps close to the selected sample rate
 > means the receive decode is working; `no … I/Q datagrams after 3 s` or an
-> implausible rate points at a firewall or a wrong offset. Please attach that
-> output to a bug report.
+> implausible rate points at a firewall or a wrong offset. On transmit, a
+> Hermes Lite also reports why nothing is going out: the log states whether the
+> onboard PA was switched on at connect, and warns if the board says its
+> transmitter is inhibited or its transmit FIFO under- or overran. Please attach
+> that output to a bug report.
 
 #### 5.2.4 TCI (network): ExpertSDR3 and Thetis
 

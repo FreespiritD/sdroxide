@@ -221,6 +221,7 @@ fn two_ddcs_share_one_connection_and_detach_independently() {
         0.0,
         sdroxide_types::HpsdrFilterBoard::None,
         false,
+        true,
     )
     .expect("open");
     assert_eq!(board.protocol(), 2);

@@ -30,7 +30,8 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use crate::net::{
-    Ctrl, RxStats, SeqTracker, ThreadCtx, board_has_lna_gain, hex_head, lna_gain_code, push_iq,
+    Ctrl, RxStats, SeqTracker, ThreadCtx, board_has_lna_gain, board_is_hermes_lite, hex_head,
+    lna_gain_code, push_iq,
 };
 use crate::protocol2::be24_to_f32;
 use sdroxide_types::HpsdrFilterBoard;
@@ -54,6 +55,19 @@ const CC_CONFIG: u8 = 0x00; // frame #1 of every datagram: C1[1:0]=rate, C4=dupl
 const CC_TX_FREQ: u8 = 0x02; // C1..C4 = TX NCO frequency (Hz)
 const CC_RX1_FREQ: u8 = 0x04; // C1..C4 = RX1 NCO frequency (Hz)
 const CC_DRIVE: u8 = 0x12; // C1 = TX drive level 0..255
+/// Register `0x09`, C2 bit 3 — the register's 32-bit view calls it bit 19.
+/// On a Hermes-Lite it switches the **onboard power amplifier** on. With it
+/// clear the board still keys (the T/R relay throws, the PTT line and any
+/// accessory board follow) and puts out nothing at the antenna jack, which is
+/// exactly what "PTT works, no power" looks like from the operating position.
+/// Every other Protocol 1 board reads this bit as an Apollo tuner command, so
+/// it is only ever sent to a Hermes-Lite.
+const HL2_PA_ON: u8 = 0x08;
+/// Register `0x09`, C2 bit 2 (bit 18 of the 32-bit view): with the PA off,
+/// hold the T/R relay in receive so the antenna connector stays on the
+/// receiver — transmit then appears at the low-power RF1 output, which is how
+/// an external amplifier is driven.
+const HL2_TR_RX_ONLY: u8 = 0x04;
 /// Register 0x0A. On a Hermes-Lite 2 its C4 is the AD9866 front-end gain:
 /// bit 6 marks the field valid, bits 5..0 are `dB + 12` (so 0 = −12 dB,
 /// 60 = +48 dB). Other Protocol 1 boards use this register for Alex and
@@ -117,13 +131,18 @@ fn n2adr_oc(freq_hz: f64) -> u8 {
     (1 << lpf) | hpf
 }
 
-/// Everything the rotating register slots need. `lna_gain` is `None` on boards
-/// whose register 0x14 we must not touch.
+/// Everything the rotating register slots need. `lna_gain` and `pa` are `None`
+/// on boards whose Hermes-Lite-specific register fields we must not touch.
 #[derive(Clone, Copy)]
 struct Regs {
     rx_freq: u32,
     tx_freq: u32,
     lna_gain: Option<f64>,
+    /// `Some(true)` to run the Hermes-Lite's onboard PA, `Some(false)` to leave
+    /// it off and keep the antenna jack on receive, `None` on a board that is
+    /// not a Hermes-Lite (its register 0x09 C2 means Apollo/Alex things and is
+    /// left at zero, as before).
+    pa: Option<bool>,
     filter_board: HpsdrFilterBoard,
     ptt: bool,
 }
@@ -152,6 +171,22 @@ impl Regs {
         }
     }
 
+    /// C2 of the drive register (`0x09`). On a Hermes-Lite it carries the PA
+    /// and T/R-relay bits; on anything else it stays zero — those bits are
+    /// Apollo tuner/filter commands there, and asserting them would operate
+    /// hardware the operator never asked about.
+    ///
+    /// The PA state is asserted continuously rather than only while keyed: the
+    /// register rotation reaches this slot every fourth datagram, and the board
+    /// must already know the answer at the moment MOX arrives.
+    fn drive_c2(&self) -> u8 {
+        match self.pa {
+            Some(true) => HL2_PA_ON,
+            Some(false) => HL2_TR_RX_ONLY,
+            None => 0,
+        }
+    }
+
     /// The slots this board actually has, in rotation order.
     fn slots(&self) -> &'static [Slot] {
         if self.lna_gain.is_some() {
@@ -167,7 +202,7 @@ impl Regs {
         match slot {
             Slot::TxFreq => freq_cc(CC_TX_FREQ, self.tx_freq, mox),
             Slot::RxFreq => freq_cc(CC_RX1_FREQ, self.rx_freq, mox),
-            Slot::Drive => [CC_DRIVE | mox, TX_DRIVE, 0, 0, 0],
+            Slot::Drive => [CC_DRIVE | mox, TX_DRIVE, self.drive_c2(), 0, 0],
             Slot::LnaGain => {
                 let code = lna_gain_code(self.lna_gain.unwrap_or(0.0));
                 [CC_HL2_GAIN | mox, 0, 0, 0, HL2_GAIN_VALID | code]
@@ -279,6 +314,65 @@ struct Ep6Info {
     versions: Option<(u8, u8, u8, u8)>,
 }
 
+/// Rate limiter for the two Hermes-Lite transmit faults worth shouting about.
+/// Both can be reported on every datagram — 381 of them a second — so each gets
+/// its own five-second gate rather than a shared one, which would let a noisy
+/// fault hide a quiet one.
+#[derive(Default)]
+struct TxHealth {
+    last_inhibit_warn: Option<Instant>,
+    last_fifo_warn: Option<Instant>,
+}
+
+impl TxHealth {
+    /// Whether `slot` has gone quiet long enough to warn again, stamping it if so.
+    fn due(slot: &mut Option<Instant>) -> bool {
+        if slot.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
+            *slot = Some(Instant::now());
+            return true;
+        }
+        false
+    }
+}
+
+/// Interpret a Hermes-Lite's status set 0 for the two things that decide
+/// whether a transmission is actually going out, and warn when either says it
+/// is not. Fields are from the Hermes-Lite 2 protocol document, quoted here in
+/// its 32-bit register view: C1 is `RDATA[31:24]`, C3 is `RDATA[15:8]`.
+///
+/// - `RDATA[25]` — TX inhibited, **active low**: an external inhibit input is
+///   holding the transmitter off. The radio still keys and produces nothing.
+/// - `RDATA[15]` — TX I/Q FIFO under/overflow recovery, with `RDATA[14]`
+///   choosing between them (`0` under, `1` over). Underflow means our EP2
+///   stream is not keeping the board's 48 kHz transmit FIFO fed and the signal
+///   on the air is being chopped; overflow means we are sending it too fast.
+///   Otherwise `RDATA[14:8]` is the FIFO's fill level.
+fn hl2_status(c1: u8, c3: u8, keyed: bool, health: &mut TxHealth) {
+    if c1 & 0x02 == 0 && TxHealth::due(&mut health.last_inhibit_warn) {
+        tracing::warn!(
+            "HPSDR P1: the Hermes-Lite reports TRANSMIT INHIBITED — something is holding its \
+             external TX-inhibit input low. The board will key and make no power until that is \
+             released."
+        );
+    }
+    // The FIFO legitimately sits empty until the first over, so this is only a
+    // fault while keyed.
+    if keyed && c3 & 0x80 != 0 && TxHealth::due(&mut health.last_fifo_warn) {
+        if c3 & 0x40 == 0 {
+            tracing::warn!(
+                "HPSDR P1: the Hermes-Lite's transmit FIFO UNDERRAN — EP2 datagrams are not \
+                 reaching it at 48 kHz, so the transmitted signal is being chopped. A busy host \
+                 or a lossy link is the usual cause."
+            );
+        } else {
+            tracing::warn!(
+                "HPSDR P1: the Hermes-Lite's transmit FIFO OVERFLOWED — EP2 datagrams are \
+                 arriving faster than 48 kHz and samples are being discarded."
+            );
+        }
+    }
+}
+
 /// Decode the five C&C bytes at the head of a radio→host frame. C0 bits 2..0
 /// are the PTT/dash/dot lines; bits 7..3 select which sensor set C1..C4 carry.
 /// Only set 0 is interpreted here — it holds the ADC-overload flag and the
@@ -361,6 +455,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
         lna_gain_db,
         filter_board,
         invert_spectrum,
+        pa_enable,
         mut tx,
         ctrl,
     } = ctx;
@@ -372,6 +467,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
     let mut slot: Option<(rtrb::Producer<f32>, crate::net::RxClock)> = None;
     let dest = SocketAddr::new(radio, PORT);
     let speed = speed_code(rate_hz);
+    let hermes_lite = board_is_hermes_lite(&board);
     let has_lna = board_has_lna_gain(&board);
 
     let mut out_seq: u32 = 0;
@@ -380,16 +476,22 @@ pub(crate) fn run(ctx: ThreadCtx) {
         rx_freq: 7_100_000,
         tx_freq: 7_100_000,
         lna_gain: has_lna.then_some(lna_gain_db),
+        pa: hermes_lite.then_some(pa_enable),
         filter_board,
         ptt: false,
     };
 
     tracing::info!(
         "HPSDR P1: stream starting to {dest} at {rate_hz:.0} Hz (speed code {speed}), \
-         EP2 at 48000 Hz; {}; priming registers then sending run command",
+         EP2 at 48000 Hz; {}; {}; priming registers then sending run command",
         match regs.lna_gain {
             Some(g) => format!("LNA gain {g:+.0} dB"),
             None => format!("board \"{board}\" has no LNA gain register we can drive"),
+        },
+        match regs.pa {
+            Some(true) => "PA on".to_string(),
+            Some(false) => "PA off (RF1 output, T/R relay held in receive)".to_string(),
+            None => format!("board \"{board}\" has no PA register we can drive"),
         }
     );
 
@@ -414,6 +516,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
     let mut logged_versions = false;
     let mut warned_no_rx = false;
     let mut radio_ptt = false;
+    let mut tx_health = TxHealth::default();
     let mut overloads: u64 = 0;
     let mut last_overload_warn: Option<Instant> = None;
     let started = Instant::now();
@@ -502,14 +605,22 @@ pub(crate) fn run(ctx: ThreadCtx) {
                             hex_head(&buf[..n], 8)
                         );
                     }
-                    if let Some((c1, c2, c3, c4)) = info.versions
-                        && !logged_versions
-                    {
-                        logged_versions = true;
-                        tracing::info!(
-                            "HPSDR P1: radio status set 0 — C1 {c1:02X} C2 {c2:02X} \
-                             C3 {c3:02X} C4 {c4:02X} (firmware/gateware version bytes)"
-                        );
+                    if let Some((c1, c2, c3, c4)) = info.versions {
+                        if !logged_versions {
+                            logged_versions = true;
+                            tracing::info!(
+                                "HPSDR P1: radio status set 0 — C1 {c1:02X} C2 {c2:02X} \
+                                 C3 {c3:02X} C4 {c4:02X}{}",
+                                if hermes_lite {
+                                    format!(" (Hermes-Lite gateware version {c4})")
+                                } else {
+                                    " (firmware/gateware version bytes)".to_string()
+                                }
+                            );
+                        }
+                        if hermes_lite {
+                            hl2_status(c1, c3, regs.ptt, &mut tx_health);
+                        }
                     }
                     if info.ptt != radio_ptt {
                         radio_ptt = info.ptt;
@@ -685,6 +796,7 @@ mod tests {
             rx_freq: 7_074_000,
             tx_freq: 7_074_000,
             lna_gain: None,
+            pa: None,
             filter_board: HpsdrFilterBoard::None,
             ptt: false,
         };
@@ -712,6 +824,7 @@ mod tests {
             rx_freq: 7_000_000,
             tx_freq: 7_000_000,
             lna_gain: None,
+            pa: None,
             filter_board: HpsdrFilterBoard::None,
             ptt: true,
         };
@@ -722,12 +835,87 @@ mod tests {
         }
     }
 
+    /// The regression behind "Hermes-Lite 2 keys but makes no power": register
+    /// `0x09` went out with C2 = 0, which is the Hermes-Lite's "PA off". The
+    /// board keys anyway — the T/R relay throws and the PTT line follows — so
+    /// nothing upstream of the antenna jack looks wrong.
+    #[test]
+    fn drive_register_switches_the_hermes_lite_pa_on() {
+        let hl2 = Regs {
+            rx_freq: 14_074_000,
+            tx_freq: 14_074_000,
+            lna_gain: Some(20.0),
+            pa: Some(true),
+            filter_board: HpsdrFilterBoard::None,
+            ptt: false,
+        };
+        let cc = hl2.cc(Slot::Drive);
+        assert_eq!(cc[0], CC_DRIVE, "register 0x09");
+        assert_eq!(cc[1], TX_DRIVE, "drive level unchanged");
+        assert_eq!(cc[2], HL2_PA_ON, "bit 19: onboard PA on");
+        assert_eq!(cc[2] & HL2_TR_RX_ONLY, 0, "the T/R relay must be free to switch");
+
+        // PA off is a real operating choice — an external amplifier driven from
+        // the low-power RF1 output — and then the antenna jack is deliberately
+        // held on the receiver rather than left connected to a dead PA.
+        let off = Regs { pa: Some(false), ..hl2 }.cc(Slot::Drive);
+        assert_eq!(off[2], HL2_TR_RX_ONLY);
+        assert_eq!(off[2] & HL2_PA_ON, 0);
+
+        // On any other Protocol 1 board those bits are Apollo tuner/filter
+        // commands, so the byte stays exactly as it always was.
+        assert_eq!(Regs { pa: None, ..hl2 }.cc(Slot::Drive)[2], 0);
+
+        // The PA state rides every drive frame, keyed or not: the board has to
+        // already know it when MOX arrives.
+        for ptt in [false, true] {
+            assert_eq!(Regs { ptt, ..hl2 }.cc(Slot::Drive)[2], HL2_PA_ON);
+        }
+    }
+
+    /// The Hermes-Lite's own account of why a transmission is not going out,
+    /// from status set 0. Both fields sit in the `RDATA` bits the protocol
+    /// document quotes, which is what makes them easy to misplace: `RDATA[25]`
+    /// is C1 bit 1 and `RDATA[15:14]` are the top two bits of C3.
+    #[test]
+    fn hermes_lite_status_reports_tx_faults() {
+        // C1 bit 1 is TX-inhibit *active low*: set means "not inhibited".
+        let mut health = TxHealth::default();
+        hl2_status(0x1E, 0x00, false, &mut health);
+        assert!(health.last_inhibit_warn.is_none(), "0x1E is a healthy transmitter");
+        hl2_status(0x1C, 0x00, false, &mut health);
+        assert!(health.last_inhibit_warn.is_some(), "inhibit line pulled low");
+
+        // FIFO under/overflow only counts while keyed — the transmit FIFO
+        // legitimately sits empty until the first over.
+        let mut health = TxHealth::default();
+        hl2_status(0x1E, 0x80, false, &mut health);
+        assert!(health.last_fifo_warn.is_none(), "an idle radio has an empty TX FIFO");
+        hl2_status(0x1E, 0x80, true, &mut health);
+        assert!(health.last_fifo_warn.is_some(), "underflow while keyed");
+
+        // A plain fill level (bit 15 clear) is not a fault however full it is.
+        let mut health = TxHealth::default();
+        hl2_status(0x1E, 0x7F, true, &mut health);
+        assert!(health.last_fifo_warn.is_none());
+
+        // Both warnings are rate-limited independently, so a chattering fault
+        // cannot crowd the other one out of the log.
+        let mut health = TxHealth::default();
+        hl2_status(0x1C, 0x00, true, &mut health);
+        let first = health.last_inhibit_warn;
+        hl2_status(0x1C, 0xC0, true, &mut health);
+        assert_eq!(health.last_inhibit_warn, first, "second inhibit warning suppressed");
+        assert!(health.last_fifo_warn.is_some(), "overflow still reported");
+    }
+
     #[test]
     fn lna_gain_register_encodes_hl2_range() {
         let regs = Regs {
             rx_freq: 7_000_000,
             tx_freq: 7_000_000,
             lna_gain: Some(0.0),
+            pa: None,
             filter_board: HpsdrFilterBoard::None,
             ptt: false,
         };
@@ -801,6 +989,7 @@ mod tests {
             rx_freq: 14_074_000,
             tx_freq: 14_074_000,
             lna_gain: Some(20.0),
+            pa: None,
             filter_board: HpsdrFilterBoard::None,
             ptt: false,
         };
@@ -824,6 +1013,7 @@ mod tests {
             rx_freq: 7_000_000,
             tx_freq: 7_000_000,
             lna_gain: Some(20.0),
+            pa: None,
             filter_board: HpsdrFilterBoard::None,
             ptt: false,
         };

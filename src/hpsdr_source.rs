@@ -64,6 +64,7 @@ impl HpsdrSource {
                     cfg.lna_gain_db,
                     cfg.filter_board,
                     cfg.invert_spectrum,
+                    cfg.pa_enable,
                 )
                 .map(std::sync::Arc::new)
                 .map_err(|e| e.to_string())
