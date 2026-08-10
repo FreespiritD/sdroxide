@@ -28,6 +28,13 @@ const DBM_LO: f32 = -127.0;
 const DBM_HI: f32 = -13.0;
 const S9_DBM: f32 = -73.0;
 
+/// Widest chord the needle's scale spans. The arc's radius follows the chord,
+/// and its ends dip `rad·(1 − cos 31°)` below the top — past ~439 pt of face
+/// that reaches below a 72 pt box. In a face wider than this the scale rides
+/// centred instead, so the desktop strip can hand the meter any width the row
+/// has over; see `the_stretched_desktop_smeter_keeps_its_scale_inside_its_box`.
+pub(crate) const NEEDLE_FACE_MAX_W: f32 = 430.0;
+
 /// SWR at the top of the SWR scale. With 3:1 pinned to the halfway point and a
 /// logarithmic scale, the end of travel falls out as 3² = 9:1.
 const SWR_MAX: f32 = 9.0;
@@ -886,9 +893,13 @@ fn show_needle(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
     // A wide, shallow arc: the pivot sits far below the short box, so the
     // needle sweeps a broad band across it and the scale's ends dip towards the
     // lower corners — leaving the top corners free for the readouts. The sweep
-    // is what sets the radius: the chord has to span the box.
+    // is what sets the radius: the chord has to span the box — up to
+    // [`NEEDLE_FACE_MAX_W`], past which the scale stays at its widest and rides
+    // centred in the face (the arc gets *taller* with width, and a wider one
+    // would dip below the box; the readouts keep the corners either way).
     let half = 31.0_f32.to_radians();
-    let rad = ((rect.width() - 14.0) / (2.0 * half.sin())).max(24.0);
+    let chord = rect.width().min(NEEDLE_FACE_MAX_W);
+    let rad = ((chord - 14.0) / (2.0 * half.sin())).max(24.0);
     let arc = Arc { pivot: pos2(rect.center().x, rect.top() + 13.0 * k + rad), rad, half };
     let band = 2.6 * k;
     let rail = (rad - band, rad + band);

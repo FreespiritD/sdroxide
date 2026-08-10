@@ -13,14 +13,10 @@ use crate::theme::{self, ThemedScroll};
 const FRAME_CUT: f32 = 10.0;
 /// Corner cut size for chip buttons.
 const CHIP_CUT: f32 = 5.0;
-/// Fixed module height for the captioned control boxes. Must exceed the tallest
-/// content (caption + a combo or slider row + margins) so every module ends up
-/// exactly this tall — then they line up regardless of the row's cross-axis
-/// alignment.
-pub const MODULE_H: f32 = 50.0;
-/// Taller box height for the prominent, caption-less boxes (frequency readout,
-/// S-meter, VFO/band-mode stack) — ~25% taller than a control box's original
-/// height, so two shortened control rows sit alongside one of these.
+/// The one module height: every box on the strip is this tall, whether its
+/// content is one centred row (frequency readout, S-meter) or two stacked
+/// control rows (VFO/RIT, RX, TX, Display, System) — so a wrapped strip's rows
+/// always line up regardless of which boxes landed on them.
 pub const MODULE_TALL_H: f32 = 72.0;
 /// The hairline border a module box wears. egui draws a [`egui::Frame`]'s
 /// stroke outside the content it was given, so a module built to `height`
@@ -319,81 +315,20 @@ pub fn hazard_stripes(p: &Painter, rect: Rect, stripe_w: f32) {
     }
 }
 
-/// A captioned control module of fixed `width`: a bordered box with a small
-/// cyan uppercase label above a row of controls.
-///
-/// Uses `allocate_ui_with_layout` so the fixed width is reserved *before*
-/// the content is drawn — that lets a `horizontal_wrapped` parent wrap the
-/// whole module to the next row cleanly (a plain `Frame` instead shrinks
-/// into whatever sliver is left, which is the wrong behavior here).
-pub fn module<R>(ui: &mut Ui, caption: &str, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
-    module_h(ui, caption, width, MODULE_H, add)
-}
-
 /// A module's inner margin on each side. What a caller measuring its own
 /// contents has to add on top of them to arrive at the `width` to reserve.
 pub const MODULE_MARGIN_X: f32 = 8.0;
 
-/// Like [`module`] but with an explicit box `height` (e.g. [`MODULE_TALL_H`]).
-pub fn module_h<R>(
-    ui: &mut Ui,
-    caption: &str,
-    width: f32,
-    height: f32,
-    add: impl FnOnce(&mut Ui) -> R,
-) -> R {
-    // Fixed height too: a bare (w, 0) allocation lets the top-down layout
-    // over-reserve vertical space, leaving big gaps between wrapped rows.
-    ui.allocate_ui_with_layout(
-        egui::vec2(width, height),
-        egui::Layout::top_down(egui::Align::Min),
-        |ui| {
-            ui.set_width(width);
-            egui::Frame::new()
-                .fill(theme::FILL())
-                .stroke(Stroke::new(1.0, theme::LINE_LIT()))
-                .inner_margin(egui::Margin {
-                    left: MODULE_MARGIN_X as i8,
-                    right: MODULE_MARGIN_X as i8,
-                    top: 4,
-                    bottom: 3,
-                })
-                .show(ui, |ui| {
-                    ui.set_width(width - 2.0 * MODULE_MARGIN_X);
-                    // Fill the full module height so every box — captioned or
-                    // bare — ends up exactly `height` tall.
-                    ui.set_min_height(height - 7.0);
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.label(
-                        RichText::new(caption.to_uppercase())
-                            .color(theme::CYAN_DIM())
-                            .size(9.5)
-                            .strong(),
-                    );
-                    // Top-align the control row. egui's ComboBox positions its
-                    // button from `available_rect_before_wrap().top()` and so
-                    // ignores vertical centering, unlike chips and drag-values;
-                    // top-aligning everything keeps them all on one baseline.
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-                        ui.set_min_height(24.0);
-                        add(ui)
-                    })
-                    .inner
-                })
-                .inner
-        },
-    )
-    .inner
-}
-
-/// Like [`module`] but with no caption — the content fills the full box height
-/// (vertically centred). Used for the frequency readout and S-meter, where the
-/// label would only waste space.
-pub fn module_bare<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
-    module_bare_h(ui, width, MODULE_H, add)
-}
-
-/// Like [`module_bare`] but with an explicit box `height`.
+/// A caption-less control module of fixed `width` and `height` (usually
+/// [`MODULE_TALL_H`]): a bordered box whose content fills the full box height,
+/// vertically centred.
+///
+/// Uses `allocate_ui_with_layout` so the fixed size is reserved *before* the
+/// content is drawn — a module never shrinks into whatever sliver of a row is
+/// left; it takes the width it asked for or overflows (a plain `Frame` instead
+/// shrinks, which is the wrong behavior here). The fixed height matters too: a
+/// bare (w, 0) allocation lets the layout over-reserve vertical space, leaving
+/// big gaps between the strip's rows.
 pub fn module_bare_h<R>(ui: &mut Ui, width: f32, height: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
     ui.allocate_ui_with_layout(
         egui::vec2(width, height),
@@ -749,6 +684,20 @@ pub fn chip_sized(
     chip_impl(ui, selected, text.into(), None, Sense::click(), Some(size))
 }
 
+/// [`chip_accent`] at an exact size — for a stretched row that carries accent
+/// chips among plain ones (the condensed System box's SAT and SCAN), so every
+/// chip in it can grow by the same amount.
+pub fn chip_accent_sized(
+    ui: &mut Ui,
+    selected: bool,
+    text: impl Into<RichText>,
+    fill: Color32,
+    ink: Color32,
+    size: egui::Vec2,
+) -> Response {
+    chip_impl(ui, selected, text.into(), Some((fill, ink)), Sense::click(), Some(size))
+}
+
 /// [`chip_hold`] at an exact size — the compact strip's PTT, which is drawn
 /// bigger than its label needs because it is the one control worth a whole
 /// thumb.
@@ -974,7 +923,7 @@ mod tests {
     /// beside it, which reads as a row out of alignment rather than as rounding.
     #[test]
     fn a_flush_module_is_exactly_as_tall_as_a_bordered_one() {
-        for height in [MODULE_H, MODULE_TALL_H, 40.0] {
+        for height in [50.0, MODULE_TALL_H, 40.0] {
             let (bordered, _) = module_height(height, false);
             let (flush, content) = module_height(height, true);
             assert_eq!(bordered, flush, "at {height} pt: bordered {bordered}, flush {flush}");

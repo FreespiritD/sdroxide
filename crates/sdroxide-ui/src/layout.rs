@@ -6,8 +6,9 @@
 //! eframe pins the web zoom factor to 1.0 — so one egui point is one CSS pixel
 //! and every hardcoded size in this crate is literally a pixel on a phone. The
 //! control strip is eight boxes that reserve a fixed width before they draw
-//! (see [`crate::chrome::module`]), so on a narrow screen they wrap to a row
-//! each and the widest still overflow. That is what the tiers exist to fix.
+//! (see [`crate::chrome::module_bare_h`]), so on a narrow screen they wrap to
+//! a row each and the widest still overflow. That is what the tiers exist to
+//! fix.
 
 use eframe::egui;
 use sdroxide_types::LayoutMode;
@@ -67,19 +68,22 @@ impl Tier {
 
 /// The tier a viewport of `size` earns, with the operator's override folded in.
 ///
-/// Phone below 600 wide because the widest single control box is TX at 520 and
-/// the frequency readout alone measures ~512: under 600 something is clipped
-/// however the strip wraps. Phone below 440 *tall* as well, for a phone in
-/// landscape — 852×393 or 932×430 is wide enough for a desktop row, but a
-/// 150 pt stack of control strip would take 40% of the height. No tablet lands
-/// there: every one of them is 768 tall or more in landscape.
+/// Phone below 600 wide because the frequency readout alone measures ~512:
+/// under 600 something is clipped however the strip wraps. Phone below 440
+/// *tall* as well, for a phone in landscape — 852×393 or 932×430 is wide
+/// enough for a desktop row, but a 150 pt stack of control strip would take
+/// 40% of the height. No tablet lands there: every one of them is 768 tall or
+/// more in landscape.
 ///
-/// Tablet up to 1400 wide. The full strip needs some 2600 pt to sit on one row,
-/// so everything below that is already two or three wrapped rows of it — and a
-/// row of menus reads better than a wall of boxes long before the boxes start
-/// to overflow. (768 portrait, the tightest tablet, leaves 732 pt of content
-/// width once the top panel's 8+8 margin and `angled_frame`'s 10+10 are off it,
-/// while the full-size readout and S-meter together want 770.)
+/// Tablet up to 1400 wide. The condensed desktop strip packs into two balanced
+/// rows from roughly 1250 pt of content width (one row from ~2450), so 1400 is
+/// no longer forced by overflow the way it was when the strip needed 2600 for
+/// a single row — but a row of menus still reads better than a wall of boxes
+/// on a small screen, and the breakpoint also guards the touch metrics, so
+/// lowering it is a separate decision from the strip's packing. (768 portrait,
+/// the tightest tablet, leaves 732 pt of content width once the top panel's
+/// 8+8 margin and `angled_frame`'s 10+10 are off it, while the full-size
+/// readout and S-meter together want 770.)
 pub fn tier_for(size: egui::Vec2, mode: LayoutMode) -> Tier {
     match mode {
         LayoutMode::Desktop => Tier::Desktop,

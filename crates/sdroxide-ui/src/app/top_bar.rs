@@ -6,13 +6,20 @@
 //! buttons. Each pushes [`Command`]s rather than touching the controller, so
 //! the whole strip is a pure function of the state it draws from.
 //!
-//! Only the desktop draws that full strip. A tablet keeps the readout and the
-//! S-meter at full size and folds everything else into menus; a phone stacks
-//! a compact readout, the meter and one row of menu chips. And a tablet-tier
-//! window too *short* for even two stacked rows — a 1280x720 panel — gets the
-//! single-row strip: the VFO box (a type-in readout over an S-meter bar)
-//! beside a thumb-sized PTT and two rows of menu buttons stretched to the
-//! edge of the screen.
+//! Only the desktop draws that full strip, and it lays it out itself rather
+//! than letting a wrapping row break wherever a box happens not to fit: every
+//! box is one uniform height with its controls in up to two rows, every width
+//! is measured before anything is drawn, [`plan_top_strip`] picks the row
+//! breaks that come out balanced, and each row's leftover goes to the boxes
+//! that can use it — the S-meter widens, sliders lengthen, chips spread — so
+//! the strip meets the right edge instead of leaving a ragged gap there.
+//!
+//! A tablet keeps the readout and the S-meter at full size and folds
+//! everything else into menus; a phone stacks a compact readout, the meter and
+//! one row of menu chips. And a tablet-tier window too *short* for even two
+//! stacked rows — a 1280x720 panel — gets the single-row strip: the VFO box
+//! (a type-in readout over an S-meter bar) beside a thumb-sized PTT and two
+//! rows of menu buttons stretched to the edge of the screen.
 
 use eframe::egui::{self, Color32, ComboBox, DragValue, RichText, Slider};
 use sdroxide_types::{
@@ -29,8 +36,34 @@ use crate::app::panels::digi_freq_for_band;
 const AB_W: f32 = 68.0;
 /// Width of the frequency box's right column (inactive VFO + band/mode chip).
 const RIGHT_W: f32 = 96.0;
-/// Width of the S-meter box at its design size.
+/// Width of the S-meter box at its design size. It has no ceiling: the bar and
+/// trace faces scale to any width, and the needle face parks its scale at
+/// [`crate::widgets::smeter::NEEDLE_FACE_MAX_W`] and centres it — so the meter
+/// is the strip's bottomless width absorber, and a row that carries it always
+/// reaches the right edge.
 const SMETER_W: f32 = 250.0;
+/// Width of the sub-receiver box at its design size.
+const SUB_W: f32 = 404.0;
+/// How much a box that grows by lengthening its slider rails or widening its
+/// offset fields (RX, TX, VFO/RIT, SUB) may add to them.
+const RAIL_STRETCH_MAX: f32 = 240.0;
+/// How much a box that grows by widening its chips (Display, System) may be
+/// stretched to, as a factor of its natural width.
+const CHIP_STRETCH_FACTOR: f32 = 2.0;
+/// The VFO/RIT box's utility chips — the labels its top row is measured and
+/// drawn from.
+const VFO_CHIPS: [&str; 4] = ["A↔B", "A→B", "SPLIT", "SUB"];
+/// Width of a RIT/XIT offset field on the desktop: a signed 4-digit offset
+/// plus " Hz".
+const HZ_FIELD_W: f32 = 74.0;
+/// Horizontal gap between the controls inside a two-row box — the
+/// `item_spacing` every condensed box sets, and therefore the gap its
+/// measurement has to count.
+const MODULE_ROW_SPACING: f32 = 5.0;
+/// Width of the value readout riding beside the TX Drive and Tune sliders
+/// ("100%" in a drag-value frame). Calibrated at the desktop tier, like the
+/// RX box's row figures; `the_condensed_tx_box_fits_its_rows` keeps it honest.
+const TX_SLIDER_VALUE_W: f32 = 48.0;
 /// Text size of the band/mode chip's label.
 const BAND_MODE_TEXT: f32 = 14.0;
 /// Below this the frequency digits stop reading as a dial, so the box sheds
@@ -108,6 +141,18 @@ impl ReadoutFit {
     }
 }
 
+/// The frequency box's measured geometry — see
+/// [`SdroxideApp::freq_box_plan`]: the digit size, the two side columns, the
+/// readout between them, and the outer width the box reserves around it all.
+struct FreqBoxPlan {
+    size: f32,
+    ab_w: f32,
+    right_w: f32,
+    readout_w: f32,
+    readout_h: f32,
+    box_w: f32,
+}
+
 /// The geometry of the short-screen single-row strip, planned before anything
 /// is drawn.
 ///
@@ -179,13 +224,193 @@ fn plan_short_strip(
     ShortStrip { digit, box_w, box_h, grid_w, cell1_w: cell(c.row1), cell2_w: cell(c.row2) }
 }
 
+/// A box the desktop packer places: its natural (minimum) outer width, how
+/// much of a row's slack it absorbs relative to its neighbours, and the widest
+/// it may be stretched to before the growth stops looking like anything.
+#[derive(Clone, Copy)]
+struct StripBox {
+    w: f32,
+    flex: f32,
+    max_w: f32,
+}
+
+/// One planned row of the desktop strip: which boxes landed on it (a
+/// contiguous range of the input — the packer never reorders), the width each
+/// is drawn at, and any gap justified between neighbours once every box on the
+/// row has been stretched to its cap.
+struct PlannedRow {
+    boxes: std::ops::Range<usize>,
+    widths: Vec<f32>,
+    extra_gap: f32,
+}
+
+struct StripPlan {
+    rows: Vec<PlannedRow>,
+}
+
+/// The rows greedy first-fit needs for `boxes` in order — the fewest possible
+/// when the order is fixed. A lone box "fits" its row by definition, however
+/// wide, so the count is always achievable.
+fn rows_needed(avail: f32, gap: f32, boxes: &[StripBox]) -> usize {
+    let mut rows = 1;
+    let mut run = boxes[0].w;
+    for b in &boxes[1..] {
+        if run + gap + b.w <= avail {
+            run += gap + b.w;
+        } else {
+            rows += 1;
+            run = b.w;
+        }
+    }
+    rows
+}
+
+/// Pack `boxes` — in the order given — into rows of `avail` points with `gap`
+/// between neighbours. A free function of measured numbers, like
+/// [`plan_short_strip`], so the arithmetic can be tested without an app.
+///
+/// Fewest rows first, because a row costs the waterfall its height. Among the
+/// break points that manage that count, the ones whose leftover can actually
+/// be *absorbed* — a row's spare width is only worth having on a row whose
+/// boxes can stretch over it, so unabsorbable spare is minimised first and
+/// natural balance breaks the ties. Then each row's leftover is fed to its
+/// flexible boxes, so the row meets the right edge instead of stopping short
+/// of it.
+///
+/// A box wider than `avail` gets a row of its own and overflows it, exactly as
+/// the old wrapping layout would have — reachable only under a forced Desktop
+/// layout on a window the desktop tier would never choose itself.
+fn plan_top_strip(avail: f32, gap: f32, boxes: &[StripBox]) -> StripPlan {
+    let n = boxes.len();
+    if n == 0 {
+        return StripPlan { rows: Vec::new() };
+    }
+    let run_w = |r: &std::ops::Range<usize>| {
+        boxes[r.clone()].iter().map(|b| b.w).sum::<f32>() + gap * (r.len() - 1) as f32
+    };
+    let fits = |r: &std::ops::Range<usize>| r.len() == 1 || run_w(r) <= avail;
+    let rows = rows_needed(avail, gap, boxes);
+
+    // Every way of placing `rows - 1` breaks among the `n - 1` seams. With at
+    // most eight boxes this is at most 128 masks — not worth a cleverer
+    // algorithm. Scored per row by how much leftover would survive every box
+    // stretching to its cap (squared), then by the raw leftover (squared) as
+    // the tiebreak — an infinite cap (the S-meter) swallows any leftover, and
+    // `max(0.0, -inf)` keeps the arithmetic finite.
+    let mut best: Option<((f32, f32), Vec<std::ops::Range<usize>>)> = None;
+    for mask in 0u32..(1 << (n - 1)) {
+        if mask.count_ones() as usize != rows - 1 {
+            continue;
+        }
+        let mut runs = Vec::with_capacity(rows);
+        let mut start = 0;
+        for seam in 0..n - 1 {
+            if mask & (1 << seam) != 0 {
+                runs.push(start..seam + 1);
+                start = seam + 1;
+            }
+        }
+        runs.push(start..n);
+        if !runs.iter().all(&fits) {
+            continue;
+        }
+        let (mut dead, mut ragged) = (0.0f32, 0.0f32);
+        for r in &runs {
+            let leftover = (avail - run_w(r)).max(0.0);
+            let capacity: f32 = boxes[r.clone()].iter().map(|b| b.max_w - b.w).sum();
+            dead += (leftover - capacity).max(0.0).powi(2);
+            ragged += leftover.powi(2);
+        }
+        if best.as_ref().is_none_or(|(s, _)| (dead, ragged) < *s) {
+            best = Some(((dead, ragged), runs));
+        }
+    }
+    let (_, runs) = best.expect("greedy's own partition is always a candidate");
+
+    // Stretch each row edge-to-edge: its leftover goes to the flexible boxes
+    // in proportion to their flex, water-filling against each box's cap — a
+    // box that hits its cap hands the rest back for the others. Whatever no
+    // box can take is justified between them instead. A couple of points are
+    // held back so rounding never pushes the last box past the edge.
+    let target = avail - 2.0;
+    let rows = runs
+        .into_iter()
+        .map(|r| {
+            let idx: Vec<usize> = r.clone().collect();
+            let mut widths: Vec<f32> = idx.iter().map(|&i| boxes[i].w).collect();
+            let mut leftover = (target - run_w(&r)).max(0.0);
+            loop {
+                let growable: Vec<usize> = (0..idx.len())
+                    .filter(|&j| boxes[idx[j]].flex > 0.0 && widths[j] < boxes[idx[j]].max_w - 0.5)
+                    .collect();
+                let flex: f32 = growable.iter().map(|&j| boxes[idx[j]].flex).sum();
+                if leftover <= 0.5 || flex <= 0.0 {
+                    break;
+                }
+                let pool = leftover;
+                for &j in &growable {
+                    let share = pool * boxes[idx[j]].flex / flex;
+                    let grown = (widths[j] + share).min(boxes[idx[j]].max_w);
+                    leftover -= grown - widths[j];
+                    widths[j] = grown;
+                }
+            }
+            let extra_gap =
+                if r.len() > 1 { leftover.max(0.0) / (r.len() - 1) as f32 } else { 0.0 };
+            PlannedRow { boxes: r, widths, extra_gap }
+        })
+        .collect();
+    StripPlan { rows }
+}
+
+/// The widest frequency box that still packs the strip into as few rows as
+/// the narrowest one would — how the desktop trades digit size for a whole
+/// row of strip, and for nothing less. `rest` is every box after the
+/// frequency box, in order; the result is `design_w` untouched whenever
+/// shrinking wouldn't save a row.
+///
+/// Greedy row count is monotone in a box's width, so the boundary is found by
+/// bisection; the half point stepped back off it keeps the result clear of
+/// the exact-fit edge that `plan_top_strip` measures with `<=`.
+fn freq_w_for_fewest_rows(
+    avail: f32,
+    gap: f32,
+    design_w: f32,
+    min_w: f32,
+    rest: &[StripBox],
+) -> f32 {
+    let rows_with = |w: f32| {
+        let mut boxes = Vec::with_capacity(rest.len() + 1);
+        boxes.push(StripBox { w, flex: 0.0, max_w: w });
+        boxes.extend_from_slice(rest);
+        rows_needed(avail, gap, &boxes)
+    };
+    let fewest = rows_with(min_w);
+    if min_w >= design_w || rows_with(design_w) <= fewest {
+        return design_w;
+    }
+    let (mut lo, mut hi) = (min_w, design_w);
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.0;
+        if rows_with(mid) <= fewest {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    (lo - 0.5).max(min_w)
+}
+
 impl SdroxideApp {
     pub(in crate::app) fn top_bar(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-        // All controls are captioned (or bare) modules that reflow when the
-        // window is narrow. The frequency box is always first, the S-meter
-        // second; the rest follow and wrap to further rows.
         let tier = crate::layout::tier(ui.ctx());
+        // The desktop plans its own rows; only the compact strips still lean
+        // on a wrapping layout.
+        if !tier.compact() {
+            self.desktop_strip(ui, cmds);
+            return;
+        }
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true), |ui| {
             // A tablet-tier window too *short* for even the two stacked
             // compact rows — a 1280x720 panel — gets the single-row strip:
@@ -197,38 +422,121 @@ impl SdroxideApp {
                 return;
             }
             let band_mode_shown = self.freq_module(ui, cmds, tier);
-            // A window too narrow for the boxes gets them as menus instead.
-            // Wrapping alone cannot save it: a module reserves its width before
-            // it draws, so it wraps whole or overflows, and never shrinks.
-            if tier.compact() {
-                // The meter is the one thing here that can be any width, so it
-                // is what gives: measure the chips that follow it and hand it
-                // the rest of the row, rather than let one of them wrap onto a
-                // row of its own.
-                let beside = if tier == crate::layout::Tier::Phone {
-                    self.menu_chips_w(ui, band_mode_shown)
-                } else {
-                    0.0
-                };
-                self.smeter_module(ui, tier, beside);
-                self.menu_bar(ui, cmds, tier, band_mode_shown);
-                return;
-            }
-            self.smeter_module(ui, tier, 0.0);
-            self.vfo_rit_module(ui, cmds);
-            self.rx_filter_module(ui, cmds);
-            // Only while the sub is running: the module appearing is itself the
-            // confirmation that SUB took effect, and it costs a wrapped row of
-            // top bar that operators who never use it should not have to pay.
-            if self.state.sub_rx_enabled {
-                self.sub_rx_module(ui, cmds);
-            }
-            if self.caps.as_ref().is_some_and(|c| c.is_transmit_capable()) {
-                self.tx_module(ui, cmds);
-            }
-            self.display_module(ui, cmds);
-            self.windows_module(ui);
+            // The boxes come as menus here: a module reserves its width before
+            // it draws, so on a window this narrow it would wrap whole or
+            // overflow, and never shrink.
+            //
+            // The meter is the one thing here that can be any width, so it
+            // is what gives: measure the chips that follow it and hand it
+            // the rest of the row, rather than let one of them wrap onto a
+            // row of its own.
+            let beside = if tier == crate::layout::Tier::Phone {
+                self.menu_chips_w(ui, band_mode_shown)
+            } else {
+                0.0
+            };
+            self.smeter_module(ui, tier, beside);
+            self.menu_bar(ui, cmds, tier, band_mode_shown);
         });
+    }
+
+    /// The desktop strip: measure every box, plan balanced rows, then draw
+    /// each row stretched to the right edge. See [`plan_top_strip`].
+    ///
+    /// Widths are measured against the live style (fonts and paddings change
+    /// with the tier) and against state — the RX box grows an NFM tone chip,
+    /// the TX box a voice-keyer button — so the plan is remade each frame, and
+    /// toggling one of those can re-break the rows. The old wrapping layout
+    /// reflowed on the same toggles.
+    fn desktop_strip(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let tier = crate::layout::tier(ui.ctx());
+        // Pane-local, not viewport: in split view each radio packs its own
+        // strip against its own pane.
+        let avail = ui.available_width();
+        let gap = ui.spacing().item_spacing.x;
+        let fit = ReadoutFit::measure(ui);
+        // The readout keeps its design size wherever the row can hold it, and
+        // shrinks against the full row where it cannot (a forced Desktop
+        // layout on a narrow pane) — a box the packer cannot break up any
+        // further. The few points of `beside` keep rounding from pushing a
+        // full-row box past the edge.
+        let mut freq = self.freq_box_plan(ui, &fit, avail, 4.0, tier);
+
+        #[derive(Clone, Copy)]
+        enum Kind {
+            Freq,
+            Smeter,
+            VfoRit,
+            RxFilter,
+            Sub,
+            Tx,
+            Display,
+            System,
+        }
+        let mut boxes: Vec<(Kind, StripBox)> = vec![
+            (Kind::Freq, StripBox { w: freq.box_w, flex: 0.0, max_w: freq.box_w }),
+            (Kind::Smeter, StripBox { w: SMETER_W, flex: 3.0, max_w: f32::INFINITY }),
+            (Kind::VfoRit, {
+                let w = self.vfo_rows_w(ui);
+                StripBox { w, flex: 1.0, max_w: w + RAIL_STRETCH_MAX }
+            }),
+            (Kind::RxFilter, {
+                let w = self.rx_filter_w();
+                StripBox { w, flex: 2.0, max_w: w + RAIL_STRETCH_MAX }
+            }),
+        ];
+        // Only while the sub is running: the module appearing is itself the
+        // confirmation that SUB took effect, and it costs strip width that
+        // operators who never use it should not have to pay.
+        if self.state.sub_rx_enabled {
+            boxes.push((
+                Kind::Sub,
+                StripBox { w: SUB_W, flex: 1.0, max_w: SUB_W + RAIL_STRETCH_MAX },
+            ));
+        }
+        if self.caps.as_ref().is_some_and(|c| c.is_transmit_capable()) {
+            let w = self.tx_rows_w(ui);
+            boxes.push((Kind::Tx, StripBox { w, flex: 2.0, max_w: w + RAIL_STRETCH_MAX }));
+        }
+        let w = self.display_rows_w(ui);
+        boxes.push((Kind::Display, StripBox { w, flex: 1.0, max_w: w * CHIP_STRETCH_FACTOR }));
+        let w = system_rows_w(ui);
+        boxes.push((Kind::System, StripBox { w, flex: 1.0, max_w: w * CHIP_STRETCH_FACTOR }));
+
+        // A whole row is worth more than digit size: when the strip packs into
+        // fewer rows with the readout at its floor, shrink it just enough to
+        // get there. The saved row goes to the waterfall, and the rows that
+        // remain come out full rather than one of them nearly empty.
+        let overhead = freq.box_w - freq.readout_w;
+        let min_w = overhead + fit.width(MIN_DIGIT);
+        let rest: Vec<StripBox> = boxes[1..].iter().map(|(_, b)| *b).collect();
+        let freq_w = freq_w_for_fewest_rows(avail, gap, freq.box_w, min_w, &rest);
+        if freq_w < freq.box_w {
+            freq = self.freq_box_plan(ui, &fit, freq_w, 0.0, tier);
+            boxes[0].1 = StripBox { w: freq.box_w, flex: 0.0, max_w: freq.box_w };
+        }
+
+        let plan = plan_top_strip(avail, gap, &boxes.iter().map(|(_, b)| *b).collect::<Vec<_>>());
+        for row in &plan.rows {
+            ui.horizontal(|ui| {
+                for (j, i) in row.boxes.clone().enumerate() {
+                    if j > 0 && row.extra_gap > 0.0 {
+                        ui.add_space(row.extra_gap);
+                    }
+                    let w = row.widths[j];
+                    match boxes[i].0 {
+                        Kind::Freq => self.freq_module_at(ui, cmds, &freq),
+                        Kind::Smeter => self.smeter_box(ui, w, crate::chrome::MODULE_TALL_H, false),
+                        Kind::VfoRit => self.vfo_rit_module(ui, cmds, w),
+                        Kind::RxFilter => self.rx_filter_module(ui, cmds, w),
+                        Kind::Sub => self.sub_rx_module(ui, cmds, w),
+                        Kind::Tx => self.tx_condensed(ui, cmds, w),
+                        Kind::Display => self.display_condensed(ui, cmds, w),
+                        Kind::System => self.windows_condensed(ui, w),
+                    }
+                }
+            });
+        }
     }
 
     /// Width the menu row's chips will take, gaps included, so the S-meter can
@@ -486,7 +794,7 @@ impl SdroxideApp {
         let btn = btn.on_hover_text("The second receiver's frequency, mode, filter and level");
         crate::chrome::menu_popup(ui, &btn, |ui| {
             crate::chrome::menu_caption(ui, "Sub receiver");
-            self.sub_controls(ui, cmds, true);
+            self.sub_controls(ui, cmds, true, 0.0);
         });
     }
 
@@ -497,7 +805,7 @@ impl SdroxideApp {
             crate::chrome::menu_caption(ui, "Transmit");
             // PTT is on the strip already; TUNE rides with the levels it is
             // set up with.
-            self.tx_controls(ui, cmds, true, false);
+            self.tx_controls(ui, cmds, true);
             if crate::chrome::chip_accent(
                 ui,
                 self.state.tx.tune,
@@ -582,12 +890,30 @@ impl SdroxideApp {
         if tier == crate::layout::Tier::Phone {
             return self.freq_module_compact(ui, cmds, &fit);
         }
-
         // Wide enough for the full box: size the digits to their design size,
         // dropping only as far as the row makes necessary. The S-meter is the
         // one thing that has to stay on this row with them — a tablet in
         // portrait has just enough width for both if the digits give a little.
-        //
+        // The few extra points of slack keep a readout that comes out exactly
+        // the width of the space left from rounding its way onto the next row.
+        let plan = self.freq_box_plan(ui, &fit, ui.available_width(), SMETER_W + 8.0 + 4.0, tier);
+        self.freq_module_at(ui, cmds, &plan);
+        true
+    }
+
+    /// The frequency box's measured geometry: the digit size the width budget
+    /// buys, the measured side-column widths, and the outer width the box will
+    /// reserve. `beside` is width that must stay free of the same `avail` —
+    /// the tablet keeps the S-meter beside the readout; the desktop packer,
+    /// which breaks rows itself, passes only a few points of rounding slack.
+    fn freq_box_plan(
+        &self,
+        ui: &egui::Ui,
+        fit: &ReadoutFit,
+        avail: f32,
+        beside: f32,
+        tier: crate::layout::Tier,
+    ) -> FreqBoxPlan {
         // Both side columns are measured rather than assumed. Their design
         // widths hold for a desktop, but a touched layout pads every chip out
         // past them — and a column reserved too narrow does not clip, it
@@ -602,17 +928,18 @@ impl SdroxideApp {
                 egui::FontId::monospace(12.0),
             ));
         let overhead = ab_w + right_w + 38.0; // side columns, gaps, box margins
-        // A few points of slack, so a readout that comes out exactly the width
-        // of the space left does not round its way onto the next row.
-        let beside = SMETER_W + 8.0 + 4.0;
-        let size =
-            fit.fit(ui.available_width() - overhead - beside).clamp(MIN_DIGIT, tier.digit_cap());
+        let size = fit.fit(avail - overhead - beside).clamp(MIN_DIGIT, tier.digit_cap());
         let (readout_w, readout_h) = (fit.width(size), fit.height(size));
         // The box still hugs its contents: that keeps the right column against
         // the box edge (no empty space) and lets the readout be centred
         // vertically by exact geometry rather than a fragile layout hint.
         let box_w = 8.0 + ab_w + 10.0 + readout_w + 12.0 + right_w + 8.0;
+        FreqBoxPlan { size, ab_w, right_w, readout_w, readout_h, box_w }
+    }
 
+    /// Draw the frequency box to a pre-measured [`FreqBoxPlan`].
+    fn freq_module_at(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, plan: &FreqBoxPlan) {
+        let &FreqBoxPlan { size, ab_w, right_w, readout_w, readout_h, box_w } = plan;
         crate::chrome::module_bare_h(ui, box_w, crate::chrome::MODULE_TALL_H, |ui| {
             ui.spacing_mut().item_spacing.x = 0.0; // control every gap explicitly
             let active = self.state.active_vfo;
@@ -692,7 +1019,6 @@ impl SdroxideApp {
                 },
             );
         });
-        true
     }
 
     /// The frequency box for a phone: which VFO is being tuned, the digits, and
@@ -829,6 +1155,16 @@ impl SdroxideApp {
         // both in what is drawn and in what a click cycles to. The persisted
         // choice is left alone: the desktop it was made on still honours it.
         let compact = tier == crate::layout::Tier::Phone;
+        self.smeter_box(ui, w, h, compact);
+    }
+
+    /// The S-meter's box at an exact size — the body [`Self::smeter_module`]
+    /// and the desktop strip share. The meter lays itself out against whatever
+    /// rect it is given, which is what makes it the strip's bottomless width
+    /// absorber: the bar and trace faces scale with the box, and the needle
+    /// face keeps its scale readable by capping and centring it (see
+    /// [`crate::widgets::smeter::NEEDLE_FACE_MAX_W`]).
+    fn smeter_box(&mut self, ui: &mut egui::Ui, w: f32, h: f32, compact: bool) {
         let style = self.view.smeter_style;
         let shown = if compact { style.compact() } else { style };
         crate::chrome::module_bare_flush_h(ui, w, h, |ui| {
@@ -845,82 +1181,113 @@ impl SdroxideApp {
 
     /// Combined VFO + RIT/XIT box: the VFO A/B utility chips on top, with the
     /// RIT/XIT tuning-offset controls stacked underneath. Bare and tall — this
-    /// replaces the separate VFO and RIT/XIT boxes.
-    fn vfo_rit_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        crate::chrome::module_bare_h(ui, 270.0, crate::chrome::MODULE_TALL_H, |ui| {
+    /// replaces the separate VFO and RIT/XIT boxes. Width past
+    /// [`Self::vfo_rows_w`] is spent by the controls themselves: the utility
+    /// chips widen, and the offset fields grow.
+    fn vfo_rit_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, w: f32) {
+        let tx_capable = self.caps.as_ref().is_some_and(|c| c.is_transmit_capable());
+        let inner = w - 2.0 * crate::chrome::MODULE_MARGIN_X - 4.0;
+        let extra1 = ((inner - chip_row_w(ui, &VFO_CHIPS)) / VFO_CHIPS.len() as f32).max(0.0);
+        let fields = if tx_capable { 2.0 } else { 1.0 };
+        let extra2 = ((inner - vfo_offsets_w(ui, tx_capable)) / fields).max(0.0);
+        crate::chrome::module_bare_h(ui, w, crate::chrome::MODULE_TALL_H, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
-                self.vfo_controls(ui, cmds, false);
+                ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
+                ui.horizontal(|ui| self.vfo_util_chips(ui, cmds, extra1));
+                ui.horizontal(|ui| self.vfo_offset_row(ui, cmds, false, extra2));
             });
         });
     }
 
-    /// The VFO utility chips and the RIT/XIT offsets — the body of the VFO box,
-    /// and of the VFO menu. See [`crate::chrome::control_row`] for `narrow`.
-    fn vfo_controls(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, narrow: bool) {
+    /// The VFO utility chips — the top row of the VFO/RIT box, and the head of
+    /// the VFO menu. `extra` stretches each chip; the popup passes 0.
+    fn vfo_util_chips(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, extra: f32) {
+        let [swap, copy, split, sub] = VFO_CHIPS;
+        if chip_stretched(ui, false, swap, extra).on_hover_text("Swap VFOs").clicked() {
+            cmds.push(Command::SwapVfos);
+        }
+        if chip_stretched(ui, false, copy, extra).on_hover_text("Copy A to B").clicked() {
+            cmds.push(Command::CopyAtoB);
+        }
+        if chip_stretched(ui, self.state.split, split, extra).clicked() {
+            cmds.push(Command::SetSplit(!self.state.split));
+        }
+        if chip_stretched(ui, self.state.sub_rx_enabled, sub, extra)
+            .on_hover_text(
+                "Second receiver, in the right ear. It tunes independently of \
+                 A/B — its controls appear in the SUB module, and its passband \
+                 on the waterfall.",
+            )
+            .clicked()
+        {
+            cmds.push(Command::SetSubRx(!self.state.sub_rx_enabled));
+        }
+    }
+
+    /// The RIT/XIT tuning offsets — the bottom row of the VFO/RIT box, and the
+    /// tail of the VFO menu. `extra` widens each Hz field; the popup passes 0.
+    fn vfo_offset_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<Command>,
+        narrow: bool,
+        extra: f32,
+    ) {
         let tx_capable = self.caps.as_ref().is_some_and(|c| c.is_transmit_capable());
         // Wide enough for a signed 4-digit offset plus " Hz", and tall enough
         // to hit with a finger where the layout expects one.
         let hz_field = if narrow {
             egui::vec2(96.0, ui.spacing().interact_size.y.max(22.0))
         } else {
-            egui::vec2(74.0, 22.0)
+            egui::vec2(HZ_FIELD_W + extra, 22.0)
         };
-        // VFO utility chips.
-        crate::chrome::control_row(ui, narrow, |ui| {
-            if crate::chrome::chip(ui, false, "A↔B").on_hover_text("Swap VFOs").clicked() {
-                cmds.push(Command::SwapVfos);
+        let rit = self.state.rit;
+        if crate::chrome::chip(ui, rit.enabled, "RIT").clicked() {
+            cmds.push(Command::SetRit { enabled: !rit.enabled, hz: rit.hz });
+        }
+        let mut rit_hz = rit.hz;
+        if ui
+            .add_sized(
+                hz_field,
+                DragValue::new(&mut rit_hz).speed(5).range(-9999..=9999).suffix(" Hz"),
+            )
+            .changed()
+        {
+            cmds.push(Command::SetRit { enabled: rit.enabled, hz: rit_hz });
+        }
+        if tx_capable {
+            let xit = self.state.xit;
+            if crate::chrome::chip(ui, xit.enabled, "XIT").clicked() {
+                cmds.push(Command::SetXit { enabled: !xit.enabled, hz: xit.hz });
             }
-            if crate::chrome::chip(ui, false, "A→B").on_hover_text("Copy A to B").clicked() {
-                cmds.push(Command::CopyAtoB);
-            }
-            if crate::chrome::chip(ui, self.state.split, "SPLIT").clicked() {
-                cmds.push(Command::SetSplit(!self.state.split));
-            }
-            if crate::chrome::chip(ui, self.state.sub_rx_enabled, "SUB")
-                .on_hover_text(
-                    "Second receiver, in the right ear. It tunes independently of \
-                     A/B — its controls appear in the SUB module, and its passband \
-                     on the waterfall.",
-                )
-                .clicked()
-            {
-                cmds.push(Command::SetSubRx(!self.state.sub_rx_enabled));
-            }
-        });
-        // RIT / XIT tuning offsets.
-        crate::chrome::control_row(ui, narrow, |ui| {
-            let rit = self.state.rit;
-            if crate::chrome::chip(ui, rit.enabled, "RIT").clicked() {
-                cmds.push(Command::SetRit { enabled: !rit.enabled, hz: rit.hz });
-            }
-            let mut rit_hz = rit.hz;
+            let mut xit_hz = xit.hz;
             if ui
                 .add_sized(
                     hz_field,
-                    DragValue::new(&mut rit_hz).speed(5).range(-9999..=9999).suffix(" Hz"),
+                    DragValue::new(&mut xit_hz).speed(5).range(-9999..=9999).suffix(" Hz"),
                 )
                 .changed()
             {
-                cmds.push(Command::SetRit { enabled: rit.enabled, hz: rit_hz });
+                cmds.push(Command::SetXit { enabled: xit.enabled, hz: xit_hz });
             }
-            if tx_capable {
-                let xit = self.state.xit;
-                if crate::chrome::chip(ui, xit.enabled, "XIT").clicked() {
-                    cmds.push(Command::SetXit { enabled: !xit.enabled, hz: xit.hz });
-                }
-                let mut xit_hz = xit.hz;
-                if ui
-                    .add_sized(
-                        hz_field,
-                        DragValue::new(&mut xit_hz).speed(5).range(-9999..=9999).suffix(" Hz"),
-                    )
-                    .changed()
-                {
-                    cmds.push(Command::SetXit { enabled: xit.enabled, hz: xit_hz });
-                }
-            }
-        });
+        }
+    }
+
+    /// The VFO utility chips and the RIT/XIT offsets — the body of the VFO
+    /// menu. See [`crate::chrome::control_row`] for `narrow`.
+    fn vfo_controls(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, narrow: bool) {
+        crate::chrome::control_row(ui, narrow, |ui| self.vfo_util_chips(ui, cmds, 0.0));
+        crate::chrome::control_row(ui, narrow, |ui| self.vfo_offset_row(ui, cmds, narrow, 0.0));
+    }
+
+    /// The VFO/RIT box's natural width: the wider of the utility-chip row and
+    /// the RIT/XIT row, plus the box margins and a little rounding slack. A
+    /// receive-only rig has no XIT, and stops paying for it.
+    fn vfo_rows_w(&self, ui: &egui::Ui) -> f32 {
+        let tx_capable = self.caps.as_ref().is_some_and(|c| c.is_transmit_capable());
+        chip_row_w(ui, &VFO_CHIPS).max(vfo_offsets_w(ui, tx_capable))
+            + 2.0 * crate::chrome::MODULE_MARGIN_X
+            + 4.0
     }
 
     /// The band/mode selector button plus the floating popup with the band +
@@ -944,18 +1311,14 @@ impl SdroxideApp {
         });
     }
 
-    /// Combined Receiver + Filter/Noise box: volume, gain and AGC on top, with
-    /// the squelch + noise + mute/record chips stacked underneath. Bare and
-    /// tall, like the VFO/RIT box — replaces the separate Receiver and Filter
-    /// boxes.
-    fn rx_filter_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        // Two rows in one box, so it is sized for the wider of them, each
-        // figure being that row laid out at the desktop tier plus a little
-        // slack. Which row leads changes with the rig and the state: the noise
-        // row usually, the receive row once it carries both a front-end gain
-        // rail and the manual-gain rail that appears with the AGC off.
-        // The widest NR chip is now "NR DFNR High" — two characters more than
-        // the "NR AI High" this was sized for.
+    /// The Receiver + Filter/Noise box's natural width: the wider of its two
+    /// rows, each figure being that row laid out at the desktop tier plus a
+    /// little slack. Which row leads changes with the rig and the state: the
+    /// noise row usually, the receive row once it carries both a front-end
+    /// gain rail and the manual-gain rail that appears with the AGC off.
+    /// The widest NR chip is now "NR DFNR High" — two characters more than
+    /// the "NR AI High" this was sized for.
+    fn rx_filter_w(&self) -> f32 {
         let noise_row: f32 = 462.0
             + match self.state.rx[0].mode {
                 Mode::Wfm => 40.0,
@@ -967,10 +1330,20 @@ impl SdroxideApp {
         let rx_row = 205.0
             + if self.rx_gain().is_some() { 180.0 } else { 0.0 }
             + if self.state.rx[0].agc == AgcMode::Off { 170.0 } else { 0.0 };
-        let width = noise_row.max(rx_row) + 16.0;
-        crate::chrome::module_bare_h(ui, width, crate::chrome::MODULE_TALL_H, |ui| {
+        noise_row.max(rx_row) + 16.0
+    }
+
+    /// Combined Receiver + Filter/Noise box: volume, gain and AGC on top, with
+    /// the squelch + noise + mute/record chips stacked underneath. Bare and
+    /// tall, like the VFO/RIT box. Width past [`Self::rx_filter_w`] goes to
+    /// the Vol and SQL rails — one per row, so both rows grow by the same
+    /// amount (the Gain and Man rails pin their own width and stay put).
+    fn rx_filter_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, w: f32) {
+        let extra = (w - self.rx_filter_w()).clamp(0.0, RAIL_STRETCH_MAX);
+        crate::chrome::module_bare_h(ui, w, crate::chrome::MODULE_TALL_H, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
+                ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
+                ui.spacing_mut().slider_width += extra;
                 self.rx_controls(ui, cmds, false);
             });
         });
@@ -1438,18 +1811,29 @@ impl SdroxideApp {
     /// has a frequency, a mode and a filter of its own — none of which the main
     /// receiver's controls can reach — so without this module it is a second
     /// receiver that can only be switched on and off.
-    fn sub_rx_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        crate::chrome::module_bare_h(ui, 404.0, crate::chrome::MODULE_TALL_H, |ui| {
+    fn sub_rx_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, w: f32) {
+        // Width past the design size goes to the frequency field on the top
+        // row and the volume rail on the bottom one — one growing control per
+        // row, so both rows widen by the same amount.
+        let extra = (w - SUB_W).clamp(0.0, RAIL_STRETCH_MAX);
+        crate::chrome::module_bare_h(ui, w, crate::chrome::MODULE_TALL_H, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
-                self.sub_controls(ui, cmds, false);
+                ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
+                self.sub_controls(ui, cmds, false, extra);
             });
         });
     }
 
     /// The sub receiver's controls — the body of the SUB box, and of the SUB
-    /// menu. See [`crate::chrome::control_row`] for `narrow`.
-    fn sub_controls(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, narrow: bool) {
+    /// menu. See [`crate::chrome::control_row`] for `narrow`; `extra` widens
+    /// the frequency field and the volume rail, and the popup passes 0.
+    fn sub_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<Command>,
+        narrow: bool,
+        extra: f32,
+    ) {
         // The sub tunes anywhere inside the device passband and nowhere outside
         // it: both receivers are DDCs on the same IQ stream.
         let half = self.state.sample_rate / 2.0;
@@ -1475,7 +1859,7 @@ impl SdroxideApp {
             let mut hz = self.state.sub_rx_hz;
             let resp = ui
                 .add_sized(
-                    [116.0, field_h],
+                    [116.0 + extra, field_h],
                     DragValue::new(&mut hz)
                         .speed(10.0)
                         .range(dev_lo..=dev_hi)
@@ -1536,7 +1920,7 @@ impl SdroxideApp {
             ui.label("Vol").on_hover_text("Sub receiver level (it plays in the right ear)");
             if ui
                 .scope(|ui| {
-                    ui.spacing_mut().slider_width = 64.0;
+                    ui.spacing_mut().slider_width = 64.0 + extra;
                     crate::chrome::slider(ui, Slider::new(&mut vol, 0.0..=1.0).show_value(false))
                 })
                 .inner
@@ -1559,104 +1943,148 @@ impl SdroxideApp {
         });
     }
 
-    fn tx_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        // The voice keyer's button only appears where the keyer can transmit —
-        // every voice mode plus RADE, which takes a message as its microphone.
-        let keyer_ok = self.state.rx[0].mode.allows_voice_keyer();
-        let width = if keyer_ok { 520.0 } else { 470.0 };
-        crate::chrome::module(ui, "Transmit", width, |ui| {
-            self.tx_controls(ui, cmds, false, true);
+    /// The PTT and TUNE latching chips — the head of the condensed TX box's
+    /// top row. Only the desktop draws them here: a compact layout keys the
+    /// transmitter from the menu row instead, where it is one tap away rather
+    /// than two — burying push-to-talk in a menu is not a thing to do to an
+    /// operator.
+    fn tx_key_chips(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let tx = self.state.tx;
+        if crate::chrome::chip_accent(
+            ui,
+            tx.ptt,
+            RichText::new(" PTT ").size(15.0).strong(),
+            crate::theme::ALERT(),
+            Color32::WHITE,
+        )
+        .clicked()
+        {
+            cmds.push(Command::SetPtt(!tx.ptt));
+        }
+        if crate::chrome::chip_accent(
+            ui,
+            tx.tune,
+            RichText::new(" TUNE ").size(15.0),
+            crate::theme::YELLOW(),
+            crate::theme::INK_ON_CYAN(),
+        )
+        .clicked()
+        {
+            cmds.push(Command::SetTune(!tx.tune));
+        }
+    }
+
+    /// The voice keyer's chip, where the keyer can transmit — every voice mode
+    /// plus RADE, which takes a message as its microphone.
+    fn tx_keyer_chip(&mut self, ui: &mut egui::Ui) {
+        if !self.state.rx[0].mode.allows_voice_keyer() {
+            return;
+        }
+        // Lit while a message is on the air, so the button doubles as
+        // the "something is transmitting from the keyer" indicator.
+        let playing = self.voice.playing.is_some();
+        let hover = match self.voice.playing {
+            Some(i) => format!(
+                "Transmitting {} — click to open the voice keyer",
+                sdroxide_types::slot_label(i as usize, &self.voice.slot(i as usize).name)
+            ),
+            None => "Voice keyer: record and transmit stored messages".to_string(),
+        };
+        if crate::chrome::chip_accent(
+            ui,
+            playing || self.show_voice,
+            RichText::new(" ▶ ").size(15.0),
+            if playing { crate::theme::ALERT() } else { crate::theme::CYAN() },
+            if playing { Color32::WHITE } else { crate::theme::INK_ON_CYAN() },
+        )
+        .on_hover_text(hover)
+        .clicked()
+        {
+            self.show_voice = !self.show_voice;
+        }
+    }
+
+    /// The Drive label + rail + readout.
+    fn tx_drive(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let mut drive = self.state.tx.drive;
+        ui.label("Drive");
+        if crate::chrome::slider(
+            ui,
+            Slider::new(&mut drive, 0.0..=1.0)
+                .show_value(true)
+                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+        )
+        .changed()
+        {
+            cmds.push(Command::SetTxDrive(drive));
+        }
+    }
+
+    /// The tune-carrier level: label + rail + readout.
+    fn tx_tune_level(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let mut tune_drive = self.state.tx.tune_drive;
+        ui.label("Tune");
+        if crate::chrome::slider(
+            ui,
+            Slider::new(&mut tune_drive, 0.0..=1.0)
+                .show_value(true)
+                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+        )
+        .changed()
+        {
+            cmds.push(Command::SetTuneDrive(tune_drive));
+        }
+    }
+
+    /// The Mic gain: label + rail, no readout.
+    fn tx_mic(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let mut mic = self.state.tx.mic_gain;
+        ui.label("Mic");
+        if crate::chrome::slider(ui, Slider::new(&mut mic, 0.0..=1.0).show_value(false)).changed() {
+            cmds.push(Command::SetMicGain(mic));
+        }
+    }
+
+    /// The transmit controls as the TX menu shows them: the keyer and the
+    /// levels, in the order the box draws them. PTT is on the strip already;
+    /// TUNE rides with the caller (see [`Self::tx_menu`]). See
+    /// [`crate::chrome::control_row`] for `narrow`.
+    fn tx_controls(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, narrow: bool) {
+        crate::chrome::control_row(ui, narrow, |ui| {
+            self.tx_keyer_chip(ui);
+            self.tx_drive(ui, cmds);
+            self.tx_tune_level(ui, cmds);
+            self.tx_mic(ui, cmds);
         });
     }
 
-    /// The transmit controls — the body of the TX box, and of the TX menu.
-    ///
-    /// `ptt` draws the PTT and TUNE buttons here. A compact layout keys the
-    /// transmitter from the menu row instead, where it is one tap away rather
-    /// than two: burying push-to-talk in a menu is not a thing to do to an
-    /// operator. See [`crate::chrome::control_row`] for `narrow`.
-    fn tx_controls(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, narrow: bool, ptt: bool) {
-        crate::chrome::control_row(ui, narrow, |ui| {
-            let tx = self.state.tx;
-            if ptt {
-                if crate::chrome::chip_accent(
-                    ui,
-                    tx.ptt,
-                    RichText::new(" PTT ").size(15.0).strong(),
-                    crate::theme::ALERT(),
-                    Color32::WHITE,
-                )
-                .clicked()
-                {
-                    cmds.push(Command::SetPtt(!tx.ptt));
-                }
-                if crate::chrome::chip_accent(
-                    ui,
-                    tx.tune,
-                    RichText::new(" TUNE ").size(15.0),
-                    crate::theme::YELLOW(),
-                    crate::theme::INK_ON_CYAN(),
-                )
-                .clicked()
-                {
-                    cmds.push(Command::SetTune(!tx.tune));
-                }
-            }
-            if self.state.rx[0].mode.allows_voice_keyer() {
-                // Lit while a message is on the air, so the button doubles as
-                // the "something is transmitting from the keyer" indicator.
-                let playing = self.voice.playing.is_some();
-                let hover = match self.voice.playing {
-                    Some(i) => format!(
-                        "Transmitting {} — click to open the voice keyer",
-                        sdroxide_types::slot_label(i as usize, &self.voice.slot(i as usize).name)
-                    ),
-                    None => "Voice keyer: record and transmit stored messages".to_string(),
-                };
-                if crate::chrome::chip_accent(
-                    ui,
-                    playing || self.show_voice,
-                    RichText::new(" ▶ ").size(15.0),
-                    if playing { crate::theme::ALERT() } else { crate::theme::CYAN() },
-                    if playing { Color32::WHITE } else { crate::theme::INK_ON_CYAN() },
-                )
-                .on_hover_text(hover)
-                .clicked()
-                {
-                    self.show_voice = !self.show_voice;
-                }
-            }
-            let mut drive = tx.drive;
-            ui.label("Drive");
-            if crate::chrome::slider(
-                ui,
-                Slider::new(&mut drive, 0.0..=1.0)
-                    .show_value(true)
-                    .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-            )
-            .changed()
-            {
-                cmds.push(Command::SetTxDrive(drive));
-            }
-            let mut tune_drive = tx.tune_drive;
-            ui.label("Tune");
-            if crate::chrome::slider(
-                ui,
-                Slider::new(&mut tune_drive, 0.0..=1.0)
-                    .show_value(true)
-                    .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-            )
-            .changed()
-            {
-                cmds.push(Command::SetTuneDrive(tune_drive));
-            }
-            let mut mic = tx.mic_gain;
-            ui.label("Mic");
-            if crate::chrome::slider(ui, Slider::new(&mut mic, 0.0..=1.0).show_value(false))
-                .changed()
-            {
-                cmds.push(Command::SetMicGain(mic));
-            }
+    /// The condensed TX box's natural width — [`tx_rows_w_for`] with the
+    /// voice keyer's presence read off the current mode.
+    fn tx_rows_w(&self, ui: &egui::Ui) -> f32 {
+        tx_rows_w_for(ui, self.state.rx[0].mode.allows_voice_keyer())
+    }
+
+    /// The condensed TX box: PTT, TUNE, the keyer and Drive on top; the tune
+    /// carrier's level and the mic gain below. Width past [`Self::tx_rows_w`]
+    /// goes to the rails — all of it to Drive's on the top row, half to each
+    /// of the two below, so both rows grow by the same amount.
+    fn tx_condensed(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, w: f32) {
+        let extra = (w - self.tx_rows_w(ui)).clamp(0.0, RAIL_STRETCH_MAX);
+        crate::chrome::module_bare_h(ui, w, crate::chrome::MODULE_TALL_H, |ui| {
+            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().slider_width += extra;
+                    self.tx_key_chips(ui, cmds);
+                    self.tx_keyer_chip(ui);
+                    self.tx_drive(ui, cmds);
+                });
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().slider_width += extra / 2.0;
+                    self.tx_tune_level(ui, cmds);
+                    self.tx_mic(ui, cmds);
+                });
+            });
         });
     }
 
@@ -1664,8 +2092,9 @@ impl SdroxideApp {
     /// kind (CW / PSK / RTTY) — an on/off chip plus that skimmer's squelch, the
     /// SNR a track must reach before it earns a box on the waterfall. Fades out
     /// on its own like the band/mode popup.
-    fn skimmer_button(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        let btn = crate::chrome::chip(ui, self.state.skimmer.any_enabled(), "SKIM").on_hover_text(
+    fn skimmer_button(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, extra: f32) {
+        let [_, skim, _] = DISPLAY_TOOL_CHIPS;
+        let btn = chip_stretched(ui, self.state.skimmer.any_enabled(), skim, extra).on_hover_text(
             "CW / PSK / RTTY skimmers — decode signals across the band and mark them on the waterfall",
         );
         let popup_id = egui::Popup::default_response_id(&btn);
@@ -1792,103 +2221,139 @@ impl SdroxideApp {
         }
     }
 
-    fn display_module(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        // The module reserves its width before the content is drawn, so the
-        // WIDE chip has to be paid for before it is known to be drawn.
-        const DISPLAY_W: f32 = 348.0;
-        const WIDE_CHIP_W: f32 = 60.0;
-
+    /// The chips that pick what the main view draws — the condensed Display
+    /// box's top row, and the head of the DISP menu's row. `extra` stretches
+    /// each chip past its label; the popup passes 0, which draws exactly the
+    /// chip it always drew.
+    fn display_view_chips(&mut self, ui: &mut egui::Ui, extra: f32) {
+        let [fit, peak, spec, wide] = DISPLAY_VIEW_CHIPS;
         // Only a front end with a full-band lane has ever sent one of these, so
         // its presence is what says the strip is on offer at all — there is no
         // capability flag for it, and inventing one would mean a wire-format
         // change for something the frames themselves already answer.
         let has_wide = self.wide_frame.is_some();
-        let width = if has_wide { DISPLAY_W + WIDE_CHIP_W } else { DISPLAY_W };
-
-        crate::chrome::module(ui, "Display", width, |ui| {
-            self.display_controls(ui, cmds, false);
-        });
-    }
-
-    /// The display controls — the body of the Display box, and of the DISP
-    /// menu. See [`crate::chrome::control_row`] for `narrow`.
-    fn display_controls(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, narrow: bool) {
         // A phone draws the waterfall alone, so the two chips that choose what
         // else is drawn have nothing to control there.
-        let has_wide = self.wide_frame.is_some();
         let picks_layers = !crate::layout::tier(ui.ctx()).waterfall_only();
+        if chip_stretched(ui, false, fit, extra)
+            .on_hover_text("Auto-set floor/ceiling for best waterfall contrast")
+            .clicked()
+        {
+            self.auto_levels();
+        }
+        if chip_stretched(ui, self.view.peak_hold, peak, extra)
+            .on_hover_text("Decaying peak-hold trace")
+            .clicked()
+        {
+            self.view.peak_hold = !self.view.peak_hold;
+        }
+        // Lit when the spectrum line is visible (not collapsed).
+        if picks_layers
+            && chip_stretched(ui, !self.view.spectrum_collapsed, spec, extra)
+                .on_hover_text("Show/hide the spectrum line above the waterfall")
+                .clicked()
+        {
+            self.view.spectrum_collapsed = !self.view.spectrum_collapsed;
+        }
+        if picks_layers
+            && has_wide
+            && chip_stretched(ui, self.view.wide_waterfall, wide, extra)
+                .on_hover_text(
+                    "Show/hide the full-band waterfall strip above the panadapter — \
+                     everything this receiver can see at once",
+                )
+                .clicked()
+        {
+            self.view.wide_waterfall = !self.view.wide_waterfall;
+            // History kept while the strip is hidden would come back as a
+            // block of minutes-old band, drawn as if it were the last few
+            // seconds. Start it again from now instead.
+            self.wide_wf.clear();
+        }
+    }
+
+    /// The solar, skimmer and FFT chips — the condensed Display box's bottom
+    /// row, and the tail of the DISP menu's row.
+    fn display_tool_chips(
+        &mut self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<Command>,
+        narrow: bool,
+        extra: f32,
+    ) {
+        let [_, _, fft] = DISPLAY_TOOL_CHIPS;
+        self.solar_button(ui, extra);
+        // In a box these two hang off chips of their own. A menu inlines
+        // them below instead: a popup opened from a popup counts as a click
+        // outside the first and closes it.
+        if narrow {
+            return;
+        }
+        self.skimmer_button(ui, cmds, extra);
+        // Floor/ceiling + FFT size live in a popup off this button.
+        let fft_btn = chip_stretched(ui, false, fft, extra)
+            .on_hover_text("Spectrum floor / ceiling and FFT size");
+        let fft_id = egui::Popup::default_response_id(&fft_btn);
+        let now = ui.input(|i| i.time);
+        let alpha =
+            crate::chrome::popup_fade_alpha(ui.ctx(), fft_id, now, &mut self.fft_popup_since);
+        let fft_resp = egui::Popup::from_toggle_button_response(&fft_btn)
+            .frame(crate::chrome::window_frame_alpha(alpha))
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_opacity(alpha);
+                crate::chrome::window_body_bg(ui);
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                self.spectrum_controls(ui);
+            });
+        if let Some(r) = &fft_resp {
+            crate::chrome::paint_popup_cut_border(ui.ctx(), &r.response, alpha);
+            if r.response.contains_pointer() {
+                self.fft_popup_since = Some(now);
+            }
+        }
+    }
+
+    /// The display controls — the body of the DISP menu. See
+    /// [`crate::chrome::control_row`] for `narrow`.
+    fn display_controls(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, narrow: bool) {
         crate::chrome::control_row(ui, narrow, |ui| {
-            if crate::chrome::chip(ui, false, "FIT")
-                .on_hover_text("Auto-set floor/ceiling for best waterfall contrast")
-                .clicked()
-            {
-                self.auto_levels();
-            }
-            if crate::chrome::chip(ui, self.view.peak_hold, "PEAK")
-                .on_hover_text("Decaying peak-hold trace")
-                .clicked()
-            {
-                self.view.peak_hold = !self.view.peak_hold;
-            }
-            // Lit when the spectrum line is visible (not collapsed).
-            if picks_layers
-                && crate::chrome::chip(ui, !self.view.spectrum_collapsed, "SPEC")
-                    .on_hover_text("Show/hide the spectrum line above the waterfall")
-                    .clicked()
-            {
-                self.view.spectrum_collapsed = !self.view.spectrum_collapsed;
-            }
-            if picks_layers
-                && has_wide
-                && crate::chrome::chip(ui, self.view.wide_waterfall, "WIDE")
-                    .on_hover_text(
-                        "Show/hide the full-band waterfall strip above the panadapter — \
-                         everything this receiver can see at once",
-                    )
-                    .clicked()
-            {
-                self.view.wide_waterfall = !self.view.wide_waterfall;
-                // History kept while the strip is hidden would come back as a
-                // block of minutes-old band, drawn as if it were the last few
-                // seconds. Start it again from now instead.
-                self.wide_wf.clear();
-            }
-            self.solar_button(ui);
-            // In a box these two hang off chips of their own. A menu inlines
-            // them below instead: a popup opened from a popup counts as a click
-            // outside the first and closes it.
-            if narrow {
-                return;
-            }
-            self.skimmer_button(ui, cmds);
-            // Floor/ceiling + FFT size live in a popup off this button.
-            let fft_btn = crate::chrome::chip(ui, false, "FFT")
-                .on_hover_text("Spectrum floor / ceiling and FFT size");
-            let fft_id = egui::Popup::default_response_id(&fft_btn);
-            let now = ui.input(|i| i.time);
-            let alpha =
-                crate::chrome::popup_fade_alpha(ui.ctx(), fft_id, now, &mut self.fft_popup_since);
-            let fft_resp = egui::Popup::from_toggle_button_response(&fft_btn)
-                .frame(crate::chrome::window_frame_alpha(alpha))
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                .show(|ui| {
-                    ui.set_opacity(alpha);
-                    crate::chrome::window_body_bg(ui);
-                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                    self.spectrum_controls(ui);
-                });
-            if let Some(r) = &fft_resp {
-                crate::chrome::paint_popup_cut_border(ui.ctx(), &r.response, alpha);
-                if r.response.contains_pointer() {
-                    self.fft_popup_since = Some(now);
-                }
-            }
+            self.display_view_chips(ui, 0.0);
+            self.display_tool_chips(ui, cmds, narrow, 0.0);
         });
         if narrow {
             crate::chrome::menu_caption(ui, "Skimmers");
             self.skimmer_controls(ui, cmds);
             self.spectrum_controls(ui);
         }
+    }
+
+    /// The condensed Display box's natural width: the wider of its two chip
+    /// rows plus the box margins.
+    fn display_rows_w(&self, ui: &egui::Ui) -> f32 {
+        let row1: &[&str] =
+            if self.wide_frame.is_some() { &DISPLAY_VIEW_CHIPS } else { &DISPLAY_VIEW_CHIPS[..3] };
+        chip_row_w(ui, row1).max(chip_row_w(ui, &DISPLAY_TOOL_CHIPS))
+            + 2.0 * crate::chrome::MODULE_MARGIN_X
+    }
+
+    /// The condensed Display box: the view chips on top, the tool chips below,
+    /// each row's chips splitting its share of the packer's stretch evenly.
+    fn display_condensed(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, w: f32) {
+        let inner = w - 2.0 * crate::chrome::MODULE_MARGIN_X;
+        let row1: &[&str] =
+            if self.wide_frame.is_some() { &DISPLAY_VIEW_CHIPS } else { &DISPLAY_VIEW_CHIPS[..3] };
+        let extra1 = ((inner - chip_row_w(ui, row1)) / row1.len() as f32).max(0.0);
+        let extra2 = ((inner - chip_row_w(ui, &DISPLAY_TOOL_CHIPS))
+            / DISPLAY_TOOL_CHIPS.len() as f32)
+            .max(0.0);
+        crate::chrome::module_bare_h(ui, w, crate::chrome::MODULE_TALL_H, |ui| {
+            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
+                ui.horizontal(|ui| self.display_view_chips(ui, extra1));
+                ui.horizontal(|ui| self.display_tool_chips(ui, cmds, false, extra2));
+            });
+        });
     }
 
     /// Spectrum floor/ceiling, FFT size and the waterfall's scroll direction.
@@ -1931,135 +2396,248 @@ impl SdroxideApp {
         }
     }
 
-    fn windows_module(&mut self, ui: &mut egui::Ui) {
-        crate::chrome::module(ui, "System", system_row_w(ui), |ui| {
-            self.windows_controls(ui, false);
+    /// The first five window chips — the condensed System box's top row.
+    /// `extra` stretches each chip past its label; the popup passes 0.
+    fn system_chips_top(&mut self, ui: &mut egui::Ui, extra: f32) {
+        let [log, spots, awards, bands, sat_label, ..] = SYSTEM_CHIPS;
+        if chip_stretched(ui, self.show_logbook, log, extra)
+            .on_hover_text("Logbook — all QSOs (digital + manual)")
+            .clicked()
+        {
+            self.show_logbook = !self.show_logbook;
+        }
+        if chip_stretched(ui, self.show_spots, spots, extra)
+            .on_hover_text("Live spots — DX cluster, POTA, SOTA, PSK Reporter")
+            .clicked()
+        {
+            self.show_spots = !self.show_spots;
+        }
+        if chip_stretched(ui, self.show_awards, awards, extra)
+            .on_hover_text("Award tracking — DXCC / WAS / WAZ / grids")
+            .clicked()
+        {
+            self.show_awards = !self.show_awards;
+        }
+        if chip_stretched(ui, self.show_bands, bands, extra)
+            .on_hover_text(
+                "Band conditions — the published forecast beside what has \
+                 actually been heard on each band",
+            )
+            .clicked()
+        {
+            self.show_bands = !self.show_bands;
+        }
+        // Accented while a satellite lock is running, like the scanner:
+        // Doppler is being applied whether or not the window is open, and
+        // that has to be visible.
+        let sat_chip = if self.sat_track.is_some() {
+            accent_chip_stretched(ui, true, sat_label, crate::theme::GREEN(), Color32::BLACK, extra)
+        } else {
+            chip_stretched(ui, self.show_sat, sat_label, extra)
+        };
+        if sat_chip
+            .on_hover_text(match &self.sat_track {
+                Some(t) => format!("Satellite — locked on {}", t.name),
+                None => "Satellite — lock on and operate with Doppler correction".into(),
+            })
+            .clicked()
+        {
+            self.show_sat = !self.show_sat;
+        }
+    }
+
+    /// The remaining window chips — the condensed System box's bottom row.
+    fn system_chips_bottom(&mut self, ui: &mut egui::Ui, extra: f32) {
+        let [.., mem, scan_label, settings, help] = SYSTEM_CHIPS;
+        if chip_stretched(ui, self.show_memories, mem, extra)
+            .on_hover_text("Memory channels")
+            .clicked()
+        {
+            self.show_memories = !self.show_memories;
+        }
+        // Accented while a scan is actually running, so its state is visible
+        // with the window closed — which is how it will usually be.
+        let scan = self.state.scan;
+        let scan_chip = if scan.running {
+            accent_chip_stretched(
+                ui,
+                true,
+                scan_label,
+                if scan.holding { crate::theme::GREEN() } else { crate::theme::CYAN() },
+                Color32::BLACK,
+                extra,
+            )
+        } else {
+            chip_stretched(ui, self.show_scanner, scan_label, extra)
+        };
+        if scan_chip
+            .on_hover_text(if scan.holding {
+                "Scanner — stopped on a signal"
+            } else if scan.running {
+                "Scanner — running"
+            } else {
+                "Scan memory channels or a frequency range"
+            })
+            .clicked()
+        {
+            self.show_scanner = !self.show_scanner;
+        }
+        if chip_stretched(ui, self.show_settings, settings, extra)
+            .on_hover_text("Settings — device gains, antennas, audio devices")
+            .clicked()
+        {
+            self.show_settings = !self.show_settings;
+        }
+        if chip_stretched(ui, self.help.open, help, extra)
+            .on_hover_text("User manual (F1)")
+            .clicked()
+        {
+            self.help.open = !self.help.open;
+        }
+    }
+
+    /// The window buttons — the body of the SYS menu. See
+    /// [`crate::chrome::control_row`] for `narrow`.
+    fn windows_controls(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        crate::chrome::control_row(ui, narrow, |ui| {
+            self.system_chips_top(ui, 0.0);
+            self.system_chips_bottom(ui, 0.0);
         });
     }
 
-    /// The window buttons — the body of the System box, and of the SYS menu.
-    /// See [`crate::chrome::control_row`] for `narrow`.
-    fn windows_controls(&mut self, ui: &mut egui::Ui, narrow: bool) {
-        let [log, spots, awards, bands, sat_label, mem, scan_label, settings, help] = SYSTEM_CHIPS;
-        crate::chrome::control_row(ui, narrow, |ui| {
-            if crate::chrome::chip(ui, self.show_logbook, log)
-                .on_hover_text("Logbook — all QSOs (digital + manual)")
-                .clicked()
-            {
-                self.show_logbook = !self.show_logbook;
-            }
-            if crate::chrome::chip(ui, self.show_spots, spots)
-                .on_hover_text("Live spots — DX cluster, POTA, SOTA, PSK Reporter")
-                .clicked()
-            {
-                self.show_spots = !self.show_spots;
-            }
-            if crate::chrome::chip(ui, self.show_awards, awards)
-                .on_hover_text("Award tracking — DXCC / WAS / WAZ / grids")
-                .clicked()
-            {
-                self.show_awards = !self.show_awards;
-            }
-            if crate::chrome::chip(ui, self.show_bands, bands)
-                .on_hover_text(
-                    "Band conditions — the published forecast beside what has \
-                     actually been heard on each band",
-                )
-                .clicked()
-            {
-                self.show_bands = !self.show_bands;
-            }
-            // Accented while a satellite lock is running, like the scanner:
-            // Doppler is being applied whether or not the window is open, and
-            // that has to be visible.
-            let sat_chip = if self.sat_track.is_some() {
-                crate::chrome::chip_accent(
-                    ui,
-                    true,
-                    sat_label,
-                    crate::theme::GREEN(),
-                    Color32::BLACK,
-                )
-            } else {
-                crate::chrome::chip(ui, self.show_sat, sat_label)
-            };
-            if sat_chip
-                .on_hover_text(match &self.sat_track {
-                    Some(t) => format!("Satellite — locked on {}", t.name),
-                    None => "Satellite — lock on and operate with Doppler correction".into(),
-                })
-                .clicked()
-            {
-                self.show_sat = !self.show_sat;
-            }
-            if crate::chrome::chip(ui, self.show_memories, mem)
-                .on_hover_text("Memory channels")
-                .clicked()
-            {
-                self.show_memories = !self.show_memories;
-            }
-            // Accented while a scan is actually running, so its state is visible
-            // with the window closed — which is how it will usually be.
-            let scan = self.state.scan;
-            let scan_chip = if scan.running {
-                crate::chrome::chip_accent(
-                    ui,
-                    true,
-                    scan_label,
-                    if scan.holding { crate::theme::GREEN() } else { crate::theme::CYAN() },
-                    Color32::BLACK,
-                )
-            } else {
-                crate::chrome::chip(ui, self.show_scanner, scan_label)
-            };
-            if scan_chip
-                .on_hover_text(if scan.holding {
-                    "Scanner — stopped on a signal"
-                } else if scan.running {
-                    "Scanner — running"
-                } else {
-                    "Scan memory channels or a frequency range"
-                })
-                .clicked()
-            {
-                self.show_scanner = !self.show_scanner;
-            }
-            if crate::chrome::chip(ui, self.show_settings, settings)
-                .on_hover_text("Settings — device gains, antennas, audio devices")
-                .clicked()
-            {
-                self.show_settings = !self.show_settings;
-            }
-            if crate::chrome::chip(ui, self.help.open, help)
-                .on_hover_text("User manual (F1)")
-                .clicked()
-            {
-                self.help.open = !self.help.open;
-            }
+    /// The condensed System box: the window chips over two rows, each row's
+    /// chips splitting its share of the packer's stretch evenly.
+    fn windows_condensed(&mut self, ui: &mut egui::Ui, w: f32) {
+        let inner = w - 2.0 * crate::chrome::MODULE_MARGIN_X;
+        let (top, bottom) = (&SYSTEM_CHIPS[..SYSTEM_SPLIT], &SYSTEM_CHIPS[SYSTEM_SPLIT..]);
+        let extra1 = ((inner - chip_row_w(ui, top)) / top.len() as f32).max(0.0);
+        let extra2 = ((inner - chip_row_w(ui, bottom)) / bottom.len() as f32).max(0.0);
+        crate::chrome::module_bare_h(ui, w, crate::chrome::MODULE_TALL_H, |ui| {
+            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
+                ui.horizontal(|ui| self.system_chips_top(ui, extra1));
+                ui.horizontal(|ui| self.system_chips_bottom(ui, extra2));
+            });
         });
     }
 }
 
 /// The System box's chips, in the order they are drawn.
 ///
-/// One list, read by both the box that reserves the width and the row that
-/// draws into it. `windows_controls` destructures it, so a chip added to the
-/// row without a label added here does not compile — which is what keeps the
-/// reservation honest. A box reserved narrower than its contents does not clip
-/// them: the row simply carries on past the box, and whatever crosses the
-/// window edge is lost. That is how SCAN, SETTINGS and HELP came to vanish on
-/// the layouts where the strip put this box near the end of a row.
+/// One list, read by both the box that reserves the width and the rows that
+/// draw into it. `system_chips_top` and `system_chips_bottom` destructure it —
+/// the first taking [`SYSTEM_SPLIT`] labels and the second the rest — so a
+/// chip added to a row without a label added here does not compile, which is
+/// what keeps the reservation honest. A box reserved narrower than its
+/// contents does not clip them: the row simply carries on past the box, and
+/// whatever crosses the window edge is lost. That is how SCAN, SETTINGS and
+/// HELP came to vanish on the layouts where the strip put this box near the
+/// end of a row.
 const SYSTEM_CHIPS: [&str; 9] =
     ["LOG", "SPOTS", "AWARDS", "BANDS", "SAT", "MEM", "SCAN", "⚙ SETTINGS", "? HELP"];
 
-/// Width the System box needs for [`SYSTEM_CHIPS`]: the chips, the gaps between
-/// them, and the box's own side margins. Measured against the live style rather
-/// than fixed, because a touched layout pads every chip out past its desktop
-/// width — see `the_system_box_fits_its_chips`.
-fn system_row_w(ui: &egui::Ui) -> f32 {
-    let chips: f32 = SYSTEM_CHIPS.iter().map(|l| crate::chrome::chip_width(ui, l, None)).sum();
-    let gaps = ui.spacing().item_spacing.x * (SYSTEM_CHIPS.len() - 1) as f32;
-    chips + gaps + 2.0 * crate::chrome::MODULE_MARGIN_X
+/// Where [`SYSTEM_CHIPS`] breaks into the condensed box's two rows. Has to
+/// agree with the destructuring patterns in `system_chips_top` / `_bottom` —
+/// the array length pins both, so a chip added to the list forces all three
+/// to be revisited together.
+const SYSTEM_SPLIT: usize = 5;
+
+/// The Display box's view-layer chips (top row); the last is drawn only for a
+/// front end with a full-band lane.
+const DISPLAY_VIEW_CHIPS: [&str; 4] = ["FIT", "PEAK", "SPEC", "WIDE"];
+
+/// The Display box's tool chips (bottom row): the solar view, the skimmers,
+/// and the FFT/levels popup. Read by the measurement and by each chip's own
+/// draw site — [`SdroxideApp::solar_button`] included, which is why it is
+/// visible to the app module.
+pub(in crate::app) const DISPLAY_TOOL_CHIPS: [&str; 3] = ["☀ 3D", "SKIM", "FFT"];
+
+/// The condensed TX box's natural width: the wider of its two rows plus the
+/// box margins, measured against the live style. The slider blocks are the
+/// rail at the current style width plus [`TX_SLIDER_VALUE_W`] for the readout;
+/// a few points of slack absorb the rounding. A free function of the keyer
+/// flag, like [`plan_short_strip`], so `the_condensed_tx_box_fits_its_rows`
+/// can price both states without an app.
+fn tx_rows_w_for(ui: &egui::Ui, keyer: bool) -> f32 {
+    let g = MODULE_ROW_SPACING;
+    let rail = ui.spacing().slider_width;
+    let label =
+        |s: &str| crate::chrome::text_width(ui, s, egui::TextStyle::Body.resolve(ui.style()));
+    let keyer_w = if keyer { crate::chrome::chip_width(ui, " ▶ ", Some(15.0)) + g } else { 0.0 };
+    let row1 = crate::chrome::chip_width(ui, " PTT ", Some(15.0))
+        + g
+        + crate::chrome::chip_width(ui, " TUNE ", Some(15.0))
+        + g
+        + keyer_w
+        + label("Drive")
+        + g
+        + rail
+        + g
+        + TX_SLIDER_VALUE_W;
+    let row2 = label("Tune") + g + rail + g + TX_SLIDER_VALUE_W + g + label("Mic") + g + rail;
+    row1.max(row2) + 2.0 * crate::chrome::MODULE_MARGIN_X + 4.0
+}
+
+/// The natural width of the RIT/XIT offset row: the chips at their labels and
+/// the Hz fields at their design width, with the box's row spacing between
+/// them. A receive-only rig draws no XIT.
+fn vfo_offsets_w(ui: &egui::Ui, tx_capable: bool) -> f32 {
+    let g = MODULE_ROW_SPACING;
+    let rit = crate::chrome::chip_width(ui, "RIT", None) + g + HZ_FIELD_W;
+    if tx_capable {
+        rit + g + crate::chrome::chip_width(ui, "XIT", None) + g + HZ_FIELD_W
+    } else {
+        rit
+    }
+}
+
+/// The natural width of a row of chips inside a condensed box: each chip at
+/// its label, with the box's row spacing between them.
+fn chip_row_w(ui: &egui::Ui, labels: &[&str]) -> f32 {
+    let chips: f32 = labels.iter().map(|l| crate::chrome::chip_width(ui, l, None)).sum();
+    chips + MODULE_ROW_SPACING * (labels.len() - 1) as f32
+}
+
+/// A chip stretched `extra` points past its label — for the condensed boxes'
+/// rows, whose chips split the row's slack evenly. At `extra` 0 it draws
+/// exactly what [`crate::chrome::chip`] would.
+pub(in crate::app) fn chip_stretched(
+    ui: &mut egui::Ui,
+    selected: bool,
+    label: &str,
+    extra: f32,
+) -> egui::Response {
+    let size = egui::vec2(
+        crate::chrome::chip_width(ui, label, None) + extra,
+        crate::chrome::chip_height(ui, None),
+    );
+    crate::chrome::chip_sized(ui, selected, label, size)
+}
+
+/// [`chip_stretched`] with an accent fill — the SAT and SCAN chips while their
+/// background work runs.
+fn accent_chip_stretched(
+    ui: &mut egui::Ui,
+    selected: bool,
+    label: &str,
+    fill: Color32,
+    ink: Color32,
+    extra: f32,
+) -> egui::Response {
+    let size = egui::vec2(
+        crate::chrome::chip_width(ui, label, None) + extra,
+        crate::chrome::chip_height(ui, None),
+    );
+    crate::chrome::chip_accent_sized(ui, selected, label, fill, ink, size)
+}
+
+/// Width the System box needs for [`SYSTEM_CHIPS`] over its two rows: the
+/// wider row plus the box's side margins. Measured against the live style
+/// rather than fixed, because a touched layout pads every chip out past its
+/// desktop width — see `the_condensed_system_box_fits_its_chips`.
+fn system_rows_w(ui: &egui::Ui) -> f32 {
+    chip_row_w(ui, &SYSTEM_CHIPS[..SYSTEM_SPLIT]).max(chip_row_w(ui, &SYSTEM_CHIPS[SYSTEM_SPLIT..]))
+        + 2.0 * crate::chrome::MODULE_MARGIN_X
 }
 
 /// The band + mode + digital chip rows: the body of the band/mode popup.
@@ -2377,14 +2955,12 @@ mod tests {
         assert!(p.box_h <= 90.0, "the strip stands {} pt", p.box_h);
     }
 
-    /// Reserve the System box the way [`SdroxideApp::windows_module`] does and
-    /// draw its chips into it the way `windows_controls` does. Hands back the
-    /// width the box left for its contents, and how far each chip reached into
-    /// it, both measured from the box's inner left edge.
-    fn system_box_and_chips(tier: crate::layout::Tier) -> (f32, Vec<(&'static str, f32)>) {
+    /// A fresh context dressed with the Desktop tier's metrics on a roomy
+    /// viewport — what the condensed-box layout tests draw in.
+    fn desktop_ctx() -> (egui::Context, egui::RawInput) {
         let ctx = egui::Context::default();
-        crate::layout::set_tier(&ctx, tier);
-        crate::theme::apply_metrics(&ctx, tier);
+        crate::layout::set_tier(&ctx, crate::layout::Tier::Desktop);
+        crate::theme::apply_metrics(&ctx, crate::layout::Tier::Desktop);
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -2392,25 +2968,43 @@ mod tests {
             )),
             ..Default::default()
         };
+        (ctx, input)
+    }
+
+    /// Reserve the condensed System box the way the desktop strip does and
+    /// draw its two chip rows into it the way `windows_condensed` does, at
+    /// zero stretch. Hands back the width the box left for its contents, and
+    /// how far each chip reached into it, both measured from the box's inner
+    /// left edge.
+    fn system_box_and_chips() -> (f32, Vec<(&'static str, f32)>) {
+        let (ctx, input) = desktop_ctx();
         let mut out = None;
         let _ = ctx.run_ui(input, |ui| {
-            // The strip's own spacing, which the chips inherit — the style's is
-            // narrower, and measuring against it would under-reserve the gaps.
-            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
             let mut chips = Vec::new();
-            let room = crate::chrome::module(ui, "System", system_row_w(ui), |ui| {
-                // Read before the row is drawn: egui grows a Ui's max_rect to
-                // cover content that overflowed it, so afterwards it reports
-                // what the row took rather than what the box offered.
-                let (left, room) = (ui.max_rect().left(), ui.max_rect().width());
-                ui.horizontal(|ui| {
-                    for label in SYSTEM_CHIPS {
-                        let right = crate::chrome::chip(ui, false, label).rect.right();
-                        chips.push((label, right - left));
-                    }
+            let width = system_rows_w(ui);
+            let room =
+                crate::chrome::module_bare_h(ui, width, crate::chrome::MODULE_TALL_H, |ui| {
+                    // Read before the rows are drawn: egui grows a Ui's
+                    // max_rect to cover content that overflowed it, so
+                    // afterwards it reports what the rows took rather than
+                    // what the box offered.
+                    let (left, room) = (ui.max_rect().left(), ui.max_rect().width());
+                    // Left-aligned rather than centred so a chip's reach is
+                    // measured from the box edge, the worst case.
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.spacing_mut().item_spacing =
+                            egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
+                        for row in [&SYSTEM_CHIPS[..SYSTEM_SPLIT], &SYSTEM_CHIPS[SYSTEM_SPLIT..]] {
+                            ui.horizontal(|ui| {
+                                for label in row {
+                                    let right = chip_stretched(ui, false, label, 0.0).rect.right();
+                                    chips.push((*label, right - left));
+                                }
+                            });
+                        }
+                    });
+                    room
                 });
-                room
-            });
             out = Some((room, chips));
         });
         out.expect("the box was drawn")
@@ -2428,15 +3022,300 @@ mod tests {
     /// that left the box near the end of a row. Nothing about the chips said so
     /// — they were drawn every frame, just past the edge of the window.
     #[test]
-    fn the_system_box_fits_its_chips() {
-        for tier in [crate::layout::Tier::Desktop, crate::layout::Tier::Tablet] {
-            let (room, chips) = system_box_and_chips(tier);
-            for (label, right) in chips {
-                assert!(
-                    right <= room + 0.5,
-                    "{tier:?}: {label} reaches {right} pt into a box with room for {room}"
-                );
-            }
+    fn the_condensed_system_box_fits_its_chips() {
+        let (room, chips) = system_box_and_chips();
+        for (label, right) in chips {
+            assert!(
+                right <= room + 0.5,
+                "{label} reaches {right} pt into a box with room for {room}"
+            );
+        }
+    }
+
+    /// Lay the condensed Display box's two rows out with the real chips at
+    /// desktop metrics: each row has to fit the width [`chip_row_w`] prices
+    /// for it, with and without the WIDE chip.
+    #[test]
+    fn the_condensed_display_box_fits_its_chips() {
+        for has_wide in [false, true] {
+            let (ctx, input) = desktop_ctx();
+            let _ = ctx.run_ui(input, |ui| {
+                let row1: &[&str] =
+                    if has_wide { &DISPLAY_VIEW_CHIPS } else { &DISPLAY_VIEW_CHIPS[..3] };
+                let room = chip_row_w(ui, row1).max(chip_row_w(ui, &DISPLAY_TOOL_CHIPS));
+                for row in [row1, &DISPLAY_TOOL_CHIPS[..]] {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = MODULE_ROW_SPACING;
+                        for label in row {
+                            chip_stretched(ui, false, label, 0.0);
+                        }
+                        let took = ui.min_rect().width();
+                        assert!(
+                            took <= room + 0.5,
+                            "has_wide={has_wide}: {row:?} took {took} of {room}"
+                        );
+                    });
+                }
+            });
+        }
+    }
+
+    /// Lay the condensed TX box's rows out with real chips and real sliders at
+    /// desktop metrics and check both fit the width [`tx_rows_w_for`]'s
+    /// arithmetic reserves — which is what keeps [`TX_SLIDER_VALUE_W`] honest
+    /// against the drag-value egui actually draws.
+    #[test]
+    fn the_condensed_tx_box_fits_its_rows() {
+        for keyer in [false, true] {
+            let (ctx, input) = desktop_ctx();
+            let _ = ctx.run_ui(input, |ui| {
+                let room = tx_rows_w_for(ui, keyer) - 2.0 * crate::chrome::MODULE_MARGIN_X;
+                ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
+                // 100% is the widest the readouts get, so the rows are laid
+                // out at it.
+                let (mut drive, mut tune, mut mic) = (1.0f32, 1.0f32, 1.0f32);
+                let pct = |v: f64, _| format!("{:.0}%", v * 100.0);
+                let row1 = ui
+                    .horizontal(|ui| {
+                        crate::chrome::chip_accent(
+                            ui,
+                            false,
+                            RichText::new(" PTT ").size(15.0).strong(),
+                            crate::theme::ALERT(),
+                            Color32::WHITE,
+                        );
+                        crate::chrome::chip_accent(
+                            ui,
+                            false,
+                            RichText::new(" TUNE ").size(15.0),
+                            crate::theme::YELLOW(),
+                            crate::theme::INK_ON_CYAN(),
+                        );
+                        if keyer {
+                            crate::chrome::chip_accent(
+                                ui,
+                                false,
+                                RichText::new(" ▶ ").size(15.0),
+                                crate::theme::CYAN(),
+                                crate::theme::INK_ON_CYAN(),
+                            );
+                        }
+                        ui.label("Drive");
+                        crate::chrome::slider(
+                            ui,
+                            Slider::new(&mut drive, 0.0..=1.0)
+                                .show_value(true)
+                                .custom_formatter(pct),
+                        );
+                        ui.min_rect().width()
+                    })
+                    .inner;
+                let row2 = ui
+                    .horizontal(|ui| {
+                        ui.label("Tune");
+                        crate::chrome::slider(
+                            ui,
+                            Slider::new(&mut tune, 0.0..=1.0)
+                                .show_value(true)
+                                .custom_formatter(pct),
+                        );
+                        ui.label("Mic");
+                        crate::chrome::slider(
+                            ui,
+                            Slider::new(&mut mic, 0.0..=1.0).show_value(false),
+                        );
+                        ui.min_rect().width()
+                    })
+                    .inner;
+                assert!(row1 <= room + 0.5, "keyer={keyer}: row 1 took {row1} of {room}");
+                assert!(row2 <= room + 0.5, "keyer={keyer}: row 2 took {row2} of {room}");
+            });
+        }
+    }
+
+    /// The desktop meter's box has no ceiling — the needle face is what caps
+    /// and centres its own scale (see `smeter::NEEDLE_FACE_MAX_W`), so however
+    /// wide the packer draws the box, the ends of the scale stay inside a
+    /// [`crate::chrome::MODULE_TALL_H`] box.
+    #[test]
+    fn the_stretched_desktop_smeter_keeps_its_scale_inside_its_box() {
+        let h = crate::chrome::MODULE_TALL_H;
+        let k = (h / 72.0).clamp(0.55, 2.0);
+        let room = h - 13.0 * k;
+        let half: f32 = 31.0_f32.to_radians();
+        for w in [SMETER_W, 439.0, 1000.0, 4000.0] {
+            let chord = w.min(crate::widgets::smeter::NEEDLE_FACE_MAX_W);
+            let rad = ((chord - 14.0) / (2.0 * half.sin())).max(24.0);
+            let extent = rad * (1.0 - half.cos());
+            assert!(extent <= room, "a {w} pt wide box spans an arc of {extent} in {room} pt");
+        }
+    }
+
+    /// Shorthand for the packer tests: a rigid box, and a flexible one.
+    fn rigid(w: f32) -> StripBox {
+        StripBox { w, flex: 0.0, max_w: w }
+    }
+    fn flexible(w: f32, flex: f32, max_w: f32) -> StripBox {
+        StripBox { w, flex, max_w }
+    }
+
+    #[test]
+    fn the_packer_keeps_one_row_and_fills_it() {
+        let plan =
+            plan_top_strip(1000.0, 8.0, &[rigid(300.0), flexible(200.0, 1.0, 400.0), rigid(300.0)]);
+        assert_eq!(plan.rows.len(), 1, "everything fits one row");
+        let row = &plan.rows[0];
+        assert_eq!(row.boxes, 0..3);
+        assert_eq!(row.widths[0], 300.0, "a rigid box never grows");
+        assert_eq!(row.widths[2], 300.0);
+        // The flexible box absorbed the slack: the row spans avail - 2.
+        let total: f32 = row.widths.iter().sum::<f32>() + 2.0 * 8.0;
+        assert!((total - 998.0).abs() < 0.6, "the row spans {total} of 998");
+    }
+
+    #[test]
+    fn the_packer_prefers_balanced_rows_over_first_fit() {
+        // First-fit would take three boxes on the first row and leave the
+        // fourth almost alone: [300 300 300 | 550], leftovers 50 and 400.
+        // Breaking after two spreads it: [300 300 | 300 550], 350 and 100.
+        let boxes = [rigid(300.0), rigid(300.0), rigid(300.0), rigid(550.0)];
+        let plan = plan_top_strip(950.0, 0.0, &boxes);
+        assert_eq!(plan.rows.len(), 2, "two rows still suffice");
+        assert_eq!(plan.rows[0].boxes, 0..2);
+        assert_eq!(plan.rows[1].boxes, 2..4);
+    }
+
+    #[test]
+    fn a_three_row_strip_comes_out_even() {
+        // Six equal boxes over three rows land two per row — never a lone
+        // box on the last row the way first-fit's tail would leave it.
+        let plan = plan_top_strip(700.0, 0.0, &[rigid(300.0); 6]);
+        assert_eq!(plan.rows.len(), 3);
+        for (i, row) in plan.rows.iter().enumerate() {
+            assert_eq!(row.boxes.len(), 2, "row {i} carries {:?}", row.boxes);
+        }
+    }
+
+    #[test]
+    fn the_packer_never_reorders() {
+        let boxes = [rigid(500.0), rigid(200.0), rigid(400.0), rigid(100.0), rigid(450.0)];
+        let plan = plan_top_strip(800.0, 8.0, &boxes);
+        let mut next = 0;
+        for row in &plan.rows {
+            assert_eq!(row.boxes.start, next, "rows are contiguous and in order");
+            next = row.boxes.end;
+        }
+        assert_eq!(next, boxes.len(), "every box was placed exactly once");
+    }
+
+    #[test]
+    fn stretch_water_fills_against_the_caps() {
+        // 98 points of slack for two flexible boxes with equal flex: the
+        // capped one takes its 40 and hands the rest to the open one.
+        let boxes = [rigid(300.0), flexible(200.0, 1.0, 240.0), flexible(200.0, 1.0, 1000.0)];
+        let plan = plan_top_strip(800.0, 0.0, &boxes);
+        let row = &plan.rows[0];
+        assert_eq!(row.widths[0], 300.0);
+        assert!((row.widths[1] - 240.0).abs() < 0.6, "the capped box stops at its cap");
+        assert!((row.widths[2] - 258.0).abs() < 0.6, "the open box takes the rest");
+        assert_eq!(row.extra_gap, 0.0);
+    }
+
+    #[test]
+    fn a_row_of_capped_boxes_justifies_the_rest() {
+        let boxes = [flexible(200.0, 1.0, 220.0), flexible(200.0, 1.0, 220.0)];
+        let plan = plan_top_strip(600.0, 0.0, &boxes);
+        let row = &plan.rows[0];
+        assert_eq!(row.widths, vec![220.0, 220.0]);
+        // 598 - 440 justified into the one gap between the two boxes.
+        assert!((row.extra_gap - 158.0).abs() < 0.6, "extra gap came out {}", row.extra_gap);
+    }
+
+    #[test]
+    fn an_oversize_box_gets_a_row_of_its_own() {
+        let boxes = [rigid(300.0), rigid(900.0), rigid(300.0)];
+        let plan = plan_top_strip(800.0, 8.0, &boxes);
+        assert_eq!(plan.rows.len(), 3, "the oversize box forces its neighbours off");
+        assert_eq!(plan.rows[1].boxes, 1..2);
+        assert_eq!(plan.rows[1].widths[0], 900.0, "an oversize box keeps its width");
+    }
+
+    /// Leftover is only worth having on a row whose boxes can spend it.
+    /// Natural balance would break these four evenly and leave 400 pt dead on
+    /// each row; putting the bottomless box alone up top leaves 100 pt dead in
+    /// total, and the packer has to prefer that.
+    #[test]
+    fn leftover_goes_where_it_can_be_absorbed() {
+        let boxes = [flexible(300.0, 1.0, f32::INFINITY), rigid(300.0), rigid(300.0), rigid(300.0)];
+        let plan = plan_top_strip(1000.0, 0.0, &boxes);
+        assert_eq!(plan.rows.len(), 2);
+        assert_eq!(plan.rows[0].boxes, 0..1, "the absorber takes the emptier row");
+        assert_eq!(plan.rows[1].boxes, 1..4);
+        assert!((plan.rows[0].widths[0] - 998.0).abs() < 0.6, "and swallows all of it");
+    }
+
+    /// The strip trades digit size for a whole row: design-width 450 forces a
+    /// second row here, and 400 is the widest frequency box that packs into
+    /// one — the search has to land just under it, and never lower.
+    #[test]
+    fn digits_shrink_just_enough_to_save_a_row() {
+        let rest = [rigid(300.0), rigid(300.0)];
+        let w = freq_w_for_fewest_rows(1000.0, 0.0, 450.0, 350.0, &rest);
+        assert!((w - 400.0).abs() < 1.0, "the freq box came back {w}");
+        let boxes = [rigid(w), rest[0], rest[1]];
+        assert_eq!(rows_needed(1000.0, 0.0, &boxes), 1, "and one row now holds it");
+    }
+
+    /// When even the narrowest readout saves nothing — three rows either way
+    /// here — the digits stay at their design size.
+    #[test]
+    fn digits_hold_their_design_size_when_no_row_is_saved() {
+        let rest = [rigid(660.0), rigid(660.0)];
+        let w = freq_w_for_fewest_rows(1000.0, 0.0, 450.0, 350.0, &rest);
+        assert_eq!(w, 450.0);
+    }
+
+    /// Lay the condensed VFO/RIT box's rows out with real chips and drag
+    /// values at desktop metrics and check both fit the width
+    /// [`vfo_offsets_w`] and [`chip_row_w`] price — which is what keeps
+    /// [`HZ_FIELD_W`] honest, in both the RX-only and the transmit-capable
+    /// shape.
+    #[test]
+    fn the_condensed_vfo_box_fits_its_rows() {
+        for tx_capable in [false, true] {
+            let (ctx, input) = desktop_ctx();
+            let _ = ctx.run_ui(input, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
+                let room = chip_row_w(ui, &VFO_CHIPS).max(vfo_offsets_w(ui, tx_capable)) + 4.0;
+                let row1 = ui
+                    .horizontal(|ui| {
+                        for label in VFO_CHIPS {
+                            chip_stretched(ui, false, label, 0.0);
+                        }
+                        ui.min_rect().width()
+                    })
+                    .inner;
+                let row2 = ui
+                    .horizontal(|ui| {
+                        let mut hz = -9999i32;
+                        crate::chrome::chip(ui, false, "RIT");
+                        ui.add_sized(
+                            [HZ_FIELD_W, 22.0],
+                            DragValue::new(&mut hz).speed(5).range(-9999..=9999).suffix(" Hz"),
+                        );
+                        if tx_capable {
+                            crate::chrome::chip(ui, false, "XIT");
+                            ui.add_sized(
+                                [HZ_FIELD_W, 22.0],
+                                DragValue::new(&mut hz).speed(5).range(-9999..=9999).suffix(" Hz"),
+                            );
+                        }
+                        ui.min_rect().width()
+                    })
+                    .inner;
+                assert!(row1 <= room + 0.5, "tx={tx_capable}: row 1 took {row1} of {room}");
+                assert!(row2 <= room + 0.5, "tx={tx_capable}: row 2 took {row2} of {room}");
+            });
         }
     }
 
