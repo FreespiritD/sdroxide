@@ -83,6 +83,11 @@ or connects to a remote sdroxide server.
   FLEX-6000/8000), RTL-SDR, RX-888 and SDRplay RSP receivers over USB, a
   PlutoSDR, or a CAT-controlled radio with audio over a USB sound card
   (demodulated audio or stereo IQ).
+- **Several radios at once** — each in its own tab with its own tuning, mode,
+  panadapter and audio, sharing your memories, logbook and a station-wide
+  transmit interlock. Multi-receiver hardware serves one tab per receiver from
+  a single connection: a TCI rig's RX2, an HPSDR Protocol 2 board's DDCs, a
+  2R2T PlutoSDR's second chain.
 - **Memory channels** and per-band memory of your last frequency/mode/filter.
 - **Solar system 3D view** — the Sun, the Earth and the Moon, the
   other seven planets and eighteen of their moons with their orbits, live NASA
@@ -194,7 +199,7 @@ popup with three rows:
 
 - **BAND:** `160M 80M 60M 40M 30M 20M 17M 15M 12M 10M 6M 2M 70CM GEN`. Each band
   remembers your last frequency, mode, and filter. Once band conditions have
-  been fetched the chips are tinted by the published forecast — green Good,
+  been fetched the button are tinted by the published forecast — green Good,
   yellow Fair, pink Poor — and hovering one gives it in words. Bands the
   forecast does not cover are left uncoloured; see
   [§2.15](#215-band-conditions). In a digital mode, the bands where that mode
@@ -285,7 +290,7 @@ can't quietly add itself to the one you set here.
   noise. Toggle it on when a steady whistle is spoiling a voice signal. (Like NR,
   it affects only what you hear, not the digital decoders; leave it off for CW
   and data modes, whose signals *are* tones.)
-- **NR** — noise reduction on the audio, with four selectable engines. The chip
+- **NR** — noise reduction on the audio, with four selectable engines. The button
   reads what is running (`NR RNN Med`, `NR DFNR High`, `NR SPEC Low`, `NR Mid`);
   click it for a picker with an **Engine** row and a **Strength** row, so any
   setting is two clicks away. A keyboard or MIDI binding cycles the *strength*
@@ -629,7 +634,7 @@ you pause you can watch the sending catch up.
 - **CALL CQ** loads and sends a CQ built from your callsign; **CLEAR** stops and
   drops whatever has not gone out.
 
-**Speed and spacing** are set from the chips at the right of the header:
+**Speed and spacing** are set from the buttons at the right of the header:
 
 - **WPM** — your keying speed.
 - **FW** — Farnsworth: send the characters at full speed and stretch only the
@@ -665,7 +670,7 @@ solar indices rather than a measurement of anything.
 pile-up is a great many paths through one small piece of sky, and a band quietly
 open everywhere is the reverse.
 
-The same verdicts colour the band chips in the **band/mode menu**, so choosing a
+The same verdicts colour the band buttons in the **band/mode menu**, so choosing a
 band shows its forecast where you are already looking. Green is Good, yellow
 Fair, pink Poor. Hovering gives the verdict in words along with its source.
 
@@ -778,6 +783,103 @@ which the rotator parks (set it to your local roofline), an azimuth offset for
 a rotator whose north is off, the smallest movement worth commanding (motors
 last longer not chasing tenths of a degree), and an optional park position.
 The status line shows where the hardware actually reports itself pointing.
+
+### 2.17 Running more than one radio
+
+SDR Oxide can run several radios at once — an HF transceiver and a VHF dongle,
+a network rig at the station and an RTL-SDR on the desk, or two receivers
+inside the same box. Each radio is complete and independent: its own interface,
+its own tuning, mode and band, its own panadapter and waterfall, its own
+receive audio, its own sub-receiver, digital modes and scanner. They appear as
+**tabs**, and with a single radio configured — the way every installation
+starts — the tab strip stays out of the way entirely and the window looks
+exactly as it always has.
+
+**Adding a radio.** Open **Settings → Radio**. Across the top of the tab is a
+row of buttons, one per radio, ending in **+**. Press **+** and a new radio is
+created and focused, with the dialog already open on its (empty) Radio tab. A
+new radio deliberately starts with **no interface** — silent, rather than
+grabbing the first device it finds, which is usually the device another radio
+is already using. Pick its interface, configure it, press **Apply /
+reconnect**, and it is on the air. From then on the same strip appears across
+the top of the main window as well.
+
+**The tab strip.** Click a tab to switch to that radio. Everything else keeps
+running behind the tab you are looking at — audio keeps playing, digital modes
+keep decoding, skimmers keep skimming, the scanner keeps scanning. Each tab
+carries, besides its name:
+
+- **● TX** — this radio is transmitting. Visible from every tab on purpose:
+  it is the one thing worth knowing about a radio you are not looking at.
+- **⚠** — this radio has a problem (typically: its device is unreachable and
+  it is retrying in the background).
+- **🔊 / 🔇** — mute this radio's speaker audio. Muting is *only* the speaker:
+  decoding, skimming, recording and everything else continue, so a muted
+  background radio still fills its FT8 list and still spots.
+- **×** — close the radio (every tab but the first has one; see below).
+
+**Naming.** A tab names itself after its radio's interface — *PlutoSDR*,
+*TCI*, *HPSDR* — so a strip full of different hardware needs no housekeeping
+to be readable. To name one yourself, use the **Name** box under the button row
+in Settings → Radio; clear the box and the tab goes back to naming itself.
+
+**The first radio is the station.** The first tab is where the shared,
+station-level things live: the spot feeds (DX cluster, POTA, SOTA, PSK
+Reporter, FreeDV Reporter), WSPRnet, TLE refresh and the antenna rotator all
+run on it, because a station has one of each of those no matter how many
+radios it has. Its configuration also lives where a single-radio installation
+keeps it, so adding and removing other radios never touches it. It is the one
+tab that cannot be closed.
+
+**One transmitter on the air at a time.** The radios share a station-wide
+transmit interlock. Keying any radio — PTT, TUNE, a digital-mode sequence,
+the voice keyer, or a program connected to one radio's built-in server —
+claims it; while it is held, a key-up on any other radio is refused with a
+notice naming the radio that is on the air, and nothing on the refused radio
+changes state. The interlock releases on unkey.
+
+**What is shared and what is per-radio.** Memory channels, memory folders,
+band stacks, the digital-mode operator settings (callsign, grid, templates),
+the logbook, spots and awards belong to the operator, and are shared: save a
+memory on one radio and it appears on the others. The dial, mode, filter,
+session restore, scanner setup and the built-in servers (TCI, rigctld,
+WSJT-X) belong to each radio. Each radio's servers have their own
+configuration precisely so two radios can serve two copies of WSJT-X on two
+ports — which also means an additional radio's TCI server starts *disabled*,
+because the default port would collide with the first radio's; enable it and
+pick a free port in [§5.8.2](#582-built-in-tci-server).
+
+**Background tabs.** A hidden radio's waterfall freezes — the pixels are only
+drawn for the tab you are watching — and resumes with a clean gap when you
+switch back; the spectrum data underneath it never stops. Keyboard shortcuts
+and MIDI controls go to the focused tab only.
+
+**Closing a radio.** The **×** on the tab (or in Settings → Radio) shuts the
+radio down and removes it from the strip. Its configuration directory is kept
+on disk — a closed tab is not a request to destroy the configuration behind
+it — but a radio added later starts fresh rather than inheriting it.
+
+**Several receivers from one box.** Some hardware carries more than one
+receiver on a single connection, and each of those receivers can be a radio
+tab of its own. Configure two radios with the same address and they *share*
+the connection rather than fighting over it — closing either tab leaves the
+other streaming, and the transmitter belongs to the first receiver's radio:
+
+- **TCI** — a rig with two receivers (a SunSDR2DX) serves one radio on RX1
+  and another on RX2, independently tunable, from one WebSocket. See
+  [§5.2.4](#524-tci-network-expertsdr3-and-thetis).
+- **HPSDR Protocol 2** — the board's DDCs are independently tunable
+  receivers; run one radio per DDC on different bands from one Ethernet
+  connection. (Protocol 1 boards have a single receiver.) See
+  [§5.2.3](#523-hpsdr-network-radios).
+- **PlutoSDR** — a 2R2T-capable board (a Pluto+, or a rev. C unlocked to two
+  channels) serves a second radio from its second receive chain. The AD9361's
+  chains **share one local oscillator**, so this is a second *antenna* on the
+  same spectrum — retune either radio and both move. See
+  [§5.2.7](#527-plutosdr-adalm-pluto).
+
+**Remote and browser clients** connect to one radio — the first — for now;
+multi-radio remote operation is a planned follow-up.
 
 ---
 
@@ -1496,7 +1598,7 @@ top. The **VIEW** controls decide how it is shown:
   on a chart.
 - **HEIGHT** stretches the picture vertically, ×0.25 to ×4. A chart that comes
   out squashed or stretched is being decoded at the wrong line rate — this makes
-  it readable, and the LPM chips fix it properly.
+  it readable, and the LPM buttons fix it properly.
 - **FOLLOW** keeps the newest lines in sight. Scrolling up turns it off so you
   can read what has already arrived without the view snapping back every half
   second; scrolling back to the bottom turns it on again.
@@ -1745,7 +1847,7 @@ The **MAP** pane shows every station heard, fading over ten minutes — a WSPR
 beacon is heard every few minutes at best, so the FT8 map's two-minute fade
 would leave this one blank almost always.
 
-Above the map is the **PROP** chip. It shades the map by where signals are
+Above the map is the **PROP** button. It shades the map by where signals are
 actually getting through; pressing it reveals the rest of the controls —
 `ALL BANDS` or `ONE BAND`, which band, and the absolute path count the brightest
 cell stands for. [§6.8](#68-the-propagation-heat-map) explains what the
@@ -1798,7 +1900,7 @@ exist into a database everybody reads.
 #### Band hopping
 
 **BAND HOP** moves the dial from band to band between slots, so one receiver
-samples the whole spectrum instead of one slice of it. A row of band chips
+samples the whole spectrum instead of one slice of it. A row of band buttons
 appears under it when it is on, for choosing which bands the cycle visits.
 Turning the VFO yourself pauses it and says so —
 a beacon and its operator fighting over the dial is the one thing this must not
@@ -1981,7 +2083,16 @@ rest of your config directory.
 
 ### 5.2 Radio: choosing and configuring the rig
 
-**Radio interface**, at the top of the tab, selects how sdroxide talks to your
+In the native application the very top of the tab carries the **radio
+roster** — one button per radio, with the same TX / warning / mute markers as
+the main window's tab strip, an **×** on every radio but the first, and **+**
+to add one ([§2.17](#217-running-more-than-one-radio)). Everything below the
+roster configures the **highlighted** radio; click another button and the whole
+application switches to that radio, this dialog included. The **Name** box
+under the buttons renames the highlighted radio's tab — left empty, the tab
+names itself after the interface selected below.
+
+**Radio interface**, under the roster, selects how sdroxide talks to your
 radio. Everything below the selector changes to match the choice:
 
 - **SoapySDR** — a SoapySDR device (wideband IQ). The default, and listed only
@@ -2079,7 +2190,7 @@ about itself. There are two reasons to fill them in:
   button stays live and transmit is allowed — so a transceiver whose driver is
   silent, such as the SXceiver, works without touching these boxes at all. Fill
   them in when you would rather have a limit than none.
-- **What it says is the chip, not the radio.** A transceiver whose filters, PA
+- **What it says is the button, not the radio.** A transceiver whose filters, PA
   and antenna port cover one band often reports whatever its synthesiser can
   reach. Stating the real range holds the dial and the transmit gate to the
   hardware you actually have.
@@ -2215,6 +2326,16 @@ involved:
 - **Sample rate** — the DDC receive rate: 48, 96, 192, 384, 768, or 1536 kHz.
   Protocol 1 boards top out at 384 kHz. Wider rates give a wider panadapter span
   at more CPU/network cost.
+- **Receiver (DDC)** — which of the board's receivers this radio runs. A
+  Protocol 2 board carries several independently tunable DDCs on one
+  connection, so a second radio tab configured with the **same address** and
+  **DDC2** gives you a second band from the same board
+  ([§2.17](#217-running-more-than-one-radio)) — the two radios share the
+  Ethernet connection, and closing either leaves the other streaming. The
+  transmitter belongs to the DDC1 radio. Sample rate, LNA gain and the filter
+  board belong to the *connection*: whichever radio opens it first sets them,
+  and later ones adopt them. A Protocol 1 board has DDC1 only and refuses
+  anything else with a message saying so.
 - **LNA gain** — the front-end gain of a Hermes Lite 2, −12 to +48 dB. It takes
   effect immediately, with no reconnect, and is remembered as the level the
   radio starts at. It is the only analogue gain the board has: too high and the
@@ -2268,6 +2389,15 @@ wideband IQ stream and transmitting audio back:
   ExpertSDR3's TCI listener on the same machine; enable *TCI* in the SDR software
   first.
 - **IQ sample rate** — the receive IQ stream rate: 48, 96, or 192 kHz.
+- **Receiver** — which of the rig's receivers this radio runs. A rig with two
+  (a SunSDR2DX) can serve two radio tabs from one connection: one radio on
+  **RX1** and a second radio, same server address, on **RX2**, each
+  independently tunable — sdroxide's dials and the SDR software's dials track
+  each other per receiver ([§2.17](#217-running-more-than-one-radio)). The two
+  radios share the WebSocket, so closing either tab leaves the other
+  streaming. The transmitter belongs to the RX1 radio, and the IQ rate belongs
+  to the connection: whichever radio connects first sets it. Asking for a
+  receiver the rig does not have is refused with the count it reported.
 - **Test connection** — verify sdroxide can reach the server and report what it
   found, without leaving the dialog.
 
@@ -2428,6 +2558,18 @@ configured in exactly the same way as one on your desk.
   before: `ip:192.168.2.1` is accepted, and a `usb:` URI is refused with an
   explanation, because this backend reaches the radio over the network the USB
   cable already provides.
+- **Receiver** — which of the AD9361's receive chains this radio runs. A
+  2R2T-capable board — a Pluto+, or a rev. C Pluto unlocked to two channels —
+  can serve two radio tabs from one box: one radio on **RX1** and a second,
+  same address, on **RX2**, each with its own antenna
+  ([§2.17](#217-running-more-than-one-radio)). Unlike a TCI rig or an HPSDR
+  board, the chains are **not independently tunable**: one local oscillator
+  serves both, so retuning either radio moves both, and both panadapters
+  follow. What RX2 buys is a second *antenna* on the same spectrum — receive
+  diversity, comparing polarisations, or A/B-ing two antennas live — not a
+  second band. The radio's title says *shared LO* as a reminder. The
+  transmitter belongs to the RX1 radio, and a stock 1R1T Pluto refuses RX2
+  when it connects, with a message naming what it found.
 - **Test connection** — opens the radio, reads what it says about itself, and
   reports the model, the firmware version, and **the tuning range this
   particular board has**. Worth pressing once (see AD9363 vs AD9364 below). It
@@ -2440,7 +2582,7 @@ configured in exactly the same way as one on your desk.
 
   **A stock Pluto cannot go below about 2.084 Msps.** With the AD9361's
   internal FIR decimator bypassed — which is how the radio arrives, and how
-  sdroxide leaves it — the lowest rate the chip's clock tree can produce is
+  sdroxide leaves it — the lowest rate the button's clock tree can produce is
   25 MHz ÷ 12. The rates under that are still offered, because a board someone
   has loaded a filter into can honour them, but on an ordinary Pluto they are
   rounded up and the connection message says so. They are marked in the list.
@@ -2487,7 +2629,7 @@ a firmware publishes no limits at all, sdroxide says so rather than quoting the
 fallback figures as fact.)
 
 **Half duplex.** The AD9361 genuinely is a full-duplex part, and sdroxide still
-stops receive for the length of an over. The reason is the link, not the chip: a
+stops receive for the length of an over. The reason is the link, not the button: a
 USB 2.0 Ethernet gadget will not carry a megasample-per-second stream in both
 directions at once, and trying produces a transmission full of holes. The whole
 link goes to transmit while you are keyed, exactly as the HPSDR backend does.
@@ -2946,6 +3088,13 @@ share the tab, one above the other, and all can run at the same time.
 
 Neither control protocol has any authentication, which is why both default to
 `127.0.0.1`.
+
+With more than one radio configured ([§2.17](#217-running-more-than-one-radio)),
+each radio has its own copy of this tab and its own servers — a client connects
+to a port and gets *that* radio, so two copies of WSJT-X on two ports can drive
+two radios at once. Additional radios start with the TCI server disabled, since
+its default port is already taken by the first radio's: enable it and pick a
+free port here.
 
 #### 5.8.1 Hamlib rigctld server
 
@@ -4092,7 +4241,7 @@ gets the same treatment.
 
 **On a tablet**, the frequency readout and the S-meter stay as they are — the
 digits shrink a little in portrait so both fit one row — and the rest becomes a
-row of menu chips:
+row of menu buttons:
 
 | Button | What it holds |
 | --- | --- |
@@ -4112,12 +4261,12 @@ there is no hovering pointer to hold them open.
 frequency move into the **VFO** menu; a small `A` or `B` before the digits says
 which one you are tuning. The band/mode button stays beside the digits where the
 width allows and moves to the menu row where it does not. The S-meter becomes a
-short strip, giving up exactly the width the menu chips need so they stay on its
+short strip, giving up exactly the width the menu buttons need so they stay on its
 row rather than wrapping — and it wears the **bar** face, because the needle's
 arc is a chord across its box and needs height a phone has not got to spare.
 Clicking it still cycles between the bar and the trace. The panadapter shows
 **the waterfall only** — no spectrum trace and no full-band strip, whatever the
-DISP chips were last left set to. Both come back exactly as you left them on a
+DISP buttons were last left set to. Both come back exactly as you left them on a
 wider screen; nothing is thrown away.
 
 **PTT is press-and-hold on both**, unlike the desktop's latching button: a
@@ -4131,11 +4280,11 @@ Every operating panel ([3](#3-digital-modes)) is two columns side by side — an
 activity list and a working area, or a picture and a gallery. A tablet keeps
 them that way. A phone cannot: the two want 180 and 220 points before either has
 drawn anything, which is more than the screen, so it shows one at a time with a
-row of chips above them.
+row of buttons above them.
 
 The panes, by mode:
 
-| Mode | Chips |
+| Mode | Buttons |
 | --- | --- |
 | FT8, FT4 | **DECODES** · **QSO** · WFALL |
 | JS8 | **HEARD** · **CHAT** · WFALL |
@@ -4171,7 +4320,7 @@ Touch gestures on the waterfall:
 | Tap | Tunes to that frequency |
 | Drag a passband edge | Sets the filter. The grab zone is wider than under a mouse, but never more than a third of the passband, so tapping inside a narrow CW filter still tunes |
 
-Chips, sliders and entry fields are all drawn larger on a touched layout, so a
+Buttons, sliders and entry fields are all drawn larger on a touched layout, so a
 row of controls is a row of finger-sized targets rather than 22-point ones.
 
 Remember that **audio needs a secure context**
@@ -4218,12 +4367,12 @@ Spots then appear two ways:
   green **NEW** flag when it is a DXCC entity you haven't worked yet.
 
 Switching a category off hides it everywhere at once — the list, the panadapter
-labels and the world-map dots — and the six category chips are remembered
+labels and the world-map dots — and the six category buttons are remembered
 between sessions, so a category you have no use for stays off. (**IN VIEW** is
 not: it is a way to read a crowded band for a moment, not a standing
 preference.)
 
-**Search** — the **⌕** box below the chips does a fuzzy search over everything in
+**Search** — the **⌕** box below the buttons does a fuzzy search over everything in
 the list: callsigns, station and transmitter names, comments, park and summit
 references, and the frequency written either way, so `9420`, `9.420` and `avlis`
 all find the same station. Letters need only appear in order, so `bbcws` finds
@@ -4553,6 +4702,8 @@ sdroxide stores its settings under the per-user config directory:
 | `sstv_rx/` | dir | Received SSTV and RIFP pictures, kept for the gallery. |
 | `wefax_rx/` | dir | Weather-fax charts received by an earlier version. Charts now go to `~/Pictures/sdroxide/wefax/`, but this is still read so an existing collection stays in the gallery. |
 | `solar/` | dir | Cached solar imagery, space-weather JSON and subscribed element-set listings for the 3D view, with an index of HTTP validators so refreshes stay cheap. Safe to delete; it is re-fetched on demand. |
+| `radios.json` | JSON | The roster of configured radios ([§2.17](#217-running-more-than-one-radio)): each radio's id and the name you gave it (empty = named after its interface). Absent until you add a second radio. |
+| `radio-<N>/` | dir | An additional radio's own copies of the files that describe *a radio*: `radio.json`, `session.json`, `scanner.json`, `tciserver.json`, `rigctld.json` and `wsjtx.json`. The first radio keeps those files at the root, exactly where a single-radio installation has always had them, so adding and removing other radios never touches it. Kept on disk when the radio is closed. |
 
 Every file has sensible defaults, so a missing or partial file always loads. You
 normally edit these through the GUI rather than by hand.
@@ -4601,7 +4752,9 @@ nothing. The keys of each are the settings on that interface's tab in
 tab shows before you touch it. `"pluto"`, for example, takes `address`,
 `sample_rate_hz`, `rf_bandwidth_hz`, `rx_gain_db`, `agc` (`"Manual"`,
 `"SlowAttack"`, `"FastAttack"` or `"Hybrid"`), `tx_gain_db`, `rx_port`,
-`tx_port`, `ppm` and `buffer_samples`.
+`tx_port`, `ppm`, `buffer_samples` and `rx` (which receive chain, for a 2R2T
+board — like `"tci"`'s `rx` and `"hpsdr"`'s `ddc`, it counts from 0 where the
+dialog counts from 1).
 
 To see the whole file with every default filled in, start sdroxide once and read
 what it wrote: it saves a complete `radio.json` on exit, and that file is the
