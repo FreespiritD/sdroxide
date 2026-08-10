@@ -26,7 +26,8 @@ impl SdroxideApp {
         } else {
             "FT8 / FT4 Setup".to_string()
         };
-        let resp = egui::Window::new(title)
+        let resp = egui::Window::new(title.clone())
+            .id(crate::layout::salted_id(ctx, &title))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(false)

@@ -104,7 +104,6 @@ pub(in crate::app) fn settings_ui_tab(
         ui.end_row();
     });
 
-
     let Some(cloud_march) = cloud_march else { return };
     ui.add_space(14.0);
     ui.label(RichText::new("3D view").size(14.0).strong().color(crate::theme::CYAN()));

@@ -47,24 +47,28 @@ fn memory_row(ui: &mut egui::Ui, m: &MemoryChannel, cmds: &mut Vec<Command>) {
         if crate::chrome::chip(ui, false, "RCL").on_hover_text("Recall").clicked() {
             cmds.push(Command::RecallMemory(m.id));
         }
-        ui.dnd_drag_source(egui::Id::new(("mem-drag", m.id)), DraggedMemory(m.id), |ui| {
-            // An RTTY memory recalls its modem setup with it; show that setup
-            // so two memories on the same dial read as the different stations
-            // they are (f32's Display keeps 45.45 as-is and 170.0 as "170").
-            let rtty = m.rtty.map_or(String::new(), |r| {
-                format!(" {}/{}{}", r.baud, r.shift_hz, if r.reverse { " R" } else { "" })
-            });
-            ui.label(
-                RichText::new(format!(
-                    "{:<12} {:>12.6} MHz  {}{}",
-                    m.name,
-                    m.freq_hz / 1e6,
-                    m.mode.label(),
-                    rtty
-                ))
-                .monospace(),
-            );
-        });
+        ui.dnd_drag_source(
+            crate::layout::salted_id(ui.ctx(), "mem-drag").with(m.id),
+            DraggedMemory(m.id),
+            |ui| {
+                // An RTTY memory recalls its modem setup with it; show that setup
+                // so two memories on the same dial read as the different stations
+                // they are (f32's Display keeps 45.45 as-is and 170.0 as "170").
+                let rtty = m.rtty.map_or(String::new(), |r| {
+                    format!(" {}/{}{}", r.baud, r.shift_hz, if r.reverse { " R" } else { "" })
+                });
+                ui.label(
+                    RichText::new(format!(
+                        "{:<12} {:>12.6} MHz  {}{}",
+                        m.name,
+                        m.freq_hz / 1e6,
+                        m.mode.label(),
+                        rtty
+                    ))
+                    .monospace(),
+                );
+            },
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if crate::chrome::chip_accent(
                 ui,
@@ -86,6 +90,7 @@ impl SdroxideApp {
     pub(in crate::app) fn memories_window(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
         let mut open = self.show_memories;
         let resp = egui::Window::new("Memories")
+            .id(crate::layout::salted_id(ctx, "Memories"))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)
@@ -302,6 +307,7 @@ impl SdroxideApp {
         let slots: Vec<sdroxide_types::VoiceSlotInfo> = self.voice.slots.clone();
 
         let resp = egui::Window::new("Voice keyer")
+            .id(crate::layout::salted_id(ctx, "Voice keyer"))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(false)

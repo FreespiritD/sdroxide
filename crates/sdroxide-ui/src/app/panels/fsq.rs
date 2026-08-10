@@ -338,6 +338,7 @@ impl SdroxideApp {
         let mut changed = false;
         let mut set_target: Option<String> = None;
         egui::Window::new("FSQ Contacts")
+            .id(crate::layout::salted_id(ctx, "FSQ Contacts"))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(false)

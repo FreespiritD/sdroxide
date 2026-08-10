@@ -60,6 +60,7 @@ impl SdroxideApp {
     pub(in crate::app) fn bands_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_bands;
         let resp = egui::Window::new("BANDS")
+            .id(crate::layout::salted_id(ctx, "BANDS"))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)

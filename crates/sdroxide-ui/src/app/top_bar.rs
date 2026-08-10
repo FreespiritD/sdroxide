@@ -323,7 +323,7 @@ impl SdroxideApp {
                     ui.label(RichText::new(tag).size(13.0).strong().color(crate::theme::CYAN()));
                     if let Some(hz) = freq_display::show_typed(
                         ui,
-                        egui::Id::new("main-freq"),
+                        crate::layout::salted_id(ui.ctx(), "main-freq"),
                         self.state.active_freq_hz(),
                         plan.digit,
                     ) {
@@ -638,7 +638,7 @@ impl SdroxideApp {
                     ui.add_space(((full_h - readout_h) / 2.0).max(0.0));
                     new_hz = freq_display::show(
                         ui,
-                        egui::Id::new("main-freq"),
+                        crate::layout::salted_id(ui.ctx(), "main-freq"),
                         self.state.active_freq_hz(),
                         self.input.cfg.wheel,
                         size,
@@ -750,7 +750,7 @@ impl SdroxideApp {
             ui.add_space(6.0);
             let new_hz = freq_display::show_typed(
                 ui,
-                egui::Id::new("main-freq"),
+                crate::layout::salted_id(ui.ctx(), "main-freq"),
                 self.state.active_freq_hz(),
                 size,
             );

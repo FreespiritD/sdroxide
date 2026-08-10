@@ -179,6 +179,7 @@ impl SdroxideApp {
         let mut win = std::mem::take(&mut self.sat_win);
         let mut open = self.show_sat;
         let resp = egui::Window::new("SATELLITE")
+            .id(crate::layout::salted_id(ctx, "SATELLITE"))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)

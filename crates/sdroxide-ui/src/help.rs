@@ -351,6 +351,7 @@ impl Help {
 
         let mut open = self.open;
         let resp = egui::Window::new("SDROXIDE MANUAL")
+            .id(crate::layout::salted_id(ctx, "SDROXIDE MANUAL"))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)

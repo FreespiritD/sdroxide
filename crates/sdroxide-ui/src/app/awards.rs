@@ -106,6 +106,7 @@ impl SdroxideApp {
         let mut new_band: Option<String> = None;
         let awards = self.awards_cache.as_ref().map(|(_, _, a)| a.clone()).unwrap_or_default();
         let resp = egui::Window::new("AWARDS")
+            .id(crate::layout::salted_id(ctx, "AWARDS"))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)

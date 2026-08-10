@@ -399,7 +399,7 @@ impl SdroxideApp {
             // position under it, and the suffix drops the stale (often very
             // wide, always 420 pt tall) geometry left by the builds before this
             // one. Position is centred on first use because it goes with it.
-            .id(egui::Id::new("settings-window-v2"))
+            .id(crate::layout::salted_id(ctx, "settings-window-v2"))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)

@@ -1224,6 +1224,7 @@ impl SdroxideApp {
                 let savable = self.sstv.full_png.as_ref().is_some_and(|(n, _)| *n == r.entry.name);
                 let armed = self.sstv.confirm_delete.as_deref() == Some(&r.entry.name);
                 egui::Window::new("Received image")
+                    .id(crate::layout::salted_id(&ctx, "Received image"))
                     .open(&mut open)
                     .collapsible(false)
                     .resizable(true)

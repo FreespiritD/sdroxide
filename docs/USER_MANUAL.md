@@ -804,10 +804,11 @@ is already using. Pick its interface, configure it, press **Apply /
 reconnect**, and it is on the air. From then on the same strip appears across
 the top of the main window as well.
 
-**The tab strip.** Click a tab to switch to that radio. Everything else keeps
-running behind the tab you are looking at — audio keeps playing, digital modes
-keep decoding, skimmers keep skimming, the scanner keeps scanning. Each tab
-carries, besides its name:
+**The tab strip.** Each radio's controls sit in a small box of their own on
+the strip. Click a radio's name to switch to it. Everything else keeps
+running behind the radio you are looking at — audio keeps playing, digital
+modes keep decoding, skimmers keep skimming, the scanner keeps scanning.
+Besides its name, each box carries:
 
 - **● TX** — this radio is transmitting. Visible from every tab on purpose:
   it is the one thing worth knowing about a radio you are not looking at.
@@ -816,7 +817,21 @@ carries, besides its name:
 - **🔊 / 🔇** — mute this radio's speaker audio. Muting is *only* the speaker:
   decoding, skimming, recording and everything else continue, so a muted
   background radio still fills its FT8 list and still spots.
-- **×** — close the radio (every tab but the first has one; see below).
+- **⊞** — open this radio in a split view of its own, or close the one it
+  has (see below).
+
+Closing a radio is deliberately *not* on the strip — that lives in
+**Settings → Radio**, behind a dialog rather than one stray click away.
+
+**Split view.** The **⊞** toggle gives a radio a pane of its own: toggle it
+on a second radio and the main area splits into two equal columns, side by
+side; a third radio makes three. Every pane carries its own copy of the
+radio strip, so any pane can be switched to any radio that is not already on
+screen — a radio is never shown twice, and its name is greyed out in the
+other panes' strips while it is up. Keyboard shortcuts and MIDI go to one
+pane at a time: the one whose box carries the accent outline, and clicking
+anywhere in a pane moves them there. Close the split views (or their radios)
+and the last pane left takes the whole window back.
 
 **Naming.** A tab names itself after its radio's interface — *PlutoSDR*,
 *TCI*, *HPSDR* — so a strip full of different hardware needs no housekeeping
@@ -854,8 +869,9 @@ drawn for the tab you are watching — and resumes with a clean gap when you
 switch back; the spectrum data underneath it never stops. Keyboard shortcuts
 and MIDI controls go to the focused tab only.
 
-**Closing a radio.** The **×** on the tab (or in Settings → Radio) shuts the
-radio down and removes it from the strip. Its configuration directory is kept
+**Closing a radio.** The **×** beside the radio's name in **Settings →
+Radio** shuts the radio down and removes it from the strip. Its configuration
+directory is kept
 on disk — a closed tab is not a request to destroy the configuration behind
 it — but a radio added later starts fresh rather than inheriting it.
 

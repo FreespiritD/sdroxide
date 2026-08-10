@@ -51,11 +51,17 @@ pub use state::DigiTraffic;
 #[cfg(not(target_arch = "wasm32"))]
 use state::SolarUi;
 
-/// Stable id of the child viewport. Not a `const` because `Id::new` hashes at
-/// runtime; it is a couple of instructions per frame.
+/// Stable id of the child viewport, distinct per radio: a split view can
+/// have two radios' solar windows up at once, and one id would be one window
+/// both fought over. Radio 0 keeps the historical hash. Not a `const` because
+/// the id hashes at runtime; it is a couple of instructions per frame.
 #[cfg(not(target_arch = "wasm32"))]
-fn viewport_id() -> egui::ViewportId {
-    egui::ViewportId::from_hash_of("sdroxide-solar3d")
+fn viewport_id(salt: u32) -> egui::ViewportId {
+    if salt == 0 {
+        egui::ViewportId::from_hash_of("sdroxide-solar3d")
+    } else {
+        egui::ViewportId::from_hash_of(("sdroxide-solar3d", salt))
+    }
 }
 
 // Scene units are gigametres (10⁶ km): 1 AU ≈ 149.6, the Sun ≈ 0.696, the Earth
@@ -230,7 +236,7 @@ impl Solar3d {
 
         let state = Arc::clone(&self.state);
         ctx.show_viewport_deferred(
-            viewport_id(),
+            viewport_id(crate::layout::radio_salt(ctx)),
             egui::ViewportBuilder::default()
                 .with_title("sdroxide — solar system")
                 .with_inner_size([1180.0, 760.0])
@@ -280,12 +286,15 @@ impl Solar3d {
 
         if self.feed.is_none() {
             let wake_ctx = ctx.clone();
+            // Captured now: the closure fires from the feed thread, long after
+            // this frame's salt has been overwritten by another radio's.
+            let vid = viewport_id(crate::layout::radio_salt(ctx));
             let feed = sdroxide_solar::SolarFeed::start(
                 sdroxide_solar::SdoChannel::from_u8(channel),
                 resolution as u32,
                 // Wake only this window: the SDR UI has no reason to redraw
                 // because a solar image arrived.
-                move || wake_ctx.request_repaint_of(viewport_id()),
+                move || wake_ctx.request_repaint_of(vid),
             );
             self.lock().data = Some(feed.shared());
             self.feed = Some(feed);

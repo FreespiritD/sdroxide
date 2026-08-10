@@ -238,6 +238,7 @@ impl SdroxideApp {
     pub(in crate::app) fn logbook_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_logbook;
         let resp = egui::Window::new("LOGBOOK")
+            .id(crate::layout::salted_id(ctx, "LOGBOOK"))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)

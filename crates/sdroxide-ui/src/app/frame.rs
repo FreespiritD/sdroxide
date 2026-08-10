@@ -51,11 +51,18 @@ impl eframe::App for SdroxideApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let now = ctx.input(|i| i.time);
+        // Which radio the ids minted below belong to. Split view draws several
+        // apps per frame; each declares itself before it draws anything.
+        crate::layout::set_radio_salt(&ctx, self.radio_id);
         // Settle the layout for this frame before anything draws. It is a
         // property of the viewport plus the operator's override, and the
         // override lives in settings the context cannot see — so it is decided
-        // once here and read from the context by everything downstream.
-        let tier = crate::layout::tier_for(ctx.content_rect().size(), self.ui_settings.layout);
+        // once here and read from the context by everything downstream. Sized
+        // from the `Ui` rather than the viewport: in a split view this app
+        // owns one column of the window, and it is the column that must decide
+        // whether the roomy layout still fits. For the whole-window case the
+        // two are the same rect.
+        let tier = crate::layout::tier_for(ui.max_rect().size(), self.ui_settings.layout);
         crate::layout::set_tier(&ctx, tier);
         if self.tier != tier {
             self.tier = tier;
@@ -106,15 +113,24 @@ impl eframe::App for SdroxideApp {
         }
 
         let mut cmds = Vec::new();
-        // F1 toggles the manual — handled here (not in `keyboard_shortcuts`) so
-        // it works even while a text field has focus.
-        if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
-            self.help.open = !self.help.open;
+        // The keyboard, the mouse buttons and the control surface belong to
+        // the focused radio alone. In a split view every visible radio runs
+        // this frame loop, and without the gate one arrow key would tune all
+        // of them at once.
+        if self.focused {
+            // F1 toggles the manual — handled here (not in
+            // `keyboard_shortcuts`) so it works even while a text field has
+            // focus.
+            if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+                self.help.open = !self.help.open;
+            }
+            // An open manual takes the scrolling keys before the bindings run,
+            // so reading it never tunes the radio at the same time.
+            self.help.grab_keys(&ctx);
+            self.control_inputs(&ctx, now, &mut cmds);
         }
-        // An open manual takes the scrolling keys before the bindings run, so
-        // reading it never tunes the radio at the same time.
-        self.help.grab_keys(&ctx);
-        self.control_inputs(&ctx, now, &mut cmds);
+        // (An unfocused pane's MIDI backlog is discarded in `drain_events`,
+        // which ran above, same as for the hidden tabs.)
         // Shutting down with a bound key, a footswitch or the compact layout's
         // PTT still held would otherwise leave the rig transmitting.
         if ctx.input(|i| i.viewport().close_requested()) {
@@ -127,7 +143,7 @@ impl eframe::App for SdroxideApp {
             }
         }
 
-        egui::Panel::top(egui::Id::new("topbar"))
+        egui::Panel::top(crate::layout::salted_id(&ctx, "topbar"))
             .frame(
                 egui::Frame::new()
                     .fill(crate::theme::BG_DEEP())
@@ -1029,6 +1045,7 @@ impl SdroxideApp {
         }
         let mut dismissed = false;
         let resp = egui::Window::new("⚠  TRANSMIT LOCKOUT DISABLED")
+            .id(crate::layout::salted_id(ctx, "oob-tx-window"))
             .frame(crate::chrome::window_frame())
             .collapsible(false)
             .resizable(false)
@@ -1152,7 +1169,7 @@ impl SdroxideApp {
 
     /// De-assert every held control. Closing the window while a footswitch or
     /// a bound key is down must not leave the transmitter keyed.
-    fn release_held_controls(&mut self, cmds: &mut Vec<Command>) {
+    pub(in crate::app) fn release_held_controls(&mut self, cmds: &mut Vec<Command>) {
         let SdroxideApp {
             input,
             state,

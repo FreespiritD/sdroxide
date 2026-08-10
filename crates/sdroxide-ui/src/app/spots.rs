@@ -305,6 +305,7 @@ impl SdroxideApp {
             (SpotKind::Broadcast, "BC"),
         ];
         let resp = egui::Window::new("SPOTS")
+            .id(crate::layout::salted_id(ctx, "SPOTS"))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)

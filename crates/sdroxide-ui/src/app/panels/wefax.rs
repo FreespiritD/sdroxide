@@ -698,7 +698,7 @@ impl SdroxideApp {
         let mut pressed_delete = false;
         let mut step = 0i32;
         let resp = egui::Window::new(format!("{title}  ·  {}×{}", size.0, size.1))
-            .id(egui::Id::new("wefax-viewer"))
+            .id(crate::layout::salted_id(ctx, "wefax-viewer"))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .default_size([

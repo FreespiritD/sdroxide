@@ -144,6 +144,37 @@ pub fn tier(ctx: &egui::Context) -> Tier {
         .unwrap_or_else(|| tier_for(ctx.content_rect().size(), LayoutMode::Auto))
 }
 
+/// Where the radio-id salt lives between [`set_radio_salt`] and [`salted_id`].
+fn radio_salt_id() -> egui::Id {
+    egui::Id::new("sdroxide-radio-salt")
+}
+
+/// Publish which radio's UI the frame is drawing. Split view draws several
+/// complete apps in one frame, so every *fixed* egui id — floating windows,
+/// the top-bar panel, the frequency readout — must differ per radio or the
+/// instances share state and egui reports id clashes. Same publication
+/// pattern as [`set_tier`], and for the same reason: the sites that mint
+/// those ids are too deep to thread another argument into.
+pub fn set_radio_salt(ctx: &egui::Context, radio_id: u32) {
+    ctx.data_mut(|d| d.insert_temp(radio_salt_id(), radio_id));
+}
+
+/// The radio whose UI is being drawn right now (0 outside a multi-radio
+/// session, and for the station radio).
+pub fn radio_salt(ctx: &egui::Context) -> u32 {
+    ctx.data(|d| d.get_temp::<u32>(radio_salt_id())).unwrap_or(0)
+}
+
+/// A fixed id, kept distinct per radio. Radio 0 keeps the historical unsalted
+/// id — the same bargain `view_key` strikes — so an existing installation
+/// keeps its saved window placements.
+pub fn salted_id(ctx: &egui::Context, name: &str) -> egui::Id {
+    match radio_salt(ctx) {
+        0 => egui::Id::new(name),
+        n => egui::Id::new((name, n)),
+    }
+}
+
 /// A window width that fits the viewport, with a margin so the cut-corner
 /// border stays visible. egui persists window sizes, so without this a keyer
 /// opened at 600 pt on a desktop stays 600 pt wide on the phone that later

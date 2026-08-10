@@ -18,6 +18,7 @@ impl SdroxideApp {
         // settings are; the engine persists it and echoes it back.
         let mut cfg = self.scanner.clone();
         let resp = egui::Window::new("Scanner")
+            .id(crate::layout::salted_id(ctx, "Scanner"))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)

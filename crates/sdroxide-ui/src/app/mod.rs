@@ -803,6 +803,17 @@ impl SdroxideApp {
                     c.label
                 )));
             }
+        } else {
+            // Losing the keyboard with a bound control held must release it:
+            // this radio stops polling the keyboard now (a visible pane still
+            // draws, a hidden tab doesn't even do that), so the key-up would
+            // never be seen. A stranded PTT is the failure this guards
+            // against.
+            let mut cmds = Vec::new();
+            self.release_held_controls(&mut cmds);
+            for c in cmds {
+                self.ctrl.send(c);
+            }
         }
     }
 
