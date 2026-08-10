@@ -66,6 +66,35 @@ const TOP_MAX_KM = 18.0;
 const EARTH_R_KM = 6371.0;
 const PI = 3.14159265;
 
+/// True radii, gigametres — `ephem::{SUN_R, EARTH_R, MOON_R}`.
+const TRUE_SUN_R = 0.6957;
+const TRUE_EARTH_R = 0.006371;
+const TRUE_MOON_R = 0.0017374;
+
+/// The Moon's shadow — the same TRUE-scale eclipse test the ground runs (see
+/// `solar_body.wgsl` for the full argument): 1 in the open, 0 in the umbra.
+/// The deck has to darken with the surface under it or the shadow would read
+/// as a hole in the weather rather than as a shadow across it. `moon_off` is
+/// the Moon's true geocentric offset, carried in `DrawData::tint2`.
+fn eclipse_light(centre: vec3<f32>, moon_off: vec3<f32>, n: vec3<f32>) -> f32 {
+    if (dot(moon_off, moon_off) < 1e-6) {
+        return 1.0;
+    }
+    let p = n * TRUE_EARTH_R;
+    let to_sun = (g.sun_pos.xyz - centre) - p;
+    let to_moon = moon_off - p;
+    let su = normalize(to_sun);
+    let mu = normalize(to_moon);
+    if (dot(su, mu) <= 0.0) {
+        return 1.0;
+    }
+    let rs = TRUE_SUN_R / length(to_sun);
+    let rm = TRUE_MOON_R / length(to_moon);
+    let sep = length(cross(su, mu));
+    let f = clamp((rs + rm - sep) / (2.0 * rs), 0.0, 1.0);
+    return 1.0 - f * f * (3.0 - 2.0 * f);
+}
+
 /// A sunlit cloud top reflects about seven tenths of what falls on it, against
 /// the ocean's six hundredths. If the deck is not markedly brighter than the
 /// sea it reads as smoke rather than as cloud.
@@ -291,10 +320,11 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
 
-    // The same soft terminator the ground uses (`solar_body.wgsl`). If the
-    // cloud's day/night line does not sit exactly on the planet's, the deck
-    // reads as floating above it.
-    let day = smoothstep(-0.06, 0.16, dot(n, to_sun));
+    // The same soft terminator the ground uses (`solar_body.wgsl`) — and the
+    // same eclipse shadow. If the cloud's day/night line does not sit exactly
+    // on the planet's, the deck reads as floating above it.
+    let day = smoothstep(-0.06, 0.16, dot(n, to_sun))
+        * eclipse_light(d.model[3].xyz, d.tint2.xyz, n);
 
     // Self-shadow: how much cloud stands between this sample and the top of its
     // own column. It is why a deck looks three-dimensional instead of like fog

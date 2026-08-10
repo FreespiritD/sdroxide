@@ -69,6 +69,34 @@ const MAX_STEPS = 40;
 /// be seen and the rest of the march is wasted.
 const MIN_TRANSMITTANCE = 0.012;
 
+/// True radii, gigametres — `ephem::{SUN_R, EARTH_R, MOON_R}`.
+const TRUE_SUN_R = 0.6957;
+const TRUE_EARTH_R = 0.006371;
+const TRUE_MOON_R = 0.0017374;
+
+/// The Moon's shadow — the same TRUE-scale eclipse test the ground and the
+/// sliced deck run (see `solar_body.wgsl` for the full argument): 1 in the
+/// open, 0 in the umbra. `n` is the sample's radial direction and `moon_off`
+/// the Moon's true geocentric offset, carried in `DrawData::tint2`.
+fn eclipse_light(centre: vec3<f32>, moon_off: vec3<f32>, n: vec3<f32>) -> f32 {
+    if (dot(moon_off, moon_off) < 1e-6) {
+        return 1.0;
+    }
+    let p = n * TRUE_EARTH_R;
+    let to_sun = (g.sun_pos.xyz - centre) - p;
+    let to_moon = moon_off - p;
+    let su = normalize(to_sun);
+    let mu = normalize(to_moon);
+    if (dot(su, mu) <= 0.0) {
+        return 1.0;
+    }
+    let rs = TRUE_SUN_R / length(to_sun);
+    let rm = TRUE_MOON_R / length(to_moon);
+    let sep = length(cross(su, mu));
+    let f = clamp((rs + rm - sep) / (2.0 * rs), 0.0, 1.0);
+    return 1.0 - f * f * (3.0 - 2.0 * f);
+}
+
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let lo = c / 12.92;
     let hi = pow((c + vec3(0.055)) / 1.055, vec3(2.4));
@@ -236,7 +264,10 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
         let s = sample_cloud(p, earth_r, lift, d.style.y, g.misc.x);
         if (s.x > 0.001) {
             let n = normalize(p);
-            let day = smoothstep(-0.06, 0.16, dot(n, to_sun_dir));
+            // Terminator and eclipse shadow, exactly as the sliced path takes
+            // them, so switching decks never moves either line.
+            let day = smoothstep(-0.06, 0.16, dot(n, to_sun_dir))
+                * eclipse_light(centre, d.tint2.xyz, n);
 
             // Two shadow taps towards the Sun. A full secondary march would be
             // the textbook answer and many times the cost; two samples up-sun

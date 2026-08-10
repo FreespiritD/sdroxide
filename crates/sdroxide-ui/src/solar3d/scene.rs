@@ -434,6 +434,11 @@ pub struct Bodies {
     pub moon: V3,
     pub moon_r: f32,
     pub moon_basis: (V3, V3, V3),
+    /// The Moon's TRUE geocentric offset, gigametres — no orbit compression,
+    /// no body exaggeration. The eclipse shadow it casts on the Earth is
+    /// computed from this, so the shadow's track stays geographically true
+    /// whatever the sliders say the Moon itself looks like.
+    pub moon_true_off: V3,
     pub sun_frame: ephem::SunFrame,
     pub planets: Vec<PlanetBody>,
     pub moons: Vec<MoonBody>,
@@ -457,7 +462,8 @@ pub fn bodies(st: &SolarUi, unix_s: f64) -> Bodies {
     let v = &st.view;
     let earth = V3::from_f64(ephem::earth_heliocentric(jd));
     let b = ephem::earth_basis(jd);
-    let moon_off = V3::from_f64(ephem::moon_geocentric_vec(jd)) * v.moon_orbit_scale;
+    let moon_true_off = V3::from_f64(ephem::moon_geocentric_vec(jd));
+    let moon_off = moon_true_off * v.moon_orbit_scale;
     let sun_r = ephem::SUN_R as f32 * v.sun_scale;
 
     let mut planets = Vec::with_capacity(sdroxide_solar::Planet::ALL.len());
@@ -522,6 +528,7 @@ pub fn bodies(st: &SolarUi, unix_s: f64) -> Bodies {
         moon: earth + moon_off,
         moon_r: ephem::MOON_R as f32 * v.body_scale,
         moon_basis: basis_cols(ephem::moon_basis(jd)),
+        moon_true_off,
         sun_frame: ephem::sun_frame(jd),
         planets,
         moons,
@@ -1022,7 +1029,9 @@ fn cloud_deck(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, field: &Clo
                 model: M4::from_basis(ex, ey, ez, b.earth, b.earth_r * cloud_radius(alt)).cols,
                 basis,
                 tint: [1.0; 4],
-                tint2: [0.0; 4],
+                // The Moon's true geocentric offset, as on the Earth draw: the
+                // deck sits in the same eclipse shadow as the ground under it.
+                tint2: b.moon_true_off.arr4(0.0),
                 params: [alt, slab, fade, extra],
                 style: [CLOUD_LIFT, CLOUD_BOTTOM_KM, CLOUD_TOP_KM, b.earth_r],
             },
@@ -1456,8 +1465,17 @@ fn bodies_draws(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
     sphere(s, sun_basis, V3::ZERO, b.sun_r, sun, MODE_SUN, [0.0; 4]);
 
     // Earth — its body frame is ECEF, so the land mask, the QTH marker and the
-    // terminator all share one coordinate system.
-    sphere(s, b.earth_basis, b.earth, b.earth_r, ink::CYAN, MODE_EARTH, [0.0; 4]);
+    // terminator all share one coordinate system. `tint2` carries the Moon's
+    // true geocentric offset, from which the shader casts the eclipse shadow.
+    let (ex, ey, ez) = b.earth_basis;
+    let mut earth = DrawData::new(
+        M4::from_basis(ex, ey, ez, b.earth, b.earth_r),
+        M4::from_basis(ex, ey, ez, V3::ZERO, 1.0),
+        ink::CYAN,
+        MODE_EARTH,
+    );
+    earth.tint2 = b.moon_true_off.arr4(0.0);
+    s.draws.push((Prim::Sphere, earth));
 
     // Moon, in the tidally locked frame — which is what puts Imbrium and
     // Tranquillitatis on the near side, where they belong.
@@ -2375,6 +2393,88 @@ mod tests {
         assert!(b.earth.z.abs() < 1e-4, "Earth off-plane by {}", b.earth.z);
         let moon_off = (b.moon - b.earth).len();
         assert!((0.35..0.41).contains(&moon_off), "Earth–Moon {moon_off} Gm");
+    }
+
+    /// The shader's `eclipse_light` (`solar_body.wgsl`), mirrored in the same
+    /// f32 arithmetic: how much sunlight reaches the surface point with world
+    /// normal `n`, from the Earth draw's own uniforms.
+    fn eclipse_light(centre: V3, moon_off: V3, n: V3) -> f32 {
+        let p = n * (ephem::EARTH_R as f32);
+        let to_sun = (V3::ZERO - centre) - p;
+        let to_moon = moon_off - p;
+        let su = to_sun.normalize();
+        let mu = to_moon.normalize();
+        if su.dot(mu) <= 0.0 {
+            return 1.0;
+        }
+        let rs = ephem::SUN_R as f32 / to_sun.len();
+        let rm = ephem::MOON_R as f32 / to_moon.len();
+        let sep = su.cross(mu).len();
+        let f = ((rs + rm - sep) / (2.0 * rs)).clamp(0.0, 1.0);
+        1.0 - f * f * (3.0 - 2.0 * f)
+    }
+
+    /// The deepest Moon shadow anywhere on the sunlit hemisphere at `unix_s`,
+    /// as (coverage, lat, lon) on a half-degree grid — computed from the very
+    /// DrawData the Earth is rendered with, so the plumbing is under test too.
+    fn deepest_shadow(st: &SolarUi, unix_s: f64) -> (f32, f64, f64) {
+        let b = bodies(st, unix_s);
+        let s = build(st, None, unix_s, [1600.0, 900.0], 0.0);
+        let earth = s
+            .draws
+            .iter()
+            .find(|(p, d)| *p == Prim::Sphere && d.params[0] == MODE_EARTH)
+            .map(|(_, d)| *d)
+            .expect("no Earth draw");
+        let centre = v3(earth.model[3][0], earth.model[3][1], earth.model[3][2]);
+        let moon = v3(earth.tint2[0], earth.tint2[1], earth.tint2[2]);
+        let to_sun = (V3::ZERO - centre).normalize();
+        let mut worst = (0.0f32, 0.0f64, 0.0f64);
+        for lat_half in -180..=180 {
+            for lon_half in -360..360 {
+                let (lat, lon) = (lat_half as f64 * 0.5, lon_half as f64 * 0.5);
+                let n = b.surface_dir(lat, lon);
+                // The night side sees the same alignment through the planet;
+                // there the shader's `day` is already zero, so skip it here.
+                if n.dot(to_sun) <= 0.0 {
+                    continue;
+                }
+                let cover = 1.0 - eclipse_light(centre, moon, n);
+                if cover > worst.0 {
+                    worst = (cover, lat, lon);
+                }
+            }
+        }
+        worst
+    }
+
+    /// 2026-08-12 17:46 UTC is the greatest eclipse of a real total solar
+    /// eclipse — NASA's catalogue puts the point at 65.2°N, 25.2°W, in the
+    /// Denmark Strait. The shadow is computed at TRUE scale whatever the
+    /// sliders say, so the same track must come out with the Moon exaggerated
+    /// and its orbit compressed — and there must be no shadow a day earlier.
+    #[test]
+    fn the_moons_shadow_falls_where_the_2026_eclipse_did() {
+        let mut st = ui();
+        st.view.body_scale = 8.0;
+        st.view.moon_orbit_scale = 0.25;
+        let (cover, lat, lon) = deepest_shadow(&st, 1_786_556_760.0);
+        assert!(cover > 0.95, "greatest eclipse only covers {cover}");
+        // ±1.5° / ±5° of longitude at 65°N is ~250 km: the floor set by the
+        // solar theory's ±0.01°, the half-degree scan and the geocentric
+        // latitude of the scan itself — and about the totality band's width.
+        assert!(
+            (lat - 65.2).abs() < 1.5 && (lon + 25.2).abs() < 5.0,
+            "deepest shadow at {lat}°, {lon}° against NASA's 65.2°, −25.2°"
+        );
+
+        // Same instant, honest sliders: the track must not move.
+        let plain = deepest_shadow(&ui(), 1_786_556_760.0);
+        assert_eq!((lat, lon), (plain.1, plain.2), "the sliders moved the shadow");
+
+        // A day earlier the Moon has not reached the node yet.
+        let (cover, lat, lon) = deepest_shadow(&st, 1_786_470_360.0);
+        assert!(cover < 1e-3, "phantom shadow {cover} at {lat}°, {lon}°");
     }
 
     /// How many bodies the scene is made of, so the counts below read as

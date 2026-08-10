@@ -2,10 +2,11 @@
 //! of the Sun's rotation axis.
 //!
 //! Algorithms are Meeus, *Astronomical Algorithms* (2nd ed.) — the low-accuracy
-//! solar theory (ch. 25), the Astronomical Almanac's short lunar series, mean
+//! solar theory (ch. 25), the abridged ELP 2000-82 lunar series (ch. 47), mean
 //! sidereal time (ch. 12), mean obliquity (ch. 22) and the solar-disk elements
 //! (ch. 29). Accuracy is far finer than a view that exaggerates body radii by
-//! 20× can express; see `accuracy` on each function.
+//! 20× can express — except for the Moon, whose full ch. 47 precision the
+//! eclipse shadow genuinely uses; see `accuracy` on each function.
 //!
 //! # Frame
 //!
@@ -119,41 +120,215 @@ pub fn earth_heliocentric(jd: f64) -> Vec3 {
     Vec3::from_lon_lat_deg(lambda + 180.0, 0.0) * (r * AU)
 }
 
+/// ΔT = TT − UT, seconds: the drift of uniform (ephemeris) time against the
+/// Earth's rotation. The 2005–2050 polynomial from Espenak & Meeus, *Five
+/// Millennium Canon of Solar Eclipses*; extrapolated it is a minute or two
+/// wrong by ±2100, which at the Moon's 0.55″/s is still far inside the lunar
+/// series' own truncation.
+fn delta_t_s(jd: f64) -> f64 {
+    let t = (jd - 2_451_545.0) / 365.25;
+    62.92 + 0.322_17 * t + 0.005_589 * t * t
+}
+
+/// Meeus table 47.A: multiples of (D, M, M′, F), then the sine coefficient of
+/// the longitude series (10⁻⁶ degree) and the cosine coefficient of the
+/// distance series (10⁻³ km).
+const MOON_LON_DIST: &[(i32, i32, i32, i32, f64, f64)] = &[
+    (0, 0, 1, 0, 6_288_774.0, -20_905_355.0),
+    (2, 0, -1, 0, 1_274_027.0, -3_699_111.0),
+    (2, 0, 0, 0, 658_314.0, -2_955_968.0),
+    (0, 0, 2, 0, 213_618.0, -569_925.0),
+    (0, 1, 0, 0, -185_116.0, 48_888.0),
+    (0, 0, 0, 2, -114_332.0, -3_149.0),
+    (2, 0, -2, 0, 58_793.0, 246_158.0),
+    (2, -1, -1, 0, 57_066.0, -152_138.0),
+    (2, 0, 1, 0, 53_322.0, -170_733.0),
+    (2, -1, 0, 0, 45_758.0, -204_586.0),
+    (0, 1, -1, 0, -40_923.0, -129_620.0),
+    (1, 0, 0, 0, -34_720.0, 108_743.0),
+    (0, 1, 1, 0, -30_383.0, 104_755.0),
+    (2, 0, 0, -2, 15_327.0, 10_321.0),
+    (0, 0, 1, 2, -12_528.0, 0.0),
+    (0, 0, 1, -2, 10_980.0, 79_661.0),
+    (4, 0, -1, 0, 10_675.0, -34_782.0),
+    (0, 0, 3, 0, 10_034.0, -23_210.0),
+    (4, 0, -2, 0, 8_548.0, -21_636.0),
+    (2, 1, -1, 0, -7_888.0, 24_208.0),
+    (2, 1, 0, 0, -6_766.0, 30_824.0),
+    (1, 0, -1, 0, -5_163.0, -8_379.0),
+    (1, 1, 0, 0, 4_987.0, -16_675.0),
+    (2, -1, 1, 0, 4_036.0, -12_831.0),
+    (2, 0, 2, 0, 3_994.0, -10_445.0),
+    (4, 0, 0, 0, 3_861.0, -11_650.0),
+    (2, 0, -3, 0, 3_665.0, 14_403.0),
+    (0, 1, -2, 0, -2_689.0, -7_003.0),
+    (2, 0, -1, 2, -2_602.0, 0.0),
+    (2, -1, -2, 0, 2_390.0, 10_056.0),
+    (1, 0, 1, 0, -2_348.0, 6_322.0),
+    (2, -2, 0, 0, 2_236.0, -9_884.0),
+    (0, 1, 2, 0, -2_120.0, 5_751.0),
+    (0, 2, 0, 0, -2_069.0, 0.0),
+    (2, -2, -1, 0, 2_048.0, -4_950.0),
+    (2, 0, 1, -2, -1_773.0, 4_130.0),
+    (2, 0, 0, 2, -1_595.0, 0.0),
+    (4, -1, -1, 0, 1_215.0, -3_958.0),
+    (0, 0, 2, 2, -1_110.0, 0.0),
+    (3, 0, -1, 0, -892.0, 3_258.0),
+    (2, 1, 1, 0, -810.0, 2_616.0),
+    (4, -1, -2, 0, 759.0, -1_897.0),
+    (0, 2, -1, 0, -713.0, -2_117.0),
+    (2, 2, -1, 0, -700.0, 2_354.0),
+    (2, 1, -2, 0, 691.0, 0.0),
+    (2, -1, 0, -2, 596.0, 0.0),
+    (4, 0, 1, 0, 549.0, -1_423.0),
+    (0, 0, 4, 0, 537.0, -1_117.0),
+    (4, -1, 0, 0, 520.0, -1_571.0),
+    (1, 0, -2, 0, -487.0, -1_739.0),
+    (2, 1, 0, -2, -399.0, 0.0),
+    (0, 0, 2, -2, -381.0, -4_421.0),
+    (1, 1, 1, 0, 351.0, 0.0),
+    (3, 0, -2, 0, -340.0, 0.0),
+    (4, 0, -3, 0, 330.0, 0.0),
+    (2, -1, 2, 0, 327.0, 0.0),
+    (0, 2, 1, 0, -323.0, 1_165.0),
+    (1, 1, -1, 0, 299.0, 0.0),
+    (2, 0, 3, 0, 294.0, 0.0),
+    (2, 0, -1, -2, 0.0, 8_752.0),
+];
+
+/// Meeus table 47.B: multiples of (D, M, M′, F) and the sine coefficient of
+/// the latitude series (10⁻⁶ degree).
+const MOON_LAT: &[(i32, i32, i32, i32, f64)] = &[
+    (0, 0, 0, 1, 5_128_122.0),
+    (0, 0, 1, 1, 280_602.0),
+    (0, 0, 1, -1, 277_693.0),
+    (2, 0, 0, -1, 173_237.0),
+    (2, 0, -1, 1, 55_413.0),
+    (2, 0, -1, -1, 46_271.0),
+    (2, 0, 0, 1, 32_573.0),
+    (0, 0, 2, 1, 17_198.0),
+    (2, 0, 1, -1, 9_266.0),
+    (0, 0, 2, -1, 8_822.0),
+    (2, -1, 0, -1, 8_216.0),
+    (2, 0, -2, -1, 4_324.0),
+    (2, 0, 1, 1, 4_200.0),
+    (2, 1, 0, -1, -3_359.0),
+    (2, -1, -1, 1, 2_463.0),
+    (2, -1, 0, 1, 2_211.0),
+    (2, -1, -1, -1, 2_065.0),
+    (0, 1, -1, -1, -1_870.0),
+    (4, 0, -1, -1, 1_828.0),
+    (0, 1, 0, 1, -1_794.0),
+    (0, 0, 0, 3, -1_749.0),
+    (0, 1, -1, 1, -1_565.0),
+    (1, 0, 0, 1, -1_491.0),
+    (0, 1, 1, 1, -1_475.0),
+    (0, 1, 1, -1, -1_410.0),
+    (0, 1, 0, -1, -1_344.0),
+    (1, 0, 0, -1, -1_335.0),
+    (0, 0, 3, 1, 1_107.0),
+    (4, 0, 0, -1, 1_021.0),
+    (4, 0, -1, 1, 833.0),
+    (0, 0, 1, -3, 777.0),
+    (4, 0, -2, 1, 671.0),
+    (2, 0, 0, -3, 607.0),
+    (2, 0, 2, -1, 596.0),
+    (2, -1, 1, -1, 491.0),
+    (2, 0, -2, 1, -451.0),
+    (0, 0, 3, -1, 439.0),
+    (2, 0, 2, 1, 422.0),
+    (2, 0, -3, -1, 421.0),
+    (2, 1, -1, 1, -366.0),
+    (2, 1, 0, 1, -351.0),
+    (4, 0, 0, 1, 331.0),
+    (2, -1, 1, 1, 315.0),
+    (2, -2, 0, -1, 302.0),
+    (0, 0, 1, 3, -283.0),
+    (2, 1, 1, -1, -229.0),
+    (1, 1, 0, -1, 223.0),
+    (1, 1, 0, 1, 223.0),
+    (0, 1, -2, -1, -220.0),
+    (2, 1, -1, -1, -220.0),
+    (1, 0, 1, 1, -185.0),
+    (2, -1, -2, -1, 181.0),
+    (0, 1, 2, 1, -177.0),
+    (4, 0, -2, -1, 176.0),
+    (4, -1, -1, -1, 166.0),
+    (1, 0, 1, -1, -164.0),
+    (4, 0, 1, -1, 132.0),
+    (1, 0, -1, -1, -119.0),
+    (4, -1, 0, -1, 115.0),
+    (2, -2, 0, 1, 107.0),
+];
+
 /// Geocentric ecliptic longitude and latitude of the Moon (degrees) and its
 /// distance (gigametres).
 ///
-/// The Astronomical Almanac's short series: ±0.3° in longitude, ±0.2° in
-/// latitude, ±0.003 AU in distance. At the exaggerated radii this view uses,
-/// 0.3° is a fraction of the rendered Moon.
+/// The abridged ELP 2000-82 series (Meeus ch. 47, all sixty terms of tables
+/// 47.A and 47.B): ±10″ in longitude, ±4″ in latitude, a few kilometres in
+/// distance. The eclipse shadow the 3D view casts on the Earth is where that
+/// precision is spent — with the Almanac's ±0.3° short series that stood here
+/// before, the umbra landed a thousand kilometres along its track from where
+/// the eclipse actually is.
+///
+/// The argument is UT, as [`julian_day`] yields. The Moon is the one body
+/// here fast enough (0.55″/s) for the ~70 s of TT − UT to matter against its
+/// own series' accuracy, so that conversion happens inside.
 pub fn moon_geocentric(jd: f64) -> (f64, f64, f64) {
-    let t = centuries(jd);
-    let s = |d: f64| d.to_radians().sin();
-    let c = |d: f64| d.to_radians().cos();
+    let t = centuries(jd + delta_t_s(jd) / 86_400.0);
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let t4 = t3 * t;
 
-    // Note the two arguments that run backwards (`259.3 − …`, `217.6 − …`):
-    // sine is odd, so writing them the other way round silently flips those
-    // terms' signs and costs ~2° of longitude.
-    let lambda = 218.32 + 481_267.881 * t + 6.29 * s(477_198.87 * t + 135.0)
-        - 1.27 * s(259.3 - 413_335.35 * t)
-        + 0.66 * s(890_534.22 * t + 235.7)
-        + 0.21 * s(954_397.74 * t + 269.9)
-        - 0.19 * s(35_999.05 * t + 357.5)
-        - 0.11 * s(966_404.03 * t + 186.6);
+    // Fundamental arguments (Meeus 47.1–47.7), degrees: the Moon's mean
+    // longitude, its mean elongation from the Sun, the Sun's and the Moon's
+    // mean anomalies, and the Moon's argument of latitude.
+    let lp = 218.316_447_7 + 481_267.881_234_21 * t - 0.001_578_6 * t2 + t3 / 538_841.0
+        - t4 / 65_194_000.0;
+    let d = 297.850_192_1 + 445_267.111_403_4 * t - 0.001_881_9 * t2 + t3 / 545_868.0
+        - t4 / 113_065_000.0;
+    let m = 357.529_109_2 + 35_999.050_290_9 * t - 0.000_153_6 * t2 + t3 / 24_490_000.0;
+    let mp = 134.963_396_4 + 477_198.867_505_5 * t + 0.008_741_4 * t2 + t3 / 69_699.0
+        - t4 / 14_712_000.0;
+    let f = 93.272_095_0 + 483_202.017_523_3 * t - 0.003_653_9 * t2 - t3 / 3_526_000.0
+        + t4 / 863_310_000.0;
 
-    let beta = 5.13 * s(483_202.02 * t + 93.3) + 0.28 * s(960_400.89 * t + 228.2)
-        - 0.28 * s(6_003.15 * t + 318.3)
-        - 0.17 * s(217.6 - 407_332.20 * t);
+    // Venus, Jupiter and the Earth's flattening, plus the shrinking of the
+    // Earth's orbital eccentricity that scales every term carrying M.
+    let a1 = (119.75 + 131.849 * t).to_radians();
+    let a2 = (53.09 + 479_264.290 * t).to_radians();
+    let a3 = (313.45 + 481_266.484 * t).to_radians();
+    let e = 1.0 - 0.002_516 * t - 0.000_007_4 * t2;
 
-    // Equatorial horizontal parallax, degrees → distance via the Earth radius.
-    let pi_deg = 0.9508
-        + 0.0518 * c(477_198.85 * t + 135.0)
-        + 0.0095 * c(413_335.38 * t - 259.3)
-        + 0.0078 * c(890_534.23 * t + 235.7)
-        + 0.0028 * c(954_397.70 * t + 269.9);
-    // 6378.14 km is the equatorial radius the formula is defined against.
-    let dist_km = 6378.14 / pi_deg.to_radians().sin();
+    let (lpr, dr, mr, mpr, fr) =
+        (lp.to_radians(), d.to_radians(), m.to_radians(), mp.to_radians(), f.to_radians());
 
-    (wrap360(lambda), beta, dist_km / 1.0e6)
+    let mut sum_l = 3_958.0 * a1.sin() + 1_962.0 * (lpr - fr).sin() + 318.0 * a2.sin();
+    let mut sum_r = 0.0;
+    for &(td, tm, tmp, tf, sl, sr) in MOON_LON_DIST {
+        let arg = dr * td as f64 + mr * tm as f64 + mpr * tmp as f64 + fr * tf as f64;
+        let scale = e.powi(tm.abs());
+        sum_l += sl * arg.sin() * scale;
+        sum_r += sr * arg.cos() * scale;
+    }
+    let mut sum_b = -2_235.0 * lpr.sin()
+        + 382.0 * a3.sin()
+        + 175.0 * (a1 - fr).sin()
+        + 175.0 * (a1 + fr).sin()
+        + 127.0 * (lpr - mpr).sin()
+        - 115.0 * (lpr + mpr).sin();
+    for &(td, tm, tmp, tf, sb) in MOON_LAT {
+        let arg = dr * td as f64 + mr * tm as f64 + mpr * tmp as f64 + fr * tf as f64;
+        sum_b += sb * arg.sin() * e.powi(tm.abs());
+    }
+
+    // Reduce to the *apparent* longitude with the same one-term nutation the
+    // solar theory folds in — Sun−Moon elongation, the whole eclipse question,
+    // has to be formed from a consistent pair. (Nutation in longitude is a
+    // rotation about the ecliptic pole, so β is untouched.)
+    let omega = (125.04 - 1_934.136 * t).to_radians();
+    let lambda = lp + sum_l * 1.0e-6 - 0.004_78 * omega.sin();
+    (wrap360(lambda), sum_b * 1.0e-6, (385_000.56 + sum_r * 1.0e-3) / 1.0e6)
 }
 
 /// Heliocentric position of the Moon, gigametres.
@@ -428,12 +603,18 @@ mod tests {
     }
 
     #[test]
-    fn moon_matches_meeus_47a_within_short_series_tolerance() {
-        // 1992 April 12.0 TD → λ 133.162655°, β −3.229126°, Δ 368409.7 km.
-        let (lambda, beta, dist) = moon_geocentric(2_448_724.5);
-        assert!((wrap180(lambda - 133.162_655)).abs() < 0.4, "λ = {lambda}");
-        assert!((beta + 3.229_126).abs() < 0.25, "β = {beta}");
-        assert!((dist * 1.0e6 - 368_409.7).abs() < 3_000.0, "Δ = {} km", dist * 1.0e6);
+    fn moon_matches_meeus_example_47a() {
+        // 1992 April 12.0 TD → mean λ 133.162655°, β −3.229126°,
+        // Δ 368409.7 km; apparent λ 133.167265° after the book's nutation of
+        // +16.595″. The example is stated in dynamical time and the function
+        // takes UT, so hand it the UT instant whose TT is the book's.
+        let jd_td = 2_448_724.5;
+        let (lambda, beta, dist) = moon_geocentric(jd_td - delta_t_s(jd_td) / 86_400.0);
+        // 0.001° ≈ 3.6″: room for the one-term nutation standing in for the
+        // book's full value, nothing more.
+        assert!((wrap180(lambda - 133.167_265)).abs() < 0.001, "λ = {lambda}");
+        assert!((beta + 3.229_126).abs() < 0.000_5, "β = {beta}");
+        assert!((dist * 1.0e6 - 368_409.7).abs() < 1.0, "Δ = {} km", dist * 1.0e6);
     }
 
     #[test]
@@ -459,9 +640,11 @@ mod tests {
         let l1 = moon_geocentric(2_451_545.0 + n).0;
         let whole = ((n * SIDEREAL_MONTH_DEG_PER_DAY - (l1 - l0)) / 360.0).round();
         let rate = ((l1 - l0) + 360.0 * whole) / n;
-        // 5e-4 °/day, not tighter: the short series rounds its mean-longitude
-        // coefficient to 481267.881°/century = 13.176257°/day, which is itself
-        // 1e-4 short of the true sidereal rate.
+        // 5e-4 °/day, not tighter, for two honest reasons: each endpoint still
+        // carries the ±8° of periodic terms (up to 4e-4 °/day across a single
+        // century), and the longitude is measured from the equinox of date, so
+        // its rate is the *tropical* one — precession's 4e-5 °/day above the
+        // sidereal constant compared against here.
         assert!((rate - SIDEREAL_MONTH_DEG_PER_DAY).abs() < 5e-4, "mean motion {rate}");
     }
 
