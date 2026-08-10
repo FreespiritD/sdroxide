@@ -181,10 +181,35 @@ const TRUE_SUN_R = 0.6957;
 const TRUE_EARTH_R = 0.006371;
 const TRUE_MOON_R = 0.0017374;
 
-/// How much of the Sun's light reaches the surface point with world normal
-/// `n`, with the Moon in the way: 1 in the open, 0 in the umbra. `centre` is
-/// the Earth's world position and `moon_off` the Moon's TRUE geocentric
-/// offset (`DrawData::tint2`); a zeroed offset means no Moon on this draw.
+/// Fraction of the Sun's disc a blocker of radius `br` covers, as seen from a
+/// point with (unnormalised) directions `to_sun` and `to_blocker`: 0 in the
+/// open, 1 inside the umbra.
+fn sun_covered(to_sun: vec3<f32>, to_blocker: vec3<f32>, br: f32) -> f32 {
+    let su = normalize(to_sun);
+    let bu = normalize(to_blocker);
+    // Only a blocker on the Sun's side of the sky can stand in front of it.
+    if (dot(su, bu) <= 0.0) {
+        return 0.0;
+    }
+    // Angular radii and separation, small-angle throughout: everything here
+    // is under two degrees. The separation comes from the cross product — the
+    // acos of a dot this close to 1 would lose most of its bits in f32.
+    let rs = TRUE_SUN_R / length(to_sun);
+    let rb = br / length(to_blocker);
+    let sep = length(cross(su, bu));
+    // Fraction of the Sun's *diameter* covered, then of its area — the
+    // smoothstep is a close fit to the lens-overlap area when the discs are
+    // of comparable size. An annular eclipse falls out for free: rb < rs caps
+    // the fraction below 1 and the shadow never quite goes dark.
+    let f = clamp((rs + rb - sep) / (2.0 * rs), 0.0, 1.0);
+    return f * f * (3.0 - 2.0 * f);
+}
+
+/// How much of the Sun's light reaches the Earth-surface point with world
+/// normal `n`, with the Moon in the way: 1 in the open, 0 in the umbra.
+/// `centre` is the Earth's world position and `moon_off` the Moon's TRUE
+/// geocentric offset (`DrawData::tint2`); a zeroed offset means no Moon on
+/// this draw.
 fn eclipse_light(centre: vec3<f32>, moon_off: vec3<f32>, n: vec3<f32>) -> f32 {
     if (dot(moon_off, moon_off) < 1e-6) {
         return 1.0;
@@ -193,27 +218,28 @@ fn eclipse_light(centre: vec3<f32>, moon_off: vec3<f32>, n: vec3<f32>) -> f32 {
     // Moon's parallax across the Earth's disc is a degree — bigger than the
     // Sun itself — so the test is per point, not per planet.
     let p = n * TRUE_EARTH_R;
-    let to_sun = (g.sun_pos.xyz - centre) - p;
-    let to_moon = moon_off - p;
-    let su = normalize(to_sun);
-    let mu = normalize(to_moon);
-    // Only a Moon on the Sun's side of the sky can stand in front of it.
-    if (dot(su, mu) <= 0.0) {
+    return 1.0 - sun_covered((g.sun_pos.xyz - centre) - p, moon_off - p, TRUE_MOON_R);
+}
+
+/// The mirror case: how much sunlight reaches the Moon-surface point with
+/// world normal `n`, with the Earth in the way — the lunar eclipse. Same true
+/// scale, same reasoning: the shadow's sweep across the Moon must not care
+/// how the sliders drew either body.
+fn lunar_eclipse_light(n: vec3<f32>) -> f32 {
+    // The Moon's true geocentric offset, as on the Earth draw; `w` is the
+    // orbit compression, from which the Earth's centre is recovered out of
+    // this draw's own (rendered, possibly compressed) position.
+    let off = d.tint2.xyz;
+    if (dot(off, off) < 1e-6) {
         return 1.0;
     }
-    // Angular radii and separation, small-angle throughout: everything here
-    // is under a degree. The separation comes from the cross product — the
-    // acos of a dot this close to 1 would lose most of its bits in f32.
-    let rs = TRUE_SUN_R / length(to_sun);
-    let rm = TRUE_MOON_R / length(to_moon);
-    let sep = length(cross(su, mu));
-    // Fraction of the Sun's *diameter* covered, then of its area. The two
-    // discs are within a hair of the same angular size — the coincidence that
-    // makes eclipses — where the smoothstep is a close fit to the true
-    // lens-overlap area. An annular eclipse falls out for free: rm < rs caps
-    // the fraction below 1 and the umbra never quite goes dark.
-    let f = clamp((rs + rm - sep) / (2.0 * rs), 0.0, 1.0);
-    return 1.0 - f * f * (3.0 - 2.0 * f);
+    let earth = d.model[3].xyz - off * d.tint2.w;
+    // The surface point at true scale, kept relative to the Earth so the
+    // ~150 Gm world coordinate never meets the sub-Gm eclipse geometry in f32.
+    let p = off + n * TRUE_MOON_R;
+    // Danjon's enlargement: the Earth's air throws its shadow a couple of
+    // per cent wider than the solid globe does.
+    return 1.0 - sun_covered((g.sun_pos.xyz - earth) - p, -p, TRUE_EARTH_R * 1.02);
 }
 
 fn shade_earth(in: VsOut, n: vec3<f32>) -> vec3<f32> {
@@ -286,6 +312,7 @@ fn shade_earth(in: VsOut, n: vec3<f32>) -> vec3<f32> {
 fn shade_moon(in: VsOut, n: vec3<f32>) -> vec3<f32> {
     let to_sun = sun_dir(in);
     let day = smoothstep(-0.03, 0.08, dot(n, to_sun));
+    let sunlight = lunar_eclipse_light(n);
     let albedo = textureSample(body_maps, samp, in.uv, i32(d.style.y)).rgb;
 
     // The Moon is famously flat-looking at full — the regolith backscatters
@@ -299,7 +326,15 @@ fn shade_moon(in: VsOut, n: vec3<f32>) -> vec3<f32> {
     // Earthshine on the night side: the same faint blue-grey the naked eye
     // sees on the dark limb of a crescent.
     let night = vec3<f32>(0.06, 0.075, 0.10) * (1.0 - day);
-    return albedo * (1.35 * day * backscatter * relief) + albedo * night;
+    // Inside the umbra the Moon is not black but copper: sunlight refracted
+    // through the ring of the Earth's atmosphere, reddened the same way a
+    // sunset is — the one fact about a total lunar eclipse everyone knows.
+    // The cube keeps the colour out of the penumbra, which to the eye is only
+    // a slight dimming of a still-full Moon.
+    let umbra = pow(1.0 - sunlight, 3.0);
+    return albedo * (1.35 * day * sunlight * backscatter * relief)
+        + albedo * vec3<f32>(0.55, 0.16, 0.06) * (day * umbra * 0.35)
+        + albedo * night;
 }
 
 // ── Everything else ─────────────────────────────────────────────────────────

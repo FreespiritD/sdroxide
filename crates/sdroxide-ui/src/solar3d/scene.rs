@@ -1478,9 +1478,21 @@ fn bodies_draws(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
     s.draws.push((Prim::Sphere, earth));
 
     // Moon, in the tidally locked frame — which is what puts Imbrium and
-    // Tranquillitatis on the near side, where they belong.
-    let moon = Color32::from_rgb(0x9a, 0xa4, 0xb4);
-    sphere(s, b.moon_basis, b.moon, b.moon_r, moon, MODE_MOON, [0.0, MAP_MOON, 0.0, 0.0]);
+    // Tranquillitatis on the near side, where they belong. `tint2` carries the
+    // same true geocentric offset the Earth draw gets, plus the orbit
+    // compression in `w`: from those and its own rendered centre the shader
+    // recovers the true geometry and casts the Earth's shadow back onto the
+    // Moon — the lunar eclipse.
+    let (mx, my, mz) = b.moon_basis;
+    let mut moon = DrawData::new(
+        M4::from_basis(mx, my, mz, b.moon, b.moon_r),
+        M4::from_basis(mx, my, mz, V3::ZERO, 1.0),
+        Color32::from_rgb(0x9a, 0xa4, 0xb4),
+        MODE_MOON,
+    );
+    moon.tint2 = b.moon_true_off.arr4(st.view.moon_orbit_scale);
+    moon.style = [0.0, MAP_MOON, 0.0, 0.0];
+    s.draws.push((Prim::Sphere, moon));
 
     if st.layer(layer::PLANETS) {
         for p in &b.planets {
@@ -2475,6 +2487,87 @@ mod tests {
         // A day earlier the Moon has not reached the node yet.
         let (cover, lat, lon) = deepest_shadow(&st, 1_786_470_360.0);
         assert!(cover < 1e-3, "phantom shadow {cover} at {lat}°, {lon}°");
+    }
+
+    /// The shader's `lunar_eclipse_light` (`solar_body.wgsl`), mirrored in
+    /// the same f32 arithmetic: how much sunlight reaches the Moon-surface
+    /// point with world normal `n`, from the Moon draw's own uniforms.
+    fn lunar_eclipse_light(d: &DrawData, n: V3) -> f32 {
+        let off = v3(d.tint2[0], d.tint2[1], d.tint2[2]);
+        let earth = v3(d.model[3][0], d.model[3][1], d.model[3][2]) - off * d.tint2[3];
+        let p = off + n * (ephem::MOON_R as f32);
+        let to_sun = (V3::ZERO - earth) - p;
+        let to_earth = -p;
+        let su = to_sun.normalize();
+        let bu = to_earth.normalize();
+        if su.dot(bu) <= 0.0 {
+            return 1.0;
+        }
+        let rs = ephem::SUN_R as f32 / to_sun.len();
+        let rb = ephem::EARTH_R as f32 * 1.02 / to_earth.len();
+        let sep = su.cross(bu).len();
+        let f = ((rs + rb - sep) / (2.0 * rs)).clamp(0.0, 1.0);
+        1.0 - f * f * (3.0 - 2.0 * f)
+    }
+
+    /// Sunlight across the Moon's sunlit face at `unix_s`, as (min, max) of
+    /// the shader's lunar eclipse factor — from the Moon draw the scene
+    /// actually emitted, so the tint2 plumbing is under test too.
+    fn moon_sunlight(st: &SolarUi, unix_s: f64) -> (f32, f32) {
+        let s = build(st, None, unix_s, [1600.0, 900.0], 0.0);
+        let moon = s
+            .draws
+            .iter()
+            .find(|(p, d)| *p == Prim::Sphere && d.params[0] == MODE_MOON)
+            .map(|(_, d)| *d)
+            .expect("no Moon draw");
+        let off = v3(moon.tint2[0], moon.tint2[1], moon.tint2[2]);
+        let earth = v3(moon.model[3][0], moon.model[3][1], moon.model[3][2]) - off * moon.tint2[3];
+        let to_sun = (V3::ZERO - (earth + off)).normalize();
+        let (mut lo, mut hi) = (1.0f32, 0.0f32);
+        for az in (0..360).step_by(5) {
+            for el in (-85..=85i32).step_by(5) {
+                let (a, b) = ((az as f32).to_radians(), (el as f32).to_radians());
+                let n = v3(b.cos() * a.cos(), b.cos() * a.sin(), b.sin());
+                if n.dot(to_sun) <= 0.1 {
+                    continue;
+                }
+                let l = lunar_eclipse_light(&moon, n);
+                lo = lo.min(l);
+                hi = hi.max(l);
+            }
+        }
+        (lo, hi)
+    }
+
+    /// 2026-03-03 ~11:34 UTC is the greatest eclipse of a real total lunar
+    /// eclipse, umbral magnitude 1.15 — the whole Moon inside the umbra. So
+    /// every point of the sunlit face must sit in deep shadow, however the
+    /// sliders draw the two bodies, and a day earlier none of it may.
+    #[test]
+    fn the_earths_shadow_swallows_the_moon_in_the_2026_eclipse() {
+        let mut st = ui();
+        st.view.body_scale = 8.0;
+        st.view.moon_orbit_scale = 0.25;
+        let (_, hi) = moon_sunlight(&st, 1_772_537_640.0);
+        assert!(hi < 0.05, "a sunlit patch survives totality: {hi}");
+
+        // An hour before greatest the eclipse is total but only just — U2 is
+        // 11:04 UTC — and two hours before it is partial, with part of the
+        // disc still in full sunlight. The whole published timeline, in two
+        // probes.
+        let (lo, hi) = moon_sunlight(&st, 1_772_537_640.0 - 3_600.0);
+        assert!(lo < 0.01 && hi < 0.5, "one hour before greatest: lo {lo}, hi {hi}");
+        let (lo, hi) = moon_sunlight(&st, 1_772_537_640.0 - 7_200.0);
+        assert!(lo < 0.5 && hi > 0.99, "two hours before greatest: lo {lo}, hi {hi}");
+
+        // Same instant, honest sliders: the eclipse must not move.
+        let (_, hi_plain) = moon_sunlight(&ui(), 1_772_537_640.0);
+        assert!(hi_plain < 0.05, "the sliders moved the lunar eclipse: {hi_plain}");
+
+        // A day earlier the Moon is not yet opposite the Sun.
+        let (lo, _) = moon_sunlight(&st, 1_772_451_240.0);
+        assert!(lo > 0.999, "phantom Earth shadow on the Moon: {lo}");
     }
 
     /// How many bodies the scene is made of, so the counts below read as

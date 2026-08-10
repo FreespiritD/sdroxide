@@ -3984,17 +3984,22 @@ against the moon-orbit scale, because past that point the enlarged Moon would
 render inside the Earth. Every body also has a glow with a minimum on-screen
 size, so nothing is ever invisible however you set these.
 
-**The Moon's shadow** — during a solar eclipse the Moon's shadow falls across
-the globe: the penumbra as a broad dimming of the daylit side, the umbra as the
+**Eclipses** — during a solar eclipse the Moon's shadow falls across the
+globe: the penumbra as a broad dimming of the daylit side, the umbra as the
 small patch of night it really is, and the cloud deck darkens under both. The
 occlusion is computed at **true scale** — the real Moon, at its real distance,
 against the real Sun — and painted geographically, so the shadow follows the
 Earth's own `body` scale and ignores the Moon's exaggerations entirely: however
 swollen the rendered Moon, the shadow crosses the countries the real eclipse
-crosses, when it crosses them. There is no layer button, because when there is
-no eclipse there is no shadow — which is almost always. The total eclipse of
-12 August 2026 (Greenland, Iceland, northern Spain, greatest at 17:46 UTC) is
-the nearest occasion to see it.
+crosses, when it crosses them. The mirror case is drawn too: during a lunar
+eclipse the Earth's shadow sweeps across the Moon, and inside the umbra the
+Moon turns the dim copper every photograph of a total lunar eclipse shows —
+sunlight bent through the ring of the Earth's atmosphere, not blackness. There
+is no layer button for any of this, because when there is no eclipse there is
+no shadow — which is almost always. The total solar eclipse of 12 August 2026
+(Greenland, Iceland, northern Spain, greatest at 17:46 UTC) is the nearest
+occasion for the one; the total lunar eclipse of 3 March 2026 (greatest at
+11:33 UTC) was the most recent for the other.
 
 **Time** — `NOW`, `−24h`, `−6h`, `+6h`, `+24h` scrub the whole scene, bodies and
 all, forwards and backwards.
