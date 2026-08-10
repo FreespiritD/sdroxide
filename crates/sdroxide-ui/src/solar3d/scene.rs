@@ -10,8 +10,39 @@ use sdroxide_types::Coverage;
 use super::camera::Camera;
 use super::math::{M4, V3, v3};
 use super::state::{Focus, SolarUi};
-use crate::theme;
 use crate::view::solar_layer as layer;
+
+/// The scene's own inks: the classic navy/cyan palette, frozen.
+///
+/// The 3D world does not follow the UI theme. The globe itself cannot — the
+/// Earth's oceans, coasts and atmosphere are baked into `solar_body.wgsl` in
+/// these same hues — so everything drawn *over* it has to keep its contrast
+/// against those fixed colours, whatever the chrome around the viewport wears.
+/// Themed inks broke that: the amber theme recoloured the QSO arcs and orbit
+/// rings into the globe's own brightness range and they vanished. The flat FT8
+/// map already follows this rule.
+mod ink {
+    use eframe::egui::Color32;
+
+    const fn c(rgb: u32) -> Color32 {
+        Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+    }
+
+    /// Live accent: the Earth's glow, the active QSO arc, fresh traffic.
+    pub const CYAN: Color32 = c(0x00d0f4);
+    /// Quiet accent: orbit rings, body labels — present, not shouting.
+    pub const CYAN_DIM: Color32 = c(0x1d9cbe);
+    /// Faint structural lines: the Moon's path and the planets' moons'.
+    pub const LINE_LIT: Color32 = c(0x2a4a66);
+    /// Alarm: the locked satellite, Earth-bound CMEs, high-threat regions.
+    pub const PINK: Color32 = c(0xff2a55);
+    /// Highlight: search hits, the sub-solar point, the solar graticule.
+    pub const YELLOW: Color32 = c(0xffd23f);
+    /// Confirmation: the QTH ring, the aurora ovals, confirmed entities.
+    pub const GREEN: Color32 = c(0x46e07d);
+    /// Near-white: live station dots and the pulse crest on the active arc.
+    pub const TEXT_STRONG: Color32 = c(0xe8f4ff);
+}
 
 /// Per-frame scene constants. 160 bytes; keep in step with `Globals` in the
 /// shaders.
@@ -685,10 +716,10 @@ fn satellites(
         // and yellow is the one accent nothing else in this layer uses. The
         // locked bird outranks even that, in the one colour louder still.
         let color = match (locked, hit, geo) {
-            (true, ..) => theme::PINK(),
-            (false, true, _) => theme::YELLOW(),
-            (false, false, true) => theme::GREEN(),
-            (false, false, false) => theme::CYAN_DIM(),
+            (true, ..) => ink::PINK,
+            (false, true, _) => ink::YELLOW,
+            (false, false, true) => ink::GREEN,
+            (false, false, false) => ink::CYAN_DIM,
         };
         let ringed = sat.popular || hit || locked;
 
@@ -743,7 +774,7 @@ fn satellites(
                         home + (pos - home) * t0,
                         home + (pos - home) * t1,
                         2.0,
-                        lin(theme::PINK(), 0.85 * fade),
+                        lin(ink::PINK, 0.85 * fade),
                     ));
                 }
             }
@@ -901,7 +932,7 @@ fn aurora_edge(s: &mut Scene, b: &Bodies, oval: &AuroraOval, fade: f32) {
                 on_earth(from, lon(k)),
                 on_earth(to, lon(j)),
                 1.4,
-                lin(theme::GREEN(), 0.45 * fade),
+                lin(ink::GREEN, 0.45 * fade),
             ));
         }
     }
@@ -1167,7 +1198,7 @@ fn body_labels(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, view_h: f3
         s.labels.push(Label {
             world: pos.arr(),
             text: name.to_string(),
-            color: if st.focus() == focus { theme::CYAN() } else { color },
+            color: if st.focus() == focus { ink::CYAN } else { color },
             offset: [10.0, -6.0],
             click: Click::Focus(focus),
         });
@@ -1182,7 +1213,7 @@ fn body_labels(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, view_h: f3
         (b.earth, b.earth_r, "EARTH", Focus::Earth, true),
         (b.moon, b.moon_r, "MOON", Focus::Moon, earth_px > MOON_LABEL_PX),
     ] {
-        add(pos, radius, name, theme::CYAN_DIM(), focus, show, false);
+        add(pos, radius, name, ink::CYAN_DIM, focus, show, false);
     }
 
     if !st.layer(layer::PLANETS) {
@@ -1224,7 +1255,7 @@ fn body_labels(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, view_h: f3
         let targeted = focus == Focus::Small(sb.index);
         let worth_it = active || (cam.eye - sb.pos).len() < NEARBY_GM;
         let show = hit || targeted || dwarf || (small_names && worth_it);
-        let color = if hit { theme::YELLOW() } else { small_color(sb.info, active) };
+        let color = if hit { ink::YELLOW } else { small_color(sb.info, active) };
         add(sb.pos, sb.radius, sb.info.name, color, Focus::Small(sb.index), show, hit || targeted);
     }
 }
@@ -1280,9 +1311,9 @@ fn spots(
         // are the ones likely to produce something.
         let t = r.threat() as f32;
         let color = if t > 0.5 {
-            theme::PINK()
+            ink::PINK
         } else if t > 0.2 {
-            theme::YELLOW()
+            ink::YELLOW
         } else {
             Color32::from_rgb(0x30, 0x20, 0x14)
         };
@@ -1326,7 +1357,7 @@ fn flares(
         s.sprites.push(SpriteInst {
             center: (dir * (b.sun_r * 1.01)).arr(),
             size_px: 8.0 + 7.0 * (sev - 2.0).clamp(0.0, 2.5),
-            color: lin(theme::PINK(), (0.35 + 0.55 * alpha).min(1.0)),
+            color: lin(ink::PINK, (0.35 + 0.55 * alpha).min(1.0)),
             params: [SPRITE_RING, 0.0, 0.0, 0.0],
         });
     }
@@ -1360,7 +1391,7 @@ fn cones(s: &mut Scene, st: &SolarUi, cmes: &[sdroxide_solar::CmeEvent], now: i6
         let earth_bound = sdroxide_solar::earth_impact(a).is_some();
         let color = if earth_bound {
             // The one that matters gets the alarm colour, whatever its speed.
-            theme::PINK()
+            ink::PINK
         } else {
             Color32::from_rgb(
                 (fast * 255.0) as u8,
@@ -1426,7 +1457,7 @@ fn bodies_draws(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
 
     // Earth — its body frame is ECEF, so the land mask, the QTH marker and the
     // terminator all share one coordinate system.
-    sphere(s, b.earth_basis, b.earth, b.earth_r, theme::CYAN(), MODE_EARTH, [0.0; 4]);
+    sphere(s, b.earth_basis, b.earth, b.earth_r, ink::CYAN, MODE_EARTH, [0.0; 4]);
 
     // Moon, in the tidally locked frame — which is what puts Imbrium and
     // Tranquillitatis on the near side, where they belong.
@@ -1455,7 +1486,7 @@ fn bodies_draws(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
     // A glow billboard with a pixel floor under every body, so "can I see the
     // Earth from 2 AU" never depends on the exaggeration slider.
     glow(s, cam, V3::ZERO, b.sun_r, 22.0, Color32::from_rgb(0xff, 0xd0, 0x80));
-    glow(s, cam, b.earth, b.earth_r, 7.0, theme::CYAN());
+    glow(s, cam, b.earth, b.earth_r, 7.0, ink::CYAN);
     glow(s, cam, b.moon, b.moon_r, 5.0, Color32::from_rgb(0xc8, 0xd2, 0xe0));
     if st.layer(layer::PLANETS) {
         for p in &b.planets {
@@ -1502,7 +1533,7 @@ fn small_color(b: &sdroxide_solar::SmallBody, active: bool) -> Color32 {
         // A comet with its tails up is the one thing in this layer that is an
         // *event* rather than a fixture, so it is the one thing given the
         // palette's live colour.
-        C::Comet if active => theme::CYAN(),
+        C::Comet if active => ink::CYAN,
         C::Comet => Color32::from_rgb(0x8a, 0x9a, 0xa8),
     }
 }
@@ -1695,7 +1726,7 @@ fn orbits(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
     for k in 1..=EARTH_STEPS {
         let jd = b.jd + 365.256_363 * k as f64 / EARTH_STEPS as f64;
         let p = V3::from_f64(ephem::earth_heliocentric(jd));
-        s.lines.push(seg(prev, p, 1.6, lin(theme::CYAN_DIM(), 0.55)));
+        s.lines.push(seg(prev, p, 1.6, lin(ink::CYAN_DIM, 0.55)));
         prev = p;
     }
 
@@ -1708,7 +1739,7 @@ fn orbits(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
     for k in 1..=MOON_STEPS {
         let jd = b.jd + 27.321_661 * k as f64 / MOON_STEPS as f64;
         let p = moon_at(jd);
-        s.lines.push(seg(prev, p, 1.3, lin(theme::LINE_LIT(), 0.7)));
+        s.lines.push(seg(prev, p, 1.3, lin(ink::LINE_LIT, 0.7)));
         prev = p;
     }
 
@@ -1724,7 +1755,7 @@ fn orbits(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
         let mut prev = at(b.jd);
         for k in 1..=PLANET_STEPS {
             let q = at(b.jd + period * k as f64 / PLANET_STEPS as f64);
-            s.lines.push(seg(prev, q, 1.2, lin(theme::CYAN_DIM(), 0.3)));
+            s.lines.push(seg(prev, q, 1.2, lin(ink::CYAN_DIM, 0.3)));
             prev = q;
         }
     }
@@ -1744,9 +1775,9 @@ fn orbits(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
             continue;
         }
         let (w, alpha, color) = if hit {
-            (1.8, 0.75, theme::YELLOW())
+            (1.8, 0.75, ink::YELLOW)
         } else if dwarf {
-            (1.2, 0.28, theme::CYAN_DIM())
+            (1.2, 0.28, ink::CYAN_DIM)
         } else {
             (1.5, 0.55, small_color(sb.info, sb.tails.is_some()))
         };
@@ -1771,7 +1802,7 @@ fn orbits(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
         let mut prev = at(b.jd);
         for k in 1..=SAT_STEPS {
             let q = at(b.jd + m.info.period_d * k as f64 / SAT_STEPS as f64);
-            s.lines.push(seg(prev, q, 1.0, lin(theme::LINE_LIT(), 0.5)));
+            s.lines.push(seg(prev, q, 1.0, lin(ink::LINE_LIT, 0.5)));
             prev = q;
         }
     }
@@ -1780,14 +1811,14 @@ fn orbits(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
 /// Solar rotation axis and equator, and the ecliptic plane reference ring.
 fn grid(s: &mut Scene, b: &Bodies) {
     let n = V3::from_f64(b.sun_frame.basis.z);
-    s.lines.push(seg(n * (-b.sun_r * 1.6), n * (b.sun_r * 1.6), 1.4, lin(theme::YELLOW(), 0.55)));
+    s.lines.push(seg(n * (-b.sun_r * 1.6), n * (b.sun_r * 1.6), 1.4, lin(ink::YELLOW, 0.55)));
 
     const RING: usize = 96;
     let mut prev = V3::from_f64(b.sun_frame.direction(0.0, 0.0)) * (b.sun_r * 1.004);
     for k in 1..=RING {
         let lon = 360.0 * k as f64 / RING as f64;
         let p = V3::from_f64(b.sun_frame.direction(0.0, lon)) * (b.sun_r * 1.004);
-        s.lines.push(seg(prev, p, 1.2, lin(theme::YELLOW(), 0.4)));
+        s.lines.push(seg(prev, p, 1.2, lin(ink::YELLOW, 0.4)));
         prev = p;
     }
 
@@ -1797,7 +1828,7 @@ fn grid(s: &mut Scene, b: &Bodies) {
         for k in 1..=RING / 2 {
             let lon = 360.0 * k as f64 / (RING / 2) as f64;
             let p = V3::from_f64(b.sun_frame.direction(lat, lon)) * (b.sun_r * 1.004);
-            s.lines.push(seg(prev, p, 1.0, lin(theme::YELLOW(), 0.22)));
+            s.lines.push(seg(prev, p, 1.0, lin(ink::YELLOW, 0.22)));
             prev = p;
         }
     }
@@ -1828,7 +1859,7 @@ fn markers(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
         s.sprites.push(SpriteInst {
             center: on_earth(lat, lon, 1.02).arr(),
             size_px: size(14.0),
-            color: lin(theme::GREEN(), 0.95 * fade),
+            color: lin(ink::GREEN, 0.95 * fade),
             params: [SPRITE_RING, 0.0, 0.0, 0.0],
         });
     }
@@ -1837,7 +1868,7 @@ fn markers(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera) {
     s.sprites.push(SpriteInst {
         center: on_earth(slat, slon, 1.02).arr(),
         size_px: size(9.0),
-        color: lin(theme::YELLOW(), 0.85 * fade),
+        color: lin(ink::YELLOW, 0.85 * fade),
         params: [SPRITE_DOT, 0.0, 0.0, 0.0],
     });
 }
@@ -1896,7 +1927,7 @@ fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, now: f64,
             s.sprites.push(SpriteInst {
                 center: to_world(ephem::geodetic_to_body(*lat, *lon), 1.015).arr(),
                 size_px: (4.0 + 3.0 * age).min(earth_px * 0.9),
-                color: lin(theme::TEXT_STRONG(), 0.85 * age * fade),
+                color: lin(ink::TEXT_STRONG, 0.85 * age * fade),
                 params: [SPRITE_DOT, 0.0, 0.0, 0.0],
             });
         }
@@ -1909,7 +1940,7 @@ fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, now: f64,
 
     // The contact being worked, and the decode clicked but not yet answered.
     for (target, color, width, active) in
-        [(st.digi.dx, theme::CYAN(), 5.2, true), (st.digi.preview, theme::YELLOW(), 1.6, false)]
+        [(st.digi.dx, ink::CYAN, 5.2, true), (st.digi.preview, ink::YELLOW, 1.6, false)]
     {
         let Some(dx) = target else { continue };
         arc(
@@ -1935,7 +1966,7 @@ fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, now: f64,
         s.labels.push(Label {
             world: pos.arr(),
             text: text.clone(),
-            color: lin_color(theme::CYAN(), 0.95 * fade),
+            color: lin_color(ink::CYAN, 0.95 * fade),
             offset: [10.0, -7.0],
             click: Click::None,
         });
@@ -1974,7 +2005,7 @@ fn lapse_arcs(
         // Fresh traffic arrives cyan and cools to a dim violet as it ages out,
         // so "this minute" and "half an hour ago" are told apart by colour and
         // not only by how faint they are.
-        let color = mix(LAPSE_OLD, theme::CYAN(), k);
+        let color = mix(LAPSE_OLD, ink::CYAN, k);
 
         let Some(pts) =
             arc_points(to_world, home, (hit.lat, hit.lon), LAPSE_ARC_STEPS, LAPSE_BULGE)
@@ -2088,8 +2119,8 @@ fn award_heat(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, anim_t: f32
     for slot in st.awards.iter() {
         let (color, size, glow) = match slot.coverage {
             Coverage::Missing => (AWARD_MISSING, 7.0 * beat, Some(22.0 * beat)),
-            Coverage::Worked => (theme::YELLOW(), 5.0, None),
-            Coverage::Confirmed => (theme::GREEN(), 3.5, None),
+            Coverage::Worked => (ink::YELLOW, 5.0, None),
+            Coverage::Confirmed => (ink::GREEN, 3.5, None),
         };
         let alpha = match slot.coverage {
             Coverage::Missing => 0.95,
@@ -2238,11 +2269,8 @@ fn arc(
         let pulse = pulse_at(mid);
         // The crest goes white-hot: colour alone cannot get brighter than the
         // arc already is, so the pulse borrows the one thing that can.
-        let c = if anim.is_some() {
-            mix(color, theme::TEXT_STRONG(), (pulse - 1.0) * 0.4)
-        } else {
-            color
-        };
+        let c =
+            if anim.is_some() { mix(color, ink::TEXT_STRONG, (pulse - 1.0) * 0.4) } else { color };
         s.lines.push(seg(
             pts[w],
             pts[w + 1],
@@ -2270,7 +2298,7 @@ fn arc(
         s.sprites.push(SpriteInst {
             center: pts[k].arr(),
             size_px: 18.0,
-            color: lin(mix(color, theme::TEXT_STRONG(), 0.5), 0.85 * fade),
+            color: lin(mix(color, ink::TEXT_STRONG, 0.5), 0.85 * fade),
             params: [SPRITE_GLOW, 0.0, 0.0, 0.0],
         });
         // A slow breath on the rings, in step with the pulse's period.
@@ -2839,6 +2867,29 @@ mod tests {
         };
         // A neighbouring country versus the far side of the world.
         assert!(peak((48.0, 11.0)) < peak((35.7, 139.7)));
+    }
+
+    /// The scene's inks are the classic palette, frozen — *not* the live
+    /// theme. The Earth shader bakes these hues into the globe itself, and the
+    /// amber theme once recoloured the arcs and orbit rings into the globe's
+    /// own brightness range, where they vanished. The atomics are process-wide
+    /// and tests run in parallel, so this pins the values instead of flipping
+    /// the theme; scene code reaching for `crate::theme` is the thing to catch
+    /// in review.
+    #[test]
+    fn the_scene_inks_are_the_classic_palette_not_the_theme() {
+        let p = crate::theme::palette(); // tests never call set_look, so this is the boot-up look
+        for (got, want, name) in [
+            (ink::CYAN, p.cyan, "cyan"),
+            (ink::CYAN_DIM, p.cyan_dim, "cyan_dim"),
+            (ink::LINE_LIT, p.line_lit, "line_lit"),
+            (ink::PINK, p.pink, "pink"),
+            (ink::YELLOW, p.yellow, "yellow"),
+            (ink::GREEN, p.green, "green"),
+            (ink::TEXT_STRONG, p.text_strong, "text_strong"),
+        ] {
+            assert_eq!(got, want, "ink::{name} drifted from the classic palette");
+        }
     }
 
     #[test]
