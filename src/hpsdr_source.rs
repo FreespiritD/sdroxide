@@ -1,22 +1,42 @@
-//! An [`IqSource`] for an OpenHPSDR ethernet SDR, Protocol 1 (Metis /
-//! Hermes-Lite 2) or Protocol 2 — the protocol is detected at open time. The
-//! board's DDC delivers wideband complex I/Q, so this drives the engine's normal
-//! DDC/demod path exactly like a SoapySDR device (`audio_mode = false`);
+//! An [`IqSource`] for one DDC of an OpenHPSDR ethernet SDR, Protocol 1
+//! (Metis / Hermes-Lite 2) or Protocol 2 — the protocol is detected at open
+//! time. The DDC delivers wideband complex I/Q, so this drives the engine's
+//! normal DDC/demod path exactly like a SoapySDR device (`audio_mode = false`);
 //! transmit I/Q goes to the board's DUC (P2) or the EP2 frame stream (P1).
+//!
+//! The connection is shared: a Protocol 2 board carries several independently
+//! tunable DDCs, so two radio tabs on the same address each take one over a
+//! single connection. The [`crate::device_registry`] is what pairs a second
+//! source with the first one's connection; the transmitter belongs to the
+//! DDC-0 source alone, and Protocol 1 boards have only DDC 0.
 
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
-use sdroxide_hpsdr::{HpsdrHandle, LNA_GAIN_ELEMENT};
+use sdroxide_hpsdr::{HpsdrBoard, HpsdrRx, LNA_GAIN_ELEMENT};
 use sdroxide_radio::{Complex32, IqSource, Result};
 
-/// How long the board may deliver no I/Q at all before the connection counts as
+use crate::device_registry::{DeviceKey, SharedDevice, registry};
+
+impl SharedDevice for HpsdrBoard {
+    fn is_alive(&self) -> bool {
+        HpsdrBoard::is_alive(self)
+    }
+}
+
+/// How long the board may deliver no I/Q at all before this stream counts as
 /// dead and the engine starts reconnecting. Comfortably longer than the few
-/// milliseconds a healthy board takes to begin streaming after the run command.
+/// milliseconds a healthy board takes to begin streaming after the run
+/// command, and longer than the network thread's own starved-DDC nudges.
 const SILENCE_BEFORE_REOPEN: Duration = Duration::from_secs(5);
 
 pub struct HpsdrSource {
-    handle: HpsdrHandle,
+    /// The shared connection and this source's stream on it. `None` after
+    /// [`IqSource::release`]: the stream is given back so a rebuilt source
+    /// can claim the DDC again, while other radios' streams on the same
+    /// connection run on undisturbed.
+    board: Option<std::sync::Arc<HpsdrBoard>>,
+    rx: Option<HpsdrRx>,
     center: f64,
     /// See [`sdroxide_types::HpsdrConfig::ppm`].
     ppm: f64,
@@ -26,28 +46,44 @@ pub struct HpsdrSource {
 }
 
 impl HpsdrSource {
-    /// Open a connection and start streaming at `center_hz`, taking the rate,
-    /// the initial front-end gain and the J16 accessory board from `cfg`. The
-    /// target IP is resolved by the caller, so `cfg`'s address fields are unused
-    /// here.
+    /// Attach DDC `cfg.ddc` of the board at `ip`, connecting only if no radio
+    /// in this process already holds that connection, and start streaming at
+    /// `center_hz`. The rate, initial front-end gain and J16 accessory board
+    /// are connection-level: whoever connects first sets them, and a later
+    /// attach runs with the established ones whatever its own config says.
     pub fn open(
         ip: Ipv4Addr,
         cfg: &sdroxide_types::HpsdrConfig,
         center_hz: f64,
     ) -> anyhow::Result<Self> {
-        let handle = HpsdrHandle::open(
-            ip,
-            cfg.sample_rate_hz,
-            cfg.lna_gain_db,
-            cfg.filter_board,
-            cfg.invert_spectrum,
-        )?;
-        handle.set_rx_freq(sdroxide_types::HpsdrConfig::apply_ppm(center_hz, cfg.ppm));
-        let label =
-            format!("HPSDR {} @ {ip} ({:.3} Msps)", handle.board, handle.sample_rate_hz / 1e6);
+        let board = registry()
+            .get_or_open(DeviceKey::Hpsdr(ip), || {
+                HpsdrBoard::open(
+                    ip,
+                    cfg.sample_rate_hz,
+                    cfg.lna_gain_db,
+                    cfg.filter_board,
+                    cfg.invert_spectrum,
+                )
+                .map(std::sync::Arc::new)
+                .map_err(|e| e.to_string())
+            })
+            .map_err(anyhow::Error::msg)?;
+        let rx = board.rx(cfg.ddc).map_err(|e| anyhow::Error::msg(e.to_string()))?;
+        rx.set_rx_freq(sdroxide_types::HpsdrConfig::apply_ppm(center_hz, cfg.ppm));
+        let label = if cfg.ddc == 0 {
+            format!("HPSDR {} @ {ip} ({:.3} Msps)", board.board(), board.sample_rate_hz() / 1e6)
+        } else {
+            format!(
+                "HPSDR DDC{} {} @ {ip} ({:.3} Msps)",
+                cfg.ddc + 1,
+                board.board(),
+                board.sample_rate_hz() / 1e6
+            )
+        };
         tracing::info!(
             "HPSDR source ready: {label}, Protocol {}, center {center_hz:.0} Hz",
-            handle.protocol
+            board.protocol()
         );
         Ok(HpsdrSource {
             center: center_hz,
@@ -55,31 +91,32 @@ impl HpsdrSource {
             rx_scratch: Vec::new(),
             tx_scratch: Vec::new(),
             label,
-            handle,
+            rx: Some(rx),
+            board: Some(board),
         })
     }
 
     pub fn sample_rate_hz(&self) -> f64 {
-        self.handle.sample_rate_hz
+        self.board.as_ref().map_or(0.0, |b| b.sample_rate_hz())
     }
 
     pub fn board(&self) -> &str {
-        &self.handle.board
+        self.board.as_ref().map_or("HPSDR", |b| b.board())
     }
 
     pub fn protocol(&self) -> u8 {
-        self.handle.protocol
+        self.board.as_ref().map_or(2, |b| b.protocol())
     }
 
     /// Whether the board has a front-end gain the UI should offer.
     pub fn has_lna_gain(&self) -> bool {
-        self.handle.has_lna_gain()
+        self.board.as_ref().is_some_and(|b| b.has_lna_gain())
     }
 }
 
 impl IqSource for HpsdrSource {
     fn sample_rate(&self) -> f64 {
-        self.handle.sample_rate_hz
+        self.sample_rate_hz()
     }
 
     fn center_hz(&self) -> f64 {
@@ -88,16 +125,24 @@ impl IqSource for HpsdrSource {
 
     fn set_center_hz(&mut self, hz: f64) -> Result<()> {
         self.center = hz;
-        self.handle.set_rx_freq(sdroxide_types::HpsdrConfig::apply_ppm(hz, self.ppm));
+        if let Some(rx) = self.rx.as_ref() {
+            rx.set_rx_freq(sdroxide_types::HpsdrConfig::apply_ppm(hz, self.ppm));
+        }
         Ok(())
     }
 
     fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        let Some(rx) = self.rx.as_mut() else {
+            // Released: nothing will ever arrive; nap so the engine loop
+            // doesn't spin while the reopen it asked for is prepared.
+            std::thread::sleep(Duration::from_millis(5));
+            return Ok(0);
+        };
         let need = buf.len() * 2;
         if self.rx_scratch.len() < need {
             self.rx_scratch.resize(need, 0.0);
         }
-        let n = self.handle.rx_read(&mut self.rx_scratch[..need]);
+        let n = rx.rx_read(&mut self.rx_scratch[..need]);
         let pairs = n / 2;
         if pairs == 0 {
             // No samples yet — brief nap so the DSP loop doesn't spin hot.
@@ -119,51 +164,78 @@ impl IqSource for HpsdrSource {
     /// with is the difference between a deaf receiver and a clipping one.
     fn set_gain_element(&mut self, name: &str, db: f64) -> Result<()> {
         if name == LNA_GAIN_ELEMENT {
-            self.handle.set_lna_gain_db(db);
+            if let Some(rx) = self.rx.as_mut() {
+                rx.set_lna_gain_db(db);
+            }
         } else if name == sdroxide_types::HpsdrConfig::PPM_ELEMENT {
             self.ppm = db;
-            self.handle.set_rx_freq(sdroxide_types::HpsdrConfig::apply_ppm(self.center, self.ppm));
+            if let Some(rx) = self.rx.as_ref() {
+                rx.set_rx_freq(sdroxide_types::HpsdrConfig::apply_ppm(self.center, self.ppm));
+            }
         }
         Ok(())
     }
 
     fn current_gains(&self) -> Vec<(String, f64)> {
-        if self.handle.has_lna_gain() {
-            vec![(LNA_GAIN_ELEMENT.to_string(), self.handle.lna_gain_db())]
-        } else {
-            Vec::new()
+        match self.rx.as_ref() {
+            Some(rx) if rx.has_lna_gain() => {
+                vec![(LNA_GAIN_ELEMENT.to_string(), rx.lna_gain_db())]
+            }
+            _ => Vec::new(),
         }
     }
 
-    /// A board that has stopped delivering I/Q — unplugged, rebooted, taken over
-    /// by another program, or opened with the wrong protocol because a probe was
-    /// lost — is reported as needing a reopen so the engine reconnects on its
-    /// own. Without this the operator has to press Apply again by hand.
+    /// A stream that has stopped delivering I/Q — the board unplugged,
+    /// rebooted, taken over by another program, or opened with the wrong
+    /// protocol because a probe was lost — is reported as needing a reopen so
+    /// the engine reconnects on its own. Without this the operator has to
+    /// press Apply again by hand. A released source likewise.
     fn needs_reopen(&self) -> bool {
-        self.handle.silent_for() >= SILENCE_BEFORE_REOPEN
+        self.rx.as_ref().is_none_or(|rx| rx.silent_for() >= SILENCE_BEFORE_REOPEN)
+    }
+
+    /// Give this DDC's stream back ahead of a rebuild — and only the stream.
+    /// The connection is deliberately kept: another radio may be streaming its
+    /// own DDC over it, and even alone, an Apply with the address unchanged
+    /// should re-attach over the live connection (the registry will find it
+    /// through this very `Arc`) rather than re-open the board. The connection
+    /// stops when the last source holding it is dropped, which for a genuine
+    /// backend switch happens right after the replacement is adopted.
+    fn release(&mut self) {
+        self.rx = None;
     }
 
     fn tx_begin(&mut self, center_hz: f64, _rate: f64) -> Result<f64> {
-        Ok(self.handle.tx_begin(sdroxide_types::HpsdrConfig::apply_ppm(center_hz, self.ppm)))
+        match self.rx.as_ref() {
+            Some(rx) => {
+                Ok(rx.tx_begin(sdroxide_types::HpsdrConfig::apply_ppm(center_hz, self.ppm)))
+            }
+            None => Ok(sdroxide_hpsdr::TX_RATE_HZ as f64),
+        }
     }
 
     fn tx_write(&mut self, samples: &[Complex32]) -> Result<()> {
+        let Some(rx) = self.rx.as_mut() else { return Ok(()) };
         self.tx_scratch.clear();
         self.tx_scratch.reserve(samples.len() * 2);
         for s in samples {
             self.tx_scratch.push(s.re);
             self.tx_scratch.push(s.im);
         }
-        self.handle.tx_write(&self.tx_scratch);
+        rx.tx_write(&self.tx_scratch);
         Ok(())
     }
 
     fn tx_end(&mut self) -> Result<()> {
-        self.handle.tx_end();
+        if let Some(rx) = self.rx.as_ref() {
+            rx.tx_end();
+        }
         Ok(())
     }
 
     fn discard_pending_rx(&mut self) {
-        self.handle.discard_pending_rx();
+        if let Some(rx) = self.rx.as_mut() {
+            rx.discard_pending_rx();
+        }
     }
 }

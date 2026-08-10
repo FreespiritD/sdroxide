@@ -8,7 +8,11 @@
 //! Discovery probes for both protocols and each board is driven by the one it
 //! answers on: Protocol 1 (Metis framing — Hermes-Lite 2 and the legacy
 //! Metis/Hermes boards) or Protocol 2. The two live in sibling framing modules
-//! behind the same discovery + [`HpsdrHandle`] abstraction.
+//! behind the same discovery + [`HpsdrBoard`] abstraction: one connection per
+//! board, one [`HpsdrRx`] stream per DDC — a Protocol 2 board serves several
+//! radios from one connection, each on its own independently tuned DDC, while
+//! Protocol 1 carries exactly one. The transmitter (DUC) belongs to DDC 0's
+//! stream.
 
 mod discovery;
 mod net;
@@ -19,9 +23,12 @@ use std::time::Duration;
 
 pub use discovery::{discover, probe};
 pub use net::{
-    HpsdrError, HpsdrHandle, LNA_GAIN_DEFAULT_DB, LNA_GAIN_ELEMENT, LNA_GAIN_MAX_DB,
+    HpsdrBoard, HpsdrError, HpsdrRx, LNA_GAIN_DEFAULT_DB, LNA_GAIN_ELEMENT, LNA_GAIN_MAX_DB,
     LNA_GAIN_MIN_DB, TX_RATE_HZ, board_has_lna_gain,
 };
+/// The Protocol 2 NCO math, exported for the wire-level tests and for
+/// diagnosing a board against the spec.
+pub use protocol2::{CLOCK_HZ, phase_word};
 pub use sdroxide_types::HpsdrDevice;
 
 /// Convenience: broadcast-scan the LAN with a default 1.5 s timeout.

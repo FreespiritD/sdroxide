@@ -83,19 +83,26 @@ fn p1_loopback_rx() {
         }
     });
 
-    // Open the handle: discovery must detect Protocol 1, then RX must flow.
-    let mut handle = sdroxide_hpsdr::HpsdrHandle::open(
+    // Open the connection: discovery must detect Protocol 1, then RX must
+    // flow on the one stream the framing carries.
+    let board = sdroxide_hpsdr::HpsdrBoard::open(
         Ipv4Addr::LOCALHOST,
         48_000.0,
         sdroxide_hpsdr::LNA_GAIN_DEFAULT_DB,
         sdroxide_types::HpsdrFilterBoard::None,
         false,
     )
-    .expect("open loopback handle");
-    assert_eq!(handle.protocol, 1, "detected as Protocol 1");
-    assert_eq!(handle.board, "Hermes-Lite 2");
+    .expect("open loopback connection");
+    assert_eq!(board.protocol(), 1, "detected as Protocol 1");
+    assert_eq!(board.board(), "Hermes-Lite 2");
     // An HL2 is a board whose front-end gain we can command.
-    assert!(handle.has_lna_gain());
+    assert!(board.has_lna_gain());
+    // Protocol 1 carries exactly one receiver here; a second is refused with
+    // a message that says so.
+    assert_eq!(board.ddc_count(), 1);
+    let err = board.rx(1).expect_err("a P1 board has no DDC 2").to_string();
+    assert!(err.contains("1 receiver"), "{err}");
+    let mut handle = board.rx(0).expect("attach the receiver");
 
     let mut out = vec![0f32; 4096];
     let mut got = 0usize;
@@ -114,5 +121,6 @@ fn p1_loopback_rx() {
 
     stop.store(true, Ordering::Relaxed);
     drop(handle);
+    drop(board);
     let _ = radio_thread.join();
 }

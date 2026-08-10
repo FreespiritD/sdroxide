@@ -25,6 +25,8 @@ use std::sync::{Mutex, OnceLock, Weak};
 pub enum DeviceKey {
     /// A TCI server, by the address dialed ("host:port").
     Tci(String),
+    /// An OpenHPSDR board, by its IP.
+    Hpsdr(std::net::Ipv4Addr),
 }
 
 /// What every entry must answer: whether the connection behind it still

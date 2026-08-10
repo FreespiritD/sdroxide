@@ -206,6 +206,32 @@ pub(in crate::app) fn settings_hpsdr_tab(
         });
         ui.end_row();
 
+        // Which of the board's DDCs this radio runs. Protocol 2 only — a P1
+        // board refuses anything but the first at open, with a clear message.
+        // Shown 1-based, stored 0-based as the wire counts.
+        ui.label("Receiver (DDC)");
+        let shown = format!("DDC{}", cfg.hpsdr.ddc + 1);
+        ComboBox::from_id_salt("hpsdr_ddc")
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                for ddc in 0u8..4 {
+                    if ui
+                        .selectable_label(cfg.hpsdr.ddc == ddc, format!("DDC{}", ddc + 1))
+                        .clicked()
+                    {
+                        cfg.hpsdr.ddc = ddc;
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "A Protocol 2 board carries several independently tunable receivers (DDCs) on \
+                 one connection — run this radio on DDC1 and another radio, same address, on \
+                 DDC2. The transmitter belongs to the DDC1 radio. Protocol 1 boards have DDC1 \
+                 only.",
+            );
+        ui.end_row();
+
         ui.label("LNA gain").on_hover_text(
             "Front-end gain of a Hermes-Lite 2. Takes effect immediately — no reconnect — \
              and is remembered as the level the radio starts at. Too high clips the ADC and \

@@ -982,15 +982,23 @@ fn open_hpsdr_source(
 
     let src = hpsdr_source::HpsdrSource::open(ip, &radio.hpsdr, center_hz)
         .context("opening HPSDR device")?;
-    let caps = hpsdr_caps(src.board(), src.sample_rate_hz(), src.protocol(), src.has_lna_gain());
+    let caps = hpsdr_caps(
+        src.board(),
+        src.sample_rate_hz(),
+        src.protocol(),
+        src.has_lna_gain(),
+        radio.hpsdr.ddc,
+    );
     Ok((Box::new(src), caps))
 }
 
 /// Capabilities for an HPSDR board: wideband IQ (not `audio_mode`), TX-capable,
 /// half-duplex. The board enforces its own limits. Protocol 1 boards top out at
 /// 384 kHz, and a Hermes-Lite 2 samples at 76.8 MHz, so its Nyquist limit is
-/// 38.4 MHz — tuning past that on one only aliases.
-fn hpsdr_caps(board: &str, sample_rate: f64, protocol: u8, has_lna: bool) -> DeviceCaps {
+/// 38.4 MHz — tuning past that on one only aliases. A secondary DDC (`ddc >
+/// 0`) has no transmitter: the board has one DUC, and it belongs to the DDC-0
+/// radio.
+fn hpsdr_caps(board: &str, sample_rate: f64, protocol: u8, has_lna: bool, ddc: u8) -> DeviceCaps {
     let hermes_lite = sdroxide_hpsdr::board_has_lna_gain(board);
     let nyquist = if hermes_lite { 38_400_000.0 } else { 61_440_000.0 };
     let gains = if has_lna {
@@ -1004,14 +1012,23 @@ fn hpsdr_caps(board: &str, sample_rate: f64, protocol: u8, has_lna: bool) -> Dev
     } else {
         Vec::new()
     };
+    let (label, tx_channels) = if ddc == 0 {
+        (format!("{board} (HPSDR P{protocol}, {:.3} Msps)", sample_rate / 1e6), 1)
+    } else {
+        (format!("{board} DDC{} (HPSDR P{protocol}, {:.3} Msps)", ddc + 1, sample_rate / 1e6), 0)
+    };
     DeviceCaps {
         driver: "hpsdr".into(),
-        label: format!("{board} (HPSDR P{protocol}, {:.3} Msps)", sample_rate / 1e6),
+        label,
         rx_channels: 1,
-        tx_channels: 1,
+        tx_channels,
         audio_mode: false,
         freq_ranges_rx: vec![(0.0, nyquist)],
-        freq_ranges_tx: vec![(1_800_000.0, if hermes_lite { 30_000_000.0 } else { 54_000_000.0 })],
+        freq_ranges_tx: if tx_channels > 0 {
+            vec![(1_800_000.0, if hermes_lite { 30_000_000.0 } else { 54_000_000.0 })]
+        } else {
+            Vec::new()
+        },
         sample_rates: sdroxide_types::HpsdrConfig::rates_for(protocol).to_vec(),
         gains,
         ..DeviceCaps::default()

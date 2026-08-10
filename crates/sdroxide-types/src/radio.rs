@@ -373,6 +373,14 @@ pub struct HpsdrConfig {
     /// to the board's NCO.
     #[serde(default)]
     pub ppm: f64,
+    /// Which of the board's DDCs (receivers) this radio runs, 0-based as the
+    /// wire counts them. A Protocol 2 board carries several independently
+    /// tunable DDCs on one connection, so two radios on the same address can
+    /// each take one; the transmitter (DUC) belongs to DDC 0's radio, and
+    /// Protocol 1 boards have only DDC 0 here. Defaults keep every existing
+    /// `radio.json` on DDC 0, exactly as before.
+    #[serde(default)]
+    pub ddc: u8,
 }
 
 impl Default for HpsdrConfig {
@@ -385,6 +393,7 @@ impl Default for HpsdrConfig {
             filter_board: HpsdrFilterBoard::None,
             invert_spectrum: Self::default_invert_spectrum(),
             ppm: 0.0,
+            ddc: 0,
         }
     }
 }

@@ -53,7 +53,7 @@ pub(crate) fn lna_gain_code(db: f64) -> u8 {
 
 /// What each radio said the last time it answered a discovery probe, so a probe
 /// that goes unanswered can fall back to fact instead of guessing. See the
-/// `None` arm of [`HpsdrHandle::open`] for why probes get lost.
+/// `None` arm of [`HpsdrBoard::open`] for why probes get lost.
 static LAST_PROBE: Mutex<Option<HashMap<Ipv4Addr, (String, u8)>>> = Mutex::new(None);
 
 fn remember_probe(ip: Ipv4Addr, board: &str, protocol: u8) {
@@ -299,9 +299,25 @@ pub enum HpsdrError {
     Msg(String),
 }
 
-/// Control messages from the [`HpsdrHandle`] to its network thread.
+/// Control messages from the handles to the network thread.
 pub(crate) enum Ctrl {
-    RxFreq(f64),
+    /// A DDC stream coming up: store its ring + liveness clock, enable it on
+    /// the board and (re)state the DDC configuration. Protocol 1 has exactly
+    /// one stream, DDC 0.
+    Attach {
+        ddc: u8,
+        ring: Producer<f32>,
+        last_rx_ms: RxClock,
+    },
+    /// A DDC stream going away (its radio tab closed, or its source is being
+    /// rebuilt).
+    Detach {
+        ddc: u8,
+    },
+    RxFreq {
+        ddc: u8,
+        hz: f64,
+    },
     /// Front-end LNA gain in dB (Hermes-Lite 2 only; ignored elsewhere).
     RxGain(f64),
     TxOn(f64),
@@ -316,14 +332,14 @@ pub(crate) enum Ctrl {
 /// a radio that has gone away.
 pub(crate) type RxClock = Arc<AtomicU64>;
 
-/// Everything a protocol thread needs: the socket, the radio address, the rates,
-/// the RX/TX rings, and the control channel.
+/// Everything a protocol thread needs: the socket, the radio address, the
+/// rates, the TX ring and the control channel. The RX rings arrive per DDC
+/// with [`Ctrl::Attach`] — streams come and go while the connection runs.
 pub(crate) struct ThreadCtx {
     pub socket: UdpSocket,
     pub radio: IpAddr,
-    /// Epoch for `last_rx_ms`, and the slot the thread stamps.
+    /// Epoch for every stream's liveness clock.
     pub opened_at: Instant,
-    pub last_rx_ms: RxClock,
     /// This connection's ownership ticket (see [`owns_connection`]).
     pub conn_id: u64,
     /// Board name from discovery — decides which board-specific registers the
@@ -336,44 +352,66 @@ pub(crate) struct ThreadCtx {
     pub filter_board: HpsdrFilterBoard,
     /// Conjugate I/Q in both directions (see `HpsdrConfig::invert_spectrum`).
     pub invert_spectrum: bool,
-    pub rx: Producer<f32>,
     pub tx: Consumer<f32>,
     pub ctrl: Receiver<Ctrl>,
 }
 
-/// A live connection to an HPSDR radio. Dropping it stops streaming.
-pub struct HpsdrHandle {
+/// What every stream of one connection shares. Dropping the last handle stops
+/// the stream and shuts the network thread down.
+struct DevInner {
     ctrl: Sender<Ctrl>,
-    rx: Consumer<f32>,
-    tx: Producer<f32>,
-    join: Option<JoinHandle<()>>,
+    /// Cleared when the network thread exits (socket error, shutdown), so
+    /// owners can tell a live connection from a dead one.
+    alive: Arc<AtomicBool>,
+    join: Mutex<Option<JoinHandle<()>>>,
     /// Board name reported by discovery (or "HPSDR" if it did not answer).
-    pub board: String,
+    board: String,
     /// OpenHPSDR protocol in use (1 or 2).
-    pub protocol: u8,
+    protocol: u8,
     /// Actual RX sample rate in Hz.
-    pub sample_rate_hz: f64,
+    sample_rate_hz: f64,
     /// Actual TX I/Q rate in Hz.
-    pub tx_rate_hz: f64,
+    tx_rate_hz: f64,
     /// Front-end LNA gain in dB currently commanded (Hermes-Lite 2 only).
-    lna_gain_db: f64,
-    /// When the connection opened, and when the network thread last decoded I/Q
-    /// — together these tell the engine whether the radio is still there (see
-    /// [`Self::silent_for`]).
+    /// Interior-mutable: it is set through shared stream handles.
+    lna_gain_db: Mutex<f64>,
+    /// Epoch for every stream's liveness clock (see [`HpsdrRx::silent_for`]).
     opened_at: Instant,
-    last_rx_ms: RxClock,
     /// Set while keyed. A half-duplex board can legitimately stop sending I/Q
     /// for the length of an over (an FT8 burst is 12.6 s), which must not be
     /// read as a dead link.
     transmitting: Arc<AtomicBool>,
+    /// The TX ring's feed end, claimable exactly once — by DDC 0's stream.
+    tx_endpoint: Mutex<Option<Producer<f32>>>,
+    /// Which DDCs have a live [`HpsdrRx`], so one cannot be vended twice: two
+    /// engines draining one ring would each get half the samples.
+    attached: Mutex<std::collections::HashSet<u8>>,
 }
 
-impl HpsdrHandle {
+impl Drop for DevInner {
+    fn drop(&mut self) {
+        let _ = self.ctrl.send(Ctrl::Shutdown);
+        if let Some(j) = self.join.lock().expect("join lock").take() {
+            let _ = j.join();
+        }
+    }
+}
+
+/// A live connection to an HPSDR radio, shared by every DDC stream on it.
+/// Cheap to clone; the connection stops when the last clone (and every
+/// [`HpsdrRx`]) is gone.
+#[derive(Clone)]
+pub struct HpsdrBoard {
+    inner: Arc<DevInner>,
+}
+
+impl HpsdrBoard {
     /// Open a connection to `ip`, auto-detecting the protocol from a discovery
-    /// probe (both P1 and P2 requests are sent), configuring the RX at
-    /// `sample_rate_hz`, and starting the stream. A manual IP that does not
-    /// answer the probe is still tried as Protocol 2. `lna_gain_db` is the
-    /// initial front-end gain for boards that have a settable one (see
+    /// probe (both P1 and P2 requests are sent) and starting the board at
+    /// `sample_rate_hz`. No streams yet — each DDC's starts when
+    /// [`HpsdrBoard::rx`] vends it. A manual IP that does not answer the
+    /// probe is still tried as Protocol 2. `lna_gain_db` is the initial
+    /// front-end gain for boards that have a settable one (see
     /// [`board_has_lna_gain`]); it is ignored on boards that do not.
     pub fn open(
         ip: Ipv4Addr,
@@ -381,7 +419,7 @@ impl HpsdrHandle {
         lna_gain_db: f64,
         filter_board: HpsdrFilterBoard,
         invert_spectrum: bool,
-    ) -> Result<HpsdrHandle, HpsdrError> {
+    ) -> Result<HpsdrBoard, HpsdrError> {
         tracing::info!("HPSDR: opening {ip}, requested RX rate {sample_rate_hz:.0} Hz");
         let (board, protocol) = match discovery::probe(ip, Duration::from_millis(800)) {
             Some(dev) => {
@@ -462,19 +500,14 @@ impl HpsdrHandle {
             socket.local_addr().map(|a| a.to_string()).unwrap_or_else(|_| "?".into())
         );
 
-        // RX ring ~0.5 s at the RX rate; TX ring ~0.5 s at the TX rate.
-        let rx_cap = ((rate * 2.0 * 0.5) as usize).next_power_of_two().max(1 << 16);
-        let (rx_prod, rx_cons) = RingBuffer::<f32>::new(rx_cap);
+        // TX ring ~0.5 s at the TX rate; each DDC's RX ring is created when
+        // its stream attaches.
         let tx_cap = ((tx_rate * 2.0 * 0.5) as usize).next_power_of_two().max(1 << 15);
         let (tx_prod, tx_cons) = RingBuffer::<f32>::new(tx_cap);
-        tracing::debug!(
-            "HPSDR: RX ring {rx_cap} floats (~0.5 s @ {rate:.0} Hz), TX ring {tx_cap} floats \
-             (~0.5 s @ {tx_rate:.0} Hz)"
-        );
+        tracing::debug!("HPSDR: TX ring {tx_cap} floats (~0.5 s @ {tx_rate:.0} Hz)");
 
         let (ctrl_tx, ctrl_rx) = crossbeam_channel::unbounded();
         let opened_at = Instant::now();
-        let last_rx_ms: RxClock = Arc::new(AtomicU64::new(0));
         // Take ownership of the radio before the thread starts. Whatever
         // connection was driving it is superseded from here, so when the engine
         // drops it a moment from now it will leave the stream alone.
@@ -483,15 +516,12 @@ impl HpsdrHandle {
             socket,
             radio: IpAddr::V4(ip),
             opened_at,
-            last_rx_ms: last_rx_ms.clone(),
             conn_id,
-
             board: board.clone(),
             rate_hz: rate,
             lna_gain_db,
             filter_board,
             invert_spectrum,
-            rx: rx_prod,
             tx: tx_cons,
             ctrl: ctrl_rx,
         };
@@ -499,85 +529,245 @@ impl HpsdrHandle {
             "HPSDR: starting Protocol {protocol} network thread to {ip} \
              (board \"{board}\", RX {rate:.0} Hz, TX {tx_rate:.0} Hz)"
         );
+        let alive = Arc::new(AtomicBool::new(true));
+        let thread_alive = Arc::clone(&alive);
         let join = std::thread::Builder::new()
             .name("sdroxide-hpsdr".into())
-            .spawn(move || match protocol {
-                1 => protocol1::run(ctx),
-                _ => protocol2::run(ctx),
+            .spawn(move || {
+                match protocol {
+                    1 => protocol1::run(ctx),
+                    _ => protocol2::run(ctx),
+                }
+                thread_alive.store(false, Ordering::Relaxed);
             })
             .map_err(|e| HpsdrError::Msg(format!("spawn network thread: {e}")))?;
 
-        Ok(HpsdrHandle {
-            ctrl: ctrl_tx,
-            rx: rx_cons,
-            tx: tx_prod,
-            join: Some(join),
-            board,
-            protocol,
-            sample_rate_hz: rate,
-            tx_rate_hz: tx_rate,
-            lna_gain_db,
-            opened_at,
-            last_rx_ms,
-            transmitting: Arc::new(AtomicBool::new(false)),
+        Ok(HpsdrBoard {
+            inner: Arc::new(DevInner {
+                ctrl: ctrl_tx,
+                alive,
+                join: Mutex::new(Some(join)),
+                board,
+                protocol,
+                sample_rate_hz: rate,
+                tx_rate_hz: tx_rate,
+                lna_gain_db: Mutex::new(lna_gain_db),
+                opened_at,
+                transmitting: Arc::new(AtomicBool::new(false)),
+                tx_endpoint: Mutex::new(Some(tx_prod)),
+                attached: Mutex::new(std::collections::HashSet::new()),
+            }),
         })
     }
 
-    /// Retune the RX NCO.
-    pub fn set_rx_freq(&self, hz: f64) {
-        tracing::debug!("HPSDR: set RX freq {hz:.0} Hz");
-        let _ = self.ctrl.send(Ctrl::RxFreq(hz));
+    /// Whether the network thread is still running. It stops on a socket error
+    /// or shutdown, at which point this connection is dead and only a fresh
+    /// [`HpsdrBoard::open`] revives it.
+    pub fn is_alive(&self) -> bool {
+        self.inner.alive.load(Ordering::Relaxed)
+    }
+
+    /// Board name reported by discovery (or "HPSDR" if it did not answer).
+    pub fn board(&self) -> &str {
+        &self.inner.board
+    }
+
+    /// OpenHPSDR protocol in use (1 or 2).
+    pub fn protocol(&self) -> u8 {
+        self.inner.protocol
+    }
+
+    /// Actual RX sample rate in Hz.
+    pub fn sample_rate_hz(&self) -> f64 {
+        self.inner.sample_rate_hz
+    }
+
+    /// How many DDCs this connection can serve: the Protocol 2 framing's
+    /// eight, or Protocol 1's one (its frame layout carries a single receiver
+    /// here).
+    pub fn ddc_count(&self) -> u8 {
+        match self.inner.protocol {
+            2 => protocol2::MAX_DDCS,
+            _ => 1,
+        }
     }
 
     /// Whether this board has a front-end gain this crate can command.
     pub fn has_lna_gain(&self) -> bool {
-        board_has_lna_gain(&self.board)
+        board_has_lna_gain(&self.inner.board)
+    }
+
+    /// Attach DDC `ddc` and start its stream. Refused beyond
+    /// [`HpsdrBoard::ddc_count`] — asking a Protocol 1 board for a second
+    /// receiver — and for a DDC that already has a live stream: two engines
+    /// draining one ring would each get half the samples.
+    pub fn rx(&self, ddc: u8) -> Result<HpsdrRx, HpsdrError> {
+        if ddc >= self.ddc_count() {
+            return Err(HpsdrError::Msg(format!(
+                "DDC {} does not exist: {} (Protocol {}) has {} receiver(s) here",
+                ddc + 1,
+                self.inner.board,
+                self.inner.protocol,
+                self.ddc_count()
+            )));
+        }
+        {
+            let mut attached = self.inner.attached.lock().expect("attached lock");
+            if !attached.insert(ddc) {
+                return Err(HpsdrError::Msg(format!(
+                    "DDC {} is already running as another radio",
+                    ddc + 1
+                )));
+            }
+        }
+        // RX ring ~0.5 s at the RX rate.
+        let rx_cap =
+            ((self.inner.sample_rate_hz * 2.0 * 0.5) as usize).next_power_of_two().max(1 << 16);
+        let (ring_prod, ring_cons) = RingBuffer::<f32>::new(rx_cap);
+        // The liveness clock starts at "data seen now": a stream attached to a
+        // long-running connection must age from its attach, not from the
+        // connection's epoch, or it would count as silent before its first
+        // datagram had a chance to arrive.
+        let last_rx_ms: RxClock =
+            Arc::new(AtomicU64::new(self.inner.opened_at.elapsed().as_millis() as u64));
+        // DDC 0's stream owns the transmitter; there is exactly one TX feed.
+        let tx =
+            if ddc == 0 { self.inner.tx_endpoint.lock().expect("tx lock").take() } else { None };
+        let _ = self.inner.ctrl.send(Ctrl::Attach {
+            ddc,
+            ring: ring_prod,
+            last_rx_ms: last_rx_ms.clone(),
+        });
+        Ok(HpsdrRx { dev: Arc::clone(&self.inner), ddc, ring: ring_cons, tx, last_rx_ms })
+    }
+}
+
+/// One DDC's stream on a shared [`HpsdrDevice`]: its IQ ring, its NCO, and —
+/// on DDC 0 — the transmitter. Dropping it stops this stream; the connection
+/// lives on for whoever else holds it.
+pub struct HpsdrRx {
+    dev: Arc<DevInner>,
+    ddc: u8,
+    ring: Consumer<f32>,
+    /// TX I/Q into the network thread — DDC 0 only.
+    tx: Option<Producer<f32>>,
+    /// This stream's liveness clock (ms since the connection opened at the
+    /// last datagram, stamped by the network thread).
+    last_rx_ms: RxClock,
+}
+
+impl std::fmt::Debug for HpsdrRx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HpsdrRx")
+            .field("ddc", &self.ddc)
+            .field("board", &self.dev.board)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for HpsdrRx {
+    fn drop(&mut self) {
+        self.dev.attached.lock().expect("attached lock").remove(&self.ddc);
+        // Hand the TX feed back so a rebuilt DDC-0 stream (Settings → Apply)
+        // can claim it again on the same connection.
+        if let Some(tx) = self.tx.take() {
+            *self.dev.tx_endpoint.lock().expect("tx lock") = Some(tx);
+        }
+        let _ = self.dev.ctrl.send(Ctrl::Detach { ddc: self.ddc });
+    }
+}
+
+impl HpsdrRx {
+    /// Which DDC this stream is (0-based, as the wire counts them).
+    pub fn ddc(&self) -> u8 {
+        self.ddc
+    }
+
+    /// See [`HpsdrBoard::is_alive`].
+    pub fn is_alive(&self) -> bool {
+        self.dev.alive.load(Ordering::Relaxed)
+    }
+
+    pub fn sample_rate_hz(&self) -> f64 {
+        self.dev.sample_rate_hz
+    }
+
+    pub fn board(&self) -> &str {
+        &self.dev.board
+    }
+
+    pub fn protocol(&self) -> u8 {
+        self.dev.protocol
+    }
+
+    /// Retune this DDC's NCO.
+    pub fn set_rx_freq(&self, hz: f64) {
+        tracing::debug!("HPSDR: set DDC{} freq {hz:.0} Hz", self.ddc);
+        let _ = self.dev.ctrl.send(Ctrl::RxFreq { ddc: self.ddc, hz });
+    }
+
+    /// Whether this board has a front-end gain this crate can command.
+    pub fn has_lna_gain(&self) -> bool {
+        board_has_lna_gain(&self.dev.board)
     }
 
     /// The front-end LNA gain currently commanded, in dB.
     pub fn lna_gain_db(&self) -> f64 {
-        self.lna_gain_db
+        *self.dev.lna_gain_db.lock().expect("lna lock")
     }
 
-    /// Set the front-end LNA gain in dB. No-op on boards without one.
+    /// Set the front-end LNA gain in dB. No-op on boards without one. The gain
+    /// is the one analogue front end, shared by every DDC — any stream may set
+    /// it, and all of them hear the result.
     pub fn set_lna_gain_db(&mut self, db: f64) {
         if !self.has_lna_gain() {
             return;
         }
         let db = db.clamp(LNA_GAIN_MIN_DB, LNA_GAIN_MAX_DB);
-        self.lna_gain_db = db;
+        *self.dev.lna_gain_db.lock().expect("lna lock") = db;
         tracing::debug!("HPSDR: set {LNA_GAIN_ELEMENT} gain {db:+.0} dB");
-        let _ = self.ctrl.send(Ctrl::RxGain(db));
+        let _ = self.dev.ctrl.send(Ctrl::RxGain(db));
     }
 
     /// Begin transmitting at `tx_freq_hz`; returns the TX I/Q rate to feed
-    /// [`Self::tx_write`].
+    /// [`Self::tx_write`]. The transmitter is DDC 0's — a no-op on any other
+    /// stream, which the engine never asks anyway (their capabilities carry no
+    /// TX).
     pub fn tx_begin(&self, tx_freq_hz: f64) -> f64 {
-        tracing::info!("HPSDR: TX begin at {tx_freq_hz:.0} Hz ({:.0} Hz I/Q)", self.tx_rate_hz);
-        self.transmitting.store(true, Ordering::Relaxed);
-        let _ = self.ctrl.send(Ctrl::TxOn(tx_freq_hz));
-        self.tx_rate_hz
+        if self.tx.is_some() {
+            tracing::info!(
+                "HPSDR: TX begin at {tx_freq_hz:.0} Hz ({:.0} Hz I/Q)",
+                self.dev.tx_rate_hz
+            );
+            self.dev.transmitting.store(true, Ordering::Relaxed);
+            let _ = self.dev.ctrl.send(Ctrl::TxOn(tx_freq_hz));
+        }
+        self.dev.tx_rate_hz
     }
 
     /// Stop transmitting.
     pub fn tx_end(&self) {
-        tracing::info!("HPSDR: TX end");
-        self.transmitting.store(false, Ordering::Relaxed);
-        let _ = self.ctrl.send(Ctrl::TxOff);
+        if self.tx.is_some() {
+            tracing::info!("HPSDR: TX end");
+            self.dev.transmitting.store(false, Ordering::Relaxed);
+            let _ = self.dev.ctrl.send(Ctrl::TxOff);
+        }
     }
 
-    /// Push interleaved I,Q TX samples (at [`Self::tx_rate_hz`]). Blocks briefly
-    /// when the ring is full (pacing the caller); drops if the thread stalls.
+    /// Push interleaved I,Q TX samples (at the device's TX rate). Blocks
+    /// briefly when the ring is full (pacing the caller); drops if the thread
+    /// stalls, and drops silently on a stream that has no transmitter.
     ///
     /// Writes go in whole I/Q pairs, so the ring always holds an even number of
     /// floats. Giving up mid-pair would put every later sample one slot out of
     /// step — the network thread would read each Q as an I, transmitting the
     /// wrong sideband for the rest of the over.
     pub fn tx_write(&mut self, iq: &[f32]) {
+        let Some(tx) = self.tx.as_mut() else { return };
         for pair in iq.chunks_exact(2) {
             let mut tries = 0u32;
             let mut chunk = loop {
-                match self.tx.write_chunk(2) {
+                match tx.write_chunk(2) {
                     Ok(c) => break c,
                     Err(_) => {
                         if tries > 2000 {
@@ -598,17 +788,17 @@ impl HpsdrHandle {
         }
     }
 
-    /// How long the radio has gone without delivering I/Q, measured from the
-    /// last datagram the network thread decoded or — if none ever arrived —
-    /// from when the connection was opened. A connection that never starts is
-    /// the failure that matters most here (wrong protocol guessed, or the board
-    /// still held by a previous stream), so it has to age just like one that
-    /// stops. Always zero while transmitting.
+    /// How long this stream has gone without I/Q, measured from the last
+    /// datagram the network thread decoded for this DDC or — if none arrived
+    /// yet — from when the stream attached. A stream that never starts is the
+    /// failure that matters most here (wrong protocol guessed, or the board
+    /// still held by a previous connection), so it has to age just like one
+    /// that stops. Always zero while transmitting.
     pub fn silent_for(&self) -> Duration {
-        if self.transmitting.load(Ordering::Relaxed) {
+        if self.dev.transmitting.load(Ordering::Relaxed) {
             return Duration::ZERO;
         }
-        let since_open = self.opened_at.elapsed();
+        let since_open = self.dev.opened_at.elapsed();
         let last = Duration::from_millis(self.last_rx_ms.load(Ordering::Relaxed));
         since_open.saturating_sub(last)
     }
@@ -617,10 +807,10 @@ impl HpsdrHandle {
     /// an even count (never splits an I/Q pair, so the stream stays aligned).
     /// Returns 0 when no data is available yet.
     pub fn rx_read(&mut self, out: &mut [f32]) -> usize {
-        let take = self.rx.slots().min(out.len()) & !1;
+        let take = self.ring.slots().min(out.len()) & !1;
         let mut n = 0;
         while n < take {
-            match self.rx.pop() {
+            match self.ring.pop() {
                 Ok(v) => {
                     out[n] = v;
                     n += 1;
@@ -635,16 +825,7 @@ impl HpsdrHandle {
     /// keeps streaming I/Q for the whole over, so `rx_read` would otherwise
     /// replay a stale backlog after `tx_end`.
     pub fn discard_pending_rx(&mut self) {
-        while self.rx.pop().is_ok() {}
-    }
-}
-
-impl Drop for HpsdrHandle {
-    fn drop(&mut self) {
-        let _ = self.ctrl.send(Ctrl::Shutdown);
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
-        }
+        while self.ring.pop().is_ok() {}
     }
 }
 

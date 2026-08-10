@@ -355,17 +355,21 @@ pub(crate) fn run(ctx: ThreadCtx) {
         socket,
         radio,
         opened_at,
-        last_rx_ms,
         conn_id,
         board,
         rate_hz,
         lna_gain_db,
         filter_board,
         invert_spectrum,
-        mut rx,
         mut tx,
         ctrl,
     } = ctx;
+    // Protocol 1 has exactly one receiver in this framing: DDC 0's stream,
+    // attached and detached like any other ([`Ctrl::Attach`]). EP6 keeps
+    // arriving either way — the radio streams as long as it runs — so with no
+    // stream attached the samples fall on the floor and the status bytes are
+    // still read.
+    let mut slot: Option<(rtrb::Producer<f32>, crate::net::RxClock)> = None;
     let dest = SocketAddr::new(radio, PORT);
     let speed = speed_code(rate_hz);
     let has_lna = board_has_lna_gain(&board);
@@ -418,10 +422,32 @@ pub(crate) fn run(ctx: ThreadCtx) {
         // 1) Control messages.
         while let Ok(msg) = ctrl.try_recv() {
             match msg {
-                Ctrl::RxFreq(hz) => {
-                    regs.rx_freq = hz.max(0.0) as u32;
-                    rot.urge(Slot::RxFreq);
-                    tracing::debug!("HPSDR P1: RX NCO -> {} Hz", regs.rx_freq);
+                Ctrl::Attach { ddc, ring, last_rx_ms } => {
+                    // The device refuses any DDC but 0 on a Protocol 1 board;
+                    // this arm is belt and braces.
+                    if ddc == 0 {
+                        slot = Some((ring, last_rx_ms));
+                        tracing::info!("HPSDR P1: receiver attached");
+                    }
+                }
+                Ctrl::Detach { ddc } => {
+                    if ddc == 0 && slot.take().is_some() {
+                        if regs.ptt {
+                            // The stream that owns the transmitter is going
+                            // away mid-over: unkey rather than leaving the
+                            // board on the air unattended.
+                            regs.ptt = false;
+                            while tx.pop().is_ok() {}
+                        }
+                        tracing::info!("HPSDR P1: receiver detached");
+                    }
+                }
+                Ctrl::RxFreq { ddc, hz } => {
+                    if ddc == 0 {
+                        regs.rx_freq = hz.max(0.0) as u32;
+                        rot.urge(Slot::RxFreq);
+                        tracing::debug!("HPSDR P1: RX NCO -> {} Hz", regs.rx_freq);
+                    }
                 }
                 Ctrl::RxGain(db) => {
                     if has_lna {
@@ -464,7 +490,9 @@ pub(crate) fn run(ctx: ThreadCtx) {
                     }
                     let pairs = rx_scratch.len() / 2;
                     stats.on_iq(pairs);
-                    last_rx_ms.store(opened_at.elapsed().as_millis() as u64, Ordering::Relaxed);
+                    if let Some((_, clock)) = slot.as_ref() {
+                        clock.store(opened_at.elapsed().as_millis() as u64, Ordering::Relaxed);
+                    }
                     stats.on_lost(seq_in.observe(info.seq) as u64);
                     if !logged_first_rx {
                         logged_first_rx = true;
@@ -507,7 +535,9 @@ pub(crate) fn run(ctx: ThreadCtx) {
                             );
                         }
                     }
-                    push_iq(&mut rx, &rx_scratch, &mut stats);
+                    if let Some((ring, _)) = slot.as_mut() {
+                        push_iq(ring, &rx_scratch, &mut stats);
+                    }
                 } else {
                     stats.on_other();
                     if n >= 4 && buf[0] == 0xEF && buf[1] == 0xFE {

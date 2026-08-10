@@ -103,18 +103,34 @@ pub fn general_packet(seq: u32, run: bool) -> [u8; GENERAL_LEN] {
     b
 }
 
-/// Build the DDC command packet (dest port 1025): enable DDC0 at `rate_khz`,
-/// 24 bits/sample, ADC0.
-pub fn ddc_command_packet(seq: u32, rate_khz: u16) -> [u8; DDC_COMMAND_LEN] {
+/// How many DDCs the Protocol 2 framing carries (DDC0..7, IQ source ports
+/// 1035..1042). Boards implement between 2 and all 8 of them.
+pub const MAX_DDCS: u8 = 8;
+
+/// Build the DDC command packet (dest port 1025): enable every DDC in `ddcs`
+/// at `rate_khz`, 24 bits/sample, ADC0.
+///
+/// Always the **whole** table: the enable mask and each enabled DDC's
+/// descriptor (stride 6 from offset 17) are written from scratch on every
+/// call, so the packet states the complete intended configuration rather than
+/// editing whatever the board had — a partial write leaving stale descriptors
+/// behind is exactly the firmware-dependent hazard to avoid.
+pub fn ddc_command_packet(seq: u32, rate_khz: u16, ddcs: &[u8]) -> [u8; DDC_COMMAND_LEN] {
     let mut b = [0u8; DDC_COMMAND_LEN];
     put_u32_be(&mut b, 0, seq);
     b[4] = 1; // ADC count
-    b[7] = 0x01; // DDC enable mask: DDC0 only
-    // DDC0 descriptor (stride 6 from offset 17): ADC sel, rate (kHz, BE u16), bits.
-    b[17] = 0; // ADC0
-    b[18] = (rate_khz >> 8) as u8;
-    b[19] = (rate_khz & 0xff) as u8;
-    b[22] = 24; // bits per sample
+    for &ddc in ddcs {
+        if ddc >= MAX_DDCS {
+            continue;
+        }
+        b[7] |= 1 << ddc; // DDC enable mask
+        // Descriptor: ADC sel, rate (kHz, BE u16), bits per sample.
+        let off = 17 + ddc as usize * 6;
+        b[off] = 0; // ADC0
+        b[off + 1] = (rate_khz >> 8) as u8;
+        b[off + 2] = (rate_khz & 0xff) as u8;
+        b[off + 5] = 24; // bits per sample
+    }
     b
 }
 
@@ -131,12 +147,17 @@ pub fn duc_command_packet(seq: u32) -> [u8; DUC_COMMAND_LEN] {
 /// Build the High-Priority command packet (dest port 1027): RX/TX NCO
 /// frequencies, PTT/MOX, and drive level (0..=255).
 ///
-/// Offsets: RX DDC0 NCO @ `buf[9..13]`, TX DUC0 NCO @ `buf[329..333]`, drive @
-/// `buf[345]`, run/MOX flags @ `buf[4]` — canonical P2 values, verify against
-/// the TAPR spec.
+/// Offsets: DDC-*n* RX NCO @ `buf[9 + 4n .. 13 + 4n]` (the spec's frequency
+/// table, 4 bytes per DDC), TX DUC0 NCO @ `buf[329..333]`, drive @ `buf[345]`,
+/// run/MOX flags @ `buf[4]` — canonical P2 values; DDC0's offset is
+/// hardware-verified, the stride is per the TAPR layout.
+///
+/// `rx_phases[n]` is DDC *n*'s phase word; a DDC that is not enabled simply
+/// has its slot written as given (zero for an unused one is fine — the board
+/// ignores frequencies of disabled DDCs).
 pub fn high_priority_packet(
     seq: u32,
-    rx_phase: u32,
+    rx_phases: &[u32; MAX_DDCS as usize],
     tx_phase: u32,
     ptt: bool,
     drive: u8,
@@ -144,7 +165,9 @@ pub fn high_priority_packet(
     let mut b = [0u8; HIGH_PRIORITY_LEN];
     put_u32_be(&mut b, 0, seq);
     b[4] = 0x01 | if ptt { 0x02 } else { 0x00 }; // run + MOX
-    put_u32_be(&mut b, 9, rx_phase); // DDC0 RX NCO
+    for (n, &phase) in rx_phases.iter().enumerate() {
+        put_u32_be(&mut b, 9 + 4 * n, phase); // DDC-n RX NCO
+    }
     put_u32_be(&mut b, 329, tx_phase); // DUC0 TX NCO
     b[345] = drive; // TX drive level 0..255
     b
@@ -213,46 +236,67 @@ fn next_seq(v: &mut u32) -> u32 {
     n
 }
 
+/// How long an enabled DDC may go without IQ — while not transmitting — before
+/// the thread re-states the DDC configuration and run command. A board can
+/// stop (or never start) one stream while the connection is otherwise healthy;
+/// nothing else would notice, because liveness is per stream and reconnecting
+/// the whole radio would take every other radio's DDC down with it.
+const DDC_STARVE_AFTER: Duration = Duration::from_secs(2);
+/// How often starved DDCs are nudged while they stay silent.
+const DDC_KICK_EVERY: Duration = Duration::from_secs(3);
+
 /// Run the Protocol 2 network loop until told to shut down.
 pub(crate) fn run(ctx: ThreadCtx) {
     let mut t = P2Thread {
         socket: ctx.socket,
         radio: ctx.radio,
         opened_at: ctx.opened_at,
-        last_rx_ms: ctx.last_rx_ms,
         conn_id: ctx.conn_id,
         invert_spectrum: ctx.invert_spectrum,
         rate_khz: (ctx.rate_hz / 1000.0) as u16,
-        rx: ctx.rx,
+        slots: std::collections::HashMap::new(),
         tx: ctx.tx,
         ctrl: ctx.ctrl,
         seq: Seq::default(),
-        rx_freq: 7_100_000.0,
         tx_freq: 7_100_000.0,
         ptt: false,
+        last_kick: None,
+        kick_logged: false,
     };
     t.run();
+}
+
+/// One attached DDC's state: its ring, its liveness clock (shared with the
+/// `HpsdrRx` that reads it), its NCO frequency and its own datagram sequence —
+/// Protocol 2 counts per stream, so a shared counter would report phantom
+/// gaps whenever the streams interleave.
+struct P2Slot {
+    ring: Producer<f32>,
+    last_rx_ms: crate::net::RxClock,
+    freq_hz: f64,
+    seq_in: SeqTracker,
 }
 
 struct P2Thread {
     socket: UdpSocket,
     radio: IpAddr,
-    /// Epoch and slot for the liveness clock the handle reads (see
-    /// `HpsdrHandle::silent_for`).
+    /// Epoch for every slot's liveness clock (see `HpsdrRx::silent_for`).
     opened_at: Instant,
-    last_rx_ms: crate::net::RxClock,
     /// This connection's ownership ticket (see `net::owns_connection`).
     conn_id: u64,
     /// Conjugate I/Q both ways (see `HpsdrConfig::invert_spectrum`).
     invert_spectrum: bool,
     rate_khz: u16,
-    rx: Producer<f32>,
+    /// The attached DDCs, by wire index.
+    slots: std::collections::HashMap<u8, P2Slot>,
     tx: Consumer<f32>,
     ctrl: Receiver<Ctrl>,
     seq: Seq,
-    rx_freq: f64,
     tx_freq: f64,
     ptt: bool,
+    /// The starved-DDC watchdog's rate limit and one-shot log flag.
+    last_kick: Option<Instant>,
+    kick_logged: bool,
 }
 
 impl P2Thread {
@@ -262,14 +306,17 @@ impl P2Thread {
 
     fn send_high_priority(&mut self) {
         let seq = next_seq(&mut self.seq.high_priority);
-        let rx = phase_word(self.rx_freq, CLOCK_HZ);
+        let mut phases = [0u32; MAX_DDCS as usize];
+        for (&ddc, slot) in &self.slots {
+            phases[ddc as usize] = phase_word(slot.freq_hz, CLOCK_HZ);
+        }
         let tx = phase_word(self.tx_freq, CLOCK_HZ);
         let drive = if self.ptt { TX_DRIVE } else { 0 };
-        let pkt = high_priority_packet(seq, rx, tx, self.ptt, drive);
+        let pkt = high_priority_packet(seq, &phases, tx, self.ptt, drive);
         tracing::trace!(
-            "HPSDR P2: high-priority seq {seq}: RX phase 0x{rx:08X} ({:.0} Hz), \
-             TX phase 0x{tx:08X} ({:.0} Hz), MOX {}, drive {drive}",
-            self.rx_freq,
+            "HPSDR P2: high-priority seq {seq}: {} DDC NCO(s), TX phase 0x{tx:08X} ({:.0} Hz), \
+             MOX {}, drive {drive}",
+            self.slots.len(),
             self.tx_freq,
             self.ptt
         );
@@ -278,13 +325,54 @@ impl P2Thread {
 
     fn send_ddc_command(&mut self) {
         let seq = next_seq(&mut self.seq.ddc);
-        let pkt = ddc_command_packet(seq, self.rate_khz);
+        let mut ddcs: Vec<u8> = self.slots.keys().copied().collect();
+        ddcs.sort_unstable();
+        let pkt = ddc_command_packet(seq, self.rate_khz, &ddcs);
         tracing::debug!(
-            "HPSDR P2: DDC command seq {seq}: DDC0 enabled, {} kHz, 24-bit, ADC0 -> port {}",
+            "HPSDR P2: DDC command seq {seq}: DDCs {ddcs:?} enabled, {} kHz, 24-bit, ADC0 -> \
+             port {}",
             self.rate_khz,
             port::DDC_COMMAND
         );
         let _ = self.socket.send_to(&pkt, self.dest(port::DDC_COMMAND));
+    }
+
+    /// Re-state the DDC configuration when an enabled stream has gone silent —
+    /// see [`DDC_STARVE_AFTER`]. Skipped while keyed: a board may legitimately
+    /// pause RX during its own TX, and unkey refreshes the clocks.
+    fn kick_starved_ddcs(&mut self) {
+        if self.ptt || self.slots.is_empty() {
+            return;
+        }
+        let now_ms = self.opened_at.elapsed().as_millis() as u64;
+        let starved: Vec<u8> = self
+            .slots
+            .iter()
+            .filter(|(_, s)| {
+                now_ms.saturating_sub(s.last_rx_ms.load(Ordering::Relaxed))
+                    > DDC_STARVE_AFTER.as_millis() as u64
+            })
+            .map(|(&ddc, _)| ddc)
+            .collect();
+        if starved.is_empty() {
+            self.kick_logged = false;
+            self.last_kick = None;
+            return;
+        }
+        if self.last_kick.is_some_and(|t| t.elapsed() < DDC_KICK_EVERY) {
+            return;
+        }
+        if !self.kick_logged {
+            self.kick_logged = true;
+            tracing::warn!(
+                "HPSDR P2: DDC(s) {starved:?} stopped streaming; re-stating the DDC \
+                 configuration and run command"
+            );
+        }
+        self.last_kick = Some(Instant::now());
+        self.send_ddc_command();
+        self.send_high_priority();
+        self.send_general(true);
     }
 
     fn send_duc_command(&mut self) {
@@ -340,7 +428,6 @@ impl P2Thread {
         let mut tx_scratch: Vec<f32> = Vec::with_capacity(DUC_SAMPLES_PER_PKT * 2);
         let mut buf = [0u8; 2048];
         let mut stats = RxStats::new(2, self.rate_khz as f64 * 1000.0);
-        let mut seq_in = SeqTracker::new();
         let mut logged_first_rx = false;
         let mut logged_first_tx = false;
         let mut warned_no_rx = false;
@@ -350,10 +437,40 @@ impl P2Thread {
             let mut freq_changed = false;
             while let Ok(msg) = self.ctrl.try_recv() {
                 match msg {
-                    Ctrl::RxFreq(hz) => {
-                        self.rx_freq = hz;
+                    Ctrl::Attach { ddc, ring, last_rx_ms } => {
+                        self.slots.insert(
+                            ddc,
+                            P2Slot {
+                                ring,
+                                last_rx_ms,
+                                freq_hz: 7_100_000.0,
+                                seq_in: SeqTracker::new(),
+                            },
+                        );
+                        // The whole table, freshly stated — never an edit.
+                        self.send_ddc_command();
                         freq_changed = true;
-                        tracing::debug!("HPSDR P2: RX NCO -> {hz:.0} Hz");
+                        tracing::info!(ddc, "HPSDR P2: DDC attached");
+                    }
+                    Ctrl::Detach { ddc } => {
+                        if self.slots.remove(&ddc).is_some() {
+                            if ddc == 0 && self.ptt {
+                                // The stream that owns the transmitter is
+                                // going away mid-over: unkey rather than
+                                // leaving the board on the air unattended.
+                                self.ptt = false;
+                            }
+                            self.send_ddc_command();
+                            freq_changed = true;
+                            tracing::info!(ddc, "HPSDR P2: DDC detached");
+                        }
+                    }
+                    Ctrl::RxFreq { ddc, hz } => {
+                        if let Some(s) = self.slots.get_mut(&ddc) {
+                            s.freq_hz = hz;
+                            freq_changed = true;
+                            tracing::debug!("HPSDR P2: DDC{ddc} NCO -> {hz:.0} Hz");
+                        }
                     }
                     // Protocol 2 boards have no front-end gain register this
                     // crate drives; the DDC command carries no gain field.
@@ -368,6 +485,13 @@ impl P2Thread {
                     Ctrl::TxOff => {
                         self.ptt = false;
                         freq_changed = true;
+                        // The watchdog was paused for the over and the board
+                        // may legitimately have paused RX during it: every
+                        // stream gets a fresh grace period.
+                        let now_ms = self.opened_at.elapsed().as_millis() as u64;
+                        for slot in self.slots.values_mut() {
+                            slot.last_rx_ms.store(now_ms, Ordering::Relaxed);
+                        }
                         tracing::info!("HPSDR P2: MOX off");
                     }
                     Ctrl::Shutdown => {
@@ -383,14 +507,15 @@ impl P2Thread {
             match self.socket.recv_from(&mut buf) {
                 Ok((n, src)) => {
                     let p = src.port();
-                    if (port::DDC_IQ_BASE..port::DDC_IQ_BASE + 8).contains(&p) {
+                    let ddc = p.checked_sub(port::DDC_IQ_BASE).filter(|&d| d < MAX_DDCS as u16);
+                    if let Some(slot) = ddc.and_then(|d| self.slots.get_mut(&(d as u8))) {
                         rx_scratch.clear();
                         if let Some(pairs) = decode_ddc_iq(&buf[..n], &mut rx_scratch) {
                             if self.invert_spectrum {
                                 crate::protocol1::conjugate(&mut rx_scratch);
                             }
                             stats.on_iq(pairs);
-                            self.last_rx_ms.store(
+                            slot.last_rx_ms.store(
                                 self.opened_at.elapsed().as_millis() as u64,
                                 Ordering::Relaxed,
                             );
@@ -408,21 +533,25 @@ impl P2Thread {
                                     hex_head(&buf[..n], 16)
                                 );
                             }
-                            // Only DDC0 is enabled, so one sequence counter
-                            // covers the whole stream. A datagram from another
-                            // DDC would carry its own counter — track just
-                            // DDC0's rather than report phantom gaps.
-                            if p == port::DDC_IQ_BASE && n >= 4 {
+                            // Sequence counters are per stream: each DDC's
+                            // datagrams count on their own, so interleaved
+                            // streams never read as phantom gaps.
+                            if n >= 4 {
                                 let seq = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
-                                stats.on_lost(seq_in.observe(seq) as u64);
+                                stats.on_lost(slot.seq_in.observe(seq) as u64);
                             }
-                            push_iq(&mut self.rx, &rx_scratch, &mut stats);
+                            push_iq(&mut slot.ring, &rx_scratch, &mut stats);
                         } else {
                             stats.on_other();
                             tracing::trace!(
                                 "HPSDR P2: undecodable DDC datagram from port {p} ({n} bytes)"
                             );
                         }
+                    } else if ddc.is_some() {
+                        // A DDC nobody attached — the board streaming one we
+                        // just disabled, most likely. Not an error.
+                        stats.on_other();
+                        tracing::trace!("HPSDR P2: I/Q from unattached DDC port {p} ({n} bytes)");
                     } else {
                         stats.on_other();
                         tracing::trace!(
@@ -441,7 +570,11 @@ impl P2Thread {
             }
 
             // Flag a radio that accepted the run command but never streams I/Q.
-            if !logged_first_rx && !warned_no_rx && started.elapsed() >= Duration::from_secs(3) {
+            if !logged_first_rx
+                && !warned_no_rx
+                && !self.slots.is_empty()
+                && started.elapsed() >= Duration::from_secs(3)
+            {
                 warned_no_rx = true;
                 tracing::warn!(
                     "HPSDR P2: no DDC I/Q datagrams after 3 s. Expected them on source port \
@@ -451,6 +584,7 @@ impl P2Thread {
                     port::DDC_IQ_BASE + 7
                 );
             }
+            self.kick_starved_ddcs();
             stats.tick();
 
             if self.ptt {
@@ -550,20 +684,44 @@ mod tests {
 
     #[test]
     fn high_priority_field_placement() {
-        let rx = phase_word(7_100_000.0, CLOCK_HZ);
+        let rx0 = phase_word(7_100_000.0, CLOCK_HZ);
+        let rx1 = phase_word(14_074_000.0, CLOCK_HZ);
+        let mut phases = [0u32; MAX_DDCS as usize];
+        phases[0] = rx0;
+        phases[1] = rx1;
         let tx = phase_word(7_100_000.0, CLOCK_HZ);
-        let b = high_priority_packet(0, rx, tx, true, 200);
+        let b = high_priority_packet(0, &phases, tx, true, 200);
         assert_eq!(b[4] & 0x02, 0x02, "MOX bit set");
-        assert_eq!(u32::from_be_bytes([b[9], b[10], b[11], b[12]]), rx);
+        // The DDC frequency table: 4 bytes per DDC from offset 9.
+        assert_eq!(u32::from_be_bytes([b[9], b[10], b[11], b[12]]), rx0);
+        assert_eq!(u32::from_be_bytes([b[13], b[14], b[15], b[16]]), rx1);
+        assert_eq!(u32::from_be_bytes([b[17], b[18], b[19], b[20]]), 0, "DDC2 unused");
         assert_eq!(u32::from_be_bytes([b[329], b[330], b[331], b[332]]), tx);
         assert_eq!(b[345], 200);
     }
 
     #[test]
     fn ddc_command_encodes_rate() {
-        let b = ddc_command_packet(0, 1536);
+        // DDC0 alone: byte-for-byte what the single-receiver code always sent.
+        let b = ddc_command_packet(0, 1536, &[0]);
         assert_eq!(b[7], 0x01);
         assert_eq!(u16::from_be_bytes([b[18], b[19]]), 1536);
         assert_eq!(b[22], 24);
+    }
+
+    #[test]
+    fn ddc_command_encodes_the_whole_table() {
+        let b = ddc_command_packet(0, 384, &[0, 2]);
+        assert_eq!(b[7], 0b0000_0101, "enable mask: DDC0 + DDC2");
+        // DDC0 descriptor at 17, DDC2's at 17 + 2×6 = 29; DDC1's untouched.
+        assert_eq!(u16::from_be_bytes([b[18], b[19]]), 384);
+        assert_eq!(b[22], 24);
+        assert_eq!(u16::from_be_bytes([b[24], b[25]]), 0, "DDC1 rate stays zero");
+        assert_eq!(b[28], 0, "DDC1 bits stay zero");
+        assert_eq!(u16::from_be_bytes([b[30], b[31]]), 384);
+        assert_eq!(b[34], 24);
+        // An out-of-range index is ignored, not a corrupted write.
+        let b = ddc_command_packet(0, 384, &[9]);
+        assert_eq!(b[7], 0, "no DDC enabled");
     }
 }
