@@ -15,21 +15,28 @@ pub struct LocalController {
     spectrum: triple_buffer::Output<SpectrumFrame>,
     wide_spectrum: triple_buffer::Output<SpectrumFrame>,
     swap_tx: Sender<EngineSwap>,
+    /// The engine thread, joined in [`RadioController::shutdown`] so device
+    /// teardown (SoapySDR/libusb) can't race the C libraries' exit handlers.
+    /// `None` after shutdown, or when the frontend chose to join it itself.
+    thread: Option<std::thread::JoinHandle<()>>,
     /// Live cpal streams (they must outlive their ring endpoints in the engine).
     audio_out: Option<sdroxide_audio::AudioOutput>,
     mic_in: Option<sdroxide_audio::AudioInput>,
     /// Currently selected device names; `None` = system default.
     out_name: Option<String>,
     in_name: Option<String>,
+    /// Where this radio's `radio.json` lives — radio 0 is the legacy root.
+    store: sdroxide_config::Store,
 }
 
 impl LocalController {
     pub fn new(
-        handles: EngineHandles,
+        mut handles: EngineHandles,
         audio_out: Option<sdroxide_audio::AudioOutput>,
         mic_in: Option<sdroxide_audio::AudioInput>,
         out_name: Option<String>,
         in_name: Option<String>,
+        store: sdroxide_config::Store,
     ) -> Self {
         LocalController {
             cmd_tx: handles.cmd_tx,
@@ -37,10 +44,12 @@ impl LocalController {
             spectrum: handles.spectrum_out,
             wide_spectrum: handles.wide_spectrum_out,
             swap_tx: handles.swap_tx,
+            thread: handles.thread.take(),
             audio_out,
             mic_in,
             out_name,
             in_name,
+            store,
         }
     }
 
@@ -186,12 +195,12 @@ impl RadioController for LocalController {
     }
 
     fn radio_config(&self) -> Option<RadioConfig> {
-        Some(sdroxide_config::load_radio_config())
+        Some(self.store.load_radio_config())
     }
 
     fn set_radio_config(&mut self, cfg: RadioConfig) {
         // Persist now; `reopen_source` applies it to the running engine.
-        if let Err(e) = sdroxide_config::save_radio_config(&cfg) {
+        if let Err(e) = self.store.save_radio_config(&cfg) {
             warn!("saving radio config: {e}");
         }
     }
@@ -199,5 +208,29 @@ impl RadioController for LocalController {
     fn reopen_source(&mut self) {
         // The engine rebuilds the source from the freshly persisted radio config.
         let _ = self.swap_tx.send(EngineSwap::ReopenSource);
+    }
+
+    fn set_muted(&mut self, muted: bool) {
+        let _ = self.swap_tx.send(EngineSwap::MuteOutput(muted));
+    }
+
+    fn nudge_shared_stores(&mut self) {
+        let _ = self.swap_tx.send(EngineSwap::ReloadSharedStores);
+    }
+
+    fn shutdown(&mut self) {
+        // The engine runs until its last command sender drops, so disconnect
+        // it by swapping the senders for endpoints wired to nothing. The audio
+        // streams go too — an exclusive device has to be free before another
+        // radio (or another program) can have it.
+        let (dead_cmd, _) = sdroxide_radio::crossbeam_channel::unbounded();
+        self.cmd_tx = dead_cmd;
+        let (dead_swap, _) = sdroxide_radio::crossbeam_channel::unbounded();
+        self.swap_tx = dead_swap;
+        self.audio_out = None;
+        self.mic_in = None;
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
     }
 }

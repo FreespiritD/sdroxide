@@ -3,6 +3,15 @@
 //!
 //! WebGL2-downlevel-safe by design: no compute, no storage buffers, only
 //! sampled R8Unorm/RGBA8 textures and one uniform buffer.
+//!
+//! The renderer's `CallbackResources` type-map holds exactly one value per
+//! type, shared by every viewport — so the resources here are a *registry*:
+//! pipelines, layouts and samplers built once, plus one set of history
+//! textures per radio, keyed by [`WaterfallCallback::wf_id`]. Two radio tabs
+//! writing one shared history would corrupt each other's scrollback and fight
+//! over the frequency axis on every switch.
+
+use std::collections::HashMap;
 
 use eframe::egui_wgpu::{CallbackResources, CallbackTrait, RenderState, ScreenDescriptor, wgpu};
 use sdroxide_types::SpectrumFrame;
@@ -28,8 +37,21 @@ struct Uniforms {
     _pad: [f32; 3],
 }
 
-pub struct WaterfallResources {
+/// What every radio's waterfall shares: compiled pipelines, bind-group
+/// layouts and samplers. Built once in [`init`].
+struct Shared {
     pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    remap_pipeline: wgpu::RenderPipeline,
+    remap_layout: wgpu::BindGroupLayout,
+    linear: wgpu::Sampler,
+    lut_sampler: wgpu::Sampler,
+    remap_sampler: wgpu::Sampler,
+}
+
+/// One radio's waterfall state: its history textures, uniforms and LUT.
+/// ~8 MB of texture per radio — retired when its tab closes ([`retire`]).
+struct WaterfallResources {
     /// One render bind group per history texture; index by `active`.
     bind_group: [wgpu::BindGroup; 2],
     /// Ping-pong history textures. `active` is the live one; the other is the
@@ -39,7 +61,6 @@ pub struct WaterfallResources {
     active: usize,
     // Remap pass: rewrites the history to a new frequency axis instead of
     // clearing it, so zoom/retune keeps the existing waterfall on screen.
-    remap_pipeline: wgpu::RenderPipeline,
     remap_uniforms: wgpu::Buffer,
     remap_bg: [wgpu::BindGroup; 2],
     lut_tex: wgpu::Texture,
@@ -51,52 +72,27 @@ pub struct WaterfallResources {
     zeros: Vec<u8>,
 }
 
-/// Create the pipeline/textures and register them in the renderer's
-/// callback resources. Call once at app construction.
+/// The one value registered in `CallbackResources`.
+pub struct WaterfallRegistry {
+    shared: Shared,
+    per: HashMap<u64, WaterfallResources>,
+}
+
+/// Compile the pipelines and register the (empty) registry in the renderer's
+/// callback resources. Call once at app construction; calling again is a
+/// no-op, so a radio tab created at runtime costs nothing here.
 pub fn init(rs: &RenderState) {
+    {
+        let renderer = rs.renderer.read();
+        if renderer.callback_resources.get::<WaterfallRegistry>().is_some() {
+            return;
+        }
+    }
     let device = &rs.device;
 
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("waterfall"),
         source: wgpu::ShaderSource::Wgsl(include_str!("shaders/waterfall.wgsl").into()),
-    });
-
-    // Two history textures for ping-pong remapping. RENDER_ATTACHMENT lets the
-    // remap pass render one into the other; R8Unorm is color-renderable on
-    // WebGL2, so this stays downlevel-safe.
-    let make_hist = |_i: usize| {
-        device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("waterfall-history"),
-            size: wgpu::Extent3d { width: TEX_W, height: TEX_H, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        })
-    };
-    let hist = [make_hist(0), make_hist(1)];
-    let hist_view =
-        [hist[0].create_view(&Default::default()), hist[1].create_view(&Default::default())];
-    let lut_tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("waterfall-lut"),
-        size: wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-
-    let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("waterfall-uniforms"),
-        size: std::mem::size_of::<Uniforms>() as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
     });
 
     let linear = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -164,34 +160,6 @@ pub fn init(rs: &RenderState) {
         ],
     });
 
-    let lut_view = lut_tex.create_view(&Default::default());
-    let make_bg = |i: usize| {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("waterfall-bg"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&hist_view[i]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&linear),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&lut_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(&lut_sampler),
-                },
-            ],
-        })
-    };
-    let bind_group = [make_bg(0), make_bg(1)];
-
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("waterfall-pl"),
         bind_group_layouts: &[Some(&layout)],
@@ -223,12 +191,6 @@ pub fn init(rs: &RenderState) {
     let remap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("waterfall-remap"),
         source: wgpu::ShaderSource::Wgsl(include_str!("shaders/waterfall_remap.wgsl").into()),
-    });
-    let remap_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("waterfall-remap-uniforms"),
-        size: 16,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
     });
     let remap_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("waterfall-remap-bgl"),
@@ -270,24 +232,6 @@ pub fn init(rs: &RenderState) {
         min_filter: wgpu::FilterMode::Linear,
         ..Default::default()
     });
-    let make_remap_bg = |i: usize| {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("waterfall-remap-bg"),
-            layout: &remap_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: remap_uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&hist_view[i]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&remap_sampler),
-                },
-            ],
-        })
-    };
-    let remap_bg = [make_remap_bg(0), make_remap_bg(1)];
     let remap_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("waterfall-remap-pl"),
         bind_group_layouts: &[Some(&remap_layout)],
@@ -315,23 +259,145 @@ pub fn init(rs: &RenderState) {
         cache: None,
     });
 
-    rs.renderer.write().callback_resources.insert(WaterfallResources {
-        pipeline,
-        bind_group,
-        hist,
-        hist_view,
-        active: 0,
-        remap_pipeline,
-        remap_uniforms,
-        remap_bg,
-        lut_tex,
-        uniforms,
-        write_row: 0,
-        current_lut: None,
-        last_center: 0.0,
-        last_span: 0.0,
-        zeros: Vec::new(),
+    rs.renderer.write().callback_resources.insert(WaterfallRegistry {
+        shared: Shared {
+            pipeline,
+            layout,
+            remap_pipeline,
+            remap_layout,
+            linear,
+            lut_sampler,
+            remap_sampler,
+        },
+        per: HashMap::new(),
     });
+}
+
+/// Drop one radio's textures when its tab closes; ~8 MB apiece otherwise
+/// leaks for the life of the process. `None` render state (no wgpu) is a no-op.
+/// Native-only like the tab strip itself — the browser client is single-radio.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn retire(rs: Option<&RenderState>, wf_id: u64) {
+    if let Some(rs) = rs
+        && let Some(reg) = rs.renderer.write().callback_resources.get_mut::<WaterfallRegistry>()
+    {
+        reg.per.remove(&wf_id);
+    }
+}
+
+impl WaterfallResources {
+    /// One radio's textures, buffers and bind groups, on the shared layouts.
+    fn new(device: &wgpu::Device, shared: &Shared) -> Self {
+        // Two history textures for ping-pong remapping. RENDER_ATTACHMENT lets
+        // the remap pass render one into the other; R8Unorm is
+        // color-renderable on WebGL2, so this stays downlevel-safe.
+        let make_hist = |_i: usize| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("waterfall-history"),
+                size: wgpu::Extent3d { width: TEX_W, height: TEX_H, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+        };
+        let hist = [make_hist(0), make_hist(1)];
+        let hist_view =
+            [hist[0].create_view(&Default::default()), hist[1].create_view(&Default::default())];
+        let lut_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("waterfall-lut"),
+            size: wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("waterfall-uniforms"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let lut_view = lut_tex.create_view(&Default::default());
+        let make_bg = |i: usize| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("waterfall-bg"),
+                layout: &shared.layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&hist_view[i]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&shared.linear),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&lut_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&shared.lut_sampler),
+                    },
+                ],
+            })
+        };
+        let bind_group = [make_bg(0), make_bg(1)];
+
+        let remap_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("waterfall-remap-uniforms"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let make_remap_bg = |i: usize| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("waterfall-remap-bg"),
+                layout: &shared.remap_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: remap_uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&hist_view[i]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&shared.remap_sampler),
+                    },
+                ],
+            })
+        };
+        let remap_bg = [make_remap_bg(0), make_remap_bg(1)];
+
+        WaterfallResources {
+            bind_group,
+            hist,
+            hist_view,
+            active: 0,
+            remap_uniforms,
+            remap_bg,
+            lut_tex,
+            uniforms,
+            write_row: 0,
+            current_lut: None,
+            last_center: 0.0,
+            last_span: 0.0,
+            zeros: Vec::new(),
+        }
+    }
 }
 
 /// Per-paint callback carrying the latest frame and view mapping. The frame is
@@ -350,20 +416,24 @@ pub struct WaterfallCallback {
     pub rows_to_write: u32,
     /// Draw the newest row at the bottom, scrolling upwards.
     pub flip: bool,
+    /// Which radio's history to scroll — see [`WaterfallRegistry`].
+    pub wf_id: u64,
 }
 
 impl CallbackTrait for WaterfallCallback {
     fn prepare(
         &self,
-        _device: &wgpu::Device,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         _screen: &ScreenDescriptor,
         encoder: &mut wgpu::CommandEncoder,
         resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let Some(r) = resources.get_mut::<WaterfallResources>() else {
+        let Some(reg) = resources.get_mut::<WaterfallRegistry>() else {
             return Vec::new();
         };
+        let WaterfallRegistry { shared, per } = reg;
+        let r = per.entry(self.wf_id).or_insert_with(|| WaterfallResources::new(device, shared));
 
         if r.current_lut != Some(self.lut) {
             queue.write_texture(
@@ -424,7 +494,7 @@ impl CallbackTrait for WaterfallCallback {
                             occlusion_query_set: None,
                             multiview_mask: None,
                         });
-                        pass.set_pipeline(&r.remap_pipeline);
+                        pass.set_pipeline(&shared.remap_pipeline);
                         pass.set_bind_group(0, &r.remap_bg[src], &[]);
                         pass.draw(0..3, 0..1);
                     }
@@ -512,8 +582,9 @@ impl CallbackTrait for WaterfallCallback {
         pass: &mut wgpu::RenderPass<'static>,
         resources: &CallbackResources,
     ) {
-        let Some(r) = resources.get::<WaterfallResources>() else { return };
-        pass.set_pipeline(&r.pipeline);
+        let Some(reg) = resources.get::<WaterfallRegistry>() else { return };
+        let Some(r) = reg.per.get(&self.wf_id) else { return };
+        pass.set_pipeline(&reg.shared.pipeline);
         pass.set_bind_group(0, &r.bind_group[r.active], &[]);
         pass.draw(0..3, 0..1);
     }

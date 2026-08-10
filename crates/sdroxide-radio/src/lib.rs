@@ -11,6 +11,7 @@ mod image_store;
 mod recorder;
 pub mod scanner;
 mod source;
+mod tx_gate;
 mod voice;
 
 #[cfg(feature = "soapy")]
@@ -24,6 +25,7 @@ pub use source::{
     ControlUpdate, ConvertedSource, DC_BLOCK_HZ, FileSource, IqSource, SigGenSource, lo_offset_for,
     override_caps_ranges, shift_caps,
 };
+pub use tx_gate::{StoreSync, TxGate};
 
 // Re-exported so frontends can name handle types without direct deps.
 pub use crossbeam_channel;

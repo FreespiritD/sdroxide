@@ -73,6 +73,17 @@ pub enum EngineSwap {
     /// Rebuild the radio source at runtime (backend / CAT audio / HPSDR-TCI
     /// address changed). The engine calls its [`ReopenFn`] factory.
     ReopenSource,
+    /// Silence (or restore) this engine's speaker path — the tab-strip mute.
+    /// The DSP, meters, decoders and the recording tap all keep running; only
+    /// what goes to the audio device is zeroed. Deliberately not
+    /// [`Command::SetMute`], which is a per-receiver setting the operator owns.
+    MuteOutput(bool),
+    /// Re-read the station-shared stores (memories, folders, band stacks, digi
+    /// operator config) from disk. Sent to every *other* engine after one of
+    /// them saves: each engine holds a whole in-memory copy and writes it back
+    /// whole, so without this nudge radio B's next edit would clobber what
+    /// radio A just added.
+    ReloadSharedStores,
 }
 
 /// Factory that (re)opens the configured IQ source at runtime, given the
@@ -118,6 +129,24 @@ pub struct EngineConfig {
     /// engines up on synthetic sources, and none of them may overwrite what the
     /// operator left the radio on.
     pub remember_session: bool,
+    /// Where this engine's radio-scoped files live (`radio.json`,
+    /// `session.json`, `scanner.json`, the server configs). The station-shared
+    /// stores stay on the root paths regardless. Defaults to the station scope,
+    /// which is also radio 0's — a single-radio start is unchanged.
+    pub store: sdroxide_config::Store,
+    /// This engine's radio id: names the DSP thread and prefixes recording
+    /// filenames, so two radios recording in the same second don't collide.
+    pub instance: u32,
+    /// Whether this engine runs the station-wide network services (spot feeds,
+    /// the rotator client). Exactly one engine per process should — they hold
+    /// logins and sockets that must not be duplicated per radio.
+    pub primary: bool,
+    /// The station's transmit interlock, shared by every engine in the
+    /// process. `None` (the default, and every single-radio start) keys freely.
+    pub tx_gate: Option<Arc<crate::TxGate>>,
+    /// Change signal for the station-shared stores, shared like `tx_gate`.
+    /// `None` (the default): no other engine exists, nothing to watch.
+    pub store_sync: Option<Arc<crate::StoreSync>>,
 }
 
 impl Default for EngineConfig {
@@ -131,6 +160,11 @@ impl Default for EngineConfig {
             tx_ham_only: true,
             reopen: None,
             remember_session: false,
+            store: sdroxide_config::Store::station(),
+            instance: 0,
+            primary: true,
+            tx_gate: None,
+            store_sync: None,
         }
     }
 }
@@ -152,8 +186,14 @@ pub fn start(source: Box<dyn IqSource>, caps: DeviceCaps, cfg: EngineConfig) -> 
     let (spec_in, spectrum_out) = triple_buffer::triple_buffer(&empty);
     let (wide_in, wide_spectrum_out) = triple_buffer::triple_buffer(&empty);
 
+    // Radio 0 keeps the historical name — profiling notes and thread filters
+    // key on it — and every further radio is distinguishable at a glance.
+    let thread_name = match cfg.instance {
+        0 => "sdroxide-dsp".to_string(),
+        n => format!("sdroxide-dsp-{n}"),
+    };
     let thread = std::thread::Builder::new()
-        .name("sdroxide-dsp".into())
+        .name(thread_name)
         .spawn(move || {
             engine_thread(source, caps, cfg, cmd_rx, swap_rx, event_tx, spec_in, wide_in)
         })
@@ -680,6 +720,11 @@ struct StereoMixer {
     /// channels arrive as separate arguments — so ducking here cannot leak into
     /// an MP3 however the caller assembled the two sides.
     duck: f32,
+    /// The tab-strip mute ([`EngineSwap::MuteOutput`]): the speaker path is
+    /// zeroed, everything else — including the recording tap — runs on. Same
+    /// placement rationale as `duck`. Zeroed rather than skipped so the ring
+    /// keeps flowing and unmuting is instant, with nothing stale queued.
+    muted: bool,
 }
 
 /// Bound on per-channel queueing (≈¼ s at 48 kHz) so a stalled side can't
@@ -701,6 +746,7 @@ impl StereoMixer {
             rx_rec_enabled: true,
             rec_mono: false,
             duck: 1.0,
+            muted: false,
         }
     }
 
@@ -785,7 +831,7 @@ impl StereoMixer {
 
         if n > 0 {
             if self.out.slots() >= n * 2 {
-                let duck = self.duck;
+                let duck = if self.muted { 0.0 } else { self.duck };
                 for i in 0..n {
                     let l = self.main_q[i] * duck;
                     let r = if dual { self.sub_q[i] * duck } else { l };
@@ -1262,6 +1308,19 @@ struct Engine {
     /// held rather than dropped: swapping back to the radio it belongs to
     /// restores it.
     want_antenna: (Option<String>, Option<String>),
+    /// Where this engine's radio-scoped files live. See [`EngineConfig::store`].
+    store: sdroxide_config::Store,
+    /// This engine's radio id. See [`EngineConfig::instance`].
+    instance: u32,
+    /// Whether this engine runs the station-wide network services.
+    /// See [`EngineConfig::primary`].
+    primary: bool,
+    /// The station's transmit interlock. See [`EngineConfig::tx_gate`].
+    tx_gate: Option<Arc<crate::TxGate>>,
+    /// Shared-store change signal, and the generation this engine has already
+    /// caught up with. See [`EngineConfig::store_sync`].
+    store_sync: Option<Arc<crate::StoreSync>>,
+    shared_gen_seen: u64,
 }
 
 /// Target width of the CW skimmer window (Hz); the Ddc snaps to the nearest
@@ -1342,7 +1401,7 @@ fn engine_thread(
 
     let memories = sdroxide_config::load_memories();
     let mem_folders = sdroxide_config::load_memory_folders();
-    let scan_cfg = sdroxide_config::load_scanner_config();
+    let scan_cfg = engine_cfg.store.load_scanner_config();
     let stacks = sdroxide_config::load_bandstacks();
     let digi_config = sdroxide_config::load_digi_config();
 
@@ -1363,7 +1422,7 @@ fn engine_thread(
     // radio actually was: a start that overrode the dial (`--freq`, or a
     // CAT rig reporting its own) is a difference like any other, and gets
     // written even if nothing is touched afterwards.
-    let session = engine_cfg.remember_session.then(sdroxide_config::load_session);
+    let session = engine_cfg.remember_session.then(|| engine_cfg.store.load_session());
     // Volume, RX gain, AGC mode, drive, mic gain and the recording channel
     // layout have no command-line override, so the remembered session (if any)
     // always wins over the hardcoded defaults `RadioState::default()` /
@@ -1503,6 +1562,12 @@ fn engine_thread(
         next_rot_emit: Instant::now(),
         session,
         want_antenna,
+        store: engine_cfg.store,
+        instance: engine_cfg.instance,
+        primary: engine_cfg.primary,
+        tx_gate: engine_cfg.tx_gate,
+        shared_gen_seen: engine_cfg.store_sync.as_ref().map_or(0, |s| s.generation()),
+        store_sync: engine_cfg.store_sync,
     };
     // After the struct, not before: the preference has to be applied through
     // the same path a reconnect uses, so both land on the same port.
@@ -1531,27 +1596,38 @@ fn engine_thread(
     // Start any enabled network spot feeds from the persisted config. The
     // operator identity comes from the digi config — one identity for the whole
     // app — and has to be in place before the feeds that log in with it.
+    // Only the primary engine brings the feeds up: they hold logins and
+    // sockets (DX cluster, RBN, the reporters) that a station has one of, not
+    // one per radio. The config still loads on every engine so a settings
+    // dialog attached to any of them shows the real station setup.
     engine.spots.set_operator(&engine.digi_config.my_call, &engine.digi_config.my_grid);
     engine.net_cfg = sdroxide_config::load_network_config();
-    engine.spots.set_config(engine.net_cfg.clone());
+    if engine.primary {
+        engine.spots.set_config(engine.net_cfg.clone());
+    }
     // Bring up the built-in TCI server (enabled by default) so third-party
-    // clients can connect without the operator having to arm anything.
-    engine.tci_cfg = sdroxide_config::load_tci_server_config();
+    // clients can connect without the operator having to arm anything. Each
+    // radio has its own scoped config — additional radios are seeded with the
+    // server disabled, or the port would collide.
+    engine.tci_cfg = engine.store.load_tci_server_config();
     engine.sync_tci_server();
     // The rigctld server is off unless the operator turned it on: port 4532 is
     // commonly already taken by a real rigctld, and it has no authentication.
-    engine.rigctld_cfg = sdroxide_config::load_rigctld_config();
+    engine.rigctld_cfg = engine.store.load_rigctld_config();
     engine.sync_rigctld();
     // WSJT-X UDP broadcast is likewise off unless the operator turned it on.
-    engine.wsjtx_cfg = sdroxide_config::load_wsjtx_config();
+    engine.wsjtx_cfg = engine.store.load_wsjtx_config();
     engine.sync_wsjtx();
     // The satellite additions: the display tracker lives in the UI, but the
     // element sets are persisted here — and the satellite *lock*, when the
     // operator engages one, runs here too (see `poll_sat_track`).
     engine.sat_cfg = sdroxide_config::load_sat_config();
-    // The rotctld client a satellite lock steers the antenna through.
+    // The rotctld client a satellite lock steers the antenna through. Primary
+    // only: there is one antenna rotator, and one rotctld to speak to.
     engine.rot_cfg = sdroxide_config::load_rotator_config();
-    engine.sync_rotator();
+    if engine.primary {
+        engine.sync_rotator();
+    }
     // Seed clients with the whole station configuration up front, for the same
     // reason as the operator config above: a settings dialog that has not been
     // told what the station is set to would show defaults, and applying those
@@ -1579,6 +1655,9 @@ fn engine_thread(
                     if engine.tx_active {
                         let _ = engine.source.tx_end();
                     }
+                    // A dying engine must not leave the station interlock
+                    // claimed, or no surviving radio could ever key again.
+                    engine.release_tx_gate();
                     info!("all controllers gone; engine stopping");
                     return;
                 }
@@ -1592,8 +1671,18 @@ fn engine_thread(
                 EngineSwap::Output(a) => engine.set_audio_output(a),
                 EngineSwap::Input(m) => engine.set_audio_input(m),
                 EngineSwap::ReopenSource => engine.reopen_source(),
+                EngineSwap::MuteOutput(muted) => {
+                    if let Some(m) = engine.mixer.as_mut() {
+                        m.muted = muted;
+                    }
+                }
+                EngineSwap::ReloadSharedStores => engine.reload_shared_stores(),
             }
         }
+
+        // Catch up with shared-store writes by any other engine in the process
+        // (an atomic load per tick; reloads only when the generation moved).
+        engine.poll_shared_stores();
 
         // Out-of-band control changes from a CAT rig (dial/mode moved on the
         // radio itself). No-op for SoapySDR/siggen/file.
@@ -1624,6 +1713,9 @@ fn engine_thread(
             // Blocking TX write paces this loop at ~10 ms per block.
             if let Err(e) = engine.tx_block() {
                 let _ = engine.event_tx.send(RadioEvent::ConnectionLost(e.to_string()));
+                // Same as the controller-gone exit: a dead engine must not
+                // keep the station interlock.
+                engine.release_tx_gate();
                 return;
             }
             // Full-duplex hardware keeps receiving during TX — but only from
@@ -3125,6 +3217,7 @@ impl Engine {
                         if let Err(e) = sdroxide_config::save_digi_config(&self.digi_config) {
                             warn!("saving digi config: {e}");
                         }
+                        self.mark_shared_store_write();
                         self.emit_digi_status();
                     }
                 }
@@ -3206,6 +3299,7 @@ impl Engine {
                 if let Err(e) = sdroxide_config::save_digi_config(&self.digi_config) {
                     warn!("saving digi config: {e}");
                 }
+                self.mark_shared_store_write();
                 // The network features report the same operator identity, so a
                 // callsign or grid edit reaches them from here.
                 self.spots.set_operator(&self.digi_config.my_call, &self.digi_config.my_grid);
@@ -3400,7 +3494,7 @@ impl Engine {
             // Built-in rigctld server (no RadioState change → return before
             // the State emit below).
             SetRigctldConfig(cfg) => {
-                if let Err(e) = sdroxide_config::save_rigctld_config(&cfg) {
+                if let Err(e) = self.store.save_rigctld_config(&cfg) {
                     warn!("saving rigctld config: {e}");
                 }
                 self.rigctld_cfg = cfg;
@@ -3412,7 +3506,7 @@ impl Engine {
             // WSJT-X UDP broadcast (no RadioState change → return before the
             // State emit below).
             SetWsjtxConfig(cfg) => {
-                if let Err(e) = sdroxide_config::save_wsjtx_config(&cfg) {
+                if let Err(e) = self.store.save_wsjtx_config(&cfg) {
                     warn!("saving WSJT-X UDP config: {e}");
                 }
                 self.wsjtx_cfg = cfg;
@@ -3475,7 +3569,7 @@ impl Engine {
             // Built-in TCI server (no RadioState change → return before the
             // State emit below).
             SetTciServerConfig(cfg) => {
-                if let Err(e) = sdroxide_config::save_tci_server_config(&cfg) {
+                if let Err(e) = self.store.save_tci_server_config(&cfg) {
                     warn!("saving TCI server config: {e}");
                 }
                 self.tci_cfg = cfg;
@@ -3595,7 +3689,16 @@ impl Engine {
         let (y, mo, d, h, mi, s) = utc_civil(secs);
         let mhz = self.state.active_freq_hz() / 1_000_000.0;
         let mode = self.state.rx[0].mode.label().replace(['/', ' '], "");
-        format!("sdroxide_{y:04}-{mo:02}-{d:02}_{h:02}-{mi:02}-{s:02}Z_{mhz:.6}MHz_{mode}.mp3")
+        // All radios share one recordings directory, so two of them starting a
+        // recording in the same second must not name the same file. Radio 0
+        // keeps the historical name.
+        let radio = match self.instance {
+            0 => String::new(),
+            n => format!("_radio{n}"),
+        };
+        format!(
+            "sdroxide{radio}_{y:04}-{mo:02}-{d:02}_{h:02}-{mi:02}-{s:02}Z_{mhz:.6}MHz_{mode}.mp3"
+        )
     }
 
     /// Construct or tear down the wideband skimmer worker: it runs while at
@@ -4632,6 +4735,7 @@ impl Engine {
         if let Err(e) = sdroxide_config::save_bandstacks(&self.stacks) {
             warn!("saving band stacks: {e}");
         }
+        self.mark_shared_store_write();
     }
 
     // ---- Scanning ----------------------------------------------------------
@@ -5065,7 +5169,7 @@ impl Engine {
     }
 
     fn save_scanner_config(&mut self) {
-        if let Err(e) = sdroxide_config::save_scanner_config(&self.scan_cfg) {
+        if let Err(e) = self.store.save_scanner_config(&self.scan_cfg) {
             warn!("saving scanner config: {e}");
         }
         let _ = self.event_tx.send(RadioEvent::Scanner(self.scan_cfg.clone()));
@@ -5082,7 +5186,18 @@ impl Engine {
         warn!("TX refused: {reason}");
         self.state.tx.ptt = false;
         self.state.tx.tune = false;
+        // Every deny happens before the transmitter keyed, so a gate claimed
+        // moments ago by the rail sequence has to be handed back — and if this
+        // radio never held it, releasing is a no-op by contract.
+        self.release_tx_gate();
         self.notice(&format!("transmit refused — {reason}"));
+    }
+
+    /// Hand back the station's transmit interlock, if this engine holds it.
+    fn release_tx_gate(&self) {
+        if let Some(gate) = self.tx_gate.as_ref() {
+            gate.release(self.instance);
+        }
     }
 
     fn notice(&self, text: &str) {
@@ -5194,7 +5309,7 @@ impl Engine {
         if now == *saved {
             return;
         }
-        match sdroxide_config::save_session(&now) {
+        match self.store.save_session(&now) {
             Ok(()) => self.session = Some(now),
             // Don't latch the new value on failure, so the next tick retries.
             Err(e) => warn!("saving the session (dial + mode + antennas + levels): {e}"),
@@ -5205,6 +5320,7 @@ impl Engine {
         if let Err(e) = sdroxide_config::save_memories(&self.memories) {
             warn!("saving memories: {e}");
         }
+        self.mark_shared_store_write();
         let _ = self.event_tx.send(RadioEvent::Memories(self.memories.clone()));
     }
 
@@ -5212,7 +5328,55 @@ impl Engine {
         if let Err(e) = sdroxide_config::save_memory_folders(&self.mem_folders) {
             warn!("saving memory folders: {e}");
         }
+        self.mark_shared_store_write();
         let _ = self.event_tx.send(RadioEvent::MemoryFolders(self.mem_folders.clone()));
+    }
+
+    /// Announce a completed write to a station-shared store, recording the new
+    /// generation as already-seen so this engine does not reload its own save.
+    fn mark_shared_store_write(&mut self) {
+        if let Some(sync) = self.store_sync.as_ref() {
+            self.shared_gen_seen = sync.bump();
+        }
+    }
+
+    /// Reload the shared stores when another engine announced a write.
+    fn poll_shared_stores(&mut self) {
+        let Some(sync) = self.store_sync.as_ref() else { return };
+        let g = sync.generation();
+        if g != self.shared_gen_seen {
+            self.shared_gen_seen = g;
+            self.reload_shared_stores();
+        }
+    }
+
+    /// Re-read the station-shared stores after another engine in this process
+    /// saved one — see [`EngineSwap::ReloadSharedStores`]. Only what changed on
+    /// disk moves; nothing is written back from here, so two engines nudging
+    /// each other cannot ping-pong.
+    fn reload_shared_stores(&mut self) {
+        let memories = sdroxide_config::load_memories();
+        if memories != self.memories {
+            self.memories = memories;
+            let _ = self.event_tx.send(RadioEvent::Memories(self.memories.clone()));
+        }
+        let folders = sdroxide_config::load_memory_folders();
+        if folders != self.mem_folders {
+            self.mem_folders = folders;
+            let _ = self.event_tx.send(RadioEvent::MemoryFolders(self.mem_folders.clone()));
+        }
+        self.stacks = sdroxide_config::load_bandstacks();
+        let digi_config = sdroxide_config::load_digi_config();
+        if digi_config != self.digi_config {
+            // The same fan-out a SetDigiConfig does, minus the save: the other
+            // engine already wrote the file.
+            self.digi_config = digi_config;
+            if let Some(d) = self.digi.as_mut() {
+                d.set_config(self.digi_config.clone());
+            }
+            self.spots.set_operator(&self.digi_config.my_call, &self.digi_config.my_grid);
+            self.emit_digi_status();
+        }
     }
 
     /// The frequency window the receivers can reach: the device passband. Both
@@ -5494,6 +5658,7 @@ impl Engine {
         // Drop rate-dependent / stateful DSP so it rebuilds for the new source.
         self.tx = None;
         self.tx_active = false;
+        self.release_tx_gate();
         self.tx_pace = None;
         self.digi = None;
         self.digi_tx = false;
@@ -5623,6 +5788,16 @@ impl Engine {
             return;
         }
         if want_tx {
+            // The station's transmit interlock: one radio on the air at a
+            // time. First among the rails, before anything with side effects,
+            // so a refused key-up on this radio leaves it exactly as it was.
+            if self.tx_gate.as_ref().is_some_and(|g| !g.try_acquire(self.instance)) {
+                let msg = match self.tx_gate.as_ref().and_then(|g| g.holder()) {
+                    Some(id) => format!("radio {} is on the air", id + 1),
+                    None => "another radio is on the air".to_string(),
+                };
+                return self.deny_tx(&msg);
+            }
             // A recording reads the same microphone the transmitter does, so
             // keying up — by any route: PTT, TUNE, a digital burst, a TCI
             // client — ends it and stores what was captured. The local monitor
@@ -5737,6 +5912,7 @@ impl Engine {
             self.source.discard_pending_rx();
             self.tx = None;
             self.tx_active = false;
+            self.release_tx_gate();
             if let Some(mixer) = self.mixer.as_mut() {
                 mixer.rx_rec_enabled = true;
             }

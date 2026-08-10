@@ -46,6 +46,9 @@ pub fn run(
             // The server *is* the radio for everyone connected to it, so it is
             // the side that remembers where the last session was left.
             remember_session: true,
+            // Server mode is single-radio: the station scope, no interlock,
+            // no peer engines to sync stores with.
+            ..Default::default()
         },
     );
 

@@ -191,7 +191,7 @@ fn spawn_output(
 }
 
 pub struct AudioOutput {
-    _stream: cpal::Stream,
+    stream: cpal::Stream,
     /// The rate the stream actually runs at — resample to this.
     pub sample_rate: f64,
     pub channels: u16,
@@ -202,6 +202,24 @@ impl AudioOutput {
     /// Total output callbacks that ran short of samples.
     pub fn underruns(&self) -> u64 {
         self.underruns.load(Ordering::Relaxed)
+    }
+
+    /// Stop the device callback without tearing the stream down.
+    ///
+    /// Not a mute: the producer side keeps filling its ring, so un-pausing
+    /// replays whatever accumulated. Callers that want silence use the
+    /// engine-side mute, which keeps the stream running and zeroes what goes
+    /// into it. Best-effort — some raw ALSA configurations cannot pause.
+    pub fn pause(&self) {
+        if let Err(e) = self.stream.pause() {
+            tracing::warn!("audio output pause not supported here: {e}");
+        }
+    }
+
+    pub fn resume(&self) {
+        if let Err(e) = self.stream.play() {
+            tracing::warn!("audio output resume failed: {e}");
+        }
     }
 }
 
@@ -583,7 +601,7 @@ pub fn start_output(
                     "audio output running"
                 );
                 return Ok((
-                    AudioOutput { _stream: stream, sample_rate: rate as f64, channels, underruns },
+                    AudioOutput { stream, sample_rate: rate as f64, channels, underruns },
                     producer,
                 ));
             }

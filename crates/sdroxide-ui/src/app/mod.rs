@@ -460,29 +460,135 @@ pub struct SdroxideApp {
     /// remote client has nothing here to read them from and no business
     /// writing them. Left at the default and never persisted in the browser.
     remote_access: sdroxide_types::RemoteAccess,
+    // ── Multi-radio (see `crate::multi::MultiApp`) ──
+    /// Whether this instance is the focused tab. Always true in a single-radio
+    /// session. Gates the announcer and the window title: a background radio
+    /// keeps decoding, but it stays quiet and leaves the title alone.
+    focused: bool,
+    /// Whether this instance writes the station-wide storage keys (UI
+    /// settings, logbook backup, input bindings) in `save`. Exactly one tab
+    /// does, or the last tab to save would overwrite the others'.
+    station_writer: bool,
+    /// This instance's per-radio storage key for the view state: `"view"` for
+    /// radio 0 — so a single-radio install keeps its saved layout — and
+    /// `"view:<id>"` for every other radio.
+    view_key: String,
+    /// Multi-radio: another tab may append to the logbook file between this
+    /// copy's reads, so re-read it before appending. False when this is the
+    /// only instance, where the copy in memory is always current.
+    shared_log: bool,
+    /// This radio's id — keys this tab's GPU waterfall history apart from the
+    /// other tabs'.
+    radio_id: u32,
+    /// The station's radio roster as the shell last published it, drawn at the
+    /// top of Settings → Radio. Empty outside a multi-radio session (remote
+    /// clients, the browser), which is also what hides the area there.
+    #[cfg(not(target_arch = "wasm32"))]
+    radio_roster: Vec<RadioChip>,
+    /// Radio-management actions the settings dialog asked for this frame. The
+    /// dialog lives inside one tab and cannot reach the shell that owns the
+    /// tab set, so requests are returned as values and drained by
+    /// [`crate::multi::MultiApp`] after the frame — the same arrangement the
+    /// solar window's LOCK button uses.
+    #[cfg(not(target_arch = "wasm32"))]
+    radio_tab_requests: Vec<RadioTabRequest>,
+    /// The radio rename in progress on the settings page: (radio id, text as
+    /// typed). UI-owned until the edit commits — the roster republishes every
+    /// frame, and a field bound straight to it would fight the keyboard —
+    /// exactly like `voice_name_edit` and `mem_folder_edit`.
+    #[cfg(not(target_arch = "wasm32"))]
+    radio_name_edit: Option<(u32, String)>,
+}
+
+/// One radio in the roster the shell publishes to the focused tab — what a
+/// tab chip shows, wherever it is drawn.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+pub(crate) struct RadioChip {
+    pub id: u32,
+    /// The operator's own name, exactly as typed — empty until they rename
+    /// the radio. What the rename field edits.
+    pub name: String,
+    /// The name this radio carries while `name` is empty: its interface type
+    /// ("TCI", "RTL-SDR", …), or a neutral "Radio N" while it has none. What
+    /// the chips display by default, and the rename field's hint.
+    pub default_name: String,
+    pub tx_on: bool,
+    pub error: bool,
+    pub muted: bool,
+    pub focused: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RadioChip {
+    /// What a tab chip shows: the operator's name, else the derived default.
+    pub fn display_name(&self) -> &str {
+        if self.name.is_empty() { &self.default_name } else { &self.name }
+    }
+}
+
+/// A radio-management action requested from inside a tab (the settings
+/// dialog's copy of the strip), acted on by the shell.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) enum RadioTabRequest {
+    /// Switch to this radio, carrying the settings dialog along: the origin's
+    /// closes, the target's opens on its Radio page.
+    Focus(u32),
+    Add,
+    Close(u32),
+    Mute {
+        id: u32,
+        muted: bool,
+    },
+    /// Record the operator's name for this radio; empty goes back to the
+    /// interface-derived default.
+    Rename {
+        id: u32,
+        name: String,
+    },
 }
 
 impl SdroxideApp {
     pub fn new(cc: &eframe::CreationContext<'_>, ctrl: Box<dyn RadioController>) -> Self {
+        Self::new_tab(&cc.egui_ctx, cc.storage, cc.wgpu_render_state.clone(), ctrl, 0, true)
+    }
+
+    /// One radio tab of a multi-radio session ([`crate::multi::MultiApp`]).
+    /// Takes the creation context's pieces rather than the context itself,
+    /// because a tab added from the "+" chip is built long after startup, when
+    /// no [`eframe::CreationContext`] exists any more.
+    pub fn new_tab(
+        egui_ctx: &egui::Context,
+        storage: Option<&dyn eframe::Storage>,
+        wgpu_render_state: Option<eframe::egui_wgpu::RenderState>,
+        ctrl: Box<dyn RadioController>,
+        radio_id: u32,
+        station_writer: bool,
+    ) -> Self {
         // The look must be selected before `theme::apply` reads it, or the
         // first frame flashes the default theme.
-        let ui_settings = load_ui_settings(cc.storage);
+        let ui_settings = load_ui_settings(storage);
         crate::theme::set_look(
             ui_settings.theme,
             ui_settings.button_style,
             ui_settings.window_style,
         );
-        crate::theme::apply(&cc.egui_ctx);
-        if let Some(rs) = &cc.wgpu_render_state {
+        crate::theme::apply(egui_ctx);
+        if let Some(rs) = &wgpu_render_state {
             waterfall_gpu::init(rs);
         }
+        // Radio 0 keeps the historical key, so an existing installation keeps
+        // its saved layout.
+        let view_key = if radio_id == 0 { "view".to_string() } else { format!("view:{radio_id}") };
         let mut view: ViewState =
-            cc.storage.and_then(|s| eframe::get_value(s, "view")).unwrap_or_default();
+            storage.and_then(|s| eframe::get_value(s, &view_key)).unwrap_or_default();
         view.migrate();
         // Copied out before `view` is moved into the struct below.
         #[cfg(not(target_arch = "wasm32"))]
         let solar3d_view = view.solar3d;
         let soapy_supported = ctrl.soapy_supported();
+        #[cfg(target_arch = "wasm32")]
+        let _ = &wgpu_render_state;
         SdroxideApp {
             ctrl,
             caps: None,
@@ -516,7 +622,7 @@ impl SdroxideApp {
             settings_tab: SettingsTab::General,
             ui_settings,
             applied_look: (ui_settings.theme, ui_settings.button_style, ui_settings.window_style),
-            speech: speech::SpeechRuntime::new(load_speech_settings(cc.storage)),
+            speech: speech::SpeechRuntime::new(load_speech_settings(storage)),
             speech_voices: Vec::new(),
             radio_cfg: None,
             converter_edit_hz: None,
@@ -555,7 +661,7 @@ impl SdroxideApp {
             digi_decodes: Vec::new(),
             digi_status: None,
             text_tx: String::new(),
-            qso_log: load_qso_log(cc.storage),
+            qso_log: load_qso_log(storage),
             session_qsos: 0,
             show_digi_settings: false,
             digi_cfg_edit: sdroxide_types::DigiConfig::default(),
@@ -603,7 +709,13 @@ impl SdroxideApp {
             broadcast_minute: -1,
             // Kicked off at startup: the first run has no cached schedule, and
             // after that this only fires again when the season turns over.
-            broadcast_fetch: persist::spawn_schedule_fetch(false),
+            // One tab downloads for the whole station; the others read the
+            // cache it fills.
+            broadcast_fetch: if station_writer {
+                persist::spawn_schedule_fetch(false)
+            } else {
+                None
+            },
             broadcast_fetch_status: None,
             broadcast_checked_day: -1,
             net_cfg_edit: NetworkConfig::default(),
@@ -630,13 +742,13 @@ impl SdroxideApp {
             worked_entities_cache: None,
             log_index_cache: None,
             help: crate::help::Help::default(),
-            input: crate::input::InputRuntime::new(cc.storage, &cc.egui_ctx),
+            input: crate::input::InputRuntime::new(storage, egui_ctx),
             midi_in_ports: Vec::new(),
             midi_out_ports: Vec::new(),
             // The GPU resources are built on first open, not here: most
             // sessions never open this window.
             #[cfg(not(target_arch = "wasm32"))]
-            solar: crate::solar3d::Solar3d::new(cc.wgpu_render_state.clone(), solar3d_view),
+            solar: crate::solar3d::Solar3d::new(wgpu_render_state, solar3d_view),
             sat_cfg: Default::default(),
             sat_cfg_edit: Default::default(),
             sat_cfg_seeded: false,
@@ -652,6 +764,154 @@ impl SdroxideApp {
             oob_tx_ack: false,
             login: Default::default(),
             remote_access: persist::load_remote_access(),
+            focused: true,
+            station_writer,
+            view_key,
+            shared_log: false,
+            radio_id,
+            #[cfg(not(target_arch = "wasm32"))]
+            radio_roster: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            radio_tab_requests: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            radio_name_edit: None,
         }
+    }
+
+    /// Set the focus flag without side effects — used while a multi-radio
+    /// session is being assembled, before there is a first frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn set_focused_flag(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    /// Focus (or unfocus) this tab at runtime. Gaining focus reseeds the
+    /// announcer — the backlog of state changes that happened in the
+    /// background is where the radio *is*, not news to recite — and restores
+    /// the window title this tab owns while it is up front.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn set_focused(&mut self, focused: bool, ctx: &egui::Context) {
+        if self.focused == focused {
+            return;
+        }
+        self.focused = focused;
+        if focused {
+            self.speech.announcer.reseed();
+            if let Some(c) = &self.caps {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
+                    "sdroxide — {}",
+                    c.label
+                )));
+            }
+        }
+    }
+
+    /// Multi-radio: mark the logbook file as shared with other tabs.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn set_shared_log(&mut self, shared: bool) {
+        self.shared_log = shared;
+    }
+
+    /// Whether this radio is on the air — the tab strip's TX badge.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn tab_tx_on(&self) -> bool {
+        self.state.tx.ptt || self.state.tx.tune
+    }
+
+    /// Whether this radio's engine reported a lost connection — the tab
+    /// strip's warning badge.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn tab_error(&self) -> bool {
+        self.error.is_some()
+    }
+
+    /// The tab strip's mute toggle — silences this radio's speaker path in the
+    /// engine; everything else keeps running.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn mute_tab(&mut self, muted: bool) {
+        self.ctrl.set_muted(muted);
+    }
+
+    /// Detach from this radio: disconnect the engine, drop the audio streams,
+    /// join the DSP thread. Tab close and app exit.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn shutdown_ctrl(&mut self) {
+        self.ctrl.shutdown();
+    }
+
+    /// Open the Settings dialog on the Radio tab — where a freshly added
+    /// radio, which has no interface yet, is configured.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn open_radio_settings(&mut self) {
+        self.show_settings = true;
+        self.settings_tab = SettingsTab::Radio;
+    }
+
+    /// Close the Settings dialog — the shell moves it to another tab when the
+    /// operator switches radios from inside it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn close_settings(&mut self) {
+        self.show_settings = false;
+    }
+
+    /// The shell's per-frame publication of the radio roster (see
+    /// [`SdroxideApp::radio_roster`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn set_radio_roster(&mut self, roster: Vec<RadioChip>) {
+        self.radio_roster = roster;
+    }
+
+    /// Drain the radio-management requests the settings dialog queued this
+    /// frame (see [`SdroxideApp::radio_tab_requests`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn take_radio_tab_requests(&mut self) -> Vec<RadioTabRequest> {
+        std::mem::take(&mut self.radio_tab_requests)
+    }
+
+    /// Put a message in this tab's dismissable notice banner. The shell uses
+    /// it for failures that have no strip to appear in (adding a radio while
+    /// the main window's tab area is hidden).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn show_notice(&mut self, text: String) {
+        self.radio_notice = Some(text);
+    }
+
+    /// What this radio should be called while the operator hasn't named it:
+    /// the interface it runs, read from the capabilities the engine reported —
+    /// so the name follows a reconfiguration by itself. `None` while there is
+    /// no interface to name it after (a fresh tab on the stand-in source, or
+    /// no capabilities yet), where the shell falls back to a neutral
+    /// "Radio N" — deliberately not "New radio", because the stand-in is also
+    /// what a fully configured radio runs on while it is unreachable.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn interface_name(&self) -> Option<String> {
+        let caps = self.caps.as_ref()?;
+        Some(match caps.driver.as_str() {
+            "none" => return None,
+            "cat" => "CAT".into(),
+            "hpsdr" => "HPSDR".into(),
+            "tci" => "TCI".into(),
+            "smartsdr" => "SmartSDR".into(),
+            "pluto" => "PlutoSDR".into(),
+            "rtlsdr" => "RTL-SDR".into(),
+            "rx888" => "RX-888".into(),
+            "sdrplay" => "SDRplay".into(),
+            // A SoapySDR device reports its Soapy driver name — the most
+            // specific interface name there is. The common ones get their
+            // proper spelling; the list is open-ended, so anything else is
+            // capitalised as-is.
+            "hackrf" => "HackRF".into(),
+            "lime" => "LimeSDR".into(),
+            "airspy" => "Airspy".into(),
+            "sx" => "SXceiver".into(),
+            "uhd" => "USRP".into(),
+            other => {
+                let mut c = other.chars();
+                match c.next() {
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    None => return None,
+                }
+            }
+        })
     }
 }

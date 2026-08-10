@@ -1,28 +1,44 @@
-//! Native GUI mode: engine thread + audio output + eframe window.
+//! Native GUI mode: one engine thread + audio output per radio, one eframe
+//! window with a tab per radio.
 
 use anyhow::Result;
 use sdroxide_config::Settings;
-use sdroxide_radio::{AudioParams, EngineConfig, IqSource, MicParams, ReopenFn, start_engine};
+use sdroxide_radio::{
+    AudioParams, EngineConfig, IqSource, MicParams, ReopenFn, StoreSync, TxGate, start_engine,
+};
 use sdroxide_types::{DeviceCaps, Mode};
+use std::sync::Arc;
 use tracing::warn;
 
 use crate::local_controller::LocalController;
 
-pub fn run(
-    source: Box<dyn IqSource>,
-    caps: DeviceCaps,
+/// Everything `main` resolved for one radio before the GUI comes up: its
+/// (possibly stand-in) front end and where its configuration lives.
+pub struct RadioBoot {
+    pub id: u32,
+    pub name: String,
+    pub source: Box<dyn IqSource>,
+    pub caps: DeviceCaps,
+    pub initial_mode: Option<Mode>,
+    /// Antenna ports named on the command line (RX, TX) — radio 0 only; the
+    /// remembered session fills in whichever the operator left out.
+    pub initial_antenna: (Option<String>, Option<String>),
+    pub reopen: Option<ReopenFn>,
+    pub store: sdroxide_config::Store,
+}
+
+/// Engine + audio + controller for one radio. Every radio gets its own cpal
+/// output stream — the operating system mixes them — and its own microphone
+/// capture when it can transmit; the [`TxGate`] is what keeps two of them from
+/// being on the air at once.
+fn build_controller(
+    boot: RadioBoot,
     settings: &Settings,
-    // Whether the engine refuses to key outside the amateur bands. Resolved in
-    // `main` from `config.toml` and the `--oob-tx` flag.
     tx_ham_only: bool,
-    initial_mode: Option<Mode>,
-    // Antenna ports named on the command line (RX, TX); the remembered session
-    // fills in whichever the operator left out.
-    initial_antenna: (Option<String>, Option<String>),
-    reopen: Option<ReopenFn>,
-) -> Result<()> {
-    // The cpal streams must outlive the engine's ring endpoints; their handles
-    // move into the LocalController so the UI can swap devices at runtime.
+    primary: bool,
+    gate: &Arc<TxGate>,
+    sync: &Arc<StoreSync>,
+) -> LocalController {
     let (audio_out, audio_params) =
         match sdroxide_audio::start_output(settings.audio_output.as_deref(), 48_000) {
             Ok((out, producer)) => {
@@ -34,7 +50,7 @@ pub fn run(
                 (None, None)
             }
         };
-    let (mic_in, mic_params) = if caps.is_transmit_capable() {
+    let (mic_in, mic_params) = if boot.caps.is_transmit_capable() {
         match sdroxide_audio::start_input(settings.audio_input.as_deref(), 48_000) {
             Ok((input, consumer)) => {
                 let rate = input.sample_rate;
@@ -53,22 +69,85 @@ pub fn run(
         audio: audio_params,
         mic: mic_params,
         cal_offset_db: settings.cal_offset_db as f32,
-        initial_mode,
-        initial_antenna,
+        initial_mode: boot.initial_mode,
+        initial_antenna: boot.initial_antenna,
         tx_ham_only,
-        reopen,
-        // This engine is the operator's radio: remember where they leave it.
+        reopen: boot.reopen,
+        // This engine is one of the operator's radios: remember where they
+        // leave it, in its own scope.
         remember_session: true,
+        store: boot.store.clone(),
+        instance: boot.id,
+        primary,
+        tx_gate: Some(gate.clone()),
+        store_sync: Some(sync.clone()),
     };
-    let mut handles = start_engine(source, caps, cfg);
-    let engine_thread = handles.thread.take();
-    let ctrl = LocalController::new(
+    let handles = start_engine(boot.source, boot.caps, cfg);
+    LocalController::new(
         handles,
         audio_out,
         mic_in,
         settings.audio_output.clone(),
         settings.audio_input.clone(),
-    );
+        boot.store,
+    )
+}
+
+pub fn run_multi(
+    radios: Vec<RadioBoot>,
+    settings: &Settings,
+    // Whether the engines refuse to key outside the amateur bands. Resolved in
+    // `main` from `config.toml` and the `--oob-tx` flag.
+    tx_ham_only: bool,
+    // A sanitized command line (radio-0 overrides stripped) for radios created
+    // at runtime from the tab strip.
+    factory_cli: crate::Cli,
+) -> Result<()> {
+    let gate = Arc::new(TxGate::new());
+    let sync = Arc::new(StoreSync::new());
+
+    let mut tabs = Vec::new();
+    for (i, boot) in radios.into_iter().enumerate() {
+        let id = boot.id;
+        let name = boot.name.clone();
+        let ctrl = build_controller(boot, settings, tx_ham_only, i == 0, &gate, &sync);
+        tabs.push(sdroxide_ui::RadioTab { id, name, ctrl: Box::new(ctrl) });
+    }
+
+    // The "+" tab: create the scope on disk, then bring the radio up on the
+    // stand-in source — a new radio has no interface yet (`Backend::None`), so
+    // the open fails by design and the tab starts at Settings → Radio.
+    let factory_gate = gate.clone();
+    let factory_sync = sync.clone();
+    let factory: sdroxide_ui::RadioFactory = Box::new(move || {
+        let slot = sdroxide_config::create_radio("").map_err(|e| e.to_string())?;
+        let settings = Settings::load();
+        let store = sdroxide_config::Store::radio(slot.id);
+        let mut c = factory_cli.clone();
+        let initial_mode = c.apply_session(store.load_session());
+        let (source, caps) =
+            match crate::open_converted_source(&store.load_radio_config(), &c, &settings) {
+                Ok(pair) => pair,
+                Err(e) => (
+                    Box::new(crate::null_source::NullSource::new(c.center_hz(), format!("{e}")))
+                        as Box<dyn IqSource>,
+                    crate::synthetic_caps("No radio"),
+                ),
+            };
+        let boot = RadioBoot {
+            id: slot.id,
+            name: slot.name.clone(),
+            source,
+            caps,
+            initial_mode,
+            initial_antenna: (None, None),
+            reopen: Some(crate::reopen_factory_for(&c, store.clone())),
+            store,
+        };
+        let ctrl =
+            build_controller(boot, &settings, tx_ham_only, false, &factory_gate, &factory_sync);
+        Ok(sdroxide_ui::RadioTab { id: slot.id, name: slot.name, ctrl: Box::new(ctrl) })
+    });
 
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
@@ -82,20 +161,15 @@ pub fn run(
             .with_title("sdroxide"),
         ..Default::default()
     };
-    let result = eframe::run_native(
+    // Engine threads are joined by each controller's `shutdown()` — on tab
+    // close, and for the rest in `SdroxideApp::on_exit` — so every device
+    // closes before process teardown can race the C libraries' exit handlers.
+    eframe::run_native(
         "sdroxide",
         options,
-        Box::new(move |cc| Ok(Box::new(sdroxide_ui::SdroxideApp::new(cc, Box::new(ctrl))))),
+        Box::new(move |cc| Ok(Box::new(sdroxide_ui::MultiApp::new(cc, tabs, Some(factory))))),
     )
-    .map_err(|e| anyhow::anyhow!("eframe: {e}"));
-
-    // The controller (and its command sender) died with the app above; the
-    // engine notices and exits. Wait for it so the SoapySDR device closes
-    // before process teardown.
-    if let Some(t) = engine_thread {
-        let _ = t.join();
-    }
-    result
+    .map_err(|e| anyhow::anyhow!("eframe: {e}"))
 }
 
 /// Native remote client: same app, `RemoteController` over WebSocket, audio

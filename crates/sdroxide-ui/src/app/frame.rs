@@ -76,278 +76,7 @@ impl eframe::App for SdroxideApp {
             crate::theme::apply_visuals(&ctx);
             ctx.request_repaint();
         }
-        while let Some(ev) = self.ctrl.poll_event() {
-            match ev {
-                RadioEvent::Capabilities(c) => {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-                        "sdroxide — {}",
-                        c.label
-                    )));
-                    self.caps = Some(c);
-                    // A new source may have no full-band lane at all. Without
-                    // this the strip from the previous backend stays on screen
-                    // for good, showing a band nothing is receiving any more.
-                    self.wide_frame = None;
-                    self.wide_wf.clear();
-                    // This also fires on a reconnect, and pictures may have
-                    // come in while the link was down. Read the stores again
-                    // rather than leaving a gallery that stops at the moment
-                    // the connection dropped.
-                    self.sstv.listed = false;
-                    self.wefax.listed = false;
-                    // Same reasoning for speech: a reconnect must not make the
-                    // radio recite its whole configuration.
-                    self.speech.announcer.reseed();
-                    self.speech.announcer.reset_decodes();
-                }
-                RadioEvent::State(s) => {
-                    let prev_vfo = self.state.active_freq_hz();
-                    let prev_mode = self.state.rx[0].mode;
-                    self.state = s;
-                    if self.state.rx[0].mode != prev_mode {
-                        self.clear_digi_rx();
-                    }
-                    self.recenter_if_tuned_away(prev_vfo);
-                    // The announcer diffs *this* — the engine's own snapshot —
-                    // rather than `self.state` per frame, because the UI
-                    // mutates that optimistically before the engine confirms
-                    // and the engine has the last word on where the radio
-                    // actually went.
-                    self.speech.announcer.on_state(&self.state, now);
-                }
-                RadioEvent::Spectrum(f) => {
-                    self.frame = Some(std::sync::Arc::new(f));
-                    self.last_spectrum_at = now;
-                }
-                // Deliberately does not touch `last_spectrum_at`: that drives
-                // the "waiting for spectrum" notice, and a full-band frame is
-                // not evidence that the tuned receiver is producing samples.
-                RadioEvent::WideSpectrum(f) => {
-                    self.wide_frame = Some(std::sync::Arc::new(f));
-                }
-                RadioEvent::Meters(m) => {
-                    self.speech.announcer.on_meters(&m, &self.state, now);
-                    self.meters = Some(m);
-                }
-                RadioEvent::Memories(m) => self.memories = m,
-                RadioEvent::MemoryFolders(f) => self.mem_folders = f,
-                RadioEvent::Scanner(c) => self.scanner = c,
-                RadioEvent::ConnectionLost(e) => {
-                    self.speech.announcer.on_error(&e, now);
-                    self.error = Some(e);
-                }
-                RadioEvent::Notice(n) => {
-                    self.speech.announcer.on_notice(n.as_deref(), now);
-                    self.radio_notice = n;
-                }
-                RadioEvent::Ft8Decodes(d) => {
-                    if let Some(st) = self.digi_status.as_ref() {
-                        self.speech.announcer.on_ft8(&d, st, now);
-                    }
-                    // Prepend newest-slot decodes; keep a rolling window.
-                    for dec in d.into_iter().rev() {
-                        self.digi_decodes.insert(0, dec);
-                    }
-                    self.digi_decodes.truncate(200);
-                }
-                RadioEvent::WsprSpots(s) => {
-                    // Newest first, and de-duplicated against what is already
-                    // held: the same reception arrives twice whenever a slot we
-                    // decoded ourselves also comes back from WSPRnet, and two
-                    // rows for one beacon reads as the mode double-counting.
-                    for spot in s.into_iter().rev() {
-                        let key = spot.dedup_key();
-                        if self.wspr_spots.iter().any(|e| e.dedup_key() == key) {
-                            continue;
-                        }
-                        self.wspr_spots.insert(0, spot);
-                    }
-                    self.wspr_spots.truncate(crate::app::panels::wspr::WSPR_SPOT_ROWS);
-                }
-                RadioEvent::Ft8Status(s) => {
-                    // Seed the editable config from the engine's persisted
-                    // value once (later edits are UI-owned so typing sticks).
-                    if !self.digi_cfg_seeded {
-                        self.digi_cfg_edit = s.config.clone();
-                        self.digi_cfg_seeded = true;
-                    }
-                    self.speech.announcer.on_digi(&s, &self.state, now);
-                    self.digi_status = Some(s);
-                }
-                RadioEvent::Ft8QsoLogged(mut r) => {
-                    r.id = self.next_log_id();
-                    let call = r.call.clone();
-                    let adif = auto_upload_adif(&self.net_cfg_edit, &r);
-                    self.qso_log.push(r);
-                    self.session_qsos += 1;
-                    persist_qso_log(&self.qso_log);
-                    // Enrich + optionally upload the freshly logged QSO.
-                    self.queue_lookup(call);
-                    if let Some((qso_id, adif, targets)) = adif {
-                        self.pending_uploads.push((qso_id, adif, targets));
-                    }
-                }
-                RadioEvent::SstvLine { image_id, y, rgb } => {
-                    self.sstv.on_line(image_id, y, &rgb, &ctx);
-                }
-                RadioEvent::SstvImage { png, .. } => self.sstv.on_image(&png, &ctx),
-                RadioEvent::DigiImage { png } => {
-                    if let Some((rgb, w, h)) = crate::sstv::decode_image(&png) {
-                        let ci = crate::sstv::color_image(&rgb, w, h);
-                        let tex = ctx.load_texture("fsq_rx", ci, egui::TextureOptions::LINEAR);
-                        self.fsq_rx_images.insert(0, tex);
-                        self.fsq_rx_images.truncate(30);
-                    }
-                }
-                RadioEvent::HellColumns { seq, rows, cols } => {
-                    self.hell.on_columns(seq, rows, &cols, &self.view.hell, &ctx);
-                }
-                RadioEvent::WefaxLine { image_id, y, gray } => {
-                    self.wefax.push_line(image_id, y, &gray);
-                }
-                RadioEvent::WefaxImage { png, .. } => {
-                    // The chart is held rather than filed: the engine names the
-                    // file it wrote and announces it a moment later, and that
-                    // name is the chart's whole metadata. Guessing it here — as
-                    // this once did, off a second clock — would sooner or later
-                    // label a chart a second away from the file it is.
-                    self.wefax.hold_fresh(&ctx, &png);
-                    self.wefax.clear_live();
-                }
-                RadioEvent::WefaxStatus(s) => self.wefax.status = s,
-                RadioEvent::SstvStatus(s) => {
-                    // Adopt a *newly* detected RX mode for the next transmit, but
-                    // don't re-apply a steady detection every frame — that would
-                    // fight the operator's manual mode selection.
-                    if s.detected != self.sstv.last_detected {
-                        if let Some(m) = s.detected {
-                            self.sstv.tx_mode = m;
-                            self.sstv.preview_dirty = true;
-                        }
-                        self.sstv.last_detected = s.detected;
-                    }
-                    self.sstv.status = s;
-                }
-                RadioEvent::RifpRows { image_id, y, w, h, rows } => {
-                    self.sstv.on_rifp_rows(image_id, y, w, h, &rows, &ctx);
-                }
-                RadioEvent::RifpImage { png, .. } => self.sstv.on_rifp_image(&png, &ctx),
-                RadioEvent::RifpStatus(s) => {
-                    self.sstv.rifp = s;
-                }
-                RadioEvent::SkimmerSpots(s) => {
-                    // The engine sends the full current set each update; the
-                    // stable `id` per spot lets the overlay keep each box (and
-                    // its scroll) in place across updates.
-                    for spot in &s {
-                        // Remember when each spot last keyed, and seed newly
-                        // seen ones to now, so alpha starts solid and fades.
-                        let e = self.skimmer_active_at.entry(spot.id).or_insert(now);
-                        if spot.active {
-                            *e = now;
-                        }
-                    }
-                    // Forget timings for spots the engine has dropped.
-                    let live: std::collections::HashSet<u64> = s.iter().map(|x| x.id).collect();
-                    self.skimmer_active_at.retain(|id, _| live.contains(id));
-                    self.skimmer_spots = s;
-                }
-                RadioEvent::Spots(s) => self.spots = s,
-                RadioEvent::NetStatus(s) => self.net_status = s,
-                RadioEvent::TciServerStatus { running, addr, clients, error } => {
-                    self.tci_srv_status = Some(TciServerStatus { running, addr, clients, error });
-                }
-                RadioEvent::RigctldStatus { running, addr, clients, error } => {
-                    self.rigctld_status = Some(TciServerStatus { running, addr, clients, error });
-                }
-                RadioEvent::VoiceStatus(v) => self.voice = v,
-                RadioEvent::ImagePresets(p) => self.sstv.on_presets(p, &ctx),
-                RadioEvent::ImageSlotSource { slot, version, png } => {
-                    self.sstv.on_slot_source(slot, version, &png);
-                }
-                // One store per mode: SSTV and RIFP share a gallery, charts
-                // have their own.
-                RadioEvent::ImageListing(l) => match l.kind {
-                    sdroxide_types::ImageKind::Sstv => self.sstv.on_listing(l, &ctx),
-                    sdroxide_types::ImageKind::Wefax => self.wefax.on_listing(l, &ctx),
-                },
-                RadioEvent::ImageFile { kind, name, png } => match kind {
-                    sdroxide_types::ImageKind::Sstv => self.sstv.on_file(&name, &png, &ctx),
-                    sdroxide_types::ImageKind::Wefax => self.wefax.on_file(&name, &png, &ctx),
-                },
-                // What the station is set up to do, from the machine the engine
-                // runs on. Seeded once, like the digi config above: later edits
-                // are the dialog's, so typing sticks, and the engine echoes
-                // every applied change back here anyway.
-                RadioEvent::StationConfig(c) => {
-                    if !self.net_cfg_seeded {
-                        self.net_cluster_cmds = c.net.cluster.commands.join("\n");
-                        self.net_rbn_cmds = c.net.rbn.commands.join("\n");
-                        self.net_cfg_edit = c.net.clone();
-                        self.net_cfg_seeded = true;
-                    }
-                    if !self.rigctld_seeded {
-                        self.rigctld_edit = c.rigctld.clone();
-                        self.rigctld_seeded = true;
-                    }
-                    if !self.tci_srv_seeded {
-                        self.tci_srv_edit = c.tci_server.clone();
-                        self.tci_srv_seeded = true;
-                    }
-                    if !self.wsjtx_seeded {
-                        self.wsjtx_edit = c.wsjtx.clone();
-                        self.wsjtx_seeded = true;
-                    }
-                    if !self.sat_cfg_seeded {
-                        self.sat_cfg_edit = c.sat.clone();
-                        self.sat_cfg = std::sync::Arc::new(c.sat.clone());
-                        self.sat_cfg_seeded = true;
-                    }
-                    if !self.rot_cfg_seeded {
-                        self.rot_cfg_edit = c.rotator.clone();
-                        self.rot_cfg_seeded = true;
-                    }
-                }
-                RadioEvent::TleSubStatus(s) => self.on_tle_sub_status(s),
-                RadioEvent::SatTrack(t) => self.sat_track = t.map(|t| *t),
-                RadioEvent::RotatorStatus { connected, az_deg, el_deg, error } => {
-                    self.rotator_status = Some((connected, az_deg, el_deg, error));
-                }
-                RadioEvent::ImageSaved(e) => match e.kind {
-                    sdroxide_types::ImageKind::Sstv => self.sstv.on_saved(e, &ctx),
-                    sdroxide_types::ImageKind::Wefax => self.wefax.on_saved(e, &ctx),
-                },
-                // Broadcast, so this is as likely to be another screen's delete
-                // as our own — either way the picture has gone.
-                RadioEvent::ImageDeleted { kind, name } => match kind {
-                    sdroxide_types::ImageKind::Sstv => self.sstv.on_deleted(&name),
-                    sdroxide_types::ImageKind::Wefax => self.wefax.on_deleted(&name),
-                },
-                RadioEvent::CallsignResult(info) => self.apply_callsign(info),
-                RadioEvent::Upload(r) => self.on_upload_result(r),
-                RadioEvent::Confirmations(recs) => self.apply_confirmations(recs),
-                // Folded here rather than queued for the map's own pass: these
-                // arrive whether or not a map is on screen, and a queue nobody
-                // drained would grow all session. The display settings are
-                // applied first because they decide whether this source counts
-                // at all — `prop_texture` does the same before its own folds.
-                RadioEvent::PropPaths(paths) => {
-                    let v = self.view.solar3d;
-                    self.prop.set_halflife_min(v.prop_halflife_min);
-                    self.prop.set_sources(crate::prop_map::PropSources(v.prop_sources));
-                    self.prop.observe_paths(
-                        &paths,
-                        sdroxide_types::PropSource::Rbn,
-                        crate::time::now_unix(),
-                    );
-                }
-            }
-        }
-        // A switched-off skimmer stops emitting, so its last boxes would sit on
-        // the waterfall until something else replaced them; drop them per kind.
-        if !self.skimmer_spots.is_empty() {
-            self.skimmer_spots.retain(|s| self.state.skimmer.enabled(s.kind));
-        }
+        self.drain_events(&ctx, now);
         self.poll_adif_import();
         self.refresh_band_conditions(now);
 
@@ -935,18 +664,344 @@ impl eframe::App for SdroxideApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, "view", &self.view);
-        // On wasm this is the logbook's persistence; on native it's a harmless
-        // backup (the authoritative copy is written to the config dir on change).
-        eframe::set_value(storage, "qso_log", &self.qso_log);
-        // Same split: authoritative on native is config.toml (written on change).
-        eframe::set_value(storage, "ui_settings", &self.ui_settings);
-        // Control-input bindings: authoritative on native is input.json.
-        eframe::set_value(storage, "input", &self.input.cfg);
+        eframe::set_value(storage, &self.view_key, &self.view);
+        // The station-wide keys are written by exactly one tab — every tab
+        // holds its own copy of these, and the last to save would otherwise
+        // overwrite the tab the operator actually changed them on.
+        if self.station_writer {
+            // On wasm this is the logbook's persistence; on native it's a
+            // harmless backup (the authoritative copy is written to the config
+            // dir on change).
+            eframe::set_value(storage, "qso_log", &self.qso_log);
+            // Same split: authoritative on native is config.toml (written on
+            // change).
+            eframe::set_value(storage, "ui_settings", &self.ui_settings);
+            // Control-input bindings: authoritative on native is input.json.
+            eframe::set_value(storage, "input", &self.input.cfg);
+        }
     }
 }
 
 impl SdroxideApp {
+    /// Drain everything this radio's engine sent since the last visit.
+    ///
+    /// Runs at the top of every drawn frame — and, in a multi-radio session,
+    /// once per frame for every *hidden* tab too (from
+    /// [`crate::multi::MultiApp`]), so a background radio keeps decoding,
+    /// logging and reconnecting while another tab is up front. The unbounded
+    /// event channel must never be left to back up.
+    pub(crate) fn drain_events(&mut self, ctx: &egui::Context, now: f64) {
+        while let Some(ev) = self.ctrl.poll_event() {
+            match ev {
+                RadioEvent::Capabilities(c) => {
+                    // The window title belongs to the focused tab; a hidden
+                    // radio reconnecting must not retitle the window over it.
+                    if self.focused {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
+                            "sdroxide — {}",
+                            c.label
+                        )));
+                    }
+                    self.caps = Some(c);
+                    // A new source may have no full-band lane at all. Without
+                    // this the strip from the previous backend stays on screen
+                    // for good, showing a band nothing is receiving any more.
+                    self.wide_frame = None;
+                    self.wide_wf.clear();
+                    // This also fires on a reconnect, and pictures may have
+                    // come in while the link was down. Read the stores again
+                    // rather than leaving a gallery that stops at the moment
+                    // the connection dropped.
+                    self.sstv.listed = false;
+                    self.wefax.listed = false;
+                    // Same reasoning for speech: a reconnect must not make the
+                    // radio recite its whole configuration.
+                    self.speech.announcer.reseed();
+                    self.speech.announcer.reset_decodes();
+                }
+                RadioEvent::State(s) => {
+                    let prev_vfo = self.state.active_freq_hz();
+                    let prev_mode = self.state.rx[0].mode;
+                    self.state = s;
+                    if self.state.rx[0].mode != prev_mode {
+                        self.clear_digi_rx();
+                    }
+                    self.recenter_if_tuned_away(prev_vfo);
+                    // The announcer diffs *this* — the engine's own snapshot —
+                    // rather than `self.state` per frame, because the UI
+                    // mutates that optimistically before the engine confirms
+                    // and the engine has the last word on where the radio
+                    // actually went. Focused tab only, here and below: two
+                    // radios narrating over each other is worse than silence,
+                    // and the reseed on focus gain skips the backlog.
+                    if self.focused {
+                        self.speech.announcer.on_state(&self.state, now);
+                    }
+                }
+                RadioEvent::Spectrum(f) => {
+                    self.frame = Some(std::sync::Arc::new(f));
+                    self.last_spectrum_at = now;
+                }
+                // Deliberately does not touch `last_spectrum_at`: that drives
+                // the "waiting for spectrum" notice, and a full-band frame is
+                // not evidence that the tuned receiver is producing samples.
+                RadioEvent::WideSpectrum(f) => {
+                    self.wide_frame = Some(std::sync::Arc::new(f));
+                }
+                RadioEvent::Meters(m) => {
+                    if self.focused {
+                        self.speech.announcer.on_meters(&m, &self.state, now);
+                    }
+                    self.meters = Some(m);
+                }
+                RadioEvent::Memories(m) => self.memories = m,
+                RadioEvent::MemoryFolders(f) => self.mem_folders = f,
+                RadioEvent::Scanner(c) => self.scanner = c,
+                RadioEvent::ConnectionLost(e) => {
+                    if self.focused {
+                        self.speech.announcer.on_error(&e, now);
+                    }
+                    self.error = Some(e);
+                }
+                RadioEvent::Notice(n) => {
+                    if self.focused {
+                        self.speech.announcer.on_notice(n.as_deref(), now);
+                    }
+                    self.radio_notice = n;
+                }
+                RadioEvent::Ft8Decodes(d) => {
+                    if let Some(st) = self.digi_status.as_ref()
+                        && self.focused
+                    {
+                        self.speech.announcer.on_ft8(&d, st, now);
+                    }
+                    // Prepend newest-slot decodes; keep a rolling window.
+                    for dec in d.into_iter().rev() {
+                        self.digi_decodes.insert(0, dec);
+                    }
+                    self.digi_decodes.truncate(200);
+                }
+                RadioEvent::WsprSpots(s) => {
+                    // Newest first, and de-duplicated against what is already
+                    // held: the same reception arrives twice whenever a slot we
+                    // decoded ourselves also comes back from WSPRnet, and two
+                    // rows for one beacon reads as the mode double-counting.
+                    for spot in s.into_iter().rev() {
+                        let key = spot.dedup_key();
+                        if self.wspr_spots.iter().any(|e| e.dedup_key() == key) {
+                            continue;
+                        }
+                        self.wspr_spots.insert(0, spot);
+                    }
+                    self.wspr_spots.truncate(crate::app::panels::wspr::WSPR_SPOT_ROWS);
+                }
+                RadioEvent::Ft8Status(s) => {
+                    // Seed the editable config from the engine's persisted
+                    // value once (later edits are UI-owned so typing sticks).
+                    if !self.digi_cfg_seeded {
+                        self.digi_cfg_edit = s.config.clone();
+                        self.digi_cfg_seeded = true;
+                    }
+                    if self.focused {
+                        self.speech.announcer.on_digi(&s, &self.state, now);
+                    }
+                    self.digi_status = Some(s);
+                }
+                RadioEvent::Ft8QsoLogged(mut r) => {
+                    // Another tab may have logged since this copy was read;
+                    // appending to a stale copy would write its QSOs away.
+                    if self.shared_log {
+                        self.qso_log = crate::app::persist::load_qso_log(None);
+                    }
+                    r.id = self.next_log_id();
+                    let call = r.call.clone();
+                    let adif = auto_upload_adif(&self.net_cfg_edit, &r);
+                    self.qso_log.push(r);
+                    self.session_qsos += 1;
+                    persist_qso_log(&self.qso_log);
+                    // Enrich + optionally upload the freshly logged QSO.
+                    self.queue_lookup(call);
+                    if let Some((qso_id, adif, targets)) = adif {
+                        self.pending_uploads.push((qso_id, adif, targets));
+                    }
+                }
+                RadioEvent::SstvLine { image_id, y, rgb } => {
+                    self.sstv.on_line(image_id, y, &rgb, &ctx);
+                }
+                RadioEvent::SstvImage { png, .. } => self.sstv.on_image(&png, &ctx),
+                RadioEvent::DigiImage { png } => {
+                    if let Some((rgb, w, h)) = crate::sstv::decode_image(&png) {
+                        let ci = crate::sstv::color_image(&rgb, w, h);
+                        let tex = ctx.load_texture("fsq_rx", ci, egui::TextureOptions::LINEAR);
+                        self.fsq_rx_images.insert(0, tex);
+                        self.fsq_rx_images.truncate(30);
+                    }
+                }
+                RadioEvent::HellColumns { seq, rows, cols } => {
+                    self.hell.on_columns(seq, rows, &cols, &self.view.hell, &ctx);
+                }
+                RadioEvent::WefaxLine { image_id, y, gray } => {
+                    self.wefax.push_line(image_id, y, &gray);
+                }
+                RadioEvent::WefaxImage { png, .. } => {
+                    // The chart is held rather than filed: the engine names the
+                    // file it wrote and announces it a moment later, and that
+                    // name is the chart's whole metadata. Guessing it here — as
+                    // this once did, off a second clock — would sooner or later
+                    // label a chart a second away from the file it is.
+                    self.wefax.hold_fresh(&ctx, &png);
+                    self.wefax.clear_live();
+                }
+                RadioEvent::WefaxStatus(s) => self.wefax.status = s,
+                RadioEvent::SstvStatus(s) => {
+                    // Adopt a *newly* detected RX mode for the next transmit, but
+                    // don't re-apply a steady detection every frame — that would
+                    // fight the operator's manual mode selection.
+                    if s.detected != self.sstv.last_detected {
+                        if let Some(m) = s.detected {
+                            self.sstv.tx_mode = m;
+                            self.sstv.preview_dirty = true;
+                        }
+                        self.sstv.last_detected = s.detected;
+                    }
+                    self.sstv.status = s;
+                }
+                RadioEvent::RifpRows { image_id, y, w, h, rows } => {
+                    self.sstv.on_rifp_rows(image_id, y, w, h, &rows, &ctx);
+                }
+                RadioEvent::RifpImage { png, .. } => self.sstv.on_rifp_image(&png, &ctx),
+                RadioEvent::RifpStatus(s) => {
+                    self.sstv.rifp = s;
+                }
+                RadioEvent::SkimmerSpots(s) => {
+                    // The engine sends the full current set each update; the
+                    // stable `id` per spot lets the overlay keep each box (and
+                    // its scroll) in place across updates.
+                    for spot in &s {
+                        // Remember when each spot last keyed, and seed newly
+                        // seen ones to now, so alpha starts solid and fades.
+                        let e = self.skimmer_active_at.entry(spot.id).or_insert(now);
+                        if spot.active {
+                            *e = now;
+                        }
+                    }
+                    // Forget timings for spots the engine has dropped.
+                    let live: std::collections::HashSet<u64> = s.iter().map(|x| x.id).collect();
+                    self.skimmer_active_at.retain(|id, _| live.contains(id));
+                    self.skimmer_spots = s;
+                }
+                RadioEvent::Spots(s) => self.spots = s,
+                RadioEvent::NetStatus(s) => self.net_status = s,
+                RadioEvent::TciServerStatus { running, addr, clients, error } => {
+                    self.tci_srv_status = Some(TciServerStatus { running, addr, clients, error });
+                }
+                RadioEvent::RigctldStatus { running, addr, clients, error } => {
+                    self.rigctld_status = Some(TciServerStatus { running, addr, clients, error });
+                }
+                RadioEvent::VoiceStatus(v) => self.voice = v,
+                RadioEvent::ImagePresets(p) => self.sstv.on_presets(p, &ctx),
+                RadioEvent::ImageSlotSource { slot, version, png } => {
+                    self.sstv.on_slot_source(slot, version, &png);
+                }
+                // One store per mode: SSTV and RIFP share a gallery, charts
+                // have their own.
+                RadioEvent::ImageListing(l) => match l.kind {
+                    sdroxide_types::ImageKind::Sstv => self.sstv.on_listing(l, &ctx),
+                    sdroxide_types::ImageKind::Wefax => self.wefax.on_listing(l, &ctx),
+                },
+                RadioEvent::ImageFile { kind, name, png } => match kind {
+                    sdroxide_types::ImageKind::Sstv => self.sstv.on_file(&name, &png, &ctx),
+                    sdroxide_types::ImageKind::Wefax => self.wefax.on_file(&name, &png, &ctx),
+                },
+                // What the station is set up to do, from the machine the engine
+                // runs on. Seeded once, like the digi config above: later edits
+                // are the dialog's, so typing sticks, and the engine echoes
+                // every applied change back here anyway.
+                RadioEvent::StationConfig(c) => {
+                    if !self.net_cfg_seeded {
+                        self.net_cluster_cmds = c.net.cluster.commands.join("\n");
+                        self.net_rbn_cmds = c.net.rbn.commands.join("\n");
+                        self.net_cfg_edit = c.net.clone();
+                        self.net_cfg_seeded = true;
+                    }
+                    if !self.rigctld_seeded {
+                        self.rigctld_edit = c.rigctld.clone();
+                        self.rigctld_seeded = true;
+                    }
+                    if !self.tci_srv_seeded {
+                        self.tci_srv_edit = c.tci_server.clone();
+                        self.tci_srv_seeded = true;
+                    }
+                    if !self.wsjtx_seeded {
+                        self.wsjtx_edit = c.wsjtx.clone();
+                        self.wsjtx_seeded = true;
+                    }
+                    if !self.sat_cfg_seeded {
+                        self.sat_cfg_edit = c.sat.clone();
+                        self.sat_cfg = std::sync::Arc::new(c.sat.clone());
+                        self.sat_cfg_seeded = true;
+                    }
+                    if !self.rot_cfg_seeded {
+                        self.rot_cfg_edit = c.rotator.clone();
+                        self.rot_cfg_seeded = true;
+                    }
+                }
+                RadioEvent::TleSubStatus(s) => self.on_tle_sub_status(s),
+                RadioEvent::SatTrack(t) => self.sat_track = t.map(|t| *t),
+                RadioEvent::RotatorStatus { connected, az_deg, el_deg, error } => {
+                    self.rotator_status = Some((connected, az_deg, el_deg, error));
+                }
+                RadioEvent::ImageSaved(e) => match e.kind {
+                    sdroxide_types::ImageKind::Sstv => self.sstv.on_saved(e, &ctx),
+                    sdroxide_types::ImageKind::Wefax => self.wefax.on_saved(e, &ctx),
+                },
+                // Broadcast, so this is as likely to be another screen's delete
+                // as our own — either way the picture has gone.
+                RadioEvent::ImageDeleted { kind, name } => match kind {
+                    sdroxide_types::ImageKind::Sstv => self.sstv.on_deleted(&name),
+                    sdroxide_types::ImageKind::Wefax => self.wefax.on_deleted(&name),
+                },
+                RadioEvent::CallsignResult(info) => self.apply_callsign(info),
+                RadioEvent::Upload(r) => self.on_upload_result(r),
+                RadioEvent::Confirmations(recs) => self.apply_confirmations(recs),
+                // Folded here rather than queued for the map's own pass: these
+                // arrive whether or not a map is on screen, and a queue nobody
+                // drained would grow all session. The display settings are
+                // applied first because they decide whether this source counts
+                // at all — `prop_texture` does the same before its own folds.
+                RadioEvent::PropPaths(paths) => {
+                    let v = self.view.solar3d;
+                    self.prop.set_halflife_min(v.prop_halflife_min);
+                    self.prop.set_sources(crate::prop_map::PropSources(v.prop_sources));
+                    self.prop.observe_paths(
+                        &paths,
+                        sdroxide_types::PropSource::Rbn,
+                        crate::time::now_unix(),
+                    );
+                }
+            }
+        }
+        // A switched-off skimmer stops emitting, so its last boxes would sit on
+        // the waterfall until something else replaced them; drop them per kind.
+        if !self.skimmer_spots.is_empty() {
+            self.skimmer_spots.retain(|s| self.state.skimmer.enabled(s.kind));
+        }
+        // A hidden tab has no frame of its own to flush these on, and its
+        // digital modes keep logging: send them now. MIDI is discarded, not
+        // queued — a control surface drives the focused radio, and a backlog
+        // of knob turns firing on tab switch would retune it at random.
+        if !self.focused {
+            for call in std::mem::take(&mut self.pending_lookups) {
+                self.ctrl.send(Command::LookupCallsign { call });
+            }
+            for (qso_id, adif, targets) in std::mem::take(&mut self.pending_uploads) {
+                self.ctrl.send(Command::UploadQso { qso_id, adif, targets });
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            self.input.discard_midi();
+        }
+    }
+
     /// The awards dashboard: DXCC / WAS / WAZ / grid counts (worked vs
     /// confirmed) with a band filter, plus the WAS state grid and WAZ zone grid.
     /// The out-of-band transmit warning.

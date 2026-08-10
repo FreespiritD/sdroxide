@@ -153,9 +153,232 @@ pub fn save_remote_login(login: Option<&sdroxide_types::RemoteAccess>) -> Result
 }
 
 pub fn config_dir() -> Result<PathBuf, ConfigError> {
+    // The override exists for the integration tests, which must not write the
+    // operator's real configuration, and works as a profile switch for anyone
+    // who wants two independent installations.
+    if let Some(dir) = std::env::var_os("SDROXIDE_CONFIG_DIR") {
+        if !dir.is_empty() {
+            return Ok(PathBuf::from(dir));
+        }
+    }
     directories::ProjectDirs::from("org", "sdroxide", "sdroxide")
         .map(|d| d.config_dir().to_path_buf())
         .ok_or(ConfigError::NoConfigDir)
+}
+
+/// A configuration scope: the station's root config directory, or one radio's
+/// subdirectory under it.
+///
+/// Multi-radio keeps **one file per radio scope** rather than one list file,
+/// because the engine and the UI each re-read and re-write `radio.json`
+/// independently — with a shared list every radio's "Apply" would be a
+/// read-modify-write race against every other radio's. Radio 0 maps to the
+/// legacy root paths, so an existing single-radio installation needs no
+/// migration and stays downgrade-safe.
+///
+/// Only the files that describe *a radio* are scoped: `radio.json`,
+/// `session.json`, `scanner.json`, `tciserver.json`, `rigctld.json`,
+/// `wsjtx.json`. Everything the operator shares across radios — memories,
+/// band stacks, the logbook, `config.toml` — stays on the root free functions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Store {
+    /// `None` = the legacy root (the station scope, and radio 0);
+    /// `Some(n)` = `<config>/radio-<n>/`.
+    scope: Option<u32>,
+}
+
+impl Store {
+    /// The station scope: the legacy root directory.
+    pub fn station() -> Store {
+        Store { scope: None }
+    }
+
+    /// The scope for radio `id`. Id 0 is the legacy root — the radio every
+    /// existing installation already has — so its files stay exactly where a
+    /// single-radio sdroxide reads and writes them.
+    pub fn radio(id: u32) -> Store {
+        Store { scope: (id != 0).then_some(id) }
+    }
+
+    /// This scope's directory. Not created here; writers create it on demand.
+    pub fn dir(&self) -> Result<PathBuf, ConfigError> {
+        let root = config_dir()?;
+        Ok(match self.scope {
+            None => root,
+            Some(id) => root.join(format!("radio-{id}")),
+        })
+    }
+
+    fn load<T: serde::de::DeserializeOwned + Default>(&self, file: &str) -> T {
+        let Ok(dir) = self.dir() else { return T::default() };
+        match fs::read_to_string(dir.join(file)) {
+            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
+                warn!("failed to parse {file}: {e}; starting fresh");
+                T::default()
+            }),
+            Err(_) => T::default(),
+        }
+    }
+
+    fn save<T: serde::Serialize>(&self, file: &str, value: &T) -> Result<(), ConfigError> {
+        let dir = self.dir()?;
+        fs::create_dir_all(&dir)?;
+        let text = serde_json::to_string_pretty(value).expect("serialize");
+        fs::write(dir.join(file), text)?;
+        Ok(())
+    }
+
+    /// Radio backend config, this scope's `radio.json`.
+    pub fn load_radio_config(&self) -> sdroxide_types::RadioConfig {
+        self.load("radio.json")
+    }
+
+    pub fn save_radio_config(&self, cfg: &sdroxide_types::RadioConfig) -> Result<(), ConfigError> {
+        self.save("radio.json", cfg)
+    }
+
+    /// The remembered dial and mode, or the defaults on a first run.
+    pub fn load_session(&self) -> Session {
+        let s: Session = self.load("session.json");
+        if s.is_usable() { s } else { Session::default() }
+    }
+
+    pub fn save_session(&self, session: &Session) -> Result<(), ConfigError> {
+        self.save("session.json", session)
+    }
+
+    pub fn load_scanner_config(&self) -> sdroxide_types::ScannerConfig {
+        self.load("scanner.json")
+    }
+
+    pub fn save_scanner_config(
+        &self,
+        cfg: &sdroxide_types::ScannerConfig,
+    ) -> Result<(), ConfigError> {
+        self.save("scanner.json", cfg)
+    }
+
+    pub fn load_tci_server_config(&self) -> sdroxide_types::TciServerConfig {
+        self.load("tciserver.json")
+    }
+
+    pub fn save_tci_server_config(
+        &self,
+        cfg: &sdroxide_types::TciServerConfig,
+    ) -> Result<(), ConfigError> {
+        self.save("tciserver.json", cfg)
+    }
+
+    pub fn load_rigctld_config(&self) -> sdroxide_types::RigctldConfig {
+        self.load("rigctld.json")
+    }
+
+    pub fn save_rigctld_config(
+        &self,
+        cfg: &sdroxide_types::RigctldConfig,
+    ) -> Result<(), ConfigError> {
+        self.save("rigctld.json", cfg)
+    }
+
+    pub fn load_wsjtx_config(&self) -> sdroxide_types::WsjtxConfig {
+        self.load("wsjtx.json")
+    }
+
+    pub fn save_wsjtx_config(&self, cfg: &sdroxide_types::WsjtxConfig) -> Result<(), ConfigError> {
+        self.save("wsjtx.json", cfg)
+    }
+}
+
+/// One radio in the station (`radios.json`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RadioSlot {
+    pub id: u32,
+    /// The operator's own name for this radio. Empty — the default — means
+    /// "name it after whatever interface it runs", so an unrenamed tab follows
+    /// the radio it is configured as instead of going stale on a label chosen
+    /// before the radio was even picked. The UI resolves the display name;
+    /// this file only records what the operator typed.
+    pub name: String,
+}
+
+/// The station's radio roster (`radios.json`). A missing file means what every
+/// installation before multi-radio meant: exactly the one radio at the legacy
+/// root paths.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RadiosFile {
+    pub radios: Vec<RadioSlot>,
+    pub next_id: u32,
+}
+
+impl Default for RadiosFile {
+    fn default() -> Self {
+        RadiosFile { radios: vec![RadioSlot { id: 0, name: String::new() }], next_id: 1 }
+    }
+}
+
+pub fn load_radios() -> RadiosFile {
+    let mut file: RadiosFile = load_json("radios.json");
+    if file.radios.is_empty() {
+        // An empty roster cannot be operated: seed the legacy radio, exactly
+        // as a missing file would.
+        file.radios = RadiosFile::default().radios;
+    }
+    // A hand-edited file must not be able to hand out an id twice.
+    let max = file.radios.iter().map(|r| r.id).max().unwrap_or(0);
+    file.next_id = file.next_id.max(max + 1);
+    file
+}
+
+pub fn save_radios(file: &RadiosFile) -> Result<(), ConfigError> {
+    save_json("radios.json", file)
+}
+
+/// Create the on-disk scope for a new radio and add it to the roster.
+///
+/// The scope is seeded with a default `radio.json` and — deliberately — a
+/// `tciserver.json` with the server disabled: [`TciServerConfig`]'s default is
+/// *enabled* on a fixed port, which is right for the station's first radio and
+/// a guaranteed bind collision for every additional one.
+pub fn create_radio(name: &str) -> Result<RadioSlot, ConfigError> {
+    let mut roster = load_radios();
+    let id = roster.next_id;
+    // An empty name is the default, not a placeholder to fill: it means the
+    // tab names itself after whatever interface the radio ends up configured
+    // as (see [`RadioSlot::name`]).
+    let slot = RadioSlot { id, name: name.to_string() };
+    let store = Store::radio(id);
+    // Seed with *no* interface: the defaults would open the first device
+    // found, which is whatever the station's first radio already holds.
+    let cfg = sdroxide_types::RadioConfig {
+        backend: sdroxide_types::Backend::None,
+        ..Default::default()
+    };
+    store.save_radio_config(&cfg)?;
+    let tci = sdroxide_types::TciServerConfig { enabled: false, ..Default::default() };
+    store.save_tci_server_config(&tci)?;
+    roster.radios.push(slot.clone());
+    roster.next_id = id + 1;
+    save_radios(&roster)?;
+    Ok(slot)
+}
+
+/// Remove a radio from the roster. Its scope directory is kept on disk — a
+/// closed tab is not a request to destroy the configuration behind it.
+pub fn remove_radio(id: u32) -> Result<(), ConfigError> {
+    let mut roster = load_radios();
+    roster.radios.retain(|r| r.id != id);
+    save_radios(&roster)
+}
+
+/// Record the operator's name for a radio. Empty puts it back on the default
+/// — named after its interface (see [`RadioSlot::name`]).
+pub fn rename_radio(id: u32, name: &str) -> Result<(), ConfigError> {
+    let mut roster = load_radios();
+    if let Some(slot) = roster.radios.iter_mut().find(|r| r.id == id) {
+        slot.name = name.to_string();
+    }
+    save_radios(&roster)
 }
 
 /// Directory for a mode's received pictures (`~/.config/sdroxide/<kind>_rx`),
@@ -371,13 +594,13 @@ impl Session {
 }
 
 /// The remembered dial and mode, or the defaults on a first run.
+/// Radio 0's session; other radios go through [`Store::load_session`].
 pub fn load_session() -> Session {
-    let s: Session = load_json("session.json");
-    if s.is_usable() { s } else { Session::default() }
+    Store::station().load_session()
 }
 
 pub fn save_session(session: &Session) -> Result<(), ConfigError> {
-    save_json("session.json", session)
+    Store::station().save_session(session)
 }
 
 /// Band-stack registers: up to 3 remembered (freq, mode, filter) per band.
@@ -430,12 +653,13 @@ pub fn save_memory_folders(folders: &[sdroxide_types::MemoryFolder]) -> Result<(
 }
 
 /// Radio backend config (SoapySDR vs CAT rig; serial + sound-card settings).
+/// Radio 0's config; other radios go through [`Store::load_radio_config`].
 pub fn load_radio_config() -> sdroxide_types::RadioConfig {
-    load_json("radio.json")
+    Store::station().load_radio_config()
 }
 
 pub fn save_radio_config(cfg: &sdroxide_types::RadioConfig) -> Result<(), ConfigError> {
-    save_json("radio.json", cfg)
+    Store::station().save_radio_config(cfg)
 }
 
 /// FT8/FT4 operator config (own call, grid, message templates).
@@ -463,11 +687,11 @@ pub fn save_skimmer_config(cfg: &sdroxide_types::SkimmerSettings) -> Result<(), 
 /// which memories to pass over. Restored at startup so a scan set up once is
 /// one keypress away afterwards.
 pub fn load_scanner_config() -> sdroxide_types::ScannerConfig {
-    load_json("scanner.json")
+    Store::station().load_scanner_config()
 }
 
 pub fn save_scanner_config(cfg: &sdroxide_types::ScannerConfig) -> Result<(), ConfigError> {
-    save_json("scanner.json", cfg)
+    Store::station().save_scanner_config(cfg)
 }
 
 /// FSQ contacts (address book for directed FSQCALL messaging).
@@ -500,31 +724,31 @@ pub fn save_network_config(cfg: &sdroxide_types::NetworkConfig) -> Result<(), Co
 /// Built-in TCI server config (the listener third-party TCI clients connect
 /// to). Owned by the engine, like the network-cockpit config above.
 pub fn load_tci_server_config() -> sdroxide_types::TciServerConfig {
-    load_json("tciserver.json")
+    Store::station().load_tci_server_config()
 }
 
 pub fn save_tci_server_config(cfg: &sdroxide_types::TciServerConfig) -> Result<(), ConfigError> {
-    save_json("tciserver.json", cfg)
+    Store::station().save_tci_server_config(cfg)
 }
 
 /// Built-in Hamlib rigctld server config (the listener "NET rigctl" clients
 /// connect to). Owned by the engine, like the TCI server config above.
 pub fn load_rigctld_config() -> sdroxide_types::RigctldConfig {
-    load_json("rigctld.json")
+    Store::station().load_rigctld_config()
 }
 
 pub fn save_rigctld_config(cfg: &sdroxide_types::RigctldConfig) -> Result<(), ConfigError> {
-    save_json("rigctld.json", cfg)
+    Store::station().save_rigctld_config(cfg)
 }
 
 /// WSJT-X UDP broadcast config (where decode/QSO datagrams are sent). Owned by
 /// the engine, like the server configs above.
 pub fn load_wsjtx_config() -> sdroxide_types::WsjtxConfig {
-    load_json("wsjtx.json")
+    Store::station().load_wsjtx_config()
 }
 
 pub fn save_wsjtx_config(cfg: &sdroxide_types::WsjtxConfig) -> Result<(), ConfigError> {
-    save_json("wsjtx.json", cfg)
+    Store::station().save_wsjtx_config(cfg)
 }
 
 /// Control-input bindings: keyboard chords, panadapter mouse behaviour and the
@@ -1253,6 +1477,77 @@ mod tests {
         assert_eq!(back.ui.theme, sdroxide_types::UiTheme::AmberPhosphor);
         assert_eq!(back.ui.button_style, sdroxide_types::ChromeStyle::Bevel);
         assert_eq!(back.ui.window_style, sdroxide_types::ChromeStyle::Gradient);
+    }
+
+    /// One test rather than several, because it redirects the config directory
+    /// through the environment — process-global state that must not race the
+    /// other tests in this binary (none of which touch `config_dir`).
+    #[test]
+    fn radio_scopes_map_under_the_config_dir_and_radio_zero_is_the_root() {
+        let root = std::env::temp_dir().join(format!("sdroxide-store-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("scratch dir");
+        // SAFETY: single-threaded within this test; no other test in this
+        // binary reads the variable.
+        unsafe { std::env::set_var("SDROXIDE_CONFIG_DIR", &root) };
+
+        // Radio 0 is the legacy installation: its files stay at the root.
+        assert_eq!(Store::radio(0).dir().unwrap(), root);
+        assert_eq!(Store::station().dir().unwrap(), root);
+        assert_eq!(Store::radio(2).dir().unwrap(), root.join("radio-2"));
+
+        // A scoped write lands in the scope, resolves on read, and leaves the
+        // root's file alone.
+        let mut cfg = sdroxide_types::RadioConfig::default();
+        cfg.converter_offset_hz = 120_000_000.0;
+        Store::radio(2).save_radio_config(&cfg).unwrap();
+        assert!(root.join("radio-2/radio.json").exists());
+        assert!(!root.join("radio.json").exists());
+        assert_eq!(Store::radio(2).load_radio_config(), cfg);
+        assert_eq!(
+            Store::radio(0).load_radio_config(),
+            sdroxide_types::RadioConfig::default(),
+            "radio 0 must not see radio 2's file"
+        );
+
+        // The roster: a missing file is the one legacy radio; creating a radio
+        // allocates a fresh id, seeds its scope, and disables the TCI server
+        // there (whose default is enabled — a guaranteed port collision on any
+        // radio but the first).
+        let roster = load_radios();
+        assert_eq!(roster.radios, vec![RadioSlot { id: 0, name: String::new() }]);
+        assert_eq!(roster.next_id, 1);
+        let slot = create_radio("").unwrap();
+        assert_eq!(slot.id, 1);
+        assert_eq!(slot.name, "", "no name until the operator types one — the UI derives it");
+        let roster = load_radios();
+        assert_eq!(roster.radios.len(), 2);
+        assert_eq!(roster.next_id, 2);
+
+        // Renaming records what was typed; renaming to nothing goes back to
+        // the derived default rather than pinning an empty label.
+        rename_radio(slot.id, "Bench 2 m").unwrap();
+        assert_eq!(load_radios().radios[1].name, "Bench 2 m");
+        rename_radio(slot.id, "").unwrap();
+        assert_eq!(load_radios().radios[1].name, "");
+        assert!(
+            !Store::radio(slot.id).load_tci_server_config().enabled,
+            "a new radio's TCI server must come up disabled"
+        );
+        assert!(sdroxide_types::TciServerConfig::default().enabled, "or this seeding is moot");
+
+        // Closing the tab keeps the scope directory: a closed radio is not a
+        // destroyed configuration.
+        remove_radio(slot.id).unwrap();
+        assert_eq!(load_radios().radios.len(), 1);
+        assert!(root.join("radio-1/radio.json").exists());
+
+        // An id must never be handed out twice, even after a removal.
+        let again = create_radio("Bench RX").unwrap();
+        assert_eq!(again.id, 2, "id 1 was used once; it stays used");
+        assert_eq!(again.name, "Bench RX");
+
+        unsafe { std::env::remove_var("SDROXIDE_CONFIG_DIR") };
     }
 
     #[test]

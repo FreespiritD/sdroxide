@@ -454,6 +454,16 @@ impl InputRuntime {
         persist_input_settings(&self.cfg);
     }
 
+    /// Throw away any queued MIDI events. A radio tab that is not focused
+    /// does not act on the control surface, and its backlog must not fire as
+    /// a burst of stale knob turns the moment it is focused.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn discard_midi(&mut self) {
+        if let Some(midi) = self.midi.as_mut() {
+            let _ = midi.poll();
+        }
+    }
+
     /// Effective step for `act` given `detents` ticks arriving now.
     fn scaled(&mut self, act: Action, tuning: &BindingTuning, now: f64, detents: f32) -> f32 {
         let rate = self.accum.entry(act).or_default().tick(now, detents);

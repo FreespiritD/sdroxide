@@ -39,6 +39,13 @@ pub enum Backend {
     /// protocol exists for anything after the original RSP1. Appended last,
     /// for the same reason as `SmartSdr` above.
     SdrPlay,
+    /// No interface chosen yet. The seeded state of a freshly created radio
+    /// tab: it must open *nothing* until the operator picks a device, because
+    /// the defaults above would grab the first device found — which is
+    /// whatever the station's first radio is already running. Appended last,
+    /// for the same reason as `SmartSdr` above; not offered in the picker
+    /// (`ALL`), only ever written by the multi-radio seeding.
+    None,
 }
 
 impl Backend {
@@ -66,6 +73,7 @@ impl Backend {
             Backend::RtlSdr => "RTL-SDR (USB)",
             Backend::Rx888 => "RX-888 (USB)",
             Backend::SdrPlay => "SDRplay RSP (USB)",
+            Backend::None => "Not configured",
         }
     }
 }

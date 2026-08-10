@@ -299,6 +299,27 @@ pub trait RadioController {
         let _ = (username, password);
     }
 
+    /// Silence (or restore) this radio's speaker path — the tab-strip mute.
+    /// Distinct from [`Command::SetMute`], which is a per-receiver setting the
+    /// operator owns: this one belongs to the tab, and everything (DSP,
+    /// decoders, the recorder) keeps running underneath it. No-op by default —
+    /// a remote session has no tab strip of its own yet.
+    fn set_muted(&mut self, muted: bool) {
+        let _ = muted;
+    }
+
+    /// Tell this radio's engine to re-read the station-shared stores
+    /// (memories, band stacks, digi operator config) from disk, because
+    /// another radio in the same process just saved one of them. No-op for
+    /// remote controllers — there is no second local engine to have written.
+    fn nudge_shared_stores(&mut self) {}
+
+    /// Detach from the radio and reclaim what this controller holds: for an
+    /// in-process engine, disconnect it (it stops), drop the audio streams and
+    /// join the DSP thread. Called when a radio tab closes and on app exit; a
+    /// controller that owns nothing needs nothing here.
+    fn shutdown(&mut self) {}
+
     /// The frontend's switchable audio devices, or `None` when the platform
     /// has none to offer (e.g. the browser client, where the browser owns
     /// device routing). Enumeration may be slow — call on demand, not per

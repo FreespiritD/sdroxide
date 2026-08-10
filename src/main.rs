@@ -267,17 +267,64 @@ fn main() -> anyhow::Result<()> {
         return gui_main::run_remote(&url);
     }
 
-    let initial_mode = cli.restore_session();
-    let (source, caps) = open_source(&cli, &settings)?;
-    gui_main::run(
-        source,
-        caps,
-        &settings,
-        cli.tx_ham_only(&settings),
-        initial_mode,
-        cli.initial_antenna(),
-        Some(reopen_factory(&cli)),
-    )
+    // The station's radio roster: the legacy single radio unless more have
+    // been added. Radio 0 keeps every command-line override and the legacy
+    // config paths; the others boot purely from their own scope, and a device
+    // that isn't there right now costs a "reconnecting" tab, not the launch.
+    let roster = sdroxide_config::load_radios();
+    let mut radios = Vec::new();
+    for (i, slot) in roster.radios.iter().enumerate() {
+        let store = sdroxide_config::Store::radio(slot.id);
+        let boot = if i == 0 {
+            let initial_mode = cli.restore_session();
+            let (source, caps) = open_source(&cli, &settings)?;
+            gui_main::RadioBoot {
+                id: slot.id,
+                name: slot.name.clone(),
+                source,
+                caps,
+                initial_mode,
+                initial_antenna: cli.initial_antenna(),
+                reopen: Some(reopen_factory(&cli)),
+                store,
+            }
+        } else {
+            let mut c = secondary_cli(&cli);
+            let session = store.load_session();
+            let initial_mode = c.apply_session(session);
+            let (source, caps) =
+                match open_converted_source(&store.load_radio_config(), &c, &settings) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        // Names are often empty now (the tab derives one from
+                        // the interface); the id is what the engine's own
+                        // messages use, so log that.
+                        tracing::warn!("radio {} unavailable: {e:#}", slot.id + 1);
+                        let msg = format!(
+                            "{e}. Retrying — or open Settings → Radio to choose another interface."
+                        );
+                        (
+                            Box::new(null_source::NullSource::new(c.center_hz(), msg))
+                                as Box<dyn IqSource>,
+                            synthetic_caps("No radio"),
+                        )
+                    }
+                };
+            gui_main::RadioBoot {
+                id: slot.id,
+                name: slot.name.clone(),
+                source,
+                caps,
+                initial_mode,
+                initial_antenna: (None, None),
+                reopen: Some(reopen_factory_for(&c, store.clone())),
+                store,
+            }
+        };
+        radios.push(boot);
+    }
+    let factory_cli = secondary_cli(&cli);
+    gui_main::run_multi(radios, &settings, cli.tx_ham_only(&settings), factory_cli)
 }
 
 /// Factory the engine calls to rebuild the interface at runtime: when the
@@ -287,6 +334,14 @@ fn main() -> anyhow::Result<()> {
 /// current dial. Fallible so a bad new config leaves the current interface
 /// running.
 fn reopen_factory(cli: &Cli) -> sdroxide_radio::ReopenFn {
+    reopen_factory_for(cli, sdroxide_config::Store::station())
+}
+
+/// [`reopen_factory`], reading `radio.json` from one radio's scope. The
+/// `--siggen`/`--file` overrides only ever apply to the station scope (radio
+/// 0); every caller building a factory for another radio passes a
+/// [`secondary_cli`], which has them stripped.
+fn reopen_factory_for(cli: &Cli, store: sdroxide_config::Store) -> sdroxide_radio::ReopenFn {
     let cli = cli.clone();
     Box::new(move |center: f64| {
         let mut c = cli.clone();
@@ -295,9 +350,26 @@ fn reopen_factory(cli: &Cli) -> sdroxide_radio::ReopenFn {
         if c.siggen || c.file.is_some() {
             return open_source(&c, &settings).map_err(|e| format!("{e:#}"));
         }
-        let radio = sdroxide_config::load_radio_config();
+        let radio = store.load_radio_config();
         open_converted_source(&radio, &c, &settings).map_err(|e| format!("{e:#}"))
     })
+}
+
+/// The command line, minus everything that belongs to radio 0 alone: the
+/// synthetic sources (`--siggen`, `--file`) and the tuning/antenna/device
+/// overrides. A secondary radio boots purely from its own scope — the flags
+/// were typed for the radio the operator has always had.
+fn secondary_cli(cli: &Cli) -> Cli {
+    let mut c = cli.clone();
+    c.siggen = false;
+    c.file = None;
+    c.freq = None;
+    c.mode = None;
+    c.rate = None;
+    c.gain = None;
+    c.antenna = None;
+    c.tx_antenna = None;
+    c
 }
 
 /// Headless tune-carrier smoke test. Relies on the engine safety rails:
@@ -821,6 +893,10 @@ fn open_configured_source(
         }
     }
     match radio.backend {
+        // A freshly created radio tab: nothing is opened — and nothing may be,
+        // or this tab would grab a device another radio is already running —
+        // until the operator picks an interface.
+        Backend::None => bail!("no radio interface selected — choose one in Settings → Radio"),
         Backend::Cat => open_cat_source(radio),
         Backend::Hpsdr => open_hpsdr_source(radio, cli.center_hz()),
         Backend::Tci => open_tci_source(radio, cli.center_hz()),

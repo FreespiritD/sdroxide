@@ -102,6 +102,9 @@ pub struct WfTuning {
     /// Optional vertical gradient `(top, bottom)` filling the spectrum area,
     /// `None` when disabled in the UI settings.
     pub gradient: Option<(Color32, Color32)>,
+    /// Which radio's GPU waterfall history this panadapter scrolls. Radios are
+    /// keyed apart so two tabs never write into each other's texture.
+    pub wf_id: u64,
 }
 
 /// Exponentially-smoothed spectrum for the trace line, folded once per new
@@ -1280,6 +1283,7 @@ pub fn show_ext(
             lut: wf.palette,
             rows_to_write: wf.rows_to_write,
             flip: view.waterfall_flip,
+            wf_id: wf.wf_id,
         },
     ));
 

@@ -153,6 +153,7 @@ impl SdroxideApp {
             spectrum_alpha,
             palette: s.waterfall_palette,
             gradient,
+            wf_id: u64::from(self.radio_id),
         }
     }
 

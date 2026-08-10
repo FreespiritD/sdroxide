@@ -189,6 +189,16 @@ pub(in crate::app) struct SettingsIo<'a> {
     /// Whether a schedule download is in flight, and what the last one did.
     bc_fetching: bool,
     bc_status: Option<&'a Result<String, String>>,
+    /// Radio-management actions from the roster strip at the top of the Radio
+    /// page — switch/add/close/mute/rename — collected here like every other
+    /// edit and handed to the multi-radio shell after the frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    radio_tabs: &'a mut Vec<crate::app::RadioTabRequest>,
+    /// The rename field's buffer: (radio id, text as typed). UI-owned until
+    /// the edit commits, so the roster's per-frame republish cannot fight the
+    /// keyboard — see `SdroxideApp::radio_name_edit`.
+    #[cfg(not(target_arch = "wasm32"))]
+    radio_name_edit: &'a mut Option<(u32, String)>,
     /// Spoken announcements, edited in place and written back after the
     /// window closure like every other buffer here.
     speech_edit: &'a mut sdroxide_types::SpeechSettings,
@@ -368,6 +378,10 @@ impl SdroxideApp {
         // window here and handed back to it below, the way `ui_edit` is.
         #[cfg(not(target_arch = "wasm32"))]
         let mut solar_cloud_march = self.solar.cloud_march();
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut radio_tab_reqs: Vec<crate::app::RadioTabRequest> = Vec::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut radio_name_edit = self.radio_name_edit.take();
         // The window does its own scrolling, so its bar can only be themed
         // through the context style — lend the palette for the length of the
         // call and hand the body back the normal one.
@@ -467,6 +481,10 @@ impl SdroxideApp {
                             solar_cloud_march: Some(&mut solar_cloud_march),
                             #[cfg(target_arch = "wasm32")]
                             solar_cloud_march: None,
+                            #[cfg(not(target_arch = "wasm32"))]
+                            radio_tabs: &mut radio_tab_reqs,
+                            #[cfg(not(target_arch = "wasm32"))]
+                            radio_name_edit: &mut radio_name_edit,
                             tab: &mut tab,
                         },
                     );
@@ -478,6 +496,13 @@ impl SdroxideApp {
         }
         self.show_settings = open;
         self.settings_tab = tab;
+        // The multi-radio shell drains these after the frame.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.radio_tab_requests.append(&mut radio_tab_reqs);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.radio_name_edit = radio_name_edit;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if solar_cloud_march != self.solar.cloud_march() {
             self.solar.set_cloud_march(solar_cloud_march);
@@ -830,6 +855,12 @@ impl SdroxideApp {
                 }
             }
             SettingsTab::Radio => {
+                // The station's radios, managed from here: this page is where
+                // radios are configured, and — with the main window's tab area
+                // hidden until there is more than one — where the second radio
+                // is added in the first place.
+                #[cfg(not(target_arch = "wasm32"))]
+                self.settings_radio_roster(ui, io.radio_tabs, io.radio_name_edit);
                 let Some(cfg) = io.radio_edit.as_mut() else {
                     // A remote client cannot choose the server's interface or
                     // edit its config — that file lives on the other machine.
@@ -1042,6 +1073,17 @@ impl SdroxideApp {
                             RichText::new(
                                 "Pick a radio interface above (this configuration used the \
                                  removed auto-detect mode).",
+                            )
+                            .weak(),
+                        );
+                    }
+                    // A freshly added radio tab: nothing opens until an
+                    // interface is chosen, so choosing one is the whole page.
+                    Backend::None => {
+                        ui.label(
+                            RichText::new(
+                                "This radio has no interface yet — pick one above and press \
+                                 Apply / reconnect.",
                             )
                             .weak(),
                         );
@@ -1407,5 +1449,109 @@ impl SdroxideApp {
         // told to re-read rather than being left on what it loaded at open time.
         #[cfg(not(target_arch = "wasm32"))]
         self.solar.reload_tle_subs();
+    }
+}
+
+/// The radio-management strip at the top of Settings → Radio: the same chips
+/// the main window's tab area shows, drawn where radios are configured. The
+/// main window only shows its copy once there is more than one radio, so this
+/// is where the second one is added. Actions cannot be taken here — the tab
+/// set lives in the multi-radio shell, not in this tab — so they are queued as
+/// [`crate::app::RadioTabRequest`]s and the shell acts on them after the frame.
+#[cfg(not(target_arch = "wasm32"))]
+impl SdroxideApp {
+    fn settings_radio_roster(
+        &self,
+        ui: &mut egui::Ui,
+        requests: &mut Vec<crate::app::RadioTabRequest>,
+        name_edit: &mut Option<(u32, String)>,
+    ) {
+        if self.radio_roster.is_empty() {
+            // Not a multi-radio session (a native remote client): nothing to
+            // manage from here.
+            return;
+        }
+        let station_id = self.radio_roster[0].id;
+        ui.horizontal_wrapped(|ui| {
+            for chip in &self.radio_roster {
+                let mut label = RichText::new(chip.display_name()).size(12.5);
+                if chip.focused {
+                    label = label.strong().color(crate::theme::TEXT_STRONG());
+                }
+                if crate::chrome::chip(ui, chip.focused, label)
+                    .on_hover_text(if chip.focused {
+                        "This radio's settings are below"
+                    } else {
+                        "Switch to this radio (the dialog follows)"
+                    })
+                    .clicked()
+                    && !chip.focused
+                {
+                    requests.push(crate::app::RadioTabRequest::Focus(chip.id));
+                }
+                if chip.tx_on {
+                    ui.label(RichText::new("● TX").size(11.0).color(crate::theme::ALERT()));
+                } else if chip.error {
+                    ui.label(RichText::new("⚠").size(11.0).color(crate::theme::ALERT()));
+                }
+                let mute = crate::chrome::chip(
+                    ui,
+                    chip.muted,
+                    RichText::new(if chip.muted { "🔇" } else { "🔊" }).size(11.0),
+                );
+                if mute.on_hover_text("Mute this radio's audio").clicked() {
+                    requests.push(crate::app::RadioTabRequest::Mute {
+                        id: chip.id,
+                        muted: !chip.muted,
+                    });
+                }
+                // The first radio is the station: it runs the shared network
+                // services and the legacy configuration, and it stays.
+                if chip.id != station_id
+                    && crate::chrome::chip(ui, false, RichText::new("×").size(11.0))
+                        .on_hover_text("Close this radio (its configuration is kept)")
+                        .clicked()
+                {
+                    requests.push(crate::app::RadioTabRequest::Close(chip.id));
+                }
+                ui.add_space(6.0);
+            }
+            if crate::chrome::chip(ui, false, RichText::new("+").size(13.0))
+                .on_hover_text("Add a radio")
+                .clicked()
+            {
+                requests.push(crate::app::RadioTabRequest::Add);
+            }
+        });
+        // The focused radio's name. By default a radio is named after its
+        // interface — the box is empty and the hint shows what that resolves
+        // to — and typing here gives it a name of the operator's own.
+        // Committed when the field loses focus (Enter included); cleared, the
+        // derived default takes over again.
+        if let Some(chip) = self.radio_roster.iter().find(|c| c.focused) {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Name").strong());
+                let stale = !matches!(name_edit, Some((id, _)) if *id == chip.id);
+                if stale {
+                    *name_edit = Some((chip.id, chip.name.clone()));
+                }
+                let buf = &mut name_edit.as_mut().expect("seeded above").1;
+                let resp = ui.add(
+                    egui::TextEdit::singleline(buf)
+                        .hint_text(chip.default_name.as_str())
+                        .desired_width(220.0),
+                );
+                if resp.lost_focus() {
+                    let name = buf.trim().to_string();
+                    if name != chip.name {
+                        requests.push(crate::app::RadioTabRequest::Rename { id: chip.id, name });
+                    }
+                }
+            });
+        }
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(6.0);
     }
 }
