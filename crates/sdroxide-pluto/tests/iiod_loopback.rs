@@ -268,6 +268,14 @@ const SAMPLE_I: i16 = 2047;
 const SAMPLE_Q: i16 = -2048;
 const SAMPLE_BYTES: [u8; 4] = [0xFF, 0x07, 0x00, 0x08];
 
+/// The second chain's distinct pattern (±half scale), emitted only when the
+/// receive mask enables both pairs — what proves the deinterleaver routes
+/// each chain to its own ring rather than duplicating the first.
+const SAMPLE2_I: i16 = 1024;
+const SAMPLE2_Q: i16 = -1024;
+/// +1024 = `0x400`; -1024 in 12-bit two's complement = `0xC00`.
+const SAMPLE2_BYTES: [u8; 4] = [0x00, 0x04, 0x00, 0x0C];
+
 fn serve(sock: TcpStream, state: Arc<Mutex<DeviceState>>, stop: Arc<AtomicBool>, xml: Arc<String>) {
     let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
     let mut writer = sock.try_clone().expect("clone");
@@ -386,15 +394,29 @@ fn serve(sock: TcpStream, state: Arc<Mutex<DeviceState>>, stop: Arc<AtomicBool>,
                 writer.write_all(b"0\n").is_ok()
             }
             Some("READBUF") => {
-                if !state.lock().expect("lock").rx_buffer_open {
-                    let _ = writer.write_all(b"-9\n");
-                    continue;
-                }
+                // A dual-pair mask gets four-element sample sets, the second
+                // pair carrying its own pattern; anything else gets the stock
+                // two-element sets.
+                let mask = {
+                    let g = state.lock().expect("lock");
+                    if !g.rx_buffer_open {
+                        drop(g);
+                        let _ = writer.write_all(b"-9\n");
+                        continue;
+                    }
+                    g.rx_open_masks.last().cloned().unwrap_or_else(|| "00000003".into())
+                };
+                let dual = mask == "0000000f";
+                let set: Vec<u8> = if dual {
+                    [SAMPLE_BYTES, SAMPLE2_BYTES].concat()
+                } else {
+                    SAMPLE_BYTES.to_vec()
+                };
                 let want: usize = words[2].parse().unwrap_or(0);
-                let sets = want / SAMPLE_BYTES.len();
-                let mut data = Vec::with_capacity(sets * SAMPLE_BYTES.len());
+                let sets = want / set.len();
+                let mut data = Vec::with_capacity(sets * set.len());
                 for _ in 0..sets {
-                    data.extend_from_slice(&SAMPLE_BYTES);
+                    data.extend_from_slice(&set);
                 }
                 // Deliberately answered in two chunks, each with its own mask,
                 // because that is the shape the protocol allows and the client
@@ -410,13 +432,19 @@ fn serve(sock: TcpStream, state: Arc<Mutex<DeviceState>>, stop: Arc<AtomicBool>,
                     // payload, which is the position that matters: a read that
                     // gives up there has consumed an unknown number of bytes
                     // and cannot simply be retried from the top.
-                    stalled_chunk(&mut writer, &data[..split])
-                        && write_chunk(&mut writer, &data[split..])
+                    stalled_chunk(&mut writer, &data[..split], &mask)
+                        && write_chunk(&mut writer, &data[split..], &mask)
                 } else {
-                    write_chunk(&mut writer, &data[..split])
-                        && write_chunk(&mut writer, &data[split..])
+                    write_chunk(&mut writer, &data[..split], &mask)
+                        && write_chunk(&mut writer, &data[split..], &mask)
                 };
-                if ok {
+                // A terminating zero only when the request was NOT fully
+                // satisfied — a real iiod stops silently once it has sent the
+                // requested bytes, and the client stops reading there too.
+                // Always appending one (as this fake once did) left the
+                // client one status line behind, which surfaced the moment a
+                // close/reopen transition changed the framing underneath it.
+                if ok && data.len() < want {
                     let _ = writer.write_all(b"0\n");
                 }
                 ok
@@ -443,19 +471,19 @@ fn serve(sock: TcpStream, state: Arc<Mutex<DeviceState>>, stop: Arc<AtomicBool>,
     let _ = writer.shutdown(Shutdown::Both);
 }
 
-fn write_chunk(writer: &mut TcpStream, data: &[u8]) -> bool {
+fn write_chunk(writer: &mut TcpStream, data: &[u8], mask: &str) -> bool {
     writer
-        .write_all(format!("{}\n00000003\n", data.len()).as_bytes())
+        .write_all(format!("{}\n{mask}\n", data.len()).as_bytes())
         .and_then(|()| writer.write_all(data))
         .is_ok()
 }
 
 /// The same chunk, with the device going quiet part-way through its payload for
 /// longer than one socket poll interval.
-fn stalled_chunk(writer: &mut TcpStream, data: &[u8]) -> bool {
+fn stalled_chunk(writer: &mut TcpStream, data: &[u8], mask: &str) -> bool {
     let half = (data.len() / 2) & !3;
     let sent = writer
-        .write_all(format!("{}\n00000003\n", data.len()).as_bytes())
+        .write_all(format!("{}\n{mask}\n", data.len()).as_bytes())
         .and_then(|()| writer.write_all(&data[..half]))
         .and_then(|()| writer.flush())
         .is_ok();
@@ -602,10 +630,11 @@ fn a_2r2t_pluto_plus_streams_its_first_pair_and_leaves_the_second_disabled() {
         );
     }
 
-    // A report from such a device has to say which chain it was using.
+    // A report from such a device has to say what was set aside (the second
+    // transmit pair; both receive pairs are kept available for streams).
     let trace = handle.trace().dump();
     assert!(trace.contains("dual-channel (2R2T)"), "{trace}");
-    assert!(trace.contains("voltage2, voltage3 disabled"), "{trace}");
+    assert!(trace.contains("voltage2, voltage3 aside"), "{trace}");
 
     handle.tx_end();
     handle.release();
@@ -1000,4 +1029,100 @@ fn serve_with_xml(
             break;
         }
     }
+}
+
+/// Phase 4 of the multi-radio work: a 2R2T firmware's two receive chains as
+/// two radios on one connection. The deinterleaver must route each chain's
+/// samples to its own ring, the one LO must be shared — a retune from either
+/// stream moves it and tells the other — and detaching one chain must narrow
+/// the buffer back without disturbing the survivor.
+#[test]
+fn a_2r2t_pluto_serves_both_chains_and_shares_the_lo() {
+    use sdroxide_pluto::PlutoRig;
+
+    let fake = Fake::start_pluto_plus();
+    let rig = PlutoRig::open(&fake.address(), &config(), 435_000_000.0).expect("open");
+    assert_eq!(rig.rx_chains(), 2);
+
+    // A chain the firmware does not stream is refused with the count.
+    let err = rig.rx(2).expect_err("chain 3 of 2 must be refused").to_string();
+    assert!(err.contains("2 chain"), "the refusal should carry the count: {err}");
+
+    let mut r0 = rig.rx(0).expect("attach chain 0");
+    let mut r1 = rig.rx(1).expect("attach chain 1");
+    // A chain cannot be attached twice — two engines draining one ring would
+    // each get half the samples.
+    let err = rig.rx(1).expect_err("duplicate chain 1 must be refused").to_string();
+    assert!(err.contains("already"), "{err}");
+
+    // The receive buffer reopens for both pairs…
+    wait_for("a dual-pair open", || {
+        fake.state.lock().expect("lock").rx_open_masks.last().map(String::as_str)
+            == Some("0000000f")
+    });
+    // …and each chain's pattern lands in its own ring: full scale on chain 0,
+    // half scale on chain 1 — a duplicated first pair would fail both.
+    let mut buf = vec![0f32; 4096];
+    wait_for("chain 0 samples", || {
+        let n = r0.rx_read(&mut buf);
+        n > 0 && (buf[0] - (SAMPLE_I as f32 / 2048.0)).abs() < 1e-6
+    });
+    wait_for("chain 1 samples", || {
+        let n = r1.rx_read(&mut buf);
+        n > 0
+            && (buf[0] - (SAMPLE2_I as f32 / 2048.0)).abs() < 1e-6
+            && (buf[1] - (SAMPLE2_Q as f32 / 2048.0)).abs() < 1e-6
+    });
+
+    // The LO is shared: chain 1 retunes it, the hardware register moves, and
+    // chain 0 is told (in engine-domain hertz) so its radio can adopt the
+    // new centre.
+    r1.set_rx_freq(146_000_000.0);
+    wait_for("the LO write", || {
+        fake.state.lock().expect("lock").get("ad9361-phy/OUTPUT/altvoltage0/frequency")
+            == Some("146000000")
+    });
+    wait_for("chain 0's notification", || r0.poll_lo_moves().contains(&146_000_000.0));
+
+    // An echo of where the LO already is moves nothing and tells nobody —
+    // the dedup that keeps two engines sharing this LO from chasing each
+    // other.
+    r0.set_rx_freq(146_000_000.0);
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(
+        r1.poll_lo_moves().is_empty(),
+        "an echo of the current LO must not come back as a move"
+    );
+
+    // Detaching chain 1 narrows the buffer back to one pair, and chain 0
+    // streams on.
+    drop(r1);
+    wait_for("the single-pair reopen", || {
+        fake.state.lock().expect("lock").rx_open_masks.last().map(String::as_str)
+            == Some("00000003")
+    });
+    r0.discard_pending_rx();
+    wait_for("chain 0 samples after the detach", || {
+        let n = r0.rx_read(&mut buf);
+        n > 0 && (buf[0] - (SAMPLE_I as f32 / 2048.0)).abs() < 1e-6
+    });
+    let r1_again = rig.rx(1).expect("re-attach chain 1 after detach");
+    drop(r1_again);
+    drop(r0);
+    rig.release();
+}
+
+/// A stock Pluto has one receive chain, and asking for a second must be
+/// refused with a message that says what would provide one.
+#[test]
+fn a_stock_pluto_refuses_a_second_chain() {
+    use sdroxide_pluto::PlutoRig;
+
+    let fake = Fake::start();
+    let rig = PlutoRig::open(&fake.address(), &config(), 435_000_000.0).expect("open");
+    assert_eq!(rig.rx_chains(), 1);
+    let err = rig.rx(1).expect_err("a stock Pluto has no chain 2").to_string();
+    assert!(err.contains("1 chain"), "{err}");
+    assert!(err.contains("2R2T"), "the refusal should say what would provide one: {err}");
+    rig.release();
 }

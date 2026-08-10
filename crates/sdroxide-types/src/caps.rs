@@ -54,6 +54,13 @@ pub struct DeviceCaps {
     pub sensors: Vec<String>,
     pub has_swr_sensor: bool,
     pub has_fwd_power_sensor: bool,
+    /// This front end's receive LO is shared with sibling streams on the same
+    /// physical device (the AD9361's two receive chains have one
+    /// synthesiser): retuning this radio moves the others, and theirs moves
+    /// this one — the engine adopts such moves as centre changes. Appended
+    /// last (postcard layout; `PROTO_VERSION` bumped with it).
+    #[serde(default)]
+    pub shared_lo_rx: bool,
 }
 
 impl DeviceCaps {

@@ -16,11 +16,11 @@ use crate::error::Error;
 use crate::iiod::Connection;
 use crate::net::{STATS_INTERVAL, Shared, TX_BUFFER_SAMPLES};
 
-/// I and Q. `Phy::probe` guarantees both buffers carry an I/Q pair at scan
-/// indices 0 and 1, and every buffer is opened with only those two enabled —
-/// a 2R2T device's second pair stays disabled and off the wire — so this is a
-/// constant rather than a guess.
-const IQ_CHANNELS: usize = 2;
+/// I and Q of the transmit buffer's one pair. `Phy::probe` guarantees it sits
+/// at scan indices 0 and 1; a 2R2T device's second transmit pair stays
+/// disabled and off the wire. The receive side is no longer a constant — it
+/// opens with one or two pairs as streams attach (see `Shared::rx_pairs`).
+const TX_IQ_CHANNELS: usize = 2;
 
 /// `-EAGAIN`: the server's own device timeout expired with nothing to hand
 /// over. Normal while a device is idle, and not a reason to tear anything down.
@@ -137,39 +137,59 @@ fn push_iq(ring: &mut Producer<f32>, iq: &[f32], stats: &mut Stats) {
 }
 
 /// Owns the receive buffer.
+///
+/// The buffer is opened with one or two I/Q pairs enabled, following
+/// `Shared::rx_pairs` — a second radio attaching to the other chain widens
+/// it, and its departure narrows it back. The channel mask is a property of
+/// an *open* buffer, so a change means close-and-reopen: a brief gap on the
+/// surviving stream, not a glitch in its alignment.
 pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Producer<f32>) {
     let phy = &shared.phy;
-    let set_bytes = phy.rx_sample_bytes();
-    let i_bytes = phy.rx_scan[0].bytes();
-    let mut raw = vec![0u8; shared.buffer_samples * set_bytes];
+    let max_pairs = phy.rx_pairs_available();
+    let mut raw = vec![0u8; shared.buffer_samples * phy.rx_sample_bytes(max_pairs)];
     let mut iq: Vec<f32> = Vec::with_capacity(shared.buffer_samples * 2);
+    let mut iq1: Vec<f32> = Vec::with_capacity(shared.buffer_samples * 2);
     let mut stats = Stats::new("RX", shared.rate_hz);
-    let mut open = false;
+    let mut open_pairs = 0usize;
 
     while shared.alive.load(Ordering::Relaxed) {
+        let want_pairs = shared.rx_pairs.load(Ordering::Relaxed).clamp(1, max_pairs);
         if !shared.rx_enabled.load(Ordering::Relaxed) {
-            if open {
+            if open_pairs > 0 {
                 let _ = conn.close_buffer(&phy.rx_buffer_id);
-                open = false;
+                open_pairs = 0;
                 shared.rx_active.store(false, Ordering::Relaxed);
             }
             std::thread::sleep(Duration::from_millis(2));
             continue;
         }
-        if !open {
-            if let Err(e) = conn.open_buffer(&phy.rx_buffer_id, shared.buffer_samples, IQ_CHANNELS)
+        if open_pairs > 0 && open_pairs != want_pairs {
+            let _ = conn.close_buffer(&phy.rx_buffer_id);
+            open_pairs = 0;
+            tracing::debug!("PlutoSDR: receive buffer reopening for {want_pairs} pair(s)");
+        }
+        if open_pairs == 0 {
+            if let Err(e) =
+                conn.open_buffer(&phy.rx_buffer_id, shared.buffer_samples, want_pairs * 2)
             {
                 shared.die("the receive buffer", &e);
                 break;
             }
-            open = true;
+            open_pairs = want_pairs;
             shared.rx_active.store(true, Ordering::Relaxed);
             tracing::debug!(
-                "PlutoSDR: receive buffer open, {} samples × {set_bytes} bytes",
-                shared.buffer_samples
+                "PlutoSDR: receive buffer open, {} samples × {} bytes ({} pair(s))",
+                shared.buffer_samples,
+                phy.rx_sample_bytes(open_pairs),
+                open_pairs
             );
         }
-        let n = match conn.read_buf(&phy.rx_buffer_id, IQ_CHANNELS, &mut raw) {
+        // Request exactly one device buffer's worth for the layout that is
+        // open — `raw` is sized for the widest, and asking for more bytes
+        // than the buffer carries would change the request on the wire.
+        let set_bytes = phy.rx_sample_bytes(open_pairs);
+        let want_bytes = shared.buffer_samples * set_bytes;
+        let n = match conn.read_buf(&phy.rx_buffer_id, open_pairs * 2, &mut raw[..want_bytes]) {
             Ok(n) => n,
             Err(Error::Remote { code, .. }) if code == EAGAIN || code == ETIMEDOUT => continue,
             Err(e) => {
@@ -181,21 +201,43 @@ pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Pro
         if sets == 0 {
             continue;
         }
+        let i_bytes = phy.rx_scan[0].bytes();
         iq.clear();
+        iq1.clear();
         for s in 0..sets {
-            let off = s * set_bytes;
+            let mut off = s * set_bytes;
             iq.push(phy.rx_scan[0].decode(&raw[off..off + i_bytes]));
-            iq.push(phy.rx_scan[1].decode(&raw[off + i_bytes..off + set_bytes]));
+            off += i_bytes;
+            let q_bytes = phy.rx_scan[1].bytes();
+            iq.push(phy.rx_scan[1].decode(&raw[off..off + q_bytes]));
+            off += q_bytes;
+            if open_pairs == 2 {
+                let i2 = phy.rx_scan[2].bytes();
+                iq1.push(phy.rx_scan[2].decode(&raw[off..off + i2]));
+                off += i2;
+                let q2 = phy.rx_scan[3].bytes();
+                iq1.push(phy.rx_scan[3].decode(&raw[off..off + q2]));
+            }
         }
         push_iq(&mut ring, &iq, &mut stats);
         // Stamped by this thread rather than by the reader, so an over — during
         // which nothing drains the ring — is not read as a dead radio.
         shared.stamp_rx();
+        if open_pairs == 2 {
+            // The second chain's radio may not have attached its ring yet (or
+            // may just have dropped it); its samples then fall on the floor,
+            // which is what "nobody is listening" should cost.
+            let mut slot = shared.ring1.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(r1) = slot.as_mut() {
+                push_iq(r1, &iq1, &mut stats);
+                shared.stamp_rx1();
+            }
+        }
         stats.on_buffer(sets);
         stats.tick();
     }
 
-    if open {
+    if open_pairs > 0 {
         let _ = conn.close_buffer(&phy.rx_buffer_id);
     }
     shared.rx_active.store(false, Ordering::Relaxed);
@@ -227,7 +269,7 @@ pub(crate) fn tx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Con
             continue;
         }
         if !open {
-            if let Err(e) = conn.open_buffer(&phy.tx_buffer_id, pairs, IQ_CHANNELS) {
+            if let Err(e) = conn.open_buffer(&phy.tx_buffer_id, pairs, TX_IQ_CHANNELS) {
                 shared.die("the transmit buffer", &e);
                 break;
             }

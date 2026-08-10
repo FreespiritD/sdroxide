@@ -27,6 +27,8 @@ pub enum DeviceKey {
     Tci(String),
     /// An OpenHPSDR board, by its IP.
     Hpsdr(std::net::Ipv4Addr),
+    /// A PlutoSDR, by the address dialed (`host[:port]`).
+    Pluto(String),
 }
 
 /// What every entry must answer: whether the connection behind it still

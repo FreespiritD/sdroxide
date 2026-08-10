@@ -1190,7 +1190,7 @@ fn open_pluto_source(
     let address = cfg.target();
     let src = pluto_source::PlutoSource::open(&address, &cfg, center_hz)
         .with_context(|| format!("opening PlutoSDR at {address}"))?;
-    let caps = pluto_caps(&src);
+    let caps = pluto_caps(&src, cfg.rx);
     Ok((Box::new(src), caps))
 }
 
@@ -1207,40 +1207,50 @@ fn open_pluto_source(
 /// Pluto is normally reached over a USB 2.0 Ethernet gadget, which will not
 /// carry a megasample-per-second stream both ways at once. Receive is torn down
 /// for the length of an over so the whole link is available to transmit.
-fn pluto_caps(src: &pluto_source::PlutoSource) -> DeviceCaps {
+fn pluto_caps(src: &pluto_source::PlutoSource, rx: u8) -> DeviceCaps {
     use sdroxide_types::{Direction, GainElement, PlutoConfig};
-    let limits = src.limits();
+    let Some(limits) = src.limits() else {
+        return DeviceCaps { driver: "pluto".into(), label: src.describe(), ..Default::default() };
+    };
+    // The transmitter belongs to the chain-0 radio — the device has one DUC
+    // path wired here.
+    let tx_capable = rx == 0;
+    let mut gains = vec![GainElement {
+        name: PlutoConfig::RF_GAIN_ELEMENT.into(),
+        direction: Direction::Rx,
+        min_db: limits.rx_gain_db.0,
+        max_db: limits.rx_gain_db.1,
+        step_db: limits.rx_gain_db.2,
+    }];
+    if tx_capable {
+        // Transmit "gain" is the AD9361's attenuator, so this range is
+        // negative: 0 dB is full output.
+        gains.push(GainElement {
+            name: PlutoConfig::TX_GAIN_ELEMENT.into(),
+            direction: Direction::Tx,
+            min_db: limits.tx_gain_db.0,
+            max_db: limits.tx_gain_db.1,
+            step_db: limits.tx_gain_db.2,
+        });
+    }
     DeviceCaps {
         driver: "pluto".into(),
         label: src.describe(),
         rx_channels: 1,
-        tx_channels: 1,
+        tx_channels: if tx_capable { 1 } else { 0 },
         full_duplex: false,
         audio_mode: false,
         freq_ranges_rx: vec![limits.rx_lo_hz],
-        freq_ranges_tx: vec![limits.tx_lo_hz],
+        freq_ranges_tx: if tx_capable { vec![limits.tx_lo_hz] } else { Vec::new() },
         sample_rates: PlutoConfig::SAMPLE_RATES.to_vec(),
         rate_ranges: vec![limits.sample_rate_hz],
-        gains: vec![
-            GainElement {
-                name: PlutoConfig::RF_GAIN_ELEMENT.into(),
-                direction: Direction::Rx,
-                min_db: limits.rx_gain_db.0,
-                max_db: limits.rx_gain_db.1,
-                step_db: limits.rx_gain_db.2,
-            },
-            // Transmit "gain" is the AD9361's attenuator, so this range is
-            // negative: 0 dB is full output.
-            GainElement {
-                name: PlutoConfig::TX_GAIN_ELEMENT.into(),
-                direction: Direction::Tx,
-                min_db: limits.tx_gain_db.0,
-                max_db: limits.tx_gain_db.1,
-                step_db: limits.tx_gain_db.2,
-            },
-        ],
+        gains,
         antennas_rx: limits.rx_ports.clone(),
-        antennas_tx: limits.tx_ports.clone(),
+        antennas_tx: if tx_capable { limits.tx_ports.clone() } else { Vec::new() },
+        // On a 2R2T firmware the chains share the one synthesiser, so a
+        // sibling radio's retune moves this radio's centre too (and vice
+        // versa). Stated only when a sibling is possible.
+        shared_lo_rx: src.rx_chains() > 1,
         ..DeviceCaps::default()
     }
 }

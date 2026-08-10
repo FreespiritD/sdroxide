@@ -43,8 +43,9 @@ pub fn lo_offset_for(rate: f64, analog_bw: f64) -> f64 {
     if analog_bw > 0.0 && offset > analog_bw * 0.45 { 0.0 } else { offset }
 }
 
-/// A change a CAT-controlled rig reported out-of-band (the operator turned the
-/// dial or changed the mode on the radio itself).
+/// A change a rig reported out-of-band (the operator turned the dial or
+/// changed the mode on the radio itself, or a sibling stream moved shared
+/// hardware).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ControlUpdate {
     Freq(f64),
@@ -54,6 +55,13 @@ pub enum ControlUpdate {
     TxDrive(f32),
     /// TUNE drive the rig reports, as a 0..1 fraction.
     TuneDrive(f32),
+    /// The hardware centre (LO) moved out from under this source: on a
+    /// shared-LO device (an AD9361's two receive chains share one
+    /// synthesiser), a sibling stream retuned it. The engine *adopts* the new
+    /// centre — its span simply is somewhere else now — and must not answer
+    /// with a correction, or two engines sharing one LO would chase each
+    /// other forever.
+    Center(f64),
 }
 
 /// Anything that produces a stream of complex baseband samples: a live
@@ -439,6 +447,9 @@ impl IqSource for ConvertedSource {
             .into_iter()
             .map(|u| match u {
                 ControlUpdate::Freq(hz) => ControlUpdate::Freq(self.down(hz)),
+                // A centre is a hardware frequency like any other the inner
+                // source reports; the converter offset comes off it too.
+                ControlUpdate::Center(hz) => ControlUpdate::Center(self.down(hz)),
                 other => other,
             })
             .collect()

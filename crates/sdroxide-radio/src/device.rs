@@ -818,6 +818,9 @@ fn probe_caps(dev: &soapysdr::Device) -> Result<DeviceCaps> {
         sensors,
         has_swr_sensor,
         has_fwd_power_sensor,
+        // SoapySDR gives no way to ask whether channels share a synthesiser;
+        // each stream here is opened as its own device anyway.
+        shared_lo_rx: false,
     })
 }
 

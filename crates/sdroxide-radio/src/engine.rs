@@ -2237,6 +2237,36 @@ impl Engine {
                 self.update_display_center();
                 let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
             }
+            // The hardware centre moved out from under this engine — a sibling
+            // stream on a shared-LO device retuned it. Adopt it: the span
+            // simply is somewhere else now, the receivers are clamped into
+            // it, and nothing is commanded back at the hardware — answering
+            // an adoption with a correction is how two engines sharing one LO
+            // would chase each other forever.
+            ControlUpdate::Center(hz) => {
+                if (hz - self.state.center_hz).abs() < 0.5 {
+                    return;
+                }
+                self.state.center_hz = hz;
+                let (lo, hi) = self.passband();
+                let vfo = match self.state.active_vfo {
+                    Vfo::A => {
+                        self.state.vfo_a_hz = self.state.vfo_a_hz.clamp(lo, hi);
+                        self.state.vfo_a_hz
+                    }
+                    Vfo::B => {
+                        self.state.vfo_b_hz = self.state.vfo_b_hz.clamp(lo, hi);
+                        self.state.vfo_b_hz
+                    }
+                };
+                self.state.band = Band::containing(vfo);
+                // Where the hardware demonstrably is, is by definition a
+                // frequency it took.
+                self.good_vfo_hz = vfo;
+                self.reseat_sub_freq();
+                self.update_tuning();
+                let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
+            }
             // Power levels the rig reports (the operator moved them on the rig,
             // or these are the levels it came up with). Adopted, not overridden:
             // the rig's own setting is what the operator asked for.

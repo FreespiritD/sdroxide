@@ -21,8 +21,8 @@
 //! available to transmit — the same trade the HPSDR backend makes.
 
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -50,12 +50,28 @@ pub(crate) const STATS_INTERVAL: Duration = Duration::from_secs(2);
 /// that the per-command round trip is not the bottleneck.
 pub(crate) const TX_BUFFER_SAMPLES: usize = 4096;
 
-/// Control messages from the [`PlutoHandle`] to its control thread.
+/// Control messages from the stream handles to the control thread.
 pub(crate) enum Ctrl {
-    RxFreq(f64),
-    RxGain(f64),
-    AgcMode(String),
-    RxPort(String),
+    /// Retune the receive LO. The AD9361's two receive chains share the one
+    /// synthesiser, so this moves *every* attached stream's centre; `origin`
+    /// names the chain that asked, and the others are told through their
+    /// LO-watch channels — the asker already knows.
+    RxFreq {
+        hz: f64,
+        origin: u8,
+    },
+    RxGain {
+        chain: u8,
+        db: f64,
+    },
+    AgcMode {
+        chain: u8,
+        mode: String,
+    },
+    RxPort {
+        chain: u8,
+        port: String,
+    },
     TxPort(String),
     TxGain(f64),
     /// Reference trim in parts per million, applied in software to every LO we
@@ -88,15 +104,29 @@ pub(crate) struct Shared {
     /// decoded samples, or 0 if it never has. Written by the stream thread
     /// rather than the reader, so a long over is not mistaken for a dead link.
     pub last_rx_ms: AtomicU64,
+    /// The second chain's clock, stamped only while its ring is attached.
+    pub last_rx1_ms: AtomicU64,
     pub transmitting: AtomicBool,
     pub buffer_samples: usize,
     pub rate_hz: f64,
+    /// How many I/Q pairs the receive buffer should be open with (1 or 2).
+    /// The receive thread reopens the buffer when this moves.
+    pub rx_pairs: AtomicUsize,
+    /// The second chain's ring feed, installed while its stream is attached.
+    pub ring1: Mutex<Option<Producer<f32>>>,
+    /// Per-chain LO-move subscribers: `(chain, notify)`. The control thread
+    /// tells every chain but the one that asked when the shared LO moves.
+    pub lo_watch: Mutex<Vec<(u8, Sender<f64>)>>,
     pub trace: Trace,
 }
 
 impl Shared {
     pub(crate) fn stamp_rx(&self) {
         self.last_rx_ms.store(self.opened_at.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn stamp_rx1(&self) {
+        self.last_rx1_ms.store(self.opened_at.elapsed().as_millis() as u64, Ordering::Relaxed);
     }
 
     /// Report a thread's fatal error once and take the connection down, so the
@@ -109,50 +139,96 @@ impl Shared {
     }
 }
 
-/// A live connection to a Pluto. Dropping it stops streaming and closes all
-/// three sockets.
-pub struct PlutoHandle {
+/// What every stream of one connection shares: the three threads, their
+/// sockets, and the endpoints a stream claims when it attaches. The teardown
+/// is [`RigInner::release`], run by the last handle out.
+struct RigInner {
     ctrl: Sender<Ctrl>,
-    rx: Consumer<f32>,
-    tx: Producer<f32>,
-    joins: Vec<JoinHandle<()>>,
-    /// One per connection, for waking its thread out of a blocked read on the
-    /// way out. See [`PlutoHandle::release`].
-    shutdowns: Vec<std::net::TcpStream>,
     shared: Arc<Shared>,
+    joins: Mutex<Vec<JoinHandle<()>>>,
+    /// One per connection, for waking its thread out of a blocked read on the
+    /// way out. See [`RigInner::release`].
+    shutdowns: Vec<std::net::TcpStream>,
+    released: AtomicBool,
+    /// Chain 0's ring endpoint, and the transmit feed — claimable exactly
+    /// once each, by chain 0's stream, and handed back when it drops so a
+    /// rebuilt stream (Settings → Apply) can claim them again.
+    rx0: Mutex<Option<Consumer<f32>>>,
+    tx0: Mutex<Option<Producer<f32>>>,
+    /// Which chains have a live [`PlutoRx`], so one cannot be vended twice:
+    /// two engines draining one ring would each get half the samples.
+    attached: Mutex<std::collections::HashSet<u8>>,
 
-    /// Actual RX sample rate in Hz, after the hardware rounded the request.
-    pub sample_rate_hz: f64,
-    /// Actual TX sample rate. The AD9361 clocks both paths together, so this is
-    /// normally the same number — read back rather than assumed.
-    pub tx_rate_hz: f64,
-    /// Analog filter bandwidth actually set, in Hz. The engine's LO-offset
-    /// policy is decided against this.
-    pub rf_bandwidth_hz: f64,
-    /// What the device says it can do.
-    pub limits: PlutoLimits,
-    pub model: String,
-    pub firmware: String,
-    pub serial: String,
-    /// Where it was reached, for labels and errors.
-    pub addr: SocketAddr,
-
-    rx_gain_db: f64,
-    tx_gain_db: f64,
-    rx_port: String,
-    tx_port: String,
+    sample_rate_hz: f64,
+    tx_rate_hz: f64,
+    rf_bandwidth_hz: f64,
+    limits: PlutoLimits,
+    model: String,
+    firmware: String,
+    serial: String,
+    addr: SocketAddr,
+    /// The gains `open` configured, seeding each stream's cache.
+    init_rx_gain_db: f64,
+    init_tx_gain_db: f64,
+    /// The ports read back at open (chain 0's).
+    rx_port0: String,
+    tx_port0: String,
     /// A sentence for `IqSource::open_status`, or `None` when it came up clean.
     open_status: Option<String>,
-    released: bool,
 }
 
-impl PlutoHandle {
-    /// Open `address` (`host[:port]`), configure the front end from `cfg`, and
-    /// start receiving at `center_hz`.
-    pub fn open(address: &str, cfg: &PlutoConfig, center_hz: f64) -> Result<PlutoHandle> {
+impl RigInner {
+    /// Stop the threads and close all three sockets, ahead of the engine
+    /// building this front end's replacement. Idempotent.
+    ///
+    /// # Why the sockets are shut down and not just flagged
+    ///
+    /// This can run on the engine thread, and it joins three threads that
+    /// spend their lives blocked in reads. A thread only notices `alive`
+    /// between reads, so on a link that stalls, joining one could take
+    /// seconds of frozen audio at exactly the moment the operator is trying
+    /// to recover. Shutting the socket down makes the blocked read return
+    /// immediately. On a healthy link this changes nothing.
+    fn release(&self) {
+        if self.released.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        self.shared.alive.store(false, Ordering::Relaxed);
+        self.shared.rx_enabled.store(false, Ordering::Relaxed);
+        self.shared.tx_enabled.store(false, Ordering::Relaxed);
+        let _ = self.ctrl.send(Ctrl::Shutdown);
+        for sock in &self.shutdowns {
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+        }
+        for j in self.joins.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
+            let _ = j.join();
+        }
+        tracing::debug!("PlutoSDR: released {}", self.addr);
+    }
+}
+
+impl Drop for RigInner {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// A live connection to a Pluto, shared by every chain stream on it. Cheap to
+/// clone; the sockets close when the last clone (and every [`PlutoRx`]) is
+/// gone.
+#[derive(Clone)]
+pub struct PlutoRig {
+    inner: Arc<RigInner>,
+}
+
+impl PlutoRig {
+    /// Open `address` (`host[:port]`) and configure the front end from `cfg`,
+    /// with the receive LO at `center_hz`. No streams yet — each chain's
+    /// starts when [`PlutoRig::rx`] vends it.
+    pub fn open(address: &str, cfg: &PlutoConfig, center_hz: f64) -> Result<PlutoRig> {
         let trace = Trace::new();
         crate::trace::remember(&trace);
-        let result = PlutoHandle::open_traced(address, cfg, center_hz, &trace);
+        let result = PlutoRig::open_traced(address, cfg, center_hz, &trace);
         if let Err(e) = &result {
             // The trace outlives the failed attempt, and a session report that
             // stops mid-sequence without saying why has to be diagnosed by
@@ -167,7 +243,7 @@ impl PlutoHandle {
         cfg: &PlutoConfig,
         center_hz: f64,
         trace: &Trace,
-    ) -> Result<PlutoHandle> {
+    ) -> Result<PlutoRig> {
         let addr = resolve(address)?;
         trace.note(format!("opening {addr} (from {address:?})"));
         tracing::info!(
@@ -201,10 +277,10 @@ impl PlutoHandle {
             rate * 0.9
         };
         let bandwidth = phy.set_bandwidth(&mut control, want_bw)?;
-        phy.set_agc_mode(&mut control, cfg.agc.iio_name())?;
-        phy.set_rx_gain(&mut control, cfg.agc.iio_name(), cfg.rx_gain_db)?;
+        phy.set_agc_mode(&mut control, 0, cfg.agc.iio_name())?;
+        phy.set_rx_gain(&mut control, 0, cfg.agc.iio_name(), cfg.rx_gain_db)?;
         if !cfg.rx_port.trim().is_empty() {
-            phy.set_rx_port(&mut control, cfg.rx_port.trim())?;
+            phy.set_rx_port(&mut control, 0, cfg.rx_port.trim())?;
         }
         if !cfg.tx_port.trim().is_empty() {
             phy.set_tx_port(&mut control, cfg.tx_port.trim())?;
@@ -263,6 +339,13 @@ impl PlutoHandle {
             cfg.rx_gain_db,
         );
 
+        if phy.rx_pairs_available() > 1 {
+            tracing::info!(
+                "PlutoSDR: this firmware streams {} receive chains — a second radio on the \
+                 same address can take the other one (they share the one LO)",
+                phy.rx_pairs_available()
+            );
+        }
         let buffer_samples = cfg.buffer_samples.clamp(1024, 1 << 20);
         let shared = Arc::new(Shared {
             phy: phy.clone(),
@@ -273,9 +356,13 @@ impl PlutoHandle {
             alive: AtomicBool::new(true),
             opened_at: Instant::now(),
             last_rx_ms: AtomicU64::new(0),
+            last_rx1_ms: AtomicU64::new(0),
             transmitting: AtomicBool::new(false),
             buffer_samples,
             rate_hz: rate,
+            rx_pairs: AtomicUsize::new(1),
+            ring1: Mutex::new(None),
+            lo_watch: Mutex::new(Vec::new()),
             trace: trace.clone(),
         });
 
@@ -321,52 +408,263 @@ impl PlutoHandle {
             })?,
         ];
 
-        Ok(PlutoHandle {
-            ctrl: ctrl_tx,
-            rx: rx_cons,
-            tx: tx_prod,
-            joins,
-            shutdowns,
-            shared,
-            sample_rate_hz: rate,
-            tx_rate_hz: tx_rate,
-            rf_bandwidth_hz: bandwidth,
-            limits: phy.limits.clone(),
-            model: phy.model.clone(),
-            firmware: phy.firmware.clone(),
-            serial: phy.serial.clone(),
-            addr,
-            rx_gain_db: cfg.rx_gain_db,
-            tx_gain_db: cfg.tx_gain_db.clamp(phy.limits.tx_gain_db.0, phy.limits.tx_gain_db.1),
-            rx_port,
-            tx_port,
-            open_status: (!warnings.is_empty()).then(|| warnings.join("; ")),
-            released: false,
+        Ok(PlutoRig {
+            inner: Arc::new(RigInner {
+                ctrl: ctrl_tx,
+                shared,
+                joins: Mutex::new(joins),
+                shutdowns,
+                released: AtomicBool::new(false),
+                rx0: Mutex::new(Some(rx_cons)),
+                tx0: Mutex::new(Some(tx_prod)),
+                attached: Mutex::new(std::collections::HashSet::new()),
+                sample_rate_hz: rate,
+                tx_rate_hz: tx_rate,
+                rf_bandwidth_hz: bandwidth,
+                limits: phy.limits.clone(),
+                model: phy.model.clone(),
+                firmware: phy.firmware.clone(),
+                serial: phy.serial.clone(),
+                addr,
+                init_rx_gain_db: cfg.rx_gain_db,
+                init_tx_gain_db: cfg
+                    .tx_gain_db
+                    .clamp(phy.limits.tx_gain_db.0, phy.limits.tx_gain_db.1),
+                rx_port0: rx_port,
+                tx_port0: tx_port,
+                open_status: (!warnings.is_empty()).then(|| warnings.join("; ")),
+            }),
         })
     }
 
     /// One line naming the radio, for logs and the UI.
     pub fn label(&self) -> String {
-        let model = if self.model.is_empty() { "PlutoSDR" } else { self.model.as_str() };
-        format!("{model} @ {} ({:.3} Msps)", self.addr.ip(), self.sample_rate_hz / 1e6)
+        let model =
+            if self.inner.model.is_empty() { "PlutoSDR" } else { self.inner.model.as_str() };
+        format!("{model} @ {} ({:.3} Msps)", self.inner.addr.ip(), self.sample_rate_hz() / 1e6)
     }
 
     /// A warning captured while opening, or `None` when it came up clean.
     pub fn open_status(&self) -> Option<String> {
-        self.open_status.clone()
+        self.inner.open_status.clone()
     }
 
     pub fn trace(&self) -> &Trace {
-        &self.shared.trace
+        &self.inner.shared.trace
     }
 
     pub fn is_alive(&self) -> bool {
-        self.shared.alive.load(Ordering::Relaxed)
+        self.inner.shared.alive.load(Ordering::Relaxed)
     }
 
-    /// Retune the receive local oscillator.
+    pub fn sample_rate_hz(&self) -> f64 {
+        self.inner.sample_rate_hz
+    }
+
+    pub fn tx_rate_hz(&self) -> f64 {
+        self.inner.tx_rate_hz
+    }
+
+    pub fn rf_bandwidth_hz(&self) -> f64 {
+        self.inner.rf_bandwidth_hz
+    }
+
+    pub fn limits(&self) -> &PlutoLimits {
+        &self.inner.limits
+    }
+
+    pub fn model(&self) -> &str {
+        &self.inner.model
+    }
+
+    pub fn firmware(&self) -> &str {
+        &self.inner.firmware
+    }
+
+    pub fn serial(&self) -> &str {
+        &self.inner.serial
+    }
+
+    pub fn addr(&self) -> SocketAddr {
+        self.inner.addr
+    }
+
+    /// How many receive chains this firmware streams (1, or 2 on a 2R2T build
+    /// such as a Pluto+).
+    pub fn rx_chains(&self) -> u8 {
+        self.inner.shared.phy.rx_pairs_available() as u8
+    }
+
+    /// Stop the threads and close the sockets. What dropping the last handle
+    /// does anyway; public for the single-stream wrapper's teardown semantic.
+    pub fn release(&self) {
+        self.inner.release();
+    }
+
+    /// Attach receive chain `chain` and start its stream. Refused for a chain
+    /// this firmware does not stream — a stock Pluto has one — and for one
+    /// that already has a live stream: two engines draining one ring would
+    /// each get half the samples.
+    pub fn rx(&self, chain: u8) -> Result<PlutoRx> {
+        let inner = &self.inner;
+        if !self.is_alive() {
+            return Err(Error::Msg("this connection is closed".into()));
+        }
+        let chains = self.rx_chains();
+        if chain >= chains {
+            return Err(Error::Unsupported(format!(
+                "receive chain {} does not exist: this {} firmware streams {} chain(s){}",
+                chain + 1,
+                if inner.model.is_empty() { "Pluto" } else { inner.model.as_str() },
+                chains,
+                if chains == 1 {
+                    " — a 2R2T build (a Pluto+, or firmware with both chains enabled) is \
+                     needed for a second"
+                } else {
+                    ""
+                }
+            )));
+        }
+        {
+            let mut attached = inner.attached.lock().unwrap_or_else(|e| e.into_inner());
+            if !attached.insert(chain) {
+                return Err(Error::Msg(format!(
+                    "receive chain {} is already running as another radio",
+                    chain + 1
+                )));
+            }
+        }
+        let (ring, tx) = if chain == 0 {
+            let ring = inner.rx0.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let tx = inner.tx0.lock().unwrap_or_else(|e| e.into_inner()).take();
+            match ring {
+                Some(mut r) => {
+                    // The receive thread kept filling this ring while nobody
+                    // held it (chain 0's producer lives in the thread); drain
+                    // the backlog so a re-attached stream starts live rather
+                    // than replaying half a second of the past.
+                    while r.pop().is_ok() {}
+                    (r, tx)
+                }
+                None => {
+                    inner.attached.lock().unwrap_or_else(|e| e.into_inner()).remove(&chain);
+                    return Err(Error::Msg("chain 0's stream endpoint is gone".into()));
+                }
+            }
+        } else {
+            let cap =
+                ((inner.sample_rate_hz * 2.0 * 0.5) as usize).next_power_of_two().max(1 << 16);
+            let (prod, cons) = RingBuffer::<f32>::new(cap);
+            // The liveness clock starts at "data seen now": a stream attached
+            // to a long-running connection must age from its attach, not from
+            // the connection's epoch.
+            inner.shared.stamp_rx1();
+            *inner.shared.ring1.lock().unwrap_or_else(|e| e.into_inner()) = Some(prod);
+            // The receive thread reopens its buffer for both pairs.
+            inner.shared.rx_pairs.store(2, Ordering::Relaxed);
+            (cons, None)
+        };
+        let (lo_tx, lo_rx) = crossbeam_channel::unbounded();
+        inner.shared.lo_watch.lock().unwrap_or_else(|e| e.into_inner()).push((chain, lo_tx));
+        Ok(PlutoRx {
+            rig: Arc::clone(inner),
+            chain,
+            ring: Some(ring),
+            lo_moves: lo_rx,
+            tx,
+            rx_gain_db: inner.init_rx_gain_db,
+            tx_gain_db: inner.init_tx_gain_db,
+            rx_port: if chain == 0 { inner.rx_port0.clone() } else { String::new() },
+            tx_port: inner.tx_port0.clone(),
+        })
+    }
+}
+
+/// One receive chain's stream on a shared [`PlutoRig`]: its IQ ring, its gain
+/// and port, and — on chain 0 — the transmitter. The LO is the rig's, shared
+/// by every chain: tuning here moves the siblings too, and their moves arrive
+/// through [`PlutoRx::poll_lo_moves`]. Dropping the stream detaches it; the
+/// connection lives on for whoever else holds it.
+pub struct PlutoRx {
+    rig: Arc<RigInner>,
+    chain: u8,
+    ring: Option<Consumer<f32>>,
+    /// LO moves a *sibling* stream commanded, in engine-domain hertz.
+    lo_moves: Receiver<f64>,
+    /// TX feed — chain 0 only.
+    tx: Option<Producer<f32>>,
+    rx_gain_db: f64,
+    tx_gain_db: f64,
+    rx_port: String,
+    tx_port: String,
+}
+
+impl std::fmt::Debug for PlutoRx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlutoRx")
+            .field("chain", &self.chain)
+            .field("addr", &self.rig.addr)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for PlutoRx {
+    fn drop(&mut self) {
+        self.rig.attached.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.chain);
+        self.rig
+            .shared
+            .lo_watch
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(c, _)| *c != self.chain);
+        if self.chain == 0 {
+            // Hand the endpoints back so a rebuilt chain-0 stream (Settings →
+            // Apply) can claim them again on the same connection.
+            if let Some(r) = self.ring.take() {
+                *self.rig.rx0.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+            }
+            if let Some(t) = self.tx.take() {
+                *self.rig.tx0.lock().unwrap_or_else(|e| e.into_inner()) = Some(t);
+            }
+        } else {
+            // The receive thread narrows its buffer back to one pair.
+            self.rig.shared.rx_pairs.store(1, Ordering::Relaxed);
+            *self.rig.shared.ring1.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+}
+
+impl PlutoRx {
+    /// Which receive chain this stream is (0-based).
+    pub fn chain(&self) -> u8 {
+        self.chain
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.rig.shared.alive.load(Ordering::Relaxed)
+    }
+
+    pub fn sample_rate_hz(&self) -> f64 {
+        self.rig.sample_rate_hz
+    }
+
+    pub fn rf_bandwidth_hz(&self) -> f64 {
+        self.rig.rf_bandwidth_hz
+    }
+
+    pub fn limits(&self) -> &PlutoLimits {
+        &self.rig.limits
+    }
+
+    /// Retune the receive local oscillator — the one LO every chain shares.
     pub fn set_rx_freq(&self, hz: f64) {
-        let _ = self.ctrl.send(Ctrl::RxFreq(hz));
+        let _ = self.rig.ctrl.send(Ctrl::RxFreq { hz, origin: self.chain });
+    }
+
+    /// LO moves a sibling stream commanded since the last poll, newest last.
+    /// The engine adopts these as centre changes; it must not answer them.
+    pub fn poll_lo_moves(&self) -> Vec<f64> {
+        self.lo_moves.try_iter().collect()
     }
 
     pub fn rx_gain_db(&self) -> f64 {
@@ -374,9 +672,9 @@ impl PlutoHandle {
     }
 
     pub fn set_rx_gain_db(&mut self, db: f64) {
-        let db = db.clamp(self.limits.rx_gain_db.0, self.limits.rx_gain_db.1);
+        let db = db.clamp(self.rig.limits.rx_gain_db.0, self.rig.limits.rx_gain_db.1);
         self.rx_gain_db = db;
-        let _ = self.ctrl.send(Ctrl::RxGain(db));
+        let _ = self.rig.ctrl.send(Ctrl::RxGain { chain: self.chain, db });
     }
 
     pub fn tx_gain_db(&self) -> f64 {
@@ -384,22 +682,28 @@ impl PlutoHandle {
     }
 
     /// Transmit gain in dB — negative, because the AD9361 expresses it as
-    /// attenuation.
+    /// attenuation. Chain 0 owns the transmitter; a no-op elsewhere.
     pub fn set_tx_gain_db(&mut self, db: f64) {
-        let db = db.clamp(self.limits.tx_gain_db.0, self.limits.tx_gain_db.1);
+        if self.tx.is_none() {
+            return;
+        }
+        let db = db.clamp(self.rig.limits.tx_gain_db.0, self.rig.limits.tx_gain_db.1);
         self.tx_gain_db = db;
-        let _ = self.ctrl.send(Ctrl::TxGain(db));
+        let _ = self.rig.ctrl.send(Ctrl::TxGain(db));
     }
 
-    /// Switch the receive AGC mode (`manual`, `slow_attack`, `fast_attack`,
-    /// `hybrid`).
+    /// Switch this chain's receive AGC mode (`manual`, `slow_attack`,
+    /// `fast_attack`, `hybrid`).
     pub fn set_agc_mode(&self, mode: &str) {
-        let _ = self.ctrl.send(Ctrl::AgcMode(mode.to_string()));
+        let _ = self.rig.ctrl.send(Ctrl::AgcMode { chain: self.chain, mode: mode.to_string() });
     }
 
-    /// Reference trim in parts per million, applied to every LO from here on.
+    /// Reference trim in parts per million. One crystal serves the whole
+    /// device, so this belongs to chain 0's radio; a no-op elsewhere.
     pub fn set_ppm(&self, ppm: f64) {
-        let _ = self.ctrl.send(Ctrl::Ppm(ppm));
+        if self.chain == 0 {
+            let _ = self.rig.ctrl.send(Ctrl::Ppm(ppm));
+        }
     }
 
     pub fn rx_port(&self) -> &str {
@@ -422,50 +726,57 @@ impl PlutoHandle {
             return;
         }
         self.rx_port = port.to_string();
-        let _ = self.ctrl.send(Ctrl::RxPort(port.to_string()));
+        let _ = self.rig.ctrl.send(Ctrl::RxPort { chain: self.chain, port: port.to_string() });
     }
 
     /// Select the transmit port, if it is not the one already selected. Same
-    /// reasoning as [`Self::set_rx_port`].
+    /// reasoning as [`Self::set_rx_port`]; chain 0 owns the transmitter.
     pub fn set_tx_port(&mut self, port: &str) {
-        if self.tx_port == port {
+        if self.tx.is_none() || self.tx_port == port {
             return;
         }
         self.tx_port = port.to_string();
-        let _ = self.ctrl.send(Ctrl::TxPort(port.to_string()));
+        let _ = self.rig.ctrl.send(Ctrl::TxPort(port.to_string()));
     }
 
     /// Begin transmitting at `tx_freq_hz`; returns the TX I/Q rate to feed
-    /// [`Self::tx_write`].
+    /// [`Self::tx_write`]. The transmitter is chain 0's — a no-op on any
+    /// other stream, which the engine never asks anyway (their capabilities
+    /// carry no TX).
     pub fn tx_begin(&self, tx_freq_hz: f64) -> f64 {
-        tracing::info!(
-            "PlutoSDR: TX begin at {tx_freq_hz:.0} Hz ({:.3} Msps I/Q, {:.2} dB)",
-            self.tx_rate_hz / 1e6,
-            self.tx_gain_db
-        );
-        self.shared.transmitting.store(true, Ordering::Relaxed);
-        let _ = self.ctrl.send(Ctrl::TxOn(tx_freq_hz));
-        self.tx_rate_hz
+        if self.tx.is_some() {
+            tracing::info!(
+                "PlutoSDR: TX begin at {tx_freq_hz:.0} Hz ({:.3} Msps I/Q, {:.2} dB)",
+                self.rig.tx_rate_hz / 1e6,
+                self.tx_gain_db
+            );
+            self.rig.shared.transmitting.store(true, Ordering::Relaxed);
+            let _ = self.rig.ctrl.send(Ctrl::TxOn(tx_freq_hz));
+        }
+        self.rig.tx_rate_hz
     }
 
     pub fn tx_end(&self) {
-        tracing::info!("PlutoSDR: TX end");
-        self.shared.transmitting.store(false, Ordering::Relaxed);
-        let _ = self.ctrl.send(Ctrl::TxOff);
+        if self.tx.is_some() {
+            tracing::info!("PlutoSDR: TX end");
+            self.rig.shared.transmitting.store(false, Ordering::Relaxed);
+            let _ = self.rig.ctrl.send(Ctrl::TxOff);
+        }
     }
 
     /// Push interleaved I,Q transmit samples. Blocks briefly when the ring is
     /// full (pacing the caller); drops rather than hanging if the transmit
-    /// thread has stalled.
+    /// thread has stalled, and drops silently on a stream with no transmitter.
     ///
     /// Writes go in whole I/Q pairs. Giving up mid-pair would put every later
     /// sample one slot out of step, so each Q would be encoded as an I — the
     /// wrong sideband for the rest of the over.
     pub fn tx_write(&mut self, iq: &[f32]) {
+        let Some(tx) = self.tx.as_mut() else { return };
         for pair in iq.chunks_exact(2) {
             let mut tries = 0u32;
             let mut chunk = loop {
-                match self.tx.write_chunk(2) {
+                match tx.write_chunk(2) {
                     Ok(c) => break c,
                     Err(_) => {
                         if tries > 2000 {
@@ -487,16 +798,17 @@ impl PlutoHandle {
     /// How many transmit floats are still queued, so PTT can be held until the
     /// tail has actually gone out (an FT8 burst needs every symbol).
     pub fn tx_pending(&self) -> usize {
-        self.tx.buffer().capacity().saturating_sub(self.tx.slots())
+        self.tx.as_ref().map_or(0, |tx| tx.buffer().capacity().saturating_sub(tx.slots()))
     }
 
     /// Drain interleaved I,Q floats from the RX ring into `out`. Always returns
     /// an even count, so the stream stays aligned. 0 means nothing yet.
     pub fn rx_read(&mut self, out: &mut [f32]) -> usize {
-        let take = self.rx.slots().min(out.len()) & !1;
+        let Some(ring) = self.ring.as_mut() else { return 0 };
+        let take = ring.slots().min(out.len()) & !1;
         let mut n = 0;
         while n < take {
-            match self.rx.pop() {
+            match ring.pop() {
                 Ok(v) => {
                     out[n] = v;
                     n += 1;
@@ -512,63 +824,147 @@ impl PlutoHandle {
     /// when it resumes, and replaying it would put a burst of stale audio in
     /// front of the first live sample.
     pub fn discard_pending_rx(&mut self) {
-        while self.rx.pop().is_ok() {}
+        if let Some(ring) = self.ring.as_mut() {
+            while ring.pop().is_ok() {}
+        }
     }
 
-    /// How long the device has gone without delivering samples, measured from
-    /// the last buffer decoded or — if none ever arrived — from when the
-    /// connection opened. A stream that never starts is the failure that
-    /// matters most here, so it ages just like one that stops. Always zero
-    /// while transmitting, when receive is deliberately switched off.
+    /// How long this stream has gone without samples, measured from the last
+    /// buffer decoded for its chain or — if none arrived yet — from when it
+    /// attached. A stream that never starts is the failure that matters most
+    /// here, so it ages just like one that stops. Always zero while
+    /// transmitting, when receive is deliberately switched off.
     pub fn silent_for(&self) -> Duration {
-        if self.shared.transmitting.load(Ordering::Relaxed) {
+        let shared = &self.rig.shared;
+        if shared.transmitting.load(Ordering::Relaxed) {
             return Duration::ZERO;
         }
-        let since_open = self.shared.opened_at.elapsed();
-        let last = Duration::from_millis(self.shared.last_rx_ms.load(Ordering::Relaxed));
+        let clock = if self.chain == 0 { &shared.last_rx_ms } else { &shared.last_rx1_ms };
+        let since_open = shared.opened_at.elapsed();
+        let last = Duration::from_millis(clock.load(Ordering::Relaxed));
         since_open.saturating_sub(last)
-    }
-
-    /// Stop the threads and close all three sockets, ahead of the engine
-    /// building this front end's replacement.
-    ///
-    /// Idempotent, and leaves the handle callable: `rx_read` returns nothing and
-    /// `is_alive` returns false, which is what the reopen path expects.
-    ///
-    /// # Why the sockets are shut down and not just flagged
-    ///
-    /// This runs on the engine thread — `reopen_source` and `poll_reconnect`
-    /// both call it before opening the replacement — and it joins three threads
-    /// that spend their lives blocked in reads. A thread only notices `alive`
-    /// between reads, so on a link that stalls, joining one could take as long
-    /// as `IO_DEADLINE`: eight seconds of frozen audio and an unresponsive
-    /// window, at exactly the moment the operator is trying to recover. Shutting
-    /// the socket down makes the blocked read return immediately.
-    ///
-    /// On a healthy link this changes nothing, which is why it never showed up
-    /// over USB.
-    pub fn release(&mut self) {
-        if self.released {
-            return;
-        }
-        self.released = true;
-        self.shared.alive.store(false, Ordering::Relaxed);
-        self.shared.rx_enabled.store(false, Ordering::Relaxed);
-        self.shared.tx_enabled.store(false, Ordering::Relaxed);
-        let _ = self.ctrl.send(Ctrl::Shutdown);
-        for sock in &self.shutdowns {
-            let _ = sock.shutdown(std::net::Shutdown::Both);
-        }
-        for j in self.joins.drain(..) {
-            let _ = j.join();
-        }
-        tracing::debug!("PlutoSDR: released {}", self.addr);
     }
 }
 
-impl Drop for PlutoHandle {
-    fn drop(&mut self) {
-        self.release();
+/// The single-stream view of a Pluto: chain 0 of a [`PlutoRig`] of its own.
+/// What every caller used before chains were split from the connection, kept
+/// for them — the loopback tests and the probe example drive exactly one
+/// chain. `release()` keeps its old meaning here: the whole connection goes
+/// down, not just the stream.
+pub struct PlutoHandle {
+    rig: PlutoRig,
+    rx0: PlutoRx,
+
+    /// Actual RX sample rate in Hz, after the hardware rounded the request.
+    pub sample_rate_hz: f64,
+    /// Actual TX sample rate. The AD9361 clocks both paths together, so this is
+    /// normally the same number — read back rather than assumed.
+    pub tx_rate_hz: f64,
+    /// Analog filter bandwidth actually set, in Hz. The engine's LO-offset
+    /// policy is decided against this.
+    pub rf_bandwidth_hz: f64,
+    /// What the device says it can do.
+    pub limits: PlutoLimits,
+    pub model: String,
+    pub firmware: String,
+    pub serial: String,
+    /// Where it was reached, for labels and errors.
+    pub addr: SocketAddr,
+}
+
+impl PlutoHandle {
+    /// Open `address` (`host[:port]`), configure the front end from `cfg`, and
+    /// start receiving at `center_hz`.
+    pub fn open(address: &str, cfg: &PlutoConfig, center_hz: f64) -> Result<PlutoHandle> {
+        let rig = PlutoRig::open(address, cfg, center_hz)?;
+        let rx0 = rig.rx(0)?;
+        Ok(PlutoHandle {
+            sample_rate_hz: rig.sample_rate_hz(),
+            tx_rate_hz: rig.tx_rate_hz(),
+            rf_bandwidth_hz: rig.rf_bandwidth_hz(),
+            limits: rig.limits().clone(),
+            model: rig.model().to_string(),
+            firmware: rig.firmware().to_string(),
+            serial: rig.serial().to_string(),
+            addr: rig.addr(),
+            rig,
+            rx0,
+        })
+    }
+
+    pub fn label(&self) -> String {
+        self.rig.label()
+    }
+    pub fn open_status(&self) -> Option<String> {
+        self.rig.open_status()
+    }
+    pub fn trace(&self) -> &Trace {
+        self.rig.trace()
+    }
+    pub fn is_alive(&self) -> bool {
+        self.rig.is_alive()
+    }
+    pub fn set_rx_freq(&self, hz: f64) {
+        self.rx0.set_rx_freq(hz);
+    }
+    pub fn rx_gain_db(&self) -> f64 {
+        self.rx0.rx_gain_db()
+    }
+    pub fn set_rx_gain_db(&mut self, db: f64) {
+        self.rx0.set_rx_gain_db(db);
+    }
+    pub fn tx_gain_db(&self) -> f64 {
+        self.rx0.tx_gain_db()
+    }
+    pub fn set_tx_gain_db(&mut self, db: f64) {
+        self.rx0.set_tx_gain_db(db);
+    }
+    pub fn set_agc_mode(&self, mode: &str) {
+        self.rx0.set_agc_mode(mode);
+    }
+    pub fn set_ppm(&self, ppm: f64) {
+        self.rx0.set_ppm(ppm);
+    }
+    pub fn rx_port(&self) -> &str {
+        self.rx0.rx_port()
+    }
+    pub fn tx_port(&self) -> &str {
+        self.rx0.tx_port()
+    }
+    pub fn set_rx_port(&mut self, port: &str) {
+        self.rx0.set_rx_port(port);
+    }
+    pub fn set_tx_port(&mut self, port: &str) {
+        self.rx0.set_tx_port(port);
+    }
+    pub fn tx_begin(&self, tx_freq_hz: f64) -> f64 {
+        self.rx0.tx_begin(tx_freq_hz)
+    }
+    pub fn tx_end(&self) {
+        self.rx0.tx_end();
+    }
+    pub fn tx_write(&mut self, iq: &[f32]) {
+        self.rx0.tx_write(iq);
+    }
+    pub fn tx_pending(&self) -> usize {
+        self.rx0.tx_pending()
+    }
+    pub fn rx_read(&mut self, out: &mut [f32]) -> usize {
+        self.rx0.rx_read(out)
+    }
+    pub fn discard_pending_rx(&mut self) {
+        self.rx0.discard_pending_rx();
+    }
+    pub fn silent_for(&self) -> Duration {
+        self.rx0.silent_for()
+    }
+
+    /// Stop the threads and close all three sockets, ahead of the engine
+    /// building this front end's replacement. Idempotent, and leaves the
+    /// handle callable: `rx_read` returns nothing and `is_alive` returns
+    /// false, which is what the reopen path expects.
+    pub fn release(&mut self) {
+        self.rig.release();
     }
 }
 
@@ -609,12 +1005,16 @@ fn control_thread(
 ) {
     let phy = &shared.phy;
     let mut ppm = cfg.ppm;
-    let mut rx_gain_db = cfg.rx_gain_db;
+    // Per receive chain, because a 2R2T firmware has a register set for each.
+    // Chain 1's values start where chain 0's config put things; its own radio
+    // asserts what it actually wants the moment it attaches.
+    let mut rx_gain_db = [cfg.rx_gain_db; 2];
     // Tracked because the receive gain register is only writable in manual —
     // see `Phy::set_rx_gain`. Seeded from what `open` actually set.
-    let mut agc_mode = cfg.agc.iio_name().to_string();
+    let mut agc_mode = [cfg.agc.iio_name().to_string(), cfg.agc.iio_name().to_string()];
     // Seeded from where `open` left the oscillator, so a ppm trim made before
-    // the operator has touched the dial still moves it.
+    // the operator has touched the dial still moves it. This is the *shared*
+    // LO — the AD9361's chains have one — in engine-domain hertz.
     let mut rx_hz = center_hz;
     while shared.alive.load(Ordering::Relaxed) {
         let msg = match ctrl.recv_timeout(Duration::from_millis(200)) {
@@ -623,32 +1023,51 @@ fn control_thread(
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
         };
         let outcome = match msg {
-            Ctrl::RxFreq(hz) => {
-                rx_hz = hz;
-                phy.set_rx_lo(&mut conn, PlutoConfig::apply_ppm(hz, ppm))
+            Ctrl::RxFreq { hz, origin } => {
+                // An echo of where the LO already is moves nothing and tells
+                // nobody — the dedup that keeps two engines sharing this LO
+                // from chasing each other.
+                if (hz - rx_hz).abs() < 0.5 {
+                    Ok(())
+                } else {
+                    match phy.set_rx_lo(&mut conn, PlutoConfig::apply_ppm(hz, ppm)) {
+                        Ok(()) => {
+                            rx_hz = hz;
+                            notify_lo_moved(&shared, hz, origin);
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
             }
-            Ctrl::RxGain(db) => {
+            Ctrl::RxGain { chain, db } => {
                 // Remembered whatever the mode is, so a slider moved while an
                 // attack mode is running still takes effect on the way back
                 // into manual rather than being thrown away.
-                rx_gain_db = db;
-                phy.set_rx_gain(&mut conn, &agc_mode, db)
+                rx_gain_db[chain as usize & 1] = db;
+                phy.set_rx_gain(&mut conn, chain, &agc_mode[chain as usize & 1], db)
             }
-            Ctrl::AgcMode(mode) => phy.set_agc_mode(&mut conn, &mode).and_then(|()| {
-                agc_mode = mode;
-                // The gain register is the AD9361's while an attack mode runs,
-                // so the value the operator last chose has to be replayed on
-                // the way back into manual — otherwise the radio resumes at
-                // whatever level the AGC happened to leave behind.
-                phy.set_rx_gain(&mut conn, &agc_mode, rx_gain_db)
-            }),
-            Ctrl::RxPort(p) => phy.set_rx_port(&mut conn, &p),
+            Ctrl::AgcMode { chain, mode } => {
+                phy.set_agc_mode(&mut conn, chain, &mode).and_then(|()| {
+                    let c = chain as usize & 1;
+                    agc_mode[c] = mode;
+                    // The gain register is the AD9361's while an attack mode
+                    // runs, so the value the operator last chose has to be
+                    // replayed on the way back into manual — otherwise the
+                    // radio resumes at whatever level the AGC happened to
+                    // leave behind.
+                    phy.set_rx_gain(&mut conn, chain, &agc_mode[c], rx_gain_db[c])
+                })
+            }
+            Ctrl::RxPort { chain, port } => phy.set_rx_port(&mut conn, chain, &port),
             Ctrl::TxPort(p) => phy.set_tx_port(&mut conn, &p),
             Ctrl::TxGain(db) => phy.set_tx_gain(&mut conn, db),
             Ctrl::Ppm(v) => {
                 ppm = v;
                 // Take effect now rather than at the next retune: an operator
-                // trimming ppm is watching a carrier while they drag.
+                // trimming ppm is watching a carrier while they drag. The
+                // engine-domain frequency is unchanged, so the siblings are
+                // not told — their dials did not move.
                 if rx_hz > 0.0 {
                     phy.set_rx_lo(&mut conn, PlutoConfig::apply_ppm(rx_hz, ppm))
                 } else {
@@ -681,6 +1100,18 @@ fn control_thread(
     shared.alive.store(false, Ordering::Relaxed);
     conn.exit();
     tracing::debug!("PlutoSDR: control thread finished");
+}
+
+/// Tell every attached stream but `origin` that the shared LO moved to `hz`
+/// (engine-domain hertz). Their engines adopt the new centre; the origin's
+/// already knows — it asked.
+fn notify_lo_moved(shared: &Shared, hz: f64, origin: u8) {
+    let watchers = shared.lo_watch.lock().unwrap_or_else(|e| e.into_inner());
+    for (chain, tx) in watchers.iter() {
+        if *chain != origin {
+            let _ = tx.send(hz);
+        }
+    }
 }
 
 /// Tune the transmit LO, silence the DDS, take receive down, then hand the link

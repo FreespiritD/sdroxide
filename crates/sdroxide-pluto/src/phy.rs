@@ -38,10 +38,17 @@ pub const RX_BUFFER: &str = "cf-ad9361-lpc";
 /// The transmit DMA buffer.
 pub const TX_BUFFER: &str = "cf-ad9361-dds-core-lpc";
 
-/// Receive chain: `INPUT voltage0` on the phy.
+/// First receive chain: `INPUT voltage0` on the phy.
 const RX_CHAN: (bool, &str) = (false, "voltage0");
+/// Second receive chain, where the firmware has one: `INPUT voltage1`.
+const RX2_CHAN: (bool, &str) = (false, "voltage1");
 /// Transmit chain: `OUTPUT voltage0` on the phy.
 const TX_CHAN: (bool, &str) = (true, "voltage0");
+
+/// The control channel for receive chain `chain` (0 or 1).
+fn rx_chan(chain: u8) -> (bool, &'static str) {
+    if chain == 0 { RX_CHAN } else { RX2_CHAN }
+}
 /// Receive local oscillator.
 const RX_LO: (bool, &str) = (true, "altvoltage0");
 /// Transmit local oscillator.
@@ -126,12 +133,19 @@ pub struct Phy {
     pub phy_id: String,
     pub rx_buffer_id: String,
     pub tx_buffer_id: String,
-    /// Wire layouts of the two *enabled* scan elements — I then Q — on the
-    /// receive buffer. A 2R2T device's second pair is never enabled, so it
-    /// never appears here.
+    /// Wire layouts of the receive buffer's usable scan elements, in scan
+    /// order — I then Q per chain, so a stock Pluto has two entries and a
+    /// 2R2T firmware four. How many are actually enabled is decided per
+    /// session ([`Phy::rx_pairs_available`] is the ceiling); the receive
+    /// thread opens the buffer with the first `pairs × 2` of these.
     pub rx_scan: Vec<ScanFormat>,
-    /// … and for the transmit buffer.
+    /// … and the transmit buffer's first I/Q pair. Transmit stays on the
+    /// first chain whatever the receive side does.
     pub tx_scan: Vec<ScanFormat>,
+    /// Whether the phy exposes the second receive chain's control channel
+    /// (`in_voltage1` with a gain register). Streaming the second pair works
+    /// without it; per-chain gain/port control does not.
+    pub rx2_control: bool,
     /// DDS tone channels on the transmit buffer, which have to be silenced
     /// before DMA transmit will be heard.
     pub dds_channels: Vec<String>,
@@ -148,12 +162,16 @@ impl Phy {
         let rx = ctx.require(RX_BUFFER, addr)?;
         let tx = ctx.require(TX_BUFFER, addr)?;
 
-        let (rx_scan, rx_note) = iq_pair(RX_BUFFER, rx)?;
-        let (tx_scan, tx_note) = iq_pair(TX_BUFFER, tx)?;
+        // Receive keeps up to two chains' worth of scan elements; transmit
+        // stays on the first pair whatever the firmware carries.
+        let (rx_scan, rx_note) = iq_scan(RX_BUFFER, rx, 2)?;
+        let (tx_scan, tx_note) = iq_scan(TX_BUFFER, tx, 1)?;
         for note in [&rx_note, &tx_note].into_iter().flatten() {
             tracing::info!("PlutoSDR: {note}");
             conn.note(note);
         }
+        let rx2_control =
+            phy.channel(RX2_CHAN.1, RX2_CHAN.0).is_some_and(|c| c.has_attr("hardwaregain"));
         let dds_channels: Vec<String> = tx
             .channels
             .iter()
@@ -229,6 +247,7 @@ impl Phy {
             tx_buffer_id: tx.id.clone(),
             rx_scan,
             tx_scan,
+            rx2_control,
             dds_channels,
             limits,
             model: ctx.hw_model().to_string(),
@@ -237,9 +256,16 @@ impl Phy {
         })
     }
 
-    /// Bytes one complex sample occupies on the receive buffer.
-    pub fn rx_sample_bytes(&self) -> usize {
-        self.rx_scan.iter().map(|f| f.bytes()).sum()
+    /// How many receive chains this firmware can stream: the I/Q pairs its
+    /// buffer carries (a stock Pluto 1, a 2R2T build 2).
+    pub fn rx_pairs_available(&self) -> usize {
+        self.rx_scan.len() / 2
+    }
+
+    /// Bytes one sample *set* occupies on the receive buffer when `pairs`
+    /// chains are enabled.
+    pub fn rx_sample_bytes(&self, pairs: usize) -> usize {
+        self.rx_scan[..pairs * 2].iter().map(|f| f.bytes()).sum()
     }
 
     /// … and on the transmit buffer.
@@ -354,17 +380,23 @@ impl Phy {
     /// AD9361, owns the receive gain register.
     pub const MANUAL_AGC: &'static str = "manual";
 
-    /// `manual`, `slow_attack`, `fast_attack` or `hybrid`. An unknown mode is
-    /// refused here rather than on the wire so the message names the modes the
-    /// device actually offers.
-    pub fn set_agc_mode(&self, conn: &mut Connection, mode: &str) -> Result<()> {
+    /// `manual`, `slow_attack`, `fast_attack` or `hybrid` for receive chain
+    /// `chain`. An unknown mode is refused here rather than on the wire so the
+    /// message names the modes the device actually offers; a chain the
+    /// firmware has no control channel for is skipped with a note rather than
+    /// refused — its stream still works, at whatever the AD9361 does.
+    pub fn set_agc_mode(&self, conn: &mut Connection, chain: u8, mode: &str) -> Result<()> {
         if !self.limits.agc_modes.iter().any(|m| m == mode) {
             return Err(Error::Unsupported(format!(
                 "this Pluto has no AGC mode {mode:?} — it offers {}",
                 self.limits.agc_modes.join(", ")
             )));
         }
-        conn.write_attr(&self.phy_id, Some(RX_CHAN), "gain_control_mode", mode)
+        if chain > 0 && !self.rx2_control {
+            tracing::debug!("PlutoSDR: no control channel for receive chain {chain}; AGC held");
+            return Ok(());
+        }
+        conn.write_attr(&self.phy_id, Some(rx_chan(chain)), "gain_control_mode", mode)
     }
 
     /// Receive gain in dB — **only writable while the gain-control mode is
@@ -380,7 +412,7 @@ impl Phy {
     ///
     /// Skipping is not the same as losing the value: the caller keeps it and
     /// replays it on the way back into manual (see `control_thread`).
-    pub fn set_rx_gain(&self, conn: &mut Connection, mode: &str, db: f64) -> Result<()> {
+    pub fn set_rx_gain(&self, conn: &mut Connection, chain: u8, mode: &str, db: f64) -> Result<()> {
         if mode != Phy::MANUAL_AGC {
             tracing::debug!(
                 "PlutoSDR: holding the {db:.1} dB receive gain — the AGC is in {mode}, where \
@@ -388,8 +420,12 @@ impl Phy {
             );
             return Ok(());
         }
+        if chain > 0 && !self.rx2_control {
+            tracing::debug!("PlutoSDR: no control channel for receive chain {chain}; gain held");
+            return Ok(());
+        }
         let db = db.clamp(self.limits.rx_gain_db.0, self.limits.rx_gain_db.1);
-        conn.write_attr(&self.phy_id, Some(RX_CHAN), "hardwaregain", &format!("{db:.6}"))
+        conn.write_attr(&self.phy_id, Some(rx_chan(chain)), "hardwaregain", &format!("{db:.6}"))
     }
 
     /// Transmit gain in dB — negative, because on the AD9361 this is
@@ -409,8 +445,12 @@ impl Phy {
         self.set_tx_gain(conn, self.limits.tx_gain_db.0)
     }
 
-    pub fn set_rx_port(&self, conn: &mut Connection, port: &str) -> Result<()> {
-        conn.write_attr(&self.phy_id, Some(RX_CHAN), "rf_port_select", port)
+    pub fn set_rx_port(&self, conn: &mut Connection, chain: u8, port: &str) -> Result<()> {
+        if chain > 0 && !self.rx2_control {
+            tracing::debug!("PlutoSDR: no control channel for receive chain {chain}; port held");
+            return Ok(());
+        }
+        conn.write_attr(&self.phy_id, Some(rx_chan(chain)), "rf_port_select", port)
     }
 
     pub fn set_tx_port(&self, conn: &mut Connection, port: &str) -> Result<()> {
@@ -445,25 +485,26 @@ impl Phy {
     }
 }
 
-/// The scan elements a buffer is actually opened with: the I/Q pair at scan
-/// indices 0 and 1.
+/// The scan elements a buffer may be opened with: up to `max_pairs` I/Q pairs
+/// at contiguous scan indices from 0.
 ///
-/// A stock Pluto's buffers carry exactly those two. A 2R2T firmware — a Pluto+,
-/// or any AD936x build with both chains compiled in — publishes four, two
-/// chains' worth of I and Q, and refusing such a device would be wrong twice
-/// over: the first pair is a perfectly good radio, and `OPEN`'s channel mask
-/// exists precisely to enable a subset. This driver always opens buffers with
-/// mask bits 0 and 1 set, so only the first pair travels the wire and the
-/// decoders see exactly the layout returned here; the extra elements stay
-/// disabled. The second value is a sentence for the session trace when
-/// elements were left disabled, so a report from such a device says which
-/// chain it was using.
+/// A stock Pluto's buffers carry exactly one pair. A 2R2T firmware — a
+/// Pluto+, or any AD936x build with both chains compiled in — publishes four
+/// elements, two chains' worth of I and Q; the receive side keeps both pairs
+/// (each can serve a radio of its own) while transmit keeps only the first.
+/// `OPEN`'s channel mask enables the first `pairs × 2` of what is returned
+/// here, so every kept element must sit at the scan index its position says,
+/// or the mask would enable something other than what is decoded. The second
+/// value is a sentence for the session trace when elements beyond `max_pairs`
+/// were left aside.
 ///
 /// What cannot be accepted is a device with fewer than two elements — that
-/// cannot carry complex baseband at all — or one whose first pair does not sit
-/// at indices 0 and 1, because the mask would then enable something other than
-/// what is decoded.
-fn iq_pair(name: &str, dev: &Device) -> Result<(Vec<ScanFormat>, Option<String>)> {
+/// cannot carry complex baseband at all.
+fn iq_scan(
+    name: &str,
+    dev: &Device,
+    max_pairs: usize,
+) -> Result<(Vec<ScanFormat>, Option<String>)> {
     let scans = dev.scan_channels();
     if scans.len() < 2 {
         return Err(Error::Unsupported(format!(
@@ -471,30 +512,30 @@ fn iq_pair(name: &str, dev: &Device) -> Result<(Vec<ScanFormat>, Option<String>)
             scans.len()
         )));
     }
-    let indices = (
-        scans[0].scan.expect("scan_channels keeps only scan elements").0,
-        scans[1].scan.expect("scan_channels keeps only scan elements").0,
-    );
-    if indices != (0, 1) {
-        return Err(Error::Unsupported(format!(
-            "{name}'s first scan elements sit at indices {} and {}, not 0 and 1 — the \
-             channel mask this driver opens buffers with (bits 0 and 1) would not select \
-             them",
-            indices.0, indices.1
-        )));
+    // Whole pairs only: a buffer with three elements keeps one pair.
+    let keep = (scans.len() / 2 * 2).min(max_pairs * 2);
+    for (pos, c) in scans[..keep].iter().enumerate() {
+        let idx = c.scan.expect("scan_channels keeps only scan elements").0;
+        if idx != pos as u32 {
+            return Err(Error::Unsupported(format!(
+                "{name}'s scan element {} sits at index {idx}, not {pos} — the channel \
+                 mask this driver opens buffers with would not select it",
+                c.id
+            )));
+        }
     }
-    let note = (scans.len() > 2).then(|| {
-        let disabled: Vec<&str> = scans[2..].iter().map(|c| c.id.as_str()).collect();
+    let note = (scans.len() > keep).then(|| {
+        let kept: Vec<&str> = scans[..keep].iter().map(|c| c.id.as_str()).collect();
+        let aside: Vec<&str> = scans[keep..].iter().map(|c| c.id.as_str()).collect();
         format!(
             "{name} has {} scan elements — a dual-channel (2R2T) firmware such as a \
-             Pluto+. Enabling only the first I/Q pair ({} and {}) and leaving {} disabled",
+             Pluto+. Keeping {} for this side and leaving {} aside",
             scans.len(),
-            scans[0].id,
-            scans[1].id,
-            disabled.join(", ")
+            kept.join(", "),
+            aside.join(", ")
         )
     });
-    Ok((scans.iter().take(2).map(|c| c.scan.expect("checked above").1).collect(), note))
+    Ok((scans[..keep].iter().map(|c| c.scan.expect("checked above").1).collect(), note))
 }
 
 // ---- attribute helpers --------------------------------------------------
@@ -581,36 +622,46 @@ mod tests {
 
     #[test]
     fn a_stock_pluto_buffer_is_its_own_iq_pair() {
-        let (scan, note) = iq_pair("cf-ad9361-lpc", &buffer(&[0, 1])).expect("pair");
+        let (scan, note) = iq_scan("cf-ad9361-lpc", &buffer(&[0, 1]), 2).expect("pair");
         assert_eq!(scan.len(), 2);
         assert!(note.is_none(), "a stock buffer needs no explaining: {note:?}");
     }
 
     /// A Pluto+ runs 2R2T firmware: four scan elements, two chains' worth of
-    /// I/Q. Refusing it was the bug — the first pair is a perfectly good radio,
-    /// and the `OPEN` mask (bits 0 and 1) enables exactly that pair.
+    /// I/Q. The receive side keeps both pairs — each can serve a radio of its
+    /// own — so nothing is left aside and nothing needs explaining.
     #[test]
-    fn a_2r2t_buffer_uses_the_first_pair_and_notes_the_rest() {
-        let (scan, note) = iq_pair("cf-ad9361-lpc", &buffer(&[0, 1, 2, 3])).expect("pair");
+    fn a_2r2t_receive_buffer_keeps_both_pairs() {
+        let (scan, note) = iq_scan("cf-ad9361-lpc", &buffer(&[0, 1, 2, 3]), 2).expect("pairs");
+        assert_eq!(scan.len(), 4);
+        assert!(note.is_none(), "both pairs kept, nothing to note: {note:?}");
+    }
+
+    /// The transmit side stays on the first chain, so a 2R2T transmit buffer
+    /// keeps one pair and says what it left aside.
+    #[test]
+    fn a_2r2t_transmit_buffer_keeps_the_first_pair_and_notes_the_rest() {
+        let (scan, note) =
+            iq_scan("cf-ad9361-dds-core-lpc", &buffer(&[0, 1, 2, 3]), 1).expect("pair");
         assert_eq!(scan.len(), 2);
-        let note = note.expect("a disabled pair is worth a line in the report");
+        let note = note.expect("a pair left aside is worth a line in the report");
         assert!(note.contains("4 scan elements"), "{note}");
-        assert!(note.contains("voltage0 and voltage1"), "{note}");
+        assert!(note.contains("voltage0, voltage1"), "{note}");
         assert!(note.contains("voltage2, voltage3"), "{note}");
     }
 
     #[test]
     fn too_few_scan_elements_are_refused() {
-        let err = iq_pair("cf-ad9361-lpc", &buffer(&[0])).expect_err("one element");
+        let err = iq_scan("cf-ad9361-lpc", &buffer(&[0]), 2).expect_err("one element");
         assert!(err.to_string().contains("1 scan element"), "{err}");
     }
 
-    /// The mask `open_buffer` sends is literally bits 0 and 1; a device whose
-    /// first pair sits elsewhere would stream elements we would mis-decode.
+    /// The mask `open_buffer` sends is literally the low bits; a device whose
+    /// pairs sit elsewhere would stream elements we would mis-decode.
     #[test]
     fn a_pair_off_indices_zero_and_one_is_refused() {
-        let err = iq_pair("cf-ad9361-lpc", &buffer(&[2, 3])).expect_err("wrong indices");
-        assert!(err.to_string().contains("2 and 3"), "{err}");
+        let err = iq_scan("cf-ad9361-lpc", &buffer(&[2, 3]), 2).expect_err("wrong indices");
+        assert!(err.to_string().contains("index 2"), "{err}");
     }
 
     #[test]

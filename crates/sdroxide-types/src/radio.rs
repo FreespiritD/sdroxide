@@ -1017,6 +1017,15 @@ pub struct PlutoConfig {
     /// at 2 Msps: long enough that the per-buffer round trip is not the
     /// bottleneck, short enough that a retune is not visibly late.
     pub buffer_samples: usize,
+    /// Which of the device's receive chains this radio runs, 0-based. A 2R2T
+    /// firmware (a Pluto+) streams two; two radios on the same address share
+    /// one connection, each with its own chain — **and the one LO**: the
+    /// AD9361's chains share a synthesiser, so retuning either radio moves
+    /// both, and the second chain is a second antenna, not a second
+    /// frequency. The transmitter belongs to chain 0's radio. Defaults keep
+    /// every existing `radio.json` on chain 0, exactly as before.
+    #[serde(default)]
+    pub rx: u8,
 }
 
 impl Default for PlutoConfig {
@@ -1036,6 +1045,7 @@ impl Default for PlutoConfig {
             tx_port: String::new(),
             ppm: 0.0,
             buffer_samples: 32768,
+            rx: 0,
         }
     }
 }

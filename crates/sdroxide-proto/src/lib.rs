@@ -221,7 +221,11 @@ use sdroxide_types::{
 /// `inverting` and `StationConfig` gained `rotator`, and postcard is not
 /// self-describing, so every message carrying either (`SetSatConfig`, the
 /// `StationConfig` bundle) changes layout and both ends have to agree.
-pub const PROTO_VERSION: u16 = 48;
+///
+/// v49: `DeviceCaps` gained `shared_lo_rx` (a Pluto 2R2T's chains share one
+/// LO). Appended field, but postcard is not self-describing, so every message
+/// carrying capabilities changes layout and both ends have to agree.
+pub const PROTO_VERSION: u16 = 49;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

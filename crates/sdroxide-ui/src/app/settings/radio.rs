@@ -677,6 +677,31 @@ pub(in crate::app) fn settings_pluto_tab(
         );
         ui.end_row();
 
+        // Which receive chain of the AD9361 this radio runs. Unlike TCI or
+        // HPSDR the chains are not independently tunable — one synthesiser
+        // serves both — so RX2 is a second *antenna*, not a second frequency.
+        ui.label("Receiver");
+        let shown = format!("RX{}", cfg.pluto.rx + 1);
+        ComboBox::from_id_salt("pluto_rx")
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                for rx in 0u8..2 {
+                    if ui.selectable_label(cfg.pluto.rx == rx, format!("RX{}", rx + 1)).clicked() {
+                        cfg.pluto.rx = rx;
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "A Pluto+ or a revision-C Pluto unlocked to 2R2T can serve two radio \
+                 tabs from one box — this radio on RX1 and another on RX2, each on its \
+                 own antenna. The two chains share the one oscillator, so retuning \
+                 either radio moves both; what RX2 buys is a second antenna on the \
+                 same spectrum (diversity), not a second band. The transmitter belongs \
+                 to the RX1 radio. A stock 1R1T Pluto refuses RX2 when it connects.",
+            );
+        ui.end_row();
+
         ui.label("Sample rate").on_hover_text(
             "Width of the spectrum sdroxide receives. The AD9361 reaches 61.44 Msps; \
              the USB network link does not, which is what this list is scaled to. \
