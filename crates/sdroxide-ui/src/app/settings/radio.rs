@@ -1427,6 +1427,16 @@ pub(in crate::app) fn settings_sdrplay_tab(
         .map(|d| d.model())
         .unwrap_or(SdrPlayModel::Rsp1b);
 
+    // A device listed without a serial number (or an unrecognised hardware
+    // version) is the signature of a USB communication problem: it opens and
+    // streams, but often deaf. Say so here, where the operator is already
+    // looking for what went wrong — picking such an entry also stores an
+    // empty serial, indistinguishable from "first one found".
+    if let Some(w) = devices.iter().find_map(|d| d.identity_warning()) {
+        ui.label(RichText::new(w).color(Color32::from_rgb(220, 170, 70)));
+        ui.add_space(6.0);
+    }
+
     egui::Grid::new("sdrplay-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Receiver");
         ui.horizontal(|ui| {

@@ -1412,9 +1412,13 @@ fn engine_thread(
     let _ = event_tx.send(RadioEvent::Scanner(scan_cfg.clone()));
     // Surface any warning captured while opening the source (e.g. radio audio
     // device unavailable / mono card chosen for IQ) so the UI can show it
-    // instead of an unexplained "waiting for spectrum".
-    if let Some(msg) = source.open_status() {
-        let _ = event_tx.send(RadioEvent::Notice(Some(msg)));
+    // instead of an unexplained "waiting for spectrum" — together with any
+    // configuration file that had to be reset to defaults on load, which
+    // would otherwise announce itself only as a radio that forgot its setup.
+    let mut notes: Vec<String> = source.open_status().into_iter().collect();
+    notes.extend(sdroxide_config::take_load_alerts());
+    if !notes.is_empty() {
+        let _ = event_tx.send(RadioEvent::Notice(Some(notes.join("\n"))));
     }
 
     // Seeded with what is already on disk rather than with the state this
@@ -5739,8 +5743,12 @@ impl Engine {
         info!(source = %self.source.describe(), audio_mode = self.audio_mode, "radio source swapped at runtime");
         let _ = self.event_tx.send(RadioEvent::Capabilities(self.caps.clone()));
         let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
-        // Surface any open warning (radio audio unavailable, …) or clear a stale one.
-        let _ = self.event_tx.send(RadioEvent::Notice(self.source.open_status()));
+        // Surface any open warning (radio audio unavailable, …) and any config
+        // file reset to defaults by the reload, or clear a stale notice.
+        let mut notes: Vec<String> = self.source.open_status().into_iter().collect();
+        notes.extend(sdroxide_config::take_load_alerts());
+        let _ =
+            self.event_tx.send(RadioEvent::Notice((!notes.is_empty()).then(|| notes.join("\n"))));
 
         // Re-establish mode-dependent chains for the fresh state.
         self.sync_digi_mode();

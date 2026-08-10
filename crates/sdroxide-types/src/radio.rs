@@ -1458,6 +1458,49 @@ impl SdrPlayDevice {
     pub fn label(&self) -> String {
         format!("{}  (serial {})", self.model().label(), self.serial)
     }
+
+    /// Whether the service reported this receiver without a usable identity:
+    /// no serial number, or a hardware version these bindings do not know.
+    ///
+    /// A missing serial is SDRplay's own documented signature of a USB
+    /// communication problem — a brownout, a bad cable, or an API service
+    /// holding a stale session after the device re-enumerated under it. Such
+    /// a receiver still lists, selects and streams, but often deaf, and
+    /// nothing else about the session looks wrong; hence a dedicated check
+    /// every surface can warn from.
+    pub fn identity_missing(&self) -> bool {
+        Self::degraded_identity(&self.serial, self.model())
+    }
+
+    /// The predicate behind [`Self::identity_missing`], for callers that hold
+    /// the serial and model without a device row (the running source).
+    pub fn degraded_identity(serial: &str, model: SdrPlayModel) -> bool {
+        serial.trim().is_empty() || model == SdrPlayModel::Unknown
+    }
+
+    /// Operator-facing warning for a degraded enumeration, `None` when
+    /// healthy. One composer so the settings picker, the standing notice and
+    /// the log all say the same thing.
+    pub fn degraded_warning(serial: &str, model: SdrPlayModel) -> Option<String> {
+        if !Self::degraded_identity(serial, model) {
+            return None;
+        }
+        let what = if serial.trim().is_empty() {
+            "no serial number"
+        } else {
+            "an unrecognised hardware version"
+        };
+        Some(format!(
+            "The SDRplay service reports this RSP with {what} — usually a USB \
+             communication problem, and such a receiver often runs deaf. Restart the \
+             SDRplay API service, then unplug and replug the receiver."
+        ))
+    }
+
+    /// [`Self::degraded_warning`] for a listed device.
+    pub fn identity_warning(&self) -> Option<String> {
+        Self::degraded_warning(&self.serial, self.model())
+    }
 }
 
 /// Named converters for [`RadioConfig::converter_offset_hz`], with the offset
@@ -1760,6 +1803,31 @@ mod tests {
         assert_eq!(SdrPlayModel::Rsp2.antennas(SdrPlayDuoTuner::Tuner1).len(), 3);
         assert_eq!(SdrPlayModel::RspDuo.antennas(SdrPlayDuoTuner::Tuner1).len(), 2);
         assert!(SdrPlayModel::RspDuo.antennas(SdrPlayDuoTuner::Tuner2).is_empty());
+    }
+
+    /// An RSP enumerating with no serial (or a hwVer nothing decodes) is
+    /// SDRplay's signature of a USB brownout or a wedged API service — a
+    /// device that lists and streams but hears nothing. Field-reported on an
+    /// RSP1B after broadband interference; every surface warns from this one
+    /// predicate.
+    #[test]
+    fn an_rsp_without_an_identity_is_flagged_as_degraded() {
+        let healthy = SdrPlayDevice { serial: "2405001234".into(), hw_ver: 6 };
+        assert!(!healthy.identity_missing());
+        assert!(healthy.identity_warning().is_none());
+
+        let no_serial = SdrPlayDevice { serial: "  ".into(), hw_ver: 6 };
+        assert!(no_serial.identity_missing());
+        assert!(no_serial.identity_warning().unwrap().contains("no serial number"));
+
+        let no_model = SdrPlayDevice { serial: "2405001234".into(), hw_ver: 0 };
+        assert!(no_model.identity_missing());
+        assert!(no_model.identity_warning().unwrap().contains("hardware version"));
+
+        // Both point the operator at the same remedy.
+        for d in [&no_serial, &no_model] {
+            assert!(d.identity_warning().unwrap().contains("Restart the SDRplay API service"));
+        }
     }
 
     /// A discovered radio and a typed address are two different things, and the

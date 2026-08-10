@@ -681,6 +681,9 @@ fn probe_sdrplay() {
             println!("=== SDRplay RSP (vendor API service) ===");
             for (i, d) in devices.iter().enumerate() {
                 println!("  {}: {}", i, d.label());
+                if let Some(w) = d.identity_warning() {
+                    println!("     ! {w}");
+                }
             }
         }
         Err(e) => println!("SDRplay: {e}"),

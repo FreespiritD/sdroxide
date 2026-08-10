@@ -193,10 +193,19 @@ impl IqSource for SdrPlaySource {
         self.handle.release();
     }
 
-    /// Standing conditions an operator needs to see: DC on the antenna port,
-    /// and an ADC being overloaded right now.
+    /// Standing conditions an operator needs to see: a degraded enumeration,
+    /// DC on the antenna port, and an ADC being overloaded right now.
     fn open_status(&self) -> Option<String> {
         let mut notes = Vec::new();
+        // A device the service lists without an identity streams but often
+        // hears nothing — and nothing else about the session looks wrong, so
+        // this note is the only thing standing between the operator and a
+        // deaf receiver with no explanation.
+        if let Some(w) =
+            sdroxide_types::SdrPlayDevice::degraded_warning(self.handle.serial(), self.model())
+        {
+            notes.push(w);
+        }
         if self.bias_tee {
             notes.push(format!("{}: bias tee is ON — ~4.7 V DC on the antenna port", self.label));
         }

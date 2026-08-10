@@ -159,6 +159,11 @@ fn run(
     };
     let model = SdrPlayModel::from_hw_ver(dev.hw_ver);
     let serial = dev.serial();
+    if let Some(w) = sdroxide_types::SdrPlayDevice::degraded_warning(&serial, model) {
+        // Streaming still starts — the operator may know better — but this in
+        // the log turns "deaf for days" into a one-line diagnosis.
+        tracing::warn!("{w}");
+    }
 
     let mut params_ptr: *mut ffi::DeviceParamsT = std::ptr::null_mut();
     let err = unsafe { (api.get_device_params)(dev.dev, &mut params_ptr) };

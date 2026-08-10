@@ -2,10 +2,57 @@
 //! (`~/.config/sdroxide/` on Linux).
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
+
+/// Configuration files that had to be reset to defaults because their content
+/// would not parse. A log line is not enough for these: the operator's device
+/// pinning and gain setup silently vanish with such a reset, and the first
+/// symptom is a radio that behaves like it was never configured. The engine
+/// drains this into the on-screen notice at startup and on every source swap.
+static LOAD_ALERTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Drain the pending configuration-reset alerts (oldest first).
+pub fn take_load_alerts() -> Vec<String> {
+    std::mem::take(&mut *LOAD_ALERTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+}
+
+/// A file was read but did not parse: keep it for inspection as `<file>.bak`
+/// (so the evidence of *what* was lost survives the reset), warn, and queue an
+/// operator-visible alert. The rename also stops the same complaint firing on
+/// every subsequent load.
+fn quarantine_unreadable(dir: &Path, file: &str, err: &dyn std::fmt::Display) {
+    let kept = fs::rename(dir.join(file), dir.join(format!("{file}.bak"))).is_ok();
+    warn!("failed to parse {file}: {err}; resetting to defaults");
+    let mut msg = format!("{file} was unreadable and has been reset to defaults");
+    if kept {
+        msg.push_str(&format!(" — the old file is kept as {file}.bak"));
+    }
+    msg.push_str("; check Settings → Radio");
+    LOAD_ALERTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(msg);
+}
+
+/// Replace `dir/file` by writing a sibling temp file and renaming it into
+/// place. A crash or power cut mid-write then leaves the old file intact
+/// instead of a truncated one — which the next load could only "reset to
+/// defaults" from, forgetting the operator's whole setup.
+fn write_atomic(dir: &Path, file: &str, text: &str) -> Result<(), ConfigError> {
+    fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!("{file}.tmp"));
+    {
+        use std::io::Write;
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(text.as_bytes())?;
+        // The data must be on disk before the rename makes it the real file,
+        // or a power cut could still promote an empty one.
+        f.sync_all()?;
+    }
+    fs::rename(&tmp, dir.join(file))?;
+    Ok(())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -212,20 +259,21 @@ impl Store {
     fn load<T: serde::de::DeserializeOwned + Default>(&self, file: &str) -> T {
         let Ok(dir) = self.dir() else { return T::default() };
         match fs::read_to_string(dir.join(file)) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
-                warn!("failed to parse {file}: {e}; starting fresh");
-                T::default()
-            }),
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(e) => {
+                    quarantine_unreadable(&dir, file, &e);
+                    T::default()
+                }
+            },
             Err(_) => T::default(),
         }
     }
 
     fn save<T: serde::Serialize>(&self, file: &str, value: &T) -> Result<(), ConfigError> {
         let dir = self.dir()?;
-        fs::create_dir_all(&dir)?;
         let text = serde_json::to_string_pretty(value).expect("serialize");
-        fs::write(dir.join(file), text)?;
-        Ok(())
+        write_atomic(&dir, file, &text)
     }
 
     /// Radio backend config, this scope's `radio.json`.
@@ -496,7 +544,9 @@ impl Settings {
             Ok(text) => match toml::from_str(&text) {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!("failed to parse {}: {e}; using defaults", path.display());
+                    if let Some(dir) = path.parent() {
+                        quarantine_unreadable(dir, "config.toml", &e);
+                    }
                     Settings::default()
                 }
             },
@@ -506,10 +556,8 @@ impl Settings {
 
     pub fn save(&self) -> Result<(), ConfigError> {
         let dir = config_dir()?;
-        fs::create_dir_all(&dir)?;
         let text = toml::to_string_pretty(self)?;
-        fs::write(dir.join("config.toml"), text)?;
-        Ok(())
+        write_atomic(&dir, "config.toml", &text)
     }
 }
 
@@ -610,20 +658,21 @@ pub type BandStacks =
 fn load_json<T: serde::de::DeserializeOwned + Default>(file: &str) -> T {
     let Ok(dir) = config_dir() else { return T::default() };
     match fs::read_to_string(dir.join(file)) {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
-            warn!("failed to parse {file}: {e}; starting fresh");
-            T::default()
-        }),
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                quarantine_unreadable(&dir, file, &e);
+                T::default()
+            }
+        },
         Err(_) => T::default(),
     }
 }
 
 fn save_json<T: serde::Serialize>(file: &str, value: &T) -> Result<(), ConfigError> {
     let dir = config_dir()?;
-    fs::create_dir_all(&dir)?;
     let text = serde_json::to_string_pretty(value).expect("serialize");
-    fs::write(dir.join(file), text)?;
-    Ok(())
+    write_atomic(&dir, file, &text)
 }
 
 pub fn load_bandstacks() -> BandStacks {
@@ -1546,6 +1595,31 @@ mod tests {
         let again = create_radio("Bench RX").unwrap();
         assert_eq!(again.id, 2, "id 1 was used once; it stays used");
         assert_eq!(again.name, "Bench RX");
+
+        // A radio.json that does not parse (truncated by a crash mid-write,
+        // disk full, hand edit gone wrong) silently stripping the operator's
+        // whole setup is how a field RSP1B "forgot" its pinned serial. The
+        // load still falls back to defaults — startup must never fail on
+        // config — but the broken file is kept as evidence and an
+        // operator-visible alert is queued.
+        let _ = take_load_alerts();
+        fs::write(root.join("radio.json"), "{ \"backend\": \"Sdr").unwrap();
+        assert_eq!(Store::station().load_radio_config(), sdroxide_types::RadioConfig::default());
+        assert!(root.join("radio.json.bak").exists(), "the broken file must be kept");
+        assert!(!root.join("radio.json").exists(), "quarantine renames, not copies");
+        let alerts = take_load_alerts();
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].contains("radio.json.bak"), "{}", alerts[0]);
+        // Once: the rename leaves nothing for the next load to complain about.
+        assert_eq!(Store::station().load_radio_config(), sdroxide_types::RadioConfig::default());
+        assert!(take_load_alerts().is_empty());
+
+        // Saves go through a sibling temp file + rename, so a crash mid-write
+        // leaves the previous file rather than a truncated one — and the temp
+        // name must not linger.
+        Store::station().save_radio_config(&cfg).unwrap();
+        assert_eq!(Store::station().load_radio_config(), cfg);
+        assert!(!root.join("radio.json.tmp").exists(), "the temp file is renamed away");
 
         unsafe { std::env::remove_var("SDROXIDE_CONFIG_DIR") };
     }
