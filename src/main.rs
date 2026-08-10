@@ -1,5 +1,6 @@
 mod audio_cat_source;
 mod console;
+mod device_registry;
 mod gui_main;
 mod hpsdr_source;
 mod local_controller;
@@ -1270,25 +1271,40 @@ fn open_tci_source(
     radio: &RadioConfig,
     center_hz: f64,
 ) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
-    let src =
-        tci_source::TciSource::open(&radio.tci.address, radio.tci.iq_sample_rate_hz, center_hz)
-            .context("connecting to TCI server")?;
-    let caps = tci_caps(&radio.tci.address, src.sample_rate_hz());
+    let src = tci_source::TciSource::open(
+        &radio.tci.address,
+        radio.tci.iq_sample_rate_hz,
+        center_hz,
+        radio.tci.rx,
+    )
+    .context("connecting to TCI server")?;
+    let caps = tci_caps(&radio.tci.address, src.sample_rate_hz(), radio.tci.rx);
     Ok((Box::new(src), caps))
 }
 
 /// Capabilities for a TCI rig: wideband IQ RX (not `audio_mode`), TX via raw
 /// audio (`tx_audio`) which the rig modulates. The rig enforces its own limits.
-fn tci_caps(address: &str, iq_rate: f64) -> DeviceCaps {
+/// A secondary receiver (`rx > 0`) has no transmitter: TCI rigs have one, and
+/// it belongs to the receiver-0 radio.
+fn tci_caps(address: &str, iq_rate: f64, rx: u32) -> DeviceCaps {
+    let (label, tx_channels, tx_audio) = if rx == 0 {
+        (format!("TCI {address} ({:.0} kHz IQ)", iq_rate / 1000.0), 1, true)
+    } else {
+        (format!("TCI RX{} {address} ({:.0} kHz IQ)", rx + 1, iq_rate / 1000.0), 0, false)
+    };
     DeviceCaps {
         driver: "tci".into(),
-        label: format!("TCI {address} ({:.0} kHz IQ)", iq_rate / 1000.0),
+        label,
         rx_channels: 1,
-        tx_channels: 1,
+        tx_channels,
         audio_mode: false,
-        tx_audio: true,
+        tx_audio,
         freq_ranges_rx: vec![(0.0, 160_000_000.0)],
-        freq_ranges_tx: vec![(1_800_000.0, 54_000_000.0)],
+        freq_ranges_tx: if tx_channels > 0 {
+            vec![(1_800_000.0, 54_000_000.0)]
+        } else {
+            Vec::new()
+        },
         sample_rates: sdroxide_types::TciConfig::IQ_RATES.to_vec(),
         // No RX gains: the SunSDR2DX ATT/Preamp is not reachable over TCI
         // (verified against ExpertSDR3 — no command spelling drives it, and

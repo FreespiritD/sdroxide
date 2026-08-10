@@ -479,11 +479,17 @@ pub struct TciConfig {
     pub address: String,
     /// IQ stream sample rate in Hz (48k / 96k / 192k).
     pub iq_sample_rate_hz: f64,
+    /// Which of the rig's receivers this radio runs, 0-based as the wire
+    /// counts them (a SunSDR2DX has 0 and 1). Two radios on the same address
+    /// share one connection, each with its own receiver; the transmitter
+    /// belongs to receiver 0's radio. `#[serde(default)]` on the struct keeps
+    /// every existing `radio.json` on receiver 0, exactly as before.
+    pub rx: u32,
 }
 
 impl Default for TciConfig {
     fn default() -> Self {
-        TciConfig { address: "127.0.0.1:50001".into(), iq_sample_rate_hz: 192_000.0 }
+        TciConfig { address: "127.0.0.1:50001".into(), iq_sample_rate_hz: 192_000.0, rx: 0 }
     }
 }
 

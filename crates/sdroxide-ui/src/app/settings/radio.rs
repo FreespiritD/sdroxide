@@ -514,6 +514,29 @@ pub(in crate::app) fn settings_tci_tab(
         });
         ui.end_row();
 
+        // Which of the rig's receivers this radio runs. Offered as the two a
+        // SunSDR2DX has; the rig reports its real count when the connection
+        // opens, and asking for one it doesn't have is refused with that
+        // count. Shown 1-based, stored 0-based as the wire counts.
+        ui.label("Receiver");
+        let shown = format!("RX{}", cfg.tci.rx + 1);
+        ComboBox::from_id_salt("tci_rx")
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                for rx in 0u32..2 {
+                    if ui.selectable_label(cfg.tci.rx == rx, format!("RX{}", rx + 1)).clicked() {
+                        cfg.tci.rx = rx;
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "A rig with two receivers (SunSDR2DX) can serve two radio tabs from one \
+                 connection — run this radio on RX1 and another on RX2. The transmitter \
+                 belongs to the RX1 radio.",
+            );
+        ui.end_row();
+
         ui.label("");
         if ui.button("Test connection").clicked() {
             *tci_test = true;

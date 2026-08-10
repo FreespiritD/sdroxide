@@ -3,11 +3,14 @@
 //! NATIVE ONLY. Pure-Rust WebSocket (tungstenite); this crate must never be a
 //! dependency of any wasm-targeted crate.
 //!
-//! [`TciHandle`] is the **client**: sdroxide as the operator of somebody else's
-//! rig (ExpertSDR3, Thetis). Receive is wideband IQ (sdroxide demodulates);
-//! transmit is audio (the rig modulates the audio we send). It is reached only
-//! from the root binary and `local_controller.rs`; the settings UI talks to it
-//! exclusively through the `RadioController` trait.
+//! [`TciDevice`] / [`TciRx`] are the **client**: sdroxide as the operator of
+//! somebody else's rig (ExpertSDR3, Thetis). One connection per rig, one
+//! stream per receiver — a SunSDR2DX serves two radios from one WebSocket.
+//! Receive is wideband IQ (sdroxide demodulates); transmit is audio (the rig
+//! modulates the audio we send) and belongs to receiver 0's stream. Reached
+//! only from the root binary; the settings UI talks to it exclusively through
+//! the `RadioController` trait. [`TciHandle`] is the single-receiver
+//! convenience the tests and the live example drive.
 //!
 //! [`server`] is the **server**: sdroxide as the rig, driven by third-party TCI
 //! clients (WSJT-X, JTDX, MSHV, skimmers). It is owned by the DSP engine, which
@@ -24,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use tungstenite::{HandshakeError, Message, WebSocket};
 
-pub use net::{TX_RATE_HZ, TciError, TciHandle, TciUpdate};
+pub use net::{TX_RATE_HZ, TciDevice, TciError, TciHandle, TciRx, TciUpdate};
 
 /// Default TCI port (ExpertSDR3).
 pub const DEFAULT_PORT: u16 = 50001;
