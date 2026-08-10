@@ -64,6 +64,12 @@ const MODULE_ROW_SPACING: f32 = 5.0;
 /// ("100%" in a drag-value frame). Calibrated at the desktop tier, like the
 /// RX box's row figures; `the_condensed_tx_box_fits_its_rows` keeps it honest.
 const TX_SLIDER_VALUE_W: f32 = 48.0;
+/// Width of the condensed TX box's mic column: the "Mic" label over a vertical
+/// rail. Calibrated the same way, guarded by the same test.
+const TX_MIC_COL_W: f32 = 30.0;
+/// Padding between the TX rows' readouts and the mic column, so the vertical
+/// rail stands apart from the sliders beside it.
+const TX_MIC_GAP: f32 = 16.0;
 /// Text size of the band/mode chip's label.
 const BAND_MODE_TEXT: f32 = 14.0;
 /// Below this the frequency digits stop reading as a dial, so the box sheds
@@ -1943,30 +1949,42 @@ impl SdroxideApp {
         });
     }
 
-    /// The PTT and TUNE latching chips — the head of the condensed TX box's
-    /// top row. Only the desktop draws them here: a compact layout keys the
-    /// transmitter from the menu row instead, where it is one tap away rather
-    /// than two — burying push-to-talk in a menu is not a thing to do to an
-    /// operator.
-    fn tx_key_chips(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+    /// The PTT latching chip, red even at rest — it is the transmit control,
+    /// and the one chip in the strip whose accident matters. Only the desktop
+    /// draws it here: a compact layout keys the transmitter from the menu row
+    /// instead, where it is one tap away rather than two — burying
+    /// push-to-talk in a menu is not a thing to do to an operator.
+    fn tx_ptt_chip(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
         let tx = self.state.tx;
-        if crate::chrome::chip_accent(
+        let label = RichText::new(" PTT ").size(15.0).strong();
+        // Tinted only while idle: keyed, the chip fills red and the label
+        // needs its white ink (`chip_enabled_tinted` is the precedent).
+        let label = if tx.ptt { label } else { label.color(crate::theme::ALERT()) };
+        if crate::chrome::chip_accent_sized(
             ui,
             tx.ptt,
-            RichText::new(" PTT ").size(15.0).strong(),
+            label,
             crate::theme::ALERT(),
             Color32::WHITE,
+            tx_key_chip_size(ui),
         )
         .clicked()
         {
             cmds.push(Command::SetPtt(!tx.ptt));
         }
-        if crate::chrome::chip_accent(
+    }
+
+    /// The TUNE latching chip: keys a carrier at the tune level drawn beside
+    /// it.
+    fn tx_tune_chip(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let tx = self.state.tx;
+        if crate::chrome::chip_accent_sized(
             ui,
             tx.tune,
             RichText::new(" TUNE ").size(15.0),
             crate::theme::YELLOW(),
             crate::theme::INK_ON_CYAN(),
+            tx_key_chip_size(ui),
         )
         .clicked()
         {
@@ -2045,6 +2063,28 @@ impl SdroxideApp {
         }
     }
 
+    /// The Mic gain as a vertical rail with its label above — the whole
+    /// control costs the condensed TX box [`TX_MIC_COL_W`] of width instead of
+    /// a third slider row's worth.
+    fn tx_mic_vertical(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.label(RichText::new("Mic").size(10.5));
+            let mut mic = self.state.tx.mic_gain;
+            // The rail takes whatever height the label left it.
+            ui.spacing_mut().slider_width = (ui.available_height() - 2.0).max(24.0);
+            if crate::chrome::slider(
+                ui,
+                Slider::new(&mut mic, 0.0..=1.0).vertical().show_value(false),
+            )
+            .on_hover_text("Microphone gain")
+            .changed()
+            {
+                cmds.push(Command::SetMicGain(mic));
+            }
+        });
+    }
+
     /// The transmit controls as the TX menu shows them: the keyer and the
     /// levels, in the order the box draws them. PTT is on the strip already;
     /// TUNE rides with the caller (see [`Self::tx_menu`]). See
@@ -2064,27 +2104,37 @@ impl SdroxideApp {
         tx_rows_w_for(ui, self.state.rx[0].mode.allows_voice_keyer())
     }
 
-    /// The condensed TX box: PTT, TUNE, the keyer and Drive on top; the tune
-    /// carrier's level and the mic gain below. Width past [`Self::tx_rows_w`]
-    /// goes to the rails — all of it to Drive's on the top row, half to each
-    /// of the two below, so both rows grow by the same amount.
+    /// The condensed TX box, keyed by what each row transmits: PTT beside the
+    /// drive it keys at (and the voice keyer, which transmits the same way),
+    /// TUNE beside the carrier level it keys at, and the mic gain standing on
+    /// its own at the right as a vertical rail. Each row's rail is sized so
+    /// the two readouts end flush with each other at the box edge, whatever
+    /// width the packer granted.
     fn tx_condensed(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, w: f32) {
-        let extra = (w - self.tx_rows_w(ui)).clamp(0.0, RAIL_STRETCH_MAX);
+        let keyer = self.state.rx[0].mode.allows_voice_keyer();
+        let (fixed1, fixed2) = tx_rows_fixed_w(ui, keyer);
+        let inner = w - 2.0 * crate::chrome::MODULE_MARGIN_X - 4.0;
+        let rows_w = inner - TX_MIC_GAP - TX_MIC_COL_W;
+        let (rail1, rail2) = ((rows_w - fixed1).max(60.0), (rows_w - fixed2).max(60.0));
         crate::chrome::module_bare_h(ui, w, crate::chrome::MODULE_TALL_H, |ui| {
-            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
+            ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
+            ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().slider_width += extra;
-                    self.tx_key_chips(ui, cmds);
+                    ui.spacing_mut().slider_width = rail1;
+                    self.tx_ptt_chip(ui, cmds);
                     self.tx_keyer_chip(ui);
                     self.tx_drive(ui, cmds);
                 });
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().slider_width += extra / 2.0;
+                    ui.spacing_mut().slider_width = rail2;
+                    self.tx_tune_chip(ui, cmds);
                     self.tx_tune_level(ui, cmds);
-                    self.tx_mic(ui, cmds);
                 });
             });
+            // The mic rail stands apart from the rows' readouts, so it reads
+            // as its own control rather than a fourth element of the rows.
+            ui.add_space(TX_MIC_GAP - MODULE_ROW_SPACING);
+            self.tx_mic_vertical(ui, cmds);
         });
     }
 
@@ -2552,30 +2602,45 @@ const DISPLAY_VIEW_CHIPS: [&str; 4] = ["FIT", "PEAK", "SPEC", "WIDE"];
 /// visible to the app module.
 pub(in crate::app) const DISPLAY_TOOL_CHIPS: [&str; 3] = ["☀ 3D", "SKIM", "FFT"];
 
-/// The condensed TX box's natural width: the wider of its two rows plus the
-/// box margins, measured against the live style. The slider blocks are the
-/// rail at the current style width plus [`TX_SLIDER_VALUE_W`] for the readout;
-/// a few points of slack absorb the rounding. A free function of the keyer
-/// flag, like [`plan_short_strip`], so `the_condensed_tx_box_fits_its_rows`
-/// can price both states without an app.
-fn tx_rows_w_for(ui: &egui::Ui, keyer: bool) -> f32 {
+/// The keying chips' shared size: PTT and TUNE drawn to the wider of the two
+/// labels, so the chips match and the level blocks beside them start on the
+/// same column.
+fn tx_key_chip_size(ui: &egui::Ui) -> egui::Vec2 {
+    let w = crate::chrome::chip_width(ui, " PTT ", Some(15.0)).max(crate::chrome::chip_width(
+        ui,
+        " TUNE ",
+        Some(15.0),
+    ));
+    egui::vec2(w, crate::chrome::chip_height(ui, Some(15.0)))
+}
+
+/// The fixed parts of the condensed TX box's two rows — everything but the
+/// slider rail: (PTT, [keyer], the Drive label and its readout) and (TUNE,
+/// the Tune label and its readout), gaps included. Free functions of the
+/// keyer flag, like [`plan_short_strip`], so
+/// `the_condensed_tx_box_fits_its_rows` can price both states without an app.
+fn tx_rows_fixed_w(ui: &egui::Ui, keyer: bool) -> (f32, f32) {
     let g = MODULE_ROW_SPACING;
-    let rail = ui.spacing().slider_width;
+    let key_w = tx_key_chip_size(ui).x;
     let label =
         |s: &str| crate::chrome::text_width(ui, s, egui::TextStyle::Body.resolve(ui.style()));
     let keyer_w = if keyer { crate::chrome::chip_width(ui, " ▶ ", Some(15.0)) + g } else { 0.0 };
-    let row1 = crate::chrome::chip_width(ui, " PTT ", Some(15.0))
-        + g
-        + crate::chrome::chip_width(ui, " TUNE ", Some(15.0))
-        + g
-        + keyer_w
-        + label("Drive")
-        + g
-        + rail
-        + g
-        + TX_SLIDER_VALUE_W;
-    let row2 = label("Tune") + g + rail + g + TX_SLIDER_VALUE_W + g + label("Mic") + g + rail;
-    row1.max(row2) + 2.0 * crate::chrome::MODULE_MARGIN_X + 4.0
+    let row1 = key_w + g + keyer_w + label("Drive") + g + g + TX_SLIDER_VALUE_W;
+    let row2 = key_w + g + label("Tune") + g + g + TX_SLIDER_VALUE_W;
+    (row1, row2)
+}
+
+/// The condensed TX box's natural width: the wider of its rows' fixed parts
+/// plus a rail at the current style width, the mic column and its padding,
+/// the box margins, and a few points of rounding slack.
+fn tx_rows_w_for(ui: &egui::Ui, keyer: bool) -> f32 {
+    let (row1, row2) = tx_rows_fixed_w(ui, keyer);
+    row1.max(row2)
+        + ui.spacing().slider_width
+        + TX_MIC_GAP
+        + TX_MIC_COL_W
+        + 2.0 * crate::chrome::MODULE_MARGIN_X
+        + 4.0
 }
 
 /// The natural width of the RIT/XIT offset row: the chips at their labels and
@@ -3060,36 +3125,33 @@ mod tests {
         }
     }
 
-    /// Lay the condensed TX box's rows out with real chips and real sliders at
-    /// desktop metrics and check both fit the width [`tx_rows_w_for`]'s
-    /// arithmetic reserves — which is what keeps [`TX_SLIDER_VALUE_W`] honest
-    /// against the drag-value egui actually draws.
+    /// Lay the condensed TX box's rows and mic column out with real widgets at
+    /// desktop metrics and check each fits the width [`tx_rows_fixed_w`] and
+    /// [`TX_MIC_COL_W`] price for it — which is what keeps
+    /// [`TX_SLIDER_VALUE_W`] and the mic column honest against what egui
+    /// actually draws.
     #[test]
     fn the_condensed_tx_box_fits_its_rows() {
         for keyer in [false, true] {
             let (ctx, input) = desktop_ctx();
             let _ = ctx.run_ui(input, |ui| {
-                let room = tx_rows_w_for(ui, keyer) - 2.0 * crate::chrome::MODULE_MARGIN_X;
                 ui.spacing_mut().item_spacing = egui::vec2(MODULE_ROW_SPACING, MODULE_ROW_SPACING);
+                let (fixed1, fixed2) = tx_rows_fixed_w(ui, keyer);
+                let rail = ui.spacing().slider_width;
                 // 100% is the widest the readouts get, so the rows are laid
                 // out at it.
                 let (mut drive, mut tune, mut mic) = (1.0f32, 1.0f32, 1.0f32);
                 let pct = |v: f64, _| format!("{:.0}%", v * 100.0);
                 let row1 = ui
                     .horizontal(|ui| {
-                        crate::chrome::chip_accent(
+                        let size = tx_key_chip_size(ui);
+                        crate::chrome::chip_accent_sized(
                             ui,
                             false,
-                            RichText::new(" PTT ").size(15.0).strong(),
+                            RichText::new(" PTT ").size(15.0).strong().color(crate::theme::ALERT()),
                             crate::theme::ALERT(),
                             Color32::WHITE,
-                        );
-                        crate::chrome::chip_accent(
-                            ui,
-                            false,
-                            RichText::new(" TUNE ").size(15.0),
-                            crate::theme::YELLOW(),
-                            crate::theme::INK_ON_CYAN(),
+                            size,
                         );
                         if keyer {
                             crate::chrome::chip_accent(
@@ -3112,6 +3174,15 @@ mod tests {
                     .inner;
                 let row2 = ui
                     .horizontal(|ui| {
+                        let size = tx_key_chip_size(ui);
+                        crate::chrome::chip_accent_sized(
+                            ui,
+                            false,
+                            RichText::new(" TUNE ").size(15.0),
+                            crate::theme::YELLOW(),
+                            crate::theme::INK_ON_CYAN(),
+                            size,
+                        );
                         ui.label("Tune");
                         crate::chrome::slider(
                             ui,
@@ -3119,16 +3190,27 @@ mod tests {
                                 .show_value(true)
                                 .custom_formatter(pct),
                         );
-                        ui.label("Mic");
-                        crate::chrome::slider(
-                            ui,
-                            Slider::new(&mut mic, 0.0..=1.0).show_value(false),
-                        );
                         ui.min_rect().width()
                     })
                     .inner;
-                assert!(row1 <= room + 0.5, "keyer={keyer}: row 1 took {row1} of {room}");
-                assert!(row2 <= room + 0.5, "keyer={keyer}: row 2 took {row2} of {room}");
+                let mic_w = ui
+                    .horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.label(RichText::new("Mic").size(10.5));
+                            ui.spacing_mut().slider_width = 45.0;
+                            crate::chrome::slider(
+                                ui,
+                                Slider::new(&mut mic, 0.0..=1.0).vertical().show_value(false),
+                            );
+                        });
+                        ui.min_rect().width()
+                    })
+                    .inner;
+                let (room1, room2) = (fixed1 + rail, fixed2 + rail);
+                assert!(row1 <= room1 + 0.5, "keyer={keyer}: row 1 took {row1} of {room1}");
+                assert!(row2 <= room2 + 0.5, "keyer={keyer}: row 2 took {row2} of {room2}");
+                assert!(mic_w <= TX_MIC_COL_W + 0.5, "the mic column took {mic_w}");
             });
         }
     }
