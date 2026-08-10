@@ -243,6 +243,37 @@ impl DigiMode {
     }
 }
 
+/// Where a CAT rig's CW comes from when the panel's keyer sends.
+///
+/// A transceiver in CW mode does not modulate what arrives at its sound card —
+/// the transmitter is keyed, by a key line or by its own memory keyer, and
+/// nothing else reaches the air. So sidetone written to the rig's playback
+/// device (which is all an SDR-side keyer can produce) is silently discarded,
+/// and the operator hears nothing go out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CwKeying {
+    /// Hand the text to the rig and let its own keyer send it (Yaesu keyer
+    /// memory playback, Icom CI-V "send CW"). The rig keys itself, so this is
+    /// the only route that puts CW on the air from a rig that is *in* CW.
+    #[default]
+    Cat,
+    /// Send the keyer's sidetone through the rig's sound card as audio. Only
+    /// reaches the air if the rig is left in a voice/data mode, where it goes
+    /// out as a tone on the sideband (MCW) at dial + pitch rather than as CW on
+    /// the dial frequency.
+    Audio,
+}
+
+impl CwKeying {
+    pub const ALL: [CwKeying; 2] = [CwKeying::Cat, CwKeying::Audio];
+    pub fn label(self) -> &'static str {
+        match self {
+            CwKeying::Cat => "Rig keyer (CAT)",
+            CwKeying::Audio => "Sound card (MCW)",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SerialConfig {
@@ -282,6 +313,9 @@ pub struct CatConfig {
     pub mode_control: ModeControl,
     /// What mode the rig uses for the FT8/FT4 engine.
     pub digi_mode: DigiMode,
+    /// Where CW the operator sends comes from — the rig's own keyer, or the
+    /// keyer's sidetone over the sound card.
+    pub cw_keying: CwKeying,
     /// Icom CI-V transceiver address (hex byte), e.g. 0x70 for many rigs.
     pub icom_radio_id: u8,
     pub format: SoundFormat,
@@ -298,6 +332,7 @@ impl Default for CatConfig {
             poll_hz: 5.0,
             mode_control: ModeControl::default(),
             digi_mode: DigiMode::default(),
+            cw_keying: CwKeying::default(),
             icom_radio_id: 0x70,
             format: SoundFormat::default(),
             audio_bw_hz: 4000.0,

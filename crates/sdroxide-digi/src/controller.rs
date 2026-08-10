@@ -89,6 +89,19 @@ pub enum DigiAction {
     /// emitted by diff, so decoding the *same* station twice running — the
     /// common case in a QSO — would stop re-reporting it.
     RadeCallsign { call: String, snr_db: f32, freq_hz: f64 },
+    /// CW for the *rig's* keyer to send, rather than sidetone for the engine to
+    /// transmit. A transceiver in CW mode keys its own transmitter and ignores
+    /// what arrives at its sound card, so on a CAT rig this is the only route
+    /// to the air — and it carries no PTT with it, because the rig switches to
+    /// transmit for the length of the message itself.
+    ///
+    /// `seconds` is how long that will take at the speed the rig was told to
+    /// key at. Nothing comes back from a rig part way through a message, so an
+    /// engine that has to know how long this radio is on the air for — to hold
+    /// the station's transmit interlock across it — has only this.
+    SendCw { text: String, seconds: f32 },
+    /// Stop CW the rig is part way through sending.
+    AbortCw,
 }
 
 struct DecodeJob {

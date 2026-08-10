@@ -23,6 +23,14 @@
 //! where the tone actually is. So the classic [`CwRx`] front end stays, running
 //! alongside for exactly those readouts, and its AFC is also what tells the
 //! tuner where to find the signal.
+//!
+//! Sending has two routes, and which one is right is a property of the radio
+//! rather than of the operator. On an SDR the keyer's sidetone *is* the signal:
+//! it goes through the transmit chain like any other audio and comes out as
+//! on-off keying. On a transceiver told to be in CW it is nothing at all — the
+//! rig keys its own transmitter and never modulates what arrives at its sound
+//! card — so there the text is handed to the rig's keyer instead and the rig
+//! does the sending. [`CatKeyer`] is that second route.
 
 use std::collections::VecDeque;
 use std::time::SystemTime;
@@ -50,6 +58,143 @@ const TX_CHUNK: usize = 400;
 /// keyed on an empty buffer holds the frequency, and the operator who wandered
 /// off is exactly the one not watching for it.
 const TX_IDLE_S: f32 = 5.0;
+/// How long a part-typed word waits for the rest of itself before it is handed
+/// to the rig anyway.
+///
+/// A rig keyed from text sends one message at a time, so every hand-off is a
+/// seam in the sending. Waiting out a typist's pause puts the seams between
+/// words, where the gap is a word space and nobody hears it, instead of inside
+/// the callsign they were half way through.
+const GATHER_S: f32 = 0.4;
+/// Breathing room after a message before the next one goes down the wire — the
+/// rig has to finish keying and take the new text in.
+const CHUNK_GAP_S: f32 = 0.15;
+
+/// Sending by handing text to the radio's own keyer.
+///
+/// Nothing comes back from the rig to say where it has got to, so this keeps
+/// the clock itself: a message handed over at a known speed takes a known time,
+/// which is what says when the next one may go, when the operator's text has
+/// actually been sent, and when our own sending has stopped reaching the
+/// decoder.
+struct CatKeyer {
+    /// Longest run of text the rig takes at once.
+    chunk: usize,
+    /// Typed, but not yet handed over.
+    queue: String,
+    /// When the message now on the air was handed over, and how long it takes.
+    sending_since: Option<SystemTime>,
+    sending_s: f32,
+    /// Characters of the operator's buffer already sent, and how many are in
+    /// the message on the air — enough to colour the panel's sent prefix as it
+    /// goes out rather than a message at a time.
+    sent: usize,
+    in_flight: usize,
+    /// When text last arrived, so a burst of typing leaves as one message.
+    last_input: Option<SystemTime>,
+    /// An abort the operator asked for, waiting to be passed on.
+    abort: bool,
+}
+
+impl CatKeyer {
+    fn new(chunk: usize) -> Self {
+        CatKeyer {
+            chunk: chunk.max(1),
+            queue: String::new(),
+            sending_since: None,
+            sending_s: 0.0,
+            sent: 0,
+            in_flight: 0,
+            last_input: None,
+            abort: false,
+        }
+    }
+
+    /// How far into the message on the air we are, 0..1. `None` when the rig is
+    /// not sending — including once the message it was given has run out.
+    fn progress(&self, now: SystemTime) -> Option<f32> {
+        let since = self.sending_since?;
+        // A wall clock that stepped backwards mid-message (NTP does) is not a
+        // message that finished. Reading it as "no progress yet" holds the next
+        // one back; reading it as "done" would land it on top of what the rig
+        // is still keying.
+        let elapsed = now.duration_since(since).unwrap_or_default().as_secs_f32();
+        (elapsed < self.sending_s).then(|| (elapsed / self.sending_s.max(1e-3)).clamp(0.0, 1.0))
+    }
+
+    /// True while the rig is keying text we gave it.
+    fn sending(&self, now: SystemTime) -> bool {
+        self.progress(now).is_some()
+    }
+
+    /// Retire a finished message: its characters are sent, and the panel's
+    /// colouring stops interpolating across them.
+    fn settle(&mut self, now: SystemTime) {
+        if self.sending_since.is_some() && !self.sending(now) {
+            self.sent += self.in_flight;
+            self.in_flight = 0;
+            self.sending_since = None;
+        }
+    }
+
+    /// The next message to hand over, or `None` if it is not time for one.
+    ///
+    /// Held back while the rig is still sending (a rig part way through a
+    /// message has nowhere to put another), and while the operator looks like
+    /// they are still typing the word — unless they have typed enough to fill a
+    /// message, which is as long as anything may wait.
+    fn next_message(&mut self, now: SystemTime, wpm: f32) -> Option<String> {
+        if self.queue.is_empty() || self.sending_since.is_some() {
+            return None;
+        }
+        let queued = self.queue.chars().count();
+        let paused = self
+            .last_input
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|d| d.as_secs_f32() >= GATHER_S);
+        // A trailing space is the operator finishing a word — the one moment a
+        // seam costs nothing.
+        if !(queued >= self.chunk || paused || self.queue.ends_with(' ')) {
+            return None;
+        }
+        let take = self.split_at(queued);
+        let msg: String = self.queue.chars().take(take).collect();
+        self.queue = self.queue.chars().skip(take).collect();
+        self.in_flight = take;
+        self.sending_since = Some(now);
+        // The rig's keyer sends at one speed: Farnsworth spacing is the app's
+        // sidetone keyer stretching the gaps, and there is no way to ask a rig
+        // for it, so the estimate must not assume it either.
+        self.sending_s = sdroxide_dsp::text_duration_s(&msg, wpm, 0.0) + CHUNK_GAP_S;
+        Some(msg)
+    }
+
+    /// How many characters of the queue go in the next message: all of it when
+    /// it fits, otherwise up to the last word break inside the limit so the
+    /// seam lands between words.
+    fn split_at(&self, queued: usize) -> usize {
+        if queued <= self.chunk {
+            return queued;
+        }
+        let head: Vec<char> = self.queue.chars().take(self.chunk).collect();
+        head.iter()
+            .rposition(|&c| c == ' ')
+            // Only when the break leaves a message worth sending; a long
+            // unbroken run (a string of digits) has to be cut somewhere.
+            .filter(|&i| i + 1 > self.chunk / 2)
+            .map(|i| i + 1)
+            .unwrap_or(self.chunk)
+    }
+
+    fn clear(&mut self) {
+        self.queue.clear();
+        self.sending_since = None;
+        self.sending_s = 0.0;
+        self.sent = 0;
+        self.in_flight = 0;
+        self.last_input = None;
+    }
+}
 
 pub struct CwController {
     cfg: DigiConfig,
@@ -79,6 +224,9 @@ pub struct CwController {
     last_sent: usize,
     /// Sidetone samples produced with an empty keyer queue.
     idle_samples: usize,
+    /// Set when the radio keys itself from text — see [`CatKeyer`]. `None` when
+    /// sending is the sidetone above, which is every SDR.
+    cat: Option<CatKeyer>,
 
     scratch: Vec<f32>,
     scratch48: Vec<f32>,
@@ -90,7 +238,9 @@ pub struct CwController {
 }
 
 impl CwController {
-    pub fn new(cfg: DigiConfig, tap_rate: f64) -> Self {
+    /// `cat_keying` is how much text the radio's own keyer takes at a time, or
+    /// `None` when sending is the keyer's sidetone through the transmit chain.
+    pub fn new(cfg: DigiConfig, tap_rate: f64, cat_keying: Option<usize>) -> Self {
         let pitch = cfg.cw_pitch_hz;
         let mut rx = CwRx::new(CW_RATE, pitch);
         rx.set_speed_lock(cfg.cw_speed_lock.then_some(cfg.cw_wpm));
@@ -118,6 +268,7 @@ impl CwController {
             keyed: false,
             last_sent: 0,
             idle_samples: 0,
+            cat: cat_keying.map(CatKeyer::new),
             scratch: Vec::new(),
             scratch48: Vec::new(),
             status_dirty: true,
@@ -186,6 +337,63 @@ impl CwController {
         out
     }
 
+    /// Keep the radio's own keyer fed: retire a finished message, hand over the
+    /// next one when it is due, and pass on an abort.
+    ///
+    /// Only what the operator has asked to transmit goes out. Text typed with
+    /// the panel out of transmit waits in the queue — the same as the sidetone
+    /// keyer, which holds it in `CwTx` until the over starts.
+    fn poll_cat(&mut self, now: SystemTime, actions: &mut Vec<DigiAction>) {
+        let wpm = self.cfg.cw_wpm;
+        let Some(cat) = self.cat.as_mut() else { return };
+        if std::mem::take(&mut cat.abort) {
+            actions.push(DigiAction::AbortCw);
+            self.status_dirty = true;
+        }
+        let was_sending = cat.sending_since.is_some();
+        cat.settle(now);
+        if cat.sending_since.is_none() && was_sending {
+            self.status_dirty = true; // the message finished: TX lamp, colouring
+            // Our sending is over, so what the decoder holds is our own — the
+            // same reset an over's end does on the sidetone path.
+            self.rx.reset();
+            if let Some(deep) = self.deep.as_ref() {
+                deep.reset();
+            }
+            self.rx_pending.clear();
+        }
+        if self.tx_active
+            && let Some(msg) = cat.next_message(now, wpm)
+        {
+            let seconds = cat.sending_s;
+            actions.push(DigiAction::SendCw { text: msg, seconds });
+            self.status_dirty = true;
+        }
+        // The sent prefix walks across the message as the rig keys it, and the
+        // panel only hears about it when a status goes out — so it is a change
+        // in the count, not the sending itself, that repaints. A character at
+        // any sane speed is a good fraction of a second, so this is a handful
+        // of updates a second and not one per tick.
+        let n = self.sent_chars(now);
+        if n != self.last_sent {
+            self.last_sent = n;
+            self.status_dirty = true;
+        }
+        // Same rule as the sidetone keyer: transmit is not left switched on
+        // around an empty buffer.
+        let idle = self.cat.as_ref().is_some_and(|c| {
+            c.queue.is_empty()
+                && c.sending_since.is_none()
+                && c.last_input
+                    .and_then(|t| now.duration_since(t).ok())
+                    .is_some_and(|d| d.as_secs_f32() >= TX_IDLE_S)
+        });
+        if self.tx_active && idle {
+            self.tx_active = false;
+            self.status_dirty = true;
+        }
+    }
+
     fn cw_status(&self) -> CwStatus {
         CwStatus {
             locked: self.rx.locked(),
@@ -201,7 +409,28 @@ impl CwController {
         self.tx_active || !self.tx.drained()
     }
 
-    fn build_status(&self) -> DigiStatus {
+    /// True while anything of ours is on the air — our own keying, by either
+    /// route. What it guards is the decoder: the tap carries our sending, and
+    /// reading it would only echo us back onto the panel.
+    fn on_air(&self, now: SystemTime) -> bool {
+        self.keyed || self.cat.as_ref().is_some_and(|c| c.sending(now))
+    }
+
+    /// Characters of the operator's buffer that have gone out — what colours
+    /// the sent prefix. With the rig keying itself there is nothing to count
+    /// but the clock, so the message on the air is interpolated across its own
+    /// duration rather than jumping a message at a time.
+    fn sent_chars(&self, now: SystemTime) -> usize {
+        let Some(cat) = self.cat.as_ref() else {
+            return self.tx.sent_chars();
+        };
+        cat.sent + (cat.in_flight as f32 * cat.progress(now).unwrap_or(1.0)).round() as usize
+    }
+
+    /// `now` is the caller's clock rather than this function's, so that what a
+    /// status reports about the message on the air — how far into it the rig
+    /// is — is the same instant the decision to send one was made against.
+    fn build_status(&self, now: SystemTime) -> DigiStatus {
         DigiStatus {
             mode: Mode::Cw,
             step: QsoStep::Idle,
@@ -211,12 +440,12 @@ impl CwController {
             tx_pending_msg: (!self.tx_buffer.is_empty()).then(|| self.tx_buffer.clone()),
             audio_hz: self.cfg.cw_pitch_hz,
             tx_even: false,
-            transmitting: self.keyed,
+            transmitting: self.on_air(now),
             tx_watchdog: false,
             transcript: Vec::<TranscriptLine>::new(),
             config: self.cfg.clone(),
             text_rx: self.rx_display(),
-            tx_sent: self.tx.sent_chars(),
+            tx_sent: self.sent_chars(now),
             fsq_heard: Vec::new(),
             fsq_messages: Vec::new(),
             rade: None,
@@ -239,8 +468,10 @@ impl DigiEngine for CwController {
         // Our own sidetone is not a signal to copy. Full break-in would let the
         // decoder read the other station between our own elements, but the tap
         // carries what we are sending, not what they are, so reading it would
-        // only echo us back onto the panel.
-        if self.keyed {
+        // only echo us back onto the panel. A rig keying itself from text we
+        // handed it is doing exactly that too, and its sidetone comes back down
+        // the same audio path.
+        if self.on_air(SystemTime::now()) {
             return;
         }
         self.scratch.clear();
@@ -265,10 +496,14 @@ impl DigiEngine for CwController {
         deep.push(&self.deep_scratch);
     }
 
-    fn poll(&mut self, _now: SystemTime, _dial_hz: f64) -> Vec<DigiAction> {
+    fn poll(&mut self, now: SystemTime, _dial_hz: f64) -> Vec<DigiAction> {
         let mut actions = Vec::new();
         self.drain_deep();
-        if self.tx_active && !self.keyed {
+        if self.cat.is_some() {
+            // The rig is doing the sending: there is no over for the engine to
+            // key, only text to hand over as the rig gets through it.
+            self.poll_cat(now, &mut actions);
+        } else if self.tx_active && !self.keyed {
             self.keyed = true;
             self.status_dirty = true;
             // Nothing more will arrive for this over, so settle the tail now
@@ -292,7 +527,7 @@ impl DigiEngine for CwController {
         }
         if self.status_dirty {
             self.status_dirty = false;
-            actions.push(DigiAction::Status(self.build_status()));
+            actions.push(DigiAction::Status(self.build_status(now)));
         }
         actions
     }
@@ -302,6 +537,13 @@ impl DigiEngine for CwController {
     }
 
     fn fill_tx_block(&mut self, out: &mut [f32]) -> bool {
+        if self.cat.is_some() {
+            // Nothing keys an over on this route, so nothing should be asking
+            // for one. If something does, it gets silence and an immediate end
+            // rather than a sidetone the rig would not transmit anyway.
+            out.fill(0.0);
+            return true;
+        }
         if self.tx.drained() {
             self.idle_samples += out.len();
             if self.idle_samples as f32 > TX_IDLE_S * OUT_RATE as f32 {
@@ -357,6 +599,13 @@ impl DigiEngine for CwController {
         self.tx_active = false;
         self.last_sent = 0;
         self.idle_samples = 0;
+        if let Some(cat) = self.cat.as_mut() {
+            let sending = cat.sending_since.is_some();
+            cat.clear();
+            // Only worth telling the rig to stop if it is part way through
+            // something; the queue it never saw is dropped here.
+            cat.abort = sending;
+        }
         self.status_dirty = true;
     }
 
@@ -392,7 +641,7 @@ impl DigiEngine for CwController {
     }
 
     fn status(&self) -> DigiStatus {
-        self.build_status()
+        self.build_status(SystemTime::now())
     }
 
     fn call_cq(&mut self) {
@@ -412,7 +661,16 @@ impl DigiEngine for CwController {
         let n = text.chars().count();
         if n > self.tx_pushed {
             let tail: String = text.chars().skip(self.tx_pushed).collect();
-            self.tx.push_text(&tail);
+            match self.cat.as_mut() {
+                // The rig keys from text, so the tail queues for it rather than
+                // for the sidetone keyer — which would otherwise send an over
+                // nothing on the air could hear.
+                Some(cat) => {
+                    cat.queue.push_str(&tail);
+                    cat.last_input = Some(SystemTime::now());
+                }
+                None => self.tx.push_text(&tail),
+            }
             self.tx_pushed = n;
         }
         self.tx_buffer = text;
@@ -422,6 +680,13 @@ impl DigiEngine for CwController {
     fn set_tx_active(&mut self, on: bool) {
         self.tx_active = on;
         self.idle_samples = 0;
+        // Coming out of transmit deliberately does not stop a message the rig
+        // has already been given: it is on the air, and the operator watching
+        // the sent prefix catch up is watching it go. `abort_tx` is what stops
+        // it — that is what the panel's CLEAR is for.
+        if let Some(cat) = self.cat.as_mut() {
+            cat.last_input = Some(SystemTime::now());
+        }
         self.status_dirty = true;
     }
 }
@@ -460,7 +725,7 @@ mod tests {
     /// and speed, and this is the cheapest way to keep it honest.
     #[test]
     fn keys_what_is_typed_and_reads_it_back() {
-        let mut c = CwController::new(cfg(), 48_000.0);
+        let mut c = CwController::new(cfg(), 48_000.0, None);
         c.set_tx_text("CQ DE W1AW K ".into());
         c.set_tx_active(true);
         c.poll(SystemTime::now(), 14_030_000.0);
@@ -481,7 +746,7 @@ mod tests {
         // A receiver has been listening before the other station starts; the
         // decoder needs a second or so of channel to measure its noise floor
         // against before the first character arrives.
-        let mut rx = CwController::new(cfg(), 48_000.0);
+        let mut rx = CwController::new(cfg(), 48_000.0, None);
         let mut lead = vec![0.0f32; 48_000 * 3 / 2];
         lead.extend_from_slice(&audio);
         lead.resize(lead.len() + 48_000 * 3 / 2, 0.0);
@@ -505,7 +770,7 @@ mod tests {
     /// panel that answers a station off its own frequency.
     #[test]
     fn the_cursor_moves_receive_and_transmit_together() {
-        let mut c = CwController::new(cfg(), 48_000.0);
+        let mut c = CwController::new(cfg(), 48_000.0, None);
         c.set_audio_hz(600.0);
         assert_eq!(c.audio_hz(), 600.0);
         assert!((c.rx.tone_hz() - 600.0).abs() < 1.0);
@@ -550,7 +815,7 @@ mod tests {
     /// between characters is the point; holding it down for ever is not.
     #[test]
     fn transmit_releases_itself_when_there_is_nothing_left_to_send() {
-        let mut c = CwController::new(cfg(), 48_000.0);
+        let mut c = CwController::new(cfg(), 48_000.0, None);
         c.set_tx_text("E".into());
         c.set_tx_active(true);
         c.poll(SystemTime::now(), 14_030_000.0);
@@ -576,7 +841,7 @@ mod tests {
     /// we key, and copying it would fill the receive pane with our own callsign.
     #[test]
     fn does_not_copy_its_own_sending() {
-        let mut c = CwController::new(cfg(), 48_000.0);
+        let mut c = CwController::new(cfg(), 48_000.0, None);
         c.set_tx_text("CQ DE W1AW K ".into());
         c.set_tx_active(true);
         c.poll(SystemTime::now(), 14_030_000.0);
@@ -591,5 +856,189 @@ mod tests {
             }
         }
         assert!(c.rx_text.is_empty(), "copied itself: {:?}", c.rx_text);
+    }
+
+    // ── sending from a radio that keys itself ───────────────────────────────
+
+    use std::time::Duration;
+
+    /// The text handed to the radio by a round of polling.
+    fn keyed(actions: &[DigiAction]) -> Vec<String> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                DigiAction::SendCw { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// On a rig that keys its own transmitter, what the operator types has to
+    /// leave as text. Sidetone would be generated into a sound card the rig
+    /// ignores, and the over the engine would key around it is an over that
+    /// transmits nothing.
+    #[test]
+    fn hands_typed_text_to_a_radio_that_keys_itself() {
+        let mut c = CwController::new(cfg(), 48_000.0, Some(50));
+        let t0 = SystemTime::now();
+        c.set_tx_text("CQ DE W1AW K ".into());
+        c.set_tx_active(true);
+        let actions = c.poll(t0, 14_030_000.0);
+        assert_eq!(keyed(&actions), vec!["CQ DE W1AW K "]);
+        assert!(
+            !actions.iter().any(|a| matches!(a, DigiAction::KeyTx)),
+            "keyed an over on a radio that keys itself"
+        );
+        // The rig is on the air, so the panel says so — and the decoder stays
+        // off the tap, which is carrying our own sending.
+        assert!(c.status().transmitting);
+        assert!(c.on_air(t0));
+        // Nothing is asked of the transmit chain, and if something asks anyway
+        // it gets silence rather than a sidetone.
+        let mut blk = [0.5f32; 480];
+        assert!(c.fill_tx_block(&mut blk));
+        assert!(blk.iter().all(|&s| s == 0.0));
+    }
+
+    /// A rig part way through a message has nowhere to put another, so the next
+    /// one waits for the length of the one on the air — which is the only clock
+    /// there is, nothing coming back to say where the rig has got to.
+    #[test]
+    fn sends_one_message_at_a_time() {
+        let mut c = CwController::new(cfg(), 48_000.0, Some(50));
+        let t0 = SystemTime::now();
+        c.set_tx_text("CQ CQ CQ ".into());
+        c.set_tx_active(true);
+        assert_eq!(keyed(&c.poll(t0, 0.0)), vec!["CQ CQ CQ "]);
+        let sending_s = c.cat.as_ref().unwrap().sending_s;
+        assert!(sending_s > 1.0, "9 characters at 25 WPM take longer than {sending_s} s");
+
+        c.set_tx_text("CQ CQ CQ DE W1AW ".into());
+        let mid = t0 + Duration::from_secs_f32(sending_s * 0.5);
+        assert!(keyed(&c.poll(mid, 0.0)).is_empty(), "wrote over a message on the air");
+        // The sent prefix walks across the message as it goes out rather than
+        // arriving all at once when it ends.
+        let part = c.sent_chars(mid);
+        assert!((1..9).contains(&part), "colouring did not follow the sending: {part}");
+
+        let after = t0 + Duration::from_secs_f32(sending_s + 0.01);
+        assert_eq!(keyed(&c.poll(after, 0.0)), vec!["DE W1AW "]);
+        assert_eq!(c.sent_chars(after), 9, "the first message is fully sent");
+    }
+
+    /// The colouring only moves on the panel if a status goes out with it.
+    #[test]
+    fn the_sent_prefix_is_reported_as_it_advances() {
+        let mut c = CwController::new(cfg(), 48_000.0, Some(50));
+        let t0 = SystemTime::now();
+        c.set_tx_text("CQ CQ CQ DE W1AW ".into());
+        c.set_tx_active(true);
+        c.poll(t0, 0.0);
+        let sending_s = c.cat.as_ref().unwrap().sending_s;
+        let status_at = |c: &mut CwController, t: SystemTime| -> Option<usize> {
+            c.poll(t, 0.0).iter().find_map(|a| match a {
+                DigiAction::Status(s) => Some(s.tx_sent),
+                _ => None,
+            })
+        };
+        // A tick into the same message, nothing has changed and nothing is said.
+        assert_eq!(status_at(&mut c, t0 + Duration::from_millis(5)), None);
+        // Part way through, the count has moved and the panel is told.
+        let mid = t0 + Duration::from_secs_f32(sending_s * 0.5);
+        let reported = status_at(&mut c, mid).expect("no status while the rig was sending");
+        assert!((1..17).contains(&reported), "reported {reported} of 17 characters");
+    }
+
+    /// Every hand-off is a seam in the sending, so they go where a gap is a
+    /// word space instead of the middle of a callsign.
+    #[test]
+    fn breaks_long_text_between_words() {
+        let mut c = CwController::new(cfg(), 48_000.0, Some(10));
+        let t0 = SystemTime::now();
+        c.set_tx_text("CQ CQ CQ DE W1AW".into());
+        c.set_tx_active(true);
+        assert_eq!(keyed(&c.poll(t0, 0.0)), vec!["CQ CQ CQ "]);
+        // A run with no word break in it has to be cut somewhere, and is.
+        let mut c = CwController::new(cfg(), 48_000.0, Some(10));
+        c.set_tx_text("599599599599".into());
+        c.set_tx_active(true);
+        assert_eq!(keyed(&c.poll(t0, 0.0)), vec!["5995995995"]);
+    }
+
+    #[test]
+    fn a_part_typed_word_waits_for_the_rest_of_itself() {
+        let mut c = CwController::new(cfg(), 48_000.0, Some(50));
+        let t0 = SystemTime::now();
+        c.set_tx_text("W1A".into());
+        c.set_tx_active(true);
+        assert!(keyed(&c.poll(t0, 0.0)).is_empty(), "a callsign went out half typed");
+        // Finishing the word releases it at once — no waiting on a timer for
+        // text the operator has plainly finished.
+        c.set_tx_text("W1AW ".into());
+        assert_eq!(keyed(&c.poll(t0, 0.0)), vec!["W1AW "]);
+    }
+
+    #[test]
+    fn a_word_never_finished_goes_out_anyway() {
+        let mut c = CwController::new(cfg(), 48_000.0, Some(50));
+        let t0 = SystemTime::now();
+        c.set_tx_text("73".into());
+        c.set_tx_active(true);
+        assert!(keyed(&c.poll(t0, 0.0)).is_empty());
+        let paused = t0 + Duration::from_secs_f32(GATHER_S + 0.05);
+        assert_eq!(keyed(&c.poll(paused, 0.0)), vec!["73"]);
+    }
+
+    /// Nothing goes out until the operator says to transmit — the panel's TX
+    /// button means the same thing on both routes.
+    #[test]
+    fn text_typed_out_of_transmit_waits() {
+        let mut c = CwController::new(cfg(), 48_000.0, Some(50));
+        let t0 = SystemTime::now();
+        c.set_tx_text("CQ DE W1AW ".into());
+        assert!(keyed(&c.poll(t0 + Duration::from_secs(1), 0.0)).is_empty());
+        c.set_tx_active(true);
+        assert_eq!(keyed(&c.poll(t0 + Duration::from_secs(1), 0.0)), vec!["CQ DE W1AW "]);
+    }
+
+    #[test]
+    fn aborting_stops_a_message_the_rig_is_part_way_through() {
+        let mut c = CwController::new(cfg(), 48_000.0, Some(50));
+        let t0 = SystemTime::now();
+        c.set_tx_text("CQ CQ CQ DE W1AW W1AW K ".into());
+        c.set_tx_active(true);
+        assert!(!keyed(&c.poll(t0, 0.0)).is_empty());
+
+        c.abort_tx();
+        let actions = c.poll(t0 + Duration::from_millis(10), 0.0);
+        assert!(
+            actions.iter().any(|a| matches!(a, DigiAction::AbortCw)),
+            "the rig was left sending a message the operator dropped"
+        );
+        // Whatever had not been handed over is gone, and transmit is released.
+        assert!(keyed(&c.poll(t0 + Duration::from_secs(30), 0.0)).is_empty());
+        assert!(!c.status().tx_next);
+        // Nothing is asked of a rig that was not sending in the first place.
+        c.abort_tx();
+        assert!(
+            !c.poll(t0 + Duration::from_secs(31), 0.0)
+                .iter()
+                .any(|a| matches!(a, DigiAction::AbortCw))
+        );
+    }
+
+    /// An operator who stops typing stops transmitting, the same as on the
+    /// sidetone route — an idle transmit switch is a transmit switch nobody is
+    /// watching.
+    #[test]
+    fn transmit_releases_itself_when_the_typing_stops() {
+        let mut c = CwController::new(cfg(), 48_000.0, Some(50));
+        let t0 = SystemTime::now();
+        c.set_tx_text("73 ".into());
+        c.set_tx_active(true);
+        assert!(!keyed(&c.poll(t0, 0.0)).is_empty());
+        assert!(c.status().tx_next);
+        c.poll(t0 + Duration::from_secs_f32(TX_IDLE_S + 1.0), 0.0);
+        assert!(!c.status().tx_next, "transmit was left on around an empty buffer");
     }
 }

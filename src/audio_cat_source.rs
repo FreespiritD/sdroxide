@@ -288,6 +288,22 @@ impl IqSource for AudioCatSource {
         Ok(())
     }
 
+    // ── CW from the rig's own keyer ──────────────────────────────────────────
+    // A rig in CW does not modulate the audio we send it — it keys its own
+    // transmitter — so the panel's keyer hands it text instead of sidetone.
+    fn cw_text_keying(&self) -> Option<usize> {
+        self.cat.cw_chunk_len()
+    }
+    fn send_cw(&mut self, text: &str) {
+        self.cat.send_cw(text.to_string());
+    }
+    fn abort_cw(&mut self) {
+        self.cat.abort_cw();
+    }
+    fn set_cw_wpm(&mut self, wpm: f32) {
+        self.cat.set_cw_wpm(wpm);
+    }
+
     fn tx_begin(&mut self, center_hz: f64, _rate: f64) -> Result<f64> {
         // XIT and split have no DDC to ride on here — the rig's dial is the
         // whole of its frequency control — so an over that transmits away from

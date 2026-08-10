@@ -111,6 +111,60 @@ pub fn read_swr_frame(radio: u8) -> Vec<u8> {
     frame(radio, 0x15, &[0x12])
 }
 
+/// Longest CW message one "send CW" frame carries. The rig buffers what it is
+/// given and keys it out at its own speed; more than this in a frame is
+/// refused, so the sender chunks to it.
+pub const CW_MAX: usize = 30;
+
+/// Reduce `text` to the characters an Icom keyer will send: upper case, the
+/// letters, digits and punctuation it has Morse for. A character it does not
+/// know would be refused along with the rest of the frame, so it is dropped
+/// here instead.
+fn cw_text(text: &str) -> String {
+    text.trim()
+        .chars()
+        .map(|c| c.to_ascii_uppercase())
+        .filter(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, ' ' | '/' | '?' | '.' | ',' | '-' | '=')
+        })
+        .scan(false, |prev_space, c| {
+            let space = c == ' ';
+            let keep = !(space && *prev_space);
+            *prev_space = space;
+            Some(keep.then_some(c))
+        })
+        .flatten()
+        .take(CW_MAX)
+        .collect()
+}
+
+/// Send `text` as CW from the rig's own keyer (cmd `0x17`). `None` when nothing
+/// in `text` is sendable — an empty frame would be a rejected frame.
+///
+/// The rig keys itself for the length of the message (its break-in decides how
+/// it switches), so this must not be wrapped in PTT.
+pub fn send_cw_frame(radio: u8, text: &str) -> Option<Vec<u8>> {
+    let msg = cw_text(text);
+    (!msg.is_empty()).then(|| frame(radio, 0x17, msg.as_bytes()))
+}
+
+/// Stop a message part way through: `0xFF` is the abort payload of the same
+/// send-CW command.
+pub fn stop_cw_frame(radio: u8) -> Vec<u8> {
+    frame(radio, 0x17, &[0xFF])
+}
+
+/// Set the keyer speed (cmd `0x14` sub `0x0C`). Icom carries it as its generic
+/// 0–255 level over a 6–48 WPM range, so the panel's speed is mapped onto that
+/// scale rather than sent as a number of words.
+pub fn keyer_speed_frame(radio: u8, wpm: f32) -> Vec<u8> {
+    let wpm = wpm.clamp(6.0, 48.0);
+    let level = (((wpm - 6.0) * (255.0 / 42.0)).round() as u32).min(255);
+    let (hi, lo) = ((level / 100) as u8, (level % 100) as u8);
+    let bcd = |v: u8| ((v / 10) << 4) | (v % 10);
+    frame(radio, 0x14, &[0x0C, bcd(hi), bcd(lo)])
+}
+
 /// Hand the rig's *own* RIT, ΔTX (XIT) and split back to neutral.
 ///
 /// sdroxide carries all three on the dial itself (see `AudioCatSource`), so an
@@ -289,6 +343,40 @@ mod tests {
         assert_eq!(body(1), vec![0x21, 0x01, 0x00], "RIT off");
         assert_eq!(body(2), vec![0x21, 0x02, 0x00], "ΔTX (XIT) off");
         assert_eq!(body(3), vec![0x0F, 0x00], "simplex");
+    }
+
+    #[test]
+    fn cw_is_sent_as_text_the_rig_can_key() {
+        // Command 0x17 with the message as plain upper-case ASCII.
+        let f = send_cw_frame(0x94, "cq de w1aw").unwrap();
+        assert_eq!(f[..5], [0xFE, 0xFE, 0x94, 0xE0, 0x17]);
+        assert_eq!(&f[5..f.len() - 1], b"CQ DE W1AW");
+        assert_eq!(*f.last().unwrap(), 0xFD);
+        // Nothing sendable is no frame at all, not an empty one.
+        assert!(send_cw_frame(0x94, "  <>  ").is_none());
+        // A message longer than one frame carries is cut to fit.
+        let long = send_cw_frame(0x94, &"a".repeat(50)).unwrap();
+        assert_eq!(long.len() - 6, CW_MAX);
+        // Abort is the same command with the escape payload.
+        assert_eq!(stop_cw_frame(0x94), vec![0xFE, 0xFE, 0x94, 0xE0, 0x17, 0xFF, 0xFD]);
+    }
+
+    #[test]
+    fn keyer_speed_maps_wpm_onto_the_rigs_level_scale() {
+        let level = |wpm: f32| {
+            let f = keyer_speed_frame(0x94, wpm);
+            assert_eq!(f[4..6], [0x14, 0x0C]);
+            decode_meter(&f[6..f.len() - 1]).unwrap()
+        };
+        // The ends of the rig's range, and a speed in the middle of it. The
+        // reference table Hamlib carries has 20 WPM at 84.
+        assert_eq!(level(6.0), 0);
+        assert_eq!(level(48.0), 255);
+        assert_eq!(level(20.0), 85);
+        // Speeds the panel offers that the rig's keyer does not reach clamp
+        // rather than wrapping round its 0..255 scale.
+        assert_eq!(level(4.0), 0);
+        assert_eq!(level(60.0), 255);
     }
 
     #[test]

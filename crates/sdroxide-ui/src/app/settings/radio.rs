@@ -19,7 +19,8 @@ pub(in crate::app) fn settings_cat_tab(
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
 ) {
     use sdroxide_types::{
-        CatFamily, DigiMode, LineState, ModeControl, Parity, PttMethod, SoundFormat, StopBits,
+        CatFamily, CwKeying, DigiMode, LineState, ModeControl, Parity, PttMethod, SoundFormat,
+        StopBits,
     };
     let Some(cfg) = radio_edit.as_mut() else {
         ui.label("Radio configuration is only available in the native app.");
@@ -110,6 +111,20 @@ pub(in crate::app) fn settings_cat_tab(
 
         ui.label("Digimode mode");
         enum_combo(ui, "digimode", &mut cfg.cat.digi_mode, &DigiMode::ALL, DigiMode::label);
+        ui.end_row();
+
+        ui.label("CW keying").on_hover_text(
+            "How the CW panel's keyer transmits. A rig in CW keys its own \
+             transmitter and ignores what arrives at its sound card, so \"Rig keyer\" \
+             — handing the text to the radio to send — is the only route that puts \
+             CW on the air there. It uses the rig's keyer speed (set from the panel's \
+             WPM), needs break-in on, and on Yaesu it sends by way of keyer memory 1, \
+             overwriting whatever was stored in it.\n\n\
+             \"Sound card\" sends the keyed sidetone as audio instead: nothing at all \
+             on a rig in CW, and a tone on the sideband (MCW) at dial + pitch if you \
+             keep the rig in USB/DATA.",
+        );
+        enum_combo(ui, "cwkey", &mut cfg.cat.cw_keying, &CwKeying::ALL, CwKeying::label);
         ui.end_row();
 
         ui.label("Poll rate");

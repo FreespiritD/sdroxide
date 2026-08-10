@@ -2313,11 +2313,45 @@ separately from your computer's own speakers and microphone.
   `Radio controlled` (you set the mode on the radio and sdroxide follows).
 - **Digimode mode** — what to switch the rig to for FT8/FT4: `USB`, `DIGI`, or
   `Radio controlled`.
+- **CW keying** — where CW you send comes from, `Rig keyer (CAT)` or
+  `Sound card (MCW)`. See below.
 - **Poll rate** — how often (Hz) sdroxide reads the rig's frequency and mode.
 - **Radio ID (hex)** — the CI-V address, for Icom and Xiegu radios.
 
 Scroll down for **Apply / reconnect**, which reopens the rig with the new
 settings.
+
+**CW keying.** A transceiver told to be in CW keys its own transmitter: it does
+not modulate what arrives at its sound card, so a keyer's sidetone sent there
+reaches nothing at all. `Rig keyer (CAT)` — the default — therefore hands the CW
+panel's text to the radio and lets the radio's own keyer send it, which is the
+only route that puts CW on the air from a rig that is *in* CW. There is no PTT
+around it: the rig switches to transmit for the length of the message itself.
+
+What that needs on the radio:
+
+- **Break-in on.** sdroxide asserts it on Yaesu (`BI1`) with every message,
+  because with break-in off the keyer runs into the sidetone and never keys the
+  transmitter.
+- **The panel's WPM is sent to the rig's keyer** (Yaesu `KS`, Icom keyer speed),
+  so the speed chip in the CW panel is the speed on the air. Farnsworth spacing
+  is the sidetone keyer's and has no equivalent in a rig's keyer, so it does not
+  apply on this route.
+- **Yaesu only: keyer memory 1 is used as scratch.** Yaesu has no streaming
+  keying command — text can only be stored and played back — so sending CW
+  overwrites whatever you had stored in CW memory 1.
+
+`Sound card (MCW)` is the other route: the keyed sidetone goes out as audio.
+That is silent on a rig in CW, and only reaches the air if you keep the rig in
+USB or DATA (set **Mode control** to `Radio controlled`), where it goes out as a
+tone on the sideband — audible as CW, but sitting at dial + pitch rather than on
+the dial frequency, and outside the rig's CW filtering. It is here for that
+setup and for radios whose keyer sdroxide cannot drive.
+
+> **Note:** on a Yaesu USB interface the *Enhanced* port is the CAT port
+> configured above. The *Standard* port is the one whose RTS/DTR lines are wired
+> to PTT and KEY; sdroxide does not use it, and `PTT method` `DTR`/`RTS` set on
+> the Enhanced port will not key anything. Use `CAT` there.
 
 > **Note:** RIT, XIT and split are driven over the same serial link, by moving
 > the radio's dial — see [2.6](#26-rit-and-xit). Set them in sdroxide rather than
@@ -4885,6 +4919,22 @@ format** to **Demod audio**.
 On the **Radio** tab, set **Mode control** to **CAT**. For FT8/FT4, set
 **Digimode mode** to **USB** or **DIGI** as your rig expects. Check the serial
 port, baud, and (for Icom/Xiegu) the **Radio ID**.
+
+**The CAT radio follows my dial but ignores frequency changes from sdroxide.**
+Take the radio out of memory mode: most rigs answer a frequency *read* from a
+memory channel but refuse to be tuned into one, so the app follows the radio
+while the radio ignores the app. (On Yaesu this used to also happen because the
+frequency field is eight digits wide on the FTDX1200/3000/5000 generation and
+nine on the FT-891/991A and FTDX10/101 — sdroxide now reads the width off the
+rig's own reply, so both work without a setting.)
+
+**CW transmits nothing.**
+Set **CW keying** to **Rig keyer (CAT)** on the Radio tab — see
+[5.2.2](#522-cat--audio-radios-serial-controlled-transceivers). A rig in CW
+ignores audio sent to its sound card, so it can only be keyed from text. On
+Yaesu also check that CW memory 1 is free to be overwritten; on any rig, that
+the radio is actually in CW (**Mode control** = `CAT`) and that its power output
+is not turned down.
 
 **Two identical USB sound cards are hard to tell apart.**
 Device names include the manufacturer, model, ALSA card id, and USB id in

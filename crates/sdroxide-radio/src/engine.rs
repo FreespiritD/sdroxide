@@ -1317,6 +1317,11 @@ struct Engine {
     primary: bool,
     /// The station's transmit interlock. See [`EngineConfig::tx_gate`].
     tx_gate: Option<Arc<crate::TxGate>>,
+    /// When CW the radio is keying itself finishes, and with it this engine's
+    /// claim on [`Self::tx_gate`]. That route has no key-up and no key-down of
+    /// its own — the message is handed over and the rig transmits it — so the
+    /// interlock is held against the clock instead.
+    cw_gate_until: Option<Instant>,
     /// Shared-store change signal, and the generation this engine has already
     /// caught up with. See [`EngineConfig::store_sync`].
     store_sync: Option<Arc<crate::StoreSync>>,
@@ -1570,6 +1575,7 @@ fn engine_thread(
         instance: engine_cfg.instance,
         primary: engine_cfg.primary,
         tx_gate: engine_cfg.tx_gate,
+        cw_gate_until: None,
         shared_gen_seen: engine_cfg.store_sync.as_ref().map_or(0, |s| s.generation()),
         store_sync: engine_cfg.store_sync,
     };
@@ -2462,6 +2468,17 @@ impl Engine {
     /// Tick the FT8/FT4 controller and apply its actions (emit events, key/
     /// unkey PTT). Owned actions avoid a `&mut self.digi` / `&mut self` clash.
     fn poll_digi(&mut self) {
+        // A message the radio was keying itself has run its length: it is off
+        // the air, so the station interlock goes back. Not while an ordinary
+        // over is running, which holds the gate on its own account.
+        if let Some(until) = self.cw_gate_until
+            && Instant::now() >= until
+        {
+            self.cw_gate_until = None;
+            if !self.tx_active {
+                self.release_tx_gate();
+            }
+        }
         let Some(digi) = self.digi.as_mut() else { return };
         let dial = self.state.rx_freq_hz();
         let actions = digi.poll(SystemTime::now(), dial);
@@ -2584,6 +2601,40 @@ impl Engine {
                 DigiAction::HellColumns { seq, rows, cols } => {
                     let _ = self.event_tx.send(RadioEvent::HellColumns { seq, rows, cols });
                 }
+                // CW the radio keys itself. No PTT and no transmit chain: the
+                // rig switches to transmit for the length of the message on its
+                // own, which is why nothing here touches `tx_active`.
+                //
+                // The station interlock still applies — a radio keying itself is
+                // a radio on the air — but there is no key-up for the usual
+                // rails to hang off, so it is claimed here and held for as long
+                // as the message takes.
+                DigiAction::SendCw { text, seconds } => {
+                    if self.tx_gate.as_ref().is_some_and(|g| !g.try_acquire(self.instance)) {
+                        let msg = match self.tx_gate.as_ref().and_then(|g| g.holder()) {
+                            Some(id) => format!("radio {} is on the air", id + 1),
+                            None => "another radio is on the air".to_string(),
+                        };
+                        warn!("CW refused: {msg}");
+                        self.notice(&format!("transmit refused — {msg}"));
+                        // Nothing of this over reached the air, so the panel
+                        // must not show it as sent.
+                        if let Some(d) = self.digi.as_mut() {
+                            d.abort_tx();
+                        }
+                    } else {
+                        self.cw_gate_until =
+                            Some(Instant::now() + Duration::from_secs_f32(seconds.max(0.0)));
+                        self.source.send_cw(&text);
+                    }
+                }
+                DigiAction::AbortCw => {
+                    self.source.abort_cw();
+                    self.cw_gate_until = None;
+                    if !self.tx_active {
+                        self.release_tx_gate();
+                    }
+                }
             }
         }
     }
@@ -2595,7 +2646,15 @@ impl Engine {
             // First, because CW is not `is_digital()` and nothing below would
             // catch it: it is an ordinary analog mode that happens to have a
             // decoder and a keyer bolted alongside. See `CwController`.
-            Box::new(CwController::new(self.digi_config.clone(), tap_rate))
+            //
+            // Which way it sends is the radio's answer, not a setting of the
+            // mode: a rig that keys itself from text is one whose sound card
+            // would swallow a sidetone whole.
+            Box::new(CwController::new(
+                self.digi_config.clone(),
+                tap_rate,
+                self.source.cw_text_keying(),
+            ))
         } else if mode.is_rade() {
             Box::new(RadeController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_sstv() {
@@ -2627,6 +2686,19 @@ impl Engine {
             Box::new(WsprController::new(self.digi_config.clone(), tap_rate))
         } else {
             Box::new(DigiController::new(mode, self.digi_config.clone(), tap_rate))
+        }
+    }
+
+    /// Build the controller for `mode` and put the radio in step with it.
+    ///
+    /// Only CW has anything to assert: a rig that keys itself sends at *its*
+    /// keyer's speed, so the panel's WPM means nothing on the air until the rig
+    /// has been told it — including the speed carried over from the last
+    /// session, which the operator never touches this time round.
+    fn start_digi(&mut self, mode: Mode, tap_rate: f64) {
+        self.digi = Some(self.make_digi(mode, tap_rate));
+        if mode == Mode::Cw {
+            self.source.set_cw_wpm(self.digi_config.cw_wpm);
         }
     }
 
@@ -2693,7 +2765,7 @@ impl Engine {
         }
 
         if want && !have {
-            self.digi = Some(self.make_digi(mode, tap_rate));
+            self.start_digi(mode, tap_rate);
             self.sync_audio_tap();
             info!(?mode, tap_rate, "digital-mode engine started");
             // CW enters with the operator's saved pitch, which need not be the
@@ -2705,7 +2777,7 @@ impl Engine {
         } else if want && have {
             // Mode changed between digital modes: rebuild for the new one.
             if self.digi.as_ref().map(|d| d.mode()) != Some(mode) {
-                self.digi = Some(self.make_digi(mode, tap_rate));
+                self.start_digi(mode, tap_rate);
             }
         } else if !want && have {
             if let Some(d) = self.digi.as_mut() {
@@ -3324,6 +3396,11 @@ impl Engine {
                 self.digi_config = c.clone();
                 if let Some(d) = self.digi.as_mut() {
                     d.set_config(c);
+                }
+                // A radio that keys itself has its own speed control, and the
+                // panel's WPM chip is the operator setting it.
+                if self.state.rx[0].mode == Mode::Cw {
+                    self.source.set_cw_wpm(self.digi_config.cw_wpm);
                 }
                 // Applying the setup is how a stood-down band hop is resumed —
                 // the operator has said what they want the beacon to do, which

@@ -1275,6 +1275,11 @@ impl CwTx {
         self.sent_chars
     }
 
+    /// Samples of keying still to go out, the element in progress included.
+    pub fn queued_samples(&self) -> usize {
+        self.q.iter().map(|k| k.samples).sum::<usize>() + self.cur_left
+    }
+
     pub fn total_chars(&self) -> usize {
         self.total_chars
     }
@@ -1332,6 +1337,23 @@ impl CwTx {
             *s = amp * self.ph.sin() as f32;
         }
     }
+}
+
+/// How long `text` takes to send, in seconds, at `wpm` (and `farnsworth_wpm`
+/// spacing, 0 for none).
+///
+/// Answered by queueing the text into a [`CwTx`] and measuring the queue, so it
+/// is the same timing the sidetone keyer would produce rather than a second,
+/// drifting copy of the rules. What needs it is a rig keying itself from text
+/// we handed it: nothing comes back to say when the rig finished, so the only
+/// way to know when the next chunk may go — and when our own sending has
+/// stopped landing in the decoder — is to have counted the elements.
+pub fn text_duration_s(text: &str, wpm: f32, farnsworth_wpm: f32) -> f32 {
+    const RATE: f64 = 8000.0;
+    let mut tx = CwTx::new(RATE, 600.0, wpm);
+    tx.set_params(600.0, wpm, farnsworth_wpm);
+    tx.push_text(text);
+    tx.queued_samples() as f32 / RATE as f32
 }
 
 #[cfg(test)]

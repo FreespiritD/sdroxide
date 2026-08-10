@@ -262,6 +262,30 @@ pub trait IqSource: Send {
         Err(crate::RadioError::Msg("device has no audio TX path".into()))
     }
 
+    /// How much CW text this radio's own keyer takes in one go, or `None` when
+    /// CW is sent the ordinary way — as keyed audio through the transmit chain.
+    ///
+    /// A transceiver put into CW keys its own transmitter: it does not modulate
+    /// what arrives at its sound card, so a keyer's sidetone written there goes
+    /// nowhere at all. Such a radio can only send CW from text handed to its
+    /// keyer, which is what [`Self::send_cw`] does — and what this reports it
+    /// can do. Default: an SDR, whose transmit chain keys the sidetone itself.
+    fn cw_text_keying(&self) -> Option<usize> {
+        None
+    }
+    /// Hand `text` to the radio's own keyer, at most `cw_text_keying()` worth,
+    /// and not again until the last lot has been sent.
+    ///
+    /// Carries no PTT: the radio switches to transmit for the length of the
+    /// message on its own, and a transmitter already keyed by CAT is one its
+    /// keyer cannot key.
+    fn send_cw(&mut self, _text: &str) {}
+    /// Stop a message the radio is part way through sending.
+    fn abort_cw(&mut self) {}
+    /// Tell the radio's keyer what speed to send at. It keys at its own speed,
+    /// so until this arrives the panel's WPM is not what goes on the air.
+    fn set_cw_wpm(&mut self, _wpm: f32) {}
+
     /// Block until queued TX audio has been played out, so PTT can be released
     /// without cutting off the tail of a burst. Default: nothing is buffered.
     fn tx_drain(&mut self) {}
@@ -557,6 +581,20 @@ impl IqSource for ConvertedSource {
 
     fn tx_write_audio(&mut self, audio: &[f32]) -> Result<()> {
         self.inner.tx_write_audio(audio)
+    }
+
+    /// Keying is text, not a frequency: the converter has nothing to add.
+    fn cw_text_keying(&self) -> Option<usize> {
+        self.inner.cw_text_keying()
+    }
+    fn send_cw(&mut self, text: &str) {
+        self.inner.send_cw(text);
+    }
+    fn abort_cw(&mut self) {
+        self.inner.abort_cw();
+    }
+    fn set_cw_wpm(&mut self, wpm: f32) {
+        self.inner.set_cw_wpm(wpm);
     }
 
     fn tx_drain(&mut self) {

@@ -110,7 +110,7 @@ pub use propagation::{
     obliquity_factor,
 };
 pub use radio::{
-    Backend, CONVERTER_OFFSET_MAX_HZ, CONVERTER_PRESETS, CatConfig, CatFamily, DigiMode,
+    Backend, CONVERTER_OFFSET_MAX_HZ, CONVERTER_PRESETS, CatConfig, CatFamily, CwKeying, DigiMode,
     FREQ_RANGE_MAX_HZ, HpsdrConfig, HpsdrDevice, HpsdrFilterBoard, LineState, ModeControl, Parity,
     PlutoAgc, PlutoConfig, PlutoDevice, PttMethod, RadioConfig, RtlSdrAgc, RtlSdrConfig,
     RtlSdrDevice, RtlSdrHfMode, Rx888Config, Rx888Device, SdrPlayAgc, SdrPlayConfig, SdrPlayDevice,
