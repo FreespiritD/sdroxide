@@ -20,6 +20,12 @@ use crate::view::ViewState;
 use crate::waterfall_gpu::WaterfallCallback;
 
 const SCALE_H: f32 = 18.0;
+
+/// Height of the frequency-scale strip — [`SCALE_H`] grown with the
+/// panadapter font-size setting, so a bigger scale font keeps its strip.
+fn scale_h() -> f32 {
+    SCALE_H * crate::theme::panadapter_font_scale()
+}
 /// Tuning rounds to this step on click-tune, unless the operator has changed
 /// [`WheelSettings::click_tune_step_hz`].
 const CLICK_TUNE_STEP: f64 = 10.0;
@@ -149,6 +155,9 @@ impl SpectrumSmooth {
 }
 
 // --- skimmer spot boxes ---------------------------------------------------
+// The box sizes and font points here are the `Medium` step of the skimmer
+// font-size setting; every use multiplies by `theme::skimmer_font_scale()`,
+// so the boxes and their text grow and shrink together.
 /// Widest a box may grow; a CW message tail longer than this scrolls.
 const SPOT_BOX_W: f32 = 236.0;
 const SPOT_BOX_H: f32 = 19.0;
@@ -193,10 +202,11 @@ fn spot_color(spot: &SkimmerSpot, hovered: bool) -> Color32 {
 /// otherwise (CW) the callsign plus the current message tail, so the box hugs
 /// its text and the tail only starts scrolling once the box is genuinely full.
 fn spot_content_width(p: &egui::Painter, spot: &SkimmerSpot, callsign_only: bool) -> f32 {
+    let fs = crate::theme::skimmer_font_scale();
     let mut w = 2.0 * SPOT_PAD;
     if let Some(call) = &spot.callsign {
         w += p
-            .layout_no_wrap(call.clone(), FontId::monospace(SPOT_CALL_PT), Color32::WHITE)
+            .layout_no_wrap(call.clone(), FontId::monospace(SPOT_CALL_PT * fs), Color32::WHITE)
             .size()
             .x;
     }
@@ -206,11 +216,11 @@ fn spot_content_width(p: &egui::Painter, spot: &SkimmerSpot, callsign_only: bool
         }
         let text = if spot.text.is_empty() { "…" } else { spot.text.as_str() };
         w += p
-            .layout_no_wrap(text.to_string(), FontId::monospace(SPOT_MSG_PT), Color32::WHITE)
+            .layout_no_wrap(text.to_string(), FontId::monospace(SPOT_MSG_PT * fs), Color32::WHITE)
             .size()
             .x;
     }
-    w.clamp(30.0, SPOT_BOX_W)
+    w.clamp(30.0, SPOT_BOX_W * fs)
 }
 
 /// Lay skimmer spots out into staggered lanes over the waterfall. Each box sits
@@ -238,6 +248,7 @@ fn layout_spots(
         .collect();
     vis.sort_by(|a, b| a.0.total_cmp(&b.0));
 
+    let box_h = SPOT_BOX_H * crate::theme::skimmer_font_scale();
     let mut lane_right: Vec<f32> = Vec::new();
     let mut out = Vec::with_capacity(vis.len());
     for (xc, idx) in vis {
@@ -262,14 +273,14 @@ fn layout_spots(
         lane_right[lane] = foot_right;
         // Lanes stack away from the newest row, so the boxes sit with the fresh
         // signals they label whichever way the waterfall scrolls.
-        let lane_off = SPOT_TOP_MARGIN + lane as f32 * (SPOT_BOX_H + SPOT_LANE_GAP);
+        let lane_off = SPOT_TOP_MARGIN + lane as f32 * (box_h + SPOT_LANE_GAP);
         let top = if view.waterfall_flip {
-            wf_rect.bottom() - lane_off - SPOT_BOX_H
+            wf_rect.bottom() - lane_off - box_h
         } else {
             wf_rect.top() + lane_off
         };
         out.push(SpotBox {
-            rect: Rect::from_min_size(pos2(box_left, top), vec2(box_w, SPOT_BOX_H)),
+            rect: Rect::from_min_size(pos2(box_left, top), vec2(box_w, box_h)),
             sig_x: xc,
             idx,
         });
@@ -304,6 +315,7 @@ fn draw_spot_box(
         StrokeKind::Inside,
     );
 
+    let fs = crate::theme::skimmer_font_scale();
     let pad = SPOT_PAD;
     let cy = rect.center().y;
 
@@ -313,7 +325,7 @@ fn draw_spot_box(
             let base =
                 if spot.text.starts_with("CQ") { crate::theme::GREEN() } else { Color32::WHITE };
             let cc = fade(base, alpha);
-            let g = p.layout_no_wrap(call.clone(), FontId::monospace(SPOT_CALL_PT), cc);
+            let g = p.layout_no_wrap(call.clone(), FontId::monospace(SPOT_CALL_PT * fs), cc);
             p.galley(pos2(rect.left() + pad, cy - g.size().y * 0.5), g, cc);
         }
         return;
@@ -322,7 +334,7 @@ fn draw_spot_box(
     let mut x = rect.left() + pad;
     if let Some(call) = &spot.callsign {
         let cc = fade(crate::theme::GREEN(), alpha);
-        let g = p.layout_no_wrap(call.clone(), FontId::monospace(SPOT_CALL_PT), cc);
+        let g = p.layout_no_wrap(call.clone(), FontId::monospace(SPOT_CALL_PT * fs), cc);
         p.galley(pos2(x, cy - g.size().y * 0.5), g.clone(), cc);
         x += g.size().x + 6.0;
     }
@@ -337,7 +349,7 @@ fn draw_spot_box(
     }
     let text = if spot.text.is_empty() { "…" } else { spot.text.as_str() };
     let col = fade(crate::theme::TEXT(), alpha);
-    let g = p.layout_no_wrap(text.to_string(), FontId::monospace(SPOT_MSG_PT), col);
+    let g = p.layout_no_wrap(text.to_string(), FontId::monospace(SPOT_MSG_PT * fs), col);
     let ty = cy - g.size().y * 0.5;
     // Left-align while it fits; once it overflows, pin the tail to the right.
     let gx = if g.size().x <= msg_rect.width() {
@@ -352,7 +364,8 @@ fn draw_spot_box(
 // --- network spot markers (DX cluster / POTA / SOTA / PSK Reporter) --------
 // Anchored at the oldest edge of the waterfall (its floor, or its top when the
 // waterfall is flipped) so they stay clear of the skimmer / FT8 boxes, which
-// hug the newest edge.
+// hug the newest edge. Sized by the skimmer font-size setting like those —
+// the two sets are the same kind of callsign box and must read as one family.
 const NET_BOX_H: f32 = 18.0;
 const NET_CALL_PT: f32 = 12.5;
 const NET_TAG_PT: f32 = 9.5;
@@ -371,20 +384,21 @@ struct NetBox {
 }
 
 fn net_spot_width(p: &egui::Painter, spot: &Spot) -> f32 {
+    let fs = crate::theme::skimmer_font_scale();
     let mut w = 2.0 * NET_PAD;
     w += p
-        .layout_no_wrap(spot.call.clone(), FontId::monospace(NET_CALL_PT), Color32::WHITE)
+        .layout_no_wrap(spot.call.clone(), FontId::monospace(NET_CALL_PT * fs), Color32::WHITE)
         .size()
         .x;
     w += 6.0
         + p.layout_no_wrap(
             spot.kind.label().to_string(),
-            FontId::monospace(NET_TAG_PT),
+            FontId::monospace(NET_TAG_PT * fs),
             Color32::WHITE,
         )
         .size()
         .x;
-    w.clamp(40.0, 220.0)
+    w.clamp(40.0, 220.0 * fs)
 }
 
 /// Kind tint, brightened on hover.
@@ -409,6 +423,7 @@ fn layout_net_spots(
         .collect();
     vis.sort_by(|a, b| a.0.total_cmp(&b.0));
 
+    let box_h = NET_BOX_H * crate::theme::skimmer_font_scale();
     let mut lane_right: Vec<f32> = Vec::new();
     let mut out = Vec::with_capacity(vis.len());
     for (xc, idx) in vis {
@@ -431,14 +446,14 @@ fn layout_net_spots(
         lane_right[lane] = foot_right;
         // Anchored at the *oldest* edge, opposite the skimmer boxes, so the two
         // sets never collide — which end that is depends on the flip.
-        let lane_off = NET_BOTTOM_MARGIN + lane as f32 * (NET_BOX_H + NET_LANE_GAP);
+        let lane_off = NET_BOTTOM_MARGIN + lane as f32 * (box_h + NET_LANE_GAP);
         let top = if view.waterfall_flip {
             wf_rect.top() + lane_off
         } else {
-            wf_rect.bottom() - lane_off - NET_BOX_H
+            wf_rect.bottom() - lane_off - box_h
         };
         out.push(NetBox {
-            rect: Rect::from_min_size(pos2(box_left, top), vec2(box_w, NET_BOX_H)),
+            rect: Rect::from_min_size(pos2(box_left, top), vec2(box_w, box_h)),
             sig_x: xc,
             idx,
         });
@@ -458,15 +473,19 @@ fn draw_net_box(p: &egui::Painter, b: &NetBox, spot: &Spot, hovered: bool, alpha
         Stroke::new(if hovered { 1.5 } else { 1.0 }, fade(border, alpha)),
         StrokeKind::Inside,
     );
+    let fs = crate::theme::skimmer_font_scale();
     let cy = rect.center().y;
     let mut x = rect.left() + NET_PAD;
     let call_col = fade(border, alpha);
-    let g = p.layout_no_wrap(spot.call.clone(), FontId::monospace(NET_CALL_PT), call_col);
+    let g = p.layout_no_wrap(spot.call.clone(), FontId::monospace(NET_CALL_PT * fs), call_col);
     p.galley(pos2(x, cy - g.size().y * 0.5), g.clone(), call_col);
     x += g.size().x + 6.0;
     let tag_col = fade(Color32::from_gray(180), alpha);
-    let tg =
-        p.layout_no_wrap(spot.kind.label().to_string(), FontId::monospace(NET_TAG_PT), tag_col);
+    let tg = p.layout_no_wrap(
+        spot.kind.label().to_string(),
+        FontId::monospace(NET_TAG_PT * fs),
+        tag_col,
+    );
     if x + tg.size().x <= rect.right() - NET_PAD {
         p.galley(pos2(x, cy - tg.size().y * 0.5), tg, tag_col);
     }
@@ -693,10 +712,10 @@ pub fn show_ext(
     // window gets back exactly the split it was left with.
     let waterfall_only = crate::layout::tier(ui.ctx()).waterfall_only();
     let frac = if waterfall_only { 0.0 } else { view.effective_spectrum_fraction() };
-    let spec_h = if frac <= 0.0 { 0.0 } else { ((rect.height() - SCALE_H) * frac).max(40.0) };
+    let spec_h = if frac <= 0.0 { 0.0 } else { ((rect.height() - scale_h()) * frac).max(40.0) };
     let spec_rect = Rect::from_min_size(rect.min, vec2(rect.width(), spec_h));
     let scale_rect =
-        Rect::from_min_size(pos2(rect.left(), spec_rect.bottom()), vec2(rect.width(), SCALE_H));
+        Rect::from_min_size(pos2(rect.left(), spec_rect.bottom()), vec2(rect.width(), scale_h()));
     let wf_rect = Rect::from_min_max(pos2(rect.left(), scale_rect.bottom()), rect.max);
 
     // Skimmer boxes are laid out up front so the click hit-test (below) and the
@@ -941,7 +960,7 @@ pub fn show_ext(
     } else if resizing && resp.dragged_by(egui::PointerButton::Primary) {
         // Spectrum/waterfall resize — set the spectrum height from the pointer.
         if let Some(p) = resp.interact_pointer_pos() {
-            let usable = (rect.height() - SCALE_H).max(1.0);
+            let usable = (rect.height() - scale_h()).max(1.0);
             view.spectrum_fraction = ((p.y - rect.top()) / usable).clamp(0.10, 0.85);
             view.spectrum_collapsed = false; // dragging it open implies visible
         }
@@ -1406,7 +1425,7 @@ pub fn show_ext(
                 pos2(tx, wf_rect.top() + 2.0),
                 anchor,
                 "SUB",
-                FontId::proportional(9.5),
+                FontId::proportional(9.5 * crate::theme::panadapter_font_scale()),
                 SUB_COLOR,
             );
         }
@@ -1459,7 +1478,7 @@ pub fn show_ext(
                     pos2(band.left() + 4.0, rect.top() + 2.0),
                     Align2::LEFT_TOP,
                     label,
-                    FontId::proportional(9.5),
+                    FontId::proportional(9.5 * crate::theme::panadapter_font_scale()),
                     Color32::from_rgba_unmultiplied(
                         base.r(),
                         base.g(),
@@ -1791,8 +1810,9 @@ fn draw_bw_measure(
     // pair on-screen) so both stay readable.
     let s_text = fmt_mhz(start_hz);
     let e_text = fmt_mhz(end_hz);
-    let sw = p.layout_no_wrap(s_text.clone(), FontId::monospace(10.5), color).size().x + 8.0;
-    let ew = p.layout_no_wrap(e_text.clone(), FontId::monospace(10.5), color).size().x + 8.0;
+    let font = FontId::monospace(10.5 * crate::theme::panadapter_font_scale());
+    let sw = p.layout_no_wrap(s_text.clone(), font.clone(), color).size().x + 8.0;
+    let ew = p.layout_no_wrap(e_text.clone(), font, color).size().x + 8.0;
     // Order the two labels left→right by marker x.
     let ((lx, lw, lt), (rx, rw, rt)) = if x0 <= x1 {
         ((x0, sw, &s_text), (x1, ew, &e_text))
@@ -1858,7 +1878,11 @@ fn faded_label(
     color: Color32,
     a: f32,
 ) {
-    let galley = p.layout_no_wrap(text.to_string(), FontId::monospace(10.5), color);
+    let galley = p.layout_no_wrap(
+        text.to_string(),
+        FontId::monospace(10.5 * crate::theme::panadapter_font_scale()),
+        color,
+    );
     let pad = vec2(4.0, 2.0);
     let size = galley.size() + pad * 2.0;
     let bx = (cx - size.x * 0.5).clamp(rect.left(), rect.right() - size.x);
@@ -1931,7 +1955,11 @@ fn offset_bracket(
 
 /// Draw `text` in a small semi-transparent black box, clamped inside `bounds`.
 fn label_box(p: &egui::Painter, top_left: Pos2, text: &str, fg: Color32, bounds: Rect) {
-    let galley = p.layout_no_wrap(text.to_string(), FontId::monospace(11.0), fg);
+    let galley = p.layout_no_wrap(
+        text.to_string(),
+        FontId::monospace(11.0 * crate::theme::panadapter_font_scale()),
+        fg,
+    );
     let pad = vec2(4.0, 2.0);
     let size = galley.size() + pad * 2.0;
     let x = (top_left.x).min(bounds.right() - size.x).max(bounds.left());
@@ -2011,7 +2039,7 @@ fn draw_grid(painter: &egui::Painter, view: &ViewState, rect: &Rect) {
                 pos2(rect.left() + 2.0, y - 1.0),
                 Align2::LEFT_BOTTOM,
                 format!("{db:.0}"),
-                FontId::monospace(9.0),
+                FontId::monospace(9.0 * crate::theme::panadapter_font_scale()),
                 Color32::from_gray(110),
             );
             db += 20.0;
@@ -2036,7 +2064,7 @@ fn draw_scale(painter: &egui::Painter, view: &ViewState, rect: &Rect) {
             pos2(x, rect.center().y + 2.0),
             Align2::CENTER_CENTER,
             format!("{:.4}", hz / 1e6),
-            FontId::monospace(10.0),
+            FontId::monospace(10.0 * crate::theme::panadapter_font_scale()),
             Color32::from_gray(190),
         );
     }

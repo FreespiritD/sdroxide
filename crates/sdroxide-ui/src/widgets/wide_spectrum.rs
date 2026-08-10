@@ -178,7 +178,7 @@ pub fn show(
                 Pos2::new(x + 2.0, rect.top() + 1.0),
                 egui::Align2::LEFT_TOP,
                 format!("{mhz:.0}"),
-                egui::FontId::proportional(9.0),
+                egui::FontId::proportional(9.0 * crate::theme::panadapter_font_scale()),
                 Color32::from_white_alpha(150),
             );
         }
@@ -197,7 +197,7 @@ pub fn show(
         Pos2::new(rect.right() - 3.0, rect.bottom() - 1.0),
         egui::Align2::RIGHT_BOTTOM,
         format!("{:.0} … {:.0} dBFS", wf.levels.0, wf.levels.1),
-        egui::FontId::proportional(9.0),
+        egui::FontId::proportional(9.0 * crate::theme::panadapter_font_scale()),
         Color32::from_white_alpha(120),
     );
 

@@ -19,7 +19,7 @@ pub(in crate::app) fn settings_ui_tab(
     cfg: &mut sdroxide_types::UiSettings,
     cloud_march: Option<&mut bool>,
 ) {
-    use sdroxide_types::{ChromeStyle, LayoutMode, Speed, UiSettings, UiTheme};
+    use sdroxide_types::{ChromeStyle, FontSize, LayoutMode, Speed, UiSettings, UiTheme};
     ui.label(RichText::new("Display").size(14.0).strong().color(crate::theme::CYAN()));
     ui.add_space(6.0);
     egui::Grid::new("ui-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
@@ -90,24 +90,20 @@ pub(in crate::app) fn settings_ui_tab(
             });
         });
         ui.end_row();
+
+        ui.label("Skimmer font size");
+        enum_combo(ui, "ui-skim-font", &mut cfg.skimmer_font_size, &FontSize::ALL, FontSize::label);
+        ui.end_row();
+
+        ui.label("Waterfall / spectrum font size");
+        enum_combo(ui, "ui-wf-font", &mut cfg.waterfall_font_size, &FontSize::ALL, FontSize::label);
+        ui.end_row();
+
+        ui.label("Menu font size");
+        enum_combo(ui, "ui-menu-font", &mut cfg.menu_font_size, &FontSize::ALL, FontSize::label);
+        ui.end_row();
     });
-    ui.add_space(8.0);
-    ui.label(
-        RichText::new(
-            "Layout picks the control strip from the window size: the full strip on a \
-             desktop, menus on a tablet, and on a phone a compact readout with the \
-             waterfall alone below it. Force one to see how it looks — or to keep the \
-             menus in a small desktop window.\n\n\
-             Theme recolours the whole UI and the styles reshape its buttons and \
-             windows — all applied immediately. The phosphor themes keep transmit \
-             and error indications red on purpose.\n\n\
-             Higher frame rates look smoother but cost more CPU/GPU. Spectrum speed \
-             sets how quickly the trace reacts (slower = smoother/more averaged). The \
-             background gradient fills the spectrum area from the top colour down to \
-             the bottom colour.",
-        )
-        .weak(),
-    );
+
 
     let Some(cloud_march) = cloud_march else { return };
     ui.add_space(14.0);

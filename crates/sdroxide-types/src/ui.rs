@@ -24,6 +24,35 @@ impl Speed {
     }
 }
 
+/// Coarse font-size step for one family of hand-painted labels — the skimmer
+/// boxes, the panadapter's own labels, the popup menus. Each family maps the
+/// three steps onto its own point sizes, so `Small` here is "the small end of
+/// that family's range", not one absolute size.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FontSize {
+    Small,
+    Large,
+    /// Declared last for the same reason as [`UiTheme::Default`]: serde
+    /// demands the catch-all be the final variant, so a typo in a hand-edited
+    /// config degrades to the middle size instead of throwing the whole
+    /// config away.
+    #[default]
+    #[serde(other)]
+    Medium,
+}
+
+impl FontSize {
+    pub const ALL: [FontSize; 3] = [FontSize::Small, FontSize::Medium, FontSize::Large];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FontSize::Small => "Small",
+            FontSize::Medium => "Medium",
+            FontSize::Large => "Large",
+        }
+    }
+}
+
 /// Which layout the window wears. `Auto` picks one from the viewport size; the
 /// rest force it — for testing the compact strips without a phone to hand, and
 /// for anyone who would rather have the menus in a small desktop window than a
@@ -152,6 +181,15 @@ pub struct UiSettings {
     pub button_style: ChromeStyle,
     /// The shape floating windows and popups wear.
     pub window_style: ChromeStyle,
+    /// Font size for the skimmer / spot boxes overlaid on the waterfall.
+    /// `Medium` is the historic size.
+    pub skimmer_font_size: FontSize,
+    /// Font size for the labels painted onto the spectrum and waterfall —
+    /// the frequency scale, the band plan, the measurement and marker
+    /// labels. `Small` is the historic size.
+    pub waterfall_font_size: FontSize,
+    /// Font size for the popup menus. `Medium` is the historic size.
+    pub menu_font_size: FontSize,
 }
 
 impl Default for UiSettings {
@@ -168,6 +206,9 @@ impl Default for UiSettings {
             theme: UiTheme::Default,
             button_style: ChromeStyle::Angled,
             window_style: ChromeStyle::Angled,
+            skimmer_font_size: FontSize::Medium,
+            waterfall_font_size: FontSize::Small,
+            menu_font_size: FontSize::Medium,
         }
     }
 }

@@ -76,6 +76,13 @@ impl eframe::App for SdroxideApp {
             crate::theme::apply_visuals(&ctx);
             ctx.request_repaint();
         }
+        // The font sizes need no visuals rewrite — everything they size is
+        // laid out per frame — so they are simply re-stored each frame.
+        crate::theme::set_font_sizes(
+            self.ui_settings.skimmer_font_size,
+            self.ui_settings.waterfall_font_size,
+            self.ui_settings.menu_font_size,
+        );
         self.drain_events(&ctx, now);
         self.poll_adif_import();
         self.refresh_band_conditions(now);

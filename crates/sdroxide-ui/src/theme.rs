@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use eframe::egui::{
     self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Stroke, TextStyle,
 };
-use sdroxide_types::{ChromeStyle, UiTheme};
+use sdroxide_types::{ChromeStyle, FontSize, UiTheme};
 
 /// Every colour role the chrome wears. A theme is one full assignment of
 /// these; the field names keep the historic constant names (`cyan` is "the
@@ -435,6 +435,53 @@ pub fn button_style() -> ChromeStyle {
 #[inline]
 pub fn window_style() -> ChromeStyle {
     STYLE_ORDER[WINDOW_STYLE.load(Ordering::Relaxed) as usize]
+}
+
+const fn font_index(f: FontSize) -> u8 {
+    match f {
+        FontSize::Small => 0,
+        FontSize::Medium => 1,
+        FontSize::Large => 2,
+    }
+}
+
+// The defaults match `UiSettings::default()` — the sizes the first frame wears
+// if nothing calls `set_font_sizes` first: skimmer and menus Medium (1),
+// panadapter labels Small (0).
+static SKIMMER_FONT: AtomicU8 = AtomicU8::new(1);
+static PANADAPTER_FONT: AtomicU8 = AtomicU8::new(0);
+static MENU_FONT: AtomicU8 = AtomicU8::new(1);
+
+/// Select the process-wide font sizes. Like [`set_look`], the values live in
+/// atomics rather than the egui context so the solar-3d viewport's menus see
+/// the same sizes from their own thread. Takes effect on whatever is painted
+/// next — the affected text is all laid out per frame.
+pub fn set_font_sizes(skimmer: FontSize, panadapter: FontSize, menu: FontSize) {
+    SKIMMER_FONT.store(font_index(skimmer), Ordering::Relaxed);
+    PANADAPTER_FONT.store(font_index(panadapter), Ordering::Relaxed);
+    MENU_FONT.store(font_index(menu), Ordering::Relaxed);
+}
+
+/// Scale for the skimmer / spot boxes on the waterfall. The historic point
+/// sizes are the `Medium` step, so that is 1.
+#[inline]
+pub fn skimmer_font_scale() -> f32 {
+    [0.85, 1.0, 1.2][SKIMMER_FONT.load(Ordering::Relaxed) as usize]
+}
+
+/// Scale for the labels painted onto the spectrum and waterfall (frequency
+/// scale, band plan, measurements, markers). The historic point sizes are the
+/// `Small` step, so that is 1.
+#[inline]
+pub fn panadapter_font_scale() -> f32 {
+    [1.0, 1.25, 1.5][PANADAPTER_FONT.load(Ordering::Relaxed) as usize]
+}
+
+/// Scale for the popup menus' text. The historic sizes — the egui text styles
+/// unscaled — are the `Medium` step, so that is 1.
+#[inline]
+pub fn menu_font_scale() -> f32 {
+    [0.85, 1.0, 1.2][MENU_FONT.load(Ordering::Relaxed) as usize]
 }
 
 /// The palette under the historic constant names — these were `pub const`s

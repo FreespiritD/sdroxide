@@ -313,8 +313,12 @@ pub fn overlay(p: &Painter, view: &ViewState, wf: &Rect, panel_below: bool) {
     }
     let (lo, hi) = (view.view_lo_hz, view.view_hi_hz);
 
-    let base_h = 18.0f32;
-    let digi_h = 14.0f32;
+    // Rows scale with the panadapter font-size setting along with their
+    // labels — `draw_seg` drops any label taller than its row, so a bigger
+    // font in an unscaled row would show fewer labels, not bigger ones.
+    let fs = crate::theme::panadapter_font_scale();
+    let base_h = 18.0f32 * fs;
+    let digi_h = 14.0f32 * fs;
 
     // Explicit digi-mode rows, stacked so overlapping modes are separated.
     let digi_rows = if span <= DIGI_MAX_SPAN { stack_digi(lo, hi) } else { Vec::new() };
@@ -343,7 +347,8 @@ pub fn overlay(p: &Painter, view: &ViewState, wf: &Rect, panel_below: bool) {
     // Base allocation row (coarse bands, or fine CW/Digi/SSB sub-segments).
     let segs: &[Seg] = if span <= FINE_MAX_SPAN { FINE } else { COARSE };
     for seg in segs {
-        draw_seg(p, view, wf, seg.lo, seg.hi, seg.kind.color(), seg.label, base_top, base_h, 10.5);
+        let color = seg.kind.color();
+        draw_seg(p, view, wf, seg.lo, seg.hi, color, seg.label, base_top, base_h, 10.5 * fs);
     }
 
     // Digi-mode rows stacked inwards from the allocation row.
@@ -354,7 +359,7 @@ pub fn overlay(p: &Painter, view: &ViewState, wf: &Rect, panel_below: bool) {
             base_top - (i as f32 + 1.0) * digi_h
         };
         for d in row {
-            draw_seg(p, view, wf, d.lo, d.hi, d.color, d.label, row_top, digi_h, 9.5);
+            draw_seg(p, view, wf, d.lo, d.hi, d.color, d.label, row_top, digi_h, 9.5 * fs);
         }
     }
 
