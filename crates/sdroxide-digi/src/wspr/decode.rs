@@ -21,8 +21,11 @@
 //!   the invented stations from twenty-two to none.
 //! * **Normalises the bit metrics** before the Fano decoder sees them, which
 //!   `mfsk-core` says it needs and defers — see [`normalise`].
-//! * **Retries the decode across a fine timing grid** rather than trusting the
-//!   best-scoring alignment, which is wsprd's DT peak-up — see [`JIGGLE_STEP`].
+//! * **Retries the decode across a grid** rather than trusting the alignment
+//!   with the best sync score, which at these SNRs is not reliable — see
+//!   [`FREQ_RETRY_STEP_HZ`].
+//! * **Computes the true sequential-decoding branch metric** instead of the
+//!   linear approximation `mfsk-core` hands Fano — see [`branch_metric`].
 //! * **Subtracts from the decoder's own recovered bits** rather than re-packing
 //!   the message, so compound and hashed-callsign signals are cancelled too.
 //!
@@ -128,6 +131,30 @@ const LLR_TARGET_SD: f32 = 2.8;
 /// clamps its soft symbols at ±127 on a 50-per-sigma scale.
 const LLR_CLAMP_SD: f32 = 2.54;
 
+/// Fixed-point scale the branch metrics are quantised to. The Fano decoder
+/// works in integers, so this sets how finely it can compare two paths.
+const FANO_SCALE: f32 = 50.0;
+
+/// Floor on a single code bit's branch metric. See [`branch_metric`].
+const FANO_METRIC_FLOOR: f32 = -8.0;
+
+/// The Fano threshold step, in the same units as [`FANO_SCALE`]. WSJT-X uses
+/// 3.4 metric units for this code (`jt9fano`'s `ndelta = 3.4·scale`).
+const FANO_DELTA: i32 = (3.4 * FANO_SCALE) as i32;
+
+/// Cycles per bit before the search gives up.
+///
+/// wsprd allows ten thousand and so did this, but wsprd runs one Fano attempt
+/// per candidate where this runs a grid of them — and the budget is only ever
+/// reached by attempts that are going to fail, so it sets the cost of the whole
+/// decode. On a synthesised band of drifting beacons the trade runs 113 decodes
+/// of 130 at two thousand, 118 at six, 119 at ten, for 39, 100 and 153 seconds
+/// of five slots. Six thousand is the knee: it gives up one decode in 130
+/// against an unlimited budget and takes a third off the wall clock, which
+/// matters because this has to finish inside a two-minute slot on hardware
+/// slower than the machine it was measured on.
+const FANO_MAX_CYCLES: u64 = 6_000;
+
 /// Drift search half-width, in Hz across the transmission.
 const MAX_DRIFT_HZ: i32 = 4;
 
@@ -155,19 +182,34 @@ pub fn decode_slot(audio: &[f32], sample_rate: u32) -> Vec<WsprDecode> {
     let (mut ires, mut qres) = (idat.clone(), qdat.clone());
 
     for pass in 0..N_PASSES {
-        let first = pass == 0;
         let cands =
             wspr::coarse_baseband::coarse_baseband(&ires, &qres, pad, MAX_CANDIDATES, MAX_DRIFT_HZ);
         let mut found_this_pass = 0usize;
         for c in &cands {
-            // Coherent block detection over 1, 2 and 3 symbols costs several
-            // times a plain demodulation and buys several dB. Pass 1 is where
-            // the strong signals are and does not need it; every later pass is
-            // working on a residual where what is left is marginal by
-            // definition, which is exactly where the margin is worth paying for.
-            let nblocks: &[usize] = if first { &[1] } else { &[1, 2, 3] };
+            // Coherent block detection over 1, 2 and 3 symbols, in every pass.
+            //
+            // It costs three Fano attempts per grid cell rather than one and is
+            // worth all of it: at −30 dB on a lone beacon it takes the decode
+            // rate from two slots in eight to six. Restricting it to the later
+            // passes — on the theory that pass 1 holds the strong signals, which
+            // do not need it — quietly capped the whole decoder at the strong
+            // signals, because a slot whose only station is a weak one gives
+            // pass 1 nothing to find and so never reaches a later pass at all.
             let Some((al, hit)) =
-                align_and_decode(&ires, &qres, c.start_sample, c.freq_hz, c.drift_hz, nblocks)
+                // `reportable_drift`, not the raw coarse figure: below two
+                // hertz the coarse score cannot tell drift from no drift and
+                // returns ±1 arbitrarily, and the demodulator does not treat
+                // that as noise — it sweeps its oscillators half a hertz across
+                // the frame, a third of the tone spacing at the ends. Handing
+                // it a drift the signal never had is the single most expensive
+                // thing this loop can do to a weak frame.
+                align_and_decode(
+                    &ires,
+                    &qres,
+                    c.start_sample,
+                    c.freq_hz,
+                    reportable_drift(c.drift_hz),
+                )
             else {
                 continue;
             };
@@ -184,7 +226,13 @@ pub fn decode_slot(audio: &[f32], sample_rate: u32) -> Vec<WsprDecode> {
             // out of noise — so this is the only thing standing between a
             // marginal candidate and an invented callsign.
             let fit = fit_of(&al, &r.info_bits);
-            let floor = if hit.from_osd { OSD_MIN_FIT } else { MIN_FIT };
+            // A plain callsign-and-grid message is the one layout that cannot
+            // be faked cheaply. The other two spend their fifty bits
+            // differently and a random vector lands on a well-formed one often
+            // enough to matter — upstream puts the hashed-callsign layout at
+            // roughly one in seven — so they answer to the same bar as OSD.
+            let compound = !matches!(r.message, WsprMessage::Type1 { .. });
+            let floor = if hit.from_osd || compound { OSD_MIN_FIT } else { MIN_FIT };
             if fit < floor {
                 continue;
             }
@@ -264,108 +312,99 @@ struct Hit {
     from_osd: bool,
 }
 
-/// Fine timing steps the decode is retried at, in baseband samples.
+/// The grid the decode is retried over, around the refined alignment.
 ///
-/// The refinement below picks the alignment with the best sync correlation, and
-/// at the SNRs this mode lives at that peak is often not the true one — the
-/// score landscape is noisy enough that the right timing sits a symbol-fraction
-/// away under a slightly lower score. Committing to the best-scoring lag is
-/// what costs the weakest signals: they are perfectly decodable a few tens of
-/// milliseconds either side, and nothing ever looks there.
+/// The refinement below picks the alignment whose sync correlation is highest,
+/// and at the SNRs this mode lives at that pick is not reliable — the sync
+/// score is itself a noisy measurement, so its peak wanders off the true
+/// alignment by more than the decoder will tolerate. Trusting it is what cost
+/// the weakest signals: they decode perfectly at the right spot, and nothing
+/// ever looked there.
 ///
-/// So the decode is retried across a fine grid instead of trusting the score,
-/// working outward from the refined pick and stopping at the first alignment
-/// that decodes. This is `wsprd`'s DT peak-up loop (`iifac = 8`, `idt ≤ 16`):
-/// ±64 baseband samples — ±0.17 s — in steps of 8, or about 21 ms.
-const JIGGLE_STEP: i32 = 8;
-const JIGGLE_STEPS: i32 = 8;
+/// So the decode itself is retried across a grid, which is a far better test
+/// than the score — Fano either converges or it does not. Measured at −30 dB
+/// with the alignment handed in deliberately wrong, the two axes are nothing
+/// alike: a tenth of a second of timing error costs almost nothing, while
+/// **0.2 Hz of frequency error halves the decode rate** and 0.3 Hz all but ends
+/// it. That is a fifth of the 1.46 Hz tone spacing. So the frequency grid is
+/// the fine one and the timing grid is coarse — the opposite way round from
+/// wsprd's DT peak-up, which can afford to trust its own frequency estimate
+/// because it is not working from a 0.73 Hz coarse bin.
+const FREQ_RETRY_STEP_HZ: f32 = 0.2;
+const FREQ_RETRY_STEPS: i32 = 5;
+const LAG_RETRY_STEP: i32 = 24;
+const LAG_RETRY_STEPS: i32 = 2;
 
 /// Refine a coarse candidate's alignment and decode there.
 ///
-/// The refinement is wsprd's `sync_and_demodulate` mode 0 then mode 1 — lag
-/// first, then frequency at the best lag — followed by its mode-2 timing
-/// peak-up, which is where the weak signals are actually won. Returns the
-/// alignment that decoded, so the caller can score the message against the
-/// tones measured at that exact spot.
+/// The timing refinement is wsprd's `sync_and_demodulate` mode 0; the rest is
+/// the retry grid above. Returns the alignment that decoded, so the caller can
+/// score the message against the tones measured at that exact spot.
 fn align_and_decode(
     idat: &[f32],
     qdat: &[f32],
     start_sample: usize,
     tone0_hz: f32,
     drift_hz: f32,
-    nblocks: &[usize],
 ) -> Option<(Aligned, Hit)> {
-    let mut al = align(idat, qdat, start_sample, tone0_hz, drift_hz);
-    let best = al.lag;
-    let f0_bb = al.tone0_hz + 1.5 * wspr::demod::TONE_SPACING_HZ - wspr::baseband::CENTER_HZ;
-    // Outward from the refined pick — nearest alignments first, so a signal
-    // that decodes at several of them is reported at the one closest to its
-    // measured timing.
-    let lags = core::iter::once(best).chain(
-        (1..=JIGGLE_STEPS)
-            .flat_map(|k| [-1i32, 1].map(move |s| (k, s)))
-            .map(move |(k, s)| best + s * k * JIGGLE_STEP),
-    );
+    // The grid is centred on the *coarse* frequency, not on a refined one.
+    // Refining it first by sync score actively hurts: at the noise floor that
+    // score is noise too, so the "refinement" wanders up to a hertz away and
+    // takes the grid with it, leaving the true frequency outside the search
+    // entirely. The coarse bin is only 0.73 Hz wide, so its estimate is the
+    // better centre — and the retry below is a better refinement than any score.
+    let lag0 = align_lag(idat, qdat, start_sample, tone0_hz, drift_hz);
+    let f0_bb = tone0_hz + 1.5 * wspr::demod::TONE_SPACING_HZ - wspr::baseband::CENTER_HZ;
+    // Outward from the centre on both axes, nearest first, so a signal that
+    // decodes at several cells is reported at the one closest to its measured
+    // alignment.
+    let outward = |n: i32| (0..=n).flat_map(|k| if k == 0 { vec![0] } else { vec![-k, k] });
 
-    // Fano over every alignment before OSD gets a turn at any of them. OSD
-    // returns a codeword for whatever it is handed, so letting it run at the
-    // first alignment would end the search there — with an answer built out of
-    // the noise at a timing the real signal was never at, and the alignment
-    // that would have decoded properly two steps later never tried.
+    // Fano over the whole grid before OSD gets a turn at any of it. OSD returns
+    // a codeword for whatever it is handed, so letting it answer at the first
+    // cell would end the search there — with something built out of the noise at
+    // an alignment the real signal was never at, and the cell that would have
+    // decoded properly never tried.
     let mut osd_at: Option<(Aligned, Hit)> = None;
-    for lag in lags {
-        if lag != al.lag {
-            al.isqs = wspr::demod::tone_amplitudes(idat, qdat, f0_bb, lag, drift_hz);
-            al.lag = lag;
-        }
-        let (fano, osd) = decode_aligned(&al, nblocks);
-        if let Some(hit) = fano {
-            return Some((al, hit));
-        }
-        if osd_at.is_none()
-            && let Some(hit) = osd
-        {
-            osd_at =
-                Some((Aligned { isqs: al.isqs.clone(), tone0_hz: al.tone0_hz, lag: al.lag }, hit));
+    for dl in outward(LAG_RETRY_STEPS) {
+        for df in outward(FREQ_RETRY_STEPS) {
+            let lag = lag0 + dl * LAG_RETRY_STEP;
+            let f = f0_bb + df as f32 * FREQ_RETRY_STEP_HZ;
+            let here = Aligned {
+                isqs: wspr::demod::tone_amplitudes(idat, qdat, f, lag, drift_hz),
+                tone0_hz: f + wspr::baseband::CENTER_HZ - 1.5 * wspr::demod::TONE_SPACING_HZ,
+                lag,
+            };
+            let (fano, osd) = decode_aligned(&here);
+            if let Some(hit) = fano {
+                return Some((here, hit));
+            }
+            if osd_at.is_none()
+                && let Some(hit) = osd
+            {
+                osd_at = Some((here, hit));
+            }
         }
     }
     osd_at
 }
 
-/// Refine a coarse candidate's alignment, wsprd's `sync_and_demodulate` mode 0
-/// then mode 1: lag first, then frequency at the best lag.
+/// The best lag for a coarse candidate — wsprd's `sync_and_demodulate` mode 0.
 ///
-/// The coarse search rounds to 0.73 Hz and a third of a second, and WSPR's Fano
-/// decoder — a K=32 convolutional code with no CRC — is sensitive to both.
-fn align(idat: &[f32], qdat: &[f32], start_sample: usize, tone0_hz: f32, drift_hz: f32) -> Aligned {
-    let f0_init = tone0_hz + 1.5 * wspr::demod::TONE_SPACING_HZ - wspr::baseband::CENTER_HZ;
+/// Only the timing. The frequency deliberately is not refined here; see
+/// [`align_and_decode`] for why picking it by sync score makes things worse.
+fn align_lag(idat: &[f32], qdat: &[f32], start_sample: usize, tone0_hz: f32, drift_hz: f32) -> i32 {
+    let f0 = tone0_hz + 1.5 * wspr::demod::TONE_SPACING_HZ - wspr::baseband::CENTER_HZ;
     let lag_init = start_sample as i32 / 32;
-
-    let mut best = (f32::NEG_INFINITY, lag_init, None);
+    let mut best = (f32::NEG_INFINITY, lag_init);
     for dlag in [-128i32, -64, 0, 64, 128] {
-        let isqs = wspr::demod::tone_amplitudes(idat, qdat, f0_init, lag_init + dlag, drift_hz);
+        let isqs = wspr::demod::tone_amplitudes(idat, qdat, f0, lag_init + dlag, drift_hz);
         let sync = wspr::demod::sync_score_isqs(&isqs);
         if sync > best.0 {
-            best = (sync, lag_init + dlag, Some(isqs));
+            best = (sync, lag_init + dlag);
         }
     }
-    let (mut best_sync, lag, mut isqs) = (best.0, best.1, best.2.expect("one lag was evaluated"));
-
-    let mut f0 = f0_init;
-    for df in [-1.0f32, -0.5, 0.5, 1.0] {
-        let cand = wspr::demod::tone_amplitudes(idat, qdat, f0_init + df, lag, drift_hz);
-        let sync = wspr::demod::sync_score_isqs(&cand);
-        if sync > best_sync {
-            best_sync = sync;
-            f0 = f0_init + df;
-            isqs = cand;
-        }
-    }
-    Aligned {
-        isqs,
-        tone0_hz: f0 + wspr::baseband::CENTER_HZ - 1.5 * wspr::demod::TONE_SPACING_HZ,
-        lag,
-    }
+    best.1
 }
 
 /// Decode at a refined alignment, returning what Fano got and, separately,
@@ -382,30 +421,26 @@ fn align(idat: &[f32], qdat: &[f32], start_sample: usize, tone0_hz: f32, drift_h
 /// Returned apart rather than as one answer so the caller can spend the whole
 /// timing search on Fano first and only then consider what OSD offered, without
 /// paying for a second Fano run over the same metrics to find out.
-fn decode_aligned(al: &Aligned, nblocks: &[usize]) -> (Option<Hit>, Option<Hit>) {
-    use mfsk_core::engine::{DecodeContext, FecCodec, FecOpts, MessageCodec};
+fn decode_aligned(al: &Aligned) -> (Option<Hit>, Option<Hit>) {
+    use mfsk_core::engine::{DecodeContext, MessageCodec};
 
-    let codec = mfsk_core::fec::ConvFano;
     // Upstream prefers a Type-1/2 decode over a Type-3 one at equal cost, since
     // a hashed callsign this station cannot invert is the weaker result. Each
     // of the two producers keeps its own pair of bests.
     let mut best: [[Option<(u32, Hit)>; 2]; 2] = Default::default();
 
-    for &nblock in nblocks {
+    for nblock in [1usize, 2, 3] {
         let mut llrs = wspr::demod::nblock_bit_metrics(&al.isqs, nblock);
         normalise(&mut llrs);
         deinterleave(&mut llrs);
 
-        let (info, errors, from_osd) =
-            if let Some(f) = codec.decode_soft(&llrs, &FecOpts::default()) {
-                let mut info = [0u8; 50];
-                info.copy_from_slice(&f.info);
-                (info, f.hard_errors, false)
-            } else if let Some((info, nhardmin)) = wspr::osd::osd_decode(&llrs) {
-                (info, nhardmin, true)
-            } else {
-                continue;
-            };
+        let (info, errors, from_osd) = if let Some((info, errors)) = fano(&llrs) {
+            (info, errors, false)
+        } else if let Some((info, nhardmin)) = wspr::osd::osd_decode(&llrs) {
+            (info, nhardmin, true)
+        } else {
+            continue;
+        };
         let Some(message) = mfsk_core::msg::Wspr50Message.unpack(&info, &DecodeContext::default())
         else {
             continue;
@@ -419,6 +454,76 @@ fn decode_aligned(al: &Aligned, nblocks: &[usize]) -> (Option<Hit>, Option<Hit>)
     let [fano, osd] = best;
     let pick = |[named, hashed]: [Option<(u32, Hit)>; 2]| named.or(hashed).map(|(_, h)| h);
     (pick(fano), pick(osd))
+}
+
+/// Run the Fano sequential decoder over one set of deinterleaved bit metrics.
+///
+/// Returns the fifty information bits and the number of channel bits the
+/// recovered codeword disagrees with, or `None` if the search did not reach the
+/// end of the trellis.
+///
+/// This calls `mfsk-core`'s decoder but not its `decode_soft`, because the
+/// branch metrics are the whole point — see [`branch_metric`].
+fn fano(llrs: &[f32; 162]) -> Option<([u8; 50], u32)> {
+    use mfsk_core::engine::FecCodec;
+    use mfsk_core::fec::conv::fano as f;
+
+    let bm: Vec<[i32; 2]> =
+        llrs.iter().map(|&l| [quantise(branch_metric(l)), quantise(branch_metric(-l))]).collect();
+    // 81 = the 50 message bits plus the code's 31-bit zero tail.
+    let res = f::fano_decode(&bm, 81, FANO_DELTA, FANO_MAX_CYCLES);
+    if !res.converged {
+        return None;
+    }
+    let mut info = [0u8; 50];
+    for (i, b) in info.iter_mut().enumerate() {
+        *b = (res.data[i / 8] >> (7 - (i % 8))) & 1;
+    }
+    // Re-encode and count the disagreements, which is how the caller ranks one
+    // block length against another.
+    let mut codeword = vec![0u8; 162];
+    mfsk_core::fec::ConvFano.encode(&info, &mut codeword);
+    let errors =
+        llrs.iter().zip(&codeword).filter(|&(&l, &c)| (c == 1) != (l < 0.0)).count() as u32;
+    Some((info, errors))
+}
+
+/// What one code bit is worth to the sequential decoder, given the metric the
+/// demodulator produced for it.
+///
+/// This is the one piece `mfsk-core` cannot be asked for. Its
+/// `build_branch_metrics` uses the max-log-MAP approximation, `m = ±l/2 − bias`
+/// — a straight line, so the reward for a confident bit grows without limit,
+/// and symmetric, so agreeing strongly with a bit pays exactly what disagreeing
+/// with it costs. Neither is true of the real metric and both hurt at the noise
+/// floor: a handful of loud symbols can carry the search down a wrong path
+/// faster than the many quiet correct ones pull it back, and when it does go
+/// wrong nothing punishes it hard enough to make it back out.
+///
+/// The real Fano metric is `log₂(P(y|b) / P(y)) − R`, which for a rate-½ code
+/// and an `l` that is a log-likelihood ratio comes out in closed form as
+/// `0.5 − log₂(1 + e^−l)`. It **saturates** at +0.5 however confident the bit
+/// is and falls away linearly on the wrong side: bounded reward, unbounded
+/// penalty. That asymmetry is what makes sequential decoding work, and it is
+/// what WSJT-X's `metric_tables` are a tabulation of — computed here instead,
+/// which is exact rather than interpolated and copies no data out of another
+/// project.
+///
+/// The floor is there because the penalty really is unbounded, and one symbol
+/// that arrived wrong and loud would otherwise decide the whole path.
+fn branch_metric(l: f32) -> f32 {
+    // log₂(1 + e^−l), arranged so a large negative `l` does not overflow the
+    // exponential.
+    let log2_1p_exp = if -l > 30.0 {
+        -l * core::f32::consts::LOG2_E
+    } else {
+        (-l).exp().ln_1p() * core::f32::consts::LOG2_E
+    };
+    (0.5 - log2_1p_exp).max(FANO_METRIC_FLOOR)
+}
+
+fn quantise(m: f32) -> i32 {
+    (m * FANO_SCALE).round() as i32
 }
 
 /// Scale the bit metrics to a fixed spread before Fano sees them.
@@ -778,6 +883,28 @@ mod tests {
         // stations sit between −25 and −30 dB.
         let weak = sent[sent.len() - 4..].iter().filter(|c| heard.iter().any(|h| h == c)).count();
         assert!(weak >= 1, "nothing below −25 dB decoded");
+    }
+
+    /// The weak end, which is the whole reason this mode exists.
+    ///
+    /// A lone beacon at −29 dB used to be missed outright: the coarse search
+    /// hands over a frequency good to about a third of a hertz, and the decoder
+    /// needs it to a fifth of one, so the alignment it was given was never quite
+    /// the alignment it could decode at. Nothing about the demodulator or the
+    /// FEC had to change to fix it — only looking in the right place.
+    #[test]
+    fn a_lone_beacon_near_the_floor_is_heard() {
+        for (target, want) in [(-26.0f64, 3), (-29.0, 2)] {
+            let heard = [0xF100_0001u64, 0xF100_0002, 0xF100_0003]
+                .iter()
+                .filter(|&&seed| {
+                    decode_slot(&slot_at_snr(target, seed), 12_000).iter().any(|d| {
+                        matches!(&d.message, WsprMessage::Type1 { callsign, .. } if callsign == "K1ABC")
+                    })
+                })
+                .count();
+            assert!(heard >= want, "at {target} dB only {heard} of 3 slots decoded");
+        }
     }
 
     /// A stable carrier must report no drift. The coarse search cannot resolve

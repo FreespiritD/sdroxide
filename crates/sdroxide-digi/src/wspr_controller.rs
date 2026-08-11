@@ -355,7 +355,19 @@ impl DigiEngine for WsprController {
                 // Half a slot of audio is the floor: less than that is a mode
                 // change or a stream hiccup, not a transmission.
                 let min_samples = (self.params.slot_s * DECODE_RATE * 0.5) as usize;
-                if self.slot_buf.len() >= min_samples {
+                // Only ever one slot in flight.
+                //
+                // A WSPR scan is seconds of work and has a whole slot to do it
+                // in, but "seconds" depends on the machine and on how busy the
+                // band is — and the queue behind this channel has no bound. A
+                // receiver that cannot quite keep up would not drop a slot and
+                // recover; it would fall a slot further behind every two
+                // minutes, holding a two-megabyte recording for each one and
+                // reporting spots ever further out of date, which reads as the
+                // decoder mysteriously lagging rather than as the machine being
+                // too slow. Skipping the slot loses two minutes of the band;
+                // queueing it loses the station.
+                if self.slot_buf.len() >= min_samples && self.pending.is_empty() {
                     let audio = std::mem::take(&mut self.slot_buf);
                     let slot_utc = self.scheduler.slot_start_unix(self.last_slot_idx) as i64;
                     self.pending.insert(slot_utc);
@@ -363,6 +375,11 @@ impl DigiEngine for WsprController {
                     // on: the hop below has not happened yet, and that ordering
                     // is what keeps a hopped spot on the right band.
                     let _ = self.job_tx.send(DecodeJob { audio, slot_utc, dial_hz: self.dial_hz });
+                } else if !self.pending.is_empty() {
+                    tracing::warn!(
+                        "WSPR: still decoding the previous slot, skipping this one — the \
+                         decoder is not keeping up with the band"
+                    );
                 }
             }
             self.slot_buf.clear();

@@ -65,7 +65,10 @@ fn beacons(n: usize, drift: f64) -> Vec<(String, String, i32, f64, f64, f64, f64
             let f0 = lo + (hi - lo) * (i as f64 / (n.max(2) - 1) as f64);
             // −6 dB at the top down to −32 at the bottom, so a run always
             // covers the whole range the operator cares about.
-            let snr = -6.0 - 26.0 * (i as f64 / (n.max(2) - 1) as f64);
+            let snr = match std::env::var("WSPR_SNR").ok().and_then(|v| v.parse::<f64>().ok()) {
+                Some(fixed) => fixed,
+                None => -6.0 - 26.0 * (i as f64 / (n.max(2) - 1) as f64),
+            };
             let dt = ((i % 7) as f64 - 3.0) * 0.3;
             let d = if i % 2 == 0 { drift } else { -drift };
             (call, grid, 23, f0, snr, dt, d)
