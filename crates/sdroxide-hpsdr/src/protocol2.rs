@@ -475,6 +475,17 @@ impl P2Thread {
                     // Protocol 2 boards have no front-end gain register this
                     // crate drives; the DDC command carries no gain field.
                     Ctrl::RxGain(_) => {}
+                    // Load the DUC ahead of key-down. Nothing on a Protocol 2
+                    // board acts on this until MOX — there is no accessory bus
+                    // here of the kind the Hermes-Lite has — but keeping the
+                    // register current means key-down needs no retune.
+                    Ctrl::TxFreq(hz) => {
+                        if self.tx_freq != hz {
+                            self.tx_freq = hz;
+                            self.send_duc_command();
+                            tracing::debug!("HPSDR P2: TX NCO -> {hz:.0} Hz (not keyed)");
+                        }
+                    }
                     Ctrl::TxOn(hz) => {
                         self.tx_freq = hz;
                         self.ptt = true;

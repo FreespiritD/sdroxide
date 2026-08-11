@@ -329,6 +329,10 @@ pub(crate) enum Ctrl {
     },
     /// Front-end LNA gain in dB (Hermes-Lite 2 only; ignored elsewhere).
     RxGain(f64),
+    /// Where the radio *would* transmit, sent while receiving so an accessory
+    /// board can switch bands before the operator keys. Loads the TX NCO
+    /// register too, which is harmless: it does nothing until MOX.
+    TxFreq(f64),
     TxOn(f64),
     TxOff,
     Shutdown,
@@ -765,6 +769,18 @@ impl HpsdrRx {
         *self.dev.lna_gain_db.lock().expect("lna lock") = db;
         tracing::debug!("HPSDR: set {LNA_GAIN_ELEMENT} gain {db:+.0} dB");
         let _ = self.dev.ctrl.send(Ctrl::RxGain(db));
+    }
+
+    /// Tell the board where this radio would transmit, while receiving.
+    ///
+    /// An amplifier, transverter or loop antenna on the accessory bus switches
+    /// bands from this and has to be settled before any RF appears, so it
+    /// cannot wait for [`Self::tx_begin`]. Belongs to the stream that owns the
+    /// transmitter; there is only one, and only one transmit frequency.
+    pub fn set_tx_freq(&self, hz: f64) {
+        if self.tx.is_some() {
+            let _ = self.dev.ctrl.send(Ctrl::TxFreq(hz));
+        }
     }
 
     /// Begin transmitting at `tx_freq_hz`; returns the TX I/Q rate to feed

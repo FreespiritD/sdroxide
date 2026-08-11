@@ -308,6 +308,10 @@ struct Ep6Info {
     ptt: bool,
     /// ADC clipped since the last report — the front-end gain is too high.
     adc_overload: bool,
+    /// A Hermes-Lite acknowledging a request we marked RQST: the address it
+    /// echoed and the four data bytes with it. Only the I2C tunnel asks for
+    /// these (see [`crate::ioboard`]).
+    ack: Option<(u8, [u8; 4])>,
     /// `(C1, C2, C3, C4)` of a status-set-0 frame: the firmware/gateware
     /// version bytes. Their exact meaning is board-specific, so they are logged
     /// raw rather than interpreted.
@@ -373,14 +377,23 @@ fn hl2_status(c1: u8, c3: u8, keyed: bool, health: &mut TxHealth) {
     }
 }
 
-/// Decode the five C&C bytes at the head of a radio→host frame. C0 bits 2..0
-/// are the PTT/dash/dot lines; bits 7..3 select which sensor set C1..C4 carry.
-/// Only set 0 is interpreted here — it holds the ADC-overload flag and the
-/// version bytes, the two things a bring-up log needs. The power and voltage
-/// sets are board-specific and left to the caller's raw logging.
+/// Decode the five C&C bytes at the head of a radio→host frame.
+///
+/// C0 bit 0 is the radio's PTT line either way. What the rest means depends on
+/// C0 bit 7, the Hermes-Lite's ACK flag:
+///
+/// - **Clear** — the ordinary rotating status. Bits 7..3 select which sensor set
+///   C1..C4 carry; only set 0 is interpreted here, holding the ADC-overload flag
+///   and the version bytes, the two things a bring-up log needs. The power and
+///   voltage sets are board-specific and left to the caller's raw logging.
+/// - **Set** — an answer to a request we marked RQST. Bits 6..1 are the address
+///   being answered and C1..C4 are its data. Nothing but the I2C tunnel asks for
+///   these, so they are handed straight to it.
 fn decode_ep6_status(cc: &[u8], info: &mut Ep6Info) {
     info.ptt |= cc[0] & 0x01 != 0;
-    if (cc[0] >> 3) & 0x1F == 0 {
+    if cc[0] & 0x80 != 0 {
+        info.ack = Some(((cc[0] >> 1) & 0x3F, [cc[1], cc[2], cc[3], cc[4]]));
+    } else if (cc[0] >> 3) & 0x1F == 0 {
         info.adc_overload |= cc[1] & 0x01 != 0;
         info.versions = Some((cc[1], cc[2], cc[3], cc[4]));
     }
@@ -396,6 +409,7 @@ fn decode_ep6(d: &[u8], out: &mut Vec<f32>) -> Option<Ep6Info> {
         seq: u32::from_be_bytes([d[4], d[5], d[6], d[7]]),
         ptt: false,
         adc_overload: false,
+        ack: None,
         versions: None,
     };
     for f in 0..2 {
@@ -473,6 +487,10 @@ pub(crate) fn run(ctx: ThreadCtx) {
 
     let mut out_seq: u32 = 0;
     let mut rot = Rotation::new();
+    // Only a Hermes-Lite has the I2C tunnel this rides on. The board itself is
+    // looked for on the bus rather than configured: it either answers or it
+    // does not, and an operator should not have to tell us what is plugged in.
+    let mut io_board = hermes_lite.then(crate::ioboard::IoBoard::new);
     let mut regs = Regs {
         rx_freq: 7_100_000,
         tx_freq: 7_100_000,
@@ -563,6 +581,14 @@ pub(crate) fn run(ctx: ThreadCtx) {
                         );
                     }
                 }
+                Ctrl::TxFreq(hz) => {
+                    let hz = hz.max(0.0) as u32;
+                    if regs.tx_freq != hz {
+                        regs.tx_freq = hz;
+                        rot.urge(Slot::TxFreq);
+                        tracing::debug!("HPSDR P1: TX NCO -> {hz} Hz (not keyed)");
+                    }
+                }
                 Ctrl::TxOn(hz) => {
                     regs.tx_freq = hz.max(0.0) as u32;
                     regs.ptt = true;
@@ -625,6 +651,13 @@ pub(crate) fn run(ctx: ThreadCtx) {
                         if hermes_lite {
                             hl2_status(c1, c3, regs.ptt, &mut tx_health);
                         }
+                    }
+                    // An answer to an I2C request: the only thing that asks for
+                    // one is the accessory-board driver.
+                    if let Some((raddr, data)) = info.ack
+                        && let Some(b) = io_board.as_mut()
+                    {
+                        b.on_ack(raddr, data, Instant::now());
                     }
                     // The radio's own PTT input (a Hermes-Lite's CN4 ring, a
                     // foot switch, a mic button). Published as a level for
@@ -719,8 +752,15 @@ pub(crate) fn run(ctx: ThreadCtx) {
                     conjugate(&mut tx_scratch);
                 }
             }
-            let cc = regs.cc(rot.take(&regs));
             let mox = if regs.ptt { 1 } else { 0 };
+            // An accessory board on the I2C tunnel gets frame #2 when it has
+            // something to say, which is only when the transmit frequency
+            // moves; the register rotation keeps the slot the rest of the time
+            // and never loses its turn (`rot.take` is not reached here).
+            let cc = io_board
+                .as_mut()
+                .and_then(|b| b.next_request(now, regs.tx_freq, mox))
+                .unwrap_or_else(|| regs.cc(rot.take(&regs)));
             let d = build_ep2(&mut out_seq, speed, mox, regs.oc(), cc, &tx_scratch);
             let _ = socket.send_to(&d, dest);
             next_ep2 += EP2_INTERVAL;
@@ -785,7 +825,8 @@ mod tests {
 
     #[test]
     fn ep6_status_bits() {
-        let mut info = Ep6Info { seq: 0, ptt: false, adc_overload: false, versions: None };
+        let mut info =
+            Ep6Info { seq: 0, ptt: false, adc_overload: false, ack: None, versions: None };
         // Status set 0, PTT closed, ADC overloaded, versions in C2..C4.
         decode_ep6_status(&[0x01, 0x01, 0x11, 0x22, 0x33], &mut info);
         assert!(info.ptt);
@@ -794,7 +835,8 @@ mod tests {
 
         // A different status set carries power/voltage, not versions: the
         // overload flag and version bytes must not be read out of it.
-        let mut other = Ep6Info { seq: 0, ptt: false, adc_overload: false, versions: None };
+        let mut other =
+            Ep6Info { seq: 0, ptt: false, adc_overload: false, ack: None, versions: None };
         decode_ep6_status(&[0x08, 0xFF, 0xFF, 0xFF, 0xFF], &mut other);
         assert!(!other.adc_overload);
         assert_eq!(other.versions, None);

@@ -11,6 +11,24 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+/// The C&C bytes of the Hermes-Lite's I2C tunnel, spelled out here rather than
+/// imported so the test pins the wire format independently of the crate.
+///
+/// C0 for a request on I2C bus 2 (address `0x3D`) with the RQST bit set, and the
+/// answer the gateware sends back with its ACK bit set. Requests carry the MOX
+/// bit too, so compare with that masked off.
+const I2C2_RQST: u8 = 0x80 | (0x3D << 1);
+const ACK_I2C2: u8 = 0x80 | (0x3D << 1);
+/// The address the gateware answers with when nothing on the bus responded.
+const ACK_ERROR: u8 = 0x80 | (0x3F << 1);
+const I2C_WRITE: u8 = 0x06;
+const I2C_READ: u8 = 0x07;
+/// The HL2IOBoard: its Pico, its hardware-version register, and what that
+/// register reads back.
+const IOB_ADDR: u8 = 0x1D;
+const IOB_VERSION_ADDR: u8 = 0x41;
+const IOB_VERSION: u8 = 0xF1;
+
 /// 24-bit big-endian encoder matching the crate's decoder (÷ 2^23).
 fn be24(x: f32) -> [u8; 3] {
     let v = (x.clamp(-1.0, 1.0) * 8_388_607.0).round() as i32;
@@ -39,6 +57,10 @@ fn p1_loopback_rx() {
     // board is actually told rather than only what comes back.
     let cc_seen: Arc<Mutex<Vec<[u8; 5]>>> = Arc::new(Mutex::new(Vec::new()));
     let cc_radio = Arc::clone(&cc_seen);
+    // Every `(register, byte)` the host wrote to the IO board's Pico over the
+    // I2C tunnel, in order.
+    let i2c_seen: Arc<Mutex<Vec<(u8, u8)>>> = Arc::new(Mutex::new(Vec::new()));
+    let i2c_radio = Arc::clone(&i2c_seen);
 
     // Fake radio: reply to discovery as an HL2 (Protocol 1), and once it has seen
     // the host's streaming socket, stream EP6 frames carrying I=0.5, Q=-0.25.
@@ -46,6 +68,7 @@ fn p1_loopback_rx() {
         let mut buf = [0u8; 2048];
         let mut host: Option<SocketAddr> = None;
         let mut seq: u32 = 0;
+        let mut pending_ack: Option<[u8; 5]> = None;
         let i = be24(0.5);
         let q = be24(-0.25);
         while !stop_r.load(Ordering::Relaxed) {
@@ -70,8 +93,29 @@ fn p1_loopback_rx() {
                         let mut seen = cc_radio.lock().unwrap();
                         for f in 0..2 {
                             let fr = 8 + f * 512;
-                            if d[fr] == 0x7F && d[fr + 1] == 0x7F && d[fr + 2] == 0x7F {
-                                seen.push(d[fr + 3..fr + 8].try_into().unwrap());
+                            if d[fr] != 0x7F || d[fr + 1] != 0x7F || d[fr + 2] != 0x7F {
+                                continue;
+                            }
+                            let cc: [u8; 5] = d[fr + 3..fr + 8].try_into().unwrap();
+                            seen.push(cc);
+                            // An I2C request on bus 2, with the MOX bit masked
+                            // off: serve it as the gateware and the accessory
+                            // bus would, and answer it.
+                            if cc[0] & !0x01 == I2C2_RQST {
+                                pending_ack = Some(match (cc[1], cc[2]) {
+                                    // The IO board's hardware-version register.
+                                    (I2C_READ, IOB_VERSION_ADDR) => {
+                                        [ACK_I2C2, IOB_VERSION, 0, 0, 0]
+                                    }
+                                    // A one-byte write to the Pico; the
+                                    // gateware echoes the request back.
+                                    (I2C_WRITE, IOB_ADDR) => {
+                                        i2c_radio.lock().unwrap().push((cc[3], cc[4]));
+                                        [ACK_I2C2, cc[1], cc[2], cc[3], cc[4]]
+                                    }
+                                    // Nothing on the bus answered.
+                                    _ => [ACK_ERROR, cc[1], cc[2], cc[3], cc[4]],
+                                });
                             }
                         }
                     }
@@ -92,6 +136,13 @@ fn p1_loopback_rx() {
                     d[fr + 1] = 0x7F;
                     d[fr + 2] = 0x7F;
                     d[fr + 3] = ptt_bit; // C0: status set 0, PTT in bit 0
+                    // An outstanding I2C request rides the first frame of the
+                    // next datagram, which is what the gateware does with it.
+                    if f == 0
+                        && let Some(ack) = pending_ack.take()
+                    {
+                        d[fr + 3..fr + 8].copy_from_slice(&ack);
+                    }
                     for s in 0..63 {
                         let b = fr + 8 + s * 8;
                         d[b..b + 3].copy_from_slice(&i);
@@ -174,6 +225,38 @@ fn p1_loopback_rx() {
         !handle.radio_ptt()
     });
     assert!(opened, "releasing it should reach the handle too");
+
+    // An HL2IOBoard on the accessory bus is found by asking, and is then told
+    // the transmit frequency — the one thing its documentation requires of SDR
+    // software, and what makes an external amplifier follow a band change.
+    // Nothing here waits for a key-down: the amplifier has to be on the right
+    // band before any RF appears.
+    handle.set_tx_freq(14_074_000.0);
+    // The last five writes, as the register numbers they went to and the
+    // frequency they spell, once there are at least that many.
+    let latest = || -> Option<(Vec<u8>, u64)> {
+        let w = i2c_seen.lock().unwrap();
+        let tail = w.get(w.len().checked_sub(5)?..)?;
+        Some((
+            tail.iter().map(|x| x.0).collect(),
+            tail.iter().fold(0u64, |acc, x| acc << 8 | x.1 as u64),
+        ))
+    };
+    // Allow for the half-second rate limit the board's documentation asks for:
+    // the frequency it was given at startup goes out first, and this one waits
+    // its turn rather than flooding the I2C bus behind it.
+    let told = (0..300).any(|_| {
+        thread::sleep(Duration::from_millis(10));
+        latest().is_some_and(|(_, hz)| hz == 14_074_000)
+    });
+    let writes = i2c_seen.lock().unwrap().clone();
+    assert!(told, "the IO board should be told the transmit frequency, got {writes:02X?}");
+    // First contact clears the board: its registers are static and may hold
+    // whatever the last program to drive it left behind.
+    assert_eq!(writes[0], (5, 1), "REG_CONTROL = 1 resets the board first");
+    // The frequency goes as a five-byte big-endian integer in registers 0..=4,
+    // with BYTE0 — the write the board acts on — last.
+    assert_eq!(latest().expect("five writes").0, vec![0, 1, 2, 3, 4], "in order, BYTE0 last");
 
     stop.store(true, Ordering::Relaxed);
     drop(handle);

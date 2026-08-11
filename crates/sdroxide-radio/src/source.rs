@@ -214,6 +214,19 @@ pub trait IqSource: Send {
     /// centre or that don't expose a per-VFO offset.
     fn set_if_offset(&mut self, _hz: f64) {}
 
+    /// The frequency this radio would transmit on — split, XIT and a satellite
+    /// uplink already in it — told to the source *while receiving*, whenever it
+    /// changes.
+    ///
+    /// Distinct from [`Self::tx_begin`], which comes at key-down and is far too
+    /// late for the hardware that wants this. Band-switching accessories —
+    /// an amplifier, a transverter, a loop antenna's tuner — have to be on the
+    /// right band *before* any RF appears, and they cannot work it out for
+    /// themselves: the operator changing band is the event they need, not the
+    /// operator keying. Default: no-op, which is right for every source with
+    /// nothing downstream of it to switch.
+    fn set_tx_freq_hz(&mut self, _hz: f64) {}
+
     // CAT-controlled rigs — meaningful only for the sound-card/CAT source.
 
     /// Panadapter width (Hz) for a demod-audio source — the engine shows this
@@ -572,6 +585,13 @@ impl IqSource for ConvertedSource {
     /// Relative (VFO minus IQ centre), so untouched.
     fn set_if_offset(&mut self, hz: f64) {
         self.inner.set_if_offset(hz);
+    }
+
+    /// A transmit frequency, so it converts like every other one: what the
+    /// hardware behind the converter actually emits is what its accessory
+    /// boards switch bands for.
+    fn set_tx_freq_hz(&mut self, hz: f64) {
+        self.inner.set_tx_freq_hz(self.up(hz));
     }
 
     fn display_bandwidth(&self) -> Option<f64> {

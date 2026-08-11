@@ -15,6 +15,7 @@
 //! stream.
 
 mod discovery;
+mod ioboard;
 mod net;
 mod protocol1;
 mod protocol2;

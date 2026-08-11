@@ -226,6 +226,15 @@ impl IqSource for HpsdrSource {
         vec![ControlUpdate::Ptt(ptt)]
     }
 
+    /// Load the transmit frequency while receiving, so an HL2IOBoard on the
+    /// accessory bus can switch an amplifier, transverter or loop antenna to
+    /// the right band before the operator keys.
+    fn set_tx_freq_hz(&mut self, hz: f64) {
+        if let Some(rx) = self.rx.as_ref() {
+            rx.set_tx_freq(sdroxide_types::HpsdrConfig::apply_ppm(hz, self.ppm));
+        }
+    }
+
     fn tx_begin(&mut self, center_hz: f64, _rate: f64) -> Result<f64> {
         match self.rx.as_ref() {
             Some(rx) => {

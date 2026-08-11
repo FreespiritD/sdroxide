@@ -1067,6 +1067,9 @@ struct Engine {
     /// Whether the radio's own PTT line is what is holding this over — set by
     /// [`Self::apply_hw_ptt`], and the reason its key-up is honoured.
     hw_ptt: bool,
+    /// The transmit frequency the source has already been told, so
+    /// [`Self::push_tx_freq`] only speaks when it moves.
+    tx_freq_told: Option<f64>,
     tx_center_hz: f64,
     tx_ham_only: bool,
     /// TX monitor: FFTs the transmitted 48 kHz baseband (the modulator output,
@@ -1478,6 +1481,7 @@ fn engine_thread(
         tx: None,
         tx_active: false,
         hw_ptt: false,
+        tx_freq_told: None,
         tx_center_hz: 0.0,
         tx_ham_only: engine_cfg.tx_ham_only,
         wide_scratch: Vec::new(),
@@ -1697,6 +1701,11 @@ fn engine_thread(
         // Catch up with shared-store writes by any other engine in the process
         // (an atomic load per tick; reloads only when the generation moved).
         engine.poll_shared_stores();
+
+        // Where we would transmit, for band-switching accessories that have to
+        // be on the right band before any RF appears. No-op unless the source
+        // has something downstream of it to switch.
+        engine.push_tx_freq();
 
         // Out-of-band control changes from a CAT rig (dial/mode moved on the
         // radio itself). No-op for SoapySDR/siggen/file.
@@ -5755,6 +5764,9 @@ impl Engine {
         // Carrying "still held" across the swap would swallow the next press,
         // since only an edge keys.
         self.hw_ptt = false;
+        // Likewise it has been told no transmit frequency yet, whatever the old
+        // one knew.
+        self.tx_freq_told = None;
         self.release_tx_gate();
         self.tx_pace = None;
         self.digi = None;
@@ -5869,6 +5881,27 @@ impl Engine {
         // Keep a wideband-IQ rig's own VFO on our dial (TCI); no-op elsewhere. This
         // way returning from TX doesn't snap the rig back to the IQ centre.
         self.source.set_if_offset(main_offset);
+    }
+
+    /// Tell the source where we would transmit, for the band-switching hardware
+    /// that has to know before the operator keys (see
+    /// [`IqSource::set_tx_freq_hz`]).
+    ///
+    /// Polled from the engine loop rather than pushed from the places that move
+    /// the transmit frequency. There are a lot of those — the dial, VFO select,
+    /// split, XIT, a band or memory recall, a satellite uplink, a scanner step,
+    /// rigctld — and several change it without going near `update_tuning`, so
+    /// instrumenting them all is a list that would silently fall out of date.
+    /// Deriving it costs one comparison per iteration.
+    fn push_tx_freq(&mut self) {
+        let hz = match self.sat_lock.as_ref().and_then(|l| l.cfg.uplink) {
+            Some(u) => u.uplink_for(self.state.active_freq_hz()) + self.state.xit.effective_hz(),
+            None => self.state.tx_freq_hz(),
+        };
+        if self.tx_freq_told != Some(hz) {
+            self.tx_freq_told = Some(hz);
+            self.source.set_tx_freq_hz(hz);
+        }
     }
 
     /// The output power to command on a rig that has its own power control:
