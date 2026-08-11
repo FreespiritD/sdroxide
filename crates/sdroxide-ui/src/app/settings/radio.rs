@@ -293,6 +293,25 @@ pub(in crate::app) fn settings_hpsdr_tab(
             });
         ui.end_row();
 
+        ui.label("IO board RX input").on_hover_text(
+            "Where an N2ADR HL2IOBoard takes its receive signal from. The board itself is found \
+             automatically and needs no setting; this one exists only for operators who have \
+             wired its own SMA jacks. Leave it at \"Radio's own input\" otherwise — selecting the \
+             IO board's J9 with nothing connected to it leaves the receiver deaf. Applies on \
+             Apply / reconnect.",
+        );
+        ComboBox::from_id_salt("hpsdr_io_rx")
+            .width(220.0)
+            .selected_text(cfg.hpsdr.io_rx_input.label())
+            .show_ui(ui, |ui| {
+                for m in sdroxide_types::HpsdrIoRxInput::ALL {
+                    if ui.selectable_label(cfg.hpsdr.io_rx_input == m, m.label()).clicked() {
+                        cfg.hpsdr.io_rx_input = m;
+                    }
+                }
+            });
+        ui.end_row();
+
         ui.label("Power amplifier");
         ui.checkbox(&mut cfg.hpsdr.pa_enable, "Use the Hermes-Lite 2's onboard PA").on_hover_text(
             "On by default, and what you want unless an external amplifier is driven from the \

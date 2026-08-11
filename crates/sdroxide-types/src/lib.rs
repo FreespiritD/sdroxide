@@ -111,11 +111,12 @@ pub use propagation::{
 };
 pub use radio::{
     Backend, CONVERTER_OFFSET_MAX_HZ, CONVERTER_PRESETS, CatConfig, CatFamily, CwKeying, DigiMode,
-    FREQ_RANGE_MAX_HZ, HpsdrConfig, HpsdrDevice, HpsdrFilterBoard, LineState, ModeControl, Parity,
-    PlutoAgc, PlutoConfig, PlutoDevice, PttMethod, RadioConfig, RtlSdrAgc, RtlSdrConfig,
-    RtlSdrDevice, RtlSdrHfMode, Rx888Config, Rx888Device, SdrPlayAgc, SdrPlayConfig, SdrPlayDevice,
-    SdrPlayDuoTuner, SdrPlayModel, SerialConfig, SmartSdrConfig, SmartSdrDevice, SoapyDeviceInfo,
-    SoundFormat, StopBits, TciConfig, converter_preset_name, format_freq_ranges, parse_freq_ranges,
+    FREQ_RANGE_MAX_HZ, HpsdrConfig, HpsdrDevice, HpsdrFilterBoard, HpsdrIoRxInput, LineState,
+    ModeControl, Parity, PlutoAgc, PlutoConfig, PlutoDevice, PttMethod, RadioConfig, RtlSdrAgc,
+    RtlSdrConfig, RtlSdrDevice, RtlSdrHfMode, Rx888Config, Rx888Device, SdrPlayAgc, SdrPlayConfig,
+    SdrPlayDevice, SdrPlayDuoTuner, SdrPlayModel, SerialConfig, SmartSdrConfig, SmartSdrDevice,
+    SoapyDeviceInfo, SoundFormat, StopBits, TciConfig, converter_preset_name, format_freq_ranges,
+    parse_freq_ranges,
 };
 pub use rifp::{
     RIFP_CALLING_HZ, RIFP_MAP_MAX_CHUNKS, RifpEncoding, RifpMeta, RifpProfile, RifpSession,

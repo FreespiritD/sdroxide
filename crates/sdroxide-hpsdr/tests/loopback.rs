@@ -163,6 +163,7 @@ fn p1_loopback_rx() {
         sdroxide_types::HpsdrFilterBoard::None,
         false,
         true,
+        sdroxide_types::HpsdrIoRxInput::Radio,
     )
     .expect("open loopback connection");
     assert_eq!(board.protocol(), 1, "detected as Protocol 1");

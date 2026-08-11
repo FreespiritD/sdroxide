@@ -2,13 +2,22 @@
 //! accessory connector that switches bands for an external amplifier, a
 //! transverter or a loop antenna.
 //!
-//! The board cannot see the transmit frequency — the Hermes-Lite's own registers
-//! never reach it — so the host has to tell it. That is the one thing its
-//! documentation asks SDR software to do:
+//! The board cannot see either frequency — the Hermes-Lite's own registers never
+//! reach it — so the host has to tell it:
 //!
 //! > The only required SDR modification is sending the transmit frequency. SDR
 //! > software must send the transmit frequency to provide band information to
 //! > power amps, transverters and loop antennas.
+//!
+//! Its documentation asks a host for four things, and this does all four:
+//!
+//! - **Reset** (`REG_CONTROL`) once at startup, since the board's registers are
+//!   static and outlive the program that last set them.
+//! - **The transmit frequency**, which is what an amplifier switches bands on.
+//! - **The receive frequency**, as a one-byte code, which the board uses to
+//!   choose a receive antenna and preselector.
+//! - **`REG_RF_INPUTS`**, whether the board's own SMA jacks replace the radio's
+//!   receive input — the operator's answer to how they wired it.
 //!
 //! Everything else the board does (which output drives which relay, the fan, the
 //! tuner) belongs in the operator's own Pico firmware, deliberately: the author
@@ -45,6 +54,8 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use sdroxide_types::HpsdrIoRxInput;
+
 /// C&C address `0x3D` — I2C bus 2 — already shifted into C0's address field.
 /// The MOX bit (0) and RQST bit (7) are OR'd in per datagram.
 const CC_I2C2: u8 = 0x3D << 1;
@@ -79,6 +90,17 @@ const REG_TX_FREQ_BYTE0: u8 = 4;
 /// software clear them at startup rather than inherit whatever the last program
 /// left behind.
 const REG_CONTROL: u8 = 5;
+/// Where the board takes its receive signal from: the radio's own input (0, and
+/// what the reset leaves), the board's own J9 SMA (1), or J9 with the J10
+/// PureSignal jack switched in on transmit (2).
+const REG_RF_INPUTS: u8 = 11;
+/// Receiver 1's frequency, as a one-byte *code* rather than a frequency —
+/// registers 13..=24 hold one for each of the twelve receivers the protocol can
+/// carry. The board uses them to pick a receive antenna and preselector; all
+/// zero (which is what the reset leaves) means "receive on the transmit band".
+///
+/// Protocol 1 carries exactly one receiver, so only this one is ever written.
+const REG_FCODE_RX1: u8 = 13;
 
 /// How long to wait for an ACK before sending the request again.
 const ACK_TIMEOUT: Duration = Duration::from_millis(150);
@@ -144,23 +166,35 @@ struct InFlight {
 /// transmit frequency.
 pub(crate) struct IoBoard {
     presence: Presence,
+    /// Which input the operator has wired the board for, stated once after the
+    /// reset. Only the connection knows this; the board itself comes up at 0.
+    rx_input: HpsdrIoRxInput,
     inflight: Option<InFlight>,
     queue: VecDeque<Op>,
-    /// The frequency the board has been told, so an unchanged dial is silent.
+    /// The transmit frequency the board has been told, so an unchanged dial is
+    /// silent.
     sent_hz: Option<u32>,
-    /// When the last frequency went out, for the half-second rate limit.
+    /// The receive frequency *code* it has been told. Held as the code rather
+    /// than the frequency because that is what the board acts on, and a code
+    /// spans a whole band (see [`hertz_to_code`]).
+    sent_rx_code: Option<u8>,
+    /// When the last frequency went out, for the half-second rate limit. Shared
+    /// by both directions: it exists to keep the I2C bus quiet, and the bus does
+    /// not care which of them is talking.
     sent_at: Option<Instant>,
     /// When the next probe may go out.
     probe_at: Option<Instant>,
 }
 
 impl IoBoard {
-    pub(crate) fn new() -> IoBoard {
+    pub(crate) fn new(rx_input: HpsdrIoRxInput) -> IoBoard {
         IoBoard {
             presence: Presence::Probing(PROBE_TRIES),
+            rx_input,
             inflight: None,
             queue: VecDeque::new(),
             sent_hz: None,
+            sent_rx_code: None,
             sent_at: None,
             probe_at: None,
         }
@@ -170,11 +204,13 @@ impl IoBoard {
     /// ordinary register rotation — which is the answer almost every time, since
     /// this talks only when the frequency moves.
     ///
-    /// `tx_freq_hz` is the frequency the radio would transmit on right now.
+    /// `tx_freq_hz` is the frequency the radio would transmit on right now;
+    /// `rx_freq_hz` is where its receiver is tuned.
     pub(crate) fn next_request(
         &mut self,
         now: Instant,
         tx_freq_hz: u32,
+        rx_freq_hz: u32,
         mox: u8,
     ) -> Option<[u8; 5]> {
         // A request still waiting on its answer holds the bus: the protocol
@@ -194,14 +230,14 @@ impl IoBoard {
             self.give_up(op, now, "no answer");
         }
 
-        self.refill(now, tx_freq_hz);
+        self.refill(now, tx_freq_hz, rx_freq_hz);
         let op = self.queue.pop_front()?;
         self.inflight = Some(InFlight { op, sent_at: now, tries: 0 });
         Some(op.cc(mox))
     }
 
     /// Queue whatever there is to say, if anything.
-    fn refill(&mut self, now: Instant, tx_freq_hz: u32) {
+    fn refill(&mut self, now: Instant, tx_freq_hz: u32, rx_freq_hz: u32) {
         if !self.queue.is_empty() {
             return;
         }
@@ -218,7 +254,10 @@ impl IoBoard {
                 }
             }
             Presence::Present => {
-                if self.sent_hz == Some(tx_freq_hz) {
+                let rx_code = hertz_to_code(rx_freq_hz);
+                let tx_stale = self.sent_hz != Some(tx_freq_hz);
+                let rx_stale = self.sent_rx_code != Some(rx_code);
+                if !tx_stale && !rx_stale {
                     return;
                 }
                 // Rate limit the *sending*, not the value: whatever the
@@ -228,10 +267,21 @@ impl IoBoard {
                 if self.sent_at.is_some_and(|t| now < t + FREQ_INTERVAL) {
                     return;
                 }
-                self.sent_hz = Some(tx_freq_hz);
                 self.sent_at = Some(now);
-                self.queue.extend(freq_writes(tx_freq_hz));
-                tracing::debug!("HL2IOBoard: transmit frequency -> {tx_freq_hz} Hz");
+                // Transmit first: it is the one an amplifier switches on, and
+                // the one that has to be right before any RF appears.
+                if tx_stale {
+                    self.sent_hz = Some(tx_freq_hz);
+                    self.queue.extend(freq_writes(tx_freq_hz));
+                    tracing::debug!("HL2IOBoard: transmit frequency -> {tx_freq_hz} Hz");
+                }
+                if rx_stale {
+                    self.sent_rx_code = Some(rx_code);
+                    self.queue.push_back(Op::write(REG_FCODE_RX1, rx_code));
+                    tracing::debug!(
+                        "HL2IOBoard: receive frequency -> {rx_freq_hz} Hz (code {rx_code})"
+                    );
+                }
             }
             Presence::Absent => {}
         }
@@ -267,9 +317,21 @@ impl IoBoard {
                 // Its registers are static and may hold whatever the last
                 // program left; its documentation asks for this at startup.
                 self.queue.push_back(Op::write(REG_CONTROL, 1));
-                // And say the frequency straight away rather than waiting for
-                // the operator to move the dial.
+                // The reset just wrote 0 there, so only a non-default choice
+                // needs saying.
+                if self.rx_input.code() != 0 {
+                    self.queue.push_back(Op::write(REG_RF_INPUTS, self.rx_input.code()));
+                    tracing::info!(
+                        "HL2IOBoard: receive input -> {} (mode {})",
+                        self.rx_input.label(),
+                        self.rx_input.code()
+                    );
+                }
+                // The reset just zeroed every register, so say both frequencies
+                // straight away rather than waiting for the operator to move
+                // the dial.
                 self.sent_hz = None;
+                self.sent_rx_code = None;
                 self.sent_at = None;
             } else {
                 self.probe_failed(now, &format!("unexpected version byte 0x{:02X}", data[0]));
@@ -288,6 +350,7 @@ impl IoBoard {
         // say the whole five bytes again from the top.
         self.queue.clear();
         self.sent_hz = None;
+        self.sent_rx_code = None;
         self.sent_at = None;
         tracing::warn!(
             "HL2IOBoard: I2C write to register {} failed ({why}); sending the transmit \
@@ -313,6 +376,25 @@ impl IoBoard {
     }
 }
 
+/// The board's one-byte logarithmic frequency code, as Quisk's `hertz2code`
+/// computes it: `round(15.47 · ln(hz / 18748.1))`, clamped to `1..=255`, with
+/// `0` reserved for "not specified".
+///
+/// Each step is 6.68 %, so an entire amateur band lands on one or two codes —
+/// which is the point. The receive code is what the board switches an antenna
+/// and preselector on, and deduplicating on the *code* rather than the frequency
+/// means a spun dial puts nothing at all on the I2C bus while a band change
+/// always does.
+fn hertz_to_code(hz: u32) -> u8 {
+    if hz == 0 {
+        return 0;
+    }
+    let code = (15.47 * (hz as f64 / 18748.1).ln()).round();
+    // Below ~18.7 kHz the logarithm goes negative; the floor is 1, since 0 has
+    // its own meaning.
+    code.clamp(1.0, 255.0) as u8
+}
+
 /// The five register writes that hand `hz` to the board, **BYTE0 last** — that
 /// write is what makes the board act on the frequency, so the other four have to
 /// already be in place.
@@ -333,6 +415,10 @@ fn freq_writes(hz: u32) -> [Op; 5] {
 mod tests {
     use super::*;
 
+    /// A receive frequency for the tests that are not about the receive code.
+    /// Held fixed so it contributes exactly one write after the reset.
+    const RX_HZ: u32 = 14_074_000;
+
     /// Answer the request `board` just made, as the gateware would.
     fn ack(board: &mut IoBoard, now: Instant, data: [u8; 4]) {
         board.on_ack(CC_I2C2 >> 1, data, now);
@@ -340,14 +426,15 @@ mod tests {
 
     /// Take the board from cold to found, returning the probe it sent.
     fn find(board: &mut IoBoard, now: Instant) -> [u8; 5] {
-        let probe = board.next_request(now, 14_074_000, 0).expect("probes on the first poll");
+        let probe =
+            board.next_request(now, 14_074_000, RX_HZ, 0).expect("probes on the first poll");
         ack(board, now, [0xF1, 0, 0, 0]);
         probe
     }
 
     #[test]
     fn probe_reads_the_version_register_and_then_resets_the_board() {
-        let mut board = IoBoard::new();
+        let mut board = IoBoard::new(HpsdrIoRxInput::Radio);
         let now = Instant::now();
         let probe = find(&mut board, now);
         assert_eq!(probe[0], CC_I2C2 | CC_RQST, "I2C bus 2, answer requested");
@@ -357,19 +444,45 @@ mod tests {
 
         // The first thing said to a board that has just been found is "clear
         // everything" — its registers survive whatever program ran last.
-        let reset = board.next_request(now, 14_074_000, 0).expect("resets the board");
+        let reset = board.next_request(now, 14_074_000, RX_HZ, 0).expect("resets the board");
         assert_eq!(reset[1], I2C_WRITE);
         assert_eq!(reset[2], IOB_ADDR);
         assert_eq!(reset[3], REG_CONTROL);
         assert_eq!(reset[4], 1);
     }
 
+    /// `REG_RF_INPUTS` is the operator's answer to "what is wired to the board's
+    /// own SMA jacks", and only they know it. The reset writes 0, so only a
+    /// non-default choice costs a transaction.
+    #[test]
+    fn the_receive_input_mode_is_stated_only_when_it_is_not_the_default() {
+        let now = Instant::now();
+        for (mode, code) in [(HpsdrIoRxInput::IoBoard, 1), (HpsdrIoRxInput::IoBoardPureSignal, 2)] {
+            let mut board = IoBoard::new(mode);
+            find(&mut board, now);
+            let reset = board.next_request(now, RX_HZ, RX_HZ, 0).expect("the reset");
+            ack(&mut board, now, [0; 4]);
+            assert_eq!((reset[3], reset[4]), (REG_CONTROL, 1));
+            let sel = board.next_request(now, RX_HZ, RX_HZ, 0).expect("the input mode");
+            ack(&mut board, now, [0; 4]);
+            assert_eq!((sel[3], sel[4]), (REG_RF_INPUTS, code), "{mode:?}");
+        }
+        // The default is what the reset already wrote, so nothing follows it but
+        // the frequencies.
+        let mut board = IoBoard::new(HpsdrIoRxInput::Radio);
+        find(&mut board, now);
+        board.next_request(now, RX_HZ, RX_HZ, 0).expect("the reset");
+        ack(&mut board, now, [0; 4]);
+        let next = board.next_request(now, RX_HZ, RX_HZ, 0).expect("straight to the frequency");
+        assert_eq!(next[3], REG_TX_FREQ_BYTE4, "no redundant mode write");
+    }
+
     #[test]
     fn a_radio_without_an_io_board_gives_up_and_stays_quiet() {
-        let mut board = IoBoard::new();
+        let mut board = IoBoard::new(HpsdrIoRxInput::Radio);
         let mut now = Instant::now();
         for _ in 0..PROBE_TRIES {
-            assert!(board.next_request(now, 14_074_000, 0).is_some(), "probe");
+            assert!(board.next_request(now, 14_074_000, RX_HZ, 0).is_some(), "probe");
             board.on_ack(RADDR_ERROR, [0, 0, 0, 0], now);
             now += PROBE_INTERVAL;
         }
@@ -378,21 +491,21 @@ mod tests {
         // the operator tunes.
         for _ in 0..50 {
             now += Duration::from_secs(1);
-            assert_eq!(board.next_request(now, 7_074_000, 0), None);
+            assert_eq!(board.next_request(now, 7_074_000, RX_HZ, 0), None);
         }
     }
 
     #[test]
     fn the_frequency_goes_out_big_endian_with_the_latching_byte_last() {
-        let mut board = IoBoard::new();
+        let mut board = IoBoard::new(HpsdrIoRxInput::Radio);
         let mut now = Instant::now();
         find(&mut board, now);
-        board.next_request(now, 14_074_000, 0); // the reset
+        board.next_request(now, 14_074_000, RX_HZ, 0); // the reset
         ack(&mut board, now, [0; 4]);
 
         let mut sent = Vec::new();
         for _ in 0..5 {
-            let cc = board.next_request(now, 14_074_000, 0).expect("a frequency byte");
+            let cc = board.next_request(now, 14_074_000, RX_HZ, 0).expect("a frequency byte");
             ack(&mut board, now, [0; 4]);
             sent.push((cc[3], cc[4]));
             now += Duration::from_millis(3);
@@ -411,39 +524,93 @@ mod tests {
         );
         assert_eq!(sent[4].0, REG_TX_FREQ_BYTE0, "the latching write is last");
 
+        // The receive code follows in the same batch, once.
+        let rx = board.next_request(now, 14_074_000, RX_HZ, 0).expect("the receive code");
+        ack(&mut board, now, [0; 4]);
+        assert_eq!((rx[3], rx[4]), (REG_FCODE_RX1, hertz_to_code(RX_HZ)));
+
         // Nothing more to say while the dial sits still.
         now += FREQ_INTERVAL * 2;
-        assert_eq!(board.next_request(now, 14_074_000, 0), None);
+        assert_eq!(board.next_request(now, 14_074_000, RX_HZ, 0), None);
+    }
+
+    /// The receive code is what the board picks an antenna and preselector on.
+    /// It is deduplicated on the *code*, and a code is 6.68 % wide — so tuning
+    /// around a band says nothing at all while moving to another says it once.
+    #[test]
+    fn the_receive_code_speaks_on_a_band_change_and_not_on_a_tune() {
+        // Each amateur band is its own code, and adjacent bands never share
+        // one, so a band change is always heard.
+        let bands = [1_900_000, 3_650_000, 7_100_000, 14_175_000, 21_225_000, 28_500_000];
+        for pair in bands.windows(2) {
+            assert_ne!(hertz_to_code(pair[0]), hertz_to_code(pair[1]), "{pair:?} share a code");
+        }
+        // A code spans 6.68 %, but the boundaries sit where they sit rather
+        // than on band edges, so a band can straddle two (20 m crosses one at
+        // ~14.145 MHz). That costs at most one extra write mid-band and is
+        // exactly as correct — the code still names where the receiver is.
+        // What matters is that ordinary tuning is silent:
+        assert_eq!(hertz_to_code(14_000_000), hertz_to_code(14_100_000));
+        assert_eq!(hertz_to_code(7_000_000), hertz_to_code(7_200_000));
+        // The rails: zero means "not specified", and nothing under-runs it.
+        assert_eq!(hertz_to_code(0), 0);
+        assert_eq!(hertz_to_code(1), 1, "below the curve's floor, still a valid code");
+        assert_eq!(hertz_to_code(18_748), 1);
+        // Quisk's own figures, to the code.
+        assert_eq!(hertz_to_code(14_074_000), 102);
+        assert_eq!(hertz_to_code(7_074_000), 92);
+
+        let mut board = IoBoard::new(HpsdrIoRxInput::Radio);
+        let mut now = Instant::now();
+        find(&mut board, now);
+        // Drain the reset, the transmit frequency and the first receive code.
+        for _ in 0..7 {
+            board.next_request(now, 14_074_000, 14_074_000, 0).expect("startup traffic");
+            ack(&mut board, now, [0; 4]);
+        }
+        // Tuning around 20 m: the transmit frequency is unchanged here, and the
+        // receive code does not move either, so the bus stays silent.
+        for hz in [14_000_000, 14_050_000, 14_100_000, 14_074_000] {
+            now += FREQ_INTERVAL;
+            assert_eq!(board.next_request(now, 14_074_000, hz, 0), None, "still 20 m at {hz}");
+        }
+        // Moving to 40 m says it, once.
+        now += FREQ_INTERVAL;
+        let cc = board.next_request(now, 14_074_000, 7_074_000, 0).expect("a band change");
+        ack(&mut board, now, [0; 4]);
+        assert_eq!((cc[3], cc[4]), (REG_FCODE_RX1, 92));
+        now += FREQ_INTERVAL;
+        assert_eq!(board.next_request(now, 14_074_000, 7_100_000, 0), None, "still 40 m");
     }
 
     #[test]
     fn frequency_updates_are_rate_limited_but_never_lost() {
-        let mut board = IoBoard::new();
+        let mut board = IoBoard::new(HpsdrIoRxInput::Radio);
         let mut now = Instant::now();
         find(&mut board, now);
-        board.next_request(now, 7_074_000, 0); // the reset
+        board.next_request(now, 7_074_000, RX_HZ, 0); // the reset
         ack(&mut board, now, [0; 4]);
 
-        // Drain the first frequency.
-        for _ in 0..5 {
-            board.next_request(now, 7_074_000, 0).expect("first frequency");
+        // Drain the first frequency and the receive code that follows it.
+        for _ in 0..6 {
+            board.next_request(now, 7_074_000, RX_HZ, 0).expect("first frequency");
             ack(&mut board, now, [0; 4]);
         }
 
         // A band change inside the rate-limit window is held, not dropped...
         now += Duration::from_millis(50);
-        assert_eq!(board.next_request(now, 14_074_000, 0), None, "too soon");
+        assert_eq!(board.next_request(now, 14_074_000, RX_HZ, 0), None, "too soon");
         // ...and a second change on top of it simply replaces the first: what
         // goes out when the window opens is where the operator actually is.
         now += Duration::from_millis(50);
-        assert_eq!(board.next_request(now, 21_074_000, 0), None, "still too soon");
+        assert_eq!(board.next_request(now, 21_074_000, RX_HZ, 0), None, "still too soon");
         now += FREQ_INTERVAL;
-        let cc = board.next_request(now, 21_074_000, 0).expect("the held change goes out");
+        let cc = board.next_request(now, 21_074_000, RX_HZ, 0).expect("the held change goes out");
         assert_eq!(cc[3], REG_TX_FREQ_BYTE4);
         ack(&mut board, now, [0; 4]);
         let mut bytes = vec![cc[4]];
         for _ in 0..4 {
-            let cc = board.next_request(now, 21_074_000, 0).expect("the rest");
+            let cc = board.next_request(now, 21_074_000, RX_HZ, 0).expect("the rest");
             ack(&mut board, now, [0; 4]);
             bytes.push(cc[4]);
         }
@@ -452,39 +619,43 @@ mod tests {
 
     #[test]
     fn an_unanswered_write_is_retried_and_then_re_sent_with_the_next_update() {
-        let mut board = IoBoard::new();
+        let mut board = IoBoard::new(HpsdrIoRxInput::Radio);
         let mut now = Instant::now();
         find(&mut board, now);
-        board.next_request(now, 7_074_000, 0); // the reset
+        board.next_request(now, 7_074_000, RX_HZ, 0); // the reset
         ack(&mut board, now, [0; 4]);
 
-        let first = board.next_request(now, 7_074_000, 0).expect("first frequency byte");
+        let first = board.next_request(now, 7_074_000, RX_HZ, 0).expect("first frequency byte");
         // Nothing answers. It is re-sent, unchanged, up to the try limit.
         for _ in 1..MAX_TRIES {
             now += ACK_TIMEOUT;
-            assert_eq!(board.next_request(now, 7_074_000, 0), Some(first), "retried verbatim");
+            assert_eq!(
+                board.next_request(now, 7_074_000, RX_HZ, 0),
+                Some(first),
+                "retried verbatim"
+            );
         }
         // Then abandoned — and because the board's idea of the frequency is now
         // unknown, the next poll says it again rather than assuming it landed.
         now += ACK_TIMEOUT;
-        let retry = board.next_request(now, 7_074_000, 0).expect("says it again");
+        let retry = board.next_request(now, 7_074_000, RX_HZ, 0).expect("says it again");
         assert_eq!(retry[3], REG_TX_FREQ_BYTE4, "starting from the top");
     }
 
     #[test]
     fn the_mox_bit_rides_i2c_commands_like_every_other_register() {
-        let mut board = IoBoard::new();
+        let mut board = IoBoard::new(HpsdrIoRxInput::Radio);
         let now = Instant::now();
-        let probe = board.next_request(now, 14_074_000, 1).expect("probe");
+        let probe = board.next_request(now, 14_074_000, RX_HZ, 1).expect("probe");
         assert_eq!(probe[0] & 1, 1, "keyed");
         assert_eq!(probe[0] & !1, CC_I2C2 | CC_RQST);
     }
 
     #[test]
     fn an_ack_for_someone_else_does_not_strand_our_request() {
-        let mut board = IoBoard::new();
+        let mut board = IoBoard::new(HpsdrIoRxInput::Radio);
         let now = Instant::now();
-        board.next_request(now, 14_074_000, 0).expect("probe");
+        board.next_request(now, 14_074_000, RX_HZ, 0).expect("probe");
         // An answer to an unrelated register must not be read as ours.
         board.on_ack(0x09, [0xF1, 0, 0, 0], now);
         assert_ne!(board.presence, Presence::Present, "that was not our answer");

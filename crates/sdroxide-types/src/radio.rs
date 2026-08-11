@@ -416,6 +416,47 @@ impl Default for CatConfig {
     }
 }
 
+/// Where an N2ADR HL2IOBoard takes its receive signal from — the board's
+/// `REG_RF_INPUTS`, which its documentation asks host software to expose.
+///
+/// The IO board carries two SMA jacks of its own: J9, which can replace the
+/// radio's receive input, and J10, a PureSignal (transmit-sample) input. Only an
+/// operator who has wired one of them should move this off the default: selecting
+/// J9 with nothing on it leaves the receiver deaf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum HpsdrIoRxInput {
+    /// Mode 0 — the radio's own receive input, with J10 mixed into it.
+    #[default]
+    Radio,
+    /// Mode 1 — J9 on the IO board is the receive input; no PureSignal.
+    IoBoard,
+    /// Mode 2 — J9 receives, and on transmit J10's PureSignal sample is passed
+    /// to the radio in place of a receive signal.
+    IoBoardPureSignal,
+}
+
+impl HpsdrIoRxInput {
+    pub const ALL: [HpsdrIoRxInput; 3] =
+        [HpsdrIoRxInput::Radio, HpsdrIoRxInput::IoBoard, HpsdrIoRxInput::IoBoardPureSignal];
+
+    /// The value written to the board's `REG_RF_INPUTS`.
+    pub fn code(self) -> u8 {
+        match self {
+            HpsdrIoRxInput::Radio => 0,
+            HpsdrIoRxInput::IoBoard => 1,
+            HpsdrIoRxInput::IoBoardPureSignal => 2,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HpsdrIoRxInput::Radio => "Radio's own input",
+            HpsdrIoRxInput::IoBoard => "IO board J9",
+            HpsdrIoRxInput::IoBoardPureSignal => "IO board J9, PureSignal on transmit",
+        }
+    }
+}
+
 /// Which accessory filter board is wired to a Hermes-Lite 2's J16 header, and
 /// therefore how its seven open-collector outputs should be driven.
 ///
@@ -492,6 +533,12 @@ pub struct HpsdrConfig {
     /// the receiver.
     #[serde(default = "HpsdrConfig::default_pa_enable")]
     pub pa_enable: bool,
+    /// Where an HL2IOBoard on the accessory bus takes its receive signal from.
+    /// Only meaningful when such a board is fitted — it is found automatically —
+    /// and only worth moving off the default by an operator who has wired the
+    /// board's own SMA jacks. See [`HpsdrIoRxInput`].
+    #[serde(default)]
+    pub io_rx_input: HpsdrIoRxInput,
     /// Crystal/TCXO error in ppm, applied to RX/TX frequency before it's sent
     /// to the board's NCO.
     #[serde(default)]
@@ -516,6 +563,7 @@ impl Default for HpsdrConfig {
             filter_board: HpsdrFilterBoard::None,
             invert_spectrum: Self::default_invert_spectrum(),
             pa_enable: Self::default_pa_enable(),
+            io_rx_input: HpsdrIoRxInput::Radio,
             ppm: 0.0,
             ddc: 0,
         }

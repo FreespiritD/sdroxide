@@ -222,6 +222,7 @@ fn two_ddcs_share_one_connection_and_detach_independently() {
         sdroxide_types::HpsdrFilterBoard::None,
         false,
         true,
+        sdroxide_types::HpsdrIoRxInput::Radio,
     )
     .expect("open");
     assert_eq!(board.protocol(), 2);

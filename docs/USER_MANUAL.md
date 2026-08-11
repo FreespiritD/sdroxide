@@ -2418,6 +2418,38 @@ involved:
 
 Receive is wideband IQ, so the full panadapter and the skimmers work.
 
+The radio's own **PTT input** keys sdroxide too: a foot switch or mic button on
+the board's PTT connector (a Hermes Lite 2's CN4 jack) transmits exactly as the
+on-screen PTT button does, safety rails and all. It belongs to the DDC1 radio —
+the one that owns the transmitter — so a second radio tab on another DDC never
+keys on it. Currently Protocol 1 only.
+
+An **N2ADR HL2IOBoard** on the accessory bus is found and driven automatically:
+there is nothing to switch on. sdroxide asks the bus whether one is there when it
+connects, clears its registers (they are static, and survive whatever program
+drove the board last), and from then on keeps it told of both frequencies:
+
+- the **transmit frequency**, which is what an external amplifier, a transverter
+  or a loop antenna switches bands on. It goes out **as you tune**, not at
+  key-down, so the amplifier is already on the band before any RF appears.
+- the **receive frequency**, sent as the board's own one-byte band code, which
+  its firmware can use to pick a receive antenna and preselector.
+
+Updates are limited to one every half second, as the board's documentation asks,
+so a spun dial cannot flood its I2C bus — and the receive code covers a whole
+band at a time, so ordinary tuning puts nothing on the bus at all. What the
+board's outputs then *do* is decided by the firmware **you** program into its
+Pico: by design, sdroxide sends the frequencies and nothing else. Run with
+`RUST_LOG=sdroxide_hpsdr=debug` to watch the board being found and each update
+going out.
+
+- **IO board RX input** — the board's `REG_RF_INPUTS`, and the one thing about it
+  sdroxide cannot work out for itself. Leave it at **Radio's own input** unless
+  you have wired the IO board's own SMA jacks: J9 can replace the radio's receive
+  input, and J10 is a PureSignal (transmit sample) input. Selecting **IO board
+  J9** with nothing connected to it leaves the receiver deaf. Takes effect on
+  *Apply / reconnect*.
+
 > **Help wanted — the HPSDR backend is not fully tested yet.** 
 > If you own an HPSDR board, you can help by running with diagnostic logging 
 > and reporting what you see:

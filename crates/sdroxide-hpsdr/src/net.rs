@@ -14,7 +14,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::discovery;
 use crate::{protocol1, protocol2};
-use sdroxide_types::HpsdrFilterBoard;
+use sdroxide_types::{HpsdrFilterBoard, HpsdrIoRxInput};
 
 /// Host→radio TX I/Q rate. **Both** protocols transmit at 48 kHz: Protocol 2
 /// feeds the DUC directly, and Protocol 1's EP2 stream (speaker audio + TX I/Q)
@@ -368,6 +368,9 @@ pub(crate) struct ThreadCtx {
     /// Switch on the Hermes-Lite's onboard PA (see `HpsdrConfig::pa_enable`).
     /// Ignored on boards that are not a Hermes-Lite.
     pub pa_enable: bool,
+    /// Where an HL2IOBoard on the accessory bus takes its receive signal from
+    /// (see `HpsdrConfig::io_rx_input`). Ignored when no such board answers.
+    pub io_rx_input: HpsdrIoRxInput,
     /// The radio's own PTT line, published for [`HpsdrRx::radio_ptt`].
     pub radio_ptt: Arc<AtomicBool>,
     pub tx: Consumer<f32>,
@@ -443,6 +446,7 @@ impl HpsdrBoard {
         filter_board: HpsdrFilterBoard,
         invert_spectrum: bool,
         pa_enable: bool,
+        io_rx_input: HpsdrIoRxInput,
     ) -> Result<HpsdrBoard, HpsdrError> {
         tracing::info!("HPSDR: opening {ip}, requested RX rate {sample_rate_hz:.0} Hz");
         let (board, protocol) = match discovery::probe(ip, Duration::from_millis(800)) {
@@ -562,6 +566,7 @@ impl HpsdrBoard {
             filter_board,
             invert_spectrum,
             pa_enable,
+            io_rx_input,
             radio_ptt: Arc::clone(&radio_ptt),
             tx: tx_cons,
             ctrl: ctrl_rx,

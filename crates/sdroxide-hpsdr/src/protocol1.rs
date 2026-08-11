@@ -470,6 +470,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
         filter_board,
         invert_spectrum,
         pa_enable,
+        io_rx_input,
         radio_ptt: ptt_line,
         mut tx,
         ctrl,
@@ -490,7 +491,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
     // Only a Hermes-Lite has the I2C tunnel this rides on. The board itself is
     // looked for on the bus rather than configured: it either answers or it
     // does not, and an operator should not have to tell us what is plugged in.
-    let mut io_board = hermes_lite.then(crate::ioboard::IoBoard::new);
+    let mut io_board = hermes_lite.then(|| crate::ioboard::IoBoard::new(io_rx_input));
     let mut regs = Regs {
         rx_freq: 7_100_000,
         tx_freq: 7_100_000,
@@ -759,7 +760,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
             // and never loses its turn (`rot.take` is not reached here).
             let cc = io_board
                 .as_mut()
-                .and_then(|b| b.next_request(now, regs.tx_freq, mox))
+                .and_then(|b| b.next_request(now, regs.tx_freq, regs.rx_freq, mox))
                 .unwrap_or_else(|| regs.cc(rot.take(&regs)));
             let d = build_ep2(&mut out_seq, speed, mox, regs.oc(), cc, &tx_scratch);
             let _ = socket.send_to(&d, dest);
