@@ -9,8 +9,15 @@
 //!
 //! Ages use egui's frame time, which is monotonic and works on both targets;
 //! `slot_utc` only decides whether a decode is *newer* than the one already
-//! recorded for that grid. The history is the exception: a replay of the last
-//! hour is a wall-clock question, so it is stamped and pruned in UTC.
+//! recorded for that station. The history is the exception: a replay of the
+//! last hour is a wall-clock question, so it is stamped and pruned in UTC.
+//!
+//! Each station carries the callsign it was heard under, which is what the
+//! globe writes beside its dot. The flat map has no room for it and ignores it,
+//! but it is kept here rather than looked up again per view: whichever feed
+//! placed the dot is the only thing that knows who was standing there — WSPR's
+//! own report names one of two different stations depending on which way round
+//! it was heard.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -27,25 +34,64 @@ pub const STATION_FADE_S: f64 = 120.0;
 /// can replay.
 pub const HISTORY_S: i64 = 3600;
 
+/// The oldest slot still inside the replay window.
+fn cutoff(now_utc: i64) -> i64 {
+    now_utc - HISTORY_S
+}
+
 /// One located decode, stamped with the slot it came from. The unit the globe's
 /// time-lapse replays.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DigiHit {
     pub lat: f64,
     pub lon: f64,
     /// Unix seconds at the start of the slot it was decoded in.
     pub slot_utc: i64,
+    /// Who was heard there, when the mode carries a callsign. Shared rather
+    /// than copied: the same call recurs in slot after slot, and the whole
+    /// history is republished into the globe every frame.
+    pub call: Option<Arc<str>>,
 }
 
-/// Grid square → (newest slot seen, frame time it was seen at), plus the last
-/// hour of located decodes.
+/// One station currently on the map: where it is, how brightly, and who it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DigiStation {
+    pub lat: f64,
+    pub lon: f64,
+    /// 1.0 → 0.0 as the decode ages out.
+    pub fade: f32,
+    /// The callsign heard there. `None` for a mode that placed a station
+    /// without naming one.
+    pub call: Option<Arc<str>>,
+}
+
+/// What is known about one station between decodes.
+struct Seen {
+    /// Newest slot it has been heard in.
+    slot: i64,
+    /// Frame time it was last heard at — what the fade counts from.
+    at: f64,
+    lat: f64,
+    lon: f64,
+    call: Option<Arc<str>>,
+}
+
+/// Station → what was last heard from it, plus the last hour of located
+/// decodes.
 pub struct DigiStations {
-    seen: HashMap<String, (i64, f64)>,
+    /// Keyed by callsign, falling back to the grid square for a decode that
+    /// carries no call.
+    ///
+    /// A station is its callsign, not its square: two operators in the same
+    /// square are two stations rather than one dot that cannot decide what it
+    /// is called, and a station that corrects its locator moves instead of
+    /// leaving a ghost behind at the old one.
+    seen: HashMap<String, Seen>,
     /// Oldest first. Behind an `Arc` because every frame republishes it into
     /// the globe and an hour of a busy band is a few thousand entries.
     history: Arc<Vec<DigiHit>>,
-    /// The (grid, slot) pairs already in `history`, so a decode that stays in
-    /// the caller's rolling list for many frames is recorded exactly once.
+    /// The (station, slot) pairs already in `history`, so a decode that stays
+    /// in the caller's rolling list for many frames is recorded exactly once.
     recorded: HashSet<(String, i64)>,
     /// How long a station stays lit after it was last heard.
     fade_s: f64,
@@ -82,28 +128,62 @@ impl DigiStations {
     /// again. That is what lets both the panel map and the globe call this with
     /// whatever list they happen to be holding.
     pub fn observe(&mut self, decodes: &[Decode], now_t: f64, now_utc: i64) {
-        let cutoff = now_utc - HISTORY_S;
         let mut fresh: Vec<DigiHit> = Vec::new();
         for d in decodes {
             let Some(grid) = d.grid.as_deref() else { continue };
-            let e = self.seen.entry(grid.to_string()).or_insert((i64::MIN, now_t));
-            if d.slot_utc > e.0 {
-                *e = (d.slot_utc, now_t); // refreshed → dot returns to full brightness
-            }
-            // A slot outside the window is either older than the replay reaches
-            // or stamped by a clock we should not trust; either way it has no
-            // place on a time axis.
-            if d.slot_utc <= cutoff || d.slot_utc > now_utc + 300 {
-                continue;
-            }
-            let key = (grid.to_string(), d.slot_utc);
-            if !self.recorded.contains(&key) {
-                let Some((lat, lon)) = sdroxide_types::grid_to_latlon(grid) else { continue };
-                self.recorded.insert(key);
-                fresh.push(DigiHit { lat, lon, slot_utc: d.slot_utc });
+            self.note(d.from.as_deref(), grid, d.slot_utc, now_t, now_utc, &mut fresh);
+        }
+        self.retire(fresh, now_t, cutoff(now_utc));
+    }
+
+    /// Fold in one located station. Shared by both `observe` paths, so the two
+    /// cannot disagree about what counts as hearing a station again.
+    fn note(
+        &mut self,
+        call: Option<&str>,
+        grid: &str,
+        slot_utc: i64,
+        now_t: f64,
+        now_utc: i64,
+        fresh: &mut Vec<DigiHit>,
+    ) {
+        let Some((lat, lon)) = sdroxide_types::grid_to_latlon(grid) else { return };
+        let call = call.filter(|c| !c.is_empty());
+        let key = call.unwrap_or(grid);
+
+        let e = self.seen.entry(key.to_string()).or_insert(Seen {
+            slot: i64::MIN,
+            at: now_t,
+            lat,
+            lon,
+            call: None,
+        });
+        if slot_utc > e.slot {
+            // Heard again → the dot returns to full brightness, and moves if the
+            // station has since given a better locator.
+            e.slot = slot_utc;
+            e.at = now_t;
+            e.lat = lat;
+            e.lon = lon;
+            // Only re-allocate when the name actually changed: on a busy band
+            // this runs a few hundred times a slot for calls that never move.
+            if e.call.as_deref() != call {
+                e.call = call.map(Arc::from);
             }
         }
-        self.retire(fresh, now_t, cutoff);
+        let hit_call = e.call.clone();
+
+        // A slot outside the window is either older than the replay reaches or
+        // stamped by a clock we should not trust; either way it has no place on
+        // a time axis.
+        if slot_utc <= cutoff(now_utc) || slot_utc > now_utc + 300 {
+            return;
+        }
+        let recorded = (key.to_string(), slot_utc);
+        if !self.recorded.contains(&recorded) {
+            self.recorded.insert(recorded);
+            fresh.push(DigiHit { lat, lon, slot_utc, call: hit_call });
+        }
     }
 
     /// Fold in WSPR spots the same way [`DigiStations::observe`] folds in
@@ -116,34 +196,26 @@ impl DigiStations {
     /// nothing. Either way the far end of the path is what is drawn, which is
     /// what makes the two sets one picture rather than two.
     pub fn observe_wspr(&mut self, spots: &[WsprSpot], now_t: f64, now_utc: i64) {
-        let cutoff = now_utc - HISTORY_S;
         let mut fresh: Vec<DigiHit> = Vec::new();
         for s in spots {
-            let grid =
-                if s.is_heard_by_other() { s.reporter_grid.as_deref() } else { s.grid.as_deref() };
+            // Both ends of the report follow the same rule: the callsign named
+            // is the one standing at the grid that gets the dot.
+            let (grid, call) = if s.is_heard_by_other() {
+                (s.reporter_grid.as_deref(), s.reporter.as_deref())
+            } else {
+                (s.grid.as_deref(), Some(s.call.as_str()))
+            };
             let Some(grid) = grid.filter(|g| !g.is_empty()) else { continue };
-            let e = self.seen.entry(grid.to_string()).or_insert((i64::MIN, now_t));
-            if s.slot_utc > e.0 {
-                *e = (s.slot_utc, now_t);
-            }
-            if s.slot_utc <= cutoff || s.slot_utc > now_utc + 300 {
-                continue;
-            }
-            let key = (grid.to_string(), s.slot_utc);
-            if !self.recorded.contains(&key) {
-                let Some((lat, lon)) = sdroxide_types::grid_to_latlon(grid) else { continue };
-                self.recorded.insert(key);
-                fresh.push(DigiHit { lat, lon, slot_utc: s.slot_utc });
-            }
+            self.note(call, grid, s.slot_utc, now_t, now_utc, &mut fresh);
         }
-        self.retire(fresh, now_t, cutoff);
+        self.retire(fresh, now_t, cutoff(now_utc));
     }
 
     /// Drop what has expired and append what is new. Shared by both `observe`
     /// paths so the two can never disagree about when a dot goes out.
     fn retire(&mut self, mut fresh: Vec<DigiHit>, now_t: f64, cutoff: i64) {
         let fade = self.fade_s;
-        self.seen.retain(|_, &mut (_, seen)| now_t - seen < fade);
+        self.seen.retain(|_, e| now_t - e.at < fade);
 
         let expired = self.history.first().is_some_and(|h| h.slot_utc <= cutoff);
         if !fresh.is_empty() || expired {
@@ -168,13 +240,17 @@ impl DigiStations {
     }
 
     /// Located stations with their 1.0 → 0.0 fade.
-    pub fn stations(&self, now_t: f64) -> Vec<(f64, f64, f32)> {
+    pub fn stations(&self, now_t: f64) -> Vec<DigiStation> {
         self.seen
-            .iter()
-            .filter_map(|(grid, &(_, seen))| {
-                let (lat, lon) = sdroxide_types::grid_to_latlon(grid)?;
-                let alpha = (1.0 - (now_t - seen) / self.fade_s).clamp(0.0, 1.0) as f32;
-                (alpha > 0.0).then_some((lat, lon, alpha))
+            .values()
+            .filter_map(|e| {
+                let fade = (1.0 - (now_t - e.at) / self.fade_s).clamp(0.0, 1.0) as f32;
+                (fade > 0.0).then(|| DigiStation {
+                    lat: e.lat,
+                    lon: e.lon,
+                    fade,
+                    call: e.call.clone(),
+                })
             })
             .collect()
     }
@@ -208,6 +284,14 @@ mod tests {
     /// A wall clock for the tests, so slots land inside the history window.
     const NOW: i64 = 1_784_937_600;
 
+    /// One callsign per grid, so each fixture square is a distinct station —
+    /// which is what the store keys on. Both feeds derive it the same way, so a
+    /// grid heard on WSPR and on FT8 is the same operator, as it would be on
+    /// the air.
+    fn call_in(grid: &str) -> String {
+        format!("TE{}", grid.to_ascii_uppercase())
+    }
+
     /// `slot` is seconds from [`NOW`].
     fn decode(grid: &str, slot: i64) -> Decode {
         Decode {
@@ -217,7 +301,7 @@ mod tests {
             audio_hz: 1000.0,
             message: format!("CQ TEST {grid}"),
             to: None,
-            from: Some("AB1CD".into()),
+            from: Some(call_in(grid)),
             grid: Some(grid.into()),
             is_cq: true,
             cq_to: None,
@@ -237,10 +321,10 @@ mod tests {
     fn a_station_fades_out_over_two_minutes_and_then_expires() {
         let mut s = DigiStations::default();
         observe(&mut s, &[decode("FN42", 100)], 0.0);
-        assert_eq!(s.stations(0.0)[0].2, 1.0, "a fresh decode is not at full brightness");
+        assert_eq!(s.stations(0.0)[0].fade, 1.0, "a fresh decode is not at full brightness");
 
         let half = s.stations(STATION_FADE_S / 2.0);
-        assert!((half[0].2 - 0.5).abs() < 1e-6, "half-way fade was {}", half[0].2);
+        assert!((half[0].fade - 0.5).abs() < 1e-6, "half-way fade was {}", half[0].fade);
 
         // Past the window it is gone entirely, not merely transparent: it must
         // also drop out of the flat map's zoom fit.
@@ -253,7 +337,7 @@ mod tests {
         let mut s = DigiStations::default();
         observe(&mut s, &[decode("FN42", 100)], 0.0);
         observe(&mut s, &[decode("FN42", 115)], 60.0);
-        assert_eq!(s.stations(60.0)[0].2, 1.0);
+        assert_eq!(s.stations(60.0)[0].fade, 1.0);
     }
 
     /// The panel map and the globe both call `observe` with whatever decode
@@ -265,7 +349,7 @@ mod tests {
         let d = [decode("FN42", 100)];
         observe(&mut s, &d, 0.0);
         observe(&mut s, &d, 60.0);
-        let f = s.stations(60.0)[0].2;
+        let f = s.stations(60.0)[0].fade;
         assert!((f - 0.5).abs() < 1e-6, "re-observing reset the fade to {f}");
     }
 
@@ -329,7 +413,7 @@ mod tests {
         observe(&mut s, &[decode("FN42", 100)], 0.0);
         assert!(s.stations(STATION_FADE_S + 1.0).len() == 1, "gone at the default fade");
         let half = s.stations(450.0);
-        assert!((half[0].2 - 0.5).abs() < 1e-6, "half-way fade was {}", half[0].2);
+        assert!((half[0].fade - 0.5).abs() < 1e-6, "half-way fade was {}", half[0].fade);
         observe(&mut s, &[], 901.0);
         assert!(s.stations(901.0).is_empty(), "it still has to expire eventually");
     }
@@ -337,7 +421,7 @@ mod tests {
     fn wspr(grid: &str, slot: i64) -> WsprSpot {
         WsprSpot {
             slot_utc: NOW + slot,
-            call: "AB1CD".into(),
+            call: call_in(grid),
             grid: Some(grid.into()),
             power_dbm: 37,
             freq_hz: 14_097_100.0,
@@ -355,10 +439,10 @@ mod tests {
     fn a_wspr_beacon_lights_its_own_grid_and_fades_like_a_decode() {
         let mut s = DigiStations::default();
         s.observe_wspr(&[wspr("FN42", 0)], 0.0, NOW);
-        assert_eq!(s.stations(0.0)[0].2, 1.0);
+        assert_eq!(s.stations(0.0)[0].fade, 1.0);
         assert_eq!(s.history().len(), 1);
         let half = s.stations(STATION_FADE_S / 2.0);
-        assert!((half[0].2 - 0.5).abs() < 1e-6, "half-way fade was {}", half[0].2);
+        assert!((half[0].fade - 0.5).abs() < 1e-6, "half-way fade was {}", half[0].fade);
     }
 
     /// A report of *us* being heard places the station that heard us. Placing
@@ -377,9 +461,11 @@ mod tests {
         s.observe_wspr(&[heard], 0.0, NOW);
         let placed = s.stations(0.0);
         assert_eq!(placed.len(), 1);
-        let (lat, lon, _) = placed[0];
+        let (lat, lon) = (placed[0].lat, placed[0].lon);
         // IO91 is southern England, not FN42 (New England).
         assert!(lat > 50.0 && lat < 53.0 && lon > -3.0 && lon < 1.0, "placed at {lat},{lon}");
+        // …and it is named after the station standing there, not after us.
+        assert_eq!(placed[0].call.as_deref(), Some("G0XYZ"));
     }
 
     /// The two feeds share one history, so a beacon in the same grid as an FT8
@@ -389,7 +475,7 @@ mod tests {
         let mut s = DigiStations::default();
         s.observe(&[decode("FN42", 0)], 0.0, NOW);
         s.observe_wspr(&[wspr("FN42", 0)], 1.0, NOW);
-        assert_eq!(s.history().len(), 1, "the same grid and slot was recorded twice");
+        assert_eq!(s.history().len(), 1, "the same station and slot was recorded twice");
     }
 
     #[test]
@@ -411,5 +497,61 @@ mod tests {
         assert!(t.transmitting);
         let (lat, lon) = t.dx.expect("JN88 is a valid grid");
         assert!(lat > 40.0 && lat < 50.0 && lon > 10.0 && lon < 20.0, "JN88 at {lat},{lon}");
+    }
+
+    /// The whole point of the callsign travelling this far: the globe labels
+    /// its dots with it, live and in the replay both.
+    #[test]
+    fn a_station_carries_the_callsign_that_was_heard() {
+        let mut s = DigiStations::default();
+        s.observe(&[decode("FN42", 0)], 0.0, NOW);
+        assert_eq!(s.stations(0.0)[0].call.as_deref(), Some("TEFN42"));
+        assert_eq!(s.history()[0].call.as_deref(), Some("TEFN42"));
+    }
+
+    /// Two operators in one square are two stations. Keying on the square would
+    /// give one dot that could not decide what it was called, and would drop
+    /// whichever of them was decoded second.
+    #[test]
+    fn two_stations_in_one_grid_are_two_stations() {
+        let mut s = DigiStations::default();
+        let mut b = decode("FN42", 0);
+        b.from = Some("K1ABC".into());
+        s.observe(&[decode("FN42", 0), b], 0.0, NOW);
+
+        let mut calls: Vec<String> =
+            s.stations(0.0).iter().filter_map(|d| d.call.as_deref().map(str::to_string)).collect();
+        calls.sort();
+        assert_eq!(calls, ["K1ABC", "TEFN42"]);
+        assert_eq!(s.history().len(), 2, "one of them was dropped from the replay");
+    }
+
+    /// A mode that places a station without naming one still gets a dot — it
+    /// simply goes unlabelled.
+    #[test]
+    fn a_decode_without_a_callsign_still_places_a_dot() {
+        let mut s = DigiStations::default();
+        let mut d = decode("FN42", 0);
+        d.from = None;
+        s.observe(&[d], 0.0, NOW);
+        let placed = s.stations(0.0);
+        assert_eq!(placed.len(), 1);
+        assert!(placed[0].call.is_none());
+    }
+
+    /// A station that corrects its locator moves. Keeping the old dot alive
+    /// until it faded would show one operator in two places at once.
+    #[test]
+    fn a_station_that_reports_a_new_grid_moves_rather_than_splitting() {
+        let mut s = DigiStations::default();
+        s.observe(&[decode("FN42", 0)], 0.0, NOW);
+        let mut moved = decode("JN88", 15);
+        moved.from = Some(call_in("FN42"));
+        s.observe(&[moved], 1.0, NOW + 15);
+
+        let placed = s.stations(1.0);
+        assert_eq!(placed.len(), 1, "the station was left behind in two squares");
+        // JN88 is central Europe, not New England.
+        assert!(placed[0].lon > 10.0, "still at {},{}", placed[0].lat, placed[0].lon);
     }
 }

@@ -893,12 +893,21 @@ fn project(view_proj: &[[f32; 4]; 4], rect: egui::Rect, world: [f32; 3]) -> Opti
     ))
 }
 
+/// How much clear space a label keeps around itself before another may be
+/// painted next to it, in pixels.
+const LABEL_GAP: egui::Vec2 = egui::vec2(3.0, 1.5);
+
 /// Project the scene's labels to screen space, paint them, and let one be
 /// clicked. Returns whether the click was consumed.
 ///
 /// The 3D pass has no text rendering, and adding one for a dozen short strings
 /// would be far more machinery than projecting a dozen points with the same
 /// matrix the vertex shaders use.
+///
+/// Crowding is settled here rather than in the scene, because it is a question
+/// about *pixels*: two callsigns a thousand kilometres apart share a patch of
+/// screen at one zoom and are half the window apart at the next. The scene says
+/// which label matters more (`rank`); this decides which of them fits.
 fn draw_labels(
     ui: &egui::Ui,
     st: &mut SolarUi,
@@ -907,7 +916,7 @@ fn draw_labels(
     labels: &[super::scene::Label],
     resp: &egui::Response,
 ) -> bool {
-    use super::scene::Click;
+    use super::scene::{Click, RANK_ALWAYS};
 
     let font = egui::FontId::proportional(11.5);
     let pointer = ui.input(|i| i.pointer.interact_pos());
@@ -917,7 +926,14 @@ fn draw_labels(
     let mut hit: Option<Click> = None;
     let p = ui.painter();
 
-    for l in labels {
+    // Best first, so the important names have taken their space by the time the
+    // rest ask for what is left. A stable sort, so labels of equal rank keep the
+    // order the scene built them in and a tie does not flicker between frames.
+    let mut order: Vec<usize> = (0..labels.len()).collect();
+    order.sort_by_key(|&i| labels[i].rank);
+    let mut taken: Vec<egui::Rect> = Vec::with_capacity(labels.len());
+
+    for l in order.into_iter().map(|i| &labels[i]) {
         let Some(anchor) = project(view_proj, rect, l.world) else { continue };
         let pos = anchor + egui::vec2(l.offset[0], l.offset[1]);
         if !rect.contains(pos) {
@@ -927,6 +943,15 @@ fn draw_labels(
         let galley = p.layout_no_wrap(l.text.clone(), font.clone(), l.color);
         let text_rect =
             egui::Rect::from_min_size(pos - egui::vec2(0.0, galley.size().y * 0.5), galley.size());
+        // Two callsigns overprinted are less use than one, so a name that would
+        // land on one already painted is dropped instead of stacked. Zoom in and
+        // it comes back, which is the same answer the map gives to every other
+        // "there is too much here to read".
+        let claim = text_rect.expand2(LABEL_GAP);
+        if l.rank != RANK_ALWAYS && taken.iter().any(|r| r.intersects(claim)) {
+            continue;
+        }
+        taken.push(claim);
         let hovered =
             l.click != Click::None && pointer.is_some_and(|q| text_rect.expand(4.0).contains(q));
         if hovered {

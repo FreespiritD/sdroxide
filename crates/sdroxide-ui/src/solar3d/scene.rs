@@ -316,6 +316,30 @@ pub struct Label {
     /// What clicking the label does: open a satellite's pass table, or point
     /// the camera at a body.
     pub click: Click,
+    /// Who gets the screen when two labels want the same patch of it. Lower
+    /// wins; [`RANK_ALWAYS`] is never dropped. See [`Label::rank`] for why the
+    /// scene decides this rather than the overlay.
+    pub rank: u8,
+}
+
+/// A label that is always painted, and takes its space before anything else
+/// asks for it: the bodies, the satellites, the station being worked.
+///
+/// These are few, and each one was either asked for by name or is the subject
+/// of the view — none of them is clutter to be thinned out.
+pub const RANK_ALWAYS: u8 = 0;
+
+impl Label {
+    /// Where a callsign sits in that order, from `k` = 1 at full brightness to
+    /// 0 as it ages out.
+    ///
+    /// The scene ranks them because the scene is what knows how fresh a decode
+    /// is; by the time the overlay has them they are all just strings. Fresher
+    /// stations get their pick of a crowded map, which is the right way round —
+    /// a callsign still on the air is worth more than one on its way out.
+    pub fn station_rank(k: f32) -> u8 {
+        1 + ((1.0 - k.clamp(0.0, 1.0)) * 200.0) as u8
+    }
 }
 
 /// What a clickable thing in the scene does.
@@ -818,6 +842,7 @@ fn satellites(
                 color: lin_color(color, (if hit { 1.0 } else { 0.9 }) * fade),
                 offset: [9.0, -7.0],
                 click: Click::Sat(sat.norad_id),
+                rank: RANK_ALWAYS,
             });
         }
     }
@@ -1210,6 +1235,7 @@ fn body_labels(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, view_h: f3
             color: if st.focus() == focus { ink::CYAN } else { color },
             offset: [10.0, -6.0],
             click: Click::Focus(focus),
+            rank: RANK_ALWAYS,
         });
     };
 
@@ -1920,8 +1946,74 @@ const LAPSE_ARC_STEPS: usize = 28;
 /// clear of the traffic behind it instead of being one strand among many.
 const LAPSE_BULGE: f32 = 0.7;
 
-/// Decoded FT8/FT4 stations, the last hour of them, and the path to the one
-/// being worked.
+/// How big the Earth has to be on screen — apparent radius, pixels — before
+/// decoded stations are named.
+///
+/// Well above the threshold the dots themselves need. A dot means something on
+/// a planet forty pixels across; a callsign beside it needs room for the *text*,
+/// and below this the names cover the continents they are standing on. Above it
+/// the overlay's declutter does the rest: pull in and more of them fit, which is
+/// exactly what zooming in should get you.
+const STATION_LABEL_MIN_PX: f32 = 90.0;
+
+/// The most callsigns offered to the overlay at once.
+///
+/// The overlay drops the ones that would overlap, so this is not the number
+/// drawn — it is a bound on the layout work done to find that out. A busy 20 m
+/// evening puts several hundred stations up, and laying out every one of their
+/// names to discard nine in ten is work no frame needs to do.
+const MAX_STATION_LABELS: usize = 72;
+
+/// Is a point on the Earth's surface turned towards the camera?
+///
+/// The dots get this for free from the depth buffer — a marker behind the globe
+/// simply fails the depth test. The labels do not: they are painted by egui
+/// after the 3D pass has finished, so without this every station on the far side
+/// of the world would have its callsign written across the near side.
+///
+/// The margin keeps a name off the silhouette itself, where it reads as
+/// belonging to neither hemisphere.
+fn faces_camera(cam: &Camera, dir: V3, pos: V3) -> bool {
+    dir.dot((cam.eye - pos).normalize()) > 0.06
+}
+
+/// Name a station standing on the Earth's surface, if it can be seen from here.
+fn station_label(
+    s: &mut Scene,
+    b: &Bodies,
+    cam: &Camera,
+    (lat, lon): (f64, f64),
+    call: &str,
+    color: Color32,
+    rank: u8,
+) {
+    let dir = b.surface_dir(lat, lon);
+    // Just clear of the dot's own lift, so the text is not z-fighting with the
+    // marker it belongs to.
+    let pos = b.earth + dir * (b.earth_r * 1.02);
+    if !faces_camera(cam, dir, pos) {
+        return;
+    }
+    s.labels.push(Label {
+        world: pos.arr(),
+        text: call.to_string(),
+        color,
+        // Tighter than a body's: this label belongs to a 4 px dot, and at arm's
+        // length from it the eye stops pairing the two.
+        offset: [7.0, -6.0],
+        click: Click::None,
+        rank,
+    });
+}
+
+/// Decoded stations, the last hour of them, and the path to the one being
+/// worked. Every mode that places stations feeds this — FT8 and FT4, JS8, WSPR,
+/// FSQ — through the one [`crate::digi_map::DigiStations`].
+///
+/// Close in, each dot is named with the callsign that was heard there, which is
+/// the question the map is being asked: not "is anyone out there" — the dots
+/// already answer that — but *who*. It is why the callsign is carried all the
+/// way from the decoder rather than dropped at the grid square.
 ///
 /// The flat map in the FT8 panel draws the live set as a great-circle line
 /// across a rectangle; here the path is the *actual* great circle, lifted off
@@ -1946,27 +2038,55 @@ fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, now: f64,
         b.earth + (ex * v.x as f32 + ey * v.y as f32 + ez * v.z as f32) * (b.earth_r * lift)
     };
 
+    // Whether there is room to write a callsign beside a dot. The LABELS chip
+    // answers "do I want names at all", and a callsign is a name — an operator
+    // who turned the planet names off did not mean "except for these".
+    let names = st.layer(layer::LABELS) && earth_px > STATION_LABEL_MIN_PX;
+
     // The live dots are a statement about *now*, so they are drawn only while
     // the replay head is at now. Wound back, the history below is the whole
     // picture and a set of dots from the present would contradict it.
     if st.lapse_live() {
-        for (lat, lon, age) in &st.digi.stations {
-            if *age <= 0.0 {
+        for d in &st.digi.stations {
+            if d.fade <= 0.0 {
                 continue;
             }
             s.sprites.push(SpriteInst {
-                center: to_world(ephem::geodetic_to_body(*lat, *lon), 1.015).arr(),
-                size_px: (4.0 + 3.0 * age).min(earth_px * 0.9),
-                color: lin(ink::TEXT_STRONG, 0.85 * age * fade),
+                center: to_world(ephem::geodetic_to_body(d.lat, d.lon), 1.015).arr(),
+                size_px: (4.0 + 3.0 * d.fade).min(earth_px * 0.9),
+                color: lin(ink::TEXT_STRONG, 0.85 * d.fade * fade),
                 params: [SPRITE_DOT, 0.0, 0.0, 0.0],
             });
+        }
+        if names {
+            // Freshest first, because both the cap below and the overlay's
+            // declutter keep the head of this list — and what should survive a
+            // crowded map is the station still on the air.
+            let mut lit: Vec<&crate::digi_map::DigiStation> =
+                st.digi.stations.iter().filter(|d| d.fade > 0.0 && d.call.is_some()).collect();
+            lit.sort_by(|a, b| b.fade.total_cmp(&a.fade));
+            for d in lit.into_iter().take(MAX_STATION_LABELS) {
+                let Some(call) = d.call.as_deref() else { continue };
+                station_label(
+                    s,
+                    b,
+                    cam,
+                    (d.lat, d.lon),
+                    call,
+                    // Held well clear of the floor as the dot fades: a name that
+                    // dims with its dot becomes unreadable long before it
+                    // disappears, and an unreadable name is worse than none.
+                    lin_color(ink::TEXT_STRONG, (0.55 + 0.45 * d.fade) * fade),
+                    Label::station_rank(d.fade),
+                );
+            }
         }
     }
 
     // The arcs need a home to start from.
     let Some(home) = st.qth else { return };
 
-    lapse_arcs(s, st, &to_world, home, earth_px, fade, now, anim_t);
+    lapse_arcs(s, st, b, cam, &to_world, home, earth_px, fade, now, anim_t, names);
 
     // The contact being worked, and the decode clicked but not yet answered.
     for (target, color, width, active) in
@@ -1991,15 +2111,24 @@ fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, now: f64,
     // weather-fax or broadcast station. The arc already puts a ring on the spot,
     // so this only has to say what is standing there — "Nauen" or "Ascension
     // Island" is the whole point of drawing the path at all.
+    //
+    // Only while the transmitter is on the near side. The arc reaching it bows
+    // out into space and stays visible over the horizon, but the name belongs to
+    // a point on the ground — printed over a globe that station is behind, it
+    // says the signal is coming from the wrong ocean.
     if let (Some(dx), Some(text)) = (st.digi.dx, st.digi.dx_label.as_ref()) {
-        let pos = to_world(ephem::geodetic_to_body(dx.0, dx.1), 1.02);
-        s.labels.push(Label {
-            world: pos.arr(),
-            text: text.clone(),
-            color: lin_color(ink::CYAN, 0.95 * fade),
-            offset: [10.0, -7.0],
-            click: Click::None,
-        });
+        let dir = b.surface_dir(dx.0, dx.1);
+        let pos = b.earth + dir * (b.earth_r * 1.02);
+        if faces_camera(cam, dir, pos) {
+            s.labels.push(Label {
+                world: pos.arr(),
+                text: text.clone(),
+                color: lin_color(ink::CYAN, 0.95 * fade),
+                offset: [10.0, -7.0],
+                click: Click::None,
+                rank: RANK_ALWAYS,
+            });
+        }
     }
 }
 
@@ -2012,15 +2141,24 @@ fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, now: f64,
 fn lapse_arcs(
     s: &mut Scene,
     st: &SolarUi,
+    b: &Bodies,
+    cam: &Camera,
     to_world: &impl Fn(sdroxide_solar::Vec3, f32) -> V3,
     home: (f64, f64),
     earth_px: f32,
     fade: f32,
     now: f64,
     anim_t: f32,
+    names: bool,
 ) {
     let head = st.lapse_head(now);
     let trail = st.lapse_trail_s();
+    // Only the replay names its own stations. With the head at now the live set
+    // above is the answer to "who is on the band", and labelling the trail as
+    // well would print most callsigns twice — once for the dot and once for the
+    // arc that arrived at it. Wound back, the trail is the only thing on screen,
+    // and an unlabelled replay is a light show rather than a record.
+    let names = names && !st.lapse_live();
     let mut drawn = 0usize;
     for hit in st.digi.history.iter().rev() {
         let age = head - hit.slot_utc as f64;
@@ -2069,6 +2207,23 @@ fn lapse_arcs(
             color: lin(color, (0.9 * alpha).min(1.0)),
             params: [SPRITE_DOT, 0.0, 0.0, 0.0],
         });
+        // Who it was. The arc's own colour, so a name reads as belonging to the
+        // strand it sits on rather than to the one beside it, and its rank comes
+        // from the same `k` — nearest the replay head wins the space.
+        if names
+            && drawn < MAX_STATION_LABELS
+            && let Some(call) = hit.call.as_deref()
+        {
+            station_label(
+                s,
+                b,
+                cam,
+                (hit.lat, hit.lon),
+                call,
+                lin_color(color, (0.55 + 0.45 * k) * fade),
+                Label::station_rank(k),
+            );
+        }
 
         drawn += 1;
         if drawn >= MAX_LAPSE_ARCS {
@@ -2979,13 +3134,31 @@ mod tests {
         assert_eq!(s.draws.iter().filter(|(p, _)| *p == Prim::Cone).count(), 0);
     }
 
+    /// Tokyo, Sydney, New York — the fixture stations, spread far enough apart
+    /// that they never crowd each other's labels.
+    const TOKYO: (f64, f64) = (35.7, 139.7);
+    const SYDNEY: (f64, f64) = (-33.9, 151.2);
+    const NEW_YORK: (f64, f64) = (40.7, -74.0);
+
+    fn station((lat, lon): (f64, f64), fade: f32, call: &str) -> crate::digi_map::DigiStation {
+        crate::digi_map::DigiStation { lat, lon, fade, call: Some(call.into()) }
+    }
+
+    fn hit((lat, lon): (f64, f64), slot_utc: i64, call: &str) -> crate::digi_map::DigiHit {
+        crate::digi_map::DigiHit { lat, lon, slot_utc, call: Some(call.into()) }
+    }
+
     /// Framed on the Earth, with a contact on the other side of the planet.
     fn earth_view_with_traffic(dx: Option<(f64, f64)>) -> SolarUi {
         let mut st = ui();
         st.view.focus = Focus::Earth.to_id();
         st.view.dist = 0.5;
         st.digi = super::super::state::DigiTraffic {
-            stations: vec![(35.7, 139.7, 1.0), (-33.9, 151.2, 0.4), (40.7, -74.0, 0.05)],
+            stations: vec![
+                station(TOKYO, 1.0, "JA1ABC"),
+                station(SYDNEY, 0.4, "VK2XYZ"),
+                station(NEW_YORK, 0.05, "W2NYC"),
+            ],
             dx,
             preview: None,
             transmitting: false,
@@ -2999,11 +3172,16 @@ mod tests {
     fn earth_view_with_history(now: i64) -> SolarUi {
         let mut st = earth_view_with_traffic(None);
         st.digi.history = std::sync::Arc::new(vec![
-            crate::digi_map::DigiHit { lat: 40.7, lon: -74.0, slot_utc: now - 50 * 60 },
-            crate::digi_map::DigiHit { lat: -33.9, lon: 151.2, slot_utc: now - 10 * 60 },
-            crate::digi_map::DigiHit { lat: 35.7, lon: 139.7, slot_utc: now },
+            hit(NEW_YORK, now - 50 * 60, "W2NYC"),
+            hit(SYDNEY, now - 10 * 60, "VK2XYZ"),
+            hit(TOKYO, now, "JA1ABC"),
         ]);
         st
+    }
+
+    /// Every callsign the scene offered to the overlay.
+    fn callsigns(s: &Scene) -> Vec<String> {
+        s.labels.iter().filter(|l| l.rank != RANK_ALWAYS).map(|l| l.text.clone()).collect()
     }
 
     #[test]
@@ -3018,6 +3196,103 @@ mod tests {
             let r = (v3(sp.center[0], sp.center[1], sp.center[2]) - b.earth).len() / b.earth_r;
             assert!((1.0..1.05).contains(&r), "marker at {r} Earth radii");
         }
+    }
+
+    /// A dot says "somebody is there"; the callsign says who, which is the
+    /// question an operator is actually asking of the map.
+    #[test]
+    fn decoded_stations_are_named_with_their_callsign() {
+        let st = earth_view_with_traffic(None);
+        let s = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        let named = callsigns(&s);
+        assert!(!named.is_empty(), "no station was named");
+        assert!(
+            named.iter().all(|c| ["JA1ABC", "VK2XYZ", "W2NYC"].contains(&c.as_str())),
+            "unexpected labels: {named:?}"
+        );
+    }
+
+    /// egui paints the labels after the 3D pass, so nothing hides them the way
+    /// the depth buffer hides the dots. A station round the back of the planet
+    /// must be dropped here, or its callsign is written across the near side and
+    /// the map says the signal came from the wrong ocean.
+    #[test]
+    fn a_station_on_the_far_side_of_the_globe_is_not_named() {
+        let now = 1_784_937_600.0;
+        let mut st = earth_view_with_traffic(None);
+        // Tokyo faces this camera; the point opposite it on the globe is as far
+        // behind the planet as a station can be.
+        st.digi.stations =
+            vec![station(TOKYO, 1.0, "NEARSIDE"), station(antipode(TOKYO), 1.0, "FARSIDE")];
+        let named = callsigns(&build(&st, None, now, [1600.0, 900.0], 0.0));
+        assert_eq!(named, ["NEARSIDE"], "the far side of the world was named");
+    }
+
+    /// Diametrically opposite on the globe.
+    fn antipode((lat, lon): (f64, f64)) -> (f64, f64) {
+        (-lat, if lon > 0.0 { lon - 180.0 } else { lon + 180.0 })
+    }
+
+    /// The dots survive to the horizon and beyond; only the names stop there.
+    #[test]
+    fn the_far_side_still_gets_its_dot() {
+        let mut st = earth_view_with_traffic(None);
+        st.digi.stations =
+            vec![station(TOKYO, 1.0, "NEARSIDE"), station(antipode(TOKYO), 1.0, "FARSIDE")];
+        let s = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        // Both stations, plus the sub-solar dot.
+        assert_eq!(s.sprites.iter().filter(|sp| sp.params[0] == SPRITE_DOT).count(), 3);
+    }
+
+    /// Turning names off means all names. An operator who cleared the LABELS
+    /// chip did not mean "except for these".
+    #[test]
+    fn callsigns_follow_the_labels_layer() {
+        let mut st = earth_view_with_traffic(None);
+        st.view.layers &= !layer::LABELS;
+        let s = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        assert!(callsigns(&s).is_empty());
+    }
+
+    /// From far enough out a callsign covers the continent it is standing on,
+    /// so the names drop away before the dots do.
+    #[test]
+    fn callsigns_go_away_when_the_earth_is_small() {
+        let mut st = earth_view_with_traffic(None);
+        st.view.dist = 40.0;
+        let s = build(&st, None, 1_784_937_600.0, [1600.0, 900.0], 0.0);
+        assert!(callsigns(&s).is_empty(), "named a planet too small to write on");
+        assert!(s.sprites.iter().any(|sp| sp.params[0] == SPRITE_DOT), "the dots went with them");
+    }
+
+    /// Wound back, the live dots are not drawn — so the replay has to name its
+    /// own stations, or the time-lapse is a light show with nobody in it.
+    #[test]
+    fn the_replay_names_the_stations_it_is_replaying() {
+        let now = 1_784_937_600i64;
+        let mut st = earth_view_with_traffic(None);
+        st.digi.history = std::sync::Arc::new(vec![
+            hit(TOKYO, now - 30 * 60, "OLDNEWS"),
+            hit(TOKYO, now - 5 * 60, "JA1ABC"),
+        ]);
+        st.set_lapse_back(4.0 * 60.0);
+        let named = callsigns(&build(&st, None, now as f64, [1600.0, 900.0], 0.0));
+        assert_eq!(named, ["JA1ABC"], "the replay named the wrong hour");
+    }
+
+    /// Live, the trail and the live set overlap: every station on the trail was
+    /// also decoded in the last two minutes. Naming both would print most calls
+    /// twice, once for the dot and once for the arc that arrived at it.
+    #[test]
+    fn the_replay_does_not_double_up_the_live_names() {
+        let now = 1_784_937_600i64;
+        let st = earth_view_with_history(now);
+        assert!(st.lapse_live());
+        let named = callsigns(&build(&st, None, now as f64, [1600.0, 900.0], 0.0));
+        let mut seen = named.clone();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), named.len(), "a callsign was labelled twice: {named:?}");
     }
 
     /// The arc has to leave the surface, or on a sphere the far half of it is

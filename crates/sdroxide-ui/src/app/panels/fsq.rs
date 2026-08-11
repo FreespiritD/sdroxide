@@ -6,12 +6,21 @@
 //! of the configuration.
 
 use eframe::egui::{self, RichText};
-use sdroxide_types::Command;
+use sdroxide_types::{Command, Decode};
 
 use crate::theme::ThemedScroll;
 
 use crate::app::SdroxideApp;
 use crate::app::panels::widgets::pick_image;
+use crate::time::now_unix;
+
+/// How long an FSQ station stays lit on the maps after it was last heard.
+///
+/// Longer than any of the slot modes, and deliberately: FSQ is a leisurely
+/// keyboard mode where a quarter of an hour between overs is an ordinary
+/// conversation rather than a silence. A map that emptied at FT8's two minutes
+/// would be blank for most of every QSO.
+const FSQ_STATION_FADE_S: f64 = 1800.0;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(in crate::app) fn fsq_load_contacts() -> Vec<sdroxide_types::FsqContact> {
@@ -71,6 +80,68 @@ impl SdroxideApp {
         }
     }
 
+    /// Feed the heard list to the maps, and ask the lookup service where the
+    /// stations on it actually are.
+    ///
+    /// FSQ carries no locator on the air — the protocol has no field for one and
+    /// no convention of putting one in the text — so unlike JS8 there is no
+    /// on-air answer to fall back on: it is the callsign lookup or nothing. The
+    /// stations that do resolve are handed over as [`Decode`]s, the shape both
+    /// maps already speak, rather than teaching them a second kind of station.
+    fn fsq_observe(&mut self, heard: &[sdroxide_types::FsqHeard], now_t: f64) {
+        self.digi_stations.set_fade_s(FSQ_STATION_FADE_S);
+        // FSQ's heard list has no expiry of its own — a station stays on it
+        // until thirty others have pushed it off — so the window is applied
+        // here. Without it, opening the panel would light up everyone heard
+        // since the receiver was switched on, which is the one thing a map of
+        // who is *on the band* must not say.
+        let now = now_unix();
+        let located: Vec<Decode> = heard
+            .iter()
+            .filter(|h| (now - h.last_utc) < FSQ_STATION_FADE_S as i64)
+            .filter_map(|h| {
+                let grid = self.fsq_grid_for(&h.call)?;
+                Some(Decode {
+                    // FSQ has no slots; `last_utc` is when the station was
+                    // actually heard, which is what the fade counts from.
+                    slot_utc: h.last_utc,
+                    snr_db: 0,
+                    dt: 0.0,
+                    audio_hz: 0.0,
+                    message: String::new(),
+                    to: None,
+                    from: Some(h.call.clone()),
+                    grid: Some(grid),
+                    is_cq: false,
+                    cq_to: None,
+                    rr73_to: None,
+                    free_text: false,
+                })
+            })
+            .collect();
+        self.digi_stations.observe(&located, now_t, now);
+
+        if !self.grid_lookup_due(now_t) {
+            return;
+        }
+        let next = heard
+            .iter()
+            .map(|h| h.call.to_ascii_uppercase())
+            .find(|c| !c.is_empty() && !self.grid_looked_up.contains(c));
+        self.queue_grid_lookup(next, now_t);
+    }
+
+    /// Where an FSQ station is, if the callsign lookup has been told.
+    fn fsq_grid_for(&self, call: &str) -> Option<String> {
+        if call.is_empty() {
+            return None;
+        }
+        self.callsign_cache
+            .get(&call.to_ascii_uppercase())
+            .and_then(|i| i.grid.clone())
+            .filter(|g| sdroxide_types::grid_to_latlon(g).is_some())
+    }
+
     pub(in crate::app) fn fsq_panel(
         &mut self,
         ui: &mut egui::Ui,
@@ -84,6 +155,9 @@ impl SdroxideApp {
         let text_rx = status.as_ref().map(|s| s.text_rx.clone()).unwrap_or_default();
         let heard = status.as_ref().map(|s| s.fsq_heard.clone()).unwrap_or_default();
         let messages = status.as_ref().map(|s| s.fsq_messages.clone()).unwrap_or_default();
+        // The globe and the flat map draw whatever was last observed, so this
+        // runs whether or not this panel is showing a map of its own.
+        self.fsq_observe(&heard, ui.input(|i| i.time));
         let my_call = {
             let c = &self.digi_cfg_edit;
             if !c.fsq_call.is_empty() { c.fsq_call.clone() } else { c.my_call.clone() }
@@ -151,13 +225,13 @@ impl SdroxideApp {
                             if heard.is_empty() {
                                 ui.label(RichText::new("— none —").weak());
                             }
-                            for call in &heard {
-                                let sel = self.fsq_target.eq_ignore_ascii_case(call);
+                            for h in &heard {
+                                let sel = self.fsq_target.eq_ignore_ascii_case(&h.call);
                                 if ui
-                                    .selectable_label(sel, RichText::new(call).monospace())
+                                    .selectable_label(sel, RichText::new(&h.call).monospace())
                                     .clicked()
                                 {
-                                    self.fsq_target = call.clone();
+                                    self.fsq_target = h.call.clone();
                                 }
                             }
                         });

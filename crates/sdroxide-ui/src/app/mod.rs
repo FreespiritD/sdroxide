@@ -237,13 +237,17 @@ pub struct SdroxideApp {
     /// JS8: the `To:` callsign the composer addresses. Also what the globe
     /// draws the QSO arc to, JS8 having no QSO sequencer to ask instead.
     js8_target: String,
-    /// JS8: callsigns a locator has already been requested for this session,
+    /// Callsigns a locator has already been requested for this session,
     /// successful or not. Every lookup is an HTTP round trip on its own thread,
-    /// and a busy band puts fifty stations in the heard list.
-    js8_looked_up: std::collections::HashSet<String>,
-    /// JS8: frame time of the last locator lookup, so they go out one at a time
-    /// rather than fifty at once the moment the panel opens.
-    js8_lookup_at: f64,
+    /// and a busy band puts fifty stations in a heard list.
+    ///
+    /// Shared by every mode that places stations this way — JS8 and FSQ both
+    /// feed the one `callsign_cache`, so asking twice for the same station
+    /// would buy nothing.
+    grid_looked_up: std::collections::HashSet<String>,
+    /// Frame time of the last locator lookup, so they go out one at a time
+    /// rather than fifty at once the moment a panel opens.
+    grid_lookup_at: f64,
     /// JS8: the last message we transmitted. What `AGN?` — "say again" — is
     /// asking for, and the one reply the operator cannot retype from memory.
     js8_last_sent: String,
@@ -675,8 +679,8 @@ impl SdroxideApp {
             hell: Default::default(),
             fsq_target: String::new(),
             js8_target: String::new(),
-            js8_looked_up: Default::default(),
-            js8_lookup_at: 0.0,
+            grid_looked_up: Default::default(),
+            grid_lookup_at: 0.0,
             js8_last_sent: String::new(),
             fsq_contacts: fsq_load_contacts(),
             fsq_new_contact: String::new(),

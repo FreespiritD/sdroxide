@@ -217,9 +217,11 @@ fn target_view(home: Option<(f64, f64)>, contacts: &[(f64, f64)], aspect: f64) -
 
 /// Draw the map filling the available width (2:1 aspect). `view` carries the
 /// animated centre/zoom across frames. `home`/`dx`/`preview` are (lat, lon) in
-/// degrees. `stations` are (lat, lon, alpha) for every decoded station still on
-/// the map — drawn as white dots (alpha fades them out over time) under the
-/// coloured markers, and used to drive the auto-zoom. `preview` is a faint
+/// degrees. `stations` is every decoded station still on the map — drawn as
+/// white dots (their fade takes them out over time) under the coloured markers,
+/// and used to drive the auto-zoom. (Their callsigns go unused here: at this
+/// size a name per dot is a solid block of text. The globe, which has room,
+/// draws them.) `preview` is a faint
 /// marker for a decode the user clicked but hasn't answered yet (distinct colour
 /// from the active DX). When `tx_active`, an animated pulse travels the home→dx
 /// path. `max_h` caps the height: on short windows the map shrinks (keeping its
@@ -235,7 +237,7 @@ pub fn show(
     dx: Option<(f64, f64)>,
     preview: Option<(f64, f64)>,
     hover: Option<(f64, f64)>,
-    stations: &[(f64, f64, f32)],
+    stations: &[crate::digi_map::DigiStation],
     // Network spots with a known location: (lat, lon, rgb tint by kind).
     spots: &[(f64, f64, (u8, u8, u8))],
     // Propagation heat, as an equirectangular RGBA image of the whole world
@@ -264,7 +266,7 @@ pub fn show(
 
     // ── Ease the view toward the target (fit home + all contacts) ──
     let aspect = (rect.height() / rect.width()) as f64;
-    let mut contacts: Vec<(f64, f64)> = stations.iter().map(|&(lat, lon, _)| (lat, lon)).collect();
+    let mut contacts: Vec<(f64, f64)> = stations.iter().map(|d| (d.lat, d.lon)).collect();
     if let Some(c) = dx {
         contacts.push(c);
     }
@@ -374,13 +376,13 @@ pub fn show(
     // with age (`alpha`). The active DX (pink), the clicked preview (amber) and
     // home (green) are painted over these below, so a selected/answered station
     // keeps its own colour.
-    for &(lat, lon, alpha) in stations {
-        if alpha <= 0.0 {
+    for d in stations {
+        if d.fade <= 0.0 {
             continue;
         }
-        let c = project(lat, lon);
-        let halo = (55.0 * alpha) as u8;
-        let core = (255.0 * alpha) as u8;
+        let c = project(d.lat, d.lon);
+        let halo = (55.0 * d.fade) as u8;
+        let core = (255.0 * d.fade) as u8;
         p.circle_filled(c, 2.6, Color32::from_rgba_unmultiplied(255, 255, 255, halo));
         p.circle_filled(c, 1.7, Color32::from_rgba_unmultiplied(255, 255, 255, core));
     }

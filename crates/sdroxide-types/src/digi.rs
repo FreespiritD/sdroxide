@@ -325,9 +325,9 @@ pub struct DigiStatus {
     /// outgoing buffer have been transmitted (drives the green "sent" cursor).
     #[serde(default)]
     pub tx_sent: usize,
-    /// FSQ directed layer: callsigns recently heard, most-recent first.
+    /// FSQ directed layer: stations recently heard, most-recent first.
     #[serde(default)]
-    pub fsq_heard: Vec<String>,
+    pub fsq_heard: Vec<FsqHeard>,
     /// FSQ directed layer: parsed directed/allcall messages (rolling, capped).
     #[serde(default)]
     pub fsq_messages: Vec<FsqMsg>,
@@ -399,6 +399,21 @@ pub struct RadeStatus {
     /// Samples dropped between the engine and the decode thread. Should stay
     /// at zero; anything else means the machine can't keep up.
     pub dropped: u64,
+}
+
+/// One station on the FSQ heard list.
+///
+/// Stamped with when it was last heard, because FSQ's own heard list is only
+/// ordered: it never drops a station, so without a time there is no way to tell
+/// somebody who transmitted a minute ago from somebody who transmitted when the
+/// receiver was first switched on. The map needs that difference to fade a
+/// station out.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FsqHeard {
+    /// Sender callsign, uppercased.
+    pub call: String,
+    /// Unix seconds when this station was last heard.
+    pub last_utc: i64,
 }
 
 /// One parsed FSQ directed (or ALLCALL) message.

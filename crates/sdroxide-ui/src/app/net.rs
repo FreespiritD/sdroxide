@@ -12,6 +12,9 @@ use sdroxide_types::{
 use crate::app::SdroxideApp;
 use crate::app::persist::persist_qso_log;
 
+/// Least time between two locator lookups driven by a heard list.
+const GRID_LOOKUP_INTERVAL_S: f64 = 1.5;
+
 /// Fill `dst` from `src` only when `dst` is blank and `src` is non-empty;
 /// returns whether it changed anything.
 fn fill_blank(dst: &mut String, src: Option<&str>) -> bool {
@@ -89,6 +92,26 @@ impl SdroxideApp {
         }
         self.pending_lookups.push(call);
         true
+    }
+
+    /// Whether another heard-list locator lookup may go out yet.
+    ///
+    /// Rationed across every mode that places stations by callsign rather than
+    /// per panel: they share one cache and one network, and a busy band would
+    /// otherwise put fifty requests on fifty threads the moment a panel opens.
+    pub(in crate::app) fn grid_lookup_due(&self, now_t: f64) -> bool {
+        now_t - self.grid_lookup_at >= GRID_LOOKUP_INTERVAL_S
+    }
+
+    /// Ask where a heard station is, and remember having asked.
+    pub(in crate::app) fn queue_grid_lookup(&mut self, call: Option<String>, now_t: f64) {
+        let Some(call) = call else { return };
+        // Only spend the interval on a request that actually left: with no
+        // provider configured this must stay ready for the moment one is.
+        if self.queue_lookup(call.clone()) {
+            self.grid_looked_up.insert(call);
+            self.grid_lookup_at = now_t;
+        }
     }
 
     /// Merge a callsign-lookup result into the open log entry and, if none

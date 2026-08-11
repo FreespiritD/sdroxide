@@ -35,9 +35,6 @@ fn js8_frame_estimate(text: &str) -> u8 {
 /// FT8's two-minute fade would leave the map blank between them.
 const JS8_STATION_FADE_S: f64 = 900.0;
 
-/// Least time between two locator lookups driven by the JS8 heard list.
-const JS8_LOOKUP_INTERVAL_S: f64 = 1.5;
-
 /// True when a message was aimed at *us* — our callsign, or a group we joined —
 /// as opposed to at the whole band.
 ///
@@ -395,23 +392,16 @@ impl SdroxideApp {
 
         // One lookup at a time. Each is an HTTP round trip on a thread of its
         // own, and a busy band puts fifty stations in this list at once.
-        if now_t - self.js8_lookup_at < JS8_LOOKUP_INTERVAL_S {
+        if !self.grid_lookup_due(now_t) {
             return;
         }
         let next = heard.iter().map(|h| h.call.to_ascii_uppercase()).find(|c| {
             !c.is_empty()
                 && !c.starts_with('@')
-                && !self.js8_looked_up.contains(c)
+                && !self.grid_looked_up.contains(c)
                 && self.js8_grid_for(c, heard).is_none()
         });
-        if let Some(call) = next {
-            // Only spend the interval on a request that actually left: with no
-            // provider configured this must stay ready for the moment one is.
-            if self.queue_lookup(call.clone()) {
-                self.js8_looked_up.insert(call);
-                self.js8_lookup_at = now_t;
-            }
-        }
+        self.queue_grid_lookup(next, now_t);
     }
 
     // ── JS8: the heard list ─────────────────────────────────────────────────

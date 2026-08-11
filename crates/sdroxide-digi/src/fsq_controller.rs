@@ -13,10 +13,11 @@ use std::collections::VecDeque;
 use std::time::SystemTime;
 
 use sdroxide_dsp::{FsqImageRx, FsqImageTx, FsqRx, FsqTx, MonoResampler};
-use sdroxide_types::{DigiConfig, DigiStatus, FsqMsg, Mode, QsoStep};
+use sdroxide_types::{DigiConfig, DigiStatus, FsqHeard, FsqMsg, Mode, QsoStep};
 
 use crate::DigiEngine;
 use crate::controller::DigiAction;
+use crate::scheduler::SlotScheduler;
 
 const MODEM_RATE: f64 = 8000.0;
 const OUT_RATE: f64 = 48_000.0;
@@ -52,7 +53,7 @@ pub struct FsqController {
     keyed: bool,
     last_sent: usize,
 
-    heard: Vec<String>,
+    heard: Vec<FsqHeard>,
     messages: Vec<FsqMsg>,
 
     scratch8: Vec<f32>,
@@ -163,15 +164,19 @@ impl FsqController {
         });
         // Auto-answer a heard-list query addressed directly to us.
         if is_query && !my.is_empty() && to == my && !self.producing() {
-            let list: Vec<String> = self.heard.iter().take(10).cloned().collect();
+            let list: Vec<&str> = self.heard.iter().take(10).map(|h| h.call.as_str()).collect();
             return Some(format!("{my}:{from} HEARD {}\n", list.join(" ")));
         }
         None
     }
 
     fn note_heard(&mut self, call: &str) {
-        self.heard.retain(|c| c != call);
-        self.heard.insert(0, call.to_string());
+        // Read straight from the clock rather than from `poll`'s: the parse runs
+        // on the audio path, which has no time argument, and a transmission is
+        // heard when it is decoded rather than at the next status tick.
+        let now = SlotScheduler::unix_now(SystemTime::now()) as i64;
+        self.heard.retain(|h| h.call != call);
+        self.heard.insert(0, FsqHeard { call: call.to_string(), last_utc: now });
         self.heard.truncate(HEARD_CAP);
         self.status_dirty = true;
     }
@@ -418,7 +423,9 @@ mod tests {
     fn parses_directed_message_to_me() {
         let mut c = ctrl();
         assert!(c.parse_line("K9XYZ:AB1CD hello there").is_none());
-        assert_eq!(c.heard, vec!["K9XYZ".to_string()]);
+        assert_eq!(c.heard.iter().map(|h| h.call.as_str()).collect::<Vec<_>>(), ["K9XYZ"]);
+        // Stamped with a real clock, so the map can fade the station out.
+        assert!(c.heard[0].last_utc > 1_700_000_000, "heard entry was not timestamped");
         assert_eq!(c.messages.len(), 1);
         let m = &c.messages[0];
         assert_eq!(m.from, "K9XYZ");

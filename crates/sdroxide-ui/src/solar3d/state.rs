@@ -312,8 +312,8 @@ pub struct SatPasses {
 /// the positions are copied across rather than shared.
 #[derive(Clone, Default)]
 pub struct DigiTraffic {
-    /// Decoded stations: latitude, longitude, and 1.0→0.0 as the decode ages out.
-    pub stations: Vec<(f64, f64, f32)>,
+    /// Decoded stations: where they are, how brightly, and who they are.
+    pub stations: Vec<crate::digi_map::DigiStation>,
     /// The station currently being worked.
     pub dx: Option<(f64, f64)>,
     /// A name for the `dx` end, when it is a named transmitter rather than a
