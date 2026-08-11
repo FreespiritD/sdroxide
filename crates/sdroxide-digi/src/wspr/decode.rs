@@ -359,10 +359,13 @@ struct Hit {
 /// **0.2 Hz of frequency error halves the decode rate** and 0.3 Hz all but ends
 /// it. That is a fifth of the 1.46 Hz tone spacing. So the frequency grid is
 /// the fine one and the timing grid is coarse — the opposite way round from
-/// wsprd's DT peak-up, which can afford to trust its own frequency estimate
-/// because it is not working from a 0.73 Hz coarse bin.
+/// wsprd's DT peak-up.
+///
+/// It only has to span ±0.4 Hz because [`interpolate_freq`] has already placed
+/// the centre to about a tenth of a hertz. Before that it ran to ±1.0 Hz and
+/// most of it was spent hunting for something the spectrum already knew.
 const FREQ_RETRY_STEP_HZ: f32 = 0.2;
-const FREQ_RETRY_STEPS: i32 = 5;
+const FREQ_RETRY_STEPS: i32 = 2;
 const LAG_RETRY_STEP: i32 = 24;
 const LAG_RETRY_STEPS: i32 = 2;
 
@@ -385,7 +388,8 @@ fn align_and_decode(
     // entirely. The coarse bin is only 0.73 Hz wide, so its estimate is the
     // better centre — and the retry below is a better refinement than any score.
     let lag0 = align_lag(idat, qdat, start_sample, tone0_hz, drift_hz);
-    let f0_bb = tone0_hz + 1.5 * wspr::demod::TONE_SPACING_HZ - wspr::baseband::CENTER_HZ;
+    let coarse_bb = tone0_hz + 1.5 * wspr::demod::TONE_SPACING_HZ - wspr::baseband::CENTER_HZ;
+    let f0_bb = interpolate_freq(idat, qdat, coarse_bb, lag0, drift_hz);
     // Outward from the centre on both axes, nearest first, so a signal that
     // decodes at several cells is reported at the one closest to its measured
     // alignment.
@@ -436,6 +440,61 @@ fn align_and_decode(
     }
     None
 }
+
+/// Sub-bin frequency estimate for a coarse candidate, by parabolic
+/// interpolation of the energy its four tones capture.
+///
+/// The coarse search reports whichever 0.73 Hz bin the signal peaked in, and the
+/// decoder wants the frequency five times finer than that — so most of the retry
+/// grid exists to hunt for something the spectrum already knows to better
+/// precision than it is willing to say. A peak that falls between two bins
+/// leaves its trace in the neighbours: fitting a parabola through the three and
+/// taking its vertex recovers where the signal actually was.
+///
+/// The statistic is the total energy in all four tones over the whole
+/// transmission, which is the right one to interpolate on for two reasons. It
+/// needs no idea of *which* tone was sent or when, so unlike the sync score it
+/// does not fall apart at the noise floor — every symbol contributes whatever
+/// tone it used. And a flat noise floor cancels out of the fit exactly, in both
+/// the numerator and the denominator, so the estimate is unbiased by how noisy
+/// the band is; only the variance costs anything.
+fn interpolate_freq(idat: &[f32], qdat: &[f32], f0_bb: f32, lag: i32, drift_hz: f32) -> f32 {
+    let e = |f| comb_energy(idat, qdat, f, lag, drift_hz);
+    let (l, c, r) = (e(f0_bb - INTERP_SPAN_HZ), e(f0_bb), e(f0_bb + INTERP_SPAN_HZ));
+    let curvature = l - 2.0 * c + r;
+    // Concave-down or nothing: if the middle sample is not the largest, this is
+    // not a peak and the vertex would be an extrapolation into a neighbouring
+    // signal. Keep what the coarse search said.
+    if !(curvature < 0.0) {
+        return f0_bb;
+    }
+    let delta = 0.5 * INTERP_SPAN_HZ * (l - r) / curvature;
+    // A genuine interior peak cannot sit more than half a sample away; anything
+    // further is the fit being led astray by a neighbour.
+    f0_bb + delta.clamp(-COARSE_BIN_HZ / 2.0, COARSE_BIN_HZ / 2.0)
+}
+
+/// Energy the four-tone comb centred at `f` collects across the transmission.
+fn comb_energy(idat: &[f32], qdat: &[f32], f: f32, lag: i32, drift_hz: f32) -> f32 {
+    let isqs = wspr::demod::tone_amplitudes(idat, qdat, f, lag, drift_hz);
+    (0..wspr::demod::N_SYMBOLS)
+        .map(|i| (0..4).map(|t| isqs.is[t][i].powi(2) + isqs.qs[t][i].powi(2)).sum::<f32>())
+        .sum()
+}
+
+/// Bin spacing of the coarse spectrum the candidates come from: the 375 Hz
+/// baseband over a 512-point transform.
+const COARSE_BIN_HZ: f32 = 375.0 / 512.0;
+
+/// How far either side of the coarse pick the parabola is sampled.
+///
+/// Not the bin spacing, which is the obvious choice and a worse one: a parabola
+/// through three points underestimates a peak narrower than its own sample
+/// spacing, and at a full bin the outer two samples sit out on the shoulders
+/// where the shape has stopped being a parabola at all. Measured over a beacon
+/// swept across a whole bin, sampling this close cuts the worst-case error to
+/// 0.19 Hz and the mean to 0.04, against 0.39 for the coarse bin it started in.
+const INTERP_SPAN_HZ: f32 = 0.5;
 
 /// Whether a grid cell is so poorly aligned that no decoder will do anything
 /// with it, cheaply enough to be worth asking before one tries.
@@ -992,6 +1051,36 @@ mod tests {
         assert!(first.len() > 8, "the fixture decoded almost nothing: {}", first.len());
         for _ in 0..2 {
             assert_eq!(decode_slot(&slot, 12_000), first, "decode order is not deterministic");
+        }
+    }
+
+    /// The frequency on a spot is a measurement other people use, and the
+    /// coarse search only ever knew it to the nearest 0.73 Hz bin. Interpolating
+    /// the spectral peak is what makes the reported figure finer than the grid
+    /// it was found on — so this puts a beacon deliberately between two bins and
+    /// checks the number that would go to WSPRnet.
+    #[test]
+    fn the_reported_frequency_is_finer_than_the_bin_it_was_found_in() {
+        // Quarter-bin steps across a whole coarse bin, so no single sub-bin
+        // phase can pass by luck.
+        for k in 0..4 {
+            let tone0 = 1500.0 + k as f64 * (375.0 / 512.0) / 4.0;
+            let truth = tone0 as f32 + 1.5 * mfsk_core::wspr::demod::TONE_SPACING_HZ;
+            let audio = crate::wspr::tx::synthesize("K1ABC", "FN42", 37, 12_000, tone0, 0.05)
+                .expect("valid message");
+            let mut slot = vec![0f32; 120 * 12_000];
+            slot[12_000..12_000 + audio.len()].copy_from_slice(&audio);
+            let mut n = Noise(0xF1E0_0000 + k);
+            for s in slot.iter_mut() {
+                *s += (n.gaussian() * 0.02) as f32;
+            }
+            let got = decode_slot(&slot, 12_000);
+            let d = got
+                .iter()
+                .find(|d| matches!(&d.message, WsprMessage::Type1 { callsign, .. } if callsign == "K1ABC"))
+                .unwrap_or_else(|| panic!("no decode at tone0 {tone0}"));
+            let err = (d.carrier_hz() - truth).abs();
+            assert!(err < 0.25, "reported {} for {truth}, off by {err:.3} Hz", d.carrier_hz());
         }
     }
 

@@ -62,7 +62,9 @@ fn beacons(n: usize, drift: f64) -> Vec<(String, String, i32, f64, f64, f64, f64
                 (b'A' + (i % 26) as u8) as char
             );
             let grid = GRIDS[i % GRIDS.len()].to_string();
-            let f0 = lo + (hi - lo) * (i as f64 / (n.max(2) - 1) as f64);
+            let shift: f64 =
+                std::env::var("WSPR_FSHIFT").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            let f0 = lo + (hi - lo) * (i as f64 / (n.max(2) - 1) as f64) + shift;
             // −6 dB at the top down to −32 at the bottom, so a run always
             // covers the whole range the operator cares about.
             let snr = match std::env::var("WSPR_SNR").ok().and_then(|v| v.parse::<f64>().ok()) {
