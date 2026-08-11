@@ -161,6 +161,26 @@ impl RadioController for LocalController {
         sdroxide_sdrplay::list()
     }
 
+    #[cfg(feature = "soapy")]
+    fn list_soapy(&self) -> Vec<sdroxide_types::SoapyDeviceInfo> {
+        // The whole enumeration, pseudo-drivers included: this feeds a list the
+        // operator reads, and a sound card that is being skipped is exactly what
+        // they need to see named. The *automatic* pick filters it (see
+        // `selectable_soapy_devices` in main.rs).
+        sdroxide_radio::enumerate_devices("")
+            .unwrap_or_else(|e| {
+                warn!("SoapySDR enumeration failed: {e}");
+                Vec::new()
+            })
+            .into_iter()
+            .map(|d| sdroxide_types::SoapyDeviceInfo {
+                driver: d.driver,
+                label: d.label,
+                args: d.args,
+            })
+            .collect()
+    }
+
     fn test_tci(&self, address: &str) -> Result<String, String> {
         sdroxide_tci::test_connection(address, std::time::Duration::from_secs(3))
     }

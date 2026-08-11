@@ -157,6 +157,10 @@ pub struct SdroxideApp {
     rx888_devices: Vec<sdroxide_types::Rx888Device>,
     /// RSPs the SDRplay API service reported on the last Rescan.
     sdrplay_devices: Vec<sdroxide_types::SdrPlayDevice>,
+    /// SoapySDR devices from the last enumeration (dialog-open on the SoapySDR
+    /// interface, or Rescan). `None` = not enumerated yet, which is a different
+    /// thing from "enumerated and found nothing".
+    soapy_devices: Option<Vec<sdroxide_types::SoapyDeviceInfo>>,
     /// Result of the last TCI "Test connection" (Ok summary / Err message).
     tci_test_result: Option<Result<String, String>>,
     /// FlexRadios found by the last SmartSDR "Discover" listen.
@@ -632,6 +636,7 @@ impl SdroxideApp {
             rtlsdr_devices: Vec::new(),
             rx888_devices: Vec::new(),
             sdrplay_devices: Vec::new(),
+            soapy_devices: None,
             tci_test_result: None,
             smartsdr_devices: Vec::new(),
             smartsdr_test_result: None,

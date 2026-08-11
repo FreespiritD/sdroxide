@@ -382,6 +382,17 @@ pub trait RadioController {
         Vec::new()
     }
 
+    /// Enumerate the SoapySDR devices this machine can see (native local client
+    /// only, and only in a build with the `soapy` feature).
+    ///
+    /// Unlike the lists above this one is *not* free: enumeration loads every
+    /// installed SoapySDR module and asks each to scan, which on a bundle
+    /// install means probing several buses. The settings UI therefore calls it
+    /// on dialog-open and on Rescan, never per frame.
+    fn list_soapy(&self) -> Vec<crate::SoapyDeviceInfo> {
+        Vec::new()
+    }
+
     /// Test a TCI server connection at `address` (`host:port`). Blocking — the
     /// settings UI calls this on demand (a "Test connection" button). Returns a
     /// success summary or an error message. Default: unsupported (remote client).

@@ -114,8 +114,8 @@ pub use radio::{
     FREQ_RANGE_MAX_HZ, HpsdrConfig, HpsdrDevice, HpsdrFilterBoard, LineState, ModeControl, Parity,
     PlutoAgc, PlutoConfig, PlutoDevice, PttMethod, RadioConfig, RtlSdrAgc, RtlSdrConfig,
     RtlSdrDevice, RtlSdrHfMode, Rx888Config, Rx888Device, SdrPlayAgc, SdrPlayConfig, SdrPlayDevice,
-    SdrPlayDuoTuner, SdrPlayModel, SerialConfig, SmartSdrConfig, SmartSdrDevice, SoundFormat,
-    StopBits, TciConfig, converter_preset_name, format_freq_ranges, parse_freq_ranges,
+    SdrPlayDuoTuner, SdrPlayModel, SerialConfig, SmartSdrConfig, SmartSdrDevice, SoapyDeviceInfo,
+    SoundFormat, StopBits, TciConfig, converter_preset_name, format_freq_ranges, parse_freq_ranges,
 };
 pub use rifp::{
     RIFP_CALLING_HZ, RIFP_MAP_MAX_CHUNKS, RifpEncoding, RifpMeta, RifpProfile, RifpSession,

@@ -1071,6 +1071,108 @@ pub(in crate::app) fn settings_smartsdr_tab(
     );
 }
 
+/// What SoapySDR can see on this machine, and what it means.
+///
+/// The SoapySDR interface has no device picker — the device is chosen by
+/// `--device` or `device_args` in `config.toml`, and until that is typed the
+/// first enumerated device wins. That made this list worth showing: on a bundle
+/// install (PothosSDR ships every module) the winner can be the sound card, and
+/// nothing on screen says so. A driver with a native interface is called out
+/// too, because reaching an RSP or a dongle through SoapySDR gives up every
+/// model-specific control sdroxide has for it.
+pub(in crate::app) fn settings_soapy_devices(
+    ui: &mut egui::Ui,
+    devices: Option<&[sdroxide_types::SoapyDeviceInfo]>,
+    rescan: &mut bool,
+) {
+    use sdroxide_types::SoapyDeviceInfo;
+
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Devices SoapySDR can see").strong());
+        if ui
+            .button("Rescan")
+            .on_hover_text(
+                "Ask every installed SoapySDR module to scan. Nothing is opened, \
+                 so this is safe while receiving — but it can take a moment.",
+            )
+            .clicked()
+        {
+            *rescan = true;
+        }
+    });
+
+    let Some(devices) = devices else {
+        ui.label(RichText::new("Not enumerated yet — press Rescan.").weak());
+        return;
+    };
+    if devices.is_empty() {
+        ui.label(
+            RichText::new(
+                "No SoapySDR devices found. Check that the module for your radio is \
+                 installed and that you may access the device.",
+            )
+            .weak(),
+        );
+        return;
+    }
+
+    for d in devices {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(d.label()).monospace());
+            if d.is_pseudo() {
+                ui.label(RichText::new("not a radio").color(Color32::from_rgb(220, 170, 70)));
+            }
+        });
+    }
+
+    // The sound-card trap: named, with the reason and the way out.
+    if devices.iter().any(SoapyDeviceInfo::is_pseudo) {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(
+                "A sound card is listed above as if it were an SDR. It accepts any \
+                 frequency and ignores it, so opening it shows the sound card's input \
+                 instead of the band. sdroxide does not pick those automatically — but \
+                 a device_args line naming one is still obeyed.",
+            )
+            .color(Color32::from_rgb(220, 170, 70)),
+        );
+    }
+
+    // Hardware with a native interface: say so, because the native one is
+    // strictly better and the operator has no way to know it exists. Named
+    // once each — two RSPs are still one interface to switch to — and by
+    // `contains` rather than `dedup`, which would keep a repeat that another
+    // driver happens to sit between.
+    let mut native: Vec<sdroxide_types::Backend> = Vec::new();
+    for b in devices.iter().filter_map(SoapyDeviceInfo::native_backend) {
+        if !native.contains(&b) {
+            native.push(b);
+        }
+    }
+    if !native.is_empty() {
+        ui.add_space(4.0);
+        let names = native.iter().map(|b| b.label()).collect::<Vec<_>>().join(", ");
+        ui.label(
+            RichText::new(format!(
+                "Hardware above is supported directly by sdroxide: {names}. Selecting that \
+                 interface above gives you its own settings — gain stages, filters and \
+                 notches SoapySDR cannot express — and needs no SoapySDR module.",
+            ))
+            .color(crate::theme::CYAN()),
+        );
+    }
+
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "Which one opens is set by --device or device_args in config.toml; with \
+             neither, the first radio listed wins.",
+        )
+        .weak(),
+    );
+}
+
 impl SdroxideApp {
     /// SoapySDR RX/TX gains + antenna (empty for a CAT rig).
     pub(in crate::app) fn settings_device_tab(&self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {

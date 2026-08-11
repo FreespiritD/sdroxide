@@ -34,7 +34,8 @@ use self::net::{
 };
 use self::radio::{
     settings_cat_tab, settings_hpsdr_tab, settings_pluto_tab, settings_rtlsdr_tab,
-    settings_rx888_tab, settings_sdrplay_tab, settings_smartsdr_tab, settings_tci_tab,
+    settings_rx888_tab, settings_sdrplay_tab, settings_smartsdr_tab, settings_soapy_devices,
+    settings_tci_tab,
 };
 use self::servers::{
     settings_rigctld_tab, settings_rotator_tab, settings_tci_server_tab, settings_wsjtx_tab,
@@ -110,6 +111,9 @@ pub(in crate::app) struct SettingsIo<'a> {
     /// Ask the SDRplay API service for its device list. Brief and
     /// non-invasive, so it cannot disturb a running stream.
     sdrplay_rescan: &'a mut bool,
+    /// Re-run the SoapySDR enumeration. Opens nothing, but loads every
+    /// installed module and asks each to scan, so it is not instant.
+    soapy_rescan: &'a mut bool,
     tci_test: &'a mut bool,
     /// Listen for FlexRadio discovery broadcasts (a couple of seconds, blocking).
     smartsdr_discover: &'a mut bool,
@@ -292,6 +296,14 @@ impl SdroxideApp {
             self.refresh_sat_sub_status();
             // Reading a directory listing is cheap, but not per-frame cheap.
             self.speech_voices = crate::app::speech::SpeechRuntime::voices();
+            // Only when SoapySDR is the interface being configured: enumeration
+            // loads every installed module and asks each to scan its bus, which
+            // is not something to do to an operator who is here to change their
+            // waterfall colours. Rescan re-runs it for anyone switching to it.
+            if self.radio_cfg.as_ref().is_some_and(|c| c.backend == sdroxide_types::Backend::Soapy)
+            {
+                self.soapy_devices = Some(self.ctrl.list_soapy());
+            }
             self.audio_devices_queried = true;
         }
         // Edits collected here and applied after the window closure, which
@@ -304,6 +316,7 @@ impl SdroxideApp {
         let mut rtlsdr_rescan = false;
         let mut rx888_rescan = false;
         let mut sdrplay_rescan = false;
+        let mut soapy_rescan = false;
         let mut tci_test = false;
         let mut smartsdr_discover = false;
         let mut smartsdr_test = false;
@@ -434,6 +447,7 @@ impl SdroxideApp {
                             rtlsdr_rescan: &mut rtlsdr_rescan,
                             rx888_rescan: &mut rx888_rescan,
                             sdrplay_rescan: &mut sdrplay_rescan,
+                            soapy_rescan: &mut soapy_rescan,
                             tci_test: &mut tci_test,
                             smartsdr_discover: &mut smartsdr_discover,
                             smartsdr_test: &mut smartsdr_test,
@@ -597,6 +611,11 @@ impl SdroxideApp {
         }
         if sdrplay_rescan {
             self.sdrplay_devices = self.ctrl.list_sdrplay();
+        }
+        if soapy_rescan {
+            // Loads every installed SoapySDR module and asks each to scan, so
+            // it can take a moment; on demand only, never per frame.
+            self.soapy_devices = Some(self.ctrl.list_soapy());
         }
         if rx888_rescan {
             self.rx888_devices = self.ctrl.list_rx888();
@@ -1005,13 +1024,7 @@ impl SdroxideApp {
                     Backend::Soapy => {
                         self.settings_device_tab(ui, cmds);
                         ui.add_space(4.0);
-                        ui.label(
-                            RichText::new(
-                                "Choose the SoapySDR device with --device or device_args in \
-                                 config.toml.",
-                            )
-                            .weak(),
-                        );
+                        settings_soapy_devices(ui, self.soapy_devices.as_deref(), io.soapy_rescan);
                     }
                     Backend::Hpsdr => settings_hpsdr_tab(
                         ui,

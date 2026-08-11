@@ -20,7 +20,7 @@ use sdroxide_radio::{
     ConvertedSource, FileSource, IqSource, SigGenSource, override_caps_ranges, shift_caps,
 };
 #[cfg(feature = "soapy")]
-use sdroxide_radio::{SoapyDevice, enumerate_devices};
+use sdroxide_radio::{DeviceInfo, SoapyDevice, enumerate_devices};
 use sdroxide_types::{Backend, DeviceCaps, RadioConfig};
 
 #[derive(Parser, Debug, Clone)]
@@ -913,8 +913,14 @@ fn open_configured_source(
         Backend::Auto => {
             #[cfg(feature = "soapy")]
             {
+                // "Is a SoapySDR radio present?" — a sound card must not answer
+                // yes here either, or auto-detect lands on it instead of falling
+                // through to the CAT rig.
                 let filter = device_filter(cli, settings);
-                if enumerate_devices(&filter).map(|d| d.is_empty()).unwrap_or(true) {
+                if selectable_soapy_devices(&filter)
+                    .map(|(real, _)| real.is_empty())
+                    .unwrap_or(true)
+                {
                     open_cat_source(radio)
                 } else {
                     open_soapy_source(cli, settings)
@@ -928,6 +934,47 @@ fn open_configured_source(
     }
 }
 
+/// Whether the operator's filter names a driver at all. A filter that says
+/// `driver=audio` is an explicit request for the sound card and is obeyed; an
+/// empty one, or one that only narrows by serial, is not.
+#[cfg(feature = "soapy")]
+fn filter_names_driver(filter: &str) -> bool {
+    filter.to_ascii_lowercase().contains("driver=")
+}
+
+/// The devices an automatic pick may choose from, and the ones held back:
+/// everything, minus the modules that are not radios, unless the filter asked
+/// for one by name.
+///
+/// Without this the sound card wins on any bundle install — SoapyAudio
+/// enumerates ahead of the real hardware, opens happily, and produces a
+/// plausible-looking spectrum of the machine's line input on whatever
+/// frequency the dial claims. See [`SoapyDeviceInfo::driver_is_pseudo`].
+///
+/// The held-back list comes back rather than being dropped so the caller can
+/// tell "nothing is plugged in" from "the only thing here is a sound card",
+/// which need entirely different advice.
+#[cfg(feature = "soapy")]
+fn selectable_soapy_devices(filter: &str) -> anyhow::Result<(Vec<DeviceInfo>, Vec<DeviceInfo>)> {
+    use sdroxide_types::SoapyDeviceInfo;
+    let all = enumerate_devices(filter).context("SoapySDR enumeration failed")?;
+    if filter_names_driver(filter) {
+        return Ok((all, Vec::new()));
+    }
+    let (real, pseudo): (Vec<_>, Vec<_>) =
+        all.into_iter().partition(|d| !SoapyDeviceInfo::driver_is_pseudo(&d.driver));
+    for d in &pseudo {
+        tracing::info!(
+            driver = %d.driver,
+            label = %d.label,
+            "skipping a SoapySDR module that is not a radio — name it with \
+             --device driver={} to open it anyway",
+            d.driver.to_ascii_lowercase(),
+        );
+    }
+    Ok((real, pseudo))
+}
+
 /// Open the first available SoapySDR device (feature-gated).
 #[cfg(feature = "soapy")]
 fn open_soapy_source(
@@ -936,10 +983,25 @@ fn open_soapy_source(
 ) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
     let rate = cli.rate.unwrap_or(settings.sample_rate);
     let filter = device_filter(cli, settings);
-    let devices = enumerate_devices(&filter).context("SoapySDR enumeration failed")?;
+    let (devices, skipped) = selectable_soapy_devices(&filter)?;
     let Some(info) = devices.first() else {
-        bail!("no SoapySDR devices found (filter: {:?})", filter);
+        // Two different situations, two different fixes: nothing plugged in at
+        // all, versus a machine whose only "SDR" is its sound card.
+        if skipped.is_empty() {
+            bail!("no SoapySDR devices found (filter: {:?})", filter);
+        }
+        bail!(
+            "no SoapySDR radios found (filter: {:?}) — the only devices SoapySDR reports \
+             are sound cards ({}), which are not radios and are never opened automatically. \
+             Pick a native interface in Settings → Radio, or ask for the sound card by name \
+             with --device driver=audio.",
+            filter,
+            skipped.iter().map(|d| d.label.as_str()).collect::<Vec<_>>().join(", "),
+        );
     };
+    // Which one, not just that there was one: on a bundle install this is the
+    // only line that says whether the radio being opened is the radio meant.
+    tracing::info!(driver = %info.driver, label = %info.label, "SoapySDR device selected");
     let dev =
         SoapyDevice::open(&info.args).with_context(|| format!("opening device {}", info.label))?;
     let caps = dev.caps().clone();

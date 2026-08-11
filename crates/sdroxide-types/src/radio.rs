@@ -78,6 +78,82 @@ impl Backend {
     }
 }
 
+/// One device from a SoapySDR enumeration. Wasm-safe so the list can cross the
+/// `RadioController` trait to the settings UI, like [`SdrPlayDevice`] — the
+/// SoapySDR types themselves live behind the native `soapy` feature.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SoapyDeviceInfo {
+    /// The driver key, as SoapySDR spells it. Case is *not* dependable: an
+    /// enumeration reports `audio` where the opened device's `driver_key()`
+    /// says `Audio`, so every comparison here folds case.
+    pub driver: String,
+    /// The human label the module publishes ("Audio (Audio)", "SDRplay
+    /// Dev0 RSP1A 2405001234").
+    pub label: String,
+    /// The full args string that opens exactly this device.
+    pub args: String,
+}
+
+impl SoapyDeviceInfo {
+    /// SoapySDR modules that are not receivers at all.
+    ///
+    /// `audio` is SoapyAudio, which presents any sound card as an SDR: it
+    /// accepts every tuning request, ignores them all, and returns the sound
+    /// card's input. On a bundle install (PothosSDR ships every module) it
+    /// enumerates ahead of the real hardware, so "the first device found" can
+    /// silently be the machine's line input — a spectrum that looks like a
+    /// receiver with a dead antenna. `null` is SoapySDR's own test stub.
+    ///
+    /// These are never what an operator means by "my SDR", so they are only
+    /// ever opened when named explicitly.
+    pub fn driver_is_pseudo(driver: &str) -> bool {
+        matches!(driver.trim().to_ascii_lowercase().as_str(), "audio" | "null")
+    }
+
+    /// The native sdroxide interface that drives this hardware directly, for
+    /// drivers that have one. The native backends carry the model-specific
+    /// controls a generic SoapySDR device cannot express — per-band LNA state
+    /// and notches on an RSP, the bias tee and direct sampling on an RTL-SDR —
+    /// so an operator reaching them through SoapySDR is losing most of the
+    /// radio.
+    pub fn native_backend_for(driver: &str) -> Option<Backend> {
+        match driver.trim().to_ascii_lowercase().as_str() {
+            "sdrplay" => Some(Backend::SdrPlay),
+            "rtlsdr" => Some(Backend::RtlSdr),
+            "plutosdr" => Some(Backend::Pluto),
+            _ => None,
+        }
+    }
+
+    pub fn is_pseudo(&self) -> bool {
+        Self::driver_is_pseudo(&self.driver)
+    }
+
+    pub fn native_backend(&self) -> Option<Backend> {
+        Self::native_backend_for(&self.driver)
+    }
+
+    /// One-line label for a device list.
+    pub fn label(&self) -> String {
+        format!("{}  (driver {})", self.label, self.driver)
+    }
+
+    /// Operator-facing warning for a device that is not a radio, `None` for
+    /// real hardware. One composer so the running-source notice, the settings
+    /// list and `--probe` all say the same thing.
+    pub fn pseudo_warning(driver: &str, label: &str) -> Option<String> {
+        if !Self::driver_is_pseudo(driver) {
+            return None;
+        }
+        Some(format!(
+            "SoapySDR opened \"{label}\" (driver {driver}) — a sound card, not a radio. \
+             It ignores the dial, so what you see is the sound card's input, not the \
+             band. Pick a real device with --device / device_args, or choose a native \
+             interface in Settings → Radio."
+        ))
+    }
+}
+
 /// CAT protocol family. Only `Xiegu` is hardware-verified so far.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum CatFamily {
@@ -1883,6 +1959,34 @@ mod tests {
         for d in [&no_serial, &no_model] {
             assert!(d.identity_warning().unwrap().contains("Restart the SDRplay API service"));
         }
+    }
+
+    /// SoapyAudio presents any sound card as an SDR that accepts every tune and
+    /// ignores it. Field-reported: an RSP1A owner on a bundle install spent a
+    /// session watching their line input, because "the first device found" was
+    /// the sound card. Case folding is the part that is easy to get wrong — an
+    /// enumeration says `audio` where the opened device says `Audio`.
+    #[test]
+    fn soapy_pseudo_drivers_are_recognised_whatever_their_case() {
+        for d in ["audio", "Audio", "AUDIO", " audio ", "null", "Null"] {
+            assert!(SoapyDeviceInfo::driver_is_pseudo(d), "{d} is not a radio");
+            assert!(SoapyDeviceInfo::pseudo_warning(d, "Audio (Audio)").is_some());
+        }
+        for d in ["sdrplay", "rtlsdr", "hackrf", "lime", "uhd", "remote", ""] {
+            assert!(!SoapyDeviceInfo::driver_is_pseudo(d), "{d} is real hardware");
+            assert!(SoapyDeviceInfo::pseudo_warning(d, "x").is_none());
+        }
+        // The warning names the device and points somewhere useful.
+        let w = SoapyDeviceInfo::pseudo_warning("Audio", "Audio (Audio)").unwrap();
+        assert!(w.contains("Audio (Audio)") && w.contains("ignores the dial"));
+
+        // Drivers with a native interface steer there; the rest stay on SoapySDR.
+        assert_eq!(SoapyDeviceInfo::native_backend_for("sdrplay"), Some(Backend::SdrPlay));
+        assert_eq!(SoapyDeviceInfo::native_backend_for("SDRplay"), Some(Backend::SdrPlay));
+        assert_eq!(SoapyDeviceInfo::native_backend_for("rtlsdr"), Some(Backend::RtlSdr));
+        assert_eq!(SoapyDeviceInfo::native_backend_for("plutosdr"), Some(Backend::Pluto));
+        assert_eq!(SoapyDeviceInfo::native_backend_for("hackrf"), None);
+        assert_eq!(SoapyDeviceInfo::native_backend_for("audio"), None);
     }
 
     /// A discovered radio and a typed address are two different things, and the

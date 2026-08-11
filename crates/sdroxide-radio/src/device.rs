@@ -557,6 +557,17 @@ impl IqSource for SoapyRxSource {
             .unwrap_or_default()
     }
 
+    /// A standing warning when what SoapySDR opened is not a radio.
+    ///
+    /// Nothing else about such a session looks wrong — the stream runs, the
+    /// dial tunes, the spectrum moves — so without this the operator is left
+    /// comparing a sound card against the band. Reached even when the device
+    /// was named explicitly, because `--device driver=audio` in a config file
+    /// written months ago is not a decision anyone remembers making.
+    fn open_status(&self) -> Option<String> {
+        sdroxide_types::SoapyDeviceInfo::pseudo_warning(&self.caps.driver, &self.caps.label)
+    }
+
     fn tx_begin(&mut self, center_hz: f64, rate: f64) -> Result<f64> {
         if self.caps.tx_channels == 0 {
             return Err(RadioError::Msg("device is not transmit capable".into()));
