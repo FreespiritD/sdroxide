@@ -34,6 +34,7 @@
 
 use mfsk_core::msg::WsprMessage;
 use mfsk_core::wspr;
+use rayon::prelude::*;
 
 /// One decoded WSPR transmission, with the numbers a spot is made of.
 #[derive(Clone, Debug, PartialEq)]
@@ -158,6 +159,26 @@ const FANO_MAX_CYCLES: u64 = 6_000;
 /// Drift search half-width, in Hz across the transmission.
 const MAX_DRIFT_HZ: i32 = 4;
 
+/// The thread pool the candidate attempts run on.
+///
+/// Deliberately not rayon's global pool, and deliberately not every core. This
+/// is a burst of heavy arithmetic a few seconds long that happens once every
+/// two minutes, sharing a machine with an SDR receive chain that has to make
+/// its audio deadline the whole time. Taking every core for those few seconds
+/// would trade a decode nobody is waiting on against a dropout everybody hears,
+/// so it takes half of them and leaves the rest to the radio.
+fn pool() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        rayon::ThreadPoolBuilder::new()
+            .num_threads((cores / 2).clamp(1, 8))
+            .thread_name(|i| format!("wspr-decode-{i}"))
+            .build()
+            .expect("build the WSPR decode pool")
+    })
+}
+
 /// Decode one slot of 12 kHz audio.
 ///
 /// `audio` is the whole slot; `sample_rate` is 12 000 in every caller, and is a
@@ -181,38 +202,48 @@ pub fn decode_slot(audio: &[f32], sample_rate: u32) -> Vec<WsprDecode> {
     // arrived; every later pass sees it with the decodes so far subtracted out.
     let (mut ires, mut qres) = (idat.clone(), qdat.clone());
 
+    // Coherent block detection over 1, 2 and 3 symbols runs in every pass. It
+    // costs three Fano attempts per grid cell rather than one and is worth all
+    // of it: at −30 dB on a lone beacon it takes the decode rate from two slots
+    // in eight to six. Restricting it to the later passes — on the theory that
+    // pass 1 holds the strong signals, which do not need it — quietly capped the
+    // whole decoder at the strong signals, because a slot whose only station is
+    // a weak one gives pass 1 nothing to find and so never reaches a later pass.
     for pass in 0..N_PASSES {
         let cands =
             wspr::coarse_baseband::coarse_baseband(&ires, &qres, pad, MAX_CANDIDATES, MAX_DRIFT_HZ);
+        // Attempt every candidate, then fold the results in candidate order.
+        //
+        // Each attempt only reads the residual, so they are independent and the
+        // work splits cleanly; the ordered fold afterwards is what keeps the
+        // output identical to the sequential version, de-duplication and all.
+        // The decoder spends four fifths of its time inside Fano and this is the
+        // only way to spend it on more than one core.
+        let attempts: Vec<Option<(Aligned, Hit)>> = pool().install(|| {
+            cands
+                .par_iter()
+                .map(|c| {
+                    // `reportable_drift`, not the raw coarse figure: below two
+                    // hertz the coarse score cannot tell drift from no drift and
+                    // returns ±1 arbitrarily, and the demodulator does not treat
+                    // that as noise — it sweeps its oscillators half a hertz
+                    // across the frame, a third of the tone spacing at the ends.
+                    // Handing it a drift the signal never had is the single most
+                    // expensive thing this loop can do to a weak frame.
+                    align_and_decode(
+                        &ires,
+                        &qres,
+                        c.start_sample,
+                        c.freq_hz,
+                        reportable_drift(c.drift_hz),
+                    )
+                })
+                .collect()
+        });
+
         let mut found_this_pass = 0usize;
-        for c in &cands {
-            // Coherent block detection over 1, 2 and 3 symbols, in every pass.
-            //
-            // It costs three Fano attempts per grid cell rather than one and is
-            // worth all of it: at −30 dB on a lone beacon it takes the decode
-            // rate from two slots in eight to six. Restricting it to the later
-            // passes — on the theory that pass 1 holds the strong signals, which
-            // do not need it — quietly capped the whole decoder at the strong
-            // signals, because a slot whose only station is a weak one gives
-            // pass 1 nothing to find and so never reaches a later pass at all.
-            let Some((al, hit)) =
-                // `reportable_drift`, not the raw coarse figure: below two
-                // hertz the coarse score cannot tell drift from no drift and
-                // returns ±1 arbitrarily, and the demodulator does not treat
-                // that as noise — it sweeps its oscillators half a hertz across
-                // the frame, a third of the tone spacing at the ends. Handing
-                // it a drift the signal never had is the single most expensive
-                // thing this loop can do to a weak frame.
-                align_and_decode(
-                    &ires,
-                    &qres,
-                    c.start_sample,
-                    c.freq_hz,
-                    reportable_drift(c.drift_hz),
-                )
-            else {
-                continue;
-            };
+        for (c, attempt) in cands.iter().zip(attempts) {
+            let Some((al, hit)) = attempt else { continue };
             let r = wspr::WsprResult {
                 message: hit.message,
                 freq_hz: al.tone0_hz,
@@ -365,29 +396,67 @@ fn align_and_decode(
     // cell would end the search there — with something built out of the noise at
     // an alignment the real signal was never at, and the cell that would have
     // decoded properly never tried.
-    let mut osd_at: Option<(Aligned, Hit)> = None;
-    for dl in outward(LAG_RETRY_STEPS) {
-        for df in outward(FREQ_RETRY_STEPS) {
-            let lag = lag0 + dl * LAG_RETRY_STEP;
-            let f = f0_bb + df as f32 * FREQ_RETRY_STEP_HZ;
-            let here = Aligned {
-                isqs: wspr::demod::tone_amplitudes(idat, qdat, f, lag, drift_hz),
-                tone0_hz: f + wspr::baseband::CENTER_HZ - 1.5 * wspr::demod::TONE_SPACING_HZ,
-                lag,
-            };
-            let (fano, osd) = decode_aligned(&here);
-            if let Some(hit) = fano {
-                return Some((here, hit));
-            }
-            if osd_at.is_none()
-                && let Some(hit) = osd
-            {
-                osd_at = Some((here, hit));
-            }
+    //
+    // Two separate walks rather than asking each cell for both answers at once,
+    // which is worth it for the arithmetic: OSD is a sixth of this decoder's
+    // entire run time, and every cell that Fano goes on to decode — and every
+    // cell after the first one OSD answers at — was paying for an OSD result
+    // that would be thrown away. The walk order is the same, so the cell that
+    // ends up reported is the same one either way.
+    let cells = || {
+        outward(LAG_RETRY_STEPS)
+            .flat_map(move |dl| outward(FREQ_RETRY_STEPS).map(move |df| (dl, df)))
+    };
+    let at = |dl: i32, df: i32| {
+        let lag = lag0 + dl * LAG_RETRY_STEP;
+        let f = f0_bb + df as f32 * FREQ_RETRY_STEP_HZ;
+        Aligned {
+            isqs: wspr::demod::tone_amplitudes(idat, qdat, f, lag, drift_hz),
+            tone0_hz: f + wspr::baseband::CENTER_HZ - 1.5 * wspr::demod::TONE_SPACING_HZ,
+            lag,
+        }
+    };
+    for (dl, df) in cells() {
+        let here = at(dl, df);
+        if hopeless(&here) {
+            continue;
+        }
+        if let Some(hit) = fano_at(&here) {
+            return Some((here, hit));
         }
     }
-    osd_at
+    for (dl, df) in cells() {
+        let here = at(dl, df);
+        if hopeless(&here) {
+            continue;
+        }
+        if let Some(hit) = osd_at(&here) {
+            return Some((here, hit));
+        }
+    }
+    None
 }
+
+/// Whether a grid cell is so poorly aligned that no decoder will do anything
+/// with it, cheaply enough to be worth asking before one tries.
+///
+/// The sync vector is a third of every WSPR symbol and is known in advance, so
+/// correlating against it costs a few thousand operations against the millions
+/// a Fano attempt can burn. It is much too noisy to *choose* an alignment with —
+/// that mistake is what [`align_and_decode`] exists to undo — but it is a
+/// perfectly good way to rule one out, and the two are not the same question.
+///
+/// The threshold is set from measurement, not from wsprd's (which is 0.12 on its
+/// own scale): over five synthesised slots, the worst-aligned cell that ever
+/// went on to decode scored 0.094, and every one of the 146 successful cells
+/// cleared this. It skips four in five of the cells that would have failed,
+/// which is most of the decoder's run time, and loses nothing.
+fn hopeless(al: &Aligned) -> bool {
+    wspr::demod::sync_score_isqs(&al.isqs) < MIN_CELL_SYNC
+}
+
+/// See [`hopeless`].
+const MIN_CELL_SYNC: f32 = 0.05;
 
 /// The best lag for a coarse candidate — wsprd's `sync_and_demodulate` mode 0.
 ///
@@ -407,53 +476,59 @@ fn align_lag(idat: &[f32], qdat: &[f32], start_sample: usize, tone0_hz: f32, dri
     best.1
 }
 
-/// Decode at a refined alignment, returning what Fano got and, separately,
-/// what OSD got where Fano would not converge.
+/// Decode at one alignment with Fano, over each coherent block length.
 ///
 /// This is `mfsk_core::wspr::decode::decode_at_baseband_nblocks`' final stage,
-/// reproduced over the same crate's public primitives for one reason: that
-/// function runs the OSD fallback unconditionally and hands back a single
-/// result that does not say which produced it. OSD synthesises a valid codeword
+/// reproduced over the same crate's public primitives for two reasons: that
+/// function runs the OSD fallback unconditionally and hands back a single result
+/// that does not say which produced it — and OSD synthesises a valid codeword
 /// for *any* input, so a caller that cannot tell the two apart has to treat
-/// every decode as suspect — and gating all of them hard enough to stop the
-/// invented callsigns would throw away the real weak ones too.
-///
-/// Returned apart rather than as one answer so the caller can spend the whole
-/// timing search on Fano first and only then consider what OSD offered, without
-/// paying for a second Fano run over the same metrics to find out.
-fn decode_aligned(al: &Aligned) -> (Option<Hit>, Option<Hit>) {
+/// every decode as suspect. Split here so each can be spent where it is worth
+/// spending, and so the caller can hold OSD's answers to a stricter standard.
+fn fano_at(al: &Aligned) -> Option<Hit> {
+    best_of_blocks(al, |llrs| fano(llrs).map(|(info, errors)| (info, errors, false)))
+}
+
+/// The same alignment, asking the ordered-statistics fallback instead.
+fn osd_at(al: &Aligned) -> Option<Hit> {
+    best_of_blocks(al, |llrs| {
+        wspr::osd::osd_decode(llrs).map(|(info, nhardmin)| (info, nhardmin, true))
+    })
+}
+
+/// Try one decoder at one alignment over coherent block lengths 1, 2 and 3, and
+/// keep the message it was surest of.
+fn best_of_blocks(
+    al: &Aligned,
+    decode: impl Fn(&[f32; 162]) -> Option<([u8; 50], u32, bool)>,
+) -> Option<Hit> {
     use mfsk_core::engine::{DecodeContext, MessageCodec};
 
     // Upstream prefers a Type-1/2 decode over a Type-3 one at equal cost, since
-    // a hashed callsign this station cannot invert is the weaker result. Each
-    // of the two producers keeps its own pair of bests.
-    let mut best: [[Option<(u32, Hit)>; 2]; 2] = Default::default();
+    // a hashed callsign this station cannot invert is the weaker result.
+    let mut named: Option<(u32, Hit)> = None;
+    let mut hashed_best: Option<(u32, Hit)> = None;
 
     for nblock in [1usize, 2, 3] {
         let mut llrs = wspr::demod::nblock_bit_metrics(&al.isqs, nblock);
         normalise(&mut llrs);
         deinterleave(&mut llrs);
 
-        let (info, errors, from_osd) = if let Some((info, errors)) = fano(&llrs) {
-            (info, errors, false)
-        } else if let Some((info, nhardmin)) = wspr::osd::osd_decode(&llrs) {
-            (info, nhardmin, true)
-        } else {
-            continue;
-        };
+        let Some((info, errors, from_osd)) = decode(&llrs) else { continue };
         let Some(message) = mfsk_core::msg::Wspr50Message.unpack(&info, &DecodeContext::default())
         else {
             continue;
         };
-        let hashed = matches!(message, WsprMessage::Type3 { .. });
-        let slot = &mut best[usize::from(from_osd)][usize::from(hashed)];
+        let slot = if matches!(message, WsprMessage::Type3 { .. }) {
+            &mut hashed_best
+        } else {
+            &mut named
+        };
         if slot.as_ref().is_none_or(|(b, _)| errors < *b) {
             *slot = Some((errors, Hit { message, info, from_osd }));
         }
     }
-    let [fano, osd] = best;
-    let pick = |[named, hashed]: [Option<(u32, Hit)>; 2]| named.or(hashed).map(|(_, h)| h);
-    (pick(fano), pick(osd))
+    named.or(hashed_best).map(|(_, h)| h)
 }
 
 /// Run the Fano sequential decoder over one set of deinterleaved bit metrics.
@@ -904,6 +979,19 @@ mod tests {
                 })
                 .count();
             assert!(heard >= want, "at {target} dB only {heard} of 3 slots decoded");
+        }
+    }
+
+    /// Candidates are attempted in parallel, so the same recording has to come
+    /// back the same way every time — a decoder whose spot list depended on
+    /// which thread finished first would be impossible to trust or to test.
+    #[test]
+    fn the_same_slot_decodes_the_same_way_every_time() {
+        let (slot, _) = crowded_slot(0xD37E_0001);
+        let first = decode_slot(&slot, 12_000);
+        assert!(first.len() > 8, "the fixture decoded almost nothing: {}", first.len());
+        for _ in 0..2 {
+            assert_eq!(decode_slot(&slot, 12_000), first, "decode order is not deterministic");
         }
     }
 

@@ -5012,6 +5012,7 @@ dependencies = [
  "image",
  "mfsk-core",
  "num-complex",
+ "rayon",
  "sdroxide-deepcw",
  "sdroxide-dsp",
  "sdroxide-rade",
