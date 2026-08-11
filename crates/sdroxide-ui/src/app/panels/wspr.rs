@@ -674,14 +674,31 @@ fn wspr_row(ui: &mut egui::Ui, s: &WsprSpot, home: Option<(f64, f64)>, now: i64)
                             .color(Color32::from_gray(130)),
                     ),
                 );
-                // The age goes last and takes what is left, so a narrow panel
-                // drops it rather than squeezing the columns that matter.
+                // When, in UTC, which is the only clock this mode has.
+                //
+                // A WSPR slot *is* a two-minute block of UTC, so the timestamp
+                // is exact rather than a rounding of one — and it is what every
+                // other client in the network prints beside a spot, so it is
+                // the thing an operator compares against WSJT-X or a WSPRnet
+                // page to see whether the two heard the same transmission. The
+                // relative age it replaces could not be compared with anything.
+                //
+                // It goes last and takes what is left, so a narrow panel drops
+                // it rather than squeezing the columns that matter.
                 crate::chrome::row_tail(ui, |ui| {
+                    let t = s.slot_utc.rem_euclid(86_400);
                     ui.label(
-                        RichText::new(fmt_age(now - s.slot_utc))
+                        RichText::new(format!("{:02}:{:02}", t / 3600, (t % 3600) / 60))
                             .size(9.5)
-                            .color(Color32::from_gray(110)),
-                    );
+                            .monospace()
+                            .color(Color32::from_gray(120)),
+                    )
+                    .on_hover_text(format!(
+                        "{:02}:{:02} UTC — {} ago",
+                        t / 3600,
+                        (t % 3600) / 60,
+                        fmt_age(now - s.slot_utc)
+                    ));
                 });
             });
         });

@@ -9,11 +9,25 @@
 //! pool — so the loop is reproduced here over the same crate's public
 //! primitives, threading the originating candidate through to the result.
 //!
-//! Everything else is deliberately a faithful copy of upstream's structure,
-//! including the two-pass successive-interference-cancellation shape and the
-//! three-second front pad, so that what we decode is what its tests against the
-//! WSJT-X reference recording actually validate. Where it differs, it is said
-//! so in a comment.
+//! It began as a faithful copy of upstream's structure and has since diverged
+//! where measurement said it had to. What it does that upstream's does not, all
+//! of it measured against `wsprd` on identical audio (see
+//! `examples/wspr_bench.rs`):
+//!
+//! * **Refuses decodes the audio does not support.** The code carries no CRC
+//!   and the OSD fallback answers with a valid codeword for any input, so
+//!   pointed at noise it invents a callsign rather than failing. [`fit_of`] and
+//!   [`is_plausible`] are what stop that, and on a synthesised band they took
+//!   the invented stations from twenty-two to none.
+//! * **Normalises the bit metrics** before the Fano decoder sees them, which
+//!   `mfsk-core` says it needs and defers — see [`normalise`].
+//! * **Retries the decode across a fine timing grid** rather than trusting the
+//!   best-scoring alignment, which is wsprd's DT peak-up — see [`JIGGLE_STEP`].
+//! * **Subtracts from the decoder's own recovered bits** rather than re-packing
+//!   the message, so compound and hashed-callsign signals are cancelled too.
+//!
+//! The three-second front pad and the successive-interference-cancellation
+//! shape are upstream's.
 
 use mfsk_core::msg::WsprMessage;
 use mfsk_core::wspr;
@@ -34,6 +48,10 @@ pub struct WsprDecode {
     /// Total frequency drift across the transmission, in Hz — see
     /// [`sdroxide_types::WsprSpot::drift_hz`] for why this is not a rate.
     pub drift_hz: f32,
+    /// How much of the received tone energy this message accounts for — see
+    /// [`fit_of`]. Near zero means the message does not explain the audio; a
+    /// clean decode runs from about 0.3 at the noise floor up towards 0.8.
+    pub fit: f32,
 }
 
 impl WsprDecode {
@@ -63,13 +81,52 @@ const FREQ_DEDUP_HZ: f32 = 5.0;
 /// One symbol at 12 kHz.
 const TIME_DEDUP_SAMPLES: i64 = 8192;
 
-/// How many coarse candidates to attempt per pass.
+/// How many coarse candidates to attempt per pass. wsprd carries up to 200.
 ///
-/// Upstream defaults to 16. WSPR's Fano decoder has no CRC, so every candidate
-/// attempted is a chance to accept a noise pattern as a message; the cost of
-/// raising this is paid in wall clock *and* in false decodes, and 16 is what
-/// upstream's recall figures were measured with.
-const MAX_CANDIDATES: usize = 16;
+/// Sixteen is enough only for a band of rock-steady carriers, which is not a
+/// band. A drifting signal smears its energy across neighbouring bins of the
+/// coarse spectrum, so it makes a lower, broader peak than a stable one of the
+/// same strength and is ranked below stations it is louder than. Measured on a
+/// synthesised band of 26 beacons given ±2 Hz of drift, recall went from 101 of
+/// 130 at sixteen candidates to 114 at twenty-four and then flat — the drifters
+/// were being cut from the list before anything tried to decode them. Set above
+/// that knee, because a real band is busier than the test one.
+const MAX_CANDIDATES: usize = 32;
+
+/// Successive-interference-cancellation passes, matching wsprd's `npasses`.
+///
+/// A pass that decodes nothing new stops the loop, so a quiet band costs one.
+const N_PASSES: usize = 3;
+
+/// Least of the received tone energy a decode must account for. See [`fit_of`].
+///
+/// Zero only rejects a message that *anti*-correlates with the audio, which is
+/// nonsense by construction. Fano's own convergence is the real gate on this
+/// path and it was measured not to produce a single false decode; anything
+/// stricter here would start costing real weak signals instead.
+const MIN_FIT: f32 = 0.0;
+
+/// The same, for a decode that came out of the OSD fallback rather than Fano.
+///
+/// OSD does not converge or fail — it returns the nearest valid codeword to
+/// whatever it is handed, so on noise it returns a well-formed callsign. On the
+/// synthesised band above, ungated it invented 22 stations across five slots
+/// while recovering two real ones; at this threshold it invents none. That the
+/// two real ones go too is the trade, and it is the right way round: a spot is
+/// pooled by the whole network, and a fabricated one corrupts everybody's path
+/// statistics rather than merely this operator's screen.
+const OSD_MIN_FIT: f32 = 0.40;
+
+/// Spread the bit metrics are scaled to before Fano. See [`normalise`].
+///
+/// Measured, not derived: recall peaks here and falls off either side, because
+/// what this really sets is the ratio between the metric spread and the
+/// decoder's fixed bias.
+const LLR_TARGET_SD: f32 = 2.8;
+
+/// Where the metrics are cut off, in multiples of [`LLR_TARGET_SD`]. wsprd
+/// clamps its soft symbols at ±127 on a 50-per-sigma scale.
+const LLR_CLAMP_SD: f32 = 2.54;
 
 /// Drift search half-width, in Hz across the transmission.
 const MAX_DRIFT_HZ: i32 = 4;
@@ -89,79 +146,425 @@ pub fn decode_slot(audio: &[f32], sample_rate: u32) -> Vec<WsprDecode> {
     let (idat, qdat) = wspr::baseband::decimate_to_baseband(&padded);
 
     let mut out: Vec<WsprDecode> = Vec::new();
-    // Pass-1 decodes keep their padded-buffer alignment so pass 2 can subtract
-    // them from the baseband at the right place.
-    let mut pass1: Vec<(WsprDecode, usize)> = Vec::new();
+    // Every decode so far keeps its padded-buffer alignment, so the next pass
+    // can subtract it from the baseband at the right place.
+    let mut decoded: Vec<(wspr::WsprResult, usize)> = Vec::new();
 
-    let cands =
-        wspr::coarse_baseband::coarse_baseband(&idat, &qdat, pad, MAX_CANDIDATES, MAX_DRIFT_HZ);
-    for c in &cands {
-        let Some(r) = wspr::decode::decode_at_baseband(
-            &idat,
-            &qdat,
-            sample_rate,
-            c.start_sample,
-            c.freq_hz,
-            0.0,
-        ) else {
-            continue;
-        };
-        let refined = r.start_sample;
-        let d = from_result(&r, c, pad, sample_rate);
-        if push_unique(&mut out, d.clone(), refined.saturating_sub(pad)) {
-            pass1.push((d, refined));
+    // The residual the current pass searches. Pass 1 sees the recording as it
+    // arrived; every later pass sees it with the decodes so far subtracted out.
+    let (mut ires, mut qres) = (idat.clone(), qdat.clone());
+
+    for pass in 0..N_PASSES {
+        let first = pass == 0;
+        let cands =
+            wspr::coarse_baseband::coarse_baseband(&ires, &qres, pad, MAX_CANDIDATES, MAX_DRIFT_HZ);
+        let mut found_this_pass = 0usize;
+        for c in &cands {
+            // Coherent block detection over 1, 2 and 3 symbols costs several
+            // times a plain demodulation and buys several dB. Pass 1 is where
+            // the strong signals are and does not need it; every later pass is
+            // working on a residual where what is left is marginal by
+            // definition, which is exactly where the margin is worth paying for.
+            let nblocks: &[usize] = if first { &[1] } else { &[1, 2, 3] };
+            let Some((al, hit)) =
+                align_and_decode(&ires, &qres, c.start_sample, c.freq_hz, c.drift_hz, nblocks)
+            else {
+                continue;
+            };
+            let r = wspr::WsprResult {
+                message: hit.message,
+                freq_hz: al.tone0_hz,
+                start_sample: (al.lag * 32).max(0) as usize,
+                dt_sec: 0.0,
+                info_bits: hit.info,
+            };
+            // Does the message we are about to report actually explain the
+            // tones that arrived? Every symbol the OSD fallback emits is a
+            // valid codeword by construction — including the ones it builds
+            // out of noise — so this is the only thing standing between a
+            // marginal candidate and an invented callsign.
+            let fit = fit_of(&al, &r.info_bits);
+            let floor = if hit.from_osd { OSD_MIN_FIT } else { MIN_FIT };
+            if fit < floor {
+                continue;
+            }
+            let refined = r.start_sample;
+            let mut d = from_result(&r, c, pad, sample_rate);
+            d.fit = fit;
+            if !is_plausible(&d) {
+                continue;
+            }
+            if push_unique(&mut out, d.clone(), refined.saturating_sub(pad)) {
+                found_this_pass += 1;
+                decoded.push((r, refined));
+            }
         }
-    }
-
-    // Pass 2 — upstream's third wsprd pass. Subtract every pass-1 decode from
-    // the baseband and search the residual: a beacon sitting under a strong
-    // neighbour's skirts is invisible until the neighbour is gone, and this is
-    // the only path that reaches the weakest signals on the reference sample.
-    if !pass1.is_empty() {
-        let mut idat2 = idat.clone();
-        let mut qdat2 = qdat.clone();
-        for (d, refined) in &pass1 {
-            let Some(info) = info_bits(&d.message) else { continue };
-            let symbols = wspr::encode_channel_symbols(&info);
+        // Nothing new to subtract means the next pass would search the same
+        // residual and find the same nothing.
+        if found_this_pass == 0 || pass + 1 >= N_PASSES {
+            break;
+        }
+        // Subtract everything decoded so far and search what is left: a beacon
+        // sitting under a strong neighbour's skirts is invisible until the
+        // neighbour is gone, and this is the only path that reaches the weakest
+        // signals in a busy window.
+        //
+        // The symbols come from the decoder's own recovered information bits
+        // rather than from re-packing the message, so a compound or
+        // hashed-callsign decode is subtracted too. Re-packing could only ever
+        // rebuild the Type-1 layout, which left the other two sitting in the
+        // residual masking whatever was behind them.
+        ires.copy_from_slice(&idat);
+        qres.copy_from_slice(&qdat);
+        for (r, refined) in &decoded {
+            let symbols = wspr::encode_channel_symbols(&r.info_bits);
             wspr::subtract::subtract_signal_baseband(
-                &mut idat2,
-                &mut qdat2,
-                d.carrier_hz(),
+                &mut ires,
+                &mut qres,
+                r.freq_hz + 1.5 * wspr::demod::TONE_SPACING_HZ,
                 (*refined as i32) / 32,
                 0.0,
                 &symbols,
             );
         }
-        let cands2 = wspr::coarse_baseband::coarse_baseband(
-            &idat2,
-            &qdat2,
-            pad,
-            MAX_CANDIDATES,
-            MAX_DRIFT_HZ,
-        );
-        for c in &cands2 {
-            // Coherent block detection over 1, 2 and 3 symbols. Several dB of
-            // extra margin at several times the cost — worth paying only here,
-            // where the strong signals have already been removed and what is
-            // left is by definition marginal.
-            let Some(r) = wspr::decode::decode_at_baseband_nblocks(
-                &idat2,
-                &qdat2,
-                sample_rate,
-                c.start_sample,
-                c.freq_hz,
-                c.drift_hz,
-                &[1, 2, 3],
-            ) else {
-                continue;
-            };
-            let refined = r.start_sample;
-            let d = from_result(&r, c, pad, sample_rate);
-            push_unique(&mut out, d, refined.saturating_sub(pad));
-        }
     }
 
     out
+}
+
+/// The drift worth putting on a spot.
+///
+/// The coarse search scores drift by shifting each symbol's tone bin by
+/// `((k−81)/81)·idrift/(2·0.732)` and *truncating* to an integer bin, as wsprd
+/// does. Below two hertz across the frame that shift never reaches a whole bin,
+/// so ±1 Hz and 0 Hz score identically on every symbol and which of the three
+/// comes back is decided by nothing at all — the sort order among equal scores.
+/// Reporting it made every stable carrier in a test band come out at −1 Hz
+/// drift. What the search can actually resolve is reported; the rest is zero.
+fn reportable_drift(hz: f32) -> f32 {
+    if hz.abs() <= 1.0 { 0.0 } else { hz }
+}
+
+/// A candidate's refined alignment, and the per-tone amplitudes measured there.
+struct Aligned {
+    isqs: wspr::demod::IsQs,
+    /// Tone-0 audio frequency after refinement, Hz.
+    tone0_hz: f32,
+    /// Baseband sample where symbol 0 starts.
+    lag: i32,
+}
+
+/// One accepted decode out of [`decode_aligned`].
+struct Hit {
+    message: WsprMessage,
+    info: [u8; 50],
+    /// Whether this came from the OSD fallback rather than from Fano. OSD
+    /// returns a valid codeword for *any* input, so its output is held to a
+    /// stricter standard downstream.
+    from_osd: bool,
+}
+
+/// Fine timing steps the decode is retried at, in baseband samples.
+///
+/// The refinement below picks the alignment with the best sync correlation, and
+/// at the SNRs this mode lives at that peak is often not the true one — the
+/// score landscape is noisy enough that the right timing sits a symbol-fraction
+/// away under a slightly lower score. Committing to the best-scoring lag is
+/// what costs the weakest signals: they are perfectly decodable a few tens of
+/// milliseconds either side, and nothing ever looks there.
+///
+/// So the decode is retried across a fine grid instead of trusting the score,
+/// working outward from the refined pick and stopping at the first alignment
+/// that decodes. This is `wsprd`'s DT peak-up loop (`iifac = 8`, `idt ≤ 16`):
+/// ±64 baseband samples — ±0.17 s — in steps of 8, or about 21 ms.
+const JIGGLE_STEP: i32 = 8;
+const JIGGLE_STEPS: i32 = 8;
+
+/// Refine a coarse candidate's alignment and decode there.
+///
+/// The refinement is wsprd's `sync_and_demodulate` mode 0 then mode 1 — lag
+/// first, then frequency at the best lag — followed by its mode-2 timing
+/// peak-up, which is where the weak signals are actually won. Returns the
+/// alignment that decoded, so the caller can score the message against the
+/// tones measured at that exact spot.
+fn align_and_decode(
+    idat: &[f32],
+    qdat: &[f32],
+    start_sample: usize,
+    tone0_hz: f32,
+    drift_hz: f32,
+    nblocks: &[usize],
+) -> Option<(Aligned, Hit)> {
+    let mut al = align(idat, qdat, start_sample, tone0_hz, drift_hz);
+    let best = al.lag;
+    let f0_bb = al.tone0_hz + 1.5 * wspr::demod::TONE_SPACING_HZ - wspr::baseband::CENTER_HZ;
+    // Outward from the refined pick — nearest alignments first, so a signal
+    // that decodes at several of them is reported at the one closest to its
+    // measured timing.
+    let lags = core::iter::once(best).chain(
+        (1..=JIGGLE_STEPS)
+            .flat_map(|k| [-1i32, 1].map(move |s| (k, s)))
+            .map(move |(k, s)| best + s * k * JIGGLE_STEP),
+    );
+
+    // Fano over every alignment before OSD gets a turn at any of them. OSD
+    // returns a codeword for whatever it is handed, so letting it run at the
+    // first alignment would end the search there — with an answer built out of
+    // the noise at a timing the real signal was never at, and the alignment
+    // that would have decoded properly two steps later never tried.
+    let mut osd_at: Option<(Aligned, Hit)> = None;
+    for lag in lags {
+        if lag != al.lag {
+            al.isqs = wspr::demod::tone_amplitudes(idat, qdat, f0_bb, lag, drift_hz);
+            al.lag = lag;
+        }
+        let (fano, osd) = decode_aligned(&al, nblocks);
+        if let Some(hit) = fano {
+            return Some((al, hit));
+        }
+        if osd_at.is_none()
+            && let Some(hit) = osd
+        {
+            osd_at =
+                Some((Aligned { isqs: al.isqs.clone(), tone0_hz: al.tone0_hz, lag: al.lag }, hit));
+        }
+    }
+    osd_at
+}
+
+/// Refine a coarse candidate's alignment, wsprd's `sync_and_demodulate` mode 0
+/// then mode 1: lag first, then frequency at the best lag.
+///
+/// The coarse search rounds to 0.73 Hz and a third of a second, and WSPR's Fano
+/// decoder — a K=32 convolutional code with no CRC — is sensitive to both.
+fn align(idat: &[f32], qdat: &[f32], start_sample: usize, tone0_hz: f32, drift_hz: f32) -> Aligned {
+    let f0_init = tone0_hz + 1.5 * wspr::demod::TONE_SPACING_HZ - wspr::baseband::CENTER_HZ;
+    let lag_init = start_sample as i32 / 32;
+
+    let mut best = (f32::NEG_INFINITY, lag_init, None);
+    for dlag in [-128i32, -64, 0, 64, 128] {
+        let isqs = wspr::demod::tone_amplitudes(idat, qdat, f0_init, lag_init + dlag, drift_hz);
+        let sync = wspr::demod::sync_score_isqs(&isqs);
+        if sync > best.0 {
+            best = (sync, lag_init + dlag, Some(isqs));
+        }
+    }
+    let (mut best_sync, lag, mut isqs) = (best.0, best.1, best.2.expect("one lag was evaluated"));
+
+    let mut f0 = f0_init;
+    for df in [-1.0f32, -0.5, 0.5, 1.0] {
+        let cand = wspr::demod::tone_amplitudes(idat, qdat, f0_init + df, lag, drift_hz);
+        let sync = wspr::demod::sync_score_isqs(&cand);
+        if sync > best_sync {
+            best_sync = sync;
+            f0 = f0_init + df;
+            isqs = cand;
+        }
+    }
+    Aligned {
+        isqs,
+        tone0_hz: f0 + wspr::baseband::CENTER_HZ - 1.5 * wspr::demod::TONE_SPACING_HZ,
+        lag,
+    }
+}
+
+/// Decode at a refined alignment, returning what Fano got and, separately,
+/// what OSD got where Fano would not converge.
+///
+/// This is `mfsk_core::wspr::decode::decode_at_baseband_nblocks`' final stage,
+/// reproduced over the same crate's public primitives for one reason: that
+/// function runs the OSD fallback unconditionally and hands back a single
+/// result that does not say which produced it. OSD synthesises a valid codeword
+/// for *any* input, so a caller that cannot tell the two apart has to treat
+/// every decode as suspect — and gating all of them hard enough to stop the
+/// invented callsigns would throw away the real weak ones too.
+///
+/// Returned apart rather than as one answer so the caller can spend the whole
+/// timing search on Fano first and only then consider what OSD offered, without
+/// paying for a second Fano run over the same metrics to find out.
+fn decode_aligned(al: &Aligned, nblocks: &[usize]) -> (Option<Hit>, Option<Hit>) {
+    use mfsk_core::engine::{DecodeContext, FecCodec, FecOpts, MessageCodec};
+
+    let codec = mfsk_core::fec::ConvFano;
+    // Upstream prefers a Type-1/2 decode over a Type-3 one at equal cost, since
+    // a hashed callsign this station cannot invert is the weaker result. Each
+    // of the two producers keeps its own pair of bests.
+    let mut best: [[Option<(u32, Hit)>; 2]; 2] = Default::default();
+
+    for &nblock in nblocks {
+        let mut llrs = wspr::demod::nblock_bit_metrics(&al.isqs, nblock);
+        normalise(&mut llrs);
+        deinterleave(&mut llrs);
+
+        let (info, errors, from_osd) =
+            if let Some(f) = codec.decode_soft(&llrs, &FecOpts::default()) {
+                let mut info = [0u8; 50];
+                info.copy_from_slice(&f.info);
+                (info, f.hard_errors, false)
+            } else if let Some((info, nhardmin)) = wspr::osd::osd_decode(&llrs) {
+                (info, nhardmin, true)
+            } else {
+                continue;
+            };
+        let Some(message) = mfsk_core::msg::Wspr50Message.unpack(&info, &DecodeContext::default())
+        else {
+            continue;
+        };
+        let hashed = matches!(message, WsprMessage::Type3 { .. });
+        let slot = &mut best[usize::from(from_osd)][usize::from(hashed)];
+        if slot.as_ref().is_none_or(|(b, _)| errors < *b) {
+            *slot = Some((errors, Hit { message, info, from_osd }));
+        }
+    }
+    let [fano, osd] = best;
+    let pick = |[named, hashed]: [Option<(u32, Hit)>; 2]| named.or(hashed).map(|(_, h)| h);
+    (pick(fano), pick(osd))
+}
+
+/// Scale the bit metrics to a fixed spread before Fano sees them.
+///
+/// A sequential decoder is not scale-invariant. Its bias — the metric it
+/// expects to gain per correctly-decoded bit — is what decides when the search
+/// gives up on a path and backs out, and `mfsk-core` fixes that bias at a
+/// constant while the metrics arriving from the demodulator carry whatever
+/// magnitude the signal happened to have. A weak signal produces small metrics,
+/// the fixed bias then swamps them, and the decoder abandons paths it should
+/// have followed: the frames that fail are the quiet ones, which is the whole
+/// population this mode exists for. Its own source says as much, and defers the
+/// fix to a normalisation pass here.
+///
+/// This is that pass, and it is `wsprd`'s: divide by the standard deviation of
+/// the metrics and clamp the tails, so a −30 dB frame and a −5 dB one arrive at
+/// the decoder looking the same size and the bias means the same thing for both.
+fn normalise(llrs: &mut [f32; 162]) {
+    let n = llrs.len() as f32;
+    let mean = llrs.iter().sum::<f32>() / n;
+    let var = llrs.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / n;
+    let sd = var.sqrt();
+    if !(sd > 0.0) || !sd.is_finite() {
+        return;
+    }
+    let k = LLR_TARGET_SD / sd;
+    // One wild metric must not decide a frame.
+    let clamp = LLR_CLAMP_SD * LLR_TARGET_SD;
+    for v in llrs.iter_mut() {
+        *v = (*v * k).clamp(-clamp, clamp);
+    }
+}
+
+/// Deinterleave 162 channel LLRs: the WSPR permutation is a bit-reversal of the
+/// symbol index, skipping the reversals that land past the end.
+fn deinterleave(llrs: &mut [f32; 162]) {
+    let mut tmp = [0f32; 162];
+    let (mut p, mut i) = (0usize, 0u8);
+    while p < 162 {
+        let j = i.reverse_bits() as usize;
+        if j < 162 {
+            tmp[p] = llrs[j];
+            p += 1;
+        }
+        i = i.wrapping_add(1);
+    }
+    *llrs = tmp;
+}
+
+/// How much of the received tone energy the decoded message accounts for.
+///
+/// WSPR's convolutional code carries no CRC, so nothing downstream of the Fano
+/// decoder knows whether a message is real — and the OSD fallback underneath it
+/// will synthesise a *valid codeword for any input*, which is how a slot of
+/// noise turns into a plausible-looking callsign. The only thing that can tell
+/// the two apart is the audio: re-encode the message we are about to report and
+/// ask whether the tones it predicts are the tones that actually arrived.
+///
+/// Every symbol's tone is `2·data + sync`. The sync half is fixed and a phantom
+/// gets it right by construction, so it says nothing; the *data* half is what
+/// the message decides. This scores each symbol's claimed tone against the one
+/// differing only in that data bit, normalised so the result is a correlation:
+/// around zero when the message is unrelated to the audio, and climbing toward
+/// one as the signal rises out of the noise.
+fn fit_of(al: &Aligned, info: &[u8; 50]) -> f32 {
+    let symbols = wspr::encode_channel_symbols(info);
+    let (mut num, mut den) = (0.0f32, 0.0f32);
+    for (i, &sym) in symbols.iter().enumerate() {
+        let t = sym as usize;
+        // Same sync bit, opposite data bit — the one the message chose against.
+        let alt = t ^ 2;
+        let mag = |k: usize| (al.isqs.is[k][i].powi(2) + al.isqs.qs[k][i].powi(2)).sqrt();
+        num += mag(t) - mag(alt);
+        den += mag(t) + mag(alt);
+    }
+    if den > 0.0 { num / den } else { 0.0 }
+}
+
+/// Whether a decode is physically possible, independent of how well it fits.
+///
+/// A WSPR transmission lives in a 200 Hz window and starts within a couple of
+/// seconds of the slot anchor. A decode outside either bound did not come from
+/// a beacon, however well-formed its callsign reads — and one reported to
+/// WSPRnet is worse than one dropped, because the network pools it.
+fn is_plausible(d: &WsprDecode) -> bool {
+    let hz = d.carrier_hz();
+    // The window plus a little, since the operator's dial can be off by a few
+    // hertz and the whole signal moves with it.
+    (sdroxide_types::WSPR_WINDOW_LO_HZ - 10.0..=sdroxide_types::WSPR_WINDOW_HI_HZ + 10.0)
+        .contains(&hz)
+        && (-2.5..=4.0).contains(&d.dt_sec)
+        && match &d.message {
+            WsprMessage::Type1 { callsign, grid, .. } => is_callsign(callsign) && is_grid4(grid),
+            WsprMessage::Type2 { callsign, .. } => {
+                // A compound callsign is a prefix or a suffix bolted onto a
+                // base one; both halves still have to be callsign-shaped.
+                callsign.split('/').all(|p| !p.is_empty() && is_call_chars(p))
+                    && callsign.split('/').count() == 2
+            }
+            // The callsign is a hash this station cannot invert, so there is
+            // nothing to check but the locator that came in the clear.
+            WsprMessage::Type3 { grid6, .. } => {
+                is_grid4(&grid6.chars().take(4).collect::<String>())
+                    && grid6.len() == 6
+                    && grid6[4..].chars().all(|c| c.is_ascii_alphabetic())
+            }
+        }
+}
+
+/// The callsign grammar WSPR's Type-1 layout can express: one or two leading
+/// characters, a digit, then one to three letters.
+///
+/// This is the packer's own rule rather than a guess at what callsigns look
+/// like — it right-aligns into six slots so the digit lands in slot 2, taking
+/// the call as it stands when character 2 is a digit and shifting it one place
+/// when character 1 is. A string that fits neither was never a Type-1 message,
+/// whatever it reads as. The check that earns its keep is the plain one:
+/// no spaces, which are the packer's blank padding surfacing mid-word.
+fn is_callsign(c: &str) -> bool {
+    let b = c.as_bytes();
+    if !(3..=6).contains(&b.len()) || !is_call_chars(c) {
+        return false;
+    }
+    let d = if b[2].is_ascii_digit() {
+        2
+    } else if b[1].is_ascii_digit() {
+        1
+    } else {
+        return false;
+    };
+    let suffix = &b[d + 1..];
+    (1..=3).contains(&suffix.len()) && suffix.iter().all(|x| x.is_ascii_alphabetic())
+}
+
+fn is_call_chars(c: &str) -> bool {
+    !c.is_empty() && c.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+/// A four-character Maidenhead locator: field A–R, square 0–9.
+fn is_grid4(g: &str) -> bool {
+    let b = g.as_bytes();
+    b.len() == 4
+        && (b'A'..=b'R').contains(&b[0])
+        && (b'A'..=b'R').contains(&b[1])
+        && b[2].is_ascii_digit()
+        && b[3].is_ascii_digit()
 }
 
 /// Build our result from upstream's, taking the SNR and drift from the coarse
@@ -180,7 +583,8 @@ fn from_result(
         // and reports the offset within the padded buffer.
         dt_sec: (r.start_sample as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0,
         snr_db: c.snr_db,
-        drift_hz: c.drift_hz,
+        drift_hz: reportable_drift(c.drift_hz),
+        fit: 0.0,
     }
 }
 
@@ -204,24 +608,6 @@ fn push_unique(out: &mut Vec<WsprDecode>, d: WsprDecode, start_sample: usize) ->
 /// need a parallel list of them.
 fn start_of(d: &WsprDecode) -> usize {
     (((d.dt_sec + 1.0) * 12_000.0).max(0.0)) as usize
-}
-
-/// The 50 information bits for a decoded message, so pass 2 can rebuild the
-/// on-air symbols and subtract them.
-///
-/// Only Type-1 can be re-packed: `mfsk-core` exposes no packer for the compound
-/// callsign and hashed-callsign layouts. A Type-2 or Type-3 decode therefore
-/// stays in the residual and may be found again in pass 2 — which the
-/// de-duplication above absorbs. Losing the subtraction costs sensitivity for
-/// whatever was hiding behind it; producing wrong symbols would corrupt the
-/// residual for everything, which is worse.
-fn info_bits(m: &WsprMessage) -> Option<[u8; 50]> {
-    match m {
-        WsprMessage::Type1 { callsign, grid, power_dbm } => {
-            mfsk_core::msg::wspr::pack_type1(callsign, grid, *power_dbm)
-        }
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -307,6 +693,127 @@ mod tests {
         slot
     }
 
+    /// A busy window: beacons across the band, strong down to under the floor.
+    ///
+    /// Returns the slot and the callsigns actually transmitted, so a test can
+    /// ask not only how many came back but whether anything came back that was
+    /// never sent.
+    fn crowded_slot(seed: u64) -> (Vec<f32>, Vec<String>) {
+        const GRIDS: &[&str] = &["FN42", "IO91", "QE38", "PM95", "JO70", "FM19", "JN48", "IM98"];
+        let sigma = 0.02f64;
+        let mut n = Noise(seed);
+        let mut slot: Vec<f32> = (0..120 * 12_000).map(|_| (n.gaussian() * sigma) as f32).collect();
+
+        let mut calls = Vec::new();
+        let count = 16;
+        for i in 0..count {
+            let call = format!("K{}A{}A", i % 10, (b'A' + i as u8) as char);
+            let f0 = 1408.0 + 184.0 * (i as f64 / (count - 1) as f64);
+            // −6 dB down to −30: the whole range an operator cares about.
+            let snr = -6.0 - 24.0 * (i as f64 / (count - 1) as f64);
+            let n_ref = sigma * sigma * 2500.0 / 6000.0;
+            let amp = (2.0 * n_ref * 10f64.powf(snr / 10.0)).sqrt() as f32;
+            let burst =
+                crate::wspr::tx::synthesize(&call, GRIDS[i % GRIDS.len()], 23, 12_000, f0, amp)
+                    .expect("a K-digit-three-letter call packs");
+            let start = 12_000 + (i % 5) * 1_200;
+            for (k, &v) in burst.iter().enumerate() {
+                if start + k < slot.len() {
+                    slot[start + k] += v;
+                }
+            }
+            calls.push(call);
+        }
+        (slot, calls)
+    }
+
+    /// The one that matters most, and the reason the decode path was rebuilt:
+    /// **nothing may come back that was never transmitted.**
+    ///
+    /// WSPR's code carries no CRC, and underneath the Fano decoder sits an
+    /// ordered-statistics fallback that answers with the nearest valid codeword
+    /// to whatever it is given — so pointed at noise it does not fail, it
+    /// invents a callsign. Before the fit gate this slot came back with seven
+    /// stations nobody sent, mixed in among the real ones and indistinguishable
+    /// from them on screen: readable callsigns, plausible grids, sensible power
+    /// levels, sitting at the frequencies of the weak signals they were built
+    /// out of.
+    ///
+    /// A spot is not a private observation. It goes to WSPRnet and is pooled
+    /// into the path statistics everyone else reads, so an invented one is not
+    /// merely this operator's problem — which is why this asserts zero, not
+    /// few, and why it is worth failing the build over.
+    #[test]
+    fn a_busy_band_yields_no_station_that_was_never_transmitted() {
+        for seed in [0xB0B_0001u64, 0xB0B_0002, 0xB0B_0003] {
+            let (slot, sent) = crowded_slot(seed);
+            let got = decode_slot(&slot, 12_000);
+            let invented: Vec<String> = got
+                .iter()
+                .map(|d| d.message.to_string())
+                .filter(|m| {
+                    let call = m.split_whitespace().next().unwrap_or("");
+                    !sent.iter().any(|s| s == call)
+                })
+                .collect();
+            assert!(invented.is_empty(), "seed {seed:x} invented {invented:?}");
+        }
+    }
+
+    /// And it still has to hear the band. A decoder that reports nothing also
+    /// reports nothing false, so the guarantee above is only worth having
+    /// beside a floor on how much actually comes back.
+    #[test]
+    fn a_busy_band_is_mostly_decoded_including_signals_under_twenty_five_dB_down() {
+        let (slot, sent) = crowded_slot(0xB0B_0001);
+        let got = decode_slot(&slot, 12_000);
+        let heard: Vec<&String> = sent
+            .iter()
+            .filter(|c| {
+                got.iter().any(|d| d.message.to_string().split_whitespace().next() == Some(c))
+            })
+            .collect();
+        assert!(heard.len() >= 12, "only {} of {} came back: {heard:?}", heard.len(), sent.len());
+        // The bottom of the list is the whole point of the mode: the last four
+        // stations sit between −25 and −30 dB.
+        let weak = sent[sent.len() - 4..].iter().filter(|c| heard.iter().any(|h| h == c)).count();
+        assert!(weak >= 1, "nothing below −25 dB decoded");
+    }
+
+    /// A stable carrier must report no drift. The coarse search cannot resolve
+    /// a hertz — see [`reportable_drift`] — and reporting the tie made every
+    /// steady beacon on a test band come back at −1 Hz.
+    #[test]
+    fn a_drift_the_search_cannot_resolve_is_reported_as_none() {
+        assert_eq!(reportable_drift(-1.0), 0.0);
+        assert_eq!(reportable_drift(1.0), 0.0);
+        assert_eq!(reportable_drift(0.0), 0.0);
+        // What it can resolve is passed through.
+        assert_eq!(reportable_drift(-3.0), -3.0);
+        assert_eq!(reportable_drift(2.0), 2.0);
+    }
+
+    /// The plausibility gate, on the shapes that actually came out of OSD.
+    #[test]
+    fn a_message_that_is_not_shaped_like_a_station_is_refused() {
+        // Real ones.
+        assert!(is_callsign("K1ABC"));
+        assert!(is_callsign("OK1UNL"));
+        assert!(is_callsign("G0XYZ"));
+        assert!(is_callsign("VK7ZZ"));
+        assert!(is_callsign("2E0ABC"));
+        // Invented ones this decoder has actually reported. Note what is *not*
+        // asserted here: "D31NEL" and "I1KSN" also came out of OSD and are
+        // perfectly well-formed, so no grammar can refuse them. Shape is the
+        // cheap half of the gate; [`fit_of`] is the half that does the work.
+        assert!(!is_callsign("OZ4 YD"), "a space is the packer's padding, not a callsign");
+        assert!(!is_callsign("ABCDEF"), "no digit at all");
+        assert!(!is_callsign("K8P/KO0SLR"), "a compound call is not Type 1");
+        assert!(is_grid4("JO70"));
+        assert!(!is_grid4("ZZ99"), "the field only runs A–R");
+        assert!(!is_grid4("JO7"));
+    }
+
     /// The calibration test, and the reason this module exists at all: the SNR
     /// we hand to WSPRnet has to be the SNR that was actually there.
     ///
@@ -356,6 +863,7 @@ mod tests {
             dt_sec: 0.0,
             snr_db: -20.0,
             drift_hz: 0.0,
+            fit: 0.5,
         };
         // Four tones 1.4648 Hz apart: the centre is 1.5 spacings up, ≈2.2 Hz.
         assert!((d.carrier_hz() - 1502.197).abs() < 0.01, "{}", d.carrier_hz());

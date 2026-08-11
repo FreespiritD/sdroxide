@@ -1658,19 +1658,28 @@ pub fn show_ext(
         draw_net_box(&painter, b, spot, hovered, a);
     }
 
-    // --- 60-second time gridlines on the waterfall ------------------------
+    // --- time gridlines on the waterfall ----------------------------------
     // The newest row (top of the waterfall, or its bottom when flipped) is
     // "now"; rows away from it are older at `rows_per_sec` rows/second (≈ 1 row
-    // per pixel). Draw a faint gray line at each whole UTC minute that falls in
-    // the visible window, labelled HH:MM.
+    // per pixel). Draw a faint gray line at each round UTC time that falls in
+    // the visible window.
+    //
+    // The interval has to follow the scroll speed rather than being fixed at a
+    // minute. At the default speed a minute is some 1700 pixels of waterfall,
+    // so on any ordinary window no minute boundary is on screen — the labels
+    // existed but an operator would see one flick past every sixty seconds and
+    // otherwise read the waterfall as having no timestamps at all. Picking the
+    // step from what is actually visible keeps a handful of them in view at
+    // every speed, which is the only way the axis is any use for saying when
+    // something was heard.
     let rows_per_sec = wf.rows_per_sec as f64;
     if rows_per_sec > 0.01 && wf_rect.height() > 4.0 {
-        let secs_per_px = 1.0 / rows_per_sec;
-        let visible_secs = wf_rect.height() as f64 * secs_per_px;
+        let visible_secs = wf_rect.height() as f64 / rows_per_sec;
+        let step = time_grid_step_s(visible_secs);
         let now = wf.now_unix;
         let oldest = now - visible_secs;
         let grid = Color32::from_rgba_unmultiplied(200, 205, 215, 60);
-        let mut t = (oldest / 60.0).ceil() * 60.0; // first minute boundary ≥ oldest
+        let mut t = (oldest / step).ceil() * step; // first boundary ≥ oldest
         while t <= now {
             let age_px = ((now - t) * rows_per_sec) as f32;
             let y = if view.waterfall_flip {
@@ -1681,7 +1690,13 @@ pub fn show_ext(
             if (wf_rect.top()..=wf_rect.bottom()).contains(&y) {
                 painter.hline(wf_rect.x_range(), y, Stroke::new(1.0, grid));
                 let tod = (t as i64).rem_euclid(86_400);
-                let text = format!("{:02}:{:02}", tod / 3600, (tod % 3600) / 60);
+                // Seconds only when the step is finer than a minute — on a slow
+                // waterfall they would all read ":00" and cost width for it.
+                let text = if step < 60.0 {
+                    format!("{:02}:{:02}:{:02}", tod / 3600, (tod % 3600) / 60, tod % 60)
+                } else {
+                    format!("{:02}:{:02}", tod / 3600, (tod % 3600) / 60)
+                };
                 label_box(
                     &painter,
                     pos2(wf_rect.left() + 2.0, y + 1.0),
@@ -1690,7 +1705,7 @@ pub fn show_ext(
                     wf_rect,
                 );
             }
-            t += 60.0;
+            t += step;
         }
     }
 
@@ -2070,6 +2085,22 @@ fn draw_scale(painter: &egui::Painter, view: &ViewState, rect: &Rect) {
     }
 }
 
+/// Spacing for the waterfall's time gridlines, given how many seconds of
+/// history are on screen.
+///
+/// Steps a human reads as round times rather than a computed interval: nobody
+/// wants a line every 37 seconds. Aims for roughly four across the visible
+/// height, so the labels are frequent enough to place a signal in time without
+/// covering the waterfall they annotate.
+fn time_grid_step_s(visible_secs: f64) -> f64 {
+    const STEPS: [f64; 12] =
+        [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0];
+    let target = visible_secs / 4.0;
+    // The smallest round step at or above the target, so the count never runs
+    // away on a tall window; the largest we have if even an hour is too fine.
+    *STEPS.iter().find(|&&s| s >= target).unwrap_or(STEPS.last().expect("non-empty"))
+}
+
 /// Gridline frequencies at a 1/2/5·10^k step giving ~5–10 lines.
 fn freq_gridlines(view: &ViewState) -> Vec<f64> {
     let span = view.span();
@@ -2089,6 +2120,45 @@ fn freq_gridlines(view: &ViewState) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bug this replaced: the step was a fixed sixty seconds, and at the
+    /// default scroll speed a minute is about 1700 pixels of waterfall — so on
+    /// any ordinary window no boundary was ever on screen and the waterfall
+    /// read as having no time axis at all.
+    ///
+    /// Whatever the speed and however tall the window, some labels have to be
+    /// visible, and not so many they bury the waterfall.
+    #[test]
+    fn the_time_axis_stays_readable_at_every_scroll_speed() {
+        // Slow, medium and fast, over short and tall waterfalls.
+        for rows_per_sec in [5.0f64, 28.0, 56.0] {
+            for height_px in [120.0f64, 300.0, 900.0] {
+                let visible = height_px / rows_per_sec;
+                let step = time_grid_step_s(visible);
+                let lines = visible / step;
+                assert!(
+                    (1.0..=8.0).contains(&lines),
+                    "{rows_per_sec} rows/s over {height_px} px shows {lines:.1} gridlines \
+                     ({step} s apart)"
+                );
+            }
+        }
+    }
+
+    /// And the steps stay times a person reads as round.
+    #[test]
+    fn the_time_axis_steps_are_round_numbers() {
+        for visible in [2.0f64, 5.0, 11.0, 60.0, 200.0, 4000.0] {
+            let s = time_grid_step_s(visible);
+            assert!(
+                [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0]
+                    .contains(&s),
+                "{visible} s of history gave a {s} s step"
+            );
+        }
+        // Past the end of the ladder it saturates rather than vanishing.
+        assert_eq!(time_grid_step_s(1e9), 3600.0);
+    }
 
     /// How long a dial released at `v0` points/second keeps turning, and how far
     /// it travels, stepped at a plausible frame rate.

@@ -206,7 +206,32 @@ pub fn symbols_for(callsign: &str, grid: &str, power_dbm: i32) -> Option<[u8; N_
 /// looking like an invalid one rather than for being one.
 fn pack(callsign: &str, grid: &str, power_dbm: i32) -> Option<[u8; 50]> {
     let g4 = sdroxide_types::wspr_grid4(grid)?;
-    mfsk_core::msg::wspr::pack_type1(&callsign.trim().to_uppercase(), &g4, power_dbm)
+    let call = callsign.trim().to_uppercase();
+    if !packable_call(&call) {
+        return None;
+    }
+    mfsk_core::msg::wspr::pack_type1(&call, &g4, power_dbm)
+}
+
+/// Whether `mfsk-core`'s callsign packer can be handed this string at all.
+///
+/// It right-aligns into six slots so the digit lands in slot 2, shifting the
+/// call one place right when the digit is in slot 1 instead — and it does that
+/// shift without checking there is room, so a six-character callsign with its
+/// digit second writes past the end of the buffer and panics. `M0ABCD` is
+/// enough to do it.
+///
+/// That matters more than a malformed callsign usually would, because nothing
+/// here is a transmit path: [`why_not_sendable`] asks the packer this same
+/// question every time the engine builds its status, so the panic is reachable
+/// from the settings field by typing, and it would take down the engine thread
+/// of a station that was only listening. Refused as unsendable instead, which
+/// is what it is.
+fn packable_call(call: &str) -> bool {
+    let b = call.as_bytes();
+    (3..=6).contains(&b.len())
+        && b.iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        && (b[2].is_ascii_digit() || (b[1].is_ascii_digit() && b.len() < 6))
 }
 
 /// Why this identity cannot be transmitted, or `None` if it can.
@@ -238,6 +263,23 @@ pub fn why_not_sendable(callsign: &str, grid: &str, power_dbm: i32) -> Option<St
 
 #[cfg(test)]
 mod tests {
+    /// A callsign that cannot be packed has to come back as "cannot be sent",
+    /// not as a panic — and this one used to panic, inside the status the
+    /// engine rebuilds every poll.
+    #[test]
+    fn a_callsign_the_packer_cannot_take_is_refused_rather_than_crashing() {
+        // Six characters with the digit second: the case that overflowed.
+        assert!(super::why_not_sendable("M0ABCD", "JN47", 23).is_some());
+        assert!(super::symbols_for("M0ABCD", "JN47", 23).is_none());
+        // Neither slot holds a digit.
+        assert!(super::why_not_sendable("ABCDEF", "JN47", 23).is_some());
+        assert!(super::why_not_sendable("AB", "JN47", 23).is_some());
+        // And the shapes that are sendable still are.
+        for call in ["K1ABC", "OK1UNL", "G0XYZ", "2E0ABC", "VK7ZZ"] {
+            assert!(super::why_not_sendable(call, "JN47", 23).is_none(), "{call} was refused");
+        }
+    }
+
     use super::*;
 
     /// Power spectrum of `audio` around `center_hz`, at the offsets in `offsets`

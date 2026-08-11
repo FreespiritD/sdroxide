@@ -728,6 +728,7 @@ mod tests {
             dt_sec: 0.2,
             snr_db: -22.0,
             drift_hz: 0.0,
+            fit: 0.5,
         };
         let s = c.to_spot(&d, 0, 14_095_600.0);
         assert_eq!(s.call, "<#00a3f>");
@@ -746,6 +747,7 @@ mod tests {
             dt_sec: 0.0,
             snr_db: -18.0,
             drift_hz: 0.0,
+            fit: 0.5,
         };
         let s = c.to_spot(&d, 0, 14_095_600.0);
         assert_eq!(s.call, "PJ4/K1ABC");
@@ -768,6 +770,7 @@ mod tests {
             dt_sec: 0.0,
             snr_db: -20.0,
             drift_hz: 0.0,
+            fit: 0.5,
         };
         let s = c.to_spot(&d, 0, 7_038_600.0);
         assert!(
