@@ -1064,6 +1064,9 @@ struct Engine {
     mic_fifo: Vec<f32>,
     tx: Option<TxChain>,
     tx_active: bool,
+    /// Whether the radio's own PTT line is what is holding this over — set by
+    /// [`Self::apply_hw_ptt`], and the reason its key-up is honoured.
+    hw_ptt: bool,
     tx_center_hz: f64,
     tx_ham_only: bool,
     /// TX monitor: FFTs the transmitted 48 kHz baseband (the modulator output,
@@ -1474,6 +1477,7 @@ fn engine_thread(
         mic_fifo: Vec::new(),
         tx: None,
         tx_active: false,
+        hw_ptt: false,
         tx_center_hz: 0.0,
         tx_ham_only: engine_cfg.tx_ham_only,
         wide_scratch: Vec::new(),
@@ -2294,6 +2298,7 @@ impl Engine {
                     let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
                 }
             }
+            ControlUpdate::Ptt(closed) => self.apply_hw_ptt(closed),
             ControlUpdate::Mode(m) => {
                 let cur = self.state.rx[0].mode;
                 let same_class = rig_mode_class(cur) == rig_mode_class(m);
@@ -3120,30 +3125,7 @@ impl Engine {
                 self.update_tuning();
             }
             SetXit { enabled, hz } => self.state.xit = sdroxide_types::OffsetState { enabled, hz },
-            SetPtt(on) => {
-                // The operator takes precedence over a TCI client: keying up
-                // locally mid-over takes the transmitter back rather than
-                // swapping the on-air audio out from under whoever is talking.
-                self.end_tci_tx();
-                // Same rule for the voice keyer: a hand on PTT ends the
-                // recorded message rather than talking over it. Releasing PTT
-                // stops it too — that is the natural "shut up" gesture.
-                self.cancel_voice_play();
-                // A digital-voice mode owns its own over: it has to build the
-                // first modem frame before there is anything to send, and it
-                // has to append the end-of-over frame afterwards. Route PTT
-                // through the mode so the main button and the panel's transmit
-                // button do the same thing.
-                if self.state.rx[0].mode.is_rade() {
-                    if let Some(d) = self.digi.as_mut() {
-                        d.set_tx_active(on);
-                        self.emit_digi_status();
-                        return;
-                    }
-                }
-                self.state.tx.ptt = on;
-                self.sync_tx_state();
-            }
+            SetPtt(on) => self.set_ptt(on),
             SetTune(on) => {
                 // As with PTT, an operator TUNE takes the transmitter back.
                 self.end_tci_tx();
@@ -5769,6 +5751,10 @@ impl Engine {
         // Drop rate-dependent / stateful DSP so it rebuilds for the new source.
         self.tx = None;
         self.tx_active = false;
+        // The new front end has its own PTT line and reports it from scratch.
+        // Carrying "still held" across the swap would swallow the next press,
+        // since only an edge keys.
+        self.hw_ptt = false;
         self.release_tx_gate();
         self.tx_pace = None;
         self.digi = None;
@@ -5893,6 +5879,58 @@ impl Engine {
     /// drive.
     fn tx_power_level(&self) -> f32 {
         if self.state.tx.tune { self.state.tx.tune_drive } else { self.state.tx.drive }
+    }
+
+    /// Key or unkey from an operator PTT — the on-screen button, a MIDI or
+    /// keyboard binding, or the radio's own PTT line ([`Self::apply_hw_ptt`]).
+    /// Every route lands here so they cannot drift apart.
+    fn set_ptt(&mut self, on: bool) {
+        // The operator takes precedence over a TCI client: keying up
+        // locally mid-over takes the transmitter back rather than
+        // swapping the on-air audio out from under whoever is talking.
+        self.end_tci_tx();
+        // Same rule for the voice keyer: a hand on PTT ends the
+        // recorded message rather than talking over it. Releasing PTT
+        // stops it too — that is the natural "shut up" gesture.
+        self.cancel_voice_play();
+        // A digital-voice mode owns its own over: it has to build the
+        // first modem frame before there is anything to send, and it
+        // has to append the end-of-over frame afterwards. Route PTT
+        // through the mode so the main button and the panel's transmit
+        // button do the same thing.
+        if self.state.rx[0].mode.is_rade() {
+            if let Some(d) = self.digi.as_mut() {
+                d.set_tx_active(on);
+                self.emit_digi_status();
+                return;
+            }
+        }
+        self.state.tx.ptt = on;
+        self.sync_tx_state();
+    }
+
+    /// The radio's own PTT line changed state — a foot switch, a mic button, or
+    /// whatever is wired to the board's PTT input.
+    ///
+    /// A key-down is only taken when nothing else already owns the
+    /// transmitter, and the matching key-up is then only honoured if this line
+    /// is what started the over. Both halves of that rule exist for the same
+    /// reason: several boards report their PTT pin and their own MOX state on
+    /// one line, so an over *we* started (TUNE, an FT8 burst, the voice keyer,
+    /// a TCI client, the on-screen button) comes straight back as "the operator
+    /// is holding PTT". Adopting that would be harmless on its own — we are
+    /// already transmitting — but the state would outlive the over that caused
+    /// it and hold the transmitter down after the real owner let go.
+    fn apply_hw_ptt(&mut self, closed: bool) {
+        if closed == self.hw_ptt {
+            return; // a level, re-reported; only edges do anything
+        }
+        if closed && (self.tx_active || self.state.tx.tune || self.digi_tx) {
+            return; // someone else owns this over — and owns its key-up too
+        }
+        self.hw_ptt = closed;
+        info!("radio PTT line {}", if closed { "closed" } else { "open" });
+        self.set_ptt(closed);
     }
 
     /// Reconcile the TX hardware state with `ptt || tune`, enforcing the

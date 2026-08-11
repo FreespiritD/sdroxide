@@ -456,6 +456,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
         filter_board,
         invert_spectrum,
         pa_enable,
+        radio_ptt: ptt_line,
         mut tx,
         ctrl,
     } = ctx;
@@ -577,6 +578,9 @@ pub(crate) fn run(ctx: ThreadCtx) {
                     tracing::info!("HPSDR P1: MOX off");
                 }
                 Ctrl::Shutdown => {
+                    // Leave no stale "keyed" behind: a handle that outlives
+                    // this thread must not read a PTT line nobody is watching.
+                    ptt_line.store(false, Ordering::Relaxed);
                     stop_stream(&socket, dest, radio, conn_id, "shutdown requested");
                     return;
                 }
@@ -622,8 +626,14 @@ pub(crate) fn run(ctx: ThreadCtx) {
                             hl2_status(c1, c3, regs.ptt, &mut tx_health);
                         }
                     }
+                    // The radio's own PTT input (a Hermes-Lite's CN4 ring, a
+                    // foot switch, a mic button). Published as a level for
+                    // `HpsdrRx::radio_ptt`, which is what carries it up to the
+                    // engine and keys the transmitter — logging it and going no
+                    // further is what left a foot switch doing nothing.
                     if info.ptt != radio_ptt {
                         radio_ptt = info.ptt;
+                        ptt_line.store(radio_ptt, Ordering::Relaxed);
                         tracing::info!(
                             "HPSDR P1: radio reports PTT {}",
                             if radio_ptt { "closed" } else { "open" }
@@ -668,6 +678,7 @@ pub(crate) fn run(ctx: ThreadCtx) {
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(e) => {
+                ptt_line.store(false, Ordering::Relaxed);
                 stop_stream(&socket, dest, radio, conn_id, &format!("recv error: {e}"));
                 return;
             }

@@ -14,7 +14,7 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use sdroxide_hpsdr::{HpsdrBoard, HpsdrRx, LNA_GAIN_ELEMENT};
-use sdroxide_radio::{Complex32, IqSource, Result};
+use sdroxide_radio::{Complex32, ControlUpdate, IqSource, Result};
 
 use crate::device_registry::{DeviceKey, SharedDevice, registry};
 
@@ -42,6 +42,10 @@ pub struct HpsdrSource {
     ppm: f64,
     rx_scratch: Vec<f32>,
     tx_scratch: Vec<f32>,
+    /// The radio's PTT line as [`IqSource::poll_control`] last reported it, so
+    /// only changes are handed on. The board reports a level and the engine
+    /// wants an edge.
+    ptt: bool,
     label: String,
 }
 
@@ -91,6 +95,7 @@ impl HpsdrSource {
             ppm: cfg.ppm,
             rx_scratch: Vec::new(),
             tx_scratch: Vec::new(),
+            ptt: false,
             label,
             rx: Some(rx),
             board: Some(board),
@@ -204,6 +209,21 @@ impl IqSource for HpsdrSource {
     /// backend switch happens right after the replacement is adopted.
     fn release(&mut self) {
         self.rx = None;
+    }
+
+    /// Hand on the radio's own PTT line — a foot switch, a mic button, or
+    /// whatever is wired to the board's PTT input — so the engine keys on it
+    /// exactly as it does on the on-screen button.
+    ///
+    /// Only changes are reported. A released stream answers `false`, which
+    /// unkeys rather than leaving an over hanging on a line nobody is reading.
+    fn poll_control(&mut self) -> Vec<ControlUpdate> {
+        let ptt = self.rx.as_ref().is_some_and(|rx| rx.radio_ptt());
+        if ptt == self.ptt {
+            return Vec::new();
+        }
+        self.ptt = ptt;
+        vec![ControlUpdate::Ptt(ptt)]
     }
 
     fn tx_begin(&mut self, center_hz: f64, _rate: f64) -> Result<f64> {

@@ -62,6 +62,14 @@ pub enum ControlUpdate {
     /// with a correction, or two engines sharing one LO would chase each
     /// other forever.
     Center(f64),
+    /// The state of the radio's own PTT line — a foot switch, a mic button, or
+    /// whatever is wired to the board's PTT input. `true` is keyed.
+    ///
+    /// This is a *level*, reported whenever it changes, not a request to
+    /// transmit: the engine still puts it through the same interlock, band and
+    /// capability rails as the on-screen button, and ignores a key-down that
+    /// arrives while something else already owns the transmitter.
+    Ptt(bool),
 }
 
 /// Anything that produces a stream of complex baseband samples: a live

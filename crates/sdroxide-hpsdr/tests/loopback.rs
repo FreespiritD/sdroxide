@@ -31,6 +31,10 @@ fn p1_loopback_rx() {
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_r = stop.clone();
+    // The radio's own PTT input (a Hermes-Lite's CN4 ring), as the test holds
+    // it: the fake board reports it in C0 bit 0 of every EP6 frame.
+    let ptt = Arc::new(AtomicBool::new(false));
+    let ptt_radio = Arc::clone(&ptt);
     // Every C&C block the host sends us on EP2, so the test can check what the
     // board is actually told rather than only what comes back.
     let cc_seen: Arc<Mutex<Vec<[u8; 5]>>> = Arc::new(Mutex::new(Vec::new()));
@@ -81,11 +85,13 @@ fn p1_loopback_rx() {
                 d[3] = 0x06; // EP6
                 d[4..8].copy_from_slice(&seq.to_be_bytes());
                 seq = seq.wrapping_add(1);
+                let ptt_bit = if ptt_radio.load(Ordering::Relaxed) { 0x01 } else { 0x00 };
                 for f in 0..2 {
                     let fr = 8 + f * 512;
                     d[fr] = 0x7F;
                     d[fr + 1] = 0x7F;
                     d[fr + 2] = 0x7F;
+                    d[fr + 3] = ptt_bit; // C0: status set 0, PTT in bit 0
                     for s in 0..63 {
                         let b = fr + 8 + s * 8;
                         d[b..b + 3].copy_from_slice(&i);
@@ -151,6 +157,23 @@ fn p1_loopback_rx() {
         assert_eq!(cc[2] & 0x04, 0, "T/R relay left free to switch in {cc:02X?}");
         assert_eq!(cc[1], 255, "full drive level in {cc:02X?}");
     }
+
+    // The radio's own PTT line reaches the handle, which is what carries a foot
+    // switch or mic button up to the engine. Reported as a level, so a poll
+    // that lands between the press and the release still sees it.
+    assert!(!handle.radio_ptt(), "the line starts open");
+    ptt.store(true, Ordering::Relaxed);
+    let closed = (0..300).any(|_| {
+        thread::sleep(Duration::from_millis(10));
+        handle.radio_ptt()
+    });
+    assert!(closed, "a closed PTT line should reach the handle");
+    ptt.store(false, Ordering::Relaxed);
+    let opened = (0..300).any(|_| {
+        thread::sleep(Duration::from_millis(10));
+        !handle.radio_ptt()
+    });
+    assert!(opened, "releasing it should reach the handle too");
 
     stop.store(true, Ordering::Relaxed);
     drop(handle);

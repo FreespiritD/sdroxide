@@ -364,6 +364,8 @@ pub(crate) struct ThreadCtx {
     /// Switch on the Hermes-Lite's onboard PA (see `HpsdrConfig::pa_enable`).
     /// Ignored on boards that are not a Hermes-Lite.
     pub pa_enable: bool,
+    /// The radio's own PTT line, published for [`HpsdrRx::radio_ptt`].
+    pub radio_ptt: Arc<AtomicBool>,
     pub tx: Consumer<f32>,
     pub ctrl: Receiver<Ctrl>,
 }
@@ -393,6 +395,11 @@ struct DevInner {
     /// for the length of an over (an FT8 burst is 12.6 s), which must not be
     /// read as a dead link.
     transmitting: Arc<AtomicBool>,
+    /// The state of the radio's own PTT line — a foot switch, a mic button, or
+    /// whatever else is wired to the board's PTT input — as the network thread
+    /// last saw it reported. A *level*, so a poll can never miss an edge by
+    /// arriving late.
+    radio_ptt: Arc<AtomicBool>,
     /// The TX ring's feed end, claimable exactly once — by DDC 0's stream.
     tx_endpoint: Mutex<Option<Producer<f32>>>,
     /// Which DDCs have a live [`HpsdrRx`], so one cannot be vended twice: two
@@ -539,6 +546,7 @@ impl HpsdrBoard {
         // connection was driving it is superseded from here, so when the engine
         // drops it a moment from now it will leave the stream alone.
         let conn_id = claim_connection(IpAddr::V4(ip));
+        let radio_ptt = Arc::new(AtomicBool::new(false));
         let ctx = ThreadCtx {
             socket,
             radio: IpAddr::V4(ip),
@@ -550,6 +558,7 @@ impl HpsdrBoard {
             filter_board,
             invert_spectrum,
             pa_enable,
+            radio_ptt: Arc::clone(&radio_ptt),
             tx: tx_cons,
             ctrl: ctrl_rx,
         };
@@ -582,6 +591,7 @@ impl HpsdrBoard {
                 lna_gain_db: Mutex::new(lna_gain_db),
                 opened_at,
                 transmitting: Arc::new(AtomicBool::new(false)),
+                radio_ptt,
                 tx_endpoint: Mutex::new(Some(tx_prod)),
                 attached: Mutex::new(std::collections::HashSet::new()),
             }),
@@ -771,6 +781,22 @@ impl HpsdrRx {
             let _ = self.dev.ctrl.send(Ctrl::TxOn(tx_freq_hz));
         }
         self.dev.tx_rate_hz
+    }
+
+    /// The state of the radio's own PTT line — a foot switch, a mic button, or
+    /// whatever is wired to the board's PTT input (a Hermes-Lite 2 reports the
+    /// ring of its CN4 jack here). `true` is keyed.
+    ///
+    /// Answered as a level rather than an event, so a caller polling at its own
+    /// pace cannot miss a press by asking at the wrong moment. Only the stream
+    /// that owns the transmitter reports it: the board has one PTT input and
+    /// one transmitter, and a second DDC's radio keying on it would put a
+    /// receiver-only tab on the air.
+    ///
+    /// Protocol 1 only for now — nothing decodes the Protocol 2 status packets
+    /// for it yet, so a P2 board always answers `false`.
+    pub fn radio_ptt(&self) -> bool {
+        self.tx.is_some() && self.dev.radio_ptt.load(Ordering::Relaxed)
     }
 
     /// Stop transmitting.
