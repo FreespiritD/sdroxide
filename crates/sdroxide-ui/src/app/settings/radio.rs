@@ -19,8 +19,8 @@ pub(in crate::app) fn settings_cat_tab(
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
 ) {
     use sdroxide_types::{
-        CatFamily, CwKeying, DigiMode, LineState, ModeControl, Parity, PttMethod, SoundFormat,
-        StopBits,
+        CatFamily, CwKeying, DigiMode, KenwoodSend, LineState, ModeControl, Parity, PttMethod,
+        SoundFormat, StopBits,
     };
     let Some(cfg) = radio_edit.as_mut() else {
         ui.label("Radio configuration is only available in the native app.");
@@ -130,6 +130,28 @@ pub(in crate::app) fn settings_cat_tab(
         ui.label("Poll rate");
         ui.add(DragValue::new(&mut cfg.cat.poll_hz).speed(0.5).range(0.5..=20.0).suffix(" Hz"));
         ui.end_row();
+
+        if cfg.cat.family == CatFamily::Kenwood {
+            ui.label("Send command").on_hover_text(
+                "Which TX command keys the rig, for PTT method \"CAT\". The \
+                 parameter does not mean the same thing on every Kenwood, so \
+                 it is not guessed.\n\n\
+                 \"Standard (TX;)\" is the front-panel SEND and works on every \
+                 model — but on a TS-590 and later it selects the microphone \
+                 input, which mutes the ACC2/USB audio sdroxide transmits.\n\n\
+                 \"Data (TX1;)\" is DATA SEND on those rigs and is the one to \
+                 use there. Do not set it on a TS-2000, where TX1 means \
+                 transmit on the sub-band instead.",
+            );
+            enum_combo(
+                ui,
+                "kwsend",
+                &mut cfg.cat.kenwood_send,
+                &KenwoodSend::ALL,
+                KenwoodSend::label,
+            );
+            ui.end_row();
+        }
 
         if matches!(cfg.cat.family, CatFamily::Icom | CatFamily::Xiegu) {
             ui.label("Radio ID (hex)");

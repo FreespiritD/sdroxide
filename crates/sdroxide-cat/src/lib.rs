@@ -6,6 +6,7 @@
 //! into the engine or UI.
 
 mod civ;
+mod kenwood;
 mod yaesu;
 
 use std::io::Write;
@@ -176,6 +177,7 @@ fn make_protocol(cfg: &CatConfig) -> Box<dyn Protocol> {
     match cfg.family {
         CatFamily::Xiegu | CatFamily::Icom => Box::new(Civ { radio: cfg.icom_radio_id }),
         CatFamily::Yaesu => Box::new(yaesu::Yaesu::new()),
+        CatFamily::Kenwood => Box::new(kenwood::Kenwood::new(cfg.kenwood_send)),
     }
 }
 

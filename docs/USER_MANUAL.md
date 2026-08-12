@@ -4,7 +4,8 @@ SDRoxide is a PowerSDR/Thetis-style software-defined-radio transceiver. It gives
 you a panadapter and waterfall, dual VFOs, a full set of receive and transmit
 controls, FT8/FT4/FT2 digital modes with an integrated logbook, a wideband CW
 skimmer, and the ability to drive either a SoapySDR device or a CAT-controlled
-radio (such as a Xiegu, Icom, or Yaesu) with audio over a USB sound card. The
+radio (such as a Xiegu, Icom, Yaesu, or Kenwood) with audio over a USB sound
+card. The
 same interface runs as a native desktop application, streams to a web browser,
 or connects to a remote sdroxide server.
 
@@ -2449,7 +2450,11 @@ separately from your computer's own speakers and microphone.
 
 - **Serial port** — the radio's CAT serial port. On Linux, USB-style ports
   (`/dev/ttyACM*`, `/dev/ttyUSB*`) are listed first.
-- **CAT family** — `Xiegu`, `Icom`, or `Yaesu`.
+- **CAT family** — `Xiegu`, `Icom`, `Yaesu`, or `Kenwood`. Kenwood and Yaesu
+  both speak ASCII commands ending in `;` and look interchangeable, but they are
+  not: a Kenwood driven as a Yaesu rejects every retune and *keys up without
+  unkeying*, because `TX0;` — Yaesu's unkey — is a transmit command on a
+  Kenwood. Pick the right one.
 - **Baud**, **Data bits**, **Parity**, **Stop bits** — the serial line settings
   (for example 19200 8N1 for a Xiegu X6100).
 - **Force RTS** / **Force DTR** — hold a control line high or low (some
@@ -2462,6 +2467,14 @@ separately from your computer's own speakers and microphone.
 - **CW keying** — where CW you send comes from, `Rig keyer (CAT)` or
   `Sound card (MCW)`. See below.
 - **Poll rate** — how often (Hz) sdroxide reads the rig's frequency and mode.
+- **Send command** (Kenwood only) — which `TX` command keys the rig when **PTT
+  method** is `CAT`. The parameter does not mean the same thing on every model,
+  so sdroxide does not guess it. `Standard (TX;)` is the front-panel SEND and
+  every model understands it; on a TS-590 and later it selects the *microphone*
+  input, which mutes the ACC2/USB audio sdroxide transmits — the classic "it
+  keys but nothing goes out" fault. `Data (TX1;)` is DATA SEND on those rigs and
+  is the one to use there. Do **not** set it on a TS-2000, where `TX1;` means
+  transmit on the sub-band — a different band entirely.
 - **Radio ID (hex)** — the CI-V address, for Icom and Xiegu radios.
 
 Scroll down for **Apply / reconnect**, which reopens the rig with the new
@@ -2478,14 +2491,21 @@ What that needs on the radio:
 
 - **Break-in on.** sdroxide asserts it on Yaesu (`BI1`) with every message,
   because with break-in off the keyer runs into the sidetone and never keys the
-  transmitter.
-- **The panel's WPM is sent to the rig's keyer** (Yaesu `KS`, Icom keyer speed),
+  transmitter. On Kenwood the same switch is `VX`, which is the *VOX* switch in
+  every mode except CW — so sdroxide sends it only once the rig has reported
+  that it is in CW, rather than risk turning VOX on under a live sound card. If
+  you key CW with **Mode control** set to `Radio controlled`, turn break-in on
+  at the radio yourself.
+- **The panel's WPM is sent to the rig's keyer** (Yaesu and Kenwood `KS`, Icom
+  keyer speed),
   so the speed chip in the CW panel is the speed on the air. Farnsworth spacing
   is the sidetone keyer's and has no equivalent in a rig's keyer, so it does not
   apply on this route.
 - **Yaesu only: keyer memory 1 is used as scratch.** Yaesu has no streaming
   keying command — text can only be stored and played back — so sending CW
-  overwrites whatever you had stored in CW memory 1.
+  overwrites whatever you had stored in CW memory 1. Kenwood streams the text
+  straight to the keyer (`KY`), 24 characters at a time, and leaves your stored
+  messages alone.
 
 `Sound card (MCW)` is the other route: the keyed sidetone goes out as audio.
 That is silent on a rig in CW, and only reaches the air if you keep the rig in
@@ -2493,6 +2513,12 @@ USB or DATA (set **Mode control** to `Radio controlled`), where it goes out as a
 tone on the sideband — audible as CW, but sitting at dial + pitch rather than on
 the dial frequency, and outside the rig's CW filtering. It is here for that
 setup and for radios whose keyer sdroxide cannot drive.
+
+> **Note (Kenwood):** at connect sdroxide turns the rig's auto-information off
+> (`AI0`), clears RIT and XIT, and selects **VFO A** for receive, which is also
+> how this family turns split off. sdroxide carries RIT, XIT and split on the
+> dial itself, and it tunes VFO A — so a rig left on VFO B or in memory mode
+> would answer every frequency read and ignore every retune.
 
 > **Note:** on a Yaesu USB interface the *Enhanced* port is the CAT port
 > configured above. The *Standard* port is the one whose RTS/DTR lines are wired
@@ -5107,7 +5133,9 @@ format** to **Demod audio**.
 **The CAT radio does not change mode.**
 On the **Radio** tab, set **Mode control** to **CAT**. For FT8/FT4/FT2, set
 **Digimode mode** to **USB** or **DIGI** as your rig expects. Check the serial
-port, baud, and (for Icom/Xiegu) the **Radio ID**.
+port, baud, and (for Icom/Xiegu) the **Radio ID**. Check **CAT family** as well:
+Kenwood and Yaesu look alike on the wire and neither one obeys the other's
+commands.
 
 **The CAT radio follows my dial but ignores frequency changes from sdroxide.**
 Take the radio out of memory mode: most rigs answer a frequency *read* from a
@@ -5115,13 +5143,28 @@ memory channel but refuse to be tuned into one, so the app follows the radio
 while the radio ignores the app. (On Yaesu this used to also happen because the
 frequency field is eight digits wide on the FTDX1200/3000/5000 generation and
 nine on the FT-891/991A and FTDX10/101 — sdroxide now reads the width off the
-rig's own reply, so both work without a setting.)
+rig's own reply, so both work without a setting.) On a Kenwood, check that
+**CAT family** is `Kenwood` and not `Yaesu`: the frequency field is eleven
+digits here, and a Yaesu-width one is a syntax error the rig answers with `?;`
+while carrying on reporting where it already was.
+
+**The Kenwood keys up and will not stop transmitting.**
+**CAT family** is set to `Yaesu`. Yaesu unkeys with `TX0;`, and on a Kenwood
+that is a *transmit* command — the rig is being told to key, twice. Set the
+family to `Kenwood`, which unkeys with `RX;`. Pull the CAT cable or switch the
+rig off to stop it in the meantime.
+
+**The Kenwood keys but no audio goes out.**
+On a TS-590 and later, set **Send command** to `Data (TX1;)`. The plain `TX;`
+selects the microphone input and mutes the ACC2/USB audio sdroxide transmits.
 
 **CW transmits nothing.**
 Set **CW keying** to **Rig keyer (CAT)** on the Radio tab — see
 [5.2.2](#522-cat-radios-serial-control--usb-audio). A rig in CW
 ignores audio sent to its sound card, so it can only be keyed from text. On
-Yaesu also check that CW memory 1 is free to be overwritten; on any rig, that
+Yaesu also check that CW memory 1 is free to be overwritten; on Kenwood, that
+break-in is on (sdroxide only asserts it when the rig has reported CW, because
+the same command is the VOX switch in every other mode); on any rig, that
 the radio is actually in CW (**Mode control** = `CAT`) and that its power output
 is not turned down.
 

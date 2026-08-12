@@ -161,15 +161,47 @@ pub enum CatFamily {
     Xiegu,
     Icom,
     Yaesu,
+    Kenwood,
 }
 
 impl CatFamily {
-    pub const ALL: [CatFamily; 3] = [CatFamily::Xiegu, CatFamily::Icom, CatFamily::Yaesu];
+    pub const ALL: [CatFamily; 4] =
+        [CatFamily::Xiegu, CatFamily::Icom, CatFamily::Yaesu, CatFamily::Kenwood];
     pub fn label(self) -> &'static str {
         match self {
             CatFamily::Xiegu => "Xiegu",
             CatFamily::Icom => "Icom",
             CatFamily::Yaesu => "Yaesu",
+            CatFamily::Kenwood => "Kenwood",
+        }
+    }
+}
+
+/// Which `TX` command keys a Kenwood.
+///
+/// The parameter means different things on different models, and picking wrong
+/// is not a no-op either way, so it stays the operator's choice. On a TS-590 and
+/// later, `TX1;` is DATA SEND — transmit with the ACC2/USB input live — while a
+/// plain `TX;` is the front-panel SEND, which mutes that input and puts a
+/// digital-mode station on the air with no audio. On a TS-2000, `TX1;` instead
+/// means *transmit on the sub-band*, which is a different band entirely.
+///
+/// So the default is the one that cannot transmit somewhere unintended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum KenwoodSend {
+    /// `TX;` — the plain SEND every model understands.
+    #[default]
+    Standard,
+    /// `TX1;` — DATA SEND on the TS-590 and later. Not for a TS-2000.
+    Data,
+}
+
+impl KenwoodSend {
+    pub const ALL: [KenwoodSend; 2] = [KenwoodSend::Standard, KenwoodSend::Data];
+    pub fn label(self) -> &'static str {
+        match self {
+            KenwoodSend::Standard => "Standard (TX;)",
+            KenwoodSend::Data => "Data (TX1;)",
         }
     }
 }
@@ -394,6 +426,8 @@ pub struct CatConfig {
     pub cw_keying: CwKeying,
     /// Icom CI-V transceiver address (hex byte), e.g. 0x70 for many rigs.
     pub icom_radio_id: u8,
+    /// Which `TX` command keys a Kenwood.
+    pub kenwood_send: KenwoodSend,
     pub format: SoundFormat,
     /// Displayed panadapter bandwidth for demod-audio mode (Hz).
     pub audio_bw_hz: f64,
@@ -410,6 +444,7 @@ impl Default for CatConfig {
             digi_mode: DigiMode::default(),
             cw_keying: CwKeying::default(),
             icom_radio_id: 0x70,
+            kenwood_send: KenwoodSend::default(),
             format: SoundFormat::default(),
             audio_bw_hz: 4000.0,
         }
