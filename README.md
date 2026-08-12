@@ -40,8 +40,10 @@ One binary, three ways to run it:
   SmartSDR (FlexRadio - experimental!), PlutoSDR (native support, experimental!)
 - **Panadapter** — GPU (wgpu) waterfall + spectrum line, wheel-zoom around the
   cursor, drag-to-pan, per-digit frequency readout, selectable colormaps,
-  peak-hold, and a **one-click auto-contrast** ("FIT") that picks the display
-  floor/ceiling from the signals currently on screen.
+  peak-hold, and **auto-contrast** ("FIT", on by default) that keeps the display
+  floor/ceiling fitted to the signals currently on screen — refitting on a band
+  change, after a pan or zoom, and when the levels drift, eased in rather than
+  switched.
 - **Modes** — SSB (USB/LSB), CW, AM, SAM, NFM (with **CTCSS/DCS** decoding and
   tone squelch), WFM (with broadcast
   pilot-tone **stereo**), DSB, DIGU/DIGL, a

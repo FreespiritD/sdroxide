@@ -2285,11 +2285,21 @@ impl SdroxideApp {
         // A phone draws the waterfall alone, so the two chips that choose what
         // else is drawn have nothing to control there.
         let picks_layers = !crate::layout::tier(ui.ctx()).waterfall_only();
-        if chip_stretched(ui, false, fit, extra)
-            .on_hover_text("Auto-set floor/ceiling for best waterfall contrast")
+        // Lit while the floor/ceiling are kept fitted by themselves. Switching
+        // it on fits immediately, which is also how a one-off fit is asked for:
+        // click it off and on again.
+        if chip_stretched(ui, self.view.auto_fit, fit, extra)
+            .on_hover_text(
+                "Keep the floor/ceiling set for best waterfall contrast — eased back into place \
+                 on a band change, after a pan or zoom, and when the levels drift. Switch it on \
+                 to fit at once; switch it off to keep the levels where you set them.",
+            )
             .clicked()
         {
-            self.auto_levels();
+            self.view.auto_fit = !self.view.auto_fit;
+            if self.view.auto_fit {
+                self.fit_levels_now(ui.input(|i| i.time));
+            }
         }
         if chip_stretched(ui, self.view.peak_hold, peak, extra)
             .on_hover_text("Decaying peak-hold trace")

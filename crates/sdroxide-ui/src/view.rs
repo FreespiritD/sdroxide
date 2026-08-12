@@ -22,6 +22,16 @@ pub struct ViewState {
     pub pre_digi_view: Option<(f64, f64)>,
     pub db_floor: f32,
     pub db_ceil: f32,
+    /// Keep [`ViewState::db_floor`]/[`ViewState::db_ceil`] fitted to what the
+    /// receiver is actually hearing, rather than only when FIT is clicked: on a
+    /// band change, once a pan or zoom has settled, and whenever the levels
+    /// have drifted far enough that the waterfall has gone flat or blown out.
+    /// See `app::spectrum::auto_fit_tick` for the triggers and the interval.
+    ///
+    /// On by default — an operator who wants the levels held where they put
+    /// them switches it off, which is also what the FIT chip now shows.
+    #[serde(default = "auto_fit_default")]
+    pub auto_fit: bool,
     pub fft_size: u32,
     /// Fraction of the panadapter height used by the spectrum line (rest = waterfall).
     pub spectrum_fraction: f32,
@@ -431,6 +441,7 @@ impl Default for ViewState {
             pre_digi_view: None,
             db_floor: -120.0,
             db_ceil: -20.0,
+            auto_fit: auto_fit_default(),
             fft_size: 4096,
             spectrum_fraction: 0.35,
             peak_hold: false,
@@ -504,6 +515,12 @@ impl ViewState {
 /// Default for [`ViewState::wide_waterfall`] — on, so a receiver that has a
 /// full-band lane shows it without anyone having to find the chip first.
 fn wide_waterfall_default() -> bool {
+    true
+}
+
+/// Default for [`ViewState::auto_fit`] — on, so the waterfall reads on the
+/// first band it is pointed at without anyone having to click FIT.
+fn auto_fit_default() -> bool {
     true
 }
 
@@ -590,6 +607,7 @@ mod tests {
         // for everyone who upgrades, and it would look like the feeds broke.
         assert!(v.wide_waterfall, "the full-band strip stays on offer after an upgrade");
         assert_eq!(v.spot_kinds_shown, [true; SPOT_KINDS], "no spot kind is hidden by upgrading");
+        assert!(v.auto_fit, "auto-fit is on for everyone, not only for fresh installs");
     }
 
     /// The same trap as the spot filters above, one layer down: a propagation

@@ -22,6 +22,49 @@ pub(in crate::app) const CFG_DEBOUNCE_S: f64 = 0.25;
 /// stops keying, instead of vanishing.
 pub(in crate::app) const SKIMMER_FADE_SECS: f64 = 5.0;
 
+/// Shortest gap between the starts of two automatic fits (seconds of egui
+/// time). A fit is a glide rather than a jump (see [`FIT_STEP_FRAC`]), so this
+/// is also about as long as one takes to arrive.
+const FIT_MIN_GAP_S: f64 = 5.0;
+
+/// How long the view has to hold still before an automatic fit lands on it.
+/// Longer than [`CFG_DEBOUNCE_S`] on purpose: a pan or zoom re-cuts the engine's
+/// viewport, and fitting to the frame that was in flight while the drag was
+/// still moving would measure the band the operator has just left. The gap
+/// beyond the debounce is what the engine gets to deliver a frame of the new
+/// window in.
+const FIT_SETTLE_S: f64 = 0.75;
+
+/// How often the levels are measured, and how often a glide steps.
+///
+/// Longer than [`CFG_DEBOUNCE_S`], and that is the whole reason for the number:
+/// the levels only take effect once the *engine* has them — the waterfall is
+/// painted from bins it has already mapped — and a value that moved every frame
+/// would reset the debounce every frame and never be sent at all. Stepping at
+/// this cadence leaves the debounce a gap to fire in, so each step of the glide
+/// reaches the screen.
+const FIT_STEP_S: f64 = 0.5;
+
+/// What fraction of the distance still to go one step of a glide covers.
+/// A quarter each, ten steps to the [`FIT_MIN_GAP_S`]: 94% of the way there
+/// over five seconds, with no step large enough to read as a jump.
+const FIT_STEP_FRAC: f32 = 0.25;
+
+/// Close enough to the target to stop gliding and sit on it, in dB — below the
+/// ~0.4 dB the frame's u8 bins are quantised to anyway.
+const FIT_ARRIVED_DB: f32 = 0.2;
+
+/// Weight of one measurement in the rolling average a glide aims at. A
+/// twentieth each, at [`FIT_STEP_S`] apart: a burst of QRM or a station coming
+/// up for a few seconds moves the target by a fraction of a dB, while a band
+/// that has genuinely changed carries it over the following half-minute.
+const FIT_AVG_ALPHA: f32 = 0.05;
+
+/// How far the levels may drift from that average before auto-fit steps in, in
+/// dB. Well above frame-to-frame percentile jitter and the ~0.4 dB quantisation
+/// of the frame's u8 bins, so a steady band is fitted once and then left alone.
+const FIT_DRIFT_DB: f32 = 3.0;
+
 /// FT8/FT4 callsign boxes stop being drawn once the newest decode is this old,
 /// so a stalled decoder (dead band, band change) doesn't leave labels pinned to
 /// the waterfall for good.
@@ -54,8 +97,15 @@ fn pick_levels(bins: &[u8], db_floor: f32, db_ceil: f32) -> Option<(f32, f32)> {
     };
     let noise = pct(0.25); // typical noise floor
     let peak = pct(0.99); // strong signals, ignoring the hottest outliers
-    let mut floor = noise - 5.0; // noise sits just above the floor (dark)
-    let mut ceil = peak + 6.0; // headroom so strong signals don't clip
+    // A bin outside the frame's own mapping is clamped to its edge, so all it
+    // says is "beyond this" — the level it stands for is not in the frame at
+    // all. Reach further in that direction rather than the usual few dB, or a
+    // display that has gone flat black (or solid white) would crawl back a
+    // margin at a time. One step may overshoot; the next fit reels it in.
+    let step = range / 255.0;
+    let reach = |clipped: bool, margin: f32| if clipped { 15.0 } else { margin };
+    let mut floor = noise - reach(noise <= db_floor + step, 5.0); // noise just above the floor (dark)
+    let mut ceil = peak + reach(peak >= db_ceil - step, 6.0); // headroom so strong signals don't clip
     // Keep a usable dynamic range even on an empty/flat band.
     let min_range = 24.0;
     if ceil - floor < min_range {
@@ -70,6 +120,79 @@ fn pick_levels(bins: &[u8], db_floor: f32, db_ceil: f32) -> Option<(f32, f32)> {
         ceil = (floor + 10.0).min(20.0);
     }
     Some((floor, ceil))
+}
+
+/// Auto-fit bookkeeping (see [`SdroxideApp::auto_fit_tick`]).
+#[derive(Default)]
+pub(in crate::app) struct AutoFit {
+    /// Rolling average of the levels a fit would pick, and when it was last
+    /// added to. What a glide aims at — an average rather than the latest
+    /// measurement so that a signal up for a second or two moves the waterfall's
+    /// contrast hardly at all. `None` until the window it describes has been
+    /// measured once.
+    avg: Option<(f32, f32)>,
+    stepped_at: f64,
+    /// When the glide now running started, and whether one is running. Also
+    /// what [`FIT_MIN_GAP_S`] spaces out — nothing dates from the *end* of a
+    /// fit, so a glide that is overtaken by events still counts as one.
+    started_at: Option<f64>,
+    gliding: bool,
+    /// What the last tick was looking at, and when that last changed. Any change
+    /// is both a reason to refit and the start of the settle wait.
+    key: Option<FitKey>,
+    changed_at: f64,
+    /// A refit asked for by a change above, still waiting for the interval to
+    /// elapse or the view to settle. Kept rather than dropped, so a band change
+    /// that lands inside the interval is fitted late instead of never.
+    pending: bool,
+}
+
+/// What an automatic fit is a fit *of*: the visible window, the resolution it
+/// is drawn at, the width the front end delivers, and the band the dial sits
+/// in. The band is carried separately because a wideband front end can be
+/// retuned clear across a band edge without the visible span moving.
+///
+/// Deliberately *not* the tuned frequency: on a front end whose centre follows
+/// the dial, every nudge of the knob would then be a refit, and tuning across a
+/// band would keep re-contrasting the waterfall underneath the operator. What
+/// such a retune really changes is the levels, and drift already answers that.
+type FitKey = (f64, f64, u32, f64, sdroxide_types::Band);
+
+/// Whether a new automatic fit may start: the interval since the last one began
+/// has elapsed, and the view has held still long enough that the frames in hand
+/// are of the window being fitted rather than the one being left.
+///
+/// Deliberately says nothing about *why* a fit is wanted — a queued trigger and
+/// drifted levels both wait on exactly these two.
+fn fit_due(fit: &AutoFit, now: f64) -> bool {
+    fit.started_at.is_none_or(|t| now - t >= FIT_MIN_GAP_S) && now - fit.changed_at >= FIT_SETTLE_S
+}
+
+/// Whether `have` is far enough from `want` to be worth a fit — i.e. the
+/// spectrum now sits too high or too low in the window it is drawn over.
+fn levels_drifted(want: (f32, f32), have: (f32, f32)) -> bool {
+    (want.0 - have.0).abs() > FIT_DRIFT_DB || (want.1 - have.1).abs() > FIT_DRIFT_DB
+}
+
+/// One step of the glide from `have` towards `target`, or `None` once there is
+/// nothing left worth covering.
+fn glide_step(have: (f32, f32), target: (f32, f32)) -> Option<(f32, f32)> {
+    let arrived = |a: f32, b: f32| (a - b).abs() <= FIT_ARRIVED_DB;
+    if arrived(have.0, target.0) && arrived(have.1, target.1) {
+        return None;
+    }
+    let step = |from: f32, to: f32| from + (to - from) * FIT_STEP_FRAC;
+    Some((step(have.0, target.0), step(have.1, target.1)))
+}
+
+/// Fold a fresh measurement into the rolling average, or start one.
+fn average_in(avg: Option<(f32, f32)>, want: (f32, f32)) -> (f32, f32) {
+    // The first measurement of a window *is* the average: there is nothing yet
+    // to smooth it against, and a band change would otherwise be dragged
+    // towards the levels of the band that was left.
+    let Some(avg) = avg else { return want };
+    let mix = |a: f32, w: f32| a + (w - a) * FIT_AVG_ALPHA;
+    (mix(avg.0, want.0), mix(avg.1, want.1))
 }
 
 impl SdroxideApp {
@@ -289,28 +412,121 @@ impl SdroxideApp {
         (spots, alpha)
     }
 
-    /// Auto-set floor/ceiling from the current frame for best waterfall
-    /// contrast (noise dark, signals visible, no over-blow). Only the bins
-    /// inside the visible viewport are considered, so signals scrolled or
+    /// The floor/ceiling a fit would pick from the current frame for best
+    /// waterfall contrast (noise dark, signals visible, no over-blow). Only the
+    /// bins inside the visible viewport are considered, so signals scrolled or
     /// zoomed off-screen (e.g. a strong broadcaster) don't skew the levels —
-    /// the emitted frame carries slack beyond the view.
-    pub(in crate::app) fn auto_levels(&mut self) {
-        let result = {
-            let Some(f) = self.frame.as_ref() else { return };
-            let n = f.bins.len();
-            if n == 0 || f.span_hz <= 0.0 {
+    /// the emitted frame carries slack beyond the view. `None` when there is no
+    /// frame to measure yet.
+    fn wanted_levels(&self) -> Option<(f32, f32)> {
+        let f = self.frame.as_ref()?;
+        let n = f.bins.len();
+        if n == 0 || f.span_hz <= 0.0 {
+            return None;
+        }
+        let base = f.center_hz - f.span_hz / 2.0;
+        let to_idx = |hz: f64| (hz - base) / f.span_hz * n as f64;
+        let i_lo = (to_idx(self.view.view_lo_hz).floor().max(0.0) as usize).min(n);
+        let i_hi = (to_idx(self.view.view_hi_hz).ceil().max(0.0) as usize).min(n);
+        let slice = if i_hi > i_lo { &f.bins[i_lo..i_hi] } else { &f.bins[..] };
+        pick_levels(slice, f.db_floor, f.db_ceil)
+    }
+
+    /// Fit the floor/ceiling now, on the operator's say-so (the FIT chip): it
+    /// lands in one go, with none of the interval, settle wait or glide that
+    /// pace a fit nobody asked for. With no frame to measure yet the fit is
+    /// left queued, so switching FIT on before the first frame arrives still
+    /// fits as soon as one does.
+    pub(in crate::app) fn fit_levels_now(&mut self, now: f64) {
+        self.fit.gliding = false;
+        let Some(want) = self.wanted_levels() else {
+            // Nothing to measure yet. Leave the fit queued and clear of the
+            // interval, so the first frame to arrive is fitted to.
+            self.fit.pending = true;
+            self.fit.started_at = None;
+            return;
+        };
+        (self.view.db_floor, self.view.db_ceil) = want;
+        // Where the automatic side would have got to, so it has no correction
+        // of its own to make on top of the one just clicked for.
+        self.fit.avg = Some(want);
+        self.fit.pending = false;
+        self.fit.started_at = Some(now);
+        self.fit.stepped_at = now;
+    }
+
+    /// Keep the levels fitted while [`ViewState::auto_fit`] is on: refit when
+    /// the band changes or a pan/zoom settles, and when what the receiver is
+    /// hearing has drifted far enough from the window it is drawn over that the
+    /// waterfall has gone flat or blown out — starting no more than one fit
+    /// every [`FIT_MIN_GAP_S`].
+    ///
+    /// An automatic fit is a glide, not a jump: the levels are stepped a
+    /// quarter of the remaining distance every [`FIT_STEP_S`] towards a rolling
+    /// average of what a fit would pick, so the contrast follows the band over
+    /// a few seconds instead of snapping around it. The operator's own click
+    /// ([`Self::fit_levels_now`]) is exempt — it is a request for *this*
+    /// picture, now.
+    ///
+    /// Runs after the panadapter has drawn, so this frame's pan, zoom and
+    /// retune are already in `view`, and before the debounced config update, so
+    /// each step goes out to the engine in the frame it was taken.
+    pub(in crate::app) fn auto_fit_tick(&mut self, now: f64) {
+        // Tracked even while auto-fit is off, so switching it on doesn't count
+        // a pan made while it was off as a change and refit a second time
+        // straight after the click's own fit.
+        let key: FitKey = (
+            self.view.view_lo_hz,
+            self.view.view_hi_hz,
+            self.view.fft_size,
+            self.state.sample_rate,
+            sdroxide_types::Band::containing(self.state.active_freq_hz()),
+        );
+        if self.fit.key != Some(key) {
+            self.fit.key = Some(key);
+            self.fit.changed_at = now;
+            // The average describes a window that is no longer on screen, and
+            // any glide was on its way somewhere that no longer exists.
+            self.fit.avg = None;
+            self.fit.gliding = false;
+            // The first look counts too: with auto-fit on by default, the
+            // display comes up fitted to the band rather than to whatever the
+            // last session left in the settings file.
+            self.fit.pending |= self.view.auto_fit;
+        }
+        if !self.view.auto_fit {
+            self.fit.pending = false;
+            self.fit.gliding = false;
+            return;
+        }
+        // Measuring costs a sort of every visible bin, and a step that landed
+        // sooner than the config debounce would never reach the engine — so
+        // both happen on the one cadence.
+        if now - self.fit.stepped_at < FIT_STEP_S || now - self.fit.changed_at < FIT_SETTLE_S {
+            return;
+        }
+        let Some(want) = self.wanted_levels() else { return };
+        self.fit.stepped_at = now;
+        let target = average_in(self.fit.avg, want);
+        self.fit.avg = Some(target);
+        let have = (self.view.db_floor, self.view.db_ceil);
+        if !self.fit.gliding {
+            if !fit_due(&self.fit, now) || !(self.fit.pending || levels_drifted(target, have)) {
                 return;
             }
-            let base = f.center_hz - f.span_hz / 2.0;
-            let to_idx = |hz: f64| (hz - base) / f.span_hz * n as f64;
-            let i_lo = (to_idx(self.view.view_lo_hz).floor().max(0.0) as usize).min(n);
-            let i_hi = (to_idx(self.view.view_hi_hz).ceil().max(0.0) as usize).min(n);
-            let slice = if i_hi > i_lo { &f.bins[i_lo..i_hi] } else { &f.bins[..] };
-            pick_levels(slice, f.db_floor, f.db_ceil)
-        };
-        if let Some((floor, ceil)) = result {
-            self.view.db_floor = floor;
-            self.view.db_ceil = ceil;
+            self.fit.pending = false;
+            self.fit.gliding = true;
+            self.fit.started_at = Some(now);
+        }
+        // The target keeps moving under the glide — it is the average of
+        // everything measured since — so each step is taken against where it
+        // has got to, not where it was when the glide began.
+        match glide_step(have, target) {
+            Some(next) => (self.view.db_floor, self.view.db_ceil) = next,
+            None => {
+                self.fit.gliding = false;
+                (self.view.db_floor, self.view.db_ceil) = target;
+            }
         }
     }
 
@@ -346,7 +562,10 @@ impl SdroxideApp {
 
 #[cfg(test)]
 mod tests {
-    use super::pick_levels;
+    use super::{
+        AutoFit, FIT_ARRIVED_DB, FIT_MIN_GAP_S, FIT_SETTLE_S, FIT_STEP_S, average_in, fit_due,
+        glide_step, levels_drifted, pick_levels,
+    };
 
     /// Map a dB value to the u8 code used by a frame spanning `[lo, hi]`.
     fn code(db: f32, lo: f32, hi: f32) -> u8 {
@@ -381,5 +600,125 @@ mod tests {
     fn empty_frame_returns_none() {
         assert!(pick_levels(&[], -120.0, -20.0).is_none());
         assert!(pick_levels(&[10, 20], -50.0, -50.0).is_none());
+    }
+
+    /// A band whose noise has fallen below the window it is mapped over reads
+    /// as a solid block of zeroes, and the frame cannot say how far below it
+    /// went. Stepping down by the usual few dB would take a fit per interval to
+    /// find it again — which, with auto-fit running, is a black waterfall for
+    /// half a minute. One fit has to make real ground.
+    #[test]
+    fn a_frame_clipped_flat_against_the_floor_reaches_well_past_it() {
+        let (lo, hi) = (-120.0f32, -20.0f32);
+        let (floor, _) = pick_levels(&vec![0u8; 512], lo, hi).unwrap();
+        assert!(floor <= lo - 10.0, "floor {floor} barely moved off {lo}");
+    }
+
+    /// The same the other way up: signals stronger than the ceiling all read as
+    /// 255, so the ceiling has to reach past them rather than creep.
+    #[test]
+    fn a_frame_clipped_against_the_ceiling_reaches_well_past_it() {
+        let (lo, hi) = (-120.0f32, -20.0f32);
+        let mut bins = vec![code(-110.0, lo, hi); 1000];
+        bins.extend(std::iter::repeat_n(255u8, 40));
+        let (_, ceil) = pick_levels(&bins, lo, hi).unwrap();
+        assert!(ceil >= hi + 10.0, "ceil {ceil} barely moved off {hi}");
+    }
+
+    /// The interval is the whole of the rate limit: nothing — not a band
+    /// change, not a pan — starts a fit sooner than [`FIT_MIN_GAP_S`] after the
+    /// last one began.
+    #[test]
+    fn no_two_fits_inside_the_interval() {
+        let settled = AutoFit { started_at: Some(100.0), pending: true, ..Default::default() };
+        assert!(!fit_due(&settled, 100.0 + FIT_MIN_GAP_S - 0.01), "refitted too soon");
+        assert!(fit_due(&settled, 100.0 + FIT_MIN_GAP_S), "the queued fit never ran");
+    }
+
+    /// A pan or zoom is a reason to refit, but only once it has stopped moving:
+    /// mid-drag the engine is still re-cutting its viewport, and the frame in
+    /// hand is of the window being left.
+    #[test]
+    fn a_fit_waits_for_the_view_to_settle() {
+        let moving = AutoFit { changed_at: 100.0, pending: true, ..Default::default() };
+        assert!(!fit_due(&moving, 100.0 + FIT_SETTLE_S - 0.01), "fitted mid-drag");
+        assert!(fit_due(&moving, 100.0 + FIT_SETTLE_S), "never fitted after the drag");
+    }
+
+    /// The drift test is what "too high or too low" means once nothing has been
+    /// asked for explicitly: small movement is left alone (so a steady band is
+    /// fitted once), a window the signal no longer sits in is taken.
+    #[test]
+    fn only_real_drift_moves_a_settled_window() {
+        let have = (-120.0, -20.0);
+        assert!(!levels_drifted((-121.0, -18.5), have), "a couple of dB is not drift");
+        assert!(levels_drifted((-140.0, -20.0), have), "the noise fell out of the window");
+        assert!(levels_drifted((-120.0, 5.0), have), "the band blew through the ceiling");
+    }
+
+    /// An automatic fit slides the levels across rather than switching them:
+    /// no single step is a jump, and the whole move is done in about the
+    /// interval between fits.
+    #[test]
+    fn a_glide_covers_the_distance_over_the_interval_without_a_jump() {
+        let (from, target) = ((-120.0f32, -20.0f32), (-100.0f32, -40.0f32));
+        let mut have = from;
+        let mut steps = 0;
+        while let Some(next) = glide_step(have, target) {
+            let moved = (next.0 - have.0).abs().max((next.1 - have.1).abs());
+            assert!(moved <= 0.3 * (target.0 - from.0).abs(), "step {steps} of {moved} dB jumped");
+            have = next;
+            steps += 1;
+            assert!(steps < 100, "the glide never arrived");
+        }
+        let took = steps as f64 * FIT_STEP_S;
+        assert!(
+            (FIT_MIN_GAP_S..3.0 * FIT_MIN_GAP_S).contains(&took),
+            "a 20 dB move took {took}s, not about {FIT_MIN_GAP_S}s",
+        );
+        assert!((have.0 - target.0).abs() <= FIT_ARRIVED_DB, "stopped short at {}", have.0);
+    }
+
+    /// The target is an average, so a station that comes up for a second or two
+    /// barely moves it and is given back the moment it drops — that is the
+    /// difference between the contrast following the band and it flinching at
+    /// every burst. A band that has really changed keeps feeding the same
+    /// measurement, and carries it.
+    #[test]
+    fn a_brief_signal_hardly_moves_the_target_but_a_changed_band_does() {
+        let steady = (-120.0f32, -20.0f32);
+        let over = |avg: (f32, f32), up: f32, secs: f64| {
+            let mut avg = avg;
+            for _ in 0..(secs / FIT_STEP_S) as usize {
+                avg = average_in(Some(avg), (steady.0, steady.1 + up));
+            }
+            avg
+        };
+        // Two seconds of a signal 10 dB over the rest of the band: not even a
+        // third of what it takes to start a fit at all.
+        let brief = over(steady, 10.0, 2.0);
+        assert!(!levels_drifted(brief, steady), "a two-second burst would start a fit: {brief:?}");
+        // Even a huge one only nudges the target — the point being that nothing
+        // *jumps*, whatever turns up.
+        let huge = over(steady, 40.0, 2.0);
+        assert!(huge.1 - steady.1 < 0.25 * 40.0, "a burst took the target most of the way up");
+        // And it is handed back over the following half-minute, at the same
+        // rate it was taken on: an average that let go faster than it took on
+        // would be no protection against a burst that ends and starts again.
+        let after = over(huge, 0.0, 20.0);
+        assert!((after.1 - steady.1).abs() < 1.5, "the target never came back down: {after:?}");
+        // The same measurement for a minute is the band, not a burst.
+        let changed = over(steady, 40.0, 60.0);
+        assert!(
+            levels_drifted(changed, steady),
+            "a minute of it never moved the target off {steady:?}",
+        );
+    }
+
+    /// Nothing to average against yet — a fresh band, a fresh window — is not a
+    /// reason to creep towards the right levels from the last band's.
+    #[test]
+    fn the_first_measurement_of_a_window_is_the_target() {
+        assert_eq!(average_in(None, (-130.0, -30.0)), (-130.0, -30.0));
     }
 }

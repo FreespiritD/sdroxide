@@ -97,6 +97,9 @@ pub struct SdroxideApp {
     sent_skim_view: Option<(f64, f64)>,
     desired_skim_view: Option<(f64, f64)>,
     desired_skim_view_at: f64,
+    /// Auto-fit's timers and the view it last measured — what keeps the
+    /// floor/ceiling fitted while the FIT chip is lit.
+    fit: spectrum::AutoFit,
     /// The (mode, dial) the digital sub-band view was last fitted for. In the
     /// free-roaming digital modes (everything but FT8/FT4/JS8/WSPR) the fit is
     /// applied only when this changes, so zoom/pan survive between frames.
@@ -627,6 +630,7 @@ impl SdroxideApp {
             sent_skim_view: None,
             desired_skim_view: None,
             desired_skim_view_at: 0.0,
+            fit: Default::default(),
             digi_view_fit: None,
             last_spectrum_at: 0.0,
             wf_last_now: 0.0,

@@ -595,6 +595,11 @@ impl eframe::App for SdroxideApp {
 
         // Debounced spectrum-config updates with pan hysteresis.
         let now = ctx.input(|i| i.time);
+        // Ahead of them, so a fit picked from this frame's spectrum rides out
+        // with the config update it just changed rather than waiting for the
+        // next frame. The panadapter has drawn by now, so any pan, zoom or
+        // retune this frame is already in `view` for the tick to notice.
+        self.auto_fit_tick(now);
         if !self.cfg_still_good() {
             let ideal = self.desired_spectrum_cfg();
             if self.desired_cfg != Some(ideal) {

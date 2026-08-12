@@ -391,7 +391,16 @@ passband. The grips work on both the spectrum and the waterfall.
 
 **Display module:**
 
-- **FIT** — auto-set the waterfall floor and ceiling for the best contrast.
+- **FIT** — keep the waterfall floor and ceiling set for the best contrast.
+  Lit, the levels are refitted by themselves: when you change band, once a pan
+  or zoom has settled, and whenever what the band is doing has drifted far
+  enough that the waterfall has gone flat or blown out. An automatic refit is
+  eased in over about five seconds, aimed at a rolling average of the levels, so
+  a station coming up for a moment doesn't move the contrast — and no more than
+  one refit is started every five seconds. Switching FIT **on** fits at once,
+  which is also how to ask for a one-off fit: click it off and on again.
+  Switching it off leaves the levels wherever you set them (the floor and
+  ceiling in the FFT popup are yours to keep only while FIT is off).
 - **PEAK** — show a decaying peak-hold trace over the spectrum.
 - **SPEC** — show or hide the spectrum line above the waterfall (lit when the
   spectrum is shown).
