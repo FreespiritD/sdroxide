@@ -1,14 +1,14 @@
 //! Widgets shared by more than one panel.
 //!
 //! The decode list and the JS8 heard list draw the same station card and the
-//! same fixed-width row cells, and every panel that transmits an image opens
-//! the same file picker, so those live here rather than in whichever panel
-//! happened to grow them first.
+//! same fixed-width row cells, every slotted mode draws the same slot clock,
+//! and every panel that transmits an image opens the same file picker, so those
+//! live here rather than in whichever panel happened to grow them first.
 
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Color32, RichText};
-use sdroxide_types::Decode;
+use sdroxide_types::{Decode, SlotTiming};
 
 /// The hover card behind a decode row: everything the entity file, the log and
 /// the operator's own grid already know about this station, said in full.
@@ -142,6 +142,96 @@ pub(in crate::app) fn row_cell(
     ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout)).add(lbl);
 }
 
+// ── The slot clock ──
+
+/// What the station is doing with the turn the bar is measuring, which is what
+/// its colour says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::app) enum SlotState {
+    /// Receiving — the ordinary state, and the one the bar is most use in.
+    Listening,
+    /// Working out what was heard. Only WSPR reports this: its decode takes
+    /// long enough to be worth naming.
+    Decoding,
+    /// Keyed.
+    Transmitting,
+}
+
+/// How far into the current slot the clock is, in seconds.
+///
+/// `engine_slot_utc` is the slot the radio says it is working on, and it is the
+/// anchor whenever this window's clock agrees that we are inside it. When the
+/// two disagree — a remote UI on a machine some way off the radio's clock, or
+/// before the first status has arrived — the local boundary is used instead.
+/// Pass 0 for the modes whose status carries no slot: a slot *is* a fixed block
+/// of UTC counted from the epoch, so a clock that is wrong then draws a bar
+/// quietly wrong by the same amount, rather than one that pins at full for a
+/// while and jumps.
+pub(in crate::app) fn slot_phase_s(now: f64, slot_s: f64, engine_slot_utc: i64) -> f64 {
+    let into = now - engine_slot_utc as f64;
+    if engine_slot_utc > 0 && (0.0..slot_s).contains(&into) { into } else { now.rem_euclid(slot_s) }
+}
+
+/// The slot clock: how far through its turn this station is, whichever way
+/// round it is spending it.
+///
+/// Every slotted mode runs on the same two facts — a turn of a fixed length,
+/// and a burst that fills part of it — so they all get the same bar. A station
+/// spends most of its slots listening, and what an operator wants to know while
+/// it does is when this one ends: that is when the recording goes to the
+/// decoder and when the next transmit decision lands. A bar that only appeared
+/// under a carrier would be missing in exactly the state it is most use in, so
+/// it is always drawn and the colour says what is happening: pink on the air,
+/// yellow working out what was heard, dim cyan listening.
+///
+/// Returns the bar's response, so a caller can hang hover text on it.
+pub(in crate::app) fn slot_bar(
+    ui: &mut egui::Ui,
+    t: SlotTiming,
+    into_slot: f64,
+    state: SlotState,
+) -> egui::Response {
+    // The clock runs on the wall clock rather than on anything arriving, so the
+    // bar has to ask for its own frames. About a four-hundredth of the bar per
+    // frame is enough to read as moving without asking a phone to redraw the
+    // panel sixty times a second for a strip five pixels tall.
+    let step_ms = (t.slot_s * 1000.0 / 400.0).clamp(80.0, 250.0);
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(step_ms as u64));
+
+    let (bar, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 5.0), egui::Sense::hover());
+    let p = ui.painter_at(bar);
+    p.rect_filled(bar, 0.0, Color32::from_gray(24));
+
+    let frac = (into_slot / t.slot_s).clamp(0.0, 1.0) as f32;
+    let mut fill = bar;
+    fill.set_width(bar.width() * frac);
+    p.rect_filled(
+        fill,
+        0.0,
+        match state {
+            SlotState::Transmitting => crate::theme::ALERT(),
+            SlotState::Decoding => crate::theme::YELLOW(),
+            SlotState::Listening => crate::theme::CYAN_DIM(),
+        },
+    );
+
+    // While keyed, a mark where the carrier stops. FT8 stops 13.1 s into its
+    // 15, WSPR 111.6 s into its 120; without the mark the rest of the bar reads
+    // as a transmission that ended early rather than as the turnaround it is.
+    // Painted over the fill, and only while transmitting: in a receive slot the
+    // recording runs the whole turn and the mark would mean nothing.
+    if state == SlotState::Transmitting {
+        let x = bar.left() + bar.width() * t.burst_end_frac() as f32;
+        p.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(x, bar.top()), egui::vec2(1.0, bar.height())),
+            0.0,
+            Color32::from_gray(150),
+        );
+    }
+    resp
+}
+
 /// Colour a decode's SNR: green for strong, cyan mid, dimmed for weak.
 pub(in crate::app) fn snr_color(snr_db: i16) -> Color32 {
     if snr_db >= 0 {
@@ -212,4 +302,73 @@ pub(in crate::app) fn sstv_section<R>(
             .inner
     })
     .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sdroxide_types::Mode;
+
+    /// A real WSPR slot boundary: 1_785_760_440 is divisible by 120, and so by
+    /// every shorter slot length here.
+    const SLOT: i64 = 1_785_760_440;
+
+    fn wspr() -> SlotTiming {
+        Mode::Wspr.slot_timing().expect("WSPR is slotted")
+    }
+
+    #[test]
+    fn the_bar_measures_from_the_slot_the_engine_says_it_is_working_on() {
+        let s = wspr().slot_s;
+        assert_eq!(slot_phase_s(SLOT as f64, s, SLOT), 0.0);
+        assert_eq!(slot_phase_s(SLOT as f64 + 43.5, s, SLOT), 43.5);
+        // Right up to the boundary, and not past it.
+        assert!(slot_phase_s(SLOT as f64 + 119.9, s, SLOT) > 119.0);
+    }
+
+    /// A window whose clock is nowhere near the radio's must not pin the bar at
+    /// full and then jump: it falls back to its own boundary, which is what a
+    /// slot is defined by, and is then wrong by exactly the clock error.
+    #[test]
+    fn a_clock_that_disagrees_with_the_engine_still_gets_a_moving_bar() {
+        let s = wspr().slot_s;
+        // Six minutes — three slots — ahead of the one the engine reported.
+        let now = SLOT as f64 + 360.0 + 20.0;
+        assert_eq!(slot_phase_s(now, s, SLOT), 20.0);
+        // And behind it, where the difference would otherwise be negative.
+        assert_eq!(slot_phase_s(SLOT as f64 - 100.0, s, SLOT), 20.0);
+    }
+
+    /// The modes whose status carries no slot pass 0, and the bar still has to
+    /// move — that is every mode but WSPR.
+    #[test]
+    fn with_no_engine_slot_the_bar_runs_off_the_local_boundary() {
+        assert_eq!(slot_phase_s(SLOT as f64 + 61.0, wspr().slot_s, 0), 61.0);
+        // FT8: 61 s past a two-minute boundary is one second into a slot.
+        let ft8 = Mode::Ft8.slot_timing().unwrap();
+        assert_eq!(slot_phase_s(SLOT as f64 + 61.0, ft8.slot_s, 0), 1.0);
+        // FT2's slots are four times shorter again.
+        let ft2 = Mode::Ft2.slot_timing().unwrap();
+        assert_eq!(slot_phase_s(SLOT as f64 + 5.0, ft2.slot_s, 0), 1.25);
+    }
+
+    /// Whatever the two clocks are doing, in whatever mode, the fraction the
+    /// bar draws is one.
+    #[test]
+    fn the_phase_is_always_inside_the_slot() {
+        for mode in Mode::ALL {
+            let Some(t) = mode.slot_timing() else { continue };
+            for k in -10..600 {
+                let now = SLOT as f64 + k as f64 * 7.3;
+                let p = slot_phase_s(now, t.slot_s, SLOT);
+                assert!((0.0..t.slot_s).contains(&p), "{mode:?}: {p} is not a position in a slot");
+            }
+        }
+        // JS8, whose slot length comes from the speed rather than the mode.
+        for speed in sdroxide_types::Js8Speed::ALL {
+            let t = speed.slot_timing();
+            let p = slot_phase_s(SLOT as f64 + 3.7, t.slot_s, 0);
+            assert!((0.0..t.slot_s).contains(&p), "{}: {p}", speed.label());
+        }
+    }
 }

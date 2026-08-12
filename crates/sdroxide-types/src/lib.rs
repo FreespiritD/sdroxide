@@ -91,7 +91,7 @@ pub use js8::{
 };
 pub use memory::{BandStackEntry, MemoryChannel, MemoryFolder, RttyMemory};
 pub use meters::{Meters, TxMeters, TxTelemetry};
-pub use mode::{AgcMode, Mode, NrEngine, NrLevel, NrStrength};
+pub use mode::{AgcMode, Mode, NrEngine, NrLevel, NrStrength, SlotTiming};
 pub use netcfg::{
     ClusterConfig, Credentials, FeedConfig, FreeDvReporterConfig, LookupProvider, NetworkConfig,
     PskConfig, RbnConfig, WsprNetConfig,

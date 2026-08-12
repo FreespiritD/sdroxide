@@ -98,6 +98,18 @@ impl Js8Speed {
         79.0 / f64::from(self.tone_spacing_hz())
     }
 
+    /// The whole clock for this speed, in the shape every other slotted mode
+    /// states it in — so the scheduler and the panels can take JS8's timing
+    /// from the same type as FT8's rather than special-casing the one mode
+    /// whose slot length is a setting.
+    pub fn slot_timing(self) -> crate::SlotTiming {
+        crate::SlotTiming {
+            slot_s: self.slot_s(),
+            tx_offset_s: self.start_delay_s(),
+            burst_s: self.burst_s(),
+        }
+    }
+
     /// Whether this speed may beacon — send heartbeats, and acknowledge them.
     ///
     /// Turbo may not. It is the local and VHF speed, 160 Hz wide and six

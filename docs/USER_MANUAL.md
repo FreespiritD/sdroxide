@@ -1026,6 +1026,14 @@ These settings are saved to `digi.json` (see [configuration files](#11-configura
 
 #### 3.2.2 The operating panel
 
+Across the top is the **slot bar** — how far through the current turn the clock
+is. Dim cyan while receiving, pink while you are transmitting, with a mark where
+your burst stops and the turnaround begins. It fills once per slot: 15 s on FT8,
+7.5 s on FT4, 3.75 s on FT2. When it reaches the end the decoder speaks and the
+next transmission may start, which is why it is worth a glance on a quiet band —
+an empty decode list under a bar that is still filling is a slot that has not
+finished yet. WSPR and JS8 have the same bar.
+
 The panel has two halves:
 
 - **DECODES** (left) — a live list of decoded stations. Each row shows the SNR
@@ -1699,7 +1707,13 @@ what you want unless you have agreed otherwise.
 
 ![The JS8 panel: stations heard on the left, the conversation on the right](images/js8call.jpg)
 
-**The panel.** Stations heard are listed on the left in the same rows the FT8
+**The panel.** Under the header is the **slot bar**, the same one FT8 has
+([3.2.2](#322-the-operating-panel)) — how far through the current turn the clock
+is, dim cyan receiving and pink transmitting. Here it also shows what the speed
+buttons actually do: the bar takes six seconds to cross on TURBO and thirty on
+SLOW.
+
+Stations heard are listed on the left in the same rows the FT8
 decode list uses — report, frequency, callsign, what they would be worth
 (DXCC / BAND / GRID / NEW / DUPE), continent, grid, distance, and the last thing
 they said — so a band you have learned to read in FT8 reads the same way here.
@@ -1880,7 +1894,11 @@ The report colours are WSPR's own scale, not FT8's: green above −10 dB, cyan t
 good path rather than a marginal one.
 
 A slot takes seconds of work to decode, so the status pane says **decoding…**
-rather than leaving you to wonder whether the band is shut.
+rather than leaving you to wonder whether the band is shut. The **slot bar**
+below the status header shows where in the two-minute cycle the beacon is, with
+the time left beside it: dim cyan listening, yellow decoding, pink on the air —
+where the mark shows where the 110.6-second burst stops. Every slotted mode has
+this bar; only WSPR's turn is long enough to want a countdown with it.
 
 #### The map, and the propagation heat on it
 

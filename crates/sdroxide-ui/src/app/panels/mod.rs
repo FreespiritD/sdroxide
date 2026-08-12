@@ -493,6 +493,11 @@ impl SdroxideApp {
     /// Two columns need 180 + 7 + 220 points before either has said anything,
     /// which is more than the whole of the screen.
     pub(in crate::app) fn digi_panel(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        // Full width, above the split: the turn is as much the decode list's
+        // clock as the sequencer's, and a phone showing one pane at a time must
+        // not lose it with the other.
+        self.slot_progress(ui);
+        ui.add_space(4.0);
         if let Some(pane) = self.phone_pane(ui, self.state.rx[0].mode) {
             match pane {
                 0 => self.decode_list(ui, cmds),
@@ -636,23 +641,74 @@ impl SdroxideApp {
         }
     }
 
+    /// The clock the current mode keeps, or `None` where it keeps none.
+    ///
+    /// FT8, FT4, FT2 and WSPR have theirs fixed by the mode; JS8's slot length
+    /// is an operator setting, so it has to come from the engine's status.
+    pub(in crate::app) fn slot_timing(&self) -> Option<sdroxide_types::SlotTiming> {
+        let mode = self.state.rx[0].mode;
+        match mode {
+            Mode::Js8 => Some(
+                self.digi_status
+                    .as_ref()
+                    .and_then(|s| s.js8.as_ref())
+                    .map_or(sdroxide_types::Js8Speed::default(), |j| j.speed)
+                    .slot_timing(),
+            ),
+            _ => mode.slot_timing(),
+        }
+    }
+
     /// The slot length of the current mode, in seconds.
     ///
-    /// FT8 and FT4 have theirs fixed by the mode; JS8's is an operator setting,
-    /// so it has to come from the engine's status. The decode list groups rows
-    /// into turns by this, and getting it wrong for JS8 Turbo would draw one
-    /// "EVEN/ODD" header per two and a half turns.
+    /// The decode list groups rows into turns by this, and getting it wrong for
+    /// JS8 Turbo would draw one "EVEN/ODD" header per two and a half turns. A
+    /// mode with no slots at all answers with FT8's, because the callers are
+    /// dividing decodes into turns and a zero there would divide by nothing.
     pub(in crate::app) fn slot_period_s(&self) -> f64 {
-        match self.state.rx[0].mode {
-            Mode::Ft4 => 7.5,
-            Mode::Ft2 => 3.75,
-            Mode::Js8 => self
-                .digi_status
-                .as_ref()
-                .and_then(|s| s.js8.as_ref())
-                .map_or(15.0, |j| j.speed.slot_s()),
-            _ => 15.0,
-        }
+        self.slot_timing().map_or(15.0, |t| t.slot_s)
+    }
+
+    /// The slot clock, above the panel of every mode that has one.
+    ///
+    /// One bar in one place for FT8, FT4, FT2 and JS8: the turn is the unit all
+    /// four are operated in — when the decoder speaks, when the sequencer may
+    /// key — and it is worth the five pixels in every pane rather than only
+    /// beside the one control that mentions it. WSPR draws its own inside the
+    /// beacon's status card, where the countdown and the duty cycle it belongs
+    /// with already are.
+    ///
+    /// Nothing at all in a mode with no slots: there is no turn to be part-way
+    /// through, and a bar that crept across a PSK panel would be measuring
+    /// something that does not exist.
+    pub(in crate::app) fn slot_progress(&self, ui: &mut egui::Ui) {
+        let Some(t) = self.slot_timing() else { return };
+        // No engine anchor: only WSPR's status carries the slot it is working
+        // on. A slot is a fixed block of UTC counted from the epoch, so this
+        // window's own clock is the same answer whenever the two agree — and
+        // when they do not, the DT readout in the QSO area is the thing that
+        // says so.
+        let into = widgets::slot_phase_s(crate::time::now_unix_f64(), t.slot_s, 0);
+        let transmitting = self.digi_status.as_ref().map(|s| s.transmitting).unwrap_or(false);
+        let state = if transmitting {
+            widgets::SlotState::Transmitting
+        } else {
+            widgets::SlotState::Listening
+        };
+        widgets::slot_bar(ui, t, into, state).on_hover_text(format!(
+            "This turn: {:.1} s of {:.0}. Decodes land at the end of it, and that is when the \
+             next transmission may start.{}",
+            into,
+            t.slot_s,
+            if transmitting {
+                format!(
+                    " The mark is where the burst stops, {:.1} s in.",
+                    t.tx_offset_s + t.burst_s
+                )
+            } else {
+                String::new()
+            }
+        ));
     }
 }
 

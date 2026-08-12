@@ -256,6 +256,11 @@ impl SdroxideApp {
             });
         });
         ui.add_space(4.0);
+        // The slot clock, under the header and across both columns. JS8's turn
+        // is the speed's, not fifteen seconds by definition, so this is also
+        // where the difference between Slow and Turbo becomes visible.
+        self.slot_progress(ui);
+        ui.add_space(4.0);
 
         // Locate the heard stations and hand them to the maps. Done before the
         // list is drawn so a row and its dot on the globe agree this frame.

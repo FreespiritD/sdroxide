@@ -191,6 +191,35 @@ impl Mode {
         matches!(self, Mode::Wspr)
     }
 
+    /// The clock this mode keeps, for the modes that keep one by themselves.
+    ///
+    /// `None` for JS8 — its slot length is an operator setting, so the answer
+    /// depends on a [`crate::Js8Speed`] this enum does not carry; ask
+    /// [`crate::Js8Speed::slot_timing`] instead. `None` too for every mode with
+    /// no slots at all, which is what makes this the test for "is there a turn
+    /// to show progress through".
+    pub fn slot_timing(self) -> Option<SlotTiming> {
+        match self {
+            // Symbol 0 is nominally half a second into the slot, which is the
+            // dt reference WSJT-X and mfsk-core both measure against.
+            Mode::Ft8 => Some(SlotTiming { slot_s: 15.0, tx_offset_s: 0.5, burst_s: 12.64 }),
+            Mode::Ft4 => Some(SlotTiming { slot_s: 7.5, tx_offset_s: 0.5, burst_s: 4.48 }),
+            // FT2 is FT4 at double the symbol rate: 105 × 288 / 12000 = 2.52 s
+            // of signal in a 3.75 s slot, keyed 0.1 s in (Decodium's
+            // `Modulator.cpp` sets `delay_ms=100` for FT2 against FT4's 300).
+            Mode::Ft2 => Some(SlotTiming { slot_s: 3.75, tx_offset_s: 0.1, burst_s: 2.52 }),
+            // 162 symbols of 8192/12000 s, starting one second into a two-minute
+            // slot. The burst fills all but nine seconds of it, which is why
+            // there is almost no latitude in when to key.
+            Mode::Wspr => Some(SlotTiming {
+                slot_s: crate::WSPR_SLOT_S,
+                tx_offset_s: crate::WSPR_TX_OFFSET_S,
+                burst_s: crate::WSPR_BURST_S,
+            }),
+            _ => None,
+        }
+    }
+
     /// True for JS8. Forks the digi panel to the conversation UI and uses its
     /// own controller: it is slotted like FT8 but carries a chat rather than a
     /// contest exchange, so the Tx1–Tx6 sequencer has nothing to say about it.
@@ -411,6 +440,40 @@ impl Mode {
             | Mode::Wefax
             | Mode::Rade => &[],
         }
+    }
+}
+
+/// The clock a slotted mode keeps: how long one turn lasts, when the
+/// transmitter keys inside it, and how long it stays keyed.
+///
+/// Slots are counted from the Unix epoch, so the slot containing a given
+/// instant is `floor(unix / slot_s)` and needs no other reference. That is what
+/// lets a receiver and a transmitter on opposite sides of the world agree on
+/// when a turn starts with nothing but their clocks. Every slot length here is
+/// commensurate with a minute — it either divides one, as FT8's 15 s does, or
+/// is a whole number of them, as WSPR's two — so the boundaries also land where
+/// an operator reading a clock expects them to.
+///
+/// Interface facts, not protocol internals: the engine schedules against these,
+/// and the panels draw the turn's progress from them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SlotTiming {
+    /// Slot period in seconds — how often a transmission may start.
+    pub slot_s: f64,
+    /// Delay from the slot boundary to the first symbol, in seconds.
+    pub tx_offset_s: f64,
+    /// On-air duration of one transmission, in seconds.
+    pub burst_s: f64,
+}
+
+impl SlotTiming {
+    /// How far into a slot the burst stops, as a fraction of the slot.
+    ///
+    /// What is left after it is the mode's turnaround: decode time at the far
+    /// end, and the margin that keeps a clock a little out from overrunning the
+    /// next slot.
+    pub fn burst_end_frac(&self) -> f64 {
+        ((self.tx_offset_s + self.burst_s) / self.slot_s).clamp(0.0, 1.0)
     }
 }
 
@@ -860,5 +923,51 @@ mod tests {
         assert_eq!(NrLevel::Off.with_strength(NrStrength::High), NrLevel::RnnHigh);
         assert_eq!(NrLevel::Off.with_engine(NrEngine::DeepFilter), NrLevel::DfMed);
         assert_eq!(NrLevel::SpecHigh.with_engine(NrEngine::Rnn), NrLevel::RnnHigh);
+    }
+
+    /// A burst that ran past its slot would key over the next one, and a slot
+    /// that was not a whole number of minutes or an even part of one would put
+    /// the boundaries somewhere no operator's clock shows.
+    #[test]
+    fn every_slotted_modes_burst_fits_a_slot_the_minute_agrees_with() {
+        for mode in Mode::ALL {
+            let Some(t) = mode.slot_timing() else { continue };
+            assert!(
+                t.tx_offset_s + t.burst_s < t.slot_s,
+                "{mode:?}: a {}s burst keyed {}s in overruns a {}s slot",
+                t.burst_s,
+                t.tx_offset_s,
+                t.slot_s
+            );
+            let (long, short) = if t.slot_s >= 60.0 { (t.slot_s, 60.0) } else { (60.0, t.slot_s) };
+            assert!(
+                (long / short).fract() < 1e-9,
+                "{mode:?}: a {}s slot is not a minute's worth of one",
+                t.slot_s
+            );
+            assert!(t.burst_end_frac() > 0.0 && t.burst_end_frac() < 1.0, "{mode:?}");
+        }
+    }
+
+    /// The modes with a turn to show, and only those: JS8 answers through its
+    /// speed instead, and a mode with no slots must not be given FT8's.
+    #[test]
+    fn only_the_slotted_modes_have_a_slot_clock() {
+        for mode in Mode::ALL {
+            let expected = matches!(mode, Mode::Ft8 | Mode::Ft4 | Mode::Ft2 | Mode::Wspr);
+            assert_eq!(mode.slot_timing().is_some(), expected, "{mode:?}");
+        }
+        assert_eq!(Mode::Js8.slot_timing(), None);
+    }
+
+    /// FT2 runs FT4's exchange four times faster than FT8 does, which is the
+    /// whole mode: the slot lengths are what say so.
+    #[test]
+    fn the_ft_family_slots_stand_in_the_published_ratio() {
+        let ft8 = Mode::Ft8.slot_timing().unwrap();
+        let ft4 = Mode::Ft4.slot_timing().unwrap();
+        let ft2 = Mode::Ft2.slot_timing().unwrap();
+        assert_eq!(ft8.slot_s, 2.0 * ft4.slot_s);
+        assert_eq!(ft4.slot_s, 2.0 * ft2.slot_s);
     }
 }

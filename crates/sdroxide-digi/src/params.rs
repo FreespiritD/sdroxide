@@ -1,6 +1,6 @@
 //! Per-mode FT8/FT4 protocol timing.
 
-use sdroxide_types::{Js8Speed, Mode};
+use sdroxide_types::{Js8Speed, Mode, SlotTiming};
 
 /// mfsk-core works entirely at this sample rate.
 pub const DECODE_RATE: f64 = 12_000.0;
@@ -23,39 +23,25 @@ pub struct DigiParams {
 impl DigiParams {
     /// Timing for the modes whose slot length is fixed by the mode itself.
     ///
+    /// The figures come from [`Mode::slot_timing`] rather than living here: the
+    /// panels draw a turn's progress from the same numbers the scheduler keys
+    /// against, and two copies of a slot length is two things to get wrong.
+    ///
     /// The fallback arm used to rewrite `mode` to [`Mode::Ft8`], which combined
     /// with `make_digi`'s fall-through to `DigiController` meant any mode that
     /// forgot a branch quietly became FT8 — no error, no log line, just a
     /// receiver listening for the wrong protocol. It now keeps the mode it was
     /// given and complains in debug builds.
     pub fn for_mode(mode: Mode) -> Self {
-        match mode {
-            Mode::Ft4 => DigiParams { mode, slot_s: 7.5, tx_offset_s: 0.5, burst_s: 4.48 },
-            // FT2 is FT4 at double the symbol rate: 105 × 288 / 12000 = 2.52 s
-            // of signal in a 3.75 s slot, keyed 0.1 s in (Decodium's
-            // `Modulator.cpp` sets `delay_ms=100` for FT2 against FT4's 300).
-            // That leaves 1.13 s for decode and turnaround, which is the whole
-            // point of the mode.
-            Mode::Ft2 => DigiParams { mode, slot_s: 3.75, tx_offset_s: 0.1, burst_s: 2.52 },
-            // Symbol 0 is nominally 0.5 s into the slot (matches WSJT-X /
-            // mfsk-core dt reference).
-            Mode::Ft8 => DigiParams { mode, slot_s: 15.0, tx_offset_s: 0.5, burst_s: 12.64 },
-            // WSPR: 162 symbols of 8192/12000 s, starting one second into a
-            // two-minute slot. The burst fills all but nine seconds of it,
-            // which is why there is almost no latitude in when to key.
-            Mode::Wspr => DigiParams {
-                mode,
-                slot_s: sdroxide_types::WSPR_SLOT_S,
-                tx_offset_s: sdroxide_types::WSPR_TX_OFFSET_S,
-                burst_s: sdroxide_types::WSPR_BURST_S,
-            },
-            other => {
+        match mode.slot_timing() {
+            Some(t) => DigiParams::from_timing(mode, t),
+            None => {
                 debug_assert!(
                     false,
-                    "DigiParams::for_mode({other:?}) has no arm — add one rather than \
-                     inheriting FT8's timing"
+                    "DigiParams::for_mode({mode:?}) has no slot timing — give the mode one in \
+                     Mode::slot_timing rather than inheriting FT8's"
                 );
-                DigiParams { mode, slot_s: 15.0, tx_offset_s: 0.5, burst_s: 12.64 }
+                DigiParams::from_timing(mode, Mode::Ft8.slot_timing().expect("FT8 is slotted"))
             }
         }
     }
@@ -63,12 +49,11 @@ impl DigiParams {
     /// Timing for JS8, whose slot length is a runtime setting rather than a
     /// distinct [`Mode`] — so [`DigiParams::for_mode`] cannot express it.
     pub fn for_js8(speed: Js8Speed) -> Self {
-        DigiParams {
-            mode: Mode::Js8,
-            slot_s: speed.slot_s(),
-            tx_offset_s: speed.start_delay_s(),
-            burst_s: speed.burst_s(),
-        }
+        DigiParams::from_timing(Mode::Js8, speed.slot_timing())
+    }
+
+    fn from_timing(mode: Mode, t: SlotTiming) -> Self {
+        DigiParams { mode, slot_s: t.slot_s, tx_offset_s: t.tx_offset_s, burst_s: t.burst_s }
     }
 
     /// Samples of 12 kHz audio in one slot.
