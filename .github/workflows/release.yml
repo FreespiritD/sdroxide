@@ -207,9 +207,10 @@ jobs:
           # Likewise the udev rules: the .deb drops them in
           # /usr/lib/udev/rules.d, but a tarball user has to install them by
           # hand and cannot do that if they are not in the tarball. Both
-          # variants carry them — the RTL-SDR and RX-888 drivers are native and
-          # present in every build.
-          cp packaging/linux/60-sdroxide-rtlsdr.rules packaging/linux/60-sdroxide-rx888.rules stage/sdroxide/
+          # variants carry them — the RTL-SDR, RX-888 and Airspy HF+ drivers
+          # are native and present in every build.
+          cp packaging/linux/60-sdroxide-rtlsdr.rules packaging/linux/60-sdroxide-rx888.rules \
+             packaging/linux/60-sdroxide-airspyhf.rules stage/sdroxide/
           if [[ "${{ matrix.variant }}" == "cat" ]]; then
             cat > stage/sdroxide/README.txt <<'EOF'
           sdroxide — SDR transceiver (https://github.com/dividebysandwich/sdroxide)
@@ -218,16 +219,17 @@ jobs:
             libasound2 (or libasound2t64)   — ALSA
 
           Drives, with no SoapySDR involved at all:
-            * RTL-SDR dongles and RX-888 / RX-888 Mk2 receivers, directly over
-              USB via native pure-Rust drivers. The RX-888's FX3 firmware is
-              bundled and uploaded automatically, so there is no vendor driver
-              package to install and nothing to run first.
+            * RTL-SDR dongles, RX-888 / RX-888 Mk2 receivers and Airspy HF+
+              (Dual / Discovery / Ranger), directly over USB via native
+              pure-Rust drivers. The RX-888's FX3 firmware is bundled and
+              uploaded automatically, so there is no vendor driver package to
+              install and nothing to run first.
             * a CAT-controlled radio over a serial port + sound card
               (Settings -> Audio/CAT)
             * the OpenHPSDR and TCI network backends
 
-          Other SoapySDR devices (HackRF, Airspy, PlutoSDR, ...) need the
-          "-soapysdr" build.
+          Other SoapySDR devices (HackRF, Airspy R2/Mini, PlutoSDR, ...) need
+          the "-soapysdr" build.
 
           Run ./sdroxide for the GUI, ./sdroxide --server to serve the web UI
           on http://localhost:4950, or ./sdroxide --help for all options.
@@ -239,10 +241,10 @@ jobs:
           Runtime requirements (Debian/Ubuntu package names):
             libsoapysdr0.8  soapysdr-module-all  libasound2 (or libasound2t64)
 
-          RTL-SDR dongles and RX-888 / RX-888 Mk2 receivers do not go through
-          SoapySDR in this build either: they have native pure-Rust drivers and
-          are opened directly over USB. SoapySDR is what adds everything else
-          (HackRF, Airspy, PlutoSDR, ...).
+          RTL-SDR dongles, RX-888 / RX-888 Mk2 receivers and the Airspy HF+
+          do not go through SoapySDR in this build either: they have native
+          pure-Rust drivers and are opened directly over USB. SoapySDR is what
+          adds everything else (HackRF, Airspy R2/Mini, PlutoSDR, ...).
 
           Run ./sdroxide for the GUI, ./sdroxide --server to serve the web UI
           on http://localhost:4950, or ./sdroxide --help for all options.
@@ -254,8 +256,9 @@ jobs:
           (per-user, no root needed; --uninstall removes it again). The .deb
           package registers the menu entry automatically.
 
-          USB receivers: opening an RTL-SDR or RX-888 as a normal user needs a
-          udev rule, which the .deb installs for you but the tarball cannot:
+          USB receivers: opening an RTL-SDR, RX-888 or Airspy HF+ as a normal
+          user needs a udev rule, which the .deb installs for you but the
+          tarball cannot:
 
             sudo cp 60-sdroxide-*.rules /usr/lib/udev/rules.d/
             sudo udevadm control --reload
@@ -324,15 +327,17 @@ jobs:
           sdroxide — SDR transceiver (https://github.com/dividebysandwich/sdroxide)
 
           Standard build (no SoapySDR / PothosSDR needed). Drives:
-            * RTL-SDR dongles and RX-888 / RX-888 Mk2 receivers, directly over
-              USB via native drivers. The RX-888's FX3 firmware is bundled and
-              uploaded automatically — no vendor driver package needed.
+            * RTL-SDR dongles, RX-888 / RX-888 Mk2 receivers and Airspy HF+
+              (Dual / Discovery / Ranger), directly over USB via native
+              drivers. The RX-888's FX3 firmware is bundled and uploaded
+              automatically — no vendor driver package needed. The HF+ needs
+              WinUSB, which Zadig or Airspy's own package installs.
             * a CAT-controlled radio over a serial port + sound card
               (Settings -> Audio/CAT)
             * the OpenHPSDR and TCI network backends
 
-          Other SoapySDR devices (HackRF, Airspy, PlutoSDR, ...) need the
-          "-soapysdr" build.
+          Other SoapySDR devices (HackRF, Airspy R2/Mini, PlutoSDR, ...) need
+          the "-soapysdr" build.
 
           Run sdroxide.exe for the GUI, sdroxide.exe --server to serve the web
           UI on http://localhost:4950, or sdroxide.exe --help for all options.
@@ -425,16 +430,17 @@ jobs:
           sdroxide — SDR transceiver (https://github.com/dividebysandwich/sdroxide)
 
           Standard build (no SoapySDR needed). Drives:
-            * RTL-SDR dongles and RX-888 / RX-888 Mk2 receivers, directly over
-              USB via native drivers. The RX-888's FX3 firmware is bundled and
-              uploaded automatically — no vendor driver package needed, and
-              nothing to set up on macOS.
+            * RTL-SDR dongles, RX-888 / RX-888 Mk2 receivers and Airspy HF+
+              (Dual / Discovery / Ranger), directly over USB via native
+              drivers. The RX-888's FX3 firmware is bundled and uploaded
+              automatically — no vendor driver package needed, and nothing to
+              set up on macOS.
             * a CAT-controlled radio over a serial port + sound card
               (Settings -> Audio/CAT)
             * the OpenHPSDR and TCI network backends
 
-          Other SoapySDR devices (HackRF, Airspy, PlutoSDR, ...) need the
-          "-soapysdr" build.
+          Other SoapySDR devices (HackRF, Airspy R2/Mini, PlutoSDR, ...) need
+          the "-soapysdr" build.
 
           Run ./sdroxide for the GUI, ./sdroxide --server to serve the web UI
           on http://localhost:4950, or ./sdroxide --help for all options.
@@ -576,17 +582,17 @@ jobs:
 
           - **Standard** (no suffix) — built without SoapySDR, so it needs no
             libSoapySDR/PothosSDR at all. It still drives real SDR hardware:
-            **RTL-SDR** dongles and **RX-888 / RX-888 Mk2** receivers are opened
-            directly over USB by native pure-Rust drivers (the RX-888's FX3
-            firmware is bundled and uploaded automatically — no vendor driver
-            package). Plus a CAT-controlled radio (Icom/Yaesu/Xiegu) over a
+            **RTL-SDR** dongles, **RX-888 / RX-888 Mk2** receivers and the
+            **Airspy HF+** (Dual / Discovery / Ranger) are opened directly over
+            USB by native pure-Rust drivers (the RX-888's FX3 firmware is
+            bundled and uploaded automatically — no vendor driver package). Plus a CAT-controlled radio (Icom/Yaesu/Xiegu) over a
             serial port + USB sound card (**Settings → Audio/CAT**), and the
             **OpenHPSDR** and **TCI** network backends. This is the recommended
             download for most users, and the one packaged as an installer
             (Windows `.msi`, macOS `.dmg`).
           - **SoapySDR** (`-soapysdr` suffix) — everything above *plus* a
             dynamic link against **SoapySDR**, for devices that have no native
-            driver here (HackRF, Airspy, PlutoSDR, …). Ships as a portable
+            driver here (HackRF, Airspy R2/Mini, PlutoSDR, …). Ships as a portable
             archive only.
 
           ### Requirements (SoapySDR builds)

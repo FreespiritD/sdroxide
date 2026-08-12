@@ -158,6 +158,8 @@ pub struct SdroxideApp {
     hpsdr_devices: Vec<sdroxide_types::HpsdrDevice>,
     rtlsdr_devices: Vec<sdroxide_types::RtlSdrDevice>,
     rx888_devices: Vec<sdroxide_types::Rx888Device>,
+    /// Airspy HF+ receivers found on the last Rescan.
+    airspyhf_devices: Vec<sdroxide_types::AirspyHfDevice>,
     /// RSPs the SDRplay API service reported on the last Rescan.
     sdrplay_devices: Vec<sdroxide_types::SdrPlayDevice>,
     /// SoapySDR devices from the last enumeration (dialog-open on the SoapySDR
@@ -651,6 +653,7 @@ impl SdroxideApp {
             hpsdr_devices: Vec::new(),
             rtlsdr_devices: Vec::new(),
             rx888_devices: Vec::new(),
+            airspyhf_devices: Vec::new(),
             sdrplay_devices: Vec::new(),
             soapy_devices: None,
             tci_test_result: None,
@@ -931,6 +934,9 @@ impl SdroxideApp {
             "pluto" => "PlutoSDR".into(),
             "rtlsdr" => "RTL-SDR".into(),
             "rx888" => "RX-888".into(),
+            // Distinct from the `"airspy"` arm below, which is SoapySDR's
+            // driver for the R2 and Mini — a different radio entirely.
+            "airspyhf" => "Airspy HF+".into(),
             "sdrplay" => "SDRplay".into(),
             // A SoapySDR device reports its Soapy driver name — the most
             // specific interface name there is. The common ones get their

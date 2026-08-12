@@ -46,10 +46,14 @@ pub enum Backend {
     /// for the same reason as `SmartSdr` above; not offered in the picker
     /// (`ALL`), only ever written by the multi-radio seeding.
     None,
+    /// Airspy HF+ (Dual / Discovery / Ranger), driven directly over USB by the
+    /// native pure-Rust driver — no libairspyhf, no SoapySDR. Appended last,
+    /// for the same reason as `SmartSdr` above.
+    AirspyHf,
 }
 
 impl Backend {
-    pub const ALL: [Backend; 10] = [
+    pub const ALL: [Backend; 11] = [
         Backend::Auto,
         Backend::Soapy,
         Backend::Cat,
@@ -59,6 +63,7 @@ impl Backend {
         Backend::Pluto,
         Backend::RtlSdr,
         Backend::Rx888,
+        Backend::AirspyHf,
         Backend::SdrPlay,
     ];
     pub fn label(self) -> &'static str {
@@ -72,6 +77,7 @@ impl Backend {
             Backend::Pluto => "PlutoSDR (network)",
             Backend::RtlSdr => "RTL-SDR (USB)",
             Backend::Rx888 => "RX-888 (USB)",
+            Backend::AirspyHf => "Airspy HF+ (USB)",
             Backend::SdrPlay => "SDRplay RSP (USB)",
             Backend::None => "Not configured",
         }
@@ -121,6 +127,10 @@ impl SoapyDeviceInfo {
             "sdrplay" => Some(Backend::SdrPlay),
             "rtlsdr" => Some(Backend::RtlSdr),
             "plutosdr" => Some(Backend::Pluto),
+            // SoapyAirspyHF, not SoapyAirspy: `airspy` is the R2/Mini, a
+            // different radio with no native backend here. Steering one of
+            // those at the HF+ interface would be worse than leaving it alone.
+            "airspyhf" => Some(Backend::AirspyHf),
             _ => None,
         }
     }
@@ -1131,6 +1141,203 @@ impl Rx888Config {
     pub const ADC_RATES: [f64; 4] = [16_200_000.0, 32_400_000.0, 64_800_000.0, 129_600_000.0];
 }
 
+/// Which Airspy HF+ is on the other end.
+///
+/// Decoded from the `part_id` word of `GET_SERIALNO_BOARDID` (vendor request
+/// 7), because that is the *only* answer: every model — Dual, Discovery,
+/// Ranger — enumerates as the same `03eb:800c`, with the same product string on
+/// some firmwares. A device list therefore cannot know which one it is looking
+/// at; only an opened receiver can say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AirspyHfModel {
+    /// HF+ Dual (rev A) — two front ends, HF from 9 kHz.
+    Dual,
+    /// HF+ Discovery (rev A) — one front end, and the model that reaches
+    /// furthest down.
+    Discovery,
+    /// HF+ Ranger (rev A).
+    Ranger,
+    #[default]
+    Unknown,
+}
+
+impl AirspyHfModel {
+    pub fn from_part_id(part_id: u32) -> AirspyHfModel {
+        match part_id {
+            1 => AirspyHfModel::Dual,
+            2 => AirspyHfModel::Discovery,
+            3 => AirspyHfModel::Ranger,
+            _ => AirspyHfModel::Unknown,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AirspyHfModel::Dual => "Airspy HF+ Dual",
+            AirspyHfModel::Discovery => "Airspy HF+ Discovery",
+            AirspyHfModel::Ranger => "Airspy HF+ Ranger",
+            AirspyHfModel::Unknown => "Airspy HF+ (unknown model)",
+        }
+    }
+
+    /// Published receive ranges, in Hz.
+    ///
+    /// The bottom end is reached by the host's own oscillator below the
+    /// synthesiser's floor — 180 kHz on a zero-IF rate, 84 kHz on a low-IF one
+    /// — which is how VLF tuning works on this hardware at all. The gap
+    /// between 31 and 60 MHz is real: there is no front end there.
+    ///
+    /// An unknown model gets the Dual's ranges, which are the conservative
+    /// ones. Publishing too little is a dial that refuses a frequency the
+    /// radio can hear; publishing too much only costs a failed tune.
+    pub fn freq_ranges(self) -> &'static [(f64, f64)] {
+        const DISCOVERY: [(f64, f64); 2] = [(500.0, 31_000_000.0), (60_000_000.0, 260_000_000.0)];
+        const DUAL: [(f64, f64); 2] = [(9_000.0, 31_000_000.0), (60_000_000.0, 260_000_000.0)];
+        match self {
+            AirspyHfModel::Discovery | AirspyHfModel::Ranger => &DISCOVERY,
+            AirspyHfModel::Dual | AirspyHfModel::Unknown => &DUAL,
+        }
+    }
+}
+
+/// An Airspy HF+ seen on the USB bus. Wasm-safe so it can cross the
+/// `RadioController` trait to the settings UI.
+///
+/// The model is deliberately absent — see [`AirspyHfModel`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AirspyHfDevice {
+    /// The 16 hex digits from the `AIRSPYHF SN:…` descriptor, when it parses.
+    pub serial: Option<String>,
+    /// The USB product string, else a generic name.
+    pub name: String,
+}
+
+impl AirspyHfDevice {
+    /// One-line label for the selection UI.
+    pub fn label(&self) -> String {
+        match &self.serial {
+            Some(s) => format!("{}  (serial {s})", self.name),
+            // Without a serial we can only ever open "the first one", so say so
+            // rather than implying this entry can be pinned.
+            None => format!("{}  [no serial — first match only]", self.name),
+        }
+    }
+}
+
+/// Airspy HF+ (USB) backend configuration. Receive only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AirspyHfConfig {
+    /// Pin a receiver by the 16 hex digits of its USB serial; empty means "the
+    /// first one found". The descriptor spells it
+    /// `AIRSPYHF SN:0123456789ABCDEF`; only the digits are stored.
+    pub serial: String,
+    /// Complex sample rate in Hz. Which rates exist depends on the model *and*
+    /// the firmware, so this is snapped to the nearest one the receiver
+    /// actually reports at open — see [`Self::SAMPLE_RATES`].
+    pub sample_rate_hz: f64,
+    /// The receiver's own AGC.
+    pub agc: bool,
+    /// AGC threshold: `false` = low, `true` = high. Only meaningful while
+    /// [`Self::agc`] is on.
+    pub agc_threshold_high: bool,
+    /// Front-end attenuator, carried as a *gain* so more slider is more
+    /// signal: `0.0` down to `-48.0` dB. Snapped to the steps the receiver
+    /// reports, six dB apiece on every firmware seen so far. Only obeyed with
+    /// the AGC off.
+    pub attenuator_db: f64,
+    /// The HF preamplifier. Buys sensitivity at the cost of intermodulation,
+    /// so off by default — which is the right setting on a real antenna.
+    pub lna: bool,
+    /// Bias tee on the antenna port. Off by default: putting phantom power on
+    /// someone's feedline uninvited is not a good default.
+    pub bias_tee: bool,
+    /// Frequency calibration in parts per *billion* — the receiver's own unit,
+    /// not ppm. `None` (the default) uses the value stored in the receiver's
+    /// flash, which is what the vendor tool wrote and is normally right.
+    /// Setting a value overrides it for this session; nothing here ever writes
+    /// flash.
+    pub calibration_ppb: Option<i32>,
+    /// Run the host-side DSP: the adaptive IQ image balancer, the 5 kHz
+    /// zero-IF offset and the fine-tuning oscillator that brings the signal
+    /// back to baseband. On by default — without it a zero-IF rate puts the
+    /// synthesiser's own leakage on the operator's signal and the mirror image
+    /// sits tens of dB higher. Turn it off only to see raw hardware output.
+    pub lib_dsp: bool,
+}
+
+impl Default for AirspyHfConfig {
+    fn default() -> Self {
+        AirspyHfConfig {
+            serial: String::new(),
+            // Present on every model and every firmware, and the receiver's own
+            // power-on default since R2.8.1.
+            sample_rate_hz: 768_000.0,
+            agc: true,
+            agc_threshold_high: false,
+            attenuator_db: 0.0,
+            lna: false,
+            bias_tee: false,
+            calibration_ppb: None,
+            lib_dsp: true,
+        }
+    }
+}
+
+impl AirspyHfConfig {
+    /// The one real gain element, carried *negative* so more slider is more
+    /// signal — like the RX-888's attenuator. It lives here rather than in
+    /// `sdroxide-airspyhf` so the wasm-safe settings UI can address it without
+    /// depending on the native backend crate, the same reason as
+    /// [`HpsdrConfig::LNA_GAIN_ELEMENT`].
+    pub const ATT_ELEMENT: &'static str = "ATT";
+
+    /// Pseudo-elements carrying settings that are not gains at all.
+    ///
+    /// They ride the existing `SetGain` command so this backend needs no new
+    /// `Command` variant, no `DeviceCaps` field and no engine change for six
+    /// settings only it has. They are deliberately absent from
+    /// `DeviceCaps::gains`, so nothing renders them as sliders — the Airspy
+    /// HF+ settings panel drives them directly.
+    pub const AGC_ELEMENT: &'static str = "AGC";
+    pub const AGC_THRESHOLD_ELEMENT: &'static str = "AGCTHR";
+    pub const LNA_ELEMENT: &'static str = "LNA";
+    pub const BIAS_TEE_ELEMENT: &'static str = "BIASTEE";
+    /// Parts per *billion*, not million. Named `PPB` rather than `PPM` on
+    /// purpose: this receiver calibrates in ppb, and a value copied out of the
+    /// RTL-SDR's ppm field would be a thousand times too small.
+    pub const PPB_ELEMENT: &'static str = "PPB";
+    pub const LIB_DSP_ELEMENT: &'static str = "LIBDSP";
+
+    /// Every rate any model and firmware combination is known to offer — the
+    /// list the settings combo shows *before* a receiver has been opened. It
+    /// is a menu, not a promise: the real list is queried from the device and
+    /// published in `DeviceCaps::sample_rates`, and the settings tab prefers
+    /// that whenever one is connected.
+    pub const SAMPLE_RATES: [f64; 8] =
+        [192_000.0, 228_000.0, 256_000.0, 384_000.0, 456_000.0, 650_000.0, 768_000.0, 912_000.0];
+
+    /// Attenuator steps assumed when the receiver's own table cannot be read
+    /// (firmware before R3.0.7 does not answer): nine 6 dB steps, 0 to 48 dB.
+    pub const ATT_STEP_DB: f64 = 6.0;
+    pub const ATT_MAX_DB: f64 = 48.0;
+
+    /// A short note on a rate, for the settings combo. Which rates a given
+    /// receiver has depends on the model and the firmware together, so the
+    /// pre-open list has to say who each one belongs to.
+    pub fn rate_note(rate_hz: f64) -> &'static str {
+        match rate_hz as u32 {
+            912_000 => "Discovery, R3.0.7+ — zero-IF",
+            768_000 => "every model — zero-IF",
+            650_000 => "R4.0.4+ — low-IF",
+            456_000 => "Discovery, R3.0.7+ — low-IF",
+            228_000 => "R4.0.0+ — low-IF",
+            256_000 => "before R4.0.0 — low-IF",
+            _ => "low-IF",
+        }
+    }
+}
+
 /// AD9361 receive AGC mode. The names are the IIO `gain_control_mode` values,
 /// which is what actually goes on the wire.
 ///
@@ -1889,6 +2096,7 @@ pub struct RadioConfig {
     pub smartsdr: SmartSdrConfig,
     pub rtlsdr: RtlSdrConfig,
     pub rx888: Rx888Config,
+    pub airspyhf: AirspyHfConfig,
     pub pluto: PlutoConfig,
     pub sdrplay: SdrPlayConfig,
 }
@@ -2000,6 +2208,56 @@ mod tests {
         assert_eq!(SdrPlayAgc::from_code(99.0), SdrPlayAgc::Hz50);
     }
 
+    /// Every `radio.json` written before this backend existed has to keep
+    /// working, and has to land on an Airspy HF+ configuration that would
+    /// actually open and hear something.
+    #[test]
+    fn airspyhf_settings_default_for_every_older_config() {
+        for json in [r#"{}"#, r#"{"backend": "SdrPlay"}"#, r#"{"rx888": {"ppm": 1.5}}"#] {
+            let cfg: RadioConfig = serde_json::from_str(json).expect("parses");
+            assert_eq!(cfg.airspyhf.sample_rate_hz, 768_000.0, "after loading {json}");
+            assert!(cfg.airspyhf.agc, "a fresh install must not be deaf after {json}");
+            assert!(cfg.airspyhf.lib_dsp, "the image balancer is on by default after {json}");
+            assert!(!cfg.airspyhf.bias_tee, "no uninvited DC on the antenna after {json}");
+            // `None` means "whatever the receiver's own flash says", which is
+            // the only value that cannot be wrong on a device we have not seen.
+            assert_eq!(cfg.airspyhf.calibration_ppb, None, "after loading {json}");
+        }
+        // And the new variant round-trips by name, which is how `Backend` is
+        // stored — appending it must not have renumbered anything.
+        let a: RadioConfig = serde_json::from_str(r#"{"backend": "AirspyHf"}"#).expect("parses");
+        assert_eq!(a.backend, Backend::AirspyHf);
+        for b in Backend::ALL {
+            let json = serde_json::to_string(&b).expect("serialises");
+            assert_eq!(serde_json::from_str::<Backend>(&json).expect("round trip"), b);
+        }
+    }
+
+    /// The `part_id` word is the only thing that says which HF+ is on the other
+    /// end — every model enumerates as the same `03eb:800c`.
+    #[test]
+    fn airspyhf_models_decode_from_the_board_part_id() {
+        assert_eq!(AirspyHfModel::from_part_id(1), AirspyHfModel::Dual);
+        assert_eq!(AirspyHfModel::from_part_id(2), AirspyHfModel::Discovery);
+        assert_eq!(AirspyHfModel::from_part_id(3), AirspyHfModel::Ranger);
+        // Anything else is a model this driver predates. It still has to open
+        // and hear, so it gets the conservative ranges rather than none.
+        for unknown in [0, 4, 99, u32::MAX] {
+            assert_eq!(AirspyHfModel::from_part_id(unknown), AirspyHfModel::Unknown);
+        }
+        assert_eq!(AirspyHfModel::Unknown.freq_ranges(), AirspyHfModel::Dual.freq_ranges());
+        // The Discovery reaches further down than the Dual; nothing reaches
+        // above 260 MHz, and nothing covers 31–60 MHz.
+        assert!(
+            AirspyHfModel::Discovery.freq_ranges()[0].0 < AirspyHfModel::Dual.freq_ranges()[0].0
+        );
+        for m in [AirspyHfModel::Dual, AirspyHfModel::Discovery, AirspyHfModel::Ranger] {
+            let r = m.freq_ranges();
+            assert_eq!(r.len(), 2, "{}", m.label());
+            assert!(r[0].1 < r[1].0, "the HF and VHF windows must not touch: {}", m.label());
+        }
+    }
+
     /// The `hwVer` byte is the only thing that says which RSP is on the other
     /// end, and its numbering is historical rather than sequential — RSP1A is
     /// 255, RSP1B is 6, and 5 does not exist.
@@ -2074,6 +2332,12 @@ mod tests {
         assert_eq!(SoapyDeviceInfo::native_backend_for("SDRplay"), Some(Backend::SdrPlay));
         assert_eq!(SoapyDeviceInfo::native_backend_for("rtlsdr"), Some(Backend::RtlSdr));
         assert_eq!(SoapyDeviceInfo::native_backend_for("plutosdr"), Some(Backend::Pluto));
+        assert_eq!(SoapyDeviceInfo::native_backend_for("airspyhf"), Some(Backend::AirspyHf));
+        assert_eq!(SoapyDeviceInfo::native_backend_for("AirspyHF"), Some(Backend::AirspyHf));
+        // The R2/Mini are a different radio behind a different SoapySDR module
+        // and have no native backend here; steering them at the HF+ interface
+        // would be worse than leaving them on SoapySDR.
+        assert_eq!(SoapyDeviceInfo::native_backend_for("airspy"), None);
         assert_eq!(SoapyDeviceInfo::native_backend_for("hackrf"), None);
         assert_eq!(SoapyDeviceInfo::native_backend_for("audio"), None);
     }

@@ -1,0 +1,26 @@
+[package]
+name = "sdroxide-airspyhf"
+version.workspace = true
+edition.workspace = true
+
+# Native-only Airspy HF+ (Dual / Discovery / Ranger) support over USB. Pure Rust
+# via `nusb` — no libusb, no libairspyhf, no libSoapySDR, no C dependency at
+# all. Must never be a dependency of any wasm-targeted crate.
+[dependencies]
+sdroxide-types.workspace = true
+# For `Nco` and `blackman_harris`. The host DSP this receiver needs is a
+# frequency shift and a windowed FFT, and the workspace already owns both;
+# hand-rolling either here would be a second copy to keep honest.
+sdroxide-dsp.workspace = true
+crossbeam-channel.workspace = true
+rtrb.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+nusb.workspace = true
+# The IQ balancer's 4096-point complex FFT. Nothing in `sdroxide-dsp` hands
+# back raw complex bins, so this is the one thing that cannot be reused.
+rustfft.workspace = true
+num-complex.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

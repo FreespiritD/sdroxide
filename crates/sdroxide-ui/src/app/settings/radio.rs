@@ -1560,6 +1560,312 @@ pub(in crate::app) fn settings_rx888_tab(
     );
 }
 
+/// Queue a receive-side gain (or pseudo-gain) change.
+///
+/// The Airspy HF+ panel drives seven of these — one real gain and six switches
+/// riding `SetGain` so the backend needs no `Command` variants of its own — and
+/// seven copies of the struct literal would bury the settings among them.
+fn push_gain(cmds: &mut Vec<Command>, element: &str, db: f64) {
+    cmds.push(Command::SetGain { dir: Direction::Rx, element: element.to_string(), db });
+}
+
+/// Airspy HF+ interface: receiver, rate, and the front end's own controls.
+///
+/// The rate list is the interesting part. Which rates an HF+ has depends on the
+/// model *and* the firmware together, and only an opened receiver knows — so
+/// once one is connected its own list is shown, and before that the union of
+/// everything any HF+ is known to offer, annotated with who each one belongs to.
+///
+/// The report button is not decoration: this backend has never been run against
+/// a real receiver, so the first people to use it are the ones who can say
+/// whether it works.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::app) fn settings_airspyhf_tab(
+    ui: &mut egui::Ui,
+    devices: &[sdroxide_types::AirspyHfDevice],
+    caps: Option<&sdroxide_types::DeviceCaps>,
+    radio_edit: &mut Option<sdroxide_types::RadioConfig>,
+    rescan: &mut bool,
+    copy_report: &mut bool,
+    apply: &mut bool,
+    cmds: &mut Vec<Command>,
+) {
+    use sdroxide_types::AirspyHfConfig;
+    let Some(cfg) = radio_edit.as_mut() else {
+        ui.label("Radio configuration is only available in the native app.");
+        return;
+    };
+
+    // Only the receiver and the rate rebuild the session — the rate because the
+    // engine builds its whole downconversion chain around it. Everything else
+    // rides `SetGain` straight to the running device.
+    let before = (cfg.airspyhf.serial.clone(), cfg.airspyhf.sample_rate_hz);
+
+    // Once a receiver has been opened, its own list is the honest one. Before
+    // that, offer everything any HF+ is known to do.
+    let queried = caps
+        .filter(|c| c.driver == "airspyhf" && !c.sample_rates.is_empty())
+        .map(|c| c.sample_rates.as_slice());
+    let rates = queried.unwrap_or(&AirspyHfConfig::SAMPLE_RATES);
+    // The attenuator's range comes from the receiver too — the models differ.
+    let att_max = caps
+        .filter(|c| c.driver == "airspyhf")
+        .and_then(|c| c.gains.first())
+        .map(|g| -g.min_db)
+        .unwrap_or(AirspyHfConfig::ATT_MAX_DB);
+    let att_step = caps
+        .filter(|c| c.driver == "airspyhf")
+        .and_then(|c| c.gains.first())
+        .map(|g| g.step_db)
+        .unwrap_or(AirspyHfConfig::ATT_STEP_DB);
+
+    egui::Grid::new("airspyhf-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Receiver");
+        ui.horizontal(|ui| {
+            if ui
+                .button("Rescan")
+                .on_hover_text(
+                    "Re-list the USB bus. No device is opened, so this is safe \
+                     to press while receiving.",
+                )
+                .clicked()
+            {
+                *rescan = true;
+            }
+            let shown = if cfg.airspyhf.serial.is_empty() {
+                "— first one found —".to_string()
+            } else {
+                cfg.airspyhf.serial.clone()
+            };
+            ComboBox::from_id_salt("airspyhf_dev").width(300.0).selected_text(shown).show_ui(
+                ui,
+                |ui| {
+                    if devices.is_empty() {
+                        ui.label(RichText::new("no receivers — press Rescan").weak());
+                    }
+                    ui.selectable_value(
+                        &mut cfg.airspyhf.serial,
+                        String::new(),
+                        "— first one found —",
+                    );
+                    for d in devices {
+                        // Only a receiver whose serial parsed can be pinned;
+                        // without one there is nothing stable to remember.
+                        match &d.serial {
+                            Some(sn) => {
+                                ui.selectable_value(
+                                    &mut cfg.airspyhf.serial,
+                                    sn.clone(),
+                                    d.label(),
+                                );
+                            }
+                            None => {
+                                ui.label(RichText::new(d.label()).weak());
+                            }
+                        }
+                    }
+                },
+            );
+        });
+        ui.end_row();
+
+        ui.label("Sample rate").on_hover_text(
+            "Which rates a receiver has depends on the model and the firmware. \
+             Takes effect on Apply.",
+        );
+        ui.horizontal(|ui| {
+            let shown = format!("{:.0} kSPS", cfg.airspyhf.sample_rate_hz / 1e3);
+            ComboBox::from_id_salt("airspyhf_rate").width(150.0).selected_text(shown).show_ui(
+                ui,
+                |ui| {
+                    for &r in rates {
+                        let label = if queried.is_some() {
+                            format!("{:.0} kSPS", r / 1e3)
+                        } else {
+                            format!("{:.0} kSPS  ({})", r / 1e3, AirspyHfConfig::rate_note(r))
+                        };
+                        if ui
+                            .selectable_label((cfg.airspyhf.sample_rate_hz - r).abs() < 1.0, label)
+                            .clicked()
+                        {
+                            cfg.airspyhf.sample_rate_hz = r;
+                        }
+                    }
+                },
+            );
+            if queried.is_none() {
+                // Inside a horizontal row a label defaults to Extend, which
+                // pushes the row off the window edge instead of wrapping.
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(
+                            "every rate any HF+ model offers — connect one to see its own",
+                        )
+                        .weak(),
+                    )
+                    .wrap(),
+                );
+            }
+        });
+        ui.end_row();
+
+        ui.label("AGC").on_hover_text(
+            "The receiver's own gain control. Leave it on for general listening; \
+             turn it off to set the attenuator by hand for measurement.",
+        );
+        let mut agc = cfg.airspyhf.agc;
+        if ui.checkbox(&mut agc, "Automatic").changed() {
+            cfg.airspyhf.agc = agc;
+            push_gain(cmds, AirspyHfConfig::AGC_ELEMENT, f64::from(u8::from(agc)));
+        }
+        ui.end_row();
+
+        ui.label("AGC threshold");
+        ui.add_enabled_ui(cfg.airspyhf.agc, |ui| {
+            let mut high = cfg.airspyhf.agc_threshold_high;
+            if ui
+                .checkbox(&mut high, "High")
+                .on_hover_text(
+                    "High trades a little sensitivity for headroom against strong \
+                     neighbours — the right setting on a crowded band at night.",
+                )
+                .changed()
+            {
+                cfg.airspyhf.agc_threshold_high = high;
+                push_gain(cmds, AirspyHfConfig::AGC_THRESHOLD_ELEMENT, f64::from(u8::from(high)));
+            }
+        });
+        ui.end_row();
+
+        ui.label("Attenuator").on_hover_text(
+            "Front-end attenuation, as a gain — 0 dB is none. Only obeyed with \
+             the AGC off.",
+        );
+        ui.add_enabled_ui(!cfg.airspyhf.agc, |ui| {
+            let mut db = cfg.airspyhf.attenuator_db;
+            if ui
+                .add(Slider::new(&mut db, -att_max..=0.0).step_by(att_step).suffix(" dB"))
+                .changed()
+            {
+                cfg.airspyhf.attenuator_db = db;
+                push_gain(cmds, AirspyHfConfig::ATT_ELEMENT, db);
+            }
+        });
+        ui.end_row();
+
+        ui.label("Preamp").on_hover_text(
+            "The HF low-noise amplifier. Buys sensitivity at the cost of \
+             intermodulation, so it is off by default — which is usually right \
+             on a real antenna.",
+        );
+        let mut lna = cfg.airspyhf.lna;
+        if ui.checkbox(&mut lna, "LNA on").changed() {
+            cfg.airspyhf.lna = lna;
+            push_gain(cmds, AirspyHfConfig::LNA_ELEMENT, f64::from(u8::from(lna)));
+        }
+        ui.end_row();
+
+        ui.label("Frequency calibration").on_hover_text(
+            "Parts per billion — this receiver's own unit, a thousand times finer \
+             than the ppm an RTL-SDR uses. Nothing here is ever written to the \
+             receiver's flash: this overrides the stored value for the session only.",
+        );
+        ui.horizontal(|ui| {
+            let mut stored = cfg.airspyhf.calibration_ppb.is_none();
+            if ui.checkbox(&mut stored, "Use the receiver's stored value").changed() {
+                cfg.airspyhf.calibration_ppb = if stored { None } else { Some(0) };
+                if let Some(ppb) = cfg.airspyhf.calibration_ppb {
+                    push_gain(cmds, AirspyHfConfig::PPB_ELEMENT, ppb as f64);
+                } else {
+                    // Back to the receiver's own figure needs a reopen: the
+                    // flash value is only read when the device is opened.
+                    *apply = true;
+                }
+            }
+            if let Some(ppb) = cfg.airspyhf.calibration_ppb.as_mut()
+                && ui.add(DragValue::new(ppb).speed(10).suffix(" ppb")).changed()
+            {
+                push_gain(cmds, AirspyHfConfig::PPB_ELEMENT, *ppb as f64);
+            }
+        });
+        ui.end_row();
+
+        ui.label("Bias tee");
+        let mut bias = cfg.airspyhf.bias_tee;
+        if ui
+            .checkbox(&mut bias, "Feed DC up the coax")
+            .on_hover_text("Not every HF+ has one; on a receiver without, this does nothing.")
+            .changed()
+        {
+            cfg.airspyhf.bias_tee = bias;
+            push_gain(cmds, AirspyHfConfig::BIAS_TEE_ELEMENT, f64::from(u8::from(bias)));
+        }
+        ui.end_row();
+
+        ui.label("Host DSP").on_hover_text(
+            "The image balancer, the zero-IF offset and the fine-tuning \
+             oscillator. Turn it off only to see raw hardware output — with it \
+             off, the mirror image appears on the zero-IF rates and the dial is \
+             accurate only to the nearest kilohertz.",
+        );
+        let mut dsp = cfg.airspyhf.lib_dsp;
+        if ui.checkbox(&mut dsp, "Correct the image and fine-tune").changed() {
+            cfg.airspyhf.lib_dsp = dsp;
+            push_gain(cmds, AirspyHfConfig::LIB_DSP_ELEMENT, f64::from(u8::from(dsp)));
+        }
+        ui.end_row();
+
+        ui.label("");
+        if ui
+            .button("Copy diagnostic report")
+            .on_hover_text(
+                "Copies the last session's trace to the clipboard, for a bug \
+                 report: every command exchanged with the receiver, and the \
+                 first bytes of the sample stream.",
+            )
+            .clicked()
+        {
+            *copy_report = true;
+        }
+        ui.end_row();
+    });
+
+    if cfg.airspyhf.bias_tee {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(
+                "Bias tee is ON. Never connect a transceiver, a grounded antenna, \
+                 or a preamp powered from elsewhere while this is enabled — the DC \
+                 goes straight down the feedline.",
+            )
+            .color(crate::theme::YELLOW()),
+        );
+    }
+
+    if (cfg.airspyhf.serial.clone(), cfg.airspyhf.sample_rate_hz) != before {
+        *apply = true;
+    }
+
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "Receive only. No SoapySDR and no libairspyhf needed. Below the \
+             synthesiser's floor the host oscillator does the tuning, which is how \
+             this receiver reaches VLF. The receiver and sample rate take effect on \
+             Apply; everything else applies as you change it.",
+        )
+        .weak(),
+    );
+    ui.label(
+        RichText::new(
+            "Not yet verified against real hardware. If it misbehaves, please send the \
+             diagnostic report — it contains every command exchanged with the receiver, \
+             and the first bytes of the sample stream decoded as I/Q pairs.",
+        )
+        .color(crate::theme::YELLOW()),
+    );
+}
+
 /// SDRplay RSP interface: device, rate, and the RSP's gain model (IF gain
 /// reduction + LNA state + hardware AGC), with the rows a given model lacks
 /// hidden.

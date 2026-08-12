@@ -82,8 +82,8 @@ or connects to a remote sdroxide server.
   many signals at once and label them on the waterfall.
 - **Many radio backends:** SoapySDR devices, OpenHPSDR (Hermes/Metis) Ethernet
   SDRs, a TCI server (ExpertSDR3/Thetis), a SmartSDR radio (FlexRadio
-  FLEX-6000/8000), RTL-SDR, RX-888 and SDRplay RSP receivers over USB, a
-  PlutoSDR, or a CAT-controlled radio with audio over a USB sound card
+  FLEX-6000/8000), RTL-SDR, RX-888, Airspy HF+ and SDRplay RSP receivers over
+  USB, a PlutoSDR, or a CAT-controlled radio with audio over a USB sound card
   (demodulated audio or stereo IQ).
 - **Several radios at once** — each in its own tab with its own tuning, mode,
   panadapter and audio, sharing your memories, logbook and a station-wide
@@ -2279,6 +2279,13 @@ radio. Everything below the selector changes to match the choice:
   [5.2.6](#526-smartsdr-flexradio-network-radios).
 - **RTL-SDR (USB)** — an RTL2832U dongle, driven by sdroxide's own USB driver
   with no SoapySDR involved. See [5.2.5](#525-rtl-sdr-usb-dongles).
+- **RX-888 (USB)** — an RX-888 / RX-888 Mk2 direct-sampling receiver, likewise
+  driven directly over USB, with its firmware bundled and uploaded for it.
+- **Airspy HF+ (USB)** — an Airspy HF+ Dual, Discovery or Ranger, driven by
+  sdroxide's own USB driver with no SoapySDR and no libairspyhf involved. See
+  [5.2.9](#529-airspy-hf-usb).
+- **SDRplay RSP (USB)** — any RSP, through the vendor's API service. See
+  [5.2.8](#528-sdrplay-rsp-usb).
 - **PlutoSDR (network)** — an ADALM-Pluto, driven by sdroxide's own IIOD client
   with no SoapySDR and no libiio involved. See
   [5.2.7](#527-plutosdr-adalm-pluto).
@@ -3015,6 +3022,92 @@ If the service reports the ADC **overloaded**, sdroxide shows it on screen and
 in the log: raise the LNA state, lower the IF gain, or turn the AGC on. If the
 RSP is unplugged — or the service restarted under sdroxide — it notices within
 a few seconds and reconnects by itself when the device returns.
+
+#### 5.2.9 Airspy HF+ (USB)
+
+> **Help wanted — this backend has not been verified against real hardware.**
+> It was written from Airspy's own reference implementation rather than on a
+> bench. If it misbehaves, the Radio tab has a **Copy diagnostic report** button;
+> that report contains every command exchanged with the receiver, the sample-rate
+> and calibration tables it reported, the whole tuning calculation, and the first
+> bytes of the sample stream decoded as I/Q pairs. It is what makes a fix
+> possible.
+
+The **Airspy HF+ (USB)** interface drives an Airspy HF+ **Dual**, **Discovery**
+or **Ranger** directly, using sdroxide's own USB driver. There is no SoapySDR, no
+libusb and no libairspyhf involved, so this works in every build — including the
+standard Windows `.msi` and macOS `.dmg` — with nothing to install beyond access
+to the device itself (see the README's *Airspy HF+ permissions*).
+
+Coverage is 0.5 kHz–31 MHz and 60–260 MHz on a Discovery or Ranger, from 9 kHz on
+a Dual, at up to 912 kSPS of complex baseband. Receive only — there is no
+transmit path in this hardware.
+
+All three models share one USB id, so the device list cannot tell them apart;
+sdroxide asks the receiver which it is once the device is open, and the model
+appears in the interface label at the top of the window.
+
+- **Receiver** — which one to open, by the serial in its USB descriptor.
+  **Rescan** re-lists the bus; it opens nothing, so it is safe to press while
+  receiving. Leaving this at *first one found* is fine with a single receiver.
+- **Sample rate** — which rates exist depends on the model **and** the firmware,
+  so once a receiver is connected the list shows that receiver's own rates. Before
+  one is connected it shows every rate any HF+ is known to offer, annotated with
+  who each belongs to. Takes effect on **Apply**. If the configured rate is not
+  one the hardware has, sdroxide uses the nearest one it does and says so on
+  screen rather than refusing to open.
+- **AGC** and **AGC threshold** — the receiver's own gain control. Leave it on
+  for general listening. *High* threshold trades a little sensitivity for
+  headroom against strong neighbours, which is the right setting on a crowded
+  band at night. Turn the AGC off to set the attenuator by hand for measurement.
+- **Attenuator** — front-end attenuation expressed as a gain, so 0 dB is none and
+  the slider goes down from there. The step comes from the receiver's own table
+  (six dB on every firmware seen so far). Only obeyed with the AGC off.
+- **Preamp (LNA)** — the HF low-noise amplifier. It buys sensitivity at the cost
+  of intermodulation, so it is off by default, which is usually right on a real
+  antenna.
+- **Frequency calibration** — in parts per **billion**, this receiver's own unit
+  and a thousand times finer than the ppm an RTL-SDR uses. Leave *Use the
+  receiver's stored value* ticked and the figure Airspy's own tool wrote into the
+  receiver's flash is used. Untick it to override for the session. **Nothing here
+  is ever written to the receiver's flash** — that page also holds the oscillator
+  trim, and a wrong write would cost the receiver its factory calibration.
+- **Bias tee** — DC up the antenna coax. Not every HF+ has one; on a receiver
+  without, this does nothing.
+- **Host DSP** — the image balancer, the zero-IF offset and the fine-tuning
+  oscillator, all three together. See below.
+
+> **The bias tee puts DC on the feedline.** The same standing warning as the
+> RTL-SDR applies: never enable it with a transceiver, a DC-grounded antenna, or
+> a preamplifier powered from somewhere else on the other end of the cable.
+
+**What the host does.** The receiver's firmware does the filtering; sdroxide does
+what the vendor library does, and for the same reasons:
+
+- An **adaptive IQ image balancer** on the zero-IF rates (768 and 912 kSPS),
+  where quadrature imbalance in the hardware would otherwise leave a mirror image
+  of every signal reflected about the centre of the passband. It converges over
+  several seconds of real signal and re-converges after a retune, because the
+  imbalance is frequency-dependent. The low-IF rates do not need it and do not
+  run it.
+- **DC cancellation**, so the converter's own offset does not sit as a spike in
+  the middle of the panadapter.
+- A **fine-tuning oscillator**. This one is not a nicety. The synthesiser is
+  programmed in whole kilohertz, so the oscillator carries the rest of the dial;
+  on a zero-IF rate the synthesiser is deliberately parked 5 kHz off so its own
+  leakage stays clear of your signal, and the oscillator brings the signal back;
+  and below the synthesiser's floor — 180 kHz on a zero-IF rate, 84 kHz on a
+  low-IF one — the oscillator does *all* the tuning. That last part is how this
+  receiver reaches VLF at all.
+
+Untick **Host DSP** to see raw hardware output. With it off, the mirror image
+appears on the zero-IF rates, DC is no longer removed, and the dial is accurate
+only to the nearest kilohertz. It is also the quickest way to tell a driver
+problem from a DSP one: if something looks wrong and turning this off changes it,
+the DSP is where to look.
+
+If the receiver is unplugged, sdroxide notices within a few seconds and
+reconnects by itself when you plug it back in — no need to press Apply.
 
 
 ### 5.3 UI: display preferences and voice announcements
@@ -4973,7 +5066,8 @@ sdroxide stores its settings under the per-user config directory:
 | File | Format | Contents |
 | --- | --- | --- |
 | `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, `region` (`"R1"` / `"R2"` / `"R3"` — the IARU region every band plan follows, [§5.1](#51-general-station-audio-and-remote-access)), plus the `[ui]` display preferences (including `theme`, `button_style` and `window_style`), the `[speech]` announcement settings ([§5.3](#53-ui-display-preferences-and-voice-announcements)) and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
-| `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/RX-888/SDRplay/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
+| `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/RX-888/Airspy HF+/SDRplay/PlutoSDR
+sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
 | `digi.json` | JSON | Digital-mode operator settings: your callsign and grid, FT8/FT4/FT2 TX period, auto-sequence and message templates, and the WSPR beacon's duty cycle, power and band-hop list. |
 | `memories.json` | JSON | Saved memory channels. |
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |
@@ -5040,6 +5134,7 @@ to its default, and a partial file is normal rather than a special case.
 | `"Pluto"` | ADALM-Pluto over IIOD | `"pluto"` |
 | `"RtlSdr"` | RTL-SDR dongle | `"rtlsdr"` |
 | `"Rx888"` | RX-888 Mk2 | `"rx888"` |
+| `"AirspyHf"` | Airspy HF+ | `"airspyhf"` |
 | `"SdrPlay"` | SDRplay RSP | `"sdrplay"` |
 
 The per-interface object is only read when `backend` names it, so leaving the

@@ -33,9 +33,9 @@ use self::net::{
     settings_freedv_tab,
 };
 use self::radio::{
-    settings_cat_tab, settings_hpsdr_tab, settings_pluto_tab, settings_rtlsdr_tab,
-    settings_rx888_tab, settings_sdrplay_tab, settings_smartsdr_tab, settings_soapy_devices,
-    settings_tci_tab,
+    settings_airspyhf_tab, settings_cat_tab, settings_hpsdr_tab, settings_pluto_tab,
+    settings_rtlsdr_tab, settings_rx888_tab, settings_sdrplay_tab, settings_smartsdr_tab,
+    settings_soapy_devices, settings_tci_tab,
 };
 use self::servers::{
     settings_rigctld_tab, settings_rotator_tab, settings_tci_server_tab, settings_wsjtx_tab,
@@ -108,6 +108,10 @@ pub(in crate::app) struct SettingsIo<'a> {
     /// no device is opened — so it cannot disturb a running stream.
     rtlsdr_rescan: &'a mut bool,
     rx888_rescan: &'a mut bool,
+    /// Re-enumerate the USB bus for Airspy HF+ receivers. Opens nothing.
+    airspyhf_rescan: &'a mut bool,
+    /// Copy the last Airspy HF+ session's trace to the clipboard.
+    airspyhf_copy_report: &'a mut bool,
     /// Ask the SDRplay API service for its device list. Brief and
     /// non-invasive, so it cannot disturb a running stream.
     sdrplay_rescan: &'a mut bool,
@@ -319,6 +323,8 @@ impl SdroxideApp {
         let mut hpsdr_discover = false;
         let mut rtlsdr_rescan = false;
         let mut rx888_rescan = false;
+        let mut airspyhf_rescan = false;
+        let mut airspyhf_copy_report = false;
         let mut sdrplay_rescan = false;
         let mut soapy_rescan = false;
         let mut tci_test = false;
@@ -383,6 +389,9 @@ impl SdroxideApp {
         // Same reasoning as the RTL-SDR: pure Rust over `nusb`, no system
         // library, so it is in every build variant.
         iface_opts.push(sdroxide_types::Backend::Rx888);
+        // Same reasoning again: pure Rust over `nusb`, no libairspyhf and no
+        // system library, so it is in every build variant.
+        iface_opts.push(sdroxide_types::Backend::AirspyHf);
         // Also in every build variant, but for a different reason: nothing is
         // linked at build time — the vendor's sdrplay_api library is found
         // with dlopen at runtime, and opening explains what to install when
@@ -451,6 +460,8 @@ impl SdroxideApp {
                             hpsdr_discover: &mut hpsdr_discover,
                             rtlsdr_rescan: &mut rtlsdr_rescan,
                             rx888_rescan: &mut rx888_rescan,
+                            airspyhf_rescan: &mut airspyhf_rescan,
+                            airspyhf_copy_report: &mut airspyhf_copy_report,
                             sdrplay_rescan: &mut sdrplay_rescan,
                             soapy_rescan: &mut soapy_rescan,
                             tci_test: &mut tci_test,
@@ -625,6 +636,19 @@ impl SdroxideApp {
         }
         if rx888_rescan {
             self.rx888_devices = self.ctrl.list_rx888();
+        }
+        if airspyhf_rescan {
+            self.airspyhf_devices = self.ctrl.list_airspyhf();
+        }
+        if airspyhf_copy_report {
+            // This backend has not been verified against hardware, so the trace
+            // is how a fault gets reported without asking anybody to reproduce
+            // it under a log filter.
+            let report = self
+                .ctrl
+                .airspyhf_diagnostics()
+                .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
+            ctx.copy_text(report);
         }
         if tci_test {
             // Blocking connect (~up to 3 s); after the closure so it can take
@@ -1118,6 +1142,16 @@ impl SdroxideApp {
                         &self.rx888_devices,
                         io.radio_edit,
                         io.rx888_rescan,
+                        io.apply_iface,
+                        cmds,
+                    ),
+                    Backend::AirspyHf => settings_airspyhf_tab(
+                        ui,
+                        &self.airspyhf_devices,
+                        self.caps.as_ref(),
+                        io.radio_edit,
+                        io.airspyhf_rescan,
+                        io.airspyhf_copy_report,
                         io.apply_iface,
                         cmds,
                     ),

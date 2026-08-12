@@ -1,3 +1,4 @@
+mod airspyhf_source;
 mod audio_cat_source;
 mod console;
 mod device_registry;
@@ -645,6 +646,7 @@ fn probe(cli: &Cli, settings: &Settings) -> anyhow::Result<()> {
     // dongle, and may this user have it?".
     probe_rtlsdr();
     probe_rx888();
+    probe_airspyhf();
     probe_sdrplay();
     probe_soapy(cli, settings)
 }
@@ -679,6 +681,22 @@ fn probe_rx888() {
                 "USB 2.0 — use a USB 3 cable and port for the full rate"
             };
             println!("  {}: {}  [{}]", i, d.label(), link);
+        }
+    }
+    println!();
+}
+
+fn probe_airspyhf() {
+    let devices = sdroxide_airspyhf::list();
+    if devices.is_empty() {
+        println!("No Airspy HF+ receivers found on USB.");
+    } else {
+        println!("=== Airspy HF+ (native USB driver) ===");
+        for (i, d) in devices.iter().enumerate() {
+            // Which model this is cannot be known without opening it — every
+            // HF+ enumerates as the same 03eb:800c — so the list does not
+            // pretend to. `--example probe` opens one and says.
+            println!("  {}: {}", i, d.label());
         }
     }
     println!();
@@ -922,6 +940,7 @@ fn open_configured_source(
         Backend::Pluto => open_pluto_source(radio, cli.center_hz(), cli.rate),
         Backend::RtlSdr => open_rtlsdr_source(radio, cli.center_hz()),
         Backend::Rx888 => open_rx888_source(radio, cli.center_hz()),
+        Backend::AirspyHf => open_airspyhf_source(radio, cli.center_hz()),
         Backend::SdrPlay => open_sdrplay_source(radio, cli.center_hz()),
         Backend::Soapy => open_soapy_source(cli, settings),
         Backend::Auto => {
@@ -1178,6 +1197,55 @@ fn rx888_caps(src: &rx888_source::Rx888Source) -> DeviceCaps {
                 step_db: 0.5,
             },
         ],
+        ..DeviceCaps::default()
+    }
+}
+
+/// Build the Airspy HF+ source from radio.json. The receiver is picked by the
+/// serial in its USB descriptor, or the first one found when none is set.
+fn open_airspyhf_source(
+    radio: &RadioConfig,
+    center_hz: f64,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let src = airspyhf_source::AirspyHfSource::open(&radio.airspyhf, center_hz)
+        .context("opening Airspy HF+ receiver")?;
+    let caps = airspyhf_caps(&src);
+    Ok((Box::new(src), caps))
+}
+
+/// Capabilities for an Airspy HF+: wideband IQ, receive only, HF plus the VHF
+/// window.
+///
+/// Two things here are the *device's* answer rather than a constant. The sample
+/// rates depend on the model and the firmware together, so they are read off
+/// the opened receiver the way [`rx888_caps`] reads its converter rate; and the
+/// attenuator's range and step come from the table the receiver reports, which
+/// differs between models. The frequency ranges do come from a table, because
+/// nothing on the device publishes them — see `AirspyHfModel::freq_ranges`.
+///
+/// The one gain element is the attenuator, carried negative so more slider is
+/// more signal, like the RX-888's. The switches (AGC and its threshold, the
+/// preamp, the bias tee, the calibration and the host DSP) ride pseudo-elements
+/// that are deliberately not listed here, so only the Airspy HF+ settings panel
+/// renders them.
+fn airspyhf_caps(src: &airspyhf_source::AirspyHfSource) -> DeviceCaps {
+    use sdroxide_types::{AirspyHfConfig, Direction, GainElement};
+    let (att_max_db, att_step_db) = src.attenuator_range_db();
+    DeviceCaps {
+        driver: "airspyhf".into(),
+        label: src.describe(),
+        rx_channels: 1,
+        tx_channels: 0,
+        audio_mode: false,
+        freq_ranges_rx: src.model().freq_ranges().to_vec(),
+        sample_rates: src.available_rates().to_vec(),
+        gains: vec![GainElement {
+            name: AirspyHfConfig::ATT_ELEMENT.into(),
+            direction: Direction::Rx,
+            min_db: -att_max_db,
+            max_db: 0.0,
+            step_db: att_step_db,
+        }],
         ..DeviceCaps::default()
     }
 }

@@ -1,0 +1,30 @@
+# Airspy HF+ (Dual / Discovery / Ranger), for sdroxide's native USB driver.
+#
+# sdroxide talks to these directly with nusb rather than through libusb,
+# libairspyhf or libSoapySDR, but the kernel-level requirement is the same: the
+# invoking user needs write access to the usbfs node.
+#
+# One id covers all three models. Nothing in the USB descriptors distinguishes a
+# Dual from a Discovery from a Ranger — sdroxide has to ask the opened device
+# (vendor request 7) — so a rule per model is neither possible nor needed.
+#
+# TAG+="uaccess" hands an ACL to whoever is logged in at the active seat. That
+# is better than the older GROUP="plugdev" recipe, which needs a group to exist,
+# the user to be added to it, and a full re-login before it takes effect.
+#
+# Install:
+#   sudo cp 60-sdroxide-airspyhf.rules /usr/lib/udev/rules.d/
+#   sudo udevadm control --reload
+# then unplug and replug the receiver.
+#
+# Airspy's own 52-airspyhf.rules covers the same id. If it is already installed
+# this file is harmless duplication, not a conflict.
+
+# Every HF+ model, running its normal firmware.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="03eb", ATTRS{idProduct}=="800c", MODE="0660", TAG+="uaccess"
+
+# The SAM-BA bootloader. sdroxide never enters it and cannot flash firmware —
+# use Airspy's own tool for that — but a receiver stuck here after an interrupted
+# vendor update is otherwise invisible to a non-root user, and "the device
+# disappeared" is a worse thing to debug than a stray rule line.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="03eb", ATTRS{idProduct}=="6124", MODE="0660", TAG+="uaccess"

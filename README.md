@@ -348,7 +348,7 @@ other ham software). See the [User Manual](docs/USER_MANUAL.md) for setup steps.
 
 ## Radio backends
 
-sdroxide can drive eight kinds of radio, selected on the **Radio** tab of the
+sdroxide can drive nine kinds of radio, selected on the **Radio** tab of the
 Settings window. Backend, serial, and radio-audio changes apply live when you
 press **Apply / reconnect**. A radio that isn't there yet at startup — or that
 drops mid-session — is retried in the background and attaches by itself, so
@@ -376,6 +376,29 @@ starting sdroxide before the rig is fine:
   converted to complex baseband on the host, which is why retuning anywhere in
   HF is instantaneous, and why it wants a modern CPU and a real USB 3 port.
   Receive only; the VHF/UHF tuner is not driven.
+- **Airspy HF+ (USB)** — an Airspy HF+ Dual, Discovery or Ranger, driven
+  directly over USB by a native pure-Rust driver. **No SoapySDR, no libusb and
+  no libairspyhf needed**, so it works in every build including the standard
+  `.msi` and `.dmg`. Up to 912 kSPS of complex baseband over 0.5 kHz–31 MHz and
+  60–260 MHz, with the receiver's own AGC and threshold, attenuator, preamp and
+  bias tee on the Radio tab. See "Airspy HF+ permissions" under Building for the
+  Linux udev rule.
+
+  The host runs the same DSP the vendor library does: an adaptive **IQ image
+  balancer**, DC cancellation, and a fine-tuning oscillator. That oscillator is
+  not a nicety — the synthesiser is programmed in whole kilohertz and parked
+  5 kHz off on the zero-IF rates so its own leakage stays clear of your signal,
+  and below its 180 kHz floor the oscillator does *all* the tuning, which is how
+  this receiver reaches VLF at all. It can be switched off from the Radio tab to
+  see raw hardware output, which is also the one-click way to tell a driver
+  problem from a DSP one.
+
+  Which sample rates exist depends on the model *and* the firmware, so the list
+  is read off the receiver rather than assumed; a rate the hardware does not
+  have is snapped to the nearest one it does, and it says so instead of refusing
+  to open. Receive only. **Not yet verified against real hardware** — see the
+  user manual, §5.2.9; the Radio tab has a **Copy diagnostic report** button,
+  and that report is what makes a fix possible.
 - **SDRplay RSP (USB)** — any SDRplay RSP (RSP1, RSP1A, RSP1B, RSP2, RSPduo,
   RSPdx, RSPdx R2), driven natively through the vendor's **SDRplay API
   service** — no SoapySDR in the path. The RSPs after the original RSP1 have
@@ -412,7 +435,7 @@ starting sdroxide before the rig is fine:
   megasample-per-second stream both ways at once. Not yet hardware-verified —
   see the user manual, §5.2.7.
 - **SoapySDR** — any [SoapySDR](https://github.com/pothosware/SoapySDR) device
-  (wideband IQ) — HackRF, Airspy, LimeSDR and friends. See below.
+  (wideband IQ) — HackRF, Airspy R2/Mini, LimeSDR and friends. See below.
 - **OpenHPSDR** — Hermes/Metis-family Ethernet SDRs on the LAN (Protocol 1 and
   2). Press **Discover** to scan for devices, or enter the IP manually; pick a
   DDC sample rate (48 kHz–1536 kHz). Not yet hardware-verified — testers can run
@@ -756,6 +779,34 @@ sdroxide uploads re-enumerates at SuperSpeed. So a receiver reported as "USB
 afterwards, that is a real cable or port problem, and sdroxide clamps the sample
 rate and says so on screen rather than silently dropping samples. `--probe`
 reports the link speed.
+
+### Airspy HF+ permissions
+
+Same situation as the RTL-SDR — direct USB access, no vendor package.
+
+**Linux.** Install the packaged udev rule and replug the receiver:
+
+```sh
+sudo cp packaging/linux/60-sdroxide-airspyhf.rules /usr/lib/udev/rules.d/
+sudo udevadm control --reload
+```
+
+The `.deb` installs this for you. If Airspy's own `52-airspyhf.rules` is already
+installed it covers the same id and there is nothing to do. The rule also covers
+`03eb:6124`, the SAM-BA bootloader — sdroxide cannot flash firmware and never
+enters it, but a receiver left there by an interrupted vendor update is
+otherwise invisible to a non-root user, and "the device disappeared" is a worse
+thing to debug than a stray rule line.
+
+**Windows.** Bind the device to **WinUSB** with [Zadig](https://zadig.akeo.ie/),
+or install Airspy's own package, which does the same thing. If the receiver
+already works with SDR# or SDR++ there is nothing to do.
+
+**macOS.** Nothing to do.
+
+All three models — Dual, Discovery and Ranger — share the id `03eb:800c`, so a
+device list cannot say which one is plugged in. sdroxide asks the receiver once
+it is open, and `--probe` lists what is on the bus.
 
 ### SDRplay RSP prerequisites
 

@@ -157,6 +157,10 @@ impl RadioController for LocalController {
         sdroxide_rtlsdr::list()
     }
 
+    fn list_airspyhf(&self) -> Vec<sdroxide_types::AirspyHfDevice> {
+        sdroxide_airspyhf::list()
+    }
+
     fn list_sdrplay(&self) -> Vec<sdroxide_types::SdrPlayDevice> {
         sdroxide_sdrplay::list()
     }
@@ -210,6 +214,15 @@ impl RadioController for LocalController {
             Some(t) => t,
             None => "No PlutoSDR session has run yet — press Test connection or \
                      Apply / reconnect first."
+                .to_string(),
+        })
+    }
+
+    fn airspyhf_diagnostics(&self) -> Option<String> {
+        Some(match sdroxide_airspyhf::diagnostics() {
+            Some(t) => t,
+            None => "No Airspy HF+ session has run yet — press Apply / reconnect \
+                     first, or run `cargo run -p sdroxide-airspyhf --example probe`."
                 .to_string(),
         })
     }

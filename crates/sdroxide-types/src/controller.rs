@@ -372,6 +372,15 @@ pub trait RadioController {
         Vec::new()
     }
 
+    /// List Airspy HF+ receivers on the USB bus (native local client only).
+    /// Same contract as [`RadioController::list_rtlsdr`]: nothing is opened, so
+    /// it is safe to call while one is streaming. Which model each one is
+    /// cannot be told from the bus — every HF+ shares a product id — so the
+    /// entries name the family and not the model.
+    fn list_airspyhf(&self) -> Vec<crate::AirspyHfDevice> {
+        Vec::new()
+    }
+
     /// List the RSPs the SDRplay API service reports (native local client
     /// only). Blocking but brief — the service answers from its own device
     /// table — and safe while one is streaming: enumeration takes the API's
@@ -456,6 +465,16 @@ pub trait RadioController {
     /// reproduce a fault with the right `RUST_LOG` filter set. `None` when no
     /// session has run. Default: nothing to report.
     fn smartsdr_diagnostics(&self) -> Option<String> {
+        None
+    }
+
+    /// The most recent Airspy HF+ session trace, for a bug report.
+    ///
+    /// This backend has not been verified against hardware, so the settings UI
+    /// offers the trace as copyable text rather than expecting a user to
+    /// reproduce a fault with the right `RUST_LOG` filter set. `None` when no
+    /// session has run. Default: nothing to report.
+    fn airspyhf_diagnostics(&self) -> Option<String> {
         None
     }
 
