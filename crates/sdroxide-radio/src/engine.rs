@@ -5731,22 +5731,44 @@ impl Engine {
         self.radio_fs = self.source.sample_rate();
         self.audio_bw = self.source.display_bandwidth().unwrap_or(self.radio_fs / 2.0);
 
-        // Fresh tuning from the new front-end (matches a cold start on it).
-        let mut state = RadioState::default();
-        state.center_hz = self.source.center_hz();
-        state.sample_rate = self.source.sample_rate();
-        state.vfo_a_hz = self.source.center_hz();
-        state.vfo_b_hz = self.source.center_hz();
-        state.band = Band::containing(state.vfo_a_hz);
-        state.gains = self.source.current_gains();
-        state.tx_gains = self.source.current_tx_gains();
-        state.antenna_rx = self.source.current_antenna();
-        state.antenna_tx = self.source.current_tx_antenna();
-        state.skimmer = if self.audio_mode {
-            sdroxide_types::SkimmerSettings::OFF // wideband-only feature
-        } else {
-            self.skim_cfg // the operator's choice survives the swap
+        // A swap changes the front end, not the operating position. The mode,
+        // filters, AGC, audio levels, transmit levels, RIT/XIT, split and the
+        // sub receiver are the operator's settings and stay theirs; only what
+        // genuinely describes the new hardware is taken from it.
+        //
+        // Starting from `RadioState::default()` here is what used to reset the
+        // radio to 20 m USB on every Apply — including an Apply that changed
+        // nothing, and including the *automatic* reconnect after a link drop,
+        // where a radio quietly retuning and changing mode by itself is worse
+        // still.
+        let mut state = RadioState {
+            center_hz: self.source.center_hz(),
+            sample_rate: self.source.sample_rate(),
+            gains: self.source.current_gains(),
+            tx_gains: self.source.current_tx_gains(),
+            antenna_rx: self.source.current_antenna(),
+            antenna_tx: self.source.current_tx_antenna(),
+            // The levels carry over; a keyed transmit never does.
+            tx: sdroxide_types::TxState { ptt: false, tune: false, ..self.state.tx },
+            // The scan was walking the old front end's span.
+            scan: sdroxide_types::ScanState::default(),
+            skimmer: if self.audio_mode {
+                sdroxide_types::SkimmerSettings::OFF // wideband-only feature
+            } else {
+                self.skim_cfg // the operator's choice survives the swap
+            },
+            ..self.state.clone()
         };
+        // `reopen` asked the new front end for the frequency we were on, so
+        // normally it is exactly there and both VFOs carry over untouched. One
+        // that could not go there — a swap to hardware that does not cover this
+        // band — has landed somewhere else, and then its own answer is the
+        // honest thing to show rather than a dial the radio is not on.
+        if (state.center_hz - self.state.active_freq_hz()).abs() > 1.0 {
+            state.vfo_a_hz = state.center_hz;
+            state.vfo_b_hz = state.center_hz;
+        }
+        state.band = Band::containing(state.active_freq_hz());
         self.state = state;
         // The tuning is fresh, but the antenna is a property of the station's
         // coax rather than of the front end: a radio that dropped out and came

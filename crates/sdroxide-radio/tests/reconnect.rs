@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use sdroxide_radio::{Complex32, EngineConfig, EngineSwap, IqSource, Result, start_engine};
-use sdroxide_types::{DeviceCaps, RadioEvent};
+use sdroxide_types::{Command, DeviceCaps, Mode, RadioEvent, RadioState, RxId, Vfo};
 
 const RATE: f64 = 48_000.0;
 const CENTER: f64 = 14_100_000.0;
@@ -306,6 +306,123 @@ fn a_changed_sample_rate_takes_effect_on_reopen() {
 
     drop(h.cmd_tx);
     drop(h.swap_tx);
+    if let Some(t) = thread {
+        let _ = t.join();
+    }
+}
+
+/// A source that reports whatever frequency it was last asked for, so a reopen
+/// puts the replacement exactly where the operator was — what real hardware
+/// covering the band does.
+struct Tunable {
+    center: f64,
+}
+
+impl IqSource for Tunable {
+    fn sample_rate(&self) -> f64 {
+        RATE
+    }
+    fn center_hz(&self) -> f64 {
+        self.center
+    }
+    fn set_center_hz(&mut self, hz: f64) -> Result<()> {
+        self.center = hz;
+        Ok(())
+    }
+    fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        std::thread::sleep(Duration::from_millis(5));
+        let n = buf.len().min(256);
+        buf[..n].fill(Complex32::new(0.0, 0.0));
+        Ok(n)
+    }
+    fn describe(&self) -> String {
+        "tunable".into()
+    }
+}
+
+/// Drain events for the whole of `dur`, returning whether `want_driver` was
+/// announced and the **last** state snapshot seen.
+///
+/// Both come out of one drain because the swap publishes its capabilities and
+/// its state together, and a loop watching for only one would throw the other
+/// away. It runs the window out rather than stopping at the first snapshot: the
+/// interesting state is the one the engine settles on, not the one it happened
+/// to publish first.
+fn settle(
+    h: &sdroxide_radio::EngineHandles,
+    want_driver: &str,
+    dur: Duration,
+) -> (bool, Option<RadioState>) {
+    let deadline = Instant::now() + dur;
+    let (mut seen, mut state) = (false, None);
+    while Instant::now() < deadline {
+        while let Ok(ev) = h.event_rx.try_recv() {
+            match ev {
+                RadioEvent::Capabilities(c) => seen |= c.driver == want_driver,
+                RadioEvent::State(s) => state = Some(s),
+                _ => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    (seen, state)
+}
+
+/// Settings → Radio → **Apply / reconnect** swaps the front end. It must not
+/// touch the operating position: the mode, filters, levels, RIT and split
+/// belong to the operator, not to the device.
+///
+/// The whole radio used to reset to `RadioState::default()` here — 20 m USB —
+/// on any Apply, including one that changed nothing, and on the *automatic*
+/// reconnect after a dropped link too.
+#[test]
+fn applying_a_settings_change_keeps_the_operating_position() {
+    let reopen: sdroxide_radio::ReopenFn = Box::new(move |center: f64| {
+        Ok((Box::new(Tunable { center }) as Box<dyn IqSource>, caps("live")))
+    });
+    let cfg = EngineConfig { reopen: Some(reopen), ..Default::default() };
+    let mut h = start_engine(Box::new(Tunable { center: CENTER }), caps("dongle"), cfg);
+    let thread = h.thread.take();
+    std::thread::sleep(Duration::from_millis(150));
+
+    // An operating position: 40 m LSB, a narrowed filter, RIT on, split to a
+    // second VFO, a raised drive and a set audio level.
+    let on_air = 7_100_000.0;
+    let split_to = 7_150_000.0;
+    for c in [
+        Command::SetVfo { vfo: Vfo::B, hz: split_to },
+        Command::SetVfo { vfo: Vfo::A, hz: on_air },
+        Command::SetMode { rx: RxId::Main, mode: Mode::Lsb },
+        Command::SetFilter { rx: RxId::Main, lo: -2_100.0, hi: -300.0 },
+        Command::SetRit { enabled: true, hz: 250 },
+        Command::SetSplit(true),
+        Command::SetTxDrive(0.4),
+        Command::SetVolume { rx: RxId::Main, v: 0.8 },
+    ] {
+        h.cmd_tx.send(c).expect("engine is running");
+    }
+    let (_, before) = settle(&h, "dongle", Duration::from_millis(500));
+    let before = before.expect("the engine publishes state");
+    assert_eq!(before.rx[0].mode, Mode::Lsb, "the test set up LSB");
+
+    // Apply / reconnect, changing nothing else.
+    h.swap_tx.send(EngineSwap::ReopenSource).expect("engine is running");
+    let (swapped, after) = settle(&h, "live", Duration::from_secs(2));
+    assert!(swapped, "the engine should have swapped to the new interface");
+    let after = after.expect("the swap publishes state");
+
+    assert_eq!(after.rx[0].mode, Mode::Lsb, "the mode is the operator's, not the device's");
+    assert_eq!((after.rx[0].filter_lo, after.rx[0].filter_hi), (-2_100.0, -300.0), "filter");
+    assert_eq!(after.vfo_a_hz, on_air, "still on the same frequency");
+    assert_eq!(after.vfo_b_hz, split_to, "the split VFO survives too");
+    assert!(after.split, "split");
+    assert_eq!(after.rit, before.rit, "RIT");
+    assert_eq!(after.tx.drive, 0.4, "transmit drive");
+    assert_eq!(after.rx[0].volume, 0.8, "audio level");
+    // And nothing is left keyed by the swap.
+    assert!(!after.tx.ptt && !after.tx.tune, "a swap must leave the transmitter down");
+
+    drop(h.cmd_tx);
     if let Some(t) = thread {
         let _ = t.join();
     }
