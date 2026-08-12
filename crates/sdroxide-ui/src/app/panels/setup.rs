@@ -19,12 +19,12 @@ impl SdroxideApp {
         let mut open = self.show_digi_settings;
         let mode = self.state.rx[0].mode;
         // Per-mode parameters (RTTY/Olivia/THOR/FSQ) now live in each panel's
-        // header, so this dialog only carries the shared identity + FT8/FT4
-        // message templates.
+        // header, so this dialog only carries the shared identity + the
+        // message templates the slotted QSO modes share.
         let title = if mode.is_text_modem() || mode.is_hell() || mode.is_js8() {
             format!("{} Setup", mode.label())
         } else {
-            "FT8 / FT4 Setup".to_string()
+            "FT8 / FT4 / FT2 Setup".to_string()
         };
         let resp = egui::Window::new(title.clone())
             .id(crate::layout::salted_id(ctx, &title))

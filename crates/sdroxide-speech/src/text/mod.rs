@@ -126,6 +126,7 @@ impl<'a> Speaker<'a> {
             Mode::Spec => "spectrum",
             Mode::Ft8 => "F T eight",
             Mode::Ft4 => "F T four",
+            Mode::Ft2 => "F T two",
             Mode::Psk => "P S K",
             // The two nobody spells out.
             Mode::Rtty => "ritty",

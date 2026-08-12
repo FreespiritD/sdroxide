@@ -340,6 +340,7 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             let src = match mode {
                 sdroxide_types::Mode::Ft8 => Some(sdroxide_types::PropSource::Ft8),
                 sdroxide_types::Mode::Ft4 => Some(sdroxide_types::PropSource::Ft4),
+                sdroxide_types::Mode::Ft2 => Some(sdroxide_types::PropSource::Ft2),
                 sdroxide_types::Mode::Js8 => Some(sdroxide_types::PropSource::Js8),
                 _ => None,
             };

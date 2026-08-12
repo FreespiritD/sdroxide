@@ -152,6 +152,9 @@ static FINE: &[Seg] = &[
 const C_FT8: Color32 = Color32::from_rgb(0x4D, 0x8C, 0xFF);
 const C_FT4: Color32 = Color32::from_rgb(0x1F, 0xC7, 0xB0);
 const C_JS8: Color32 = Color32::from_rgb(0x8B, 0xD1, 0x3A);
+/// FT2 shares FT4's family, so it takes a neighbouring hue rather than a
+/// contrasting one — the eye should read "the fast pair" at a glance.
+const C_FT2: Color32 = Color32::from_rgb(0x2B, 0xA8, 0xE0);
 const C_WSPR: Color32 = Color32::from_rgb(0xB4, 0x8E, 0xF9);
 const C_QRSS: Color32 = Color32::from_rgb(0x76, 0x6A, 0xD6);
 const C_PSK: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x3D);
@@ -180,8 +183,8 @@ const fn dg(lo: f64, hi: f64, label: &'static str, color: Color32) -> DigiSeg {
 /// frequency tables so they stay consistent with the skimmer gating.
 fn digi_segments() -> Vec<DigiSeg> {
     use sdroxide_types::{
-        FT4_DIALS, FT8_DIALS, JS8_DIALS, PSK_RANGES, RIFP_CALLING, RTTY_RANGES, SSTV_CALLING,
-        WSPR_DIALS,
+        FT2_DIALS, FT4_DIALS, FT8_DIALS, JS8_DIALS, PSK_RANGES, RIFP_CALLING, RTTY_RANGES,
+        SSTV_CALLING, WSPR_DIALS,
     };
     let mut v = Vec::with_capacity(64);
     for &f in FT8_DIALS {
@@ -189,6 +192,9 @@ fn digi_segments() -> Vec<DigiSeg> {
     }
     for &f in FT4_DIALS {
         v.push(dg(f, f + 2500.0, "FT4", C_FT4));
+    }
+    for &f in FT2_DIALS {
+        v.push(dg(f, f + 2500.0, "FT2", C_FT2));
     }
     for &f in JS8_DIALS {
         v.push(dg(f, f + 2500.0, "JS8", C_JS8));

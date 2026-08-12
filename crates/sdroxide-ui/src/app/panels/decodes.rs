@@ -53,6 +53,7 @@ fn is_ft8_or_ft4(mode: &str) -> bool {
     m.eq_ignore_ascii_case("FT8")
         || m.eq_ignore_ascii_case("FT4")
         || m.eq_ignore_ascii_case("FT8-4")
+        || m.eq_ignore_ascii_case("FT2")
 }
 
 impl SdroxideApp {
@@ -842,7 +843,7 @@ impl SdroxideApp {
                             );
                         }
                         if s.config.dxped_mode != sdroxide_types::DxpedMode::Normal
-                            && s.mode == Mode::Ft8
+                            && matches!(s.mode, Mode::Ft8 | Mode::Ft2)
                         {
                             ui.label(
                                 RichText::new(s.config.dxped_mode.label().to_uppercase())

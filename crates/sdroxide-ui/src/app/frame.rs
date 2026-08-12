@@ -348,7 +348,7 @@ impl eframe::App for SdroxideApp {
                         &mut self.spec_smooth,
                         &mut self.trace_cache,
                         Some(spectrum_view::AudioCursor { hz: audio_hz, click_sets_offset: true }),
-                        if mode == Mode::Ft8 {
+                        if matches!(mode, Mode::Ft8 | Mode::Ft2) {
                             self.digi_status
                                 .as_ref()
                                 .map(|s| s.config.dxped_mode)

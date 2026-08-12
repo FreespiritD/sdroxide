@@ -809,7 +809,7 @@ impl SdroxideApp {
                 ui.add_space(8.0);
                 ui.label(
                     RichText::new(
-                        "Your callsign and grid, shared across FT8/FT4, SSTV image headers, and \
+                        "Your callsign and grid, shared across FT8/FT4/FT2, SSTV image headers, and \
                          the logbook. Also editable from the FT8 / SSTV setup dialog.",
                     )
                     .weak(),
@@ -1202,7 +1202,7 @@ impl SdroxideApp {
                 ui.checkbox(&mut io.net_edit.pota.enabled, "POTA activator spots");
                 ui.checkbox(&mut io.net_edit.sota.enabled, "SOTA spots");
                 ui.checkbox(&mut io.net_edit.psk.enabled, "PSK Reporter (current band)");
-                ui.checkbox(&mut io.net_edit.psk.report, "Upload my FT8/FT4 decodes")
+                ui.checkbox(&mut io.net_edit.psk.report, "Upload my FT8/FT4/FT2 decodes")
                     .on_hover_text(
                         "Report what this station hears to pskreporter.info, so it appears \
                          there as a receiver. Uses the callsign and grid from the General tab.",

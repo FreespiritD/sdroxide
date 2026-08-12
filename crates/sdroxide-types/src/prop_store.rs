@@ -30,8 +30,12 @@ use crate::{Band, Decode, QsoRecord, WsprSpot, grid_to_latlon};
 ///
 /// A bitmask rather than a set of booleans because it is persisted and passed
 /// to the globe, and because the chips that toggle it want an index.
+///
+/// `u16`, not `u8`: with FT2 there are eight sources, and `1 << 8` does not fit
+/// a byte. The stored form is a TOML integer, which is self-describing, so
+/// widening it reads back every file written by an older build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PropSources(pub u8);
+pub struct PropSources(pub u16);
 
 impl Default for PropSources {
     /// Everything. Each source is a real observation of a real path, and a map

@@ -46,7 +46,7 @@ pub(in crate::app) const TAB_WFALL: &str = "WFALL";
 /// the waterfall always has something to sit beside.
 pub(in crate::app) fn panel_panes(mode: Mode) -> &'static [&'static str] {
     match mode {
-        Mode::Ft8 | Mode::Ft4 => &["DECODES", "QSO"],
+        Mode::Ft8 | Mode::Ft4 | Mode::Ft2 => &["DECODES", "QSO"],
         Mode::Js8 => &["HEARD", "CHAT"],
         // No QSO pane, because there is no QSO: WSPR measures paths. The map
         // is its own pane rather than sharing one, so a narrow screen can show
@@ -96,6 +96,7 @@ impl SdroxideApp {
             let src = match mode {
                 Mode::Ft8 => Some(sdroxide_types::PropSource::Ft8),
                 Mode::Ft4 => Some(sdroxide_types::PropSource::Ft4),
+                Mode::Ft2 => Some(sdroxide_types::PropSource::Ft2),
                 Mode::Js8 => Some(sdroxide_types::PropSource::Js8),
                 _ => None,
             };
@@ -265,6 +266,18 @@ fn digi_dial_freqs(mode: Mode) -> &'static [(&'static str, f64)] {
             ("15m", 21_140_000.0),
             ("12m", 24_919_000.0),
             ("10m", 28_180_000.0),
+        ],
+        // FT2 dials, per the reference client. 60m is in the mode's own list
+        // but not in this row, which carries one button per contest band.
+        Mode::Ft2 => &[
+            ("80m", 3_578_000.0),
+            ("40m", 7_062_000.0),
+            ("30m", 10_144_000.0),
+            ("20m", 14_084_000.0),
+            ("17m", 18_108_000.0),
+            ("15m", 21_144_000.0),
+            ("12m", 24_923_000.0),
+            ("10m", 28_184_000.0),
         ],
         // FreeDV calling frequencies (USB dial).
         Mode::Rade => &[
@@ -439,7 +452,7 @@ impl SdroxideApp {
                     // count to put here. JS8 is slotted too, but it keeps its
                     // own heard list and never fills `digi_decodes` — a "0 rx"
                     // beside a busy band would be a lie.
-                    if matches!(mode, Mode::Ft8 | Mode::Ft4) {
+                    if matches!(mode, Mode::Ft8 | Mode::Ft4 | Mode::Ft2) {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 RichText::new(format!("{} rx", self.digi_decodes.len()))
@@ -632,6 +645,7 @@ impl SdroxideApp {
     pub(in crate::app) fn slot_period_s(&self) -> f64 {
         match self.state.rx[0].mode {
             Mode::Ft4 => 7.5,
+            Mode::Ft2 => 3.75,
             Mode::Js8 => self
                 .digi_status
                 .as_ref()
@@ -680,7 +694,7 @@ mod tests {
 
     #[test]
     fn the_slotted_modes_can_find_their_qso_pane() {
-        for mode in [Mode::Ft8, Mode::Ft4] {
+        for mode in [Mode::Ft8, Mode::Ft4, Mode::Ft2] {
             let i = pane_index(mode, "QSO");
             assert_eq!(panel_panes(mode)[i], "QSO", "{mode:?}");
             assert_ne!(i, pane_index(mode, "DECODES"), "{mode:?} panes collapsed");

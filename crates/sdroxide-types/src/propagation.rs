@@ -67,6 +67,13 @@ pub enum PropSource {
     /// existed loads with RBN off, which is the right default for a source
     /// this coarse.
     Rbn,
+    /// FT2 — FT4's waveform at double the symbol rate.
+    ///
+    /// Appended last for the same reason as [`PropSource::Rbn`]: the bitmask
+    /// is positional over [`PropSource::ALL`], so inserting next to `Ft4`
+    /// where it belongs logically would silently re-point every saved bit
+    /// above it at the wrong source.
+    Ft2,
 }
 
 impl PropSource {
@@ -81,6 +88,12 @@ impl PropSource {
             PropSource::Js8 => -24.0,
             PropSource::Ft8 => -21.0,
             PropSource::Ft4 => -17.0,
+            // FT2 sends the same 174 coded bits as FT4 in half the time, so
+            // it collects half the energy: 3 dB worse, and the on-air reports
+            // from the first months (QSOs down to about -12) sit right there.
+            // The mode's own publicity claims -23; that is the figure for
+            // FT8's 15-second frame and cannot apply to a 2.52 s one.
+            PropSource::Ft2 => -14.0,
             // A CW skimmer decodes down to a few dB S/N in its own narrow
             // bandwidth — a few hundred hertz, not the 2500 the other figures
             // are referenced to. Restating that floor in 2500 Hz costs about
@@ -110,6 +123,7 @@ impl PropSource {
             PropSource::WsprHeardUs => "WSPR rx",
             PropSource::Ft8 => "FT8",
             PropSource::Ft4 => "FT4",
+            PropSource::Ft2 => "FT2",
             PropSource::Js8 => "JS8",
             PropSource::Logged => "Log",
             PropSource::Rbn => "RBN",
@@ -117,7 +131,7 @@ impl PropSource {
     }
 
     /// Every source, for the filter chips.
-    pub const ALL: [PropSource; 7] = [
+    pub const ALL: [PropSource; 8] = [
         PropSource::Wspr,
         PropSource::WsprHeardUs,
         PropSource::Ft8,
@@ -125,6 +139,7 @@ impl PropSource {
         PropSource::Js8,
         PropSource::Logged,
         PropSource::Rbn,
+        PropSource::Ft2,
     ];
 }
 

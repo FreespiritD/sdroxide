@@ -249,8 +249,8 @@ pub(crate) fn parse_dx_line(line: &str, now: i64) -> Option<Spot> {
 /// Pull a mode token out of a spot comment, if present.
 fn detect_mode(comment: &str) -> String {
     const MODES: &[&str] = &[
-        "FT8", "FT4", "CW", "SSB", "USB", "LSB", "RTTY", "PSK", "PSK31", "JT65", "JT9", "FM", "AM",
-        "SSTV", "OLIVIA", "MFSK", "JS8", "WSPR",
+        "FT8", "FT4", "FT2", "CW", "SSB", "USB", "LSB", "RTTY", "PSK", "PSK31", "JT65", "JT9",
+        "FM", "AM", "SSTV", "OLIVIA", "MFSK", "JS8", "WSPR",
     ];
     for tok in comment.split_whitespace() {
         let up = tok.trim_matches(|c: char| !c.is_ascii_alphanumeric()).to_ascii_uppercase();

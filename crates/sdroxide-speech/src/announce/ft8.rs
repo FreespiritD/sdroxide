@@ -188,7 +188,7 @@ impl QsoWatch {
         // Only the sequenced modes have an exchange. The keyboard modes put
         // their typed buffer in `tx_pending_msg`, and reading the operator's
         // own typing back to them is not an announcement.
-        if !matches!(st.mode, Mode::Ft8 | Mode::Ft4) {
+        if !matches!(st.mode, Mode::Ft8 | Mode::Ft4 | Mode::Ft2) {
             self.reset();
             return;
         }

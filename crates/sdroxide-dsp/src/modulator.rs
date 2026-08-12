@@ -40,6 +40,7 @@ pub fn make_modulator(mode: Mode, rate: f64, passband: (f32, f32)) -> Option<Box
         | Mode::Js8
         | Mode::Wspr
         | Mode::Ft4
+        | Mode::Ft2
         | Mode::Psk
         | Mode::Rtty
         | Mode::Sstv

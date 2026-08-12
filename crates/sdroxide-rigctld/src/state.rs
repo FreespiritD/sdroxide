@@ -123,6 +123,7 @@ pub fn to_hamlib_mode(m: Mode) -> &'static str {
         | Mode::Js8
         | Mode::Wspr
         | Mode::Ft4
+        | Mode::Ft2
         | Mode::Psk
         | Mode::Sstv
         | Mode::Wefax
@@ -187,7 +188,16 @@ mod tests {
     /// mode must therefore parse back to something we treat as unchanged.
     #[test]
     fn digital_modes_report_pktusb() {
-        for m in [Mode::Ft8, Mode::Ft4, Mode::Psk, Mode::Sstv, Mode::Fsq, Mode::Hell, Mode::Rade] {
+        for m in [
+            Mode::Ft8,
+            Mode::Ft4,
+            Mode::Ft2,
+            Mode::Psk,
+            Mode::Sstv,
+            Mode::Fsq,
+            Mode::Hell,
+            Mode::Rade,
+        ] {
             assert_eq!(to_hamlib_mode(m), "PKTUSB", "{m:?}");
         }
     }

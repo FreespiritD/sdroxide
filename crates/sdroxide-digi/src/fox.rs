@@ -23,6 +23,20 @@ use crate::qso::{Payload, classify_payload};
 /// Spacing between the Fox's simultaneous signals, as WSJT-X lays them out.
 pub const SLOT_SPACING_HZ: f32 = 60.0;
 
+/// FT2's spacing. An FT2 signal is 167 Hz wide against FT8's 50, so 60 Hz
+/// slots would overlap outright; the reference client uses 500 Hz for the
+/// same reason (`foxgenft2.f90`: "we use fstep=500 Hz between slots for 3x
+/// isolation margin (was 200 Hz)").
+pub const FT2_SLOT_SPACING_HZ: f32 = 500.0;
+
+/// Spacing between a Fox's simultaneous signals in `mode`.
+pub fn slot_spacing_hz(mode: Mode) -> f32 {
+    match mode {
+        Mode::Ft2 => FT2_SLOT_SPACING_HZ,
+        _ => SLOT_SPACING_HZ,
+    }
+}
+
 /// A Hound in the pile-up.
 #[derive(Debug, Clone)]
 struct Hound {

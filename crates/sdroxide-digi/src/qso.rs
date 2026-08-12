@@ -7,7 +7,7 @@ use sdroxide_types::{
     Decode, DigiConfig, DigiStatus, DxpedMode, Mode, QsoRecord, QsoStep, QueuedCall, TranscriptLine,
 };
 
-use crate::fox::{Fox, SLOT_SPACING_HZ};
+use crate::fox::{Fox, slot_spacing_hz};
 
 /// Give up waiting for a picked non-CQ station to call CQ after this long.
 const WAIT_CQ_S: i64 = 300;
@@ -84,8 +84,13 @@ fn is_grid(t: &str) -> bool {
 }
 
 /// True when this mode + config puts us on the Fox side of a pile-up.
+///
+/// FT8 and FT2 only. Those are the two the DXpedition layout is defined for —
+/// the reference FT2 client says so in as many words ("Fox-and-Hound
+/// operation is available only in FT8 and FT2 modes") and ships
+/// `foxgenft2.f90` to generate the multi-slot waveform. FT4 has no Fox.
 fn fox_role(mode: Mode, cfg: &DigiConfig) -> bool {
-    mode == Mode::Ft8 && cfg.dxped_mode == DxpedMode::Fox
+    matches!(mode, Mode::Ft8 | Mode::Ft2) && cfg.dxped_mode == DxpedMode::Fox
 }
 
 #[derive(Debug, Clone)]
@@ -198,9 +203,13 @@ impl QsoMachine {
     }
 
     /// Which side of a DXpedition pile-up we are operating. Always `Normal`
-    /// outside FT8 — the mode has no DXpedition layout to speak.
+    /// outside FT8 and FT2 — no other mode has a DXpedition layout to speak.
     pub fn dxped(&self) -> DxpedMode {
-        if self.mode == Mode::Ft8 { self.cfg.dxped_mode } else { DxpedMode::Normal }
+        if matches!(self.mode, Mode::Ft8 | Mode::Ft2) {
+            self.cfg.dxped_mode
+        } else {
+            DxpedMode::Normal
+        }
     }
 
     /// Hound: the Fox's tone offset to move onto, taken once.
@@ -872,7 +881,7 @@ impl QsoMachine {
                 .messages
                 .into_iter()
                 .enumerate()
-                .map(|(i, m)| (m, self.audio_hz + i as f32 * SLOT_SPACING_HZ))
+                .map(|(i, m)| (m, self.audio_hz + i as f32 * slot_spacing_hz(self.mode)))
                 .collect();
         }
         self.plan_tx().map(|m| vec![(m, self.audio_hz)]).unwrap_or_default()
@@ -1823,7 +1832,7 @@ mod tests {
     }
 
     #[test]
-    fn only_ft8_has_a_fox() {
+    fn only_ft8_and_ft2_have_a_fox() {
         // FT4 has no DXpedition layout, so the role is inert there.
         let cfg = DigiConfig {
             my_call: "DX1FOX".into(),

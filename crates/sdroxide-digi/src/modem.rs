@@ -180,6 +180,24 @@ impl Ft8Modem {
                 build_decode(&bits, r.snr_db, r.dt_sec, r.freq_hz, slot_utc, ht)
             })
             .collect(),
+            // FT2 is FT4 at double the symbol rate, but mfsk-core ships no FT2
+            // protocol, so the pipeline is reassembled from its public generic
+            // stages in [`crate::ft2`]. No a-priori pass yet — the sniper entry
+            // point it would need is `pub(crate)` in mfsk-core, and FT2 is a
+            // strong-signal mode where AP buys least.
+            Mode::Ft2 => crate::ft2::decode::decode_slot(
+                audio_12k,
+                AUDIO_MIN_HZ,
+                AUDIO_MAX_HZ,
+                SYNC_MIN,
+                MAX_CAND,
+            )
+            .into_iter()
+            .filter_map(|r| {
+                let bits: [u8; 77] = r.message77().try_into().ok()?;
+                build_decode(&bits, r.snr_db, r.dt_sec, r.freq_hz, slot_utc, ht)
+            })
+            .collect(),
             _ => {
                 // With no hint this is bit-for-bit the plain wide-band decode;
                 // with one, every candidate that fails an ordinary decode gets a
@@ -259,6 +277,10 @@ impl Ft8Modem {
             Mode::Ft4 => {
                 let tones = mfsk_core::ft4::encode::message_to_tones(&msg77);
                 mfsk_core::ft4::encode::tones_to_f32(&tones, audio_hz, amplitude)
+            }
+            Mode::Ft2 => {
+                let tones = crate::ft2::encode::message_to_tones(&msg77);
+                crate::ft2::encode::tones_to_f32(&tones, audio_hz, amplitude)
             }
             _ => {
                 let tones = mfsk_core::ft8::wave_gen::message_to_tones(&msg77);

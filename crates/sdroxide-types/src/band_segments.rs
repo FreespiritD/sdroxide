@@ -114,6 +114,24 @@ pub const FT4_DIALS: &[f64] = &[
     24_919_000.0,
     28_180_000.0,
 ];
+/// FT2 dial frequencies (Hz), as shipped by the reference client (Decodium's
+/// `models/FrequencyList.cpp`). HF only, matching the FT4 list above; the
+/// reference also lists 50.316, 70.157, 144.177, 432.177 and 1296.177 MHz.
+///
+/// 80m and 12m land within a couple of hundred hertz of the JS8 dials — that
+/// is the mode author's choice of segment, not a transcription slip.
+pub const FT2_DIALS: &[f64] = &[
+    1_843_000.0,
+    3_578_000.0,
+    5_360_000.0,
+    7_062_000.0,
+    10_144_000.0,
+    14_084_000.0,
+    18_108_000.0,
+    21_144_000.0,
+    24_923_000.0,
+    28_184_000.0,
+];
 /// JS8Call dial frequencies (Hz); occupies ~3 kHz of USB audio above each.
 pub const JS8_DIALS: &[f64] = &[
     1_842_000.0,
@@ -157,6 +175,7 @@ pub const RIFP_CALLING: &[f64] =
 pub fn is_auto_digi(hz: f64) -> bool {
     FT8_DIALS.iter().any(|&f| (f - 100.0..=f + 3100.0).contains(&hz))
         || FT4_DIALS.iter().any(|&f| (f - 100.0..=f + 3100.0).contains(&hz))
+        || FT2_DIALS.iter().any(|&f| (f - 100.0..=f + 3100.0).contains(&hz))
         || JS8_DIALS.iter().any(|&f| (f - 100.0..=f + 3100.0).contains(&hz))
         || WSPR_DIALS.iter().any(|&f| {
             // Dial reference, plus the QRSS + WSPR beacon window above it.
@@ -350,6 +369,7 @@ pub fn digi_channels(mode: crate::Mode) -> Vec<DigiChannel> {
             v
         }
         Mode::Ft4 => plain(FT4_DIALS),
+        Mode::Ft2 => plain(FT2_DIALS),
         Mode::Psk => noted(PSK_DIALS),
         Mode::Rtty => noted(RTTY_DIALS),
         Mode::Fsq => plain(FSQ_DIALS),
@@ -482,6 +502,12 @@ mod tests {
         // Two of FSQCall's published frequencies sit above the Region 1 data
         // segment on their band; the rest happen to fall inside one.
         assert_eq!(flagged(Mode::Fsq), vec![7_105_000.0, 14_105_000.0]);
+        // FT2's 160 m dial is 1.843, which is exactly where the Region 1 data
+        // segment ends and phone begins — so the whole 2.5 kHz of it lands in
+        // the phone segment. Flagged on purpose: the mode's frequency list
+        // comes from its author, and an operator in Region 1 needs to see that
+        // this one is not usable as published.
+        assert_eq!(flagged(Mode::Ft2), vec![1_843_000.0]);
         // The everyday modes are clean.
         for m in [Mode::Ft4, Mode::Psk, Mode::Rtty] {
             assert!(flagged(m).is_empty(), "{m:?}: {:?}", flagged(m));
@@ -517,6 +543,7 @@ mod tests {
         // FT4 has a single convention everywhere.
         for b in Band::ALL {
             assert!(digi_channels_in(Mode::Ft4, b).len() <= 1, "FT4 on {b:?}");
+            assert!(digi_channels_in(Mode::Ft2, b).len() <= 1, "FT2 on {b:?}");
         }
         // 40 m PSK carries the region split, which is the case the picker
         // exists for.

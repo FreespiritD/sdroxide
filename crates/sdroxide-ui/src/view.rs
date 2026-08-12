@@ -318,7 +318,7 @@ pub struct Solar3dView {
     /// it and the flat map reads it: one setting, both views, and no way for
     /// them to be looking at different evidence.
     #[serde(default = "prop_sources_default")]
-    pub prop_sources: u8,
+    pub prop_sources: u16,
 }
 
 /// Default for [`Solar3dView::prop_mode`] — the combined view, which reads
@@ -348,8 +348,8 @@ fn prop_bands_default() -> u16 {
 /// Default for [`Solar3dView::prop_sources`] — everything. Each source is a
 /// real observation of a real path, and a map that quietly ignored the logbook
 /// would be a map of the last hour rather than of the station.
-fn prop_sources_default() -> u8 {
-    (1u8 << sdroxide_types::PropSource::ALL.len()) - 1
+fn prop_sources_default() -> u16 {
+    (1u16 << sdroxide_types::PropSource::ALL.len()) - 1
 }
 
 impl Solar3dView {
@@ -369,7 +369,7 @@ impl Solar3dView {
     fn migrate_prop_sources(&mut self) {
         let now = prop_sources_default();
         for shorter in 1..sdroxide_types::PropSource::ALL.len() {
-            if self.prop_sources == (1u8 << shorter) - 1 {
+            if self.prop_sources == (1u16 << shorter) - 1 {
                 self.prop_sources = now;
                 return;
             }

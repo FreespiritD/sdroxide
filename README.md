@@ -4,7 +4,7 @@ A PowerSDR/Thetis-style software-defined-radio transceiver client in Rust, with
 pluggable radio backends (**SoapySDR**, **OpenHPSDR**, **TCI**, **SmartSDR**, and **CAT**), an
 [egui](https://github.com/emilk/egui) GUI, and a cyberpunk theme. It runs as a **native desktop application** and, from the same
 binary, as a **server that streams the same UI to a web browser** over
-WebSocket. It includes an integrated, persistent **logbook**, many digital modes like **FT8/FT4**
+WebSocket. It includes an integrated, persistent **logbook**, many digital modes like **FT8/FT4/FT2**
 built-in, and **TCI and Hamlib rigctld servers** so third-party programs like WSJT-X can use it as their radio.
 
 <hr/>
@@ -45,7 +45,7 @@ One binary, three ways to run it:
 - **Modes** — SSB (USB/LSB), CW, AM, SAM, NFM (with **CTCSS/DCS** decoding and
   tone squelch), WFM (with broadcast
   pilot-tone **stereo**), DSB, DIGU/DIGL, a
-  spectrum-only mode, **FT8/FT4**, **JS8** (all four speeds, with directed
+  spectrum-only mode, **FT8/FT4/FT2**, **JS8** (all four speeds, with directed
   messaging, heartbeats and multi-frame free text), the keyboard modes
   **PSK31**, **RTTY**,
   **Olivia**, **THOR** and **FSQ** (with directed messaging + images),
@@ -75,7 +75,7 @@ One binary, three ways to run it:
   half-duplex sequencing (HackRF) or full-duplex (LimeSDR), and a ham-band /
   TX-range lockout so you can't key outside your allocation.
 - **Resizable layout** — drag the frequency-scale strip to resize the spectrum
-  vs. waterfall split; in FT8/FT4, drag the divider to resize the operating
+  vs. waterfall split; in FT8/FT4/FT2, drag the divider to resize the operating
   panel.
 - **Live spotting, awards & QSL** — DX cluster / POTA / SOTA / PSK Reporter spots
   as clickable panadapter markers (click to tune + pre-fill a log entry),
@@ -95,22 +95,27 @@ One binary, three ways to run it:
   Announcements play on their own sound device, so they are never recorded and
   never sent to a remote listener. The window is also exposed to NVDA, Orca and
   VoiceOver.
-- **Persistence** — device, rates, gains, memories, band stacks, the FT8/FT4
+- **Persistence** — device, rates, gains, memories, band stacks, the FT8/FT4/FT2
   operator profile, network/QSL credentials, control bindings, and the logbook
   are all stored under `~/.config/sdroxide/`.
 
-## FT8 / FT4
+## FT8 / FT4 / FT2
 
-Selecting FT8 or FT4 switches the panadapter to a zoomed sub-band waterfall with
-a decode list and an auto-sequencing QSO panel:
+Selecting FT8, FT4 or FT2 switches the panadapter to a zoomed sub-band waterfall
+with a decode list and an auto-sequencing QSO panel. The three are one protocol
+at three speeds — 15 s slots for FT8, 7.5 s for FT4, 3.75 s for FT2 — sharing a
+message format, a panel and a logbook:
 
 - Click a decoded line to move your TX audio frequency onto that signal (a faint
   marker appears on the world map); press **REPLY** to start an auto-sequenced
   QSO, or **Call CQ** to call.
 - A dot-matrix **world map** shows your grid, the station you're working, and an
   animated pulse travelling the great-circle path while you transmit.
-- Own callsign, grid, and message templates are set in the FT8/FT4 setup dialog
+- Own callsign, grid, and message templates are set in the FT8/FT4/FT2 setup dialog
   and persisted.
+- **FT2** trades sensitivity and spectrum for speed: 4-GFSK at 41.667 baud,
+  167 Hz wide, a 2.52 s burst, and a complete contact in about six seconds. It
+  wants an accurate clock — its timing search is only about half a second wide.
 - All decoding and encoding run server-side in the native engine, so native and
   browser clients behave identically.
 
@@ -145,7 +150,7 @@ paths rather than a conversation.
 ## Propagation heat map
 
 Everything the station hears becomes evidence about the ionosphere, and the
-**PROP** layer on the 3D globe draws it: WSPR both ways, FT8/FT4 and JS8
+**PROP** layer on the 3D globe draws it: WSPR both ways, FT8/FT4/FT2 and JS8
 decodes, and the logbook.
 
 - Each reception is placed at the **midpoint of its path** — the patch of
@@ -285,7 +290,7 @@ cargo run -p sdroxide-rade --bin rade-harness -- \
 ## Logbook
 
 Open the **LOG** button (available in any mode) for a persistent logbook that
-holds both FT8/FT4 and manually entered QSOs:
+holds both FT8/FT4/FT2 and manually entered QSOs:
 
 - Entries are grouped into daily **sessions** with a time span and QSO count.
 - **+ New Entry** adds a manual QSO. Alongside the basics (call, frequency, mode,
@@ -293,7 +298,7 @@ holds both FT8/FT4 and manually entered QSOs:
   country**, transmit **power**, and **contest** fields (contest id + sent/received
   serials); a **worked-before** badge warns when you've already worked that call
   on the band. **EDIT** and **DEL** amend or remove any past entry.
-- FT8/FT4 QSOs are logged automatically as they complete.
+- FT8/FT4/FT2 QSOs are logged automatically as they complete.
 - **IMPORT** loads QSOs from an ADIF (`.adi`) file (de-duplicated against the
   existing log); export the whole book to **ADIF** or plain **TXT**. A
   QSL/confirmation status column shows what's been uploaded and confirmed.
@@ -789,7 +794,7 @@ sdroxide --connect 192.168.1.10:4950
 | `--freq <HZ>` | Center frequency in Hz (default: where the last session was left; `14200000` on a first run). |
 | `--rate <HZ>` | Sample rate in Hz (default: from config). |
 | `--gain <DB>` | Overall RX gain in dB (default: hardware AGC / moderate). |
-| `--mode <MODE>` | Initial mode: `USB LSB CW AM SAM NFM WFM DIGU DIGL DSB SPEC FT8 FT4 PSK RTTY OLIVIA THOR FSQ HELL SSTV RIFP WEFAX RFPAINT RADE`. Default: the mode the last session was left in. |
+| `--mode <MODE>` | Initial mode: `USB LSB CW AM SAM NFM WFM DIGU DIGL DSB SPEC FT8 FT4 FT2 PSK RTTY OLIVIA THOR FSQ HELL SSTV RIFP WEFAX RFPAINT RADE`. Default: the mode the last session was left in. |
 | `--antenna <NAME>` | RX antenna port, as the device names it (`LNAH`, `TX/RX`; see `--probe`). Default: the port the last session was left on. |
 | `--tx-antenna <NAME>` | TX antenna port, likewise (`BAND1`, `BAND2`). |
 | `--server` | Run as a server: HTTP web client + WebSocket streaming backend. |
@@ -824,20 +829,20 @@ them, plus PTT, band, mode, filter and much else, are rebindable on the
 
 | Action | Result |
 | --- | --- |
-| Left-click | Tune the active VFO to that frequency. In FT8/FT4, sets the TX audio offset instead. |
-| **Shift** + left-click | Place the second receiver: the sub-receiver when SUB is on, VFO B otherwise. Works over a spot box and in FT8/FT4 too. |
+| Left-click | Tune the active VFO to that frequency. In FT8/FT4/FT2, sets the TX audio offset instead. |
+| **Shift** + left-click | Place the second receiver: the sub-receiver when SUB is on, VFO B otherwise. Works over a spot box and in FT8/FT4/FT2 too. |
 | Drag inside the sub-receiver's passband | Tune the sub-receiver (violet, when SUB is on) instead of panning. |
 | Left-drag | Grab and slide the spectrum — pans the view and tunes along with it. |
 | Right-drag | Pan the view only (no tuning). |
 | Scroll wheel | Zoom in/out around the cursor. |
 | Drag a passband edge | Move that filter edge (works on the spectrum and the waterfall). |
 | Drag the frequency-scale strip | Resize the spectrum vs. waterfall split. |
-| Drag the waterfall / FT8 panel divider | Resize the FT8/FT4 operating panel. |
+| Drag the waterfall / FT8 panel divider | Resize the FT8/FT4/FT2 operating panel. |
 
 **Frequency readout** — scroll the wheel over a digit to step that digit; click
 its upper half to increment, lower half to decrement.
 
-**FT8/FT4 decode list** — click a row to move your TX audio onto that signal
+**FT8/FT4/FT2 decode list** — click a row to move your TX audio onto that signal
 (and preview it on the map); press **REPLY** to start an auto-sequenced QSO.
 
 

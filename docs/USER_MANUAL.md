@@ -2,7 +2,7 @@
 
 SDRoxide is a PowerSDR/Thetis-style software-defined-radio transceiver. It gives
 you a panadapter and waterfall, dual VFOs, a full set of receive and transmit
-controls, FT8/FT4 digital modes with an integrated logbook, a wideband CW
+controls, FT8/FT4/FT2 digital modes with an integrated logbook, a wideband CW
 skimmer, and the ability to drive either a SoapySDR device or a CAT-controlled
 radio (such as a Xiegu, Icom, or Yaesu) with audio over a USB sound card. The
 same interface runs as a native desktop application, streams to a web browser,
@@ -14,7 +14,7 @@ or connects to a remote sdroxide server.
 
 1. [Feature overview](#1-feature-overview)
 2. [Basic operation](#2-basic-operation)
-3. [Digital modes (FT8, FT4, PSK31, RTTY, Olivia, THOR, FSQ, Hellschreiber, SSTV, RIFP, weather fax, JS8, RF Paint, WSPR)](#3-digital-modes)
+3. [Digital modes (FT8, FT4, FT2, PSK31, RTTY, Olivia, THOR, FSQ, Hellschreiber, SSTV, RIFP, weather fax, JS8, RF Paint, WSPR)](#3-digital-modes)
 4. [Skimmers (CW, PSK, RTTY)](#4-skimmers)
 5. [Settings](#5-settings)
 6. [Solar system 3D view](#6-solar-system-3d-view)
@@ -38,7 +38,8 @@ or connects to a remote sdroxide server.
 - **Dual VFO (A/B)** with split operation, VFO swap/copy, and an independently
   tunable sub-receiver with its own mode and filter.
 - **All the common modes:** LSB, USB, CW, AM, SAM, NFM, WFM, DIGU, DIGL, DSB, a
-  spectrum-only mode (SPEC), the automatic digital modes **FT8** and **FT4**, the
+  spectrum-only mode (SPEC), the automatic digital modes **FT8**, **FT4** and
+  **FT2**, the
   keyboard modes **PSK31**, **RTTY**, **Olivia**, **THOR** and **FSQ**, the image
   modes **SSTV**, **weather fax** and **RIFP** (draft-dulaunoy-rifp-00, a packetised image
   protocol on its own FSK modem), and the transmit-only **RF Paint**
@@ -62,7 +63,7 @@ or connects to a remote sdroxide server.
 - **Voice keyer** — ten recorded messages, transmitted from a button, a numpad
   key, a MIDI pad or a Hamlib `send_voice_mem` command; works in the voice modes
   and in RADE digital voice.
-- **FT8 / FT4** with a live decode list, automatic QSO sequencing, a world map,
+- **FT8 / FT4 / FT2** with a live decode list, automatic QSO sequencing, a world map,
   a transcript, and automatic logging.
 - **Integrated logbook** for digital and manual QSOs, with contest and QSL
   fields, a worked-before check, ADIF import/export and text export.
@@ -131,7 +132,7 @@ See the [command-line reference](#10-command-line-reference) for all options.
 
 The window has two parts: a **top control bar** of captioned modules that reflow
 onto more rows as the window narrows, and the **panadapter** (spectrum plus
-waterfall) filling the rest of the window. In FT8/FT4 the lower part of the
+waterfall) filling the rest of the window. In FT8/FT4/FT2 the lower part of the
 window is shared with the digital operating panel.
 
 ![The top control bar modules](images/02-top-bar.jpg)
@@ -157,7 +158,7 @@ The smaller grey number below the readout is the *inactive* VFO's frequency.
 - **Left-click** tunes the active VFO to the clicked frequency. **Shift+click**
   places the *second* receiver: the sub-receiver when SUB is on, VFO B otherwise.
   Unlike a plain click, it means the same thing everywhere — over a spot box it
-  takes the spot's frequency, and in FT8/FT4 it still tunes rather than moving
+  takes the spot's frequency, and in FT8/FT4/FT2 it still tunes rather than moving
   the transmit offset.
 - **Left-drag** grabs the spectrum and slides it (the tuning moves with the
   content). Let go while the pointer is still moving and the dial keeps turning,
@@ -189,7 +190,7 @@ top when the waterfall is flipped — see [§2.8](#28-the-display-and-fft-contro
 labels the allocations. Zoomed out it shows coarse bands (ham, broadcast, CB,
 AM); zoomed into a ham band it splits into the CW / digital / SSB / beacon
 sub-segments. When you zoom in close (a span of ~100 kHz or less), the digital
-sub-band is broken out into the individual popular modes — **FT8, FT4, JS8,
+sub-band is broken out into the individual popular modes — **FT8, FT4, FT2, JS8,
 WSPR, QRSS, PSK, RTTY, SSTV, RIFP, FREEDV** — each in its own colour.
 
 ### 2.4 Bands and modes
@@ -320,7 +321,7 @@ can't quietly add itself to the one you set here.
   Higher strengths remove more noise but can add faint artefacts on weak signals,
   so pick the lowest that cleans the audio; on a noisy voice signal, start with
   **DFNR Med**, and drop to **RNN Med** if the machine is struggling. (NR affects
-  only what you hear; the FT8/FT4/PSK/RTTY decoders still receive the untouched
+  only what you hear; the FT8/FT4/FT2/PSK/RTTY decoders still receive the untouched
   signal, and a steady unmodulated carrier — a heterodyne — is treated as noise
   and suppressed. Any NR engine also forces WFM to mono — see **ST** below.)
 - **ST** (WFM only) — broadcast **stereo**. It lights when the station's 19 kHz
@@ -903,7 +904,7 @@ multi-radio remote operation is a planned follow-up.
 
 sdroxide has several families of digital mode. What they all share — how a mode
 is entered, the calling-frequency buttons, and the bands with more than one
-agreed frequency — is in 3.1. **FT8** and **FT4** are automatic, timeslot-based
+agreed frequency — is in 3.1. **FT8**, **FT4** and **FT2** are automatic, timeslot-based
 modes with QSO sequencing, a world map, and automatic logging; they and the
 logbook they write into — which also serves every other mode and your manual
 QSOs — are 3.2. **PSK31**, **RTTY**, **Olivia**, **THOR** and **FSQ** are live
@@ -938,9 +939,9 @@ jumps to that band's default frequency, also staying in the mode, and you tune
 from there.
 
 Two more things hold across the modes. Your **callsign and grid** are one
-identity for the whole program: the General settings tab and the FT8/FT4 setup
+identity for the whole program: the General settings tab and the FT8/FT4/FT2 setup
 window ([3.2.1](#321-one-time-setup-your-callsign-and-grid)) edit the same
-values, and they fill the keyboard modes' CQ macros, the FT8/FT4 exchange, and
+values, and they fill the keyboard modes' CQ macros, the FT8/FT4/FT2 exchange, and
 everything the station reports or uploads. And every digital transmission goes
 through the normal transmit path, so the ham-band lockout and the usual
 transmit safety apply in every mode.
@@ -971,18 +972,38 @@ band plan, and a few of them land in Region 1's CW or phone segments (1.845,
 — but check your own band plan before you key, because sdroxide will not stop
 you.
 
-### 3.2 FT8 and FT4
+### 3.2 FT8, FT4 and FT2
 
-**FT8** and **FT4** are the automatic modes: timeslot-based, with QSO
+**FT8**, **FT4** and **FT2** are the automatic modes: timeslot-based, with QSO
 sequencing, a world map, a transcript, and automatic logging. Choose one from
-the DIGITAL row ([3.1](#31-general-considerations)) and the FT8/FT4 operating
-panel appears in the lower part of the window.
+the DIGITAL row ([3.1](#31-general-considerations)) and the operating panel
+appears in the lower part of the window.
+
+The three are the same protocol at three speeds — same message format, same
+error-correcting code, same panel, same logbook. Only the clock and the
+bandwidth differ:
+
+| | FT8 | FT4 | FT2 |
+|---|---|---|---|
+| Slot | 15 s | 7.5 s | 3.75 s |
+| Transmission | 12.6 s | 5.0 s | 2.5 s |
+| Tones | 8 | 4 | 4 |
+| Bandwidth | 50 Hz | 83 Hz | 167 Hz |
+| Decodes down to | about −21 dB | about −17 dB | about −14 dB |
+
+**FT2** is the newest and the fastest — a complete contact takes about six
+seconds, and sixteen slots go by every minute. It buys that speed with
+sensitivity and with spectrum: each signal is twice as wide as an FT4 one and
+needs roughly 3 dB more of it, so it is a strong-signal mode for open bands and
+contests rather than a replacement for FT8. It also asks more of your clock:
+with 24 ms symbols, timing that would pass unnoticed on FT8 will cost you
+decodes ([3.2.3](#323-working-stations)).
 
 ![The FT8 operating panel](images/07-ft8-panel.png)
 
 #### 3.2.1 One-time setup: your callsign and grid
 
-Click **SETUP** in the QSO area to open the **FT8 / FT4 Setup** window:
+Click **SETUP** in the QSO area to open the **FT8 / FT4 / FT2 Setup** window:
 
 - **My callsign** — your call (entered in upper case).
 - **My grid** — your Maidenhead grid locator (for example `FN42`).
@@ -991,9 +1012,10 @@ Click **SETUP** in the QSO area to open the **FT8 / FT4 Setup** window:
 - **TX watchdog / Give up after** — how long unattended transmitting may
   continue with no progress, and how many unanswered calls to one station are
   worth making. Both 0 to disable.
-- **DXpedition** — which side of an FT8 pile-up you are on: **Normal**,
+- **DXpedition** — which side of an FT8 or FT2 pile-up you are on: **Normal**,
   **Hound**, or **Fox** (see [DXpedition mode](#324-dxpedition-mode-hound-and-fox)).
-  **Fox signals** sets how many stations a Fox works at once.
+  **Fox signals** sets how many stations a Fox works at once. FT4 has no
+  DXpedition layout, so the setting is ignored there.
 - **Message templates** — the CQ / Grid / Report / R+Report / RR73 / 73 lines,
   using the placeholders `{MYCALL}`, `{MYGRID}`, `{DX}`, and `{REPORT}`. The
   defaults follow standard FT8 practice; you rarely need to change them.
@@ -1129,9 +1151,12 @@ free text is cut to 13 characters.
 - **Watch your clock.** The station card shows `DT` — how far your slot timing
   sits from the stations you are hearing, taken from the decodes themselves. It
   stays grey while you are inside half a second, turns amber past that and pink
-  past 1.5 s. FT8 and FT4 need both ends to agree where a slot begins, and a
+  past 1.5 s. All three modes need both ends to agree where a slot begins, and a
   clock far enough out that nobody can decode you looks exactly like a dead band
-  from your side, so this is the first thing to check when nobody answers.
+  from your side, so this is the first thing to check when nobody answers. FT2
+  is the strict one: its whole search window is about half a second wide, so
+  half a second of clock error that FT8 would shrug off loses you the band
+  entirely.
   Positive means you transmit early. The figure covers the whole receive path,
   so a slow audio or network chain counts the same as a wrong clock.
 - **Unattended transmitting stops itself.** Two limits, both on the FT8 setup
@@ -1142,9 +1167,9 @@ free text is cut to 13 characters.
   it and starts the clock again. Repeating a CQ doesn't count as an unanswered
   call — that is what the watchdog is for. Set either to 0 to disable it.
 
-Transmission happens automatically in your chosen time slot (FT8 slots are 15 s,
-FT4 slots are 7.5 s) and goes through the normal transmit path, so the ham-band
-lockout and transmit safety still apply.
+Transmission happens automatically in your chosen time slot (15 s on FT8, 7.5 s
+on FT4, 3.75 s on FT2) and goes through the normal transmit path, so the
+ham-band lockout and transmit safety still apply.
 
 #### 3.2.4 DXpedition mode (Hound and Fox)
 
@@ -1183,7 +1208,7 @@ Contacts are logged as their `RR73` goes out; where a caller is waiting, that
 
 #### 3.2.5 Reporting what you hear
 
-Enable **Upload my FT8/FT4 decodes** on the Network settings tab to report every
+Enable **Upload my FT8/FT4/FT2 decodes** on the Network settings tab to report every
 station you decode to [pskreporter.info](https://pskreporter.info), where your
 station then shows up as a receiver and your reports feed everyone else's
 propagation maps. Reports are batched and uploaded every five minutes (the
@@ -1196,7 +1221,7 @@ without publishing them.
 
 #### 3.2.6 Logging and the logbook
 
-Completed FT8/FT4 QSOs are logged automatically. Open the full logbook with the
+Completed FT8/FT4/FT2 QSOs are logged automatically. Open the full logbook with the
 **LOG** button (System module).
 
 ![The logbook](images/09-logbook.png)
@@ -1233,7 +1258,7 @@ The log is stored in `qso_log.json`.
 ### 3.3 PSK31 and RTTY
 
 Choose **PSK** or **RTTY** from the DIGITAL row of the Band/Mode popup. As with
-FT8/FT4 the panadapter switches to a zoomed sub-band waterfall, but the lower
+FT8/FT4/FT2 the panadapter switches to a zoomed sub-band waterfall, but the lower
 panel is a live **messaging area** instead of a QSO sequencer.
 
 ![The PSK/RTTY messaging panel](images/rtty.jpg)
@@ -1262,7 +1287,7 @@ panel is a live **messaging area** instead of a QSO sequencer.
 - **PSK** is BPSK31 — differential BPSK with the standard varicode alphabet.
 - **RTTY** defaults to 45.45 baud, 170 Hz shift, Baudot (ITA2). **Shift**
   (170 / 425 / 850 Hz) and **Baud** (45 / 50 / 75) are selectable.
-- Your callsign and grid (shared with the FT8/FT4 setup) fill the CQ macro.
+- Your callsign and grid (shared with the FT8/FT4/FT2 setup) fill the CQ macro.
 
 **Skimmers:** the PSK and RTTY skimmers (see [Skimmers](#4-skimmers)) label
 signals across each band's PSK/RTTY calling sub-bands. Clicking a label from any
@@ -1969,7 +1994,7 @@ label each one on the waterfall. There are three: **CW**, **PSK31**, and
 
 **Band-aware gating.** To avoid noise and false decodes, each skimmer only runs
 where its mode is used: the CW skimmer in CW sub-bands, and the PSK and RTTY
-skimmers in each band's PSK/RTTY calling sub-bands — with the FT8, FT4, WSPR, and
+skimmers in each band's PSK/RTTY calling sub-bands — with the FT8, FT4, FT2, WSPR, and
 QRSS watering-holes excluded so their signals aren't mistaken for PSK or RTTY
 (the WSPR window and the slow-CW/QRSS beacons just below it sit inside the RTTY
 sub-band on several bands, so they're carved out explicitly). The skimmer-decoded
@@ -2035,7 +2060,7 @@ the one to quote in a bug report, so there is no need to go looking for the
 binary to ask it.
 
 **Station** — your **Callsign** and **Grid square**. This is the identity the
-whole program uses: FT8/FT4 exchanges, the SSTV image header, the logbook, the
+whole program uses: FT8/FT4/FT2 exchanges, the SSTV image header, the logbook, the
 DX cluster login, and FreeDV Reporter. The same pair is editable from the FT8 /
 SSTV setup dialog; there is only one copy of it.
 
@@ -2311,7 +2336,7 @@ separately from your computer's own speakers and microphone.
 - **PTT method** — `CAT`, `DTR`, `RTS`, or `VOX` (how transmit is keyed).
 - **Mode control** — `CAT` (sdroxide sets the radio's mode to match) or
   `Radio controlled` (you set the mode on the radio and sdroxide follows).
-- **Digimode mode** — what to switch the rig to for FT8/FT4: `USB`, `DIGI`, or
+- **Digimode mode** — what to switch the rig to for FT8/FT4/FT2: `USB`, `DIGI`, or
   `Radio controlled`.
 - **CW keying** — where CW you send comes from, `Rig keyer (CAT)` or
   `Sound card (MCW)`. See below.
@@ -3232,7 +3257,7 @@ Setting up clients:
 - **N1MM+ / Log4OM** — pick the Hamlib/rigctld radio type and enter the same
   host and port.
 
-sdroxide reports every digital mode (FT8, FT4, PSK, RTTY's neighbours, SSTV,
+sdroxide reports every digital mode (FT8, FT4, FT2, PSK, RTTY's neighbours, SSTV,
 RADE…) as Hamlib's `PKTUSB`, because that is what they are on the air. Clients
 that read the mode and periodically write it back — WSJT-X does — therefore
 cannot knock a running FT8 session out of its mode: setting the mode already
@@ -3849,7 +3874,7 @@ machine is on screen in every open tab.
 
 ### 6.7 Your QSOs on the globe
 
-**The QSO layer** puts your FT8/FT4 traffic on the globe. Every station decoded
+**The QSO layer** puts your FT8/FT4/FT2 traffic on the globe. Every station decoded
 in the last two minutes is a white dot that fades as it ages — the same set the
 flat map in the FT8 panel shows, so the two never disagree. Behind them, every
 decode of the last hour is an arc from your QTH to the station that sent it,
@@ -3889,7 +3914,7 @@ with an empty hour that fills as the decodes come in.
 **The PROP layer** paints where signals are actually getting through, band by
 band, from every mode this station runs. Everything this station hears is
 evidence about the ionosphere, and it is all pooled into one picture: WSPR both
-ways, FT8/FT4 and JS8 decodes, and the logbook. With the
+ways, FT8/FT4/FT2 and JS8 decodes, and the logbook. With the
 [Reverse Beacon Network](#55-spots-spot-feeds) switched on, so is everything
 *everyone else* hears. The **PROP** button above the flat map in the FT8 and WSPR
 operating panels draws the same thing under the panel map.
@@ -3913,7 +3938,7 @@ On the flat map the controls are the **PROP** button above it; on the globe they
 are the `PROP` button in the menu bar, which adds the source filter and the
 half-life. Both draw the same field.
 
-**Signal reports are made comparable before they are pooled.** WSPR, FT8, FT4 and
+**Signal reports are made comparable before they are pooled.** WSPR, FT8, FT4, FT2 and
 JS8 all quote SNR in a 2500 Hz bandwidth, but their decode floors are ten
 decibels apart — so what is stored is the margin above each mode's *own* floor.
 Without that, the most sensitive mode on the band would paint as the worst
@@ -4291,7 +4316,7 @@ sdroxide --server --web-root path/to/sdroxide-web/dist
 ### 8.2 What works in the browser
 
 The web client mirrors the native UI: tuning, mode and band changes, the
-panadapter and waterfall, receive audio, FT8/FT4, the logbook, memories, and
+panadapter and waterfall, receive audio, FT8/FT4/FT2, the logbook, memories, and
 meters. Microphone transmit is supported where the browser grants microphone
 access — see [audio needs a secure context](#83-audio-needs-a-secure-context)
 below. **Settings → Radio** shows the server device's gains and antenna
@@ -4395,7 +4420,7 @@ The panes, by mode:
 
 | Mode | Buttons |
 | --- | --- |
-| FT8, FT4 | **DECODES** · **QSO** · WFALL |
+| FT8, FT4, FT2 | **DECODES** · **QSO** · WFALL |
 | JS8 | **HEARD** · **CHAT** · WFALL |
 | FSQ | **HEARD** · **TRAFFIC** · WFALL |
 | SSTV, RIFP | **RECEIVE** · **SEND** · WFALL |
@@ -4414,7 +4439,7 @@ the decode list switches to **QSO** by itself — you started an exchange, so th
 panel shows you the exchange. In SSTV the live picture and the received gallery
 stack one above the other instead of sharing the width.
 
-**The FT8/FT4 world map** is gone on both compact layouts. It is the largest
+**The FT8/FT4/FT2 world map** is gone on both compact layouts. It is the largest
 thing in that column and the only part of it that is neither the state of the
 contact nor a control that changes it, and on a tablet it was taking the room
 the transmit buttons needed. The same stations are still on the panadapter and
@@ -4717,7 +4742,7 @@ Longwave and the HF standard-time stations are not in EiBi's file — it starts 
 | `--freq <HZ>` | Center frequency in Hz (default: where the last session was left, or 14,200,000 on a first run). |
 | `--rate <HZ>` | Sample rate in Hz (default: from config). |
 | `--gain <DB>` | Overall RX gain in dB (default: hardware AGC or a moderate value). |
-| `--mode <MODE>` | Initial mode (USB, LSB, CW, AM, SAM, NFM, WFM, DIGU, DIGL, DSB, SPEC, FT8, FT4, PSK, RTTY, OLIVIA, THOR, FSQ, SSTV, RIFP, WEFAX, RFPAINT, RADE). Default: the mode the last session was left in. |
+| `--mode <MODE>` | Initial mode (USB, LSB, CW, AM, SAM, NFM, WFM, DIGU, DIGL, DSB, SPEC, FT8, FT4, FT2, PSK, RTTY, OLIVIA, THOR, FSQ, SSTV, RIFP, WEFAX, RFPAINT, RADE). Default: the mode the last session was left in. |
 | `--antenna <NAME>` | RX antenna port, as the device names it (LNAH, TX/RX — `--probe` lists them). Default: the port the last session was left on, and failing that whatever the driver selects. |
 | `--tx-antenna <NAME>` | TX antenna port, likewise (BAND1, BAND2). |
 | `--server` | Run as a server (web client + WebSocket streaming backend). |
@@ -4787,7 +4812,7 @@ sdroxide stores its settings under the per-user config directory:
 | --- | --- | --- |
 | `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, plus the `[ui]` display preferences (including `theme`, `button_style` and `window_style`), the `[speech]` announcement settings ([§5.3](#53-ui-display-preferences-and-voice-announcements)) and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
 | `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/RX-888/SDRplay/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
-| `digi.json` | JSON | Digital-mode operator settings: your callsign and grid, FT8/FT4 TX period, auto-sequence and message templates, and the WSPR beacon's duty cycle, power and band-hop list. |
+| `digi.json` | JSON | Digital-mode operator settings: your callsign and grid, FT8/FT4/FT2 TX period, auto-sequence and message templates, and the WSPR beacon's duty cycle, power and band-hop list. |
 | `memories.json` | JSON | Saved memory channels. |
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |
 | `session.json` | JSON | Where you left the radio: the dial frequency, the mode and the RX/TX antenna ports, restored the next time you start. Written by the engine as you tune, so `--freq`, `--mode`, `--antenna` and `--tx-antenna` override it for a run without changing it. |
@@ -4958,7 +4983,7 @@ carry I and Q. Use a stereo line-input interface for IQ, or switch **Sound
 format** to **Demod audio**.
 
 **The CAT radio does not change mode.**
-On the **Radio** tab, set **Mode control** to **CAT**. For FT8/FT4, set
+On the **Radio** tab, set **Mode control** to **CAT**. For FT8/FT4/FT2, set
 **Digimode mode** to **USB** or **DIGI** as your rig expects. Check the serial
 port, baud, and (for Icom/Xiegu) the **Radio ID**.
 
@@ -4972,7 +4997,7 @@ rig's own reply, so both work without a setting.)
 
 **CW transmits nothing.**
 Set **CW keying** to **Rig keyer (CAT)** on the Radio tab — see
-[5.2.2](#522-cat--audio-radios-serial-controlled-transceivers). A rig in CW
+[5.2.2](#522-cat-radios-serial-control--usb-audio). A rig in CW
 ignores audio sent to its sound card, so it can only be keyed from text. On
 Yaesu also check that CW memory 1 is free to be overwritten; on any rig, that
 the radio is actually in CW (**Mode control** = `CAT`) and that its power output

@@ -2472,6 +2472,9 @@ impl Engine {
             // mode, so it has to come from the status rather than a constant.
             tr_period_s: match s.mode {
                 sdroxide_types::Mode::Ft4 => 7,
+                // The WSJT-X UDP Status message carries the period as whole
+                // seconds, so FT4's 7.5 goes out as 7 and FT2's 3.75 as 3.
+                sdroxide_types::Mode::Ft2 => 3,
                 sdroxide_types::Mode::Js8 => s.js8.as_ref().map_or(15, |j| j.speed.slot_s() as u32),
                 _ => 15,
             },
@@ -6904,6 +6907,7 @@ fn rig_mode_class(m: Mode) -> u8 {
         | Mode::Digu
         | Mode::Ft8
         | Mode::Ft4
+        | Mode::Ft2
         | Mode::Js8
         | Mode::Wspr
         | Mode::Psk

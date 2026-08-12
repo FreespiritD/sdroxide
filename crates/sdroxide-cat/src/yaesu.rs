@@ -91,6 +91,7 @@ fn mode_digit(m: Mode) -> char {
         | Mode::Js8
         | Mode::Wspr
         | Mode::Ft4
+        | Mode::Ft2
         | Mode::Psk
         | Mode::Rtty
         | Mode::Olivia

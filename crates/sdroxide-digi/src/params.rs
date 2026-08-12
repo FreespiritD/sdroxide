@@ -31,6 +31,12 @@ impl DigiParams {
     pub fn for_mode(mode: Mode) -> Self {
         match mode {
             Mode::Ft4 => DigiParams { mode, slot_s: 7.5, tx_offset_s: 0.5, burst_s: 4.48 },
+            // FT2 is FT4 at double the symbol rate: 105 × 288 / 12000 = 2.52 s
+            // of signal in a 3.75 s slot, keyed 0.1 s in (Decodium's
+            // `Modulator.cpp` sets `delay_ms=100` for FT2 against FT4's 300).
+            // That leaves 1.13 s for decode and turnaround, which is the whole
+            // point of the mode.
+            Mode::Ft2 => DigiParams { mode, slot_s: 3.75, tx_offset_s: 0.1, burst_s: 2.52 },
             // Symbol 0 is nominally 0.5 s into the slot (matches WSJT-X /
             // mfsk-core dt reference).
             Mode::Ft8 => DigiParams { mode, slot_s: 15.0, tx_offset_s: 0.5, burst_s: 12.64 },
@@ -82,7 +88,19 @@ mod tests {
         // another's timing *and* another's decoder.
         assert_eq!(DigiParams::for_mode(Mode::Ft8).mode, Mode::Ft8);
         assert_eq!(DigiParams::for_mode(Mode::Ft4).mode, Mode::Ft4);
+        assert_eq!(DigiParams::for_mode(Mode::Ft2).mode, Mode::Ft2);
         assert_eq!(DigiParams::for_js8(Js8Speed::Normal).mode, Mode::Js8);
+    }
+
+    /// Every slotted mode's burst has to start and finish inside its slot, and
+    /// its slot has to divide the minute or the two ends drift apart.
+    #[test]
+    fn slotted_timing_closes_on_the_minute() {
+        for mode in [Mode::Ft8, Mode::Ft4, Mode::Ft2] {
+            let p = DigiParams::for_mode(mode);
+            assert!(p.tx_offset_s + p.burst_s < p.slot_s, "{mode:?} burst overruns its slot");
+            assert!((60.0 / p.slot_s).fract() < 1e-9, "{mode:?} slot does not divide a minute");
+        }
     }
 
     #[test]

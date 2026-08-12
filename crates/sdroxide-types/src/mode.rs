@@ -70,12 +70,19 @@ pub enum Mode {
     /// a path, which is why its decodes are [`crate::WsprSpot`]s rather than
     /// [`crate::Decode`]s. Appended for the same reason as [`Mode::Hell`].
     Wspr,
+    /// FT2 — FT4 with the symbol rate doubled: 4-GFSK at 41.667 baud, 167 Hz
+    /// wide, a 2.52 s burst in a 3.75 s slot. The LDPC(174,91) code, the
+    /// CRC-14 and the 77-bit payload are FT8's and FT4's, so the sequencer,
+    /// the decode list and the logbook see nothing new — only the clock runs
+    /// four times faster than FT8's. Appended for the same reason as
+    /// [`Mode::Hell`].
+    Ft2,
 }
 
 impl Mode {
     /// Every mode, in the order they cycle and appear in the picker — which is
     /// deliberately *not* the enum's declaration order (see [`Mode::Hell`]).
-    pub const ALL: [Mode; 26] = [
+    pub const ALL: [Mode; 27] = [
         Mode::Lsb,
         Mode::Usb,
         Mode::Cw,
@@ -89,6 +96,7 @@ impl Mode {
         Mode::Spec,
         Mode::Ft8,
         Mode::Ft4,
+        Mode::Ft2,
         Mode::Js8,
         Mode::Wspr,
         Mode::Psk,
@@ -108,9 +116,10 @@ impl Mode {
     /// slotted FT8/FT4 modes, the continuous keyboard modes, Hell, SSTV, RIFP,
     /// RF Paint). All are USB underneath except RIFP, which is FSK on the
     /// carrier.
-    pub const DIGITAL: [Mode; 15] = [
+    pub const DIGITAL: [Mode; 16] = [
         Mode::Ft8,
         Mode::Ft4,
+        Mode::Ft2,
         Mode::Js8,
         Mode::Wspr,
         Mode::Psk,
@@ -132,6 +141,7 @@ impl Mode {
             self,
             Mode::Ft8
                 | Mode::Ft4
+                | Mode::Ft2
                 | Mode::Js8
                 | Mode::Wspr
                 | Mode::Psk
@@ -171,7 +181,7 @@ impl Mode {
     /// Including it would buy an overlay that is always empty and a transmit
     /// frequency picker for a mode whose tone offset does not move.
     pub fn is_slotted(self) -> bool {
-        matches!(self, Mode::Ft8 | Mode::Ft4 | Mode::Js8)
+        matches!(self, Mode::Ft8 | Mode::Ft4 | Mode::Ft2 | Mode::Js8)
     }
 
     /// True for WSPR. Its own controller and panel: it is slotted like FT8, but
@@ -270,6 +280,7 @@ impl Mode {
             Mode::Spec => "SPEC",
             Mode::Ft8 => "FT8",
             Mode::Ft4 => "FT4",
+            Mode::Ft2 => "FT2",
             Mode::Psk => "PSK",
             Mode::Rtty => "RTTY",
             Mode::Sstv => "SSTV",
@@ -307,6 +318,7 @@ impl Mode {
             // SSTV occupies the full USB audio passband.
             Mode::Ft8
             | Mode::Ft4
+            | Mode::Ft2
             | Mode::Js8
             | Mode::Psk
             | Mode::Rtty
@@ -384,6 +396,7 @@ impl Mode {
             | Mode::Spec
             | Mode::Ft8
             | Mode::Ft4
+            | Mode::Ft2
             | Mode::Js8
             | Mode::Wspr
             | Mode::Psk

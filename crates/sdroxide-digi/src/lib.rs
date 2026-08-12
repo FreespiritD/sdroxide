@@ -17,6 +17,7 @@ pub mod controller;
 pub mod cw_controller;
 pub mod fox;
 pub mod fsq_controller;
+pub mod ft2;
 pub mod hell_controller;
 pub mod js8;
 pub mod js8_controller;
@@ -208,6 +209,7 @@ mod dispatch_tests {
         assert_eq!(pick(Mode::Wspr), "wspr");
         assert_eq!(pick(Mode::Ft8), "ft8");
         assert_eq!(pick(Mode::Ft4), "ft8");
+        assert_eq!(pick(Mode::Ft2), "ft8");
         assert_eq!(pick(Mode::Fsq), "fsq");
         assert_eq!(pick(Mode::Hell), "hell");
         assert_eq!(pick(Mode::Psk), "text");
