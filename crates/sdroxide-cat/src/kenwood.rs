@@ -48,7 +48,7 @@ const DATA_PROBE_POLLS: u32 = 3;
 
 pub struct Kenwood {
     buf: String,
-    /// Which `TX` form keys this rig — see [`KenwoodSend`].
+    /// Which generation's `TX` form keys this rig — see [`KenwoodSend`].
     send: KenwoodSend,
     /// Mode digit from the rig's last `MD;` reply.
     mode_digit: Option<char>,
@@ -193,8 +193,8 @@ impl Protocol for Kenwood {
     fn ptt(&self, on: bool) -> Vec<u8> {
         if on {
             match self.send {
-                KenwoodSend::Standard => b"TX;".to_vec(),
-                KenwoodSend::Data => b"TX1;".to_vec(),
+                KenwoodSend::Ts2000 => b"TX;".to_vec(),
+                KenwoodSend::Ts590 => b"TX1;".to_vec(),
             }
         } else {
             // Never `TX0;` — that is a *transmit* command on this family.
@@ -315,7 +315,7 @@ mod tests {
     use super::*;
 
     fn kenwood() -> Kenwood {
-        Kenwood::new(KenwoodSend::Standard)
+        Kenwood::new(KenwoodSend::Ts2000)
     }
 
     fn parse_str(k: &mut Kenwood, s: &str) -> Vec<CatUpdate> {
@@ -341,13 +341,23 @@ mod tests {
 
     #[test]
     fn unkeying_uses_rx_because_tx0_would_transmit() {
-        let k = kenwood();
-        assert_eq!(k.ptt(true), b"TX;".to_vec());
-        assert_eq!(k.ptt(false), b"RX;".to_vec());
-        // The data-input SEND, for rigs that route transmit audio by which TX
-        // command keyed them.
-        assert_eq!(Kenwood::new(KenwoodSend::Data).ptt(true), b"TX1;".to_vec());
-        assert_eq!(Kenwood::new(KenwoodSend::Data).ptt(false), b"RX;".to_vec());
+        // Whichever generation keys the rig, only `RX;` stops it. `TX0;` — the
+        // Yaesu unkey — would be a second key-down.
+        for send in KenwoodSend::ALL {
+            assert_eq!(Kenwood::new(send).ptt(false), b"RX;".to_vec(), "{send:?} unkey");
+        }
+    }
+
+    #[test]
+    fn each_generation_keys_with_its_own_send() {
+        // TS-2000 and earlier: the ordinary send, on the main band. `TX1;`
+        // there is the *sub*-band, which is a different band entirely.
+        assert_eq!(Kenwood::new(KenwoodSend::Ts2000).ptt(true), b"TX;".to_vec());
+        // TS-590 and later: DATA SEND, which keys with the ACC2/USB input live
+        // instead of the microphone.
+        assert_eq!(Kenwood::new(KenwoodSend::Ts590).ptt(true), b"TX1;".to_vec());
+        // The default cannot transmit somewhere unintended.
+        assert_eq!(KenwoodSend::default(), KenwoodSend::Ts2000);
     }
 
     #[test]

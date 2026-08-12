@@ -2476,14 +2476,20 @@ separately from your computer's own speakers and microphone.
 - **CW keying** — where CW you send comes from, `Rig keyer (CAT)` or
   `Sound card (MCW)`. See below.
 - **Poll rate** — how often (Hz) sdroxide reads the rig's frequency and mode.
-- **Send command** (Kenwood only) — which `TX` command keys the rig when **PTT
-  method** is `CAT`. The parameter does not mean the same thing on every model,
-  so sdroxide does not guess it. `Standard (TX;)` is the front-panel SEND and
-  every model understands it; on a TS-590 and later it selects the *microphone*
-  input, which mutes the ACC2/USB audio sdroxide transmits — the classic "it
-  keys but nothing goes out" fault. `Data (TX1;)` is DATA SEND on those rigs and
-  is the one to use there. Do **not** set it on a TS-2000, where `TX1;` means
-  transmit on the sub-band — a different band entirely.
+- **Send command** (Kenwood only) — which transceiver *generation* keys the rig
+  when **PTT method** is `CAT`. The two disagree about what the `TX` parameter
+  means, nothing on the wire tells them apart, and there is no value that is
+  right on both — so it is a setting rather than a guess:
+  - `TS-2000 style (TX;)` — TS-480, TS-570, TS-870, TS-2000, and any Kenwood
+    with no separate data input. The ordinary send, on the main band.
+  - `TS-590 style (TX1;)` — TS-590S/SG, TS-890, TS-990. DATA SEND, which keys
+    with the ACC2/USB audio input live. On these rigs the plain send selects the
+    *microphone* instead and mutes the audio sdroxide transmits — the classic
+    "it keys but nothing goes out" fault.
+
+  The default is `TS-2000 style`, because the two mistakes are not equally bad:
+  a TS-590 set wrong transmits silence, while a TS-2000 set wrong transmits on
+  the **sub-band** — another band entirely.
 - **Radio ID (hex)** — the CI-V address, for Icom and Xiegu radios.
 
 Scroll down for **Apply / reconnect**, which reopens the rig with the new
@@ -5164,8 +5170,13 @@ family to `Kenwood`, which unkeys with `RX;`. Pull the CAT cable or switch the
 rig off to stop it in the meantime.
 
 **The Kenwood keys but no audio goes out.**
-On a TS-590 and later, set **Send command** to `Data (TX1;)`. The plain `TX;`
-selects the microphone input and mutes the ACC2/USB audio sdroxide transmits.
+On a TS-590S/SG, TS-890 or TS-990, set **Send command** to `TS-590 style
+(TX1;)`. The plain send selects the microphone input and mutes the ACC2/USB
+audio sdroxide transmits.
+
+**The Kenwood transmits on the wrong band.**
+On a TS-2000, set **Send command** back to `TS-2000 style (TX;)`. `TX1;` is
+DATA SEND on a TS-590 but *transmit on the sub-band* on a TS-2000.
 
 **CW transmits nothing.**
 Set **CW keying** to **Rig keyer (CAT)** on the Radio tab — see

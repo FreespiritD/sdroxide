@@ -177,31 +177,37 @@ impl CatFamily {
     }
 }
 
-/// Which `TX` command keys a Kenwood.
+/// Which transceiver generation's `TX` command keys the rig.
 ///
-/// The parameter means different things on different models, and picking wrong
-/// is not a no-op either way, so it stays the operator's choice. On a TS-590 and
-/// later, `TX1;` is DATA SEND — transmit with the ACC2/USB input live — while a
-/// plain `TX;` is the front-panel SEND, which mutes that input and puts a
-/// digital-mode station on the air with no audio. On a TS-2000, `TX1;` instead
-/// means *transmit on the sub-band*, which is a different band entirely.
+/// Really a question about the rig, not about sdroxide: the two generations
+/// disagree about what the `TX` parameter *means*, and there is no value that
+/// is right on both. On a TS-590 and later, `TX1;` is DATA SEND — key with the
+/// ACC2/USB input live — while the plain send selects the microphone input and
+/// puts a digital-mode station on the air with no audio at all. On a TS-2000,
+/// `TX1;` instead means transmit on the **sub-band**, which is a different band
+/// entirely. Nothing on the wire distinguishes the two, so the operator says.
 ///
-/// So the default is the one that cannot transmit somewhere unintended.
+/// The default is the generation whose command cannot transmit somewhere
+/// unintended: a TS-590 set wrong is silent, a TS-2000 set wrong is on the air
+/// in the wrong place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum KenwoodSend {
-    /// `TX;` — the plain SEND every model understands.
+    /// TS-2000 and earlier (TS-480, TS-570, TS-870, TS-2000): plain `TX;` — the
+    /// ordinary send, on the main band. Also the right answer for any Kenwood
+    /// with no separate data input to key.
     #[default]
-    Standard,
-    /// `TX1;` — DATA SEND on the TS-590 and later. Not for a TS-2000.
-    Data,
+    Ts2000,
+    /// TS-590 and later (TS-590S/SG, TS-890, TS-990): `TX1;` — DATA SEND, which
+    /// keys with the ACC2/USB audio input live rather than the microphone.
+    Ts590,
 }
 
 impl KenwoodSend {
-    pub const ALL: [KenwoodSend; 2] = [KenwoodSend::Standard, KenwoodSend::Data];
+    pub const ALL: [KenwoodSend; 2] = [KenwoodSend::Ts2000, KenwoodSend::Ts590];
     pub fn label(self) -> &'static str {
         match self {
-            KenwoodSend::Standard => "Standard (TX;)",
-            KenwoodSend::Data => "Data (TX1;)",
+            KenwoodSend::Ts2000 => "TS-2000 style (TX;)",
+            KenwoodSend::Ts590 => "TS-590 style (TX1;)",
         }
     }
 }

@@ -133,15 +133,18 @@ pub(in crate::app) fn settings_cat_tab(
 
         if cfg.cat.family == CatFamily::Kenwood {
             ui.label("Send command").on_hover_text(
-                "Which TX command keys the rig, for PTT method \"CAT\". The \
-                 parameter does not mean the same thing on every Kenwood, so \
-                 it is not guessed.\n\n\
-                 \"Standard (TX;)\" is the front-panel SEND and works on every \
-                 model — but on a TS-590 and later it selects the microphone \
-                 input, which mutes the ACC2/USB audio sdroxide transmits.\n\n\
-                 \"Data (TX1;)\" is DATA SEND on those rigs and is the one to \
-                 use there. Do not set it on a TS-2000, where TX1 means \
-                 transmit on the sub-band instead.",
+                "Which transceiver generation keys the rig, for PTT method \
+                 \"CAT\". The two disagree about what the TX parameter means \
+                 and nothing on the wire tells them apart, so pick the one \
+                 that matches your radio.\n\n\
+                 \"TS-2000 style (TX;)\" — TS-480, TS-570, TS-870, TS-2000: \
+                 the ordinary send, on the main band.\n\n\
+                 \"TS-590 style (TX1;)\" — TS-590S/SG, TS-890, TS-990: DATA \
+                 SEND, which keys with the ACC2/USB audio input live. On these \
+                 rigs the plain send selects the microphone instead and mutes \
+                 the audio sdroxide transmits.\n\n\
+                 Set wrong, a TS-590 transmits silence — but a TS-2000 \
+                 transmits on the sub-band, which is another band entirely.",
             );
             enum_combo(
                 ui,
