@@ -1078,11 +1078,27 @@ fn parse_blocks(md: &str) -> Vec<Block> {
         }
 
         // Paragraph: consecutive plain lines.
+        //
+        // The *first* line is always taken, even when it looks like the start
+        // of a block. Reaching here means every branch above declined it — a
+        // table row whose header got separated from it, a `#heading` with no
+        // space after the hash, an image line that would not parse — and
+        // re-testing it here would break out of this loop with `i` exactly
+        // where it started, leaving the outer loop to reconsider the same line
+        // forever.
+        //
+        // That is not a cosmetic bug. This runs inside the eframe app-creation
+        // closure, before the first frame, so a parser that never returns is a
+        // program that opens no window at all: audio and the engine come up,
+        // the process sits there, and nothing on screen says why. One stray
+        // newline inside a table row in `USER_MANUAL.md` did exactly that.
+        // Malformed markdown may render badly; it may not hang the GUI.
+        let start = i;
         let mut buf = String::new();
         while i < lines.len() {
             let l = lines[i];
             let lt = l.trim();
-            if lt.is_empty() || is_block_start(l) {
+            if lt.is_empty() || (i > start && is_block_start(l)) {
                 break;
             }
             if !buf.is_empty() {
@@ -1091,6 +1107,10 @@ fn parse_blocks(md: &str) -> Vec<Block> {
             buf.push_str(lt);
             i += 1;
         }
+        // Belt and braces: whatever the branches above do in future, this loop
+        // is the last one and it must always move.
+        debug_assert!(i > start, "parse_blocks made no progress at line {start}");
+        i = i.max(start + 1);
         blocks.push(Block::Paragraph(parse_inline(&buf)));
     }
     blocks
@@ -1314,6 +1334,55 @@ fn parse_link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Markdown that no block branch claims must still be consumed.
+    ///
+    /// Each of these used to spin `parse_blocks` on one line forever. Because
+    /// the parse happens inside the eframe app-creation closure, before the
+    /// first frame, the symptom was not a broken help page — it was a program
+    /// that started, brought up the radio and the audio, and then opened no
+    /// window at all, with nothing on screen to say why. A stray newline in the
+    /// middle of a table row in `USER_MANUAL.md` was enough to cause it: the
+    /// rows after the break were orphaned from their header, and an orphaned
+    /// `|` row is a line that looks like a block and belongs to none.
+    ///
+    /// In a debug build the `debug_assert!` in `parse_blocks` turns a
+    /// reintroduced hang into a panic here rather than a test that never ends.
+    #[test]
+    fn markdown_that_matches_no_block_is_still_consumed() {
+        for (name, md) in [
+            ("orphaned table row", "| a | b |\n| c | d |\n"),
+            ("table whose header lost its row", "| File | Format |\nnot a row |\n| x | y |\n"),
+            ("hash with no space", "#nospace\n"),
+            ("image that will not parse", "![unterminated\n"),
+            ("a lone pipe", "|\n"),
+            ("pipe after a paragraph", "text\n| orphan |\nmore text\n"),
+        ] {
+            let blocks = parse_blocks(md);
+            assert!(!blocks.is_empty(), "{name}: parsed to nothing");
+        }
+        // And the ordinary constructs still parse as themselves, so the
+        // always-take-the-first-line rule has not swallowed real blocks.
+        let doc = "# Title\n\ntext\n\n- one\n- two\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n";
+        let blocks = parse_blocks(doc);
+        assert!(matches!(blocks[0], Block::Heading { level: 1, .. }));
+        assert!(matches!(blocks[1], Block::Paragraph(_)));
+        assert!(matches!(blocks[2], Block::Bullets(ref v) if v.len() == 2));
+        assert!(matches!(blocks[3], Block::Table { ref rows, .. } if rows.len() == 1));
+    }
+
+    /// The shipped manual must parse, because it is parsed on the way to the
+    /// first frame. This is the test that would have caught the broken table
+    /// row before it ever reached a running program.
+    #[test]
+    fn the_bundled_manual_parses() {
+        let blocks = parse_blocks(MANUAL_MD);
+        assert!(blocks.len() > 500, "only {} blocks — the manual did not parse", blocks.len());
+        // A table row split across two lines orphans every row below it, which
+        // shows up as the table count collapsing rather than as an error.
+        let tables = blocks.iter().filter(|b| matches!(b, Block::Table { .. })).count();
+        assert!(tables > 10, "only {tables} tables — a table row is probably split over two lines");
+    }
 
     /// One key-down event, no modifiers.
     fn press(key: egui::Key) -> egui::Event {

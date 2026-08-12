@@ -374,16 +374,27 @@ impl Store {
     }
 
     fn load<T: serde::de::DeserializeOwned + Default>(&self, file: &str) -> T {
-        let Ok(dir) = self.dir() else { return T::default() };
+        self.load_checked(file).0
+    }
+
+    /// [`Store::load`], plus whether the file had to be **quarantined**.
+    ///
+    /// That is a different thing from the file being absent, and for some files
+    /// the difference decides what a safe fallback is. Absent means a first run
+    /// and the defaults are the right answer; quarantined means the operator
+    /// had a configuration and it has just been taken away from them, which is
+    /// not a state to guess confidently in.
+    fn load_checked<T: serde::de::DeserializeOwned + Default>(&self, file: &str) -> (T, bool) {
+        let Ok(dir) = self.dir() else { return (T::default(), false) };
         match fs::read_to_string(dir.join(file)) {
             Ok(text) => match serde_json::from_str(&text) {
-                Ok(v) => v,
+                Ok(v) => (v, false),
                 Err(e) => {
                     quarantine_unreadable(&dir, file, &e);
-                    T::default()
+                    (T::default(), true)
                 }
             },
-            Err(_) => T::default(),
+            Err(_) => (T::default(), false),
         }
     }
 
@@ -394,8 +405,53 @@ impl Store {
     }
 
     /// Radio backend config, this scope's `radio.json`.
+    ///
+    /// A file that had to be quarantined comes back as the defaults with the
+    /// interface set to [`Backend::None`] — open *nothing* — rather than the
+    /// default backend.
+    ///
+    /// The difference is not cosmetic, and the reason is a field report. Serde
+    /// fails a `RadioConfig` whole: one unreadable value anywhere in the file,
+    /// from a setting for a rig that is not even connected, discards the
+    /// operator's interface selection along with it. The default backend then
+    /// goes looking for hardware and opens whatever it finds first — on that
+    /// machine, a SoapySDR module that claims the receiver's bare USB
+    /// controller id, which flooded the console and never started. The operator
+    /// had selected a native driver and had no way to connect any of it to a
+    /// config file that had been silently reset.
+    ///
+    /// `Backend::None` is exactly the right state to land in: it already means
+    /// "opened nothing, waiting for the operator to choose", the settings panel
+    /// already renders that as a page about choosing one, and the alert
+    /// [`quarantine_unreadable`] queues already points there. Nothing is
+    /// grabbed on the way.
+    ///
+    /// A *missing* file is untouched by this — that is a first run, where the
+    /// defaults are the right answer.
+    ///
+    /// The fallback is **written back**, and that is the half that matters.
+    /// Quarantine *renames* the unreadable file away, so without a re-seed the
+    /// very next start finds no `radio.json` at all — indistinguishable from a
+    /// first run — and goes straight back to the default backend. The operator
+    /// in the report above hit that on every subsequent launch, not just the
+    /// one where their config broke. Persisting the choice makes "nothing is
+    /// selected" a state that survives a restart, which is the only way it is
+    /// any use.
     pub fn load_radio_config(&self) -> sdroxide_types::RadioConfig {
-        self.load("radio.json")
+        let (mut cfg, quarantined) = self.load_checked::<sdroxide_types::RadioConfig>("radio.json");
+        if quarantined {
+            warn!(
+                "radio.json was reset, so no interface is selected — pick one in \
+                 Settings → Radio rather than letting the defaults open something"
+            );
+            cfg.backend = sdroxide_types::Backend::None;
+            // Best effort. If it cannot be written the program still runs on
+            // the safe value for this session; only the memory of it is lost.
+            if let Err(e) = self.save_radio_config(&cfg) {
+                warn!("could not record the reset radio.json: {e}");
+            }
+        }
+        cfg
     }
 
     pub fn save_radio_config(&self, cfg: &sdroxide_types::RadioConfig) -> Result<(), ConfigError> {
@@ -1733,19 +1789,29 @@ mod tests {
         // A radio.json that does not parse (truncated by a crash mid-write,
         // disk full, hand edit gone wrong) silently stripping the operator's
         // whole setup is how a field RSP1B "forgot" its pinned serial. The
-        // load still falls back to defaults — startup must never fail on
-        // config — but the broken file is kept as evidence and an
-        // operator-visible alert is queued.
+        // load still falls back — startup must never fail on config — but it
+        // falls back to *no interface at all* rather than to the default one,
+        // the broken file is kept as evidence, and an alert is queued. See
+        // `Store::load_radio_config` and `tests/quarantine.rs` for why the
+        // default backend is the wrong place to land.
         let _ = take_load_alerts();
         fs::write(root.join("radio.json"), "{ \"backend\": \"Sdr").unwrap();
-        assert_eq!(Store::station().load_radio_config(), sdroxide_types::RadioConfig::default());
+        let reset = sdroxide_types::RadioConfig {
+            backend: sdroxide_types::Backend::None,
+            ..Default::default()
+        };
+        assert_eq!(Store::station().load_radio_config(), reset);
         assert!(root.join("radio.json.bak").exists(), "the broken file must be kept");
-        assert!(!root.join("radio.json").exists(), "quarantine renames, not copies");
         let alerts = take_load_alerts();
         assert_eq!(alerts.len(), 1);
         assert!(alerts[0].contains("radio.json.bak"), "{}", alerts[0]);
+        // The fallback is written back, so "nothing is selected" survives a
+        // restart. Without this the next start finds no file, reads that as a
+        // first run, and goes straight back to the default backend — which is
+        // the state the operator was actually stuck in.
+        assert!(root.join("radio.json").exists(), "the safe fallback was not recorded");
+        assert_eq!(Store::station().load_radio_config(), reset);
         // Once: the rename leaves nothing for the next load to complain about.
-        assert_eq!(Store::station().load_radio_config(), sdroxide_types::RadioConfig::default());
         assert!(take_load_alerts().is_empty());
 
         // Saves go through a sibling temp file + rename, so a crash mid-write
