@@ -205,10 +205,20 @@ pub enum KenwoodSend {
     /// TS-2000 and earlier (TS-480, TS-570, TS-870, TS-2000): plain `TX;` — the
     /// ordinary send, on the main band. Also the right answer for any Kenwood
     /// with no separate data input to key.
+    ///
+    /// The alias is the name this variant shipped under before it was renamed
+    /// by model. It is not cosmetic: `radio.json` is stored by variant *name*,
+    /// so without it every config written under the old name fails to
+    /// deserialize — and because serde fails the whole `RadioConfig`, that
+    /// takes the operator's interface selection with it and resets them to the
+    /// default backend. One renamed word cost a working RX-888 setup exactly
+    /// that way.
     #[default]
+    #[serde(alias = "Standard")]
     Ts2000,
     /// TS-590 and later (TS-590S/SG, TS-890, TS-990): `TX1;` — DATA SEND, which
     /// keys with the ACC2/USB audio input live rather than the microphone.
+    #[serde(alias = "Data")]
     Ts590,
 }
 
@@ -2206,6 +2216,38 @@ mod tests {
         assert_eq!(SdrPlayAgc::Hz50.code(), 2.0);
         assert_eq!(SdrPlayAgc::Hz5.code(), 3.0);
         assert_eq!(SdrPlayAgc::from_code(99.0), SdrPlayAgc::Hz50);
+    }
+
+    /// A renamed variant must keep reading under its old name.
+    ///
+    /// Field-reported, and the cost was out of all proportion to the change.
+    /// `KenwoodSend::Standard` was renamed `Ts2000`; serde stores this enum by
+    /// *name*, so every `radio.json` holding the old one stopped deserializing
+    /// — and serde fails the whole `RadioConfig`, not the one field. The loader
+    /// quarantined the file and returned the defaults, so an operator running a
+    /// native RX-888 was silently switched to the default SoapySDR backend,
+    /// which then opened whatever SoapySDR offered first. On that machine it
+    /// was LimeSuite, which claims the RX-888's bare Cypress FX3 id — so the
+    /// program flooded the console with LimeSuite transfer errors and never
+    /// started, and nothing on screen connected any of it to a Kenwood setting
+    /// on a rig that was not even plugged in.
+    #[test]
+    fn a_renamed_kenwood_variant_still_reads_under_its_old_name() {
+        for (old, want) in [("Standard", KenwoodSend::Ts2000), ("Data", KenwoodSend::Ts590)] {
+            let json = format!(r#"{{"backend": "Rx888", "cat": {{"kenwood_send": "{old}"}}}}"#);
+            let cfg: RadioConfig = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("{old:?} no longer parses: {e}"));
+            assert_eq!(cfg.cat.kenwood_send, want);
+            // The point of the test: the *interface* survives. A config that
+            // fails to parse takes this with it and lands on the default
+            // backend, which goes looking for hardware.
+            assert_eq!(cfg.backend, Backend::Rx888, "the interface selection was lost");
+        }
+        // The current names round-trip, so the aliases have not displaced them.
+        for v in KenwoodSend::ALL {
+            let json = serde_json::to_string(&v).expect("serialises");
+            assert_eq!(serde_json::from_str::<KenwoodSend>(&json).expect("round trip"), v);
+        }
     }
 
     /// Every `radio.json` written before this backend existed has to keep
