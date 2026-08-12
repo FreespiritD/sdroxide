@@ -2129,7 +2129,7 @@ decides every band plan sdroxide draws and enforces:
   the band buttons jump to, what `Band` a frequency reports as, and — with
   `tx_ham_only` set, which is the default — where transmit is refused.
 - **Sub-segments** — the CW / data / SSB / beacon blocks on the waterfall's
-  band strip ([§ 4.6](#46-the-band-plan-strip)). Region 1 splits the top of each
+  band strip ([§ 2.8](#28-the-display-and-fft-controls)). Region 1 splits the top of each
   band into a phone sub-band; Regions 2 and 3 hand it to all modes, and their
   40 m data segment starts 5 kHz lower.
 - **Skimmer windows** — where the PSK and RTTY skimmers listen. 40 m PSK is
