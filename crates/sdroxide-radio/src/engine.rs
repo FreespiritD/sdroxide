@@ -1363,6 +1363,13 @@ fn engine_thread(
     let audio_bw = source.display_bandwidth().unwrap_or(radio_fs / 2.0);
     let source_center_hz = source.center_hz();
 
+    // Before the first `Band::containing` below: every band edge and
+    // sub-segment in the process reads this, and a band worked out under the
+    // wrong region would be wrong in the band stack from the first frame. Set
+    // here rather than only in the binary so a headless `--server` engine — and
+    // any test that brings one up — is on the station's band plan too.
+    sdroxide_types::set_region(sdroxide_config::load_region());
+
     let mut state = RadioState::default();
     state.center_hz = source.center_hz();
     state.sample_rate = source.sample_rate();
@@ -3720,6 +3727,18 @@ impl Engine {
                 self.emit_station_config();
                 return;
             }
+            SetRegion(region) => {
+                if let Err(e) = sdroxide_config::save_region(region) {
+                    warn!("saving IARU region: {e}");
+                }
+                sdroxide_types::set_region(region);
+                // The band the dial is on can change without the dial moving:
+                // 7.250 is 40 m in Region 2 and general coverage everywhere
+                // else, and the band stack, the band buttons and the transmit
+                // lockout all key off `state.band`.
+                self.state.band = Band::containing(self.state.active_freq_hz());
+                self.emit_station_config();
+            }
         }
         let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
     }
@@ -4318,6 +4337,7 @@ impl Engine {
                 wsjtx: self.wsjtx_cfg.clone(),
                 sat: self.sat_cfg.clone(),
                 rotator: self.rot_cfg.clone(),
+                region: sdroxide_types::region(),
             },
         )));
     }

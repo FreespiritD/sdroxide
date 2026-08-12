@@ -189,9 +189,16 @@ The smaller grey number below the readout is the *inactive* VFO's frequency.
 top when the waterfall is flipped — see [§2.8](#28-the-display-and-fft-controls))
 labels the allocations. Zoomed out it shows coarse bands (ham, broadcast, CB,
 AM); zoomed into a ham band it splits into the CW / digital / SSB / beacon
-sub-segments. When you zoom in close (a span of ~100 kHz or less), the digital
-sub-band is broken out into the individual popular modes — **FT8, FT4, FT2, JS8,
-WSPR, QRSS, PSK, RTTY, SSTV, RIFP, FREEDV** — each in its own colour.
+sub-segments, or an all-modes block where the plan gives one. When you zoom in
+close (a span of ~100 kHz or less), the digital sub-band is broken out into the
+individual popular modes — **FT8, FT4, FT2, JS8, WSPR, QRSS, PSK, RTTY, SSTV,
+RIFP, FREEDV** — each in its own colour.
+
+Everything on the strip follows the **IARU region** on the General tab
+([5.1](#51-general-station-audio-and-remote-access)) — the ham blocks, their
+sub-segments, and the shortwave broadcast blocks that overlap an amateur band in
+one region and not another (3.900–4.000 and 7.200–7.300 are broadcasting in
+Regions 1 and 3 and amateur in Region 2).
 
 ### 2.4 Bands and modes
 
@@ -936,7 +943,9 @@ a **cyan underline**: clicking one jumps the dial straight to that frequency,
 staying in the mode, and the button highlights when the dial is already on it.
 Every band is available in every mode — clicking a band without an underline
 jumps to that band's default frequency, also staying in the mode, and you tune
-from there.
+from there. Where a mode's convention differs by region — PSK31 and RTTY on
+40 m, SSTV on 80 m and 40 m — the button uses the one for the **IARU region**
+set on the General tab ([5.1](#51-general-station-audio-and-remote-access)).
 
 Two more things hold across the modes. Your **callsign and grid** are one
 identity for the whole program: the General settings tab and the FT8/FT4/FT2 setup
@@ -955,8 +964,7 @@ mode's operating panel listing them:
 | Mode | Where it happens |
 | --- | --- |
 | FT8 | The DXpedition (Fox/Hound) window on every HF band, and 6 m's second frequency at 50.323 |
-| PSK31 | The 40 m region split: 7.040 in Region 1, 7.070 in Regions 2 and 3 |
-| RTTY | The DX calling spots (3.590, 14.083) and the Region 2 slot at 7.080 |
+| RTTY | The DX calling spots (3.590, 14.083) |
 | SSTV | The move-up-when-busy secondaries — a picture takes two minutes, so one frequency per band is occupied most of the time |
 
 The button's face is the frequency you are on when the dial is already sitting on
@@ -964,13 +972,19 @@ one of them, and reads **⇵ FREQ** when it is not. Clicking a frequency moves t
 **dial**; where you sit inside the audio passband is a separate control and is
 left alone.
 
-An entry shown in **amber** is one the IARU Region 1 band plan does not put
-narrow data on. That is not a mistake in the list: the WSJT-X DXpedition
-frequencies and the FSQCall set are global conventions built around the Region 2
-band plan, and a few of them land in Region 1's CW or phone segments (1.845,
-3.567 and 24.911 for FT8). The DX will be there and so will everyone chasing it
-— but check your own band plan before you key, because sdroxide will not stop
-you.
+The frequencies that differ by region — PSK31 and RTTY on 40 m, SSTV on 80 m and
+40 m — are not offered as a choice, because the **IARU region** setting
+([5.1](#51-general-station-audio-and-remote-access)) already says which one
+applies to you. Set that and the list is your region's.
+
+An entry shown in **amber** is one your region's band plan does not put narrow
+data on. That is not a mistake in the list: the WSJT-X DXpedition frequencies and
+the FSQCall set are global conventions built around the Region 2 band plan, and a
+few of them land in Region 1's CW or phone segments (1.845, 3.567 and 24.911 for
+FT8 — of which only 3.567 and 24.911 are still amber in Region 2, where the top
+of each band is an all-modes segment). The DX will be there and so will everyone
+chasing it — but check your own band plan before you key, because sdroxide will
+not stop you.
 
 ### 3.2 FT8, FT4 and FT2
 
@@ -1417,10 +1431,12 @@ operating* frequencies:
 | 30 m | 10.144 | 6 m | 50.286 |
 | 20 m | 14.073 | | |
 
-**These are IARU Region 1 values** where that band plan splits by region, matching
-the Region 1 band edges sdroxide uses elsewhere; Region 2 and 3 differ on 160 m
-and 80 m in particular. Bands quoted as a range use its low edge, so tune *up*
-from the preset to find activity. 6 m is not in that band plan and comes from the
+**These are IARU Region 1 values** where that band plan splits by region, and —
+unlike the band plans and the other modes' calling frequencies — they do *not*
+follow the **IARU region** setting: Hell has no per-region table published to
+follow. Region 2 and 3 differ on 160 m and 80 m in particular. Bands quoted as a
+range use its low edge, so tune *up* from the preset to find activity. 6 m is not
+in that band plan and comes from the
 [Feld Hell Club](https://sites.google.com/site/feldhellclub/Home/frequencies).
 
 On 15 m and 10 m the presets are 21.063 and 28.063 rather than the 21.074 /
@@ -1448,10 +1464,12 @@ if you tune in mid-picture, from the sync cadence — and transmits in **Martin 
 until a mode has been detected. Selecting a specific mode instead pins both the
 receive decoder and the transmit compositor to that mode.
 
-Band buttons tune to that band's common SSTV calling frequency (for example
-14.230 MHz on 20 m, 7.171 on 40 m, 3.730 on 80 m — and above HF, 144.500 on
-2 m and 432.500 on 70 cm, the narrow-band SSTV activity centre), staying in
-SSTV.
+Band buttons tune to that band's common SSTV calling frequency, staying in SSTV.
+14.230 MHz on 20 m, 21.340 on 15 m and 28.680 on 10 m are the same the world
+over; 80 m and 40 m split by region and follow the **IARU region** setting
+([5.1](#51-general-station-audio-and-remote-access)) — 3.730 and 7.165 in
+Region 1, 3.845 and 7.171 in Regions 2 and 3. Above HF, 144.500 on 2 m and
+432.500 on 70 cm, the narrow-band SSTV activity centre.
 
 **Receiving:**
 
@@ -2036,7 +2054,7 @@ window opens the same dialog on its Spots tab). Nine tabs run across the top:
 
 | Tab | What it holds |
 | --- | --- |
-| **General** | Which version this is, your callsign and grid, the sound devices, and who may connect remotely. [5.1](#51-general-station-audio-and-remote-access) |
+| **General** | Which version this is, your callsign, grid and IARU region, the sound devices, and who may connect remotely. [5.1](#51-general-station-audio-and-remote-access) |
 | **Radio** | Which rig sdroxide talks to, and how. [5.2](#52-radio-choosing-and-configuring-the-rig) |
 | **UI** | Frame rate, waterfall palette, spectrum background, 3D cloud rendering, and the spoken announcements. [5.3](#53-ui-display-preferences-and-voice-announcements) |
 | **Controls** | Keyboard, mouse and MIDI bindings. [5.4](#54-controls-keyboard-mouse-and-midi) |
@@ -2081,6 +2099,48 @@ binary to ask it.
 whole program uses: FT8/FT4/FT2 exchanges, the SSTV image header, the logbook, the
 DX cluster login, and FreeDV Reporter. The same pair is editable from the FT8 /
 SSTV setup dialog; there is only one copy of it.
+
+**IARU region** — which of the three ITU regions your station is in:
+
+| | Where |
+| --- | --- |
+| **Region 1** | Europe, Africa, the Middle East, northern Asia |
+| **Region 2** | The Americas |
+| **Region 3** | Southern and eastern Asia, Australasia, the Pacific |
+
+The amateur allocations are not the same in all three, so this one setting
+decides every band plan sdroxide draws and enforces:
+
+- **Band edges** — 70 cm is 430–440 MHz in Region 1, 420–450 in Region 2 and
+  430–450 in Region 3, so 446 MHz is out of band in Europe and in band in the
+  Americas. 40 m runs to 7.200 outside Region 2 and to 7.300 inside it; 80 m
+  ends at 3.800, 4.000 or 3.900; 160 m starts at 1.810 in Region 1 and 1.800
+  elsewhere; 6 m and 2 m are 2 MHz wider outside Region 1. These edges are what
+  the band buttons jump to, what `Band` a frequency reports as, and — with
+  `tx_ham_only` set, which is the default — where transmit is refused.
+- **Sub-segments** — the CW / data / SSB / beacon blocks on the waterfall's
+  band strip ([§ 4.6](#46-the-band-plan-strip)). Region 1 splits the top of each
+  band into a phone sub-band; Regions 2 and 3 hand it to all modes, and their
+  40 m data segment starts 5 kHz lower.
+- **Skimmer windows** — where the PSK and RTTY skimmers listen. 40 m PSK is
+  around 7.040 in Region 1 and 7.070 in the other two; RTTY, 7.040 against
+  7.080.
+- **Calling frequencies** — the ⇵ frequency chip and the digital band buttons
+  offer your region's convention: PSK31 and RTTY on 40 m, and SSTV on 80 m and
+  40 m (3.730 / 7.165 in Region 1, 3.845 / 7.171 elsewhere — and 3.845 is
+  outside the Region 1 allocation altogether, so it is never offered there).
+
+The default is **Region 1**, which is the band plan every sdroxide before this
+setting had; an existing installation is not moved by upgrading. It is a
+property of the *station*, stored as `region` in `config.toml` on the machine
+the radio is attached to and announced to every client, so a remote operator
+sees the band plan of the radio they are driving rather than of wherever they
+happen to be sitting. It takes effect immediately — no APPLY, no restart.
+
+> This is the *regional* allocation, which is the widest set of edges the
+> region's amateurs share. Your own licence may grant less (and occasionally
+> more), and national band plans differ inside a region. Nothing here is a
+> substitute for your licence conditions.
 
 **Your audio (speakers / microphone)** — the devices sdroxide uses for *you*,
 separate from any sound card wired to a radio:
@@ -4828,7 +4888,7 @@ sdroxide stores its settings under the per-user config directory:
 
 | File | Format | Contents |
 | --- | --- | --- |
-| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, plus the `[ui]` display preferences (including `theme`, `button_style` and `window_style`), the `[speech]` announcement settings ([§5.3](#53-ui-display-preferences-and-voice-announcements)) and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
+| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, `region` (`"R1"` / `"R2"` / `"R3"` — the IARU region every band plan follows, [§5.1](#51-general-station-audio-and-remote-access)), plus the `[ui]` display preferences (including `theme`, `button_style` and `window_style`), the `[speech]` announcement settings ([§5.3](#53-ui-display-preferences-and-voice-announcements)) and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
 | `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/RX-888/SDRplay/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
 | `digi.json` | JSON | Digital-mode operator settings: your callsign and grid, FT8/FT4/FT2 TX period, auto-sequence and message templates, and the WSPR beacon's duty cycle, power and band-hop list. |
 | `memories.json` | JSON | Saved memory channels. |

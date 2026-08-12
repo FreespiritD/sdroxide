@@ -428,4 +428,13 @@ pub enum Command {
     /// Persisted engine-side and echoed to every client in the
     /// [`crate::RadioEvent::StationConfig`] bundle, like the servers.
     SetRotatorConfig(RotatorConfig),
+
+    /// Set the station's ITU / IARU region, which decides every band edge and
+    /// sub-segment. Persisted to `config.toml` engine-side and echoed to every
+    /// client in the [`crate::RadioEvent::StationConfig`] bundle. Appended for
+    /// the usual reason: postcard numbers variants by position.
+    ///
+    /// Station-wide rather than per-radio: a second radio at the same desk is
+    /// on the same continent as the first.
+    SetRegion(crate::Region),
 }

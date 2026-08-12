@@ -452,6 +452,14 @@ pub struct SdroxideApp {
     /// server configs.
     rot_cfg_edit: sdroxide_types::RotatorConfig,
     rot_cfg_seeded: bool,
+    /// The station's IARU region, as the General tab's dropdown last showed it.
+    ///
+    /// Unlike the config buffers around it this is not seeded-once-then-owned
+    /// by the dialog: it is overwritten by every `StationConfig` announcement,
+    /// because the band plan the whole client draws with has to be the
+    /// station's and not a stale local guess. The dropdown writes through it to
+    /// [`Command::SetRegion`].
+    region_edit: sdroxide_types::Region,
     /// Weather fax: the chart being painted and the gallery of saved ones.
     wefax: crate::wefax::WefaxUi,
     /// Whether the operator has dismissed the out-of-band transmit warning
@@ -767,6 +775,10 @@ impl SdroxideApp {
             rotator_status: None,
             rot_cfg_edit: Default::default(),
             rot_cfg_seeded: false,
+            // Whatever this process is already on: the binary applies the
+            // station's setting before the app is built, and a remote client
+            // starts on the default until the station says otherwise.
+            region_edit: sdroxide_types::region(),
             sat_ui: Default::default(),
             sat_sub_status: Vec::new(),
             wefax: Default::default(),

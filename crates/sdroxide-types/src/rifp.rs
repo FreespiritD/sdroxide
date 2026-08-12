@@ -79,8 +79,13 @@ impl RifpProfile {
         self.bandwidth_hz() > 12_000.0
     }
 
-    /// The segments where a channel this wide is normally permitted, as
-    /// `(low, high, label)` in Hz.
+    /// The segments where a channel this wide is normally permitted in the
+    /// station's configured region, as `(low, high, label)` in Hz.
+    pub fn wide_segments(self) -> &'static [(f64, f64, &'static str)] {
+        self.wide_segments_in(crate::region())
+    }
+
+    /// The same for `region`.
     ///
     /// RIFP assigns no frequency and sdroxide will transmit it wherever it is
     /// tuned; this is only what the panel uses to decide whether to say
@@ -88,9 +93,14 @@ impl RifpProfile {
     /// operation is generally allowed — the amateur allocations differ by
     /// country and none of this is a substitute for the operator's own licence
     /// conditions, which may well be narrower than 25 kHz even inside these.
-    pub fn wide_segments(self) -> &'static [(f64, f64, &'static str)] {
-        match self {
-            RifpProfile::Cpfsk4800 => &[
+    ///
+    /// The regional differences are the ones the band edges already carry:
+    /// 6 m runs to 54 MHz and 70 cm to 450 MHz outside Region 1, and Region 2's
+    /// 2 m FM simplex lives above 146 MHz rather than in the 144.5 all-modes
+    /// segment Region 1 uses.
+    pub fn wide_segments_in(self, region: crate::Region) -> &'static [(f64, f64, &'static str)] {
+        match (self, region) {
+            (RifpProfile::Cpfsk4800, crate::Region::R1) => &[
                 // 10 m FM.
                 (29_510_000.0, 29_700_000.0, "10 m FM (29.510–29.700)"),
                 // 6 m all-modes: the segment above the narrow-band part.
@@ -101,6 +111,18 @@ impl RifpProfile {
                 // 70 cm, where 25 kHz channels are the norm and where the
                 // draft's own deployment example lives.
                 (430_000_000.0, 440_000_000.0, "70 cm (430–440)"),
+            ],
+            (RifpProfile::Cpfsk4800, crate::Region::R2) => &[
+                (29_520_000.0, 29_700_000.0, "10 m FM (29.520–29.700)"),
+                (50_500_000.0, 54_000_000.0, "6 m all-modes (50.5–54.0)"),
+                (146_000_000.0, 148_000_000.0, "2 m FM (146–148)"),
+                (420_000_000.0, 450_000_000.0, "70 cm (420–450)"),
+            ],
+            (RifpProfile::Cpfsk4800, crate::Region::R3) => &[
+                (29_520_000.0, 29_700_000.0, "10 m FM (29.520–29.700)"),
+                (50_500_000.0, 54_000_000.0, "6 m all-modes (50.5–54.0)"),
+                (144_500_000.0, 144_794_000.0, "2 m all-modes (144.500–144.794)"),
+                (430_000_000.0, 450_000_000.0, "70 cm (430–450)"),
             ],
         }
     }

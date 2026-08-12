@@ -21,10 +21,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{NetworkConfig, RigctldConfig, RotatorConfig, SatConfig, TciServerConfig, WsjtxConfig};
+use crate::{
+    NetworkConfig, Region, RigctldConfig, RotatorConfig, SatConfig, TciServerConfig, WsjtxConfig,
+};
 
 /// Everything the engine host persists on the station's behalf, as one
-/// snapshot. See the module docs for why these six travel together.
+/// snapshot. See the module docs for why these travel together.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StationConfig {
@@ -41,4 +43,16 @@ pub struct StationConfig {
     pub sat: SatConfig,
     /// The rotctld client a satellite lock steers the antenna through.
     pub rotator: RotatorConfig,
+    /// The ITU / IARU region the station is in, from `config.toml`.
+    ///
+    /// The odd one out in this bundle — it is a line in `config.toml` rather
+    /// than a file of its own — but it belongs here for the same reason as the
+    /// rest: it is a fact about the machine the antenna is attached to, and a
+    /// remote client that guessed it from its own disk would draw a band plan
+    /// for the wrong continent and warn about the wrong band edges.
+    ///
+    /// Every client adopts this into [`crate::set_region`] as it arrives, so
+    /// the band buttons, the waterfall's band strip and the frequency displays
+    /// all agree with the station they are operating.
+    pub region: Region,
 }

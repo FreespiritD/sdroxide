@@ -225,7 +225,11 @@ use sdroxide_types::{
 /// v49: `DeviceCaps` gained `shared_lo_rx` (a Pluto 2R2T's chains share one
 /// LO). Appended field, but postcard is not self-describing, so every message
 /// carrying capabilities changes layout and both ends have to agree.
-pub const PROTO_VERSION: u16 = 49;
+/// v50: the station's IARU region, which decides every band edge and
+/// sub-segment. `StationConfig` gained `region` (appended, but the bundle
+/// changes layout) and `Command::SetRegion` is appended last, so no surviving
+/// discriminant moves.
+pub const PROTO_VERSION: u16 = 50;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

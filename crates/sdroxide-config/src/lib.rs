@@ -88,6 +88,17 @@ pub struct Settings {
     pub audio_output: Option<String>,
     /// Preferred audio input (microphone) device name; `None` = system default.
     pub audio_input: Option<String>,
+    /// The ITU / IARU region this station is in, which decides every band edge
+    /// and sub-segment sdroxide draws and enforces.
+    ///
+    /// A property of the *station*, not of the screen: it is where the antenna
+    /// is, so it belongs in `config.toml` next to `tx_ham_only` and travels to
+    /// remote clients in the [`sdroxide_types::StationConfig`] bundle rather
+    /// than being read off each client's own disk.
+    ///
+    /// Region 1 by default, which is the band plan every sdroxide before this
+    /// setting had.
+    pub region: sdroxide_types::Region,
     /// UI / display preferences (frame rate, waterfall + spectrum speed).
     pub ui: sdroxide_types::UiSettings,
     /// Username and password a remote client must present in server mode.
@@ -118,6 +129,7 @@ impl Default for Settings {
             tx_ham_only: true,
             audio_output: None,
             audio_input: None,
+            region: sdroxide_types::Region::default(),
             ui: sdroxide_types::UiSettings::default(),
             remote_access: sdroxide_types::RemoteAccess::default(),
             speech: sdroxide_types::SpeechSettings::default(),
@@ -135,6 +147,23 @@ pub fn load_ui_settings() -> sdroxide_types::UiSettings {
 pub fn save_ui_settings(ui: &sdroxide_types::UiSettings) -> Result<(), ConfigError> {
     let mut s = Settings::load();
     s.ui = *ui;
+    s.save()
+}
+
+/// Load just the station's IARU region.
+pub fn load_region() -> sdroxide_types::Region {
+    Settings::load().region
+}
+
+/// Persist the station's IARU region, preserving every other setting
+/// (read-modify-write, like [`save_ui_settings`]).
+///
+/// Does *not* apply it — the caller does that with
+/// [`sdroxide_types::set_region`], because the two have different scopes: the
+/// file is the station's, the process-wide setting is this process's.
+pub fn save_region(region: sdroxide_types::Region) -> Result<(), ConfigError> {
+    let mut s = Settings::load();
+    s.region = region;
     s.save()
 }
 
@@ -1265,6 +1294,23 @@ mod tests {
         let s: Settings = toml::from_str("sample_rate = 2400000.0").unwrap();
         assert_eq!(s.sample_rate, 2_400_000.0);
         assert_eq!(s.server_port, Settings::default().server_port);
+    }
+
+    /// The region has to survive a write, and a `config.toml` written before it
+    /// existed has to keep loading — as Region 1, which is the band plan those
+    /// installations already have. Getting this wrong would move an operator's
+    /// band edges without them touching anything.
+    #[test]
+    fn the_region_round_trips_and_defaults_to_region_1() {
+        for region in sdroxide_types::Region::ALL {
+            let s = Settings { region, server_port: 4951, ..Settings::default() };
+            let text = toml::to_string_pretty(&s).unwrap();
+            let back: Settings = toml::from_str(&text).unwrap();
+            assert_eq!(back.region, region, "{text}");
+            assert_eq!(back.server_port, 4951, "a table swallowed a value below it");
+        }
+        let old: Settings = toml::from_str("tx_ham_only = false").unwrap();
+        assert_eq!(old.region, sdroxide_types::Region::R1);
     }
 
     /// The credentials survive a write and a read, and — the part that is easy

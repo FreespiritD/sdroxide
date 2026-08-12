@@ -210,14 +210,24 @@ pub(in crate::app) fn pane_index(mode: Mode, name: &str) -> usize {
 
 /// The standard dial frequency for `band`, if one exists for `mode`
 /// (matched by which band's edges the frequency falls within).
+///
+/// The shared table wins where it has an answer: those frequencies follow the
+/// station's IARU region, and they are what the waterfall's band strip and the
+/// frequency chip already show — a band button that jumped somewhere else would
+/// be contradicting the rest of the screen. The list below covers the modes the
+/// shared table has no convention for, and the VHF/UHF entries it stops short
+/// of.
 pub(in crate::app) fn digi_freq_for_band(mode: Mode, band: Band) -> Option<f64> {
-    let (lo, hi) = band.edges()?;
-    // WSPR's dials are already in the band plan, where `is_auto_digi` and the
-    // waterfall's band strip read them. A second copy here would be a second
-    // copy to keep right.
-    if mode.is_wspr() {
-        return sdroxide_types::WSPR_DIALS.iter().copied().find(|hz| (lo..=hi).contains(hz));
+    let shared = sdroxide_types::digi_channels_in(mode, band);
+    if !shared.is_empty() {
+        // The plain calling frequency, which is the one with no note. Not
+        // simply the lowest: FT8's DXpedition frequency is *below* the calling
+        // one on five bands, and a band button that dropped the operator into a
+        // Fox/Hound window would be a trap.
+        let c = shared.iter().find(|c| c.note.is_empty()).unwrap_or(&shared[0]);
+        return Some(c.dial_hz);
     }
+    let (lo, hi) = band.edges()?;
     digi_dial_freqs(mode).iter().find(|&&(_, hz)| (lo..=hi).contains(&hz)).map(|&(_, hz)| hz)
 }
 
@@ -591,26 +601,30 @@ impl SdroxideApp {
                         text.push_str(&format!("   {}", c.note));
                     }
                     let mut rich = RichText::new(text).size(12.0);
-                    if c.outside_r1_data_segment(mode) {
+                    if c.outside_data_segment(mode) {
                         rich = rich.color(crate::theme::YELLOW());
                     }
                     let row = ui.selectable_label(on, rich);
-                    if c.outside_r1_data_segment(mode) {
-                        row.clone().on_hover_text(
-                            "A global convention that the IARU Region 1 band plan does not put \
+                    if c.outside_data_segment(mode) {
+                        row.clone().on_hover_text(format!(
+                            "A global convention that the IARU Region {} band plan does not put \
                              narrow data on — check your own band plan before transmitting here.",
-                        );
+                            sdroxide_types::region().number()
+                        ));
                     }
                     if row.clicked() {
                         pick = Some(c.dial_hz);
                     }
                 }
-                if channels.iter().any(|c| c.outside_r1_data_segment(mode)) {
+                if channels.iter().any(|c| c.outside_data_segment(mode)) {
                     ui.add_space(2.0);
                     ui.label(
-                        RichText::new("Amber: outside the Region 1 data segment.")
-                            .color(crate::theme::LINE_LIT())
-                            .size(10.0),
+                        RichText::new(format!(
+                            "Amber: outside the Region {} data segment.",
+                            sdroxide_types::region().number()
+                        ))
+                        .color(crate::theme::LINE_LIT())
+                        .size(10.0),
                     );
                 }
             });

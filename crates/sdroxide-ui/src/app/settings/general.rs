@@ -5,9 +5,28 @@
 //! in-band.
 
 use eframe::egui::{self, Color32, ComboBox, RichText};
-use sdroxide_types::RemoteAccess;
+use sdroxide_types::{Region, RemoteAccess};
 
 use crate::app::SdroxideApp;
+
+/// The IARU region dropdown: the number the band plans are published under,
+/// with the part of the world it covers next to it.
+///
+/// Both, because neither alone identifies it for most operators — "Region 2"
+/// means nothing until you know it is the Americas, and the number is what
+/// every band-plan document and contest rule actually says.
+pub(in crate::app) fn region_combo(ui: &mut egui::Ui, region: &mut Region) {
+    ComboBox::from_id_salt("iaru-region").width(360.0).selected_text(region.label()).show_ui(
+        ui,
+        |ui| {
+            for r in Region::ALL {
+                if ui.selectable_label(*region == r, r.label()).clicked() {
+                    *region = r;
+                }
+            }
+        },
+    );
+}
 
 /// A device dropdown ("System default" + names); calls `pick(Some(name)|None)`.
 pub(in crate::app) fn device_combo(

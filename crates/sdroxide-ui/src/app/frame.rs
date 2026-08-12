@@ -968,6 +968,14 @@ impl SdroxideApp {
                         self.rot_cfg_edit = c.rotator.clone();
                         self.rot_cfg_seeded = true;
                     }
+                    // Adopted on every announcement rather than seeded once:
+                    // this is not a dialog buffer the operator types into but
+                    // the band plan the whole client draws with, and the
+                    // station is its only authority. A remote client that kept
+                    // its own would show European band edges for an American
+                    // radio.
+                    self.region_edit = c.region;
+                    sdroxide_types::set_region(c.region);
                 }
                 RadioEvent::TleSubStatus(s) => self.on_tle_sub_status(s),
                 RadioEvent::SatTrack(t) => self.sat_track = t.map(|t| *t),

@@ -27,7 +27,7 @@ use eframe::egui::{self, Color32, ComboBox, RichText};
 use sdroxide_types::{Command, LookupProvider, NetworkConfig};
 
 use self::controls::settings_controls_tab;
-use self::general::{device_combo, remote_access_settings};
+use self::general::{device_combo, region_combo, remote_access_settings};
 use self::net::{
     broadcast_stations_settings, net_heading, net_row, net_secret, operator_identity_note,
     settings_freedv_tab,
@@ -212,6 +212,10 @@ pub(in crate::app) struct SettingsIo<'a> {
     /// The TEST button was pressed; answered after the closure, where the
     /// announcer is reachable.
     speech_test: &'a mut bool,
+    /// The station's IARU region. Applied and sent the moment it changes —
+    /// there is no APPLY step on the General tab, and the whole point of it is
+    /// that the band plan follows immediately.
+    region_edit: &'a mut sdroxide_types::Region,
     tab: &'a mut SettingsTab,
 }
 
@@ -334,6 +338,7 @@ impl SdroxideApp {
         let mut access_edit = self.remote_access.clone();
         let mut digi_edit = self.digi_cfg_edit.clone();
         let digi_seeded = self.digi_cfg_seeded;
+        let mut region_edit = self.region_edit;
         let mut net_edit = self.net_cfg_edit.clone();
         let mut net_cmds = self.net_cluster_cmds.clone();
         let mut rbn_cmds = self.net_rbn_cmds.clone();
@@ -499,6 +504,7 @@ impl SdroxideApp {
                             radio_tabs: &mut radio_tab_reqs,
                             #[cfg(not(target_arch = "wasm32"))]
                             radio_name_edit: &mut radio_name_edit,
+                            region_edit: &mut region_edit,
                             tab: &mut tab,
                         },
                     );
@@ -729,6 +735,16 @@ impl SdroxideApp {
             self.digi_cfg_edit = digi_edit;
             cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
         }
+        // The station's region. Applied here as well as sent, so the band
+        // buttons and the waterfall's band strip redraw on this frame instead
+        // of on whichever one the engine's echo lands in — and so the change is
+        // visible even before a remote station has confirmed it. The engine
+        // persists it and announces the authoritative value back.
+        if region_edit != self.region_edit {
+            self.region_edit = region_edit;
+            sdroxide_types::set_region(region_edit);
+            cmds.push(Command::SetRegion(region_edit));
+        }
     }
 
     /// The Settings body: a General tab (station identity + the sound devices)
@@ -806,13 +822,54 @@ impl SdroxideApp {
                         },
                     );
                 });
-                ui.add_space(8.0);
+                ui.add_space(6.0);
                 ui.label(
                     RichText::new(
                         "Your callsign and grid, shared across FT8/FT4/FT2, SSTV image headers, and \
                          the logbook. Also editable from the FT8 / SSTV setup dialog.",
                     )
                     .weak(),
+                );
+
+                // Its own grid, outside the enabled-ui above: the region comes
+                // from `config.toml` by way of the station announcement, not
+                // from the digi config, so it is neither waiting on the same
+                // seeding nor sent with the same command.
+                ui.add_space(8.0);
+                egui::Grid::new("general-region-grid").num_columns(2).spacing([12.0, 8.0]).show(
+                    ui,
+                    |ui| {
+                        ui.label("IARU region");
+                        region_combo(ui, io.region_edit);
+                        ui.end_row();
+                    },
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(format!(
+                        "Where the station is. Sets every band plan: the band edges, the CW / \
+                         data / phone sub-segments on the waterfall strip, where the skimmers \
+                         listen, the calling frequencies offered, and what counts as out of band \
+                         for transmit. In Region {} that makes 70 cm {}. Takes effect at once, \
+                         and applies to every radio at this station.",
+                        io.region_edit.number(),
+                        match io.region_edit {
+                            sdroxide_types::Region::R1 =>
+                                "430–440 MHz — so 446 is out of band, and 40 m stops at 7.200",
+                            sdroxide_types::Region::R2 => "420–450 MHz, and 40 m runs to 7.300",
+                            sdroxide_types::Region::R3 => "430–450 MHz, and 80 m stops at 3.900",
+                        }
+                    ))
+                    .weak(),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "The regional allocation, not your licence: your own conditions may be \
+                         narrower, and national plans differ inside a region.",
+                    )
+                    .size(10.5)
+                    .color(Color32::from_gray(140)),
                 );
 
                 ui.add_space(10.0);

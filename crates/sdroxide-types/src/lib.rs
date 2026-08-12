@@ -26,6 +26,7 @@ mod pictures;
 mod prop_store;
 mod propagation;
 mod radio;
+pub mod region;
 mod rifp;
 mod rigctld;
 mod rotator;
@@ -55,10 +56,13 @@ pub use awards::{
 };
 pub use band::Band;
 pub use band_segments::{
-    DigiChannel, FSQ_DIALS, FT2_DIALS, FT4_DIALS, FT8_DIALS, FT8_DXPED_DIALS, JS8_DIALS, PSK_DIALS,
-    PSK_RANGES, RIFP_CALLING, RTTY_DIALS, RTTY_RANGES, SSTV_CALLING, Segment, SegmentKind,
-    WSPR_DIALS, digi_channels, digi_channels_in, is_auto_digi, is_cw_segment, is_digi_segment,
-    is_psk_segment, is_rtty_segment, segment_kind_at,
+    DigiChannel, FSQ_DIALS, FT2_DIALS, FT4_DIALS, FT8_DIALS, FT8_DXPED_DIALS, FT8_VHF_DIALS,
+    JS8_DIALS, PSK_DIALS, PSK_RANGES_R1, PSK_RANGES_R23, RIFP_CALLING, RTTY_DIALS, RTTY_RANGES_R1,
+    RTTY_RANGES_R23, SEGMENTS_R1, SEGMENTS_R2, SEGMENTS_R3, SSTV_DIALS, Segment, SegmentKind,
+    WSPR_DIALS, digi_channels, digi_channels_for, digi_channels_in, digi_channels_in_region,
+    is_auto_digi, is_cw_segment, is_digi_segment, is_psk_segment, is_psk_segment_in,
+    is_rtty_segment, is_rtty_segment_in, psk_ranges, psk_ranges_in, rtty_ranges, rtty_ranges_in,
+    segment_kind_at, segment_kind_at_in, segments, segments_in, sstv_dials_in,
 };
 pub use broadcast::{BroadcastStation, BroadcastStations};
 pub use callsign::{CallsignInfo, UploadResult, UploadTarget};
@@ -118,6 +122,7 @@ pub use radio::{
     SoapyDeviceInfo, SoundFormat, StopBits, TciConfig, converter_preset_name, format_freq_ranges,
     parse_freq_ranges,
 };
+pub use region::{Region, region, set_region};
 pub use rifp::{
     RIFP_CALLING_HZ, RIFP_MAP_MAX_CHUNKS, RifpEncoding, RifpMeta, RifpProfile, RifpSession,
     RifpSize, RifpStatus,

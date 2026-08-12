@@ -1,11 +1,29 @@
 //! Ham-band sub-segment data (CW / digimode / phone / beacon ranges), shared so
 //! the engine can gate skimmers by segment and the UI can draw the band plan.
 //!
-//! IARU Region 1 HF ranges, mirrored from the UI band-plan overlay. Frequencies
-//! are absolute Hz. Only HF amateur bands are covered; a frequency outside every
-//! listed segment returns `None`.
+//! One table per IARU region, picked by the station's [`crate::Region`]
+//! setting. Frequencies are absolute Hz. Only HF amateur bands are covered — a
+//! frequency outside every listed segment returns `None`, which is what
+//! everything above 30 MHz does.
+//!
+//! ## What is a segment and what is a convention
+//!
+//! Two different kinds of fact live here and they are kept apart on purpose.
+//!
+//! The **segments** are the region's band plan: which part of a band is for CW,
+//! for narrow data, for phone. They differ by region and that is the whole
+//! reason this module is parameterised.
+//!
+//! The **dial tables** — FT8, FT4, JS8, WSPR and the rest — are what the modes'
+//! own communities settled on, and most of those are global: WSJT-X ships one
+//! frequency list for the whole world. Only where a mode really does operate in
+//! two places, like PSK31 and RTTY on 40 m, is a dial tagged with the regions
+//! it belongs to.
 
 use serde::{Deserialize, Serialize};
+
+use crate::Region;
+use crate::region::mask;
 
 /// The operating category of a band sub-segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,6 +36,15 @@ pub enum SegmentKind {
     Phone,
     /// Beacon sub-band.
     Beacon,
+    /// All modes. The Region 2 and 3 band plans hand whole stretches of a band
+    /// to "all modes" rather than splitting phone from data the way Region 1
+    /// does, and calling those phone would be wrong in both directions: it
+    /// would flag a perfectly ordinary data frequency as out of plan, and it
+    /// would tell the operator the segment is narrower than it is.
+    ///
+    /// Appended last: `SegmentKind` is serialised, and postcard numbers
+    /// variants by declaration order.
+    All,
 }
 
 /// One band sub-segment: `[lo, hi)` in Hz with its operating category.
@@ -34,51 +61,175 @@ const fn seg(lo: f64, hi: f64, kind: SegmentKind) -> Segment {
 
 const M: f64 = 1_000_000.0;
 
-/// HF CW / digi / phone / beacon segments (IARU Region 1), sorted by frequency.
-pub const SEGMENTS: &[Segment] = &[
+use SegmentKind::{All, Beacon, Cw, Digi, Phone};
+
+/// HF sub-segments for IARU Region 1, sorted by frequency.
+pub const SEGMENTS_R1: &[Segment] = &[
     // 160m
-    seg(1.810 * M, 1.838 * M, SegmentKind::Cw),
-    seg(1.838 * M, 1.843 * M, SegmentKind::Digi),
-    seg(1.843 * M, 2.000 * M, SegmentKind::Phone),
+    seg(1.810 * M, 1.838 * M, Cw),
+    seg(1.838 * M, 1.843 * M, Digi),
+    seg(1.843 * M, 2.000 * M, Phone),
     // 80m
-    seg(3.500 * M, 3.570 * M, SegmentKind::Cw),
-    seg(3.570 * M, 3.600 * M, SegmentKind::Digi),
-    seg(3.600 * M, 3.800 * M, SegmentKind::Phone),
+    seg(3.500 * M, 3.570 * M, Cw),
+    seg(3.570 * M, 3.600 * M, Digi),
+    seg(3.600 * M, 3.800 * M, Phone),
+    // 60m — the WRC-15 allocation is 15 kHz of all-modes everywhere.
+    seg(5.3515 * M, 5.3665 * M, All),
     // 40m
-    seg(7.000 * M, 7.040 * M, SegmentKind::Cw),
-    seg(7.040 * M, 7.100 * M, SegmentKind::Digi),
-    seg(7.100 * M, 7.200 * M, SegmentKind::Phone),
+    seg(7.000 * M, 7.040 * M, Cw),
+    seg(7.040 * M, 7.100 * M, Digi),
+    seg(7.100 * M, 7.200 * M, Phone),
     // 30m (no phone)
-    seg(10.100 * M, 10.130 * M, SegmentKind::Cw),
-    seg(10.130 * M, 10.150 * M, SegmentKind::Digi),
+    seg(10.100 * M, 10.130 * M, Cw),
+    seg(10.130 * M, 10.150 * M, Digi),
     // 20m
-    seg(14.000 * M, 14.070 * M, SegmentKind::Cw),
-    seg(14.070 * M, 14.099 * M, SegmentKind::Digi),
-    seg(14.099 * M, 14.101 * M, SegmentKind::Beacon),
-    seg(14.101 * M, 14.350 * M, SegmentKind::Phone),
+    seg(14.000 * M, 14.070 * M, Cw),
+    seg(14.070 * M, 14.099 * M, Digi),
+    seg(14.099 * M, 14.101 * M, Beacon),
+    seg(14.101 * M, 14.350 * M, Phone),
     // 17m
-    seg(18.068 * M, 18.095 * M, SegmentKind::Cw),
-    seg(18.095 * M, 18.109 * M, SegmentKind::Digi),
-    seg(18.109 * M, 18.111 * M, SegmentKind::Beacon),
-    seg(18.111 * M, 18.168 * M, SegmentKind::Phone),
+    seg(18.068 * M, 18.095 * M, Cw),
+    seg(18.095 * M, 18.109 * M, Digi),
+    seg(18.109 * M, 18.111 * M, Beacon),
+    seg(18.111 * M, 18.168 * M, Phone),
     // 15m
-    seg(21.000 * M, 21.070 * M, SegmentKind::Cw),
-    seg(21.070 * M, 21.150 * M, SegmentKind::Digi),
-    seg(21.150 * M, 21.450 * M, SegmentKind::Phone),
+    seg(21.000 * M, 21.070 * M, Cw),
+    seg(21.070 * M, 21.150 * M, Digi),
+    seg(21.150 * M, 21.450 * M, Phone),
     // 12m
-    seg(24.890 * M, 24.915 * M, SegmentKind::Cw),
-    seg(24.915 * M, 24.930 * M, SegmentKind::Digi),
-    seg(24.930 * M, 24.990 * M, SegmentKind::Phone),
+    seg(24.890 * M, 24.915 * M, Cw),
+    seg(24.915 * M, 24.930 * M, Digi),
+    seg(24.930 * M, 24.990 * M, Phone),
     // 10m
-    seg(28.000 * M, 28.070 * M, SegmentKind::Cw),
-    seg(28.070 * M, 28.190 * M, SegmentKind::Digi),
-    seg(28.190 * M, 28.300 * M, SegmentKind::Beacon),
-    seg(28.300 * M, 29.700 * M, SegmentKind::Phone),
+    seg(28.000 * M, 28.070 * M, Cw),
+    seg(28.070 * M, 28.190 * M, Digi),
+    seg(28.190 * M, 28.300 * M, Beacon),
+    seg(28.300 * M, 29.700 * M, Phone),
 ];
+
+/// HF sub-segments for IARU Region 2 (the Americas), sorted by frequency.
+///
+/// Three bands are genuinely different rather than merely relabelled: 160 m
+/// starts 10 kHz lower and opens with a digimode window, 80 m runs to 4.000 and
+/// 40 m to 7.300. Above 30 m the split points are Region 1's, because the
+/// modes that define them are the same modes — but the top of each band is "all
+/// modes" here rather than a phone sub-band.
+pub const SEGMENTS_R2: &[Segment] = &[
+    // 160m — the extra 1.800–1.810 is digimodes in this region's plan.
+    seg(1.800 * M, 1.810 * M, Digi),
+    seg(1.810 * M, 1.838 * M, Cw),
+    seg(1.838 * M, 1.843 * M, Digi),
+    seg(1.843 * M, 2.000 * M, All),
+    // 80m — 500 kHz wide, and the top 200 kHz is where the phone activity is.
+    seg(3.500 * M, 3.570 * M, Cw),
+    seg(3.570 * M, 3.600 * M, Digi),
+    seg(3.600 * M, 4.000 * M, All),
+    // 60m
+    seg(5.3515 * M, 5.3665 * M, All),
+    // 40m — the CW/data boundary is 5 kHz lower than Region 1's, and the band
+    // runs 100 kHz further up.
+    seg(7.000 * M, 7.035 * M, Cw),
+    seg(7.035 * M, 7.100 * M, Digi),
+    seg(7.100 * M, 7.300 * M, All),
+    // 30m
+    seg(10.100 * M, 10.130 * M, Cw),
+    seg(10.130 * M, 10.150 * M, Digi),
+    // 20m
+    seg(14.000 * M, 14.070 * M, Cw),
+    seg(14.070 * M, 14.099 * M, Digi),
+    seg(14.099 * M, 14.101 * M, Beacon),
+    seg(14.101 * M, 14.350 * M, All),
+    // 17m
+    seg(18.068 * M, 18.095 * M, Cw),
+    seg(18.095 * M, 18.109 * M, Digi),
+    seg(18.109 * M, 18.111 * M, Beacon),
+    seg(18.111 * M, 18.168 * M, All),
+    // 15m
+    seg(21.000 * M, 21.070 * M, Cw),
+    seg(21.070 * M, 21.150 * M, Digi),
+    seg(21.150 * M, 21.450 * M, All),
+    // 12m
+    seg(24.890 * M, 24.915 * M, Cw),
+    seg(24.915 * M, 24.930 * M, Digi),
+    seg(24.930 * M, 24.990 * M, All),
+    // 10m
+    seg(28.000 * M, 28.070 * M, Cw),
+    seg(28.070 * M, 28.190 * M, Digi),
+    seg(28.190 * M, 28.300 * M, Beacon),
+    seg(28.300 * M, 29.700 * M, All),
+];
+
+/// HF sub-segments for IARU Region 3 (Asia-Pacific), sorted by frequency.
+///
+/// Between the other two: 160 m starts at 1.800 as in Region 2 but has no
+/// digimode window at the bottom, 80 m stops at 3.900, and 40 m stops at 7.200
+/// as in Region 1 while the data conventions on it are Region 2's.
+pub const SEGMENTS_R3: &[Segment] = &[
+    // 160m
+    seg(1.800 * M, 1.838 * M, Cw),
+    seg(1.838 * M, 1.843 * M, Digi),
+    seg(1.843 * M, 2.000 * M, All),
+    // 80m
+    seg(3.500 * M, 3.570 * M, Cw),
+    seg(3.570 * M, 3.600 * M, Digi),
+    seg(3.600 * M, 3.900 * M, All),
+    // 60m
+    seg(5.3515 * M, 5.3665 * M, All),
+    // 40m
+    seg(7.000 * M, 7.035 * M, Cw),
+    seg(7.035 * M, 7.100 * M, Digi),
+    seg(7.100 * M, 7.200 * M, All),
+    // 30m
+    seg(10.100 * M, 10.130 * M, Cw),
+    seg(10.130 * M, 10.150 * M, Digi),
+    // 20m
+    seg(14.000 * M, 14.070 * M, Cw),
+    seg(14.070 * M, 14.099 * M, Digi),
+    seg(14.099 * M, 14.101 * M, Beacon),
+    seg(14.101 * M, 14.350 * M, All),
+    // 17m
+    seg(18.068 * M, 18.095 * M, Cw),
+    seg(18.095 * M, 18.109 * M, Digi),
+    seg(18.109 * M, 18.111 * M, Beacon),
+    seg(18.111 * M, 18.168 * M, All),
+    // 15m
+    seg(21.000 * M, 21.070 * M, Cw),
+    seg(21.070 * M, 21.150 * M, Digi),
+    seg(21.150 * M, 21.450 * M, All),
+    // 12m
+    seg(24.890 * M, 24.915 * M, Cw),
+    seg(24.915 * M, 24.930 * M, Digi),
+    seg(24.930 * M, 24.990 * M, All),
+    // 10m
+    seg(28.000 * M, 28.070 * M, Cw),
+    seg(28.070 * M, 28.190 * M, Digi),
+    seg(28.190 * M, 28.300 * M, Beacon),
+    seg(28.300 * M, 29.700 * M, All),
+];
+
+/// The HF sub-segments of `region`'s band plan, sorted by frequency.
+pub fn segments_in(region: Region) -> &'static [Segment] {
+    match region {
+        Region::R1 => SEGMENTS_R1,
+        Region::R2 => SEGMENTS_R2,
+        Region::R3 => SEGMENTS_R3,
+    }
+}
+
+/// The HF sub-segments of the station's configured region.
+pub fn segments() -> &'static [Segment] {
+    segments_in(crate::region())
+}
+
+/// The operating category at `hz` in `region`, or `None` outside every listed
+/// HF segment.
+pub fn segment_kind_at_in(hz: f64, region: Region) -> Option<SegmentKind> {
+    segments_in(region).iter().find(|s| hz >= s.lo && hz < s.hi).map(|s| s.kind)
+}
 
 /// The operating category at `hz`, or `None` outside every listed HF segment.
 pub fn segment_kind_at(hz: f64) -> Option<SegmentKind> {
-    SEGMENTS.iter().find(|s| hz >= s.lo && hz < s.hi).map(|s| s.kind)
+    segment_kind_at_in(hz, crate::region())
 }
 
 /// True if `hz` falls in a CW sub-segment.
@@ -157,9 +308,37 @@ pub const WSPR_DIALS: &[f64] = &[
     24_924_600.0,
     28_124_600.0,
 ];
-/// Analog-SSTV calling frequencies (Hz); a picture occupies ~2.7 kHz above each.
-pub const SSTV_CALLING: &[f64] =
-    &[3_730_000.0, 7_171_000.0, 14_230_000.0, 21_340_000.0, 28_680_000.0];
+
+/// Analog-SSTV frequencies (Hz), with the note the picker shows and the regions
+/// each belongs to. A picture occupies ~2.7 kHz above the dial.
+///
+/// The secondaries matter more here than in most modes: a picture takes two
+/// minutes, so a single frequency per band is occupied a lot of the time and
+/// the convention is simply to move up.
+///
+/// 80 m and 40 m split by region and always have — 3.730 and 7.165 in Region 1,
+/// 3.845 and 7.171 in the Americas and the Asia-Pacific. 3.845 is outside the
+/// Region 1 allocation altogether, which is exactly the sort of entry the
+/// region filter exists to keep out of a European operator's picker.
+pub const SSTV_DIALS: &[(f64, &str, u8)] = &[
+    (3_730_000.0, "", mask::R1),
+    (3_735_000.0, "secondary", mask::R1),
+    (3_845_000.0, "", mask::R23),
+    (7_165_000.0, "", mask::R1),
+    (7_171_000.0, "", mask::R23),
+    (14_230_000.0, "", mask::ALL),
+    (14_233_000.0, "secondary", mask::ALL),
+    (21_340_000.0, "", mask::ALL),
+    (28_680_000.0, "", mask::ALL),
+    (28_690_000.0, "secondary", mask::ALL),
+];
+
+/// The analog-SSTV frequencies in use in `region`, ascending — [`SSTV_DIALS`]
+/// with the region filter applied, for callers that want the frequencies rather
+/// than the picker's annotated channels.
+pub fn sstv_dials_in(region: Region) -> Vec<f64> {
+    SSTV_DIALS.iter().filter(|&&(_, _, m)| region.in_mask(m)).map(|&(hz, _, _)| hz).collect()
+}
 
 /// RIFP centre frequencies (Hz): the calling frequency the draft names, plus a
 /// spot in each segment below it where a wide channel fits (10 m FM, the 6 m
@@ -172,6 +351,9 @@ pub const RIFP_CALLING: &[f64] =
 /// skimmers must not run — their DSP would only produce garbage from these
 /// signals. Covers FT8, FT4 and JS8 (dial → +3 kHz), plus the WSPR window and
 /// the QRSS/MEPT beacons just below it (~1000–1700 Hz above the WSPR dial).
+///
+/// Region-independent, because these dial lists are: the WSJT modes ship one
+/// frequency table for the whole world.
 pub fn is_auto_digi(hz: f64) -> bool {
     FT8_DIALS.iter().any(|&f| (f - 100.0..=f + 3100.0).contains(&hz))
         || FT4_DIALS.iter().any(|&f| (f - 100.0..=f + 3100.0).contains(&hz))
@@ -183,9 +365,9 @@ pub fn is_auto_digi(hz: f64) -> bool {
         })
 }
 
-/// The narrow sub-bands where PSK31 activity clusters (IARU Region 1). The PSK
+/// The narrow sub-bands where PSK31 activity clusters in Region 1. The PSK
 /// skimmer runs only here, not across the whole digi segment.
-pub const PSK_RANGES: &[(f64, f64)] = &[
+pub const PSK_RANGES_R1: &[(f64, f64)] = &[
     (1_838_000.0, 1_840_000.0),   // 160m
     (3_580_000.0, 3_583_000.0),   // 80m
     (7_038_000.0, 7_042_000.0),   // 40m
@@ -197,8 +379,22 @@ pub const PSK_RANGES: &[(f64, f64)] = &[
     (28_118_000.0, 28_122_000.0), // 10m
 ];
 
-/// The sub-bands where RTTY activity clusters (IARU Region 1).
-pub const RTTY_RANGES: &[(f64, f64)] = &[
+/// The same for Regions 2 and 3, which differ only on 40 m: the activity is
+/// around 7.070, not 7.040.
+pub const PSK_RANGES_R23: &[(f64, f64)] = &[
+    (1_838_000.0, 1_840_000.0),   // 160m
+    (3_580_000.0, 3_583_000.0),   // 80m
+    (7_068_000.0, 7_072_000.0),   // 40m
+    (10_139_000.0, 10_142_000.0), // 30m
+    (14_070_000.0, 14_073_000.0), // 20m
+    (18_097_000.0, 18_100_000.0), // 17m
+    (21_070_000.0, 21_073_000.0), // 15m
+    (24_920_000.0, 24_923_000.0), // 12m
+    (28_118_000.0, 28_122_000.0), // 10m
+];
+
+/// The sub-bands where RTTY activity clusters in Region 1.
+pub const RTTY_RANGES_R1: &[(f64, f64)] = &[
     (3_580_000.0, 3_600_000.0),   // 80m
     (7_040_000.0, 7_050_000.0),   // 40m
     (10_140_000.0, 10_150_000.0), // 30m
@@ -208,6 +404,45 @@ pub const RTTY_RANGES: &[(f64, f64)] = &[
     (24_921_000.0, 24_930_000.0), // 12m
     (28_083_000.0, 28_120_000.0), // 10m
 ];
+
+/// The same for Regions 2 and 3: 40 m RTTY sits from 7.075 up, around the
+/// 7.080 calling frequency, rather than in Region 1's 7.040–7.050.
+pub const RTTY_RANGES_R23: &[(f64, f64)] = &[
+    (3_580_000.0, 3_600_000.0),   // 80m
+    (7_075_000.0, 7_100_000.0),   // 40m
+    (10_140_000.0, 10_150_000.0), // 30m
+    (14_083_000.0, 14_099_000.0), // 20m
+    (18_101_000.0, 18_109_000.0), // 17m
+    (21_080_000.0, 21_120_000.0), // 15m
+    (24_921_000.0, 24_930_000.0), // 12m
+    (28_083_000.0, 28_120_000.0), // 10m
+];
+
+/// Where PSK31 clusters in `region`.
+pub fn psk_ranges_in(region: Region) -> &'static [(f64, f64)] {
+    match region {
+        Region::R1 => PSK_RANGES_R1,
+        Region::R2 | Region::R3 => PSK_RANGES_R23,
+    }
+}
+
+/// Where PSK31 clusters in the station's configured region.
+pub fn psk_ranges() -> &'static [(f64, f64)] {
+    psk_ranges_in(crate::region())
+}
+
+/// Where RTTY clusters in `region`.
+pub fn rtty_ranges_in(region: Region) -> &'static [(f64, f64)] {
+    match region {
+        Region::R1 => RTTY_RANGES_R1,
+        Region::R2 | Region::R3 => RTTY_RANGES_R23,
+    }
+}
+
+/// Where RTTY clusters in the station's configured region.
+pub fn rtty_ranges() -> &'static [(f64, f64)] {
+    rtty_ranges_in(crate::region())
+}
 
 /// FT8 DXpedition (Fox/Hound) dial frequencies (Hz).
 ///
@@ -232,50 +467,39 @@ pub const FT8_DXPED_DIALS: &[f64] = &[
 /// sporadic-E opening is most of the time.
 pub const FT8_VHF_DIALS: &[f64] = &[50_313_000.0, 50_323_000.0, 144_174_000.0, 432_174_000.0];
 
-/// Analog-SSTV frequencies beyond the primary calling ones in [`SSTV_CALLING`].
-///
-/// The secondaries matter more here than in most modes: a picture takes two
-/// minutes, so a single frequency per band is occupied a lot of the time and
-/// the convention is simply to move up.
-/// The Region 2 secondaries that fall outside the Region 1 allocations this
-/// build's band edges model — 80 m 3.845 among them — are deliberately absent:
-/// an entry `Band::containing` cannot place is one the picker would never show
-/// and the transmit lockout would refuse anyway.
-pub const SSTV_SECONDARY: &[f64] = &[3_735_000.0, 7_165_000.0, 14_233_000.0, 28_690_000.0];
-
-/// PSK31 dial frequencies (Hz).
+/// PSK31 dial frequencies (Hz), tagged with the regions each belongs to.
 ///
 /// 40 m carries the region split that the rest of the table does not need:
 /// 7.040 is where Region 1 activity sits — the bottom of the digimode segment
 /// since the 2009 rebandplan, the older 7.035 having been left in the
 /// narrow-band part — and 7.070 is the Region 2 and 3 convention.
-pub const PSK_DIALS: &[(f64, &str)] = &[
-    (1_838_000.0, ""),
-    (3_580_000.0, ""),
-    (7_040_000.0, "region 1"),
-    (7_070_000.0, "regions 2 and 3"),
-    (10_142_000.0, ""),
-    (14_070_000.0, ""),
-    (18_097_000.0, ""),
-    (21_070_000.0, ""),
-    (24_920_000.0, ""),
-    (28_120_000.0, ""),
+pub const PSK_DIALS: &[(f64, &str, u8)] = &[
+    (1_838_000.0, "", mask::ALL),
+    (3_580_000.0, "", mask::ALL),
+    (7_040_000.0, "", mask::R1),
+    (7_070_000.0, "", mask::R23),
+    (10_142_000.0, "", mask::ALL),
+    (14_070_000.0, "", mask::ALL),
+    (18_097_000.0, "", mask::ALL),
+    (21_070_000.0, "", mask::ALL),
+    (24_920_000.0, "", mask::ALL),
+    (28_120_000.0, "", mask::ALL),
 ];
 
-/// RTTY dial frequencies (Hz) — the DX calling spots, plus the Region 2 slots
-/// on 40 m and 80 m where the Region 1 ones fall outside the allocation.
-pub const RTTY_DIALS: &[(f64, &str)] = &[
-    (3_580_000.0, ""),
-    (3_590_000.0, "DX calling"),
-    (7_040_000.0, "region 1"),
-    (7_080_000.0, "regions 2 and 3"),
-    (10_142_000.0, ""),
-    (14_080_000.0, ""),
-    (14_083_000.0, "DX calling"),
-    (18_105_000.0, ""),
-    (21_080_000.0, ""),
-    (24_925_000.0, ""),
-    (28_080_000.0, ""),
+/// RTTY dial frequencies (Hz) — the DX calling spots, plus the 40 m split
+/// between Region 1's 7.040 and the 7.080 the other two regions use.
+pub const RTTY_DIALS: &[(f64, &str, u8)] = &[
+    (3_580_000.0, "", mask::ALL),
+    (3_590_000.0, "DX calling", mask::ALL),
+    (7_040_000.0, "", mask::R1),
+    (7_080_000.0, "", mask::R23),
+    (10_142_000.0, "", mask::ALL),
+    (14_080_000.0, "", mask::ALL),
+    (14_083_000.0, "DX calling", mask::ALL),
+    (18_105_000.0, "", mask::ALL),
+    (21_080_000.0, "", mask::ALL),
+    (24_925_000.0, "", mask::ALL),
+    (28_080_000.0, "", mask::ALL),
 ];
 
 /// FSQCall dial frequencies (Hz), as the mode's own documentation publishes
@@ -303,33 +527,39 @@ pub struct DigiChannel {
     /// its signal in the audio passband above it.
     pub dial_hz: f64,
     /// What distinguishes it from the band's other entries — "DXpedition",
-    /// "region 2", "DX calling". Empty for the plain calling frequency, which
+    /// "secondary", "DX calling". Empty for the plain calling frequency, which
     /// is the first entry in a band.
     pub note: &'static str,
 }
 
 impl DigiChannel {
-    /// True when this frequency is not in a data sub-segment of the IARU
-    /// Region 1 band plan.
+    /// True when this frequency is not in a data or all-modes sub-segment of
+    /// the station's configured region's band plan.
+    pub fn outside_data_segment(&self, mode: crate::Mode) -> bool {
+        self.outside_data_segment_in(mode, crate::region())
+    }
+
+    /// True when this frequency is not in a data or all-modes sub-segment of
+    /// `region`'s band plan.
     ///
-    /// Several genuinely conventional frequencies are: the WSJT-X DXpedition
-    /// set is a *global* convention chosen around the Region 2 band plan, and
-    /// three of its entries land in Region 1's CW and phone segments.
+    /// Several genuinely conventional frequencies are not: the WSJT-X
+    /// DXpedition set is a *global* convention chosen around the Region 2 band
+    /// plan, and three of its entries land in Region 1's CW and phone segments.
     ///
-    /// Worth showing rather than hiding: an operator in Region 1 should know
-    /// before they key that the frequency the DX is working on is one their own
-    /// band plan does not put data in.
+    /// Worth showing rather than hiding: an operator should know before they
+    /// key that the frequency the DX is working on is one their own band plan
+    /// does not put data in.
     ///
     /// The wideband modes are exempt — analog SSTV is a phone emission and
     /// RIFP's CPFSK channel is 25 kHz wide, so both belong in the SSB and
     /// all-mode parts of the band by design and flagging them would be noise.
-    pub fn outside_r1_data_segment(&self, mode: crate::Mode) -> bool {
+    pub fn outside_data_segment_in(&self, mode: crate::Mode, region: Region) -> bool {
         if wideband_by_design(mode) {
             return false;
         }
         // Above HF there are no segments in the table to check against.
-        match segment_kind_at(self.dial_hz) {
-            Some(kind) => kind != SegmentKind::Digi,
+        match segment_kind_at_in(self.dial_hz, region) {
+            Some(kind) => !matches!(kind, SegmentKind::Digi | SegmentKind::All),
             None => false,
         }
     }
@@ -341,18 +571,29 @@ fn wideband_by_design(mode: crate::Mode) -> bool {
     matches!(mode, crate::Mode::Sstv | crate::Mode::Rifp)
 }
 
-/// The conventional dial frequencies for `mode`, ascending.
+/// The conventional dial frequencies for `mode` in the station's configured
+/// region, ascending.
+pub fn digi_channels(mode: crate::Mode) -> Vec<DigiChannel> {
+    digi_channels_for(mode, crate::region())
+}
+
+/// The conventional dial frequencies for `mode` in `region`, ascending.
 ///
 /// Empty for a mode with no convention of its own — CW, SSB, and the modes
 /// whose operating frequency is a property of what they are pointed at rather
 /// than of the mode (RF Paint, RADE).
-pub fn digi_channels(mode: crate::Mode) -> Vec<DigiChannel> {
+pub fn digi_channels_for(mode: crate::Mode, region: Region) -> Vec<DigiChannel> {
     use crate::Mode;
     let plain = |v: &[f64]| -> Vec<DigiChannel> {
         v.iter().map(|&dial_hz| DigiChannel { dial_hz, note: "" }).collect()
     };
-    let noted = |v: &[(f64, &'static str)]| -> Vec<DigiChannel> {
-        v.iter().map(|&(dial_hz, note)| DigiChannel { dial_hz, note }).collect()
+    // The region-tagged tables: an entry only appears where its convention
+    // actually holds, so a Region 1 operator is never offered 7.070 for PSK31.
+    let tagged = |v: &[(f64, &'static str, u8)]| -> Vec<DigiChannel> {
+        v.iter()
+            .filter(|&&(_, _, m)| region.in_mask(m))
+            .map(|&(dial_hz, note, _)| DigiChannel { dial_hz, note })
+            .collect()
     };
 
     let mut v = match mode {
@@ -370,16 +611,10 @@ pub fn digi_channels(mode: crate::Mode) -> Vec<DigiChannel> {
         }
         Mode::Ft4 => plain(FT4_DIALS),
         Mode::Ft2 => plain(FT2_DIALS),
-        Mode::Psk => noted(PSK_DIALS),
-        Mode::Rtty => noted(RTTY_DIALS),
+        Mode::Psk => tagged(PSK_DIALS),
+        Mode::Rtty => tagged(RTTY_DIALS),
         Mode::Fsq => plain(FSQ_DIALS),
-        Mode::Sstv => {
-            let mut v = plain(SSTV_CALLING);
-            v.extend(
-                SSTV_SECONDARY.iter().map(|&dial_hz| DigiChannel { dial_hz, note: "secondary" }),
-            );
-            v
-        }
+        Mode::Sstv => tagged(SSTV_DIALS),
         Mode::Rifp => plain(RIFP_CALLING),
         _ => Vec::new(),
     };
@@ -387,55 +622,128 @@ pub fn digi_channels(mode: crate::Mode) -> Vec<DigiChannel> {
     v
 }
 
-/// The conventional dial frequencies for `mode` that fall inside `band`.
+/// The conventional dial frequencies for `mode` that fall inside `band`, in the
+/// station's configured region.
 ///
 /// The caller shows a picker when this returns more than one — a band with a
 /// single convention has nothing to choose between.
 pub fn digi_channels_in(mode: crate::Mode, band: crate::Band) -> Vec<DigiChannel> {
-    digi_channels(mode).into_iter().filter(|c| crate::Band::containing(c.dial_hz) == band).collect()
+    digi_channels_in_region(mode, band, crate::region())
+}
+
+/// The conventional dial frequencies for `mode` inside `band`, in `region`.
+pub fn digi_channels_in_region(
+    mode: crate::Mode,
+    band: crate::Band,
+    region: Region,
+) -> Vec<DigiChannel> {
+    digi_channels_for(mode, region)
+        .into_iter()
+        .filter(|c| crate::Band::containing_in(c.dial_hz, region) == band)
+        .collect()
 }
 
 /// True in a PSK31 calling sub-band (and clear of the automatic modes).
 pub fn is_psk_segment(hz: f64) -> bool {
-    !is_auto_digi(hz) && PSK_RANGES.iter().any(|&(lo, hi)| (lo..=hi).contains(&hz))
+    is_psk_segment_in(hz, crate::region())
+}
+
+/// The same for `region`.
+pub fn is_psk_segment_in(hz: f64, region: Region) -> bool {
+    !is_auto_digi(hz) && psk_ranges_in(region).iter().any(|&(lo, hi)| (lo..=hi).contains(&hz))
 }
 
 /// True in an RTTY sub-band (and clear of the automatic modes).
 pub fn is_rtty_segment(hz: f64) -> bool {
-    !is_auto_digi(hz) && RTTY_RANGES.iter().any(|&(lo, hi)| (lo..=hi).contains(&hz))
+    is_rtty_segment_in(hz, crate::region())
+}
+
+/// The same for `region`.
+pub fn is_rtty_segment_in(hz: f64, region: Region) -> bool {
+    !is_auto_digi(hz) && rtty_ranges_in(region).iter().any(|&(lo, hi)| (lo..=hi).contains(&hz))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Band;
 
     #[test]
     fn classification() {
-        assert_eq!(segment_kind_at(14_030_000.0), Some(SegmentKind::Cw));
-        assert_eq!(segment_kind_at(14_074_000.0), Some(SegmentKind::Digi)); // FT8
-        assert_eq!(segment_kind_at(14_200_000.0), Some(SegmentKind::Phone));
-        assert!(is_cw_segment(7_020_000.0));
-        assert!(!is_cw_segment(7_074_000.0));
-        assert!(is_digi_segment(7_074_000.0));
+        assert_eq!(segment_kind_at_in(14_030_000.0, Region::R1), Some(Cw));
+        assert_eq!(segment_kind_at_in(14_074_000.0, Region::R1), Some(Digi)); // FT8
+        assert_eq!(segment_kind_at_in(14_200_000.0, Region::R1), Some(Phone));
+        assert_eq!(segment_kind_at_in(7_020_000.0, Region::R1), Some(Cw));
+        assert_eq!(segment_kind_at_in(7_074_000.0, Region::R1), Some(Digi));
         // Outside any HF ham segment.
-        assert_eq!(segment_kind_at(15_000_000.0), None);
-        assert!(!is_cw_segment(15_000_000.0));
+        assert_eq!(segment_kind_at_in(15_000_000.0, Region::R1), None);
     }
 
+    /// The places the three plans genuinely disagree — the point of the
+    /// setting, so spelled out rather than left to the tables to imply.
+    #[test]
+    fn the_regions_disagree_where_they_should() {
+        // 1.805: below Region 1's band entirely, digimodes in Region 2, CW in
+        // Region 3.
+        assert_eq!(segment_kind_at_in(1_805_000.0, Region::R1), None);
+        assert_eq!(segment_kind_at_in(1_805_000.0, Region::R2), Some(Digi));
+        assert_eq!(segment_kind_at_in(1_805_000.0, Region::R3), Some(Cw));
+        // 7.037: data in Regions 2 and 3, still CW in Region 1.
+        assert_eq!(segment_kind_at_in(7_037_000.0, Region::R1), Some(Cw));
+        assert_eq!(segment_kind_at_in(7_037_000.0, Region::R2), Some(Digi));
+        assert_eq!(segment_kind_at_in(7_037_000.0, Region::R3), Some(Digi));
+        // 7.250: Region 2 only.
+        assert_eq!(segment_kind_at_in(7_250_000.0, Region::R1), None);
+        assert_eq!(segment_kind_at_in(7_250_000.0, Region::R2), Some(All));
+        assert_eq!(segment_kind_at_in(7_250_000.0, Region::R3), None);
+        // 3.850: Region 1 stops at 3.800.
+        assert_eq!(segment_kind_at_in(3_850_000.0, Region::R1), None);
+        assert_eq!(segment_kind_at_in(3_850_000.0, Region::R2), Some(All));
+        assert_eq!(segment_kind_at_in(3_850_000.0, Region::R3), Some(All));
+        // The top of 20 m is a phone sub-band in Region 1 and all-modes in the
+        // other two — which is what keeps an ordinary data frequency there from
+        // being flagged as out of plan.
+        assert_eq!(segment_kind_at_in(14_200_000.0, Region::R2), Some(All));
+        assert_eq!(segment_kind_at_in(14_200_000.0, Region::R3), Some(All));
+    }
+
+    /// 20 m, where all three regions agree — so this one is about the skimmer
+    /// windows dodging the automatic modes rather than about the region, and it
+    /// is asserted for all three to say so.
     #[test]
     fn psk_rtty_subbands() {
-        // 20m PSK area, clear of FT8 (14.074).
-        assert!(is_psk_segment(14_072_000.0));
-        assert!(!is_psk_segment(14_074_000.0)); // FT8
-        assert!(!is_psk_segment(14_090_000.0)); // RTTY area, not PSK
-        assert!(!is_psk_segment(14_200_000.0)); // phone
-        // 20m RTTY area, clear of FT4 (14.080) and WSPR/QRSS (around 14.097).
-        assert!(is_rtty_segment(14_090_000.0));
-        assert!(!is_rtty_segment(14_081_000.0)); // FT4
-        assert!(!is_rtty_segment(14_095_600.0)); // WSPR dial
-        assert!(!is_rtty_segment(14_097_000.0)); // WSPR signal window (dial + 1400)
-        assert!(!is_rtty_segment(14_096_800.0)); // QRSS / WSPR window (dial + 1200)
-        assert!(!is_rtty_segment(14_072_000.0)); // PSK area, not RTTY
+        for r in Region::ALL {
+            // 20m PSK area, clear of FT8 (14.074).
+            assert!(is_psk_segment_in(14_072_000.0, r), "{r:?}");
+            assert!(!is_psk_segment_in(14_074_000.0, r)); // FT8
+            assert!(!is_psk_segment_in(14_090_000.0, r)); // RTTY area, not PSK
+            assert!(!is_psk_segment_in(14_200_000.0, r)); // phone
+            // 20m RTTY area, clear of FT4 (14.080) and WSPR/QRSS (around 14.097).
+            assert!(is_rtty_segment_in(14_090_000.0, r), "{r:?}");
+            assert!(!is_rtty_segment_in(14_081_000.0, r)); // FT4
+            assert!(!is_rtty_segment_in(14_095_600.0, r)); // WSPR dial
+            assert!(!is_rtty_segment_in(14_097_000.0, r)); // WSPR window (dial + 1400)
+            assert!(!is_rtty_segment_in(14_096_800.0, r)); // QRSS window (dial + 1200)
+            assert!(!is_rtty_segment_in(14_072_000.0, r)); // PSK area, not RTTY
+        }
+    }
+
+    /// 40 m is where the skimmers have to move with the region: pointing the
+    /// PSK skimmer at 7.040 in the Americas would skim an empty stretch of
+    /// band and miss the actual activity 30 kHz up.
+    #[test]
+    fn the_skimmer_windows_follow_the_region_on_40m() {
+        let in_range =
+            |ranges: &[(f64, f64)], hz: f64| ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&hz));
+        assert!(in_range(psk_ranges_in(Region::R1), 7_040_000.0));
+        assert!(!in_range(psk_ranges_in(Region::R1), 7_070_000.0));
+        for r in [Region::R2, Region::R3] {
+            assert!(in_range(psk_ranges_in(r), 7_070_000.0), "{r:?}");
+            assert!(!in_range(psk_ranges_in(r), 7_040_000.0), "{r:?}");
+            assert!(in_range(rtty_ranges_in(r), 7_080_000.0), "{r:?}");
+        }
+        assert!(in_range(rtty_ranges_in(Region::R1), 7_045_000.0));
+        assert!(!in_range(rtty_ranges_in(Region::R1), 7_080_000.0));
     }
 
     #[test]
@@ -448,8 +756,9 @@ mod tests {
         }
     }
 
-    /// Every conventional frequency has to be inside an amateur band, and the
-    /// Region 1 flag has to agree with the segment table.
+    /// Every conventional frequency has to be inside an amateur band *of the
+    /// region it is offered in*, and the out-of-plan flag has to agree with
+    /// that region's segment table.
     ///
     /// There is deliberately no assertion that the frequencies sit in a data
     /// segment. Several genuinely do not: the WSJT-X DXpedition set and the
@@ -461,21 +770,28 @@ mod tests {
     /// silently.
     #[test]
     fn every_conventional_frequency_is_in_a_band_and_flagged_honestly() {
-        use crate::{Band, Mode};
-        for mode in Mode::ALL {
-            for c in digi_channels(mode) {
-                let band = Band::containing(c.dial_hz);
-                assert_ne!(band, Band::Gen, "{mode:?} {} is outside every band", c.dial_hz);
-                let flagged = c.outside_r1_data_segment(mode);
-                match segment_kind_at(c.dial_hz) {
-                    // Above HF there are no sub-segments to check against.
-                    None => assert!(!flagged, "{mode:?} {} flagged above HF", c.dial_hz),
-                    Some(kind) => assert_eq!(
-                        flagged,
-                        !wideband_by_design(mode) && kind != SegmentKind::Digi,
-                        "{mode:?} {} is in a {kind:?} segment and flagged {flagged}",
+        use crate::Mode;
+        for region in Region::ALL {
+            for mode in Mode::ALL {
+                for c in digi_channels_for(mode, region) {
+                    let band = Band::containing_in(c.dial_hz, region);
+                    assert_ne!(
+                        band,
+                        Band::Gen,
+                        "{mode:?} {} is outside every band in {region:?}",
                         c.dial_hz
-                    ),
+                    );
+                    let flagged = c.outside_data_segment_in(mode, region);
+                    match segment_kind_at_in(c.dial_hz, region) {
+                        // Above HF there are no sub-segments to check against.
+                        None => assert!(!flagged, "{mode:?} {} flagged above HF", c.dial_hz),
+                        Some(kind) => assert_eq!(
+                            flagged,
+                            !wideband_by_design(mode) && !matches!(kind, Digi | All),
+                            "{mode:?} {} is in a {kind:?} segment and flagged {flagged}",
+                            c.dial_hz
+                        ),
+                    }
                 }
             }
         }
@@ -488,11 +804,11 @@ mod tests {
     /// rather than slipping into the picker unnoticed.
     #[test]
     fn the_region_1_mismatches_are_exactly_these() {
-        use crate::{Band, Mode};
+        use crate::Mode;
         let flagged = |mode: Mode| -> Vec<f64> {
-            digi_channels(mode)
+            digi_channels_for(mode, Region::R1)
                 .into_iter()
-                .filter(|c| c.outside_r1_data_segment(mode))
+                .filter(|c| c.outside_data_segment_in(mode, Region::R1))
                 .map(|c| c.dial_hz)
                 .collect()
         };
@@ -518,10 +834,40 @@ mod tests {
         }
         // ...and the ordinary FT8 calling frequencies never are either.
         for &f in FT8_DIALS {
-            assert!(!DigiChannel { dial_hz: f, note: "" }.outside_r1_data_segment(Mode::Ft8));
+            let c = DigiChannel { dial_hz: f, note: "" };
+            assert!(!c.outside_data_segment_in(Mode::Ft8, Region::R1));
         }
-        for c in digi_channels_in(Mode::Sstv, Band::M20) {
-            assert!(!c.outside_r1_data_segment(Mode::Sstv));
+    }
+
+    /// The out-of-plan flag has to be regional, not a fixed list: most of what
+    /// Region 1 flags is flagged only because it was chosen around a band plan
+    /// that hands the top of each band to all modes.
+    #[test]
+    fn what_region_1_flags_is_mostly_in_plan_elsewhere() {
+        use crate::Mode;
+        let flagged = |hz: f64, mode, region| {
+            DigiChannel { dial_hz: hz, note: "" }.outside_data_segment_in(mode, region)
+        };
+        // FT8's 160 m DXpedition frequency, FSQCall's 40 m and 20 m, and FT2's
+        // 160 m dial all land in Region 1 phone segments and in Region 2 and 3
+        // all-modes ones.
+        for (hz, mode) in [
+            (1_845_000.0, Mode::Ft8),
+            (7_105_000.0, Mode::Fsq),
+            (14_105_000.0, Mode::Fsq),
+            (1_843_000.0, Mode::Ft2),
+        ] {
+            assert!(flagged(hz, mode, Region::R1), "{hz} should be flagged in R1");
+            for r in [Region::R2, Region::R3] {
+                assert!(!flagged(hz, mode, r), "{hz} should not be flagged in {r:?}");
+            }
+        }
+        // The two that sit in a CW sub-band are flagged in every region: every
+        // plan puts CW there, and moving to the Americas does not change that.
+        for hz in [3_567_000.0, 24_911_000.0] {
+            for r in Region::ALL {
+                assert!(flagged(hz, Mode::Ft8, r), "{hz} should be flagged in {r:?}");
+            }
         }
     }
 
@@ -530,44 +876,98 @@ mod tests {
     /// may list the same frequency twice.
     #[test]
     fn bands_with_a_choice_have_one_and_the_rest_do_not() {
-        use crate::{Band, Mode};
+        use crate::Mode;
         // FT8 on 20 m: the calling frequency and the DXpedition one.
-        let ft8_20 = digi_channels_in(Mode::Ft8, Band::M20);
+        let ft8_20 = digi_channels_in_region(Mode::Ft8, Band::M20, Region::R1);
         assert_eq!(ft8_20.len(), 2, "{ft8_20:?}");
         assert_eq!(ft8_20[0].dial_hz, 14_074_000.0);
         assert!(ft8_20[0].note.is_empty(), "the calling frequency leads and is unannotated");
         assert!(ft8_20[1].note.contains("DXpedition"));
         // 6 m has two FT8 frequencies; 2 m has one, so it shows no picker.
-        assert_eq!(digi_channels_in(Mode::Ft8, Band::M6).len(), 2);
-        assert_eq!(digi_channels_in(Mode::Ft8, Band::M2).len(), 1);
-        // FT4 has a single convention everywhere.
-        for b in Band::ALL {
-            assert!(digi_channels_in(Mode::Ft4, b).len() <= 1, "FT4 on {b:?}");
-            assert!(digi_channels_in(Mode::Ft2, b).len() <= 1, "FT2 on {b:?}");
+        assert_eq!(digi_channels_in_region(Mode::Ft8, Band::M6, Region::R1).len(), 2);
+        assert_eq!(digi_channels_in_region(Mode::Ft8, Band::M2, Region::R1).len(), 1);
+        // FT4 and FT2 have a single convention everywhere, in every region.
+        for region in Region::ALL {
+            for b in Band::ALL {
+                assert!(digi_channels_in_region(Mode::Ft4, b, region).len() <= 1, "FT4 {b:?}");
+                assert!(digi_channels_in_region(Mode::Ft2, b, region).len() <= 1, "FT2 {b:?}");
+            }
         }
-        // 40 m PSK carries the region split, which is the case the picker
-        // exists for.
-        assert_eq!(digi_channels_in(Mode::Psk, Band::M40).len(), 2);
+        // 40 m PSK used to carry the region split as a two-entry picker. Now
+        // that the station says where it is, each region is offered only its
+        // own frequency and the picker stays out of the way.
+        for region in Region::ALL {
+            let psk40 = digi_channels_in_region(Mode::Psk, Band::M40, region);
+            assert_eq!(psk40.len(), 1, "{region:?}: {psk40:?}");
+        }
+        assert_eq!(
+            digi_channels_in_region(Mode::Psk, Band::M40, Region::R1)[0].dial_hz,
+            7_040_000.0
+        );
+        assert_eq!(
+            digi_channels_in_region(Mode::Psk, Band::M40, Region::R2)[0].dial_hz,
+            7_070_000.0
+        );
         // SSTV on 20 m: the calling frequency and the one to move up to.
-        assert_eq!(digi_channels_in(Mode::Sstv, Band::M20).len(), 2);
+        assert_eq!(digi_channels_in_region(Mode::Sstv, Band::M20, Region::R1).len(), 2);
         // Modes with no convention of their own offer nothing rather than
         // something invented.
         for m in [Mode::Usb, Mode::Cw, Mode::Rade, Mode::RfPaint, Mode::Hell] {
-            assert!(digi_channels(m).is_empty(), "{m:?} should have no channel list");
+            assert!(digi_channels_for(m, Region::R1).is_empty(), "{m:?}");
         }
-        // No duplicates, and ascending within every mode.
-        for m in Mode::ALL {
-            let v = digi_channels(m);
-            for w in v.windows(2) {
-                assert!(w[0].dial_hz < w[1].dial_hz, "{m:?}: {:?} then {:?}", w[0], w[1]);
+        // No duplicates, and ascending within every mode and region.
+        for region in Region::ALL {
+            for m in Mode::ALL {
+                let v = digi_channels_for(m, region);
+                for w in v.windows(2) {
+                    assert!(
+                        w[0].dial_hz < w[1].dial_hz,
+                        "{m:?} in {region:?}: {:?} then {:?}",
+                        w[0],
+                        w[1]
+                    );
+                }
             }
         }
     }
 
+    /// SSTV's 80 m and 40 m calling frequencies are region conventions, and
+    /// 3.845 is outside the Region 1 allocation altogether — offering it to a
+    /// European operator would be offering an out-of-band transmission.
+    #[test]
+    fn sstv_offers_each_region_its_own_calling_frequency() {
+        use crate::Mode;
+        let dials = |region| -> Vec<f64> {
+            digi_channels_for(Mode::Sstv, region).into_iter().map(|c| c.dial_hz).collect()
+        };
+        assert!(dials(Region::R1).contains(&3_730_000.0));
+        assert!(!dials(Region::R1).contains(&3_845_000.0));
+        assert!(dials(Region::R2).contains(&3_845_000.0));
+        assert!(!dials(Region::R2).contains(&3_730_000.0));
+        assert!(dials(Region::R1).contains(&7_165_000.0));
+        assert!(dials(Region::R3).contains(&7_171_000.0));
+    }
+
     #[test]
     fn segments_sorted_and_non_overlapping() {
-        for w in SEGMENTS.windows(2) {
-            assert!(w[0].hi <= w[1].lo, "overlap: {:?} then {:?}", w[0], w[1]);
+        for region in Region::ALL {
+            for w in segments_in(region).windows(2) {
+                assert!(w[0].hi <= w[1].lo, "{region:?} overlap: {:?} then {:?}", w[0], w[1]);
+            }
+        }
+    }
+
+    /// A sub-segment that runs past its own band's edge would colour the
+    /// waterfall outside the allocation and tell the skimmers to work there.
+    #[test]
+    fn every_segment_is_inside_a_band_of_its_own_region() {
+        for region in Region::ALL {
+            for s in segments_in(region) {
+                let band = Band::containing_in(s.lo, region);
+                assert_ne!(band, Band::Gen, "{region:?}: {s:?} starts outside every band");
+                let (_, hi) = band.edges_in(region).expect("a named band has edges");
+                assert!(s.hi <= hi, "{region:?}: {s:?} runs past {band:?}'s edge at {hi}");
+            }
         }
     }
 }
@@ -578,7 +978,7 @@ mod js8_tests {
 
     #[test]
     fn js8_has_conventional_channels() {
-        let ch = digi_channels(crate::Mode::Js8);
+        let ch = digi_channels_for(crate::Mode::Js8, Region::R1);
         assert_eq!(ch.len(), JS8_DIALS.len());
         assert!(ch.iter().any(|c| c.dial_hz == 14_078_000.0), "20 m JS8 missing");
     }

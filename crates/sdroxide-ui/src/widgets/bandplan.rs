@@ -3,9 +3,19 @@
 //! Two zoom tiers: when zoomed out, coarse allocations (ham bands, broadcast
 //! bands, CB, AM); when zoomed into a ham band, the fine sub-segments (CW,
 //! digital, SSB, beacons). Labels are drawn only where the segment is wide
-//! enough on screen. HF ham sub-bands follow the IARU Region 1 plan.
+//! enough on screen.
+//!
+//! Both tiers are built from the station's IARU region — once per region, then
+//! cached: the ham blocks from [`sdroxide_types::Band::edges_in`], their
+//! sub-segments from the shared segment table the skimmers gate on, and the
+//! broadcast blocks from the region-specific list below. Nothing here restates a
+//! band edge — a strip that disagreed with the transmit lockout would be worse
+//! than no strip.
+
+use std::sync::OnceLock;
 
 use eframe::egui::{Color32, FontId, Painter, Rect, Stroke, pos2};
+use sdroxide_types::{Band, Region, SegmentKind};
 
 use crate::theme;
 use crate::view::ViewState;
@@ -38,6 +48,7 @@ impl Kind {
     }
 }
 
+/// One block of the allocation strip.
 struct Seg {
     lo: f64,
     hi: f64,
@@ -49,98 +60,124 @@ const fn s(lo: f64, hi: f64, label: &'static str, kind: Kind) -> Seg {
     Seg { lo, hi, label, kind }
 }
 
+/// The whole-band label for a ham block. A match rather than a `format!` so the
+/// strip's tables can be built once and borrowed for the lifetime of the
+/// process — this is a per-frame draw path.
+fn ham_label(band: Band) -> &'static str {
+    match band {
+        Band::M160 => "160m HAM",
+        Band::M80 => "80m HAM",
+        Band::M60 => "60m HAM",
+        Band::M40 => "40m HAM",
+        Band::M30 => "30m HAM",
+        Band::M20 => "20m HAM",
+        Band::M17 => "17m HAM",
+        Band::M15 => "15m HAM",
+        Band::M12 => "12m HAM",
+        Band::M10 => "10m HAM",
+        Band::M6 => "6m HAM",
+        Band::M2 => "2m HAM",
+        Band::M70 => "70cm HAM",
+        Band::Gen => "GEN",
+    }
+}
+
 // Above this view span, show coarse bands; below it, fine ham sub-segments.
 const FINE_MAX_SPAN: f64 = 800_000.0;
 
 const M: f64 = 1_000_000.0;
 
-/// Coarse allocations shown when zoomed out.
-static COARSE: &[Seg] = &[
-    s(0.153 * M, 0.279 * M, "LW AM", Kind::Am),
-    s(0.531 * M, 1.602 * M, "MW AM", Kind::Am),
-    s(1.810 * M, 2.000 * M, "160m HAM", Kind::Ham),
-    s(3.500 * M, 3.800 * M, "80m HAM", Kind::Ham),
-    s(3.900 * M, 4.000 * M, "75m BC", Kind::Broadcast),
-    s(4.750 * M, 5.060 * M, "60m BC", Kind::Broadcast),
-    s(5.351 * M, 5.366 * M, "60m HAM", Kind::Ham),
-    s(5.900 * M, 6.200 * M, "49m BC", Kind::Broadcast),
-    s(7.000 * M, 7.200 * M, "40m HAM", Kind::Ham),
-    s(7.200 * M, 7.450 * M, "41m BC", Kind::Broadcast),
-    s(9.400 * M, 9.900 * M, "31m BC", Kind::Broadcast),
-    s(10.100 * M, 10.150 * M, "30m HAM", Kind::Ham),
-    s(11.600 * M, 12.100 * M, "25m BC", Kind::Broadcast),
-    s(13.570 * M, 13.870 * M, "22m BC", Kind::Broadcast),
-    s(14.000 * M, 14.350 * M, "20m HAM", Kind::Ham),
-    s(15.100 * M, 15.830 * M, "19m BC", Kind::Broadcast),
-    s(17.480 * M, 17.900 * M, "16m BC", Kind::Broadcast),
-    s(18.068 * M, 18.168 * M, "17m HAM", Kind::Ham),
-    s(21.000 * M, 21.450 * M, "15m HAM", Kind::Ham),
-    s(21.450 * M, 21.850 * M, "13m BC", Kind::Broadcast),
-    s(24.890 * M, 24.990 * M, "12m HAM", Kind::Ham),
-    s(25.670 * M, 26.100 * M, "11m BC", Kind::Broadcast),
-    s(26.965 * M, 27.405 * M, "CB", Kind::Cb),
-    s(28.000 * M, 29.700 * M, "10m HAM", Kind::Ham),
-];
+/// Broadcast, CB and AM allocations — everything on the strip that is not an
+/// amateur band. Shown at both zoom tiers, since none of it has sub-structure
+/// worth drawing.
+///
+/// Three of these are region-dependent, and two of those are the reason it
+/// matters here: 3.900–4.000 and 7.200–7.300 are shortwave broadcasting in
+/// Regions 1 and 3 and amateur allocations in Region 2, so drawing them
+/// unconditionally would paint an orange broadcast block across an American
+/// operator's own band.
+fn non_ham(region: Region) -> Vec<Seg> {
+    let mut v = vec![
+        s(0.153 * M, 0.279 * M, "LW AM", Kind::Am),
+        s(0.531 * M, 1.602 * M, "MW AM", Kind::Am),
+        s(4.750 * M, 5.060 * M, "60m BC", Kind::Broadcast),
+        s(5.900 * M, 6.200 * M, "49m BC", Kind::Broadcast),
+        s(9.400 * M, 9.900 * M, "31m BC", Kind::Broadcast),
+        s(11.600 * M, 12.100 * M, "25m BC", Kind::Broadcast),
+        s(13.570 * M, 13.870 * M, "22m BC", Kind::Broadcast),
+        s(15.100 * M, 15.830 * M, "19m BC", Kind::Broadcast),
+        s(17.480 * M, 17.900 * M, "16m BC", Kind::Broadcast),
+        s(21.450 * M, 21.850 * M, "13m BC", Kind::Broadcast),
+        s(25.670 * M, 26.100 * M, "11m BC", Kind::Broadcast),
+        s(26.965 * M, 27.405 * M, "CB", Kind::Cb),
+    ];
+    // 75 m broadcasting: 3.950–4.000 in Region 1, all of 3.900–4.000 in
+    // Region 3, and none of it in Region 2, where the band is 80 m.
+    match region {
+        Region::R1 => v.push(s(3.950 * M, 4.000 * M, "75m BC", Kind::Broadcast)),
+        Region::R3 => v.push(s(3.900 * M, 4.000 * M, "75m BC", Kind::Broadcast)),
+        Region::R2 => {}
+    }
+    // 41 m broadcasting starts where 40 m ends: 7.200 outside Region 2, 7.300
+    // inside it.
+    let bc41_lo = if region == Region::R2 { 7.300 * M } else { 7.200 * M };
+    v.push(s(bc41_lo, 7.450 * M, "41m BC", Kind::Broadcast));
+    v.sort_by(|a, b| a.lo.total_cmp(&b.lo));
+    v
+}
 
-/// Fine segments shown when zoomed into a band. Broadcast/CB/AM keep their
-/// coarse blocks (no sub-structure); ham bands split into usage segments.
-static FINE: &[Seg] = &[
-    // Broadcast + others (unchanged from coarse).
-    s(0.153 * M, 0.279 * M, "LW AM", Kind::Am),
-    s(0.531 * M, 1.602 * M, "MW AM", Kind::Am),
-    s(3.900 * M, 4.000 * M, "75m BC", Kind::Broadcast),
-    s(4.750 * M, 5.060 * M, "60m BC", Kind::Broadcast),
-    s(5.900 * M, 6.200 * M, "49m BC", Kind::Broadcast),
-    s(7.200 * M, 7.450 * M, "41m BC", Kind::Broadcast),
-    s(9.400 * M, 9.900 * M, "31m BC", Kind::Broadcast),
-    s(11.600 * M, 12.100 * M, "25m BC", Kind::Broadcast),
-    s(13.570 * M, 13.870 * M, "22m BC", Kind::Broadcast),
-    s(15.100 * M, 15.830 * M, "19m BC", Kind::Broadcast),
-    s(17.480 * M, 17.900 * M, "16m BC", Kind::Broadcast),
-    s(21.450 * M, 21.850 * M, "13m BC", Kind::Broadcast),
-    s(25.670 * M, 26.100 * M, "11m BC", Kind::Broadcast),
-    s(26.965 * M, 27.405 * M, "CB", Kind::Cb),
-    // 160m
-    s(1.810 * M, 1.838 * M, "CW", Kind::Cw),
-    s(1.838 * M, 1.843 * M, "Digi", Kind::Digi),
-    s(1.843 * M, 2.000 * M, "SSB", Kind::Phone),
-    // 80m
-    s(3.500 * M, 3.570 * M, "CW", Kind::Cw),
-    s(3.570 * M, 3.600 * M, "Digi", Kind::Digi),
-    s(3.600 * M, 3.800 * M, "SSB", Kind::Phone),
-    // 60m
-    s(5.351 * M, 5.366 * M, "60m", Kind::Ham),
-    // 40m
-    s(7.000 * M, 7.040 * M, "CW", Kind::Cw),
-    s(7.040 * M, 7.100 * M, "Digi", Kind::Digi),
-    s(7.100 * M, 7.200 * M, "SSB", Kind::Phone),
-    // 30m
-    s(10.100 * M, 10.130 * M, "CW", Kind::Cw),
-    s(10.130 * M, 10.150 * M, "Digi", Kind::Digi),
-    // 20m
-    s(14.000 * M, 14.070 * M, "CW", Kind::Cw),
-    s(14.070 * M, 14.099 * M, "Digi", Kind::Digi),
-    s(14.099 * M, 14.101 * M, "Bcn", Kind::Beacon),
-    s(14.101 * M, 14.350 * M, "SSB", Kind::Phone),
-    // 17m
-    s(18.068 * M, 18.095 * M, "CW", Kind::Cw),
-    s(18.095 * M, 18.109 * M, "Digi", Kind::Digi),
-    s(18.109 * M, 18.111 * M, "Bcn", Kind::Beacon),
-    s(18.111 * M, 18.168 * M, "SSB", Kind::Phone),
-    // 15m
-    s(21.000 * M, 21.070 * M, "CW", Kind::Cw),
-    s(21.070 * M, 21.150 * M, "Digi", Kind::Digi),
-    s(21.150 * M, 21.450 * M, "SSB", Kind::Phone),
-    // 12m
-    s(24.890 * M, 24.915 * M, "CW", Kind::Cw),
-    s(24.915 * M, 24.930 * M, "Digi", Kind::Digi),
-    s(24.930 * M, 24.990 * M, "SSB", Kind::Phone),
-    // 10m
-    s(28.000 * M, 28.070 * M, "CW", Kind::Cw),
-    s(28.070 * M, 28.190 * M, "Digi", Kind::Digi),
-    s(28.190 * M, 28.300 * M, "Bcn", Kind::Beacon),
-    s(28.300 * M, 29.700 * M, "SSB", Kind::Phone),
-];
+/// The coarse tier: whole amateur bands plus the non-ham allocations.
+///
+/// Every HF and VHF/UHF band `Band::ALL` names appears, so 6 m, 2 m and 70 cm
+/// finally get a block of their own — and get it at the right width for the
+/// region.
+fn build_coarse(region: Region) -> Vec<Seg> {
+    let mut v = non_ham(region);
+    for band in Band::ALL {
+        let Some((lo, hi)) = band.edges_in(region) else { continue };
+        v.push(s(lo, hi, ham_label(band), Kind::Ham));
+    }
+    v.sort_by(|a, b| a.lo.total_cmp(&b.lo));
+    v
+}
+
+/// The fine tier: the region's sub-segments where there are any, and the whole
+/// band where there are not (everything above 30 MHz).
+fn build_fine(region: Region) -> Vec<Seg> {
+    let segs = sdroxide_types::segments_in(region);
+    let mut v = non_ham(region);
+    for seg in segs {
+        let (label, kind) = match seg.kind {
+            SegmentKind::Cw => ("CW", Kind::Cw),
+            SegmentKind::Digi => ("Digi", Kind::Digi),
+            SegmentKind::Phone => ("SSB", Kind::Phone),
+            SegmentKind::Beacon => ("Bcn", Kind::Beacon),
+            SegmentKind::All => ("All", Kind::Ham),
+        };
+        v.push(s(seg.lo, seg.hi, label, kind));
+    }
+    // The bands with no sub-segment table keep their whole-band block, so
+    // zooming into 2 m or 70 cm does not empty the strip.
+    for band in Band::ALL {
+        let Some((lo, hi)) = band.edges_in(region) else { continue };
+        if !segs.iter().any(|s| s.lo < hi && s.hi > lo) {
+            v.push(s(lo, hi, ham_label(band), Kind::Ham));
+        }
+    }
+    v.sort_by(|a, b| a.lo.total_cmp(&b.lo));
+    v
+}
+
+/// The two tiers for `region`, built on first use and kept.
+///
+/// Both are pure functions of the region, and this runs once per frame per
+/// panadapter — so they are worked out three times at most for the life of the
+/// process rather than sixty times a second.
+fn tables(region: Region) -> &'static (Vec<Seg>, Vec<Seg>) {
+    static CACHE: [OnceLock<(Vec<Seg>, Vec<Seg>)>; 3] =
+        [OnceLock::new(), OnceLock::new(), OnceLock::new()];
+    CACHE[region.number() as usize - 1].get_or_init(|| (build_coarse(region), build_fine(region)))
+}
 
 // ── Explicit digi-mode detail rows ──────────────────────────────────────────
 //
@@ -181,10 +218,14 @@ const fn dg(lo: f64, hi: f64, label: &'static str, color: Color32) -> DigiSeg {
 
 /// The explicit digi-mode activity spans, derived from the shared calling-
 /// frequency tables so they stay consistent with the skimmer gating.
-fn digi_segments() -> Vec<DigiSeg> {
+///
+/// The WSJT modes' dials are one global list and stay that way; PSK, RTTY and
+/// SSTV move with the region, and the skimmer windows they are drawn from are
+/// the ones the skimmers actually use.
+fn digi_segments(region: Region) -> Vec<DigiSeg> {
     use sdroxide_types::{
-        FT2_DIALS, FT4_DIALS, FT8_DIALS, JS8_DIALS, PSK_RANGES, RIFP_CALLING, RTTY_RANGES,
-        SSTV_CALLING, WSPR_DIALS,
+        FT2_DIALS, FT4_DIALS, FT8_DIALS, JS8_DIALS, RIFP_CALLING, WSPR_DIALS, psk_ranges_in,
+        rtty_ranges_in, sstv_dials_in,
     };
     let mut v = Vec::with_capacity(64);
     for &f in FT8_DIALS {
@@ -204,13 +245,13 @@ fn digi_segments() -> Vec<DigiSeg> {
         v.push(dg(f + 1000.0, f + 1400.0, "QRSS", C_QRSS));
         v.push(dg(f + 1400.0, f + 1600.0, "WSPR", C_WSPR));
     }
-    for &(lo, hi) in PSK_RANGES {
+    for &(lo, hi) in psk_ranges_in(region) {
         v.push(dg(lo, hi, "PSK", C_PSK));
     }
-    for &(lo, hi) in RTTY_RANGES {
+    for &(lo, hi) in rtty_ranges_in(region) {
         v.push(dg(lo, hi, "RTTY", C_RTTY));
     }
-    for &f in SSTV_CALLING {
+    for f in sstv_dials_in(region) {
         v.push(dg(f, f + 2700.0, "SSTV", C_SSTV));
     }
     // RIFP is the one entry centred on its frequency rather than starting at
@@ -225,9 +266,9 @@ fn digi_segments() -> Vec<DigiSeg> {
 /// Partition the in-view digi spans into non-overlapping rows (greedy interval
 /// colouring): each span goes in the first row whose last span ends before it
 /// starts, else a new row. Overlapping modes therefore land in separate rows.
-fn stack_digi(lo: f64, hi: f64) -> Vec<Vec<DigiSeg>> {
+fn stack_digi(lo: f64, hi: f64, region: Region) -> Vec<Vec<DigiSeg>> {
     let mut vis: Vec<DigiSeg> =
-        digi_segments().into_iter().filter(|d| d.hi > lo && d.lo < hi).collect();
+        digi_segments(region).into_iter().filter(|d| d.hi > lo && d.lo < hi).collect();
     vis.sort_by(|a, b| a.lo.total_cmp(&b.lo));
     let mut rows: Vec<Vec<DigiSeg>> = Vec::new();
     let mut row_hi: Vec<f64> = Vec::new();
@@ -326,8 +367,12 @@ pub fn overlay(p: &Painter, view: &ViewState, wf: &Rect, panel_below: bool) {
     let base_h = 18.0f32 * fs;
     let digi_h = 14.0f32 * fs;
 
+    // Read once per frame, so every row of the strip is drawn under the same
+    // band plan even if the operator changes the setting mid-frame.
+    let region = sdroxide_types::region();
+
     // Explicit digi-mode rows, stacked so overlapping modes are separated.
-    let digi_rows = if span <= DIGI_MAX_SPAN { stack_digi(lo, hi) } else { Vec::new() };
+    let digi_rows = if span <= DIGI_MAX_SPAN { stack_digi(lo, hi, region) } else { Vec::new() };
     // Cap rows both by preference and by how much waterfall we're willing to use.
     let fit = (((wf.height() * 0.5) - base_h) / digi_h).floor().max(0.0) as usize;
     let n_digi = digi_rows.len().min(MAX_DIGI_ROWS).min(fit);
@@ -351,8 +396,8 @@ pub fn overlay(p: &Painter, view: &ViewState, wf: &Rect, panel_below: bool) {
     );
 
     // Base allocation row (coarse bands, or fine CW/Digi/SSB sub-segments).
-    let segs: &[Seg] = if span <= FINE_MAX_SPAN { FINE } else { COARSE };
-    for seg in segs {
+    let (coarse, fine) = tables(region);
+    for seg in if span <= FINE_MAX_SPAN { fine } else { coarse } {
         let color = seg.kind.color();
         draw_seg(p, view, wf, seg.lo, seg.hi, color, seg.label, base_top, base_h, 10.5 * fs);
     }

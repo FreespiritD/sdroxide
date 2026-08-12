@@ -206,6 +206,7 @@ impl<'a> Speaker<'a> {
             Some(SegmentKind::Digi) => "data",
             Some(SegmentKind::Phone) => "phone",
             Some(SegmentKind::Beacon) => "beacon",
+            Some(SegmentKind::All) => "all modes",
             None => "",
         }
     }
