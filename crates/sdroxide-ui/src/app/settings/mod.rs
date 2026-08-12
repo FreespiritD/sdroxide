@@ -862,15 +862,8 @@ impl SdroxideApp {
                     ))
                     .weak(),
                 );
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(
-                        "The regional allocation, not your licence: your own conditions may be \
-                         narrower, and national plans differ inside a region.",
-                    )
-                    .size(10.5)
-                    .color(Color32::from_gray(140)),
-                );
+                ui.add_space(6.0);
+                self.settings_band_plan_file(ui, cmds);
 
                 ui.add_space(10.0);
                 ui.separator();

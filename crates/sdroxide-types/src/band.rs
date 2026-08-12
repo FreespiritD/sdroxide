@@ -67,14 +67,25 @@ impl Band {
         self.edges_in(crate::region())
     }
 
-    /// Band edges in Hz for `region`, or `None` for general coverage.
+    /// Band edges in Hz for `region`, or `None` for general coverage — and for
+    /// a band the station's [`crate::BandPlan`] does not give that region.
+    ///
+    /// Read from the installed band plan, which is `bandplan.json` in the
+    /// config directory once the operator has one and
+    /// [`Band::iaru_default_edges_in`] until then.
+    pub fn edges_in(self, region: Region) -> Option<(f64, f64)> {
+        crate::band_plan().region(region).edges(self)
+    }
+
+    /// The built-in IARU edges for `region` — the seed for a fresh
+    /// `bandplan.json`, and what is used until one is loaded.
     ///
     /// The *allocation*, not any one country's licence conditions: a national
     /// administration may grant less (Germany's 10 m stops at 29.700 like
     /// everyone's, but its 2 m ends at 146 while Region 1 as a whole varies) and
     /// occasionally more. These are the widest edges the region's amateurs
-    /// share, which is what a band plan and a transmit lockout can honestly be
-    /// built on.
+    /// share, which is what a shipped default can honestly be — an operator who
+    /// needs their own licence's edges puts them in the file.
     ///
     /// Where the bands differ:
     /// - **160 m** starts at 1.810 in Region 1 and at 1.800 in Regions 2 and 3.
@@ -88,7 +99,7 @@ impl Band {
     ///
     /// 30 m through 10 m, and the WRC-15 60 m allocation, are the same
     /// everywhere.
-    pub fn edges_in(self, region: Region) -> Option<(f64, f64)> {
+    pub fn iaru_default_edges_in(self, region: Region) -> Option<(f64, f64)> {
         let by_region = |r1: (f64, f64), r2: (f64, f64), r3: (f64, f64)| match region {
             Region::R1 => Some(r1),
             Region::R2 => Some(r2),
@@ -150,10 +161,7 @@ impl Band {
 
     /// The band containing `hz` in `region`, or `Gen` if none does.
     pub fn containing_in(hz: f64, region: Region) -> Band {
-        Band::ALL
-            .into_iter()
-            .find(|b| b.edges_in(region).is_some_and(|(lo, hi)| hz >= lo && hz <= hi))
-            .unwrap_or(Band::Gen)
+        crate::band_plan().region(region).containing(hz)
     }
 
     /// A reasonable default frequency/mode when jumping to a band with no stack

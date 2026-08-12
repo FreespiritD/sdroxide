@@ -2137,10 +2137,53 @@ the radio is attached to and announced to every client, so a remote operator
 sees the band plan of the radio they are driving rather than of wherever they
 happen to be sitting. It takes effect immediately — no APPLY, no restart.
 
+#### The band plan file
+
+The numbers behind all of that live in **`bandplan.json`** in the config
+directory ([§11](#11-configuration-files)), and they are yours to change. On
+first start sdroxide writes the built-in IARU tables there; from then on that
+file is the authority for every band edge, sub-segment and skimmer window in the
+program.
+
+The General tab shows the path and a **RELOAD BAND PLAN** button, which re-reads
+the file on the machine the radio is attached to and applies it without a
+restart — so the loop is: edit, save, click, done.
+
+The file is one row per line, in **megahertz**, and it explains itself in a
+`readme` field at the top (JSON has no comments). Each region has four lists:
+
+| List | What it sets |
+| --- | --- |
+| `bands` | The allocations. Leave a band out and the region does not have it. |
+| `segments` | The CW / data / phone / beacon / all-modes blocks on the waterfall strip. `kind` is `Cw`, `Digi`, `Phone`, `Beacon` or `All`. |
+| `psk_windows` | Where the PSK31 skimmer listens. |
+| `rtty_windows` | Where the RTTY skimmer listens. |
+
+```json
+"region1": {
+  "bands": [
+    {"band": "M2", "lo_mhz": 144.0, "hi_mhz": 144.4},
+    ...
+```
+
+That edit is the common one: **narrow a band to your own licence**, and with
+`tx_ham_only` set (the default) sdroxide refuses to transmit outside it. The
+band buttons, the waterfall strip and the frequency displays all follow.
+
+If a row says something impossible — edges the wrong way round, a band listed
+twice, `GEN` where a real band belongs — that row is dropped, the rest of the
+file is used, and the notice bar says which one and why. If the file will not
+parse as JSON at all, sdroxide runs on the built-in tables for that session and
+tells you so; **your file is left exactly as it is**, unlike the files sdroxide
+writes for itself, because a half-finished edit should survive the start that
+could not read it. Delete the file to get a fresh copy of the defaults — one is
+written on the next reload or start.
+
 > This is the *regional* allocation, which is the widest set of edges the
 > region's amateurs share. Your own licence may grant less (and occasionally
 > more), and national band plans differ inside a region. Nothing here is a
-> substitute for your licence conditions.
+> substitute for your licence conditions — which is exactly why the file is
+> editable.
 
 **Your audio (speakers / microphone)** — the devices sdroxide uses for *you*,
 separate from any sound card wired to a radio:
@@ -4893,6 +4936,7 @@ sdroxide stores its settings under the per-user config directory:
 | `digi.json` | JSON | Digital-mode operator settings: your callsign and grid, FT8/FT4/FT2 TX period, auto-sequence and message templates, and the WSPR beacon's duty cycle, power and band-hop list. |
 | `memories.json` | JSON | Saved memory channels. |
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |
+| `bandplan.json` | JSON | The band plan itself, per IARU region: band edges, the CW/data/phone/beacon/all-modes sub-segments, and the PSK and RTTY skimmer windows — all in MHz. Written from the built-in IARU tables on first start and meant to be edited; narrow a band here and the transmit lockout narrows with it. Which region applies is `region` in `config.toml`. **RELOAD BAND PLAN** on the General tab applies an edit without a restart, and deleting the file restores the defaults. See [§5.1](#51-general-station-audio-and-remote-access). |
 | `session.json` | JSON | Where you left the radio: the dial frequency, the mode and the RX/TX antenna ports, restored the next time you start. Written by the engine as you tune, so `--freq`, `--mode`, `--antenna` and `--tx-antenna` override it for a run without changing it. |
 | `qso_log.json` | JSON | The logbook (digital and manual QSOs, with contest/QSL fields). |
 | `net.json` | JSON | Network cockpit: DX cluster / POTA / SOTA / PSK / FreeDV Reporter / WSPRnet feed settings, and callsign-lookup / eQSL / QRZ / Club Log / LoTW credentials (stored in plaintext). |

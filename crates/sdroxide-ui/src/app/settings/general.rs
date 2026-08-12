@@ -8,6 +8,7 @@ use eframe::egui::{self, Color32, ComboBox, RichText};
 use sdroxide_types::{Region, RemoteAccess};
 
 use crate::app::SdroxideApp;
+use crate::app::persist::band_plan_path;
 
 /// The IARU region dropdown: the number the band plans are published under,
 /// with the part of the world it covers next to it.
@@ -122,6 +123,71 @@ pub(in crate::app) fn remote_access_settings(ui: &mut egui::Ui, access: &mut Rem
 }
 
 impl SdroxideApp {
+    /// The band-plan file: where it is, whether the station is on it, and the
+    /// button that re-reads it.
+    ///
+    /// No editor here on purpose. A band plan is forty rows of numbers that
+    /// exist to be pasted from a published table and compared against one; a
+    /// text editor does that far better than any grid this dialog could hold,
+    /// and the file is written to be readable. What the dialog owes the
+    /// operator is the path, and a way to apply an edit without restarting.
+    pub(in crate::app) fn settings_band_plan_file(
+        &self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<sdroxide_types::Command>,
+    ) {
+        let custom = !sdroxide_types::band_plan().is_default();
+        ui.horizontal_wrapped(|ui| {
+            if crate::chrome::chip(ui, false, RichText::new("RELOAD BAND PLAN").size(10.5))
+                .on_hover_text(
+                    "Re-read bandplan.json on the machine the radio is attached to and apply \
+                     it — band edges, sub-segments and skimmer windows — without restarting.",
+                )
+                .clicked()
+            {
+                cmds.push(sdroxide_types::Command::ReloadBandPlan);
+            }
+            ui.add(
+                egui::Label::new(
+                    RichText::new(if custom {
+                        "Running on the station's own band plan."
+                    } else {
+                        "Running on the built-in IARU tables."
+                    })
+                    .size(10.5)
+                    .weak(),
+                )
+                .wrap(),
+            );
+        });
+        ui.add_space(4.0);
+        // Only where the file is actually on this machine. A remote client
+        // showing its own config path would be pointing at the wrong computer.
+        let path = (!self.ctrl.engine_is_remote())
+            .then(band_plan_path)
+            .flatten()
+            .map(|p| p.display().to_string());
+        ui.label(
+            RichText::new(match &path {
+                Some(p) => format!(
+                    "Every band edge and sub-segment comes from {p}, written from the built-in \
+                     IARU tables the first time and yours to edit after that — narrow a band to \
+                     your licence and sdroxide will refuse to transmit outside it. Frequencies \
+                     are in MHz; delete the file for a fresh copy of the defaults. This is the \
+                     regional allocation, not your licence: your own conditions may be narrower, \
+                     and national plans differ inside a region.",
+                ),
+                None => "Every band edge and sub-segment comes from bandplan.json on the machine \
+                         the radio is attached to. This is the regional allocation, not your \
+                         licence: your own conditions may be narrower, and national plans differ \
+                         inside a region."
+                    .to_string(),
+            })
+            .size(10.5)
+            .color(Color32::from_gray(140)),
+        );
+    }
+
     /// The user's own speakers / microphone (applied live).
     pub(in crate::app) fn settings_user_audio(
         &self,

@@ -5,14 +5,12 @@
 //! digital, SSB, beacons). Labels are drawn only where the segment is wide
 //! enough on screen.
 //!
-//! Both tiers are built from the station's IARU region — once per region, then
-//! cached: the ham blocks from [`sdroxide_types::Band::edges_in`], their
-//! sub-segments from the shared segment table the skimmers gate on, and the
-//! broadcast blocks from the region-specific list below. Nothing here restates a
-//! band edge — a strip that disagreed with the transmit lockout would be worse
-//! than no strip.
-
-use std::sync::OnceLock;
+//! Both tiers are built from the station's band plan — the ham blocks from
+//! [`sdroxide_types::Band::edges_in`], their sub-segments from the shared
+//! segment table the skimmers gate on — plus the region-specific broadcast list
+//! below. Nothing here restates a band edge: the plan is the operator's
+//! `bandplan.json`, and a strip that disagreed with the transmit lockout would
+//! be worse than no strip.
 
 use eframe::egui::{Color32, FontId, Painter, Rect, Stroke, pos2};
 use sdroxide_types::{Band, Region, SegmentKind};
@@ -60,9 +58,9 @@ const fn s(lo: f64, hi: f64, label: &'static str, kind: Kind) -> Seg {
     Seg { lo, hi, label, kind }
 }
 
-/// The whole-band label for a ham block. A match rather than a `format!` so the
-/// strip's tables can be built once and borrowed for the lifetime of the
-/// process — this is a per-frame draw path.
+/// The whole-band label for a ham block. A match rather than lower-casing
+/// `Band::label` at each use: this runs every frame, and a `&'static str` costs
+/// nothing where a `String` would cost an allocation per band per frame.
 fn ham_label(band: Band) -> &'static str {
     match band {
         Band::M160 => "160m HAM",
@@ -131,7 +129,13 @@ fn non_ham(region: Region) -> Vec<Seg> {
 /// Every HF and VHF/UHF band `Band::ALL` names appears, so 6 m, 2 m and 70 cm
 /// finally get a block of their own — and get it at the right width for the
 /// region.
-fn build_coarse(region: Region) -> Vec<Seg> {
+///
+/// Rebuilt each frame rather than cached. It is two forty-element vectors and a
+/// sort, which is nothing beside the FFT and the waterfall upload either side of
+/// it — and a cache would need invalidating whenever the operator reloads
+/// `bandplan.json` or the station announces a different one, which is exactly
+/// the kind of bookkeeping that quietly goes stale.
+fn coarse(region: Region) -> Vec<Seg> {
     let mut v = non_ham(region);
     for band in Band::ALL {
         let Some((lo, hi)) = band.edges_in(region) else { continue };
@@ -143,7 +147,7 @@ fn build_coarse(region: Region) -> Vec<Seg> {
 
 /// The fine tier: the region's sub-segments where there are any, and the whole
 /// band where there are not (everything above 30 MHz).
-fn build_fine(region: Region) -> Vec<Seg> {
+fn fine(region: Region) -> Vec<Seg> {
     let segs = sdroxide_types::segments_in(region);
     let mut v = non_ham(region);
     for seg in segs {
@@ -166,17 +170,6 @@ fn build_fine(region: Region) -> Vec<Seg> {
     }
     v.sort_by(|a, b| a.lo.total_cmp(&b.lo));
     v
-}
-
-/// The two tiers for `region`, built on first use and kept.
-///
-/// Both are pure functions of the region, and this runs once per frame per
-/// panadapter — so they are worked out three times at most for the life of the
-/// process rather than sixty times a second.
-fn tables(region: Region) -> &'static (Vec<Seg>, Vec<Seg>) {
-    static CACHE: [OnceLock<(Vec<Seg>, Vec<Seg>)>; 3] =
-        [OnceLock::new(), OnceLock::new(), OnceLock::new()];
-    CACHE[region.number() as usize - 1].get_or_init(|| (build_coarse(region), build_fine(region)))
 }
 
 // ── Explicit digi-mode detail rows ──────────────────────────────────────────
@@ -396,8 +389,7 @@ pub fn overlay(p: &Painter, view: &ViewState, wf: &Rect, panel_below: bool) {
     );
 
     // Base allocation row (coarse bands, or fine CW/Digi/SSB sub-segments).
-    let (coarse, fine) = tables(region);
-    for seg in if span <= FINE_MAX_SPAN { fine } else { coarse } {
+    for seg in if span <= FINE_MAX_SPAN { fine(region) } else { coarse(region) } {
         let color = seg.kind.color();
         draw_seg(p, view, wf, seg.lo, seg.hi, color, seg.label, base_top, base_h, 10.5 * fs);
     }

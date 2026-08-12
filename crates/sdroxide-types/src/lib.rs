@@ -7,6 +7,7 @@ mod access;
 mod awards;
 mod band;
 mod band_segments;
+mod bandplan;
 pub mod broadcast;
 mod callsign;
 mod caps;
@@ -64,6 +65,7 @@ pub use band_segments::{
     is_rtty_segment, is_rtty_segment_in, psk_ranges, psk_ranges_in, rtty_ranges, rtty_ranges_in,
     segment_kind_at, segment_kind_at_in, segments, segments_in, sstv_dials_in,
 };
+pub use bandplan::{BandPlan, BandPlanError, RegionPlan, band_plan, set_band_plan};
 pub use broadcast::{BroadcastStation, BroadcastStations};
 pub use callsign::{CallsignInfo, UploadResult, UploadTarget};
 pub use caps::{DeviceCaps, Direction, GainElement};

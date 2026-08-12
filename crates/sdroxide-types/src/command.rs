@@ -437,4 +437,14 @@ pub enum Command {
     /// Station-wide rather than per-radio: a second radio at the same desk is
     /// on the same continent as the first.
     SetRegion(crate::Region),
+
+    /// Re-read `bandplan.json` from the engine's config directory and adopt it.
+    ///
+    /// The band plan is a file the operator edits in a text editor, so the
+    /// alternative to this is restarting the program after every correction.
+    /// Answered with a fresh [`crate::RadioEvent::StationConfig`] carrying the
+    /// plan that was actually loaded — which is the built-in one if the file
+    /// would not parse, and the loader says so through a
+    /// [`crate::RadioEvent::Notice`].
+    ReloadBandPlan,
 }

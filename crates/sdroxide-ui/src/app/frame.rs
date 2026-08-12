@@ -969,13 +969,20 @@ impl SdroxideApp {
                         self.rot_cfg_seeded = true;
                     }
                     // Adopted on every announcement rather than seeded once:
-                    // this is not a dialog buffer the operator types into but
+                    // these are not dialog buffers the operator types into but
                     // the band plan the whole client draws with, and the
                     // station is its only authority. A remote client that kept
                     // its own would show European band edges for an American
                     // radio.
                     self.region_edit = c.region;
                     sdroxide_types::set_region(c.region);
+                    // Only when it actually changed: installing leaks the
+                    // previous plan, and this bundle arrives on every
+                    // station-config edit — a password change must not cost an
+                    // allocation that is never freed.
+                    if sdroxide_types::band_plan() != &c.band_plan {
+                        sdroxide_types::set_band_plan(c.band_plan.clone());
+                    }
                 }
                 RadioEvent::TleSubStatus(s) => self.on_tle_sub_status(s),
                 RadioEvent::SatTrack(t) => self.sat_track = t.map(|t| *t),

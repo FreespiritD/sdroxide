@@ -1364,10 +1364,12 @@ fn engine_thread(
     let source_center_hz = source.center_hz();
 
     // Before the first `Band::containing` below: every band edge and
-    // sub-segment in the process reads this, and a band worked out under the
-    // wrong region would be wrong in the band stack from the first frame. Set
+    // sub-segment in the process reads these, and a band worked out under the
+    // wrong plan would be wrong in the band stack from the first frame. Set
     // here rather than only in the binary so a headless `--server` engine — and
-    // any test that brings one up — is on the station's band plan too.
+    // any test that brings one up — is on the station's band plan too. The
+    // first call also seeds `bandplan.json` if the operator has none.
+    sdroxide_types::set_band_plan(sdroxide_config::load_band_plan());
     sdroxide_types::set_region(sdroxide_config::load_region());
 
     let mut state = RadioState::default();
@@ -3739,6 +3741,35 @@ impl Engine {
                 self.state.band = Band::containing(self.state.active_freq_hz());
                 self.emit_station_config();
             }
+            ReloadBandPlan => {
+                // A missing file is seeded here as well as at startup, which is
+                // what makes "delete it to get the defaults back" work without
+                // a restart.
+                let plan = sdroxide_config::load_band_plan();
+                let custom = !plan.is_default();
+                // The plan is process-wide, so a second radio at this station
+                // is transmitting under the new edges from this moment too —
+                // the lockout reads it at key time. Only its *displayed* band
+                // lags, until it next retunes and recomputes.
+                sdroxide_types::set_band_plan(plan);
+                // Same reason as `SetRegion`: the dial has not moved but the
+                // band under it may have.
+                self.state.band = Band::containing(self.state.active_freq_hz());
+                self.emit_station_config();
+                // Whatever the loader had to say — a row it dropped, a file it
+                // could not read — reaches the operator who asked for the
+                // reload, not just the log.
+                let alerts = sdroxide_config::take_load_alerts();
+                if alerts.is_empty() {
+                    self.notice(if custom {
+                        "Band plan reloaded from bandplan.json."
+                    } else {
+                        "Band plan reloaded — it matches the built-in IARU tables."
+                    });
+                } else {
+                    self.notice(&alerts.join("\n"));
+                }
+            }
         }
         let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
     }
@@ -4338,6 +4369,7 @@ impl Engine {
                 sat: self.sat_cfg.clone(),
                 rotator: self.rot_cfg.clone(),
                 region: sdroxide_types::region(),
+                band_plan: sdroxide_types::band_plan().clone(),
             },
         )));
     }

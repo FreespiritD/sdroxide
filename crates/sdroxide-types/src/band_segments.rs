@@ -48,7 +48,7 @@ pub enum SegmentKind {
 }
 
 /// One band sub-segment: `[lo, hi)` in Hz with its operating category.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Segment {
     pub lo: f64,
     pub hi: f64,
@@ -207,13 +207,20 @@ pub const SEGMENTS_R3: &[Segment] = &[
     seg(28.300 * M, 29.700 * M, All),
 ];
 
-/// The HF sub-segments of `region`'s band plan, sorted by frequency.
-pub fn segments_in(region: Region) -> &'static [Segment] {
+/// The built-in HF sub-segments for `region` — the seed for a fresh
+/// `bandplan.json`, and what is used until one is loaded.
+pub(crate) fn default_segments_in(region: Region) -> &'static [Segment] {
     match region {
         Region::R1 => SEGMENTS_R1,
         Region::R2 => SEGMENTS_R2,
         Region::R3 => SEGMENTS_R3,
     }
+}
+
+/// The HF sub-segments of `region`'s band plan, sorted by frequency — from the
+/// station's [`crate::BandPlan`].
+pub fn segments_in(region: Region) -> &'static [Segment] {
+    crate::band_plan().region(region).segments()
 }
 
 /// The HF sub-segments of the station's configured region.
@@ -418,12 +425,17 @@ pub const RTTY_RANGES_R23: &[(f64, f64)] = &[
     (28_083_000.0, 28_120_000.0), // 10m
 ];
 
-/// Where PSK31 clusters in `region`.
-pub fn psk_ranges_in(region: Region) -> &'static [(f64, f64)] {
+/// The built-in PSK31 windows for `region`, before any `bandplan.json`.
+pub(crate) fn default_psk_ranges_in(region: Region) -> &'static [(f64, f64)] {
     match region {
         Region::R1 => PSK_RANGES_R1,
         Region::R2 | Region::R3 => PSK_RANGES_R23,
     }
+}
+
+/// Where PSK31 clusters in `region`, from the station's [`crate::BandPlan`].
+pub fn psk_ranges_in(region: Region) -> &'static [(f64, f64)] {
+    crate::band_plan().region(region).psk_ranges()
 }
 
 /// Where PSK31 clusters in the station's configured region.
@@ -431,12 +443,17 @@ pub fn psk_ranges() -> &'static [(f64, f64)] {
     psk_ranges_in(crate::region())
 }
 
-/// Where RTTY clusters in `region`.
-pub fn rtty_ranges_in(region: Region) -> &'static [(f64, f64)] {
+/// The built-in RTTY windows for `region`, before any `bandplan.json`.
+pub(crate) fn default_rtty_ranges_in(region: Region) -> &'static [(f64, f64)] {
     match region {
         Region::R1 => RTTY_RANGES_R1,
         Region::R2 | Region::R3 => RTTY_RANGES_R23,
     }
+}
+
+/// Where RTTY clusters in `region`, from the station's [`crate::BandPlan`].
+pub fn rtty_ranges_in(region: Region) -> &'static [(f64, f64)] {
+    crate::band_plan().region(region).rtty_ranges()
 }
 
 /// Where RTTY clusters in the station's configured region.

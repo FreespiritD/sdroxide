@@ -207,10 +207,19 @@ fn main() -> anyhow::Result<()> {
     let mut cli = Cli::parse();
     let settings = Settings::load();
     // Before anything reads a band edge — the console panadapter, the headless
-    // smoke tests and the GUI all do. The engine sets it again from the same
-    // file when it starts; doing it here as well means even the paths that
-    // never build an engine are on the station's band plan.
-    sdroxide_types::set_region(settings.region);
+    // smoke tests and the GUI all do. The engine sets these again from the same
+    // files when it starts; doing it here as well means even the paths that
+    // never build an engine are on the station's band plan. `load_band_plan`
+    // also seeds `bandplan.json` from the built-in tables on a first run.
+    //
+    // Skipped when connecting to somebody else's station: the band plan that
+    // matters is theirs, it arrives in the first `StationConfig`, and seeding a
+    // file here would leave a document in this machine's config directory that
+    // looks authoritative and changes nothing.
+    if cli.connect.is_none() {
+        sdroxide_types::set_band_plan(sdroxide_config::load_band_plan());
+        sdroxide_types::set_region(settings.region);
+    }
 
     if cli.probe {
         return probe(&cli, &settings);

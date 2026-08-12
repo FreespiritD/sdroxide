@@ -55,4 +55,14 @@ pub struct StationConfig {
     /// the band buttons, the waterfall's band strip and the frequency displays
     /// all agree with the station they are operating.
     pub region: Region,
+    /// The band plan itself — `bandplan.json` on the engine's machine, or the
+    /// built-in IARU tables where there is no file.
+    ///
+    /// Travels for the same reason the region does, and more urgently: an
+    /// operator who has narrowed 2 m to their licence's edges has a station
+    /// that will refuse to key above them, and a client drawing the shipped
+    /// plan would show a band button that does nothing and a waterfall strip
+    /// that disagrees with the radio. The largest field in this bundle by some
+    /// way, but the bundle is sent on connect and on change, not in a loop.
+    pub band_plan: crate::BandPlan,
 }
