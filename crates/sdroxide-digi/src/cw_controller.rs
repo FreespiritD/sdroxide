@@ -224,6 +224,14 @@ pub struct CwController {
     tx_active: bool,
     keyed: bool,
     last_sent: usize,
+    /// Something has actually been sent since transmit was switched on.
+    ///
+    /// What makes "the over is finished" different from "the over never
+    /// started": under `send_on_enter` an empty buffer draining is the end of a
+    /// message and releases transmit, but an empty buffer that was *always*
+    /// empty is the operator holding the switch down, and taking it off them
+    /// the instant they pressed it would read as a broken button.
+    over_had_text: bool,
     /// Sidetone samples produced with an empty keyer queue.
     idle_samples: usize,
     /// Set when the radio keys itself from text — see [`CatKeyer`]. `None` when
@@ -269,6 +277,7 @@ impl CwController {
             tx_active: false,
             keyed: false,
             last_sent: 0,
+            over_had_text: false,
             idle_samples: 0,
             cat: cat_keying.map(CatKeyer::new),
             scratch: Vec::new(),
@@ -383,14 +392,22 @@ impl CwController {
         }
         // Same rule as the sidetone keyer: transmit is not left switched on
         // around an empty buffer.
-        let idle = self.cat.as_ref().is_some_and(|c| {
-            c.queue.is_empty()
-                && c.sending_since.is_none()
-                && c.last_input
-                    .and_then(|t| now.duration_since(t).ok())
-                    .is_some_and(|d| d.as_secs_f32() >= TX_IDLE_S)
+        let empty =
+            self.cat.as_ref().is_some_and(|c| c.queue.is_empty() && c.sending_since.is_none());
+        if self.tx_active && !empty {
+            self.over_had_text = true;
+        }
+        // And the same shortcut: a committed line ends its own over as soon as
+        // the rig has finished keying it, rather than waiting out a typist who
+        // was never going to type.
+        let committed_over_done = self.cfg.send_on_enter && self.over_had_text;
+        let waited = self.cat.as_ref().is_some_and(|c| {
+            c.last_input
+                .and_then(|t| now.duration_since(t).ok())
+                .is_some_and(|d| d.as_secs_f32() >= TX_IDLE_S)
         });
-        if self.tx_active && idle {
+        if self.tx_active && empty && (committed_over_done || waited) {
+            self.over_had_text = false;
             self.tx_active = false;
             self.status_dirty = true;
         }
@@ -547,6 +564,15 @@ impl DigiEngine for CwController {
             return true;
         }
         if self.tx.drained() {
+            // A committed line is a whole over: it ends when the text has gone
+            // out, not five seconds later. The hang below exists to bridge the
+            // gaps between typed characters, and under `send_on_enter` there
+            // are no gaps to bridge — only a carrier nobody is using.
+            if self.cfg.send_on_enter && self.over_had_text {
+                self.over_had_text = false;
+                self.tx_active = false;
+                self.status_dirty = true;
+            }
             self.idle_samples += out.len();
             if self.idle_samples as f32 > TX_IDLE_S * OUT_RATE as f32 {
                 self.tx_active = false;
@@ -554,6 +580,7 @@ impl DigiEngine for CwController {
             }
         } else {
             self.idle_samples = 0;
+            self.over_had_text = true;
         }
         while self.tx48.len() < out.len() && self.producing() {
             self.scratch.clear();
@@ -601,6 +628,7 @@ impl DigiEngine for CwController {
         self.tx_active = false;
         self.last_sent = 0;
         self.idle_samples = 0;
+        self.over_had_text = false;
         if let Some(cat) = self.cat.as_mut() {
             let sending = cat.sending_since.is_some();
             cat.clear();
@@ -682,6 +710,9 @@ impl DigiEngine for CwController {
     fn set_tx_active(&mut self, on: bool) {
         self.tx_active = on;
         self.idle_samples = 0;
+        // A fresh over: whatever the last one sent has no bearing on whether
+        // this one has sent anything yet.
+        self.over_had_text = false;
         // Coming out of transmit deliberately does not stop a message the rig
         // has already been given: it is on the air, and the operator watching
         // the sent prefix catch up is watching it go. `abort_tx` is what stops
@@ -1007,6 +1038,66 @@ mod tests {
         c.set_tx_text("CQ CQ CQ\nDE W1AW\n".into());
         c.set_tx_active(true);
         assert_eq!(keyed(&c.poll(t0, 0.0)), vec!["CQ CQ CQ\n"]);
+    }
+
+    /// Send on return makes an over a finite thing: the rig is given the line,
+    /// keys it, and transmit is released the moment it is done rather than five
+    /// seconds later while the operator types the next one.
+    #[test]
+    fn a_committed_line_releases_transmit_when_the_rig_has_sent_it() {
+        let mut c =
+            CwController::new(DigiConfig { send_on_enter: true, ..cfg() }, 48_000.0, Some(50));
+        let t0 = SystemTime::now();
+        c.set_tx_text("TNX OM\n".into());
+        c.set_tx_active(true);
+        assert!(!keyed(&c.poll(t0, 0.0)).is_empty());
+        let sending_s = c.cat.as_ref().unwrap().sending_s;
+        assert!(sending_s + 0.01 < TX_IDLE_S, "the idle timer alone would pass this test");
+
+        // Held while the rig is actually keying it.
+        c.poll(t0 + Duration::from_secs_f32(sending_s * 0.5), 0.0);
+        assert!(c.status().tx_next, "released while the rig was still sending");
+
+        // Finished: released at once.
+        c.poll(t0 + Duration::from_secs_f32(sending_s + 0.01), 0.0);
+        assert!(!c.status().tx_next, "transmit was held after the line had gone out");
+    }
+
+    /// The switch is still a switch. Pressed over an empty buffer it holds, and
+    /// only the idle timer takes it back — an over that never started is not an
+    /// over that finished, and grabbing it back on the press would read as a
+    /// broken button.
+    #[test]
+    fn holding_transmit_over_an_empty_buffer_still_holds() {
+        let mut c =
+            CwController::new(DigiConfig { send_on_enter: true, ..cfg() }, 48_000.0, Some(50));
+        let t0 = SystemTime::now();
+        c.set_tx_active(true);
+        c.poll(t0 + Duration::from_secs_f32(TX_IDLE_S * 0.5), 0.0);
+        assert!(c.status().tx_next, "an empty buffer ended the over on its own");
+        c.poll(t0 + Duration::from_secs_f32(TX_IDLE_S + 1.0), 0.0);
+        assert!(!c.status().tx_next, "the idle timer no longer applies");
+    }
+
+    /// The same on the sidetone route, where transmit really is the PTT line:
+    /// the key comes up when the line has gone out, not after the hang that
+    /// exists to bridge a typist's gaps.
+    #[test]
+    fn a_committed_line_releases_the_key_when_it_has_gone_out() {
+        let mut c = CwController::new(DigiConfig { send_on_enter: true, ..cfg() }, 48_000.0, None);
+        c.set_tx_text("E\n".into());
+        c.set_tx_active(true);
+        c.poll(SystemTime::now(), 14_030_000.0);
+
+        let mut blk = [0.0f32; 480];
+        let mut blocks = 0;
+        while !c.fill_tx_block(&mut blk) {
+            blocks += 1;
+            assert!(blocks < 2000, "transmit never released the key");
+        }
+        let held_s = blocks as f32 * 480.0 / OUT_RATE as f32;
+        assert!(held_s < TX_IDLE_S * 0.5, "held the key for {held_s:.1} s after one dit");
+        assert!(!c.status().tx_next);
     }
 
     /// Nothing goes out until the operator says to transmit — the panel's TX

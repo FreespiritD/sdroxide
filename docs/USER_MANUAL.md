@@ -666,7 +666,10 @@ you pause you can watch the sending catch up.
 pace, correct what you like, and commit it when it reads right. The line break
 is keyed as a word space; Shift+Return breaks a line without sending it; and
 **TX** commits the box the same way if you would rather press it than reach for
-Return. The setting is shared with the keyboard modes
+Return. Transmit then releases **as soon as the line has gone out**, rather than
+after the five-second hang above — that hang is there to bridge the gaps between
+typed characters, and there are none to bridge when the line was composed before
+it was sent. The setting is shared with the keyboard modes
 ([3.3](#33-psk31-and-rtty)).
 
 It is off by default, because sending as you type is how a CW operator sends:
@@ -1344,9 +1347,12 @@ panel is a live **messaging area** instead of a QSO sequencer.
   starts on its own. Type at your own pace, read it back, correct it, and commit
   it when it says what you meant — nothing half-typed is ever on the air.
   Shift+Return breaks a line without sending it, and **TX** commits the box the
-  same way Return does. The setting is shared with Olivia, THOR, Hellschreiber
-  and CW ([2.14](#214-cw-decoding-and-keyboard-sending)), where it earns its
-  keep for a second reason.
+  same way Return does. **The over ends with the line**: transmit releases once
+  the text has gone out, instead of holding the carrier up with idle reversals
+  while you compose the next one. Pressing **TX** over an empty box still holds
+  the channel, if that is what you want. The setting is shared with Olivia,
+  THOR, Hellschreiber and CW ([2.14](#214-cw-decoding-and-keyboard-sending)),
+  where it earns its keep for a second reason.
 
 **Settings (PSK/RTTY setup dialog):**
 
@@ -1447,10 +1453,13 @@ only confirmation Hell offers that your timing and font are right.
 **SEND ON RETURN** ([3.3](#33-psk31-and-rtty)) applies here too, and Hell is the
 mode where the difference is plainest: a correction typed live is already on the
 paper — the receiving operator watched you make it — while one made before you
-press **Return** never existed. Holding the channel with an empty box still
-sends blank paper, so the habit costs nothing; the line simply lands whole when
-you commit it. The break itself has no glyph, so it goes out as one blank cell,
-which is the gap you would have typed between lines anyway.
+press **Return** never existed. The strip then ends with the line: transmit
+releases once the text has been painted, rather than holding the channel with
+blank paper for as long as you take to type the next one. Pressing **TX** over
+an empty box still holds it, so the between-overs habit is there when you want
+it — it is simply no longer what composing a line does. The break itself has no
+glyph, so it goes out as one blank cell, which is the gap you would have typed
+between lines anyway.
 
 **Variants.** Seven, matching fldigi's set:
 

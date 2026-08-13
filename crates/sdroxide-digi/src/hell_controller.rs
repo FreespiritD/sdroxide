@@ -62,6 +62,11 @@ pub struct HellController {
     tx_active: bool,
     keyed: bool,
     last_sent: usize,
+    /// Something has actually been sent since transmit was switched on — see
+    /// the release under `send_on_enter` in [`Self::fill_tx_block`]. Holding
+    /// the channel over an empty buffer is a real thing to do in Hell, so it
+    /// must not be mistaken for an over that has finished.
+    over_had_text: bool,
 
     status_dirty: bool,
 }
@@ -88,6 +93,7 @@ impl HellController {
             tx_active: false,
             keyed: false,
             last_sent: 0,
+            over_had_text: false,
             status_dirty: true,
         }
     }
@@ -234,6 +240,22 @@ impl DigiEngine for HellController {
             self.last_sent = self.tx.sent_chars();
             self.status_dirty = true;
         }
+        // A committed line is a whole over, and it ends when the line does.
+        // Blank paper between overs is how Hell holds a channel, and that is
+        // still what the TX button is for — but under `send_on_enter` the
+        // operator composes off the air, so holding would paint a blank strip
+        // for as long as they take to type.
+        //
+        // The character count rather than `HellTx::drained`, which stays false
+        // while the switch is held by design: it answers "has the carrier
+        // stopped", and the question here is "has the text finished".
+        if self.tx.sent_chars() < self.tx.total_chars() {
+            self.over_had_text = true;
+        } else if self.cfg.send_on_enter && self.over_had_text {
+            self.over_had_text = false;
+            self.tx_active = false;
+            self.status_dirty = true;
+        }
         !self.producing()
     }
 
@@ -254,6 +276,7 @@ impl DigiEngine for HellController {
         self.tx_pushed = 0;
         self.tx_active = false;
         self.last_sent = 0;
+        self.over_had_text = false;
         self.status_dirty = true;
     }
 
@@ -315,6 +338,8 @@ impl DigiEngine for HellController {
 
     fn set_tx_active(&mut self, on: bool) {
         self.tx_active = on;
+        // A fresh over: what the last one sent says nothing about this one.
+        self.over_had_text = false;
         self.status_dirty = true;
     }
 }
@@ -456,5 +481,42 @@ mod tests {
         }
         assert!(done, "transmit never finished after release");
         assert_eq!(c.tx.sent_chars(), c.tx.total_chars());
+    }
+
+    /// Send on return ends the over with the line. Holding the channel with
+    /// blank paper is what the switch is for, and it is exactly wrong here: the
+    /// operator is composing the next line off the air, and the strip would
+    /// carry a blank for as long as they take to type it.
+    #[test]
+    fn a_committed_line_releases_the_channel_when_it_has_been_painted() {
+        let cfg = DigiConfig { send_on_enter: true, ..cfg(HellVariant::Feld) };
+        let mut c = HellController::new(cfg, OUT_RATE);
+        c.set_tx_text("HI\n".into());
+        c.set_tx_active(true);
+        let mut audio = [0.0f32; BLOCK];
+        let mut done = false;
+        for _ in 0..20_000 {
+            if c.fill_tx_block(&mut audio) {
+                done = true;
+                break;
+            }
+        }
+        assert!(done, "the channel was still held after the line had been painted");
+        assert!(!c.status().tx_next);
+        assert_eq!(c.tx.sent_chars(), c.tx.total_chars());
+    }
+
+    /// The switch is still a switch: pressed over an empty box it holds the
+    /// channel, because that is what blank paper between overs is for. An over
+    /// that never started is not an over that finished.
+    #[test]
+    fn holding_the_channel_over_an_empty_box_still_holds() {
+        let cfg = DigiConfig { send_on_enter: true, ..cfg(HellVariant::Feld) };
+        let mut c = HellController::new(cfg, OUT_RATE);
+        c.set_tx_active(true);
+        let mut audio = [0.0f32; BLOCK];
+        for _ in 0..500 {
+            assert!(!c.fill_tx_block(&mut audio), "an empty box ended the over on its own");
+        }
     }
 }

@@ -129,6 +129,11 @@ pub struct TextModemController {
     tx_active: bool,
     keyed: bool,
     last_sent: usize,
+    /// Something has actually been sent since transmit was switched on — see
+    /// the release under `send_on_enter` in [`Self::fill_tx_block`]. Without
+    /// it, holding the switch down over an empty buffer would end the over the
+    /// instant it began.
+    over_had_text: bool,
 
     scratch8: Vec<f32>,
     scratch48: Vec<f32>,
@@ -185,6 +190,7 @@ impl TextModemController {
             tx_active: false,
             keyed: false,
             last_sent: 0,
+            over_had_text: false,
             scratch8: Vec::new(),
             scratch48: Vec::new(),
             status_dirty: true,
@@ -328,6 +334,18 @@ impl DigiEngine for TextModemController {
             self.last_sent = self.tx.sent_chars();
             self.status_dirty = true;
         }
+        // A committed line is a whole over, and it ends when the line does.
+        // Holding the carrier past that is what type-ahead wants — the other
+        // station hears that you are still there — but under `send_on_enter`
+        // the operator is composing off the air, so the hold would be idle
+        // reversals for as long as they take to type.
+        if self.tx.sent_chars() < self.tx.total_chars() {
+            self.over_had_text = true;
+        } else if self.cfg.send_on_enter && self.over_had_text {
+            self.over_had_text = false;
+            self.tx_active = false;
+            self.status_dirty = true;
+        }
         !self.producing() && self.tx48.is_empty()
     }
 
@@ -347,6 +365,7 @@ impl DigiEngine for TextModemController {
         self.tx_pushed = 0;
         self.tx_active = false;
         self.last_sent = 0;
+        self.over_had_text = false;
         self.status_dirty = true;
     }
 
@@ -399,6 +418,8 @@ impl DigiEngine for TextModemController {
 
     fn set_tx_active(&mut self, on: bool) {
         self.tx_active = on;
+        // A fresh over: what the last one sent says nothing about this one.
+        self.over_had_text = false;
         self.status_dirty = true;
     }
 }
