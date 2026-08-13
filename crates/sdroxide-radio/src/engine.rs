@@ -1811,8 +1811,8 @@ fn engine_thread(
             } else {
                 let stereo = engine.main.as_ref().is_some_and(|c| c.stereo_locked());
                 let tone = engine.main.as_ref().and_then(|c| c.sub_tone());
-                engine.main.as_ref().and_then(|c| c.power_dbfs()).map(|p| Meters {
-                    s_dbm: p + engine.cal_offset_db,
+                engine.rx_signal_dbm().map(|s_dbm| Meters {
+                    s_dbm,
                     adc_peak_dbfs: 0.0,
                     tx: None,
                     stereo,
@@ -4895,6 +4895,37 @@ impl Engine {
         self.mark_shared_store_write();
     }
 
+    /// What the S-meter should read, in dBm, or `None` when nothing here
+    /// measures a signal at all.
+    ///
+    /// Three front ends, in the order of how much the reading is worth:
+    ///
+    /// * A rig with its own S-meter (a CAT rig answering the meter read) — the
+    ///   manufacturer calibrated that against a signal generator, and it is
+    ///   already in dBm, so the dBFS→dBm offset must *not* go on top of it.
+    /// * An IQ front end — the receive chain measures its own passband, in
+    ///   dBFS, which `cal_offset_db` turns into dBm for this hardware.
+    /// * A rig on a sound card whose family has no meter read: all that is left
+    ///   is the level of the audio it sends, after its own AGC and squelch.
+    ///   Not the same quantity, but it moves with the signal, and a meter that
+    ///   moves is worth more than one that never leaves its stop — which is
+    ///   what a demod-audio source used to show, having no `RxChain` to ask.
+    fn rx_signal_dbm(&mut self) -> Option<f32> {
+        if let Some(dbm) = self.source.rx_signal_dbm() {
+            return Some(dbm);
+        }
+        if let Some(p) = self.main.as_ref().and_then(|c| c.power_dbfs()) {
+            return Some(p + self.cal_offset_db);
+        }
+        self.audio_mode.then(|| self.audio_level_dbfs() + self.cal_offset_db)
+    }
+
+    /// The smoothed level of the audio a demod-audio source is sending, in
+    /// dBFS. Meaningless (and not measured) on any other kind of front end.
+    fn audio_level_dbfs(&self) -> f32 {
+        10.0 * (self.audio_level + 1e-20).log10()
+    }
+
     // ---- Scanning ----------------------------------------------------------
 
     /// What the level on the current channel is, in dBFS on the same scale as
@@ -4904,10 +4935,13 @@ impl Engine {
         if let Some(p) = self.main.as_ref().and_then(|c| c.power_dbfs()) {
             return Some(p);
         }
-        // A CAT rig on a sound card: no DDC, no demodulator, no meter — the
-        // audio it sends is the only evidence there is.
+        // A CAT rig on a sound card: no DDC, no demodulator, no measurement of
+        // the signal itself — the audio it sends is the only evidence there is.
+        // Deliberately not the rig's own S-meter, even where one is available:
+        // a scan compares this against the *squelch* threshold, which is a
+        // level in the audio, and the two scales do not meet.
         if self.audio_mode {
-            return Some(10.0 * (self.audio_level + 1e-20).log10());
+            return Some(self.audio_level_dbfs());
         }
         // No audio chain at all — a headless engine started without a sound
         // device. The panadapter's FFT is still running, and channel power read

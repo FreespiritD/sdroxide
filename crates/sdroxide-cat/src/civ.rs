@@ -5,6 +5,10 @@ use sdroxide_types::Mode;
 
 pub const PREAMBLE: u8 = 0xFE;
 pub const END: u8 = 0xFD;
+/// The rig's "NG" answer: it will not do what the last command asked. Carries
+/// no indication of *which* command, and models answer it for every
+/// sub-command they don't implement.
+pub const NG: u8 = 0xFA;
 /// Controller (this software) address — conventional default.
 pub const CONTROLLER_ADDR: u8 = 0xE0;
 
@@ -110,6 +114,15 @@ pub fn ptt_frame(radio: u8, on: bool) -> Vec<u8> {
 /// transmitting; the rig answers with a 0..255 reading (see [`swr_from_reading`]).
 pub fn read_swr_frame(radio: u8) -> Vec<u8> {
     frame(radio, 0x15, &[0x12])
+}
+/// Read the S-meter (Icom cmd `0x15` sub `0x02`). The rig answers with a 0..255
+/// reading on its own calibrated scale (see [`dbm_from_smeter`]).
+///
+/// A CAT rig hands us audio it has already demodulated and levelled, so nothing
+/// on this side of the sound card can measure a signal strength — the rig's own
+/// meter is the only S-meter there is. Only meaningful while receiving.
+pub fn read_smeter_frame(radio: u8) -> Vec<u8> {
+    frame(radio, 0x15, &[0x02])
 }
 
 /// Longest CW message one "send CW" frame carries. The rig buffers what it is
@@ -226,6 +239,41 @@ pub fn parse_swr_reply(data: &[u8]) -> Option<f32> {
     Some(swr_from_reading(decode_meter(&data[1..])?))
 }
 
+/// Map an Icom S-meter reading (`0..255`) to dBm, over the calibration Icom
+/// states and Hamlib carries for this family: reading 0 is S0, 120 is S9, and
+/// 241 is S9+60 dB. S9 is −73 dBm and an S-unit is 6 dB, so the three points are
+/// −127, −73 and −13 dBm; between and beyond them the scale is interpolated and
+/// clamped, as the SWR curve is.
+///
+/// This is the rig's *own* meter, in the units its manufacturer calibrated it
+/// in — not a level derived from the sound card — so it needs no dBFS→dBm
+/// offset applying on top.
+fn dbm_from_smeter(reading: u32) -> f32 {
+    const CAL: &[(f32, f32)] = &[(0.0, -127.0), (120.0, -73.0), (241.0, -13.0)];
+    let r = reading as f32;
+    if r <= CAL[0].0 {
+        return CAL[0].1;
+    }
+    for w in CAL.windows(2) {
+        let (x0, y0) = w[0];
+        let (x1, y1) = w[1];
+        if r <= x1 {
+            return y0 + (y1 - y0) * (r - x0) / (x1 - x0);
+        }
+    }
+    CAL[CAL.len() - 1].1
+}
+
+/// Parse an S-meter reply payload (Icom cmd `0x15`): the sub-command byte
+/// followed by the BCD reading. Returns the signal level in dBm, or `None` if
+/// the reply isn't the S-meter (`0x02`) or is malformed.
+pub fn parse_smeter_reply(data: &[u8]) -> Option<f32> {
+    if data.first() != Some(&0x02) {
+        return None;
+    }
+    Some(dbm_from_smeter(decode_meter(&data[1..])?))
+}
+
 /// A parsed reply from the rig (payload after `<cmd>`, addresses stripped).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CivReply {
@@ -328,6 +376,32 @@ mod tests {
         assert_eq!(swr([0x00, 0x0f]), None);
         // The wrong meter sub-command is ignored (we only read SWR / 0x12).
         assert_eq!(parse_swr_reply(&[0x11, 0x00, 0x50]), None);
+        // The S-meter shares command 0x15 and must not be read as an SWR.
+        assert_eq!(parse_swr_reply(&[0x02, 0x01, 0x20]), None);
+    }
+
+    #[test]
+    fn s_meter_decodes_to_dbm() {
+        let dbm =
+            |reading_bcd: [u8; 2]| parse_smeter_reply(&[0x02, reading_bcd[0], reading_bcd[1]]);
+        // The calibration points: S0, S9, S9+60.
+        assert_eq!(dbm([0x00, 0x00]), Some(-127.0));
+        assert_eq!(dbm([0x01, 0x20]), Some(-73.0));
+        assert_eq!(dbm([0x02, 0x41]), Some(-13.0));
+        // S9 is 120 and an S-unit is 6 dB, so half of S9's reading is S4.5 —
+        // 27 dB below S9 on the interpolated scale.
+        assert_eq!(dbm([0x00, 0x60]), Some(-100.0));
+        // Past the top of the table the reading clamps rather than running on.
+        assert_eq!(dbm([0x02, 0x55]), Some(-13.0));
+        // A malformed reading is no reading, and the SWR sub-meter is not ours.
+        assert_eq!(dbm([0x00, 0x0f]), None);
+        assert_eq!(parse_smeter_reply(&[0x12, 0x00, 0x48]), None);
+    }
+
+    #[test]
+    fn the_two_meter_reads_are_distinct_frames() {
+        assert_eq!(read_smeter_frame(0x94), vec![0xFE, 0xFE, 0x94, 0xE0, 0x15, 0x02, 0xFD]);
+        assert_eq!(read_swr_frame(0x94), vec![0xFE, 0xFE, 0x94, 0xE0, 0x15, 0x12, 0xFD]);
     }
 
     #[test]

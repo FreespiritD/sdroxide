@@ -208,6 +208,17 @@ pub trait IqSource: Send {
     fn tx_telemetry(&mut self) -> Option<sdroxide_types::TxTelemetry> {
         None
     }
+    /// The rig's own S-meter in dBm, polled by the engine while receiving.
+    ///
+    /// For a source that hands us already-demodulated audio (a CAT rig on a
+    /// sound card) this is the only signal-strength measurement there is: the
+    /// audio arrives after the rig's own filters and AGC, so nothing on this
+    /// side of it can tell a strong signal from a weak one. Sources that give
+    /// us IQ need none of this — the engine measures the passband itself.
+    /// Default: none.
+    fn rx_signal_dbm(&mut self) -> Option<f32> {
+        None
+    }
     /// Offset (Hz) of the operator's VFO from the IQ centre, so a rig that keeps
     /// its own VFO within a wideband IQ stream (TCI) can track the dial while we
     /// tune with a software DDC. No-op for sources whose VFO already equals the
@@ -580,6 +591,10 @@ impl IqSource for ConvertedSource {
 
     fn tx_telemetry(&mut self) -> Option<sdroxide_types::TxTelemetry> {
         self.inner.tx_telemetry()
+    }
+
+    fn rx_signal_dbm(&mut self) -> Option<f32> {
+        self.inner.rx_signal_dbm()
     }
 
     /// Relative (VFO minus IQ centre), so untouched.

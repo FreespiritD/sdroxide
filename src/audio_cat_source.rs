@@ -106,7 +106,19 @@ pub struct AudioCatSource {
     /// the engine's 100 ms meter poll sees the most recent value between the
     /// rig's ~5 Hz updates. Cleared on unkey.
     last_telem: Option<TxTelemetry>,
+    /// Latest S-meter reading (dBm) the rig reported while receiving, and when
+    /// it arrived. Held for the same reason as `last_telem` — the engine's
+    /// meter ticks far faster than the rig answers, and a gap between answers
+    /// is not a signal that went away — but only for as long as it can still be
+    /// called current: a rig that has stopped answering must not leave a needle
+    /// standing at the last thing it said.
+    last_signal: Option<(std::time::Instant, f32)>,
 }
+
+/// How long a reading from the rig's S-meter stands in for the next one. Comes
+/// to a handful of the rig's own ~5 Hz answers, so an ordinary gap is covered
+/// and a link that has gone quiet is not.
+const SIGNAL_MAX_AGE: std::time::Duration = std::time::Duration::from_millis(1500);
 
 impl AudioCatSource {
     /// Open the radio's sound-card streams and the CAT serial thread. `audio_in`
@@ -192,6 +204,7 @@ impl AudioCatSource {
             label,
             status,
             last_telem: None,
+            last_signal: None,
         })
     }
 }
@@ -276,8 +289,8 @@ impl IqSource for AudioCatSource {
                     }
                 }
                 sdroxide_cat::CatUpdate::Mode(m) => out.push(ControlUpdate::Mode(m)),
-                // SWR arrives on the separate telemetry channel, not here.
-                sdroxide_cat::CatUpdate::Swr(_) => {}
+                // Both meters arrive on their own telemetry channels, not here.
+                sdroxide_cat::CatUpdate::Swr(_) | sdroxide_cat::CatUpdate::Signal(_) => {}
             }
         }
         out
@@ -340,6 +353,19 @@ impl IqSource for AudioCatSource {
             self.last_telem = Some(t);
         }
         self.last_telem
+    }
+
+    fn rx_signal_dbm(&mut self) -> Option<f32> {
+        // Latched for the same reason as `tx_telemetry`, and against the same
+        // ~5 Hz stream of readings. A rig whose family (or dialect) has no
+        // S-meter read never sends any — and one that has stopped answering
+        // stops counting once its last reading goes stale. Either way the
+        // engine falls back to the level of the audio itself, which is still
+        // arriving whatever the control link is doing.
+        if let Some(dbm) = self.cat.poll_signal() {
+            self.last_signal = Some((std::time::Instant::now(), dbm));
+        }
+        self.last_signal.filter(|(at, _)| at.elapsed() < SIGNAL_MAX_AGE).map(|(_, dbm)| dbm)
     }
 
     fn tx_write_audio(&mut self, audio: &[f32]) -> Result<()> {

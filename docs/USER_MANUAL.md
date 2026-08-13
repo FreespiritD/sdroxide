@@ -466,6 +466,15 @@ becomes the headline reading, on a logarithmic scale with 1:1 at the left stop,
 with no wattmeter) is shown alongside. Rigs with no SWR bridge fall back to a
 drive/ALC scale.
 
+Where the reading comes from depends on the interface. An SDR delivers IQ and
+the receiver measures the signal in its own passband, calibrated to dBm by
+`cal_offset_db` in `config.toml`. A **CAT rig on a sound card** sends audio it
+has already demodulated and levelled, so there is nothing left on this side to
+measure: Icom rigs are asked for their own S-meter over CI-V instead, which is
+the reading on the radio's front panel, and rigs whose CAT dialect has no meter
+read fall back to the level of the audio itself — that one follows the signal
+but is not calibrated in dBm, being whatever the rig's AGC left.
+
 ### 2.10 Transmit
 
 On a TX-capable rig the **Transmit** module appears:
@@ -2546,6 +2555,18 @@ setup and for radios whose keyer sdroxide cannot drive.
 > configured above. The *Standard* port is the one whose RTS/DTR lines are wired
 > to PTT and KEY; sdroxide does not use it, and `PTT method` `DTR`/`RTS` set on
 > the Enhanced port will not key anything. Use `CAT` there.
+
+> **Note (Icom over USB):** if the dial and the waterfall follow the radio but
+> **PTT** and **TUNE** do nothing, the link is fine and the keying is not. Check
+> **PTT method** first: `CAT` keys with a CI-V command and always works on a rig
+> that is answering, while `DTR` and `RTS` only key if the radio's own
+> *USB SEND* setting has been assigned to that line (an IC-7300 leaves it off,
+> so those two do nothing at all out of the box), and `VOX` keys nothing until
+> VOX is on at the radio. The **Radio ID (hex)** must also be the rig's CI-V
+> address — 94h on an IC-7300, 70h on a Xiegu X6100 — though a wrong one stops
+> the frequency working too, so it is rarely the answer here. When the radio
+> answers the key-down with a refusal, sdroxide says so in the log: *the radio
+> refused the transmit command*.
 
 > **Note:** RIT, XIT and split are driven over the same serial link, by moving
 > the radio's dial — see [2.6](#26-rit-and-xit). Set them in sdroxide rather than

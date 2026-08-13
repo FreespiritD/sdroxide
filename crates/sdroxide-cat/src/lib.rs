@@ -26,6 +26,9 @@ pub enum CatUpdate {
     Mode(Mode),
     /// TX SWR reading (routed to the telemetry channel, not the control channel).
     Swr(f32),
+    /// RX S-meter reading in dBm, from the rig's own meter (routed to the
+    /// signal channel, not the control channel).
+    Signal(f32),
 }
 
 /// Enumerate serial ports for the settings UI. USB-style ports (ttyACM/ttyUSB,
@@ -60,6 +63,16 @@ trait Protocol: Send {
     /// Frames requesting TX telemetry (SWR / power), polled only while keyed.
     /// Empty for families with no such read.
     fn tx_telemetry_requests(&self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+    /// Frames requesting the rig's S-meter, polled only while receiving.
+    ///
+    /// A CAT rig sends us audio it has already demodulated, filtered and
+    /// levelled — there is no signal left on this side of the sound card to
+    /// measure — so its own meter is the only S-meter the operator can be
+    /// shown. Empty for families with no such read, which fall back to the
+    /// level of the audio itself.
+    fn rx_telemetry_requests(&self) -> Vec<Vec<u8>> {
         Vec::new()
     }
     /// Frames that switch the rig's *own* RIT, XIT and split off, sent once
@@ -101,12 +114,23 @@ trait Protocol: Send {
         false
     }
 
+    /// True when [`Protocol::parse`] saw the rig refuse a command since the
+    /// last call. Which command it refused is not in the answer — CI-V's "NG"
+    /// carries nothing but itself — so this is only worth reporting where the
+    /// caller knows what it just sent. Reported once, then cleared.
+    fn refused(&mut self) -> bool {
+        false
+    }
+
     fn parse(&mut self, buf: &mut Vec<u8>) -> Vec<CatUpdate>;
 }
 
 /// CI-V protocol (Icom + Xiegu). `radio` is the CI-V transceiver address.
 struct Civ {
     radio: u8,
+    /// The rig answered "NG" since this was last read (see
+    /// [`Protocol::refused`]).
+    nak: bool,
 }
 
 impl Protocol for Civ {
@@ -125,6 +149,9 @@ impl Protocol for Civ {
     fn tx_telemetry_requests(&self) -> Vec<Vec<u8>> {
         vec![civ::read_swr_frame(self.radio)]
     }
+    fn rx_telemetry_requests(&self) -> Vec<Vec<u8>> {
+        vec![civ::read_smeter_frame(self.radio)]
+    }
     fn clear_offsets(&self) -> Vec<Vec<u8>> {
         civ::clear_offsets_frames(self.radio)
     }
@@ -139,6 +166,9 @@ impl Protocol for Civ {
     }
     fn set_cw_wpm(&mut self, wpm: f32) -> Vec<Vec<u8>> {
         vec![civ::keyer_speed_frame(self.radio, wpm)]
+    }
+    fn refused(&mut self) -> bool {
+        std::mem::take(&mut self.nak)
     }
     fn parse(&mut self, buf: &mut Vec<u8>) -> Vec<CatUpdate> {
         let mut out = Vec::new();
@@ -160,12 +190,22 @@ impl Protocol for Civ {
                         }
                     }
                 }
-                // Meter read (0x15): we only request the SWR sub-meter (0x12).
+                // Meter read (0x15): the SWR sub-meter (0x12) while transmitting,
+                // the S-meter (0x02) while receiving. The sub-command byte in the
+                // reply says which arrived — nothing else does, since both are
+                // answered on the one command.
                 0x15 => {
                     if let Some(swr) = civ::parse_swr_reply(&reply.data) {
                         out.push(CatUpdate::Swr(swr));
+                    } else if let Some(dbm) = civ::parse_smeter_reply(&reply.data) {
+                        out.push(CatUpdate::Signal(dbm));
                     }
                 }
+                // "NG": the rig would not do what it was asked. Plenty of these
+                // are expected — every sub-command a given model doesn't
+                // implement answers this way — so it is only noted here, for a
+                // caller that knows it just sent something that mattered.
+                civ::NG => self.nak = true,
                 _ => {}
             }
         }
@@ -175,7 +215,9 @@ impl Protocol for Civ {
 
 fn make_protocol(cfg: &CatConfig) -> Box<dyn Protocol> {
     match cfg.family {
-        CatFamily::Xiegu | CatFamily::Icom => Box::new(Civ { radio: cfg.icom_radio_id }),
+        CatFamily::Xiegu | CatFamily::Icom => {
+            Box::new(Civ { radio: cfg.icom_radio_id, nak: false })
+        }
         CatFamily::Yaesu => Box::new(yaesu::Yaesu::new()),
         CatFamily::Kenwood => Box::new(kenwood::Kenwood::new(cfg.kenwood_send)),
     }
@@ -198,6 +240,7 @@ pub struct CatHandle {
     cmd_tx: Sender<CatCmd>,
     event_rx: Receiver<CatUpdate>,
     telem_rx: Receiver<TxTelemetry>,
+    signal_rx: Receiver<f32>,
     cw_chunk_len: usize,
 }
 
@@ -244,6 +287,13 @@ impl CatHandle {
     pub fn poll_telemetry(&self) -> Option<TxTelemetry> {
         self.telem_rx.try_iter().last()
     }
+
+    /// The rig's own S-meter in dBm, or `None` if nothing new arrived since the
+    /// last call. Only rigs whose family has such a read report one; the rest
+    /// never send here at all.
+    pub fn poll_signal(&self) -> Option<f32> {
+        self.signal_rx.try_iter().last()
+    }
 }
 
 impl Drop for CatHandle {
@@ -274,7 +324,8 @@ pub fn query_once(cfg: &CatConfig) -> Option<(Option<f64>, Option<Mode>)> {
                     match u {
                         CatUpdate::Freq(hz) => freq = Some(hz),
                         CatUpdate::Mode(m) => mode = Some(m),
-                        CatUpdate::Swr(_) => {} // not requested during startup query
+                        // Neither meter is requested during the startup query.
+                        CatUpdate::Swr(_) | CatUpdate::Signal(_) => {}
                     }
                 }
             }
@@ -288,15 +339,16 @@ pub fn spawn(cfg: CatConfig) -> CatHandle {
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
     let (event_tx, event_rx) = crossbeam_channel::unbounded();
     let (telem_tx, telem_rx) = crossbeam_channel::unbounded();
+    let (signal_tx, signal_rx) = crossbeam_channel::unbounded();
     // Asked of the framing before it goes to the thread, so the keyer can size
     // its chunks to the rig without reaching across the channel to find out.
     let cw_chunk_len =
         if cfg.cw_keying == CwKeying::Cat { make_protocol(&cfg).cw_chunk_len() } else { 0 };
     std::thread::Builder::new()
         .name("sdroxide-cat".into())
-        .spawn(move || serial_thread(cfg, cmd_rx, event_tx, telem_tx))
+        .spawn(move || serial_thread(cfg, cmd_rx, event_tx, telem_tx, signal_tx))
         .expect("spawn cat thread");
-    CatHandle { cmd_tx, event_rx, telem_rx, cw_chunk_len }
+    CatHandle { cmd_tx, event_rx, telem_rx, signal_rx, cw_chunk_len }
 }
 
 fn map_parity(p: Parity) -> serialport::Parity {
@@ -318,6 +370,77 @@ fn map_data_bits(n: u8) -> serialport::DataBits {
         6 => serialport::DataBits::Six,
         7 => serialport::DataBits::Seven,
         _ => serialport::DataBits::Eight,
+    }
+}
+
+/// The shortest gap left between two frames written to the rig.
+///
+/// A transceiver serves its control port with the same processor that runs the
+/// radio, and it acts on one command at a time: a frame that arrives while the
+/// rig is still working through the previous one can simply be missed, and
+/// nothing on the wire says so. The case that matters is key-down, which asserts
+/// the mode (and, with split or XIT, the transmit frequency) and then keys —
+/// changing mode is among the slowest things a rig does, and a PTT lost behind
+/// one is an over that never reaches the air while everything else about the
+/// link looks healthy.
+///
+/// Only consecutive writes wait; a frame sent on its own goes out at once. The
+/// whole traffic here is a handful of short frames a second, so this costs
+/// nothing that can be noticed — and [`ModeMemory`] keeps the mode off the wire
+/// entirely when the rig is already in it, which is what makes key-down a single
+/// frame in the ordinary case.
+const FRAME_GAP: Duration = Duration::from_millis(30);
+
+/// Write one frame, leaving at least [`FRAME_GAP`] since the last one went out.
+/// Returns true on a write error — the caller's signal to reconnect.
+fn write_frame(
+    port: &mut dyn serialport::SerialPort,
+    frame: &[u8],
+    last_write: &mut Instant,
+) -> bool {
+    let since = last_write.elapsed();
+    if since < FRAME_GAP {
+        std::thread::sleep(FRAME_GAP - since);
+    }
+    let failed = port.write_all(frame).is_err();
+    *last_write = Instant::now();
+    failed
+}
+
+/// What mode the rig is in, held as the frame that would put it there — either
+/// because it was told so, or because it said so on its last poll.
+///
+/// Every key-down asserts the mode, so that an over cannot go out in whatever
+/// the rig happens to have been left in. Asserting it is not free, though: the
+/// rig acts on the command every time, which on an Icom also re-selects filter
+/// 1 under an operator who chose another, and leaves the radio busy at exactly
+/// the moment the PTT frame arrives behind it. So the command is only written
+/// when it would actually change something.
+///
+/// What is compared is the frame, not the mode: two of the app's modes can be
+/// one thing to a rig (DIGU rides on USB, and that is what goes on the wire),
+/// and the rig can only report back the one it has.
+#[derive(Default)]
+struct ModeMemory(Option<Vec<u8>>);
+
+impl ModeMemory {
+    /// True when `frame` still needs sending — the rig is in some other mode,
+    /// or has not said which. Records it as sent.
+    fn needs(&mut self, frame: &[u8]) -> bool {
+        if self.0.as_deref() == Some(frame) {
+            return false;
+        }
+        self.0 = Some(frame.to_vec());
+        true
+    }
+
+    /// The rig reported the mode `frame` would have set. That is where it is,
+    /// whoever put it there — a mode the operator selected on the radio itself
+    /// is one there is no need to command back onto it.
+    fn reported(&mut self, frame: &[u8]) {
+        if self.0.as_deref() != Some(frame) {
+            self.0 = Some(frame.to_vec());
+        }
     }
 }
 
@@ -348,6 +471,7 @@ fn serial_thread(
     cmd_rx: Receiver<CatCmd>,
     event_tx: Sender<CatUpdate>,
     telem_tx: Sender<TxTelemetry>,
+    signal_tx: Sender<f32>,
 ) {
     let mut protocol = make_protocol(&cfg);
     let poll_period = Duration::from_secs_f32((1.0 / cfg.poll_hz.max(0.2)).min(5.0));
@@ -372,7 +496,17 @@ fn serial_thread(
         // (Re)open the port, retrying on failure.
         let mut port = match open_port(&cfg.serial) {
             Ok(p) => {
-                info!(path = %cfg.serial.path, baud = cfg.serial.baud, "CAT port open");
+                // The PTT method belongs in this line: a rig that answers every
+                // read and still refuses to key is nearly always one being asked
+                // to key some way it isn't set up for, and this is where that
+                // shows.
+                info!(
+                    path = %cfg.serial.path,
+                    baud = cfg.serial.baud,
+                    family = cfg.family.label(),
+                    ptt = cfg.ptt.label(),
+                    "CAT port open"
+                );
                 p
             }
             Err(e) => {
@@ -403,23 +537,32 @@ fn serial_thread(
             }
             _ => {}
         }
+        // When the last frame went out, so consecutive writes can be spaced
+        // (see `FRAME_GAP`). Backdated: the first write waits for nothing.
+        let mut last_write = Instant::now() - FRAME_GAP;
         // Don't force a mode on connect — adopt the rig's current mode (read via
         // `query_once`/poll); the app commands mode only when the operator picks one.
         // RIT/XIT/split are the exception: those we do own, so clear the rig's
         // own copies rather than let them offset us invisibly.
         for f in protocol.clear_offsets() {
-            let _ = port.write_all(&f);
+            write_frame(&mut *port, &f, &mut last_write);
         }
 
         let mut rx = Vec::with_capacity(256);
         let mut read_buf = [0u8; 256];
         let mut next_poll = Instant::now();
-        // TX telemetry (SWR) is polled faster than freq/mode, but only while keyed.
-        let mut next_telem = Instant::now();
+        // The meters are polled faster than freq/mode, and which meter is asked
+        // for depends on what the rig is doing: SWR while keyed, S-meter while
+        // receiving.
+        let mut next_meter = Instant::now();
         let mut ptt = false;
+        // When a CAT key-down was last written, so the rig's refusal of one can
+        // be told from the refusals its unimplemented sub-commands answer with.
+        let mut ptt_written: Option<Instant> = None;
         let mut pending_freq: Option<f64> = None;
         let mut last_sent_freq: Option<f64> = None;
         let mut freq_deadline = Instant::now();
+        let mut mode_memory = ModeMemory::default();
         // Only forward genuine changes so the engine isn't re-notified every poll.
         let mut emit_freq: Option<f64> = None;
         let mut emit_mode: Option<Mode> = None;
@@ -431,7 +574,9 @@ fn serial_thread(
                     Ok(CatCmd::Freq(hz)) => pending_freq = Some(hz), // coalesce
                     Ok(CatCmd::Mode(m)) => {
                         if let Some(mm) = mode_cmd(m) {
-                            if port.write_all(&protocol.set_mode(mm)).is_err() {
+                            let f = protocol.set_mode(mm);
+                            if mode_memory.needs(&f) && write_frame(&mut *port, &f, &mut last_write)
+                            {
                                 break 'io true;
                             }
                         }
@@ -446,7 +591,8 @@ fn serial_thread(
                             && let Some(hz) = pending_freq.take()
                             && last_sent_freq != Some(hz)
                         {
-                            if port.write_all(&protocol.set_freq(hz)).is_err() {
+                            let f = protocol.set_freq(hz);
+                            if write_frame(&mut *port, &f, &mut last_write) {
                                 break 'io true;
                             }
                             last_sent_freq = Some(hz);
@@ -457,15 +603,21 @@ fn serial_thread(
                             PttMethod::Vox => false,
                             PttMethod::Rts => port.write_request_to_send(on).is_err(),
                             PttMethod::Dtr => port.write_data_terminal_ready(on).is_err(),
-                            PttMethod::Cat => port.write_all(&protocol.ptt(on)).is_err(),
+                            PttMethod::Cat => {
+                                let f = protocol.ptt(on);
+                                ptt_written = on.then(Instant::now);
+                                write_frame(&mut *port, &f, &mut last_write)
+                            }
                         };
                         if failed {
                             break 'io true;
                         }
                         ptt = on;
-                        if on {
-                            next_telem = Instant::now(); // start polling SWR at once
-                        } else {
+                        // Ask the meter that belongs to the new state straight
+                        // away, rather than showing the other one's last reading
+                        // for the rest of the current period.
+                        next_meter = Instant::now();
+                        if !on {
                             // Clear the reading so the meter drops SWR on unkey.
                             let _ = telem_tx.send(TxTelemetry::default());
                         }
@@ -476,21 +628,21 @@ fn serial_thread(
                     // around it would hold a carrier the keyer cannot key.
                     Ok(CatCmd::Cw(text)) => {
                         for f in protocol.send_cw(&text) {
-                            if port.write_all(&f).is_err() {
+                            if write_frame(&mut *port, &f, &mut last_write) {
                                 break 'io true;
                             }
                         }
                     }
                     Ok(CatCmd::CwAbort) => {
                         for f in protocol.abort_cw() {
-                            if port.write_all(&f).is_err() {
+                            if write_frame(&mut *port, &f, &mut last_write) {
                                 break 'io true;
                             }
                         }
                     }
                     Ok(CatCmd::CwWpm(wpm)) => {
                         for f in protocol.set_cw_wpm(wpm) {
-                            if port.write_all(&f).is_err() {
+                            if write_frame(&mut *port, &f, &mut last_write) {
                                 break 'io true;
                             }
                         }
@@ -505,7 +657,8 @@ fn serial_thread(
             if let Some(hz) = pending_freq {
                 let now = Instant::now();
                 if last_sent_freq != Some(hz) && now >= freq_deadline {
-                    if port.write_all(&protocol.set_freq(hz)).is_err() {
+                    let f = protocol.set_freq(hz);
+                    if write_frame(&mut *port, &f, &mut last_write) {
                         break 'io true;
                     }
                     last_sent_freq = Some(hz);
@@ -519,17 +672,25 @@ fn serial_thread(
             if Instant::now() >= next_poll {
                 next_poll = Instant::now() + poll_period;
                 for req in protocol.poll_requests() {
-                    if port.write_all(&req).is_err() {
+                    if write_frame(&mut *port, &req, &mut last_write) {
                         break 'io true;
                     }
                 }
             }
 
-            // While keyed, poll TX telemetry (SWR) at ~5 Hz.
-            if ptt && Instant::now() >= next_telem {
-                next_telem = Instant::now() + Duration::from_millis(200);
-                for req in protocol.tx_telemetry_requests() {
-                    if port.write_all(&req).is_err() {
+            // Poll the meter that applies right now, at ~5 Hz: the SWR while
+            // keyed, the rig's S-meter while receiving. Both ride the same
+            // command on CI-V and only one of them is meaningful at a time, so
+            // they take turns rather than sharing the bus.
+            if Instant::now() >= next_meter {
+                next_meter = Instant::now() + Duration::from_millis(200);
+                let reqs = if ptt {
+                    protocol.tx_telemetry_requests()
+                } else {
+                    protocol.rx_telemetry_requests()
+                };
+                for req in reqs {
+                    if write_frame(&mut *port, &req, &mut last_write) {
                         break 'io true;
                     }
                 }
@@ -557,11 +718,32 @@ fn serial_thread(
                         // it for the moment before the re-issue lands.
                         updates.retain(|u| !matches!(u, CatUpdate::Freq(_)));
                     }
+                    // A refusal on its own says nothing — rigs answer that way
+                    // for every sub-command they don't have, and the offsets
+                    // cleared at open collect a few. One arriving on the heels
+                    // of a key-down is worth saying out loud: the operator is
+                    // looking at a transmitter that did not key, with no other
+                    // sign of why.
+                    if protocol.refused()
+                        && ptt_written.is_some_and(|t| t.elapsed() < Duration::from_millis(500))
+                    {
+                        ptt_written = None;
+                        warn!(
+                            "the radio refused a command at key-down — if it did not transmit, \
+                             check its CI-V settings, or the PTT method in Settings → Radio"
+                        );
+                    }
                     for u in updates {
-                        // SWR is telemetry, not a control change: route it to the
-                        // telemetry channel and skip the freq/mode dedup below.
+                        // The meters are telemetry, not control changes: they go
+                        // to their own channels and skip the freq/mode dedup
+                        // below — a reading that repeats is still current, and
+                        // dropping it would freeze the meter.
                         if let CatUpdate::Swr(v) = u {
                             let _ = telem_tx.send(TxTelemetry { fwd_w: None, swr: Some(v) });
+                            continue;
+                        }
+                        if let CatUpdate::Signal(dbm) = u {
+                            let _ = signal_tx.send(dbm);
                             continue;
                         }
                         // Forward only genuine changes (poll repeats otherwise).
@@ -574,13 +756,19 @@ fn serial_thread(
                                 c
                             }
                             CatUpdate::Mode(m) => {
+                                // Also where the rig's mode is learned: what it
+                                // reports is the truth about what it is in, and
+                                // anything that isn't what we last set means the
+                                // next mode command has to go out for real.
+                                mode_memory.reported(&protocol.set_mode(m));
                                 let c = emit_mode != Some(m);
                                 if c {
                                     emit_mode = Some(m);
                                 }
                                 c
                             }
-                            CatUpdate::Swr(_) => false, // handled above
+                            // Both meters are handled above.
+                            CatUpdate::Swr(_) | CatUpdate::Signal(_) => false,
                         };
                         if changed {
                             let _ = event_tx.send(u);
@@ -603,5 +791,51 @@ fn serial_thread(
         } else {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sdroxide_types::CatFamily;
+
+    fn icom() -> Box<dyn Protocol> {
+        make_protocol(&CatConfig {
+            family: CatFamily::Icom,
+            icom_radio_id: 0x94,
+            ..CatConfig::default()
+        })
+    }
+
+    /// The rig's mode is asserted on every key-down. Writing it every time is
+    /// what this guards against: the rig acts on each one — re-selecting its
+    /// filter, and busy for as long as it takes — with the PTT frame right
+    /// behind it.
+    #[test]
+    fn the_mode_is_only_commanded_when_it_would_change_something() {
+        let mut p = icom();
+        let mut m = ModeMemory::default();
+        // Nothing is known about the rig yet, so the mode goes out.
+        assert!(m.needs(&p.set_mode(Mode::Usb)));
+        // Asserting the same mode again — every subsequent key-down — does not.
+        assert!(!m.needs(&p.set_mode(Mode::Usb)));
+        // DIGU is USB on the wire for this family, so it is not a change either.
+        assert!(!m.needs(&p.set_mode(Mode::Digu)));
+        // A mode that really is different is written.
+        assert!(m.needs(&p.set_mode(Mode::Cw)));
+    }
+
+    #[test]
+    fn what_the_rig_reports_is_where_the_rig_is() {
+        let mut p = icom();
+        let mut m = ModeMemory::default();
+        assert!(m.needs(&p.set_mode(Mode::Cw)));
+        // The operator turns the mode knob on the radio itself. The app follows
+        // it there, and commanding it back onto a mode it is already in is
+        // exactly the wasted write this avoids.
+        m.reported(&p.set_mode(Mode::Lsb));
+        assert!(!m.needs(&p.set_mode(Mode::Lsb)));
+        // And a mode the rig is *not* in still goes out.
+        assert!(m.needs(&p.set_mode(Mode::Usb)));
     }
 }
