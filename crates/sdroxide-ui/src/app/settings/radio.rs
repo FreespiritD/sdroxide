@@ -1872,6 +1872,7 @@ pub(in crate::app) fn settings_airspyhf_tab(
 pub(in crate::app) fn settings_sdrplay_tab(
     ui: &mut egui::Ui,
     devices: &[sdroxide_types::SdrPlayDevice],
+    caps: Option<&sdroxide_types::DeviceCaps>,
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     rescan: &mut bool,
     apply: &mut bool,
@@ -1892,17 +1893,22 @@ pub(in crate::app) fn settings_sdrplay_tab(
         cfg.sdrplay.duo_tuner,
     );
 
-    // Which rows to draw comes from the *selected* device's model. With
-    // nothing enumerated (service down, mid-replug) fall back to showing the
-    // RSP1A/1B feature set: the driver ignores a switch the real hardware
-    // lacks, whereas a hidden switch cannot be un-hidden by an operator whose
-    // service just isn't running yet.
-    let model = devices
-        .iter()
-        .find(|d| d.serial == cfg.sdrplay.serial)
-        .or(devices.first())
-        .map(|d| d.model())
-        .unwrap_or(SdrPlayModel::Rsp1b);
+    // Which rows to draw comes from the *selected* device's model, and with
+    // nothing enumerated (service down, mid-replug) from the RSP1A/1B feature
+    // set: the driver ignores a switch the real hardware lacks, whereas a
+    // hidden switch cannot be un-hidden by an operator whose service just
+    // isn't running yet.
+    let listed = devices.iter().find(|d| d.serial == cfg.sdrplay.serial).or(devices.first());
+    let model = listed.map(|d| d.model()).unwrap_or(SdrPlayModel::Rsp1b);
+
+    // Except that RSP1B is the one model with *no* antenna ports and the
+    // shortest LNA ladder, so falling back to it does the very thing the rule
+    // above forbids: it hides controls. Where a receiver is already open its
+    // own capabilities are the honest account of what it has, and they hold
+    // whether the service enumerated nothing, listed no serial to match, or
+    // left out the device it has already handed to us.
+    let open = caps.filter(|c| c.driver == "sdrplay" && listed.is_none());
+    let open_ports = open.map(|c| c.antennas_rx.as_slice()).filter(|p| !p.is_empty());
 
     // A device listed without a serial number (or an unrecognised hardware
     // version) is the signature of a USB communication problem: it opens and
@@ -2065,7 +2071,13 @@ pub(in crate::app) fn settings_sdrplay_tab(
              driver clamps and keeps your choice for when you tune back. \
              Applies immediately.",
         );
-        let max_lna = model.max_lna_state();
+        // Same story as the ports: an RSPdx guessed to be an RSP1B would lose
+        // two thirds of its LNA range. The open device publishes the real one.
+        let max_lna = open
+            .and_then(|c| c.gains.iter().find(|g| g.name == SdrPlayConfig::LNA_ELEMENT))
+            .map(|g| (-g.min_db).round().clamp(0.0, 255.0) as u8)
+            .filter(|&n| n > 0)
+            .unwrap_or_else(|| model.max_lna_state());
         if ui
             .add(Slider::new(&mut cfg.sdrplay.lna_state, 0..=max_lna))
             .on_hover_text("0 = max gain")
@@ -2119,7 +2131,10 @@ pub(in crate::app) fn settings_sdrplay_tab(
             ui.end_row();
         }
 
-        let antennas = model.antennas(cfg.sdrplay.duo_tuner);
+        let antennas: Vec<&str> = match open_ports {
+            Some(ports) => ports.iter().map(String::as_str).collect(),
+            None => model.antennas(cfg.sdrplay.duo_tuner).to_vec(),
+        };
         if !antennas.is_empty() {
             ui.label("Antenna").on_hover_text("Applies immediately.");
             let shown = if cfg.sdrplay.antenna.is_empty() {
@@ -2128,8 +2143,8 @@ pub(in crate::app) fn settings_sdrplay_tab(
                 cfg.sdrplay.antenna.clone()
             };
             ComboBox::from_id_salt("sdrplay_antenna").selected_text(shown).show_ui(ui, |ui| {
-                for &a in antennas {
-                    if ui.selectable_label(cfg.sdrplay.antenna == a, a).clicked() {
+                for a in &antennas {
+                    if ui.selectable_label(cfg.sdrplay.antenna == *a, *a).clicked() {
                         cfg.sdrplay.antenna = a.to_string();
                         cmds.push(Command::SetAntenna { dir: Direction::Rx, name: a.to_string() });
                     }

@@ -312,6 +312,19 @@ impl SdroxideApp {
             {
                 self.soapy_devices = Some(self.ctrl.list_soapy());
             }
+            // The RSP tab draws itself from the model in this list — which
+            // antenna ports exist, whether there is an HDR path, how far the
+            // LNA goes. Asking the service is one round trip and opens no
+            // device, so it happens on open: without it the tab falls back to
+            // the RSP1B feature set, and an RSPdx owner is left with no
+            // antenna selector until they think to press Rescan.
+            if self
+                .radio_cfg
+                .as_ref()
+                .is_some_and(|c| c.backend == sdroxide_types::Backend::SdrPlay)
+            {
+                self.sdrplay_devices = self.ctrl.list_sdrplay();
+            }
             self.audio_devices_queried = true;
         }
         // Edits collected here and applied after the window closure, which
@@ -1158,6 +1171,7 @@ impl SdroxideApp {
                     Backend::SdrPlay => settings_sdrplay_tab(
                         ui,
                         &self.sdrplay_devices,
+                        self.caps.as_ref(),
                         io.radio_edit,
                         io.sdrplay_rescan,
                         io.apply_iface,
