@@ -190,6 +190,15 @@ impl SdroxideApp {
             }
             ui.fonts_mut(|f| f.layout_job(job))
         };
+
+        // Send on return: the key is taken before the box is built, or the
+        // edit turns it into a newline first. The line break is still wanted on
+        // screen — it goes in below, once the line is known to be committed —
+        // and the keyer reads it as a word space.
+        let send_on_enter = self.digi_cfg_edit.send_on_enter;
+        let tx_id = ui.id().with("cw-tx-edit");
+        let entered = send_on_enter && crate::chrome::take_return(ui, tx_id);
+
         let resp = ui
             .allocate_ui(egui::vec2(ui.available_width(), input_h), |ui| {
                 egui::Frame::new()
@@ -207,10 +216,15 @@ impl SdroxideApp {
                             .show_themed(ui, |ui| {
                                 ui.add(
                                     egui::TextEdit::multiline(&mut self.text_tx)
+                                        .id(tx_id)
                                         .layouter(&mut layouter)
                                         .frame(egui::Frame::NONE)
                                         .desired_width(f32::INFINITY)
-                                        .hint_text("Type here to send…"),
+                                        .hint_text(if send_on_enter {
+                                            "Type a line, Return sends it…"
+                                        } else {
+                                            "Type here to send…"
+                                        }),
                                 )
                             })
                             .inner
@@ -223,13 +237,25 @@ impl SdroxideApp {
             if !self.text_tx.starts_with(&prefix) {
                 self.text_tx = prev;
             }
-            cmds.push(Command::DigiTxText(self.text_tx.clone()));
             // Typing is itself the instruction to send: waiting for a separate
             // button press would put the first characters on the air late, and
             // a CW operator who has started a callsign has committed to it.
-            if !tx_on && !self.text_tx.is_empty() {
-                cmds.push(Command::DigiTxActive(true));
+            //
+            // Unless the operator asked for the other bargain, in which case
+            // nothing leaves the box until it is committed — see `entered`.
+            if !send_on_enter {
+                cmds.push(Command::DigiTxText(self.text_tx.clone()));
+                if !tx_on && !self.text_tx.is_empty() {
+                    cmds.push(Command::DigiTxActive(true));
+                }
             }
+        }
+        // Return commits the whole buffer at once. That is the point of the
+        // mode on a rig that keys itself from text: each hand-off to its keyer
+        // is a transmit-receive cycle, and a line given over in one piece costs
+        // one switch where typing it live costs one per word.
+        if entered {
+            self.commit_tx_line(cmds);
         }
         ui.add_space(gap);
 
@@ -242,9 +268,19 @@ impl SdroxideApp {
                 crate::theme::ALERT(),
                 Color32::WHITE,
             )
-            .on_hover_text("Hold the key down between characters, so nothing typed waits")
+            .on_hover_text(if send_on_enter {
+                "Send what is in the box now, without waiting for Return"
+            } else {
+                "Hold the key down between characters, so nothing typed waits"
+            })
             .clicked()
             {
+                // In send-on-Return the box is held back until it is committed,
+                // and pressing transmit is a commit — switching TX on over a
+                // queue nothing was ever put into would send silence.
+                if !tx_on && send_on_enter {
+                    cmds.push(Command::DigiTxText(self.text_tx.clone()));
+                }
                 cmds.push(Command::DigiTxActive(!tx_on));
             }
             if crate::chrome::chip_accent(
@@ -271,6 +307,21 @@ impl SdroxideApp {
                 cmds.push(Command::DigiAbortTx);
                 cmds.push(Command::DigiTxText(String::new()));
             }
+
+            // Which bargain the operator wants: a character on the air as it is
+            // typed, or a line held back until it is whole. It sits with the
+            // sending controls rather than the decoder chips in the header,
+            // because what it changes is what the TX button and the box do.
+            crate::chrome::row_tail(ui, |ui| {
+                self.send_on_return_chip(
+                    ui,
+                    cmds,
+                    "Hold what is typed until Return, then send the line in one piece \
+                     instead of keying each character as it is typed. Worth having on a \
+                     transceiver that keys itself from text, where every hand-off to its \
+                     keyer is another transmit-receive cycle.",
+                );
+            });
         });
         ui.add_space(bottom_pad);
     }

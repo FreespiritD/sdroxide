@@ -416,6 +416,37 @@ pub fn control_row<R>(ui: &mut Ui, narrow: bool, add: impl FnOnce(&mut Ui) -> R)
     }
 }
 
+/// Take a bare Return off the event queue, so a transmit box can use it as
+/// "send this line" instead of "new line".
+///
+/// It has to be called *before* the box is built. A multiline [`egui::TextEdit`]
+/// reads the events as it draws, so by the time its response comes back the
+/// newline is already in the buffer and there is nothing left to intercept.
+///
+/// Shift+Return is deliberately left alone. egui's own shortcut matching
+/// ignores a stray Shift, which would swallow both; matching the modifiers
+/// exactly leaves the edit its combination for breaking a line without sending
+/// it. `edit_id` is the id given to the box, so a Return typed anywhere else on
+/// the panel is not read as a send.
+pub fn take_return(ui: &Ui, edit_id: egui::Id) -> bool {
+    if !ui.memory(|m| m.has_focus(edit_id)) {
+        return false;
+    }
+    ui.input_mut(|i| {
+        let mut hit = false;
+        i.events.retain(|e| {
+            let bare = matches!(
+                e,
+                egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. }
+                    if modifiers.is_none()
+            );
+            hit |= bare;
+            !bare
+        });
+        hit
+    })
+}
+
 /// The trailing items of a header row: pinned to the right where there is room
 /// to spare, and simply next in line where there is not.
 ///
@@ -896,6 +927,50 @@ fn chip_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Press Return with `modifiers` into a fresh context and report whether
+    /// [`take_return`] claimed it, and how many events were left behind for the
+    /// text box that draws afterwards.
+    fn press_return(modifiers: egui::Modifiers, focused: bool) -> (bool, usize) {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("a-transmit-box");
+        let input = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        };
+        let (mut took, mut left) = (false, 0);
+        let _ = ctx.run_ui(input, |ui| {
+            if focused {
+                ui.memory_mut(|m| m.request_focus(id));
+            }
+            took = take_return(ui, id);
+            left = ui.input(|i| i.events.len());
+        });
+        (took, left)
+    }
+
+    /// Return sends, Shift+Return breaks the line. egui's own shortcut matching
+    /// ignores a stray Shift, so taking the key with it would leave no way to
+    /// type a newline at all — and the box would sit there eating the
+    /// combination while doing nothing with it.
+    #[test]
+    fn only_a_bare_return_is_taken_from_the_box() {
+        assert_eq!(press_return(egui::Modifiers::NONE, true), (true, 0));
+        assert_eq!(
+            press_return(egui::Modifiers::SHIFT, true),
+            (false, 1),
+            "Shift+Return was swallowed, so the box could not break a line"
+        );
+        // A Return typed with the focus somewhere else belongs to whatever has
+        // it, not to a transmit box that is merely on the same panel.
+        assert_eq!(press_return(egui::Modifiers::NONE, false), (false, 1));
+    }
 
     /// Lay a single module out in a fresh context and return how tall it made
     /// the row, along with whatever height it handed its own content.

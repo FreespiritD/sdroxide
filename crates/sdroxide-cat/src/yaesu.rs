@@ -132,7 +132,9 @@ fn mode_from_digit(d: char) -> Option<Mode> {
 fn keyer_text(text: &str) -> String {
     text.trim()
         .chars()
-        .map(|c| c.to_ascii_uppercase())
+        // A line break is a word break, not nothing: dropping it would run the
+        // end of one line into the start of the next and send them as one word.
+        .map(|c| if c.is_ascii_whitespace() { ' ' } else { c.to_ascii_uppercase() })
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '/' | '?' | '.' | ','))
         // Collapse the runs of spaces a trimmed chunk boundary can leave behind.
         .scan(false, |prev_space, c| {
@@ -323,6 +325,8 @@ mod tests {
         assert_eq!(keyer_text("w1aw/p ur 599 ok?"), "W1AW/P UR 599 OK?");
         // A semicolon would end the frame early; it never reaches the wire.
         assert_eq!(keyer_text("de;w1aw"), "DEW1AW");
+        // A line break is a word break — dropping it would send one word.
+        assert_eq!(keyer_text("tnx fer call\nur 599"), "TNX FER CALL UR 599");
         // Nothing sendable produces no frames at all rather than an empty
         // memory write.
         assert!(keyer_text("   ").is_empty());

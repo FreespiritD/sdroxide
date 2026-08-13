@@ -148,6 +148,14 @@ impl SdroxideApp {
             }
             ui.fonts_mut(|f| f.layout_job(job))
         };
+        // Send on return: the key is taken before the box is built, or the edit
+        // turns it into a newline first. The break stays in the text — these
+        // modes carry it, and a received line break is where the other station
+        // ended a line too.
+        let send_on_enter = self.digi_cfg_edit.send_on_enter;
+        let tx_id = ui.id().with("text-tx-edit");
+        let entered = send_on_enter && crate::chrome::take_return(ui, tx_id);
+
         // Fixed-height box: the multiline TextEdit grows with content, so wrap it
         // in a bounded ScrollArea (stick-to-bottom) instead of letting it push the
         // buttons off the panel.
@@ -170,10 +178,15 @@ impl SdroxideApp {
                             .show_themed(ui, |ui| {
                                 ui.add(
                                     egui::TextEdit::multiline(&mut self.text_tx)
+                                        .id(tx_id)
                                         .layouter(&mut layouter)
                                         .frame(egui::Frame::NONE)
                                         .desired_width(f32::INFINITY)
-                                        .hint_text("Type here to transmit…"),
+                                        .hint_text(if send_on_enter {
+                                            "Type a line, Return sends it…"
+                                        } else {
+                                            "Type here to transmit…"
+                                        }),
                                 )
                             })
                             .inner
@@ -186,7 +199,16 @@ impl SdroxideApp {
             if !self.text_tx.starts_with(&prefix) {
                 self.text_tx = prev;
             }
-            cmds.push(Command::DigiTxText(self.text_tx.clone()));
+            // Held back until Return commits it when the operator asked for
+            // that — the modem is fed nothing it could start sending.
+            if !send_on_enter {
+                cmds.push(Command::DigiTxText(self.text_tx.clone()));
+            }
+        }
+        // Return commits the line and starts the over if it is not already
+        // running, so one key both finishes the thought and sends it.
+        if entered {
+            self.commit_tx_line(cmds);
         }
         ui.add_space(gap);
 
@@ -202,6 +224,12 @@ impl SdroxideApp {
             )
             .clicked()
             {
+                // In send-on-return the box is held back until it is committed,
+                // and pressing transmit is a commit — switching TX on over a
+                // modem that was given nothing would send an empty carrier.
+                if !tx_on && send_on_enter {
+                    cmds.push(Command::DigiTxText(self.text_tx.clone()));
+                }
                 cmds.push(Command::DigiTxActive(!tx_on));
             }
             if crate::chrome::chip_accent(
@@ -226,6 +254,15 @@ impl SdroxideApp {
                 cmds.push(Command::DigiAbortTx);
                 cmds.push(Command::DigiTxText(String::new()));
             }
+            crate::chrome::row_tail(ui, |ui| {
+                self.send_on_return_chip(
+                    ui,
+                    cmds,
+                    "Hold what is typed until Return, then send the line in one piece \
+                     instead of streaming each character onto the air as it is typed. \
+                     Lets a line be read back and corrected before any of it goes out.",
+                );
+            });
         });
         // Visible padding below the buttons so they aren't flush with the edge.
         ui.add_space(bottom_pad);
@@ -383,6 +420,12 @@ impl SdroxideApp {
             }
             ui.fonts_mut(|f| f.layout_job(job))
         };
+        // Send on return, as the keyboard modes do it — the key has to be taken
+        // before the box is built or the edit turns it into a newline first.
+        let send_on_enter = self.digi_cfg_edit.send_on_enter;
+        let tx_id = ui.id().with("hell-tx-edit");
+        let entered = send_on_enter && crate::chrome::take_return(ui, tx_id);
+
         let resp = ui
             .allocate_ui(egui::vec2(ui.available_width(), input_h), |ui| {
                 egui::Frame::new()
@@ -400,10 +443,15 @@ impl SdroxideApp {
                             .show_themed(ui, |ui| {
                                 ui.add(
                                     egui::TextEdit::multiline(&mut self.text_tx)
+                                        .id(tx_id)
                                         .layouter(&mut layouter)
                                         .frame(egui::Frame::NONE)
                                         .desired_width(f32::INFINITY)
-                                        .hint_text("Type here to transmit…"),
+                                        .hint_text(if send_on_enter {
+                                            "Type a line, Return sends it…"
+                                        } else {
+                                            "Type here to transmit…"
+                                        }),
                                 )
                             })
                             .inner
@@ -415,7 +463,12 @@ impl SdroxideApp {
             if !self.text_tx.starts_with(&prefix) {
                 self.text_tx = prev;
             }
-            cmds.push(Command::DigiTxText(self.text_tx.clone()));
+            if !send_on_enter {
+                cmds.push(Command::DigiTxText(self.text_tx.clone()));
+            }
+        }
+        if entered {
+            self.commit_tx_line(cmds);
         }
         ui.add_space(gap);
 
@@ -431,6 +484,13 @@ impl SdroxideApp {
             .on_hover_text("Hold the channel: idle sends blank paper, so the strip keeps scrolling")
             .clicked()
             {
+                // Holding the channel with an empty box is a real thing to do
+                // here — blank paper is what keeps the strip moving — but text
+                // the operator typed and did not commit would be stranded, so
+                // pressing transmit hands it over as well.
+                if !tx_on && send_on_enter {
+                    cmds.push(Command::DigiTxText(self.text_tx.clone()));
+                }
                 cmds.push(Command::DigiTxActive(!tx_on));
             }
             if crate::chrome::chip_accent(
@@ -454,6 +514,16 @@ impl SdroxideApp {
                 cmds.push(Command::DigiAbortTx);
                 cmds.push(Command::DigiTxText(String::new()));
             }
+            crate::chrome::row_tail(ui, |ui| {
+                self.send_on_return_chip(
+                    ui,
+                    cmds,
+                    "Hold what is typed until Return, then send the line in one piece \
+                     instead of painting each character onto the strip as it is typed. \
+                     A correction typed live is already on the paper; one made before \
+                     Return never was.",
+                );
+            });
         });
         ui.add_space(bottom_pad);
     }

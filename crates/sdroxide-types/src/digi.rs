@@ -927,6 +927,17 @@ pub struct DigiConfig {
     /// to settle when you already know how fast the other station sends.
     #[serde(default)]
     pub cw_speed_lock: bool,
+    /// Keyboard modes and CW: hold what is typed until Return, then send the
+    /// line in one piece, instead of putting each character on the air as it is
+    /// typed.
+    ///
+    /// Off is how these modes are worked — the first letter of a callsign goes
+    /// out while the rest is still being typed, and the sent prefix catches up
+    /// as it goes. On buys the chance to read a line back before committing it,
+    /// and on a rig that keys itself from text it is the difference between one
+    /// transmit-receive cycle for the line and one per word.
+    #[serde(default)]
+    pub send_on_enter: bool,
     /// Give up on an incomplete incoming session after this many seconds.
     pub rifp_session_timeout_s: u32,
 
@@ -1015,6 +1026,7 @@ impl Default for DigiConfig {
             cw_wpm: cw_default_wpm(),
             cw_farnsworth_wpm: 0.0,
             cw_speed_lock: false,
+            send_on_enter: false,
             tx_watchdog_min: 6,
             max_tx_repeats: 10,
             sstv_tx_ppm: 0.0,

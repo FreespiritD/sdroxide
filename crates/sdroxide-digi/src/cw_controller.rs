@@ -153,8 +153,10 @@ impl CatKeyer {
             .and_then(|t| now.duration_since(t).ok())
             .is_some_and(|d| d.as_secs_f32() >= GATHER_S);
         // A trailing space is the operator finishing a word — the one moment a
-        // seam costs nothing.
-        if !(queued >= self.chunk || paused || self.queue.ends_with(' ')) {
+        // seam costs nothing. A newline is the stronger form of the same thing:
+        // the line was committed, so there is no more typing to wait out and
+        // holding it for the gather timer would only delay it.
+        if !(queued >= self.chunk || paused || self.queue.ends_with([' ', '\n'])) {
             return None;
         }
         let take = self.split_at(queued);
@@ -178,7 +180,7 @@ impl CatKeyer {
         }
         let head: Vec<char> = self.queue.chars().take(self.chunk).collect();
         head.iter()
-            .rposition(|&c| c == ' ')
+            .rposition(|&c| c == ' ' || c == '\n')
             // Only when the break leaves a message worth sending; a long
             // unbroken run (a string of digits) has to be cut somewhere.
             .filter(|&i| i + 1 > self.chunk / 2)
@@ -987,6 +989,24 @@ mod tests {
         assert!(keyed(&c.poll(t0, 0.0)).is_empty());
         let paused = t0 + Duration::from_secs_f32(GATHER_S + 0.05);
         assert_eq!(keyed(&c.poll(paused, 0.0)), vec!["73"]);
+    }
+
+    /// A line the operator committed with Return has no more typing coming, so
+    /// it is not held for the gather timer — and it leaves as one message,
+    /// which on this route is one switch of the rig's relay for the whole line.
+    #[test]
+    fn a_committed_line_goes_over_at_once() {
+        let mut c = CwController::new(cfg(), 48_000.0, Some(50));
+        let t0 = SystemTime::now();
+        c.set_tx_text("TNX FER CALL OM\n".into());
+        c.set_tx_active(true);
+        assert_eq!(keyed(&c.poll(t0, 0.0)), vec!["TNX FER CALL OM\n"]);
+        // A line longer than the rig takes still breaks between words, and the
+        // committing newline is one of them.
+        let mut c = CwController::new(cfg(), 48_000.0, Some(10));
+        c.set_tx_text("CQ CQ CQ\nDE W1AW\n".into());
+        c.set_tx_active(true);
+        assert_eq!(keyed(&c.poll(t0, 0.0)), vec!["CQ CQ CQ\n"]);
     }
 
     /// Nothing goes out until the operator says to transmit — the panel's TX

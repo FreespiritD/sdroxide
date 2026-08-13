@@ -661,6 +661,23 @@ you pause you can watch the sending catch up.
 - **CALL CQ** loads and sends a CQ built from your callsign; **CLEAR** stops and
   drops whatever has not gone out.
 
+**SEND ON RETURN** changes that bargain: nothing leaves the box until you press
+**Return**, and then the whole line goes out in one piece. Type at your own
+pace, correct what you like, and commit it when it reads right. The line break
+is keyed as a word space; Shift+Return breaks a line without sending it; and
+**TX** commits the box the same way if you would rather press it than reach for
+Return. The setting is shared with the keyboard modes
+([3.3](#33-psk31-and-rtty)).
+
+It is off by default, because sending as you type is how a CW operator sends:
+the first letter of a callsign is on the air while the rest is still being
+typed. Turn it on if you are keying a **transceiver's own keyer** — the usual
+case for a CAT radio in CW ([5.2.2](#522-cat-radios-serial-control--usb-audio)).
+There, every hand-off to the rig is a transmit-receive cycle of its own, so a
+line committed whole switches the relay once where typing it live switches it
+once per word. Set the rig's **break-in delay** long enough to bridge the
+characters as well, or it will drop out between them however the text arrives.
+
 **Speed and spacing** are set from the buttons at the right of the header:
 
 - **WPM** — your keying speed.
@@ -1322,6 +1339,14 @@ panel is a live **messaging area** instead of a QSO sequencer.
   watch the transmission catch up when you pause.
 - **CALL CQ** loads a CQ macro and starts sending it; **CLEAR** empties the
   buffer and stops; pressing **TX** again unkeys.
+- **SEND ON RETURN** changes that to a line at a time: nothing leaves the box
+  until you press **Return**, and then the whole line goes out and the over
+  starts on its own. Type at your own pace, read it back, correct it, and commit
+  it when it says what you meant — nothing half-typed is ever on the air.
+  Shift+Return breaks a line without sending it, and **TX** commits the box the
+  same way Return does. The setting is shared with Olivia, THOR, Hellschreiber
+  and CW ([2.14](#214-cw-decoding-and-keyboard-sending)), where it earns its
+  keep for a second reason.
 
 **Settings (PSK/RTTY setup dialog):**
 
@@ -1337,8 +1362,11 @@ mode switches to PSK or RTTY, tunes onto the signal, and opens this panel.
 ### 3.4 Olivia, THOR and FSQ
 
 Three more keyboard modes are on the DIGITAL row. **Olivia** and **THOR** reuse
-the same messaging panel as PSK/RTTY; each mode's submode is chosen on its setup
-page (**⚙ SETUP**):
+the same messaging panel as PSK/RTTY — including **SEND ON RETURN**
+([3.3](#33-psk31-and-rtty)), which is worth a look in these modes in particular:
+at 32/1000 Olivia a typed correction takes long enough to send that it is better
+not to have sent the mistake. Each mode's submode is chosen on its setup page
+(**⚙ SETUP**):
 
 - **Olivia** — a slow, extremely robust MFSK mode with Walsh/Hadamard block
   coding. Choose the **tone count** (2, 4, 8, 16, 32, 64) and **bandwidth**
@@ -1415,6 +1443,14 @@ nothing to send, Hell transmits blank paper rather than dropping the carrier,
 which is how it holds a channel between overs — so press **TX** again to release.
 Your own transmission is painted onto the same strip as it goes out, which is the
 only confirmation Hell offers that your timing and font are right.
+
+**SEND ON RETURN** ([3.3](#33-psk31-and-rtty)) applies here too, and Hell is the
+mode where the difference is plainest: a correction typed live is already on the
+paper — the receiving operator watched you make it — while one made before you
+press **Return** never existed. Holding the channel with an empty box still
+sends blank paper, so the habit costs nothing; the line simply lands whole when
+you commit it. The break itself has no glyph, so it goes out as one blank cell,
+which is the gap you would have typed between lines anyway.
 
 **Variants.** Seven, matching fldigi's set:
 
@@ -2532,6 +2568,14 @@ What that needs on the radio:
   so the speed chip in the CW panel is the speed on the air. Farnsworth spacing
   is the sidetone keyer's and has no equivalent in a rig's keyer, so it does not
   apply on this route.
+- **A longer break-in delay, and consider SEND ON RETURN.** The rig takes the
+  text a message at a time and switches to transmit for each one, so how often
+  it drops back to receive is set by two things sdroxide does not control: your
+  **break-in (QSK) delay**, and how much text arrives at once. Typed live, that
+  is a message per word. **SEND ON RETURN** in the CW panel
+  ([2.14](#214-cw-decoding-and-keyboard-sending)) holds the line until you press
+  Return and then sends it whole, which is one switch of the relay for the
+  sentence.
 - **Yaesu only: keyer memory 1 is used as scratch.** Yaesu has no streaming
   keying command — text can only be stored and played back — so sending CW
   overwrites whatever you had stored in CW memory 1. Kenwood streams the text

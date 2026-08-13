@@ -545,6 +545,50 @@ impl SdroxideApp {
         });
     }
 
+    /// The chip that chooses between putting characters on the air as they are
+    /// typed and holding the line back until Return commits it.
+    ///
+    /// Shared by every panel that types onto the air, because it is one habit
+    /// rather than one per mode: an operator who composes a line before sending
+    /// it does that in CW and in PSK alike. `hover` is the mode's own reason
+    /// for wanting it, which is not the same reason everywhere.
+    pub(in crate::app) fn send_on_return_chip(
+        &mut self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<Command>,
+        hover: &str,
+    ) {
+        let on = self.digi_cfg_edit.send_on_enter;
+        if crate::chrome::chip(ui, on, RichText::new("SEND ON RETURN").size(10.5))
+            .on_hover_text(hover)
+            .clicked()
+        {
+            self.digi_cfg_edit.send_on_enter = !on;
+            if self.digi_cfg_seeded {
+                cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
+            }
+        }
+    }
+
+    /// Commit the transmit box: hand the whole buffer over and start the over.
+    ///
+    /// What Return does under [`Self::send_on_return_chip`], in every panel
+    /// that types onto the air. The break goes in the buffer rather than being
+    /// swallowed: the keyboard modes carry it as a line break, CW keys it as a
+    /// word space, and Hell has no glyph for it so it costs one blank cell —
+    /// which is the gap you want between one committed line and the next
+    /// anyway.
+    pub(in crate::app) fn commit_tx_line(&mut self, cmds: &mut Vec<Command>) {
+        if self.text_tx.trim().is_empty() {
+            return;
+        }
+        if !self.text_tx.ends_with('\n') {
+            self.text_tx.push('\n');
+        }
+        cmds.push(Command::DigiTxText(self.text_tx.clone()));
+        cmds.push(Command::DigiTxActive(true));
+    }
+
     /// The band's other conventional frequencies for this mode, as a chip that
     /// opens a picker.
     ///

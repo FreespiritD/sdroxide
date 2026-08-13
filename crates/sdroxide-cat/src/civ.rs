@@ -137,7 +137,9 @@ pub const CW_MAX: usize = 30;
 fn cw_text(text: &str) -> String {
     text.trim()
         .chars()
-        .map(|c| c.to_ascii_uppercase())
+        // A line break is a word break, not nothing: dropping it would run the
+        // end of one line into the start of the next and send them as one word.
+        .map(|c| if c.is_ascii_whitespace() { ' ' } else { c.to_ascii_uppercase() })
         .filter(|c| {
             c.is_ascii_alphanumeric() || matches!(c, ' ' | '/' | '?' | '.' | ',' | '-' | '=')
         })
@@ -429,6 +431,9 @@ mod tests {
         assert_eq!(*f.last().unwrap(), 0xFD);
         // Nothing sendable is no frame at all, not an empty one.
         assert!(send_cw_frame(0x94, "  <>  ").is_none());
+        // A line break is a word break — dropping it would send one word.
+        let wrapped = send_cw_frame(0x94, "tnx fer call\nur 599").unwrap();
+        assert_eq!(&wrapped[5..wrapped.len() - 1], b"TNX FER CALL UR 599");
         // A message longer than one frame carries is cut to fit.
         let long = send_cw_frame(0x94, &"a".repeat(50)).unwrap();
         assert_eq!(long.len() - 6, CW_MAX);
