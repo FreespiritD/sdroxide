@@ -57,6 +57,7 @@ sdroxide-rigctld = { path = "crates/sdroxide-rigctld" }
 sdroxide-rotator = { path = "crates/sdroxide-rotator" }
 sdroxide-hpsdr = { path = "crates/sdroxide-hpsdr" }
 sdroxide-tci = { path = "crates/sdroxide-tci" }
+sdroxide-icomnet = { path = "crates/sdroxide-icomnet" }
 sdroxide-smartsdr = { path = "crates/sdroxide-smartsdr" }
 sdroxide-rtlsdr = { path = "crates/sdroxide-rtlsdr" }
 sdroxide-rx888 = { path = "crates/sdroxide-rx888" }
@@ -105,6 +106,7 @@ sdroxide-cat.workspace = true
 sdroxide-hpsdr.workspace = true
 sdroxide-tci.workspace = true
 sdroxide-smartsdr.workspace = true
+sdroxide-icomnet.workspace = true
 sdroxide-rtlsdr.workspace = true
 sdroxide-rx888.workspace = true
 sdroxide-airspyhf.workspace = true

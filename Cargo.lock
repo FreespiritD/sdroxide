@@ -4938,6 +4938,7 @@ dependencies = [
  "sdroxide-config",
  "sdroxide-dsp",
  "sdroxide-hpsdr",
+ "sdroxide-icomnet",
  "sdroxide-net",
  "sdroxide-pluto",
  "sdroxide-proto",
@@ -5064,6 +5065,18 @@ dependencies = [
  "sdroxide-types",
  "thiserror 2.0.19",
  "tracing",
+]
+
+[[package]]
+name = "sdroxide-icomnet"
+version = "1.2.0"
+dependencies = [
+ "crossbeam-channel",
+ "rtrb",
+ "sdroxide-types",
+ "thiserror 2.0.19",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

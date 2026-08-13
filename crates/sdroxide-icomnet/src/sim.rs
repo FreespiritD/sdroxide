@@ -1,0 +1,612 @@
+//! A wire-level Icom, for testing a client without a radio.
+//!
+//! This is not a mock — nothing is stubbed at a Rust boundary. It binds real
+//! UDP sockets, runs the real handshake, negotiates real ports, and streams
+//! real PCM and real CI-V frames. A client that talks to it is exercising
+//! every byte it would put on the wire to a transceiver.
+//!
+//! That matters more here than it usually would: this backend was written
+//! against a published packet layout and a CI-V manual, with no hardware to
+//! check it against. The simulator is what makes "the handshake completes and
+//! audio flows" a thing that can be asserted rather than hoped.
+//!
+//! # What it deliberately does not model
+//!
+//! Latency, jitter and reordering. Packet *loss* is modelled, because the
+//! retransmit path is otherwise unreachable ([`SimOptions::drop_every`]), but
+//! a loopback socket delivers in order and instantly, so nothing here proves
+//! anything about behaviour on a congested link.
+
+use std::collections::VecDeque;
+use std::io;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use crate::protocol::{self as proto, AudioCodec, Header, ctrl};
+
+/// How the simulated radio should behave.
+#[derive(Debug, Clone)]
+pub struct SimOptions {
+    pub radio_name: String,
+    /// `0xB6` gives an IC-7300MK2; anything else exercises the unknown-model
+    /// path.
+    pub civ_address: u8,
+    pub username: String,
+    pub password: String,
+    pub can_transmit: bool,
+    /// Emit a sine at this audio frequency. `None` is silence.
+    ///
+    /// For a 12 kHz IF test, ask for 12 kHz plus the offset the tone should
+    /// land at once the client has mixed the IF down.
+    pub tone_hz: Option<f64>,
+    pub sample_rate: u32,
+    /// Send a `27 00` scope sweep about ten times a second.
+    pub scope: bool,
+    /// Drop every Nth outgoing tracked packet, so the client's retransmit path
+    /// is actually reached. 0 never drops.
+    pub drop_every: u32,
+    /// The dial the simulated radio reports, in Hz.
+    pub freq_hz: f64,
+    /// Control port. 0 takes an ephemeral one, which is what the tests want so
+    /// they can run in parallel; the standalone simulator asks for 50001 so a
+    /// client can be pointed at it without being told the port.
+    pub port: u16,
+    /// Which interface to answer on. Loopback by default — answering on the LAN
+    /// puts a phantom radio on somebody else's network, so it takes a flag.
+    pub bind: Ipv4Addr,
+}
+
+impl Default for SimOptions {
+    fn default() -> Self {
+        SimOptions {
+            radio_name: "IC-7300MK2".into(),
+            civ_address: 0xB6,
+            username: "operator".into(),
+            password: "hunter2".into(),
+            can_transmit: true,
+            tone_hz: None,
+            sample_rate: 48_000,
+            scope: true,
+            drop_every: 0,
+            freq_hz: 14_074_000.0,
+            port: 0,
+            bind: Ipv4Addr::LOCALHOST,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct Recorded {
+    /// PCM the client transmitted, decoded to mono.
+    tx_audio: Vec<f32>,
+    /// CI-V frames the client sent.
+    civ: Vec<Vec<u8>>,
+    /// Set once the client has completed the stream request.
+    streaming: bool,
+    /// Set when the client asked for something to be resent.
+    served_retransmit: bool,
+}
+
+/// A running simulated radio. Dropping it stops the thread.
+pub struct Sim {
+    port: u16,
+    alive: Arc<AtomicBool>,
+    recorded: Arc<Mutex<Recorded>>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl Sim {
+    /// Bind on the loopback interface and start serving. The control port is
+    /// ephemeral so tests can run in parallel.
+    pub fn start(opts: SimOptions) -> io::Result<Sim> {
+        let control = bind_on(opts.bind, opts.port)?;
+        let port = control.local_addr()?.port();
+        // The data ports are always ephemeral: the radio names them in its
+        // status packet, so nothing needs to predict them.
+        let civ = bind_on(opts.bind, 0)?;
+        let audio = bind_on(opts.bind, 0)?;
+        let alive = Arc::new(AtomicBool::new(true));
+        let recorded = Arc::new(Mutex::new(Recorded::default()));
+
+        let radio = SimRadio {
+            opts,
+            control: SimStream::new(control, "control"),
+            civ: SimStream::new(civ, "civ"),
+            audio: SimStream::new(audio, "audio"),
+            alive: alive.clone(),
+            recorded: recorded.clone(),
+            token: 0x1234_5678,
+            token_request: 0,
+            civ_open: false,
+            audio_started: None,
+            audio_sent: 0,
+            next_scope: Instant::now(),
+            phase: 0.0,
+            drop_counter: 0,
+        };
+        let join =
+            std::thread::Builder::new().name("icomnet-sim".into()).spawn(move || radio.run())?;
+        Ok(Sim { port, alive, recorded: recorded.clone(), join: Some(join) })
+    }
+
+    /// The control port to point a client at.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Everything the client has transmitted so far.
+    pub fn tx_audio(&self) -> Vec<f32> {
+        self.recorded.lock().unwrap_or_else(|e| e.into_inner()).tx_audio.clone()
+    }
+
+    /// Every CI-V frame the client has sent.
+    pub fn civ_frames(&self) -> Vec<Vec<u8>> {
+        self.recorded.lock().unwrap_or_else(|e| e.into_inner()).civ.clone()
+    }
+
+    /// Whether the client got as far as opening the streams.
+    pub fn is_streaming(&self) -> bool {
+        self.recorded.lock().unwrap_or_else(|e| e.into_inner()).streaming
+    }
+
+    /// Whether the client noticed a dropped packet and asked for it back.
+    pub fn served_retransmit(&self) -> bool {
+        self.recorded.lock().unwrap_or_else(|e| e.into_inner()).served_retransmit
+    }
+
+    pub fn stop(mut self) {
+        self.shutdown();
+    }
+
+    fn shutdown(&mut self) {
+        self.alive.store(false, Ordering::Relaxed);
+        if let Some(j) = self.join.take() {
+            let _ = j.join();
+        }
+    }
+}
+
+impl Drop for Sim {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn bind_on(ip: Ipv4Addr, port: u16) -> io::Result<UdpSocket> {
+    let s = UdpSocket::bind(SocketAddrV4::new(ip, port))?;
+    s.set_nonblocking(true)?;
+    Ok(s)
+}
+
+/// The radio's half of one stream: enough sequencing to be a credible peer.
+struct SimStream {
+    sock: UdpSocket,
+    peer: Option<SocketAddr>,
+    my_id: u32,
+    peer_id: u32,
+    send_seq: u16,
+    sent: VecDeque<(u16, Vec<u8>)>,
+    tag: &'static str,
+}
+
+impl SimStream {
+    fn new(sock: UdpSocket, tag: &'static str) -> SimStream {
+        let local = sock.local_addr().ok();
+        let port = local.map(|a| a.port()).unwrap_or(0);
+        let ip = match local {
+            Some(SocketAddr::V4(v4)) => *v4.ip(),
+            _ => Ipv4Addr::LOCALHOST,
+        };
+        SimStream {
+            sock,
+            peer: None,
+            my_id: proto::session_id(ip, port),
+            peer_id: 0,
+            send_seq: 0,
+            sent: VecDeque::new(),
+            tag,
+        }
+    }
+
+    fn port(&self) -> u16 {
+        self.sock.local_addr().map(|a| a.port()).unwrap_or(0)
+    }
+
+    fn write(&self, pkt: &[u8]) {
+        if let Some(p) = self.peer {
+            let _ = self.sock.send_to(pkt, p);
+        }
+    }
+
+    /// Send with a sequence number, keeping a copy so a retransmit request can
+    /// be answered. `drop_it` simulates the packet never arriving — the copy is
+    /// still kept, which is exactly what a real radio does.
+    fn send_tracked(&mut self, mut pkt: Vec<u8>, drop_it: bool) {
+        pkt[6..8].copy_from_slice(&self.send_seq.to_le_bytes());
+        if !drop_it {
+            self.write(&pkt);
+        }
+        if self.sent.len() >= 500 {
+            self.sent.pop_front();
+        }
+        self.sent.push_back((self.send_seq, pkt));
+        self.send_seq = self.send_seq.wrapping_add(1);
+    }
+
+    fn control(&self, kind: u16, seq: u16) -> Vec<u8> {
+        proto::control(kind, seq, self.my_id, self.peer_id)
+    }
+
+    /// Deal with the handshake and reliability layer. Returns an application
+    /// packet for the caller when there is one.
+    fn poll(&mut self, out: &mut Vec<u8>, served: &mut bool) -> bool {
+        let mut buf = [0u8; 2048];
+        let (n, from) = match self.sock.recv_from(&mut buf) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        self.peer = Some(from);
+        let pkt = &buf[..n];
+        let Some(h) = Header::parse(pkt) else { return false };
+        if h.sent_id != 0 {
+            self.peer_id = h.sent_id;
+        }
+
+        match h.kind {
+            ctrl::ARE_YOU_THERE => {
+                let p = self.control(ctrl::I_AM_HERE, 0);
+                self.write(&p);
+                tracing::trace!(target: "icomnet::sim", stream = self.tag, "are you there → I am here");
+            }
+            ctrl::READY => {
+                let p = self.control(ctrl::READY, 0);
+                self.write(&p);
+            }
+            ctrl::PING => {
+                if let Some(ping) = proto::parse_ping(pkt).filter(|p| !p.reply) {
+                    let r = proto::ping(ping.seq, true, ping.time, self.my_id, self.peer_id);
+                    self.write(&r);
+                }
+            }
+            ctrl::RETRANSMIT => {
+                *served = true;
+                let mut wanted = Vec::new();
+                if n == proto::CONTROL_SIZE {
+                    wanted.push(h.seq);
+                } else {
+                    let mut at = proto::HEADER;
+                    while at + 4 <= n {
+                        let first = proto::u16_at(pkt, at);
+                        let last = proto::u16_at(pkt, at + 2);
+                        for i in 0..=last.wrapping_sub(first).min(64) {
+                            wanted.push(first.wrapping_add(i));
+                        }
+                        at += 4;
+                    }
+                }
+                for seq in wanted {
+                    if let Some((_, d)) = self.sent.iter().find(|(s, _)| *s == seq) {
+                        let d = d.clone();
+                        self.write(&d);
+                    }
+                }
+            }
+            ctrl::DISCONNECT | ctrl::IDLE if n == proto::CONTROL_SIZE => {}
+            _ => {
+                if n > proto::CONTROL_SIZE {
+                    out.clear();
+                    out.extend_from_slice(pkt);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+struct SimRadio {
+    opts: SimOptions,
+    control: SimStream,
+    civ: SimStream,
+    audio: SimStream,
+    alive: Arc<AtomicBool>,
+    recorded: Arc<Mutex<Recorded>>,
+    token: u32,
+    token_request: u16,
+    civ_open: bool,
+    audio_started: Option<Instant>,
+    audio_sent: u64,
+    next_scope: Instant,
+    phase: f64,
+    drop_counter: u32,
+}
+
+impl SimRadio {
+    fn run(mut self) {
+        let mut buf = Vec::<u8>::with_capacity(2048);
+        while self.alive.load(Ordering::Relaxed) {
+            let mut worked = false;
+            let mut served = false;
+
+            while self.control.poll(&mut buf, &mut served) {
+                worked = true;
+                let pkt = std::mem::take(&mut buf);
+                self.on_control(&pkt);
+                buf = pkt;
+            }
+            while self.civ.poll(&mut buf, &mut served) {
+                worked = true;
+                if let Some(frame) = proto::parse_civ_data(&buf) {
+                    let frame = frame.to_vec();
+                    self.record(|r| r.civ.push(frame.clone()));
+                    self.on_civ(&frame);
+                } else if buf.len() == proto::OPENCLOSE_SIZE {
+                    self.civ_open = buf[0x15] == 0x04;
+                }
+            }
+            // An open/close packet is the same length as a retransmit-range
+            // packet, so it arrives through the application path above only
+            // when it is long enough; catch the short form here.
+            while self.audio.poll(&mut buf, &mut served) {
+                worked = true;
+                if let Some(pcm) = proto::parse_audio_data(&buf) {
+                    let mut decoded = Vec::new();
+                    proto::decode_pcm(AudioCodec::Lpcm16Mono, pcm, &mut decoded);
+                    self.record(|r| r.tx_audio.extend_from_slice(&decoded));
+                }
+            }
+            if served {
+                self.record(|r| r.served_retransmit = true);
+            }
+
+            if self.audio_started.is_some() {
+                self.pump_audio();
+                self.pump_scope();
+            }
+            if !worked {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    fn record(&self, f: impl FnOnce(&mut Recorded)) {
+        f(&mut self.recorded.lock().unwrap_or_else(|e| e.into_inner()));
+    }
+
+    fn on_control(&mut self, pkt: &[u8]) {
+        match pkt.len() {
+            proto::LOGIN_SIZE => {
+                let user_ok = pkt[0x40..0x50] == proto::passcode(&self.opts.username);
+                let pass_ok = pkt[0x50..0x60] == proto::passcode(&self.opts.password);
+                self.token_request = proto::u16_at(pkt, 0x1a);
+                let mut r = vec![0u8; proto::LOGIN_RESPONSE_SIZE];
+                r[0..4].copy_from_slice(&(proto::LOGIN_RESPONSE_SIZE as u32).to_le_bytes());
+                r[8..12].copy_from_slice(&self.control.my_id.to_le_bytes());
+                r[12..16].copy_from_slice(&self.control.peer_id.to_le_bytes());
+                r[0x1a..0x1c].copy_from_slice(&self.token_request.to_le_bytes());
+                r[0x1c..0x20].copy_from_slice(&self.token.to_le_bytes());
+                let err: u32 =
+                    if user_ok && pass_ok { 0 } else { proto::LoginResponse::BAD_CREDENTIALS };
+                r[0x30..0x34].copy_from_slice(&err.to_le_bytes());
+                r[0x40..0x44].copy_from_slice(b"FTTH");
+                let drop_it = self.should_drop();
+                self.control.send_tracked(r, drop_it);
+            }
+            proto::TOKEN_SIZE => {
+                let magic = pkt[0x15];
+                if magic == 0x02 {
+                    // The token is claimed; introduce ourselves.
+                    let caps = self.capabilities();
+                    let drop_it = self.should_drop();
+                    self.control.send_tracked(caps, drop_it);
+                } else if magic == 0x05 {
+                    let mut r = proto::token(
+                        0x05,
+                        0,
+                        self.token_request,
+                        self.token,
+                        self.control.my_id,
+                        self.control.peer_id,
+                    );
+                    r[0x14] = 0x02; // reply
+                    r[0x30..0x34].copy_from_slice(&0u32.to_le_bytes());
+                    let drop_it = self.should_drop();
+                    self.control.send_tracked(r, drop_it);
+                }
+            }
+            proto::CONNINFO_SIZE => {
+                // A stream request: answer with the data ports.
+                let mut r = vec![0u8; proto::STATUS_SIZE];
+                r[0..4].copy_from_slice(&(proto::STATUS_SIZE as u32).to_le_bytes());
+                r[8..12].copy_from_slice(&self.control.my_id.to_le_bytes());
+                r[12..16].copy_from_slice(&self.control.peer_id.to_le_bytes());
+                r[0x42..0x44].copy_from_slice(&self.civ.port().to_be_bytes());
+                r[0x46..0x48].copy_from_slice(&self.audio.port().to_be_bytes());
+                let drop_it = self.should_drop();
+                self.control.send_tracked(r, drop_it);
+                self.audio_started = Some(Instant::now());
+                self.audio_sent = 0;
+                self.record(|x| x.streaming = true);
+            }
+            _ => {}
+        }
+    }
+
+    /// The capabilities packet, with this radio as its only entry.
+    fn capabilities(&self) -> Vec<u8> {
+        let len = proto::CAPABILITIES_SIZE + proto::RADIO_CAP_SIZE;
+        let mut p = vec![0u8; len];
+        p[0..4].copy_from_slice(&(len as u32).to_le_bytes());
+        p[8..12].copy_from_slice(&self.control.my_id.to_le_bytes());
+        p[12..16].copy_from_slice(&self.control.peer_id.to_le_bytes());
+        p[0x40..0x42].copy_from_slice(&1u16.to_le_bytes());
+
+        let c = proto::CAPABILITIES_SIZE;
+        p[c + 0x07..c + 0x09].copy_from_slice(&proto::RadioCap::CAP_MAC.to_be_bytes());
+        p[c + 0x0a..c + 0x10].copy_from_slice(&[0x00, 0x90, 0xc7, 0x01, 0x02, 0x03]);
+        let name = self.opts.radio_name.as_bytes();
+        let n = name.len().min(32);
+        p[c + 0x10..c + 0x10 + n].copy_from_slice(&name[..n]);
+        p[c + 0x30..c + 0x34].copy_from_slice(b"ICOM");
+        p[c + 0x52] = self.opts.civ_address;
+        p[c + 0x53..c + 0x55].copy_from_slice(&0x000fu16.to_be_bytes());
+        let tx: u16 = if self.opts.can_transmit { 0x000f } else { 0 };
+        p[c + 0x55..c + 0x57].copy_from_slice(&tx.to_be_bytes());
+        p[c + 0x5a..c + 0x5e].copy_from_slice(&115_200u32.to_be_bytes());
+        p
+    }
+
+    /// Answer the CI-V queries a client actually makes at startup.
+    fn on_civ(&mut self, frame: &[u8]) {
+        // FE FE <to> <from> <cmd> … FD
+        if frame.len() < 6 || frame[0] != 0xfe || frame[1] != 0xfe {
+            return;
+        }
+        let cmd = frame[4];
+        let addr = self.opts.civ_address;
+        let reply = |body: Vec<u8>| {
+            let mut f = vec![0xfe, 0xfe, 0xe0, addr];
+            f.extend_from_slice(&body);
+            f.push(0xfd);
+            f
+        };
+        let out = match cmd {
+            // Read frequency.
+            0x03 => Some(reply({
+                let mut b = vec![0x03];
+                b.extend_from_slice(&bcd_freq(self.opts.freq_hz));
+                b
+            })),
+            // Read mode: USB, wide.
+            0x04 => Some(reply(vec![0x04, 0x01, 0x01])),
+            0x15 => match frame.get(5) {
+                // S-meter, mid scale.
+                Some(0x02) => Some(reply(vec![0x15, 0x02, 0x01, 0x20])),
+                // SWR, bottom of scale.
+                Some(0x12) => Some(reply(vec![0x15, 0x12, 0x00, 0x00])),
+                _ => None,
+            },
+            // Anything we are told to set is simply acknowledged.
+            0x05 | 0x06 | 0x0f | 0x14 | 0x16 | 0x1a | 0x1c | 0x21 | 0x27 => {
+                Some(vec![0xfe, 0xfe, 0xe0, addr, 0xfb, 0xfd])
+            }
+            _ => None,
+        };
+        if let Some(f) = out {
+            self.send_civ(f);
+        }
+        // A scope-data-output enable starts the sweeps.
+        if cmd == 0x27 && frame.get(5) == Some(&0x11) {
+            self.next_scope = Instant::now();
+        }
+    }
+
+    fn send_civ(&mut self, frame: Vec<u8>) {
+        let p = proto::civ_data(&frame, 0, self.civ.my_id, self.civ.peer_id);
+        let drop_it = self.should_drop();
+        self.civ.send_tracked(p, drop_it);
+    }
+
+    /// One `27 00` sweep, in the single-frame form a LAN Icom sends.
+    fn pump_scope(&mut self) {
+        if !self.opts.scope || !self.civ_open || Instant::now() < self.next_scope {
+            return;
+        }
+        self.next_scope = Instant::now() + Duration::from_millis(100);
+        let addr = self.opts.civ_address;
+        let mut f = vec![0xfe, 0xfe, 0xe0, addr, 0x27, 0x00];
+        f.push(0x00); // selected VFO
+        f.push(0x01); // division 1
+        f.push(0x01); // of 1 — the LAN form
+        f.push(0x00); // centre mode
+        f.extend_from_slice(&bcd_freq(self.opts.freq_hz));
+        f.extend_from_slice(&bcd_freq(50_000.0)); // ±50 kHz span
+        f.push(0x00); // in range
+        // A noise floor with a peak in the middle, so a client can tell it
+        // apart from a flat buffer.
+        for i in 0..475i32 {
+            let v = if (i - 237).abs() < 4 { 150 } else { 20 + i % 7 };
+            f.push(v.clamp(0, 160) as u8);
+        }
+        f.push(0xfd);
+        self.send_civ(f);
+    }
+
+    /// Pace PCM off a wall clock so the client sees a real-time stream.
+    fn pump_audio(&mut self) {
+        let Some(start) = self.audio_started else { return };
+        let rate = f64::from(self.opts.sample_rate);
+        let due = (start.elapsed().as_secs_f64() * rate) as u64;
+        if due <= self.audio_sent {
+            return;
+        }
+        // One packet at a time; the loop comes back round immediately.
+        let want = ((due - self.audio_sent) as usize).min(proto::AUDIO_CHUNK / 2);
+        let mut samples = Vec::with_capacity(want);
+        match self.opts.tone_hz {
+            Some(hz) => {
+                let step = std::f64::consts::TAU * hz / rate;
+                for _ in 0..want {
+                    samples.push((self.phase.sin() * 0.5) as f32);
+                    self.phase += step;
+                    if self.phase > std::f64::consts::TAU {
+                        self.phase -= std::f64::consts::TAU;
+                    }
+                }
+            }
+            None => samples.resize(want, 0.0),
+        }
+        self.audio_sent += want as u64;
+        let mut pcm = Vec::with_capacity(want * 2);
+        proto::encode_pcm(AudioCodec::Lpcm16Mono, &samples, &mut pcm);
+        let p = proto::audio_data(&pcm, 0, self.audio.my_id, self.audio.peer_id);
+        let drop_it = self.should_drop();
+        self.audio.send_tracked(p, drop_it);
+    }
+
+    fn should_drop(&mut self) -> bool {
+        if self.opts.drop_every == 0 {
+            return false;
+        }
+        self.drop_counter += 1;
+        self.drop_counter.is_multiple_of(self.opts.drop_every)
+    }
+}
+
+/// Icom's 5-byte little-endian BCD frequency, as used by both `03` and the
+/// scope sweep's edge and span fields.
+fn bcd_freq(hz: f64) -> [u8; 5] {
+    let mut v = hz.max(0.0).round() as u64;
+    let mut out = [0u8; 5];
+    for byte in out.iter_mut() {
+        let lo = (v % 10) as u8;
+        v /= 10;
+        let hi = (v % 10) as u8;
+        v /= 10;
+        *byte = lo | (hi << 4);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bcd_matches_icoms_little_endian_nibble_order() {
+        // 14.074 MHz → 00 40 07 14 00
+        assert_eq!(bcd_freq(14_074_000.0), [0x00, 0x40, 0x07, 0x14, 0x00]);
+        assert_eq!(bcd_freq(50_000.0), [0x00, 0x00, 0x05, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn the_simulator_binds_and_stops_cleanly() {
+        let sim = Sim::start(SimOptions::default()).unwrap();
+        assert_ne!(sim.port(), 0);
+        assert!(!sim.is_streaming());
+        sim.stop();
+    }
+}

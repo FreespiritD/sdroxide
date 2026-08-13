@@ -1,0 +1,783 @@
+//! An [`IqSource`] for an Icom reached over its LAN or WiFi port.
+//!
+//! The radio is both the front end and the rig: control, audio and the
+//! spectrum scope all arrive on one connection, so this source owns the whole
+//! conversation the way [`crate::audio_cat_source::AudioCatSource`] owns a
+//! serial port and a sound card.
+//!
+//! # Two receive paths
+//!
+//! No Icom offers I/Q, over any interface. What the LAN gives instead is two
+//! different things, and the operator picks between them:
+//!
+//! * **AF** — the radio demodulates and we get audio, exactly as with a CAT rig
+//!   and a sound card. `caps.audio_mode` is set and the engine shows a narrow
+//!   audio-band panadapter.
+//! * **12 kHz IF** — Icom's DRM output, a real IF in the audio stream. Mixed to
+//!   baseband and decimated by two here, it becomes a 24 kHz complex stream the
+//!   engine treats like any other front end, so sdroxide's own filters, noise
+//!   reduction and decoders apply over roughly ±12 kHz.
+//!
+//! Either way the *wide* panadapter is fed from the radio's own `27 00` scope
+//! sweep through [`IqSource::wide_spectrum_db`] — 475 finished bins covering up
+//! to ±500 kHz. That is not I/Q and cannot be demodulated; it is a picture.
+//!
+//! # Status
+//!
+//! Not verified on hardware. Everything here is exercised against
+//! `sdroxide_icomnet::sim`, and the session trace is copyable from the settings
+//! tab so a first user with a radio can report what actually happened.
+
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
+use sdroxide_cat::civ;
+use sdroxide_dsp::Ddc;
+use sdroxide_icomnet::{IcomNetDevice, IcomNetOptions};
+use sdroxide_radio::rtrb;
+use sdroxide_radio::{Complex32, ControlUpdate, IqSource, Result};
+use sdroxide_types::{CwKeying, IcomNetConfig, IcomRxSource, Mode, TxTelemetry};
+
+use crate::dial::Dial;
+
+/// The last session's trace, kept after the source is dropped.
+///
+/// A connection that fails or misbehaves is usually replaced immediately — by
+/// the engine's background retry, or by the operator pressing Apply — and the
+/// trace of the *interesting* session would go with it. Holding the most recent
+/// one here is what lets Settings → Radio still offer it afterwards.
+static LAST_TRACE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The most recent Icom LAN session trace, for a bug report.
+pub fn last_diagnostics() -> Option<String> {
+    LAST_TRACE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The trace if there is one, and an explanation of what to do with it either
+/// way — the settings dialog offers the button whether or not a session has run.
+pub fn diagnostics_or_hint() -> String {
+    match last_diagnostics() {
+        Some(t) => format!("{t}\n{}\n", sdroxide_icomnet::FIELD_REPORT_HINT),
+        None => format!(
+            "No Icom LAN session has run yet — connect to a radio first.\n\n{}\n",
+            sdroxide_icomnet::FIELD_REPORT_HINT
+        ),
+    }
+}
+
+fn record_trace(dev: &IcomNetDevice) {
+    *LAST_TRACE.lock().unwrap_or_else(|e| e.into_inner()) = Some(dev.trace().dump());
+}
+
+/// The IF the radio puts in the audio stream when its LAN output is set to IF.
+/// Fixed by Icom — it is the DRM standard's intermediate frequency, which is
+/// why the setting exists at all.
+const IF_CENTER_HZ: f64 = 12_000.0;
+
+/// Complex rate the 12 kHz IF is delivered at. Exactly half the 48 kHz stream,
+/// which puts the usable band at ±12 kHz — the whole of what a real IF at that
+/// centre can carry.
+const IF_OUT_RATE: f64 = 24_000.0;
+
+/// How long a reading from the rig's own meter stands in for the next one, as
+/// for a serial CAT rig: enough to cover an ordinary gap between answers, not
+/// enough to leave a needle standing on a link that has gone quiet.
+const METER_MAX_AGE: Duration = Duration::from_millis(1500);
+
+/// How often to ask the radio where it is tuned and what its meter reads.
+const POLL_PERIOD: Duration = Duration::from_millis(200);
+
+/// The scope's amplitude scale is 0..=160 with no documented dB per step. The
+/// engine's `auto_levels` normalises whatever it is given, so this only has to
+/// put the trace in a plausible range and keep it linear; the constant is a
+/// calibration knob for whoever first sees one against a known signal.
+const SCOPE_DB_PER_UNIT: f32 = 0.5;
+
+pub struct IcomNetSource {
+    dev: IcomNetDevice,
+    audio: rtrb::Consumer<f32>,
+    tx: Option<rtrb::Producer<f32>>,
+    rate: f64,
+    rx_source: IcomRxSource,
+    audio_bw: f64,
+    cw_keying: CwKeying,
+    civ_addr: u8,
+    label: String,
+    status: Option<String>,
+
+    dial: Dial,
+    /// Rolling buffer for the CI-V parser. Frames arrive whole, but reusing the
+    /// tested parser costs nothing and it drops our own echoes for us.
+    civ_buf: Vec<u8>,
+    pending: Vec<ControlUpdate>,
+
+    // The 12 kHz IF path.
+    ddc: Option<Ddc>,
+    if_in: Vec<Complex32>,
+    if_out: VecDeque<Complex32>,
+
+    // The radio's own scope.
+    scope: civ::ScopeAssembler,
+    scope_frame: Option<(f64, f64, Vec<u8>)>,
+
+    last_poll: Instant,
+    last_signal: Option<(Instant, f32)>,
+    last_telem: Option<TxTelemetry>,
+    transmitting: bool,
+}
+
+impl IcomNetSource {
+    /// Connect, then put the radio into the state this session needs.
+    pub fn open(cfg: &IcomNetConfig) -> anyhow::Result<IcomNetSource> {
+        let rx_source = cfg.effective_rx_source();
+        let dev = IcomNetDevice::connect(IcomNetOptions {
+            address: cfg.address.clone(),
+            control_port: cfg.control_port,
+            username: cfg.username.clone(),
+            password: cfg.password.clone(),
+            client_name: "sdroxide".into(),
+            rx_sample_rate: cfg.sample_rate_hz,
+            tx_sample_rate: cfg.sample_rate_hz,
+            tx_buffer_ms: cfg.tx_latency_ms,
+            civ_address_override: cfg.civ_address_override,
+            timeout: Duration::from_secs(10),
+        })?;
+
+        let info = dev.info().clone();
+        let audio = dev.take_audio_rx().ok_or_else(|| anyhow::anyhow!("no receive stream"))?;
+        let tx = dev.take_audio_tx();
+        let civ_addr = info.civ_address;
+
+        let mut notes = Vec::new();
+        if cfg.rx_source == IcomRxSource::If12k && rx_source == IcomRxSource::Af {
+            notes.push(format!(
+                "The 12 kHz IF needs a 48 kHz audio stream; this connection asked for {} Hz, \
+                 so the radio's demodulated audio is being used instead.",
+                cfg.sample_rate_hz
+            ));
+        }
+        if !info.can_transmit {
+            notes.push(format!("{} offered no transmit stream — receive only.", info.radio_name));
+        }
+
+        let mut src = IcomNetSource {
+            dev,
+            audio,
+            tx,
+            rate: match rx_source {
+                IcomRxSource::Af => f64::from(cfg.sample_rate_hz),
+                IcomRxSource::If12k => IF_OUT_RATE,
+            },
+            rx_source,
+            audio_bw: cfg.audio_bw_hz,
+            cw_keying: cfg.cw_keying,
+            civ_addr,
+            label: format!(
+                "{} over LAN at {} ({})",
+                info.radio_name,
+                cfg.address,
+                match rx_source {
+                    IcomRxSource::Af => "AF",
+                    IcomRxSource::If12k => "12 kHz IF",
+                }
+            ),
+            status: None,
+            dial: Dial::default(),
+            civ_buf: Vec::with_capacity(1024),
+            pending: Vec::new(),
+            ddc: (rx_source == IcomRxSource::If12k).then(|| {
+                let mut d = Ddc::new(f64::from(cfg.sample_rate_hz), IF_OUT_RATE);
+                d.set_offset_hz(IF_CENTER_HZ);
+                d
+            }),
+            if_in: Vec::new(),
+            if_out: VecDeque::new(),
+            scope: civ::ScopeAssembler::default(),
+            scope_frame: None,
+            last_poll: Instant::now(),
+            last_signal: None,
+            last_telem: None,
+            transmitting: false,
+        };
+        notes.extend(src.configure(cfg));
+        src.status = (!notes.is_empty()).then(|| notes.join("\n"));
+        Ok(src)
+    }
+
+    /// Put the radio into the state the session needs, and say what could not
+    /// be done. Returns operator-facing notes, not errors: none of this is
+    /// fatal, and a session that receives is worth having even when a menu item
+    /// could not be written.
+    fn configure(&mut self, cfg: &IcomNetConfig) -> Vec<String> {
+        let mut notes = Vec::new();
+        let model = self.dev.info().model;
+
+        // The rig may still be holding an offset from a previous session; we
+        // carry RIT, XIT and split on the dial ourselves.
+        for f in civ::clear_offsets_frames(self.civ_addr) {
+            self.send(f);
+        }
+        self.send(civ::read_freq_frame(self.civ_addr));
+        self.send(civ::read_mode_frame(self.civ_addr));
+
+        match model.lan_afif_select {
+            Some(item) => {
+                self.send(civ::set_menu_frame(self.civ_addr, item, &[cfg.rx_source.menu_value()]));
+            }
+            None if cfg.rx_source == IcomRxSource::If12k => notes.push(
+                "sdroxide does not know this model's menu numbering, so it cannot switch the \
+                 LAN output to IF — set SET > Connectors > LAN AF/IF Output > Output Select \
+                 to IF on the radio."
+                    .into(),
+            ),
+            None => {}
+        }
+
+        if cfg.set_mod_input_on_open {
+            match model.lan_mod_input {
+                Some((data_off, data_on, lan)) => {
+                    self.send(civ::set_menu_frame(self.civ_addr, data_off, &[lan]));
+                    self.send(civ::set_menu_frame(self.civ_addr, data_on, &[lan]));
+                }
+                None => notes.push(
+                    "sdroxide does not know this model's menu numbering, so it cannot switch \
+                     the modulation input to LAN — set SET > Connectors > MOD Input on the \
+                     radio, or transmit audio will not be heard."
+                        .into(),
+                ),
+            }
+        }
+
+        if cfg.scope {
+            self.send(civ::scope_on_frame(self.civ_addr, true));
+            self.send(civ::scope_output_frame(self.civ_addr, true));
+        }
+        notes
+    }
+
+    /// Whether the radio offered a transmit stream. An IC-R8600 does not, and
+    /// neither does a transceiver somebody else is already transmitting from.
+    pub fn can_transmit(&self) -> bool {
+        self.dev.info().can_transmit && self.tx.is_some()
+    }
+
+    /// The label the settings dialog and the engine show for this session.
+    pub fn describe(&self) -> String {
+        self.label.clone()
+    }
+
+    fn send(&self, frame: Vec<u8>) {
+        self.dev.send_civ(frame);
+    }
+
+    /// Drain whatever the radio has said, and ask it the periodic questions.
+    fn pump(&mut self) {
+        while let Ok(frame) = self.dev.civ_frames().try_recv() {
+            self.civ_buf.extend_from_slice(&frame);
+        }
+        for reply in civ::parse_frames(&mut self.civ_buf) {
+            // Our own frames come back on a shared bus; the parser already
+            // drops the ones we sent.
+            self.on_reply(reply);
+        }
+
+        if self.last_poll.elapsed() >= POLL_PERIOD {
+            self.last_poll = Instant::now();
+            self.send(civ::read_freq_frame(self.civ_addr));
+            self.send(civ::read_mode_frame(self.civ_addr));
+            if self.transmitting {
+                self.send(civ::read_swr_frame(self.civ_addr));
+            } else {
+                self.send(civ::read_smeter_frame(self.civ_addr));
+            }
+        }
+    }
+
+    fn on_reply(&mut self, reply: civ::CivReply) {
+        match reply.cmd {
+            // Frequency, both the polled read and an unsolicited transceive
+            // report when the operator turns the knob.
+            0x00 | 0x03 => {
+                if let Some(hz) = civ::decode_freq(&reply.data) {
+                    // The dial carries RIT, and for the length of an over it
+                    // carries XIT or split instead, so what the radio reports
+                    // has to be folded back before it means "the VFO moved".
+                    if let Some(vfo) = self.dial.report(hz) {
+                        self.pending.push(ControlUpdate::Freq(vfo));
+                    }
+                }
+            }
+            0x01 | 0x04 => {
+                if let Some(m) = reply.data.first().and_then(|&b| civ::civ_to_mode(b)) {
+                    self.pending.push(ControlUpdate::Mode(m));
+                }
+            }
+            0x15 => {
+                if let Some(dbm) = civ::parse_smeter_reply(&reply.data) {
+                    self.last_signal = Some((Instant::now(), dbm));
+                }
+                if let Some(swr) = civ::parse_swr_reply(&reply.data) {
+                    self.last_telem = Some(TxTelemetry { swr: Some(swr), ..Default::default() });
+                }
+            }
+            0x27 => {
+                if let Some((info, bins)) =
+                    civ::parse_scope_frame(&reply.data).and_then(|s| self.scope.push(s))
+                {
+                    self.scope_frame = Some((info.center_hz, info.span_hz, bins));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Move audio out of the network ring, converting on the way when the
+    /// stream is carrying a 12 kHz IF rather than demodulated audio.
+    fn fill(&mut self, want: usize) {
+        match self.ddc.as_mut() {
+            None => {}
+            Some(ddc) => {
+                // Two input samples per output sample, plus a little slack so a
+                // partly-filled filter still produces something.
+                let need = want.saturating_sub(self.if_out.len()) * 2 + 64;
+                self.if_in.clear();
+                for _ in 0..need {
+                    match self.audio.pop() {
+                        // A real IF: the imaginary half is zero, and the mixer
+                        // plus the decimating low-pass is what removes the
+                        // image the real signal carries.
+                        Ok(s) => self.if_in.push(Complex32::new(s, 0.0)),
+                        Err(_) => break,
+                    }
+                }
+                if !self.if_in.is_empty() {
+                    let mut out = Vec::with_capacity(self.if_in.len() / 2 + 8);
+                    let input = std::mem::take(&mut self.if_in);
+                    ddc.process(&input, &mut out);
+                    self.if_in = input;
+                    self.if_out.extend(out);
+                }
+            }
+        }
+    }
+}
+
+impl IqSource for IcomNetSource {
+    fn sample_rate(&self) -> f64 {
+        self.rate
+    }
+
+    fn center_hz(&self) -> f64 {
+        self.dial.vfo
+    }
+
+    fn set_center_hz(&mut self, hz: f64) -> Result<()> {
+        if let Some(f) = self.dial.set_vfo(hz) {
+            self.send(civ::set_freq_frame(self.civ_addr, f));
+        }
+        Ok(())
+    }
+
+    fn set_rit_hz(&mut self, hz: f64) {
+        if let Some(f) = self.dial.set_rit(hz) {
+            self.send(civ::set_freq_frame(self.civ_addr, f));
+        }
+    }
+
+    fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        self.pump();
+        let n = match self.rx_source {
+            IcomRxSource::Af => {
+                let mut n = 0;
+                while n < buf.len() {
+                    match self.audio.pop() {
+                        Ok(s) => {
+                            buf[n] = Complex32::new(s, 0.0);
+                            n += 1;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                n
+            }
+            IcomRxSource::If12k => {
+                self.fill(buf.len());
+                let mut n = 0;
+                while n < buf.len() {
+                    match self.if_out.pop_front() {
+                        Some(s) => {
+                            buf[n] = s;
+                            n += 1;
+                        }
+                        None => break,
+                    }
+                }
+                n
+            }
+        };
+        if n == 0 {
+            // Nothing yet: the radio paces this stream, so yielding here is
+            // what keeps the engine thread off a spin.
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(n)
+    }
+
+    fn describe(&self) -> String {
+        self.label.clone()
+    }
+
+    fn open_status(&self) -> Option<String> {
+        self.status.clone()
+    }
+
+    fn display_bandwidth(&self) -> Option<f64> {
+        (self.rx_source == IcomRxSource::Af).then_some(self.audio_bw)
+    }
+
+    /// The radio's own scope, as the full-band panadapter.
+    ///
+    /// These are finished magnitude bins on the radio's 0..=160 scale, not
+    /// anything derived from I/Q — there is no I/Q on this interface. Mapping
+    /// them onto a dB axis is a linear guess with an uncalibrated slope; the
+    /// engine's auto-levelling makes the picture right even where the absolute
+    /// numbers are not.
+    fn wide_spectrum_db(&mut self, out: &mut Vec<f32>) -> Option<(f64, f64)> {
+        let (center, span, bins) = self.scope_frame.take()?;
+        out.clear();
+        out.extend(bins.iter().map(|&b| (f32::from(b) - 160.0) * SCOPE_DB_PER_UNIT));
+        Some((center, span))
+    }
+
+    fn poll_control(&mut self) -> Vec<ControlUpdate> {
+        self.pump();
+        std::mem::take(&mut self.pending)
+    }
+
+    fn set_control_mode(&mut self, mode: Mode) -> Result<()> {
+        self.send(civ::set_mode_frame(self.civ_addr, mode));
+        Ok(())
+    }
+
+    // ── CW from the rig's own keyer ─────────────────────────────────────────
+    // A rig *in* CW does not modulate what we send it — it keys its own
+    // transmitter — so the keyer hands it text rather than a sidetone.
+    fn cw_text_keying(&self) -> Option<usize> {
+        matches!(self.cw_keying, CwKeying::Cat).then_some(civ::CW_MAX)
+    }
+    fn send_cw(&mut self, text: &str) {
+        if let Some(f) = civ::send_cw_frame(self.civ_addr, text) {
+            self.send(f);
+        }
+    }
+    fn abort_cw(&mut self) {
+        self.send(civ::stop_cw_frame(self.civ_addr));
+    }
+    fn set_cw_wpm(&mut self, wpm: f32) {
+        self.send(civ::keyer_speed_frame(self.civ_addr, wpm));
+    }
+
+    fn tx_begin(&mut self, center_hz: f64, _rate: f64) -> Result<f64> {
+        // Split and XIT have no DDC to ride on: the radio's dial is its whole
+        // frequency control, so an over that transmits away from where we
+        // listen borrows the dial until unkey.
+        if let Some(f) = self.dial.begin_tx(center_hz) {
+            self.send(civ::set_freq_frame(self.civ_addr, f));
+        }
+        self.send(civ::ptt_frame(self.civ_addr, true));
+        self.transmitting = true;
+        // Transmit audio is always plain AF at the negotiated rate, whatever
+        // the receive stream happens to be carrying.
+        Ok(f64::from(self.dev.info().tx_sample_rate))
+    }
+
+    fn tx_write_audio(&mut self, audio: &[f32]) -> Result<()> {
+        let Some(tx) = self.tx.as_mut() else {
+            return Ok(()); // receive-only radio; PTT still keyed it
+        };
+        // Block on a full ring so the engine's transmit loop is paced by the
+        // radio rather than by the CPU: without this a long burst is generated
+        // far faster than 48 kHz and most of it is dropped.
+        for &s in audio {
+            let mut v = s;
+            let mut tries = 0u32;
+            while let Err(rtrb::PushError::Full(x)) = tx.push(v) {
+                v = x;
+                tries += 1;
+                if tries > 200 {
+                    break; // the link stalled — drop rather than hang transmit
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        Ok(())
+    }
+
+    fn tx_drain(&mut self) {
+        // Wait for the ring to empty before unkey, so the tail of a burst —
+        // which is exactly what an FT8 decoder needs — is not cut off.
+        let Some(tx) = self.tx.as_ref() else { return };
+        let cap = tx.buffer().capacity();
+        for _ in 0..1000 {
+            if cap.saturating_sub(tx.slots()) <= cap / 40 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn tx_end(&mut self) -> Result<()> {
+        self.send(civ::ptt_frame(self.civ_addr, false));
+        self.transmitting = false;
+        if let Some(f) = self.dial.end_tx() {
+            self.send(civ::set_freq_frame(self.civ_addr, f));
+        }
+        self.last_telem = None;
+        Ok(())
+    }
+
+    fn discard_pending_rx(&mut self) {
+        while self.audio.pop().is_ok() {}
+        self.if_out.clear();
+    }
+
+    fn tx_telemetry(&mut self) -> Option<TxTelemetry> {
+        self.pump();
+        self.last_telem
+    }
+
+    fn rx_signal_dbm(&mut self) -> Option<f32> {
+        self.pump();
+        self.last_signal.filter(|(at, _)| at.elapsed() < METER_MAX_AGE).map(|(_, dbm)| dbm)
+    }
+
+    fn needs_reopen(&self) -> bool {
+        if !self.dev.is_alive() {
+            // The session that just died is the one worth reporting on.
+            record_trace(&self.dev);
+            return true;
+        }
+        false
+    }
+
+    fn release(&mut self) {
+        record_trace(&self.dev);
+        self.dev.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sdroxide_icomnet::sim::{Sim, SimOptions};
+
+    fn cfg(sim: &Sim) -> IcomNetConfig {
+        IcomNetConfig {
+            address: "127.0.0.1".into(),
+            control_port: sim.port(),
+            username: "operator".into(),
+            password: "hunter2".into(),
+            ..Default::default()
+        }
+    }
+
+    fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if f() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    #[test]
+    fn af_mode_delivers_packed_real_audio_at_the_negotiated_rate() {
+        let sim =
+            Sim::start(SimOptions { tone_hz: Some(1_000.0), scope: false, ..Default::default() })
+                .unwrap();
+        let mut src = IcomNetSource::open(&cfg(&sim)).expect("open");
+        assert_eq!(src.sample_rate(), 48_000.0);
+        assert_eq!(src.display_bandwidth(), Some(4000.0));
+
+        let mut buf = vec![Complex32::default(); 4096];
+        let mut got = Vec::new();
+        wait_for("audio", || {
+            let n = src.read(&mut buf).unwrap();
+            got.extend_from_slice(&buf[..n]);
+            got.len() > 4_800
+        });
+        // Demodulated audio is real: the engine's audio-mode path reads the
+        // real part and would see a phantom sideband if anything landed in the
+        // imaginary one.
+        assert!(got.iter().all(|c| c.im == 0.0));
+        assert!(got.iter().any(|c| c.re.abs() > 0.4));
+    }
+
+    #[test]
+    fn the_12_khz_if_lands_a_tone_at_the_offset_it_was_sent_at() {
+        // The radio emits a real IF with a tone 3 kHz above the 12 kHz centre.
+        // After mixing down, that tone must sit at +3 kHz — this is the one
+        // piece of the IF path that can be checked without hardware.
+        let sim = Sim::start(SimOptions {
+            tone_hz: Some(IF_CENTER_HZ + 3_000.0),
+            scope: false,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut c = cfg(&sim);
+        c.rx_source = IcomRxSource::If12k;
+        let mut src = IcomNetSource::open(&c).expect("open");
+        assert_eq!(src.sample_rate(), IF_OUT_RATE);
+        assert_eq!(src.display_bandwidth(), None, "the IF path is not audio mode");
+
+        let mut buf = vec![Complex32::default(); 4096];
+        let mut got = Vec::new();
+        wait_for("IF samples", || {
+            let n = src.read(&mut buf).unwrap();
+            got.extend_from_slice(&buf[..n]);
+            got.len() > 12_000
+        });
+        // Drop the filter's start-up transient.
+        let got = &got[2_000..];
+        let at = |hz: f64| goertzel(got, hz, IF_OUT_RATE);
+        let wanted = at(3_000.0);
+        assert!(
+            wanted > 20.0 * at(-3_000.0),
+            "the image must be gone: {wanted} vs {}",
+            at(-3_000.0)
+        );
+        assert!(wanted > 20.0 * at(6_000.0), "energy is at +3 kHz, not elsewhere");
+        assert!(wanted > 20.0 * at(0.0), "and not left at DC");
+    }
+
+    /// Complex energy at one frequency, positive or negative — the sign is the
+    /// whole point of the test, so a real-valued Goertzel would not do.
+    fn goertzel(x: &[Complex32], hz: f64, rate: f64) -> f64 {
+        let w = std::f64::consts::TAU * hz / rate;
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (n, s) in x.iter().enumerate() {
+            let (sn, cs) = (-w * n as f64).sin_cos();
+            re += f64::from(s.re) * cs - f64::from(s.im) * sn;
+            im += f64::from(s.re) * sn + f64::from(s.im) * cs;
+        }
+        (re * re + im * im).sqrt() / x.len() as f64
+    }
+
+    #[test]
+    fn the_radios_scope_reaches_the_full_band_lane() {
+        let sim = Sim::start(SimOptions { freq_hz: 14_100_000.0, ..Default::default() }).unwrap();
+        let mut src = IcomNetSource::open(&cfg(&sim)).expect("open");
+
+        let mut bins = Vec::new();
+        let mut span = None;
+        let mut buf = vec![Complex32::default(); 1024];
+        wait_for("a scope sweep", || {
+            let _ = src.read(&mut buf);
+            span = src.wide_spectrum_db(&mut bins);
+            span.is_some()
+        });
+        let (center, width) = span.unwrap();
+        assert_eq!(center, 14_100_000.0);
+        // The simulator reports a ±50 kHz half-span; the width is the full one.
+        assert_eq!(width, 100_000.0);
+        assert_eq!(bins.len(), 475);
+        // Mapped to a dB axis with the peak near the top of the scale.
+        assert!(bins.iter().all(|&d| d <= 0.0));
+        assert!(bins.iter().any(|&d| d > -10.0), "the planted peak survived the mapping");
+    }
+
+    #[test]
+    fn the_dial_is_adopted_from_the_radio_rather_than_assumed() {
+        let sim =
+            Sim::start(SimOptions { freq_hz: 7_074_000.0, scope: false, ..Default::default() })
+                .unwrap();
+        let mut src = IcomNetSource::open(&cfg(&sim)).expect("open");
+        wait_for("the radio's dial", || {
+            src.poll_control().iter().any(|u| matches!(u, ControlUpdate::Freq(_)))
+                || src.center_hz() == 7_074_000.0
+        });
+        assert_eq!(src.center_hz(), 7_074_000.0);
+    }
+
+    #[test]
+    fn tuning_sends_the_radio_a_set_frequency() {
+        let sim = Sim::start(SimOptions { scope: false, ..Default::default() }).unwrap();
+        let mut src = IcomNetSource::open(&cfg(&sim)).expect("open");
+        src.set_center_hz(21_074_000.0).unwrap();
+        wait_for("a set-frequency frame", || {
+            sim.civ_frames().iter().any(|f| {
+                f.get(4) == Some(&0x05)
+                    && civ::decode_freq(&f[5..f.len() - 1]) == Some(21_074_000.0)
+            })
+        });
+    }
+
+    #[test]
+    fn a_known_model_gets_its_modulation_input_switched_to_lan() {
+        let sim = Sim::start(SimOptions { scope: false, ..Default::default() }).unwrap();
+        let _src = IcomNetSource::open(&cfg(&sim)).expect("open");
+        // 1A 05 00 84 05 and 1A 05 00 85 05 — DATA OFF MOD and DATA MOD to LAN.
+        wait_for("the modulation-input writes", || {
+            let frames = sim.civ_frames();
+            let seen = |item: u8| {
+                frames.iter().any(|f| {
+                    f.len() >= 10 && f[4] == 0x1A && f[5] == 0x05 && f[7] == item && f[8] == 0x05
+                })
+            };
+            seen(0x84) && seen(0x85)
+        });
+    }
+
+    #[test]
+    fn an_unknown_model_says_what_the_operator_has_to_set_by_hand() {
+        let sim = Sim::start(SimOptions {
+            civ_address: 0xA2,
+            radio_name: "IC-9700".into(),
+            scope: false,
+            ..Default::default()
+        })
+        .unwrap();
+        let src = IcomNetSource::open(&cfg(&sim)).expect("open");
+        let status = src.open_status().expect("a note about the menu");
+        assert!(status.contains("modulation input"), "{status}");
+    }
+
+    #[test]
+    fn asking_for_the_if_at_a_rate_that_cannot_carry_it_falls_back_and_says_so() {
+        let sim =
+            Sim::start(SimOptions { sample_rate: 24_000, scope: false, ..Default::default() })
+                .unwrap();
+        let mut c = cfg(&sim);
+        c.rx_source = IcomRxSource::If12k;
+        c.sample_rate_hz = 24_000;
+        let src = IcomNetSource::open(&c).expect("open");
+        assert_eq!(src.sample_rate(), 24_000.0);
+        assert!(src.open_status().unwrap().contains("12 kHz IF needs a 48 kHz"));
+    }
+
+    #[test]
+    fn transmitting_keys_the_radio_and_unkeying_releases_it() {
+        let sim = Sim::start(SimOptions { scope: false, ..Default::default() }).unwrap();
+        let mut src = IcomNetSource::open(&cfg(&sim)).expect("open");
+        let ptt = |on: u8| {
+            sim.civ_frames()
+                .iter()
+                .any(|f| f.len() >= 7 && f[4] == 0x1C && f[5] == 0x00 && f[6] == on)
+        };
+        src.tx_begin(14_074_000.0, 48_000.0).unwrap();
+        wait_for("PTT on", || ptt(1));
+        src.tx_end().unwrap();
+        wait_for("PTT off", || ptt(0));
+    }
+
+    #[test]
+    fn a_dead_session_asks_to_be_reopened() {
+        let sim = Sim::start(SimOptions { scope: false, ..Default::default() }).unwrap();
+        let mut src = IcomNetSource::open(&cfg(&sim)).expect("open");
+        assert!(!src.needs_reopen());
+        src.release();
+        assert!(src.needs_reopen());
+    }
+}

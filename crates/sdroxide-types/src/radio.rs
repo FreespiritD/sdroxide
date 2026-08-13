@@ -50,15 +50,22 @@ pub enum Backend {
     /// native pure-Rust driver — no libairspyhf, no SoapySDR. Appended last,
     /// for the same reason as `SmartSdr` above.
     AirspyHf,
+    /// An Icom over its LAN or WiFi port, speaking the IP-remote protocol
+    /// RS-BA1 uses: IC-7300MK2, IC-705, IC-9700, IC-7610, IC-905, IC-R8600.
+    /// Control, audio and the radio's own spectrum scope all arrive over the
+    /// network; there is no I/Q, because no Icom offers any. Appended last,
+    /// for the same reason as `SmartSdr` above.
+    IcomNet,
 }
 
 impl Backend {
-    pub const ALL: [Backend; 11] = [
+    pub const ALL: [Backend; 12] = [
         Backend::Auto,
         Backend::Soapy,
         Backend::Cat,
         Backend::Hpsdr,
         Backend::Tci,
+        Backend::IcomNet,
         Backend::SmartSdr,
         Backend::Pluto,
         Backend::RtlSdr,
@@ -73,6 +80,7 @@ impl Backend {
             Backend::Cat => "CAT / Audio",
             Backend::Hpsdr => "HPSDR (network)",
             Backend::Tci => "TCI (network)",
+            Backend::IcomNet => "Icom LAN (network)",
             Backend::SmartSdr => "SmartSDR / FlexRadio (network)",
             Backend::Pluto => "PlutoSDR (network)",
             Backend::RtlSdr => "RTL-SDR (USB)",
@@ -745,6 +753,125 @@ impl Default for TciConfig {
 impl TciConfig {
     /// IQ sample rates offered in the UI.
     pub const IQ_RATES: [f64; 3] = [48_000.0, 96_000.0, 192_000.0];
+}
+
+/// What the Icom's LAN audio stream is carrying.
+///
+/// The radio decides this — `SET > Connectors > LAN AF/IF Output → Output
+/// Select` — and sdroxide can write the setting on a model it knows. The choice
+/// is between letting the radio demodulate and doing it here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum IcomRxSource {
+    /// Demodulated audio. The rig's filters, AGC and demodulator do the work
+    /// and sdroxide shows a narrow audio-band panadapter beside the rig's own
+    /// scope. Always available, on every model.
+    #[default]
+    Af,
+    /// The 12 kHz IF — Icom's DRM output. sdroxide mixes it to baseband and
+    /// demodulates it, which brings its own notch, noise reduction, digital
+    /// modes and skimmer to bear over roughly ±12 kHz of real spectrum.
+    ///
+    /// Needs a 48 kHz stream; at any lower rate there is no room for the IF.
+    /// How much of that ±12 kHz is genuinely there is not documented by Icom
+    /// and has not been measured on hardware.
+    If12k,
+}
+
+impl IcomRxSource {
+    pub const ALL: [IcomRxSource; 2] = [IcomRxSource::Af, IcomRxSource::If12k];
+    pub fn label(self) -> &'static str {
+        match self {
+            IcomRxSource::Af => "AF — the radio demodulates",
+            IcomRxSource::If12k => "12 kHz IF — sdroxide demodulates",
+        }
+    }
+    /// The value `1A 05 <lan_afif_select>` takes for this choice.
+    pub fn menu_value(self) -> u8 {
+        match self {
+            IcomRxSource::Af => 0x00,
+            IcomRxSource::If12k => 0x01,
+        }
+    }
+}
+
+/// Icom LAN backend configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IcomNetConfig {
+    /// Hostname or IP of the radio. There is no discovery — an Icom does not
+    /// announce itself — so this is always typed in.
+    pub address: String,
+    /// Control port; the CI-V and audio ports are negotiated, not configured.
+    pub control_port: u16,
+    /// The network user set on the radio, under `SET > Network`.
+    pub username: String,
+    /// Stored in the clear in `radio.json`, as every other service credential
+    /// in this program is: the radio requires a reversible obfuscation of it on
+    /// the wire, so a secret store here would protect nothing.
+    pub password: String,
+    pub rx_source: IcomRxSource,
+    /// Where CW the operator sends comes from. Same choice as a serial CAT rig
+    /// and for the same reason: a rig *in* CW ignores the audio we send it and
+    /// keys its own transmitter, so CW has to go as text to its keyer.
+    pub cw_keying: CwKeying,
+    /// Audio sample rate to ask the radio for.
+    pub sample_rate_hz: u32,
+    /// Displayed panadapter bandwidth in AF mode (Hz), as for a CAT rig.
+    pub audio_bw_hz: f64,
+    /// How much audio the radio should buffer before modulating, in ms. Higher
+    /// survives a worse network at the cost of transmit latency.
+    pub tx_latency_ms: u32,
+    /// Pick a radio by CI-V address rather than taking the first offered. Only
+    /// an RS-BA1 server PC ever presents more than one.
+    pub civ_address_override: Option<u8>,
+    /// Switch the radio's modulation input to LAN when the session opens, so
+    /// transmit audio is heard. Off for a model whose menu numbering is not in
+    /// the table — see `sdroxide_icomnet::protocol::MODELS`.
+    pub set_mod_input_on_open: bool,
+    /// Ask the radio to stream its spectrum scope, and show it in the full-band
+    /// panadapter lane.
+    pub scope: bool,
+}
+
+impl Default for IcomNetConfig {
+    fn default() -> Self {
+        IcomNetConfig {
+            address: String::new(),
+            control_port: 50_001,
+            username: String::new(),
+            password: String::new(),
+            rx_source: IcomRxSource::default(),
+            cw_keying: CwKeying::default(),
+            sample_rate_hz: 48_000,
+            audio_bw_hz: 4000.0,
+            tx_latency_ms: 150,
+            civ_address_override: None,
+            set_mod_input_on_open: true,
+            scope: true,
+        }
+    }
+}
+
+impl IcomNetConfig {
+    /// Audio rates an Icom offers over the network.
+    pub const SAMPLE_RATES: [u32; 4] = [8_000, 16_000, 24_000, 48_000];
+
+    /// Whether the 12 kHz IF can be used at the configured rate. A 12 kHz IF
+    /// needs the whole of a 48 kHz stream; below that its centre is above
+    /// Nyquist and there is nothing to recover.
+    pub fn if_mode_usable(&self) -> bool {
+        self.sample_rate_hz >= 48_000
+    }
+
+    /// What the source actually does, given what the operator asked for and
+    /// what the rate allows.
+    pub fn effective_rx_source(&self) -> IcomRxSource {
+        if self.rx_source == IcomRxSource::If12k && !self.if_mode_usable() {
+            IcomRxSource::Af
+        } else {
+            self.rx_source
+        }
+    }
 }
 
 /// SmartSDR (FlexRadio) backend configuration.
@@ -2103,6 +2230,7 @@ pub struct RadioConfig {
     pub cat: CatConfig,
     pub hpsdr: HpsdrConfig,
     pub tci: TciConfig,
+    pub icomnet: IcomNetConfig,
     pub smartsdr: SmartSdrConfig,
     pub rtlsdr: RtlSdrConfig,
     pub rx888: Rx888Config,
@@ -2114,6 +2242,29 @@ pub struct RadioConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_if_source_falls_back_when_the_rate_cannot_carry_it() {
+        let mut c = IcomNetConfig { rx_source: IcomRxSource::If12k, ..Default::default() };
+        assert!(c.if_mode_usable());
+        assert_eq!(c.effective_rx_source(), IcomRxSource::If12k);
+        // A 12 kHz IF has nowhere to live in a 24 kHz stream.
+        c.sample_rate_hz = 24_000;
+        assert!(!c.if_mode_usable());
+        assert_eq!(c.effective_rx_source(), IcomRxSource::Af);
+    }
+
+    #[test]
+    fn every_offered_backend_has_a_label_and_icom_lan_is_offered() {
+        assert!(Backend::ALL.contains(&Backend::IcomNet));
+        for b in Backend::ALL {
+            assert!(!b.label().is_empty());
+        }
+        // Serde writes the variant name, so an old radio.json must still load
+        // and a new one must name this backend recognisably.
+        let json = serde_json::to_string(&Backend::IcomNet).unwrap();
+        assert_eq!(json, "\"IcomNet\"");
+    }
 
     /// Every way an existing `radio.json` can arrive has to land on the working
     /// sideband. The one release that shipped this setting called it `swap_iq`

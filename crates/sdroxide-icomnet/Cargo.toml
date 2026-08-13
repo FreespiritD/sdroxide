@@ -1,0 +1,19 @@
+[package]
+name = "sdroxide-icomnet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Native-only client for Icom's IP-remote (RS-BA1) protocol — the LAN/WiFi port
+# on the IC-7300MK2, IC-705, IC-9700, IC-7610, IC-905 and IC-R8600 — plus a
+# wire-level radio simulator. Plain UDP sockets from std: pure Rust, no system
+# library. Must never be a dependency of any wasm-targeted crate.
+[dependencies]
+sdroxide-types.workspace = true
+crossbeam-channel.workspace = true
+rtrb.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

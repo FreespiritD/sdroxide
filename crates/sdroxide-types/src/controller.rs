@@ -409,6 +409,26 @@ pub trait RadioController {
         Err("not supported on this client".into())
     }
 
+    /// Test an Icom LAN connection. Blocking, on demand.
+    ///
+    /// There is no discovery counterpart: an Icom does not announce itself on
+    /// the network, so the address is always typed in and the only question
+    /// worth answering is whether what is at that address is a radio that will
+    /// let us in. Default: unsupported (remote client).
+    fn test_icomnet(&self, _cfg: &crate::IcomNetConfig) -> Result<String, String> {
+        Err("not supported on this client".into())
+    }
+
+    /// The most recent Icom LAN session trace, for a bug report.
+    ///
+    /// This backend has not been verified against hardware, so the settings UI
+    /// offers the trace as copyable text rather than expecting a user to
+    /// reproduce a fault with the right `RUST_LOG` filter set. `None` when no
+    /// session has run. Default: nothing to report.
+    fn icomnet_diagnostics(&self) -> Option<String> {
+        None
+    }
+
     /// Listen for FlexRadio discovery broadcasts (native local client only).
     /// Blocking for a couple of seconds — the settings UI calls it on demand
     /// from a "Discover" button, not per frame. Default empty: a browser client

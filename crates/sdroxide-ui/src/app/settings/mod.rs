@@ -33,9 +33,9 @@ use self::net::{
     settings_freedv_tab,
 };
 use self::radio::{
-    settings_airspyhf_tab, settings_cat_tab, settings_hpsdr_tab, settings_pluto_tab,
-    settings_rtlsdr_tab, settings_rx888_tab, settings_sdrplay_tab, settings_smartsdr_tab,
-    settings_soapy_devices, settings_tci_tab,
+    settings_airspyhf_tab, settings_cat_tab, settings_hpsdr_tab, settings_icomnet_tab,
+    settings_pluto_tab, settings_rtlsdr_tab, settings_rx888_tab, settings_sdrplay_tab,
+    settings_smartsdr_tab, settings_soapy_devices, settings_tci_tab,
 };
 use self::servers::{
     settings_rigctld_tab, settings_rotator_tab, settings_tci_server_tab, settings_wsjtx_tab,
@@ -119,6 +119,10 @@ pub(in crate::app) struct SettingsIo<'a> {
     /// installed module and asks each to scan, so it is not instant.
     soapy_rescan: &'a mut bool,
     tci_test: &'a mut bool,
+    /// Connect to the Icom, report what it is, and disconnect (blocking).
+    icomnet_test: &'a mut bool,
+    /// Copy the last Icom LAN session's trace to the clipboard.
+    icomnet_copy_report: &'a mut bool,
     /// Listen for FlexRadio discovery broadcasts (a couple of seconds, blocking).
     smartsdr_discover: &'a mut bool,
     smartsdr_test: &'a mut bool,
@@ -341,6 +345,8 @@ impl SdroxideApp {
         let mut sdrplay_rescan = false;
         let mut soapy_rescan = false;
         let mut tci_test = false;
+        let mut icomnet_test = false;
+        let mut icomnet_copy_report = false;
         let mut smartsdr_discover = false;
         let mut smartsdr_test = false;
         let mut smartsdr_copy_report = false;
@@ -392,6 +398,8 @@ impl SdroxideApp {
         iface_opts.push(sdroxide_types::Backend::Hpsdr);
         iface_opts.push(sdroxide_types::Backend::Cat);
         iface_opts.push(sdroxide_types::Backend::Tci);
+        // Pure-Rust UDP, no system library — in every build variant, as TCI is.
+        iface_opts.push(sdroxide_types::Backend::IcomNet);
         iface_opts.push(sdroxide_types::Backend::SmartSdr);
         // Pure-Rust IIOD over TCP — no libiio, no libusb — so like the two USB
         // backends below it is in every build variant.
@@ -480,6 +488,8 @@ impl SdroxideApp {
                             tci_test: &mut tci_test,
                             smartsdr_discover: &mut smartsdr_discover,
                             smartsdr_test: &mut smartsdr_test,
+                            icomnet_test: &mut icomnet_test,
+                            icomnet_copy_report: &mut icomnet_copy_report,
                             smartsdr_copy_report: &mut smartsdr_copy_report,
                             pluto_discover: &mut pluto_discover,
                             pluto_test: &mut pluto_test,
@@ -684,6 +694,24 @@ impl SdroxideApp {
                     }
                 });
             }
+        }
+        // Blocking connect (~up to 5 s); after the closure so it can take
+        // `&self.ctrl`. Tests what is *typed in the dialog*, not what was last
+        // applied — a test that ignored an edited address would be answering a
+        // question nobody asked.
+        if let (true, Some(cfg)) = (icomnet_test, &radio_edit) {
+            self.icomnet_test_result = Some(if cfg.icomnet.address.trim().is_empty() {
+                Err("enter the radio's address first".to_string())
+            } else {
+                self.ctrl.test_icomnet(&cfg.icomnet)
+            });
+        }
+        if icomnet_copy_report {
+            let report = self
+                .ctrl
+                .icomnet_diagnostics()
+                .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
+            ctx.copy_text(report);
         }
         if smartsdr_copy_report {
             // The whole point of the trace is that a user can hand it over
@@ -1124,6 +1152,13 @@ impl SdroxideApp {
                     Backend::Tci => {
                         settings_tci_tab(ui, io.radio_edit, io.tci_test, &self.tci_test_result)
                     }
+                    Backend::IcomNet => settings_icomnet_tab(
+                        ui,
+                        io.radio_edit,
+                        io.icomnet_test,
+                        io.icomnet_copy_report,
+                        &self.icomnet_test_result,
+                    ),
                     Backend::SmartSdr => settings_smartsdr_tab(
                         ui,
                         &self.smartsdr_devices,

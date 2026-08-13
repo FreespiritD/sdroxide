@@ -648,6 +648,186 @@ pub(in crate::app) fn settings_tci_tab(
     );
 }
 
+/// Settings → Radio for an Icom on its LAN or WiFi port.
+///
+/// No Discover button: an Icom does not announce itself on the network, so the
+/// address is always typed in.
+pub(in crate::app) fn settings_icomnet_tab(
+    ui: &mut egui::Ui,
+    radio_edit: &mut Option<sdroxide_types::RadioConfig>,
+    test: &mut bool,
+    copy_report: &mut bool,
+    test_result: &Option<Result<String, String>>,
+) {
+    use sdroxide_types::{CwKeying, IcomNetConfig, IcomRxSource};
+    let Some(cfg) = radio_edit.as_mut() else {
+        ui.label("Radio configuration is only available in the native app.");
+        return;
+    };
+    let net = &mut cfg.icomnet;
+
+    egui::Grid::new("icomnet-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Radio address").on_hover_text(
+            "The address shown on the radio under SET > Network. Network Control has to \
+             be on there, and the radio needs a network user name and password set.",
+        );
+        ui.add(
+            egui::TextEdit::singleline(&mut net.address)
+                .desired_width(220.0)
+                .hint_text("host or IP, e.g. 192.168.1.50"),
+        );
+        ui.end_row();
+
+        ui.label("Control port");
+        ui.add(egui::DragValue::new(&mut net.control_port).range(1..=65535))
+            .on_hover_text("50001 unless it has been changed on the radio.");
+        ui.end_row();
+
+        ui.label("Network user");
+        ui.add(egui::TextEdit::singleline(&mut net.username).desired_width(220.0));
+        ui.end_row();
+
+        ui.label("Password").on_hover_text(
+            "Stored in the clear in radio.json. The protocol obfuscates it reversibly on \
+             the wire, so nothing here would make it a secret.",
+        );
+        ui.add(egui::TextEdit::singleline(&mut net.password).password(true).desired_width(220.0));
+        ui.end_row();
+
+        ui.label("Receive from").on_hover_text(
+            "AF: the radio demodulates and sdroxide shows the audio band. \
+             12 kHz IF: the radio sends its DRM intermediate frequency instead and \
+             sdroxide demodulates, which brings its own filters, noise reduction and \
+             decoders to bear over about ±12 kHz. Either way the wide waterfall is the \
+             radio's own scope — no Icom outputs I/Q.",
+        );
+        ComboBox::from_id_salt("icomnet_rx_source").selected_text(net.rx_source.label()).show_ui(
+            ui,
+            |ui| {
+                for s in IcomRxSource::ALL {
+                    if ui.selectable_label(net.rx_source == s, s.label()).clicked() {
+                        net.rx_source = s;
+                    }
+                }
+            },
+        );
+        ui.end_row();
+
+        ui.label("Audio sample rate");
+        ComboBox::from_id_salt("icomnet_rate")
+            .selected_text(format!("{} Hz", net.sample_rate_hz))
+            .show_ui(ui, |ui| {
+                for r in IcomNetConfig::SAMPLE_RATES {
+                    if ui.selectable_label(net.sample_rate_hz == r, format!("{r} Hz")).clicked() {
+                        net.sample_rate_hz = r;
+                    }
+                }
+            });
+        ui.end_row();
+
+        // The 12 kHz IF cannot fit below 48 kHz, and silently falling back to AF
+        // without saying so would look like the setting had not taken.
+        if net.rx_source == IcomRxSource::If12k && !net.if_mode_usable() {
+            ui.label("");
+            ui.colored_label(
+                egui::Color32::from_rgb(0xd0, 0x90, 0x30),
+                "A 12 kHz IF needs the 48000 Hz stream — at this rate the radio's \
+                 demodulated audio is used instead.",
+            );
+            ui.end_row();
+        }
+
+        if net.rx_source == IcomRxSource::Af {
+            ui.label("Displayed bandwidth");
+            ui.add(
+                egui::DragValue::new(&mut net.audio_bw_hz).range(1000.0..=24_000.0).suffix(" Hz"),
+            )
+            .on_hover_text("Width of the audio-band panadapter, as for a CAT rig.");
+            ui.end_row();
+        }
+
+        ui.label("CW keying");
+        ComboBox::from_id_salt("icomnet_cw").selected_text(net.cw_keying.label()).show_ui(
+            ui,
+            |ui| {
+                for k in CwKeying::ALL {
+                    if ui.selectable_label(net.cw_keying == k, k.label()).clicked() {
+                        net.cw_keying = k;
+                    }
+                }
+            },
+        );
+        ui.end_row();
+
+        ui.label("Transmit buffer");
+        ui.add(egui::DragValue::new(&mut net.tx_latency_ms).range(20..=1000).suffix(" ms"))
+            .on_hover_text(
+                "How much audio the radio holds before modulating. More survives a worse \
+                 network, at the cost of transmit latency.",
+            );
+        ui.end_row();
+
+        ui.label("");
+        ui.checkbox(&mut net.scope, "Show the radio's spectrum scope").on_hover_text(
+            "Streams the radio's own 475-bin sweep into the full-band waterfall. It is \
+             the radio's picture, not sdroxide's DSP — there is no I/Q to compute one \
+             from.",
+        );
+        ui.end_row();
+
+        ui.label("");
+        ui.checkbox(&mut net.set_mod_input_on_open, "Switch modulation input to LAN")
+            .on_hover_text(
+                "Transmit audio is only heard when the radio's MOD input is set to LAN. \
+                 sdroxide can write that on a model whose menu numbering it knows; on any \
+                 other it says so and leaves the menu alone.",
+            );
+        ui.end_row();
+
+        ui.label("");
+        ui.horizontal(|ui| {
+            if ui.button("Test connection").clicked() {
+                *test = true;
+            }
+            if ui
+                .button("Copy diagnostic report")
+                .on_hover_text(
+                    "Copies the last session's handshake and CI-V trace to the clipboard, \
+                     for a bug report.",
+                )
+                .clicked()
+            {
+                *copy_report = true;
+            }
+        });
+        ui.end_row();
+    });
+
+    test_result_line(ui, test_result);
+
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new(
+            "Control, audio and the radio's own scope over one network connection — no \
+             serial cable and no sound card. Press \"Apply / reconnect\" to switch without \
+             a restart.",
+        )
+        .weak(),
+    );
+    ui.label(
+        RichText::new(sdroxide_icomnet_hint())
+            .weak()
+            .color(egui::Color32::from_rgb(0xd0, 0x90, 0x30)),
+    );
+}
+
+/// Kept as a function so the UI crate needs no dependency on the backend crate
+/// just to repeat one sentence.
+fn sdroxide_icomnet_hint() -> &'static str {
+    "Not verified against hardware yet: if it misbehaves, please attach the diagnostic \
+     report to a bug report."
+}
+
 /// The outcome line under a "Test connection" button.
 ///
 /// A successful test gets a second, weak line pointing at Apply / reconnect:

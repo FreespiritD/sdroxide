@@ -276,6 +276,206 @@ pub fn parse_smeter_reply(data: &[u8]) -> Option<f32> {
     Some(dbm_from_smeter(decode_meter(&data[1..])?))
 }
 
+// ---------------------------------------------------------------------------
+// Set-mode menu items
+// ---------------------------------------------------------------------------
+
+/// Write a Set-mode menu item: `1A 05 <hi> <lo> <value…>`.
+///
+/// The item number is *not* portable between models — Icom renumbers this
+/// block, and the IC-7300MK2 moved several relative to the original IC-7300.
+/// Callers must take the number from the model at hand rather than from
+/// another rig's manual: the numbers around the modulation-input entries
+/// include the calibration marker, so a wrong write puts a signal on the
+/// receiver that is not on the antenna.
+pub fn set_menu_frame(radio: u8, item: u16, value: &[u8]) -> Vec<u8> {
+    let mut data = vec![0x05, (item >> 8) as u8, item as u8];
+    data.extend_from_slice(value);
+    frame(radio, 0x1A, &data)
+}
+
+/// Read a Set-mode menu item back.
+pub fn read_menu_frame(radio: u8, item: u16) -> Vec<u8> {
+    frame(radio, 0x1A, &[0x05, (item >> 8) as u8, item as u8])
+}
+
+// ---------------------------------------------------------------------------
+// Spectrum scope
+// ---------------------------------------------------------------------------
+
+/// Turn the radio's own spectrum scope on or off (`27 10`).
+pub fn scope_on_frame(radio: u8, on: bool) -> Vec<u8> {
+    frame(radio, 0x27, &[0x10, u8::from(on)])
+}
+
+/// Start or stop the scope sending its sweeps to us (`27 11`).
+///
+/// Separate from [`scope_on_frame`] on purpose: the scope can be running on the
+/// radio's own display without streaming, and a client that only turns the
+/// display on waits forever for data.
+pub fn scope_output_frame(radio: u8, on: bool) -> Vec<u8> {
+    frame(radio, 0x27, &[0x11, u8::from(on)])
+}
+
+/// How the radio is laying its scope out. Only the frequency reporting differs:
+/// centred modes report a centre and a span, fixed modes report both edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeMode {
+    Center,
+    Fixed,
+    ScrollCenter,
+    ScrollFixed,
+}
+
+impl ScopeMode {
+    fn from_byte(b: u8) -> Option<ScopeMode> {
+        Some(match b {
+            0x00 => ScopeMode::Center,
+            0x01 => ScopeMode::Fixed,
+            0x02 => ScopeMode::ScrollCenter,
+            0x03 => ScopeMode::ScrollFixed,
+            _ => return None,
+        })
+    }
+    /// Whether this mode reports a centre and span rather than two edges.
+    fn is_centred(self) -> bool {
+        matches!(self, ScopeMode::Center | ScopeMode::ScrollCenter)
+    }
+}
+
+/// What a sweep covers. Only the first division of a sweep carries it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScopeInfo {
+    pub mode: ScopeMode,
+    pub center_hz: f64,
+    /// Full width, low edge to high edge.
+    ///
+    /// In the centred modes the radio reports a *half* span — its own menu
+    /// labels these settings "±2.5k" through "±500k" — so the reported value is
+    /// doubled here to give one meaning in all four modes.
+    pub span_hz: f64,
+    /// The radio is telling us the trace is off the top of its scale.
+    pub out_of_range: bool,
+}
+
+/// One `27 00` frame.
+///
+/// Over LAN the whole sweep arrives at once and `divisions` is 1. Over USB the
+/// radio splits it: division 1 carries the wave information and no bins, and
+/// the rest carry bins only. Both forms parse here, because the split is a
+/// property of the *transport*, and this parser has no idea which one it is
+/// looking at until it reads the field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScopeSweep {
+    /// 1-based.
+    pub division: u8,
+    /// 1 over LAN; 11 or 15 over USB, depending on the model.
+    pub divisions: u8,
+    /// Present on the first division only.
+    pub info: Option<ScopeInfo>,
+    /// Amplitudes, 0..=160. Empty on the first division of a split sweep.
+    pub bins: Vec<u8>,
+}
+
+impl ScopeSweep {
+    /// The whole sweep arrived in this one frame.
+    pub fn is_complete(&self) -> bool {
+        self.divisions <= 1 && !self.bins.is_empty()
+    }
+}
+
+/// The two-digit BCD counters the sweep uses for its division numbers. A
+/// division of 11 is sent as `0x11`, not as 11.
+fn from_bcd(b: u8) -> Option<u8> {
+    let (hi, lo) = (b >> 4, b & 0x0f);
+    (hi <= 9 && lo <= 9).then_some(hi * 10 + lo)
+}
+
+/// Bytes of wave information on the first division: scope mode, two 5-byte
+/// frequencies, and the out-of-range flag.
+const SCOPE_INFO_LEN: usize = 12;
+
+/// Parse the payload of a `27 00` reply — `data` as [`CivReply`] delivers it,
+/// beginning with the `0x00` sub-command byte.
+pub fn parse_scope_frame(data: &[u8]) -> Option<ScopeSweep> {
+    if data.first() != Some(&0x00) || data.len() < 4 {
+        return None;
+    }
+    // data[1] is the selected/unselected VFO, which this backend does not use:
+    // it drives one receiver and the radio only reports the selected one.
+    let division = from_bcd(data[2])?;
+    let divisions = from_bcd(data[3])?;
+    if division == 0 || divisions == 0 || division > divisions {
+        return None;
+    }
+    let rest = &data[4..];
+
+    // Only the first division carries the wave information.
+    if division != 1 {
+        return Some(ScopeSweep { division, divisions, info: None, bins: rest.to_vec() });
+    }
+    if rest.len() < SCOPE_INFO_LEN {
+        return None;
+    }
+    let mode = ScopeMode::from_byte(rest[0])?;
+    let a = decode_freq(&rest[1..6])?;
+    let b = decode_freq(&rest[6..11])?;
+    let (center_hz, span_hz) =
+        if mode.is_centred() { (a, b * 2.0) } else { ((a + b) / 2.0, (b - a).abs()) };
+    Some(ScopeSweep {
+        division,
+        divisions,
+        info: Some(ScopeInfo { mode, center_hz, span_hz, out_of_range: rest[11] != 0 }),
+        bins: rest[SCOPE_INFO_LEN..].to_vec(),
+    })
+}
+
+/// Reassembles a sweep that arrives in pieces.
+///
+/// Over LAN this is a pass-through — one frame is one sweep — but the USB path
+/// exists on the same radios and a client that only handled the whole form
+/// would show nothing at all there rather than showing something wrong.
+#[derive(Debug, Default)]
+pub struct ScopeAssembler {
+    info: Option<ScopeInfo>,
+    bins: Vec<u8>,
+    expect: u8,
+    next: u8,
+}
+
+impl ScopeAssembler {
+    /// Feed one frame. Returns a finished sweep when the last division lands.
+    pub fn push(&mut self, sweep: ScopeSweep) -> Option<(ScopeInfo, Vec<u8>)> {
+        if sweep.division == 1 {
+            self.info = sweep.info;
+            self.bins.clear();
+            self.expect = sweep.divisions;
+            self.next = 2;
+            self.bins.extend_from_slice(&sweep.bins);
+            if sweep.divisions <= 1 {
+                return self.finish();
+            }
+            return None;
+        }
+        // A continuation with no start, or out of order: the sweep is not
+        // recoverable, and half a sweep drawn as a whole one is worse than a
+        // dropped frame.
+        if self.info.is_none() || sweep.division != self.next {
+            self.info = None;
+            self.bins.clear();
+            return None;
+        }
+        self.bins.extend_from_slice(&sweep.bins);
+        self.next += 1;
+        if sweep.division >= self.expect { self.finish() } else { None }
+    }
+
+    fn finish(&mut self) -> Option<(ScopeInfo, Vec<u8>)> {
+        let info = self.info.take()?;
+        Some((info, std::mem::take(&mut self.bins)))
+    }
+}
+
 /// A parsed reply from the rig (payload after `<cmd>`, addresses stripped).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CivReply {
@@ -467,5 +667,153 @@ mod tests {
         assert!(parse_frames(&mut buf).is_empty()); // incomplete, buffered
         buf.extend_from_slice(tail);
         assert_eq!(parse_frames(&mut buf).len(), 1);
+    }
+
+    // -- scope and menu ----------------------------------------------------
+
+    /// The whole-sweep form a LAN Icom sends: division 1 of 1, all 475 bins.
+    fn lan_sweep(bins: usize) -> Vec<u8> {
+        let mut d = vec![0x00, 0x00, 0x01, 0x01, 0x00];
+        d.extend_from_slice(&encode_freq(14_100_000.0)); // centre
+        d.extend_from_slice(&encode_freq(50_000.0)); // ±50 kHz
+        d.push(0x00); // in range
+        d.extend((0..bins).map(|i| (i % 161) as u8));
+        d
+    }
+
+    #[test]
+    fn a_lan_sweep_parses_whole() {
+        let s = parse_scope_frame(&lan_sweep(475)).unwrap();
+        assert_eq!(s.division, 1);
+        assert_eq!(s.divisions, 1);
+        assert!(s.is_complete());
+        assert_eq!(s.bins.len(), 475);
+        let i = s.info.unwrap();
+        assert_eq!(i.mode, ScopeMode::Center);
+        assert_eq!(i.center_hz, 14_100_000.0);
+        // The radio reports a half span; the parser gives the full width.
+        assert_eq!(i.span_hz, 100_000.0);
+        assert!(!i.out_of_range);
+    }
+
+    #[test]
+    fn a_fixed_mode_sweep_reports_edges_and_becomes_a_centre_and_width() {
+        let mut d = vec![0x00, 0x00, 0x01, 0x01, 0x01];
+        d.extend_from_slice(&encode_freq(14_000_000.0));
+        d.extend_from_slice(&encode_freq(14_350_000.0));
+        d.push(0x00);
+        d.extend(std::iter::repeat_n(0x20u8, 475));
+        let i = parse_scope_frame(&d).unwrap().info.unwrap();
+        assert_eq!(i.mode, ScopeMode::Fixed);
+        assert_eq!(i.center_hz, 14_175_000.0);
+        assert_eq!(i.span_hz, 350_000.0);
+    }
+
+    #[test]
+    fn the_out_of_range_flag_is_carried() {
+        // sub, vfo, div, divmax, mode, 5 centre, 5 span, out-of-range.
+        let mut d = lan_sweep(0);
+        d[15] = 0x01;
+        assert!(parse_scope_frame(&d).unwrap().info.unwrap().out_of_range);
+    }
+
+    #[test]
+    fn division_counters_are_bcd_not_binary() {
+        // "11 of 11" over USB is 0x11, which read as binary would be 17.
+        let mut d = lan_sweep(0);
+        d[2] = 0x01;
+        d[3] = 0x11;
+        let s = parse_scope_frame(&d).unwrap();
+        assert_eq!(s.divisions, 11);
+        assert!(!s.is_complete(), "a split sweep is not finished by its first frame");
+    }
+
+    #[test]
+    fn a_malformed_sweep_is_rejected_rather_than_half_read() {
+        // Not the 27 00 sub-command.
+        assert!(parse_scope_frame(&[0x10, 0x01]).is_none());
+        // Truncated before the wave information is complete.
+        assert!(parse_scope_frame(&[0x00, 0x00, 0x01, 0x01, 0x00, 0x00]).is_none());
+        // Division 0, and a division past the total.
+        let mut d = lan_sweep(4);
+        d[2] = 0x00;
+        assert!(parse_scope_frame(&d).is_none());
+        let mut d = lan_sweep(4);
+        d[2] = 0x03;
+        assert!(parse_scope_frame(&d).is_none());
+    }
+
+    #[test]
+    fn the_assembler_passes_a_whole_sweep_straight_through() {
+        let mut a = ScopeAssembler::default();
+        let (info, bins) = a.push(parse_scope_frame(&lan_sweep(475)).unwrap()).unwrap();
+        assert_eq!(bins.len(), 475);
+        assert_eq!(info.center_hz, 14_100_000.0);
+    }
+
+    #[test]
+    fn the_assembler_joins_a_split_sweep() {
+        let mut a = ScopeAssembler::default();
+        // Division 1 of 3: information only.
+        let mut first = lan_sweep(0);
+        first[3] = 0x03;
+        assert!(a.push(parse_scope_frame(&first).unwrap()).is_none());
+        // Divisions 2 and 3: bins only.
+        let cont = |div: u8, fill: u8| {
+            let mut d = vec![0x00, 0x00, div, 0x03];
+            d.extend(std::iter::repeat_n(fill, 50));
+            parse_scope_frame(&d).unwrap()
+        };
+        assert!(a.push(cont(0x02, 0x11)).is_none());
+        let (_, bins) = a.push(cont(0x03, 0x22)).unwrap();
+        assert_eq!(bins.len(), 100);
+        assert_eq!(bins[0], 0x11);
+        assert_eq!(bins[99], 0x22);
+    }
+
+    #[test]
+    fn the_assembler_drops_a_sweep_it_cannot_trust() {
+        let mut a = ScopeAssembler::default();
+        let mut first = lan_sweep(0);
+        first[3] = 0x03;
+        a.push(parse_scope_frame(&first).unwrap());
+        // Division 3 with 2 missing: half a sweep drawn as a whole one would
+        // be a lie, so nothing comes out.
+        let mut third = vec![0x00, 0x00, 0x03, 0x03];
+        third.extend(std::iter::repeat_n(0x22u8, 50));
+        assert!(a.push(parse_scope_frame(&third).unwrap()).is_none());
+        // And it stays dropped rather than resyncing mid-sweep.
+        let mut second = vec![0x00, 0x00, 0x02, 0x03];
+        second.extend(std::iter::repeat_n(0x11u8, 50));
+        assert!(a.push(parse_scope_frame(&second).unwrap()).is_none());
+    }
+
+    #[test]
+    fn scope_control_frames_are_the_documented_commands() {
+        assert_eq!(
+            scope_on_frame(0xB6, true),
+            vec![0xFE, 0xFE, 0xB6, 0xE0, 0x27, 0x10, 0x01, 0xFD]
+        );
+        assert_eq!(
+            scope_output_frame(0xB6, true),
+            vec![0xFE, 0xFE, 0xB6, 0xE0, 0x27, 0x11, 0x01, 0xFD]
+        );
+        assert_eq!(
+            scope_output_frame(0xB6, false),
+            vec![0xFE, 0xFE, 0xB6, 0xE0, 0x27, 0x11, 0x00, 0xFD]
+        );
+    }
+
+    #[test]
+    fn a_menu_write_splits_the_item_into_two_bytes() {
+        // IC-7300MK2 DATA OFF MOD = 1A 05 00 84, value 05 = LAN.
+        assert_eq!(
+            set_menu_frame(0xB6, 0x0084, &[0x05]),
+            vec![0xFE, 0xFE, 0xB6, 0xE0, 0x1A, 0x05, 0x00, 0x84, 0x05, 0xFD]
+        );
+        assert_eq!(
+            read_menu_frame(0xB6, 0x0079),
+            vec![0xFE, 0xFE, 0xB6, 0xE0, 0x1A, 0x05, 0x00, 0x79, 0xFD]
+        );
     }
 }

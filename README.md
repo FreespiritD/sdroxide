@@ -1,7 +1,7 @@
 # SDR Oxide
 
 A PowerSDR/Thetis-style software-defined-radio transceiver client in Rust, with
-pluggable radio backends (**SoapySDR**, **OpenHPSDR**, **TCI**, **SmartSDR**, and **CAT**), an
+pluggable radio backends (**SoapySDR**, **OpenHPSDR**, **TCI**, **SmartSDR**, **Icom LAN**, and **CAT**), an
 [egui](https://github.com/emilk/egui) GUI, and a cyberpunk theme. It runs as a **native desktop application** and, from the same
 binary, as a **server that streams the same UI to a web browser** over
 WebSocket. It includes an integrated, persistent **logbook**, many digital modes like **FT8/FT4/FT2**
@@ -37,7 +37,8 @@ One binary, three ways to run it:
 - **Radios** - CAT/Audio, CAT/Stereo IQ, TCI (SunSDR), OpenHPSDR P1 and P2
   (Hermes Lite 2, Apache Labs), SoapySDR (HackRF, etc.), RTL-SDR (native support), 
   RX-888 (native support), SDRplay RSP (native, via the vendor API service),
-  SmartSDR (FlexRadio - experimental!), PlutoSDR (native support, experimental!)
+  SmartSDR (FlexRadio - experimental!), PlutoSDR (native support, experimental!),
+  Icom LAN / RS-BA1 protocol (experimental!)
 - **Panadapter** — GPU (wgpu) waterfall + spectrum line, wheel-zoom around the
   cursor, drag-to-pan, per-digit frequency readout, selectable colormaps,
   peak-hold, and **auto-contrast** ("FIT", on by default) that keeps the display
@@ -446,6 +447,13 @@ starting sdroxide before the rig is fine:
 - **TCI** — a TCI (Transceiver Control Interface) server such as ExpertSDR3 
   over WebSocket (default `127.0.0.1:50001`): wideband IQ receive plus 
   audio transmit.
+- **Icom LAN** — an Icom on its own Ethernet/WiFi port (IC-7300MK2, IC-705,
+  IC-9700, IC-7610, IC-905, IC-R8600), speaking the same IP-remote protocol as
+  RS-BA1 — no RS-BA1 licence and no PC at the radio. Control, audio and the
+  radio's own 475-point spectrum scope over one connection. There is no I/Q on
+  any Icom; the audio stream carries either demodulated AF or the 12 kHz DRM IF,
+  and sdroxide can demodulate the latter itself over about ±12 kHz. Not yet
+  hardware-verified.
 - **SmartSDR / FlexRadio** — a FLEX-6000 or FLEX-8000 on the LAN. Press
   **Discover** to listen for radios (they announce themselves), or enter an
   address for one reached over a router or VPN. Receive is a **DAX IQ** stream,

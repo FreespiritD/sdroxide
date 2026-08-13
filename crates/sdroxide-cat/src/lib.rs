@@ -5,7 +5,9 @@
 //! opaque [`CatHandle`] (a background serial thread), so no serial types leak
 //! into the engine or UI.
 
-mod civ;
+/// Icom CI-V framing and parsing. Public because the Icom LAN backend tunnels
+/// the same protocol over UDP and must not carry a second copy of it.
+pub mod civ;
 mod kenwood;
 mod yaesu;
 

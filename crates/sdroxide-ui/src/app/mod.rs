@@ -168,6 +168,7 @@ pub struct SdroxideApp {
     soapy_devices: Option<Vec<sdroxide_types::SoapyDeviceInfo>>,
     /// Result of the last TCI "Test connection" (Ok summary / Err message).
     tci_test_result: Option<Result<String, String>>,
+    icomnet_test_result: Option<Result<String, String>>,
     /// FlexRadios found by the last SmartSDR "Discover" listen.
     smartsdr_devices: Vec<sdroxide_types::SmartSdrDevice>,
     /// Result of the last SmartSDR "Test connection".
@@ -657,6 +658,7 @@ impl SdroxideApp {
             sdrplay_devices: Vec::new(),
             soapy_devices: None,
             tci_test_result: None,
+            icomnet_test_result: None,
             smartsdr_devices: Vec::new(),
             smartsdr_test_result: None,
             pluto_devices: Vec::new(),

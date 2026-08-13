@@ -189,6 +189,25 @@ impl RadioController for LocalController {
         sdroxide_tci::test_connection(address, std::time::Duration::from_secs(3))
     }
 
+    fn test_icomnet(&self, cfg: &sdroxide_types::IcomNetConfig) -> Result<String, String> {
+        sdroxide_icomnet::test_connection(sdroxide_icomnet::IcomNetOptions {
+            address: cfg.address.clone(),
+            control_port: cfg.control_port,
+            username: cfg.username.clone(),
+            password: cfg.password.clone(),
+            client_name: "sdroxide".into(),
+            rx_sample_rate: cfg.sample_rate_hz,
+            tx_sample_rate: cfg.sample_rate_hz,
+            tx_buffer_ms: cfg.tx_latency_ms,
+            civ_address_override: cfg.civ_address_override,
+            timeout: std::time::Duration::from_secs(5),
+        })
+    }
+
+    fn icomnet_diagnostics(&self) -> Option<String> {
+        Some(crate::icomnet_source::diagnostics_or_hint())
+    }
+
     fn discover_smartsdr(&self) -> Vec<sdroxide_types::SmartSdrDevice> {
         crate::smartsdr_source::discover()
     }

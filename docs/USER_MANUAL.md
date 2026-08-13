@@ -2331,6 +2331,10 @@ radio. Everything below the selector changes to match the choice:
   [5.2.4](#524-tci-network-expertsdr3-and-thetis).
 - **SmartSDR / FlexRadio (network)** — a FLEX-6000 or FLEX-8000 on the LAN. See
   [5.2.6](#526-smartsdr-flexradio-network-radios).
+- **Icom LAN (network)** — an Icom on its own Ethernet or WiFi port: IC-7300MK2,
+  IC-705, IC-9700, IC-7610, IC-905, IC-R8600. Control, audio and the radio's
+  spectrum scope over one network connection, with no serial cable and no sound
+  card. See [5.2.10](#5210-icom-lan-network-radios).
 - **RTL-SDR (USB)** — an RTL2832U dongle, driven by sdroxide's own USB driver
   with no SoapySDR involved. See [5.2.5](#525-rtl-sdr-usb-dongles).
 - **RX-888 (USB)** — an RX-888 / RX-888 Mk2 direct-sampling receiver, likewise
@@ -2616,7 +2620,7 @@ setup and for radios whose keyer sdroxide cannot drive.
 > *USB SEND* setting has been assigned to that line (an IC-7300 leaves it off,
 > so those two do nothing at all out of the box), and `VOX` keys nothing until
 > VOX is on at the radio. The **Radio ID (hex)** must also be the rig's CI-V
-> address — 94h on an IC-7300, 70h on a Xiegu X6100 — though a wrong one stops
+> address — 94h on an IC-7300, B6h on an IC-7300MK2, 70h on a Xiegu X6100 — though a wrong one stops
 > the frequency working too, so it is rarely the answer here. When the radio
 > answers the key-down with a refusal, sdroxide says so in the log: *the radio
 > refused the transmit command*.
@@ -3182,6 +3186,99 @@ the DSP is where to look.
 
 If the receiver is unplugged, sdroxide notices within a few seconds and
 reconnects by itself when you plug it back in — no need to press Apply.
+
+#### 5.2.10 Icom LAN (network radios)
+
+The **Icom LAN (network)** interface drives an Icom over the Ethernet or WiFi
+port on the radio itself, using the same IP-remote protocol Icom's own RS-BA1
+software speaks. No licence for RS-BA1 is needed, and no computer at the radio
+end: sdroxide talks to the transceiver directly.
+
+It covers every Icom with a network port — the **IC-7300MK2**, **IC-705**,
+**IC-9700**, **IC-7610**, **IC-905** and **IC-R8600** — because the protocol is
+the same on all of them and the radio reports its own CI-V address when the
+session opens. There is nothing to choose from a model list.
+
+One connection carries three things:
+
+- **Control** — the whole CI-V command set, tunnelled over the network. Dial,
+  mode, PTT, the S-meter, SWR and the radio's own CW keyer.
+- **Audio**, both ways, at up to 48 kHz.
+- **The radio's spectrum scope** — its own 475-point sweep, up to ±500 kHz wide,
+  which sdroxide draws in the full-band waterfall.
+
+##### What this is not
+
+**There is no I/Q.** No Icom outputs I/Q over any interface, LAN included. The
+wide waterfall is the picture the radio's own DSP computed, not something
+sdroxide analysed — you cannot demodulate it, run a skimmer across it, or expect
+it to respond to sdroxide's own noise reduction. What sdroxide *can* process is
+whatever the audio stream carries, which is the choice below.
+
+##### On the radio, first
+
+Three settings, all under **MENU » SET**:
+
+1. **Network > Network Control** — ON. Without it the radio never answers.
+2. **Network > Network User1 (or User2)** — set a **network user name** and
+   **password**, and enter the same pair in sdroxide.
+3. **Connectors > MOD Input > DATA OFF MOD** and **DATA MOD** — **LAN**, or
+   transmit audio is not heard. sdroxide writes this for you on a model whose
+   menu numbering it knows (currently the IC-7300MK2); on any other it says so
+   in the status line and leaves the menu alone.
+
+Note the radio's IP address from its **Network** screen — an Icom does not
+announce itself on the network, so there is no Discover button.
+
+##### Receive from: AF or the 12 kHz IF
+
+**Receive from** is the one setting worth thinking about. It selects what the
+radio puts in the audio stream (`SET > Connectors > LAN AF/IF Output > Output
+Select`), which decides who does the demodulating:
+
+- **AF — the radio demodulates.** The radio's filters, AGC and detector do the
+  work and sdroxide shows a narrow audio-band panadapter beside the radio's
+  scope. This is the safe default and works on every model at every sample rate.
+- **12 kHz IF — sdroxide demodulates.** The radio sends its DRM intermediate
+  frequency instead of audio. sdroxide mixes it down to baseband and treats it
+  as an ordinary receiver front end, so its own filters, noise reduction,
+  notches, digital-mode decoders and skimmer all apply — over roughly ±12 kHz
+  around the dial.
+
+  This needs the **48000 Hz** audio rate; at anything lower there is no room for
+  a 12 kHz IF and sdroxide falls back to AF and says so. How much of that
+  ±12 kHz is genuinely usable is not documented by Icom and has not been
+  measured here, so treat the width as approximate.
+
+Transmit is unaffected by the choice: it is always audio the radio modulates.
+
+##### The rest of the tab
+
+- **Radio address** and **Control port** — the address from the radio's Network
+  screen; the port is 50001 unless it has been changed there.
+- **Network user** and **Password** — as set on the radio. The password is
+  stored in the clear in `radio.json`; the protocol obfuscates it reversibly on
+  the wire, so keeping it secret here would protect nothing.
+- **Audio sample rate** — 8000, 16000, 24000 or 48000 Hz.
+- **Displayed bandwidth** (AF only) — the width of the audio-band panadapter.
+- **CW keying** — as for a CAT rig. A radio *in* CW ignores the audio it is
+  sent and keys its own transmitter, so **Rig keyer (CAT)** is what puts CW on
+  the air at the dial frequency ([§5.2.2](#522-cat-radios-serial-control--usb-audio)).
+- **Transmit buffer** — how much audio the radio holds before modulating. More
+  survives a worse network, at the cost of transmit latency.
+- **Show the radio's spectrum scope** — stream the sweep into the full-band
+  waterfall.
+- **Switch modulation input to LAN** — do step 3 above automatically, where the
+  model is known.
+- **Test connection** — connect, report what the radio said it is, and
+  disconnect.
+- **Copy diagnostic report** — the last session's handshake and CI-V trace, as
+  text.
+
+> **Not yet verified against hardware.** This backend was written from Icom's
+> published CI-V reference and the protocol's packet layout, and is tested
+> end-to-end against a simulator rather than a radio. If it misbehaves, the
+> **Copy diagnostic report** button produces everything a bug report needs.
 
 
 ### 5.3 UI: display preferences and voice announcements
@@ -5203,6 +5300,7 @@ to its default, and a partial file is normal rather than a special case.
 | `"Cat"` | CAT control + sound card | `"cat"` |
 | `"Hpsdr"` | OpenHPSDR network radio | `"hpsdr"` |
 | `"Tci"` | TCI over WebSocket | `"tci"` |
+| `"IcomNet"` | Icom over its LAN/WiFi port | `"icomnet"` |
 | `"SmartSdr"` | FlexRadio SmartSDR | `"smartsdr"` |
 | `"Pluto"` | ADALM-Pluto over IIOD | `"pluto"` |
 | `"RtlSdr"` | RTL-SDR dongle | `"rtlsdr"` |

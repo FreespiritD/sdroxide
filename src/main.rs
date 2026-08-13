@@ -2,8 +2,10 @@ mod airspyhf_source;
 mod audio_cat_source;
 mod console;
 mod device_registry;
+mod dial;
 mod gui_main;
 mod hpsdr_source;
+mod icomnet_source;
 mod local_controller;
 mod null_source;
 mod pluto_source;
@@ -22,7 +24,7 @@ use sdroxide_radio::{
 };
 #[cfg(feature = "soapy")]
 use sdroxide_radio::{DeviceInfo, SoapyDevice, enumerate_devices};
-use sdroxide_types::{Backend, DeviceCaps, RadioConfig};
+use sdroxide_types::{Backend, DeviceCaps, IcomNetConfig, RadioConfig};
 
 #[derive(Parser, Debug, Clone)]
 #[command(version, about)]
@@ -936,6 +938,7 @@ fn open_configured_source(
         Backend::Cat => open_cat_source(radio),
         Backend::Hpsdr => open_hpsdr_source(radio, cli.center_hz()),
         Backend::Tci => open_tci_source(radio, cli.center_hz()),
+        Backend::IcomNet => open_icomnet_source(radio),
         Backend::SmartSdr => open_smartsdr_source(radio, cli.center_hz()),
         Backend::Pluto => open_pluto_source(radio, cli.center_hz(), cli.rate),
         Backend::RtlSdr => open_rtlsdr_source(radio, cli.center_hz()),
@@ -1484,6 +1487,49 @@ fn tci_caps(address: &str, iq_rate: f64, rx: u32) -> DeviceCaps {
         // (verified against ExpertSDR3 — no command spelling drives it, and
         // toggling it in the GUI emits nothing on the wire). TCI gain control
         // is deferred until a controllable path is found.
+        ..DeviceCaps::default()
+    }
+}
+
+/// Build the Icom LAN source from radio.json.
+///
+/// The centre is not passed in: an Icom is the rig as well as the front end,
+/// and the dial belongs to the radio. The source adopts whatever it is tuned
+/// to, the way the CAT backend does — starting a session by retuning somebody's
+/// transceiver to a frequency out of a config file is not the behaviour a
+/// transceiver operator expects.
+fn open_icomnet_source(radio: &RadioConfig) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let src = icomnet_source::IcomNetSource::open(&radio.icomnet)
+        .context("connecting to the Icom over LAN")?;
+    let caps = icomnet_caps(&radio.icomnet, &src);
+    Ok((Box::new(src), caps))
+}
+
+/// Capabilities for an Icom over LAN.
+///
+/// `audio_mode` follows the receive path: demodulated audio takes the engine's
+/// audio-band bypass, while the 12 kHz IF is ordinary complex baseband and does
+/// not. `tx_audio` is set either way — transmit is always audio the radio
+/// modulates, whatever the receive stream is carrying.
+///
+/// The frequency ranges are deliberately wide. This one backend covers rigs
+/// from an HF-only IC-7300MK2 to an IC-905 at 10 GHz and a receive-only
+/// IC-R8600, the protocol carries no band table, and an operator who wants the
+/// dial held to their radio's real coverage can state it in Settings — which is
+/// what `freq_ranges_rx` is for.
+fn icomnet_caps(cfg: &IcomNetConfig, src: &icomnet_source::IcomNetSource) -> DeviceCaps {
+    let audio_mode = cfg.effective_rx_source() == sdroxide_types::IcomRxSource::Af;
+    let tx = src.can_transmit();
+    DeviceCaps {
+        driver: "icomnet".into(),
+        label: src.describe(),
+        rx_channels: 1,
+        tx_channels: usize::from(tx),
+        audio_mode,
+        tx_audio: tx,
+        freq_ranges_rx: vec![(30_000.0, 10_500_000_000.0)],
+        freq_ranges_tx: if tx { vec![(1_800_000.0, 10_500_000_000.0)] } else { Vec::new() },
+        has_swr_sensor: tx,
         ..DeviceCaps::default()
     }
 }
