@@ -43,11 +43,31 @@ pub struct RadioTab {
 /// "+" chip. Lives in the binary — only it knows how to open backends.
 pub type RadioFactory = Box<dyn FnMut() -> Result<RadioTab, String>>;
 
+/// Dials another station for the Remote settings tab: `(url, id, ctx)` in,
+/// a connected tab out. Also in the binary, for the same reason — the
+/// connection needs this machine's sound devices hung off it, and only the
+/// frontend can open those. The context is what the socket wakes when a
+/// message arrives.
+pub type RemoteFactory = Box<dyn FnMut(&str, u32, &egui::Context) -> Result<RadioTab, String>>;
+
+/// Ids for tabs that hold somebody else's station. The station's own radios
+/// are numbered from the roster on disk, from 0 up; these are not in it — a
+/// connection is not a radio this machine owns — so they are numbered from a
+/// place the roster will never reach rather than allocated from it. The id
+/// keys the tab's view state and its waterfall history, and a collision would
+/// hand a connection the layout and the history of one of this machine's own
+/// radios.
+const REMOTE_TAB_ID_BASE: u32 = 1 << 31;
+
 struct Tab {
     id: u32,
     name: String,
     app: SdroxideApp,
     muted: bool,
+    /// Somebody else's station, reached over the network. It has no entry in
+    /// this machine's radio roster, so closing or renaming it must not go
+    /// looking for one.
+    remote: bool,
 }
 
 /// What the operator asked a strip to do, resolved after the frame — the
@@ -79,6 +99,11 @@ pub struct MultiApp {
     /// empty, and always holding the focused tab ([`Self::sanitize_panes`]).
     panes: Vec<u32>,
     factory: Option<RadioFactory>,
+    /// How a station somewhere else is dialled — Settings → Remote. Present
+    /// in every native session, including one that is itself a remote client:
+    /// a screen with no radio of its own is exactly the one most likely to be
+    /// pointed at a server.
+    remote: Option<RemoteFactory>,
     /// Kept for tabs created at runtime, which are built long after the
     /// [`eframe::CreationContext`] is gone.
     wgpu: Option<eframe::egui_wgpu::RenderState>,
@@ -89,12 +114,15 @@ impl MultiApp {
         cc: &eframe::CreationContext<'_>,
         radios: Vec<RadioTab>,
         factory: Option<RadioFactory>,
+        remote: Option<RemoteFactory>,
     ) -> Self {
         let shared_log = radios.len() > 1;
+        let can_add = factory.is_some();
         let tabs: Vec<Tab> = radios
             .into_iter()
             .enumerate()
             .map(|(i, r)| {
+                let remote = r.ctrl.engine_is_remote();
                 let mut app = SdroxideApp::new_tab(
                     &cc.egui_ctx,
                     cc.storage,
@@ -105,12 +133,13 @@ impl MultiApp {
                 );
                 app.set_focused_flag(i == 0);
                 app.set_shared_log(shared_log);
-                Tab { id: r.id, name: r.name, app, muted: false }
+                app.set_can_add_radio(can_add);
+                Tab { id: r.id, name: r.name, app, muted: false, remote }
             })
             .collect();
         assert!(!tabs.is_empty(), "MultiApp needs at least one radio");
         let panes = vec![tabs[0].id];
-        MultiApp { tabs, focused: 0, panes, factory, wgpu: cc.wgpu_render_state.clone() }
+        MultiApp { tabs, focused: 0, panes, factory, remote, wgpu: cc.wgpu_render_state.clone() }
     }
 
     /// The main window's strip is a switcher, so it is only drawn once there
@@ -232,6 +261,7 @@ impl MultiApp {
                     }
                 }
                 RadioTabRequest::Add => self.add_tab(ctx),
+                RadioTabRequest::Connect { url, name } => self.connect_tab(&url, name, ctx),
                 RadioTabRequest::Close(id) => {
                     if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
                         self.close_tab(i, ctx);
@@ -246,7 +276,12 @@ impl MultiApp {
                 RadioTabRequest::Rename { id, name } => {
                     if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
                         t.name = name.clone();
-                        if let Err(e) = sdroxide_config::rename_radio(id, &name) {
+                        // A connection has no roster entry to record it in —
+                        // the name it was given is the address it was dialled
+                        // at, and it lasts as long as the connection does.
+                        if !t.remote
+                            && let Err(e) = sdroxide_config::rename_radio(id, &name)
+                        {
                             eprintln!("sdroxide: renaming radio {id}: {e}");
                         }
                     }
@@ -363,34 +398,7 @@ impl MultiApp {
         let Some(factory) = self.factory.as_mut() else { return };
         match factory() {
             Ok(r) => {
-                let new_id = r.id;
-                let mut app = SdroxideApp::new_tab(
-                    ctx,
-                    // A brand-new radio has no saved view to restore, and the
-                    // station-wide settings are read from their real files on
-                    // native; storage is only a wasm concern, and wasm has no
-                    // factory.
-                    None,
-                    self.wgpu.clone(),
-                    r.ctrl,
-                    r.id,
-                    false,
-                );
-                app.set_focused_flag(false);
-                self.tabs.push(Tab { id: r.id, name: r.name, app, muted: false });
-                for tab in &mut self.tabs {
-                    tab.app.set_shared_log(true);
-                }
-                // The dialog follows: if the add came from inside Settings →
-                // Radio, that dialog belongs on the new radio now (a no-op
-                // when it came from the main window's strip).
-                self.tabs[self.focused].app.close_settings();
-                // In a split the new radio takes over the active pane rather
-                // than opening yet another column unasked.
-                let pane = self.active_pane();
-                let i = self.tabs.len() - 1;
-                self.panes[pane] = new_id;
-                self.focus_tab(i, ctx);
+                let i = self.install_tab(r, ctx);
                 // The new tab has no interface yet; the operator's next stop
                 // is Settings → Radio, so open it for them.
                 self.tabs[i].app.open_radio_settings();
@@ -403,13 +411,95 @@ impl MultiApp {
         }
     }
 
+    /// Dial another sdroxide server and give it a tab of its own — Settings →
+    /// Remote's CONNECT button.
+    ///
+    /// The verdict goes back to the tab that asked, not to the new one: a
+    /// connection that never opened has no tab to report from, and the dialog
+    /// the operator is looking at is where they are expecting an answer.
+    fn connect_tab(&mut self, url: &str, name: String, ctx: &egui::Context) {
+        let origin = self.focused;
+        let Some(remote) = self.remote.as_mut() else {
+            self.tabs[origin]
+                .app
+                .set_remote_status(Err("This client cannot open a connection.".into()));
+            return;
+        };
+        // Never an id from the roster: this station is not one of ours.
+        let id = self
+            .tabs
+            .iter()
+            .map(|t| t.id)
+            .filter(|id| *id >= REMOTE_TAB_ID_BASE)
+            .max()
+            .map_or(REMOTE_TAB_ID_BASE, |m| m.saturating_add(1));
+        match remote(url, id, ctx) {
+            Ok(mut r) => {
+                // The address as the operator entered it wins over whatever
+                // the factory called it — it is what they will recognise in
+                // the strip.
+                r.name = name;
+                let label = r.name.clone();
+                self.install_tab(r, ctx);
+                // Not "connected": the socket opens in the background, and
+                // whether the station answers is reported by the tab it now
+                // has — with the sign-in screen, if it asks for one.
+                self.tabs[origin]
+                    .app
+                    .set_remote_status(Ok(format!("{label} has a tab of its own now.")));
+            }
+            Err(e) => self.tabs[origin].app.set_remote_status(Err(format!("{url}: {e}"))),
+        }
+    }
+
+    /// Put a freshly built radio on screen: append it, take over the active
+    /// pane, hand it the keyboard. Returns its index.
+    fn install_tab(&mut self, r: RadioTab, ctx: &egui::Context) -> usize {
+        let new_id = r.id;
+        let remote = r.ctrl.engine_is_remote();
+        let mut app = SdroxideApp::new_tab(
+            ctx,
+            // A brand-new radio has no saved view to restore, and the
+            // station-wide settings are read from their real files on
+            // native; storage is only a wasm concern, and wasm has no
+            // factory.
+            None,
+            self.wgpu.clone(),
+            r.ctrl,
+            r.id,
+            false,
+        );
+        app.set_focused_flag(false);
+        app.set_can_add_radio(self.factory.is_some());
+        self.tabs.push(Tab { id: r.id, name: r.name, app, muted: false, remote });
+        for tab in &mut self.tabs {
+            tab.app.set_shared_log(true);
+        }
+        // The dialog follows: if the request came from inside Settings, that
+        // dialog belongs on the new radio now (a no-op when it came from the
+        // main window's strip).
+        self.tabs[self.focused].app.close_settings();
+        // In a split the new radio takes over the active pane rather than
+        // opening yet another column unasked.
+        let pane = self.active_pane();
+        let i = self.tabs.len() - 1;
+        self.panes[pane] = new_id;
+        self.focus_tab(i, ctx);
+        i
+    }
+
     fn close_tab(&mut self, i: usize, ctx: &egui::Context) {
         if i == 0 || i >= self.tabs.len() {
             return;
         }
         let mut tab = self.tabs.remove(i);
         tab.app.shutdown_ctrl();
-        if let Err(e) = sdroxide_config::remove_radio(tab.id) {
+        // Closing a connection hangs up and nothing more: it was never in this
+        // machine's roster, and the station at the other end is not ours to
+        // remove from anything.
+        if !tab.remote
+            && let Err(e) = sdroxide_config::remove_radio(tab.id)
+        {
             eprintln!("sdroxide: removing radio {} from the roster: {e}", tab.id);
         }
         crate::waterfall_gpu::retire(self.wgpu.as_ref(), u64::from(tab.id));

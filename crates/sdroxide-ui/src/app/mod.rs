@@ -482,6 +482,17 @@ pub struct SdroxideApp {
     /// remote client has nothing here to read them from and no business
     /// writing them. Left at the default and never persisted in the browser.
     remote_access: sdroxide_types::RemoteAccess,
+    /// Which station the **Remote** tab dials — the address as last entered,
+    /// read from this machine's `config.toml` and written back as it is typed.
+    /// Belongs to the screen, not to the station, so unlike `remote_access` it
+    /// is editable from every native client.
+    #[cfg(not(target_arch = "wasm32"))]
+    remote_server: sdroxide_types::RemoteServer,
+    /// What the last CONNECT from the Remote tab did — "connecting…" while the
+    /// shell has it, then whatever came back. Shown on that tab, because a
+    /// connection that failed to open leaves no tab of its own to say so.
+    #[cfg(not(target_arch = "wasm32"))]
+    remote_status: Option<Result<String, String>>,
     // ── Multi-radio (see `crate::multi::MultiApp`) ──
     /// Whether this instance is the focused tab. Always true in a single-radio
     /// session. Gates the announcer and the window title: a background radio
@@ -507,6 +518,12 @@ pub struct SdroxideApp {
     /// clients, the browser), which is also what hides the area there.
     #[cfg(not(target_arch = "wasm32"))]
     radio_roster: Vec<RadioChip>,
+    /// Whether the shell can build a radio of this machine's own — false in a
+    /// client that only ever drives somebody else's station (`--connect`),
+    /// where the roster's "+" would open nothing. Connecting to a *further*
+    /// server is a different matter and stays available there.
+    #[cfg(not(target_arch = "wasm32"))]
+    can_add_radio: bool,
     /// Radio-management actions the settings dialog asked for this frame. The
     /// dialog lives inside one tab and cannot reach the shell that owns the
     /// tab set, so requests are returned as values and drained by
@@ -557,6 +574,14 @@ pub(crate) enum RadioTabRequest {
     /// closes, the target's opens on its Radio page.
     Focus(u32),
     Add,
+    /// Open somebody else's station as a tab of its own: dial this WebSocket
+    /// URL and, if it answers, show it under `name`. Queued by the **Remote**
+    /// tab's CONNECT button — the connection is made by the shell, because
+    /// only it can add a tab to hold it.
+    Connect {
+        url: String,
+        name: String,
+    },
     Close(u32),
     Mute {
         id: u32,
@@ -794,6 +819,10 @@ impl SdroxideApp {
             oob_tx_ack: false,
             login: Default::default(),
             remote_access: persist::load_remote_access(),
+            #[cfg(not(target_arch = "wasm32"))]
+            remote_server: persist::load_remote_server(),
+            #[cfg(not(target_arch = "wasm32"))]
+            remote_status: None,
             focused: true,
             station_writer,
             view_key,
@@ -801,6 +830,10 @@ impl SdroxideApp {
             radio_id,
             #[cfg(not(target_arch = "wasm32"))]
             radio_roster: Vec::new(),
+            // Set by the shell, which is the only thing that knows whether it
+            // was given a factory.
+            #[cfg(not(target_arch = "wasm32"))]
+            can_add_radio: false,
             #[cfg(not(target_arch = "wasm32"))]
             radio_tab_requests: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -900,6 +933,23 @@ impl SdroxideApp {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn set_radio_roster(&mut self, roster: Vec<RadioChip>) {
         self.radio_roster = roster;
+    }
+
+    /// Whether the shell can open a radio attached to this machine (see
+    /// [`SdroxideApp::can_add_radio`]). Set once, when the session is
+    /// assembled.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn set_can_add_radio(&mut self, can: bool) {
+        self.can_add_radio = can;
+    }
+
+    /// How the connection the Remote tab asked for went (see
+    /// [`SdroxideApp::remote_status`]). Success is reported on the tab as well
+    /// as by the new radio appearing, because the operator may well be looking
+    /// at the dialog rather than at the strip behind it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn set_remote_status(&mut self, status: Result<String, String>) {
+        self.remote_status = Some(status);
     }
 
     /// Drain the radio-management requests the settings dialog queued this

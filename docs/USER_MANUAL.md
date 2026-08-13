@@ -107,7 +107,8 @@ or connects to a remote sdroxide server.
   [5.3](#53-ui-display-preferences-and-voice-announcements).
 - **Remote and web operation:** run headless as a server and control it from a
   browser or from a second sdroxide instance over the network, behind a username
-  and password.
+  and password. A station reached that way opens as a radio tab beside your own
+  ones — enter its address on **Settings → Remote** and press CONNECT.
 
 ---
 
@@ -876,6 +877,14 @@ is already using. Pick its interface, configure it, press **Apply /
 reconnect**, and it is on the air. From then on the same strip appears across
 the top of the main window as well.
 
+**Adding somebody else's station.** A radio in a tab does not have to be
+attached to this machine. **Settings → Remote** takes the address of an sdroxide
+server and gives it a tab of its own, exactly like a local radio
+([7.2](#72-connect-a-native-remote-client)) — the engine stays where the antenna
+is, and what crosses the network is the spectrum, the audio and the commands.
+Such a tab is closed from the roster like any other, which hangs up and changes
+nothing on the server.
+
 **The tab strip.** Each radio's controls sit in a small box of their own on
 the strip. Click a radio's name to switch to it. Everything else keeps
 running behind the radio you are looking at — audio keeps playing, digital
@@ -967,7 +976,10 @@ other streaming, and the transmitter belongs to the first receiver's radio:
   [§5.2.7](#527-plutosdr-adalm-pluto).
 
 **Remote and browser clients** connect to one radio — the first — for now;
-multi-radio remote operation is a planned follow-up.
+multi-radio remote operation is a planned follow-up. The other direction already
+works: a station dialled from **Settings → Remote**
+([7.2](#72-connect-a-native-remote-client)) becomes a tab like any other, so one
+screen can hold this machine's radios and somebody else's at the same time.
 
 ---
 
@@ -2139,7 +2151,7 @@ care about is always better copied on the panel.
 
 Everything that configures sdroxide lives in one window, opened with the
 **⚙ SETTINGS** button in the System module (the **⚙ SETUP** button in the SPOTS
-window opens the same dialog on its Spots tab). Nine tabs run across the top:
+window opens the same dialog on its Spots tab). Ten tabs run across the top:
 
 | Tab | What it holds |
 | --- | --- |
@@ -2151,6 +2163,7 @@ window opens the same dialog on its Spots tab). Nine tabs run across the top:
 | **FreeDV** | FreeDV Reporter (qso.freedv.org). [5.6](#56-freedv-freedv-reporter) |
 | **Uploads** | Callsign lookup, QSL upload, confirmation download. [5.7](#57-uploads-callsign-lookup-and-qsl-services) |
 | **Servers** | Hamlib rigctld, the built-in TCI server, and the WSJT-X UDP broadcast. [5.8](#58-servers-letting-other-programs-drive-the-radio) |
+| **Remote** | The address of an sdroxide server elsewhere, and the button that connects to it. [7.2](#72-connect-a-native-remote-client) |
 | **TLE** | Satellites to track beyond the amateur set, and their frequencies. [5.9](#59-tle-satellites-and-their-frequencies) |
 
 Most settings take effect the moment you change them. The ones that open or
@@ -2172,7 +2185,9 @@ show, and change, the real thing whether you are at the shack machine, on a
 native remote client or in a browser tab. `input.json` and the `[ui]` half of
 `config.toml` are the exception, and belong to the screen in front of you: a
 display preference and a knob on your desk have nothing to do with the radio in
-the other room. The rest of `config.toml` — including the `[remote_access]`
+the other room — and so does the `[remote_server]` address on the **Remote**
+tab, which is where *this* screen goes rather than anything about the station it
+arrives at. The rest of `config.toml` — including the `[remote_access]`
 sign-in — belongs to the engine's machine, which is why the **Remote access**
 section of the General tab is only shown there.
 
@@ -4693,18 +4708,40 @@ to anyone who can reach the port, and says so in its log at startup.
 
 ### 7.2 Connect a native remote client
 
-On another machine:
+From the GUI, on any other machine running sdroxide: open **Settings →
+Remote**, enter the server's **Address** and **Port**, and press **CONNECT**.
+
+The station comes up as a radio tab of its own, beside whatever radios that
+sdroxide already has open — the tab strip at the top of the window switches
+between them, and ⊞ puts two side by side ([2.17](#217-running-more-than-one-radio)).
+Your own radio keeps running while you work the remote one. To hang up, close
+the tab from the roster at the top of **Settings → Radio**; nothing on the
+server is changed by that. If the server asks for a username and password, its
+sign-in screen appears in the new tab ([7.3](#73-sign-in-who-may-operate-the-station)).
+
+The address is remembered in `config.toml` on the machine you typed it on, so
+the next connection is one button. **Address** takes a host name, an IPv4 or
+IPv6 address, or a complete `ws://…` (or `wss://`) URL if the server sits behind
+a reverse proxy — a URL is used exactly as typed and ignores the port box.
+**Port** is `server_port` from the server's own `config.toml`, 4950 unless it
+was given `--port`.
+
+The same thing from the command line, which starts sdroxide as a client and
+nothing else:
 
 ```
 sdroxide --connect HOST:4950
 ```
 
-`--connect` accepts `host`, `host:port`, or a full `ws://…` URL. The remote
-client is the full sdroxide GUI running against the server: control, state,
-memories, meters, spectrum, FT8 decodes and logging, and skimmer spots all work.
-Receive audio streams down (48 kHz mono), and your microphone is sent up to the
-server while you transmit. The remote client uses your local speakers and
-microphone for audio.
+`--connect` accepts `host`, `host:port`, or a full `ws://…` URL. A client
+started this way has no radio of its own — and can still reach **Settings →
+Remote** to connect to a second station.
+
+Either way, a remote client is the full sdroxide GUI running against the server:
+control, state, memories, meters, spectrum, FT8 decodes and logging, and skimmer
+spots all work. Receive audio streams down (48 kHz mono), and your microphone is
+sent up to the server while you transmit. The remote client uses your local
+speakers and microphone for audio.
 
 ### 7.3 Sign-in: who may operate the station
 
@@ -5283,7 +5320,7 @@ sdroxide stores its settings under the per-user config directory:
 
 | File | Format | Contents |
 | --- | --- | --- |
-| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, `region` (`"R1"` / `"R2"` / `"R3"` — the IARU region every band plan follows, [§5.1](#51-general-station-audio-and-remote-access)), plus the `[ui]` display preferences (including `theme`, `button_style` and `window_style`), the `[speech]` announcement settings ([§5.3](#53-ui-display-preferences-and-voice-announcements)) and the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext). Belongs to the machine the engine runs on. |
+| `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, `region` (`"R1"` / `"R2"` / `"R3"` — the IARU region every band plan follows, [§5.1](#51-general-station-audio-and-remote-access)), plus the `[ui]` display preferences (including `theme`, `button_style` and `window_style`), the `[speech]` announcement settings ([§5.3](#53-ui-display-preferences-and-voice-announcements)), the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext) and the `[remote_server]` address the **Remote** tab dials ([§7.2](#72-connect-a-native-remote-client)). Belongs to the machine the engine runs on — except `[ui]`, `[speech]` and `[remote_server]`, which belong to the screen in front of you. |
 | `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/RX-888/Airspy HF+/SDRplay/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
 | `digi.json` | JSON | Digital-mode operator settings: your callsign and grid, FT8/FT4/FT2 TX period, auto-sequence and message templates, and the WSPR beacon's duty cycle, power and band-hop list. |
 | `memories.json` | JSON | Saved memory channels. |

@@ -117,6 +117,25 @@ pub(in crate::app) fn persist_remote_access(access: &sdroxide_types::RemoteAcces
 #[cfg(target_arch = "wasm32")]
 pub(in crate::app) fn persist_remote_access(_access: &sdroxide_types::RemoteAccess) {}
 
+// ── Remote server address (native: config.toml [remote_server]) ──────────────
+//
+// The other direction: which station *this* screen dials, from Settings →
+// Remote. No browser half at all, unlike everything above — a browser client is
+// already attached to the server that served it and has nowhere to put a second
+// connection, so that tab does not exist there and there is nothing to remember.
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::app) fn load_remote_server() -> sdroxide_types::RemoteServer {
+    sdroxide_config::load_remote_server()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::app) fn persist_remote_server(server: &sdroxide_types::RemoteServer) {
+    if let Err(e) = sdroxide_config::save_remote_server(server) {
+        eprintln!("failed to save the remote server address: {e}");
+    }
+}
+
 // ── Broadcast stations ───────────────────────────────────────────────────────
 //
 // Native: the cached season schedule (or the compiled-in one until a download

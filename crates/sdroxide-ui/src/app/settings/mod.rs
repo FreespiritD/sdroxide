@@ -19,6 +19,8 @@ pub(in crate::app) mod controls;
 pub(in crate::app) mod general;
 pub(in crate::app) mod net;
 pub(in crate::app) mod radio;
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::app) mod remote;
 pub(in crate::app) mod servers;
 pub(in crate::app) mod tle;
 pub(in crate::app) mod ui_tab;
@@ -37,6 +39,8 @@ use self::radio::{
     settings_pluto_tab, settings_rtlsdr_tab, settings_rx888_tab, settings_sdrplay_tab,
     settings_smartsdr_tab, settings_soapy_devices, settings_tci_tab,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use self::remote::settings_remote_tab;
 use self::servers::{
     settings_rigctld_tab, settings_rotator_tab, settings_tci_server_tab, settings_wsjtx_tab,
 };
@@ -49,8 +53,9 @@ use crate::theme::ThemedScroll as _;
 /// Settings dialog tabs: General (station identity + audio devices), the radio
 /// interface and its settings, display/UI preferences and spoken
 /// announcements, control inputs
-/// (keyboard/mouse bindings), the network cockpit (spot feeds + uploads), and
-/// the built-in TCI server.
+/// (keyboard/mouse bindings), the network cockpit (spot feeds + uploads), the
+/// built-in TCI server, and — the other direction — the sdroxide server this
+/// screen connects *out* to.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::app) enum SettingsTab {
     General,
@@ -61,6 +66,10 @@ pub(in crate::app) enum SettingsTab {
     FreeDv,
     Uploads,
     Servers,
+    /// Dial another station. Native only: a browser client is already attached
+    /// to the server that served it and has nowhere to put a second one.
+    #[cfg(not(target_arch = "wasm32"))]
+    Remote,
     Tle,
 }
 
@@ -141,6 +150,14 @@ pub(in crate::app) struct SettingsIo<'a> {
     /// credentials are `config.toml` on the machine the radio is attached to,
     /// and this is not it.
     access_edit: Option<&'a mut sdroxide_types::RemoteAccess>,
+    /// The other direction — which station this screen dials from the Remote
+    /// tab, and whether CONNECT was pressed. Editable everywhere `access_edit`
+    /// is not: it is this machine's own setting, so a remote client is exactly
+    /// as entitled to it as the shack machine.
+    #[cfg(not(target_arch = "wasm32"))]
+    remote_edit: &'a mut sdroxide_types::RemoteServer,
+    #[cfg(not(target_arch = "wasm32"))]
+    remote_connect: &'a mut bool,
     digi_edit: &'a mut sdroxide_types::DigiConfig,
     digi_seeded: bool,
     net_edit: &'a mut NetworkConfig,
@@ -361,6 +378,10 @@ impl SdroxideApp {
         // Only where the engine is in this process: see `SettingsIo`.
         let owns_server = !self.ctrl.engine_is_remote();
         let mut access_edit = self.remote_access.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut remote_edit = self.remote_server.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut remote_connect = false;
         let mut digi_edit = self.digi_cfg_edit.clone();
         let digi_seeded = self.digi_cfg_seeded;
         let mut region_edit = self.region_edit;
@@ -497,6 +518,10 @@ impl SdroxideApp {
                             apply_iface: &mut apply_iface,
                             ui_edit: &mut ui_edit,
                             access_edit: owns_server.then_some(&mut access_edit),
+                            #[cfg(not(target_arch = "wasm32"))]
+                            remote_edit: &mut remote_edit,
+                            #[cfg(not(target_arch = "wasm32"))]
+                            remote_connect: &mut remote_connect,
                             digi_edit: &mut digi_edit,
                             digi_seeded,
                             net_edit: &mut net_edit,
@@ -793,6 +818,27 @@ impl SdroxideApp {
             self.remote_access = access_edit;
             crate::app::persist::persist_remote_access(&self.remote_access);
         }
+        // The address to dial, written as it is typed for the same reason: a
+        // pressed CONNECT is a poor moment to find out the address was never
+        // saved, and there is no APPLY step here to hang it off. Not gated on
+        // `owns_server` — this is the operator's own machine's setting, so a
+        // remote client is as entitled to it as the shack machine is.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if remote_edit != self.remote_server {
+                self.remote_server = remote_edit;
+                crate::app::persist::persist_remote_server(&self.remote_server);
+            }
+            if remote_connect && !self.remote_server.host.trim().is_empty() {
+                // Dialled by the shell after the frame: it owns the tab set,
+                // and this connection needs a tab to live in.
+                self.remote_status = Some(Ok(format!("Dialling {}…", self.remote_server.url())));
+                self.radio_tab_requests.push(crate::app::RadioTabRequest::Connect {
+                    url: self.remote_server.url(),
+                    name: self.remote_server.label(),
+                });
+            }
+        }
         // Callsign/grid from the General tab — same store as the FT8/SSTV setup
         // dialog. Only apply once seeded so we can't overwrite the engine's saved
         // config with defaults.
@@ -826,19 +872,26 @@ impl SdroxideApp {
     ) {
         use sdroxide_types::Backend;
 
+        // Built rather than written out, because one of the tabs only exists on
+        // native (see [`SettingsTab::Remote`]).
+        let mut tabs = vec![
+            (SettingsTab::General, "General"),
+            (SettingsTab::Radio, "Radio"),
+            (SettingsTab::Ui, "UI"),
+            (SettingsTab::Controls, "Controls"),
+            (SettingsTab::Spots, "Spots"),
+            (SettingsTab::FreeDv, "FreeDV"),
+            (SettingsTab::Uploads, "Uploads"),
+            (SettingsTab::Servers, "Servers"),
+        ];
+        // Next to Servers: the two are the same subject from opposite ends —
+        // what this station offers others, and where this screen goes.
+        #[cfg(not(target_arch = "wasm32"))]
+        tabs.push((SettingsTab::Remote, "Remote"));
+        tabs.push((SettingsTab::Tle, "TLE"));
         // Wrapped: the tab strip no longer fits the window's width on one line.
         ui.horizontal_wrapped(|ui| {
-            for (t, label) in [
-                (SettingsTab::General, "General"),
-                (SettingsTab::Radio, "Radio"),
-                (SettingsTab::Ui, "UI"),
-                (SettingsTab::Controls, "Controls"),
-                (SettingsTab::Spots, "Spots"),
-                (SettingsTab::FreeDv, "FreeDV"),
-                (SettingsTab::Uploads, "Uploads"),
-                (SettingsTab::Servers, "Servers"),
-                (SettingsTab::Tle, "TLE"),
-            ] {
+            for (t, label) in tabs {
                 if crate::chrome::chip(ui, *io.tab == t, label).clicked() {
                     *io.tab = t;
                 }
@@ -1540,6 +1593,17 @@ impl SdroxideApp {
                     io.rot_apply,
                 );
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            SettingsTab::Remote => settings_remote_tab(
+                ui,
+                io.remote_edit,
+                io.remote_connect,
+                // A session with no shell around it has nowhere to put the
+                // connection. Every native build has one; this is what keeps
+                // the button honest if that ever stops being true.
+                !self.radio_roster.is_empty(),
+                self.remote_status.as_ref(),
+            ),
             SettingsTab::Tle => settings_tle_tab(ui, io),
         }
     }
@@ -1612,12 +1676,15 @@ impl SdroxideApp {
         requests: &mut Vec<crate::app::RadioTabRequest>,
         name_edit: &mut Option<(u32, String)>,
     ) {
-        if self.radio_roster.is_empty() {
-            // Not a multi-radio session (a native remote client): nothing to
-            // manage from here.
+        // Nothing to manage: no roster at all (the browser client), or a
+        // session that holds one radio it cannot add to — a client dialled
+        // straight at somebody else's station, which has exactly one thing on
+        // screen and no hardware of its own to open beside it.
+        let Some(station) = self.radio_roster.first() else { return };
+        if self.radio_roster.len() < 2 && !self.can_add_radio {
             return;
         }
-        let station_id = self.radio_roster[0].id;
+        let station_id = station.id;
         ui.horizontal_wrapped(|ui| {
             for chip in &self.radio_roster {
                 let mut label = RichText::new(chip.display_name()).size(12.5);
@@ -1662,9 +1729,13 @@ impl SdroxideApp {
                 }
                 ui.add_space(6.0);
             }
-            if crate::chrome::chip(ui, false, RichText::new("+").size(13.0))
-                .on_hover_text("Add a radio")
-                .clicked()
+            // Absent where there is nothing to add: a client that only drives
+            // somebody else's station has no local radios to open. Connecting
+            // to a further server is still offered, on the Remote tab.
+            if self.can_add_radio
+                && crate::chrome::chip(ui, false, RichText::new("+").size(13.0))
+                    .on_hover_text("Add a radio")
+                    .clicked()
             {
                 requests.push(crate::app::RadioTabRequest::Add);
             }

@@ -69,6 +69,71 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
+/// The other end of the same wire: which sdroxide server *this* screen dials.
+///
+/// [`RemoteAccess`] above is what a station demands of its visitors;
+/// this is where a visitor goes. It belongs to the machine the operator is
+/// sitting at rather than to the station — two laptops pointed at the same
+/// shack each remember their own — which is why it is persisted next to the
+/// sound-device selection in `config.toml` and never travels in the
+/// [`StationConfig`](crate::StationConfig) bundle.
+///
+/// No credentials here on purpose. The server challenges the socket once it is
+/// open and the sign-in dialog answers it, so a password would be a second copy
+/// of a secret this file has no need to hold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RemoteServer {
+    /// Host name or address of the machine running `sdroxide --server`. Empty
+    /// until the operator has entered one.
+    pub host: String,
+    /// The port that server listens on — `server_port` in *its* `config.toml`.
+    pub port: u16,
+}
+
+impl Default for RemoteServer {
+    fn default() -> Self {
+        // The port every sdroxide server binds unless it was told otherwise, so
+        // the operator only has to type the half that is actually theirs.
+        RemoteServer { host: String::new(), port: 4950 }
+    }
+}
+
+impl RemoteServer {
+    /// The WebSocket URL to dial, matching what `--connect` builds.
+    ///
+    /// A host that already carries a scheme is taken as a complete URL and used
+    /// as typed: pasting a `ws://…/ws` (or a `wss://` one from a reverse proxy)
+    /// into the address box is a reasonable thing to do, and rebuilding it
+    /// around the port box would only break it. An IPv6 literal is bracketed if
+    /// the operator did not bracket it themselves, because `::1:4950` is not an
+    /// address.
+    pub fn url(&self) -> String {
+        let host = self.host.trim();
+        if host.contains("://") {
+            return host.to_string();
+        }
+        if host.contains(':') && !host.starts_with('[') {
+            return format!("ws://[{host}]:{}/ws", self.port);
+        }
+        format!("ws://{host}:{}/ws", self.port)
+    }
+
+    /// What to call the tab this connection opens: the address as typed, minus
+    /// the scheme and the endpoint path that are the same for every server.
+    pub fn label(&self) -> String {
+        let host = self.host.trim();
+        if host.contains("://") {
+            return host
+                .split_once("://")
+                .map_or(host, |(_, rest)| rest)
+                .trim_end_matches("/ws")
+                .to_string();
+        }
+        format!("{host}:{}", self.port)
+    }
+}
+
 /// Where a connection stands with the server's sign-in challenge.
 ///
 /// Reported by [`RadioController::auth_phase`](crate::RadioController::auth_phase)
@@ -148,6 +213,25 @@ mod tests {
         // length term catches this one.
         assert!(!ct_eq(b"abc", b"abc\0"));
         assert!(ct_eq(b"abc", b"abc"));
+    }
+
+    /// What the address box produces for the shapes an operator actually
+    /// types: a bare host, a host with the port in it, and a pasted URL.
+    #[test]
+    fn the_dialled_url_follows_what_was_typed() {
+        let plain = RemoteServer { host: "shack".into(), port: 4950 };
+        assert_eq!(plain.url(), "ws://shack:4950/ws");
+        assert_eq!(plain.label(), "shack:4950");
+        // A whole URL wins over the port box — including a `wss://` one from a
+        // reverse proxy, which this could not have built.
+        let url = RemoteServer { host: "wss://shack.example/ws".into(), port: 4950 };
+        assert_eq!(url.url(), "wss://shack.example/ws");
+        assert_eq!(url.label(), "shack.example");
+        // An IPv6 literal needs brackets before a port can be appended to it.
+        let v6 = RemoteServer { host: "fe80::1".into(), port: 4950 };
+        assert_eq!(v6.url(), "ws://[fe80::1]:4950/ws");
+        let bracketed = RemoteServer { host: "[fe80::1]".into(), port: 4950 };
+        assert_eq!(bracketed.url(), "ws://[fe80::1]:4950/ws");
     }
 
     #[test]

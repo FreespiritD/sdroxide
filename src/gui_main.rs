@@ -167,116 +167,167 @@ pub fn run_multi(
     eframe::run_native(
         "sdroxide",
         options,
-        Box::new(move |cc| Ok(Box::new(sdroxide_ui::MultiApp::new(cc, tabs, Some(factory))))),
+        Box::new(move |cc| {
+            Ok(Box::new(sdroxide_ui::MultiApp::new(
+                cc,
+                tabs,
+                Some(factory),
+                Some(remote_factory()),
+            )))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))
+}
+
+/// This machine's sound devices, hung off a connection to somebody else's
+/// station: their audio comes out of these speakers, and this microphone is
+/// what goes on their air.
+struct CpalBridge {
+    _out: Option<sdroxide_audio::AudioOutput>,
+    out: Option<sdroxide_radio::rtrb::Producer<f32>>,
+    _mic: Option<sdroxide_audio::AudioInput>,
+    mic: Option<sdroxide_radio::rtrb::Consumer<f32>>,
+    mic_resampler: Option<sdroxide_dsp::MonoResampler>,
+    raw: Vec<f32>,
+    /// Selected device names; `None` = system default.
+    out_name: Option<String>,
+    in_name: Option<String>,
+}
+
+impl CpalBridge {
+    /// Open the devices this machine's settings name. Every connection gets a
+    /// bridge of its own — two servers on screen are two streams the operating
+    /// system mixes, exactly as two local radios are.
+    fn open() -> Self {
+        let settings = Settings::load();
+        let mut bridge = CpalBridge {
+            _out: None,
+            out: None,
+            _mic: None,
+            mic: None,
+            mic_resampler: None,
+            raw: Vec::new(),
+            out_name: settings.audio_output.clone(),
+            in_name: settings.audio_input.clone(),
+        };
+        bridge.open_output();
+        bridge.open_input();
+        bridge
+    }
+
+    fn open_output(&mut self) {
+        self._out = None;
+        self.out = None;
+        match sdroxide_audio::start_output(self.out_name.as_deref(), 48_000) {
+            Ok((o, p)) => {
+                self._out = Some(o);
+                self.out = Some(p);
+            }
+            Err(e) => warn!("no audio output ({e}); running silent"),
+        }
+    }
+    fn open_input(&mut self) {
+        self._mic = None;
+        self.mic = None;
+        match sdroxide_audio::start_input(self.in_name.as_deref(), 48_000) {
+            Ok((i, c)) => {
+                self.mic_resampler = sdroxide_dsp::MonoResampler::new(i.sample_rate, 48_000.0);
+                self._mic = Some(i);
+                self.mic = Some(c);
+            }
+            Err(e) => warn!("no microphone ({e}); TX carries silence"),
+        }
+    }
+}
+
+impl sdroxide_ui::AudioBridge for CpalBridge {
+    fn caps(&self) -> sdroxide_proto::AudioCaps {
+        sdroxide_proto::AudioCaps { opus_decode: false, opus_encode: false }
+    }
+    fn play(&mut self, pcm: &[f32]) {
+        if let Some(out) = self.out.as_mut() {
+            for &s in pcm {
+                if out.push(s).is_err() || out.push(s).is_err() {
+                    break; // ring full
+                }
+            }
+        }
+    }
+    fn pull_mic(&mut self, out_vec: &mut Vec<f32>) {
+        let Some(mic) = self.mic.as_mut() else { return };
+        self.raw.clear();
+        while let Ok(s) = mic.pop() {
+            self.raw.push(s);
+        }
+        match &mut self.mic_resampler {
+            Some(r) => r.push(&self.raw, out_vec),
+            None => out_vec.extend_from_slice(&self.raw),
+        }
+    }
+    fn devices(&self) -> Option<sdroxide_types::AudioDevices> {
+        Some(sdroxide_types::AudioDevices {
+            outputs: sdroxide_audio::output_device_names(),
+            inputs: sdroxide_audio::input_device_names(),
+            selected_output: self.out_name.clone(),
+            selected_input: self.in_name.clone(),
+        })
+    }
+    fn set_device(&mut self, output: bool, name: Option<String>) {
+        if output {
+            self.out_name = name;
+            self.open_output();
+        } else {
+            self.in_name = name;
+            self.open_input();
+        }
+        // Same persisted selection as the local app (same machine).
+        let mut s = sdroxide_config::Settings::load();
+        s.audio_output = self.out_name.clone();
+        s.audio_input = self.in_name.clone();
+        if let Err(e) = s.save() {
+            warn!("saving audio device selection: {e}");
+        }
+    }
+}
+
+/// Dial an sdroxide server and wrap the session as a radio tab.
+///
+/// Used both for `--connect`, where it is the whole session, and for Settings →
+/// Remote, where it is one more tab beside the radios already open. `id` keys
+/// that tab's saved layout; `ctx` is what the socket wakes when a message
+/// arrives.
+fn connect_remote(
+    url: &str,
+    id: u32,
+    ctx: &eframe::egui::Context,
+) -> Result<sdroxide_ui::RadioTab, String> {
+    let ctx = ctx.clone();
+    // A deadline hint, not an immediate repaint: audio packets arrive far
+    // faster than the display needs to redraw, and egui takes the soonest of
+    // all requested deadlines anyway — this escapes the idle poll quickly
+    // without outpacing the app's frame scheduler.
+    let ctrl = sdroxide_ui::RemoteController::connect(
+        url,
+        Some(Box::new(CpalBridge::open())),
+        move || ctx.request_repaint_after(std::time::Duration::from_millis(33)),
+    )?;
+    // Named after the address, minus the parts every server shares — the shell
+    // overrides this with whatever the operator typed when the connection came
+    // from the Remote tab.
+    let name =
+        url.split_once("://").map_or(url, |(_, rest)| rest).trim_end_matches("/ws").to_string();
+    Ok(sdroxide_ui::RadioTab { id, name, ctrl: Box::new(ctrl) })
+}
+
+/// The Remote tab's dialler, handed to the shell so CONNECT has something to
+/// call. Lives here because the connection needs this machine's sound devices.
+fn remote_factory() -> sdroxide_ui::RemoteFactory {
+    Box::new(connect_remote)
 }
 
 /// Native remote client: same app, `RemoteController` over WebSocket, audio
 /// through local cpal devices.
 pub fn run_remote(url: &str) -> Result<()> {
-    struct CpalBridge {
-        _out: Option<sdroxide_audio::AudioOutput>,
-        out: Option<sdroxide_radio::rtrb::Producer<f32>>,
-        _mic: Option<sdroxide_audio::AudioInput>,
-        mic: Option<sdroxide_radio::rtrb::Consumer<f32>>,
-        mic_resampler: Option<sdroxide_dsp::MonoResampler>,
-        raw: Vec<f32>,
-        /// Selected device names; `None` = system default.
-        out_name: Option<String>,
-        in_name: Option<String>,
-    }
-
-    impl CpalBridge {
-        fn open_output(&mut self) {
-            self._out = None;
-            self.out = None;
-            match sdroxide_audio::start_output(self.out_name.as_deref(), 48_000) {
-                Ok((o, p)) => {
-                    self._out = Some(o);
-                    self.out = Some(p);
-                }
-                Err(e) => warn!("no audio output ({e}); running silent"),
-            }
-        }
-        fn open_input(&mut self) {
-            self._mic = None;
-            self.mic = None;
-            match sdroxide_audio::start_input(self.in_name.as_deref(), 48_000) {
-                Ok((i, c)) => {
-                    self.mic_resampler = sdroxide_dsp::MonoResampler::new(i.sample_rate, 48_000.0);
-                    self._mic = Some(i);
-                    self.mic = Some(c);
-                }
-                Err(e) => warn!("no microphone ({e}); TX carries silence"),
-            }
-        }
-    }
-
-    impl sdroxide_ui::AudioBridge for CpalBridge {
-        fn caps(&self) -> sdroxide_proto::AudioCaps {
-            sdroxide_proto::AudioCaps { opus_decode: false, opus_encode: false }
-        }
-        fn play(&mut self, pcm: &[f32]) {
-            if let Some(out) = self.out.as_mut() {
-                for &s in pcm {
-                    if out.push(s).is_err() || out.push(s).is_err() {
-                        break; // ring full
-                    }
-                }
-            }
-        }
-        fn pull_mic(&mut self, out_vec: &mut Vec<f32>) {
-            let Some(mic) = self.mic.as_mut() else { return };
-            self.raw.clear();
-            while let Ok(s) = mic.pop() {
-                self.raw.push(s);
-            }
-            match &mut self.mic_resampler {
-                Some(r) => r.push(&self.raw, out_vec),
-                None => out_vec.extend_from_slice(&self.raw),
-            }
-        }
-        fn devices(&self) -> Option<sdroxide_types::AudioDevices> {
-            Some(sdroxide_types::AudioDevices {
-                outputs: sdroxide_audio::output_device_names(),
-                inputs: sdroxide_audio::input_device_names(),
-                selected_output: self.out_name.clone(),
-                selected_input: self.in_name.clone(),
-            })
-        }
-        fn set_device(&mut self, output: bool, name: Option<String>) {
-            if output {
-                self.out_name = name;
-                self.open_output();
-            } else {
-                self.in_name = name;
-                self.open_input();
-            }
-            // Same persisted selection as the local app (same machine).
-            let mut s = sdroxide_config::Settings::load();
-            s.audio_output = self.out_name.clone();
-            s.audio_input = self.in_name.clone();
-            if let Err(e) = s.save() {
-                warn!("saving audio device selection: {e}");
-            }
-        }
-    }
-
-    let settings = Settings::load();
-    let mut bridge = CpalBridge {
-        _out: None,
-        out: None,
-        _mic: None,
-        mic: None,
-        mic_resampler: None,
-        raw: Vec::new(),
-        out_name: settings.audio_output.clone(),
-        in_name: settings.audio_input.clone(),
-    };
-    bridge.open_output();
-    bridge.open_input();
-
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()
@@ -294,17 +345,14 @@ pub fn run_remote(url: &str) -> Result<()> {
         "sdroxide-remote",
         options,
         Box::new(move |cc| {
-            let ctx = cc.egui_ctx.clone();
-            // A deadline hint, not an immediate repaint: audio packets arrive
-            // far faster than the display needs to redraw, and egui takes the
-            // soonest of all requested deadlines anyway — this escapes the
-            // idle poll quickly without outpacing the app's frame scheduler.
-            let ctrl =
-                sdroxide_ui::RemoteController::connect(&url, Some(Box::new(bridge)), move || {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(33))
-                })
-                .map_err(|e| format!("connect {url}: {e}"))?;
-            Ok(Box::new(sdroxide_ui::SdroxideApp::new(cc, Box::new(ctrl))))
+            // Radio 0, so a client that has always been started this way keeps
+            // the layout it saved before there was a shell around it.
+            let tab =
+                connect_remote(&url, 0, &cc.egui_ctx).map_err(|e| format!("connect {url}: {e}"))?;
+            // No radio factory: this machine's own hardware, if it has any, is
+            // not what this session is for. A *further* server still is —
+            // Settings → Remote works here exactly as it does in the shack.
+            Ok(Box::new(sdroxide_ui::MultiApp::new(cc, vec![tab], None, Some(remote_factory()))))
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))

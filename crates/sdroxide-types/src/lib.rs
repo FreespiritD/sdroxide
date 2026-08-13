@@ -50,7 +50,7 @@ mod worldmask;
 mod wsjtx;
 mod wspr;
 
-pub use access::{AuthPhase, RemoteAccess};
+pub use access::{AuthPhase, RemoteAccess, RemoteServer};
 pub use awards::{
     Awards, Coverage, EntitySlot, Highlight, LogIndex, Novelty, Status as AwardStatus, US_STATES,
     compute_awards, counts, coverage_counts, entity_coverage, entity_name,

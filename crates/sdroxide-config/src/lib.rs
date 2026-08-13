@@ -118,6 +118,12 @@ pub struct Settings {
     ///
     /// Also a table, so it goes after every plain value for the reason above.
     pub speech: sdroxide_types::SpeechSettings,
+    /// The sdroxide server this screen dials from Settings → Remote — the
+    /// counterpart of `remote_access` above, and client-side like `[ui]` and
+    /// `[speech]`: it is where *this* machine goes, not who may come here.
+    ///
+    /// A table again, and last for the same reason.
+    pub remote_server: sdroxide_types::RemoteServer,
 }
 
 impl Default for Settings {
@@ -137,6 +143,7 @@ impl Default for Settings {
             ui: sdroxide_types::UiSettings::default(),
             remote_access: sdroxide_types::RemoteAccess::default(),
             speech: sdroxide_types::SpeechSettings::default(),
+            remote_server: sdroxide_types::RemoteServer::default(),
         }
     }
 }
@@ -270,6 +277,19 @@ pub fn load_remote_access() -> sdroxide_types::RemoteAccess {
 pub fn save_remote_access(access: &sdroxide_types::RemoteAccess) -> Result<(), ConfigError> {
     let mut s = Settings::load();
     s.remote_access = access.clone();
+    s.save()
+}
+
+/// Load the server this screen last dialled from Settings → Remote.
+pub fn load_remote_server() -> sdroxide_types::RemoteServer {
+    Settings::load().remote_server
+}
+
+/// Persist the server address, preserving every other setting
+/// (read-modify-write, like [`save_ui_settings`]).
+pub fn save_remote_server(server: &sdroxide_types::RemoteServer) -> Result<(), ConfigError> {
+    let mut s = Settings::load();
+    s.remote_server = server.clone();
     s.save()
 }
 
@@ -1540,6 +1560,36 @@ mod tests {
         assert!(back.speech.cat.filters);
         assert!(!back.tx_ham_only, "a value below a table must not become part of it");
         assert_eq!(back.ui, s.ui, "the table above must survive too");
+    }
+
+    /// The fourth table, and the one most recently appended: the address the
+    /// Remote tab dials must survive a write, and must not take the scalars
+    /// above it with it.
+    #[test]
+    fn the_remote_server_address_survives_a_write() {
+        let s = Settings {
+            remote_server: sdroxide_types::RemoteServer { host: "shack.local".into(), port: 4951 },
+            tx_ham_only: false,
+            server_port: 4952,
+            ..Settings::default()
+        };
+        let text = toml::to_string_pretty(&s).unwrap();
+        let back: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(back.remote_server.host, "shack.local");
+        assert_eq!(back.remote_server.port, 4951);
+        assert!(!back.tx_ham_only, "a value below a table must not become part of it");
+        assert_eq!(back.server_port, 4952, "the port we listen on is not the one we dial");
+        assert_eq!(back.speech, s.speech, "the table above must survive too");
+    }
+
+    /// A `config.toml` written before this feature existed has no address to
+    /// dial, and the port box starts on the one every server binds.
+    #[test]
+    fn a_config_without_a_remote_server_table_has_nowhere_to_go() {
+        let s: Settings = toml::from_str("server_port = 4950").unwrap();
+        assert!(s.remote_server.host.is_empty());
+        assert_eq!(s.remote_server.port, 4950);
     }
 
     /// A `config.toml` written before this feature existed comes up silent,
