@@ -14,7 +14,7 @@ use rtrb::{Consumer, Producer};
 
 use crate::error::Error;
 use crate::iiod::Connection;
-use crate::net::{STATS_INTERVAL, Shared, TX_BUFFER_SAMPLES};
+use crate::net::{STATS_INTERVAL, Shared};
 
 /// I and Q of the transmit buffer's one pair. `Phy::probe` guarantees it sits
 /// at scan indices 0 and 1; a 2R2T device's second transmit pair stays
@@ -35,7 +35,14 @@ const ETIMEDOUT: i64 = -110;
 struct Stats {
     what: &'static str,
     nominal_hz: f64,
-    started: Instant,
+    /// How long the buffer has actually been open, summed across every window.
+    ///
+    /// Wall time since the thread started is the wrong denominator: the
+    /// transmit buffer is closed between overs and the receive buffer is closed
+    /// *during* them, so counting the idle stretches reported clock errors
+    /// hundreds of thousands of ppm out — a figure alarming enough in a debug
+    /// log to send a tester after the wrong fault entirely.
+    active: Duration,
     since: Instant,
     win_buffers: u64,
     win_samples: u64,
@@ -49,7 +56,7 @@ impl Stats {
         Stats {
             what,
             nominal_hz,
-            started: Instant::now(),
+            active: Duration::ZERO,
             since: Instant::now(),
             win_buffers: 0,
             win_samples: 0,
@@ -57,6 +64,21 @@ impl Stats {
             total_samples: 0,
             total_dropped: 0,
         }
+    }
+
+    /// The buffer just opened: start a fresh window, so the first figure after
+    /// an idle stretch measures streaming and not the wait that preceded it.
+    fn opened(&mut self) {
+        self.since = Instant::now();
+        self.win_buffers = 0;
+        self.win_samples = 0;
+        self.win_dropped = 0;
+    }
+
+    /// The buffer just closed: bank the part-window that will never be
+    /// reported, so its samples and its time stay paired in the clock estimate.
+    fn closed(&mut self) {
+        self.active += self.since.elapsed();
     }
 
     fn on_buffer(&mut self, pairs: usize) {
@@ -76,7 +98,7 @@ impl Stats {
     /// error: a Pluto reading tens of ppm here is tens of ppm off frequency,
     /// which is what the `ppm` setting on the Radio tab is for.
     fn clock_error(&self) -> String {
-        let dt = self.started.elapsed().as_secs_f64();
+        let dt = self.active.as_secs_f64();
         if dt < 20.0 || self.total_samples == 0 || self.nominal_hz <= 0.0 {
             return "clock: measuring".to_string();
         }
@@ -91,6 +113,25 @@ impl Stats {
             return;
         }
         let ksps = self.win_samples as f64 / dt.as_secs_f64() / 1000.0;
+        // A direction that cannot carry the full rate is the fault that used to
+        // need an oscilloscope to find: on transmit the device empties its
+        // buffer faster than the next one arrives, so the carrier drops out
+        // between buffers and the envelope goes out chopped. Nothing else in
+        // the program can see it, so it is said here.
+        // 5 %, not a hair's breadth: a window ends on a buffer boundary while
+        // its clock does not, and the first buffer of an over is waited for
+        // from an empty ring, so a percent or two of shortfall is bookkeeping.
+        if self.win_dropped == 0 && self.nominal_hz > 0.0 && ksps * 1e3 < self.nominal_hz * 0.95 {
+            tracing::warn!(
+                "PlutoSDR {}: {ksps:.1} of {:.1} ksps over {:.2}s — the link is not carrying the \
+                 full sample rate. On transmit this leaves the modulation with gaps in it; \
+                 lower the sample rate, or reach the radio over Ethernet rather than the USB \
+                 gadget",
+                self.what,
+                self.nominal_hz / 1e3,
+                dt.as_secs_f64(),
+            );
+        }
         if self.win_dropped > 0 {
             tracing::warn!(
                 "PlutoSDR {}: {} buffers, {} samples ({ksps:.1} ksps) over {:.2}s; \
@@ -113,6 +154,7 @@ impl Stats {
                 self.clock_error(),
             );
         }
+        self.active += dt;
         self.since = Instant::now();
         self.win_buffers = 0;
         self.win_samples = 0;
@@ -158,6 +200,7 @@ pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Pro
             if open_pairs > 0 {
                 let _ = conn.close_buffer(&phy.rx_buffer_id);
                 open_pairs = 0;
+                stats.closed();
                 shared.rx_active.store(false, Ordering::Relaxed);
             }
             std::thread::sleep(Duration::from_millis(2));
@@ -166,6 +209,7 @@ pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Pro
         if open_pairs > 0 && open_pairs != want_pairs {
             let _ = conn.close_buffer(&phy.rx_buffer_id);
             open_pairs = 0;
+            stats.closed();
             tracing::debug!("PlutoSDR: receive buffer reopening for {want_pairs} pair(s)");
         }
         if open_pairs == 0 {
@@ -176,6 +220,7 @@ pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Pro
                 break;
             }
             open_pairs = want_pairs;
+            stats.opened();
             shared.rx_active.store(true, Ordering::Relaxed);
             tracing::debug!(
                 "PlutoSDR: receive buffer open, {} samples × {} bytes ({} pair(s))",
@@ -249,20 +294,39 @@ pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Pro
 ///
 /// `WRITEBUF` does not return until the device has taken the data, so this loop
 /// is paced by the hardware itself — there is no clock on this side to drift.
+///
+/// # What has to hold for the carrier to be continuous
+///
+/// The device plays nothing while a `WRITEBUF` is in flight, so one buffer must
+/// cover *more airtime than the round trip costs* — see
+/// [`crate::net::tx_buffer_samples`], which is what sizes it. Given that, the
+/// device's queue depth is conserved: the engine produces one buffer's worth of
+/// samples in exactly the airtime that buffer covers, so each push replaces
+/// what was played since the last one, and the lead established by the first
+/// push of an over survives to the end of it.
 pub(crate) fn tx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Consumer<f32>) {
     let phy = &shared.phy;
     let set_bytes = phy.tx_sample_bytes();
     let i_bytes = phy.tx_scan[0].bytes();
-    let pairs = TX_BUFFER_SAMPLES;
+    let pairs = shared.tx_buffer_samples;
     let mut raw = vec![0u8; pairs * set_bytes];
-    let mut stats = Stats::new("TX", shared.rate_hz);
+    let mut stats = Stats::new("TX", shared.tx_rate_hz);
     let mut open = false;
+
+    // How long a full buffer takes the engine to produce, which is what the
+    // wait below is really waiting for. Scaled rather than fixed: a flat 20 ms
+    // was shorter than a buffer at any useful rate once buffers grew past a few
+    // milliseconds, so every single one would have been cut short and padded —
+    // trading the old gap between buffers for a gap inside each of them.
+    let buffer_span = Duration::from_secs_f64(pairs as f64 / shared.tx_rate_hz.max(1.0));
+    let fill_wait = buffer_span * 2 + Duration::from_millis(20);
 
     while shared.alive.load(Ordering::Relaxed) {
         if !shared.tx_enabled.load(Ordering::Relaxed) {
             if open {
                 let _ = conn.close_buffer(&phy.tx_buffer_id);
                 open = false;
+                stats.closed();
                 shared.tx_active.store(false, Ordering::Relaxed);
             }
             std::thread::sleep(Duration::from_millis(2));
@@ -274,16 +338,20 @@ pub(crate) fn tx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Con
                 break;
             }
             open = true;
+            stats.opened();
             shared.tx_active.store(true, Ordering::Relaxed);
-            tracing::debug!("PlutoSDR: transmit buffer open, {pairs} samples");
+            tracing::debug!(
+                "PlutoSDR: transmit buffer open, {pairs} samples ({:.1} ms)",
+                buffer_span.as_secs_f64() * 1e3
+            );
         }
 
-        // Give the engine a moment to fill a whole buffer before padding with
+        // Give the engine time to fill a whole buffer before padding with
         // silence. The first buffers of an over are legitimately short — the
         // ring starts empty — and sending them as-is would put a gap in the
         // middle of the modulation instead of only at the very start.
         let want = pairs * 2;
-        let deadline = Instant::now() + Duration::from_millis(20);
+        let deadline = Instant::now() + fill_wait;
         while ring.slots() < want
             && Instant::now() < deadline
             && shared.tx_enabled.load(Ordering::Relaxed)

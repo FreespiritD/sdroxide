@@ -45,10 +45,41 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// How often a stream thread emits a throughput line (`RUST_LOG=…=debug`).
 pub(crate) const STATS_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Transmit buffer length in complex samples. At 2 Msps this is ~2 ms per
-/// `WRITEBUF`, short enough that key-up latency is inaudible and long enough
-/// that the per-command round trip is not the bottleneck.
-pub(crate) const TX_BUFFER_SAMPLES: usize = 4096;
+/// How much airtime one transmit buffer should cover.
+///
+/// `WRITEBUF` is synchronous — command, status line, payload, status line — so
+/// each buffer costs two round trips over the link on top of the payload
+/// itself, and **the DAC has nothing queued while that is in flight**. The
+/// buffer therefore has to outlast the round trip by a wide margin, or the
+/// transmitted envelope is chopped at the buffer rate.
+///
+/// This used to be a flat 4096 samples, which is 1.64 ms at the default
+/// 2.5 Msps. Measured on a Pluto reached over its USB Ethernet gadget the round
+/// trip is ~2.2 ms — *longer than the buffer* — so the transmitter ran dry for
+/// ~0.55 ms out of every 2.19 ms: a 456 Hz chop with about a quarter of the
+/// modulation missing, unreadable in NFM (the discriminator sees an impulse at
+/// every restart) and merely bad in SSB. Lowering the sample rate only narrowed
+/// the gap, because the round trip is fixed and it was the buffer that shrank
+/// with it — the tell that the buffer length, not the link, was the bottleneck.
+///
+/// 25 ms puts an order of magnitude between the two while still keying up
+/// faster than an operator can hear.
+const TX_BUFFER_MS: f64 = 25.0;
+
+/// Floor and ceiling on [`tx_buffer_samples`], in complex samples. The floor
+/// keeps a slow rate from producing a buffer so short that the per-buffer round
+/// trip dominates again; the ceiling bounds the device-side allocation and the
+/// key-up latency at rates a Pluto cannot stream over USB anyway.
+const TX_BUFFER_BOUNDS: (usize, usize) = (4096, 1 << 17);
+
+/// Transmit buffer length in complex samples at `rate_hz` — see
+/// [`TX_BUFFER_MS`]. Rounded to a multiple of 1024 so the byte count stays
+/// comfortably aligned for the device's DMA.
+pub(crate) fn tx_buffer_samples(rate_hz: f64) -> usize {
+    let want = (rate_hz * TX_BUFFER_MS / 1000.0) as usize;
+    let want = want.clamp(TX_BUFFER_BOUNDS.0, TX_BUFFER_BOUNDS.1);
+    (want / 1024 * 1024).max(TX_BUFFER_BOUNDS.0)
+}
 
 /// Control messages from the stream handles to the control thread.
 pub(crate) enum Ctrl {
@@ -109,6 +140,12 @@ pub(crate) struct Shared {
     pub transmitting: AtomicBool,
     pub buffer_samples: usize,
     pub rate_hz: f64,
+    /// The transmit path's own rate. The AD9361 clocks both directions
+    /// together so this is normally [`Self::rate_hz`], but it is read back
+    /// rather than assumed, and the transmit buffer is sized against it.
+    pub tx_rate_hz: f64,
+    /// Transmit buffer length in complex samples — see [`tx_buffer_samples`].
+    pub tx_buffer_samples: usize,
     /// How many I/Q pairs the receive buffer should be open with (1 or 2).
     /// The receive thread reopens the buffer when this moves.
     pub rx_pairs: AtomicUsize,
@@ -360,6 +397,8 @@ impl PlutoRig {
             transmitting: AtomicBool::new(false),
             buffer_samples,
             rate_hz: rate,
+            tx_rate_hz: tx_rate,
+            tx_buffer_samples: tx_buffer_samples(tx_rate),
             rx_pairs: AtomicUsize::new(1),
             ring1: Mutex::new(None),
             lo_watch: Mutex::new(Vec::new()),
@@ -373,7 +412,9 @@ impl PlutoRig {
         let (tx_prod, tx_cons) = RingBuffer::<f32>::new(tx_cap);
         tracing::debug!(
             "PlutoSDR: RX ring {rx_cap} floats, TX ring {tx_cap} floats, \
-             {buffer_samples}-sample device buffers"
+             {buffer_samples}-sample RX device buffers, {}-sample TX device buffers ({:.1} ms)",
+            shared.tx_buffer_samples,
+            shared.tx_buffer_samples as f64 / tx_rate * 1e3,
         );
 
         // The data connections are opened after the control one has proved the
@@ -1167,6 +1208,34 @@ mod tests {
         assert_eq!(addr.port(), 30431);
         // The default port is filled in when the operator gives only a host.
         assert_eq!(resolve("127.0.0.1").expect("bare").port(), crate::DEFAULT_PORT);
+    }
+
+    /// The property the transmit buffer exists to have. `WRITEBUF` is
+    /// synchronous and the device plays nothing while one is in flight, so a
+    /// buffer that covers less airtime than the round trip costs guarantees a
+    /// gap in the modulation on every single one — which is what a flat 4096
+    /// samples did at 2.5 Msps: 1.64 ms of buffer against a ~2.2 ms round trip.
+    #[test]
+    fn a_transmit_buffer_outlasts_the_round_trip_that_refills_it() {
+        // Generous next to the ~2.2 ms measured over a Pluto's USB gadget.
+        let round_trip_ms = 5.0;
+        // Up to about 5 Msps, which is already 20 MB/s of transmit payload —
+        // past what that gadget carries, so the rates above it are theoretical.
+        for rate in [2_083_333.0, 2_500_000.0, 3_072_000.0, 4_000_000.0, 5_000_000.0] {
+            let ms = tx_buffer_samples(rate) as f64 / rate * 1e3;
+            assert!(
+                ms > round_trip_ms * 3.0,
+                "{rate} sps gives a {ms:.2} ms transmit buffer, too short to stay ahead"
+            );
+        }
+        // Bounded the other way by the sample cap, which is there for the
+        // device-side allocation: 25 ms at the AD9361's top rate would ask a
+        // Pluto for megabytes of DMA memory it has no way to fill over USB.
+        assert_eq!(tx_buffer_samples(30_720_000.0), TX_BUFFER_BOUNDS.1);
+        // Key-up latency is capped by the *time*, not the count, so it does not
+        // grow with the rate.
+        assert!(tx_buffer_samples(2_500_000.0) as f64 / 2.5e6 < 0.030);
+        assert_eq!(tx_buffer_samples(0.0), TX_BUFFER_BOUNDS.0);
     }
 
     #[test]

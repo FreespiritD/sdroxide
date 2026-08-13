@@ -496,6 +496,25 @@ output power directly — and both sliders adopt the rig's current settings when
 sdroxide connects, so a level you set in ExpertSDR3 carries over instead of
 being overwritten.
 
+**Drive and the hardware's TX gain are not the same control.** On an IQ radio —
+a Pluto, an HPSDR board, an SDRplay or a SoapySDR device — Drive is *digital*:
+it scales the modulated baseband on its way to the converter, with a hard
+limiter at digital full scale so it cannot overflow. The radio's own output
+level is a separate slider on the Radio tab (**TX gain**, or whatever that
+device calls it), and the two multiply. Set TX gain once for the antenna and
+the amplifier you are feeding, and use Drive as the level you actually work
+with; the sensible starting point is Drive near the top and TX gain low, not
+the other way around, because backing off in the digital domain throws away
+converter resolution and Drive is the one with the limiter behind it.
+
+**What Mic gain does depends on the mode.** In SSB it sets how hard the
+microphone drives the modulator, so Drive and Mic between them decide both
+level and how much the limiter is working. In FM it sets **deviation** —
+sdroxide's FM modulator is constant-envelope, so Drive changes the power and
+does nothing to the audio, while Mic gain alone decides how wide the signal is.
+50% is unity gain, which puts a full-scale recording at the ±5 kHz peak
+deviation NFM wants; higher over-deviates and distorts however low Drive is.
+
 ### 2.11 Voice keyer
 
 The **▶** button in the Transmit module opens the **voice keyer**: ten recorded
@@ -2972,7 +2991,10 @@ configured in exactly the same way as one on your desk.
   *attenuation*: `0 dB` is full output and `−89.75 dB` is as close to off as the
   part gets. Applied as you move it. On connect the transmitter is set to its
   quietest *first* and your value applied second, so nothing the previous
-  program left in the attenuator is ever live.
+  program left in the attenuator is ever live. This is the **hardware**
+  level, and it is not the Drive slider on the Transmit module: Drive scales
+  the samples sdroxide sends, TX gain sets how loudly the radio plays them, and
+  the two multiply ([2.10](#210-transmit)).
 - **Frequency correction** — reference error in parts per million, applied by
   sdroxide to every frequency it asks for. It is deliberately **not** written to
   the radio's own `xo_correction`, which is persistent and would outlive the
@@ -2997,6 +3019,21 @@ stops receive for the length of an over. The reason is the link, not the button:
 USB 2.0 Ethernet gadget will not carry a megasample-per-second stream in both
 directions at once, and trying produces a transmission full of holes. The whole
 link goes to transmit while you are keyed, exactly as the HPSDR backend does.
+
+**The sample rate is a transmit setting too.** Every I/Q sample is four bytes in
+each direction, so 2.5 Msps is 10 MB/s the link has to carry — and on transmit
+it has to carry it *on time*, because the AD9361 plays out whatever is in its
+buffer and then stops. If the link cannot keep up, the result on the air is not
+a quiet signal but a chopped one: the envelope switches on and off at the buffer
+rate, which is buzzy and thin in SSB and completely unreadable in NFM, where
+every restart is a click in the receiver's discriminator. Nothing on screen
+shows this — sdroxide's own monitor sees the samples it sent, not the gaps
+between them — so run with `RUST_LOG=sdroxide_pluto=debug` if you suspect it and
+watch for the line that says the link is not carrying the full sample rate.
+The cure is to ask for less: **2.083 Msps**, the lowest a stock Pluto accepts,
+is plenty for voice and leaves the most headroom. Reaching the radio over real
+Ethernet rather than the USB gadget helps too, and so does taking it off a USB
+hub.
 
 **Transmit, the first time.** Set TX gain to its minimum, key into a **dummy
 load**, and check the signal is where the dial says before you raise it. The
