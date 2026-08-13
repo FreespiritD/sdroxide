@@ -1088,6 +1088,11 @@ pub struct RtlSdrConfig {
     /// default, and turned off again on a clean shutdown — it will damage a
     /// transceiver or anything DC-shorted on the other end of the cable.
     pub bias_tee: bool,
+    /// Remove the DC spike on the centre of the span and the mirror image, in
+    /// DSP. On by default: both are artefacts of the dongle rather than
+    /// anything on the antenna, and the R820T has no offset-tuning mode to
+    /// move the LO out of the way instead.
+    pub iq_correction: bool,
     /// Bulk transfers kept in flight (advanced). The default gives ~53 ms of
     /// hardware-side buffering at 2.4 Msps, twice the worst-case retune stall.
     pub transfers: u8,
@@ -1106,6 +1111,7 @@ impl Default for RtlSdrConfig {
             agc: RtlSdrAgc::Manual,
             hf_mode: RtlSdrHfMode::Auto,
             bias_tee: false,
+            iq_correction: true,
             transfers: 16,
             transfer_kib: 16,
         }
@@ -1123,7 +1129,7 @@ impl RtlSdrConfig {
     ///
     /// These ride the existing `SetGain` command so that adding this backend
     /// needs no new `Command` variant, no `DeviceCaps` field and no engine
-    /// change for four settings only one backend has. They are deliberately
+    /// change for five settings only one backend has. They are deliberately
     /// absent from `DeviceCaps::gains`, so nothing renders them as sliders —
     /// the RTL-SDR settings panel drives them directly. The encodings live
     /// beside the enums they carry ([`RtlSdrAgc::code`], `HfMode as u8`) so
@@ -1132,6 +1138,7 @@ impl RtlSdrConfig {
     pub const PPM_ELEMENT: &'static str = "PPM";
     pub const HF_MODE_ELEMENT: &'static str = "HFMODE";
     pub const BIAS_TEE_ELEMENT: &'static str = "BIASTEE";
+    pub const IQ_CORRECTION_ELEMENT: &'static str = "IQCORR";
 
     /// Sample rates offered in the UI. All lie inside the resampler's upper
     /// window except 250 kHz, which is in the lower one. 3.2 Msps is offered

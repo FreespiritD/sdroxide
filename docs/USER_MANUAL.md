@@ -2870,6 +2870,33 @@ Receive only — there is no transmit path in this hardware.
 
   Switching between the tuner and direct sampling re-initialises the tuner and
   briefly interrupts the stream.
+- **IQ correction** — clears the two artefacts every dongle puts in its own
+  spectrum: the **DC spike** parked permanently on the centre of the span (the
+  tuner's local oscillator leaking back into its own mixer, plus the converter's
+  offset), and the **mirror image** each signal leaves reflected about that
+  centre, because the I and Q paths never match exactly in gain and phase. Both
+  are the receiver talking to itself; nothing on the antenna produces them. The
+  R820T has no offset-tuning mode to move the oscillator out of the passband, so
+  correcting the samples is the only way to get a clean centre.
+
+  sdroxide measures the imbalance from the samples themselves and needs no
+  calibration: it converges in around a third of a second at 2.4 Msps and then
+  tracks slowly, so it settles on the dongle rather than chasing a fading
+  signal. Typical dongles gain 25–40 dB of image rejection from it.
+
+  On by default, and it applies the moment you tick it — no reconnect. Turn it
+  off when you want to see the front end as it really is, or when measuring the
+  receiver itself.
+
+  Two things are worth knowing. A spectrum that genuinely is symmetric about the
+  centre — two equally strong carriers the same distance either side of the dial
+  — looks exactly like an imbalance; sdroxide recognises a measurement no
+  receiver could produce and holds its estimate instead of chasing it, so the
+  worst such a signal does is stop the correction improving while it is there.
+  And an **AM station tuned dead on the dial has its carrier at DC as well**, so
+  the correction takes that carrier out along with the spike and the audio
+  distorts: tune a kilohertz off it — the demodulator does not care — or switch
+  the correction off.
 - **Bias tee** — feeds roughly 4.5 V DC up the antenna coax for a mast-head
   preamplifier.
 

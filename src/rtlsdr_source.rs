@@ -6,7 +6,8 @@
 
 use std::time::Duration;
 
-use sdroxide_radio::{Complex32, IqSource, Result};
+use sdroxide_dsp::IqCorrect;
+use sdroxide_radio::{Complex32, DC_BLOCK_HZ, IqSource, Result};
 use sdroxide_rtlsdr::RtlSdrHandle;
 use sdroxide_types::{RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode};
 
@@ -24,6 +25,12 @@ pub struct RtlSdrSource {
     gain_db: f64,
     agc: RtlSdrAgc,
     bias_tee: bool,
+    /// Front-end DC and image correction, applied to every block as it arrives
+    /// so the panadapter, the demodulators and the skimmers all see the same
+    /// clean stream. `None` while the operator has it switched off — the
+    /// samples then reach the engine exactly as the dongle produced them.
+    /// See [`IqCorrect`].
+    iq_correct: Option<IqCorrect>,
 }
 
 impl RtlSdrSource {
@@ -38,6 +45,9 @@ impl RtlSdrSource {
             gain_db: cfg.tuner_gain_db,
             agc: cfg.agc,
             bias_tee: cfg.bias_tee,
+            iq_correct: cfg
+                .iq_correction
+                .then(|| IqCorrect::new(DC_BLOCK_HZ, handle.sample_rate_hz)),
             handle,
         })
     }
@@ -91,6 +101,9 @@ impl IqSource for RtlSdrSource {
         for p in 0..pairs {
             buf[p] = Complex32::new(self.rx_scratch[2 * p], self.rx_scratch[2 * p + 1]);
         }
+        if let Some(iq) = self.iq_correct.as_mut() {
+            iq.process(&mut buf[..pairs]);
+        }
         Ok(pairs)
     }
 
@@ -123,6 +136,23 @@ impl IqSource for RtlSdrSource {
             RtlSdrConfig::BIAS_TEE_ELEMENT => {
                 self.bias_tee = db >= 0.5;
                 self.handle.set_bias_tee(self.bias_tee);
+            }
+            // Purely a host-side correction, so it switches on and off between
+            // one block and the next with nothing to reconfigure on the dongle.
+            // Switching it on starts from a fresh estimate rather than whatever
+            // the loop was left holding, which may be from another band.
+            RtlSdrConfig::IQ_CORRECTION_ELEMENT => {
+                if db >= 0.5 {
+                    match self.iq_correct.as_mut() {
+                        Some(iq) => iq.reset(),
+                        None => {
+                            self.iq_correct =
+                                Some(IqCorrect::new(DC_BLOCK_HZ, self.handle.sample_rate_hz));
+                        }
+                    }
+                } else {
+                    self.iq_correct = None;
+                }
             }
             _ => {}
         }

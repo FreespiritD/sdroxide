@@ -539,6 +539,26 @@ pub(in crate::app) fn settings_rtlsdr_tab(
         }
         ui.end_row();
 
+        ui.label("IQ correction").on_hover_text(
+            "Removes the dongle's own DC spike from the centre of the span, and \
+             the mirror image every signal leaves reflected about it, by \
+             measuring the imbalance in the samples themselves — no calibration, \
+             and it applies immediately. The tuner has no offset-tuning mode, so \
+             this is the only way to clear the centre.\n\n\
+             An AM carrier tuned dead on the dial is at DC too, so it goes with \
+             the spike: tune a kilohertz off it, or switch this off.",
+        );
+        let mut iq = cfg.rtlsdr.iq_correction;
+        if ui.checkbox(&mut iq, "Remove the centre spike and mirror image").changed() {
+            cfg.rtlsdr.iq_correction = iq;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: RtlSdrConfig::IQ_CORRECTION_ELEMENT.to_string(),
+                db: if iq { 1.0 } else { 0.0 },
+            });
+        }
+        ui.end_row();
+
         ui.label("Bias tee");
         let mut bias = cfg.rtlsdr.bias_tee;
         if ui.checkbox(&mut bias, "Feed ~4.5 V DC up the coax").changed() {
