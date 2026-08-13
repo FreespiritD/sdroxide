@@ -735,9 +735,11 @@ impl Settings {
 }
 
 /// Where the operator left the radio (`session.json`): the dial, the mode, the
-/// selected antennas, and the audio/RF levels. Restored on the next start, so
-/// the program comes back up where it was instead of on a fixed default
-/// frequency and whichever port and level the driver happens to power up on.
+/// selected antennas, the audio/RF levels, and the receive settings that are
+/// set by ear (squelch, noise reduction, the front end's own gain stages).
+/// Restored on the next start, so the program comes back up where it was
+/// instead of on a fixed default frequency and whichever port and level the
+/// driver happens to power up on.
 ///
 /// Deliberately not part of `config.toml`. That file holds preferences the
 /// operator sets once; this is written by the engine as the radio is used, and
@@ -768,6 +770,23 @@ pub struct Session {
     pub tune_drive: f32,
     /// Mic gain, 0.0..=1.0.
     pub mic_gain: f32,
+    /// Main receiver's squelch threshold, in dBFS.
+    /// [`sdroxide_types::SQUELCH_OPEN_DB`] = always open.
+    pub squelch_db: f32,
+    /// Main receiver's noise reduction (engine + strength, or off).
+    pub noise_reduction: sdroxide_types::NrLevel,
+    /// Front-end RX gain stages the operator has set, as `(element, dB)` —
+    /// the sliders on the Radio tab's device panel.
+    ///
+    /// Only the elements that have actually been moved are listed, and an
+    /// empty list means "no preference": a device is opened on its driver's
+    /// own gains, and a front end nobody has touched must keep coming up on
+    /// those rather than on a figure this file invented for it. Same reasoning
+    /// as [`Self::antenna_rx`], and the engine checks the names against the
+    /// device the same way before applying any of them.
+    pub gains: Vec<(String, f64)>,
+    /// Front-end TX gain stages, likewise.
+    pub tx_gains: Vec<(String, f64)>,
     /// Whether a recording mixes RX/TX down to one channel instead of putting
     /// RX left and TX right. A preference the operator sets once and expects to
     /// still hold next time, not something the engine moves on its own — but it
@@ -798,6 +817,10 @@ impl Default for Session {
             drive: radio.tx.drive,
             tune_drive: radio.tx.tune_drive,
             mic_gain: radio.tx.mic_gain,
+            squelch_db: radio.rx[0].squelch_db,
+            noise_reduction: radio.rx[0].noise_reduction,
+            gains: Vec::new(),
+            tx_gains: Vec::new(),
             recording_mono: radio.recording_mono,
         }
     }
@@ -1362,6 +1385,10 @@ mod tests {
             drive: 0.4,
             tune_drive: 0.2,
             mic_gain: 0.6,
+            squelch_db: -70.0,
+            noise_reduction: sdroxide_types::NrLevel::RnnMed,
+            gains: vec![("LNA".into(), 24.0), ("VGA".into(), 16.0)],
+            tx_gains: vec![("PAD".into(), -6.0)],
             recording_mono: true,
         };
         let back: Session = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
@@ -1383,6 +1410,13 @@ mod tests {
         assert_eq!(old.tune_drive, radio.tx.tune_drive);
         assert_eq!(old.mic_gain, radio.tx.mic_gain);
         assert_eq!(old.recording_mono, radio.recording_mono);
+        // Likewise the receive settings added after those: an operator upgrading
+        // into this comes up squelch-open with NR off, exactly as they always
+        // did, and on the front end's own gains rather than on invented ones.
+        assert_eq!(old.squelch_db, radio.rx[0].squelch_db);
+        assert_eq!(old.noise_reduction, radio.rx[0].noise_reduction);
+        assert!(old.gains.is_empty(), "no gain preference until one is expressed");
+        assert!(old.tx_gains.is_empty());
     }
 
     /// The first run, and every run before this file existed, has to land where

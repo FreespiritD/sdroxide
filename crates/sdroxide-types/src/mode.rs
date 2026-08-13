@@ -589,9 +589,11 @@ impl NrStrength {
 /// declaration order but the wire: [`NrLevel::ALL`] and the picker impose the
 /// display order instead.
 ///
-/// The RNNoise variants were called `Ai*` until v43. Renaming them cost nothing:
-/// this enum reaches disk through no name-based format — it rides postcard and
-/// is persisted nowhere else — so only the positions matter.
+/// The RNNoise variants were called `Ai*` until v43, when renaming them still
+/// cost nothing. It would cost something now: the operator's setting is kept in
+/// `session.json`, which is JSON and so names its variants. A rename has to
+/// keep loading the old spelling (serde `alias`) or every operator on that
+/// engine silently comes back up on NR off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum NrLevel {
     #[default]

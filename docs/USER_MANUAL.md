@@ -387,6 +387,12 @@ panadapter: two vertical grip lines mark the filter's low and high edges (they
 brighten to orange when you can grab them). Drag an edge to widen or narrow the
 passband. The grips work on both the spectrum and the waterfall.
 
+The volume, AGC mode and manual gain, the squelch and the noise reduction are
+remembered in `session.json` and restored the next time you start, along with
+the front end's own gain stages ([§5.2.1](#521-soapysdr-devices)). They are
+settings you arrive at by ear against your own antenna and noise floor, so
+sdroxide brings the receiver back up where you left it rather than on defaults.
+
 ### 2.8 The display and FFT controls
 
 **Display module:**
@@ -2477,12 +2483,16 @@ exposes, and nothing it does not:
   receives on `LNAH`/`LNAL`/`LNAW` and transmits on `BAND1`/`BAND2`; a HackRF
   has a single `TX/RX` port and gets no drop-down at all.
 
-Whichever ports you pick are remembered in `session.json` and selected again the
-next time you start, and re-selected if the radio drops out and the engine
-reconnects it — a freshly opened device is on whatever port its driver defaults
-to, which need not be the feedline you were listening on. To pin them at start
-instead — on a headless server, where nobody is at the machine to pick — use
-`--antenna` and `--tx-antenna`; `--probe` lists the names a device offers.
+Whichever ports and gains you pick are remembered in `session.json` and set
+again the next time you start, and re-applied if the radio drops out and the
+engine reconnects it — a freshly opened device is on whatever port and gains its
+driver defaults to, which need not be the feedline you were listening on or the
+levels you had settled on against your own noise floor. A gain stage your
+current front end does not have is kept rather than discarded, so switching back
+to the radio it belongs to brings it back; one outside this device's range is
+clamped to what it can do. To pin the ports at start instead — on a headless
+server, where nobody is at the machine to pick — use `--antenna` and
+`--tx-antenna`; `--probe` lists the names a device offers.
 
 These are the one part of this tab a **remote client** can also reach: the
 interface and its configuration belong to the machine the server runs on, but
@@ -5279,7 +5289,7 @@ sdroxide stores its settings under the per-user config directory:
 | `memories.json` | JSON | Saved memory channels. |
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |
 | `bandplan.json` | JSON | The band plan itself, per IARU region: band edges, the CW/data/phone/beacon/all-modes sub-segments, and the PSK and RTTY skimmer windows — all in MHz. Written from the built-in IARU tables on first start and meant to be edited; narrow a band here and the transmit lockout narrows with it. Which region applies is `region` in `config.toml`. **RELOAD BAND PLAN** on the General tab applies an edit without a restart, and deleting the file restores the defaults. See [§5.1](#51-general-station-audio-and-remote-access). |
-| `session.json` | JSON | Where you left the radio: the dial frequency, the mode and the RX/TX antenna ports, restored the next time you start. Written by the engine as you tune, so `--freq`, `--mode`, `--antenna` and `--tx-antenna` override it for a run without changing it. |
+| `session.json` | JSON | Where you left the radio: the dial frequency, the mode, the RX/TX antenna ports, the AF volume, RX gain, AGC mode, squelch and noise reduction, the TX drive/tune drive/mic gain, and the front end's own gain stages (the sliders on the Radio tab's device panel), restored the next time you start. Written by the engine as you tune, so `--freq`, `--mode`, `--antenna` and `--tx-antenna` override it for a run without changing it. Gain stages are remembered by name: one your current front end does not have is kept, not thrown away, so switching back to the radio it belongs to brings it back, and a figure past what this device offers is clamped to its range. |
 | `qso_log.json` | JSON | The logbook (digital and manual QSOs, with contest/QSL fields). |
 | `net.json` | JSON | Network cockpit: DX cluster / POTA / SOTA / PSK / FreeDV Reporter / WSPRnet feed settings, and callsign-lookup / eQSL / QRZ / Club Log / LoTW credentials (stored in plaintext). |
 | `tciserver.json` | JSON | Built-in TCI server: enabled, bind address, port, advertised device name, whether clients may transmit, and the client limit. |

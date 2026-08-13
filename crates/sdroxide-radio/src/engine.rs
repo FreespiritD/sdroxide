@@ -1034,6 +1034,10 @@ const SAT_EMIT_INTERVAL: Duration = Duration::from_millis(500);
 /// recovery reads the TLE caches off disk. Neither belongs at 5 Hz.
 const SAT_SLOW_INTERVAL_S: f64 = 300.0;
 
+/// A front end's gain stages as `(element name, dB)` — the shape the device
+/// API, [`RadioState::gains`] and `session.json` all use.
+type GainSet = Vec<(String, f64)>;
+
 struct Engine {
     source: Box<dyn IqSource>,
     caps: DeviceCaps,
@@ -1314,6 +1318,15 @@ struct Engine {
     /// held rather than dropped: swapping back to the radio it belongs to
     /// restores it.
     want_antenna: (Option<String>, Option<String>),
+    /// The front-end gain stages the operator has set, RX then TX, as
+    /// `(element, dB)` — held for the same reason [`Self::want_antenna`] is,
+    /// and applied by [`Engine::restore_gains`] after every open.
+    ///
+    /// Only elements that have actually been set are listed: an untouched
+    /// device stays on its driver's own gains. Names the current device does
+    /// not offer are held rather than dropped, so swapping back to the front
+    /// end they belong to brings them back.
+    want_gains: (GainSet, GainSet),
     /// Where this engine's radio-scoped files live. See [`EngineConfig::store`].
     store: sdroxide_config::Store,
     /// This engine's radio id. See [`EngineConfig::instance`].
@@ -1447,14 +1460,21 @@ fn engine_thread(
     // CAT rig reporting its own) is a difference like any other, and gets
     // written even if nothing is touched afterwards.
     let session = engine_cfg.remember_session.then(|| engine_cfg.store.load_session());
-    // Volume, RX gain, AGC mode, drive, mic gain and the recording channel
-    // layout have no command-line override, so the remembered session (if any)
-    // always wins over the hardcoded defaults `RadioState::default()` /
-    // `engine_cfg.initial_mode` set above.
+    // Volume, RX gain, AGC mode, squelch, noise reduction, drive, mic gain and
+    // the recording channel layout have no command-line override, so the
+    // remembered session (if any) always wins over the hardcoded defaults
+    // `RadioState::default()` / `engine_cfg.initial_mode` set above.
+    //
+    // The audio chain above was built before this and carries the defaults, but
+    // it re-reads the receiver's settings per block and rebuilds what changed —
+    // squelch is read straight from the state, and the NR engine is configured
+    // the first time the level it holds differs from the one it was built with.
     if let Some(s) = session.as_ref() {
         state.rx[0].volume = s.volume;
         state.rx[0].manual_gain_db = s.rx_gain_db;
         state.rx[0].agc = s.agc;
+        state.rx[0].squelch_db = s.squelch_db;
+        state.rx[0].noise_reduction = s.noise_reduction;
         state.tx.drive = s.drive;
         state.tx.tune_drive = s.tune_drive;
         state.tx.mic_gain = s.mic_gain;
@@ -1467,6 +1487,10 @@ fn engine_thread(
         cli_rx.or_else(|| session.as_ref().and_then(|s| s.antenna_rx.clone())),
         cli_tx.or_else(|| session.as_ref().and_then(|s| s.antenna_tx.clone())),
     );
+    // The front-end gains have no command line to lose to; they are whatever
+    // the operator last set on this radio, and nothing at all on a first run.
+    let want_gains =
+        session.as_ref().map(|s| (s.gains.clone(), s.tx_gains.clone())).unwrap_or_default();
 
     let mut engine = Engine {
         source,
@@ -1588,6 +1612,7 @@ fn engine_thread(
         next_rot_emit: Instant::now(),
         session,
         want_antenna,
+        want_gains,
         store: engine_cfg.store,
         instance: engine_cfg.instance,
         primary: engine_cfg.primary,
@@ -1599,6 +1624,7 @@ fn engine_thread(
     // After the struct, not before: the preference has to be applied through
     // the same path a reconnect uses, so both land on the same port.
     engine.restore_antennas();
+    engine.restore_gains();
     // The opening state goes out here rather than with the capabilities above,
     // so the first thing every UI sees is the port the radio is actually on.
     let _ = engine.event_tx.send(RadioEvent::State(engine.state.clone()));
@@ -3240,18 +3266,24 @@ impl Engine {
                 self.voice.rename(slot as usize, name);
                 self.emit_voice_status();
             }
+            // Remembered as well as applied, exactly like the antenna below: a
+            // reconnect, an interface switch or the next start reopens the
+            // device on its driver defaults, and the operator's front-end gains
+            // have to survive that (see [`Engine::restore_gains`]).
             SetGain { dir, element, db } => match dir {
                 Direction::Rx => {
                     if let Err(e) = self.source.set_gain_element(&element, db) {
                         warn!("set RX gain {element}: {e}");
                     }
                     self.state.gains = self.source.current_gains();
+                    self.remember_gain(dir, element, db);
                 }
                 Direction::Tx => {
                     if let Err(e) = self.source.set_tx_gain_element(&element, db) {
                         warn!("set TX gain {element}: {e}");
                     }
                     self.state.tx_gains = self.source.current_tx_gains();
+                    self.remember_gain(dir, element, db);
                 }
             },
             // Remembered as well as applied: a reconnect or an interface switch
@@ -5467,6 +5499,77 @@ impl Engine {
         }
     }
 
+    /// Note down a gain stage the operator has set, so it can be put back on
+    /// the next open — and, through `session.json`, on the next start.
+    ///
+    /// Recorded as the device reads it back rather than as it was asked for
+    /// where the two differ: a driver that quantises 33.7 dB to its 1 dB grid
+    /// should be remembered on the step it actually went to, or every restart
+    /// would re-send a figure it never held.
+    fn remember_gain(&mut self, dir: Direction, element: String, db: f64) {
+        let (want, actual) = match dir {
+            Direction::Rx => (&mut self.want_gains.0, &self.state.gains),
+            Direction::Tx => (&mut self.want_gains.1, &self.state.tx_gains),
+        };
+        let db = actual.iter().find(|(n, _)| *n == element).map_or(db, |(_, d)| *d);
+        match want.iter_mut().find(|(n, _)| *n == element) {
+            Some(slot) => slot.1 = db,
+            None => want.push((element, db)),
+        }
+    }
+
+    /// Re-apply the remembered front-end gain stages, for the same reason
+    /// [`Engine::restore_antennas`] re-applies the antenna: a device that has
+    /// just been opened sits on its driver's defaults, and the LNA and
+    /// attenuator settings an operator arrived at by listening to the noise
+    /// floor are not something to make them find again on every start.
+    ///
+    /// Elements the current front end does not have are skipped — the same
+    /// check the antenna gets — and a value out of its range is clamped rather
+    /// than dropped, so a figure carried over from another device lands on the
+    /// nearest thing this one can do instead of on nothing.
+    ///
+    /// Several native backends (Pluto, RX-888, Airspy HF+, HPSDR, SDRplay)
+    /// already keep their gain stages in `radio.json` and apply them as they
+    /// open, so for those this runs *after* and the session's value wins. The
+    /// two agree in practice — the panels that write that config push the same
+    /// figure through `SetGain`, which is what is remembered here — and the
+    /// backends that have no config home for a gain, the SoapySDR ones, are the
+    /// reason this exists at all.
+    fn restore_gains(&mut self) {
+        let (want_rx, want_tx) = self.want_gains.clone();
+        // Copied out of `caps` before the source is touched: `set_gain_element`
+        // needs `self` mutably, and the range is all that is wanted from it.
+        let range = |caps: &DeviceCaps, dir, name: &str| {
+            caps.gains
+                .iter()
+                .find(|g| g.direction == dir && g.name == name)
+                .map(|g| (g.min_db, g.max_db))
+        };
+        let mut touched_rx = false;
+        for (name, db) in want_rx {
+            let Some((min, max)) = range(&self.caps, Direction::Rx, &name) else { continue };
+            if let Err(e) = self.source.set_gain_element(&name, db.clamp(min, max)) {
+                warn!("restoring RX gain {name}: {e}");
+            }
+            touched_rx = true;
+        }
+        if touched_rx {
+            self.state.gains = self.source.current_gains();
+        }
+        let mut touched_tx = false;
+        for (name, db) in want_tx {
+            let Some((min, max)) = range(&self.caps, Direction::Tx, &name) else { continue };
+            if let Err(e) = self.source.set_tx_gain_element(&name, db.clamp(min, max)) {
+                warn!("restoring TX gain {name}: {e}");
+            }
+            touched_tx = true;
+        }
+        if touched_tx {
+            self.state.tx_gains = self.source.current_tx_gains();
+        }
+    }
+
     /// Write the dial, mode, antennas and levels to `session.json` if any of
     /// them has moved since the last write, so the next start comes up here
     /// rather than on the default frequency and levels. A no-op on an engine
@@ -5495,6 +5598,15 @@ impl Engine {
             drive: self.state.tx.drive,
             tune_drive: self.state.tx.tune_drive,
             mic_gain: self.state.tx.mic_gain,
+            squelch_db: self.state.rx[0].squelch_db,
+            noise_reduction: self.state.rx[0].noise_reduction,
+            // What the operator asked for rather than what the device currently
+            // reports, for the antennas' reason again: a front end with no gain
+            // to set — a CAT rig, a file — must not erase the stages a real
+            // receiver was left on, and a driver that moves a gain by itself
+            // (an AGC riding the IF) is not the operator changing their mind.
+            gains: self.want_gains.0.clone(),
+            tx_gains: self.want_gains.1.clone(),
             recording_mono: self.state.recording_mono,
         };
         if now == *saved {
@@ -5861,8 +5973,11 @@ impl Engine {
         self.state = state;
         // The tuning is fresh, but the antenna is a property of the station's
         // coax rather than of the front end: a radio that dropped out and came
-        // back has to return to the port it was receiving on.
+        // back has to return to the port it was receiving on. The gain stages
+        // come back for the same reason — the reopened device is on its driver
+        // defaults, and only the ones this front end actually has are applied.
         self.restore_antennas();
+        self.restore_gains();
 
         // Rebuild the device analyzer for the new rate.
         self.analyzer =
