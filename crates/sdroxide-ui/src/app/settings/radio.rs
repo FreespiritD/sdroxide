@@ -594,6 +594,218 @@ pub(in crate::app) fn settings_rtlsdr_tab(
     );
 }
 
+/// rtl_tcp interface: the same dongle as the tab above, on another machine.
+///
+/// Deliberately the same controls in the same order — an operator who moves a
+/// dongle from this machine to a Raspberry Pi on the mast should not have to
+/// learn a second panel. What differs is at the top (an address, not a USB
+/// serial) and in the hover text, which has to say *whose* hardware each knob
+/// reaches: everything here is performed by the server, and nothing it does
+/// with the request is ever reported back.
+pub(in crate::app) fn settings_rtltcp_tab(
+    ui: &mut egui::Ui,
+    radio_edit: &mut Option<sdroxide_types::RadioConfig>,
+    cmds: &mut Vec<Command>,
+) {
+    use sdroxide_types::{RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode, RtlTcpConfig};
+    let Some(cfg) = radio_edit.as_mut() else {
+        ui.label("Radio configuration is only available in the native app.");
+        return;
+    };
+
+    egui::Grid::new("rtltcp-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Server address").on_hover_text(
+            "Where rtl_tcp is listening: an address, or an address and port. \
+             The port defaults to 1234, which is rtl_tcp's own default.\n\n\
+             On the far end, start it as `rtl_tcp -a 0.0.0.0` — bound to \
+             127.0.0.1, which is what it does with no -a, it only accepts \
+             connections from that same machine.\n\nTakes effect on Apply.",
+        );
+        ui.add(
+            egui::TextEdit::singleline(&mut cfg.rtltcp.address)
+                .desired_width(220.0)
+                .hint_text("host or host:port, e.g. raspberrypi.local:1234"),
+        );
+        ui.end_row();
+
+        ui.label("Sample rate").on_hover_text(
+            "Requested of the server, with the same resampler limits as a local \
+             dongle — it is the same silicon on the far end.\n\n\
+             The figure beside each rate is what it costs on the link: the \
+             samples are sent uncompressed, and a rate the network cannot carry \
+             makes rtl_tcp drop the connection rather than degrade. \
+             Takes effect on Apply.",
+        );
+        let shown = format!(
+            "{:.3} Msps  —  {:.0} Mbit/s",
+            cfg.rtltcp.sample_rate_hz / 1e6,
+            RtlTcpConfig::link_mbit(cfg.rtltcp.sample_rate_hz),
+        );
+        ComboBox::from_id_salt("rtltcp_rate").width(260.0).selected_text(shown).show_ui(ui, |ui| {
+            for &r in &RtlSdrConfig::SAMPLE_RATES {
+                let sel = (cfg.rtltcp.sample_rate_hz - r).abs() < 1.0;
+                let mbit = RtlTcpConfig::link_mbit(r);
+                let mut label = format!("{:.3} Msps  —  {mbit:.0} Mbit/s", r / 1e6);
+                // The threshold is where a rate stops fitting comfortably in
+                // what a single WiFi hop delivers in practice, which is well
+                // under its nominal rate.
+                if mbit >= 30.0 {
+                    label.push_str("  (wired link)");
+                }
+                if ui.selectable_label(sel, label).clicked() {
+                    cfg.rtltcp.sample_rate_hz = r;
+                }
+            }
+        });
+        ui.end_row();
+
+        ui.label("AGC").on_hover_text(
+            "Runs on the server's dongle. Manual is the setting for measurement \
+             and weak-signal digital modes.",
+        );
+        let mut agc = cfg.rtltcp.agc;
+        enum_combo(ui, "rtltcp_agc", &mut agc, &RtlSdrAgc::ALL, RtlSdrAgc::label);
+        if agc != cfg.rtltcp.agc {
+            cfg.rtltcp.agc = agc;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: RtlSdrConfig::AGC_ELEMENT.to_string(),
+                db: agc.code() as f64,
+            });
+        }
+        ui.end_row();
+
+        ui.label("Tuner gain").on_hover_text(
+            "Applies immediately — no reconnect. Sent in tenths of a dB and \
+             snapped by the server to a step its tuner has; the protocol has no \
+             replies, so what it settled on cannot be read back and this slider \
+             keeps showing what was asked for. Ignored while the tuner AGC is \
+             running.",
+        );
+        ui.add_enabled_ui(!cfg.rtltcp.agc.tuner_auto(), |ui| {
+            if crate::chrome::slider(
+                ui,
+                Slider::new(&mut cfg.rtltcp.tuner_gain_db, 0.0..=RtlSdrConfig::GAIN_MAX_DB)
+                    .step_by(0.1)
+                    .suffix(" dB"),
+            )
+            .changed()
+            {
+                cmds.push(Command::SetGain {
+                    dir: Direction::Rx,
+                    element: RtlSdrConfig::TUNER_GAIN_ELEMENT.to_string(),
+                    db: cfg.rtltcp.tuner_gain_db,
+                });
+            }
+        });
+        ui.end_row();
+
+        ui.label("Frequency correction").on_hover_text(
+            "Crystal error of the *server's* dongle, in parts per million — a \
+             property of that hardware, so it is set here and not on this \
+             machine's dongles. Applies immediately.\n\n\
+             The measured clock error the USB interface prints is not available \
+             here: over a network what that measurement sees is the buffering, \
+             not the crystal, and it is wrong by thousands of ppm. Calibrate the \
+             dongle on USB once and carry the number over, or tune a broadcast \
+             station of known frequency and adjust until it sits on the dial.",
+        );
+        let mut ppm = cfg.rtltcp.ppm;
+        if ui.add(egui::DragValue::new(&mut ppm).range(-200..=200).suffix(" ppm")).changed() {
+            cfg.rtltcp.ppm = ppm;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: RtlSdrConfig::PPM_ELEMENT.to_string(),
+                db: ppm as f64,
+            });
+        }
+        ui.end_row();
+
+        ui.label("HF reception").on_hover_text(
+            "The tuner starts at 24 MHz; below that the far end needs help. A \
+             Blog V4 upconverts by itself and Automatic leaves it alone — which \
+             is the only thing it can do, since the protocol reports the tuner \
+             chip and nothing else, and a V4 is indistinguishable from a plain \
+             R828D over the wire.\n\n\
+             On a V3 or any other dongle, Automatic switches the server to \
+             direct sampling below the crossover. Choose Direct sampling \
+             explicitly for a plain R828D that hears nothing on HF. Switching \
+             briefly interrupts the stream.",
+        );
+        let mut hf = cfg.rtltcp.hf_mode;
+        enum_combo(ui, "rtltcp_hf", &mut hf, &RtlSdrHfMode::ALL, RtlSdrHfMode::label);
+        if hf != cfg.rtltcp.hf_mode {
+            cfg.rtltcp.hf_mode = hf;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: RtlSdrConfig::HF_MODE_ELEMENT.to_string(),
+                db: hf as u8 as f64,
+            });
+        }
+        ui.end_row();
+
+        ui.label("IQ correction").on_hover_text(
+            "Removes the dongle's DC spike and mirror image here, from the \
+             samples as they arrive — they are artefacts of the hardware, so \
+             they travel over the network with everything else. Applies \
+             immediately.\n\n\
+             An AM carrier tuned dead on the dial sits at DC too, so it goes \
+             with the spike: tune a kilohertz off it, or switch this off.",
+        );
+        let mut iq = cfg.rtltcp.iq_correction;
+        if ui.checkbox(&mut iq, "Remove the centre spike and mirror image").changed() {
+            cfg.rtltcp.iq_correction = iq;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: RtlSdrConfig::IQ_CORRECTION_ELEMENT.to_string(),
+                db: if iq { 1.0 } else { 0.0 },
+            });
+        }
+        ui.end_row();
+
+        ui.label("Bias tee").on_hover_text(
+            "Powers a preamp from the far end's dongle. Older servers do not \
+             implement the command and ignore it silently — the protocol has no \
+             way to say no — so a bias tee that does not come on is not \
+             necessarily this end's doing.",
+        );
+        let mut bias = cfg.rtltcp.bias_tee;
+        if ui.checkbox(&mut bias, "Feed ~4.5 V DC up the remote coax").changed() {
+            cfg.rtltcp.bias_tee = bias;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: RtlSdrConfig::BIAS_TEE_ELEMENT.to_string(),
+                db: if bias { 1.0 } else { 0.0 },
+            });
+        }
+        ui.end_row();
+    });
+
+    if cfg.rtltcp.bias_tee {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(
+                "Bias tee is ON, on hardware that is somewhere else. Whatever is \
+                 on the other end of that feedline — a transceiver, a grounded \
+                 antenna, a preamp already powered — is not in front of you to \
+                 check.",
+            )
+            .color(crate::theme::YELLOW()),
+        );
+    }
+
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "Receive only. The address and sample rate take effect on Apply; \
+             everything else applies as you change it. A dropped connection is \
+             retried on its own, so a server that is restarted comes back \
+             without touching anything here.",
+        )
+        .weak(),
+    );
+}
+
 /// TCI interface: WebSocket server address, IQ sample rate, and a
 /// Test-connection button (the interface is chosen by the selector in
 /// `settings_body`).

@@ -83,8 +83,9 @@ or connects to a remote sdroxide server.
 - **Many radio backends:** SoapySDR devices, OpenHPSDR (Hermes/Metis) Ethernet
   SDRs, a TCI server (ExpertSDR3/Thetis), a SmartSDR radio (FlexRadio
   FLEX-6000/8000), RTL-SDR, RX-888, Airspy HF+ and SDRplay RSP receivers over
-  USB, a PlutoSDR, or a CAT-controlled radio with audio over a USB sound card
-  (demodulated audio or stereo IQ).
+  USB, an RTL-SDR published over the network by `rtl_tcp`, a PlutoSDR, or a
+  CAT-controlled radio with audio over a USB sound card (demodulated audio or
+  stereo IQ).
 - **Several radios at once** — each in its own tab with its own tuning, mode,
   panadapter and audio, sharing your memories, logbook and a station-wide
   transmit interlock. Multi-receiver hardware serves one tab per receiver from
@@ -2377,6 +2378,9 @@ radio. Everything below the selector changes to match the choice:
   card. See [5.2.10](#5210-icom-lan-network-radios).
 - **RTL-SDR (USB)** — an RTL2832U dongle, driven by sdroxide's own USB driver
   with no SoapySDR involved. See [5.2.5](#525-rtl-sdr-usb-dongles).
+- **RTL-SDR over rtl_tcp (network)** — the same dongle plugged into another
+  machine — a Raspberry Pi at the antenna, say — and published with `rtl_tcp`.
+  See [5.2.11](#5211-rtl-sdr-over-rtl_tcp-network-dongles).
 - **RX-888 (USB)** — an RX-888 / RX-888 Mk2 direct-sampling receiver, likewise
   driven directly over USB, with its firmware bundled and uploaded for it.
 - **Airspy HF+ (USB)** — an Airspy HF+ Dual, Discovery or Ranger, driven by
@@ -3369,6 +3373,90 @@ Transmit is unaffected by the choice: it is always audio the radio modulates.
 > end-to-end against a simulator rather than a radio. If it misbehaves, the
 > **Copy diagnostic report** button produces everything a bug report needs.
 
+#### 5.2.11 RTL-SDR over rtl_tcp (network dongles)
+
+The **RTL-SDR over rtl_tcp (network)** interface is the dongle from
+[§5.2.5](#525-rtl-sdr-usb-dongles) on a *different machine* — typically a
+Raspberry Pi at the foot of the mast, so the coax run is a metre instead of
+thirty. The far end runs `rtl_tcp`, which owns the dongle and performs every
+register write on sdroxide's behalf; this end sends five-byte commands and
+receives the same 8-bit I/Q the USB endpoint would have produced.
+
+On the remote machine:
+
+```sh
+rtl_tcp -a 0.0.0.0
+```
+
+The `-a 0.0.0.0` matters. With no `-a`, `rtl_tcp` binds to localhost and only
+accepts connections from the machine it is running on. Add `-p` if you want a
+port other than 1234, and `-d` to pick between several dongles. Any server that
+speaks the protocol works — osmocom's `rtl_tcp`, the rtl-sdr-blog fork's, or one
+of the several re-implementations.
+
+The settings are deliberately the same ones as the USB tab, in the same order,
+because it is the same radio; only these differ:
+
+- **Server address** — `host` or `host:port`. The port defaults to 1234. A
+  hostname, an IPv4 address or a bracketed IPv6 literal all work. Takes effect
+  on Apply.
+- **Sample rate** — shown with what it costs on the link, because that is the
+  number that decides here. The samples are sent uncompressed at two bytes per
+  complex sample: 1.024 Msps is 16 Mbit/s, 2.4 Msps is 38 Mbit/s. The default is
+  1.024 Msps rather than the USB tab's 2.4, since it has to fit down a network.
+  **A rate the link cannot carry does not degrade gracefully** — `rtl_tcp` drops
+  a client that stops keeping up, and sdroxide then reconnects, so the symptom
+  is a stream that restarts every few seconds rather than one that gets choppy.
+  Wired Ethernet carries any rate on the list; a single WiFi hop is usually good
+  for 1.8 Msps and reliable at 1.024.
+- **Frequency correction** — the crystal error of the *remote* dongle. It is a
+  property of that hardware, so it is set here and not in the USB tab.
+
+  The measured clock-error line that the USB interface prints
+  ([§5.2.5](#525-rtl-sdr-usb-dongles)) is **not** available over `rtl_tcp`, and
+  the log says so instead of printing a figure. That measurement counts samples
+  against elapsed time, which works because the dongle itself paces them; over a
+  network it measures the buffering in between. Against a real `rtl_tcp` on
+  loopback — the best case there is — successive readings 25 seconds in ranged
+  from -770 to +2600 ppm for a dongle whose real error is a few. Calibrate the
+  dongle on USB once and carry the number across, or tune a broadcast station of
+  known frequency and adjust until it sits on the dial.
+- **HF reception** — with one wrinkle the USB tab does not have. The protocol
+  reports the tuner chip and nothing else, and a Blog V4 is an R828D like any
+  other R828D, so sdroxide cannot tell them apart over the wire. *Automatic*
+  therefore leaves an R828D alone — right for a V4, which upconverts inside the
+  server's own tuning call — and switches anything else to direct sampling below
+  28.8 MHz. If your remote dongle is a *plain* R828D that hears nothing on HF,
+  choose **Direct sampling (Q branch)** explicitly; that is always obeyed.
+- **Bias tee** — feeds the coax at the far end, which may be out of sight and up
+  a mast. sdroxide turns it off when the connection closes cleanly, and warns
+  while it is on. Older servers do not implement the command at all; because the
+  protocol has no replies, a bias tee that fails to come on cannot be
+  distinguished from one that did.
+
+Everything else — AGC, tuner gain, IQ correction — behaves as on the USB tab and
+applies as you change it, without reconnecting.
+
+Two consequences of the protocol are worth knowing, because they look like bugs
+and are not:
+
+- **Nothing is ever reported back.** There are no replies in either direction:
+  the gain slider shows what was asked for, not what the far end's tuner snapped
+  it to, and the sample rate is the requested one. Over USB sdroxide reads both
+  back from the hardware.
+- **The dongle is not selectable from here.** `rtl_tcp` chose its dongle when it
+  started, with `-d`. There is no serial, no product string and no device list in
+  the protocol, so there is nothing to rescan.
+
+A dropped connection is retried on its own: a server that is restarted, a Pi that
+reboots, or a client dropped for falling behind all come back without touching
+anything on the Radio tab.
+
+> **rtl_tcp has no authentication and no encryption.** Anyone who can reach the
+> port gets the dongle and can retune it — including turning its bias tee on.
+> Keep it on a network you trust, or reach it through a VPN or an SSH tunnel
+> (`ssh -L 1234:localhost:1234 pi@host`, then connect to `127.0.0.1:1234` here,
+> leaving `rtl_tcp` bound to localhost on the far end).
 
 ### 5.3 UI: display preferences and voice announcements
 
@@ -5348,7 +5436,7 @@ sdroxide stores its settings under the per-user config directory:
 | File | Format | Contents |
 | --- | --- | --- |
 | `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, `region` (`"R1"` / `"R2"` / `"R3"` — the IARU region every band plan follows, [§5.1](#51-general-station-audio-and-remote-access)), plus the `[ui]` display preferences (including `theme`, `button_style` and `window_style`), the `[speech]` announcement settings ([§5.3](#53-ui-display-preferences-and-voice-announcements)), the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext) and the `[remote_server]` address the **Remote** tab dials ([§7.2](#72-connect-a-native-remote-client)). Belongs to the machine the engine runs on — except `[ui]`, `[speech]` and `[remote_server]`, which belong to the screen in front of you. |
-| `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/RX-888/Airspy HF+/SDRplay/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
+| `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/rtl_tcp/RX-888/Airspy HF+/SDRplay/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
 | `digi.json` | JSON | Digital-mode operator settings: your callsign and grid, FT8/FT4/FT2 TX period, auto-sequence and message templates, and the WSPR beacon's duty cycle, power and band-hop list. |
 | `memories.json` | JSON | Saved memory channels. |
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |
@@ -5415,6 +5503,7 @@ to its default, and a partial file is normal rather than a special case.
 | `"SmartSdr"` | FlexRadio SmartSDR | `"smartsdr"` |
 | `"Pluto"` | ADALM-Pluto over IIOD | `"pluto"` |
 | `"RtlSdr"` | RTL-SDR dongle | `"rtlsdr"` |
+| `"RtlTcp"` | RTL-SDR published by `rtl_tcp` | `"rtltcp"` |
 | `"Rx888"` | RX-888 Mk2 | `"rx888"` |
 | `"AirspyHf"` | Airspy HF+ | `"airspyhf"` |
 | `"SdrPlay"` | SDRplay RSP | `"sdrplay"` |

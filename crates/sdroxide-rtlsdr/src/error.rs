@@ -41,6 +41,13 @@ pub enum Error {
     #[error("{0}")]
     Unsupported(String),
 
+    /// The `rtl_tcp` link failed, or what answered on the far end was not an
+    /// `rtl_tcp` server. Carries the sentence, like [`Error::Access`]: the
+    /// remedies here are a hostname, a port, a firewall or a server that is
+    /// not running, and none of those are visible in an errno.
+    #[error("{0}")]
+    Net(String),
+
     /// The tuner PLL failed to lock, so the radio is receiving noise rather
     /// than the requested frequency. Worth surfacing loudly: the symptom is
     /// otherwise indistinguishable from a dead antenna.

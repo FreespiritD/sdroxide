@@ -1,5 +1,11 @@
-//! An [`IqSource`] for an RTL2832U dongle driven over USB by the native
-//! driver in `sdroxide-rtlsdr` — no SoapySDR, no libusb.
+//! An [`IqSource`] for an RTL2832U dongle driven by the native driver in
+//! `sdroxide-rtlsdr` — no SoapySDR, no libusb.
+//!
+//! Two ways in, one source: [`RtlSdrSource::open`] takes a dongle on this
+//! machine's USB bus, [`RtlSdrSource::connect`] one published over the network
+//! by an `rtl_tcp` server. Everything below the constructors is shared,
+//! because it is the same radio and the same samples — only the distance to
+//! its registers differs.
 //!
 //! Receive only: the trait's transmit methods already default to errors, which
 //! is the correct answer for this hardware.
@@ -9,12 +15,18 @@ use std::time::Duration;
 use sdroxide_dsp::IqCorrect;
 use sdroxide_radio::{Complex32, DC_BLOCK_HZ, IqSource, Result};
 use sdroxide_rtlsdr::RtlSdrHandle;
-use sdroxide_types::{RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode};
+use sdroxide_types::{RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode, RtlTcpConfig};
 
 /// How long the dongle may deliver nothing before the connection counts as
 /// dead. Shorter than the HPSDR backend's five seconds: this is a local USB
 /// device, so there is no network to be briefly slow.
 const SILENCE_BEFORE_REOPEN: Duration = Duration::from_secs(3);
+
+/// The same, for an `rtl_tcp` link — where there *is* a network to be briefly
+/// slow. Matches the HPSDR backend's window, and is long enough that a
+/// congested WiFi hop does not get read as a dead server and reconnected out
+/// from under a stream that was about to recover.
+const SILENCE_BEFORE_RECONNECT: Duration = Duration::from_secs(5);
 
 pub struct RtlSdrSource {
     handle: RtlSdrHandle,
@@ -25,6 +37,12 @@ pub struct RtlSdrSource {
     gain_db: f64,
     agc: RtlSdrAgc,
     bias_tee: bool,
+    /// How long a silence has to last before this source asks to be reopened.
+    silence: Duration,
+    /// Whether the dongle is on the other end of a network link. Only the
+    /// operator-facing wording depends on it — a bias tee somewhere else is a
+    /// different warning from one on the desk.
+    remote: bool,
     /// Front-end DC and image correction, applied to every block as it arrives
     /// so the panadapter, the demodulators and the skimmers all see the same
     /// clean stream. `None` while the operator has it switched off — the
@@ -34,22 +52,60 @@ pub struct RtlSdrSource {
 }
 
 impl RtlSdrSource {
+    /// A dongle on this machine's USB bus.
     pub fn open(cfg: &RtlSdrConfig, center_hz: f64) -> anyhow::Result<Self> {
         let handle = RtlSdrHandle::open(cfg, center_hz)?;
+        Ok(Self::from_handle(
+            handle,
+            Settings {
+                gain_db: cfg.tuner_gain_db,
+                agc: cfg.agc,
+                bias_tee: cfg.bias_tee,
+                iq_correction: cfg.iq_correction,
+                silence: SILENCE_BEFORE_REOPEN,
+                remote: false,
+            },
+            center_hz,
+        ))
+    }
+
+    /// A dongle published over the network by an `rtl_tcp` server.
+    ///
+    /// The far end owns the hardware, so everything here is a request rather
+    /// than a readback — including the sample rate and the gain the stream is
+    /// actually running at. That is a property of the protocol, not of this
+    /// connection; see [`RtlSdrHandle::connect`].
+    pub fn connect(cfg: &RtlTcpConfig, center_hz: f64) -> anyhow::Result<Self> {
+        let handle = RtlSdrHandle::connect(cfg, center_hz)?;
+        Ok(Self::from_handle(
+            handle,
+            Settings {
+                gain_db: cfg.tuner_gain_db,
+                agc: cfg.agc,
+                bias_tee: cfg.bias_tee,
+                iq_correction: cfg.iq_correction,
+                silence: SILENCE_BEFORE_RECONNECT,
+                remote: true,
+            },
+            center_hz,
+        ))
+    }
+
+    fn from_handle(handle: RtlSdrHandle, s: Settings, center_hz: f64) -> Self {
         let label = format!("{} @ {:.3} Msps", handle.label, handle.sample_rate_hz / 1e6);
         tracing::info!("RTL-SDR source ready: {label}, center {center_hz:.0} Hz");
-        Ok(RtlSdrSource {
+        RtlSdrSource {
             center: center_hz,
             rx_scratch: Vec::new(),
             label,
-            gain_db: cfg.tuner_gain_db,
-            agc: cfg.agc,
-            bias_tee: cfg.bias_tee,
-            iq_correct: cfg
-                .iq_correction
-                .then(|| IqCorrect::new(DC_BLOCK_HZ, handle.sample_rate_hz)),
+            gain_db: s.gain_db,
+            agc: s.agc,
+            bias_tee: s.bias_tee,
+            silence: s.silence,
+            remote: s.remote,
+            iq_correct: s.iq_correction.then(|| IqCorrect::new(DC_BLOCK_HZ, handle.sample_rate_hz)),
             handle,
-        })
+        }
     }
 
     pub fn sample_rate_hz(&self) -> f64 {
@@ -69,6 +125,17 @@ impl RtlSdrSource {
     pub fn hf_capable(&self) -> bool {
         self.handle.hf_capable
     }
+}
+
+/// The settings the two constructors have in common — the same knobs in
+/// [`RtlSdrConfig`] and [`RtlTcpConfig`], plus what the link implies.
+struct Settings {
+    gain_db: f64,
+    agc: RtlSdrAgc,
+    bias_tee: bool,
+    iq_correction: bool,
+    silence: Duration,
+    remote: bool,
 }
 
 impl IqSource for RtlSdrSource {
@@ -168,9 +235,11 @@ impl IqSource for RtlSdrSource {
 
     /// A dongle that has been unplugged, or whose thread has died, is reported
     /// as needing a reopen so the engine reconnects on its own — which is what
-    /// makes replugging one Just Work rather than needing Apply pressed.
+    /// makes replugging one Just Work rather than needing Apply pressed. Over
+    /// `rtl_tcp` the same rule reconnects to a server that was restarted, or
+    /// that dropped this client for falling behind.
     fn needs_reopen(&self) -> bool {
-        !self.handle.is_alive() || self.handle.silent_for() >= SILENCE_BEFORE_REOPEN
+        !self.handle.is_alive() || self.handle.silent_for() >= self.silence
     }
 
     /// Hand the dongle back before the engine opens its replacement. Without
@@ -183,9 +252,12 @@ impl IqSource for RtlSdrSource {
     /// Surface what an operator needs to know but cannot see. A bias tee
     /// putting DC on the feedline is worth a standing on-screen reminder — the
     /// setting is persisted, so it survives a restart with nothing else to
-    /// indicate it.
+    /// indicate it. More so over `rtl_tcp`, where the coax it is feeding is
+    /// wherever the server is and may not be in the room.
     fn open_status(&self) -> Option<String> {
-        self.bias_tee
-            .then(|| format!("{}: bias tee is ON — ~4.5 V DC on the antenna coax", self.label))
+        self.bias_tee.then(|| {
+            let where_ = if self.remote { " at the far end" } else { "" };
+            format!("{}: bias tee is ON — ~4.5 V DC on the antenna coax{where_}", self.label)
+        })
     }
 }

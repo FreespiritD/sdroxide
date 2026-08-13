@@ -56,10 +56,19 @@ pub enum Backend {
     /// network; there is no I/Q, because no Icom offers any. Appended last,
     /// for the same reason as `SmartSdr` above.
     IcomNet,
+    /// An RTL-SDR dongle plugged into another machine and published with
+    /// `rtl_tcp` — the same hardware as [`Backend::RtlSdr`], reached over the
+    /// network instead of over USB. Kept a separate interface rather than a
+    /// mode of the USB one because what the operator picks is *where the
+    /// radio is*, and because the two configurations have nothing in common
+    /// but the tuner: a serial number identifies nothing on the far end, and
+    /// an address identifies nothing locally. Appended last, for the same
+    /// reason as `SmartSdr` above.
+    RtlTcp,
 }
 
 impl Backend {
-    pub const ALL: [Backend; 12] = [
+    pub const ALL: [Backend; 13] = [
         Backend::Auto,
         Backend::Soapy,
         Backend::Cat,
@@ -69,6 +78,7 @@ impl Backend {
         Backend::SmartSdr,
         Backend::Pluto,
         Backend::RtlSdr,
+        Backend::RtlTcp,
         Backend::Rx888,
         Backend::AirspyHf,
         Backend::SdrPlay,
@@ -84,6 +94,7 @@ impl Backend {
             Backend::SmartSdr => "SmartSDR / FlexRadio (network)",
             Backend::Pluto => "PlutoSDR (network)",
             Backend::RtlSdr => "RTL-SDR (USB)",
+            Backend::RtlTcp => "RTL-SDR over rtl_tcp (network)",
             Backend::Rx888 => "RX-888 (USB)",
             Backend::AirspyHf => "Airspy HF+ (USB)",
             Backend::SdrPlay => "SDRplay RSP (USB)",
@@ -1163,6 +1174,102 @@ impl RtlSdrConfig {
     pub const HF_CROSSOVER_HZ: f64 = 28_800_000.0;
 }
 
+/// An RTL-SDR published over the network by `rtl_tcp` (osmocom's, the
+/// rtl-sdr-blog fork's, or any of the several servers that speak the same
+/// protocol). Receive only.
+///
+/// The knobs are deliberately the same ones as [`RtlSdrConfig`], and they ride
+/// the same pseudo-elements, because it is the same radio — the difference is
+/// only which side of the link the register writes happen on. What is missing
+/// here is everything that describes *this* machine's USB bus: there is no
+/// serial to pin (the server chose the dongle when it started) and no transfer
+/// geometry (the server owns the transfers; TCP does its own buffering).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RtlTcpConfig {
+    /// `host` or `host:port` of the `rtl_tcp` server. The port may be left off
+    /// and defaults to 1234, which is what `rtl_tcp` listens on unless told
+    /// otherwise — see [`Self::endpoint`].
+    pub address: String,
+    /// Sample rate in Hz, requested of the server. Same resampler limits as
+    /// the USB backend, since it is the same silicon on the far end.
+    pub sample_rate_hz: f64,
+    /// Crystal error in parts per million, applied by the *server* to its
+    /// dongle. This is a property of the far-end hardware, not of the link.
+    pub ppm: i32,
+    /// Tuner gain in dB when AGC is off. Sent in tenths of a dB, which is the
+    /// unit the protocol carries; the server snaps it to the nearest step its
+    /// tuner can produce and tells us nothing about the result.
+    pub tuner_gain_db: f64,
+    pub agc: RtlSdrAgc,
+    /// How the far end reaches HF. `Auto` and `DirectQ` send the protocol's
+    /// direct-sampling command; a Blog V4 on the far end needs neither,
+    /// because the blog fork's server upconverts inside its own tuning call.
+    pub hf_mode: RtlSdrHfMode,
+    /// Bias tee on the *remote* dongle: ~4.5 V DC on an antenna coax that is
+    /// wherever the server is, which may be a mast a hundred metres away and
+    /// out of sight. Off by default, and switched off again when the stream
+    /// closes cleanly.
+    ///
+    /// Older servers do not implement the command at all and answer it with
+    /// silence rather than an error — the protocol has no replies — so a
+    /// bias tee that does not come on is not necessarily this end's fault.
+    pub bias_tee: bool,
+    /// Remove the DC spike and mirror image in DSP, exactly as on the USB
+    /// backend: these are artefacts of the dongle, so they arrive over the
+    /// network along with everything else.
+    pub iq_correction: bool,
+}
+
+impl Default for RtlTcpConfig {
+    fn default() -> Self {
+        RtlTcpConfig {
+            address: format!("127.0.0.1:{}", RtlTcpConfig::DEFAULT_PORT),
+            // Deliberately lower than the USB backend's 2.4 Msps default: this
+            // one has to fit down a network link, and 2.4 Msps is 38 Mbit/s of
+            // uncompressed 8-bit I/Q. 1.024 Msps is 16 Mbit/s, which survives
+            // WiFi, and the operator can raise it on a wired link.
+            sample_rate_hz: 1_024_000.0,
+            ppm: 0,
+            tuner_gain_db: 30.0,
+            agc: RtlSdrAgc::Manual,
+            hf_mode: RtlSdrHfMode::Auto,
+            bias_tee: false,
+            iq_correction: true,
+        }
+    }
+}
+
+impl RtlTcpConfig {
+    /// The port `rtl_tcp` listens on when it is not given `-p`.
+    pub const DEFAULT_PORT: u16 = 1234;
+
+    /// The configured address as `host:port`, supplying the default port when
+    /// the operator typed only a host.
+    ///
+    /// "No colon means no port" is not quite enough on its own: an IPv6
+    /// literal is all colons, and is written in brackets exactly so that a
+    /// port can be told apart from an address word. So a bracketed literal
+    /// with nothing after the bracket needs the port too.
+    pub fn endpoint(&self) -> String {
+        let a = self.address.trim();
+        let has_port = match a.rfind(']') {
+            // `[::1]:1234` — a port only if something follows the bracket.
+            Some(close) => a[close + 1..].starts_with(':'),
+            None => a.contains(':'),
+        };
+        if has_port { a.to_string() } else { format!("{a}:{}", Self::DEFAULT_PORT) }
+    }
+
+    /// Sample rates offered in the UI, and how much of a link each one asks
+    /// for. Same list as [`RtlSdrConfig::SAMPLE_RATES`] — it is the same
+    /// resampler — but here the number that decides is the second one.
+    pub fn link_mbit(rate_hz: f64) -> f64 {
+        // Two bytes per complex sample, eight bits to the byte.
+        rate_hz * 2.0 * 8.0 / 1e6
+    }
+}
+
 /// One RTL-SDR dongle found on the USB bus. Wasm-safe so it can cross the
 /// `RadioController` trait to the settings UI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2240,6 +2347,7 @@ pub struct RadioConfig {
     pub icomnet: IcomNetConfig,
     pub smartsdr: SmartSdrConfig,
     pub rtlsdr: RtlSdrConfig,
+    pub rtltcp: RtlTcpConfig,
     pub rx888: Rx888Config,
     pub airspyhf: AirspyHfConfig,
     pub pluto: PlutoConfig,
@@ -2271,6 +2379,33 @@ mod tests {
         // and a new one must name this backend recognisably.
         let json = serde_json::to_string(&Backend::IcomNet).unwrap();
         assert_eq!(json, "\"IcomNet\"");
+    }
+
+    /// The network RTL-SDR is its own interface, and an older `radio.json`
+    /// that predates it still loads — with the USB entry it was written with.
+    #[test]
+    fn the_rtl_tcp_interface_is_offered_and_named_on_the_wire() {
+        assert!(Backend::ALL.contains(&Backend::RtlTcp));
+        assert_eq!(serde_json::to_string(&Backend::RtlTcp).unwrap(), "\"RtlTcp\"");
+        assert_ne!(Backend::RtlTcp.label(), Backend::RtlSdr.label());
+
+        let cfg: RadioConfig = serde_json::from_str(r#"{"backend": "RtlSdr"}"#).expect("parses");
+        assert_eq!(cfg.backend, Backend::RtlSdr);
+        assert_eq!(cfg.rtltcp, RtlTcpConfig::default(), "a config with no rtl_tcp block");
+    }
+
+    /// The port may be left off, and an IPv6 literal is all colons — so the
+    /// brackets, not the colons, are what say whether a port is present.
+    #[test]
+    fn an_address_without_a_port_gets_the_protocol_default() {
+        let at = |a: &str| RtlTcpConfig { address: a.into(), ..Default::default() }.endpoint();
+        assert_eq!(at("192.168.1.5"), "192.168.1.5:1234");
+        assert_eq!(at("192.168.1.5:5678"), "192.168.1.5:5678");
+        assert_eq!(at("raspberrypi.local"), "raspberrypi.local:1234");
+        assert_eq!(at("[fe80::1]"), "[fe80::1]:1234");
+        assert_eq!(at("[fe80::1]:5678"), "[fe80::1]:5678");
+        // Typed with a stray space, as a pasted address arrives.
+        assert_eq!(at("  10.0.0.9  "), "10.0.0.9:1234");
     }
 
     /// Every way an existing `radio.json` can arrive has to land on the working

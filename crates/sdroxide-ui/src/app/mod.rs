@@ -985,6 +985,9 @@ impl SdroxideApp {
             "smartsdr" => "SmartSDR".into(),
             "pluto" => "PlutoSDR".into(),
             "rtlsdr" => "RTL-SDR".into(),
+            // Named apart from the USB one: on a station with both, which tab
+            // is the dongle on the mast is exactly what needs telling apart.
+            "rtltcp" => "RTL-SDR (rtl_tcp)".into(),
             "rx888" => "RX-888".into(),
             // Distinct from the `"airspy"` arm below, which is SoapySDR's
             // driver for the R2 and Mini — a different radio entirely.

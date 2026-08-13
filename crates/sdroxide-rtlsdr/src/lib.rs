@@ -7,6 +7,11 @@
 //! `f32` into an [`rtrb`] ring, exactly like the `sdroxide-hpsdr` and
 //! `sdroxide-tci` backends.
 //!
+//! The same dongle on *another* machine, published with `rtl_tcp`, is reached
+//! by [`RtlSdrHandle::connect`] instead: the far end owns the registers, so
+//! that path speaks the five-byte command protocol rather than USB, and hands
+//! back the identical handle. See [`tcp`].
+//!
 //! Supported tuners: R820T, R820T2 and R828D — every RTL-SDR Blog V3/V4 and
 //! effectively all generic DVB-T sticks still in circulation. The legacy
 //! E4000/FC0012/FC0013/FC2580 parts are deliberately not implemented; the probe
@@ -28,6 +33,7 @@ mod handle;
 mod regs;
 mod rtl2832;
 mod stream;
+mod tcp;
 mod tuner;
 mod usb;
 

@@ -171,11 +171,7 @@ fn pump(
         .endpoint::<Bulk, In>(BULK_EP)
         .map_err(|e| Error::Access(format!("cannot open the RTL-SDR bulk endpoint: {e}")))?;
 
-    // Conversion lookup: 8-bit unsigned to f32. 127.4 rather than 127.5 is the
-    // measured DC centre of the RTL2832's ADC output, and is what librtlsdr and
-    // SoapyRTLSDR both use; 1/128 puts full scale just inside ±1.0. A table
-    // rather than arithmetic because this runs 4.8 million times a second.
-    let lut: [f32; 256] = core::array::from_fn(|i| (i as f32 - 127.4) * (1.0 / 128.0));
+    let lut = sample_lut();
 
     let mut stats = RxStats::new(dev.sample_rate());
     let started = Instant::now();
@@ -333,11 +329,23 @@ fn apply(dev: &mut Device, p: &Pending, odd_carry: &mut Option<u8>) -> Result<()
     Ok(())
 }
 
+/// Conversion lookup: 8-bit unsigned to f32. 127.4 rather than 127.5 is the
+/// measured DC centre of the RTL2832's ADC output, and is what librtlsdr and
+/// SoapyRTLSDR both use; 1/128 puts full scale just inside ±1.0. A table rather
+/// than arithmetic because this runs 4.8 million times a second.
+///
+/// Shared with the `rtl_tcp` backend: the bytes on that socket are the ones
+/// this endpoint produced, so they convert by the same table.
+pub(crate) fn sample_lut() -> [f32; 256] {
+    core::array::from_fn(|i| (i as f32 - 127.4) * (1.0 / 128.0))
+}
+
 /// Convert a transfer's 8-bit unsigned I/Q into interleaved `f32`.
 ///
 /// `carry` holds a leftover byte from a previous short transfer so that I/Q
-/// pairing survives an odd-length completion.
-fn convert(bytes: &[u8], lut: &[f32; 256], carry: &mut Option<u8>, out: &mut Vec<f32>) {
+/// pairing survives an odd-length completion — or, over `rtl_tcp`, a socket
+/// read that ended between an I and its Q, which happens constantly.
+pub(crate) fn convert(bytes: &[u8], lut: &[f32; 256], carry: &mut Option<u8>, out: &mut Vec<f32>) {
     out.clear();
     out.reserve(bytes.len() + 1);
 
@@ -369,7 +377,7 @@ mod tests {
     use super::*;
 
     fn lut() -> [f32; 256] {
-        core::array::from_fn(|i| (i as f32 - 127.4) * (1.0 / 128.0))
+        sample_lut()
     }
 
     #[test]

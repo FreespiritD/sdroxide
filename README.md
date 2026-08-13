@@ -35,7 +35,8 @@ One binary, three ways to run it:
 ## Core features
 
 - **Radios** - CAT/Audio, CAT/Stereo IQ, TCI (SunSDR), OpenHPSDR P1 and P2
-  (Hermes Lite 2, Apache Labs), SoapySDR (HackRF, etc.), RTL-SDR (native support), 
+  (Hermes Lite 2, Apache Labs), SoapySDR (HackRF, etc.), RTL-SDR (native support,
+  over USB or over the network via rtl_tcp),
   RX-888 (native support), SDRplay RSP (native, via the vendor API service),
   SmartSDR (FlexRadio - experimental!), PlutoSDR (native support, experimental!),
   Icom LAN / RS-BA1 protocol (experimental!)
@@ -362,6 +363,13 @@ starting sdroxide before the rig is fine:
   an RTL-SDR Blog V4's built-in upconverter, or on other sticks by direct
   sampling the ADC's Q branch (the V3's HF port). Bias tee and ppm correction
   are on the Radio tab; see "RTL-SDR permissions" under Building.
+- **RTL-SDR over rtl_tcp (network)** — the same dongle on another machine — a
+  Raspberry Pi at the antenna, say — published with `rtl_tcp -a 0.0.0.0`. The
+  same controls as the USB interface, since it is the same radio; the far end
+  performs them. Rates are shown with what they cost on the link (the samples
+  are uncompressed: 1.024 Msps is 16 Mbit/s, 2.4 Msps is 38), and a dropped
+  connection reconnects by itself. `rtl_tcp` has no authentication, so keep it
+  on a trusted network or reach it through an SSH tunnel.
 - **RX-888 (USB)** — an RX-888 or RX-888 Mk2 direct-sampling HF receiver
   (LTC2208 16-bit ADC, Cypress FX3), driven directly over USB by a native
   pure-Rust driver. **No SoapySDR, no libusb, and no vendor driver package.**
@@ -461,11 +469,11 @@ starting sdroxide before the rig is fine:
   transmit is DAX audio the radio modulates. DAX IQ tops out at **192 kHz**,
   which is this backend's widest span.
 
-The wideband-IQ backends (RTL-SDR, RX-888, SDRplay, SoapySDR, HPSDR, TCI,
-SmartSDR, PlutoSDR) drive the full panadapter, the CW/PSK/RTTY skimmers, and
-internal demodulation; a CAT rig feeding demodulated audio shows only a narrow
-audio-band slice. RTL-SDR, RX-888 and SDRplay are receive-only; the others can
-transmit.
+The wideband-IQ backends (RTL-SDR over USB or rtl_tcp, RX-888, SDRplay,
+SoapySDR, HPSDR, TCI, SmartSDR, PlutoSDR) drive the full panadapter, the
+CW/PSK/RTTY skimmers, and internal demodulation; a CAT rig feeding demodulated
+audio shows only a narrow audio-band slice. RTL-SDR, RX-888 and SDRplay are
+receive-only; the others can transmit.
 
 Whichever backend you pick, a **converter offset** on the same tab handles an
 external frequency converter: an HF upconverter (Ham It Up, SpyVerter), a

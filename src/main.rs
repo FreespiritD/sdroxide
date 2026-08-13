@@ -942,6 +942,7 @@ fn open_configured_source(
         Backend::SmartSdr => open_smartsdr_source(radio, cli.center_hz()),
         Backend::Pluto => open_pluto_source(radio, cli.center_hz(), cli.rate),
         Backend::RtlSdr => open_rtlsdr_source(radio, cli.center_hz()),
+        Backend::RtlTcp => open_rtltcp_source(radio, cli.center_hz()),
         Backend::Rx888 => open_rx888_source(radio, cli.center_hz()),
         Backend::AirspyHf => open_airspyhf_source(radio, cli.center_hz()),
         Backend::SdrPlay => open_sdrplay_source(radio, cli.center_hz()),
@@ -1144,7 +1145,18 @@ fn open_rtlsdr_source(
 ) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
     let src = rtlsdr_source::RtlSdrSource::open(&radio.rtlsdr, center_hz)
         .context("opening RTL-SDR dongle")?;
-    let caps = rtlsdr_caps(&src);
+    let caps = rtlsdr_caps(&src, "rtlsdr");
+    Ok((Box::new(src), caps))
+}
+
+/// The same dongle on another machine, reached through its `rtl_tcp` server.
+fn open_rtltcp_source(
+    radio: &RadioConfig,
+    center_hz: f64,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let src = rtlsdr_source::RtlSdrSource::connect(&radio.rtltcp, center_hz)
+        .with_context(|| format!("connecting to rtl_tcp at {}", radio.rtltcp.endpoint()))?;
+    let caps = rtlsdr_caps(&src, "rtltcp");
     Ok((Box::new(src), caps))
 }
 
@@ -1412,7 +1424,13 @@ fn pluto_caps(src: &pluto_source::PlutoSource, rx: u8) -> DeviceCaps {
 /// direct sampling, which tops out at the ADC's Nyquist limit — leaving a gap
 /// between there and the tuner's 24 MHz floor. Overlapping or disjoint ranges
 /// are both fine: `DeviceCaps::can_rx_hz` is an `any` over the list.
-fn rtlsdr_caps(src: &rtlsdr_source::RtlSdrSource) -> DeviceCaps {
+///
+/// `driver` distinguishes the two ways in — `rtlsdr` over USB, `rtltcp` over
+/// the network — because it is what names the interface in the UI and what a
+/// radio tab is called before the operator names it. The capabilities
+/// themselves are the same: it is the same dongle either way, and the sample
+/// rate and HF answers come from the source, which knows which link it is on.
+fn rtlsdr_caps(src: &rtlsdr_source::RtlSdrSource, driver: &str) -> DeviceCaps {
     let rate = src.sample_rate_hz();
     let freq_ranges_rx = if src.is_blog_v4() {
         vec![(0.0, 1_766_000_000.0)]
@@ -1422,7 +1440,7 @@ fn rtlsdr_caps(src: &rtlsdr_source::RtlSdrSource) -> DeviceCaps {
         vec![(24_000_000.0, 1_766_000_000.0)]
     };
     DeviceCaps {
-        driver: "rtlsdr".into(),
+        driver: driver.into(),
         label: format!("{} ({}, {:.3} Msps)", src.describe(), src.tuner(), rate / 1e6),
         rx_channels: 1,
         tx_channels: 0,

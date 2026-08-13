@@ -36,8 +36,8 @@ use self::net::{
 };
 use self::radio::{
     settings_airspyhf_tab, settings_cat_tab, settings_hpsdr_tab, settings_icomnet_tab,
-    settings_pluto_tab, settings_rtlsdr_tab, settings_rx888_tab, settings_sdrplay_tab,
-    settings_smartsdr_tab, settings_soapy_devices, settings_tci_tab,
+    settings_pluto_tab, settings_rtlsdr_tab, settings_rtltcp_tab, settings_rx888_tab,
+    settings_sdrplay_tab, settings_smartsdr_tab, settings_soapy_devices, settings_tci_tab,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use self::remote::settings_remote_tab;
@@ -428,6 +428,10 @@ impl SdroxideApp {
         // Ungated, unlike SoapySDR: the RTL-SDR driver is pure Rust and needs
         // no system library, so it is compiled into every build variant.
         iface_opts.push(sdroxide_types::Backend::RtlSdr);
+        // The same driver over a socket instead of the USB bus — pure Rust and
+        // std::net, so it is in every build variant too. Listed next to the USB
+        // entry because the choice between them is only where the dongle is.
+        iface_opts.push(sdroxide_types::Backend::RtlTcp);
         // Same reasoning as the RTL-SDR: pure Rust over `nusb`, no system
         // library, so it is in every build variant.
         iface_opts.push(sdroxide_types::Backend::Rx888);
@@ -1238,6 +1242,10 @@ impl SdroxideApp {
                         io.rtlsdr_rescan,
                         cmds,
                     ),
+                    // No device list: the dongle is the server's, and the
+                    // protocol has no enumeration — there is nothing to rescan
+                    // and nothing to pick from.
+                    Backend::RtlTcp => settings_rtltcp_tab(ui, io.radio_edit, cmds),
                     Backend::Rx888 => settings_rx888_tab(
                         ui,
                         &self.rx888_devices,

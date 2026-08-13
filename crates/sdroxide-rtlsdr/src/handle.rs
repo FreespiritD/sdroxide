@@ -80,6 +80,9 @@ pub(crate) struct RxStats {
     /// field, a number that keeps moving is worse than none.
     first_iq: Option<Instant>,
     since: Instant,
+    /// Whether the samples are paced by the dongle's own clock, which is what
+    /// makes the clock estimate mean anything. See [`RxStats::network`].
+    hw_paced: bool,
     win_samples: u64,
     win_dropped: u64,
     win_errors: u64,
@@ -94,6 +97,7 @@ impl RxStats {
             nominal_hz,
             first_iq: None,
             since: Instant::now(),
+            hw_paced: true,
             win_samples: 0,
             win_dropped: 0,
             win_errors: 0,
@@ -101,6 +105,26 @@ impl RxStats {
             total_dropped: 0,
             total_errors: 0,
         }
+    }
+
+    /// Accounting for samples that arrived over a socket, where the clock
+    /// estimate is withheld rather than reported.
+    ///
+    /// The measurement counts samples against elapsed time here, and over a
+    /// network what it measures is the *buffering*, not the crystal: the
+    /// difference between the two is however many samples are sitting in the
+    /// server's queue, the kernel's, and the ring at the moment of the reading,
+    /// and that moves by tens of milliseconds from one reading to the next.
+    /// Measured against a real `rtl_tcp` on loopback — the most favourable link
+    /// there is — successive readings 25 seconds in ranged from -770 to
+    /// +2600 ppm, and the error only decays as 1/t: reaching the few ppm the
+    /// figure is meant to resolve would take hours.
+    ///
+    /// So it is not shown. A number that looks like a measurement and is off by
+    /// three orders of magnitude is worse than no number, and this one came
+    /// with "set this as the ppm correction" beside it.
+    pub(crate) fn network(nominal_hz: f64) -> RxStats {
+        RxStats { hw_paced: false, ..RxStats::new(nominal_hz) }
     }
 
     pub(crate) fn on_iq(&mut self, pairs: usize) {
@@ -131,7 +155,14 @@ impl RxStats {
     /// from. Whatever this reports is very nearly the number to type into the
     /// ppm setting, which turns an otherwise fiddly calibration into reading a
     /// log line.
+    ///
+    /// Only over a link that the dongle paces, though — see
+    /// [`RxStats::network`], where this measures the buffering instead and is
+    /// withheld.
     fn clock_error(&self) -> String {
+        if !self.hw_paced {
+            return "clock: not measurable over a network link".to_string();
+        }
         let dt = self.first_iq.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
         // Below ~20 s the host's own scheduling jitter dominates.
         if dt < 20.0 || self.total_samples == 0 || self.nominal_hz <= 0.0 {
@@ -234,6 +265,23 @@ impl RtlSdrHandle {
     /// succeeded or failed.
     pub fn open(cfg: &RtlSdrConfig, center_hz: f64) -> Result<RtlSdrHandle> {
         crate::stream::spawn(cfg, center_hz)
+    }
+
+    /// Connect to a dongle published by an `rtl_tcp` server, and start
+    /// streaming.
+    ///
+    /// The same handle as [`Self::open`], because nothing in it was ever
+    /// specific to USB: the control setters below become five-byte commands
+    /// on a socket, and the samples arrive through the same ring. Blocks until
+    /// the connection is up and the far end configured, or has failed.
+    ///
+    /// What differs is what can be *known*. The protocol carries no replies,
+    /// so [`Self::effective_gain_db`] reports the gain that was asked for
+    /// rather than one snapped to a step the far end has, [`Self::gains_db`]
+    /// is empty because the values are never sent, and the sample rate is the
+    /// requested one.
+    pub fn connect(cfg: &sdroxide_types::RtlTcpConfig, center_hz: f64) -> Result<RtlSdrHandle> {
+        crate::tcp::spawn(cfg, center_hz)
     }
 
     pub(crate) fn from_parts(
@@ -393,6 +441,22 @@ mod tests {
         p.absorb(Ctrl::Shutdown);
         p.absorb(Ctrl::Center(100e6));
         assert!(p.shutdown, "a later message must not cancel a shutdown");
+    }
+
+    /// The clock estimate is a property of a hardware-paced link, and saying
+    /// so is the whole point: over a socket the same arithmetic measures the
+    /// buffering and lands thousands of ppm out.
+    #[test]
+    fn the_clock_estimate_is_withheld_over_a_network_link() {
+        let mut net = RxStats::network(1_024_000.0);
+        net.on_iq(1_024_000);
+        assert!(net.clock_error().contains("not measurable"), "{}", net.clock_error());
+
+        let mut usb = RxStats::new(2_400_000.0);
+        usb.on_iq(2_400_000);
+        // Hardware-paced, but not for long enough yet — which is a different
+        // answer from "never".
+        assert_eq!(usb.clock_error(), "clock: measuring");
     }
 
     #[test]
