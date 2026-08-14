@@ -87,7 +87,13 @@ impl WinlinkManager {
             return Err("a Winlink session is already running".into());
         }
         if !self.cfg.is_usable() {
-            return Err("set a Winlink callsign and password first".into());
+            // Names the APPLY button on purpose: the settings tab keeps edits
+            // in a scratch copy until it is pressed, so an account can be typed
+            // in, look saved, and never reach here.
+            return Err(
+                "set a Winlink callsign and password in Settings \u{2192} Winlink, then press APPLY"
+                    .into(),
+            );
         }
 
         // Take a snapshot of the outbox now. The worker gets owned data and

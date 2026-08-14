@@ -1613,6 +1613,25 @@ impl SdroxideApp {
                         );
                     });
                 });
+
+                // Every network tab commits through its own APPLY: the edits
+                // above live in a scratch copy until one is pressed. Without
+                // this button the account is typed in, appears to stick, and
+                // the engine never hears about it — so connecting reports that
+                // no callsign has been set.
+                ui.add_space(8.0);
+                if crate::chrome::chip_accent(
+                    ui,
+                    false,
+                    RichText::new(" APPLY ").strong(),
+                    crate::theme::GREEN(),
+                    crate::theme::INK_ON_CYAN(),
+                )
+                .on_hover_text("Persist the Winlink account")
+                .clicked()
+                {
+                    *io.net_apply = true;
+                }
             }
             SettingsTab::Uploads => {
                 if !net_seeded_note(ui, io.net_seeded) {
