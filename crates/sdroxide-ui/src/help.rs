@@ -950,6 +950,9 @@ fn slugify(s: &str) -> String {
             out.push(c.to_ascii_lowercase());
         } else if c == ' ' || c == '-' {
             out.push('-');
+        } else if c == '_' {
+            // GitHub keeps underscores verbatim (`rtl_tcp` stays `rtl_tcp`).
+            out.push('_');
         }
     }
     out
@@ -1493,6 +1496,11 @@ mod tests {
         assert_eq!(slugify("1. Feature overview"), "1-feature-overview");
         assert_eq!(slugify("5.9 UI preferences"), "59-ui-preferences");
         assert_eq!(slugify("3. Digital modes"), "3-digital-modes");
+        // Underscores survive; only the parentheses and dots are dropped.
+        assert_eq!(
+            slugify("5.2.11 RTL-SDR over rtl_tcp (network dongles)"),
+            "5211-rtl-sdr-over-rtl_tcp-network-dongles"
+        );
     }
 
     /// Every whole-line image the manual references must be baked into the
