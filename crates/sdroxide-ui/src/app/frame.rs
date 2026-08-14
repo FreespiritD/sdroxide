@@ -547,6 +547,7 @@ impl eframe::App for SdroxideApp {
         self.digi_settings_window(&ctx, &mut cmds);
         self.logbook_window(&ctx);
         self.mail_window(&ctx, &mut cmds);
+        self.mail_log_window(&ctx);
         self.spots_window(&ctx, &mut cmds);
         self.awards_window(&ctx);
         self.bands_window(&ctx);

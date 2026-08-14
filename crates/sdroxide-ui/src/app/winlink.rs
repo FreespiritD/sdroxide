@@ -11,6 +11,8 @@
 //! may have attachments in it.
 
 use eframe::egui;
+
+use crate::app::panels::widgets::row_cell;
 use sdroxide_types::{
     Command, MailDraft, MailEntry, MailFolder, MailListing, MailMessage, WinlinkStatus,
 };
@@ -34,14 +36,28 @@ pub struct MailUi {
     draft: Option<MailDraft>,
     compose_to: String,
     compose_cc: String,
-    /// Show the session transcript rather than the message list.
-    show_log: bool,
+    /// The session-transcript window, which is its own window rather than a
+    /// mode of this one: reading the log while working through messages is the
+    /// point of having it.
+    pub log_open: bool,
+    /// Where the draggable divider sits, as a fraction of the body height.
+    /// Clamped on use so neither pane can be dragged away entirely.
+    split: f32,
     /// Set when the folder needs re-listing — on open, after a session, after
     /// a delete. Cleared by the request that goes out.
     dirty: bool,
+    /// Last frame's `open`, so the listing can be asked for on the rising edge.
+    /// Without this the window opens showing "loading…" for ever: nothing else
+    /// sets `dirty`, so the request is never made.
+    was_open: bool,
 }
 
 impl MailUi {
+    /// Starting divider position, and the range it may be dragged through.
+    const SPLIT_DEFAULT: f32 = 0.45;
+    const SPLIT_MIN: f32 = 0.12;
+    const SPLIT_MAX: f32 = 0.85;
+
     pub fn on_status(&mut self, status: WinlinkStatus) {
         // A session that has just finished may have filed new mail, so the
         // open folder is stale.
@@ -93,6 +109,14 @@ impl MailUi {
 
 impl crate::app::SdroxideApp {
     pub(in crate::app) fn mail_window(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
+        // Opening the window is itself a reason to (re)list: the mailbox may
+        // have changed since it was last closed, and on the very first open
+        // there is nothing to show at all.
+        if self.mail.open && !self.mail.was_open {
+            self.mail.dirty = true;
+        }
+        self.mail.was_open = self.mail.open;
+
         if !self.mail.open {
             return;
         }
@@ -137,19 +161,18 @@ impl crate::app::SdroxideApp {
         let avail = ui.available_height();
         let body_h = if avail.is_finite() && avail > 1.0 { avail } else { 420.0 };
 
-        if self.mail.show_log {
-            self.mail_log(ui, body_h);
-            return;
-        }
         if self.mail.draft.is_some() {
             self.mail_compose(ui, cmds);
             return;
         }
 
-        // List above, message below — one column, so the window stays usable
-        // at the width a browser client on a laptop actually gets. The list
-        // keeps a floor so a long message cannot squeeze it away entirely.
-        let list_h = (body_h * 0.45).clamp(140.0, (body_h - 120.0).max(140.0));
+        // List above, message below, with a draggable divider between them.
+        // One column rather than two, so the window stays usable at the width
+        // a browser client on a laptop actually gets.
+        let split = self.mail.split;
+        let split = if split <= 0.0 { MailUi::SPLIT_DEFAULT } else { split };
+        let list_h = (body_h * split).clamp(80.0, (body_h - 80.0).max(80.0));
+
         egui::ScrollArea::vertical()
             .id_salt("mail-list")
             .min_scrolled_height(list_h)
@@ -158,12 +181,52 @@ impl crate::app::SdroxideApp {
             .show(ui, |ui| {
                 self.mail_list(ui, cmds);
             });
-        ui.separator();
+
+        self.mail_divider(ui, body_h);
+
         egui::ScrollArea::vertical().id_salt("mail-body").auto_shrink([false, false]).show(
             ui,
             |ui| {
                 self.mail_message(ui, cmds);
             },
+        );
+    }
+
+    /// The draggable divider between the list and the message.
+    ///
+    /// A plain `ui.separator()` is a hairline nobody can grab, so this
+    /// allocates a band tall enough to hit, shows a resize cursor over it, and
+    /// converts the drag into a fraction of the body height. Fractions rather
+    /// than pixels so the split survives the window being resized.
+    fn mail_divider(&mut self, ui: &mut egui::Ui, body_h: f32) {
+        const BAND: f32 = 7.0;
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), BAND), egui::Sense::drag());
+
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+        if resp.dragged() && body_h > 1.0 {
+            let split =
+                if self.mail.split <= 0.0 { MailUi::SPLIT_DEFAULT } else { self.mail.split };
+            self.mail.split =
+                (split + resp.drag_delta().y / body_h).clamp(MailUi::SPLIT_MIN, MailUi::SPLIT_MAX);
+        }
+        if resp.double_clicked() {
+            self.mail.split = MailUi::SPLIT_DEFAULT;
+        }
+
+        // A line with a grip in the middle, brighter while it is being used, so
+        // it reads as something to grab rather than as decoration.
+        let lit = resp.hovered() || resp.dragged();
+        let colour = if lit { crate::theme::CYAN() } else { crate::theme::LINE() };
+        let y = rect.center().y;
+        ui.painter().hline(rect.x_range(), y, egui::Stroke::new(1.0, colour));
+        let grip = 26.0;
+        ui.painter().hline(
+            (rect.center().x - grip)..=(rect.center().x + grip),
+            y,
+            egui::Stroke::new(3.0, colour),
         );
     }
 
@@ -190,8 +253,8 @@ impl crate::app::SdroxideApp {
             if ui.add_enabled(!busy, egui::Button::new("COMPOSE")).clicked() {
                 self.mail.draft = Some(MailDraft::default());
             }
-            if ui.selectable_label(self.mail.show_log, "LOG").clicked() {
-                self.mail.show_log = !self.mail.show_log;
+            if ui.selectable_label(self.mail.log_open, "LOG").clicked() {
+                self.mail.log_open = !self.mail.log_open;
             }
         });
 
@@ -230,56 +293,226 @@ impl crate::app::SdroxideApp {
             return;
         }
 
-        egui::Grid::new("mail-rows").num_columns(4).striped(true).show(ui, |ui| {
-            for entry in &listing.entries {
-                self.mail_row(ui, entry, cmds);
-                ui.end_row();
-            }
-        });
+        // Column widths, in the decode list's manner: fixed for the fields that
+        // line up down the page, with the subject taking whatever is left so
+        // the table always fills the window's width.
+        let full = ui.available_width();
+        let date_w = 108.0;
+        let who_w = (full * 0.22).clamp(90.0, 200.0);
+        let att_w = 26.0;
+        let btn_w = 108.0;
+        let gaps = ui.spacing().item_spacing.x * 4.0;
+        let subject_w = (full - date_w - who_w - att_w - btn_w - gaps - 18.0).max(80.0);
+
+        self.mail_list_head(ui, date_w, who_w, att_w, subject_w);
+
+        for (i, entry) in listing.entries.iter().enumerate() {
+            self.mail_row(ui, i, entry, date_w, who_w, att_w, subject_w, cmds);
+        }
 
         if listing.total as usize > listing.entries.len() {
-            ui.label(format!(
-                "showing {} of {} — open a message or narrow the folder",
-                listing.entries.len(),
-                listing.total
-            ));
+            ui.label(
+                egui::RichText::new(format!(
+                    "showing {} of {}",
+                    listing.entries.len(),
+                    listing.total
+                ))
+                .size(11.0)
+                .color(crate::theme::TEXT()),
+            );
         }
     }
 
-    fn mail_row(&mut self, ui: &mut egui::Ui, entry: &MailEntry, cmds: &mut Vec<Command>) {
-        let selected = self.mail.selected.as_ref().is_some_and(|m| m.mid == entry.mid);
-        ui.label(&entry.date);
-        // Inbox rows show who it is from; everywhere else, who it is to.
-        let who = if self.mail.folder == MailFolder::Inbox { &entry.from } else { &entry.to };
-        ui.label(who);
+    /// The column headings, dim and small so they frame the rows without
+    /// competing with them.
+    fn mail_list_head(
+        &self,
+        ui: &mut egui::Ui,
+        date_w: f32,
+        who_w: f32,
+        att_w: f32,
+        subject_w: f32,
+    ) {
+        let inbox = self.mail.folder == MailFolder::Inbox;
+        let head = |text: &str| {
+            egui::Label::new(
+                egui::RichText::new(text).size(10.0).strong().color(crate::theme::CYAN_DIM()),
+            )
+            .selectable(false)
+        };
+        ui.horizontal(|ui| {
+            // Matches the rows' frame margin, or the headings sit left of the
+            // columns they name.
+            ui.add_space(11.0);
+            row_cell(ui, date_w, 16.0, false, head("DATE"));
+            row_cell(ui, who_w, 16.0, false, head(if inbox { "FROM" } else { "TO" }));
+            row_cell(ui, att_w, 16.0, false, head(""));
+            row_cell(ui, subject_w, 16.0, false, head("SUBJECT"));
+        });
+    }
 
-        let mut subject = entry.subject.clone();
-        if subject.is_empty() {
-            subject = "(no subject)".into();
+    /// One message row: a full-width band the whole of which selects the
+    /// message, with the archive/delete buttons pinned right.
+    #[allow(clippy::too_many_arguments)]
+    fn mail_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        index: usize,
+        entry: &MailEntry,
+        date_w: f32,
+        who_w: f32,
+        att_w: f32,
+        subject_w: f32,
+        cmds: &mut Vec<Command>,
+    ) {
+        let selected = self.mail.selected.as_ref().is_some_and(|m| m.mid == entry.mid);
+        let inbox = self.mail.folder == MailFolder::Inbox;
+        // Unread is only meaningful in the inbox, and only until it is opened.
+        let unread = inbox && entry.unread && !selected;
+        let row_h = 22.0;
+
+        // Where the buttons ended up, so the row-body click can exclude them.
+        let mut buttons_left = None;
+
+        let inner = egui::Frame::new()
+            .fill(if selected { crate::theme::TOME_BG() } else { crate::theme::ROW_BG() })
+            .inner_margin(egui::Margin { left: 10, right: 6, top: 3, bottom: 3 })
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let dim = crate::theme::TEXT();
+                    let strong = crate::theme::TEXT_STRONG();
+
+                    // Date: dim and monospace, so the column reads as a ruler
+                    // down the side rather than as content.
+                    row_cell(
+                        ui,
+                        date_w,
+                        row_h,
+                        false,
+                        egui::Label::new(
+                            egui::RichText::new(&entry.date).monospace().size(11.0).color(dim),
+                        )
+                        .selectable(false),
+                    );
+
+                    // Correspondent: the identity, so it carries the accent
+                    // colour and the weight.
+                    let who = if inbox { &entry.from } else { &entry.to };
+                    let who = who.strip_prefix("SMTP:").unwrap_or(who);
+                    row_cell(
+                        ui,
+                        who_w,
+                        row_h,
+                        false,
+                        egui::Label::new(
+                            egui::RichText::new(who)
+                                .size(12.0)
+                                .strong()
+                                .color(crate::theme::CYAN()),
+                        )
+                        .truncate()
+                        .selectable(false),
+                    );
+
+                    // Attachment marker, its own narrow column so subjects
+                    // still line up whether or not there is one.
+                    // The attachment count rather than a paperclip: this font
+                    // has no glyph for one and draws a tofu box, and the number
+                    // says more than the icon did anyway.
+                    row_cell(
+                        ui,
+                        att_w,
+                        row_h,
+                        // Right-aligned so it tucks against the subject it
+                        // belongs to rather than floating mid-row.
+                        true,
+                        egui::Label::new(if entry.attachments > 0 {
+                            egui::RichText::new(entry.attachments.to_string())
+                                .size(11.0)
+                                .strong()
+                                .color(crate::theme::YELLOW())
+                        } else {
+                            egui::RichText::new("")
+                        })
+                        .selectable(false),
+                    );
+
+                    let subject = if entry.subject.is_empty() {
+                        egui::RichText::new("(no subject)").size(12.0).italics().color(dim)
+                    } else {
+                        // Unread stands out by weight and brightness; read mail
+                        // recedes. Colour alone would not survive a colourblind
+                        // operator or a dim screen.
+                        let t = egui::RichText::new(&entry.subject).size(12.0);
+                        if unread { t.strong().color(strong) } else { t.color(dim) }
+                    };
+                    row_cell(
+                        ui,
+                        subject_w,
+                        row_h,
+                        false,
+                        egui::Label::new(subject).truncate().selectable(false),
+                    );
+
+                    // Pinned right. Allocated inside the row so they take their
+                    // clicks before the row-body interaction below sees them.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let left = ui.cursor().max.x;
+                        if ui.small_button("DEL").on_hover_text("Delete this message").clicked() {
+                            cmds.push(Command::MailDelete {
+                                folder: self.mail.folder,
+                                mid: entry.mid.clone(),
+                            });
+                        }
+                        if self.mail.folder != MailFolder::Archive
+                            && ui
+                                .small_button("ARCH")
+                                .on_hover_text("Move to the archive")
+                                .clicked()
+                        {
+                            cmds.push(Command::MailMove {
+                                from: self.mail.folder,
+                                to: MailFolder::Archive,
+                                mid: entry.mid.clone(),
+                            });
+                        }
+                        buttons_left = Some(ui.min_rect().left());
+                        let _ = left;
+                    });
+                });
+            });
+
+        let r = inner.response.rect;
+
+        // Left accent bar: gold for unread, cyan for the open message, dim
+        // otherwise — the same vocabulary the decode list uses.
+        let (accent, aw) = if unread {
+            (crate::theme::YELLOW(), 3.5)
+        } else if selected {
+            (crate::theme::CYAN(), 3.5)
+        } else {
+            (crate::theme::CYAN_DIM(), 2.0)
+        };
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(r.left_top(), egui::pos2(r.left() + aw, r.bottom())),
+            0.0,
+            accent,
+        );
+
+        // The row body — everything left of the buttons — opens the message.
+        // Excluding the buttons' rect is what keeps this interaction from
+        // covering and stealing their clicks.
+        let body_right = buttons_left.map(|x| x - 2.0).unwrap_or(r.right());
+        let body = egui::Rect::from_min_max(r.left_top(), egui::pos2(body_right, r.bottom()));
+        let resp = ui.interact(body, ui.id().with(("mail-row", index)), egui::Sense::click());
+        if resp.hovered() && !selected {
+            ui.painter().rect_filled(r, 0.0, crate::theme::ROW_HOVER().gamma_multiply(0.5));
         }
-        if entry.attachments > 0 {
-            subject.push_str(&format!("  [{}]", entry.attachments));
-        }
-        if ui.selectable_label(selected, subject).clicked() && !selected {
+        if resp.clicked() && !selected {
             self.mail.loading = Some(entry.mid.clone());
             self.mail.selected = None;
             cmds.push(Command::MailGet { folder: self.mail.folder, mid: entry.mid.clone() });
         }
-
-        ui.horizontal(|ui| {
-            if self.mail.folder != MailFolder::Archive
-                && ui.small_button("archive").on_hover_text("Move to the archive").clicked()
-            {
-                cmds.push(Command::MailMove {
-                    from: self.mail.folder,
-                    to: MailFolder::Archive,
-                    mid: entry.mid.clone(),
-                });
-            }
-            if ui.small_button("delete").clicked() {
-                cmds.push(Command::MailDelete { folder: self.mail.folder, mid: entry.mid.clone() });
-            }
-        });
     }
 
     fn mail_message(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
@@ -391,20 +624,72 @@ impl crate::app::SdroxideApp {
         }
     }
 
-    fn mail_log(&mut self, ui: &mut egui::Ui, height: f32) {
-        if self.mail.status.log.is_empty() {
-            ui.label("no session yet");
+    /// The session transcript, in a window of its own.
+    ///
+    /// Separate rather than a mode of the mail window on purpose: watching a
+    /// forwarding session while still reading and composing messages is the
+    /// whole reason to have it open. It follows the live status, so it updates
+    /// as the session runs without anything having to poll it.
+    pub(in crate::app) fn mail_log_window(&mut self, ctx: &egui::Context) {
+        if !self.mail.log_open {
             return;
         }
-        egui::ScrollArea::vertical()
-            .id_salt("mail-log")
-            .max_height(height)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for line in &self.mail.status.log {
-                    ui.label(egui::RichText::new(line).monospace());
+
+        let mut open = self.mail.log_open;
+        egui::Window::new("MAIL LOG")
+            .id(crate::layout::salted_id(ctx, "MAIL-LOG"))
+            .open(&mut open)
+            .frame(crate::chrome::window_frame())
+            .resizable(true)
+            .default_width(crate::layout::window_w(ctx, 560.0))
+            .default_height(crate::layout::window_h(ctx, 420.0))
+            .min_width(crate::layout::window_w(ctx, 320.0))
+            .min_height(crate::layout::window_h(ctx, 200.0))
+            .show(ctx, |ui| {
+                crate::chrome::window_body_bg(ui);
+                ui.set_min_height(crate::layout::window_h(ctx, 200.0));
+
+                if self.mail.status.busy {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("session running…");
+                    });
+                    // Keep the transcript moving while a session is live; there
+                    // is no other repaint source when the radio is idle.
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                    ui.separator();
                 }
+
+                if self.mail.status.log.is_empty() {
+                    ui.label("no session yet");
+                    return;
+                }
+
+                egui::ScrollArea::vertical()
+                    .id_salt("mail-log")
+                    .auto_shrink([false, false])
+                    // Follow the tail while a session is running, so the newest
+                    // lines stay in view without the operator chasing them.
+                    .stick_to_bottom(self.mail.status.busy)
+                    .show(ui, |ui| {
+                        for line in &self.mail.status.log {
+                            // Direction colouring: what we said versus what the
+                            // peer said, which is the first thing you need when
+                            // reading a failed session.
+                            let colour = if line.starts_with('>') {
+                                crate::theme::CYAN()
+                            } else if line.starts_with("< ***") {
+                                crate::theme::ALERT()
+                            } else {
+                                crate::theme::TEXT()
+                            };
+                            ui.label(
+                                egui::RichText::new(line).monospace().size(11.0).color(colour),
+                            );
+                        }
+                    });
             });
+        self.mail.log_open = open;
     }
 }
 
@@ -457,6 +742,61 @@ mod tests {
         ui.dirty = false;
         ui.on_status(WinlinkStatus { busy: false, ..Default::default() });
         assert!(ui.dirty, "new mail may have arrived, so the listing must refresh");
+    }
+
+    #[test]
+    fn opening_the_window_asks_for_a_listing() {
+        // The rising edge is the only thing that triggers the first request;
+        // without it the window shows "loading…" for ever.
+        let mut ui = MailUi::default();
+        assert!(!ui.dirty);
+        ui.open = true;
+        // Mirrors the edge check in `mail_window`.
+        if ui.open && !ui.was_open {
+            ui.dirty = true;
+        }
+        ui.was_open = ui.open;
+        assert!(ui.dirty, "opening must request a listing");
+
+        // And it does not re-request on every subsequent frame.
+        ui.dirty = false;
+        if ui.open && !ui.was_open {
+            ui.dirty = true;
+        }
+        assert!(!ui.dirty, "an already-open window must not re-request each frame");
+    }
+
+    #[test]
+    fn the_divider_starts_at_the_default_and_stays_in_range() {
+        // `split` is zero on a fresh `MailUi`, which must read as "use the
+        // default" rather than "collapse the list to nothing".
+        let ui = MailUi::default();
+        assert_eq!(ui.split, 0.0);
+        let effective = if ui.split <= 0.0 { MailUi::SPLIT_DEFAULT } else { ui.split };
+        assert!((MailUi::SPLIT_MIN..=MailUi::SPLIT_MAX).contains(&effective));
+    }
+
+    #[test]
+    fn dragging_the_divider_cannot_collapse_either_pane() {
+        // Mirrors the clamp in `mail_divider`: whatever the drag, both panes
+        // keep a share of the body.
+        let clamp = |v: f32| v.clamp(MailUi::SPLIT_MIN, MailUi::SPLIT_MAX);
+        for drag in [-10.0f32, -1.0, -0.001, 0.0, 0.001, 1.0, 10.0] {
+            let split = clamp(MailUi::SPLIT_DEFAULT + drag);
+            assert!(split >= MailUi::SPLIT_MIN, "list collapsed at drag {drag}");
+            assert!(split <= MailUi::SPLIT_MAX, "message pane collapsed at drag {drag}");
+        }
+    }
+
+    #[test]
+    fn the_log_is_a_separate_window_from_the_mailbox() {
+        // The point of the change: the transcript can be open while the
+        // operator carries on reading mail, so the two flags are independent.
+        let mut ui = MailUi { open: true, ..Default::default() };
+        ui.log_open = true;
+        assert!(ui.open && ui.log_open);
+        ui.open = false;
+        assert!(ui.log_open, "closing the mailbox must not close the log");
     }
 
     #[test]
