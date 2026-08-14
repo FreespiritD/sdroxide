@@ -247,7 +247,19 @@ impl crate::app::SdroxideApp {
             ui.separator();
 
             let busy = self.mail.status.busy;
-            if ui.add_enabled(!busy, egui::Button::new("CONNECT")).clicked() {
+            // One button, two jobs. A session that cannot be stopped is a
+            // session the operator watches for two minutes wondering whether
+            // anything is happening — and a greyed-out CONNECT says nothing
+            // about how to get out of it.
+            if busy {
+                if ui
+                    .button("ABORT")
+                    .on_hover_text("Stop the session in progress")
+                    .clicked()
+                {
+                    cmds.push(Command::WinlinkAbort);
+                }
+            } else if ui.button("CONNECT").clicked() {
                 cmds.push(Command::WinlinkConnect);
             }
             if ui.add_enabled(!busy, egui::Button::new("COMPOSE")).clicked() {

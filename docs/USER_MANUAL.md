@@ -5483,6 +5483,12 @@ To forward over the air:
 3. Set the route to **Radio (packet)** and name the gateway.
 4. Press **CONNECT** in the MAIL window as usual.
 
+While a session is running, CONNECT becomes **ABORT**. Stopping is cooperative
+rather than a hard kill: the link is torn down properly and whatever mail
+already arrived is still filed, so aborting a session that was halfway through
+does not lose what it had. A call to a gateway that is not answering takes two
+minutes to give up on its own, and ABORT takes effect in well under a second.
+
 ### Choosing a gateway
 
 Winlink publishes its gateway list through `api.winlink.org`, which refuses

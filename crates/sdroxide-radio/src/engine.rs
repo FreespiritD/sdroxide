@@ -3789,6 +3789,13 @@ impl Engine {
             //
             // All of these answer on the event channel and none of them touch
             // `RadioState`, so they return before the State emit below.
+            WinlinkAbort => {
+                if let Some(wl) = self.winlink.as_mut() {
+                    wl.abort();
+                }
+                self.emit_winlink_status();
+                return;
+            }
             PacketBeacon => {
                 match self.digi.as_mut() {
                     Some(d) if self.state.rx[0].mode.is_packet() => d.packet_beacon_now(),

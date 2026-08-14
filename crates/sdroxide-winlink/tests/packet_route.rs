@@ -10,10 +10,17 @@
 //! the air, and is the operator's step.
 
 use std::io::{Read, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use sdroxide_ax25::{Addr, LinkConfig, PortEvent, PortRequest, port_pair};
 use sdroxide_winlink::transport::{Ax25Transport, Transport};
+
+/// A cancel flag nobody ever sets.
+fn quiet() -> Arc<AtomicBool> {
+    Arc::new(AtomicBool::new(false))
+}
 
 fn link() -> (sdroxide_ax25::PortHandle, sdroxide_ax25::PortEndpoint) {
     port_pair(LinkConfig { me: Addr::new("OE3JJS-10").unwrap(), paclen: 128, maxframe: 4 })
@@ -58,7 +65,7 @@ fn the_transport_carries_a_conversation() {
     });
 
     let mut t =
-        Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5)).expect("connect");
+        Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5), quiet()).expect("connect");
     assert_eq!(t.target_call(), "OE1XAR-10");
     assert!(t.describe().contains("OE1XAR-10"));
 
@@ -88,7 +95,7 @@ fn a_clean_hangup_delivers_the_last_bytes_first() {
     });
 
     let mut t =
-        Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5)).expect("connect");
+        Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5), quiet()).expect("connect");
     let mut buf = [0u8; 16];
     let n = t.read(&mut buf).expect("read");
     assert_eq!(&buf[..n], b"FQ\r", "the last block was lost to the hangup");
@@ -107,7 +114,7 @@ fn a_failed_link_is_an_error_not_an_eof() {
     });
 
     let mut t =
-        Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5)).expect("connect");
+        Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5), quiet()).expect("connect");
     let mut buf = [0u8; 16];
     let e = t.read(&mut buf).expect_err("a dead link must not read as EOF");
     assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe);
@@ -119,7 +126,7 @@ fn a_failed_link_is_an_error_not_an_eof() {
 #[test]
 fn an_unanswered_call_times_out() {
     let (handle, _endpoint) = link();
-    let e = Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_millis(200))
+    let e = Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_millis(200), quiet())
         .expect_err("an unanswered call must not succeed");
     assert!(e.to_string().contains("OE1XAR-10"), "the error should name the gateway: {e}");
 }
@@ -133,9 +140,9 @@ fn a_second_session_is_refused() {
         std::thread::sleep(Duration::from_secs(2));
     });
 
-    let first = Ax25Transport::connect(handle.clone(), "OE1XAR-10", &[], Duration::from_secs(5))
+    let first = Ax25Transport::connect(handle.clone(), "OE1XAR-10", &[], Duration::from_secs(5), quiet())
         .expect("first");
-    let e = Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_millis(200))
+    let e = Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_millis(200), quiet())
         .expect_err("two sessions took one radio");
     assert!(e.to_string().contains("already in use"), "{e}");
     drop(first);
@@ -145,7 +152,82 @@ fn a_second_session_is_refused() {
 #[test]
 fn a_bad_gateway_callsign_is_refused_up_front() {
     let (handle, _endpoint) = link();
-    let e = Ax25Transport::connect(handle, "not a callsign", &[], Duration::from_secs(1))
+    let e = Ax25Transport::connect(handle, "not a callsign", &[], Duration::from_secs(1), quiet())
         .expect_err("garbage accepted as a callsign");
     assert!(e.to_string().to_lowercase().contains("callsign"), "{e}");
+}
+
+// ─────────────────────────── stopping a call ───────────────────────────
+
+/// The operator changes their mind while a gateway is being called.
+///
+/// Reported from the field: there was no way to stop a call, and a dial that
+/// takes two minutes to time out is two minutes of watching a window that says
+/// "calling OE1XIK…". The flag is checked every quarter second, so this must
+/// return in well under a second rather than at the deadline.
+#[test]
+fn an_abort_stops_a_call_in_progress() {
+    let (handle, _endpoint) = link();
+    let cancel = quiet();
+
+    let c = Arc::clone(&cancel);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        c.store(true, Ordering::SeqCst);
+    });
+
+    let started = std::time::Instant::now();
+    // A dial timeout long enough that finishing early can only be the abort.
+    let e = Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(60), cancel)
+        .expect_err("the abort did not stop the call");
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(2), "the abort took {took:?} to take effect");
+    assert_eq!(e.to_string().to_lowercase().contains("stopped"), true, "{e}");
+}
+
+/// And once connected: a session stuck waiting for a gateway that has gone
+/// quiet must still be stoppable, because that is where a real session spends
+/// most of its time.
+#[test]
+fn an_abort_stops_a_session_waiting_on_a_quiet_link() {
+    let (handle, endpoint) = link();
+    let cancel = quiet();
+    std::thread::spawn(move || {
+        answer(&endpoint);
+        // Then say nothing at all, holding the endpoint alive.
+        std::thread::sleep(Duration::from_secs(30));
+    });
+
+    let mut t =
+        Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5), Arc::clone(&cancel))
+            .expect("connect");
+
+    let c = Arc::clone(&cancel);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        c.store(true, Ordering::SeqCst);
+    });
+
+    let started = std::time::Instant::now();
+    let mut buf = [0u8; 16];
+    let e = t.read(&mut buf).expect_err("a stopped read must not block for ever");
+    assert!(started.elapsed() < Duration::from_secs(2), "the abort was not noticed promptly");
+    assert_eq!(e.kind(), std::io::ErrorKind::Interrupted);
+}
+
+/// A controller destroyed under a running session — the operator changed mode —
+/// must fail the read rather than wait for ever on a link with no other end.
+#[test]
+fn a_vanished_controller_fails_the_read() {
+    let (handle, endpoint) = link();
+    std::thread::spawn(move || {
+        answer(&endpoint);
+        // Drop the endpoint: the mode changed and the controller is gone.
+    });
+
+    let mut t = Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5), quiet())
+        .expect("connect");
+    let mut buf = [0u8; 16];
+    let e = t.read(&mut buf).expect_err("a vanished controller must not read as EOF");
+    assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe);
 }

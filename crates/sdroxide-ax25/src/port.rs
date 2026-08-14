@@ -120,8 +120,21 @@ impl PortHandle {
     }
 
     /// Block for the next event, giving up after `timeout`.
-    pub fn recv_timeout(&self, timeout: std::time::Duration) -> Option<PortEvent> {
-        self.rx.recv_timeout(timeout).ok()
+    ///
+    /// `Ok(None)` is "nothing yet"; `Err` is "the link is gone". Keeping those
+    /// apart matters: a caller polling in short hops so it can notice an abort
+    /// would otherwise loop for ever against a controller that has already been
+    /// destroyed by a mode change, unable to tell that from a quiet channel.
+    pub fn recv_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<Option<PortEvent>, PortClosed> {
+        use crossbeam_channel::RecvTimeoutError;
+        match self.rx.recv_timeout(timeout) {
+            Ok(ev) => Ok(Some(ev)),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(PortClosed),
+        }
     }
 }
 

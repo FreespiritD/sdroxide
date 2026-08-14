@@ -700,7 +700,7 @@ fn two_stations_connect_and_exchange_data() {
         if !from_b.is_empty() {
             hear(&mut a, &from_b);
         }
-        if let Some(PortEvent::Connected) = a.port.recv_timeout(std::time::Duration::ZERO) {
+        if let Ok(Some(PortEvent::Connected)) = a.port.recv_timeout(std::time::Duration::ZERO) {
             connected = true;
             break;
         }
@@ -719,7 +719,7 @@ fn two_stations_connect_and_exchange_data() {
         if !from_b.is_empty() {
             hear(&mut a, &from_b);
         }
-        while let Some(ev) = b.port.recv_timeout(std::time::Duration::ZERO) {
+        while let Ok(Some(ev)) = b.port.recv_timeout(std::time::Duration::ZERO) {
             if let PortEvent::Data(d) = ev {
                 got.extend(d);
             }

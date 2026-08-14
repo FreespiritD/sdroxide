@@ -483,6 +483,9 @@ pub enum Command {
     /// [`crate::RadioEvent::WinlinkStatus`] when it finishes; refused there too
     /// if one is already running.
     WinlinkConnect,
+    /// Stop the forwarding session in progress. Cooperative: the link is torn
+    /// down properly and whatever already arrived is still filed.
+    WinlinkAbort,
     /// Packet: send one UNPROTO identification frame now. Still subject to
     /// CSMA — the operator asks for the channel, they do not take it.
     PacketBeacon,

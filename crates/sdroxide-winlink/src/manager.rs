@@ -51,6 +51,37 @@ enum Done {
     Session(Box<SessionOutcome>, Option<String>),
 }
 
+/// Releases the busy flag and publishes a result **however** the worker ends —
+/// including a panic.
+///
+/// Without this, a worker that panics leaves `busy` set for ever: the status
+/// line keeps saying "calling …", `connect` refuses with "a session is already
+/// running", and nothing short of restarting sdroxide gets the operator out of
+/// it. Reported from the field, and the reason this is a guard rather than two
+/// statements at the end of the closure.
+struct SessionGuard {
+    busy: Arc<AtomicBool>,
+    done_tx: Sender<Done>,
+    /// Taken by the worker when it finishes normally; a panic leaves it here
+    /// and the drop publishes a failure instead of nothing.
+    outcome: Option<(Box<SessionOutcome>, Option<String>)>,
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        // Release before publishing, so a client that reacts to the result can
+        // immediately start another session.
+        self.busy.store(false, Ordering::SeqCst);
+        let (outcome, err) = self.outcome.take().unwrap_or_else(|| {
+            (
+                Box::new(SessionOutcome::default()),
+                Some("the Winlink session ended unexpectedly".into()),
+            )
+        });
+        let _ = self.done_tx.send(Done::Session(outcome, err));
+    }
+}
+
 /// Owns the mailbox and the session worker.
 pub struct WinlinkManager {
     mailbox: Mailbox,
@@ -60,6 +91,8 @@ pub struct WinlinkManager {
     /// rather than queued — two concurrent sessions on one account is not
     /// something the CMS expects.
     busy: Arc<AtomicBool>,
+    /// Set by [`WinlinkManager::abort`]; the transport watches it and gives up.
+    cancel: Arc<AtomicBool>,
     done_rx: Receiver<Done>,
     done_tx: Sender<Done>,
     /// The engine's packet link, when the radio is in a packet mode. `None`
@@ -79,6 +112,7 @@ impl WinlinkManager {
             cfg,
             status: WinlinkStatus::default(),
             busy: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::new(AtomicBool::new(false)),
             done_rx,
             done_tx,
             packet_port: None,
@@ -176,6 +210,9 @@ impl WinlinkManager {
         };
         let busy = Arc::clone(&self.busy);
         let done_tx = self.done_tx.clone();
+        // A previous abort must not cancel this session before it starts.
+        self.cancel.store(false, Ordering::SeqCst);
+        let cancel = Arc::clone(&self.cancel);
 
         busy.store(true, Ordering::SeqCst);
         self.status.busy = true;
@@ -187,12 +224,10 @@ impl WinlinkManager {
 
         let spawned =
             std::thread::Builder::new().name("sdroxide-winlink".into()).spawn(move || {
+                let mut guard = SessionGuard { busy, done_tx, outcome: None };
                 let mut outcome = SessionOutcome::default();
-                let err = run_session(&route, port, &cfg, &outbound, &mut outcome);
-                // Release the flag before publishing, so a client that reacts
-                // to the result can immediately start another session.
-                busy.store(false, Ordering::SeqCst);
-                let _ = done_tx.send(Done::Session(Box::new(outcome), err));
+                let err = run_session(&route, port, &cancel, &cfg, &outbound, &mut outcome);
+                guard.outcome = Some((Box::new(outcome), err));
             });
 
         if let Err(e) = spawned {
@@ -204,6 +239,20 @@ impl WinlinkManager {
         Ok(())
     }
 
+    /// Stop the session in progress.
+    ///
+    /// Cooperative rather than a thread kill: the flag is set here and the
+    /// transport notices it, so the link is torn down properly and the outcome
+    /// — including whatever mail already arrived — is still filed. Harmless
+    /// when nothing is running.
+    pub fn abort(&mut self) {
+        if !self.busy.load(Ordering::SeqCst) {
+            return;
+        }
+        self.cancel.store(true, Ordering::SeqCst);
+        self.status.activity = "stopping…".into();
+    }
+
     /// Take whatever a finished session produced. Non-blocking; call it on the
     /// engine's existing tick.
     ///
@@ -211,7 +260,24 @@ impl WinlinkManager {
     pub fn poll(&mut self) -> bool {
         let outcome = match self.done_rx.try_recv() {
             Ok(Done::Session(outcome, err)) => (outcome, err),
-            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Empty) => {
+                // Belt and braces for the bug that started this: a worker that
+                // ends without publishing leaves the window saying "calling …"
+                // for ever and `connect` refusing with "already running", and
+                // nothing but a restart gets the operator out. `SessionGuard`
+                // should make that impossible; this notices if it ever happens
+                // anyway, because the cost of being wrong is that high.
+                if self.status.busy && !self.busy.load(Ordering::SeqCst) {
+                    self.status.busy = false;
+                    self.status.activity.clear();
+                    if self.status.last_error.is_none() {
+                        self.status.last_error =
+                            Some("the Winlink session ended without a result".into());
+                    }
+                    return true;
+                }
+                return false;
+            }
             Err(TryRecvError::Disconnected) => return false,
         };
         let (outcome, err) = outcome;
@@ -334,6 +400,7 @@ impl WinlinkManager {
 fn run_session(
     route: &WinlinkRoute,
     port: Option<sdroxide_ax25::PortHandle>,
+    cancel: &Arc<AtomicBool>,
     cfg: &SessionConfig,
     outbound: &[Message],
     outcome: &mut SessionOutcome,
@@ -355,7 +422,13 @@ fn run_session(
             let port = port.expect("connect() proved the link exists before spawning");
             outcome.log.push(format!("> calling {gateway}"));
             let mut transport =
-                match Ax25Transport::connect(port, gateway, via, RADIO_DIAL_TIMEOUT) {
+                match Ax25Transport::connect(
+                    port,
+                    gateway,
+                    via,
+                    RADIO_DIAL_TIMEOUT,
+                    Arc::clone(cancel),
+                ) {
                     Ok(t) => t,
                     Err(e) => return Some(e.to_string()),
                 };
@@ -470,7 +543,34 @@ mod tests {
         let dir = TempDir::new("nocreds");
         let mut mgr = WinlinkManager::new(&dir.0, WinlinkConfig::default()).unwrap();
         assert!(mgr.connect(WinlinkRoute::Telnet { address: String::new() }).is_err());
+    }
+
+    /// Aborting when nothing is running must be harmless, not a state change
+    /// the operator then has to undo.
+    #[test]
+    fn aborting_an_idle_manager_does_nothing() {
+        let dir = TempDir::new("abort-idle");
+        let mut mgr = WinlinkManager::new(&dir.0, WinlinkConfig::default()).expect("open");
+        mgr.abort();
         assert!(!mgr.status().busy);
+        assert!(mgr.status().activity.is_empty());
+    }
+
+    /// The state the field report described: busy set, but the worker gone
+    /// without publishing. The operator must get the window back rather than
+    /// being locked out until a restart.
+    #[test]
+    fn a_lost_result_still_frees_the_window() {
+        let dir = TempDir::new("lost-result");
+        let mut mgr = WinlinkManager::new(&dir.0, WinlinkConfig::default()).expect("open");
+        // Exactly what a vanished worker leaves behind.
+        mgr.status.busy = true;
+        mgr.status.activity = "calling OE1XIK…".into();
+
+        assert!(mgr.poll(), "poll should have noticed and republished");
+        assert!(!mgr.status().busy, "the window is still stuck on busy");
+        assert!(mgr.status().activity.is_empty(), "the activity line never cleared");
+        assert!(mgr.status().last_error.is_some(), "the operator was told nothing");
     }
 
     #[test]

@@ -158,6 +158,9 @@ impl Transport for TelnetTransport {
 
 // ───────────────────────────── the radio lane ─────────────────────────────
 
+/// How long the transport waits before checking whether it has been cancelled.
+const CANCEL_POLL: Duration = Duration::from_millis(250);
+
 /// A B2F session over an AX.25 connected-mode link.
 ///
 /// The second implementer the trait above was written for. Everything radio-
@@ -183,6 +186,10 @@ pub struct Ax25Transport {
     /// link underneath a session in progress.
     _lease: sdroxide_ax25::PortLease,
     gateway: String,
+    /// Set when the operator asks to stop. Watched everywhere this would
+    /// otherwise block, so an abort takes effect in well under a second rather
+    /// than at the end of a two-minute dial timeout.
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Bytes delivered by the link but not yet read by the session.
     inbox: std::collections::VecDeque<u8>,
     /// The link has closed cleanly; hand back what is left, then `Ok(0)`.
@@ -200,6 +207,7 @@ impl Ax25Transport {
         gateway: &str,
         via: &[String],
         timeout: Duration,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<Self, TransportError> {
         let lease = port.try_claim().ok_or_else(|| {
             TransportError::Connect(
@@ -226,8 +234,19 @@ impl Ax25Transport {
         let deadline = std::time::Instant::now() + timeout;
         let mut inbox = std::collections::VecDeque::new();
         loop {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            if left.is_zero() {
+            // Checked every quarter second rather than once at the end: a call
+            // to an unattended gateway takes two minutes to time out, and an
+            // operator who has changed their mind should not have to watch it.
+            if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(TransportError::Connect(
+                    gateway.into(),
+                    std::io::Error::new(std::io::ErrorKind::Interrupted, "stopped"),
+                ));
+            }
+            let left = deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .min(CANCEL_POLL);
+            if deadline <= std::time::Instant::now() {
                 return Err(TransportError::Connect(
                     gateway.into(),
                     std::io::Error::new(
@@ -236,12 +255,15 @@ impl Ax25Transport {
                     ),
                 ));
             }
-            match port.recv_timeout(left) {
+            match port.recv_timeout(left).map_err(|e| {
+                TransportError::Connect(gateway.into(), std::io::Error::other(e.to_string()))
+            })? {
                 Some(sdroxide_ax25::PortEvent::Connected) => {
                     return Ok(Ax25Transport {
                         port,
                         _lease: lease,
                         gateway: gateway.to_string(),
+                        cancel,
                         inbox,
                         closed: false,
                     });
@@ -270,17 +292,35 @@ impl Ax25Transport {
     }
 
     /// Pull whatever the link has, blocking until there is something.
+    ///
+    /// Waits in short hops rather than one long block, so an abort is noticed
+    /// promptly. There is no read *timeout* — see the type's note — only a
+    /// cancel check between hops.
     fn fill(&mut self) -> std::io::Result<()> {
         while self.inbox.is_empty() && !self.closed {
-            match self.port.recv() {
-                Ok(sdroxide_ax25::PortEvent::Data(d)) => self.inbox.extend(d),
-                Ok(sdroxide_ax25::PortEvent::Connected) => {}
-                Ok(sdroxide_ax25::PortEvent::Disconnected) => self.closed = true,
-                Ok(sdroxide_ax25::PortEvent::Failed(why)) => {
+            if self.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "stopped by the operator",
+                ));
+            }
+            match self.port.recv_timeout(CANCEL_POLL) {
+                Ok(Some(sdroxide_ax25::PortEvent::Data(d))) => self.inbox.extend(d),
+                Ok(Some(sdroxide_ax25::PortEvent::Connected)) => {}
+                Ok(Some(sdroxide_ax25::PortEvent::Disconnected)) => self.closed = true,
+                Ok(Some(sdroxide_ax25::PortEvent::Failed(why))) => {
                     return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, why));
                 }
+                // Nothing yet: go round, check the cancel flag, wait again.
+                Ok(None) => {}
+                // The controller is gone — a mode change under a running
+                // session. Fail rather than wait for ever on a link that no
+                // longer has another end.
                 Err(e) => {
-                    return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string()));
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        e.to_string(),
+                    ));
                 }
             }
         }
