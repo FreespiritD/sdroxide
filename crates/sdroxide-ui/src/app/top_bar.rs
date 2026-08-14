@@ -89,6 +89,20 @@ const PHONE_SMETER_MIN_W: f32 = 80.0;
 /// would draw the ends of the scale below a 40 pt box. See
 /// `the_phone_smeter_keeps_its_scale_inside_its_box`.
 const PHONE_SMETER_MAX_W: f32 = 220.0;
+/// Least ink-to-edge a stretched menu chip is allowed: below this the label
+/// stops reading as being *in* the chip. A chip drawn to an exact size centres
+/// its text and lets it hang over the edges rather than clipping it, so this is
+/// what decides when the labels have to shrink instead. See [`plan_phone_tail`].
+const MENU_TEXT_PAD: f32 = 5.0;
+/// How small a stretched menu chip's label may be set. Four characters at this
+/// size on a phone held at arm's length is the floor; a narrower screen than
+/// that keeps the size and overhangs the cell, which reads better than a label
+/// nobody can make out.
+const MENU_TEXT_MIN: f32 = 11.0;
+/// The compact strip's PTT: its label and text size. The spaces are padding —
+/// it is the one chip on the row worth more of a target than its label needs.
+const PTT_LABEL: &str = " PTT ";
+const PTT_TEXT: f32 = 15.0;
 /// Digit sizes of the single-row strip's readout. It is a type-in field — tap
 /// and type, no per-digit targets — so the floor is about reading the
 /// frequency, not hitting one digit of it.
@@ -228,6 +242,138 @@ fn plan_short_strip(
     let grid_w = (avail - box_w - c.ptt_w - gaps - 4.0).max(grid_min);
     let cell = |(n, _): (usize, f32)| (grid_w - (n - 1) as f32 * cell_gap) / n as f32;
     ShortStrip { digit, box_w, box_h, grid_w, cell1_w: cell(c.row1), cell2_w: cell(c.row2) }
+}
+
+/// Which menu a chip on a compact strip opens. One list drives both the
+/// measuring and the drawing of the row (see [`SdroxideApp::menu_chips`]), so
+/// the two cannot come to disagree about what is on it — a chip counted but
+/// not drawn, or the reverse, is exactly what breaks a planned row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuChip {
+    Rx,
+    Vfo,
+    Sub,
+    Tx,
+    Disp,
+    Sys,
+}
+
+impl MenuChip {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Rx => "RX",
+            Self::Vfo => "VFO",
+            Self::Sub => "SUB",
+            Self::Tx => "TX",
+            Self::Disp => "DISP",
+            Self::Sys => "SYS",
+        }
+    }
+}
+
+/// How the menu chips are drawn: hugging their labels, or stretched to a
+/// uniform cell — the phone's own row of buttons, where the row is divided
+/// between them instead of being left part empty.
+#[derive(Clone, Copy)]
+enum ChipFit {
+    Hug,
+    /// The cell every chip is drawn at, and the label size that fits it
+    /// (`None` leaves the style's own size alone).
+    Cell(egui::Vec2, Option<f32>),
+}
+
+/// The phone strip's tail — the S-meter and the menu chips — planned before
+/// either is drawn.
+///
+/// The chips hug their labels beside the meter wherever the row holds all of
+/// them. Where it does not they take a row of their own, stretched to divide
+/// it: five buttons across the screen rather than four and a lonely fifth
+/// under them. A phone gives the top bar three rows before the waterfall
+/// starts paying for them, and a row carrying one chip costs the same height
+/// as a row carrying six.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PhoneTail {
+    /// The S-meter's width on the row it lands on.
+    meter_w: f32,
+    /// How much wider than its label each chip that stays beside the meter is
+    /// drawn: what the meter could not take of its row — it has a ceiling —
+    /// split between them, so the row still reaches the right edge.
+    lead_extra: f32,
+    /// The menu chips' own row, when they take one.
+    grid: Option<MenuGrid>,
+}
+
+/// The menu chips' own row: one cell width for all of them, and the label size
+/// that fits it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MenuGrid {
+    /// The row divided by the chip count, gaps off.
+    cell_w: f32,
+    /// The size the labels shrink to where the widest of them will not fit a
+    /// cell at the style's own; `None` leaves the style's size alone.
+    text: Option<f32>,
+}
+
+/// The measured widths [`plan_phone_tail`] works from — taken off the live
+/// style when the strip is drawn, and given as plain numbers by the layout
+/// tests.
+struct PhoneChips<'a> {
+    /// The chips that stay with the meter — the band/mode chip where the
+    /// frequency box could not keep it, and the PTT: how many, and what they
+    /// take of the row together with the gap before each.
+    lead: (usize, f32),
+    /// What each menu chip measures on its own, gaps excluded.
+    menu: &'a [f32],
+    /// The widest menu label's *text* width at `text_size` — what a label that
+    /// has to shrink into its cell is scaled from.
+    text_w: f32,
+    text_size: f32,
+}
+
+/// Plan the phone strip's tail for a row of `row` points with `left` of it
+/// still free where the meter is about to be drawn. A free function of
+/// measured numbers, like [`plan_short_strip`], so the arithmetic can be
+/// tested without an app around it.
+///
+/// The meter is the elastic one — the bar and trace faces take any width — so
+/// it is what gives, down to [`PHONE_SMETER_MIN_W`]. Past that squeezing it
+/// buys nothing readable, and the chips are better off with a row of their
+/// own than spilling one at a time onto one.
+fn plan_phone_tail(row: f32, left: f32, c: &PhoneChips, gap: f32) -> PhoneTail {
+    // A few points held back wherever a width is measured against the room for
+    // it: one that comes out exactly equal to the space left rounds the wrong
+    // way often enough, and the cost of being wrong is the stray row this
+    // whole plan exists to save.
+    const SLACK: f32 = 6.0;
+    let menu_w: f32 = c.menu.iter().map(|w| w + gap).sum();
+    let (n_lead, lead_w) = c.lead;
+    let holds = |space: f32, beside: f32| space - beside - SLACK >= PHONE_SMETER_MIN_W;
+    // Which row the meter lands on: this one, if what is left of it can hold
+    // the meter at its narrowest and the chips that must stay beside it; else
+    // the fresh row the wrapping layout is about to break onto.
+    let space = if holds(left, lead_w) { left } else { row };
+    // Do the menu chips fit there too, at the price of squeezing the meter?
+    let one_row = holds(space, lead_w + menu_w);
+    let beside = if one_row { lead_w + menu_w } else { lead_w };
+    let meter_w = (space - beside - SLACK).clamp(PHONE_SMETER_MIN_W, PHONE_SMETER_MAX_W);
+    let spare = (space - beside - SLACK - meter_w).max(0.0);
+    let grid = (!one_row).then(|| {
+        let n = c.menu.len().max(1);
+        // The row, divided — but never past twice the widest chip's own width:
+        // beyond that the stretch stops reading as a button and starts reading
+        // as a mistake, and a phone in landscape has width to burn. The
+        // desktop's chip boxes are held to the same factor.
+        let widest = c.menu.iter().fold(0.0f32, |a, &b| a.max(b));
+        let cell_w = ((row - (n - 1) as f32 * gap) / n as f32).min(CHIP_STRETCH_FACTOR * widest);
+        // Cells this size are usually *wider* than the labels asked for — the
+        // point is to spend the row rather than waste it. Only where the row
+        // cannot afford even that does the text give way.
+        let room = cell_w - 2.0 * MENU_TEXT_PAD;
+        let text = (c.text_w > room)
+            .then(|| (c.text_size * room / c.text_w).max(MENU_TEXT_MIN).min(c.text_size));
+        MenuGrid { cell_w, text }
+    });
+    PhoneTail { meter_w, lead_extra: if n_lead > 0 { spare / n_lead as f32 } else { 0.0 }, grid }
 }
 
 /// A box the desktop packer places: its natural (minimum) outer width, how
@@ -433,16 +579,18 @@ impl SdroxideApp {
             // overflow, and never shrink.
             //
             // The meter is the one thing here that can be any width, so it
-            // is what gives: measure the chips that follow it and hand it
-            // the rest of the row, rather than let one of them wrap onto a
-            // row of its own.
-            let beside = if tier == crate::layout::Tier::Phone {
-                self.menu_chips_w(ui, band_mode_shown)
+            // is what gives: the phone measures the chips that follow it and
+            // hands it the rest of the row, and where they cannot all fit
+            // beside it they take a stretched row of their own rather than
+            // spill one at a time onto one. See [`plan_phone_tail`].
+            if tier == crate::layout::Tier::Phone {
+                let tail = self.phone_tail(ui, band_mode_shown);
+                self.smeter_box(ui, tail.meter_w, PHONE_SMETER_H, true);
+                self.menu_bar(ui, cmds, tier, band_mode_shown, Some(tail));
             } else {
-                0.0
-            };
-            self.smeter_module(ui, tier, beside);
-            self.menu_bar(ui, cmds, tier, band_mode_shown);
+                self.smeter_box(ui, SMETER_W, crate::chrome::MODULE_TALL_H, false);
+                self.menu_bar(ui, cmds, tier, band_mode_shown, None);
+            }
         });
     }
 
@@ -545,36 +693,68 @@ impl SdroxideApp {
         }
     }
 
-    /// Width the menu row's chips will take, gaps included, so the S-meter can
-    /// be handed whatever is left over.
+    /// The menu chips the compact strips carry, in the order they are drawn.
+    /// The one list the row is measured from and drawn with, so a chip counted
+    /// but not drawn — or the reverse — cannot break the plan around it.
+    fn menu_chips(&self, tx_capable: bool) -> Vec<MenuChip> {
+        let mut chips = vec![MenuChip::Rx, MenuChip::Vfo];
+        // Only while the sub is running: the chip appearing is itself the
+        // confirmation that SUB took effect.
+        if self.state.sub_rx_enabled {
+            chips.push(MenuChip::Sub);
+        }
+        if tx_capable {
+            chips.push(MenuChip::Tx);
+        }
+        chips.extend([MenuChip::Disp, MenuChip::Sys]);
+        chips
+    }
+
+    /// Whether a menu chip is drawn lit: the state its menu holds, showing
+    /// through the closed chip.
+    fn menu_chip_lit(&self, chip: MenuChip) -> bool {
+        match chip {
+            MenuChip::Vfo => self.state.split,
+            MenuChip::Sub => true,
+            MenuChip::Tx => self.state.tx.tune,
+            MenuChip::Rx | MenuChip::Disp | MenuChip::Sys => false,
+        }
+    }
+
+    /// Measure the phone strip's chips against the live style and plan the
+    /// meter and the menu row around them — see [`plan_phone_tail`].
     ///
-    /// Measured against the same conditions [`Self::menu_bar`] draws under, and
-    /// it has to stay in step with it: a chip counted here that is not drawn
-    /// (or the reverse) only costs the meter a few points of width, but the two
-    /// lists are meant to be read together.
-    fn menu_chips_w(&self, ui: &egui::Ui, band_mode_shown: bool) -> f32 {
+    /// Call this where the meter is about to be drawn and nowhere else: the
+    /// plan turns on how much of the current row is still free, and only the
+    /// cursor knows that.
+    fn phone_tail(&self, ui: &egui::Ui, band_mode_shown: bool) -> PhoneTail {
         let tx_capable = self.caps.as_ref().is_some_and(|c| c.is_transmit_capable());
         let gap = ui.spacing().item_spacing.x;
-        let mut w = 0.0;
-        let mut add =
-            |label: &str, size: Option<f32>| w += crate::chrome::chip_width(ui, label, size) + gap;
+        let mut lead = (0usize, 0.0f32);
+        let mut add_lead = |w: f32| {
+            lead.0 += 1;
+            lead.1 += w + gap;
+        };
         if !band_mode_shown {
-            add(&self.band_mode_label(), Some(BAND_MODE_TEXT));
+            add_lead(crate::chrome::chip_width(ui, &self.band_mode_label(), Some(BAND_MODE_TEXT)));
         }
         if tx_capable {
-            add(" PTT ", Some(15.0));
+            add_lead(crate::chrome::chip_width(ui, PTT_LABEL, Some(PTT_TEXT)));
         }
-        add("RX", None);
-        add("VFO", None);
-        if self.state.sub_rx_enabled {
-            add("SUB", None);
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let (mut menu, mut text_w) = (Vec::new(), 0.0f32);
+        for chip in self.menu_chips(tx_capable) {
+            menu.push(crate::chrome::chip_width(ui, chip.label(), None));
+            text_w = text_w.max(crate::chrome::text_width(ui, chip.label(), font.clone()));
         }
-        if tx_capable {
-            add("TX", None);
-        }
-        add("DISP", None);
-        add("SYS", None);
-        w
+        // Not `available_width()`: in a wrapping layout that reports the width
+        // of the row this item would wrap *onto*, which is the full row
+        // however much of the current one is already spoken for. The cursor is
+        // what knows — in landscape the frequency box has taken part of it.
+        let row = ui.max_rect().width();
+        let left = row - (ui.cursor().min.x - ui.max_rect().min.x).max(0.0);
+        let chips = PhoneChips { lead, menu: &menu, text_w, text_size: font.size };
+        plan_phone_tail(row, left, &chips, gap)
     }
 
     /// The strip a short tablet-tier window wears: everything on one row.
@@ -716,39 +896,84 @@ impl SdroxideApp {
     /// control box the layout gave up.
     ///
     /// `band_mode_shown` says whether the frequency box could afford the
-    /// band/mode chip; when it could not, this row carries it instead.
+    /// band/mode chip; when it could not, this row carries it instead. `tail`
+    /// is the phone's plan for the row — how much wider than their labels the
+    /// chips beside the meter are drawn, and whether the menu chips take a
+    /// stretched row of their own; the tablet passes `None` and every chip
+    /// hugs its label.
     fn menu_bar(
         &mut self,
         ui: &mut egui::Ui,
         cmds: &mut Vec<Command>,
         tier: crate::layout::Tier,
         band_mode_shown: bool,
+        tail: Option<PhoneTail>,
     ) {
         let tx_capable = self.caps.as_ref().is_some_and(|c| c.is_transmit_capable());
+        let extra = tail.map_or(0.0, |t| t.lead_extra);
         if !band_mode_shown {
-            self.band_mode_button(ui, cmds);
+            self.band_mode_chip(ui, cmds, extra);
         }
         if tx_capable {
-            self.held_ptt(ui, cmds);
+            self.held_ptt(ui, cmds, extra);
         }
-        let btn = crate::chrome::chip(ui, false, "RX");
-        self.rx_menu(ui, btn, cmds);
-        let btn = crate::chrome::chip(ui, self.state.split, "VFO");
-        // The tablet's full frequency box already carries the A/B selector
-        // and the other VFO's frequency; the phone box shows only a tag.
-        self.vfo_menu(ui, btn, cmds, tier == crate::layout::Tier::Phone);
-        if self.state.sub_rx_enabled {
-            let btn = crate::chrome::chip(ui, true, "SUB");
-            self.sub_menu(ui, btn, cmds);
+        let chips = self.menu_chips(tx_capable);
+        let Some(grid) = tail.and_then(|t| t.grid) else {
+            self.menu_chip_row(ui, cmds, tier, &chips, ChipFit::Hug);
+            return;
+        };
+        // A row of their own, taken whole: a wrapping layout gives an item
+        // wider than the space left a fresh row, so allocating the width the
+        // cells add up to is what breaks the row — and, once they are on it,
+        // what stops the layout breaking it again under them.
+        let h = crate::chrome::chip_height(ui, None);
+        let n = chips.len() as f32;
+        let w = n * grid.cell_w + (n - 1.0) * ui.spacing().item_spacing.x;
+        ui.allocate_ui_with_layout(
+            egui::vec2(w, h),
+            egui::Layout::left_to_right(egui::Align::Min),
+            |ui| {
+                let fit = ChipFit::Cell(egui::vec2(grid.cell_w, h), grid.text);
+                self.menu_chip_row(ui, cmds, tier, &chips, fit);
+            },
+        );
+    }
+
+    /// Draw the menu chips, each dressed with the menu it opens. `fit` decides
+    /// whether they hug their labels or divide a row between them.
+    fn menu_chip_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<Command>,
+        tier: crate::layout::Tier,
+        chips: &[MenuChip],
+        fit: ChipFit,
+    ) {
+        for &chip in chips {
+            let lit = self.menu_chip_lit(chip);
+            let btn = match fit {
+                ChipFit::Hug => crate::chrome::chip(ui, lit, chip.label()),
+                ChipFit::Cell(size, text) => {
+                    let label = RichText::new(chip.label());
+                    let label = match text {
+                        Some(pt) => label.size(pt),
+                        None => label,
+                    };
+                    crate::chrome::chip_sized(ui, lit, label, size)
+                }
+            };
+            match chip {
+                MenuChip::Rx => self.rx_menu(ui, btn, cmds),
+                // The tablet's full frequency box already carries the A/B
+                // selector and the other VFO's frequency; the phone box shows
+                // only a tag, so its VFO menu carries them instead.
+                MenuChip::Vfo => self.vfo_menu(ui, btn, cmds, tier == crate::layout::Tier::Phone),
+                MenuChip::Sub => self.sub_menu(ui, btn, cmds),
+                MenuChip::Tx => self.tx_menu(ui, btn, cmds),
+                MenuChip::Disp => self.disp_menu(ui, btn, cmds),
+                MenuChip::Sys => self.sys_menu(ui, btn, cmds),
+            }
         }
-        if tx_capable {
-            let btn = crate::chrome::chip(ui, self.state.tx.tune, "TX");
-            self.tx_menu(ui, btn, cmds);
-        }
-        let btn = crate::chrome::chip(ui, false, "DISP");
-        self.disp_menu(ui, btn, cmds);
-        let btn = crate::chrome::chip(ui, false, "SYS");
-        self.sys_menu(ui, btn, cmds);
     }
 
     /// The RX menu: the receiver and filter/noise controls. Takes the chip it
@@ -854,14 +1079,19 @@ impl SdroxideApp {
     /// it — including when the browser takes the touch away because the tab
     /// went to the background, which arrives here as the pointer simply no
     /// longer being down on the chip.
-    fn held_ptt(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        let resp = crate::chrome::chip_hold(
-            ui,
-            self.state.tx.ptt,
-            RichText::new(" PTT ").size(15.0).strong(),
-            crate::theme::ALERT(),
-            Color32::WHITE,
-        )
+    /// `extra` widens it past its label — its share of what the S-meter beside
+    /// it could not take of the row.
+    fn held_ptt(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, extra: f32) {
+        let label = RichText::new(PTT_LABEL).size(PTT_TEXT).strong();
+        let (fill, ink) = (crate::theme::ALERT(), Color32::WHITE);
+        let resp = if extra > 0.5 {
+            let w = crate::chrome::chip_width(ui, PTT_LABEL, Some(PTT_TEXT)) + extra;
+            let h = crate::chrome::chip_height(ui, Some(PTT_TEXT));
+            let size = egui::vec2(w, h);
+            crate::chrome::chip_hold_sized(ui, self.state.tx.ptt, label, fill, ink, size)
+        } else {
+            crate::chrome::chip_hold(ui, self.state.tx.ptt, label, fill, ink)
+        }
         .on_hover_text("Hold to transmit");
         self.apply_held_ptt(&resp, cmds);
     }
@@ -1124,51 +1354,18 @@ impl SdroxideApp {
 
     /// The S-meter in a label-less box, always pinned top-right. Clicking it
     /// cycles the needle / bar / trace faces.
-    fn smeter_module(&mut self, ui: &mut egui::Ui, tier: crate::layout::Tier, beside: f32) {
-        // The meter lays itself out against its box height, so a shorter box is
-        // simply a smaller instrument, and it is the one thing in the compact
-        // strip that will take any width at all. On a phone it is therefore
-        // what gives: `beside` is what the menu chips need, and the meter takes
-        // the rest of the row so none of them wraps onto a row of its own.
-        //
-        // Bounded at both ends. Too narrow and the scale has nothing left to be
-        // read on; too wide and the needle's arc — a chord across the box, so
-        // its radius and its height both follow the width — would reach below
-        // the box. The operator's choice of face is never touched.
-        let (w, h) = match tier {
-            crate::layout::Tier::Phone => {
-                // Measured against the room left on *this* row where the meter
-                // and the chips both still fit in it — in landscape the
-                // frequency box has already taken part of it — and against a
-                // fresh row where they do not, because that is where the
-                // wrapping layout is about to put them.
-                // Not `available_width()`: in a wrapping layout that reports
-                // the width of the row this item would wrap *onto*, which is
-                // the full row however much of the current one is already
-                // spoken for. The cursor is what knows.
-                let row = ui.max_rect().width();
-                let left = row - (ui.cursor().min.x - ui.max_rect().min.x).max(0.0);
-                let space = if left >= PHONE_SMETER_MIN_W + beside { left } else { row };
-                // A few points of slack: a width that comes out exactly equal
-                // to the space left rounds the wrong way often enough, and the
-                // cost of being wrong is the last chip on a row of its own.
-                let w = (space - beside - 6.0).clamp(PHONE_SMETER_MIN_W, PHONE_SMETER_MAX_W);
-                (w, PHONE_SMETER_H)
-            }
-            _ => (SMETER_W, crate::chrome::MODULE_TALL_H),
-        };
-        // A box this shape has no room for an arc, so the needle is skipped —
-        // both in what is drawn and in what a click cycles to. The persisted
-        // choice is left alone: the desktop it was made on still honours it.
-        let compact = tier == crate::layout::Tier::Phone;
-        self.smeter_box(ui, w, h, compact);
-    }
-
-    /// The S-meter's box at an exact size — the body [`Self::smeter_module`]
-    /// and the desktop strip share. The meter lays itself out against whatever
-    /// rect it is given, which is what makes it the strip's bottomless width
-    /// absorber: the bar and trace faces scale with the box, and the needle
-    /// face keeps its scale readable by capping and centring it (see
+    ///
+    /// The meter lays itself out against the rect it is given, so a shorter box
+    /// is simply a smaller instrument and any width at all is a meter — which
+    /// is what makes it the strip's width absorber. `compact` is the phone's
+    /// 40 pt box: no room for an arc, so the needle is skipped, both in what is
+    /// drawn and in what a click cycles to. The operator's persisted choice is
+    /// left alone — the desktop it was made on still honours it. What width
+    /// the phone's box gets is [`plan_phone_tail`]'s decision; the desktop
+    /// packer makes its own.
+    ///
+    /// The bar and trace faces scale with the box, and the needle face keeps
+    /// its scale readable by capping and centring it (see
     /// [`crate::widgets::smeter::NEEDLE_FACE_MAX_W`]).
     fn smeter_box(&mut self, ui: &mut egui::Ui, w: f32, h: f32, compact: bool) {
         let style = self.view.smeter_style;
@@ -1299,12 +1496,21 @@ impl SdroxideApp {
     /// The band/mode selector button plus the floating popup with the band +
     /// mode + digital button rows.
     fn band_mode_button(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        self.band_mode_chip(ui, cmds, 0.0);
+    }
+
+    /// [`Self::band_mode_button`], `extra` points wider than its label — its
+    /// share of what the S-meter beside it could not take of the phone's row.
+    fn band_mode_chip(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>, extra: f32) {
         let mode = self.state.rx[0].mode;
-        let btn = crate::chrome::chip(
-            ui,
-            false,
-            RichText::new(self.band_mode_label()).size(BAND_MODE_TEXT),
-        );
+        let label = RichText::new(self.band_mode_label()).size(BAND_MODE_TEXT);
+        let btn = if extra > 0.5 {
+            let w = crate::chrome::chip_width(ui, &self.band_mode_label(), Some(BAND_MODE_TEXT));
+            let h = crate::chrome::chip_height(ui, Some(BAND_MODE_TEXT));
+            crate::chrome::chip_sized(ui, false, label, egui::vec2(w + extra, h))
+        } else {
+            crate::chrome::chip(ui, false, label)
+        };
 
         // The same scrolled, viewport-sized popup the menu chips use. This is
         // the longest menu in the program — three sections and forty chips —
@@ -2973,6 +3179,300 @@ mod tests {
             let extent = rad * (1.0 - half.cos());
             assert!(extent <= room, "a {w} pt wide arc spans {extent} of {room} pt");
         }
+    }
+
+    /// Every menu chip the phone strip can carry, measured from the touched
+    /// layout it is laid out with: the label at 14.5 pt Chakra in a chip padded
+    /// 13 pt a side, so "TX" fills a 43 pt chip and "DISP" — the widest — a 57
+    /// pt one. The PTT, at 15 pt and with its label's own spaces for padding,
+    /// comes out 59; the band/mode chip runs to [`TOUCH_BAND_CHIP_W`].
+    const P_MENU: [(&str, f32, f32); 6] = [
+        ("RX", 44.1, 18.1),
+        ("VFO", 52.8, 26.8),
+        ("SUB", 54.1, 28.1),
+        ("TX", 42.9, 16.9),
+        ("DISP", 57.1, 31.1),
+        ("SYS", 51.4, 25.4),
+    ];
+    const P_PTT_W: f32 = 59.2;
+    const P_TEXT: f32 = 14.5;
+    /// Every gap on the strip: the `item_spacing` [`SdroxideApp::top_bar`] sets
+    /// for itself, not the style's own.
+    const P_GAP: f32 = 8.0;
+    /// The active-VFO tag at 13 pt — the same figure the short strip is
+    /// measured with.
+    const P_TAG_W: f32 = 9.0;
+
+    /// The menu chips a rig in this state carries: what each measures, and the
+    /// widest label's text width.
+    fn p_menu(tx: bool, sub: bool) -> (Vec<f32>, f32) {
+        let keep = |l: &str| match l {
+            "SUB" => sub,
+            "TX" => tx,
+            _ => true,
+        };
+        let menu = P_MENU.iter().filter(|(l, ..)| keep(l)).map(|&(_, w, _)| w).collect();
+        let text =
+            P_MENU.iter().filter(|(l, ..)| keep(l)).map(|&(_, _, t)| t).fold(0.0f32, f32::max);
+        (menu, text)
+    }
+
+    /// The whole phone strip as it lays itself out on a `viewport` this wide:
+    /// what [`SdroxideApp::freq_module_compact`] decides about the readout and
+    /// the band/mode chip, and what [`plan_phone_tail`] then makes of the row
+    /// that is left — all of it in plain numbers, measured off the constants
+    /// above rather than a live style.
+    struct PhoneStrip {
+        /// Content width of the strip: the viewport less the panel margins.
+        content: f32,
+        /// Was the band/mode chip kept in the frequency box?
+        band_mode_shown: bool,
+        tail: PhoneTail,
+        /// Rows the whole strip takes, the frequency box's included.
+        rows: usize,
+        /// What the meter's row carries: the frequency box where it shares one
+        /// with it, then the meter and the chips that stay beside it.
+        meter_row: f32,
+    }
+
+    fn a_phone_strip(viewport: f32, tx: bool, sub: bool) -> PhoneStrip {
+        let f = shipped();
+        // Less the top panel's 8+8 and angled_frame's 10+10.
+        let content = viewport - 36.0;
+        // `freq_module_compact`, in the order it decides things.
+        let fixed = 16.0 + P_TAG_W + 6.0;
+        let with_chip = f.fit(content - fixed - 8.0 - TOUCH_BAND_CHIP_W).min(PHONE_DIGIT_MAX);
+        let band_mode_shown = with_chip >= MIN_DIGIT;
+        let size = if band_mode_shown {
+            with_chip
+        } else {
+            f.fit(content - fixed).clamp(MIN_DIGIT, PHONE_DIGIT_MAX)
+        };
+        let box_w =
+            fixed + f.width(size) + if band_mode_shown { 8.0 + TOUCH_BAND_CHIP_W } else { 0.0 };
+
+        let (menu, text_w) = p_menu(tx, sub);
+        let mut lead = (0usize, 0.0f32);
+        if !band_mode_shown {
+            lead = (1, TOUCH_BAND_CHIP_W + P_GAP);
+        }
+        if tx {
+            lead = (lead.0 + 1, lead.1 + P_PTT_W + P_GAP);
+        }
+        let chips = PhoneChips { lead, menu: &menu, text_w, text_size: P_TEXT };
+        // The wrapping layout puts the meter after the box, with a gap.
+        let left = content - box_w - P_GAP;
+        let tail = plan_phone_tail(content, left, &chips, P_GAP);
+
+        // The meter shares the frequency box's row exactly when the plan gave
+        // it more than what a fresh row would have left it.
+        let shares = tail.meter_w + lead.1 + 6.0 <= left;
+        let lead_w = lead.1 + lead.0 as f32 * tail.lead_extra;
+        PhoneStrip {
+            content,
+            band_mode_shown,
+            tail,
+            rows: 1 + usize::from(!shares) + usize::from(tail.grid.is_some()),
+            meter_row: if shares { box_w + P_GAP } else { 0.0 } + tail.meter_w + lead_w,
+        }
+    }
+
+    /// The point of the plan: on every phone the tier dresses, the menu
+    /// buttons are *one* row — never four of them across and a fifth alone
+    /// under them, which costs the waterfall a whole row of height to show one
+    /// button and leaves the rest of it empty.
+    #[test]
+    fn the_phone_menu_buttons_always_share_one_row() {
+        for viewport in [320.0f32, 360.0, 375.0, 393.0, 412.0, 430.0, 480.0, 540.0, 599.0] {
+            for (tx, sub) in [(true, false), (true, true), (false, false), (false, true)] {
+                let s = a_phone_strip(viewport, tx, sub);
+                let what = format!("{viewport} pt, tx={tx} sub={sub}");
+                assert!(s.rows <= 3, "{what}: the strip took {} rows", s.rows);
+                assert!(
+                    s.meter_row <= s.content + 0.5,
+                    "{what}: the meter's row wants {} of {}",
+                    s.meter_row,
+                    s.content
+                );
+                assert!(
+                    (PHONE_SMETER_MIN_W..=PHONE_SMETER_MAX_W).contains(&s.tail.meter_w),
+                    "{what}: the meter came out {} pt",
+                    s.tail.meter_w
+                );
+                let Some(g) = s.tail.grid else {
+                    continue;
+                };
+                let (menu, text_w) = p_menu(tx, sub);
+                let n = menu.len() as f32;
+                let row = n * g.cell_w + (n - 1.0) * P_GAP;
+                assert!(row <= s.content + 0.5, "{what}: the buttons want {row} of {}", s.content);
+                // And every label lands inside the cell it is centred in: a
+                // chip drawn to an exact size does not clip its text, it lets
+                // it hang over the edges.
+                let ink = text_w * g.text.unwrap_or(P_TEXT) / P_TEXT;
+                assert!(
+                    ink + 2.0 * MENU_TEXT_PAD <= g.cell_w + 0.5,
+                    "{what}: a {ink} pt label in a {} pt cell",
+                    g.cell_w
+                );
+            }
+        }
+    }
+
+    /// A 412x915 phone in portrait, the screen the strip is worn on most: the
+    /// readout on one row, the meter and the PTT on the next, and five buttons
+    /// across the third — each of them *wider* than its label asked for,
+    /// because the row is divided between them rather than left part empty.
+    #[test]
+    fn a_phone_in_portrait_spends_the_row_on_its_buttons() {
+        let s = a_phone_strip(412.0, true, false);
+        assert!(s.band_mode_shown, "the frequency box had room for the band/mode chip");
+        assert_eq!(s.rows, 3, "the strip took {} rows", s.rows);
+        let g = s.tail.grid.expect("the buttons take a row of their own");
+        assert!(g.text.is_none(), "the labels shrank to {:?} with room to spare", g.text);
+        let widest = P_MENU.iter().map(|&(_, w, _)| w).fold(0.0f32, f32::max);
+        assert!(g.cell_w > widest, "cells came out {} against a {widest} pt chip", g.cell_w);
+        // The meter takes all it may of its row and the PTT — the only chip
+        // beside it — takes the rest, so that row reaches the edge too.
+        assert_eq!(s.tail.meter_w, PHONE_SMETER_MAX_W);
+        assert!(s.tail.lead_extra > 0.0, "the PTT was left at its label width");
+        assert!(s.meter_row >= s.content - 6.5, "{} of {} used", s.meter_row, s.content);
+    }
+
+    /// A phone in landscape — 852x393 — keeps the meter on the readout's row
+    /// (three points short of holding the buttons there too), so the strip is
+    /// two rows. The buttons still divide the second, but only up to twice the
+    /// chip their labels asked for: a row 816 pt wide would otherwise put "RX"
+    /// in a 163 pt button.
+    #[test]
+    fn a_phone_in_landscape_stops_stretching_its_buttons() {
+        let s = a_phone_strip(852.0, true, false);
+        assert_eq!(s.rows, 2, "the strip took {} rows", s.rows);
+        let g = s.tail.grid.expect("the buttons take a row of their own");
+        let widest = P_MENU.iter().map(|&(_, w, _)| w).fold(0.0f32, f32::max);
+        assert_eq!(g.cell_w, CHIP_STRETCH_FACTOR * widest, "cells came out {}", g.cell_w);
+        // The buttons' row still has to be one the layout will break onto:
+        // wider than whatever the meter and the PTT left of the row above.
+        let (menu, _) = p_menu(true, false);
+        let n = menu.len() as f32;
+        let grid_w = n * g.cell_w + (n - 1.0) * P_GAP;
+        assert!(
+            grid_w > s.content - s.meter_row,
+            "a {grid_w} pt row of buttons fits the {} pt left of the row above it",
+            s.content - s.meter_row
+        );
+    }
+
+    /// The plan leans on two things the wrapping layout does, so they are
+    /// checked against egui rather than assumed: a block as wide as the row is
+    /// given a fresh row of its own rather than squeezed onto the end of the
+    /// one it is on, and the cells inside it then divide that row without it
+    /// breaking again under them. The strip's skeleton at phone metrics, with
+    /// a spacer standing in for the frequency box and the real chips.
+    #[test]
+    fn the_button_row_is_broken_out_of_the_strip_whole() {
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        crate::layout::set_tier(&ctx, crate::layout::Tier::Phone);
+        crate::theme::apply_metrics(&ctx, crate::layout::Tier::Phone);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(412.0, 915.0),
+            )),
+            ..Default::default()
+        };
+        const LABELS: [&str; 5] = ["RX", "VFO", "TX", "DISP", "SYS"];
+        let (mut tops, mut right, mut edge) = (Vec::new(), 0.0f32, 0.0f32);
+        let _ = ctx.run_ui(input, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+            ui.with_layout(
+                egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
+                |ui| {
+                    let row = ui.max_rect().width();
+                    edge = ui.max_rect().right();
+                    let gap = ui.spacing().item_spacing.x;
+                    let sense = egui::Sense::hover();
+                    // The frequency box, which takes the row on a phone held
+                    // upright — the case the buttons used to spill in.
+                    ui.allocate_exact_size(egui::vec2(row, PHONE_FREQ_H), sense);
+
+                    let font = egui::TextStyle::Button.resolve(ui.style());
+                    let mut menu = Vec::new();
+                    let mut text_w = 0.0f32;
+                    for l in LABELS {
+                        menu.push(crate::chrome::chip_width(ui, l, None));
+                        text_w = text_w.max(crate::chrome::text_width(ui, l, font.clone()));
+                    }
+                    let ptt_w = crate::chrome::chip_width(ui, PTT_LABEL, Some(PTT_TEXT));
+                    let left = row - (ui.cursor().min.x - ui.max_rect().min.x).max(0.0);
+                    let chips = PhoneChips {
+                        lead: (1, ptt_w + gap),
+                        menu: &menu,
+                        text_w,
+                        text_size: font.size,
+                    };
+                    let tail = plan_phone_tail(row, left, &chips, gap);
+
+                    ui.allocate_exact_size(egui::vec2(tail.meter_w, PHONE_SMETER_H), sense);
+                    let ptt_h = crate::chrome::chip_height(ui, Some(PTT_TEXT));
+                    ui.allocate_exact_size(egui::vec2(ptt_w + tail.lead_extra, ptt_h), sense);
+
+                    let g = tail.grid.expect("the buttons take a row of their own");
+                    let h = crate::chrome::chip_height(ui, None);
+                    let n = LABELS.len() as f32;
+                    let w = n * g.cell_w + (n - 1.0) * gap;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(w, h),
+                        egui::Layout::left_to_right(egui::Align::Min),
+                        |ui| {
+                            for l in LABELS {
+                                let cell = egui::vec2(g.cell_w, h);
+                                let r = crate::chrome::chip_sized(ui, false, l, cell).rect;
+                                tops.push(r.top());
+                                right = right.max(r.right());
+                            }
+                        },
+                    );
+                },
+            );
+        });
+        let top = tops[0];
+        assert!(tops.iter().all(|t| (t - top).abs() < 0.5), "the buttons landed at {tops:?}");
+        assert!(right <= edge + 0.5, "the last button reaches {right} past a {edge} pt edge");
+    }
+
+    /// Where the row cannot afford a cell wide enough for "DISP" at the
+    /// style's size, every label shrinks by the same factor rather than hang
+    /// over the edges of the chip it is centred in. The narrowest phone keeps
+    /// its size with five buttons up and gives a fraction of a point with the
+    /// sub's sixth; a row narrower than any phone — a desktop window dragged
+    /// down to a sliver, which the tier dresses as a phone — gives real
+    /// ground, and never past the floor.
+    #[test]
+    fn a_row_too_narrow_for_the_labels_shrinks_them_into_their_cells() {
+        assert!(
+            a_phone_strip(320.0, true, false).tail.grid.is_some_and(|g| g.text.is_none()),
+            "five buttons on the narrowest phone had to shrink their labels"
+        );
+        let six = a_phone_strip(320.0, true, true).tail.grid.expect("a row of their own");
+        assert!(six.text.is_some_and(|s| (14.0..P_TEXT).contains(&s)), "six came out {six:?}");
+        let (menu, text_w) = p_menu(true, true);
+        let chips = PhoneChips {
+            lead: (2, TOUCH_BAND_CHIP_W + P_GAP + P_PTT_W + P_GAP),
+            menu: &menu,
+            text_w,
+            text_size: P_TEXT,
+        };
+        let tail = plan_phone_tail(240.0, 240.0, &chips, P_GAP);
+        let g = tail.grid.expect("the buttons take a row of their own");
+        let size = g.text.expect("the labels had to give");
+        assert!((MENU_TEXT_MIN..P_TEXT).contains(&size), "the labels were set at {size} pt");
+        assert!(
+            text_w * size / P_TEXT + 2.0 * MENU_TEXT_PAD <= g.cell_w + 0.5,
+            "a shrunk label still overhangs a {} pt cell",
+            g.cell_w
+        );
     }
 
     /// Metrics measured from the touched layout the short strip is laid out

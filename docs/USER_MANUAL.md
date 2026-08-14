@@ -5071,15 +5071,7 @@ there is no hovering pointer to hold them open.
 
 **On a phone** the readout shrinks too, and the A/B selector and the other VFO's
 frequency move into the **VFO** menu; a small `A` or `B` before the digits says
-which one you are tuning. The band/mode button stays beside the digits where the
-width allows and moves to the menu row where it does not. The S-meter becomes a
-short strip, giving up exactly the width the menu buttons need so they stay on its
-row rather than wrapping — and it wears the **bar** face, because the needle's
-arc is a chord across its box and needs height a phone has not got to spare.
-Clicking it still cycles between the bar and the trace. The panadapter shows
-**the waterfall only** — no spectrum trace and no full-band strip, whatever the
-DISP buttons were last left set to. Both come back exactly as you left them on a
-wider screen; nothing is thrown away.
+which one you are tuning. 
 
 **PTT is press-and-hold on both**, unlike the desktop's latching button: a
 latching control an inch from a waterfall you pan with your thumb is one mis-tap
