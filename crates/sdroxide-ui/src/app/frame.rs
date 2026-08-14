@@ -1022,6 +1022,14 @@ impl SdroxideApp {
                         crate::time::now_unix(),
                     );
                 }
+                // Consumed by the controller, not here: the settings dialog
+                // asks for the interface configuration through
+                // `RadioController::radio_config` when it opens, and both
+                // controllers answer from the authority nearest them — the
+                // local one reads the file, the remote one the copy this
+                // announcement left it. There is nothing to seed on the way
+                // past.
+                RadioEvent::RadioConfig(_) => {}
             }
         }
         // A switched-off skimmer stops emitting, so its last boxes would sit on

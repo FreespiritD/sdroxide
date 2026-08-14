@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgcMode, Band, DigiConfig, Direction, ImageKind, Mode, NetworkConfig, NrLevel, QsoStep,
-    RigctldConfig, RotatorConfig, RxId, SatConfig, SatLockConfig, SkimmerSettings, SpectrumConfig,
-    SstvMode, TciServerConfig, UploadTarget, Vfo, WsjtxConfig,
+    RadioConfig, RigctldConfig, RotatorConfig, RxId, SatConfig, SatLockConfig, SkimmerSettings,
+    SpectrumConfig, SstvMode, TciServerConfig, UploadTarget, Vfo, WsjtxConfig,
 };
 
 /// The single control vocabulary. The GUI, the WebSocket protocol, and the
@@ -447,4 +447,29 @@ pub enum Command {
     /// would not parse, and the loader says so through a
     /// [`crate::RadioEvent::Notice`].
     ReloadBandPlan,
+
+    /// The engine host's `radio.json`, as edited by whoever is driving this
+    /// radio. Appended for the usual reason: postcard numbers variants by
+    /// position.
+    ///
+    /// The engine owns the file — it is in *its* config directory, not the
+    /// screen's — so it does the writing, and echoes the result back as
+    /// [`crate::RadioEvent::RadioConfig`]. That is what lets an operator away
+    /// from the shack reach the settings only the device itself has: an
+    /// RTL-SDR's AGC mode, its ppm correction, its bias tee. Those ride
+    /// [`Command::SetGain`] pseudo-elements to the running device, but the
+    /// figure that survives a restart lives here.
+    ///
+    /// `reopen` rebuilds the front end afterwards. The settings that are fixed
+    /// when a device is opened — sample rate, addresses, sound cards — need it;
+    /// the ones that apply as you move them do not. One command rather than a
+    /// save and a separate reopen, so the two cannot arrive out of order and
+    /// rebuild the device from the config it had a moment ago.
+    ///
+    /// Boxed: `RadioConfig` carries every backend's settings at once, and every
+    /// other variant here would otherwise be as large as the biggest of them.
+    SetRadioConfig {
+        cfg: Box<RadioConfig>,
+        reopen: bool,
+    },
 }

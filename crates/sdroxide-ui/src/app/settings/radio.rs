@@ -11,12 +11,32 @@ use sdroxide_types::{Command, Direction};
 use crate::app::SdroxideApp;
 use crate::app::settings::enum_combo;
 
+/// Why a discovery or test control is greyed out.
+///
+/// One wording rather than a dozen: every one of these buttons asks a question
+/// about a *machine* — what is on its USB bus, which serial ports it has,
+/// whether an address answers from where it stands — and on a remote client
+/// this screen is not that machine. The settings around them describe the
+/// device instead, so they travel.
+const NOT_FROM_HERE: &str = "Only from the machine the radio is attached to: this asks about \
+                             its hardware and its network, not this screen's.";
+
+/// Draw a control that only works where the radio is, greyed out and explained
+/// when this screen is somewhere else.
+fn local_only<R>(ui: &mut egui::Ui, local: bool, add: impl FnOnce(&mut egui::Ui) -> R) {
+    let group = ui.add_enabled_ui(local, add);
+    if !local {
+        group.response.on_hover_text(NOT_FROM_HERE);
+    }
+}
+
 /// CAT / Audio interface: serial + PTT parameters (the interface itself is
 /// chosen by the selector in `settings_body`).
 pub(in crate::app) fn settings_cat_tab(
     ui: &mut egui::Ui,
     serial_ports: &[String],
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
+    local: bool,
 ) {
     use sdroxide_types::{
         CatFamily, CwKeying, DigiMode, KenwoodSend, LineState, ModeControl, Parity, PttMethod,
@@ -48,12 +68,17 @@ pub(in crate::app) fn settings_cat_tab(
         } else {
             cfg.cat.serial.path.clone()
         };
-        ComboBox::from_id_salt("serport").width(260.0).selected_text(shown).show_ui(ui, |ui| {
-            for p in serial_ports {
-                if ui.selectable_label(&cfg.cat.serial.path == p, p).clicked() {
-                    cfg.cat.serial.path = p.clone();
+        // The list is of *this* machine's ports. Where the rig is elsewhere the
+        // stored path is still worth showing — it says which port the engine is
+        // using — but there is nothing here to choose from.
+        local_only(ui, local, |ui| {
+            ComboBox::from_id_salt("serport").width(260.0).selected_text(shown).show_ui(ui, |ui| {
+                for p in serial_ports {
+                    if ui.selectable_label(&cfg.cat.serial.path == p, p).clicked() {
+                        cfg.cat.serial.path = p.clone();
+                    }
                 }
-            }
+            });
         });
         ui.end_row();
 
@@ -179,6 +204,7 @@ pub(in crate::app) fn settings_hpsdr_tab(
     devices: &[sdroxide_types::HpsdrDevice],
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     discover: &mut bool,
+    local: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::HpsdrConfig;
@@ -188,30 +214,34 @@ pub(in crate::app) fn settings_hpsdr_tab(
     };
     egui::Grid::new("hpsdr-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Devices");
-        ui.horizontal(|ui| {
-            if ui.button("Discover").clicked() {
-                *discover = true;
-            }
-            let shown = cfg.hpsdr.selected_ip.clone().unwrap_or_else(|| "— none —".into());
-            ComboBox::from_id_salt("hpsdr_dev").width(320.0).selected_text(shown).show_ui(
-                ui,
-                |ui| {
-                    if devices.is_empty() {
-                        ui.label(RichText::new("no devices — press Discover").weak());
-                    }
-                    for d in devices {
-                        // Both protocols are drivable; anything else is greyed out.
-                        if d.supported() {
-                            let sel = cfg.hpsdr.selected_ip.as_deref() == Some(d.ip.as_str());
-                            if ui.selectable_label(sel, d.label()).clicked() {
-                                cfg.hpsdr.selected_ip = Some(d.ip.clone());
-                            }
-                        } else {
-                            ui.label(RichText::new(d.label()).weak());
+        // The scan goes out on this machine's LAN; the radio is on the
+        // engine's. The manual IP below is typed, so it still works from here.
+        local_only(ui, local, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Discover").clicked() {
+                    *discover = true;
+                }
+                let shown = cfg.hpsdr.selected_ip.clone().unwrap_or_else(|| "— none —".into());
+                ComboBox::from_id_salt("hpsdr_dev").width(320.0).selected_text(shown).show_ui(
+                    ui,
+                    |ui| {
+                        if devices.is_empty() {
+                            ui.label(RichText::new("no devices — press Discover").weak());
                         }
-                    }
-                },
-            );
+                        for d in devices {
+                            // Both protocols are drivable; anything else is greyed out.
+                            if d.supported() {
+                                let sel = cfg.hpsdr.selected_ip.as_deref() == Some(d.ip.as_str());
+                                if ui.selectable_label(sel, d.label()).clicked() {
+                                    cfg.hpsdr.selected_ip = Some(d.ip.clone());
+                                }
+                            } else {
+                                ui.label(RichText::new(d.label()).weak());
+                            }
+                        }
+                    },
+                );
+            });
         });
         ui.end_row();
 
@@ -394,6 +424,7 @@ pub(in crate::app) fn settings_rtlsdr_tab(
     devices: &[sdroxide_types::RtlSdrDevice],
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     rescan: &mut bool,
+    local: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::{RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode};
@@ -404,45 +435,50 @@ pub(in crate::app) fn settings_rtlsdr_tab(
 
     egui::Grid::new("rtlsdr-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Dongle");
-        ui.horizontal(|ui| {
-            if ui
-                .button("Rescan")
-                .on_hover_text(
-                    "Re-list the USB bus. No device is opened, so this is safe \
-                     to press while receiving.",
-                )
-                .clicked()
-            {
-                *rescan = true;
-            }
-            let shown = cfg.rtlsdr.serial.clone().unwrap_or_else(|| "— first one found —".into());
-            ComboBox::from_id_salt("rtlsdr_dev").width(300.0).selected_text(shown).show_ui(
-                ui,
-                |ui| {
-                    if devices.is_empty() {
-                        ui.label(RichText::new("no dongles — press Rescan").weak());
-                    }
-                    if ui
-                        .selectable_label(cfg.rtlsdr.serial.is_none(), "— first one found —")
-                        .clicked()
-                    {
-                        cfg.rtlsdr.serial = None;
-                    }
-                    for d in devices {
-                        // Only a dongle with a serial can be pinned; without
-                        // one there is nothing stable to remember, since bus
-                        // position changes on every replug.
-                        if let Some(sn) = &d.serial {
-                            let sel = cfg.rtlsdr.serial.as_deref() == Some(sn.as_str());
-                            if ui.selectable_label(sel, d.label()).clicked() {
-                                cfg.rtlsdr.serial = Some(sn.clone());
-                            }
-                        } else {
-                            ui.label(RichText::new(d.label()).weak());
+        // Which dongle is the one row here that names a USB bus rather than the
+        // radio. Everything below reaches the dongle wherever it is plugged in.
+        local_only(ui, local, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Rescan")
+                    .on_hover_text(
+                        "Re-list the USB bus. No device is opened, so this is safe \
+                         to press while receiving.",
+                    )
+                    .clicked()
+                {
+                    *rescan = true;
+                }
+                let shown =
+                    cfg.rtlsdr.serial.clone().unwrap_or_else(|| "— first one found —".into());
+                ComboBox::from_id_salt("rtlsdr_dev").width(300.0).selected_text(shown).show_ui(
+                    ui,
+                    |ui| {
+                        if devices.is_empty() {
+                            ui.label(RichText::new("no dongles — press Rescan").weak());
                         }
-                    }
-                },
-            );
+                        if ui
+                            .selectable_label(cfg.rtlsdr.serial.is_none(), "— first one found —")
+                            .clicked()
+                        {
+                            cfg.rtlsdr.serial = None;
+                        }
+                        for d in devices {
+                            // Only a dongle with a serial can be pinned; without
+                            // one there is nothing stable to remember, since bus
+                            // position changes on every replug.
+                            if let Some(sn) = &d.serial {
+                                let sel = cfg.rtlsdr.serial.as_deref() == Some(sn.as_str());
+                                if ui.selectable_label(sel, d.label()).clicked() {
+                                    cfg.rtlsdr.serial = Some(sn.clone());
+                                }
+                            } else {
+                                ui.label(RichText::new(d.label()).weak());
+                            }
+                        }
+                    },
+                );
+            });
         });
         ui.end_row();
 
@@ -814,6 +850,7 @@ pub(in crate::app) fn settings_tci_tab(
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     tci_test: &mut bool,
     test_result: &Option<Result<String, String>>,
+    local: bool,
 ) {
     use sdroxide_types::TciConfig;
     let Some(cfg) = radio_edit.as_mut() else {
@@ -865,9 +902,14 @@ pub(in crate::app) fn settings_tci_tab(
         ui.end_row();
 
         ui.label("");
-        if ui.button("Test connection").clicked() {
-            *tci_test = true;
-        }
+        // The test opens its own socket from wherever it is pressed, so a
+        // green answer here would only say this screen can reach the rig — a
+        // different question from the one being asked.
+        local_only(ui, local, |ui| {
+            if ui.button("Test connection").clicked() {
+                *tci_test = true;
+            }
+        });
         ui.end_row();
     });
     test_result_line(ui, test_result);
@@ -890,6 +932,7 @@ pub(in crate::app) fn settings_icomnet_tab(
     test: &mut bool,
     copy_report: &mut bool,
     test_result: &Option<Result<String, String>>,
+    local: bool,
 ) {
     use sdroxide_types::{CwKeying, IcomNetConfig, IcomRxSource};
     let Some(cfg) = radio_edit.as_mut() else {
@@ -1017,20 +1060,25 @@ pub(in crate::app) fn settings_icomnet_tab(
         ui.end_row();
 
         ui.label("");
-        ui.horizontal(|ui| {
-            if ui.button("Test connection").clicked() {
-                *test = true;
-            }
-            if ui
-                .button("Copy diagnostic report")
-                .on_hover_text(
-                    "Copies the last session's handshake and CI-V trace to the clipboard, \
-                     for a bug report.",
-                )
-                .clicked()
-            {
-                *copy_report = true;
-            }
+        // Both reach for this machine: the test opens its own socket from here,
+        // and the trace is of the session *this* process ran. The engine's own
+        // is on the engine's machine.
+        local_only(ui, local, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Test connection").clicked() {
+                    *test = true;
+                }
+                if ui
+                    .button("Copy diagnostic report")
+                    .on_hover_text(
+                        "Copies the last session's handshake and CI-V trace to the clipboard, \
+                         for a bug report.",
+                    )
+                    .clicked()
+                {
+                    *copy_report = true;
+                }
+            });
         });
         ui.end_row();
     });
@@ -1106,6 +1154,7 @@ pub(in crate::app) fn settings_pluto_tab(
     test: &mut bool,
     copy_report: &mut bool,
     test_result: &Option<Result<String, String>>,
+    local: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::{PlutoAgc, PlutoConfig};
@@ -1120,29 +1169,34 @@ pub(in crate::app) fn settings_pluto_tab(
              a Pluto on the end of a USB cable is often unreachable by multicast even \
              though the address works.",
         );
-        ui.horizontal(|ui| {
-            if ui.button("Discover").clicked() {
-                *discover = true;
-            }
-            let shown = cfg.pluto.selected_ip.clone().unwrap_or_else(|| "— none —".into());
-            ComboBox::from_id_salt("pluto_dev").width(340.0).selected_text(shown).show_ui(
-                ui,
-                |ui| {
-                    if devices.is_empty() {
-                        ui.label(RichText::new("no radios — press Discover").weak());
-                    }
-                    for d in devices {
-                        let sel = cfg.pluto.selected_ip.as_deref() == Some(d.ip.as_str());
-                        if ui.selectable_label(sel, d.label()).clicked() {
-                            cfg.pluto.selected_ip = Some(d.ip.clone());
-                            // The typed address wins over a selection, so a
-                            // click here has no visible effect until it is
-                            // cleared. Do that for the operator.
-                            cfg.pluto.address.clear();
+        // The mDNS query and the USB-gadget probe both go out from here, and a
+        // Pluto on a USB cable is only reachable from the machine it is plugged
+        // into. The Address row below is typed, so it still works from here.
+        local_only(ui, local, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Discover").clicked() {
+                    *discover = true;
+                }
+                let shown = cfg.pluto.selected_ip.clone().unwrap_or_else(|| "— none —".into());
+                ComboBox::from_id_salt("pluto_dev").width(340.0).selected_text(shown).show_ui(
+                    ui,
+                    |ui| {
+                        if devices.is_empty() {
+                            ui.label(RichText::new("no radios — press Discover").weak());
                         }
-                    }
-                },
-            );
+                        for d in devices {
+                            let sel = cfg.pluto.selected_ip.as_deref() == Some(d.ip.as_str());
+                            if ui.selectable_label(sel, d.label()).clicked() {
+                                cfg.pluto.selected_ip = Some(d.ip.clone());
+                                // The typed address wins over a selection, so a
+                                // click here has no visible effect until it is
+                                // cleared. Do that for the operator.
+                                cfg.pluto.address.clear();
+                            }
+                        }
+                    },
+                );
+            });
         });
         ui.end_row();
 
@@ -1324,27 +1378,31 @@ pub(in crate::app) fn settings_pluto_tab(
         ui.end_row();
 
         ui.label("");
-        ui.horizontal(|ui| {
-            if ui
-                .button("Test connection")
-                .on_hover_text(
-                    "Opens the radio, reads what it says about itself, and reports the \
-                     tuning range this particular board has. Does not start a stream.",
-                )
-                .clicked()
-            {
-                *test = true;
-            }
-            if ui
-                .button("Copy diagnostic report")
-                .on_hover_text(
-                    "Copies the last session's protocol trace to the clipboard, for a \
-                     bug report.",
-                )
-                .clicked()
-            {
-                *copy_report = true;
-            }
+        // Both run here: the test opens the radio from this machine, and the
+        // trace is of this process's own session.
+        local_only(ui, local, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Test connection")
+                    .on_hover_text(
+                        "Opens the radio, reads what it says about itself, and reports the \
+                         tuning range this particular board has. Does not start a stream.",
+                    )
+                    .clicked()
+                {
+                    *test = true;
+                }
+                if ui
+                    .button("Copy diagnostic report")
+                    .on_hover_text(
+                        "Copies the last session's protocol trace to the clipboard, for a \
+                         bug report.",
+                    )
+                    .clicked()
+                {
+                    *copy_report = true;
+                }
+            });
         });
         ui.end_row();
     });
@@ -1387,6 +1445,7 @@ pub(in crate::app) fn settings_smartsdr_tab(
     test: &mut bool,
     copy_report: &mut bool,
     test_result: &Option<Result<String, String>>,
+    local: bool,
 ) {
     use sdroxide_types::SmartSdrConfig;
     let Some(cfg) = radio_edit.as_mut() else {
@@ -1400,35 +1459,40 @@ pub(in crate::app) fn settings_smartsdr_tab(
              A radio reached through a router or a VPN never broadcasts to you — \
              enter its address below instead.",
         );
-        ui.horizontal(|ui| {
-            if ui.button("Discover").clicked() {
-                *discover = true;
-            }
-            let shown = cfg.smartsdr.selected_ip.clone().unwrap_or_else(|| "— none —".into());
-            ComboBox::from_id_salt("flex_dev").width(340.0).selected_text(shown).show_ui(
-                ui,
-                |ui| {
-                    if devices.is_empty() {
-                        ui.label(RichText::new("no radios — press Discover").weak());
-                    }
-                    for d in devices {
-                        let sel = cfg.smartsdr.selected_ip.as_deref() == Some(d.ip.as_str());
-                        // A radio that is already claimed and has multiFLEX off
-                        // will refuse us, so it is shown but not selectable.
-                        if d.joinable {
-                            if ui.selectable_label(sel, d.label()).clicked() {
-                                cfg.smartsdr.selected_ip = Some(d.ip.clone());
-                            }
-                        } else {
-                            ui.label(RichText::new(d.label()).weak()).on_hover_text(
-                                "Another GUI client has this radio and multiFLEX is \
-                                 disabled. Disconnect that client, or enable multiFLEX \
-                                 on the radio.",
-                            );
+        // The broadcasts a FLEX sends reach its own network segment, which is
+        // the engine's, not this screen's. The Address row below is typed, so
+        // it still works from here.
+        local_only(ui, local, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Discover").clicked() {
+                    *discover = true;
+                }
+                let shown = cfg.smartsdr.selected_ip.clone().unwrap_or_else(|| "— none —".into());
+                ComboBox::from_id_salt("flex_dev").width(340.0).selected_text(shown).show_ui(
+                    ui,
+                    |ui| {
+                        if devices.is_empty() {
+                            ui.label(RichText::new("no radios — press Discover").weak());
                         }
-                    }
-                },
-            );
+                        for d in devices {
+                            let sel = cfg.smartsdr.selected_ip.as_deref() == Some(d.ip.as_str());
+                            // A radio that is already claimed and has multiFLEX off
+                            // will refuse us, so it is shown but not selectable.
+                            if d.joinable {
+                                if ui.selectable_label(sel, d.label()).clicked() {
+                                    cfg.smartsdr.selected_ip = Some(d.ip.clone());
+                                }
+                            } else {
+                                ui.label(RichText::new(d.label()).weak()).on_hover_text(
+                                    "Another GUI client has this radio and multiFLEX is \
+                                     disabled. Disconnect that client, or enable multiFLEX \
+                                     on the radio.",
+                                );
+                            }
+                        }
+                    },
+                );
+            });
         });
         ui.end_row();
 
@@ -1483,27 +1547,31 @@ pub(in crate::app) fn settings_smartsdr_tab(
         ui.end_row();
 
         ui.label("");
-        ui.horizontal(|ui| {
-            if ui
-                .button("Test connection")
-                .on_hover_text(
-                    "Checks the radio answers, without registering as a GUI client — \
-                     so it will not disturb a SmartSDR session already running.",
-                )
-                .clicked()
-            {
-                *test = true;
-            }
-            if ui
-                .button("Copy diagnostic report")
-                .on_hover_text(
-                    "Copies the last session's protocol trace to the clipboard, for a \
-                     bug report.",
-                )
-                .clicked()
-            {
-                *copy_report = true;
-            }
+        // Both run here: the test opens its own connection from this machine,
+        // and the trace is of this process's own session.
+        local_only(ui, local, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Test connection")
+                    .on_hover_text(
+                        "Checks the radio answers, without registering as a GUI client — \
+                         so it will not disturb a SmartSDR session already running.",
+                    )
+                    .clicked()
+                {
+                    *test = true;
+                }
+                if ui
+                    .button("Copy diagnostic report")
+                    .on_hover_text(
+                        "Copies the last session's protocol trace to the clipboard, for a \
+                         bug report.",
+                    )
+                    .clicked()
+                {
+                    *copy_report = true;
+                }
+            });
         });
         ui.end_row();
     });
@@ -1540,8 +1608,25 @@ pub(in crate::app) fn settings_soapy_devices(
     ui: &mut egui::Ui,
     devices: Option<&[sdroxide_types::SoapyDeviceInfo]>,
     rescan: &mut bool,
+    local: bool,
 ) {
     use sdroxide_types::SoapyDeviceInfo;
+
+    // The whole section, not just the button: the list below is what *this*
+    // machine's installed modules found, and shown beside a radio that is
+    // somewhere else it would be read as that radio's.
+    if !local {
+        ui.label(RichText::new("Devices SoapySDR can see").strong());
+        ui.label(
+            RichText::new(
+                "Enumerated on the machine the radio is attached to, where the modules \
+                 are installed. Which device it opens is `device_args` in that machine's \
+                 config.toml, or its --device.",
+            )
+            .weak(),
+        );
+        return;
+    }
 
     ui.horizontal(|ui| {
         ui.label(RichText::new("Devices SoapySDR can see").strong());
@@ -1753,6 +1838,7 @@ pub(in crate::app) fn settings_rx888_tab(
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     rescan: &mut bool,
     apply: &mut bool,
+    local: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::Rx888Config;
@@ -1772,39 +1858,43 @@ pub(in crate::app) fn settings_rx888_tab(
 
     egui::Grid::new("rx888-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Receiver");
-        ui.horizontal(|ui| {
-            if ui
-                .button("Rescan")
-                .on_hover_text(
-                    "Re-list the USB bus. No device is opened, so this is safe \
-                     to press while receiving.",
-                )
-                .clicked()
-            {
-                *rescan = true;
-            }
-            let shown = if cfg.rx888.serial.is_empty() {
-                "— first one found —".to_string()
-            } else {
-                cfg.rx888.serial.clone()
-            };
-            ComboBox::from_id_salt("rx888_dev").width(300.0).selected_text(shown).show_ui(
-                ui,
-                |ui| {
-                    if devices.is_empty() {
-                        ui.label("No RX-888 found — press Rescan");
-                    }
-                    ui.selectable_value(
-                        &mut cfg.rx888.serial,
-                        String::new(),
-                        "— first one found —",
-                    );
-                    for d in devices {
-                        let serial = d.serial.clone().unwrap_or_default();
-                        ui.selectable_value(&mut cfg.rx888.serial, serial, d.label());
-                    }
-                },
-            );
+        // Which receiver is this panel's one row about a USB bus; everything
+        // below reaches the device wherever it is plugged in.
+        local_only(ui, local, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Rescan")
+                    .on_hover_text(
+                        "Re-list the USB bus. No device is opened, so this is safe \
+                         to press while receiving.",
+                    )
+                    .clicked()
+                {
+                    *rescan = true;
+                }
+                let shown = if cfg.rx888.serial.is_empty() {
+                    "— first one found —".to_string()
+                } else {
+                    cfg.rx888.serial.clone()
+                };
+                ComboBox::from_id_salt("rx888_dev").width(300.0).selected_text(shown).show_ui(
+                    ui,
+                    |ui| {
+                        if devices.is_empty() {
+                            ui.label("No RX-888 found — press Rescan");
+                        }
+                        ui.selectable_value(
+                            &mut cfg.rx888.serial,
+                            String::new(),
+                            "— first one found —",
+                        );
+                        for d in devices {
+                            let serial = d.serial.clone().unwrap_or_default();
+                            ui.selectable_value(&mut cfg.rx888.serial, serial, d.label());
+                        }
+                    },
+                );
+            });
         });
         ui.end_row();
 
@@ -2000,6 +2090,7 @@ pub(in crate::app) fn settings_airspyhf_tab(
     rescan: &mut bool,
     copy_report: &mut bool,
     apply: &mut bool,
+    local: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::AirspyHfConfig;
@@ -2033,51 +2124,55 @@ pub(in crate::app) fn settings_airspyhf_tab(
 
     egui::Grid::new("airspyhf-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Receiver");
-        ui.horizontal(|ui| {
-            if ui
-                .button("Rescan")
-                .on_hover_text(
-                    "Re-list the USB bus. No device is opened, so this is safe \
-                     to press while receiving.",
-                )
-                .clicked()
-            {
-                *rescan = true;
-            }
-            let shown = if cfg.airspyhf.serial.is_empty() {
-                "— first one found —".to_string()
-            } else {
-                cfg.airspyhf.serial.clone()
-            };
-            ComboBox::from_id_salt("airspyhf_dev").width(300.0).selected_text(shown).show_ui(
-                ui,
-                |ui| {
-                    if devices.is_empty() {
-                        ui.label(RichText::new("no receivers — press Rescan").weak());
-                    }
-                    ui.selectable_value(
-                        &mut cfg.airspyhf.serial,
-                        String::new(),
-                        "— first one found —",
-                    );
-                    for d in devices {
-                        // Only a receiver whose serial parsed can be pinned;
-                        // without one there is nothing stable to remember.
-                        match &d.serial {
-                            Some(sn) => {
-                                ui.selectable_value(
-                                    &mut cfg.airspyhf.serial,
-                                    sn.clone(),
-                                    d.label(),
-                                );
-                            }
-                            None => {
-                                ui.label(RichText::new(d.label()).weak());
+        // Which receiver is this panel's one row about a USB bus; everything
+        // below reaches the device wherever it is plugged in.
+        local_only(ui, local, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Rescan")
+                    .on_hover_text(
+                        "Re-list the USB bus. No device is opened, so this is safe \
+                         to press while receiving.",
+                    )
+                    .clicked()
+                {
+                    *rescan = true;
+                }
+                let shown = if cfg.airspyhf.serial.is_empty() {
+                    "— first one found —".to_string()
+                } else {
+                    cfg.airspyhf.serial.clone()
+                };
+                ComboBox::from_id_salt("airspyhf_dev").width(300.0).selected_text(shown).show_ui(
+                    ui,
+                    |ui| {
+                        if devices.is_empty() {
+                            ui.label(RichText::new("no receivers — press Rescan").weak());
+                        }
+                        ui.selectable_value(
+                            &mut cfg.airspyhf.serial,
+                            String::new(),
+                            "— first one found —",
+                        );
+                        for d in devices {
+                            // Only a receiver whose serial parsed can be pinned;
+                            // without one there is nothing stable to remember.
+                            match &d.serial {
+                                Some(sn) => {
+                                    ui.selectable_value(
+                                        &mut cfg.airspyhf.serial,
+                                        sn.clone(),
+                                        d.label(),
+                                    );
+                                }
+                                None => {
+                                    ui.label(RichText::new(d.label()).weak());
+                                }
                             }
                         }
-                    }
-                },
-            );
+                    },
+                );
+            });
         });
         ui.end_row();
 
@@ -2228,17 +2323,21 @@ pub(in crate::app) fn settings_airspyhf_tab(
         ui.end_row();
 
         ui.label("");
-        if ui
-            .button("Copy diagnostic report")
-            .on_hover_text(
-                "Copies the last session's trace to the clipboard, for a bug \
-                 report: every command exchanged with the receiver, and the \
-                 first bytes of the sample stream.",
-            )
-            .clicked()
-        {
-            *copy_report = true;
-        }
+        // The trace is of the session *this* process ran; the engine's own is
+        // on the engine's machine.
+        local_only(ui, local, |ui| {
+            if ui
+                .button("Copy diagnostic report")
+                .on_hover_text(
+                    "Copies the last session's trace to the clipboard, for a bug \
+                     report: every command exchanged with the receiver, and the \
+                     first bytes of the sample stream.",
+                )
+                .clicked()
+            {
+                *copy_report = true;
+            }
+        });
         ui.end_row();
     });
 
@@ -2288,6 +2387,7 @@ pub(in crate::app) fn settings_sdrplay_tab(
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     rescan: &mut bool,
     apply: &mut bool,
+    local: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::{SdrPlayAgc, SdrPlayConfig, SdrPlayDuoTuner, SdrPlayModel};
@@ -2334,41 +2434,51 @@ pub(in crate::app) fn settings_sdrplay_tab(
 
     egui::Grid::new("sdrplay-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Receiver");
-        ui.horizontal(|ui| {
-            if ui
-                .button("Rescan")
-                .on_hover_text(
-                    "Ask the SDRplay API service for its device list. Nothing is \
-                     opened, so this is safe to press while receiving.",
-                )
-                .clicked()
-            {
-                *rescan = true;
-            }
-            let shown = if cfg.sdrplay.serial.is_empty() {
-                "— first one found —".to_string()
-            } else {
-                cfg.sdrplay.serial.clone()
-            };
-            ComboBox::from_id_salt("sdrplay_dev").width(300.0).selected_text(shown).show_ui(
-                ui,
-                |ui| {
-                    if devices.is_empty() {
-                        ui.label(
-                            RichText::new("no RSPs — press Rescan (needs the SDRplay API service)")
+        // The service that answers this is the one on the engine's machine;
+        // everything below reaches the RSP through it.
+        local_only(ui, local, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Rescan")
+                    .on_hover_text(
+                        "Ask the SDRplay API service for its device list. Nothing is \
+                         opened, so this is safe to press while receiving.",
+                    )
+                    .clicked()
+                {
+                    *rescan = true;
+                }
+                let shown = if cfg.sdrplay.serial.is_empty() {
+                    "— first one found —".to_string()
+                } else {
+                    cfg.sdrplay.serial.clone()
+                };
+                ComboBox::from_id_salt("sdrplay_dev").width(300.0).selected_text(shown).show_ui(
+                    ui,
+                    |ui| {
+                        if devices.is_empty() {
+                            ui.label(
+                                RichText::new(
+                                    "no RSPs — press Rescan (needs the SDRplay API service)",
+                                )
                                 .weak(),
+                            );
+                        }
+                        ui.selectable_value(
+                            &mut cfg.sdrplay.serial,
+                            String::new(),
+                            "— first one found —",
                         );
-                    }
-                    ui.selectable_value(
-                        &mut cfg.sdrplay.serial,
-                        String::new(),
-                        "— first one found —",
-                    );
-                    for d in devices {
-                        ui.selectable_value(&mut cfg.sdrplay.serial, d.serial.clone(), d.label());
-                    }
-                },
-            );
+                        for d in devices {
+                            ui.selectable_value(
+                                &mut cfg.sdrplay.serial,
+                                d.serial.clone(),
+                                d.label(),
+                            );
+                        }
+                    },
+                );
+            });
         });
         ui.end_row();
 

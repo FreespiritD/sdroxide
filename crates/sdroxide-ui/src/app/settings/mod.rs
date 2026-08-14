@@ -105,6 +105,19 @@ pub(in crate::app) struct SatEditState {
 pub(in crate::app) struct SettingsIo<'a> {
     iface_opts: &'a [sdroxide_types::Backend],
     radio_edit: &'a mut Option<sdroxide_types::RadioConfig>,
+    /// Whether the radio is on *this* machine's buses and network.
+    ///
+    /// The interface's settings travel to a remote client — they describe the
+    /// device, and the engine writes them wherever it lives. What cannot travel
+    /// is everything that answers a question about a machine: which dongles are
+    /// on the USB bus, which serial ports exist, what a Discover broadcast
+    /// finds, whether an address answers. Those are enumerated locally, so a
+    /// remote client asking them would get its *own* answers — a laptop's sound
+    /// cards offered as the shack rig's, a dongle list from the wrong bus. The
+    /// controls that do it are disabled rather than left to lie, and choosing
+    /// the interface itself goes with them: the operator is not there to plug
+    /// the new one in.
+    local_devices: bool,
     /// Converter offset in Hz, buffered until Apply — see
     /// `SdroxideApp::converter_edit_hz`.
     converter_hz: &'a mut Option<f64>,
@@ -347,6 +360,14 @@ impl SdroxideApp {
                 self.sdrplay_devices = self.ctrl.list_sdrplay();
             }
             self.audio_devices_queried = true;
+        } else if self.radio_cfg.is_none() {
+            // Still waiting for the interface configuration. On a remote client
+            // it arrives with the connect-time replay, so this is normally
+            // answered before anyone opens the dialog — but a client that
+            // opened it during a reconnect would otherwise sit on "only
+            // available in the native app" until the dialog was closed and
+            // reopened. One `Option` clone a frame, and only while it is empty.
+            self.radio_cfg = self.ctrl.radio_config();
         }
         // Edits collected here and applied after the window closure, which
         // borrows `&self` and so can't touch `&mut self.ctrl`.
@@ -500,6 +521,7 @@ impl SdroxideApp {
                         &mut SettingsIo {
                             iface_opts: &iface_opts,
                             radio_edit: &mut radio_edit,
+                            local_devices: owns_server,
                             converter_hz: &mut converter_hz,
                             ranges: &mut ranges,
                             audio_pick: &mut audio_pick,
@@ -993,7 +1015,24 @@ impl SdroxideApp {
                 self.settings_user_audio(ui, io.audio_pick);
                 // The radio's own sound card is only used by the CAT / Audio
                 // interface; every other backend carries its audio in-band.
-                if backend == Some(Backend::Cat) {
+                //
+                // Local only, and not because the setting is: `audio_devices`
+                // is *this* screen's sound cards, and the rig is plugged into
+                // the engine's. Offering a laptop's built-in microphone as the
+                // shack transceiver's transmit path is worse than offering
+                // nothing at all.
+                if backend == Some(Backend::Cat) && !io.local_devices {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("Radio audio (sound card)").strong());
+                    ui.label(
+                        RichText::new(
+                            "Set on the machine the radio is plugged into — the sound cards \
+                             listed here are this screen's, not its.",
+                        )
+                        .weak(),
+                    );
+                }
+                if backend == Some(Backend::Cat) && io.local_devices {
                     if let (Some(devs), Some(cfg)) =
                         (self.audio_devices.as_ref(), io.radio_edit.as_mut())
                     {
@@ -1083,7 +1122,18 @@ impl SdroxideApp {
                 });
                 egui::Grid::new("iface-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                     ui.label(RichText::new("Radio interface").strong());
-                    enum_combo(ui, "iface", &mut cfg.backend, io.iface_opts, Backend::label);
+                    // Which interface, only where the hardware is. Everything
+                    // below this row describes the device and travels; *this*
+                    // row would reopen the far end onto something else, and
+                    // nobody is standing there to plug it in if it isn't there.
+                    if io.local_devices {
+                        enum_combo(ui, "iface", &mut cfg.backend, io.iface_opts, Backend::label);
+                    } else {
+                        ui.label(backend.label()).on_hover_text(
+                            "Which interface the server uses is set on the machine it runs \
+                             on. Its settings are below and can be changed from here.",
+                        );
+                    }
                     ui.end_row();
 
                     ui.label(RichText::new("Converter").strong());
@@ -1196,25 +1246,38 @@ impl SdroxideApp {
                     Backend::Soapy => {
                         self.settings_device_tab(ui, cmds);
                         ui.add_space(4.0);
-                        settings_soapy_devices(ui, self.soapy_devices.as_deref(), io.soapy_rescan);
+                        settings_soapy_devices(
+                            ui,
+                            self.soapy_devices.as_deref(),
+                            io.soapy_rescan,
+                            io.local_devices,
+                        );
                     }
                     Backend::Hpsdr => settings_hpsdr_tab(
                         ui,
                         &self.hpsdr_devices,
                         io.radio_edit,
                         io.hpsdr_discover,
+                        io.local_devices,
                         cmds,
                     ),
-                    Backend::Cat => settings_cat_tab(ui, &self.serial_ports, io.radio_edit),
-                    Backend::Tci => {
-                        settings_tci_tab(ui, io.radio_edit, io.tci_test, &self.tci_test_result)
+                    Backend::Cat => {
+                        settings_cat_tab(ui, &self.serial_ports, io.radio_edit, io.local_devices)
                     }
+                    Backend::Tci => settings_tci_tab(
+                        ui,
+                        io.radio_edit,
+                        io.tci_test,
+                        &self.tci_test_result,
+                        io.local_devices,
+                    ),
                     Backend::IcomNet => settings_icomnet_tab(
                         ui,
                         io.radio_edit,
                         io.icomnet_test,
                         io.icomnet_copy_report,
                         &self.icomnet_test_result,
+                        io.local_devices,
                     ),
                     Backend::SmartSdr => settings_smartsdr_tab(
                         ui,
@@ -1224,6 +1287,7 @@ impl SdroxideApp {
                         io.smartsdr_test,
                         io.smartsdr_copy_report,
                         &self.smartsdr_test_result,
+                        io.local_devices,
                     ),
                     Backend::Pluto => settings_pluto_tab(
                         ui,
@@ -1233,6 +1297,7 @@ impl SdroxideApp {
                         io.pluto_test,
                         io.pluto_copy_report,
                         &self.pluto_test_result,
+                        io.local_devices,
                         cmds,
                     ),
                     Backend::RtlSdr => settings_rtlsdr_tab(
@@ -1240,6 +1305,7 @@ impl SdroxideApp {
                         &self.rtlsdr_devices,
                         io.radio_edit,
                         io.rtlsdr_rescan,
+                        io.local_devices,
                         cmds,
                     ),
                     // No device list: the dongle is the server's, and the
@@ -1252,6 +1318,7 @@ impl SdroxideApp {
                         io.radio_edit,
                         io.rx888_rescan,
                         io.apply_iface,
+                        io.local_devices,
                         cmds,
                     ),
                     Backend::AirspyHf => settings_airspyhf_tab(
@@ -1262,6 +1329,7 @@ impl SdroxideApp {
                         io.airspyhf_rescan,
                         io.airspyhf_copy_report,
                         io.apply_iface,
+                        io.local_devices,
                         cmds,
                     ),
                     Backend::SdrPlay => settings_sdrplay_tab(
@@ -1271,16 +1339,23 @@ impl SdroxideApp {
                         io.radio_edit,
                         io.sdrplay_rescan,
                         io.apply_iface,
+                        io.local_devices,
                         cmds,
                     ),
                     // Legacy configs may still carry the removed auto-detect
                     // backend; prompt the user to pick a concrete interface.
+                    // Which nobody can do from a remote client — the row above
+                    // is a label there — so say who has to.
                     Backend::Auto => {
                         ui.label(
-                            RichText::new(
+                            RichText::new(if io.local_devices {
                                 "Pick a radio interface above (this configuration used the \
-                                 removed auto-detect mode).",
-                            )
+                                 removed auto-detect mode)."
+                            } else {
+                                "This configuration used the removed auto-detect mode. An \
+                                 interface has to be chosen on the machine the radio is \
+                                 attached to."
+                            })
                             .weak(),
                         );
                     }
@@ -1288,19 +1363,30 @@ impl SdroxideApp {
                     // interface is chosen, so choosing one is the whole page.
                     Backend::None => {
                         ui.label(
-                            RichText::new(
+                            RichText::new(if io.local_devices {
                                 "This radio has no interface yet — pick one above and press \
-                                 Apply / reconnect.",
-                            )
+                                 Apply / reconnect."
+                            } else {
+                                "This radio has no interface yet. One has to be chosen on the \
+                                 machine the radio is attached to."
+                            })
                             .weak(),
                         );
                     }
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
+                    // Remotely this button reopens the radio the server already
+                    // has, on the settings just edited — it cannot switch to a
+                    // different interface, because the row that would choose
+                    // one is a label there.
                     if ui
                         .button("Apply / reconnect")
-                        .on_hover_text("Switch to this interface now — no restart needed")
+                        .on_hover_text(if io.local_devices {
+                            "Switch to this interface now — no restart needed"
+                        } else {
+                            "Reopen the server's radio on these settings — no restart needed"
+                        })
                         .clicked()
                     {
                         *io.apply_iface = true;
@@ -1309,7 +1395,15 @@ impl SdroxideApp {
                     // narrow window doesn't push this under the scrollbar.
                     ui.add(
                         egui::Label::new(
-                            RichText::new("Switches the live radio without restarting.").weak(),
+                            RichText::new(if io.local_devices {
+                                "Switches the live radio without restarting."
+                            } else {
+                                "Everything above is the server's own configuration, and \
+                                 changes are saved there. Most settings apply as you change \
+                                 them; the ones fixed when the device is opened — the sample \
+                                 rate, an address — need this button."
+                            })
+                            .weak(),
                         )
                         .wrap(),
                     );

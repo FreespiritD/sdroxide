@@ -5244,6 +5244,7 @@ dependencies = [
  "opus",
  "rtrb",
  "rust-embed",
+ "sdroxide-config",
  "sdroxide-proto",
  "sdroxide-radio",
  "sdroxide-solar",

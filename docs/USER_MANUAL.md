@@ -2191,11 +2191,14 @@ to `rigctld.json`, `tciserver.json` and `wsjtx.json`, and the satellite
 additions to `satellites.json`.
 
 Most of those files describe the *station*, not the screen: the feeds it
-connects to, the servers it offers, the satellites it tracks. They live on the
-machine the radio engine runs on, and the engine tells every client what they
-say — so the **Spots**, **FreeDV**, **Uploads**, **Servers** and **TLE** tabs
-show, and change, the real thing whether you are at the shack machine, on a
-native remote client or in a browser tab. `input.json` and the `[ui]` half of
+connects to, the servers it offers, the satellites it tracks, the radio it has.
+They live on the machine the radio engine runs on, and the engine tells every
+client what they say — so the **Radio**, **Spots**, **FreeDV**, **Uploads**,
+**Servers** and **TLE** tabs show, and change, the real thing whether you are at
+the shack machine, on a native remote client or in a browser tab. (The Radio tab
+keeps back the parts that are about a *machine* rather than about the radio:
+which interface to open, and the buttons that scan a bus or test an address. See
+[7.4](#74-what-to-know).) `input.json` and the `[ui]` half of
 `config.toml` are the exception, and belong to the screen in front of you: a
 display preference and a knob on your desk have nothing to do with the radio in
 the other room — and so does the `[remote_server]` address on the **Remote**
@@ -2530,10 +2533,12 @@ clamped to what it can do. To pin the ports at start instead — on a headless
 server, where nobody is at the machine to pick — use `--antenna` and
 `--tx-antenna`; `--probe` lists the names a device offers.
 
-These are the one part of this tab a **remote client** can also reach: the
-interface and its configuration belong to the machine the server runs on, but
-the gains and antennas ride ordinary commands to the running device, so an
-operator away from the shack can still swap to the beam.
+A **remote client** gets this tab too, filled in from the server's own
+`radio.json` rather than from any file beside the screen: the gains, the
+antennas and every setting the interface has, applied to the running device and
+saved where the radio is ([7.4](#74-what-to-know)). What stays behind is the
+choice of interface and the buttons that scan a bus or test an address — those
+ask about a machine, and from a remote client it would be the wrong one.
 
 The cyan heading above the gains names the device that is *open right now*, not
 the one selected — which is why the screenshot still reads
@@ -4910,6 +4915,24 @@ stranger cannot lock you out of your own radio by opening a socket to it.
 
 ### 7.4 What to know
 
+- **The radio's own settings travel.** **Settings → Radio** on a remote client
+  shows the *server's* interface panel, read from the `radio.json` on the
+  machine the radio is attached to: an RTL-SDR's tuner gain, AGC mode,
+  frequency correction, HF path, IQ correction and bias tee; a Pluto's gain and
+  filter; an RSP's LNA state and antenna port; a CAT rig's PTT and keying. What
+  you change is applied to the running device and saved on that machine, so it
+  survives a restart there. Most settings take effect as you move them; the ones
+  that are fixed when a device is opened — a sample rate, an address — wait for
+  **Apply / reconnect**, which reopens the server's radio without restarting it.
+- **What does not travel** is everything that asks a question about a *machine*
+  rather than about the radio: **Rescan**, **Discover**, **Test connection**,
+  the diagnostic-report buttons, the serial-port list, and the CAT sound-card
+  pickers. Those enumerate the USB bus, the serial ports and the network of
+  whichever computer they run on, and from a remote client that is the wrong
+  one — so they are greyed out with a note rather than left to answer about your
+  laptop. Choosing the *interface* itself goes with them: nobody is at the far
+  end to plug in the device you switched to. Set those on the machine the radio
+  is attached to.
 - **One client at a time.** A second connection is refused with a "server busy"
   message.
 - **If the link drops**, the client shows what went wrong in place of the
@@ -4966,10 +4989,13 @@ The web client mirrors the native UI: tuning, mode and band changes, the
 panadapter and waterfall, receive audio, FT8/FT4/FT2, the logbook, memories, and
 meters. Microphone transmit is supported where the browser grants microphone
 access — see [audio needs a secure context](#83-audio-needs-a-secure-context)
-below. **Settings → Radio** shows the server device's gains and antenna
-drop-downs, so you can swap feedline or wind an LNA back from the browser; which
-interface the server opens, and how it is configured, stays on the machine that
-runs it. The [solar system 3D view](#6-solar-system-3d-view) works too: **☀ 3D**
+below. **Settings → Radio** shows the server device's own settings panel — its
+gains, its antenna ports, and everything else its interface has, read from and
+written back to the `radio.json` on the machine the radio is attached to
+([7.4](#74-what-to-know)) — so you can swap feedline, wind an LNA back or take
+a dongle's AGC off from a phone. Which interface the server opens, and the
+buttons that scan a bus or test an address, stay on the machine that runs it.
+The [solar system 3D view](#6-solar-system-3d-view) works too: **☀ 3D**
 opens it in a new tab, which connects to a separate read-only endpoint and so
 does not consume the single control connection — though it is challenged for the
 same sign-in, since it is shown your QTH and everything the station is decoding.
@@ -5492,11 +5518,13 @@ normally edit these through the GUI rather than by hand.
 
 ### 11.1 Choosing the radio interface without a GUI
 
-Settings → Radio is the normal way to pick an interface, and a remote or browser
-client deliberately cannot use it: which radio the engine talks to is a property
-of the machine the radio is plugged into ([§8.2](#82-what-works-in-the-browser)).
-On a headless server — a container, a systemd unit, a box with no display — that
-leaves `radio.json`, so here is what it contains.
+Settings → Radio is the normal way to configure an interface, and a remote or
+browser client can use it for everything except *which* interface to open:
+that is a property of the machine the radio is plugged into, along with the
+buttons that scan a bus or test an address ([7.4](#74-what-to-know)). On a
+headless server — a container, a systemd unit, a box with no display — picking
+the interface leaves `radio.json`, so here is what it contains. Once one is
+open, the settings under it can be reached from a client like any other.
 
 Only the keys you want to change need to be present. Everything else falls back
 to its default, and a partial file is normal rather than a special case.

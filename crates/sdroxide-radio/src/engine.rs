@@ -1687,6 +1687,11 @@ fn engine_thread(
     // would write them over the real thing.
     engine.emit_station_config();
     engine.emit_tle_sub_status();
+    // And this radio's own interface configuration, for the same reason again.
+    // It is the only route a remote operator has to the settings that belong to
+    // the device rather than to the receiver chain — a dongle's AGC mode, its
+    // ppm correction, its bias tee.
+    engine.emit_radio_config();
     // The source opened with its LO on the requested frequency, which is also
     // where the VFO now sits — on zero-IF hardware that is the one place the VFO
     // must not be, so let the span check park the LO clear of it before the
@@ -3810,6 +3815,25 @@ impl Engine {
                     self.notice(&alerts.join("\n"));
                 }
             }
+
+            // This radio's own `radio.json` (no RadioState change → return
+            // before the State emit below). The engine is the one that writes
+            // it: the file is in *this* machine's config directory, and the
+            // screen asking for the change may be in another country.
+            SetRadioConfig { cfg, reopen } => {
+                if let Err(e) = self.store.save_radio_config(&cfg) {
+                    warn!("saving radio config: {e}");
+                }
+                // Announced from the store rather than echoed from `cfg`, so
+                // what every client shows is what was actually written — a
+                // failed save leaves them on the configuration the radio is
+                // really running, not the one that got away.
+                self.emit_radio_config();
+                if reopen {
+                    self.reopen_source();
+                }
+                return;
+            }
         }
         let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
     }
@@ -4412,6 +4436,24 @@ impl Engine {
                 band_plan: sdroxide_types::band_plan().clone(),
             },
         )));
+    }
+
+    /// Announce this radio's `radio.json` — which interface is open and how
+    /// every backend is configured.
+    ///
+    /// Read back from the store rather than kept in memory. The engine does not
+    /// otherwise hold this file (the [`ReopenFn`] factory loads it afresh on
+    /// every open, and several backends read their own section as they start),
+    /// so the store is the only copy there is, and reading it is what makes an
+    /// announcement mean "this is what is on disk" rather than "this is what
+    /// somebody asked for".
+    ///
+    /// Sent at startup and after every change, for [`Engine::emit_station_config`]'s
+    /// reason: the settings dialog may be running on another machine, and this
+    /// file is only reachable from this one.
+    fn emit_radio_config(&self) {
+        let _ =
+            self.event_tx.send(RadioEvent::RadioConfig(Box::new(self.store.load_radio_config())));
     }
 
     /// Announce what each TLE subscription's cached listing holds. Reads the

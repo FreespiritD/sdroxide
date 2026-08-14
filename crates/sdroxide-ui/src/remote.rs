@@ -120,7 +120,27 @@ pub struct RemoteController {
     voice_recording: bool,
     mic_buf: Vec<f32>,
     mic_seq: u32,
+    /// The engine host's `radio.json` as last announced, with whatever the
+    /// settings dialog has since edited into it. `None` until the server says —
+    /// which it does on connect — so the Radio tab knows to wait rather than
+    /// offer defaults.
+    radio_cfg: Option<sdroxide_types::RadioConfig>,
+    /// An edit is waiting to go out, and the wall-clock second the last one
+    /// did. See [`RADIO_CFG_COALESCE_S`].
+    radio_cfg_dirty: bool,
+    radio_cfg_sent: f64,
 }
+
+/// How long an edited interface configuration is held before it goes out.
+///
+/// The settings dialog hands the whole configuration over on every frame in
+/// which anything differs from the last, so dragging a gain slider produces one
+/// of these per frame. Each is a socket message *and* a `radio.json` write on
+/// the engine's machine — frequently a Pi on an SD card — so they are coalesced
+/// to the last value in the window. Nothing is waiting on it: the knob itself
+/// already reached the hardware through `Command::SetGain` as it moved, and
+/// this is only the copy that survives a restart. Apply skips the wait.
+const RADIO_CFG_COALESCE_S: f64 = 0.25;
 
 impl RemoteController {
     /// `wake` is called from the socket thread whenever an event arrives —
@@ -147,6 +167,9 @@ impl RemoteController {
             voice_recording: false,
             mic_buf: Vec::new(),
             mic_seq: 0,
+            radio_cfg: None,
+            radio_cfg_dirty: false,
+            radio_cfg_sent: 0.0,
         })
     }
 
@@ -273,7 +296,42 @@ impl RemoteController {
             ServerMsg::RotatorStatus { connected, az_deg, el_deg, error } => self
                 .pending
                 .push_back(RadioEvent::RotatorStatus { connected, az_deg, el_deg, error }),
+            ServerMsg::RadioConfig(c) => {
+                // Adopted only when nothing of ours is waiting to go out. This
+                // message is usually the echo of our own write, but it can
+                // arrive mid-drag — and a slider that jumped back to the value
+                // the server had a moment ago, every time it answered, would be
+                // unusable.
+                if !self.radio_cfg_dirty {
+                    self.radio_cfg = Some((*c).clone());
+                }
+                self.pending.push_back(RadioEvent::RadioConfig(c));
+            }
         }
+    }
+
+    /// Send the queued interface configuration, if it is due.
+    ///
+    /// `reopen` is the operator pressing Apply: it goes out at once, whether or
+    /// not anything is queued (Apply on an unchanged config still means
+    /// "reconnect the radio"), and carries the instruction to rebuild the front
+    /// end. See [`RADIO_CFG_COALESCE_S`] for why the rest wait.
+    fn flush_radio_config(&mut self, reopen: bool) {
+        if !reopen && !self.radio_cfg_dirty {
+            return;
+        }
+        let now = crate::time::now_unix_f64();
+        // `>=` as well as the window, because this is a wall clock: an NTP step
+        // backwards would otherwise park the deadline in the future and strand
+        // the edit there.
+        if !reopen && now >= self.radio_cfg_sent && now - self.radio_cfg_sent < RADIO_CFG_COALESCE_S
+        {
+            return;
+        }
+        let Some(cfg) = self.radio_cfg.clone() else { return };
+        self.radio_cfg_dirty = false;
+        self.radio_cfg_sent = now;
+        self.send_msg(ClientMsg::Command(Command::SetRadioConfig { cfg: Box::new(cfg), reopen }));
     }
 
     fn pump_mic(&mut self) {
@@ -335,11 +393,16 @@ impl RadioController for RemoteController {
             }
         }
         self.pump_mic();
+        self.flush_radio_config(false);
         self.pending.pop_front()
     }
 
     fn wants_repaint_soon(&self) -> bool {
-        !self.pending.is_empty()
+        // A queued interface edit counts: it is released by the clock rather
+        // than by anything arriving, so without a frame to release it on, the
+        // last nudge of a slider would sit here until something else woke the
+        // app up.
+        !self.pending.is_empty() || self.radio_cfg_dirty
     }
 
     fn can_reconnect(&self) -> bool {
@@ -384,6 +447,11 @@ impl RadioController for RemoteController {
         self.voice_recording = false;
         self.mic_buf.clear();
         self.mic_seq = 0;
+        // The interface configuration is per-session too: the new socket may
+        // reach a different station, and an edit queued against the dead one
+        // must not be applied to it. The fresh session announces its own.
+        self.radio_cfg = None;
+        self.radio_cfg_dirty = false;
         Ok(())
     }
 
@@ -395,6 +463,27 @@ impl RadioController for RemoteController {
         if let Some(a) = self.audio.as_mut() {
             a.set_device(output, name);
         }
+    }
+
+    /// The engine host's interface configuration, as it announced it.
+    ///
+    /// This is what lets the Radio tab render here at all: the per-backend
+    /// panels are driven entirely by the `Option<RadioConfig>` they are handed,
+    /// so answering with the *server's* copy is the whole of what makes an
+    /// RTL-SDR's AGC, ppm, HF path and bias tee reachable from another machine.
+    /// `None` only in the moment before the connect-time announcement lands.
+    fn radio_config(&self) -> Option<sdroxide_types::RadioConfig> {
+        self.radio_cfg.clone()
+    }
+
+    fn set_radio_config(&mut self, cfg: sdroxide_types::RadioConfig) {
+        self.radio_cfg = Some(cfg);
+        self.radio_cfg_dirty = true;
+        self.flush_radio_config(false);
+    }
+
+    fn reopen_source(&mut self) {
+        self.flush_radio_config(true);
     }
 }
 

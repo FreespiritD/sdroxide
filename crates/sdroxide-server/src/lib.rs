@@ -121,6 +121,12 @@ pub(crate) struct Latest {
     /// the next half-second tick — and above all must not offer to start a
     /// lock that is already running.
     pub sat_track: Option<Box<sdroxide_types::SatTrackStatus>>,
+    /// Which radio interface this machine has open and how its backends are
+    /// configured — `radio.json`. Announced by the engine at startup and after
+    /// every change, and replayed on connect for `station`'s reason: it is a
+    /// file here, so a client elsewhere has no copy, and the settings panel it
+    /// feeds would otherwise open on defaults and write them back.
+    pub radio: Option<Box<sdroxide_types::RadioConfig>>,
 }
 
 pub(crate) struct Shared {
@@ -491,6 +497,10 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             RadioEvent::TleSubStatus(s) => {
                 latest.tle_subs = s.clone();
                 Some(ServerMsg::TleSubStatus(s))
+            }
+            RadioEvent::RadioConfig(c) => {
+                latest.radio = Some(c.clone());
+                Some(ServerMsg::RadioConfig(c))
             }
             RadioEvent::SatTrack(t) => {
                 latest.sat_track = t.clone();

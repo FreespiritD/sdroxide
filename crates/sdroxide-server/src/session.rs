@@ -117,6 +117,7 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>, audio_caps: A
         station,
         tle_subs,
         sat_track,
+        radio,
     ) = {
         let latest = shared.latest.lock().unwrap();
         (
@@ -132,6 +133,7 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>, audio_caps: A
             latest.station.clone(),
             latest.tle_subs.clone(),
             latest.sat_track.clone(),
+            latest.radio.clone(),
         )
     };
     let ack = ServerMsg::HelloAck { proto: PROTO_VERSION, caps, state, rx_codec, tx_codec };
@@ -163,6 +165,13 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>, audio_caps: A
     if let Some(s) = station {
         let _ = socket.send(msg(&ServerMsg::StationConfig(s))).await;
         let _ = socket.send(msg(&ServerMsg::TleSubStatus(tle_subs))).await;
+    }
+    // And which interface this machine has open, with every backend's settings.
+    // Same reason again, and the same failure without it: the Radio tab would
+    // come up on defaults, and the first thing touched there would write a
+    // default sample rate and an empty device selection over the operator's.
+    if let Some(r) = radio {
+        let _ = socket.send(msg(&ServerMsg::RadioConfig(r))).await;
     }
     // The satellite lock is a condition too: a client attaching mid-pass has
     // to see it immediately, and must not offer to start one that is running.

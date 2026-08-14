@@ -229,6 +229,19 @@ pub enum RadioEvent {
         el_deg: f64,
         error: Option<String>,
     },
+    /// This radio's `radio.json`, as it stands on the machine the engine runs
+    /// on: which interface is open and how every backend is configured.
+    /// Emitted once at startup and after every [`Command::SetRadioConfig`],
+    /// exactly as [`RadioEvent::StationConfig`] is.
+    ///
+    /// A client on another machine has no other way to learn any of it — the
+    /// file is in the engine host's config directory — and without it the
+    /// settings dialog there opens on defaults and writes those defaults back
+    /// over the operator's real configuration the moment anything is touched.
+    ///
+    /// Boxed for the reason `StationConfig` is: it carries every backend's
+    /// settings at once and every other variant would otherwise pay for it.
+    RadioConfig(Box<crate::RadioConfig>),
 }
 
 /// Snapshot of the frontend's switchable sound devices (native clients).

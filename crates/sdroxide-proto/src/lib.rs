@@ -231,7 +231,21 @@ use sdroxide_types::{
 /// bundle changes layout and both ends have to agree. `Command::SetRegion` and
 /// `Command::ReloadBandPlan` are appended last, so no surviving discriminant
 /// moves.
-pub const PROTO_VERSION: u16 = 50;
+/// v51: the interface configuration reaches remote clients — a new
+/// `ServerMsg::RadioConfig` and a new `Command::SetRadioConfig`, both appended
+/// last, so no surviving discriminant moves. What an SDR can be told about
+/// itself is not all expressible as a gain stage: an RTL-SDR's AGC mode, its
+/// ppm correction, its HF path and its bias tee ride `SetGain` pseudo-elements
+/// to the running device, but the panel that drives them reads and writes
+/// `radio.json` — a file in the engine host's config directory, which a remote
+/// client had no copy of and was therefore shown "only available in the native
+/// app" instead of. A headless server's dongle could only be configured by
+/// editing that file by hand and restarting. The engine announces it instead,
+/// and the server caches and replays it like the station config. The version
+/// still has to be bumped despite the appends: a v50 client cannot decode the
+/// announcement, so it would report a protocol error rather than the truth,
+/// which is that the server is offering it something it has never heard of.
+pub const PROTO_VERSION: u16 = 51;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -480,6 +494,15 @@ pub enum ServerMsg {
         el_deg: f64,
         error: Option<String>,
     },
+    /// Which radio interface the engine host has open, and how every backend on
+    /// that machine is configured — its `radio.json`. Cached by the server and
+    /// replayed on connect, like the station config, and for the same reason:
+    /// it is a file in *that* machine's config directory, so a client here has
+    /// no other copy, and a settings panel opened on defaults would write those
+    /// defaults back over the operator's real configuration.
+    ///
+    /// Appended last, for the usual reason.
+    RadioConfig(Box<sdroxide_types::RadioConfig>),
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {
@@ -756,6 +779,59 @@ mod tests {
 
     fn no_station() -> sdroxide_types::StationConfig {
         sdroxide_types::StationConfig::default()
+    }
+
+    /// The interface configuration, both ways.
+    ///
+    /// Worth its own test for `roundtrip_station_config`'s reason: every field
+    /// here has only ever been written to JSON before, and JSON forgives things
+    /// postcard does not. It is also the message where a silent mismatch would
+    /// be worst — a config that decodes into the wrong fields does not fail,
+    /// it reconfigures somebody's radio.
+    ///
+    /// Filled in rather than defaulted, and across several backends at once: a
+    /// field-order slip only shows where two neighbouring fields hold different
+    /// values, and `Default` is mostly zeros and empty strings.
+    #[test]
+    fn roundtrip_radio_config() {
+        use sdroxide_types::{
+            Backend, RadioConfig, RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode, RtlTcpConfig,
+        };
+
+        let cfg = RadioConfig {
+            backend: Backend::RtlSdr,
+            converter_offset_hz: 125_000_000.0,
+            freq_ranges_rx: vec![(0.0, 14_400_000.0), (24_000_000.0, 1_766_000_000.0)],
+            rtlsdr: RtlSdrConfig {
+                serial: Some("00000001".into()),
+                sample_rate_hz: 1_536_000.0,
+                ppm: -17,
+                tuner_gain_db: 32.8,
+                agc: RtlSdrAgc::Rtl,
+                hf_mode: RtlSdrHfMode::DirectQ,
+                bias_tee: true,
+                iq_correction: false,
+                transfers: 12,
+                transfer_kib: 32,
+            },
+            rtltcp: RtlTcpConfig {
+                address: "mast.local:1234".into(),
+                tuner_gain_db: 49.6,
+                agc: RtlSdrAgc::Both,
+                ..RtlTcpConfig::default()
+            },
+            ..RadioConfig::default()
+        };
+
+        let m = ServerMsg::RadioConfig(Box::new(cfg.clone()));
+        assert_eq!(decode::<ServerMsg>(&encode(&m).unwrap()).unwrap(), m);
+
+        // And back the other way — this is the direction that writes the file.
+        for reopen in [false, true] {
+            let c =
+                ClientMsg::Command(Command::SetRadioConfig { cfg: Box::new(cfg.clone()), reopen });
+            assert_eq!(decode::<ClientMsg>(&encode(&c).unwrap()).unwrap(), c);
+        }
     }
 
     /// The sign-in exchange, both ways.

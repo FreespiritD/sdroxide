@@ -26,6 +26,10 @@ triple_buffer = "9.0.0"
 # The server only uses the engine, not SoapySDR device handling — leave
 # `soapy` for the top-level binary to decide.
 sdroxide-radio = { path = "../sdroxide-radio", default-features = false }
+# Seeding and reading back the engine host's `radio.json` in `radio_config.rs`,
+# through the same store the engine writes it with — a test that hand-rolled
+# the file could pass against a format the engine cannot read.
+sdroxide-config = { path = "../sdroxide-config" }
 tokio-tungstenite = "0.30.0"
 # `start_paused` clocks, so the sign-in gate's three-second lockout is asserted
 # rather than waited out — the tests would otherwise take longer than the rest
