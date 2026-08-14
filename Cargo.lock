@@ -5177,6 +5177,7 @@ dependencies = [
  "sdroxide-solar",
  "sdroxide-tci",
  "sdroxide-types",
+ "sdroxide-winlink",
  "sdroxide-wsjtx",
  "shine-rs",
  "soapysdr",

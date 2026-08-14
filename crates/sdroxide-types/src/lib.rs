@@ -46,6 +46,7 @@ mod tone;
 mod ui;
 mod voice;
 mod wefax;
+mod winlink;
 mod worldmask;
 mod wsjtx;
 mod wspr;
@@ -159,6 +160,10 @@ pub use tone::{CTCSS_TONES, SubTone};
 pub use ui::{ChromeStyle, FontSize, LayoutMode, Speed, UiSettings, UiTheme};
 pub use voice::{VOICE_MAX_LEN_S, VOICE_SLOTS, VoiceSlotInfo, VoiceStatus, slot_label};
 pub use wefax::{WEFAX_STATIONS, WefaxChartMeta, WefaxIoc, WefaxLpm, WefaxStation, WefaxStatus};
+pub use winlink::{
+    DEFAULT_CMS_ADDRESS, MAIL_PAGE_MAX, MailAttachment, MailDraft, MailEntry, MailFolder,
+    MailListing, MailMessage, WinlinkConfig, WinlinkStatus,
+};
 pub use wsjtx::WsjtxConfig;
 pub use wspr::{
     BURST_S as WSPR_BURST_S, DEFAULT_TX_HZ as WSPR_DEFAULT_TX_HZ, POWERS_DBM as WSPR_POWERS_DBM,

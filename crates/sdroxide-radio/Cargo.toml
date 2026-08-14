@@ -22,6 +22,7 @@ sdroxide-config = { path = "../sdroxide-config" }
 sdroxide-digi = { path = "../sdroxide-digi" }
 sdroxide-skimmer = { path = "../sdroxide-skimmer" }
 sdroxide-net = { path = "../sdroxide-net" }
+sdroxide-winlink = { path = "../sdroxide-winlink" }
 # Only for `tlesub`: the engine persists the satellite subscriptions and, being
 # the machine with the config directory, is also the one that fetches them and
 # reports what each listing holds. No tracking happens here — that is the UI's.

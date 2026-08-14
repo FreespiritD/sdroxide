@@ -65,6 +65,7 @@ pub(in crate::app) enum SettingsTab {
     Spots,
     FreeDv,
     Uploads,
+    Winlink,
     Servers,
     /// Dial another station. Native only: a browser client is already attached
     /// to the server that served it and has nowhere to put a second one.
@@ -908,6 +909,7 @@ impl SdroxideApp {
             (SettingsTab::Spots, "Spots"),
             (SettingsTab::FreeDv, "FreeDV"),
             (SettingsTab::Uploads, "Uploads"),
+            (SettingsTab::Winlink, "Winlink"),
             (SettingsTab::Servers, "Servers"),
         ];
         // Next to Servers: the two are the same subject from opposite ends —
@@ -1566,6 +1568,51 @@ impl SdroxideApp {
                     io.bc_fetching,
                     io.bc_status,
                 );
+            }
+            SettingsTab::Winlink => {
+                if !net_seeded_note(ui, io.net_seeded) {
+                    return;
+                }
+                let wl = &mut io.net_edit.winlink;
+                net_heading(ui, "Winlink account");
+                net_row(ui, "Callsign", &mut wl.callsign, 140.0);
+                net_secret(ui, "Password", &mut wl.password, 140.0);
+                ui.label(
+                    RichText::new(
+                        "The Winlink account password, not the gateway password. It is \
+                         case-sensitive — enter it exactly as it was issued.",
+                    )
+                    .weak(),
+                );
+                net_row(ui, "Locator", &mut wl.locator, 100.0);
+
+                ui.add_space(6.0);
+                net_heading(ui, "Gateway");
+                net_row(ui, "CMS address", &mut wl.cms_address, 220.0);
+                net_row(ui, "Client name", &mut wl.app_name, 140.0);
+                ui.label(
+                    RichText::new(
+                        "Winlink's production servers only accept client names they know, and \
+                         answer an unknown one with \"Unknown client types are not allowed on \
+                         production servers\". Until sdroxide is registered with the Winlink \
+                         Development Team, connecting needs a name they recognise.",
+                    )
+                    .weak(),
+                );
+
+                ui.add_space(6.0);
+                net_heading(ui, "Automatic connection");
+                ui.checkbox(&mut wl.auto_connect, "Connect on a timer");
+                ui.add_enabled_ui(wl.auto_connect, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add_sized([96.0, 22.0], egui::Label::new("Every"));
+                        ui.add(
+                            egui::DragValue::new(&mut wl.auto_connect_minutes)
+                                .range(5..=1440)
+                                .suffix(" min"),
+                        );
+                    });
+                });
             }
             SettingsTab::Uploads => {
                 if !net_seeded_note(ui, io.net_seeded) {

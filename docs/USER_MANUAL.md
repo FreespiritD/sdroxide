@@ -22,10 +22,11 @@ or connects to a remote sdroxide server.
 7. [Remote operation](#7-remote-operation)
 8. [Web operation](#8-web-operation)
 9. [Spotting, awards, and QSL upload](#9-spotting-awards-and-qsl-upload)
-10. [Command-line reference](#10-command-line-reference)
-11. [Configuration files](#11-configuration-files)
-12. [Troubleshooting](#12-troubleshooting)
-13. [Appendix: keyboard shortcuts, modes, bands](#13-appendix)
+10. [Winlink radio email](#10-winlink-radio-email)
+11. [Command-line reference](#11-command-line-reference)
+12. [Configuration files](#12-configuration-files)
+13. [Troubleshooting](#13-troubleshooting)
+14. [Appendix: keyboard shortcuts, modes, bands](#14-appendix)
 
 ---
 
@@ -78,6 +79,10 @@ or connects to a remote sdroxide server.
   one-click (or automatic) upload to eQSL, QRZ Logbook and Club Log, with LoTW
   ADIF export and confirmation download.
 - **Award tracking** — live DXCC / WAS / WAZ / grid tallies, worked vs confirmed.
+- **Winlink radio email** — a native client for the amateur store-and-forward
+  email network: B2F/FBB forwarding, LZHUF compression and the secure login,
+  with a mailbox, compose and reply, and attachments
+  ([§10](#10-winlink-radio-email)).
 - **Wideband skimmers** — a CW skimmer plus PSK31 and RTTY skimmers that decode
   many signals at once and label them on the waterfall.
 - **Many radio backends:** SoapySDR devices, OpenHPSDR (Hermes/Metis) Ethernet
@@ -129,7 +134,7 @@ To try the interface with no hardware, use the built-in signal generator:
 sdroxide --siggen
 ```
 
-See the [command-line reference](#10-command-line-reference) for all options.
+See the [command-line reference](#11-command-line-reference) for all options.
 
 ### 2.2 The main window
 
@@ -222,7 +227,7 @@ popup with three rows:
 
 ![The band and mode selector popup](images/04-band-mode-popup.jpg)
 
-See the [appendix](#13-appendix) for what each mode is.
+See the [appendix](#14-appendix) for what each mode is.
 
 ### 2.5 VFOs, split, and the sub-receiver
 
@@ -553,7 +558,7 @@ Each row is one slot:
 - **✕** erases the recording.
 
 Recordings are stored as plain 48 kHz mono WAV files in
-`~/.config/sdroxide/voice` (see [11. Configuration files](#11-configuration-files)),
+`~/.config/sdroxide/voice` (see [12. Configuration files](#12-configuration-files)),
 one per slot, so you can also record a message in an audio editor, name it
 `slot3.wav`, and drop it in.
 
@@ -1125,7 +1130,7 @@ Click **SETUP** in the QSO area to open the **FT8 / FT4 / FT2 Setup** window:
 
 ![The FT8 / FT4 setup window](images/08-ft8-setup.png)
 
-These settings are saved to `digi.json` (see [configuration files](#11-configuration-files)).
+These settings are saved to `digi.json` (see [configuration files](#12-configuration-files)).
 
 #### 3.2.2 The operating panel
 
@@ -2184,7 +2189,7 @@ rebind a connection — the radio itself, the spot feeds, FreeDV Reporter, and t
 two servers — have their own **APPLY** or **Apply / reconnect** button, noted in
 each section below. Nothing here needs a restart.
 
-Settings are written to the per-user config directory ([§11](#11-configuration-files)):
+Settings are written to the per-user config directory ([§12](#12-configuration-files)):
 display preferences to `config.toml`, the radio to `radio.json`, key/mouse/MIDI
 bindings to `input.json`, feeds and credentials to `net.json`, the two servers
 to `rigctld.json`, `tciserver.json` and `wsjtx.json`, and the satellite
@@ -2260,7 +2265,7 @@ happen to be sitting. It takes effect immediately — no APPLY, no restart.
 #### The band plan file
 
 The numbers behind all of that live in **`bandplan.json`** in the config
-directory ([§11](#11-configuration-files)), and they are yours to change. On
+directory ([§12](#12-configuration-files)), and they are yours to change. On
 first start sdroxide writes the built-in IARU tables there; from then on that
 file is the authority for every band edge, sub-segment and skimmer window in the
 program.
@@ -2344,7 +2349,7 @@ symptom is silent receive and a "waiting for spectrum" panadapter). For a
 sound card dedicated to the radio, the reliable fix is to tell WirePlumber to
 stop managing that card, leaving it for sdroxide. Create a drop-in such as
 `~/.config/wireplumber/wireplumber.conf.d/51-radio.conf` that disables the
-card, then restart WirePlumber. See [troubleshooting](#12-troubleshooting).
+card, then restart WirePlumber. See [troubleshooting](#13-troubleshooting).
 
 **Remote access** — the **Username** and **Password** a remote client has to
 give before this station will let it operate: the browser page, another sdroxide
@@ -3631,7 +3636,7 @@ The table lists every shortcut, one per row: the key **Shortcut**, what it
 binding without deleting it. Click the shortcut button to rebind it, then press
 the key combination you want (Esc cancels). **+ Add shortcut** creates a row,
 **✕** removes one, and **Restore defaults** puts back the shipped set listed in
-[13](#13-appendix). Shortcuts are ignored while you are typing in a text field
+[14](#14-appendix). Shortcuts are ignored while you are typing in a text field
 or a control has keyboard focus.
 
 **Push-to-talk deserves a note.** No PTT key ships bound, on purpose: a
@@ -5149,7 +5154,7 @@ by all of them.
 
 All of this runs on the machine with the radio (the server, in remote/web mode),
 so a browser or remote client uses it too. Credentials are stored in plaintext in
-`net.json` (see [§11](#11-configuration-files)).
+`net.json` (see [§12](#12-configuration-files)).
 
 ### 9.1 Spot feeds (DX cluster, POTA, SOTA, PSK Reporter)
 
@@ -5326,7 +5331,7 @@ current instead of shipping a snapshot that goes stale:
 
 - **On first run** it downloads the current season's schedule from
   [EiBi](https://www.eibispace.de/) in the background and caches it under
-  `broadcast/` in the config directory ([§11](#11-configuration-files)).
+  `broadcast/` in the config directory ([§12](#12-configuration-files)).
 - **At each season change** — the last Sunday in March and the last Sunday in
   October — the cache no longer matches the season SDRoxide is in, so the new
   file is fetched. The check happens at startup and once a day thereafter, and
@@ -5403,7 +5408,80 @@ Longwave and the HF standard-time stations are not in EiBi's file — it starts 
 
 ---
 
-## 10. Command-line reference
+## 10. Winlink radio email
+
+**MAIL** in the system chips opens the mailbox. Winlink is the amateur
+store-and-forward email network: messages are held by a Common Message Server
+(CMS) and collected when you connect, either over the internet or — eventually,
+see below — over the air.
+
+sdroxide speaks the Winlink client protocol natively: B2F/FBB forwarding, LZHUF
+compression, and the secure-login challenge. There is no external program to
+install and nothing to configure beyond the account.
+
+### Setting up
+
+Settings → **Winlink**:
+
+| Field | What it is |
+| --- | --- |
+| Callsign | Your Winlink account callsign. |
+| Password | The **account** password, not the gateway password. It is case-sensitive — enter it exactly as issued. |
+| Locator | Reported in the session greeting. Cosmetic. |
+| CMS address | Which server to dial. `server.winlink.org:8772` unless you have a reason. |
+| Client name | The name announced to the CMS. See the note below. |
+| Connect on a timer | Poll for mail automatically. |
+
+An account is created the first time a callsign connects to the CMS, and the
+password arrives as a service message. Winlink validates amateur licences
+automatically for many countries.
+
+> **Client name, and why it is a field.** Winlink's production servers accept
+> only client names they have registered, and answer anything else with
+> `*** Unknown client types are not allowed on production servers`. sdroxide is
+> not yet registered with the Winlink Development Team, so out of the box a
+> connection will be refused. Until that is sorted out this field is how an
+> operator gets in. It is deliberately visible rather than quietly defaulted to
+> another project's name.
+
+### Using it
+
+The window has a folder row — **INBOX**, **OUTBOX**, **SENT**, **ARCHIVE** —
+with the message count beside each, and three buttons:
+
+- **CONNECT** runs one forwarding session: everything in the outbox goes out,
+  and anything waiting comes back. It runs on its own thread, so the radio
+  keeps working.
+- **COMPOSE** writes a message. It is filed in the outbox and sent on the next
+  session, not immediately — which is the point of a store-and-forward network.
+- **LOG** shows the protocol transcript of the last session. Worth looking at
+  when a session fails: it is usually the only thing that explains why.
+
+Addresses are callsigns, or `SMTP:someone@example.org` to reach ordinary
+internet email. Separate several with commas.
+
+The mailbox lives on the machine with the radio, under
+`~/.config/sdroxide/winlink/`, one file per message. A remote or browser client
+reads it a page at a time over the wire rather than holding a copy, so a
+mailbox with attachments in it does not have to cross a phone link on connect.
+
+### Over the air
+
+Today the only transport is the CMS over the internet — which is how a large
+share of Winlink traffic actually moves, and is the standard fallback when a
+radio path is not available. Radio transports are planned in this order:
+
+1. **AX.25 packet** on VHF/UHF, reaching the RMS Packet gateways.
+2. **ARDOP** on HF, reaching the RMS Trimode gateways.
+
+VARA is deliberately not on that list: it is a closed Windows binary whose
+licence forbids reverse engineering, and no open implementation of its waveform
+exists. ARDOP and packet are the open modes the deployed gateway network
+actually speaks.
+
+---
+
+## 11. Command-line reference
 
 | Option | Description |
 | --- | --- |
@@ -5471,7 +5549,7 @@ engine.
 
 ---
 
-## 11. Configuration files
+## 12. Configuration files
 
 sdroxide stores its settings under the per-user config directory:
 
@@ -5492,6 +5570,7 @@ sdroxide stores its settings under the per-user config directory:
 | `session.json` | JSON | Where you left the radio: the dial frequency, the mode, the RX/TX antenna ports, the AF volume, RX gain, AGC mode, squelch and noise reduction, the TX drive/tune drive/mic gain, and the front end's own gain stages (the sliders on the Radio tab's device panel), restored the next time you start. Written by the engine as you tune, so `--freq`, `--mode`, `--antenna` and `--tx-antenna` override it for a run without changing it. Gain stages are remembered by name: one your current front end does not have is kept, not thrown away, so switching back to the radio it belongs to brings it back, and a figure past what this device offers is clamped to its range. |
 | `qso_log.json` | JSON | The logbook (digital and manual QSOs, with contest/QSL fields). |
 | `net.json` | JSON | Network cockpit: DX cluster / POTA / SOTA / PSK / FreeDV Reporter / WSPRnet feed settings, and callsign-lookup / eQSL / QRZ / Club Log / LoTW credentials (stored in plaintext). |
+| `winlink/` | directory | The Winlink mailbox: `inbox/`, `outbox/`, `sent/` and `archive/`, one `.b2f` file per message holding it exactly as it rides the wire ([§10](#10-winlink-radio-email)). The account settings live in `net.json`, password included, in plaintext. |
 | `tciserver.json` | JSON | Built-in TCI server: enabled, bind address, port, advertised device name, whether clients may transmit, and the client limit. |
 | `rigctld.json` | JSON | Built-in Hamlib rigctld server: enabled, bind address, port, reported rig name, whether clients may transmit, and the client limit. |
 | `wsjtx.json` | JSON | WSJT-X UDP broadcast: enabled, destination host and port, and the name clients see. |
@@ -5613,7 +5692,7 @@ fall back to the config directory.
 
 ---
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 **"Waiting for spectrum" and no receive audio (CAT radio).**
 The radio's capture device could not be opened. Common causes:
@@ -5728,7 +5807,7 @@ stuck, press Apply / reconnect again.
 
 ---
 
-## 13. Appendix
+## 14. Appendix
 
 ### Keyboard shortcuts
 

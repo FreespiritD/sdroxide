@@ -1277,6 +1277,11 @@ struct Engine {
     /// Network cockpit: owns the spot feeds (DX cluster / POTA / SOTA / PSK)
     /// and the lookup/upload worker threads. The engine only drains it.
     spots: sdroxide_net::SpotManager,
+    /// Winlink radio email: owns the mailbox and the forwarding-session worker.
+    /// `None` when the mailbox directory could not be opened, which must not
+    /// stop the radio from running — the operator simply gets an error the
+    /// first time they open the window.
+    winlink: Option<sdroxide_winlink::WinlinkManager>,
     /// The network-cockpit config as last persisted. The spot manager has its
     /// own copy but does not hand it back, and a remote settings dialog has to
     /// be told what this station is set to — see [`Engine::emit_station_config`].
@@ -1602,6 +1607,7 @@ fn engine_thread(
         // Where the source opened, which is by definition a frequency it took.
         good_vfo_hz: source_center_hz,
         spots: sdroxide_net::SpotManager::new(),
+        winlink: open_mailbox(&sdroxide_types::WinlinkConfig::default()),
         net_cfg: sdroxide_types::NetworkConfig::default(),
         sat_cfg: sdroxide_types::SatConfig::default(),
         tle_refresh: None,
@@ -1764,6 +1770,7 @@ fn engine_thread(
         engine.poll_rigctld();
         engine.wsjtx_heartbeat();
         engine.poll_spots();
+        engine.poll_winlink();
         engine.poll_images();
         engine.poll_tle_refresh();
         engine.poll_sat_track();
@@ -3629,8 +3636,16 @@ impl Engine {
                     warn!("saving network config: {e}");
                 }
                 self.net_cfg = cfg.clone();
+                // The mailbox root does not depend on the settings, but the
+                // manager may never have opened — a first run with no config
+                // directory yet, say — so retry here rather than only at boot.
+                match self.winlink.as_mut() {
+                    Some(wl) => wl.set_config(cfg.winlink.clone()),
+                    None => self.winlink = open_mailbox(&cfg.winlink),
+                }
                 self.spots.set_config(cfg);
                 self.emit_station_config();
+                self.emit_winlink_status();
                 return;
             }
             SpotDialHint(hz) => {
@@ -3722,6 +3737,88 @@ impl Engine {
             }
             ImageDelete { kind, name } => {
                 self.gallery.delete(kind, name);
+                return;
+            }
+
+            // ── Winlink radio email ──
+            //
+            // All of these answer on the event channel and none of them touch
+            // `RadioState`, so they return before the State emit below.
+            WinlinkConnect => {
+                match self.winlink.as_mut() {
+                    Some(wl) => {
+                        if let Err(e) = wl.connect() {
+                            let _ = self.event_tx.send(RadioEvent::Notice(Some(e)));
+                        }
+                        self.emit_winlink_status();
+                    }
+                    None => {
+                        let _ = self.event_tx.send(RadioEvent::Notice(Some(
+                            "the Winlink mailbox is unavailable".into(),
+                        )));
+                    }
+                }
+                return;
+            }
+            MailList { folder, offset, count } => {
+                if let Some(wl) = self.winlink.as_ref() {
+                    let listing = wl.list(folder, offset, count);
+                    let _ = self.event_tx.send(RadioEvent::MailListing(listing));
+                }
+                return;
+            }
+            MailGet { folder, mid } => {
+                if let Some(wl) = self.winlink.as_ref()
+                    && let Some(msg) = wl.get(folder, &mid)
+                {
+                    let _ = self.event_tx.send(RadioEvent::MailMessage(Box::new(msg)));
+                }
+                return;
+            }
+            MailCompose(draft) => {
+                if let Some(wl) = self.winlink.as_mut() {
+                    match wl.compose(&draft) {
+                        Ok(mid) => {
+                            let _ = self.event_tx.send(RadioEvent::MailSaved(mid));
+                            self.emit_winlink_status();
+                        }
+                        Err(e) => {
+                            let _ = self.event_tx.send(RadioEvent::Notice(Some(e)));
+                        }
+                    }
+                }
+                return;
+            }
+            MailDelete { folder, mid } => {
+                if let Some(wl) = self.winlink.as_mut() {
+                    match wl.delete(folder, &mid) {
+                        // Told to every attached client: a deleted message is
+                        // gone from all of their mailbox views, not just the
+                        // one that asked.
+                        Ok(()) => {
+                            let _ = self.event_tx.send(RadioEvent::MailDeleted { folder, mid });
+                            self.emit_winlink_status();
+                        }
+                        Err(e) => {
+                            let _ = self.event_tx.send(RadioEvent::Notice(Some(e)));
+                        }
+                    }
+                }
+                return;
+            }
+            MailMove { from, to, mid } => {
+                if let Some(wl) = self.winlink.as_mut() {
+                    match wl.move_to(from, to, &mid) {
+                        Ok(()) => {
+                            let _ =
+                                self.event_tx.send(RadioEvent::MailDeleted { folder: from, mid });
+                            self.emit_winlink_status();
+                        }
+                        Err(e) => {
+                            let _ = self.event_tx.send(RadioEvent::Notice(Some(e)));
+                        }
+                    }
+                }
                 return;
             }
 
@@ -4856,6 +4953,24 @@ impl Engine {
 
     /// Keep the spot manager's band context current and forward any spots,
     /// lookup/upload results, confirmations, or status lines it produced.
+    /// Drain the Winlink worker. Non-blocking, like every other feed the
+    /// engine owns: a forwarding session takes tens of seconds and none of it
+    /// happens here.
+    fn poll_winlink(&mut self) {
+        let Some(wl) = self.winlink.as_mut() else { return };
+        if wl.poll() {
+            let _ = self.event_tx.send(RadioEvent::WinlinkStatus(wl.status().clone()));
+        }
+    }
+
+    /// Publish the current Winlink status, so a client that has just attached
+    /// or just changed a setting sees the folder counts without connecting.
+    fn emit_winlink_status(&mut self) {
+        if let Some(wl) = self.winlink.as_ref() {
+            let _ = self.event_tx.send(RadioEvent::WinlinkStatus(wl.status().clone()));
+        }
+    }
+
     fn poll_spots(&mut self) {
         self.spots.set_dial(self.state.active_freq_hz());
 
@@ -7218,6 +7333,28 @@ fn save_sstv_rx(png: &[u8]) -> Option<String> {
 ///
 /// The name is returned rather than kept quiet: it is what a gallery lists the
 /// picture under and the key every later fetch names it by.
+/// Open the Winlink mailbox under the config directory.
+///
+/// Returns `None` rather than failing the engine: a mailbox that cannot be
+/// opened is a reason for the mail window to complain, not for the radio to
+/// refuse to start.
+fn open_mailbox(cfg: &sdroxide_types::WinlinkConfig) -> Option<sdroxide_winlink::WinlinkManager> {
+    let dir = match sdroxide_config::config_dir() {
+        Ok(d) => d.join("winlink"),
+        Err(e) => {
+            warn!("winlink mailbox: {e}");
+            return None;
+        }
+    };
+    match sdroxide_winlink::WinlinkManager::new(dir, cfg.clone()) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            warn!("opening the winlink mailbox: {e}");
+            None
+        }
+    }
+}
+
 fn save_image_rx(kind: &str, png: &[u8]) -> Option<String> {
     let dir = match sdroxide_config::image_rx_dir(kind) {
         Ok(d) => d,

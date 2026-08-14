@@ -16,6 +16,7 @@
 pub mod b2f;
 pub mod lzhuf;
 pub mod mailbox;
+pub mod manager;
 pub mod message;
 pub mod secure;
 pub mod session;
@@ -24,6 +25,7 @@ pub mod transport;
 pub use b2f::{Answer, Proposal, Sid};
 pub use lzhuf::{LzhufError, compress, decompress};
 pub use mailbox::{Folder, Mailbox, MailboxError};
+pub use manager::WinlinkManager;
 pub use message::{Attachment, Message, MessageError};
 pub use secure::login_response;
 pub use session::{SessionConfig, SessionError, SessionOutcome};

@@ -292,6 +292,10 @@ pub struct NetworkConfig {
     /// The skimmer firehose, which feeds the propagation map rather than the
     /// spot list. Appended last, as the wire requires.
     pub rbn: RbnConfig,
+
+    // ── Winlink ──
+    /// Radio email. Appended last, as the wire requires.
+    pub winlink: crate::WinlinkConfig,
 }
 
 impl Default for NetworkConfig {
@@ -318,6 +322,7 @@ impl Default for NetworkConfig {
             auto_upload_qrz: false,
             auto_upload_clublog: false,
             wspr: WsprNetConfig::default(),
+            winlink: crate::WinlinkConfig::default(),
             rbn: RbnConfig::default(),
         }
     }

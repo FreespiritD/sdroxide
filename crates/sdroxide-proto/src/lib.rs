@@ -245,7 +245,16 @@ use sdroxide_types::{
 /// still has to be bumped despite the appends: a v50 client cannot decode the
 /// announcement, so it would report a protocol error rather than the truth,
 /// which is that the server is offering it something it has never heard of.
-pub const PROTO_VERSION: u16 = 51;
+/// v52: Winlink radio email. Five appended `Command`s (`WinlinkConnect`,
+/// `MailList`, `MailGet`, `MailCompose`, `MailDelete`, `MailMove`) and five
+/// appended `ServerMsg`s (`WinlinkStatus`, `MailListing`, `MailMessage`,
+/// `MailSaved`, `MailDeleted`), so no surviving discriminant moves — but
+/// `NetworkConfig` gained `winlink`, and postcard is not self-describing, so
+/// every message carrying it changes layout and both ends have to agree. The
+/// mailbox itself stays on the engine host and is read a page and a message at
+/// a time, like the picture store: mirroring a mailbox with attachments in it
+/// to every client on connect is not something a phone link would survive.
+pub const PROTO_VERSION: u16 = 52;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -503,6 +512,20 @@ pub enum ServerMsg {
     ///
     /// Appended last, for the usual reason.
     RadioConfig(Box<sdroxide_types::RadioConfig>),
+
+    // ── Winlink radio email ──
+    //
+    // Appended for the usual reason: postcard numbers variants by position.
+    WinlinkStatus(sdroxide_types::WinlinkStatus),
+    MailListing(sdroxide_types::MailListing),
+    /// Boxed: a message carries its attachments, and every other variant here
+    /// would otherwise be as large as the biggest mail we can hold.
+    MailMessage(Box<sdroxide_types::MailMessage>),
+    MailSaved(String),
+    MailDeleted {
+        folder: sdroxide_types::MailFolder,
+        mid: String,
+    },
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {
@@ -685,10 +708,98 @@ mod tests {
                 kind: ImageKind::Sstv,
                 name: "sstv-1753795200000.png".into(),
             }),
+            ClientMsg::Command(Command::WinlinkConnect),
+            ClientMsg::Command(Command::MailList {
+                folder: sdroxide_types::MailFolder::Inbox,
+                offset: 0,
+                count: 50,
+            }),
+            ClientMsg::Command(Command::MailGet {
+                folder: sdroxide_types::MailFolder::Sent,
+                mid: "TJKYEIMMHSRB".into(),
+            }),
+            ClientMsg::Command(Command::MailCompose(Box::new(sdroxide_types::MailDraft {
+                to: vec!["OE1XYZ".into()],
+                cc: vec![],
+                subject: "hello".into(),
+                body: "body".into(),
+                // Attachments are raw bytes, which is exactly what a
+                // non-self-describing encoding is easiest to get wrong on.
+                attachments: vec![sdroxide_types::MailAttachment {
+                    name: "a.bin".into(),
+                    data: vec![0, 1, 254, 255],
+                }],
+            }))),
+            ClientMsg::Command(Command::MailDelete {
+                folder: sdroxide_types::MailFolder::Inbox,
+                mid: "TJKYEIMMHSRB".into(),
+            }),
+            ClientMsg::Command(Command::MailMove {
+                from: sdroxide_types::MailFolder::Inbox,
+                to: sdroxide_types::MailFolder::Archive,
+                mid: "TJKYEIMMHSRB".into(),
+            }),
         ];
         for m in &cmds {
             let bytes = encode(m).unwrap();
             let back: ClientMsg = decode(&bytes).unwrap();
+            assert_eq!(&back, m);
+        }
+
+        // Winlink: a listing, a whole message with a binary attachment, and the
+        // session status. The attachment is the part worth round-tripping —
+        // raw bytes through a non-self-describing encoding.
+        let winlink = [
+            ServerMsg::WinlinkStatus(sdroxide_types::WinlinkStatus {
+                busy: false,
+                activity: String::new(),
+                last_error: Some("peer disconnected mid-session".into()),
+                last_session: Some(1_786_699_845),
+                last_received: 2,
+                last_sent: 1,
+                counts: [3, 0, 1, 0],
+                log: vec!["> FF".into(), "< FQ".into()],
+            }),
+            ServerMsg::MailListing(sdroxide_types::MailListing {
+                folder: sdroxide_types::MailFolder::Inbox,
+                offset: 0,
+                total: 3,
+                entries: vec![sdroxide_types::MailEntry {
+                    mid: "TJKYEIMMHSRB".into(),
+                    date: "2026/08/14 09:30".into(),
+                    from: "OE1XYZ".into(),
+                    to: "OE3JJS".into(),
+                    subject: "hello".into(),
+                    folder: sdroxide_types::MailFolder::Inbox,
+                    bytes: 512,
+                    attachments: 1,
+                    unread: true,
+                }],
+            }),
+            ServerMsg::MailMessage(Box::new(sdroxide_types::MailMessage {
+                mid: "TJKYEIMMHSRB".into(),
+                date: "2026/08/14 09:30".into(),
+                msg_type: "Private".into(),
+                from: "OE1XYZ".into(),
+                to: vec!["OE3JJS".into()],
+                cc: vec![],
+                subject: "hello".into(),
+                body: "body".into(),
+                attachments: vec![sdroxide_types::MailAttachment {
+                    name: "a.bin".into(),
+                    data: vec![0, 1, 254, 255],
+                }],
+                folder: sdroxide_types::MailFolder::Inbox,
+            })),
+            ServerMsg::MailSaved("TJKYEIMMHSRB".into()),
+            ServerMsg::MailDeleted {
+                folder: sdroxide_types::MailFolder::Inbox,
+                mid: "TJKYEIMMHSRB".into(),
+            },
+        ];
+        for m in &winlink {
+            let bytes = encode(m).unwrap();
+            let back: ServerMsg = decode(&bytes).unwrap();
             assert_eq!(&back, m);
         }
     }

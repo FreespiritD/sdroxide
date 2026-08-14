@@ -489,6 +489,15 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             // out of, and replaying it would be an instruction to remove a
             // thumbnail that was never there.
             RadioEvent::ImageDeleted { kind, name } => Some(ServerMsg::ImageDeleted { kind, name }),
+            // Winlink. All pass straight through: the mailbox stays on this
+            // machine and the client reads it a page at a time, so there is
+            // nothing to cache for replay on connect except the status, which
+            // the engine re-emits whenever it changes.
+            RadioEvent::WinlinkStatus(st) => Some(ServerMsg::WinlinkStatus(st)),
+            RadioEvent::MailListing(l) => Some(ServerMsg::MailListing(l)),
+            RadioEvent::MailMessage(m) => Some(ServerMsg::MailMessage(m)),
+            RadioEvent::MailSaved(mid) => Some(ServerMsg::MailSaved(mid)),
+            RadioEvent::MailDeleted { folder, mid } => Some(ServerMsg::MailDeleted { folder, mid }),
             RadioEvent::StationConfig(c) => {
                 latest.station = Some(c.clone());
                 sat = Some(c.sat.clone());

@@ -546,6 +546,7 @@ impl eframe::App for SdroxideApp {
         self.settings_window(&ctx, &mut cmds);
         self.digi_settings_window(&ctx, &mut cmds);
         self.logbook_window(&ctx);
+        self.mail_window(&ctx, &mut cmds);
         self.spots_window(&ctx, &mut cmds);
         self.awards_window(&ctx);
         self.bands_window(&ctx);
@@ -1004,6 +1005,11 @@ impl SdroxideApp {
                     sdroxide_types::ImageKind::Sstv => self.sstv.on_deleted(&name),
                     sdroxide_types::ImageKind::Wefax => self.wefax.on_deleted(&name),
                 },
+                RadioEvent::WinlinkStatus(st) => self.mail.on_status(st),
+                RadioEvent::MailListing(l) => self.mail.on_listing(l),
+                RadioEvent::MailMessage(m) => self.mail.on_message(m),
+                RadioEvent::MailSaved(mid) => self.mail.on_saved(mid),
+                RadioEvent::MailDeleted { folder, mid } => self.mail.on_deleted(folder, &mid),
                 RadioEvent::CallsignResult(info) => self.apply_callsign(info),
                 RadioEvent::Upload(r) => self.on_upload_result(r),
                 RadioEvent::Confirmations(recs) => self.apply_confirmations(recs),

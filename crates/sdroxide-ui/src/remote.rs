@@ -290,6 +290,14 @@ impl RemoteController {
             ServerMsg::ImageDeleted { kind, name } => {
                 self.pending.push_back(RadioEvent::ImageDeleted { kind, name })
             }
+            // Winlink: straight through to the app, same as the picture store.
+            ServerMsg::WinlinkStatus(st) => self.pending.push_back(RadioEvent::WinlinkStatus(st)),
+            ServerMsg::MailListing(l) => self.pending.push_back(RadioEvent::MailListing(l)),
+            ServerMsg::MailMessage(m) => self.pending.push_back(RadioEvent::MailMessage(m)),
+            ServerMsg::MailSaved(mid) => self.pending.push_back(RadioEvent::MailSaved(mid)),
+            ServerMsg::MailDeleted { folder, mid } => {
+                self.pending.push_back(RadioEvent::MailDeleted { folder, mid })
+            }
             ServerMsg::StationConfig(c) => self.pending.push_back(RadioEvent::StationConfig(c)),
             ServerMsg::TleSubStatus(s) => self.pending.push_back(RadioEvent::TleSubStatus(s)),
             ServerMsg::SatTrack(t) => self.pending.push_back(RadioEvent::SatTrack(t)),

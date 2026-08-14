@@ -2508,7 +2508,13 @@ impl SdroxideApp {
 
     /// The remaining window chips — the condensed System box's bottom row.
     fn system_chips_bottom(&mut self, ui: &mut egui::Ui, extra: f32) {
-        let [.., mem, scan_label, settings, help] = SYSTEM_CHIPS;
+        let [.., mail, mem, scan_label, settings, help] = SYSTEM_CHIPS;
+        if chip_stretched(ui, self.mail.open, mail, extra)
+            .on_hover_text("Winlink radio email")
+            .clicked()
+        {
+            self.mail.open = !self.mail.open;
+        }
         if chip_stretched(ui, self.show_memories, mem, extra)
             .on_hover_text("Memory channels")
             .clicked()
@@ -2593,8 +2599,8 @@ impl SdroxideApp {
 /// whatever crosses the window edge is lost. That is how SCAN, SETTINGS and
 /// HELP came to vanish on the layouts where the strip put this box near the
 /// end of a row.
-const SYSTEM_CHIPS: [&str; 9] =
-    ["LOG", "SPOTS", "AWARDS", "BANDS", "SAT", "MEM", "SCAN", "⚙ SETTINGS", "? HELP"];
+const SYSTEM_CHIPS: [&str; 10] =
+    ["LOG", "SPOTS", "AWARDS", "BANDS", "SAT", "MAIL", "MEM", "SCAN", "⚙ SETTINGS", "? HELP"];
 
 /// Where [`SYSTEM_CHIPS`] breaks into the condensed box's two rows. Has to
 /// agree with the destructuring patterns in `system_chips_top` / `_bottom` —

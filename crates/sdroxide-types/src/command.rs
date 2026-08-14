@@ -472,4 +472,47 @@ pub enum Command {
         cfg: Box<RadioConfig>,
         reopen: bool,
     },
+
+    // ── Winlink radio email ──
+    //
+    // The mailbox lives on the machine with the radio and is read lazily,
+    // exactly like the picture store: a listing carries metadata, a fetch
+    // carries one message. Appended for the usual reason — postcard numbers
+    // variants by position.
+    /// Run a forwarding session now. Answered by
+    /// [`crate::RadioEvent::WinlinkStatus`] when it finishes; refused there too
+    /// if one is already running.
+    WinlinkConnect,
+    /// One page of a mail folder, newest first: `count` entries (capped at
+    /// [`crate::MAIL_PAGE_MAX`]) from `offset`. Answered with
+    /// [`crate::RadioEvent::MailListing`].
+    MailList {
+        folder: crate::MailFolder,
+        offset: u32,
+        count: u32,
+    },
+    /// Fetch one message with its attachments, by the id a listing gave.
+    /// Answered with [`crate::RadioEvent::MailMessage`].
+    MailGet {
+        folder: crate::MailFolder,
+        mid: String,
+    },
+    /// File a composed message in the outbox. The MID and date are minted by
+    /// the engine, not the client: a duplicate MID is rejected by the CMS, and
+    /// a client cannot guarantee uniqueness. Answered with
+    /// [`crate::RadioEvent::MailSaved`].
+    MailCompose(Box<crate::MailDraft>),
+    /// Delete a message. Like the picture store's delete, this arrives over a
+    /// socket nothing authenticates and ends at `remove_file`, so the id is
+    /// validated against an allow-list before it names a path.
+    MailDelete {
+        folder: crate::MailFolder,
+        mid: String,
+    },
+    /// Move a message between folders.
+    MailMove {
+        from: crate::MailFolder,
+        to: crate::MailFolder,
+        mid: String,
+    },
 }

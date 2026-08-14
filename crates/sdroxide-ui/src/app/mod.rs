@@ -36,6 +36,7 @@ pub(in crate::app) mod spots;
 pub(in crate::app) mod top_bar;
 pub(in crate::app) mod util;
 pub(in crate::app) mod windows;
+pub(in crate::app) mod winlink;
 
 use std::sync::{Arc, Mutex};
 
@@ -323,6 +324,9 @@ pub struct SdroxideApp {
     digi_free_text: String,
     /// Logbook overlay open state, and the in-progress new/edit entry (if any).
     show_logbook: bool,
+    /// The Winlink mail window. Holds its own view state; the mailbox itself
+    /// lives engine-side and is read a page at a time.
+    pub(in crate::app) mail: winlink::MailUi,
     log_edit: Option<LogEditForm>,
     // ── Network cockpit (spots / lookup / uploads) ──
     /// Latest merged network spots (DX cluster / POTA / SOTA / PSK Reporter).
@@ -749,6 +753,7 @@ impl SdroxideApp {
             digi_new_only: false,
             digi_free_text: String::new(),
             show_logbook: false,
+            mail: winlink::MailUi::default(),
             log_edit: None,
             spots: Vec::new(),
             net_status: None,

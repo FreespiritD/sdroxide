@@ -14,42 +14,10 @@ use std::path::{Path, PathBuf};
 use crate::message::Message;
 
 /// Where a message sits in its life.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "lowercase")]
-pub enum Folder {
-    /// Arrived from a forwarding partner.
-    Inbox,
-    /// Composed here, waiting for a session to carry it.
-    Outbox,
-    /// Handed to a forwarding partner and accepted.
-    Sent,
-    /// Kept, but out of the way.
-    Archive,
-}
-
-impl Folder {
-    pub const ALL: [Folder; 4] = [Folder::Inbox, Folder::Outbox, Folder::Sent, Folder::Archive];
-
-    pub fn dir_name(self) -> &'static str {
-        match self {
-            Folder::Inbox => "inbox",
-            Folder::Outbox => "outbox",
-            Folder::Sent => "sent",
-            Folder::Archive => "archive",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Folder::Inbox => "INBOX",
-            Folder::Outbox => "OUTBOX",
-            Folder::Sent => "SENT",
-            Folder::Archive => "ARCHIVE",
-        }
-    }
-}
+///
+/// Defined in `sdroxide-types` rather than here, because the browser client
+/// has to name folders too and links none of this crate.
+pub use sdroxide_types::MailFolder as Folder;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MailboxError {

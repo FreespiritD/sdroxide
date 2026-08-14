@@ -242,6 +242,24 @@ pub enum RadioEvent {
     /// Boxed for the reason `StationConfig` is: it carries every backend's
     /// settings at once and every other variant would otherwise pay for it.
     RadioConfig(Box<crate::RadioConfig>),
+
+    // ── Winlink radio email ──
+    //
+    // Appended for the usual reason: postcard numbers variants by position.
+    /// Session state and per-folder counts, after any change.
+    WinlinkStatus(crate::WinlinkStatus),
+    /// One page of a folder, answering [`crate::Command::MailList`].
+    MailListing(crate::MailListing),
+    /// One whole message, answering [`crate::Command::MailGet`].
+    MailMessage(Box<crate::MailMessage>),
+    /// A composed message was filed in the outbox, with the id it was given.
+    MailSaved(String),
+    /// A message is gone. Sent to whichever client is attached, whether or not
+    /// it asked, since a deleted message is gone from every mailbox view.
+    MailDeleted {
+        folder: crate::MailFolder,
+        mid: String,
+    },
 }
 
 /// Snapshot of the frontend's switchable sound devices (native clients).
