@@ -176,9 +176,48 @@ pub fn stop_cw_frame(radio: u8) -> Vec<u8> {
 pub fn keyer_speed_frame(radio: u8, wpm: f32) -> Vec<u8> {
     let wpm = wpm.clamp(6.0, 48.0);
     let level = (((wpm - 6.0) * (255.0 / 42.0)).round() as u32).min(255);
-    let (hi, lo) = ((level / 100) as u8, (level % 100) as u8);
-    let bcd = |v: u8| ((v / 10) << 4) | (v % 10);
-    frame(radio, 0x14, &[0x0C, bcd(hi), bcd(lo)])
+    let [hi, lo] = encode_level(level);
+    frame(radio, 0x14, &[0x0C, hi, lo])
+}
+
+/// Icom's generic 0–255 level as the two BCD bytes its level commands carry
+/// (`0000`..`0255`) — the write side of [`decode_meter`].
+fn encode_level(level: u32) -> [u8; 2] {
+    let level = level.min(255);
+    let bcd = |v: u32| (((v / 10) << 4) | (v % 10)) as u8;
+    [bcd(level / 100), bcd(level % 100)]
+}
+
+/// Set the transmit output power (cmd `0x14` sub `0x0A`), as a 0..1 fraction of
+/// what the radio can do. Icom carries power on the same 0–255 level scale as
+/// everything else in this command block, spanning the rig's whole range — so
+/// the fraction is the setting, whether the radio behind it is a 100 W IC-7300
+/// or a 10 W IC-705.
+///
+/// This is the only transmit level control a CAT rig has that works in *every*
+/// mode. The audio we put into its sound card is not one: a rig in CW keys its
+/// own transmitter from its own keyer and never looks at the sound card at all,
+/// which is why a drive slider that only scaled audio did nothing on CW.
+pub fn set_power_frame(radio: u8, frac: f32) -> Vec<u8> {
+    let level = (frac.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let mut data = vec![0x0A];
+    data.extend_from_slice(&encode_level(level));
+    frame(radio, 0x14, &data)
+}
+
+/// Read the transmit output power back (cmd `0x14` sub `0x0A`, no payload).
+pub fn read_power_frame(radio: u8) -> Vec<u8> {
+    frame(radio, 0x14, &[0x0A])
+}
+
+/// Parse a level reply payload (cmd `0x14`): the sub-command byte followed by
+/// the BCD level. Returns the power as a 0..1 fraction, or `None` if the reply
+/// is some other level (keyer speed, AF gain…) or is malformed.
+pub fn parse_power_reply(data: &[u8]) -> Option<f32> {
+    if data.first() != Some(&0x0A) {
+        return None;
+    }
+    Some(decode_meter(&data[1..])?.min(255) as f32 / 255.0)
 }
 
 /// Hand the rig's *own* RIT, ΔTX (XIT) and split back to neutral.
@@ -639,6 +678,44 @@ mod tests {
         assert_eq!(long.len() - 6, CW_MAX);
         // Abort is the same command with the escape payload.
         assert_eq!(stop_cw_frame(0x94), vec![0xFE, 0xFE, 0x94, 0xE0, 0x17, 0xFF, 0xFD]);
+    }
+
+    /// Transmit power is a level on the same 0–255 scale as everything else in
+    /// command 0x14, spanning whatever the rig can do — so the slider's
+    /// fraction *is* the setting, and no wattage has to be known here.
+    #[test]
+    fn transmit_power_is_a_fraction_of_the_rigs_own_scale() {
+        let level = |frac: f32| {
+            let f = set_power_frame(0x94, frac);
+            assert_eq!(f[..4], [0xFE, 0xFE, 0x94, 0xE0], "addressed to the rig");
+            assert_eq!(f[4..6], [0x14, 0x0A], "RF power level");
+            assert_eq!(*f.last().unwrap(), 0xFD);
+            decode_meter(&f[6..f.len() - 1]).unwrap()
+        };
+        assert_eq!(level(0.0), 0);
+        assert_eq!(level(0.5), 128);
+        assert_eq!(level(1.0), 255);
+        // A slider cannot ask for more than the radio has.
+        assert_eq!(level(2.0), 255);
+        assert_eq!(level(-1.0), 0);
+        // The read carries no payload, so it cannot be mistaken for a set.
+        assert_eq!(read_power_frame(0x94), vec![0xFE, 0xFE, 0x94, 0xE0, 0x14, 0x0A, 0xFD]);
+    }
+
+    #[test]
+    fn the_power_the_rig_reports_comes_back_as_the_fraction_that_set_it() {
+        // Reply payload = sub-command 0x0A followed by the 2-byte BCD level.
+        assert_eq!(parse_power_reply(&[0x0A, 0x00, 0x00]), Some(0.0));
+        assert_eq!(parse_power_reply(&[0x0A, 0x02, 0x55]), Some(1.0));
+        // Round trip: what we would send for 30 % reads back as 30 %, to
+        // within the rig's own 1/255 grid.
+        let f = set_power_frame(0x94, 0.30);
+        let back = parse_power_reply(&f[5..f.len() - 1]).unwrap();
+        assert!((back - 0.30).abs() < 0.005, "{back}");
+        // Another level on the same command is not the power (the keyer speed
+        // shares it), and a malformed BCD reading is nothing at all.
+        assert_eq!(parse_power_reply(&[0x0C, 0x00, 0x85]), None);
+        assert_eq!(parse_power_reply(&[0x0A, 0x00, 0x0f]), None);
     }
 
     #[test]

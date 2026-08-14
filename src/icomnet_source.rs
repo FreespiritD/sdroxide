@@ -219,6 +219,9 @@ impl IcomNetSource {
         }
         self.send(civ::read_freq_frame(self.civ_addr));
         self.send(civ::read_mode_frame(self.civ_addr));
+        // What the radio's power is set to, so the Drive slider starts where the
+        // radio already is instead of imposing a remembered level on it.
+        self.send(civ::read_power_frame(self.civ_addr));
 
         match model.lan_afif_select {
             Some(item) => {
@@ -310,6 +313,14 @@ impl IcomNetSource {
             0x01 | 0x04 => {
                 if let Some(m) = reply.data.first().and_then(|&b| civ::civ_to_mode(b)) {
                     self.pending.push(ControlUpdate::Mode(m));
+                }
+            }
+            // The transmit power the radio is set to, asked for once when the
+            // session opens. Adopted into the Drive slider rather than
+            // commanded back: the radio's own setting is the operator's.
+            0x14 => {
+                if let Some(frac) = civ::parse_power_reply(&reply.data) {
+                    self.pending.push(ControlUpdate::TxDrive(frac));
                 }
             }
             0x15 => {
@@ -475,6 +486,22 @@ impl IqSource for IcomNetSource {
     }
     fn set_cw_wpm(&mut self, wpm: f32) {
         self.send(civ::keyer_speed_frame(self.civ_addr, wpm));
+    }
+
+    // ── Output power ────────────────────────────────────────────────────────
+    // The radio's own power control, which is the only transmit level that
+    // applies in every mode: the audio on this link is just the modulating
+    // signal, and in CW there is none at all — the radio keys itself from its
+    // own keyer. The engine asserts the level that applies (the drive, or the
+    // tune level while tuning) before each over.
+    fn set_tx_drive(&mut self, frac: f64) {
+        self.send(civ::set_power_frame(self.civ_addr, frac as f32));
+    }
+    /// One power register on the radio; the engine commands the tune level
+    /// through [`Self::set_tx_drive`] for as long as TUNE holds it.
+    fn set_tune_drive(&mut self, _frac: f64) {}
+    fn commands_tx_power(&self) -> bool {
+        true
     }
 
     fn tx_begin(&mut self, center_hz: f64, _rate: f64) -> Result<f64> {

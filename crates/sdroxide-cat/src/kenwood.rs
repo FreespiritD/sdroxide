@@ -263,6 +263,16 @@ impl Protocol for Kenwood {
         vec![format!("KS{wpm:03};").into_bytes()]
     }
 
+    fn set_power(&mut self, frac: f32) -> Vec<Vec<u8>> {
+        vec![crate::pc_set_frame(frac)]
+    }
+    fn read_power(&self) -> Vec<Vec<u8>> {
+        vec![crate::pc_read_frame()]
+    }
+    fn commands_power(&self) -> bool {
+        true
+    }
+
     fn parse(&mut self, buf: &mut Vec<u8>) -> Vec<CatUpdate> {
         self.buf.push_str(&String::from_utf8_lossy(buf));
         buf.clear();
@@ -285,6 +295,10 @@ impl Protocol for Kenwood {
                     self.mode_digit = Some(d);
                     self.md_replies = self.md_replies.saturating_add(1).min(DATA_PROBE_POLLS);
                     mode_touched = true;
+                }
+            } else if let Some(rest) = msg.strip_prefix("PC") {
+                if let Some(frac) = crate::pc_parse(rest) {
+                    out.push(CatUpdate::Power(frac));
                 }
             } else if let Some(rest) = msg.strip_prefix("DA") {
                 if let Some(d) = rest.chars().next() {

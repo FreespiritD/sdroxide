@@ -63,6 +63,26 @@ impl AudioCatSource {
         let (init_freq, _init_mode) = sdroxide_cat::query_once(&cfg).unwrap_or((None, None));
         let center = init_freq.unwrap_or(14_074_000.0);
 
+        // A rig with no sound card named falls back to the machine's default
+        // input, which is almost never the radio — it is the operator's headset,
+        // or, at a station with two rigs on two identical USB codecs, the *other*
+        // radio's card. Worth saying out loud: the symptom is one radio with
+        // audio and one without, and nothing else points at the cause.
+        if audio_in.is_none() || audio_out.is_none() {
+            tracing::warn!(
+                "no sound card chosen for the {} rig on {} ({}) — falling back to the system \
+                 default, which is not this radio unless it happens to be the default. Pick its \
+                 card under Settings → General → Radio audio.",
+                cfg.family.label(),
+                cfg.serial.path,
+                match (audio_in.is_none(), audio_out.is_none()) {
+                    (true, true) => "receive and transmit",
+                    (true, false) => "receive",
+                    _ => "transmit",
+                },
+            );
+        }
+
         // RX capture is best-effort: a missing/unsupported device leaves RX
         // silent but keeps the app (and its Settings dialog) alive.
         let opened = match cfg.format {
@@ -220,6 +240,11 @@ impl IqSource for AudioCatSource {
                     }
                 }
                 sdroxide_cat::CatUpdate::Mode(m) => out.push(ControlUpdate::Mode(m)),
+                // The power the rig came up on, read once when the port opened.
+                // The engine adopts it into the Drive slider rather than
+                // commanding the rig back — the radio's own setting is the
+                // operator's, not a stale one to overwrite.
+                sdroxide_cat::CatUpdate::Power(frac) => out.push(ControlUpdate::TxDrive(frac)),
                 // Both meters arrive on their own telemetry channels, not here.
                 sdroxide_cat::CatUpdate::Swr(_) | sdroxide_cat::CatUpdate::Signal(_) => {}
             }
@@ -230,6 +255,29 @@ impl IqSource for AudioCatSource {
     fn set_control_mode(&mut self, mode: Mode) -> Result<()> {
         self.cat.set_mode(mode);
         Ok(())
+    }
+
+    // ── Output power ─────────────────────────────────────────────────────────
+    // The rig's own power control, over CAT. It is the only transmit level that
+    // means anything in every mode: the audio we put into the sound card is not
+    // one in CW (the rig keys itself from its own keyer and never looks at the
+    // sound card) and not one under TUNE either, so before this the Drive and
+    // Tune sliders moved nothing at all on a CAT rig.
+    //
+    // The engine asserts the level that applies — drive, or the tune level
+    // while tuning — before every key-down, so an over cannot go out at the
+    // previous one.
+    fn set_tx_drive(&mut self, frac: f64) {
+        self.cat.set_power(frac as f32);
+    }
+
+    /// Nothing to set: a rig has one power register, and the engine commands the
+    /// tune level through [`Self::set_tx_drive`] for as long as TUNE holds the
+    /// transmitter.
+    fn set_tune_drive(&mut self, _frac: f64) {}
+
+    fn commands_tx_power(&self) -> bool {
+        self.cat.commands_power()
     }
 
     // ── CW from the rig's own keyer ──────────────────────────────────────────

@@ -391,33 +391,120 @@ fn device_display(device: &cpal::Device, cards: &HashMap<String, AlsaCard>) -> O
     }
 }
 
-/// Enumerate devices for one direction as (device, unique display name),
-/// deduping identical display names (several sub-PCMs / index-vs-id forms of one
-/// card collapse to a single entry).
-fn enumerate_named(host: &cpal::Host, output: bool) -> Vec<(cpal::Device, String)> {
+/// What makes two enumerated entries *the same piece of hardware*.
+///
+/// The two directions this has to get right pull opposite ways. On ALSA one
+/// card is reached through several PCMs — `front:CARD=X`, `sysdefault:CARD=X`,
+/// `hw:CARD=X,DEV=0` — and those are one device with several doors, so the card
+/// is the identity and the opener may use whichever door will run. Everywhere
+/// else each entry is its own endpoint, and the *name* is no identity at all:
+/// two of the same USB codec — which is exactly what a station running an
+/// IC-7300 and an IC-R8600 has — come back as one string twice, and only the
+/// host's own device id tells them apart (a WASAPI endpoint id, a CoreAudio
+/// device UID; both stay put across restarts).
+fn device_identity(device: &cpal::Device, cards: &HashMap<String, AlsaCard>) -> Option<String> {
+    if let Some(raw) = device_card_id(device) {
+        // ALSA names the same card both ways — the hints say `CARD=Generic`,
+        // the traditional `hw:`/`plughw:` entries say `CARD=0` — so the token is
+        // resolved to the card's stable id before it stands for anything.
+        let id = cards.get(&raw).map(|c| c.id.clone()).unwrap_or(raw);
+        return Some(format!("card:{id}"));
+    }
+    device.id().ok().map(|id| format!("dev:{}", id.id()))
+}
+
+/// 16 bits of FNV-1a, rendered as four hex digits. Only ever used to tell two
+/// identically-named devices apart, so what matters is that the same device
+/// gets the same tag every run — not that the tag means anything.
+fn short_tag(s: &str) -> String {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in s.as_bytes() {
+        h ^= *b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    format!("{:04x}", (h ^ (h >> 16)) & 0xffff)
+}
+
+/// Hands out the name the operator picks a device by, one device at a time.
+///
+/// Entries that are the same hardware *under the same name* share that name —
+/// ALSA's several PCMs per card. Entries that are not never do: the second
+/// device to want a name already taken is given a suffix derived from its
+/// identity, so it stays the same name across restarts and the operator's
+/// choice keeps pointing at the radio they chose.
+///
+/// Same-card-different-name is deliberately two entries, not one: the several
+/// outputs of one HDMI card are one piece of hardware and still different
+/// sockets, and an operator has to be able to pick between them.
+#[derive(Default)]
+struct NameAssigner {
+    by_device: HashMap<(String, String), String>,
+    taken: HashSet<String>,
+}
+
+impl NameAssigner {
+    fn name_for(&mut self, base: &str, identity: &str) -> String {
+        let key = (identity.to_string(), base.to_string());
+        if let Some(name) = self.by_device.get(&key) {
+            return name.clone();
+        }
+        let name = if self.taken.insert(base.to_string()) {
+            base.to_string()
+        } else {
+            let tag = short_tag(identity);
+            let mut name = format!("{base} [#{tag}]");
+            let mut n = 2;
+            while !self.taken.insert(name.clone()) {
+                name = format!("{base} [#{tag}-{n}]");
+                n += 1;
+            }
+            name
+        };
+        self.by_device.insert(key, name.clone());
+        name
+    }
+}
+
+/// Every device for one direction, paired with the name it is picked by. One
+/// card's several PCMs appear once per PCM under a shared name — the opener
+/// wants them all, so it can fall back to whichever one will run — while two
+/// separate devices always get two names (see [`NameAssigner`]).
+fn enumerate_devices(host: &cpal::Host, output: bool) -> Vec<(cpal::Device, String)> {
     let cards = alsa_cards();
     let devs = if output { host.output_devices().ok() } else { host.input_devices().ok() };
-    let mut seen = HashSet::new();
+    let mut names = NameAssigner::default();
     let mut out = Vec::new();
     if let Some(devs) = devs {
         for d in devs {
-            let Some(name) = device_display(&d, &cards) else { continue };
-            if seen.insert(name.clone()) {
-                out.push((d, name));
-            }
+            let Some(base) = device_display(&d, &cards) else { continue };
+            // A device that won't say who it is falls back to its name, which
+            // is what this used to key on throughout.
+            let identity = device_identity(&d, &cards).unwrap_or_else(|| base.clone());
+            let name = names.name_for(&base, &identity);
+            out.push((d, name));
         }
     }
     out
 }
 
+/// The distinct names of the devices for one direction, in enumeration order.
+fn device_names(host: &cpal::Host, output: bool) -> Vec<String> {
+    let mut seen = HashSet::new();
+    enumerate_devices(host, output)
+        .into_iter()
+        .map(|(_, n)| n)
+        .filter(|n| seen.insert(n.clone()))
+        .collect()
+}
+
 /// Names of the available output devices (for a device-selection UI).
 pub fn output_device_names() -> Vec<String> {
-    enumerate_named(&cpal::default_host(), true).into_iter().map(|(_, n)| n).collect()
+    device_names(&cpal::default_host(), true)
 }
 
 /// Names of the available input devices (for a device-selection UI).
 pub fn input_device_names() -> Vec<String> {
-    enumerate_named(&cpal::default_host(), false).into_iter().map(|(_, n)| n).collect()
+    device_names(&cpal::default_host(), false)
 }
 
 /// True if the device reports at least one sample configuration we can use.
@@ -435,38 +522,37 @@ fn has_usable_config(device: &cpal::Device, output: bool) -> bool {
     }
 }
 
-/// Find a device by its enumerated (enriched) name; falls back to the default
-/// device (with a warning) when the name is gone — e.g. the device was
-/// unplugged. Matches the enriched display name first, then the plain cpal name
-/// for configs saved before names carried the manufacturer/card id. Among
-/// matches, prefers one that actually reports a usable config.
+/// Find a device by the name it was picked by; falls back to the default device
+/// (with a warning) when the name is gone — e.g. the device was unplugged.
+/// Matches the enumerated name first, then the plain cpal name for configs saved
+/// before names carried the manufacturer/card id (or the suffix that separates
+/// two identical devices). Among matches — one card's several PCMs — prefers one
+/// that actually reports a usable config.
+///
+/// Returns the device *and* the name it ended up under, which is what the "audio
+/// output running" line reports: with two of the same sound card in the station
+/// the plain cpal name says nothing about which one this is, and that line is
+/// where an operator checks that each radio got its own.
 fn pick_device(
     host: &cpal::Host,
     name: Option<&str>,
     output: bool,
-) -> Result<cpal::Device, AudioError> {
+) -> Result<(cpal::Device, String), AudioError> {
     if let Some(want) = name {
-        let cards = alsa_cards();
-        let all: Vec<cpal::Device> =
-            if output { host.output_devices().ok() } else { host.input_devices().ok() }
-                .map(|d| d.collect())
-                .unwrap_or_default();
-        // 1) enriched-name match (all sub-PCMs of the card); 2) legacy plain
+        let all = enumerate_devices(host, output);
+        // 1) enumerated-name match (all sub-PCMs of the card); 2) legacy plain
         // cpal-name match for configs saved before names carried the vendor/id.
-        let mut idxs: Vec<usize> = all
-            .iter()
-            .enumerate()
-            .filter(|(_, d)| device_display(d, &cards).as_deref() == Some(want))
-            .map(|(i, _)| i)
-            .collect();
+        // The legacy form cannot tell two identical devices apart — nothing
+        // recorded then could — so it takes the first, exactly as before, and
+        // the operator re-picks from a list that now shows both.
+        let mut idxs: Vec<usize> =
+            all.iter().enumerate().filter(|(_, (_, n))| n == want).map(|(i, _)| i).collect();
         if idxs.is_empty() {
             idxs = all
                 .iter()
                 .enumerate()
-                .filter(|(_, d)| {
-                    // Skip excluded nodes (usbstream/pseudo) even in legacy mode.
-                    device_display(d, &cards).is_some()
-                        && d.description().ok().map(|x| x.name() == want).unwrap_or(false)
+                .filter(|(_, (d, _))| {
+                    d.description().ok().map(|x| x.name() == want).unwrap_or(false)
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -475,14 +561,17 @@ fn pick_device(
             let best = idxs
                 .iter()
                 .copied()
-                .find(|&i| has_usable_config(&all[i], output))
+                .find(|&i| has_usable_config(&all[i].0, output))
                 .unwrap_or(idxs[0]);
             return Ok(all.into_iter().nth(best).unwrap());
         }
         warn!("audio device {want:?} not found; using default");
     }
-    if output { host.default_output_device() } else { host.default_input_device() }
-        .ok_or(AudioError::NoDevice)
+    let device = if output { host.default_output_device() } else { host.default_input_device() }
+        .ok_or(AudioError::NoDevice)?;
+    let cards = alsa_cards();
+    let label = device_display(&device, &cards).unwrap_or_else(|| "system default".into());
+    Ok((device, label))
 }
 
 /// Open an input device (microphone) by name (`None` = system default) and
@@ -493,7 +582,7 @@ pub fn start_input(
     preferred_rate: u32,
 ) -> Result<(AudioInput, rtrb::Consumer<f32>), AudioError> {
     let host = cpal::default_host();
-    let device = pick_device(&host, device_name, false)?;
+    let (device, label) = pick_device(&host, device_name, false)?;
 
     let picked = device
         .supported_input_configs()
@@ -506,12 +595,7 @@ pub fn start_input(
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize);
         match spawn_input(&device, &config, fmt, false, producer) {
             Ok(stream) => {
-                info!(
-                    rate,
-                    format = ?fmt,
-                    device = device.description().map(|d| d.to_string()).unwrap_or_default(),
-                    "mic input running"
-                );
+                info!(rate, format = ?fmt, device = %label, "mic input running");
                 return Ok((
                     AudioInput { _stream: stream, sample_rate: rate as f64, channels },
                     consumer,
@@ -534,7 +618,7 @@ pub fn start_input_stereo(
     preferred_rate: u32,
 ) -> Result<(AudioInput, rtrb::Consumer<f32>), AudioError> {
     let host = cpal::default_host();
-    let device = pick_device(&host, device_name, false)?;
+    let (device, label) = pick_device(&host, device_name, false)?;
 
     let picked = device
         .supported_input_configs()
@@ -554,7 +638,7 @@ pub fn start_input_stereo(
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize * 2);
         match spawn_input(&device, &config, fmt, true, producer) {
             Ok(stream) => {
-                info!(rate, stream_channels = config.channels, hw_channels = channels, format = ?fmt, "radio IQ input running");
+                info!(rate, stream_channels = config.channels, hw_channels = channels, format = ?fmt, device = %label, "radio IQ input running");
                 return Ok((
                     AudioInput { _stream: stream, sample_rate: rate as f64, channels },
                     consumer,
@@ -579,7 +663,7 @@ pub fn start_output(
     preferred_rate: u32,
 ) -> Result<(AudioOutput, rtrb::Producer<f32>), AudioError> {
     let host = cpal::default_host();
-    let device = pick_device(&host, device_name, true)?;
+    let (device, label) = pick_device(&host, device_name, true)?;
 
     let picked = device
         .supported_output_configs()
@@ -593,13 +677,7 @@ pub fn start_output(
         let underruns = Arc::new(AtomicU64::new(0));
         match spawn_output(&device, &config, fmt, consumer, underruns.clone()) {
             Ok(stream) => {
-                info!(
-                    rate,
-                    channels,
-                    format = ?fmt,
-                    device = device.description().map(|d| d.to_string()).unwrap_or_default(),
-                    "audio output running"
-                );
+                info!(rate, channels, format = ?fmt, device = %label, "audio output running");
                 return Ok((
                     AudioOutput { stream, sample_rate: rate as f64, channels, underruns },
                     producer,
@@ -616,6 +694,8 @@ pub fn start_output(
 
 #[cfg(test)]
 mod tests {
+    use super::NameAssigner;
+
     #[test]
     fn device_enumeration_works() {
         // Must not panic, even on systems without audio; prints what it found.
@@ -623,5 +703,55 @@ mod tests {
         let ins = super::input_device_names();
         eprintln!("outputs: {outs:?}");
         eprintln!("inputs:  {ins:?}");
+    }
+
+    /// ALSA reaches one card through several PCMs. They are one device and have
+    /// to stay one entry, or the operator picks between doors instead of radios
+    /// and the opener loses the fallback to whichever PCM will actually run.
+    #[test]
+    fn one_card_reached_several_ways_is_one_device() {
+        let mut n = NameAssigner::default();
+        assert_eq!(n.name_for("USB Audio CODEC [CODEC]", "card:CODEC"), "USB Audio CODEC [CODEC]");
+        assert_eq!(n.name_for("USB Audio CODEC [CODEC]", "card:CODEC"), "USB Audio CODEC [CODEC]");
+    }
+
+    /// Two of the same USB codec — an IC-7300 and an IC-R8600 on one machine —
+    /// come back from Windows and macOS as one name twice. Collapsing them left
+    /// a single entry in the picker and both radios opening the first card, so
+    /// whichever radio came up first took the audio and the other was silent.
+    #[test]
+    fn two_of_the_same_sound_card_are_two_devices() {
+        let mut n = NameAssigner::default();
+        let first = n.name_for("USB Audio CODEC", "dev:{0.0.1.00000000}.{aaaa}");
+        let second = n.name_for("USB Audio CODEC", "dev:{0.0.1.00000000}.{bbbb}");
+        assert_eq!(first, "USB Audio CODEC");
+        assert_ne!(first, second, "two devices must not share one name");
+        assert!(second.starts_with("USB Audio CODEC ["), "the suffix hangs off the real name");
+        // And each keeps the name it was given, however often it is asked.
+        assert_eq!(n.name_for("USB Audio CODEC", "dev:{0.0.1.00000000}.{bbbb}"), second);
+    }
+
+    /// One card, several sockets: an HDMI card's outputs are one piece of
+    /// hardware under several names, and the operator picks between the names.
+    #[test]
+    fn one_card_with_several_outputs_keeps_them_apart() {
+        let mut n = NameAssigner::default();
+        assert_eq!(n.name_for("HDMI 0 [Generic]", "card:Generic"), "HDMI 0 [Generic]");
+        assert_eq!(n.name_for("HDMI 2 [Generic]", "card:Generic"), "HDMI 2 [Generic]");
+    }
+
+    /// The suffix is derived from the device's own identity, not from the order
+    /// the host happened to enumerate in: a name that moved between radios
+    /// across a restart would point each one at the other's transmitter.
+    #[test]
+    fn the_suffix_does_not_depend_on_enumeration_order() {
+        let name = |a: &str, b: &str| {
+            let mut n = NameAssigner::default();
+            n.name_for("USB Audio CODEC", a);
+            n.name_for("USB Audio CODEC", b)
+        };
+        // B named second in both runs, so B keeps its suffix whichever order
+        // the two were seen in.
+        assert_eq!(name("dev:aaaa", "dev:bbbb"), name("dev:cccc", "dev:bbbb"));
     }
 }

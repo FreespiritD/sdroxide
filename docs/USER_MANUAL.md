@@ -499,10 +499,22 @@ On a TX-capable rig the **Transmit** module appears:
 > only be lifted from the command line, one run at a time, with `--oob-tx`
 > ([10](#transmitting-outside-the-amateur-bands---oob-tx)).
 
-On a rig with its own power control (TCI), Drive and Tune command the rig's
-output power directly — and both sliders adopt the rig's current settings when
-sdroxide connects, so a level you set in ExpertSDR3 carries over instead of
-being overwritten.
+On a rig with its own power control — a TCI rig, or a **CAT rig** on any of the
+three dialects — Drive and Tune command the rig's output power directly rather
+than scaling anything on this side, and the slider adopts the rig's own setting
+when sdroxide connects: a level set in ExpertSDR3, or on the radio's front
+panel, carries over instead of being overwritten. The level that applies is
+asserted before every over, including a CW message handed to the rig's own
+keyer — which is the one place where the rig's power is the *only* transmit
+control there is, the sound card having no part in CW at all. After a TUNE the
+operating level is put back, so the radio is not left at the tune level for the
+next call.
+
+> On a CAT rig the power is a fraction of what the radio can do. Icom carries it
+> that way natively; Yaesu and Kenwood take a number of watts and have no way to
+> say how many they have, so their sliders are read against 100 W — right for
+> nearly every rig those dialects cover, and low (never high) for the few that
+> go above it, such as an FTDX101MP or a TS-480HX.
 
 **Drive and the hardware's TX gain are not the same control.** On an IQ radio —
 a Pluto, an HPSDR board, an SDRplay or a SoapySDR device — Drive is *digital*:
@@ -2311,7 +2323,12 @@ why the screenshot above (taken with a TCI rig) does not show it.
 
 Device names include the manufacturer, model, ALSA card id, and USB id — for
 example `C-Media Electronics Inc. USB Audio Device, USB Audio [Device · 0d8c:0012]`
-— so two identical adapters can be told apart.
+— so two identical adapters can be told apart. Where the operating system itself
+hands out the same name twice (Windows and macOS do, and two Icoms are two of
+the same USB codec) the second one carries a short tag of its own, as in
+`USB Audio CODEC [#a3f1]`. The tag comes from the device rather than from the
+order it was found in, so it stays the same across restarts and a radio keeps
+the sound card it was given.
 
 > **IQ needs a stereo device.** IQ format requires a two-channel capture
 > interface (I and Q). A mono USB audio adapter cannot carry IQ; if you pick one
@@ -2642,6 +2659,11 @@ What that needs on the radio:
   overwrites whatever you had stored in CW memory 1. Kenwood streams the text
   straight to the keyer (`KY`), 24 characters at a time, and leaves your stored
   messages alone.
+- **The Drive slider is the power CW goes out at.** Nothing sdroxide sends
+  reaches the air here — the rig keys its own transmitter — so the level of the
+  audio going into its sound card means nothing in CW, and the transmit level is
+  the rig's own power control, commanded over the same serial link before each
+  message ([2.10](#210-transmit)).
 
 `Sound card (MCW)` is the other route: the keyed sidetone goes out as audio.
 That is silent on a rig in CW, and only reaches the air if you keep the rig in
@@ -5651,14 +5673,24 @@ ignores audio sent to its sound card, so it can only be keyed from text. On
 Yaesu also check that CW memory 1 is free to be overwritten; on Kenwood, that
 break-in is on (sdroxide only asserts it when the rig has reported CW, because
 the same command is the VOX switch in every other mode); on any rig, that
-the radio is actually in CW (**Mode control** = `CAT`) and that its power output
-is not turned down.
+the radio is actually in CW (**Mode control** = `CAT`) and that the **Drive**
+slider — which *is* the rig's output power on a CAT rig, in CW as in every other
+mode — is not down at the bottom.
 
 **Two identical USB sound cards are hard to tell apart.**
 Device names include the manufacturer, model, ALSA card id, and USB id in
 brackets (e.g. `… [Device_1 · 0d8c:0014]`), which disambiguates identical
-adapters. Re-select the intended device in the **General** tab if the names
-changed after an update.
+adapters. Where the system reports both under one name — Windows and macOS do,
+and two Icoms are two of the same USB codec — the second carries a tag of its
+own (`… [#a3f1]`). Re-select the intended device in the **General** tab if the
+names changed after an update. Which card each radio actually opened is in the
+log, on the `audio output running` and `radio IQ input running` lines.
+
+**Two radios share one sound card.**
+Each radio has its own **Radio audio** devices, in its own settings — select the
+radio's tab first, then pick its cards. If both radios were configured before
+their two cards could be told apart, both may be holding the same name: re-pick
+each one from the list and press **Apply / reconnect**.
 
 **A setting did not take effect.**
 Backend, serial, sound-format, and radio-audio-device changes apply when you

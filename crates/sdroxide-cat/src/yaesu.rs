@@ -200,6 +200,16 @@ impl Protocol for Yaesu {
         vec![format!("KS{wpm:03};").into_bytes()]
     }
 
+    fn set_power(&mut self, frac: f32) -> Vec<Vec<u8>> {
+        vec![crate::pc_set_frame(frac)]
+    }
+    fn read_power(&self) -> Vec<Vec<u8>> {
+        vec![crate::pc_read_frame()]
+    }
+    fn commands_power(&self) -> bool {
+        true
+    }
+
     fn reframed(&mut self) -> bool {
         std::mem::take(&mut self.reframed)
     }
@@ -221,6 +231,10 @@ impl Protocol for Yaesu {
                     if let Ok(hz) = rest.parse::<u64>() {
                         out.push(CatUpdate::Freq(hz as f64));
                     }
+                }
+            } else if let Some(rest) = msg.strip_prefix("PC") {
+                if let Some(frac) = crate::pc_parse(rest) {
+                    out.push(CatUpdate::Power(frac));
                 }
             } else if let Some(rest) = msg.strip_prefix("MD") {
                 // `MD<P1><P2>` — P1 selects the VFO (always 0 here), P2 is the

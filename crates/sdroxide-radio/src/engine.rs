@@ -2677,6 +2677,14 @@ impl Engine {
                     } else {
                         self.cw_gate_until =
                             Some(Instant::now() + Duration::from_secs_f32(seconds.max(0.0)));
+                        // Assert the drive first, exactly as key-down does for
+                        // every other over. Nothing else can: this path never
+                        // reaches `sync_tx_state`, so without it the operator's
+                        // Drive slider would be the one control that does
+                        // nothing in the one mode where it is the *only*
+                        // control — the rig keys its own transmitter here and
+                        // never looks at the audio we send it.
+                        self.source.set_tx_drive(self.state.tx.drive as f64);
                         self.source.send_cw(&text);
                     }
                 }
@@ -6317,6 +6325,14 @@ impl Engine {
         } else {
             if let Err(e) = self.source.tx_end() {
                 warn!("tx_end: {e}");
+            }
+            // Give a rig with its own power control its operating level back.
+            // TUNE holds it at the (deliberately low) tune level for the length
+            // of the tune, and a radio left there afterwards is one that answers
+            // the next call — from its own hand microphone, where nothing here
+            // is in the way — at a few watts.
+            if self.source.commands_tx_power() {
+                self.source.set_tx_drive(self.state.tx.drive as f64);
             }
             // The radio kept streaming RX for the whole over; PTT only
             // stopped us polling it. Drop the backlog instead of replaying

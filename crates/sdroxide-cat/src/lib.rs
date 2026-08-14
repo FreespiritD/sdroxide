@@ -31,6 +31,10 @@ pub enum CatUpdate {
     /// RX S-meter reading in dBm, from the rig's own meter (routed to the
     /// signal channel, not the control channel).
     Signal(f32),
+    /// The transmit power the rig is set to, as a `0..1` fraction of its
+    /// maximum. Read once when the port opens, so the panel's Drive slider ends
+    /// up where the radio's own power control already is.
+    Power(f32),
 }
 
 /// Enumerate serial ports for the settings UI. USB-style ports (ttyACM/ttyUSB,
@@ -109,6 +113,29 @@ trait Protocol: Send {
         Vec::new()
     }
 
+    /// Set the transmitter's output power, as a `0..1` fraction of what the rig
+    /// can do.
+    ///
+    /// This is the only transmit level a CAT rig has that means anything in
+    /// *every* mode. The level of the audio we put into its sound card is not
+    /// one: a rig in CW keys its own transmitter from its own keyer and never
+    /// looks at the sound card, and one asked to TUNE holds a carrier the audio
+    /// has no part in either. Empty for families with no such command, where
+    /// there is nothing but the audio.
+    fn set_power(&mut self, _frac: f32) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+    /// Frames asking what the rig's power is set to, sent once when the port
+    /// opens so the panel can *adopt* the rig's own level instead of imposing a
+    /// remembered one on it. Empty for families with no such read.
+    fn read_power(&self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+    /// Whether [`Protocol::set_power`] reaches this family at all.
+    fn commands_power(&self) -> bool {
+        false
+    }
+
     /// True when [`Protocol::parse`] learned something about the rig's framing
     /// that invalidates frames written before it — the Yaesu frequency-field
     /// width. Reported once, to whoever can re-issue the frame.
@@ -169,6 +196,15 @@ impl Protocol for Civ {
     fn set_cw_wpm(&mut self, wpm: f32) -> Vec<Vec<u8>> {
         vec![civ::keyer_speed_frame(self.radio, wpm)]
     }
+    fn set_power(&mut self, frac: f32) -> Vec<Vec<u8>> {
+        vec![civ::set_power_frame(self.radio, frac)]
+    }
+    fn read_power(&self) -> Vec<Vec<u8>> {
+        vec![civ::read_power_frame(self.radio)]
+    }
+    fn commands_power(&self) -> bool {
+        true
+    }
     fn refused(&mut self) -> bool {
         std::mem::take(&mut self.nak)
     }
@@ -190,6 +226,13 @@ impl Protocol for Civ {
                         if let Some(m) = civ::civ_to_mode(b) {
                             out.push(CatUpdate::Mode(m));
                         }
+                    }
+                }
+                // Level read (0x14): only the transmit power (0x0A) is asked
+                // for, and only when the port opens.
+                0x14 => {
+                    if let Some(frac) = civ::parse_power_reply(&reply.data) {
+                        out.push(CatUpdate::Power(frac));
                     }
                 }
                 // Meter read (0x15): the SWR sub-meter (0x12) while transmitting,
@@ -215,6 +258,39 @@ impl Protocol for Civ {
     }
 }
 
+/// Output power the ASCII families are assumed to have at full scale, in watts.
+///
+/// Yaesu's and Kenwood's `PC` sets a *number of watts*, and neither family has
+/// a command that says how many the rig has — so a 0..1 fraction can only be
+/// turned into one against an assumption. A hundred watts is what all but a
+/// handful of the rigs these two dialects cover put out (the FT-891, FT-991A,
+/// FTDX10, FTDX101D, FT-710, TS-590, TS-2000, TS-890 are all 100 W), and the
+/// exceptions are the *bigger* ones — an FTDX101MP or a TS-480HX simply tops
+/// out at half the slider. Erring low is the right way to be wrong about a
+/// transmitter. CI-V needs none of this: Icom's power level spans whatever the
+/// radio has, so the fraction is the setting.
+const ASCII_FULL_POWER_W: f32 = 100.0;
+
+/// `PC` — set output power (Yaesu "new CAT" and Kenwood alike). The three-digit
+/// field is in watts, and the families' documented minimum is 5 W: a rig cannot
+/// be asked for less, so the bottom of the slider is as low as it goes.
+fn pc_set_frame(frac: f32) -> Vec<u8> {
+    let w = (frac.clamp(0.0, 1.0) * ASCII_FULL_POWER_W).round().clamp(5.0, 999.0) as u32;
+    format!("PC{w:03};").into_bytes()
+}
+
+/// `PC;` — ask what the power is set to.
+fn pc_read_frame() -> Vec<u8> {
+    b"PC;".to_vec()
+}
+
+/// The payload of a `PC` reply (the digits after `PC`) as a 0..1 fraction, or
+/// `None` when it isn't a number.
+fn pc_parse(rest: &str) -> Option<f32> {
+    let w: u32 = rest.trim().parse().ok()?;
+    Some((w as f32 / ASCII_FULL_POWER_W).clamp(0.0, 1.0))
+}
+
 fn make_protocol(cfg: &CatConfig) -> Box<dyn Protocol> {
     match cfg.family {
         CatFamily::Xiegu | CatFamily::Icom => {
@@ -234,6 +310,8 @@ enum CatCmd {
     /// Stop a message the rig is part way through.
     CwAbort,
     CwWpm(f32),
+    /// Output power as a 0..1 fraction of the rig's maximum.
+    Power(f32),
     Stop,
 }
 
@@ -244,6 +322,7 @@ pub struct CatHandle {
     telem_rx: Receiver<TxTelemetry>,
     signal_rx: Receiver<f32>,
     cw_chunk_len: usize,
+    commands_power: bool,
 }
 
 impl CatHandle {
@@ -278,6 +357,19 @@ impl CatHandle {
             return;
         }
         let _ = self.cmd_tx.send(CatCmd::CwWpm(wpm));
+    }
+    /// Set the transmitter's output power, as a `0..1` fraction of what the rig
+    /// can do. Silently ignored on a family with no power command, where the
+    /// level of the audio going into the rig is the only control there is.
+    pub fn set_power(&self, frac: f32) {
+        if !self.commands_power {
+            return;
+        }
+        let _ = self.cmd_tx.send(CatCmd::Power(frac));
+    }
+    /// Whether [`Self::set_power`] reaches this rig.
+    pub fn commands_power(&self) -> bool {
+        self.commands_power
     }
     /// Non-blocking drain of rig-reported freq/mode changes.
     pub fn poll(&self) -> Vec<CatUpdate> {
@@ -326,8 +418,9 @@ pub fn query_once(cfg: &CatConfig) -> Option<(Option<f64>, Option<Mode>)> {
                     match u {
                         CatUpdate::Freq(hz) => freq = Some(hz),
                         CatUpdate::Mode(m) => mode = Some(m),
-                        // Neither meter is requested during the startup query.
-                        CatUpdate::Swr(_) | CatUpdate::Signal(_) => {}
+                        // Neither meter nor the power is requested during the
+                        // startup query.
+                        CatUpdate::Swr(_) | CatUpdate::Signal(_) | CatUpdate::Power(_) => {}
                     }
                 }
             }
@@ -346,11 +439,14 @@ pub fn spawn(cfg: CatConfig) -> CatHandle {
     // its chunks to the rig without reaching across the channel to find out.
     let cw_chunk_len =
         if cfg.cw_keying == CwKeying::Cat { make_protocol(&cfg).cw_chunk_len() } else { 0 };
+    // Same reason: the engine asks whether this rig's power can be commanded
+    // before it commands anything.
+    let commands_power = make_protocol(&cfg).commands_power();
     std::thread::Builder::new()
         .name("sdroxide-cat".into())
         .spawn(move || serial_thread(cfg, cmd_rx, event_tx, telem_tx, signal_tx))
         .expect("spawn cat thread");
-    CatHandle { cmd_tx, event_rx, telem_rx, signal_rx, cw_chunk_len }
+    CatHandle { cmd_tx, event_rx, telem_rx, signal_rx, cw_chunk_len, commands_power }
 }
 
 fn map_parity(p: Parity) -> serialport::Parity {
@@ -393,6 +489,12 @@ fn map_data_bits(n: u8) -> serialport::DataBits {
 /// frame in the ordinary case.
 const FRAME_GAP: Duration = Duration::from_millis(30);
 
+/// Shortest gap between two output-power writes. A slider drag is worth one
+/// frame every so often, not one per pixel; a hundred milliseconds is faster
+/// than anyone can read a wattmeter and slow enough that the queue in front of
+/// the next PTT stays empty.
+const POWER_GAP: Duration = Duration::from_millis(100);
+
 /// Write one frame, leaving at least [`FRAME_GAP`] since the last one went out.
 /// Returns true on a write error — the caller's signal to reconnect.
 fn write_frame(
@@ -406,6 +508,32 @@ fn write_frame(
     }
     let failed = port.write_all(frame).is_err();
     *last_write = Instant::now();
+    failed
+}
+
+/// Write an output-power level, unless it is the one the rig was last given.
+/// Returns true on a write error — the caller's signal to reconnect.
+///
+/// Skipping a level already written is what keeps the assertion before every
+/// key-down free: the rig is served one frame at a time, and a needless one in
+/// front of a PTT delays the transmitter coming up.
+fn write_power(
+    port: &mut dyn serialport::SerialPort,
+    protocol: &mut dyn Protocol,
+    frac: f32,
+    last_sent: &mut Option<f32>,
+    last_write: &mut Instant,
+) -> bool {
+    if *last_sent == Some(frac) {
+        return false;
+    }
+    let mut failed = false;
+    for f in protocol.set_power(frac) {
+        failed |= write_frame(port, &f, last_write);
+    }
+    if !failed {
+        *last_sent = Some(frac);
+    }
     failed
 }
 
@@ -549,6 +677,14 @@ fn serial_thread(
         for f in protocol.clear_offsets() {
             write_frame(&mut *port, &f, &mut last_write);
         }
+        // The transmit power is the rig's, not ours: ask what it is set to and
+        // let the panel adopt it, the same way the dial and the mode are
+        // adopted. Imposing a remembered level instead would put an operator
+        // who has never touched the slider on the air at whatever it defaults
+        // to — on a radio they had already set the power on.
+        for f in protocol.read_power() {
+            write_frame(&mut *port, &f, &mut last_write);
+        }
 
         let mut rx = Vec::with_capacity(256);
         let mut read_buf = [0u8; 256];
@@ -564,6 +700,15 @@ fn serial_thread(
         let mut pending_freq: Option<f64> = None;
         let mut last_sent_freq: Option<f64> = None;
         let mut freq_deadline = Instant::now();
+        // Output power, coalesced and rate-limited exactly as the frequency is:
+        // dragging the Drive slider produces a command per pixel, and a rig
+        // whose control port is served one frame at a time must not be handed
+        // hundreds of them — the PTT behind that queue is the thing that would
+        // suffer. Only a level that differs from the last one written goes out,
+        // so the assertion before every key-down is free once it has settled.
+        let mut pending_power: Option<f32> = None;
+        let mut last_sent_power: Option<f32> = None;
+        let mut power_deadline = Instant::now();
         let mut mode_memory = ModeMemory::default();
         // Only forward genuine changes so the engine isn't re-notified every poll.
         let mut emit_freq: Option<f64> = None;
@@ -584,6 +729,22 @@ fn serial_thread(
                         }
                     }
                     Ok(CatCmd::Ptt(on)) => {
+                        // Key-down has to land at the level the engine asserted
+                        // for it — the drive, or the tune level under TUNE — so
+                        // the rate limit below is not allowed to leave that
+                        // sitting in the queue while the transmitter comes up.
+                        if on
+                            && let Some(frac) = pending_power.take()
+                            && write_power(
+                                &mut *port,
+                                &mut *protocol,
+                                frac,
+                                &mut last_sent_power,
+                                &mut last_write,
+                            )
+                        {
+                            break 'io true;
+                        }
                         // Key-down has to land on the transmit frequency. With
                         // XIT or split the engine queues the transmit dial
                         // immediately before PTT, and the debounce below would
@@ -629,6 +790,22 @@ fn serial_thread(
                     // length of the message on its own, and asserting CAT PTT
                     // around it would hold a carrier the keyer cannot key.
                     Ok(CatCmd::Cw(text)) => {
+                        // Nothing else asserts the level for this over: the rig
+                        // keys itself, so there is no PTT here to hang it off —
+                        // and CW is the mode where the rig's power is the only
+                        // transmit control there is, the sound card having no
+                        // part in it at all.
+                        if let Some(frac) = pending_power.take()
+                            && write_power(
+                                &mut *port,
+                                &mut *protocol,
+                                frac,
+                                &mut last_sent_power,
+                                &mut last_write,
+                            )
+                        {
+                            break 'io true;
+                        }
                         for f in protocol.send_cw(&text) {
                             if write_frame(&mut *port, &f, &mut last_write) {
                                 break 'io true;
@@ -649,9 +826,29 @@ fn serial_thread(
                             }
                         }
                     }
+                    Ok(CatCmd::Power(frac)) => pending_power = Some(frac), // coalesce
                     Ok(CatCmd::Stop) => return,
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => return,
+                }
+            }
+
+            // Rate-limited power write (only on change), on the same principle
+            // as the frequency below it.
+            if let Some(frac) = pending_power {
+                let now = Instant::now();
+                if now >= power_deadline {
+                    pending_power = None;
+                    power_deadline = now + POWER_GAP;
+                    if write_power(
+                        &mut *port,
+                        &mut *protocol,
+                        frac,
+                        &mut last_sent_power,
+                        &mut last_write,
+                    ) {
+                        break 'io true;
+                    }
                 }
             }
 
@@ -748,6 +945,18 @@ fn serial_thread(
                             let _ = signal_tx.send(dbm);
                             continue;
                         }
+                        // The power the rig reports goes straight out: it is
+                        // asked for once per connection, and the engine adopts
+                        // it without answering, so there is nothing here to
+                        // dedup and no loop to break. Recording it as sent is
+                        // what makes the adoption free — the engine asserts the
+                        // level it adopted before the first key-down, and that
+                        // is now a level the rig is already on.
+                        if let CatUpdate::Power(frac) = u {
+                            last_sent_power = Some(frac);
+                            let _ = event_tx.send(u);
+                            continue;
+                        }
                         // Forward only genuine changes (poll repeats otherwise).
                         let changed = match u {
                             CatUpdate::Freq(hz) => {
@@ -769,8 +978,8 @@ fn serial_thread(
                                 }
                                 c
                             }
-                            // Both meters are handled above.
-                            CatUpdate::Swr(_) | CatUpdate::Signal(_) => false,
+                            // Both meters and the power are handled above.
+                            CatUpdate::Swr(_) | CatUpdate::Signal(_) | CatUpdate::Power(_) => false,
                         };
                         if changed {
                             let _ = event_tx.send(u);
@@ -839,5 +1048,32 @@ mod tests {
         assert!(!m.needs(&p.set_mode(Mode::Lsb)));
         // And a mode the rig is *not* in still goes out.
         assert!(m.needs(&p.set_mode(Mode::Usb)));
+    }
+
+    /// `PC` is watts, and the families' documented floor is 5 W — a rig cannot
+    /// be asked for nothing, so the bottom of the slider is as low as it goes
+    /// rather than a `PC000;` the radio would reject outright.
+    #[test]
+    fn the_ascii_families_send_power_as_three_digits_of_watts() {
+        let sent = |frac: f32| String::from_utf8(pc_set_frame(frac)).unwrap();
+        assert_eq!(sent(1.0), "PC100;");
+        assert_eq!(sent(0.5), "PC050;");
+        assert_eq!(sent(0.05), "PC005;");
+        assert_eq!(sent(0.0), "PC005;");
+        // A slider cannot ask for more than the assumed full scale.
+        assert_eq!(sent(2.0), "PC100;");
+    }
+
+    #[test]
+    fn a_pc_reply_reads_back_as_the_fraction_that_set_it() {
+        assert_eq!(pc_parse("100"), Some(1.0));
+        assert_eq!(pc_parse("050"), Some(0.5));
+        assert_eq!(pc_parse("005"), Some(0.05));
+        // A rig that puts out more than the assumed full scale reports more
+        // watts than we would ever ask for; the slider still tops out at 1.
+        assert_eq!(pc_parse("200"), Some(1.0));
+        // Not a number is not a power.
+        assert_eq!(pc_parse(""), None);
+        assert_eq!(pc_parse("abc"), None);
     }
 }
