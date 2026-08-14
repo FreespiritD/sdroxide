@@ -21,7 +21,9 @@ impl SdroxideApp {
         // Per-mode parameters (RTTY/Olivia/THOR/FSQ) now live in each panel's
         // header, so this dialog only carries the shared identity + the
         // message templates the slotted QSO modes share.
-        let title = if mode.is_text_modem() || mode.is_hell() || mode.is_js8() {
+        let title = if mode.is_packet() {
+            "Packet Setup".to_string()
+        } else if mode.is_text_modem() || mode.is_hell() || mode.is_js8() {
             format!("{} Setup", mode.label())
         } else {
             "FT8 / FT4 / FT2 Setup".to_string()
@@ -50,6 +52,120 @@ impl SdroxideApp {
                         changed = true;
                     }
                     ui.end_row();
+                    if mode.is_packet() {
+                        ui.label("Station call");
+                        if ui.text_edit_singleline(&mut cfg.packet_mycall).changed() {
+                            cfg.packet_mycall = cfg.packet_mycall.to_uppercase();
+                            changed = true;
+                        }
+                        ui.end_row();
+                        ui.label("");
+                        ui.label(
+                            RichText::new(
+                                "With an SSID — OE3JJS-10. A packet station is conventionally \
+                                 a different SSID from the operator, and nothing transmits \
+                                 until this is set.",
+                            )
+                            .weak(),
+                        );
+                        ui.end_row();
+
+                        // Speed is VHF's choice only: HF packet runs at 300 and
+                        // the controller clamps it, so offering 9600 on 40 m
+                        // would be a control that does nothing.
+                        if mode == sdroxide_types::Mode::Packet {
+                            ui.label("Speed");
+                            ui.horizontal(|ui| {
+                                for b in [
+                                    sdroxide_types::PacketBaud::Vhf1200,
+                                    sdroxide_types::PacketBaud::Vhf9600,
+                                ] {
+                                    changed |= ui
+                                        .selectable_value(&mut cfg.packet_baud, b, b.label())
+                                        .changed();
+                                }
+                            });
+                            ui.end_row();
+                            if cfg.packet_baud == sdroxide_types::PacketBaud::Vhf9600 {
+                                ui.label("");
+                                ui.label(
+                                    RichText::new(
+                                        "9600 needs the radio's data port. A microphone and \
+                                         speaker path destroys it at both ends — that is the \
+                                         radio, not sdroxide.",
+                                    )
+                                    .weak(),
+                                );
+                                ui.end_row();
+                            }
+                        }
+
+                        ui.label("TX delay");
+                        ui.horizontal(|ui| {
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut cfg.packet_txdelay_ms)
+                                        .range(50..=2000)
+                                        .suffix(" ms"),
+                                )
+                                .on_hover_text(
+                                    "Flags sent before a frame, so the far end can hear us and \
+                                     lock its clock. On a CAT rig sdroxide alone spends 165–240 \
+                                     ms getting on the air, and the rig's own transmit-ready \
+                                     time is on top of that.",
+                                )
+                                .changed();
+                        });
+                        ui.end_row();
+
+                        ui.label("Answer calls");
+                        changed |= ui
+                            .checkbox(&mut cfg.packet_accept_incoming, "Accept connections")
+                            .on_hover_text(
+                                "Off for a Winlink client, which dials out and has no reason to \
+                                 answer. On to be reachable as a mailbox or a peer.",
+                            )
+                            .changed();
+                        ui.end_row();
+
+                        ui.label("Beacon");
+                        ui.horizontal(|ui| {
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut cfg.packet_beacon_minutes)
+                                        .range(0..=120)
+                                        .suffix(" min"),
+                                )
+                                .on_hover_text("0 disables the timer")
+                                .changed();
+                            changed |= ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut cfg.packet_beacon_text)
+                                        .hint_text("beacon text"),
+                                )
+                                .changed();
+                        });
+                        ui.end_row();
+
+                        ui.label("KISS server");
+                        ui.horizontal(|ui| {
+                            changed |= ui
+                                .checkbox(&mut cfg.packet_kiss_server, "Serve")
+                                .on_hover_text(
+                                    "Offer this modem as a KISS TNC on a socket, so Pat, an \
+                                     APRS client or the Linux AX.25 stack can use the radio.",
+                                )
+                                .changed();
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut cfg.packet_kiss_port)
+                                        .range(1024..=65535),
+                                )
+                                .changed();
+                        });
+                        ui.end_row();
+                    }
+
                     if mode.is_js8() {
                         let turbo = cfg.js8_speed == sdroxide_types::Js8Speed::Turbo;
                         ui.label("Auto-reply");

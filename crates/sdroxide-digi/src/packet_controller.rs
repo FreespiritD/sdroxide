@@ -843,6 +843,10 @@ impl DigiEngine for PacketController {
         }
     }
 
+    fn packet_beacon_now(&mut self) {
+        self.queue_beacon();
+    }
+
     fn packet_send_frame(&mut self, frame: Vec<u8>) {
         self.send_from_host(frame);
     }

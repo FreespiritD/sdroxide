@@ -5467,17 +5467,77 @@ mailbox with attachments in it does not have to cross a phone link on connect.
 
 ### Over the air
 
-Today the only transport is the CMS over the internet — which is how a large
-share of Winlink traffic actually moves, and is the standard fallback when a
-radio path is not available. Radio transports are planned in this order:
+Two routes now: the CMS over the internet, and **AX.25 packet** on the radio,
+reaching the RMS Packet gateways. Pick one under **Settings → Winlink → How to
+connect**. ARDOP on HF is still to come; VARA deliberately is not, being a
+closed Windows binary whose licence forbids reverse engineering and for which
+no open implementation of the waveform exists.
 
-1. **AX.25 packet** on VHF/UHF, reaching the RMS Packet gateways.
-2. **ARDOP** on HF, reaching the RMS Trimode gateways.
+To forward over the air:
 
-VARA is deliberately not on that list: it is a closed Windows binary whose
-licence forbids reverse engineering, and no open implementation of its waveform
-exists. ARDOP and packet are the open modes the deployed gateway network
-actually speaks.
+1. Put the radio in **PACKET** (VHF/UHF, FM) or **PACKET-HF** (HF, sideband)
+   and tune to the gateway's frequency.
+2. Set your **station call** in the packet setup dialog — with an SSID, e.g.
+   `OE3JJS-10`. Nothing transmits until this is set: an unidentified
+   transmission is illegal everywhere.
+3. Set the route to **Radio (packet)** and name the gateway.
+4. Press **CONNECT** in the MAIL window as usual.
+
+### Choosing a gateway
+
+Winlink publishes its gateway list through `api.winlink.org`, which refuses
+every request that does not carry an access key. sdroxide does not have one, so
+**you keep your own list** — which is what a packet operator does anyway: the
+two or three gateways reachable from one location are learned by trying, and
+they rarely change.
+
+Under **Settings → Winlink**, with the route set to Radio, type a gateway
+callsign and press **+ ADD GATEWAY** to remember it. Each saved entry can carry
+a digipeater path, a frequency and a speed, and **USE** makes it the one the
+next connect calls. Nothing is hidden behind the missing API key: a typed
+callsign works exactly as well as a fetched one, and if a key ever arrives the
+fetched entries land in the same list.
+
+Digipeaters go in **Via**, in order, separated by spaces — usually empty, since
+a gateway you can hear directly is one you should call directly.
+
+### Speeds
+
+| | Where | Notes |
+|---|---|---|
+| 300 baud | HF, sideband | 200 Hz shift AFSK. `PACKET-HF` runs at this speed and no other. |
+| 1200 baud | VHF/UHF, FM | Bell 202. The workhorse, and what most RMS Packet gateways answer on. |
+| 9600 baud | VHF/UHF, FM | G3RUH. **Needs the radio's data port** — a microphone and speaker path destroys it at both ends. That is the radio, not sdroxide. |
+
+The modem is validated against Direwolf at all three speeds, in both
+directions: sdroxide decodes audio `gen_packets` produced, and `atest` decodes
+what sdroxide transmits.
+
+### The packet panel
+
+**MONITOR** lists every frame heard on the channel — sender, destination,
+digipeater path, frame type and any text — with your own transmissions in a
+different colour. `BUSY` means another station is transmitting and the modem
+will not key over them. A rising **bad** count against a steady frame count is
+what a marginal path looks like: frames are arriving and failing their check
+sequence.
+
+**LINK** shows the connected session, when there is one. There is no text entry:
+packet here is not a keyboard mode. The traffic is somebody else's, a beacon on
+a timer, or a Winlink session driving the link from the MAIL window.
+
+### Serving the modem to other software
+
+Switch on **KISS server** in the packet setup dialog and sdroxide offers its
+modem as a KISS TNC on a socket (8001 by default), the same way it already
+serves TCI and rigctld. Pat, an APRS client, or the Linux AX.25 stack can then
+use the radio without knowing sdroxide exists.
+
+A host's TXDELAY and persistence commands are logged and ignored — those are
+your settings, and a client overriding them invisibly would be a mystery to
+debug. The server runs only while the radio is in a packet mode: offering this
+modem while the radio is on FT8 would be a socket that accepts frames and never
+sends them.
 
 ---
 

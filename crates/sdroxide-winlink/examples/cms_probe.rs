@@ -66,6 +66,7 @@ fn main() {
         locator,
         app_name,
         app_version: env!("CARGO_PKG_VERSION").into(),
+        ..Default::default()
     };
 
     let outbound = if send { vec![test_message(&callsign)] } else { Vec::new() };
@@ -165,7 +166,8 @@ fn run_via_manager(
     }
 
     println!("connecting to {address} as {callsign} (client name {app_name})…");
-    mgr.connect().expect("starting the session");
+    mgr.connect(sdroxide_winlink::WinlinkRoute::Telnet { address: address.to_string() })
+        .expect("starting the session");
     while !mgr.poll() {
         std::thread::sleep(Duration::from_millis(200));
     }

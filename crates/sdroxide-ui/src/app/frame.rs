@@ -404,6 +404,8 @@ impl eframe::App for SdroxideApp {
                                     self.image_panel(ui, &mut cmds, mode);
                                 } else if mode.is_rf_paint() {
                                     self.rf_paint_panel(ui, &mut cmds, panel_h);
+                                } else if mode.is_packet() {
+                                    self.packet_panel(ui, &mut cmds, panel_h);
                                 } else if mode.is_fsq() {
                                     self.fsq_panel(ui, &mut cmds, panel_h);
                                 } else if mode.is_hell() {

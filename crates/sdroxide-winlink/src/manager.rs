@@ -20,10 +20,31 @@ use sdroxide_types::{
 use crate::mailbox::{Mailbox, MailboxError};
 use crate::message::{Attachment, Message, format_date, generate_mid};
 use crate::session::{self, SessionConfig, SessionOutcome};
-use crate::transport::TelnetTransport;
+use crate::transport::{Ax25Transport, TelnetTransport};
 
 /// How long to wait on the CMS before giving up.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long to wait for a gateway to answer a call.
+///
+/// Far longer than the telnet figure, and deliberately: a SABM is retried
+/// against T1 and N2, and on a marginal VHF path or at 300 baud on HF the
+/// handshake legitimately takes tens of seconds. Giving up at thirty would
+/// abandon sessions that were about to work.
+const RADIO_DIAL_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Where a forwarding session goes.
+///
+/// The `Transport` trait has always been able to carry a second lane; this is
+/// the operator-facing choice of which one, and the reason `run_session` stops
+/// hard-coding telnet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WinlinkRoute {
+    /// The CMS over the internet.
+    Telnet { address: String },
+    /// An RMS gateway over the air, optionally through digipeaters.
+    Packet { gateway: String, via: Vec<String> },
+}
 
 /// What a finished session produced.
 enum Done {
@@ -41,6 +62,10 @@ pub struct WinlinkManager {
     busy: Arc<AtomicBool>,
     done_rx: Receiver<Done>,
     done_tx: Sender<Done>,
+    /// The engine's packet link, when the radio is in a packet mode. `None`
+    /// means the radio cannot carry a session right now — which is a refusal
+    /// the operator can act on, not a failure to report afterwards.
+    packet_port: Option<sdroxide_ax25::PortHandle>,
 }
 
 impl WinlinkManager {
@@ -56,9 +81,26 @@ impl WinlinkManager {
             busy: Arc::new(AtomicBool::new(false)),
             done_rx,
             done_tx,
+            packet_port: None,
         };
         mgr.refresh_counts();
         Ok(mgr)
+    }
+
+    /// Hand over (or take away) the engine's packet link.
+    ///
+    /// Called when a packet mode starts and again when it stops, because a mode
+    /// change destroys the controller that owns the far end. Taking it away
+    /// mid-session is deliberate: the session then fails with a transcript
+    /// rather than blocking for ever on a link that no longer exists.
+    pub fn set_packet_port(&mut self, port: Option<sdroxide_ax25::PortHandle>) {
+        self.packet_port = port;
+    }
+
+    /// True when a radio session could be started right now.
+    #[must_use]
+    pub fn packet_available(&self) -> bool {
+        self.packet_port.is_some()
     }
 
     pub fn set_config(&mut self, cfg: WinlinkConfig) {
@@ -82,7 +124,7 @@ impl WinlinkManager {
     /// Returns an error only for reasons known before any I/O — no credentials,
     /// or a session already running. Anything that goes wrong on the wire
     /// arrives later through [`WinlinkManager::poll`].
-    pub fn connect(&mut self) -> Result<(), String> {
+    pub fn connect(&mut self, route: WinlinkRoute) -> Result<(), String> {
         if self.busy.load(Ordering::SeqCst) {
             return Err("a Winlink session is already running".into());
         }
@@ -104,26 +146,49 @@ impl WinlinkManager {
             .list(MailFolder::Outbox)
             .map_err(|e| format!("reading the outbox: {e}"))?;
 
+        // Fail before spawning anything when the radio cannot carry it. The
+        // alternative — a worker that starts and immediately reports failure —
+        // reads as a session that went wrong rather than one that was never
+        // possible.
+        let port = match &route {
+            WinlinkRoute::Packet { .. } => match self.packet_port.clone() {
+                Some(p) => Some(p),
+                None => {
+                    return Err(
+                        "switch the radio to PACKET or PACKET-HF before forwarding over the air"
+                            .into(),
+                    );
+                }
+            },
+            WinlinkRoute::Telnet { .. } => None,
+        };
+
         let cfg = SessionConfig {
             callsign: self.cfg.callsign.trim().to_uppercase(),
             password: self.cfg.password.clone(),
             locator: self.cfg.locator.clone(),
             app_name: self.cfg.app_name.clone(),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
+            target_call: match &route {
+                WinlinkRoute::Telnet { .. } => crate::transport::CMS_TARGET_CALL.to_string(),
+                WinlinkRoute::Packet { gateway, .. } => gateway.to_uppercase(),
+            },
         };
-        let address = self.cfg.cms_address.clone();
         let busy = Arc::clone(&self.busy);
         let done_tx = self.done_tx.clone();
 
         busy.store(true, Ordering::SeqCst);
         self.status.busy = true;
-        self.status.activity = format!("connecting to {address}…");
+        self.status.activity = match &route {
+            WinlinkRoute::Telnet { address } => format!("connecting to {address}…"),
+            WinlinkRoute::Packet { gateway, .. } => format!("calling {gateway}…"),
+        };
         self.status.last_error = None;
 
         let spawned =
             std::thread::Builder::new().name("sdroxide-winlink".into()).spawn(move || {
                 let mut outcome = SessionOutcome::default();
-                let err = run_session(&address, &cfg, &outbound, &mut outcome);
+                let err = run_session(&route, port, &cfg, &outbound, &mut outcome);
                 // Release the flag before publishing, so a client that reacts
                 // to the result can immediately start another session.
                 busy.store(false, Ordering::SeqCst);
@@ -267,20 +332,39 @@ impl WinlinkManager {
 
 /// Dial and run one session, returning the error text if it failed.
 fn run_session(
-    address: &str,
+    route: &WinlinkRoute,
+    port: Option<sdroxide_ax25::PortHandle>,
     cfg: &SessionConfig,
     outbound: &[Message],
     outcome: &mut SessionOutcome,
 ) -> Option<String> {
-    let mut transport = match TelnetTransport::dial(address, &cfg.callsign, DIAL_TIMEOUT) {
-        Ok(t) => t,
-        Err(e) => return Some(e.to_string()),
-    };
-    outcome.log.extend(transport.login_log().iter().cloned());
-
-    match session::run_into(&mut transport, cfg, outbound, outcome) {
-        Ok(()) => None,
-        Err(e) => Some(e.to_string()),
+    match route {
+        WinlinkRoute::Telnet { address } => {
+            let mut transport =
+                match TelnetTransport::dial(address, &cfg.callsign, DIAL_TIMEOUT) {
+                    Ok(t) => t,
+                    Err(e) => return Some(e.to_string()),
+                };
+            outcome.log.extend(transport.login_log().iter().cloned());
+            match session::run_into(&mut transport, cfg, outbound, outcome) {
+                Ok(()) => None,
+                Err(e) => Some(e.to_string()),
+            }
+        }
+        WinlinkRoute::Packet { gateway, via } => {
+            let port = port.expect("connect() proved the link exists before spawning");
+            outcome.log.push(format!("> calling {gateway}"));
+            let mut transport =
+                match Ax25Transport::connect(port, gateway, via, RADIO_DIAL_TIMEOUT) {
+                    Ok(t) => t,
+                    Err(e) => return Some(e.to_string()),
+                };
+            outcome.log.push(format!("< connected to {gateway}"));
+            match session::run_into(&mut transport, cfg, outbound, outcome) {
+                Ok(()) => None,
+                Err(e) => Some(e.to_string()),
+            }
+        }
     }
 }
 
@@ -385,7 +469,7 @@ mod tests {
     fn connecting_without_credentials_is_refused_before_any_io() {
         let dir = TempDir::new("nocreds");
         let mut mgr = WinlinkManager::new(&dir.0, WinlinkConfig::default()).unwrap();
-        assert!(mgr.connect().is_err());
+        assert!(mgr.connect(WinlinkRoute::Telnet { address: String::new() }).is_err());
         assert!(!mgr.status().busy);
     }
 

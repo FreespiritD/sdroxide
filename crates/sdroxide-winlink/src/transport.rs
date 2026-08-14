@@ -155,3 +155,184 @@ impl Transport for TelnetTransport {
         format!("CMS telnet {}", self.address)
     }
 }
+
+// ───────────────────────────── the radio lane ─────────────────────────────
+
+/// A B2F session over an AX.25 connected-mode link.
+///
+/// The second implementer the trait above was written for. Everything radio-
+/// shaped lives behind [`sdroxide_ax25::PortHandle`]: this holds no modem, no
+/// timers and no PTT, only a byte stream and the callsign at the far end.
+///
+/// # Why `read` never times out
+///
+/// [`crate::session`]'s reader turns any `io::Error` into a dead session, and
+/// `Ok(0)` into a disconnect. Over TCP a 30-second silence means something is
+/// wrong; over 300-baud HF packet, with T1 retries against a fading path, a
+/// minute of silence is an ordinary part of a working session. A socket-style
+/// timeout here would kill sessions that were about to succeed.
+///
+/// AX.25 already has a failure model — T1 retried N2 times — and when it gives
+/// up the link says so. That is what this surfaces as `BrokenPipe`. `Ok(0)` is
+/// reserved for a clean DISC/UA. The belt-and-braces upper bound belongs in
+/// [`crate::manager`], as a whole-session watchdog, not here.
+#[derive(Debug)]
+pub struct Ax25Transport {
+    port: sdroxide_ax25::PortHandle,
+    /// Held for as long as the transport lives, so nothing else can drive the
+    /// link underneath a session in progress.
+    _lease: sdroxide_ax25::PortLease,
+    gateway: String,
+    /// Bytes delivered by the link but not yet read by the session.
+    inbox: std::collections::VecDeque<u8>,
+    /// The link has closed cleanly; hand back what is left, then `Ok(0)`.
+    closed: bool,
+}
+
+impl Ax25Transport {
+    /// Connect to `gateway` and wait for the link to come up.
+    ///
+    /// Blocks until the far end answers or the link gives up, which on HF can
+    /// be tens of seconds — this runs on the Winlink worker thread, which
+    /// exists precisely so that is somebody else's problem.
+    pub fn connect(
+        port: sdroxide_ax25::PortHandle,
+        gateway: &str,
+        via: &[String],
+        timeout: Duration,
+    ) -> Result<Self, TransportError> {
+        let lease = port.try_claim().ok_or_else(|| {
+            TransportError::Connect(
+                gateway.into(),
+                std::io::Error::other("the packet link is already in use"),
+            )
+        })?;
+        let peer = sdroxide_ax25::Addr::new(gateway).map_err(|e| {
+            TransportError::Connect(gateway.into(), std::io::Error::other(e.to_string()))
+        })?;
+        let digis = via
+            .iter()
+            .map(|d| sdroxide_ax25::Addr::new(d))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                TransportError::Connect(gateway.into(), std::io::Error::other(e.to_string()))
+            })?;
+
+        port.send(sdroxide_ax25::PortRequest::Connect { peer, via: digis, ext: false })
+            .map_err(|e| {
+                TransportError::Connect(gateway.into(), std::io::Error::other(e.to_string()))
+            })?;
+
+        let deadline = std::time::Instant::now() + timeout;
+        let mut inbox = std::collections::VecDeque::new();
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Err(TransportError::Connect(
+                    gateway.into(),
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "the gateway did not answer",
+                    ),
+                ));
+            }
+            match port.recv_timeout(left) {
+                Some(sdroxide_ax25::PortEvent::Connected) => {
+                    return Ok(Ax25Transport {
+                        port,
+                        _lease: lease,
+                        gateway: gateway.to_string(),
+                        inbox,
+                        closed: false,
+                    });
+                }
+                // A gateway that starts talking before we have processed the
+                // connect event is not an error; keep the bytes.
+                Some(sdroxide_ax25::PortEvent::Data(d)) => inbox.extend(d),
+                Some(sdroxide_ax25::PortEvent::Disconnected) => {
+                    return Err(TransportError::Connect(
+                        gateway.into(),
+                        std::io::Error::new(
+                            std::io::ErrorKind::ConnectionRefused,
+                            "the gateway hung up during the handshake",
+                        ),
+                    ));
+                }
+                Some(sdroxide_ax25::PortEvent::Failed(why)) => {
+                    return Err(TransportError::Connect(
+                        gateway.into(),
+                        std::io::Error::other(why),
+                    ));
+                }
+                None => {}
+            }
+        }
+    }
+
+    /// Pull whatever the link has, blocking until there is something.
+    fn fill(&mut self) -> std::io::Result<()> {
+        while self.inbox.is_empty() && !self.closed {
+            match self.port.recv() {
+                Ok(sdroxide_ax25::PortEvent::Data(d)) => self.inbox.extend(d),
+                Ok(sdroxide_ax25::PortEvent::Connected) => {}
+                Ok(sdroxide_ax25::PortEvent::Disconnected) => self.closed = true,
+                Ok(sdroxide_ax25::PortEvent::Failed(why)) => {
+                    return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, why));
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string()));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Read for Ax25Transport {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.fill()?;
+        let n = buf.len().min(self.inbox.len());
+        for slot in buf.iter_mut().take(n) {
+            *slot = self.inbox.pop_front().unwrap_or(0);
+        }
+        // `Ok(0)` only once the buffered bytes are gone: a peer that sends its
+        // last block and hangs up in the same breath still gets read.
+        Ok(n)
+    }
+}
+
+impl Write for Ax25Transport {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        // Blocks when the link's window is full, which is the backpressure —
+        // without it B2F would believe a whole message had gone out while none
+        // of it had left the antenna.
+        self.port
+            .send(sdroxide_ax25::PortRequest::Data(buf.to_vec()))
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string()))?;
+        Ok(buf.len())
+    }
+
+    /// Nothing to flush: `write` has already handed the bytes to the link, and
+    /// when they reach the air is CSMA's business, not ours.
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for Ax25Transport {
+    fn drop(&mut self) {
+        let _ = self.port.send(sdroxide_ax25::PortRequest::Disconnect);
+    }
+}
+
+impl Transport for Ax25Transport {
+    /// The gateway's callsign — which is why [`Transport::target_call`] exists
+    /// and why the CMS constant must stop being hard-coded in the greeting.
+    fn target_call(&self) -> &str {
+        &self.gateway
+    }
+
+    fn describe(&self) -> String {
+        format!("AX.25 packet to {}", self.gateway)
+    }
+}

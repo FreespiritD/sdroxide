@@ -163,8 +163,7 @@ pub use voice::{VOICE_MAX_LEN_S, VOICE_SLOTS, VoiceSlotInfo, VoiceStatus, slot_l
 pub use wefax::{WEFAX_STATIONS, WefaxChartMeta, WefaxIoc, WefaxLpm, WefaxStation, WefaxStatus};
 pub use winlink::{
     DEFAULT_CMS_ADDRESS, MAIL_PAGE_MAX, MailAttachment, MailDraft, MailEntry, MailFolder,
-    MailListing, MailMessage, WinlinkConfig, WinlinkStatus,
-};
+    MailListing, MailMessage, WinlinkConfig, WinlinkStatus, WinlinkLane, WinlinkGateway};
 pub use wsjtx::WsjtxConfig;
 pub use wspr::{
     BURST_S as WSPR_BURST_S, DEFAULT_TX_HZ as WSPR_DEFAULT_TX_HZ, POWERS_DBM as WSPR_POWERS_DBM,

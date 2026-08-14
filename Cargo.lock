@@ -5186,6 +5186,7 @@ dependencies = [
  "image",
  "num-complex",
  "rtrb",
+ "sdroxide-ax25",
  "sdroxide-config",
  "sdroxide-digi",
  "sdroxide-dsp",
@@ -5418,6 +5419,7 @@ version = "1.2.0"
 dependencies = [
  "crossbeam-channel",
  "md-5",
+ "sdroxide-ax25",
  "sdroxide-types",
  "serde",
  "thiserror 2.0.19",

@@ -1284,6 +1284,8 @@ struct Engine {
     winlink: Option<sdroxide_winlink::WinlinkManager>,
     /// The KISS TNC server, when the operator has one running.
     kiss: Option<sdroxide_kiss::KissServer>,
+    /// The session end of the packet link, while a packet mode is running.
+    packet_port: Option<sdroxide_ax25::PortHandle>,
     /// The network-cockpit config as last persisted. The spot manager has its
     /// own copy but does not hand it back, and a remote settings dialog has to
     /// be told what this station is set to — see [`Engine::emit_station_config`].
@@ -1611,6 +1613,7 @@ fn engine_thread(
         spots: sdroxide_net::SpotManager::new(),
         winlink: open_mailbox(&sdroxide_types::WinlinkConfig::default()),
         kiss: None,
+        packet_port: None,
         net_cfg: sdroxide_types::NetworkConfig::default(),
         sat_cfg: sdroxide_types::SatConfig::default(),
         tle_refresh: None,
@@ -2725,7 +2728,7 @@ impl Engine {
 
     /// Build the digital-mode engine for `mode`: the continuous keyboard
     /// controller for PSK/RTTY, else the slotted FT8/FT4 controller.
-    fn make_digi(&self, mode: Mode, tap_rate: f64) -> Box<dyn DigiEngine> {
+    fn make_digi(&mut self, mode: Mode, tap_rate: f64) -> Box<dyn DigiEngine> {
         if mode == Mode::Cw {
             // First, because CW is not `is_digital()` and nothing below would
             // catch it: it is an ordinary analog mode that happens to have a
@@ -2752,7 +2755,26 @@ impl Engine {
             // underneath, not in the link layer. Ahead of `is_text_modem` and
             // the fall-through for the usual reason — packet is neither, and
             // whichever caught it would decode nothing and say nothing.
-            Box::new(PacketController::new(mode, self.digi_config.clone(), tap_rate))
+            //
+            // The engine makes the link port and keeps the handle, rather than
+            // the controller handing one out: a mode change destroys the
+            // controller, and the port's lifetime has to be something the
+            // engine can reason about.
+            let mut ctl = PacketController::new(mode, self.digi_config.clone(), tap_rate);
+            let call = self.digi_config.packet_mycall.trim();
+            match sdroxide_ax25::Addr::new(if call.is_empty() { "N0CALL" } else { call }) {
+                Ok(me) => {
+                    let (handle, endpoint) = sdroxide_ax25::port_pair(sdroxide_ax25::LinkConfig {
+                        me,
+                        paclen: self.digi_config.packet_paclen,
+                        maxframe: self.digi_config.packet_maxframe,
+                    });
+                    ctl.attach_port(endpoint);
+                    self.packet_port = Some(handle);
+                }
+                Err(e) => warn!("packet callsign: {e}"),
+            }
+            Box::new(ctl)
         } else if mode.is_rf_paint() {
             Box::new(RfPaintController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_fsq() {
@@ -2786,6 +2808,10 @@ impl Engine {
     /// has been told it — including the speed carried over from the last
     /// session, which the operator never touches this time round.
     fn start_digi(&mut self, mode: Mode, tap_rate: f64) {
+        // The old controller owns the far end of any existing link, and is
+        // about to be dropped. Clear the handle first so nothing hands a
+        // session a port whose other end has gone.
+        self.packet_port = None;
         self.digi = Some(self.make_digi(mode, tap_rate));
         if mode == Mode::Cw {
             self.source.set_cw_wpm(self.digi_config.cw_wpm);
@@ -2881,6 +2907,7 @@ impl Engine {
                 self.sync_tx_state();
             }
             self.digi = None;
+            self.packet_port = None;
             self.channel_analyzer = None;
             self.sync_audio_tap();
             info!("digital-mode engine stopped");
@@ -3762,10 +3789,38 @@ impl Engine {
             //
             // All of these answer on the event channel and none of them touch
             // `RadioState`, so they return before the State emit below.
+            PacketBeacon => {
+                match self.digi.as_mut() {
+                    Some(d) if self.state.rx[0].mode.is_packet() => d.packet_beacon_now(),
+                    _ => {
+                        let _ = self.event_tx.send(RadioEvent::Notice(Some(
+                            "switch the radio to PACKET or PACKET-HF to beacon".into(),
+                        )));
+                    }
+                }
+                return;
+            }
             WinlinkConnect => {
                 match self.winlink.as_mut() {
                     Some(wl) => {
-                        if let Err(e) = wl.connect() {
+                        // The lane is the operator's setting rather than a
+                        // command parameter, so an existing client that knows
+                        // nothing about radio lanes still connects by telnet.
+                        let c = wl.config();
+                        let route = match c.lane {
+                            sdroxide_types::WinlinkLane::Telnet => {
+                                sdroxide_winlink::WinlinkRoute::Telnet {
+                                    address: c.cms_address.clone(),
+                                }
+                            }
+                            sdroxide_types::WinlinkLane::Packet => {
+                                sdroxide_winlink::WinlinkRoute::Packet {
+                                    gateway: c.gateway.trim().to_uppercase(),
+                                    via: c.gateway_via.clone(),
+                                }
+                            }
+                        };
+                        if let Err(e) = wl.connect(route) {
                             let _ = self.event_tx.send(RadioEvent::Notice(Some(e)));
                         }
                         self.emit_winlink_status();
@@ -4975,6 +5030,18 @@ impl Engine {
     /// engine owns: a forwarding session takes tens of seconds and none of it
     /// happens here.
     fn poll_winlink(&mut self) {
+        // Keep the manager's view of the radio link current. A mode change
+        // destroys the controller that owns the far end, so this both hands the
+        // port over when a packet mode starts and takes it away when it stops —
+        // taking it away is what turns "the operator changed mode mid-session"
+        // into a session that fails with a transcript instead of blocking for
+        // ever on a link that no longer exists.
+        let port = self.packet_port.clone();
+        if let Some(wl) = self.winlink.as_mut() {
+            if wl.packet_available() != port.is_some() {
+                wl.set_packet_port(port);
+            }
+        }
         let Some(wl) = self.winlink.as_mut() else { return };
         if wl.poll() {
             let _ = self.event_tx.send(RadioEvent::WinlinkStatus(wl.status().clone()));

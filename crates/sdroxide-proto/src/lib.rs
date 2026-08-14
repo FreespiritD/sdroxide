@@ -266,6 +266,11 @@ use sdroxide_types::{
 /// `NetworkConfig`. The heard list is capped (`PACKET_HEARD_MAX`) and travels
 /// whole rather than as a delta: it is a rolling view of a busy channel, not a
 /// log, and a client that reconnects wants what is on the air now.
+/// `WinlinkConfig` also gained `lane`, `gateway` and `gateway_via`, so the
+/// operator picks the radio lane in settings rather than the client picking it
+/// per connect — which keeps `Command::WinlinkConnect` unchanged and means an
+/// older client still forwards by telnet instead of failing to encode a command
+/// it has never heard of.
 pub const PROTO_VERSION: u16 = 53;
 const VERSION_BYTE: u8 = 0x12;
 

@@ -25,8 +25,9 @@ pub mod transport;
 pub use b2f::{Answer, Proposal, Sid};
 pub use lzhuf::{LzhufError, compress, decompress};
 pub use mailbox::{Folder, Mailbox, MailboxError};
-pub use manager::WinlinkManager;
+pub use manager::{WinlinkManager, WinlinkRoute};
 pub use message::{Attachment, Message, MessageError};
 pub use secure::login_response;
 pub use session::{SessionConfig, SessionError, SessionOutcome};
 pub use transport::{TelnetTransport, Transport, TransportError};
+

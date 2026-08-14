@@ -28,6 +28,27 @@ pub struct SessionConfig {
     pub locator: String,
     pub app_name: String,
     pub app_version: String,
+    /// Who we are forwarding with, for the greeting line.
+    ///
+    /// `wl2k` for the CMS, the gateway's callsign over the air. Carried here
+    /// rather than read from [`crate::transport::Transport::target_call`] so
+    /// that [`run_into`] stays generic over `Read + Write` — the in-memory
+    /// `FakeCms` the tests drive is not a `Transport` and should not have to
+    /// become one to exercise a greeting line.
+    pub target_call: String,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        SessionConfig {
+            callsign: String::new(),
+            password: String::new(),
+            locator: String::new(),
+            app_name: String::new(),
+            app_version: String::new(),
+            target_call: crate::transport::CMS_TARGET_CALL.to_string(),
+        }
+    }
 }
 
 /// What a session did.
@@ -345,7 +366,7 @@ fn send_our_handshake<T: Read + Write>(
 
     send_line(
         wire,
-        &format!("; {} DE {} ({})", crate::transport::CMS_TARGET_CALL, cfg.callsign, cfg.locator),
+        &format!("; {} DE {} ({})", cfg.target_call, cfg.callsign, cfg.locator),
         out,
     )?;
     Ok(())
@@ -467,6 +488,7 @@ mod tests {
             locator: "JN88".into(),
             app_name: "sdroxide".into(),
             app_version: "1.2.0".into(),
+            ..Default::default()
         }
     }
 

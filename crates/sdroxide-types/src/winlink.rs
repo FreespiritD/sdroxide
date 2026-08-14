@@ -157,13 +157,50 @@ pub struct WinlinkStatus {
 /// The gateway the CMS telnet transport dials by default.
 pub const DEFAULT_CMS_ADDRESS: &str = "server.winlink.org:8772";
 
+/// Which lane a forwarding session should use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum WinlinkLane {
+    /// The CMS over the internet.
+    #[default]
+    Telnet,
+    /// An RMS gateway over the air, using the radio's current packet mode.
+    Packet,
+}
+
+/// One RMS gateway the operator has written down.
+///
+/// Winlink publishes the real gateway list through `api.winlink.org`'s
+/// `ChannelList`, which refuses every request without an access key we do not
+/// have. So the operator keeps their own list, which is what a packet operator
+/// does anyway: the two or three gateways actually reachable from a given
+/// location are learned by trying, and they do not change often.
+///
+/// When a key does arrive, the fetched list populates exactly this structure —
+/// nothing above it needs to know where the entries came from.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WinlinkGateway {
+    /// The gateway's callsign, including SSID — `OE1XAR-10`.
+    pub callsign: String,
+    /// Digipeaters to reach it through, in order. Usually empty.
+    pub via: Vec<String>,
+    /// Where to tune. Zero means "wherever the radio already is", which is the
+    /// right answer for an operator who parks on one channel.
+    pub freq_hz: f64,
+    /// Speed this gateway runs. Selecting the gateway sets the modem to match,
+    /// because calling a 1200-baud gateway at 9600 produces silence and no
+    /// explanation.
+    pub baud: crate::PacketBaud,
+    /// Free text for the operator — "Vienna, 24/7" — shown in the picker.
+    pub label: String,
+}
+
 /// Account settings for Winlink.
 ///
 /// The password is the Winlink *account* password, which answers the secure
 /// login challenge. It is stored in plaintext alongside the other service
 /// credentials in [`crate::NetworkConfig`] — the same posture as QRZ, LoTW and
 /// Club Log, and worth knowing rather than assuming otherwise.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WinlinkConfig {
     /// The account callsign. Upper-cased on use.
@@ -183,6 +220,19 @@ pub struct WinlinkConfig {
     /// knob that lets an operator get in, and it is deliberately visible in
     /// settings rather than silently defaulted to somebody else's client name.
     pub app_name: String,
+    /// Which lane [`crate::Command::WinlinkConnect`] uses by default.
+    #[serde(default)]
+    pub lane: WinlinkLane,
+    /// The RMS gateway to call over the air, e.g. `OE1XAR-10`.
+    #[serde(default)]
+    pub gateway: String,
+    /// Digipeaters to route through, in order. Usually empty.
+    #[serde(default)]
+    pub gateway_via: Vec<String>,
+    /// The operator's own gateway list, since the published one needs an API
+    /// key. Picking one fills in `gateway` and `gateway_via`.
+    #[serde(default)]
+    pub gateways: Vec<WinlinkGateway>,
     /// Connect automatically on a timer.
     pub auto_connect: bool,
     /// How often to connect when `auto_connect` is on.
@@ -197,6 +247,10 @@ impl Default for WinlinkConfig {
             locator: String::new(),
             cms_address: DEFAULT_CMS_ADDRESS.to_string(),
             app_name: "sdroxide".to_string(),
+            lane: WinlinkLane::default(),
+            gateway: String::new(),
+            gateway_via: Vec::new(),
+            gateways: Vec::new(),
             auto_connect: false,
             auto_connect_minutes: 30,
         }

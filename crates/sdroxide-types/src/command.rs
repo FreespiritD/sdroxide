@@ -483,6 +483,9 @@ pub enum Command {
     /// [`crate::RadioEvent::WinlinkStatus`] when it finishes; refused there too
     /// if one is already running.
     WinlinkConnect,
+    /// Packet: send one UNPROTO identification frame now. Still subject to
+    /// CSMA — the operator asks for the channel, they do not take it.
+    PacketBeacon,
     /// One page of a mail folder, newest first: `count` entries (capped at
     /// [`crate::MAIL_PAGE_MAX`]) from `offset`. Answered with
     /// [`crate::RadioEvent::MailListing`].

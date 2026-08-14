@@ -127,6 +127,8 @@ pub trait DigiEngine: Send {
     /// RIFP: forget an incomplete incoming session by its 16-hex-digit ID, or
     /// all of them when the string is empty.
     fn rifp_drop_session(&mut self, _session: &str) {}
+    /// Packet: send one UNPROTO identification frame now.
+    fn packet_beacon_now(&mut self) {}
     /// Packet: transmit a frame on a KISS host's behalf. Subject to CSMA like
     /// everything else — a host asks for the channel, it does not take it.
     fn packet_send_frame(&mut self, _frame: Vec<u8>) {}

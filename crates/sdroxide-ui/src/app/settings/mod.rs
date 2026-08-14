@@ -1587,7 +1587,121 @@ impl SdroxideApp {
                 net_row(ui, "Locator", &mut wl.locator, 100.0);
 
                 ui.add_space(6.0);
-                net_heading(ui, "Gateway");
+                net_heading(ui, "How to connect");
+                ui.horizontal(|ui| {
+                    ui.add_sized([96.0, 22.0], egui::Label::new("Route"));
+                    ui.selectable_value(
+                        &mut wl.lane,
+                        sdroxide_types::WinlinkLane::Telnet,
+                        "Internet",
+                    )
+                    .on_hover_text("Forward with the CMS over the internet");
+                    ui.selectable_value(
+                        &mut wl.lane,
+                        sdroxide_types::WinlinkLane::Packet,
+                        "Radio (packet)",
+                    )
+                    .on_hover_text(
+                        "Call an RMS gateway on the air. The radio must be in PACKET or \
+                         PACKET-HF.",
+                    );
+                });
+
+                if wl.lane == sdroxide_types::WinlinkLane::Packet {
+                    ui.add_space(4.0);
+                    net_row(ui, "Gateway", &mut wl.gateway, 140.0);
+                    let mut via = wl.gateway_via.join(" ");
+                    ui.horizontal(|ui| {
+                        ui.add_sized([96.0, 22.0], egui::Label::new("Via"));
+                        if ui.add_sized([200.0, 22.0], egui::TextEdit::singleline(&mut via)).changed()
+                        {
+                            wl.gateway_via = via
+                                .split_whitespace()
+                                .map(|s| s.to_uppercase())
+                                .collect();
+                        }
+                    });
+                    ui.label(
+                        RichText::new(
+                            "Digipeaters, in order, separated by spaces. Usually empty — a \
+                             gateway you can hear directly is a gateway you should call \
+                             directly.",
+                        )
+                        .weak(),
+                    );
+
+                    ui.add_space(6.0);
+                    net_heading(ui, "My gateways");
+                    ui.label(
+                        RichText::new(
+                            "Winlink's published gateway list needs an API key sdroxide does \
+                             not have, so keep your own. The two or three gateways reachable \
+                             from one location are learned by trying, and they rarely change.",
+                        )
+                        .weak(),
+                    );
+
+                    let mut remove = None;
+                    let mut pick = None;
+                    for (i, g) in wl.gateways.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button("USE")
+                                .on_hover_text("Call this one on the next connect")
+                                .clicked()
+                            {
+                                pick = Some(i);
+                            }
+                            let freq = if g.freq_hz > 0.0 {
+                                format!("{:.4} MHz", g.freq_hz / 1e6)
+                            } else {
+                                "current dial".to_string()
+                            };
+                            let via = if g.via.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" via {}", g.via.join(" "))
+                            };
+                            ui.label(format!(
+                                "{}{via} — {freq}, {} baud{}{}",
+                                g.callsign,
+                                g.baud.label(),
+                                if g.label.is_empty() { "" } else { " — " },
+                                g.label,
+                            ));
+                            if ui.button("✕").on_hover_text("Forget this gateway").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = pick {
+                        let g = wl.gateways[i].clone();
+                        wl.gateway = g.callsign;
+                        wl.gateway_via = g.via;
+                    }
+                    if let Some(i) = remove {
+                        wl.gateways.remove(i);
+                    }
+
+                    ui.add_space(4.0);
+                    if ui
+                        .button("+ ADD GATEWAY")
+                        .on_hover_text("Save the gateway above to the list")
+                        .clicked()
+                        && !wl.gateway.trim().is_empty()
+                    {
+                        wl.gateways.push(sdroxide_types::WinlinkGateway {
+                            callsign: wl.gateway.trim().to_uppercase(),
+                            via: wl.gateway_via.clone(),
+                            freq_hz: 0.0,
+                            baud: sdroxide_types::PacketBaud::default(),
+                            label: String::new(),
+                        });
+                    }
+                }
+
+                ui.add_space(6.0);
+                net_heading(ui, "Internet gateway");
                 net_row(ui, "CMS address", &mut wl.cms_address, 220.0);
                 net_row(ui, "Client name", &mut wl.app_name, 140.0);
                 ui.label(
