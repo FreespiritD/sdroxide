@@ -1,0 +1,19 @@
+[package]
+name = "sdroxide-winlink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Winlink radio-email client for sdroxide: the B2F/FBB forwarding protocol, LZHUF compression, secure login, and a mailbox — over the CMS telnet gateway."
+
+# Native-only: blocking network I/O on its own threads. Must never be a
+# dependency of any wasm-targeted crate.
+
+[dependencies]
+sdroxide-types.workspace = true
+crossbeam-channel.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# The Winlink secure-login challenge is MD5 over a fixed salt. Used as a
+# checksum against a published algorithm, not to protect anything.
+md-5 = "0.10"
