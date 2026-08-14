@@ -186,10 +186,7 @@ fn mail_round_trips_through_the_engine() {
     // A message id that would escape the mailbox directory is refused rather
     // than resolved. It arrives over a socket nothing authenticates and ends at
     // `remove_file`, so this is the rail that matters most here.
-    eng.send(Command::MailDelete {
-        folder: MailFolder::Inbox,
-        mid: "../../../etc/passwd".into(),
-    });
+    eng.send(Command::MailDelete { folder: MailFolder::Inbox, mid: "../../../etc/passwd".into() });
     let notice = eng.wait_for("a refusal", |ev| match ev {
         RadioEvent::Notice(Some(n)) => Some(n.clone()),
         _ => None,
@@ -210,6 +207,50 @@ fn mail_round_trips_through_the_engine() {
     });
     assert!(notice.contains("callsign and password"), "unexpected notice: {notice}");
 
+    // Put the full account back, so what the restart below reloads is a
+    // configured station rather than the half-cleared one used just above.
+    let mut net = sdroxide_types::NetworkConfig::default();
+    net.winlink.callsign = "OE3JJS".into();
+    net.winlink.password = "not-used-offline".into();
+    eng.send(Command::SetNetworkConfig(net));
+    eng.wait_for("winlink status after restoring the account", |ev| {
+        matches!(ev, RadioEvent::WinlinkStatus(_)).then_some(())
+    });
+
     eng.stop();
+
+    // Settings must survive a restart. The engine loads `net.json` at startup,
+    // but the mailbox manager is built before that happens, so it has to be
+    // handed the account explicitly — otherwise every session refuses with
+    // "set a callsign and password first" and it reads as the settings having
+    // been lost.
+    let mut h = start_engine(
+        Box::new(Silence { center: 14_200_000.0 }),
+        caps(),
+        EngineConfig { store: sdroxide_config::Store::radio(0), ..Default::default() },
+    );
+    let thread = h.thread.take();
+    let restarted = Harness { h, thread };
+    restarted.wait_for("the first state", |ev| matches!(ev, RadioEvent::State(_)).then_some(()));
+
+    // The callsign persisted, so composing works without configuring anything.
+    restarted.send(Command::MailCompose(Box::new(MailDraft {
+        to: vec!["OE1XYZ".into()],
+        subject: "after restart".into(),
+        body: "still configured\r\n".into(),
+        ..Default::default()
+    })));
+    let mid = restarted.wait_for("a composed message after restart", |ev| match ev {
+        RadioEvent::MailSaved(mid) => Some(mid.clone()),
+        _ => None,
+    });
+    restarted.send(Command::MailGet { folder: MailFolder::Outbox, mid: mid.clone() });
+    let msg = restarted.wait_for("the message after restart", |ev| match ev {
+        RadioEvent::MailMessage(m) if m.mid == mid => Some(m.clone()),
+        _ => None,
+    });
+    assert_eq!(msg.from, "OE3JJS", "the persisted callsign should have been reloaded");
+
+    restarted.stop();
     let _ = std::fs::remove_dir_all(&root);
 }

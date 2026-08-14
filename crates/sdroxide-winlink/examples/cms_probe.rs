@@ -13,11 +13,16 @@
 //!     cargo run -p sdroxide-winlink --example cms_probe
 //! ```
 //!
-//! With `--send` it also posts a short message to the account itself, which is
-//! the end-to-end check: it should come back on a later connection.
+//! With `--send` it also posts a short message. With `--mailbox <dir>` it runs
+//! the session through [`WinlinkManager`] instead of driving the session layer
+//! directly, so the whole stack is exercised — receive, file to disk, list —
+//! which matters because the CMS delivers a message once and there is no
+//! second chance to test the filing half.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use sdroxide_types::MailFolder;
+use sdroxide_winlink::WinlinkManager;
 use sdroxide_winlink::message::{Message, format_date, generate_mid};
 use sdroxide_winlink::session::{self, SessionConfig};
 use sdroxide_winlink::transport::{CMS_ADDRESS, TelnetTransport};
@@ -36,6 +41,14 @@ fn main() {
     // Kept as an explicit, off-by-default knob rather than a silent default:
     // claiming to be somebody else's client is not ours to do quietly.
     let app_name = std::env::var("WINLINK_APP_NAME").unwrap_or_else(|_| "sdroxide".into());
+
+    // `--mailbox <dir>`: drive the manager, which is what the engine uses.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--mailbox") {
+        let dir = args.get(i + 1).expect("--mailbox needs a directory").clone();
+        run_via_manager(&dir, &callsign, &password, &locator, &address, &app_name, send);
+        return;
+    }
 
     println!("connecting to {address} as {callsign} (client name {app_name})…");
     let mut transport = match TelnetTransport::dial(&address, &callsign, Duration::from_secs(30)) {
@@ -116,4 +129,78 @@ fn test_message(callsign: &str) -> Message {
 
 fn indent(text: &str) -> String {
     text.lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n")
+}
+
+/// Run one session through [`WinlinkManager`] and report what landed in the
+/// mailbox, so the filing half is covered by the same single delivery.
+#[allow(clippy::too_many_arguments)]
+fn run_via_manager(
+    dir: &str,
+    callsign: &str,
+    password: &str,
+    locator: &str,
+    address: &str,
+    app_name: &str,
+    send: bool,
+) {
+    let cfg = sdroxide_types::WinlinkConfig {
+        callsign: callsign.to_string(),
+        password: password.to_string(),
+        locator: locator.to_string(),
+        cms_address: address.to_string(),
+        app_name: app_name.to_string(),
+        ..Default::default()
+    };
+    let mut mgr = WinlinkManager::new(dir, cfg).expect("opening the mailbox");
+    println!("mailbox at {dir}");
+
+    if send {
+        let draft = sdroxide_types::MailDraft {
+            to: vec![callsign.to_string()],
+            subject: "sdroxide test".into(),
+            body: "Sent by sdroxide's Winlink client.\r\n".into(),
+            ..Default::default()
+        };
+        println!("filed {} in the outbox", mgr.compose(&draft).expect("composing"));
+    }
+
+    println!("connecting to {address} as {callsign} (client name {app_name})…");
+    mgr.connect().expect("starting the session");
+    while !mgr.poll() {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    let status = mgr.status().clone();
+    println!("\n--- transcript ---");
+    for line in &status.log {
+        println!("{line}");
+    }
+
+    println!("\n--- result ---");
+    if let Some(err) = &status.last_error {
+        println!("session failed: {err}");
+    }
+    println!("received {}, sent {}", status.last_received, status.last_sent);
+    for (i, folder) in MailFolder::ALL.into_iter().enumerate() {
+        println!("  {:<8} {}", folder.dir_name(), status.counts[i]);
+    }
+
+    // The point of this mode: what actually reached the disk.
+    for folder in [MailFolder::Inbox, MailFolder::Sent] {
+        let listing = mgr.list(folder, 0, 20);
+        for entry in &listing.entries {
+            println!("\n[{}] {}  {}", folder.dir_name(), entry.date, entry.mid);
+            println!("  from {}  to {}", entry.from, entry.to);
+            println!("  subject: {}", entry.subject);
+            if let Some(msg) = mgr.get(folder, &entry.mid) {
+                println!("  body ({} bytes):", msg.body.len());
+                for line in msg.body.lines() {
+                    println!("    {line}");
+                }
+                for att in &msg.attachments {
+                    println!("  attachment: {} ({} bytes)", att.name, att.data.len());
+                }
+            }
+        }
+    }
 }

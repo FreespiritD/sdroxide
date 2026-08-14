@@ -1661,6 +1661,14 @@ fn engine_thread(
     // dialog attached to any of them shows the real station setup.
     engine.spots.set_operator(&engine.digi_config.my_call, &engine.digi_config.my_grid);
     engine.net_cfg = sdroxide_config::load_network_config();
+    // Hand the persisted account to the mailbox. Without this the manager keeps
+    // the defaults it was built with and every session refuses with "set a
+    // callsign and password first", which reads exactly like the settings
+    // having been lost — they were saved, they simply never arrived here.
+    match engine.winlink.as_mut() {
+        Some(wl) => wl.set_config(engine.net_cfg.winlink.clone()),
+        None => engine.winlink = open_mailbox(&engine.net_cfg.winlink),
+    }
     if engine.primary {
         engine.spots.set_config(engine.net_cfg.clone());
     }

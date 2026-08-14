@@ -104,6 +104,12 @@ impl crate::app::SdroxideApp {
             cmds.push(Command::MailList { folder: self.mail.folder, offset: 0, count: PAGE });
         }
 
+        // An `egui::Window` shrinks to its content, so `default_height` alone
+        // leaves an empty inbox drawn as a couple of lines. `min_height` keeps
+        // a floor, and `set_min_height` inside makes the content actually ask
+        // for the room — without that the window collapses again the moment a
+        // folder is empty.
+        let min_h = crate::layout::window_h(ctx, 520.0);
         let mut open = self.mail.open;
         egui::Window::new("MAIL")
             .id(crate::layout::salted_id(ctx, "MAIL"))
@@ -111,9 +117,12 @@ impl crate::app::SdroxideApp {
             .frame(crate::chrome::window_frame())
             .resizable(true)
             .default_width(crate::layout::window_w(ctx, 860.0))
-            .default_height(crate::layout::window_h(ctx, 600.0))
+            .default_height(crate::layout::window_h(ctx, 640.0))
+            .min_width(crate::layout::window_w(ctx, 420.0))
+            .min_height(min_h)
             .show(ctx, |ui| {
                 crate::chrome::window_body_bg(ui);
+                ui.set_min_height(min_h);
                 self.mail_body(ui, cmds);
             });
         self.mail.open = open;
@@ -123,8 +132,13 @@ impl crate::app::SdroxideApp {
         self.mail_header(ui, cmds);
         ui.separator();
 
+        // Whatever is left under the header. In an auto-sizing window this can
+        // come back as zero or infinite, so it is clamped rather than trusted.
+        let avail = ui.available_height();
+        let body_h = if avail.is_finite() && avail > 1.0 { avail } else { 420.0 };
+
         if self.mail.show_log {
-            self.mail_log(ui);
+            self.mail_log(ui, body_h);
             return;
         }
         if self.mail.draft.is_some() {
@@ -133,15 +147,24 @@ impl crate::app::SdroxideApp {
         }
 
         // List above, message below — one column, so the window stays usable
-        // at the width a browser client on a laptop actually gets.
-        let list_height = (ui.available_height() * 0.45).max(120.0);
-        egui::ScrollArea::vertical().id_salt("mail-list").max_height(list_height).show(ui, |ui| {
-            self.mail_list(ui, cmds);
-        });
+        // at the width a browser client on a laptop actually gets. The list
+        // keeps a floor so a long message cannot squeeze it away entirely.
+        let list_h = (body_h * 0.45).clamp(140.0, (body_h - 120.0).max(140.0));
+        egui::ScrollArea::vertical()
+            .id_salt("mail-list")
+            .min_scrolled_height(list_h)
+            .max_height(list_h)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                self.mail_list(ui, cmds);
+            });
         ui.separator();
-        egui::ScrollArea::vertical().id_salt("mail-body").show(ui, |ui| {
-            self.mail_message(ui, cmds);
-        });
+        egui::ScrollArea::vertical().id_salt("mail-body").auto_shrink([false, false]).show(
+            ui,
+            |ui| {
+                self.mail_message(ui, cmds);
+            },
+        );
     }
 
     fn mail_header(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
@@ -368,16 +391,20 @@ impl crate::app::SdroxideApp {
         }
     }
 
-    fn mail_log(&mut self, ui: &mut egui::Ui) {
+    fn mail_log(&mut self, ui: &mut egui::Ui, height: f32) {
         if self.mail.status.log.is_empty() {
             ui.label("no session yet");
             return;
         }
-        egui::ScrollArea::vertical().id_salt("mail-log").show(ui, |ui| {
-            for line in &self.mail.status.log {
-                ui.label(egui::RichText::new(line).monospace());
-            }
-        });
+        egui::ScrollArea::vertical()
+            .id_salt("mail-log")
+            .max_height(height)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for line in &self.mail.status.log {
+                    ui.label(egui::RichText::new(line).monospace());
+                }
+            });
     }
 }
 
@@ -434,8 +461,10 @@ mod tests {
 
     #[test]
     fn deleting_the_open_message_closes_it() {
-        let mut ui = MailUi::default();
-        ui.selected = Some(Box::new(MailMessage { mid: "ABC".into(), ..Default::default() }));
+        let mut ui = MailUi {
+            selected: Some(Box::new(MailMessage { mid: "ABC".into(), ..Default::default() })),
+            ..Default::default()
+        };
         ui.on_deleted(MailFolder::Inbox, "ABC");
         assert!(ui.selected.is_none());
     }
