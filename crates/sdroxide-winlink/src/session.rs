@@ -200,6 +200,9 @@ pub fn run_into<T: Read + Write>(
         } else {
             match handle_inbound(&mut wire, out) {
                 Ok(Inbound::NoMore) => remote_no_msgs = true,
+                // They had mail for us; they have not said they are done, so
+                // the session goes round again rather than hanging up on them.
+                Ok(Inbound::Received) => remote_no_msgs = false,
                 Ok(Inbound::Quit) => quit_received = true,
                 // The CMS routinely drops the socket rather than saying FQ.
                 // That is a normal ending, not a failure.
@@ -236,17 +239,29 @@ fn handle_outbound<T: Read + Write>(
 
 /// What ended the peer's turn.
 enum Inbound {
-    /// `FF` — nothing more from them this session.
+    /// `FF`, or an empty proposal block — nothing more from them this session.
     NoMore,
     /// `FQ` — they are hanging up.
     Quit,
+    /// They proposed messages and we took them. Their turn is over, but they
+    /// have not said they are finished, so the session continues.
+    Received,
 }
 
-/// Their turn: take proposals and the messages that follow, until `FF`/`FQ`.
+/// Their turn: accumulate a proposal block, accept it, and read the messages.
+///
+/// **A proposal block ends the peer's turn.** After the `FS` answer and the
+/// messages it accepted, the peer says nothing more — no `FF` follows. Waiting
+/// for one blocks until the read timeout and reports a failed session even
+/// though the mail arrived, which is precisely what the live CMS does and what
+/// a fixture scripted with a trailing `FF` will never show.
 fn handle_inbound<T: Read + Write>(
     wire: &mut Wire<'_, T>,
     out: &mut SessionOutcome,
 ) -> Result<Inbound, SessionError> {
+    let mut proposals: Vec<Proposal> = Vec::new();
+    let mut checksum_input: Vec<u8> = Vec::new();
+
     loop {
         let line = wire.read_line()?;
         out.log.push(format!("< {line}"));
@@ -257,10 +272,25 @@ fn handle_inbound<T: Read + Write>(
         if line.starts_with("FF") {
             return Ok(Inbound::NoMore);
         }
-        if Proposal::parse(&line).is_some() {
-            receive_block(wire, line, out)?;
-            // A block is the whole of their turn; the next line is FF or FQ.
+        if let Some(prop) = Proposal::parse(&line) {
+            // The checksum covers each proposal line's bytes and its `\r`.
+            checksum_input.extend_from_slice(line.as_bytes());
+            checksum_input.push(b'\r');
+            proposals.push(prop);
             continue;
+        }
+        if let Some(rest) = line.strip_prefix("F>") {
+            let declared = u8::from_str_radix(rest.trim(), 16).unwrap_or(0);
+            let sum = checksum_input.iter().fold(0u8, |a, &b| a.wrapping_add(b));
+            if sum.wrapping_add(declared) != 0 {
+                return Err(SessionError::BadProposalChecksum);
+            }
+            // An empty block is how a peer says it has nothing, in place of FF.
+            if proposals.is_empty() {
+                return Ok(Inbound::NoMore);
+            }
+            receive_messages(wire, &proposals, out)?;
+            return Ok(Inbound::Received);
         }
         // `;PM`, MOTD and anything else is informational; the log has it.
     }
@@ -321,38 +351,12 @@ fn send_our_handshake<T: Read + Write>(
     Ok(())
 }
 
-/// Take a proposal block: accumulate `FC` lines, verify the `F>` checksum,
-/// accept everything, then read the messages that follow.
-fn receive_block<T: Read + Write>(
+/// Accept a parsed proposal block and read the messages that follow.
+fn receive_messages<T: Read + Write>(
     wire: &mut Wire<'_, T>,
-    first: String,
+    proposals: &[Proposal],
     out: &mut SessionOutcome,
 ) -> Result<(), SessionError> {
-    let mut proposals = Vec::new();
-    let mut checksum_input = Vec::new();
-
-    let mut line = first;
-    loop {
-        if let Some(prop) = Proposal::parse(&line) {
-            checksum_input.extend_from_slice(line.as_bytes());
-            checksum_input.push(b'\r');
-            proposals.push(prop);
-        } else if let Some(rest) = line.strip_prefix("F>") {
-            let declared = u8::from_str_radix(rest.trim(), 16).unwrap_or(0);
-            let sum = checksum_input.iter().fold(0u8, |a, &b| a.wrapping_add(b));
-            if sum.wrapping_add(declared) != 0 {
-                return Err(SessionError::BadProposalChecksum);
-            }
-            break;
-        }
-        line = wire.read_line()?;
-        out.log.push(format!("< {line}"));
-    }
-
-    if proposals.is_empty() {
-        return Ok(());
-    }
-
     // Accept everything. A client with a full mailbox might defer; ours has
     // nowhere to put a deferral, and taking the message is what the operator
     // connected for.
@@ -360,7 +364,7 @@ fn receive_block<T: Read + Write>(
     let line = String::from_utf8_lossy(&b2f::answer_line(&answers)).trim_end().to_string();
     send_line(wire, &line, out)?;
 
-    for prop in &proposals {
+    for prop in proposals {
         let frame = wire.read_frame()?;
         out.log.push(format!("< [{} bytes] {}", frame.data.len(), frame.title));
 
@@ -514,6 +518,12 @@ mod tests {
             for (m, p) in msgs.iter().zip(&packed) {
                 s.extend_from_slice(&b2f::encode_frames(&m.title(), 0, p));
             }
+            // **No FF here.** A proposal block plus its messages is the whole
+            // of the peer's turn; the real CMS says nothing more. An earlier
+            // version of this script appended one, which let the client sit
+            // waiting for it and still pass — the live session then failed on
+            // a read timeout after the mail had already arrived. The FF below
+            // belongs to the peer's *next* turn.
             s.extend_from_slice(b"FF\r");
         }
         s
@@ -536,7 +546,13 @@ mod tests {
         let sent = String::from_utf8_lossy(&cms.from_client);
         assert!(sent.contains(";FW: OE3JJS\r"), "must request mail for the callsign");
         assert!(sent.contains("[sdroxide-1.2.0-B2FHM$]\r"), "must send our SID");
-        assert!(sent.contains("FS +\r"), "must accept the proposal");
+
+        // The exact turn sequence, not just "an FS appeared somewhere": we
+        // offer nothing, take their block, offer nothing again, and quit once
+        // they say they are done. Pinned because waiting for a phantom FF
+        // after the messages is invisible to any looser assertion.
+        let tail = &sent[sent.find("(JN88)").expect("greeting") + 6..];
+        assert_eq!(tail, "\rFF\rFS +\rFF\rFQ\r", "unexpected turn sequence: {tail:?}");
     }
 
     #[test]
