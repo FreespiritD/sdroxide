@@ -82,8 +82,9 @@ fn mode_digit(m: Mode) -> char {
         Mode::Lsb => '1',
         Mode::Cw => '3',
         Mode::Nfm | Mode::Wfm => '4',
-        // RIFP keys the carrier itself: data over FM, not over a sideband.
-        Mode::Rifp => 'A',
+        // RIFP keys the carrier itself and VHF packet frequency-modulates it:
+        // data over FM (DATA-FM), not over a sideband.
+        Mode::Rifp | Mode::Packet => 'A',
         Mode::Am | Mode::Sam | Mode::Dsb => '5',
         Mode::Digl => '8',
         Mode::Digu
@@ -98,6 +99,7 @@ fn mode_digit(m: Mode) -> char {
         | Mode::Thor
         | Mode::Fsq
         | Mode::Hell
+        | Mode::PacketHf
         | Mode::Rade => 'C',
         Mode::Usb | Mode::Spec | Mode::Sstv | Mode::Wefax | Mode::RfPaint => '2',
     }

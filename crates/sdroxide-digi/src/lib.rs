@@ -22,6 +22,7 @@ pub mod hell_controller;
 pub mod js8;
 pub mod js8_controller;
 pub mod modem;
+pub mod packet_controller;
 pub mod params;
 pub mod qso;
 pub mod rade_controller;
@@ -44,6 +45,7 @@ pub use fsq_controller::FsqController;
 pub use hell_controller::HellController;
 pub use js8_controller::Js8Controller;
 pub use modem::{ApHints, Ft8Modem};
+pub use packet_controller::PacketController;
 pub use params::{DECODE_RATE, DigiParams};
 pub use qso::QsoMachine;
 pub use rade_controller::RadeController;
@@ -125,6 +127,15 @@ pub trait DigiEngine: Send {
     /// RIFP: forget an incomplete incoming session by its 16-hex-digit ID, or
     /// all of them when the string is empty.
     fn rifp_drop_session(&mut self, _session: &str) {}
+    /// Packet: transmit a frame on a KISS host's behalf. Subject to CSMA like
+    /// everything else — a host asks for the channel, it does not take it.
+    fn packet_send_frame(&mut self, _frame: Vec<u8>) {}
+    /// Packet: frames heard since the last call, for a KISS host. Drained
+    /// rather than pushed, so a controller need not know a socket exists.
+    fn packet_take_air_frames(&mut self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+
     /// FSQ image: queue a grayscale image (`w*h` bytes) and start transmitting.
     fn set_image(&mut self, _gray: Vec<u8>, _w: u16, _h: u16) {}
 
@@ -180,6 +191,8 @@ mod dispatch_tests {
             "wefax"
         } else if mode.is_rifp() {
             "rifp"
+        } else if mode.is_packet() {
+            "packet"
         } else if mode.is_rf_paint() {
             "rfpaint"
         } else if mode.is_fsq() {
@@ -215,6 +228,12 @@ mod dispatch_tests {
         assert_eq!(pick(Mode::Psk), "text");
         assert_eq!(pick(Mode::Rade), "rade");
         assert_eq!(pick(Mode::Wefax), "wefax");
+        // Both packet modes reach the one packet controller. HF packet is the
+        // quiet trap of the pair: it is a keyboard-shaped mode on a sideband,
+        // so `is_text_modem` further down would look like a plausible home and
+        // the operator would get a PSK decoder listening to AX.25.
+        assert_eq!(pick(Mode::Packet), "packet");
+        assert_eq!(pick(Mode::PacketHf), "packet");
         // CW is not a digital mode at all, so it has to be picked off before
         // the chain rather than by it — the fall-through would hand it an FT8
         // decoder, which would sit there decoding nothing for ever.

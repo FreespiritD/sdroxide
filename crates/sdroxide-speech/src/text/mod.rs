@@ -138,6 +138,8 @@ impl<'a> Speaker<'a> {
             Mode::RfPaint => "R F paint",
             Mode::Rade => "rade",
             Mode::Rifp => "R I F P",
+            Mode::Packet => "packet",
+            Mode::PacketHf => "H F packet",
             Mode::Wefax => "wefax",
             Mode::Js8 => "J S eight",
             // Pronounced "whisper" — the joke the name is built on.

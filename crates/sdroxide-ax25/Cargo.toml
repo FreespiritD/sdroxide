@@ -1,0 +1,16 @@
+[package]
+name = "sdroxide-ax25"
+version.workspace = true
+edition.workspace = true
+description = "AX.25 link layer: HDLC framing, packet codec and connected mode"
+# MIT rather than the workspace GPL, deliberately. The connected-mode state
+# machine and the packet codec here are vendored from rax25 (MIT); keeping this
+# crate under the same terms means upstream's licence survives on upstream's
+# code. MIT is inbound-compatible with GPL, so the built binary is unaffected.
+# See vendor/rax25/PROVENANCE.md.
+license = "MIT"
+
+[dependencies]
+crossbeam-channel = "0.5"
+thiserror.workspace = true
+tracing.workspace = true

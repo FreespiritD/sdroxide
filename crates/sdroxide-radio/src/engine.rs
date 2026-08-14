@@ -15,8 +15,8 @@ use tracing::{debug, info, warn};
 use sdroxide_config::BandStacks;
 use sdroxide_digi::{
     CwController, DigiAction, DigiController, DigiEngine, FsqController, HellController,
-    Js8Controller, RadeController, RfPaintController, RifpController, SstvController,
-    TextModemController, WefaxController, WsprController,
+    Js8Controller, PacketController, RadeController, RfPaintController, RifpController,
+    SstvController, TextModemController, WefaxController, WsprController,
 };
 use sdroxide_dsp::{
     Agc, AutoNotch, DcBlock, Ddc, DeepFilterNr, Demodulator, Duc, Modulator, MonoResampler, Nco,
@@ -1282,6 +1282,8 @@ struct Engine {
     /// stop the radio from running — the operator simply gets an error the
     /// first time they open the window.
     winlink: Option<sdroxide_winlink::WinlinkManager>,
+    /// The KISS TNC server, when the operator has one running.
+    kiss: Option<sdroxide_kiss::KissServer>,
     /// The network-cockpit config as last persisted. The spot manager has its
     /// own copy but does not hand it back, and a remote settings dialog has to
     /// be told what this station is set to — see [`Engine::emit_station_config`].
@@ -1608,6 +1610,7 @@ fn engine_thread(
         good_vfo_hz: source_center_hz,
         spots: sdroxide_net::SpotManager::new(),
         winlink: open_mailbox(&sdroxide_types::WinlinkConfig::default()),
+        kiss: None,
         net_cfg: sdroxide_types::NetworkConfig::default(),
         sat_cfg: sdroxide_types::SatConfig::default(),
         tle_refresh: None,
@@ -1779,6 +1782,7 @@ fn engine_thread(
         engine.wsjtx_heartbeat();
         engine.poll_spots();
         engine.poll_winlink();
+        engine.poll_kiss_server();
         engine.poll_images();
         engine.poll_tle_refresh();
         engine.poll_sat_track();
@@ -2743,6 +2747,12 @@ impl Engine {
             Box::new(WefaxController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_rifp() {
             Box::new(RifpController::new(self.digi_config.clone(), tap_rate))
+        } else if mode.is_packet() {
+            // Both packet modes, one controller: HF and VHF differ in the radio
+            // underneath, not in the link layer. Ahead of `is_text_modem` and
+            // the fall-through for the usual reason — packet is neither, and
+            // whichever caught it would decode nothing and say nothing.
+            Box::new(PacketController::new(mode, self.digi_config.clone(), tap_rate))
         } else if mode.is_rf_paint() {
             Box::new(RfPaintController::new(self.digi_config.clone(), tap_rate))
         } else if mode.is_fsq() {
@@ -4968,6 +4978,68 @@ impl Engine {
         let Some(wl) = self.winlink.as_mut() else { return };
         if wl.poll() {
             let _ = self.event_tx.send(RadioEvent::WinlinkStatus(wl.status().clone()));
+        }
+    }
+
+    /// Start, stop and pump the KISS TNC server.
+    ///
+    /// Only runs in a packet mode: the server offers *this* modem, and offering
+    /// it while the radio is on FT8 would be a socket that accepts frames and
+    /// silently never sends them. Stopping it on the way out is what makes a
+    /// mode change a clean disconnect for any attached host rather than a
+    /// hang.
+    fn poll_kiss_server(&mut self) {
+        let want = self.state.rx[0].mode.is_packet() && self.digi_config.packet_kiss_server;
+        match (want, self.kiss.is_some()) {
+            (true, false) => {
+                let addr = format!("127.0.0.1:{}", self.digi_config.packet_kiss_port);
+                match sdroxide_kiss::KissServer::start(&addr) {
+                    Ok(s) => {
+                        info!(addr = %s.addr(), "KISS server started");
+                        self.kiss = Some(s);
+                    }
+                    Err(e) => {
+                        // Say so once and turn the setting off, rather than
+                        // retrying every tick and filling the log: a port
+                        // clash does not resolve itself.
+                        warn!("KISS server: {e}");
+                        self.digi_config.packet_kiss_server = false;
+                        let _ = self.event_tx.send(RadioEvent::Notice(Some(format!(
+                            "KISS server: {e}"
+                        ))));
+                    }
+                }
+                return;
+            }
+            (false, true) => {
+                self.kiss = None;
+                info!("KISS server stopped");
+                return;
+            }
+            _ => {}
+        }
+        let Some(srv) = self.kiss.as_ref() else { return };
+
+        // Host → air. Everything a host sends goes through CSMA like our own
+        // traffic; a KISS client can ask for the channel but cannot take it.
+        let reqs = srv.poll();
+        if let Some(digi) = self.digi.as_mut() {
+            for r in reqs {
+                match r {
+                    sdroxide_kiss::KissRequest::Send(frame) => digi.packet_send_frame(frame),
+                    sdroxide_kiss::KissRequest::Parameter(cmd, v) => {
+                        // Reported, not applied — TXDELAY and friends are the
+                        // operator's settings here, and a host overriding them
+                        // invisibly would be a mystery to debug.
+                        debug!(?cmd, v, "KISS host set a parameter; ignoring in favour of the operator's");
+                    }
+                    sdroxide_kiss::KissRequest::Clients(_) => {}
+                }
+            }
+            // Air → host.
+            for frame in digi.packet_take_air_frames() {
+                srv.broadcast(&frame);
+            }
         }
     }
 
@@ -7302,12 +7374,13 @@ fn rig_mode_class(m: Mode) -> u8 {
         | Mode::Hell
         | Mode::RfPaint
         | Mode::Rade
+        | Mode::PacketHf
         | Mode::Spec => 1,
         Mode::Am | Mode::Sam | Mode::Dsb => 2,
         Mode::Cw => 3,
-        // RIFP is data on an FM carrier, so a rig reporting plain FM is still
-        // where we left it.
-        Mode::Nfm | Mode::Wfm | Mode::Rifp => 5,
+        // RIFP and VHF packet are data on an FM carrier, so a rig reporting
+        // plain FM is still where we left it.
+        Mode::Nfm | Mode::Wfm | Mode::Rifp | Mode::Packet => 5,
     }
 }
 

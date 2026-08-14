@@ -334,6 +334,9 @@ pub struct DigiStatus {
     /// RADE digital voice: modem state, when that mode is active.
     #[serde(default)]
     pub rade: Option<RadeStatus>,
+    /// AX.25 packet: channel and link state, when that mode is active.
+    #[serde(default)]
+    pub packet: Option<PacketStatus>,
     /// JS8: heard list, reassembled conversation and transmit-queue progress.
     /// `None` in every other mode, so the panel that renders it is its own
     /// "are we in JS8?" test.
@@ -401,6 +404,83 @@ pub struct RadeStatus {
     pub dropped: u64,
 }
 
+/// The speed a packet station is running.
+///
+/// One `Mode` covers both VHF speeds because they differ only in the modem;
+/// which of the two, and whether HF's 300 baud applies at all, is this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PacketBaud {
+    /// 300 baud AFSK, 200 Hz shift — HF, on single sideband. Only meaningful
+    /// with [`crate::Mode::PacketHf`].
+    Hf300,
+    /// 1200 baud Bell 202 — the VHF workhorse, and what most RMS Packet
+    /// gateways answer on.
+    #[default]
+    Vhf1200,
+    /// 9600 baud G3RUH. Needs a radio with a real data port: the mic and
+    /// speaker path destroys it at both ends.
+    Vhf9600,
+}
+
+impl PacketBaud {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            PacketBaud::Hf300 => "300",
+            PacketBaud::Vhf1200 => "1200",
+            PacketBaud::Vhf9600 => "9600",
+        }
+    }
+
+    #[must_use]
+    pub fn baud(self) -> f64 {
+        match self {
+            PacketBaud::Hf300 => 300.0,
+            PacketBaud::Vhf1200 => 1200.0,
+            PacketBaud::Vhf9600 => 9600.0,
+        }
+    }
+}
+
+/// One frame heard on the channel, for the monitor pane.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PacketHeard {
+    /// Seconds since the Unix epoch.
+    pub at: i64,
+    pub from: String,
+    pub to: String,
+    /// Digipeater path, in order, empty when direct.
+    pub via: Vec<String>,
+    /// The frame type as a monitor would print it: `UI`, `SABM`, `I`, `RR`…
+    pub kind: String,
+    /// Printable payload, if the frame carried one.
+    pub text: String,
+    /// True when we sent it, so the pane can show both sides of a QSO.
+    pub sent: bool,
+}
+
+/// What a packet station is doing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PacketStatus {
+    pub baud: PacketBaud,
+    /// The channel is busy — a modem-level carrier detect, not a squelch.
+    /// CSMA will not key while this is set.
+    pub dcd: bool,
+    /// Smoothed receive level, 0..1, for the meter.
+    pub level: f32,
+    /// Frames heard, newest last, capped.
+    pub heard: Vec<PacketHeard>,
+    /// Frames that arrived but failed their check sequence. A rising count
+    /// against a steady `heard` is what a marginal path looks like.
+    pub bad_frames: u32,
+    /// The connected-mode link, when there is one.
+    pub link: Option<String>,
+}
+
+/// Most frames kept for the monitor pane. A busy VHF channel produces a few a
+/// second, and the pane is a rolling view rather than a log.
+pub const PACKET_HEARD_MAX: usize = 200;
+
 /// One station on the FSQ heard list.
 ///
 /// Stamped with when it was last heard, because FSQ's own heard list is only
@@ -452,6 +532,7 @@ impl DigiStatus {
             fsq_heard: Vec::new(),
             fsq_messages: Vec::new(),
             rade: None,
+            packet: None,
             js8: None,
             fox_queue: Vec::new(),
             call_queue: Vec::new(),
@@ -941,6 +1022,70 @@ pub struct DigiConfig {
     /// Give up on an incomplete incoming session after this many seconds.
     pub rifp_session_timeout_s: u32,
 
+    // ── AX.25 packet ──
+    /// Which speed the packet modem runs at.
+    #[serde(default)]
+    pub packet_baud: PacketBaud,
+    /// The callsign this station answers to on the air, with an optional SSID
+    /// (`OE3JJS-10`). Separate from the logbook callsign: a packet station
+    /// conventionally uses an SSID to distinguish the mailbox from the operator.
+    #[serde(default)]
+    pub packet_mycall: String,
+    /// Longest information field sent in one frame. 128 is the AX.25 default
+    /// and what a gateway will assume; 256 is faster on a clean VHF channel and
+    /// worse on a marginal one, because a single bit error costs the whole
+    /// frame.
+    #[serde(default = "default_packet_paclen")]
+    pub packet_paclen: u16,
+    /// Frames that may be outstanding before an acknowledgement is required.
+    #[serde(default = "default_packet_maxframe")]
+    pub packet_maxframe: u8,
+    /// Flags sent ahead of a frame, in milliseconds, to give the far end's
+    /// receiver time to hear us and lock its clock.
+    ///
+    /// Generous by default. The engine alone spends 165–240 ms getting from
+    /// "transmit" to the first sample on a CAT rig — measured, see
+    /// `crates/sdroxide-radio/tests/tx_turnaround.rs` — and the rig's own
+    /// transmit-ready time is on top of that. On an IQ SDR the engine costs
+    /// 7 ms and this is purely the far end's business.
+    #[serde(default = "default_packet_txdelay_ms")]
+    pub packet_txdelay_ms: u16,
+    /// Flags sent after a frame before dropping the transmitter.
+    #[serde(default = "default_packet_txtail_ms")]
+    pub packet_txtail_ms: u16,
+    /// CSMA persistence, 0–255: the chance of transmitting in any one slot once
+    /// the channel is clear. The classic value is 63.
+    #[serde(default = "default_packet_persist")]
+    pub packet_persist: u8,
+    /// CSMA slot time in milliseconds.
+    ///
+    /// Ten is the classic figure and is not achievable here: on a sound-card
+    /// rig the receive loop only comes round every 341 ms, so slots are counted
+    /// on the audio sample clock instead, and this is what that clock counts.
+    #[serde(default = "default_packet_slottime_ms")]
+    pub packet_slottime_ms: u16,
+    /// Offer the modem as a KISS TNC on a TCP port, so Pat, an APRS client or
+    /// the Linux AX.25 stack can use the radio.
+    #[serde(default)]
+    pub packet_kiss_server: bool,
+    /// Port for the KISS server. 8001 is what most software expects.
+    #[serde(default = "default_packet_kiss_port")]
+    pub packet_kiss_port: u16,
+    /// Answer incoming connection requests instead of refusing them.
+    ///
+    /// Off by default, which is the right posture for a Winlink client: it
+    /// dials out to a gateway and has no reason to accept calls. Turning it on
+    /// makes the station reachable — a mailbox, or a peer for another station
+    /// to connect to.
+    #[serde(default)]
+    pub packet_accept_incoming: bool,
+    /// Text sent as a periodic UNPROTO beacon. Empty disables it.
+    #[serde(default)]
+    pub packet_beacon_text: String,
+    /// Minutes between beacons; zero disables.
+    #[serde(default)]
+    pub packet_beacon_minutes: u32,
+
     // ── WSPR ──
     /// WSPR: percentage of two-minute slots to transmit in, 0–100.
     ///
@@ -1062,6 +1207,19 @@ impl Default for DigiConfig {
             rifp_send_sender_id: true,
             rifp_content_hint: String::new(),
             rifp_dither: true,
+            packet_baud: PacketBaud::default(),
+            packet_mycall: String::new(),
+            packet_paclen: default_packet_paclen(),
+            packet_maxframe: default_packet_maxframe(),
+            packet_txdelay_ms: default_packet_txdelay_ms(),
+            packet_txtail_ms: default_packet_txtail_ms(),
+            packet_persist: default_packet_persist(),
+            packet_slottime_ms: default_packet_slottime_ms(),
+            packet_kiss_server: false,
+            packet_kiss_port: default_packet_kiss_port(),
+            packet_accept_incoming: false,
+            packet_beacon_text: String::new(),
+            packet_beacon_minutes: 0,
             rifp_session_timeout_s: 300,
             wspr_tx_percent: 0,
             wspr_power_dbm: wspr_default_power(),
@@ -1630,4 +1788,26 @@ fn yes() -> bool {
 /// `#[serde(default)]` helper for [`DigiConfig::js8_assembly_timeout_s`].
 fn js8_default_timeout() -> u32 {
     300
+}
+
+fn default_packet_paclen() -> u16 {
+    128
+}
+fn default_packet_maxframe() -> u8 {
+    4
+}
+fn default_packet_txdelay_ms() -> u16 {
+    500
+}
+fn default_packet_txtail_ms() -> u16 {
+    50
+}
+fn default_packet_persist() -> u8 {
+    63
+}
+fn default_packet_slottime_ms() -> u16 {
+    100
+}
+fn default_packet_kiss_port() -> u16 {
+    8001
 }

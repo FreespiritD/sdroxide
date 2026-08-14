@@ -305,7 +305,7 @@ impl RttyTx {
 /// rectangular FSK symbol. A moving average of `len` samples has an equivalent
 /// noise bandwidth of exactly `rate/len` (the baud rate here), sidelobes and
 /// all, so this collects the full matched-filter gain at O(1) per sample.
-struct Integrator {
+pub(crate) struct Integrator {
     ring: Vec<Complex32>,
     pos: usize,
     // f64 so the running sum can't drift over an hours-long stream.
@@ -314,7 +314,7 @@ struct Integrator {
 }
 
 impl Integrator {
-    fn new(len: usize) -> Self {
+    pub(crate) fn new(len: usize) -> Self {
         Integrator {
             ring: vec![Complex32::new(0.0, 0.0); len.max(1)],
             pos: 0,
@@ -323,7 +323,7 @@ impl Integrator {
         }
     }
 
-    fn resize(&mut self, len: usize) {
+    pub(crate) fn resize(&mut self, len: usize) {
         self.ring.clear();
         self.ring.resize(len.max(1), Complex32::new(0.0, 0.0));
         self.pos = 0;
@@ -332,7 +332,7 @@ impl Integrator {
     }
 
     /// Push one sample; returns the window mean.
-    fn push(&mut self, z: Complex32) -> Complex32 {
+    pub(crate) fn push(&mut self, z: Complex32) -> Complex32 {
         let old = std::mem::replace(&mut self.ring[self.pos], z);
         self.pos = (self.pos + 1) % self.ring.len();
         self.sum_re += (z.re - old.re) as f64;

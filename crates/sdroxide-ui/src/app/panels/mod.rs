@@ -54,6 +54,10 @@ pub(in crate::app) fn panel_panes(mode: Mode) -> &'static [&'static str] {
         Mode::Wspr => &["SPOTS", "MAP", "STATUS"],
         Mode::Fsq => &["HEARD", "TRAFFIC"],
         Mode::Sstv | Mode::Rifp => &["RECEIVE", "SEND"],
+        // MONITOR is every frame heard on the channel, LINK is the connected
+        // session — the two things a packet operator watches, and they move
+        // independently, so they get a pane each rather than sharing one.
+        Mode::Packet | Mode::PacketHf => &["MONITOR", "LINK"],
         Mode::Wefax => &["CHART", "SAVED"],
         Mode::RfPaint => &["TEXT", "IMAGE"],
         // The keyboard modes and RADE are one column already: receive above,

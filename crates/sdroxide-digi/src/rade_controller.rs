@@ -105,6 +105,7 @@ fn build_status(
         fsq_heard: Vec::new(),
         fsq_messages: Vec::new(),
         rade,
+        packet: None,
         js8: None,
         fox_queue: Vec::new(),
         call_queue: Vec::new(),

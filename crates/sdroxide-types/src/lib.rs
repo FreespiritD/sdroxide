@@ -76,7 +76,8 @@ pub use controller::{AudioDevices, RadioController, RadioEvent};
 pub use digi::{
     ClockHealth, CwStatus, Decode, DigiConfig, DigiStatus, DxpedMode, FOX_MAX_SLOTS,
     FOX_ZONE_MAX_HZ, FoxCaller, FsqHeard, FsqMsg, HOUND_ZONE_MAX_HZ, HellVariant, QsoRecord,
-    QsoStep, QueuedCall, RadeStatus, ThorMode, TranscriptLine, adif_band, adif_to_qso_log,
+    PACKET_HEARD_MAX, PacketBaud, PacketHeard, PacketStatus, QsoStep, QueuedCall, RadeStatus,
+    ThorMode, TranscriptLine, adif_band, adif_to_qso_log,
     clock_health, cq_is_for_us, fmt_report, qso_log_to_adif, qso_log_to_text, utc_ymd_hms,
     worked_before, ymd_hms_to_unix,
 };

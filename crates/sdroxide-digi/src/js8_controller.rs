@@ -989,6 +989,7 @@ impl DigiEngine for Js8Controller {
             fsq_heard: Vec::new(),
             fsq_messages: Vec::new(),
             rade: None,
+            packet: None,
             js8: Some(Js8Status {
                 speed: self.speed,
                 heard: self.heard.clone(),

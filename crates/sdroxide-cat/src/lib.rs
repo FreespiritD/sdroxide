@@ -608,8 +608,15 @@ fn serial_thread(
     // What mode to command the rig into for a given app mode. FT8/FT4 use the
     // separate `digi_mode` setting; every other mode obeys `mode_control`
     // (CAT = mirror the selected mode to the rig; Radio = don't touch it).
+    //
+    // `digi_mode` is a choice between two *sidebands* — plain USB or the rig's
+    // DATA-U position — so it only makes sense for a mode that rides a
+    // sideband. The carrier-centred modes (RIFP, VHF packet) frequency-modulate
+    // the carrier instead: sending them as USB puts the rig in the wrong
+    // modulation entirely, and nothing downstream would say so. Those fall
+    // through to `mode_control`, where each protocol's own map answers DATA-FM.
     let mode_cmd = |app_mode: Mode| -> Option<Mode> {
-        if app_mode.is_digital() && !app_mode.is_sstv() {
+        if app_mode.is_digital() && !app_mode.is_sstv() && !app_mode.is_carrier_centered() {
             return match cfg.digi_mode {
                 DigiMode::Radio => None,
                 DigiMode::Usb => Some(Mode::Usb),

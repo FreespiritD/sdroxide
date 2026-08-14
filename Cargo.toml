@@ -66,6 +66,8 @@ sdroxide-pluto = { path = "crates/sdroxide-pluto" }
 sdroxide-sdrplay = { path = "crates/sdroxide-sdrplay" }
 sdroxide-net = { path = "crates/sdroxide-net" }
 sdroxide-winlink = { path = "crates/sdroxide-winlink" }
+sdroxide-ax25 = { path = "crates/sdroxide-ax25" }
+sdroxide-kiss = { path = "crates/sdroxide-kiss" }
 sdroxide-deepcw = { path = "crates/sdroxide-deepcw" }
 
 serde = { version = "1", features = ["derive"] }

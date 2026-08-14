@@ -254,7 +254,19 @@ use sdroxide_types::{
 /// mailbox itself stays on the engine host and is read a page and a message at
 /// a time, like the picture store: mirroring a mailbox with attachments in it
 /// to every client on connect is not something a phone link would survive.
-pub const PROTO_VERSION: u16 = 52;
+/// v53: AX.25 packet radio. Two appended `Mode` variants — `Packet` (VHF/UHF
+/// FM) and `PacketHf` (HF sideband) — so no surviving discriminant moves and a
+/// v52 client decodes every mode it already knew. The bump is for the other
+/// direction: a v53 engine on a packet mode sends a discriminant a v52 client
+/// has never heard of, and postcard is not self-describing, so what it would
+/// report is a protocol error rather than the truth. Same reasoning as v51's.
+/// `DigiConfig` also gained the `packet_*` settings and `DigiStatus` an
+/// `Option<PacketStatus>` carrying the heard list, which changes the layout of
+/// every message either of them rides in — the same reason v52 had to bump for
+/// `NetworkConfig`. The heard list is capped (`PACKET_HEARD_MAX`) and travels
+/// whole rather than as a delta: it is a rolling view of a busy channel, not a
+/// log, and a client that reconnects wants what is on the air now.
+pub const PROTO_VERSION: u16 = 53;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

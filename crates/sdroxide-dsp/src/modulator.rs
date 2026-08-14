@@ -50,11 +50,17 @@ pub fn make_modulator(mode: Mode, rate: f64, passband: (f32, f32)) -> Option<Box
         | Mode::Fsq
         | Mode::Hell
         | Mode::RfPaint
+        // HF packet is 300 baud AFSK audio on a sideband, like RTTY.
+        | Mode::PacketHf
         | Mode::Rade => Some(Box::new(SsbMod::new(rate, lo, hi))),
         Mode::Am | Mode::Sam | Mode::Dsb => Some(Box::new(AmMod::new(rate))),
         Mode::Nfm => Some(Box::new(FmMod::new(rate))),
         // RIFP keys the carrier itself rather than a sideband of it.
         Mode::Rifp => Some(Box::new(CpfskMod::new(rate))),
+        // VHF packet frequency-modulates the carrier, at both bauds — the
+        // modem hands over audio and this integrates it, exactly as a rig's
+        // FM modulator would.
+        Mode::Packet => Some(Box::new(PacketFmMod::new(rate))),
         // CW has none, deliberately. A manual PTT in CW keys a carrier — that
         // is what a straight key does — and modulating the microphone instead
         // would put speech on the air in a CW segment. The panel's keyer needs
@@ -141,6 +147,58 @@ impl FmMod {
 }
 
 impl Modulator for FmMod {
+    fn process(&mut self, audio: &[f32], out: &mut Vec<Complex32>) {
+        self.filtered.clear();
+        self.lpf.process(audio, &mut self.filtered);
+        for &a in &self.filtered {
+            self.phase =
+                (self.phase + self.dev_step * a.clamp(-1.0, 1.0) as f64) % std::f64::consts::TAU;
+            out.push(Complex32::new(0.9 * self.phase.cos() as f32, 0.9 * self.phase.sin() as f32));
+        }
+    }
+}
+
+/// Peak deviation for AX.25 packet on FM, both bauds. 3 kHz is what a TNC
+/// driving a rig's mic gain is set up for at 1200, and what the G3RUH modem
+/// specifies at 9600, so one figure serves both and matches what every other
+/// station on the channel is doing.
+pub const PACKET_DEVIATION_HZ: f64 = 3_000.0;
+
+/// FM for AX.25 packet: the modem's audio integrated into carrier phase at
+/// ±3 kHz.
+///
+/// Separate from [`FmMod`] only because of bandwidth. `FmMod` low-passes at
+/// 3 kHz for voice, which passes 1200 baud Bell 202 tones but would destroy the
+/// 9600 baud G3RUH baseband — that reaches to about 4.8 kHz. Widening `FmMod`
+/// instead would change how every NFM voice transmission sounds, to fix a mode
+/// it has nothing to do with.
+///
+/// There is deliberately no envelope gate here, unlike [`CpfskMod`]: the input
+/// is real audio, it crosses zero twice per cycle at 1200 baud, and a
+/// zero-means-idle test would chop it to pieces. Packet keys and unkeys through
+/// the engine's PTT path like every other continuous mode.
+pub struct PacketFmMod {
+    lpf: RealFir,
+    filtered: Vec<f32>,
+    phase: f64,
+    dev_step: f64,
+}
+
+impl PacketFmMod {
+    pub fn new(rate: f64) -> Self {
+        PacketFmMod {
+            // Wide enough for the 9600 baseband with room for its shaping
+            // skirt, narrow enough to keep the transmitted signal inside a
+            // 25 kHz channel once the deviation is applied.
+            lpf: RealFir::lowpass(129, 6_000.0, rate),
+            filtered: Vec::new(),
+            phase: 0.0,
+            dev_step: std::f64::consts::TAU * PACKET_DEVIATION_HZ / rate,
+        }
+    }
+}
+
+impl Modulator for PacketFmMod {
     fn process(&mut self, audio: &[f32], out: &mut Vec<Complex32>) {
         self.filtered.clear();
         self.lpf.process(audio, &mut self.filtered);

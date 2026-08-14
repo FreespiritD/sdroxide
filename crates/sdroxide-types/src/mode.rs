@@ -77,12 +77,30 @@ pub enum Mode {
     /// four times faster than FT8's. Appended for the same reason as
     /// [`Mode::Hell`].
     Ft2,
+    /// AX.25 packet on VHF/UHF — 1200 baud Bell 202 AFSK or 9600 baud G3RUH,
+    /// chosen by `DigiConfig::packet_baud`. Like [`Mode::Rifp`] and unlike
+    /// every other digital mode, this is not sideband audio: both waveforms
+    /// frequency-modulate the carrier, so the dial is the channel centre.
+    ///
+    /// The two bauds share one variant on purpose. They differ only in what
+    /// the modem puts into the modulator — tones at 1200, shaped scrambled
+    /// baseband at 9600 — and agree on everything a `Mode` decides: the filter,
+    /// the rig mode to command, the band plan, carrier-centring. That is what
+    /// a config field is for. Appended for the same reason as [`Mode::Hell`].
+    Packet,
+    /// AX.25 packet on HF — 300 baud AFSK, 200 Hz shift, on single sideband.
+    /// The link layer is identical to [`Mode::Packet`]'s and the same
+    /// controller drives both; this is a separate variant because the *radio*
+    /// underneath is different (USB, not FM), and every per-mode table in the
+    /// tree — filter, CAT mode, hamlib name, band plan — needs a different
+    /// answer for it. Appended for the same reason as [`Mode::Hell`].
+    PacketHf,
 }
 
 impl Mode {
     /// Every mode, in the order they cycle and appear in the picker — which is
     /// deliberately *not* the enum's declaration order (see [`Mode::Hell`]).
-    pub const ALL: [Mode; 27] = [
+    pub const ALL: [Mode; 29] = [
         Mode::Lsb,
         Mode::Usb,
         Mode::Cw,
@@ -101,6 +119,8 @@ impl Mode {
         Mode::Wspr,
         Mode::Psk,
         Mode::Rtty,
+        Mode::Packet,
+        Mode::PacketHf,
         Mode::Sstv,
         Mode::Rifp,
         Mode::Wefax,
@@ -114,9 +134,9 @@ impl Mode {
 
     /// The digital modes handled by a dedicated decode/encode engine (the
     /// slotted FT8/FT4 modes, the continuous keyboard modes, Hell, SSTV, RIFP,
-    /// RF Paint). All are USB underneath except RIFP, which is FSK on the
-    /// carrier.
-    pub const DIGITAL: [Mode; 16] = [
+    /// packet, RF Paint). All are USB underneath except RIFP and VHF packet,
+    /// which frequency-modulate the carrier.
+    pub const DIGITAL: [Mode; 18] = [
         Mode::Ft8,
         Mode::Ft4,
         Mode::Ft2,
@@ -133,6 +153,8 @@ impl Mode {
         Mode::Wefax,
         Mode::RfPaint,
         Mode::Rade,
+        Mode::Packet,
+        Mode::PacketHf,
     ];
 
     /// True for modes that use a dedicated decode/QSO layer over USB.
@@ -155,14 +177,24 @@ impl Mode {
                 | Mode::RfPaint
                 | Mode::Rade
                 | Mode::Wefax
+                | Mode::Packet
+                | Mode::PacketHf
         )
+    }
+
+    /// True for AX.25 packet, on either band. Both variants run the same link
+    /// layer and the same controller; what differs is the radio underneath.
+    pub fn is_packet(self) -> bool {
+        matches!(self, Mode::Packet | Mode::PacketHf)
     }
 
     /// True for the modes whose transmit waveform is not single-sideband audio
     /// on the carrier, so the dial is the signal's centre rather than its lower
-    /// edge. Only RIFP so far: its CPFSK profile keys the carrier itself.
+    /// edge: RIFP's CPFSK profile keys the carrier itself, and VHF packet
+    /// frequency-modulates it. HF packet is *not* one of these — 300 baud is
+    /// audio on a sideband like any other keyboard mode.
     pub fn is_carrier_centered(self) -> bool {
-        matches!(self, Mode::Rifp)
+        matches!(self, Mode::Rifp | Mode::Packet)
     }
 
     /// True for the continuous keyboard text modes (PSK31 / RTTY / Olivia / Thor
@@ -320,6 +352,8 @@ impl Mode {
             Mode::RfPaint => "RFPAINT",
             Mode::Rade => "RADE",
             Mode::Rifp => "RIFP",
+            Mode::Packet => "PACKET",
+            Mode::PacketHf => "PACKET-HF",
             Mode::Wefax => "WEFAX",
             Mode::Js8 => "JS8",
             Mode::Wspr => "WSPR",
@@ -377,6 +411,15 @@ impl Mode {
             // the wider passband leaves room for the acquisition search to
             // track a signal that is off frequency.
             Mode::Rade => (300.0, 2700.0),
+            // VHF packet frequency-modulates the carrier, so like RIFP the
+            // passband straddles the dial. ±8 kHz is the NFM channel: 1200
+            // Bell 202 at ±3 kHz deviation occupies about 10 kHz by Carson,
+            // 9600 G3RUH about 16 kHz, and both fit inside a 25 kHz channel
+            // with the usual margin for a rig a little off frequency.
+            Mode::Packet => (-8_000.0, 8_000.0),
+            // HF packet is 300 baud AFSK on a sideband, tones around
+            // 1600/1800 Hz — an ordinary keyboard-mode passband.
+            Mode::PacketHf => (150.0, 2850.0),
         }
     }
 
@@ -420,6 +463,11 @@ impl Mode {
             }
             Mode::Nfm => &[("8k", -4000.0, 4000.0), ("16k", -8000.0, 8000.0)],
             Mode::Dsb => &[("5k", -2500.0, 2500.0), ("6k", -3000.0, 3000.0)],
+            // The one digital mode with a real filter choice: 1200 Bell 202
+            // occupies about 10 kHz and 9600 G3RUH about 16 kHz, so the
+            // operator wants the narrower one when running 1200 on a busy
+            // channel. Labelled by occupied bandwidth, like NFM's.
+            Mode::Packet => &[("12k", -6000.0, 6000.0), ("20k", -10_000.0, 10_000.0)],
             // Digital modes have a fixed wide passband; no presets.
             Mode::Wfm
             | Mode::Spec
@@ -438,6 +486,7 @@ impl Mode {
             | Mode::RfPaint
             | Mode::Rifp
             | Mode::Wefax
+            | Mode::PacketHf
             | Mode::Rade => &[],
         }
     }
@@ -846,6 +895,71 @@ impl AgcMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Mode` carries the same postcard-by-declaration-index contract as
+    /// [`NrLevel`] below, and is serialised into far more: every stored config,
+    /// every `RadioState` on the wire, every remote client's idea of what the
+    /// radio is doing. Inserting a variant rather than appending one renames
+    /// every mode after it, silently, on disk and on the wire alike.
+    ///
+    /// The whole enum is pinned rather than a sample: a sample only catches an
+    /// insertion before the samples it happens to name.
+    #[test]
+    fn mode_discriminants_are_stable() {
+        let pinned = [
+            (Mode::Lsb, 0),
+            (Mode::Usb, 1),
+            (Mode::Cw, 2),
+            (Mode::Am, 3),
+            (Mode::Sam, 4),
+            (Mode::Nfm, 5),
+            (Mode::Wfm, 6),
+            (Mode::Digu, 7),
+            (Mode::Digl, 8),
+            (Mode::Dsb, 9),
+            (Mode::Spec, 10),
+            (Mode::Ft8, 11),
+            (Mode::Ft4, 12),
+            (Mode::Psk, 13),
+            (Mode::Rtty, 14),
+            (Mode::Sstv, 15),
+            (Mode::Olivia, 16),
+            (Mode::Thor, 17),
+            (Mode::Fsq, 18),
+            (Mode::RfPaint, 19),
+            (Mode::Rade, 20),
+            (Mode::Hell, 21),
+            (Mode::Rifp, 22),
+            (Mode::Wefax, 23),
+            (Mode::Js8, 24),
+            (Mode::Wspr, 25),
+            (Mode::Ft2, 26),
+            (Mode::Packet, 27),
+            (Mode::PacketHf, 28),
+        ];
+        for (mode, index) in pinned {
+            assert_eq!(mode as u8, index, "{} moved", mode.label());
+        }
+    }
+
+    /// A mode missing from [`Mode::ALL`] compiles, persists and decodes — and
+    /// is simply unreachable, because `ALL` is what the picker and the mode
+    /// cycle are built from. Nothing else notices.
+    #[test]
+    fn every_mode_is_reachable_from_all() {
+        for (mode, index) in Mode::ALL.iter().zip(0u8..) {
+            let _ = (mode, index);
+        }
+        // `Mode::ALL`'s length is checked by the array type; what needs
+        // checking is that it is a permutation of the enum, with nothing
+        // dropped and nothing listed twice.
+        let last = Mode::PacketHf as u8;
+        for i in 0..=last {
+            let present = Mode::ALL.iter().filter(|m| **m as u8 == i).count();
+            assert_eq!(present, 1, "discriminant {i} appears {present} times in Mode::ALL");
+        }
+        assert_eq!(Mode::ALL.len(), last as usize + 1);
+    }
 
     /// The wire is the declaration order. Every discriminant that has ever been
     /// on the wire is pinned here, so a variant inserted rather than appended

@@ -63,12 +63,15 @@ pub fn mode_to_civ(m: Mode) -> u8 {
         | Mode::Fsq
         | Mode::Hell
         | Mode::RfPaint
-        | Mode::Rade => 0x01,
+        | Mode::Rade
+        // HF packet is 300 baud AFSK on a sideband, like any keyboard mode.
+        | Mode::PacketHf => 0x01,
         Mode::Am | Mode::Sam | Mode::Dsb => 0x02,
         Mode::Cw => 0x03,
-        // RIFP is FSK on the carrier, so a CAT rig has to be in FM for the
-        // dial to mean what RIFP means by it.
-        Mode::Nfm | Mode::Wfm | Mode::Rifp => 0x05,
+        // RIFP is FSK on the carrier, and VHF packet frequency-modulates it,
+        // so a CAT rig has to be in FM for the dial to mean what they mean by
+        // it.
+        Mode::Nfm | Mode::Wfm | Mode::Rifp | Mode::Packet => 0x05,
         Mode::Spec => 0x01,
     }
 }

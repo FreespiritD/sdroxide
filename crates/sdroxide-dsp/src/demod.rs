@@ -99,7 +99,12 @@ pub fn make_demod(mode: Mode, channel_rate: f64) -> Option<Box<dyn Demodulator>>
         | Mode::Fsq
         | Mode::Hell
         | Mode::RfPaint
+        // HF packet is 300 baud AFSK audio on a sideband, like RTTY.
+        | Mode::PacketHf
         | Mode::Rade => Some(Box::new(SsbDemod::new(channel_rate, lo, hi))),
+        // VHF packet frequency-modulates the carrier, so like RIFP it wants a
+        // discriminator — but a flat one, not the voice NFM path.
+        Mode::Packet => Some(Box::new(PacketFmDemod::new(channel_rate, lo, hi))),
         // RIFP is the one digital mode that is not sideband audio: its CPFSK
         // carrier sits on the dial, so it wants a discriminator, not a
         // sideband filter.
@@ -505,6 +510,82 @@ impl Demodulator for FskDemod {
         // RIFP_TAPS, not PASSBAND_TAPS: the engine calls this the moment the
         // chain is built, so a brick wall here would undo the whole point of
         // the short filter above.
+        self.fir.set_taps(bandpass_taps(RIFP_TAPS, lo as f64, hi as f64, self.rate));
+    }
+
+    fn audio_rate(&self) -> f64 {
+        self.rate
+    }
+
+    fn power_dbfs(&self) -> f32 {
+        self.power.dbfs()
+    }
+}
+
+/// Flat discriminator for AX.25 packet on FM, scaled to ±1 at ±3 kHz.
+///
+/// Neither of the existing FM paths will do. [`FmDemod`] is a *voice*
+/// discriminator: it low-passes the recovered audio at 3.6 kHz and runs it
+/// through several high-pass poles, and 9600 baud G3RUH needs everything from
+/// near DC — where the scrambler deliberately leaves content — out to about
+/// 4.8 kHz. [`FskDemod`] has the right shape but is scaled to RIFP's ±4 kHz
+/// deviation, which is not ours.
+///
+/// What packet wants is the discriminator output and nothing else: no
+/// de-emphasis, no squelch, one DC blocker slow enough to correct a mistuned
+/// carrier without drooping the data away. The bit clock, the slicer and the
+/// descrambler all live above this, in the modem.
+pub struct PacketFmDemod {
+    rate: f64,
+    fir: ComplexFir,
+    lpf: RealFir,
+    dc: DcBlock,
+    prev: Complex32,
+    scale: f32,
+    filtered: Vec<Complex32>,
+    raw_audio: Vec<f32>,
+    power: PowerMeter,
+}
+
+impl PacketFmDemod {
+    pub fn new(rate: f64, lo: f32, hi: f32) -> Self {
+        PacketFmDemod {
+            rate,
+            // Short, like the RIFP front end and for the same reason: a brick
+            // wall would ring across the symbol transitions the bit clock
+            // tracks.
+            fir: ComplexFir::new(bandpass_taps(RIFP_TAPS, lo as f64, hi as f64, rate)),
+            // Above the 9600 baseband and its shaping skirt, well below the
+            // channel edge.
+            lpf: RealFir::lowpass(63, 8_000.0, rate),
+            // 0.2 Hz ≈ 0.8 s: slow enough to leave the scrambler's low-frequency
+            // content alone, fast enough to track a rig a kilohertz off.
+            dc: DcBlock::new(0.2, rate),
+            prev: Complex32::new(1.0, 0.0),
+            scale: (rate / (std::f64::consts::TAU * crate::modulator::PACKET_DEVIATION_HZ)) as f32,
+            filtered: Vec::new(),
+            raw_audio: Vec::new(),
+            power: PowerMeter::new(),
+        }
+    }
+}
+
+impl Demodulator for PacketFmDemod {
+    fn process(&mut self, iq: &[Complex32], out: &mut Vec<f32>) {
+        self.filtered.clear();
+        self.fir.process(iq, &mut self.filtered);
+        self.power.update(&self.filtered);
+
+        self.raw_audio.clear();
+        for &z in &self.filtered {
+            let d = z * self.prev.conj();
+            self.prev = z;
+            self.raw_audio.push(self.dc.run(d.arg() * self.scale));
+        }
+        self.lpf.process(&self.raw_audio, out);
+    }
+
+    fn set_filter(&mut self, lo: f32, hi: f32) {
         self.fir.set_taps(bandpass_taps(RIFP_TAPS, lo as f64, hi as f64, self.rate));
     }
 

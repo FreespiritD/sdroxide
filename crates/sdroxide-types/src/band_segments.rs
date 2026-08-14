@@ -585,7 +585,10 @@ impl DigiChannel {
 /// True for the modes whose signal is too wide for a narrow-data sub-segment,
 /// and which therefore belong in the phone / all-mode parts of the band.
 fn wideband_by_design(mode: crate::Mode) -> bool {
-    matches!(mode, crate::Mode::Sstv | crate::Mode::Rifp)
+    // VHF packet is a 25 kHz FM channel and belongs nowhere near a narrow-data
+    // sub-segment. HF packet is the opposite — 300 baud in a few hundred hertz
+    // is narrow data by any measure — so it is deliberately not listed.
+    matches!(mode, crate::Mode::Sstv | crate::Mode::Rifp | crate::Mode::Packet)
 }
 
 /// The conventional dial frequencies for `mode` in the station's configured

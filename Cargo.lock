@@ -4992,6 +4992,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sdroxide-ax25"
+version = "1.2.0"
+dependencies = [
+ "crossbeam-channel",
+ "thiserror 2.0.19",
+ "tracing",
+]
+
+[[package]]
 name = "sdroxide-cat"
 version = "1.2.0"
 dependencies = [
@@ -5041,6 +5050,7 @@ dependencies = [
  "mfsk-core",
  "num-complex",
  "rayon",
+ "sdroxide-ax25",
  "sdroxide-deepcw",
  "sdroxide-dsp",
  "sdroxide-rade",
@@ -5087,6 +5097,15 @@ dependencies = [
  "thiserror 2.0.19",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "sdroxide-kiss"
+version = "1.2.0"
+dependencies = [
+ "crossbeam-channel",
+ "sdroxide-ax25",
+ "tracing",
 ]
 
 [[package]]
@@ -5170,6 +5189,7 @@ dependencies = [
  "sdroxide-config",
  "sdroxide-digi",
  "sdroxide-dsp",
+ "sdroxide-kiss",
  "sdroxide-net",
  "sdroxide-rigctld",
  "sdroxide-rotator",

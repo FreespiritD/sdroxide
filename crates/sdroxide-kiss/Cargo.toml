@@ -1,0 +1,10 @@
+[package]
+name = "sdroxide-kiss"
+version.workspace = true
+edition.workspace = true
+description = "KISS TNC server: sdroxide's modem, over a socket"
+
+[dependencies]
+sdroxide-ax25.workspace = true
+crossbeam-channel.workspace = true
+tracing.workspace = true

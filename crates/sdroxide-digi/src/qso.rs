@@ -1005,6 +1005,7 @@ impl QsoMachine {
             fsq_heard: Vec::new(),
             fsq_messages: Vec::new(),
             rade: None,
+            packet: None,
             js8: None,
             fox_queue: self.fox.as_ref().map(Fox::status).unwrap_or_default(),
             call_queue: self.queue.iter().cloned().collect(),
