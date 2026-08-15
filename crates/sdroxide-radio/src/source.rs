@@ -322,6 +322,26 @@ pub trait IqSource: Send {
     /// without cutting off the tail of a burst. Default: nothing is buffered.
     fn tx_drain(&mut self) {}
 
+    /// How far ahead of real time the engine may fill this source's transmit
+    /// ring before it paces production back down to real time, in ms.
+    ///
+    /// The engine feeds TX audio at real time plus this cushion (see
+    /// `pace_tx_block` in `engine.rs`) so the device/network ring downstream
+    /// stays near-empty rather than filling to its full depth — that ring's
+    /// depth is otherwise wasted as pure latency. The cushion is what absorbs
+    /// jitter between one feed and the next before the ring runs dry: a stall
+    /// (scheduling, USB round trip, network transit) shorter than this many ms
+    /// is invisible; a longer one underruns and is heard as a chopped
+    /// transmission. Default `30.0` ms is right for hardware reached directly
+    /// (sound card, USB, LAN) whose own jitter is negligible. A source
+    /// reached over a link with real jitter — WiFi, a VPN — should report
+    /// more, trading transmit-audio and PTT latency for headroom, the same
+    /// tradeoff the Icom LAN backend's `tx_latency_ms` setting makes
+    /// explicit.
+    fn tx_pace_cushion_ms(&self) -> f64 {
+        30.0
+    }
+
     /// A user-facing warning captured while opening the source (e.g. the radio
     /// audio device was unavailable, or a mono card was selected for IQ), or
     /// `None` when the source came up cleanly. Surfaced in the UI so a silent
@@ -642,6 +662,10 @@ impl IqSource for ConvertedSource {
 
     fn tx_drain(&mut self) {
         self.inner.tx_drain();
+    }
+
+    fn tx_pace_cushion_ms(&self) -> f64 {
+        self.inner.tx_pace_cushion_ms()
     }
 
     fn open_status(&self) -> Option<String> {

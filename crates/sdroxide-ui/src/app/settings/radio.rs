@@ -371,6 +371,22 @@ pub(in crate::app) fn settings_hpsdr_tab(
             });
         }
         ui.end_row();
+
+        ui.label("Transmit buffer");
+        ui.add(
+            egui::DragValue::new(&mut cfg.hpsdr.tx_latency_ms)
+                .range(HpsdrConfig::TX_LATENCY_MS_RANGE)
+                .suffix(" ms"),
+        )
+        .on_hover_text(
+            "How far ahead of real time transmit audio is fed to the board over the network, \
+             before sdroxide slows down to match it. The board itself holds no such buffer — \
+             this only widens sdroxide's own margin. Raise it on a WiFi link or a VPN, where \
+             the low default (right for a direct wired connection) is not enough headroom \
+             against jitter and the transmitted audio or PTT stutters; higher costs transmit \
+             latency.",
+        );
+        ui.end_row();
     });
     ui.add_space(6.0);
     ui.label(

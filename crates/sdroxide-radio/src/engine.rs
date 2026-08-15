@@ -951,16 +951,15 @@ const TX_MON_HEADROOM_DB: f32 = -30.0;
 /// backpressure, but only *once the ring is full* — that is the latency. This
 /// caps the feed AT real time (never slower: `checked_sub` yields no sleep when
 /// we're already behind), so it can only *reduce* buffering, never starve a
-/// consumer that was keeping up. A few-block head-start leaves a small cushion
-/// against jitter/clock drift before pacing engages.
-fn pace_tx_block(tx_pace: &mut Option<(Instant, u64)>) {
-    /// ~30 ms of slack fed out before pacing kicks in, so the hardware/network
-    /// consumer has a buffer and never underruns on scheduling jitter or a
-    /// consumer clock slightly faster than nominal 48 kHz.
-    const CUSHION: u64 = 3 * TX_AUDIO_BLOCK as u64;
+/// consumer that was keeping up. A head-start of `cushion_ms` is fed out before
+/// pacing engages, so the hardware/network consumer downstream has that much
+/// slack against jitter or a consumer clock slightly faster than nominal
+/// 48 kHz — see [`IqSource::tx_pace_cushion_ms`].
+fn pace_tx_block(tx_pace: &mut Option<(Instant, u64)>, cushion_ms: f64) {
+    let cushion = (cushion_ms.max(0.0) / 1000.0 * TX_MONITOR_RATE) as u64;
     let (start, fed) = tx_pace.get_or_insert_with(|| (Instant::now(), 0));
     *fed += TX_AUDIO_BLOCK as u64;
-    let paced = fed.saturating_sub(CUSHION);
+    let paced = fed.saturating_sub(cushion);
     let target = Duration::from_secs_f64(paced as f64 / TX_MONITOR_RATE);
     if let Some(d) = target.checked_sub(start.elapsed()) {
         std::thread::sleep(d);
@@ -6655,7 +6654,7 @@ impl Engine {
         }
         // Keep the device/network TX ring near-empty (HPSDR ≈ 0.5 s, SoapySDR
         // varies) rather than letting a fast loop fill it and delay the signal.
-        pace_tx_block(&mut self.tx_pace);
+        pace_tx_block(&mut self.tx_pace, self.source.tx_pace_cushion_ms());
         Ok(())
     }
 
@@ -6716,7 +6715,7 @@ impl Engine {
         }
         // Pace the burst to real time so it isn't raced into the device ring
         // (which would drop PTT early — the tail matters for FT8 decode).
-        pace_tx_block(&mut self.tx_pace);
+        pace_tx_block(&mut self.tx_pace, self.source.tx_pace_cushion_ms());
 
         if done {
             // Burst finished: drain any queued audio, then unkey and let the QSO
@@ -6818,7 +6817,7 @@ impl Engine {
         // starving the mic FIFO (choppy audio), and a CAT rig buffered its ~1 s
         // output ring before the sound card's own backpressure engaged (voice
         // delayed by ~1 s). Pacing keeps every backend's ring near-empty.
-        pace_tx_block(&mut self.tx_pace);
+        pace_tx_block(&mut self.tx_pace, self.source.tx_pace_cushion_ms());
 
         if burst_done {
             // Let any queued audio play out before dropping PTT, so the rig
