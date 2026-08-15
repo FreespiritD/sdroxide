@@ -20,8 +20,8 @@ use sdroxide_digi::{
 };
 use sdroxide_dsp::{
     Agc, AutoNotch, DcBlock, Ddc, Decimator, DeepFilterNr, Demodulator, Duc, Modulator,
-    MonoResampler, Nco, NeuralNr, NoiseBlanker, SpecBleachNr, SpectralNr, SpectrumAnalyzer,
-    StereoResampler, channel_target, make_demod, make_modulator,
+    MonoResampler, Nco, NeuralNr, NoiseBlanker, ParametricEq, SpecBleachNr, SpectralNr,
+    SpectrumAnalyzer, StereoResampler, channel_target, make_demod, make_modulator,
 };
 use sdroxide_rigctld::{RigState, RigctldController};
 use sdroxide_skimmer::{SkimmerAction, SkimmerController};
@@ -30,7 +30,7 @@ use sdroxide_types::{
     AgcMode, Band, BandStackEntry, Command, DeviceCaps, DigiConfig, Direction, ImageKind,
     MemoryChannel, MemoryFolder, Meters, Mode, NrEngine, NrLevel, RadioEvent, RadioState,
     RigctldConfig, RxId, RxState, ScanKind, ScanResume, SpectrumConfig, SpectrumFrame,
-    TciServerConfig, TxMeters, Vfo,
+    TciServerConfig, TxEqState, TxMeters, Vfo,
 };
 
 use crate::recorder::{Recorder, RecordingChannels};
@@ -901,10 +901,17 @@ impl StereoMixer {
     }
 }
 
-/// The transmit chain: mic 48 k → modulator → drive → DUC → device.
+/// The transmit chain: mic 48 k → EQ → modulator → drive → DUC → device.
 struct TxChain {
     modulator: Option<Box<dyn Modulator>>,
     dc: DcBlock,
+    /// Voice-only parametric EQ on the mic audio, ahead of the modulator. See
+    /// [`RadioCore::apply`]'s `SetTxEq` and the voice branch of `tx_block`.
+    eq: ParametricEq,
+    /// The [`TxEqState`] `eq`'s coefficients were last built from, so a block
+    /// that hasn't changed the EQ skips recomputing them. Same idea as how
+    /// `RxChain::run` reconfigures NR/notch only on change.
+    eq_cfg: TxEqState,
     duc: Duc,
     /// The DUC's output rate — what `sat_nco` has to be programmed against.
     tx_rate: f64,
@@ -996,6 +1003,14 @@ impl TxChain {
         TxChain {
             modulator: make_modulator(mode, 48_000.0, passband),
             dc: DcBlock::new(100.0, 48_000.0),
+            // Deliberately not the operator's real EQ state: `tx_block`'s
+            // voice branch compares this against `self.state.tx.eq` every
+            // block and reconfigures on any difference, so a fresh, default
+            // `eq_cfg` here just means the very first block of the over
+            // always reconfigures once. That's cheap, and it keeps this
+            // constructor from needing the live state threaded through.
+            eq: ParametricEq::new(),
+            eq_cfg: TxEqState::default(),
             duc: Duc::new(48_000.0, tx_rate),
             tx_rate,
             sat_nco: None,
@@ -1541,6 +1556,7 @@ fn engine_thread(
         state.tx.drive = s.drive;
         state.tx.tune_drive = s.tune_drive;
         state.tx.mic_gain = s.mic_gain;
+        state.tx.eq = s.tx_eq;
         state.recording_mono = s.recording_mono;
     }
     // The command line outranks the remembered session, exactly as it does for
@@ -3334,6 +3350,36 @@ impl Engine {
                 }
             }
             SetMicGain(v) => self.state.tx.mic_gain = v.clamp(0.0, 1.0),
+            SetTxEq(mut eq) => {
+                eq.low.freq_hz = eq.low.freq_hz.clamp(
+                    *TxEqState::LOW_FREQ_HZ_RANGE.start(),
+                    *TxEqState::LOW_FREQ_HZ_RANGE.end(),
+                );
+                eq.mid.freq_hz = eq.mid.freq_hz.clamp(
+                    *TxEqState::MID_FREQ_HZ_RANGE.start(),
+                    *TxEqState::MID_FREQ_HZ_RANGE.end(),
+                );
+                eq.high.freq_hz = eq.high.freq_hz.clamp(
+                    *TxEqState::HIGH_FREQ_HZ_RANGE.start(),
+                    *TxEqState::HIGH_FREQ_HZ_RANGE.end(),
+                );
+                for band in [&mut eq.low, &mut eq.mid, &mut eq.high] {
+                    band.gain_db = band
+                        .gain_db
+                        .clamp(*TxEqState::GAIN_DB_RANGE.start(), *TxEqState::GAIN_DB_RANGE.end());
+                }
+                eq.mid.q =
+                    eq.mid.q.clamp(*TxEqState::MID_Q_RANGE.start(), *TxEqState::MID_Q_RANGE.end());
+                eq.low.q = eq
+                    .low
+                    .q
+                    .clamp(*TxEqState::SHELF_SLOPE_RANGE.start(), *TxEqState::SHELF_SLOPE_RANGE.end());
+                eq.high.q = eq
+                    .high
+                    .q
+                    .clamp(*TxEqState::SHELF_SLOPE_RANGE.start(), *TxEqState::SHELF_SLOPE_RANGE.end());
+                self.state.tx.eq = eq;
+            }
 
             // ── Voice keyer ─────────────────────────────────────────────────
             VoiceRecord(Some(slot)) => {
@@ -5982,6 +6028,7 @@ impl Engine {
             drive: self.state.tx.drive,
             tune_drive: self.state.tx.tune_drive,
             mic_gain: self.state.tx.mic_gain,
+            tx_eq: self.state.tx.eq,
             squelch_db: self.state.rx[0].squelch_db,
             noise_reduction: self.state.rx[0].noise_reduction,
             decimation: self.state.decimation,
@@ -7197,6 +7244,16 @@ impl Engine {
             let mic_gain = if tci_tx { 1.0 } else { self.state.tx.mic_gain * 2.0 };
             for a in &mut audio {
                 *a = tx.dc.run(*a) * mic_gain;
+            }
+            // Voice-only parametric EQ, ahead of the modulator. Reconfigured
+            // only when the operator actually changed a band, see
+            // `TxChain::eq_cfg`.
+            if tx.eq_cfg != self.state.tx.eq {
+                tx.eq.configure(&self.state.tx.eq, 48_000.0);
+                tx.eq_cfg = self.state.tx.eq;
+            }
+            if self.state.tx.eq.enabled {
+                tx.eq.process(&mut audio);
             }
             if let Some(mixer) = self.mixer.as_mut() {
                 mixer.push_tx(&audio);
