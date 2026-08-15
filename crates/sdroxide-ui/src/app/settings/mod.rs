@@ -261,6 +261,11 @@ pub(in crate::app) struct SettingsIo<'a> {
     /// there is no APPLY step on the General tab, and the whole point of it is
     /// that the band plan follows immediately.
     region_edit: &'a mut sdroxide_types::Region,
+    /// The transmit parametric EQ (voice modes only). Same contract as
+    /// `region_edit`: no APPLY step, sent the moment a band changes. This is
+    /// live `RadioState`, not a per-backend `RadioConfig`, so it applies
+    /// regardless of which radio interface is selected.
+    tx_eq_edit: &'a mut sdroxide_types::TxEqState,
     tab: &'a mut SettingsTab,
 }
 
@@ -297,6 +302,29 @@ fn freq_range_edit(ui: &mut egui::Ui, id: &str, text: &mut String, hover: &str) 
             ui.label(RichText::new(e).color(Color32::from_rgb(230, 90, 80)));
         }
     });
+}
+
+/// One row of the transmit-EQ grid: a band's frequency, gain and Q/slope.
+/// `q_range` doubles as the shelf-slope range for the two shelf bands, see
+/// [`sdroxide_types::TxEqBand::q`].
+fn tx_eq_band_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    band: &mut sdroxide_types::TxEqBand,
+    freq_range: std::ops::RangeInclusive<f32>,
+    q_range: std::ops::RangeInclusive<f32>,
+    hover: &str,
+) {
+    ui.label(label).on_hover_text(hover);
+    ui.add(egui::DragValue::new(&mut band.freq_hz).range(freq_range).suffix(" Hz").speed(5.0));
+    ui.add(
+        egui::DragValue::new(&mut band.gain_db)
+            .range(sdroxide_types::TxEqState::GAIN_DB_RANGE)
+            .suffix(" dB")
+            .speed(0.2),
+    );
+    ui.add(egui::DragValue::new(&mut band.q).range(q_range).speed(0.02));
+    ui.end_row();
 }
 
 pub(in crate::app) fn enum_combo<T: PartialEq + Copy>(
@@ -431,6 +459,7 @@ impl SdroxideApp {
         let mut digi_edit = self.digi_cfg_edit.clone();
         let digi_seeded = self.digi_cfg_seeded;
         let mut region_edit = self.region_edit;
+        let mut tx_eq_edit = self.state.tx.eq;
         let mut net_edit = self.net_cfg_edit.clone();
         let mut net_cmds = self.net_cluster_cmds.clone();
         let mut rbn_cmds = self.net_rbn_cmds.clone();
@@ -633,6 +662,7 @@ impl SdroxideApp {
                             #[cfg(not(target_arch = "wasm32"))]
                             radio_name_edit: &mut radio_name_edit,
                             region_edit: &mut region_edit,
+                            tx_eq_edit: &mut tx_eq_edit,
                             tab: &mut tab,
                         },
                     );
@@ -948,6 +978,13 @@ impl SdroxideApp {
             self.region_edit = region_edit;
             sdroxide_types::set_region(region_edit);
             cmds.push(Command::SetRegion(region_edit));
+        }
+        // The transmit EQ: live `RadioState`, applied the moment a band
+        // changes, same as the region above. There is no per-backend config
+        // to wait on, so no APPLY step either.
+        if tx_eq_edit != self.state.tx.eq {
+            self.state.tx.eq = tx_eq_edit;
+            cmds.push(Command::SetTxEq(tx_eq_edit));
         }
     }
 
@@ -1306,6 +1343,61 @@ impl SdroxideApp {
                             "Transmit is off while a converter is set."
                         })
                         .weak(),
+                    );
+                }
+
+                // Transmit EQ: mic/modulator-path DSP, not a device feature.
+                // It applies the same way regardless of which interface is
+                // selected above, so it sits here rather than in one of the
+                // per-backend sections below.
+                if self.caps.as_ref().is_some_and(|c| c.is_transmit_capable()) {
+                    ui.separator();
+                    ui.label(
+                        RichText::new("Transmit EQ").size(14.0).strong().color(crate::theme::CYAN()),
+                    );
+                    ui.add_space(4.0);
+                    ui.checkbox(&mut io.tx_eq_edit.enabled, "Enabled").on_hover_text(
+                        "A 3-band parametric EQ on the microphone audio, ahead of the modulator. \
+                         Voice modes only (SSB/AM/FM); digital modes and CW carry synthesized or \
+                         keyed audio that never reaches it. Off by default and flat when turned \
+                         on, so enabling it changes nothing on the air until a band below is \
+                         actually moved. Applies immediately.",
+                    );
+                    ui.add_space(4.0);
+                    egui::Grid::new("tx-eq-grid").num_columns(4).spacing([10.0, 6.0]).show(
+                        ui,
+                        |ui| {
+                            ui.label("");
+                            ui.label(RichText::new("Freq").weak());
+                            ui.label(RichText::new("Gain").weak());
+                            ui.label(RichText::new("Q / Slope").weak());
+                            ui.end_row();
+
+                            tx_eq_band_row(
+                                ui,
+                                "Low shelf",
+                                &mut io.tx_eq_edit.low,
+                                sdroxide_types::TxEqState::LOW_FREQ_HZ_RANGE,
+                                sdroxide_types::TxEqState::SHELF_SLOPE_RANGE,
+                                "Cuts/boosts rumble and handling noise.",
+                            );
+                            tx_eq_band_row(
+                                ui,
+                                "Mid peak",
+                                &mut io.tx_eq_edit.mid,
+                                sdroxide_types::TxEqState::MID_FREQ_HZ_RANGE,
+                                sdroxide_types::TxEqState::MID_Q_RANGE,
+                                "Presence: a narrow bump or dip somewhere in the voice band.",
+                            );
+                            tx_eq_band_row(
+                                ui,
+                                "High shelf",
+                                &mut io.tx_eq_edit.high,
+                                sdroxide_types::TxEqState::HIGH_FREQ_HZ_RANGE,
+                                sdroxide_types::TxEqState::SHELF_SLOPE_RANGE,
+                                "Brightness/de-ess.",
+                            );
+                        },
                     );
                 }
                 ui.separator();
