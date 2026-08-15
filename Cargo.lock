@@ -4942,6 +4942,7 @@ dependencies = [
  "eframe",
  "num-complex",
  "rtrb",
+ "sdroxide-airspy",
  "sdroxide-airspyhf",
  "sdroxide-audio",
  "sdroxide-cat",
@@ -4962,6 +4963,20 @@ dependencies = [
  "sdroxide-tci",
  "sdroxide-types",
  "sdroxide-ui",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "sdroxide-airspy"
+version = "1.2.0"
+dependencies = [
+ "crossbeam-channel",
+ "nusb",
+ "rtrb",
+ "sdroxide-dsp",
+ "sdroxide-types",
+ "thiserror 2.0.19",
  "tracing",
  "tracing-subscriber",
 ]

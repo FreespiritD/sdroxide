@@ -1,0 +1,484 @@
+//! The one blocking thread that owns the receiver, and the bulk pump inside it.
+//!
+//! # The rate change is the interesting part
+//!
+//! Everything else here is the shape `sdroxide-airspyhf` and `sdroxide-rtlsdr`
+//! already use. What differs is that a rate change on this receiver is not a
+//! setting — it is a stop, a reprogram, and a restart, because the tuner's IF
+//! and the clock dividers both move with it. So the endpoint is torn down and
+//! rebuilt around it, the host DSP is reset (its delay line holds the old
+//! band), and the ring is left to drain naturally rather than being cleared:
+//! what is in it is real signal from a moment ago, at a rate the consumer was
+//! told about.
+
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
+
+use nusb::MaybeFuture;
+use nusb::transfer::{Bulk, In, TransferError};
+use rtrb::Producer;
+use sdroxide_dsp::Complex32;
+use sdroxide_types::AirspyConfig;
+
+use crate::convert::HostDsp;
+use crate::device::Device;
+use crate::error::{Error, Result};
+use crate::handle::{AirspyHandle, Ctrl, DeviceInfo, Pending, RxStats, Shared, push_iq, ring_for};
+use crate::protocol::{BULK_EP, packed_whole_words, unpack12};
+use crate::trace::{self, Trace};
+use crate::usb::UsbDev;
+
+/// How long a first completion may block before the loop goes back to serve
+/// control. Bounds how long a dial drag waits when the stream has gone quiet.
+const COMPLETE_TIMEOUT: Duration = Duration::from_millis(20);
+
+/// How long to wait for cancelled transfers to come back before dropping an
+/// endpoint.
+const CANCEL_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Transfer geometry, bounded against a hand-edited config.
+///
+/// Bigger than the HackRF's by default: this is a USB 2.0 device carrying up to
+/// 30 MB/s, so the per-transfer overhead matters more and the control latency
+/// matters less — nothing here transmits, so a retune landing mid-transfer
+/// costs a few milliseconds of stale spectrum and nothing else.
+const MIN_TRANSFERS: usize = 4;
+const MAX_TRANSFERS: usize = 64;
+const MIN_TRANSFER_BYTES: usize = 4 * 1024;
+const MAX_TRANSFER_BYTES: usize = 512 * 1024;
+
+/// Transfer lengths must be a whole number of `u32` words, because the packed
+/// format is defined on words. Rounding to 4 KiB satisfies that and the USB
+/// packet size together.
+const GRANULE: usize = 4096;
+
+fn geometry(cfg: &AirspyConfig) -> (usize, usize) {
+    let n = (cfg.transfers as usize).clamp(MIN_TRANSFERS, MAX_TRANSFERS);
+    let bytes = ((cfg.transfer_kib as usize) * 1024).clamp(MIN_TRANSFER_BYTES, MAX_TRANSFER_BYTES)
+        / GRANULE
+        * GRANULE;
+    (n, bytes.max(GRANULE))
+}
+
+/// Open the receiver and start the stream thread.
+///
+/// The device is opened *on the thread* so that all control transfers happen on
+/// one thread; this function blocks on a handshake until that has succeeded or
+/// failed, so the caller still gets a synchronous `Result`.
+pub(crate) fn spawn(cfg: &AirspyConfig, center_hz: f64) -> Result<AirspyHandle> {
+    let (ctrl_tx, ctrl_rx) = crossbeam_channel::unbounded::<Ctrl>();
+    // Rendezvous for the open result, so the caller learns about a permission
+    // problem or a missing receiver as a normal error rather than as a stream
+    // that silently never starts.
+    let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<DeviceInfo>>(1);
+
+    let shared = Arc::new(Shared::new());
+    let t = Trace::new();
+    trace::remember(&t);
+
+    // Sized for the largest rate this receiver can be moved to at runtime, not
+    // the one it opens on: a rate change does not reallocate the ring, and one
+    // sized for 2.5 Msps would hold a twentieth of a second at 10.
+    let (rx_prod, rx_cons) = ring_for(10.0e6);
+
+    let cfg = cfg.clone();
+    let thread_shared = Arc::clone(&shared);
+    let thread_trace = t.clone();
+    let join = std::thread::Builder::new()
+        .name("sdroxide-airspy".into())
+        .spawn(move || {
+            run(
+                cfg,
+                center_hz,
+                ctrl_rx,
+                rx_prod,
+                Arc::clone(&thread_shared),
+                ready_tx,
+                thread_trace,
+            );
+            thread_shared.alive.store(false, Ordering::Relaxed);
+        })
+        .map_err(|e| Error::Access(format!("could not start the Airspy thread: {e}")))?;
+
+    match ready_rx.recv() {
+        Ok(Ok(info)) => Ok(AirspyHandle::from_parts(rx_cons, ctrl_tx, shared, join, t, info)),
+        Ok(Err(e)) => {
+            let _ = join.join();
+            Err(e)
+        }
+        // The thread died before reporting; joining surfaces a panic message.
+        Err(_) => {
+            let _ = join.join();
+            Err(Error::Access("the Airspy thread stopped before it opened the receiver".into()))
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run(
+    cfg: AirspyConfig,
+    center_hz: f64,
+    ctrl: crossbeam_channel::Receiver<Ctrl>,
+    mut rx: Producer<f32>,
+    shared: Arc<Shared>,
+    ready: crossbeam_channel::Sender<Result<DeviceInfo>>,
+    trace: Trace,
+) {
+    let usb = match UsbDev::open(&cfg.serial, &trace) {
+        Ok(d) => d,
+        Err(e) => {
+            trace.note(format!("open failed: {e}"));
+            let _ = ready.send(Err(e));
+            return;
+        }
+    };
+    let serial = usb.serial().map(str::to_string);
+    if !usb.is_high_speed_or_better() {
+        trace.note(
+            "this receiver is not on a high-speed link — no rate it offers will fit, \
+             and the stream will drop almost everything",
+        );
+    }
+
+    let mut dev = match Device::open(usb, &cfg, center_hz) {
+        Ok(d) => d,
+        Err(e) => {
+            trace.note(format!("configure failed: {e}"));
+            let _ = ready.send(Err(e));
+            return;
+        }
+    };
+
+    shared.rate_milli_hz.store((dev.sample_rate_hz() * 1000.0) as u64, Ordering::Relaxed);
+    let _ = ready.send(Ok(DeviceInfo {
+        label: dev.describe(),
+        firmware: dev.firmware.clone(),
+        serial,
+        sample_rate_hz: dev.sample_rate_hz(),
+        rates_hz: dev.available_rates(),
+        snapped_from: dev.snapped_from,
+        packing_active: dev.packing_active(),
+    }));
+
+    if let Err(e) = pump(&mut dev, &cfg, &ctrl, &mut rx, &shared, &trace) {
+        tracing::warn!("Airspy stream stopped: {e}");
+        trace.note(format!("stream stopped: {e}"));
+    }
+    dev.shutdown();
+}
+
+fn pump(
+    dev: &mut Device,
+    cfg: &AirspyConfig,
+    ctrl: &crossbeam_channel::Receiver<Ctrl>,
+    rx: &mut Producer<f32>,
+    shared: &Arc<Shared>,
+    trace: &Trace,
+) -> Result<()> {
+    let (in_flight, transfer_bytes) = geometry(cfg);
+    tracing::info!(
+        "Airspy streaming: {in_flight} transfers x {} KiB, {} at {:.3} Msps complex",
+        transfer_bytes / 1024,
+        if dev.packing_active() { "12-bit packed" } else { "16-bit unpacked" },
+        dev.sample_rate_hz() / 1e6,
+    );
+
+    let mut dsp = HostDsp::new();
+    dsp.set_dc_enabled(cfg.dc_block);
+    let mut stats = RxStats::new(dev.sample_rate_hz());
+    let started = Instant::now();
+    let mut raw: Vec<u16> = Vec::with_capacity(transfer_bytes);
+    let mut samples: Vec<Complex32> = Vec::with_capacity(transfer_bytes / 2);
+    let mut interleaved: Vec<f32> = Vec::with_capacity(transfer_bytes);
+    let mut logged_first = false;
+
+    let mut ep = open_endpoint(dev, in_flight, transfer_bytes)?;
+    dev.start()?;
+
+    loop {
+        // 1. Collapse the whole control channel, then apply each field once.
+        let mut pending = Pending::default();
+        while let Ok(c) = ctrl.try_recv() {
+            pending.absorb(c);
+        }
+        if pending.shutdown {
+            break;
+        }
+        if !pending.is_empty() {
+            // A rate change is not a setting on this receiver — it stops the
+            // sample flow, so the endpoint has to come down with it.
+            if let Some(hz) = pending.rate {
+                close(ep);
+                let outcome = rebuild(dev, hz, &mut dsp, &mut stats, shared, trace);
+                ep = open_endpoint(dev, in_flight, transfer_bytes)?;
+                dev.start()?;
+                if let Err(e) = outcome {
+                    tracing::warn!("Airspy: rate change failed: {e}");
+                    trace.note(format!("rate change failed: {e}"));
+                }
+            } else {
+                // Keep the hardware fed while we talk on endpoint 0.
+                while ep.pending() < in_flight {
+                    ep.submit(ep.allocate(transfer_bytes));
+                }
+            }
+            if let Err(e) = apply(dev, &pending, &mut dsp) {
+                // A setting that cannot be applied is worth saying out loud,
+                // but it is not a reason to tear the stream down — the operator
+                // can pick another value.
+                tracing::warn!("Airspy: {e}");
+                trace.note(format!("control change failed: {e}"));
+            }
+        }
+
+        // 2. Refill before draining, so the queue is never empty while the
+        //    receiver is producing.
+        while ep.pending() < in_flight {
+            ep.submit(ep.allocate(transfer_bytes));
+        }
+
+        // 3. Drain every completion that is ready, not just one. Blocking only
+        //    on the first; the rest are polled. Taking one per iteration
+        //    starves the stream under a sustained dial drag.
+        let mut drained = 0usize;
+        loop {
+            let timeout = if drained == 0 { COMPLETE_TIMEOUT } else { Duration::ZERO };
+            let Some(completion) = ep.wait_next_complete(timeout) else {
+                break;
+            };
+            match completion.status {
+                Ok(()) => {
+                    let bytes = &completion.buffer[..];
+                    raw.clear();
+                    decode_raw(bytes, dev.packing_active(), &mut raw);
+
+                    samples.clear();
+                    dsp.process(&raw, &mut samples);
+
+                    if !logged_first && !samples.is_empty() {
+                        logged_first = true;
+                        // The two lines a developer without this hardware
+                        // cannot produce: whether the 12-bit unpacking is right,
+                        // and which way the spectrum runs.
+                        trace.first_samples(&raw, &samples);
+                    }
+
+                    if !samples.is_empty() {
+                        interleaved.clear();
+                        interleaved.reserve(samples.len() * 2);
+                        for s in &samples {
+                            interleaved.push(s.re);
+                            interleaved.push(s.im);
+                        }
+                        stats.on_iq(samples.len());
+                        push_iq(rx, &interleaved, &mut stats);
+                        shared
+                            .last_rx_ms
+                            .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+                    }
+                }
+                Err(TransferError::Cancelled) => {}
+                Err(TransferError::Disconnected) => {
+                    return Err(Error::NotFound("the Airspy was unplugged".into()));
+                }
+                Err(TransferError::Stall) => {
+                    tracing::warn!("Airspy endpoint stalled; clearing and resynchronising");
+                    trace.note("bulk endpoint stalled; cleared");
+                    let _ = ep.clear_halt().wait();
+                    // The stream restarts from a packet boundary, so the filter
+                    // history and the packing phase both belong to nothing.
+                    dsp.reset();
+                    stats.on_stall();
+                }
+                Err(e) => {
+                    tracing::debug!("Airspy transfer error: {e}");
+                    stats.on_error();
+                }
+            }
+
+            // Reuse the buffer rather than allocating a new one every few
+            // milliseconds.
+            let mut buf = completion.buffer;
+            buf.clear();
+            ep.submit(buf);
+
+            drained += 1;
+            // Go back and serve control rather than spinning here forever if
+            // the receiver is outrunning us.
+            if drained >= in_flight {
+                break;
+            }
+        }
+
+        stats.tick(trace);
+    }
+
+    trace.note(format!("stream ended: {}", stats.summary()));
+    close(ep);
+    Ok(())
+}
+
+/// Turn a completion into raw 12-bit sample values.
+///
+/// Unpacked, the receiver sends little-endian `u16` per sample with the top
+/// four bits clear. Packed, it sends three `u32` words per eight samples — a
+/// third less USB bandwidth, and on a USB 2.0 device carrying 30 MB/s that is
+/// the difference between keeping up and not.
+fn decode_raw(bytes: &[u8], packed: bool, out: &mut Vec<u16>) {
+    if packed {
+        // The packed format is defined on 32-bit words, and a completion is a
+        // whole number of them by construction — the transfer size is a
+        // multiple of 4 KiB. A partial group at the end carries no whole
+        // samples and is dropped rather than half-decoded.
+        let words: Vec<u32> =
+            bytes.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let whole = packed_whole_words(words.len());
+        unpack12(&words[..whole], out);
+    } else {
+        out.extend(bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]) & 0x0fff));
+    }
+}
+
+/// Apply the collapsible settings, in dependency order.
+///
+/// The rate is deliberately absent: it is handled by the caller, which has to
+/// take the endpoint down around it.
+fn apply(dev: &mut Device, p: &Pending, dsp: &mut HostDsp) -> Result<()> {
+    if let Some(v) = p.center {
+        dev.set_center_hz(v)?;
+    }
+    if let Some(v) = p.curve {
+        dev.set_curve(v)?;
+    }
+    if let Some(v) = p.gain_step {
+        dev.set_gain_step(v)?;
+    }
+    if let Some(v) = p.lna_agc {
+        dev.set_lna_agc(v)?;
+    }
+    if let Some(v) = p.mixer_agc {
+        dev.set_mixer_agc(v)?;
+    }
+    if let Some(v) = p.bias_tee {
+        dev.set_bias_tee(v)?;
+    }
+    // Purely host-side, so it switches between one block and the next with
+    // nothing to reconfigure on the receiver.
+    if let Some(v) = p.dc_block {
+        dsp.set_dc_enabled(v);
+    }
+    Ok(())
+}
+
+/// Reprogram the rate, with the endpoint already closed.
+///
+/// The DSP is reset because its delay line holds a few dozen samples of the old
+/// band at the old rate, and the clock measurement is restarted because the gap
+/// would otherwise read as an enormous negative error.
+fn rebuild(
+    dev: &mut Device,
+    hz: f64,
+    dsp: &mut HostDsp,
+    stats: &mut RxStats,
+    shared: &Arc<Shared>,
+    trace: &Trace,
+) -> Result<()> {
+    let r = dev.set_rate(hz);
+    dsp.reset();
+    let now = dev.sample_rate_hz();
+    stats.restart_clock(now);
+    shared.rate_milli_hz.store((now * 1000.0) as u64, Ordering::Relaxed);
+    trace.note(format!("rate now {:.3} Msps complex", now / 1e6));
+    r
+}
+
+fn open_endpoint(
+    dev: &Device,
+    in_flight: usize,
+    transfer_bytes: usize,
+) -> Result<nusb::Endpoint<Bulk, In>> {
+    let mut ep = dev
+        .usb()
+        .interface()
+        .endpoint::<Bulk, In>(BULK_EP)
+        .map_err(|e| Error::Access(format!("cannot open the Airspy bulk endpoint: {e}")))?;
+    for _ in 0..in_flight {
+        ep.submit(ep.allocate(transfer_bytes));
+    }
+    Ok(ep)
+}
+
+/// Cancel and reap everything outstanding, then drop the endpoint.
+fn close(mut ep: nusb::Endpoint<Bulk, In>) {
+    ep.cancel_all();
+    let deadline = Instant::now() + CANCEL_TIMEOUT;
+    while ep.pending() > 0 && Instant::now() < deadline {
+        if ep.wait_next_complete(Duration::from_millis(50)).is_none() {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Transfer lengths must be a whole number of 32-bit words, because that is
+    /// what the packed format is defined on. The clamps must also hold against
+    /// a hand-edited config file.
+    #[test]
+    fn geometry_rounds_to_whole_words_and_clamps() {
+        let cfg = AirspyConfig::default();
+        let (n, bytes) = geometry(&cfg);
+        assert_eq!(n, 16);
+        assert_eq!(bytes, 128 * 1024);
+        assert_eq!(bytes % 4, 0, "the packed format is defined on u32 words");
+        assert_eq!(bytes % GRANULE, 0);
+
+        let zero = AirspyConfig { transfers: 0, transfer_kib: 0, ..Default::default() };
+        let (n, bytes) = geometry(&zero);
+        assert_eq!(n, MIN_TRANSFERS);
+        assert!(bytes >= GRANULE && bytes % GRANULE == 0);
+
+        let huge = AirspyConfig { transfers: 255, transfer_kib: 4096, ..Default::default() };
+        let (n, bytes) = geometry(&huge);
+        assert_eq!(n, MAX_TRANSFERS);
+        assert_eq!(bytes, MAX_TRANSFER_BYTES);
+
+        // Every reachable size divides into whole packed groups' worth of
+        // words, so no completion is ever half a group.
+        for kib in [4u16, 7, 64, 128, 511, 4096] {
+            let (_, b) = geometry(&AirspyConfig { transfer_kib: kib, ..Default::default() });
+            assert_eq!(b % 4, 0, "{kib} KiB is not a whole number of words");
+        }
+    }
+
+    /// Both wire formats decode to the same 12-bit range, and neither leaks the
+    /// top four bits of the unpacked form into a sample.
+    #[test]
+    fn both_wire_formats_decode_to_twelve_bit_values() {
+        // Unpacked: little-endian u16, top nibble ignored. A firmware that
+        // leaves rubbish up there must not turn a mid-scale sample into a
+        // full-scale one.
+        let bytes: Vec<u8> =
+            [0x00u16, 0x0800, 0xF7FF, 0x0FFF].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let mut out = Vec::new();
+        decode_raw(&bytes, false, &mut out);
+        assert_eq!(out, vec![0x000, 0x800, 0x7FF, 0xFFF]);
+
+        // Packed: three words in, eight samples out, all within 12 bits.
+        let words = [0x1234_5678u32, 0x9ABC_DEF0, 0x0F1E_2D3C];
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let mut out = Vec::new();
+        decode_raw(&bytes, true, &mut out);
+        assert_eq!(out.len(), 8);
+        assert!(out.iter().all(|s| *s <= 0xfff));
+
+        // A partial group carries no whole samples and is dropped rather than
+        // half-decoded — a half-decoded group would shift every sample after it.
+        let mut out = Vec::new();
+        decode_raw(&bytes[..8], true, &mut out);
+        assert!(out.is_empty(), "two words are not a group");
+    }
+}

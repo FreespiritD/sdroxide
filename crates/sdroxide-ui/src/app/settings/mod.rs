@@ -35,7 +35,8 @@ use self::net::{
     settings_freedv_tab,
 };
 use self::radio::{
-    settings_airspyhf_tab, settings_cat_tab, settings_hackrf_tab, settings_hpsdr_tab,
+    settings_airspy_tab, settings_airspyhf_tab, settings_cat_tab, settings_hackrf_tab,
+    settings_hpsdr_tab,
     settings_icomnet_tab, settings_pluto_tab, settings_rtlsdr_tab, settings_rtltcp_tab,
     settings_rx888_tab, settings_sdrplay_tab, settings_smartsdr_tab, settings_soapy_devices,
     settings_tci_tab,
@@ -138,6 +139,8 @@ pub(in crate::app) struct SettingsIo<'a> {
     airspyhf_copy_report: &'a mut bool,
     hackrf_rescan: &'a mut bool,
     hackrf_copy_report: &'a mut bool,
+    airspy_rescan: &'a mut bool,
+    airspy_copy_report: &'a mut bool,
     /// Ask the SDRplay API service for its device list. Brief and
     /// non-invasive, so it cannot disturb a running stream.
     sdrplay_rescan: &'a mut bool,
@@ -370,6 +373,13 @@ impl SdroxideApp {
             {
                 self.hackrf_devices = self.ctrl.list_hackrf();
             }
+            if self
+                .radio_cfg
+                .as_ref()
+                .is_some_and(|c| c.backend == sdroxide_types::Backend::Airspy)
+            {
+                self.airspy_devices = self.ctrl.list_airspy();
+            }
             self.audio_devices_queried = true;
         } else if self.radio_cfg.is_none() {
             // Still waiting for the interface configuration. On a remote client
@@ -393,6 +403,8 @@ impl SdroxideApp {
         let mut airspyhf_copy_report = false;
         let mut hackrf_rescan = false;
         let mut hackrf_copy_report = false;
+        let mut airspy_rescan = false;
+        let mut airspy_copy_report = false;
         let mut sdrplay_rescan = false;
         let mut soapy_rescan = false;
         let mut tci_test = false;
@@ -475,6 +487,9 @@ impl SdroxideApp {
         // And again — pure Rust over `nusb`, no libhackrf. The only one of
         // these USB backends that transmits, which is why it is the only one
         // whose settings tab has a switch to arm before it will.
+        // Same again, and a different radio from the HF+ above despite the
+        // name: an R2/Mini is other silicon behind another protocol.
+        iface_opts.push(sdroxide_types::Backend::Airspy);
         iface_opts.push(sdroxide_types::Backend::HackRf);
         // Also in every build variant, but for a different reason: nothing is
         // linked at build time — the vendor's sdrplay_api library is found
@@ -549,6 +564,8 @@ impl SdroxideApp {
                             airspyhf_copy_report: &mut airspyhf_copy_report,
                             hackrf_rescan: &mut hackrf_rescan,
                             hackrf_copy_report: &mut hackrf_copy_report,
+                            airspy_rescan: &mut airspy_rescan,
+                            airspy_copy_report: &mut airspy_copy_report,
                             sdrplay_rescan: &mut sdrplay_rescan,
                             soapy_rescan: &mut soapy_rescan,
                             tci_test: &mut tci_test,
@@ -740,6 +757,16 @@ impl SdroxideApp {
             let report = self
                 .ctrl
                 .airspyhf_diagnostics()
+                .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
+            ctx.copy_text(report);
+        }
+        if airspy_rescan {
+            self.airspy_devices = self.ctrl.list_airspy();
+        }
+        if airspy_copy_report {
+            let report = self
+                .ctrl
+                .airspy_diagnostics()
                 .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
             ctx.copy_text(report);
         }
@@ -1362,6 +1389,17 @@ impl SdroxideApp {
                         io.radio_edit,
                         io.airspyhf_rescan,
                         io.airspyhf_copy_report,
+                        io.apply_iface,
+                        io.local_devices,
+                        cmds,
+                    ),
+                    Backend::Airspy => settings_airspy_tab(
+                        ui,
+                        &self.airspy_devices,
+                        self.caps.as_ref(),
+                        io.radio_edit,
+                        io.airspy_rescan,
+                        io.airspy_copy_report,
                         io.apply_iface,
                         io.local_devices,
                         cmds,

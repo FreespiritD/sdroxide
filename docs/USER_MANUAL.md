@@ -90,7 +90,8 @@ or connects to a remote sdroxide server.
 - **Many radio backends:** SoapySDR devices, OpenHPSDR (Hermes/Metis) Ethernet
   SDRs, a TCI server (ExpertSDR3/Thetis), a SmartSDR radio (FlexRadio
   FLEX-6000/8000), RTL-SDR, RX-888, Airspy HF+ and SDRplay RSP receivers over
-  USB, a HackRF transceiver over USB, an RTL-SDR published over the network by
+  USB, an Airspy R2 or Mini over USB, a HackRF transceiver over USB, an RTL-SDR
+  published over the network by
   `rtl_tcp`, a PlutoSDR, or a CAT-controlled radio with audio over a USB sound
   card (demodulated audio or stereo IQ).
 - **Several radios at once** — each in its own tab with its own tuning, mode,
@@ -2448,6 +2449,9 @@ radio. Everything below the selector changes to match the choice:
 - **Airspy HF+ (USB)** — an Airspy HF+ Dual, Discovery or Ranger, driven by
   sdroxide's own USB driver with no SoapySDR and no libairspyhf involved. See
   [5.2.9](#529-airspy-hf-usb).
+- **Airspy R2 / Mini (USB)** — an Airspy R2 or Mini, driven by sdroxide's own
+  USB driver. A different receiver from the Airspy HF+ above, with its own
+  interface. See [5.2.13](#5213-airspy-r2--mini-usb).
 - **HackRF One (USB)** — a HackRF One, Jawbreaker or rad1o, driven by
   sdroxide's own USB driver with no SoapySDR and no libhackrf involved. The one
   USB interface here that transmits, and half duplex. See
@@ -3691,6 +3695,86 @@ With it on:
 > button records every command exchanged with the radio in order, including the
 > exact sequence around each key-down — which is the part a bug report needs and
 > the part nobody can reconstruct from a spectrum.
+
+#### 5.2.13 Airspy R2 / Mini (USB)
+
+An Airspy R2 or Airspy Mini, driven directly over USB by sdroxide's own
+pure-Rust driver. No SoapySDR, no libusb and no libairspy, so this interface is
+in every build variant on every platform. 24 MHz to 1800 MHz, receive only.
+
+**This is not the Airspy HF+.** Same vendor, different receiver: different
+silicon, a different USB id, a different protocol and a different tuning range.
+They have separate interfaces, separate drivers and separate udev rules, and
+neither substitutes for the other.
+
+**Permissions.** Linux needs the packaged udev rule — see "Airspy R2 / Mini
+permissions" in the README, and note it is a different file from the HF+'s.
+Windows wants WinUSB via Zadig or Airspy's own package. macOS needs nothing.
+
+**Receiver.** Rescan lists what is on the bus. An R2 and a Mini share the USB
+id `1d50:60a1` *and* the same product string, so the list cannot say which is
+which — only the sample rates separate them, and those need the device open.
+The serial is matched on its suffix, so the last eight digits are enough.
+
+**Sample rate.** The rate you pick is the rate you get: an R2 offers 10 and
+2.5 Msps, a Mini 6 and 3. Once a receiver is connected the combo shows *its*
+rates; before that it shows both models' and says which is which.
+
+Underneath, the receiver runs at **twice** the rate shown. Its ADC is real
+rather than complex — it digitises a real signal at the full rate — and sdroxide
+makes complex baseband from it on the host with a quarter-rate translate and a
+half-band decimator. Two consequences are worth knowing:
+
+- The receiver's own DC offset lands at the **edge** of the span rather than at
+  its centre, which is the opposite of every zero-IF receiver here. That is why
+  the DC-removal switch below exists and why it is on by default.
+- Image rejection is not uniform across the span. A half-band cannot brick-wall,
+  so the inner 80 % of the span gets the full rejection and the outer edges
+  progressively less — at 10 Msps that is the middle ±4 MHz of ±5 MHz. Every
+  receiver built this way makes the same trade, Airspy's own software included.
+
+Changing the rate reopens the receiver: the rate moves the tuner's IF and the
+clock dividers together, so it cannot be changed under a running stream.
+
+**Gain is a step along a curve, not three sliders.** The R820T2 has an LNA, a
+mixer and a VGA, and setting them independently is a good way to build a
+receiver that either overloads or hisses. Airspy publishes two curated curves
+through the three stages and sdroxide offers the same choice, because that is
+what the numbers were tuned for and what every other Airspy program does:
+
+| Curve | Use |
+| --- | --- |
+| **Linearity** | Least intermodulation for a given sensitivity. The right default on an antenna with broadcast stations nearby. |
+| **Sensitivity** | More gain for weak signals, less overload margin. |
+
+The **Gain** slider is a step from 0 (quiet) to 21 along whichever curve is
+selected. It is not a dB figure — how much a step is worth depends on the curve
+and the band.
+
+**Tuner AGC.** The tuner has its own loops for the LNA and the mixer. They are
+off by default, and for a reason: with one running, the gain slider no longer
+sets the stage that loop owns — the loop overwrites it a moment later. Use one
+or the other, not both.
+
+**12-bit packing.** On by default, and worth leaving on. The receiver can pack
+its 12-bit samples three-to-a-word instead of padding each to 16 bits, which is
+a third less USB traffic — and this is a USB 2.0 device carrying up to 30 MB/s
+packed against 40 unpacked. Firmware too old to have the request streams
+unpacked and sdroxide says so. Applies on reconnect, because it changes how
+every transfer is decoded.
+
+**Bias tee.** DC on the antenna port for an active antenna or preamp. Off by
+default.
+
+**DC removal.** On by default. Turn it off to see raw hardware output, which is
+the quick way to tell a driver problem from a DSP one — but see above for where
+the spur goes when you do.
+
+> **Not yet verified against real hardware.** If it misbehaves, the Radio tab's
+> **Copy diagnostic report** button records every command exchanged with the
+> receiver, the sample-rate arithmetic (which is where a span that is half or
+> double what it should be would show), and the first samples both as raw 12-bit
+> values and decoded as I/Q pairs.
 
 ### 5.3 UI: display preferences and voice announcements
 
@@ -5978,6 +6062,7 @@ to its default, and a partial file is normal rather than a special case.
 | `"RtlTcp"` | RTL-SDR published by `rtl_tcp` | `"rtltcp"` |
 | `"Rx888"` | RX-888 Mk2 | `"rx888"` |
 | `"AirspyHf"` | Airspy HF+ | `"airspyhf"` |
+| `"Airspy"` | Airspy R2 / Mini | `"airspy"` |
 | `"HackRf"` | HackRF One / Jawbreaker / rad1o | `"hackrf"` |
 | `"SdrPlay"` | SDRplay RSP | `"sdrplay"` |
 

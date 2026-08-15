@@ -1,0 +1,27 @@
+[package]
+name = "sdroxide-airspy"
+version.workspace = true
+edition.workspace = true
+
+# Native-only Airspy R2 / Mini support over USB. Pure Rust via `nusb` — no
+# libusb, no libairspy, no libSoapySDR, no C dependency at all. Must never be a
+# dependency of any wasm-targeted crate.
+#
+# Note this is a *different radio* from the Airspy HF+ next door in
+# `sdroxide-airspyhf`: different silicon, different USB id, different protocol,
+# and a different host-DSP problem. The two share a vendor and nothing else.
+[dependencies]
+# `AirspyConfig` — including the offered sample-rate list, which lives there
+# rather than here because the settings UI is shared with the wasm client.
+sdroxide-types.workspace = true
+# `Complex32` for the baseband the workspace passes around, and
+# `blackman_harris` for the halfband this driver has to design.
+sdroxide-dsp.workspace = true
+crossbeam-channel.workspace = true
+rtrb.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+nusb.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

@@ -2491,6 +2491,283 @@ pub(in crate::app) fn settings_airspyhf_tab(
     );
 }
 
+/// Airspy R2 / Mini interface: receiver, rate, and the tuner's gain curves.
+///
+/// The interesting part is the rate list. An R2 offers 10 and 2.5 Msps and a
+/// Mini 6 and 3, and the two are indistinguishable on the USB bus — same
+/// product id, same product string. So once a receiver is connected its own
+/// list is shown, and before that the union of both, annotated with which model
+/// each rate belongs to.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::app) fn settings_airspy_tab(
+    ui: &mut egui::Ui,
+    devices: &[sdroxide_types::AirspyDevice],
+    caps: Option<&sdroxide_types::DeviceCaps>,
+    radio_edit: &mut Option<sdroxide_types::RadioConfig>,
+    rescan: &mut bool,
+    copy_report: &mut bool,
+    apply: &mut bool,
+    local: bool,
+    cmds: &mut Vec<Command>,
+) {
+    use sdroxide_types::{AirspyConfig, AirspyGain};
+    let Some(cfg) = radio_edit.as_mut() else {
+        ui.label("Radio configuration is only available in the native app.");
+        return;
+    };
+
+    // What cannot change under a running stream. The rate stops and restarts
+    // the receiver, and packing decides how every completion is decoded.
+    let before = (cfg.airspy.serial.clone(), cfg.airspy.sample_rate_hz, cfg.airspy.packing);
+
+    // The receiver's own rates when one is connected, the union of both models'
+    // before that.
+    let rates: Vec<f64> = match caps {
+        Some(c) if !c.sample_rates.is_empty() => c.sample_rates.clone(),
+        _ => AirspyConfig::SAMPLE_RATES.to_vec(),
+    };
+    let from_device = caps.is_some_and(|c| !c.sample_rates.is_empty());
+
+    egui::Grid::new("airspy-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Receiver");
+        local_only(ui, local, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Rescan")
+                    .on_hover_text(
+                        "Re-list the USB bus. No device is opened, so this is safe \
+                         to press while receiving.",
+                    )
+                    .clicked()
+                {
+                    *rescan = true;
+                }
+                let shown = if cfg.airspy.serial.is_empty() {
+                    "— first one found —".to_string()
+                } else {
+                    cfg.airspy.serial.clone()
+                };
+                ComboBox::from_id_salt("airspy_dev").width(300.0).selected_text(shown).show_ui(
+                    ui,
+                    |ui| {
+                        if devices.is_empty() {
+                            ui.label("No Airspy R2 or Mini found — press Rescan");
+                        }
+                        ui.selectable_value(
+                            &mut cfg.airspy.serial,
+                            String::new(),
+                            "— first one found —",
+                        );
+                        for d in devices {
+                            let serial = d.serial.clone().unwrap_or_default();
+                            ui.selectable_value(&mut cfg.airspy.serial, serial, d.label());
+                        }
+                    },
+                );
+            });
+        });
+        ui.end_row();
+
+        ui.label("Sample rate");
+        ui.horizontal(|ui| {
+            ComboBox::from_id_salt("airspy_rate")
+                .width(180.0)
+                .selected_text(format!("{:.3} Msps", cfg.airspy.sample_rate_hz / 1e6))
+                .show_ui(ui, |ui| {
+                    for r in &rates {
+                        let note = AirspyConfig::rate_note(*r);
+                        let text = if from_device || note.is_empty() {
+                            format!("{:.3} Msps", r / 1e6)
+                        } else {
+                            format!("{:.3} Msps — {note}", r / 1e6)
+                        };
+                        ui.selectable_value(&mut cfg.airspy.sample_rate_hz, *r, text);
+                    }
+                });
+            ui.add(
+                egui::Label::new(
+                    RichText::new(if from_device {
+                        "read from this receiver".to_string()
+                    } else {
+                        "an R2 and a Mini offer different rates and cannot be told \
+                         apart until one is open"
+                            .to_string()
+                    })
+                    .weak(),
+                )
+                .wrap(),
+            );
+        });
+        ui.end_row();
+        ui.label("");
+        ui.add(
+            egui::Label::new(
+                RichText::new(
+                    "This is the rate you get. The receiver's ADC runs at twice it — \
+                     it digitises a real signal and sdroxide makes complex baseband \
+                     from it on the host.",
+                )
+                .weak(),
+            )
+            .wrap(),
+        );
+        ui.end_row();
+
+        ui.label("Gain curve");
+        ui.horizontal(|ui| {
+            for c in AirspyGain::ALL {
+                if ui.selectable_label(cfg.airspy.gain_curve == c, c.label()).clicked()
+                    && cfg.airspy.gain_curve != c
+                {
+                    cfg.airspy.gain_curve = c;
+                    push_gain(cmds, AirspyConfig::CURVE_ELEMENT, c.code() as f64);
+                }
+            }
+        });
+        ui.end_row();
+
+        ui.label("Gain");
+        if ui
+            .add(
+                egui::Slider::new(&mut cfg.airspy.gain_step, 0..=(AirspyConfig::GAIN_STEPS - 1))
+                    .text("step"),
+            )
+            .on_hover_text(
+                "A step along the curve above, not a dB figure — the tuner's LNA, \
+                 mixer and VGA move together, and how much each step is worth \
+                 depends on the curve and the band. 0 is the quiet end.",
+            )
+            .changed()
+        {
+            push_gain(cmds, AirspyConfig::GAIN_ELEMENT, cfg.airspy.gain_step as f64);
+        }
+        ui.end_row();
+
+        ui.label("Tuner AGC");
+        ui.horizontal(|ui| {
+            if ui
+                .checkbox(&mut cfg.airspy.lna_agc, "LNA")
+                .on_hover_text("Hands the LNA to the tuner's own loop, overriding the curve.")
+                .changed()
+            {
+                push_gain(cmds, AirspyConfig::LNA_AGC_ELEMENT, cfg.airspy.lna_agc as u8 as f64);
+            }
+            if ui
+                .checkbox(&mut cfg.airspy.mixer_agc, "Mixer")
+                .on_hover_text("The same for the mixer stage.")
+                .changed()
+            {
+                push_gain(cmds, AirspyConfig::MIXER_AGC_ELEMENT, cfg.airspy.mixer_agc as u8 as f64);
+            }
+        });
+        ui.end_row();
+        if cfg.airspy.lna_agc || cfg.airspy.mixer_agc {
+            ui.label("");
+            ui.add(
+                egui::Label::new(
+                    RichText::new(
+                        "With a loop running, the gain slider no longer sets the stage \
+                         it owns — the loop overwrites it.",
+                    )
+                    .weak(),
+                )
+                .wrap(),
+            );
+            ui.end_row();
+        }
+
+        ui.label("Bias tee");
+        if ui
+            .checkbox(&mut cfg.airspy.bias_tee, "DC on the antenna port")
+            .on_hover_text("Powers an active antenna or preamp down the coax.")
+            .changed()
+        {
+            push_gain(cmds, AirspyConfig::BIAS_TEE_ELEMENT, cfg.airspy.bias_tee as u8 as f64);
+        }
+        ui.end_row();
+
+        ui.label("12-bit packing");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut cfg.airspy.packing, "Enable");
+            ui.add(
+                egui::Label::new(
+                    RichText::new(
+                        "A third less USB traffic. Leave it on: this is a USB 2.0 \
+                         device and the top rate is 30 MB/s packed against 40 \
+                         unpacked. Applies on reconnect.",
+                    )
+                    .weak(),
+                )
+                .wrap(),
+            );
+        });
+        ui.end_row();
+
+        ui.label("DC removal");
+        if ui
+            .checkbox(&mut cfg.airspy.dc_block, "Remove the ADC's offset")
+            .on_hover_text(
+                "Turn it off to see raw hardware output. Worth knowing where the \
+                 spur goes: the offset lands at the edge of the span, not its \
+                 centre, because the signal is translated by a quarter of the \
+                 sample rate on the way through.",
+            )
+            .changed()
+        {
+            push_gain(cmds, AirspyConfig::DC_BLOCK_ELEMENT, cfg.airspy.dc_block as u8 as f64);
+        }
+        ui.end_row();
+    });
+
+    if cfg.airspy.bias_tee {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(
+                "Bias tee is ON. Never connect a transceiver, a grounded antenna, \
+                 or a preamp powered from elsewhere while this is enabled — the DC \
+                 goes straight down the feedline.",
+            )
+            .color(crate::theme::YELLOW()),
+        );
+    }
+
+    if (cfg.airspy.serial.clone(), cfg.airspy.sample_rate_hz, cfg.airspy.packing) != before {
+        *apply = true;
+    }
+
+    ui.add_space(6.0);
+    local_only(ui, local, |ui| {
+        if ui
+            .button("Copy diagnostic report")
+            .on_hover_text(
+                "Every command exchanged with the receiver, the sample-rate \
+                 arithmetic, and the first samples decoded as I/Q.",
+            )
+            .clicked()
+        {
+            *copy_report = true;
+        }
+    });
+
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "Receive only, 24–1800 MHz. No SoapySDR and no libairspy needed. The \
+             receiver, sample rate and packing take effect on Apply; everything \
+             else applies as you change it.",
+        )
+        .weak(),
+    );
+    ui.label(
+        RichText::new(
+            "Not yet verified against real hardware. If it misbehaves, please send the \
+             diagnostic report — it contains every command exchanged with the receiver, \
+             the rate arithmetic, and the first samples decoded as I/Q pairs.",
+        )
+        .color(crate::theme::YELLOW()),
+    );
+}
+
 /// HackRF interface: radio, rate, the front end, and — behind its own switch —
 /// the transmitter.
 ///

@@ -211,7 +211,7 @@ jobs:
           # are native and present in every build.
           cp packaging/linux/60-sdroxide-rtlsdr.rules packaging/linux/60-sdroxide-rx888.rules \
              packaging/linux/60-sdroxide-airspyhf.rules packaging/linux/60-sdroxide-hackrf.rules \
-             stage/sdroxide/
+             packaging/linux/60-sdroxide-airspy.rules stage/sdroxide/
           if [[ "${{ matrix.variant }}" == "cat" ]]; then
             cat > stage/sdroxide/README.txt <<'EOF'
           sdroxide — SDR transceiver (https://github.com/dividebysandwich/sdroxide)

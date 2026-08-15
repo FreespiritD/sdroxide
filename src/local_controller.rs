@@ -161,6 +161,10 @@ impl RadioController for LocalController {
         sdroxide_airspyhf::list()
     }
 
+    fn list_airspy(&self) -> Vec<sdroxide_types::AirspyDevice> {
+        sdroxide_airspy::list()
+    }
+
     fn list_hackrf(&self) -> Vec<sdroxide_types::HackRfDevice> {
         sdroxide_hackrf::list()
     }
@@ -246,6 +250,15 @@ impl RadioController for LocalController {
             Some(t) => t,
             None => "No Airspy HF+ session has run yet — press Apply / reconnect \
                      first, or run `cargo run -p sdroxide-airspyhf --example probe`."
+                .to_string(),
+        })
+    }
+
+    fn airspy_diagnostics(&self) -> Option<String> {
+        Some(match sdroxide_airspy::diagnostics() {
+            Some(t) => t,
+            None => "No Airspy R2/Mini session has run yet — press Apply / reconnect \
+                     first, or run `cargo run -p sdroxide-airspy --example probe`."
                 .to_string(),
         })
     }

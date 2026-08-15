@@ -161,6 +161,7 @@ pub struct SdroxideApp {
     rx888_devices: Vec<sdroxide_types::Rx888Device>,
     /// Airspy HF+ receivers found on the last Rescan.
     airspyhf_devices: Vec<sdroxide_types::AirspyHfDevice>,
+    airspy_devices: Vec<sdroxide_types::AirspyDevice>,
     hackrf_devices: Vec<sdroxide_types::HackRfDevice>,
     /// RSPs the SDRplay API service reported on the last Rescan.
     sdrplay_devices: Vec<sdroxide_types::SdrPlayDevice>,
@@ -685,6 +686,7 @@ impl SdroxideApp {
             rtlsdr_devices: Vec::new(),
             rx888_devices: Vec::new(),
             airspyhf_devices: Vec::new(),
+            airspy_devices: Vec::new(),
             hackrf_devices: Vec::new(),
             sdrplay_devices: Vec::new(),
             soapy_devices: None,

@@ -65,6 +65,11 @@ pub enum Backend {
     /// an address identifies nothing locally. Appended last, for the same
     /// reason as `SmartSdr` above.
     RtlTcp,
+    /// Airspy R2 or Mini, driven directly over USB by the native pure-Rust
+    /// driver — no libairspy, no SoapySDR. A **different radio** from the
+    /// Airspy HF+ above: different silicon, different USB id, different
+    /// protocol. Appended last, for the same reason as `SmartSdr` above.
+    Airspy,
     /// HackRF One (or a Jawbreaker / rad1o), driven directly over USB by the
     /// native pure-Rust driver — no libhackrf, no SoapySDR. The only native
     /// USB backend here that transmits, and half duplex: receive stops for the
@@ -74,7 +79,7 @@ pub enum Backend {
 }
 
 impl Backend {
-    pub const ALL: [Backend; 14] = [
+    pub const ALL: [Backend; 15] = [
         Backend::Auto,
         Backend::Soapy,
         Backend::Cat,
@@ -87,6 +92,7 @@ impl Backend {
         Backend::RtlTcp,
         Backend::Rx888,
         Backend::AirspyHf,
+        Backend::Airspy,
         Backend::HackRf,
         Backend::SdrPlay,
     ];
@@ -104,6 +110,7 @@ impl Backend {
             Backend::RtlTcp => "RTL-SDR over rtl_tcp (network)",
             Backend::Rx888 => "RX-888 (USB)",
             Backend::AirspyHf => "Airspy HF+ (USB)",
+            Backend::Airspy => "Airspy R2 / Mini (USB)",
             Backend::HackRf => "HackRF One (USB)",
             Backend::SdrPlay => "SDRplay RSP (USB)",
             Backend::None => "Not configured",
@@ -154,10 +161,12 @@ impl SoapyDeviceInfo {
             "sdrplay" => Some(Backend::SdrPlay),
             "rtlsdr" => Some(Backend::RtlSdr),
             "plutosdr" => Some(Backend::Pluto),
-            // SoapyAirspyHF, not SoapyAirspy: `airspy` is the R2/Mini, a
-            // different radio with no native backend here. Steering one of
-            // those at the HF+ interface would be worse than leaving it alone.
+            // Two different radios behind two different SoapySDR modules, and
+            // each now has its own native backend. Steering `airspy` at the HF+
+            // interface (or the other way round) would open the wrong driver
+            // against the wrong silicon.
             "airspyhf" => Some(Backend::AirspyHf),
+            "airspy" => Some(Backend::Airspy),
             // Worth steering even harder than the rest: SoapyHackRF drops the
             // receive amp on the first transmit and never applies the transmit
             // one at all, which the native driver does not do.
@@ -1842,6 +1851,189 @@ impl HackRfConfig {
     }
 }
 
+/// Which of the R820T2's two curated gain curves to drive the front end from.
+///
+/// The tuner has an LNA, a mixer and a VGA, and setting the three
+/// independently is a good way to build a receiver that either overloads or
+/// hisses. Airspy publishes two curves through them and every Airspy program
+/// offers the choice rather than three sliders; this does the same, because the
+/// numbers were tuned as curves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AirspyGain {
+    /// Least intermodulation for a given sensitivity — the right default on an
+    /// antenna with broadcast nearby.
+    #[default]
+    Linearity,
+    /// More sensitivity, less overload margin.
+    Sensitivity,
+}
+
+impl AirspyGain {
+    pub fn code(self) -> u8 {
+        match self {
+            AirspyGain::Linearity => 0,
+            AirspyGain::Sensitivity => 1,
+        }
+    }
+
+    pub fn from_code(code: u8) -> AirspyGain {
+        match code {
+            1 => AirspyGain::Sensitivity,
+            _ => AirspyGain::Linearity,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AirspyGain::Linearity => "Linearity (best strong-signal handling)",
+            AirspyGain::Sensitivity => "Sensitivity (best weak-signal)",
+        }
+    }
+
+    pub const ALL: [AirspyGain; 2] = [AirspyGain::Linearity, AirspyGain::Sensitivity];
+}
+
+/// An Airspy R2 or Mini seen on the USB bus. Wasm-safe so it can cross the
+/// `RadioController` trait to the settings UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AirspyDevice {
+    /// The USB serial descriptor, when it has one.
+    pub serial: Option<String>,
+    /// The USB product string, else a generic name.
+    ///
+    /// An R2 and a Mini are indistinguishable here — same product id, same
+    /// product string. Only the rate list separates them, and that needs the
+    /// device open, so this does not pretend to know.
+    pub name: String,
+}
+
+impl AirspyDevice {
+    /// One-line label for the selection UI.
+    pub fn label(&self) -> String {
+        match &self.serial {
+            Some(s) => {
+                let tail = &s[s.len().saturating_sub(8)..];
+                format!("{}  (serial …{tail})", self.name)
+            }
+            // Without a serial we can only ever open "the first one", so say so
+            // rather than implying this entry can be pinned.
+            None => format!("{}  [no serial — first match only]", self.name),
+        }
+    }
+}
+
+/// Airspy R2 / Mini (USB) backend configuration. Receive only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AirspyConfig {
+    /// Pin a receiver by its USB serial; empty means "the first one found".
+    /// Matched on the **suffix**, so the last eight digits are enough.
+    pub serial: String,
+    /// **Complex** sample rate in Hz — what you get, not what the ADC runs at.
+    /// The receiver is programmed at twice this, because its ADC is real and
+    /// the host makes complex baseband from it. Snapped to a rate the receiver
+    /// actually offers at open; see [`Self::SAMPLE_RATES`].
+    pub sample_rate_hz: f64,
+    /// Which curated gain curve the three tuner stages follow.
+    pub gain_curve: AirspyGain,
+    /// Step along that curve, 0 (least gain) to 21 (most).
+    pub gain_step: u8,
+    /// The tuner's own AGC loops, one for the LNA and one for the mixer. Off by
+    /// default: they fight a manual gain step, and the curves are what this
+    /// receiver is usually driven by.
+    pub lna_agc: bool,
+    pub mixer_agc: bool,
+    /// Bias tee on the antenna port. Off by default: putting phantom power on
+    /// someone's feedline uninvited is not a good default.
+    pub bias_tee: bool,
+    /// 12-bit packing on the USB link.
+    ///
+    /// On by default, and it matters more here than it looks: at the top rate
+    /// the ADC produces 20 Msps of real samples, which is 40 MB/s unpacked
+    /// against 30 MB/s packed — and this is a USB 2.0 device, so the link has
+    /// no headroom to spare. Firmware too old to have the request falls back to
+    /// unpacked and says so.
+    pub packing: bool,
+    /// Remove the ADC's DC offset on the host.
+    ///
+    /// On by default. Worth knowing where the spur goes if you turn it off: the
+    /// offset lands at the *edge* of the output span rather than its centre,
+    /// because the signal is translated by a quarter of the sample rate on the
+    /// way through. Turn it off to see raw hardware output.
+    pub dc_block: bool,
+    /// Bulk transfers in flight, and the size of each in KiB.
+    pub transfers: u8,
+    pub transfer_kib: u16,
+}
+
+impl Default for AirspyConfig {
+    fn default() -> Self {
+        AirspyConfig {
+            serial: String::new(),
+            // The R2's slower rate: present on every R2, and the one that asks
+            // least of both the USB link and the host.
+            sample_rate_hz: 2_500_000.0,
+            gain_curve: AirspyGain::Linearity,
+            // Mid-curve. High enough to hear something on a first plug-in, low
+            // enough not to overload on a real antenna.
+            gain_step: 11,
+            lna_agc: false,
+            mixer_agc: false,
+            bias_tee: false,
+            packing: true,
+            dc_block: true,
+            transfers: 16,
+            transfer_kib: 128,
+        }
+    }
+}
+
+impl AirspyConfig {
+    /// The one real gain element: a step along the selected curve. It is a
+    /// *step*, not a dB figure — how much each one is worth depends on the
+    /// curve and the band — so the settings tab shows it as a step control and
+    /// this is what carries it.
+    pub const GAIN_ELEMENT: &'static str = "GAIN";
+
+    /// Pseudo-elements carrying settings that are not gains at all. They ride
+    /// the existing `SetGain` command so this backend needs no new `Command`
+    /// variant, no `DeviceCaps` field and no engine change; they are
+    /// deliberately absent from `DeviceCaps::gains`, so nothing renders them as
+    /// sliders.
+    pub const CURVE_ELEMENT: &'static str = "CURVE";
+    pub const LNA_AGC_ELEMENT: &'static str = "LNAAGC";
+    pub const MIXER_AGC_ELEMENT: &'static str = "MIXAGC";
+    pub const BIAS_TEE_ELEMENT: &'static str = "BIASTEE";
+    pub const PACKING_ELEMENT: &'static str = "PACKING";
+    pub const DC_BLOCK_ELEMENT: &'static str = "DCBLOCK";
+
+    /// Steps along a gain curve.
+    pub const GAIN_STEPS: u8 = 22;
+
+    /// The **complex** rates any R2 or Mini is known to offer — the list the
+    /// settings combo shows *before* a receiver has been opened. It is a menu,
+    /// not a promise: the real list is queried from the device and published in
+    /// `DeviceCaps::sample_rates`, and the settings tab prefers that whenever
+    /// one is connected.
+    pub const SAMPLE_RATES: [f64; 4] = [2.5e6, 3.0e6, 6.0e6, 10.0e6];
+
+    /// Which model a rate belongs to, for the pre-open combo. An R2 and a Mini
+    /// cannot be told apart on the bus, so the list has to cover both and say
+    /// which is which.
+    pub fn rate_note(rate_hz: f64) -> &'static str {
+        match rate_hz as u32 {
+            10_000_000 => "R2 — 40 MB/s over USB, 30 packed",
+            6_000_000 => "Mini — 24 MB/s, 18 packed",
+            3_000_000 => "Mini — 12 MB/s, 9 packed",
+            2_500_000 => "R2 — 10 MB/s, 7.5 packed",
+            _ => "",
+        }
+    }
+
+    /// Tuning range, in Hz. Fixed by the R820T2 and the same on both models.
+    pub const FREQ_RANGE: (f64, f64) = (24.0e6, 1_800.0e6);
+}
+
 /// AD9361 receive AGC mode. The names are the IIO `gain_control_mode` values,
 /// which is what actually goes on the wire.
 ///
@@ -2603,6 +2795,7 @@ pub struct RadioConfig {
     pub rtltcp: RtlTcpConfig,
     pub rx888: Rx888Config,
     pub airspyhf: AirspyHfConfig,
+    pub airspy: AirspyConfig,
     pub hackrf: HackRfConfig,
     pub pluto: PlutoConfig,
     pub sdrplay: SdrPlayConfig,
@@ -2923,10 +3116,17 @@ mod tests {
         assert_eq!(SoapyDeviceInfo::native_backend_for("plutosdr"), Some(Backend::Pluto));
         assert_eq!(SoapyDeviceInfo::native_backend_for("airspyhf"), Some(Backend::AirspyHf));
         assert_eq!(SoapyDeviceInfo::native_backend_for("AirspyHF"), Some(Backend::AirspyHf));
-        // The R2/Mini are a different radio behind a different SoapySDR module
-        // and have no native backend here; steering them at the HF+ interface
-        // would be worse than leaving them on SoapySDR.
-        assert_eq!(SoapyDeviceInfo::native_backend_for("airspy"), None);
+        // The R2/Mini are a different radio behind a different SoapySDR module,
+        // and now have a native backend of their own. The pair below is the
+        // thing worth guarding: `airspy` and `airspyhf` must never steer at
+        // each other's driver, because each would open the wrong silicon.
+        assert_eq!(SoapyDeviceInfo::native_backend_for("airspy"), Some(Backend::Airspy));
+        assert_eq!(SoapyDeviceInfo::native_backend_for("Airspy"), Some(Backend::Airspy));
+        assert_ne!(
+            SoapyDeviceInfo::native_backend_for("airspy"),
+            SoapyDeviceInfo::native_backend_for("airspyhf"),
+            "two different radios must not share a backend"
+        );
         // A HackRF, on the other hand, has a native backend now, and steering
         // one there matters more than for the receivers: SoapyHackRF loses the
         // receive amp on the first transmit and never applies the transmit one.

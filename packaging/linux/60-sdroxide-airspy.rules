@@ -1,0 +1,26 @@
+# Airspy R2 and Airspy Mini, for sdroxide's native USB driver.
+#
+# A *different receiver* from the Airspy HF+, which has its own rule file:
+# different silicon, different USB id, different protocol. Both may be installed
+# together and neither covers the other.
+#
+# sdroxide talks to these directly with nusb rather than through libusb,
+# libairspy or libSoapySDR, but the kernel-level requirement is the same: the
+# invoking user needs write access to the usbfs node.
+#
+# TAG+="uaccess" hands an ACL to whoever is logged in at the active seat. That
+# is better than the older GROUP="plugdev" recipe, which needs a group to exist,
+# the user to be added to it, and a full re-login before it takes effect.
+#
+# Install:
+#   sudo cp 60-sdroxide-airspy.rules /usr/lib/udev/rules.d/
+#   sudo udevadm control --reload
+# then unplug and replug the receiver.
+#
+# Airspy's own 52-airspy.rules covers the same id. If it is already installed
+# this file is harmless duplication, not a conflict.
+
+# One id for both models. Nothing in the USB descriptors distinguishes an R2
+# from a Mini — not even the product string — so a rule per model is neither
+# possible nor needed.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="60a1", MODE="0660", TAG+="uaccess"

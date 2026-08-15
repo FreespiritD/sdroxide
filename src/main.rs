@@ -1,3 +1,4 @@
+mod airspy_source;
 mod airspyhf_source;
 mod audio_cat_source;
 mod console;
@@ -650,6 +651,7 @@ fn probe(cli: &Cli, settings: &Settings) -> anyhow::Result<()> {
     probe_rtlsdr();
     probe_rx888();
     probe_airspyhf();
+    probe_airspy();
     probe_hackrf();
     probe_sdrplay();
     probe_soapy(cli, settings)
@@ -700,6 +702,22 @@ fn probe_airspyhf() {
             // Which model this is cannot be known without opening it — every
             // HF+ enumerates as the same 03eb:800c — so the list does not
             // pretend to. `--example probe` opens one and says.
+            println!("  {}: {}", i, d.label());
+        }
+    }
+    println!();
+}
+
+fn probe_airspy() {
+    let devices = sdroxide_airspy::list();
+    if devices.is_empty() {
+        println!("No Airspy R2 or Mini receivers found on USB.");
+    } else {
+        println!("=== Airspy R2 / Mini (native USB driver) ===");
+        for (i, d) in devices.iter().enumerate() {
+            // An R2 and a Mini share 1d50:60a1 and the same product string;
+            // only the rate list separates them, and that needs the device
+            // open. The list does not pretend to know.
             println!("  {}: {}", i, d.label());
         }
     }
@@ -964,6 +982,7 @@ fn open_configured_source(
         Backend::RtlTcp => open_rtltcp_source(radio, cli.center_hz()),
         Backend::Rx888 => open_rx888_source(radio, cli.center_hz()),
         Backend::AirspyHf => open_airspyhf_source(radio, cli.center_hz()),
+        Backend::Airspy => open_airspy_source(radio, cli.center_hz()),
         Backend::HackRf => open_hackrf_source(radio, cli.center_hz()),
         Backend::SdrPlay => open_sdrplay_source(radio, cli.center_hz()),
         Backend::Soapy => open_soapy_source(cli, settings),
@@ -1280,6 +1299,53 @@ fn airspyhf_caps(src: &airspyhf_source::AirspyHfSource) -> DeviceCaps {
             min_db: -att_max_db,
             max_db: 0.0,
             step_db: att_step_db,
+        }],
+        ..DeviceCaps::default()
+    }
+}
+
+/// Build the Airspy R2 / Mini source from radio.json. The receiver is picked by
+/// the suffix of its USB serial, or the first one found when none is configured.
+fn open_airspy_source(
+    radio: &RadioConfig,
+    center_hz: f64,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let src = airspy_source::AirspySource::open(&radio.airspy, center_hz)
+        .context("opening Airspy R2/Mini")?;
+    let caps = airspy_caps(&src);
+    Ok((Box::new(src), caps))
+}
+
+/// Capabilities for an Airspy R2 / Mini: wideband IQ, receive only, VHF/UHF.
+///
+/// The **sample rates come off the device**, not from a table. An R2 offers 10
+/// and 2.5 Msps and a Mini 6 and 3, the two are indistinguishable on the USB
+/// bus, and publishing a union would offer every owner two rates their receiver
+/// does not have. The tuning range is the R820T2's and is the same on both, so
+/// that one is a constant.
+///
+/// One gain element: a step along the selected curve, 0 to 21. It is not a dB
+/// figure — how much each step is worth depends on the curve and the band — so
+/// `step_db` is 1 and the settings tab says what it means. The switches (the
+/// curve itself, the two AGC loops, the bias tee, packing and the DC blocker)
+/// ride pseudo-elements that are deliberately not listed here, so only the
+/// Airspy panel renders them.
+fn airspy_caps(src: &airspy_source::AirspySource) -> DeviceCaps {
+    use sdroxide_types::{AirspyConfig, Direction, GainElement};
+    DeviceCaps {
+        driver: "airspy".into(),
+        label: src.describe(),
+        rx_channels: 1,
+        tx_channels: 0,
+        audio_mode: false,
+        freq_ranges_rx: vec![AirspyConfig::FREQ_RANGE],
+        sample_rates: src.available_rates().to_vec(),
+        gains: vec![GainElement {
+            name: AirspyConfig::GAIN_ELEMENT.into(),
+            direction: Direction::Rx,
+            min_db: 0.0,
+            max_db: (AirspyConfig::GAIN_STEPS - 1) as f64,
+            step_db: 1.0,
         }],
         ..DeviceCaps::default()
     }

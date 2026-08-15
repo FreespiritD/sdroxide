@@ -40,7 +40,7 @@ One binary, three ways to run it:
   RX-888 (native support), SDRplay RSP (native, via the vendor API service),
   SmartSDR (FlexRadio - experimental!), PlutoSDR (native support, experimental!),
   Icom LAN / RS-BA1 protocol (experimental!), HackRF (native support, RX
-  verified / TX unmeasured)
+  verified / TX unmeasured), Airspy R2/Mini (native support, experimental!)
 - **Panadapter** — GPU (wgpu) waterfall + spectrum line, wheel-zoom around the
   cursor, drag-to-pan, per-digit frequency readout, selectable colormaps,
   peak-hold, and **auto-contrast** ("FIT", on by default) that keeps the display
@@ -357,7 +357,7 @@ other ham software). See the [User Manual](docs/USER_MANUAL.md) for setup steps.
 
 ## Radio backends
 
-sdroxide can drive fourteen kinds of radio, selected on the **Radio** tab of the
+sdroxide can drive fifteen kinds of radio, selected on the **Radio** tab of the
 Settings window. Backend, serial, and radio-audio changes apply live when you
 press **Apply / reconnect**. A radio that isn't there yet at startup — or that
 drops mid-session — is retried in the background and attaches by itself, so
@@ -423,6 +423,31 @@ starting sdroxide before the rig is fine:
   to open. Receive only. **Not yet verified against real hardware** — see the
   user manual, §5.2.9; the Radio tab has a **Copy diagnostic report** button,
   and that report is what makes a fix possible.
+- **Airspy R2 / Mini (USB)** — an Airspy R2 or Airspy Mini, driven directly
+  over USB by a native pure-Rust driver. **No SoapySDR, no libusb and no
+  libairspy needed**, so it works in every build including the standard `.msi`
+  and `.dmg`. 24–1800 MHz; up to 10 Msps on an R2, 6 on a Mini. Receive only.
+  See "Airspy R2 / Mini permissions" under Building for the Linux udev rule.
+
+  A **different receiver from the Airspy HF+** above — different silicon, a
+  different USB id and a different protocol — so it has its own interface and
+  its own driver. The two are not variants of each other.
+
+  The rate you pick is the rate you get, but the receiver runs at twice it: its
+  ADC is real, not complex, and sdroxide does the downconversion on the host —
+  a quarter-rate translate and a half-band decimator, which is also why the
+  receiver's own DC offset lands at the *edge* of the span rather than its
+  centre. An R2 and a Mini cannot be told apart on the USB bus, so the rate list
+  is read off whichever one is connected rather than assumed.
+
+  Gain is a **step along a curve** rather than three sliders: the R820T2's LNA,
+  mixer and VGA move together along one of two curated curves — linearity for
+  strong-signal handling, sensitivity for weak signals — which is how every
+  Airspy program drives this tuner and what the numbers were tuned for. Bias
+  tee, the tuner's own AGC loops and 12-bit USB packing are on the same tab.
+
+  **Not yet verified against real hardware** — the Radio tab has a **Copy
+  diagnostic report** button, and that report is what makes a fix possible.
 - **HackRF One (USB)** — a HackRF One (or a Jawbreaker or rad1o), driven
   directly over USB by a native pure-Rust driver. **No SoapySDR, no libusb and
   no libhackrf needed**, so it works in every build including the standard
@@ -485,8 +510,8 @@ starting sdroxide before the rig is fine:
   megasample-per-second stream both ways at once. Not yet hardware-verified —
   see the user manual, §5.2.7.
 - **SoapySDR** — any [SoapySDR](https://github.com/pothosware/SoapySDR) device
-  (wideband IQ) — Airspy R2/Mini, LimeSDR, bladeRF and friends. See below. A
-  HackRF reaches sdroxide better through its own interface above, and the device
+  (wideband IQ) — LimeSDR, bladeRF, USRP and friends. See below. A HackRF or an
+  Airspy reaches sdroxide better through its own interface above, and the device
   list says so when it finds one.
 - **OpenHPSDR** — Hermes/Metis-family Ethernet SDRs on the LAN (Protocol 1 and
   2). Press **Discover** to scan for devices, or enter the IP manually; pick a
@@ -513,11 +538,12 @@ starting sdroxide before the rig is fine:
   which is this backend's widest span.
 
 The wideband-IQ backends (RTL-SDR over USB or rtl_tcp, RX-888, Airspy HF+,
-SDRplay, HackRF, SoapySDR, HPSDR, TCI, SmartSDR, PlutoSDR) drive the full
-panadapter, the CW/PSK/RTTY skimmers, and internal demodulation; a CAT rig
-feeding demodulated audio shows only a narrow audio-band slice. RTL-SDR, RX-888,
-Airspy HF+ and SDRplay are receive-only; the others can transmit — the HackRF
-and the PlutoSDR half duplex, the rest while still receiving.
+Airspy R2/Mini, SDRplay, HackRF, SoapySDR, HPSDR, TCI, SmartSDR, PlutoSDR)
+drive the full panadapter, the CW/PSK/RTTY skimmers, and internal demodulation;
+a CAT rig feeding demodulated audio shows only a narrow audio-band slice.
+RTL-SDR, RX-888, Airspy HF+, Airspy R2/Mini and SDRplay are receive-only; the
+others can transmit — the HackRF and the PlutoSDR half duplex, the rest while
+still receiving.
 
 Whichever backend you pick, a **converter offset** on the same tab handles an
 external frequency converter: an HF upconverter (Ham It Up, SpyVerter), a
@@ -867,6 +893,30 @@ already works with SDR# or SDR++ there is nothing to do.
 All three models — Dual, Discovery and Ranger — share the id `03eb:800c`, so a
 device list cannot say which one is plugged in. sdroxide asks the receiver once
 it is open, and `--probe` lists what is on the bus.
+
+### Airspy R2 / Mini permissions
+
+Same situation as the Airspy HF+ — direct USB access, no vendor package — but a
+**separate rule file**, because it is a separate receiver with its own USB id.
+Both may be installed together and neither covers the other.
+
+```sh
+sudo cp packaging/linux/60-sdroxide-airspy.rules /usr/lib/udev/rules.d/
+sudo udevadm control --reload
+```
+
+The `.deb` installs this for you. If Airspy's own `52-airspy.rules` is already
+installed it covers the same id and there is nothing to do.
+
+**Windows.** Bind the device to WinUSB with [Zadig](https://zadig.akeo.ie/), or
+install Airspy's own package, which does the same thing.
+
+**macOS.** Nothing to do.
+
+Both models share the id `1d50:60a1` *and* the same USB product string, so a
+device list cannot say whether an R2 or a Mini is plugged in — the only thing
+that separates them is the set of sample rates they offer, which sdroxide reads
+once the receiver is open.
 
 ### HackRF permissions
 
