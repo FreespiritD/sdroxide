@@ -2747,6 +2747,15 @@ setup and for radios whose keyer sdroxide cannot drive.
 > on the radio: sdroxide clears the rig's own copies on connect so the two can't
 > stack up.
 
+**Which bands are offered.** CAT carries no band table, so sdroxide cannot tell
+an HF-only FT-891 from an FT-991A on 70 cm or an IC-9700 on 23 cm. Rather than
+guess, it leaves every band live and lets the rig answer: ask a radio for a band
+it does not have and it simply declines over CAT, which sdroxide reports in the
+log. The real limits on transmit are your licence — the amateur-band gate, which
+follows your region ([5.1](#51-general-station-audio-and-remote-access)) — and
+the rig itself. If you would rather sdroxide held the dial to the radio you
+actually own, state an **RX range** and **TX range** at the top of this tab.
+
 #### 5.2.3 HPSDR (network radios)
 
 ![The Radio tab with the HPSDR (network) interface selected](images/settings-radio-hpsdr.jpg)
@@ -3021,6 +3030,13 @@ Tuning moves the radio's own slice, so its front panel and any second client
 follow your dial rather than the other way round. TX power and TUNE power
 command the radio's `rfpower`/`tunepower`, and SWR and forward power come back
 from the radio's meters while you transmit.
+
+Receive covers 30 kHz to 54 MHz, and to 165 MHz on the models with a VHF
+receiver (the 6600, the 6700 and the 8000 family). On those, transmit is offered
+on 2 m as well as HF and 6 m — a FLEX's own PA stops at 6 m, but a transverter
+on the XVTR port transmits at the band the slice is showing, and sdroxide cannot
+see SmartSDR's transverter table to tell the two apart. Without a transverter
+the radio simply declines the key-down.
 
 > **Help wanted — this backend has not been verified against real hardware.**
 > It was written from the published wire format and tested against a simulator,

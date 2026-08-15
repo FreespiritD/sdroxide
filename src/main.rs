@@ -1581,12 +1581,24 @@ fn open_smartsdr_source(
 /// 8000 series and the 6600/6700 add 2 m), and the radio declines anything it
 /// cannot do. The sample rates are the four DAX IQ stream rates — 192 kHz is
 /// the ceiling, which makes it this backend's widest span.
+///
+/// The transmit envelope follows the receive one onto 2 m on the models that
+/// have a VHF section. A FLEX's own PA is HF and 6 m, but a transverter on the
+/// XVTR port transmits at the band the slice is showing — 2 m being the usual
+/// one — and this backend cannot see SmartSDR's transverter table to tell the
+/// two cases apart. Refusing to key would break the transverter operator; the
+/// radio refusing a transmit it cannot do costs nothing, which is the same
+/// trade this function's receive ranges already make.
 fn smartsdr_caps(model: &str, label: String) -> DeviceCaps {
-    // The 6400/6600 and the whole 8000 family have a 2 m receiver; the rest stop
+    // The 6600/6700 and the whole 8000 family have a 2 m receiver; the rest stop
     // at 6 m. Getting this wrong only costs a refused tune, so infer it.
     let vhf = matches!(model, "FLEX-6600" | "FLEX-6600M" | "FLEX-6700" | "FLEX-6700R")
         || model.starts_with("FLEX-8");
     let rx_top = if vhf { 165_000_000.0 } else { 54_000_000.0 };
+    let mut tx = vec![(1_800_000.0, 54_000_000.0)];
+    if vhf {
+        tx.push((144_000_000.0, 148_000_000.0));
+    }
     DeviceCaps {
         driver: "smartsdr".into(),
         label,
@@ -1595,7 +1607,7 @@ fn smartsdr_caps(model: &str, label: String) -> DeviceCaps {
         audio_mode: false,
         tx_audio: true,
         freq_ranges_rx: vec![(30_000.0, rx_top)],
-        freq_ranges_tx: vec![(1_800_000.0, 54_000_000.0)],
+        freq_ranges_tx: tx,
         sample_rates: sdroxide_types::SmartSdrConfig::IQ_RATES.to_vec(),
         // No RX gain elements: a FLEX has no user-settable front-end gain in the
         // sense this list means. Its `display pan rfgain` is a per-panadapter
@@ -1607,13 +1619,24 @@ fn smartsdr_caps(model: &str, label: String) -> DeviceCaps {
 }
 
 /// Capabilities for a CAT rig. TX-capable unless PTT is VOX-only-with-no-audio;
-/// we advertise TX so the UI shows PTT and the safety rails apply. Frequency
-/// range covers HF+6m (the rig enforces its own limits over CAT).
+/// we advertise TX so the UI shows PTT and the safety rails apply. The rig
+/// enforces its own limits over CAT.
 ///
 /// The RX floor is deliberately below any rig's: the range is what the engine
 /// refuses to tune past, and a general-coverage receiver that reaches the LF
 /// time signals must not be held back by a figure invented here. A rig asked
 /// for something it cannot do simply declines over CAT, which costs nothing.
+///
+/// The ceilings are above any rig's for exactly the same reason, and they used
+/// to be well below several: this one backend covers rigs from an HF-only
+/// FT-891 to an FT-991A on 70 cm, an IC-9700 on 23 cm and an IC-905 at 10 GHz,
+/// and CAT carries no band table to tell them apart. A 148 MHz receive ceiling
+/// greyed out the 70 cm button on a rig that has the band, and a 54 MHz
+/// transmit ceiling refused to key a 2 m rig that was hearing the band
+/// perfectly well. What holds a licensed operator in bounds is the
+/// amateur-band gate — region-aware, and 70 cm is the highest band sdroxide's
+/// table knows — plus the rig's own refusal. An operator who wants a firmer
+/// limit than that can state one in Settings.
 fn cat_caps(radio: &RadioConfig) -> DeviceCaps {
     let demod = matches!(radio.cat.format, sdroxide_types::SoundFormat::DemodAudio);
     DeviceCaps {
@@ -1622,8 +1645,8 @@ fn cat_caps(radio: &RadioConfig) -> DeviceCaps {
         rx_channels: 1,
         tx_channels: 1,
         audio_mode: demod,
-        freq_ranges_rx: vec![(10_000.0, 148_000_000.0)],
-        freq_ranges_tx: vec![(1_800_000.0, 54_000_000.0)],
+        freq_ranges_rx: vec![(10_000.0, 10_500_000_000.0)],
+        freq_ranges_tx: vec![(1_800_000.0, 10_500_000_000.0)],
         ..DeviceCaps::default()
     }
 }
@@ -1692,6 +1715,39 @@ mod tests {
 
         // A second receiver still has no transmitter of its own.
         assert!(tci_caps("127.0.0.1:40001", 312_000.0, 1).freq_ranges_tx.is_empty());
+    }
+
+    /// A CAT rig is whatever the operator plugged in, and the envelope here is
+    /// only what the engine refuses to tune past: the rig's own refusal and the
+    /// amateur-band gate are the real limits. The ceilings used to sit below
+    /// several shipping rigs.
+    #[test]
+    fn a_cat_rig_reaches_the_vhf_and_uhf_bands() {
+        let caps = cat_caps(&RadioConfig::default());
+        for hz in [145_500_000.0, 435_000_000.0, 1_296_000_000.0] {
+            assert!(caps.may_rx_hz(hz), "receive at {:.3} MHz", hz / 1e6);
+            assert!(caps.may_tx_hz(hz), "transmit at {:.3} MHz", hz / 1e6);
+        }
+        // Still an envelope at both ends: below the transmit floor and above
+        // any rig this backend drives.
+        assert!(caps.may_rx_hz(60_000.0), "LF time signals stay reachable");
+        assert!(!caps.may_tx_hz(500_000.0));
+        assert!(!caps.may_tx_hz(24_000_000_000.0));
+    }
+
+    /// A FLEX with a VHF section may be showing a 2 m transverter's output on
+    /// the slice, and the models without one are unchanged.
+    #[test]
+    fn a_vhf_flex_may_transmit_on_two_metres() {
+        let vhf = smartsdr_caps("FLEX-6700", "FLEX-6700".into());
+        assert!(vhf.may_rx_hz(145_500_000.0));
+        assert!(vhf.may_tx_hz(145_500_000.0));
+        assert!(vhf.may_tx_hz(14_200_000.0), "HF is untouched");
+
+        let hf_only = smartsdr_caps("FLEX-6400", "FLEX-6400".into());
+        assert!(!hf_only.may_rx_hz(145_500_000.0), "no VHF receiver, no 2 m");
+        assert!(!hf_only.may_tx_hz(145_500_000.0));
+        assert!(hf_only.may_tx_hz(50_150_000.0), "6 m is untouched");
     }
 
     fn session(freq_hz: f64, mode: sdroxide_types::Mode) -> sdroxide_config::Session {
