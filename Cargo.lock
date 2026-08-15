@@ -4947,6 +4947,7 @@ dependencies = [
  "sdroxide-cat",
  "sdroxide-config",
  "sdroxide-dsp",
+ "sdroxide-hackrf",
  "sdroxide-hpsdr",
  "sdroxide-icomnet",
  "sdroxide-net",
@@ -5073,6 +5074,20 @@ dependencies = [
  "rubato 4.0.0",
  "rustfft",
  "sdroxide-types",
+]
+
+[[package]]
+name = "sdroxide-hackrf"
+version = "1.2.0"
+dependencies = [
+ "crossbeam-channel",
+ "nusb",
+ "rtrb",
+ "sdroxide-dsp",
+ "sdroxide-types",
+ "thiserror 2.0.19",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -35,7 +35,8 @@ use self::net::{
     settings_freedv_tab,
 };
 use self::radio::{
-    settings_airspyhf_tab, settings_cat_tab, settings_hpsdr_tab, settings_icomnet_tab,
+    settings_airspyhf_tab, settings_cat_tab, settings_hackrf_tab, settings_hpsdr_tab,
+    settings_icomnet_tab,
     settings_pluto_tab, settings_rtlsdr_tab, settings_rtltcp_tab, settings_rx888_tab,
     settings_sdrplay_tab, settings_smartsdr_tab, settings_soapy_devices, settings_tci_tab,
 };
@@ -135,6 +136,8 @@ pub(in crate::app) struct SettingsIo<'a> {
     airspyhf_rescan: &'a mut bool,
     /// Copy the last Airspy HF+ session's trace to the clipboard.
     airspyhf_copy_report: &'a mut bool,
+    hackrf_rescan: &'a mut bool,
+    hackrf_copy_report: &'a mut bool,
     /// Ask the SDRplay API service for its device list. Brief and
     /// non-invasive, so it cannot disturb a running stream.
     sdrplay_rescan: &'a mut bool,
@@ -360,6 +363,16 @@ impl SdroxideApp {
             {
                 self.sdrplay_devices = self.ctrl.list_sdrplay();
             }
+            // Cheap and opens nothing, same as the RTL-SDR list — and without
+            // it a HackRF owner arriving on this tab sees an empty device combo
+            // until they think to press Rescan.
+            if self
+                .radio_cfg
+                .as_ref()
+                .is_some_and(|c| c.backend == sdroxide_types::Backend::HackRf)
+            {
+                self.hackrf_devices = self.ctrl.list_hackrf();
+            }
             self.audio_devices_queried = true;
         } else if self.radio_cfg.is_none() {
             // Still waiting for the interface configuration. On a remote client
@@ -381,6 +394,8 @@ impl SdroxideApp {
         let mut rx888_rescan = false;
         let mut airspyhf_rescan = false;
         let mut airspyhf_copy_report = false;
+        let mut hackrf_rescan = false;
+        let mut hackrf_copy_report = false;
         let mut sdrplay_rescan = false;
         let mut soapy_rescan = false;
         let mut tci_test = false;
@@ -460,6 +475,10 @@ impl SdroxideApp {
         // Same reasoning again: pure Rust over `nusb`, no libairspyhf and no
         // system library, so it is in every build variant.
         iface_opts.push(sdroxide_types::Backend::AirspyHf);
+        // And again — pure Rust over `nusb`, no libhackrf. The only one of
+        // these USB backends that transmits, which is why it is the only one
+        // whose settings tab has a switch to arm before it will.
+        iface_opts.push(sdroxide_types::Backend::HackRf);
         // Also in every build variant, but for a different reason: nothing is
         // linked at build time — the vendor's sdrplay_api library is found
         // with dlopen at runtime, and opening explains what to install when
@@ -531,6 +550,8 @@ impl SdroxideApp {
                             rx888_rescan: &mut rx888_rescan,
                             airspyhf_rescan: &mut airspyhf_rescan,
                             airspyhf_copy_report: &mut airspyhf_copy_report,
+                            hackrf_rescan: &mut hackrf_rescan,
+                            hackrf_copy_report: &mut hackrf_copy_report,
                             sdrplay_rescan: &mut sdrplay_rescan,
                             soapy_rescan: &mut soapy_rescan,
                             tci_test: &mut tci_test,
@@ -722,6 +743,20 @@ impl SdroxideApp {
             let report = self
                 .ctrl
                 .airspyhf_diagnostics()
+                .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
+            ctx.copy_text(report);
+        }
+        if hackrf_rescan {
+            self.hackrf_devices = self.ctrl.list_hackrf();
+        }
+        if hackrf_copy_report {
+            // Worth more on this backend than on the receive-only ones: a
+            // transmit fault is about the *order* control transfers went out
+            // in around a key-down, which nobody can reconstruct from a
+            // spectrum.
+            let report = self
+                .ctrl
+                .hackrf_diagnostics()
                 .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
             ctx.copy_text(report);
         }
@@ -1330,6 +1365,16 @@ impl SdroxideApp {
                         io.radio_edit,
                         io.airspyhf_rescan,
                         io.airspyhf_copy_report,
+                        io.apply_iface,
+                        io.local_devices,
+                        cmds,
+                    ),
+                    Backend::HackRf => settings_hackrf_tab(
+                        ui,
+                        &self.hackrf_devices,
+                        io.radio_edit,
+                        io.hackrf_rescan,
+                        io.hackrf_copy_report,
                         io.apply_iface,
                         io.local_devices,
                         cmds,

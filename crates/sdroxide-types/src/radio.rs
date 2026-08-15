@@ -65,10 +65,16 @@ pub enum Backend {
     /// an address identifies nothing locally. Appended last, for the same
     /// reason as `SmartSdr` above.
     RtlTcp,
+    /// HackRF One (or a Jawbreaker / rad1o), driven directly over USB by the
+    /// native pure-Rust driver — no libhackrf, no SoapySDR. The only native
+    /// USB backend here that transmits, and half duplex: receive stops for the
+    /// length of an over. Appended last, for the same reason as `SmartSdr`
+    /// above.
+    HackRf,
 }
 
 impl Backend {
-    pub const ALL: [Backend; 13] = [
+    pub const ALL: [Backend; 14] = [
         Backend::Auto,
         Backend::Soapy,
         Backend::Cat,
@@ -81,6 +87,7 @@ impl Backend {
         Backend::RtlTcp,
         Backend::Rx888,
         Backend::AirspyHf,
+        Backend::HackRf,
         Backend::SdrPlay,
     ];
     pub fn label(self) -> &'static str {
@@ -97,6 +104,7 @@ impl Backend {
             Backend::RtlTcp => "RTL-SDR over rtl_tcp (network)",
             Backend::Rx888 => "RX-888 (USB)",
             Backend::AirspyHf => "Airspy HF+ (USB)",
+            Backend::HackRf => "HackRF One (USB)",
             Backend::SdrPlay => "SDRplay RSP (USB)",
             Backend::None => "Not configured",
         }
@@ -150,6 +158,10 @@ impl SoapyDeviceInfo {
             // different radio with no native backend here. Steering one of
             // those at the HF+ interface would be worse than leaving it alone.
             "airspyhf" => Some(Backend::AirspyHf),
+            // Worth steering even harder than the rest: SoapyHackRF drops the
+            // receive amp on the first transmit and never applies the transmit
+            // one at all, which the native driver does not do.
+            "hackrf" => Some(Backend::HackRf),
             _ => None,
         }
     }
@@ -1589,6 +1601,190 @@ impl AirspyHfConfig {
     }
 }
 
+/// A HackRF seen on the USB bus. Wasm-safe so it can cross the
+/// `RadioController` trait to the settings UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HackRfDevice {
+    /// The 32 hex digits of the USB serial descriptor, when it has one.
+    pub serial: Option<String>,
+    /// The USB product string, else the name the product id implies.
+    pub name: String,
+    /// The USB product id. Kept because it is the only thing that separates a
+    /// HackRF One from a Jawbreaker or a rad1o without opening the device, and
+    /// the three do not tune the same range — see `BoardKind::freq_range` in
+    /// `sdroxide-hackrf`.
+    pub pid: u16,
+}
+
+impl HackRfDevice {
+    /// One-line label for the selection UI.
+    pub fn label(&self) -> String {
+        match &self.serial {
+            // The tail is what identifies a radio in practice: the leading half
+            // of a HackRF serial is zeroes on every unit, so showing all 32
+            // digits is 16 characters of noise. The full value is still what
+            // gets stored.
+            Some(s) => {
+                let tail = &s[s.len().saturating_sub(8)..];
+                format!("{}  (serial …{tail})", self.name)
+            }
+            // Without a serial we can only ever open "the first one", so say so
+            // rather than implying this entry can be pinned.
+            None => format!("{}  [no serial — first match only]", self.name),
+        }
+    }
+}
+
+/// HackRF One (USB) backend configuration. Receive, and transmit once it is
+/// armed — see [`Self::tx_enabled`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HackRfConfig {
+    /// Pin a radio by its USB serial; empty means "the first one found".
+    /// Matched on the **suffix**, which is libhackrf's behaviour and the reason
+    /// every HackRF instruction quotes only the last eight digits.
+    pub serial: String,
+    /// Complex sample rate in Hz. See [`Self::SAMPLE_RATES`].
+    pub sample_rate_hz: f64,
+    /// Front-end LNA, 0–40 dB in 8 dB steps. Truncated to a step by the
+    /// hardware, so what is stored here is not always what is applied; the
+    /// settings tab shows back what the radio really did.
+    pub lna_db: f64,
+    /// Baseband VGA, 0–62 dB in 2 dB steps.
+    pub vga_db: f64,
+    /// The 14 dB RF amplifier, on receive.
+    ///
+    /// Off by default. It is one switch shared with [`Self::tx_amp`] rather
+    /// than two independent stages, and on a real antenna a HackRF front end
+    /// overloads with it in circuit — which is exactly why the two directions
+    /// are separate settings here even though the hardware has one control.
+    pub amp: bool,
+    /// Transmit VGA, 0–47 dB in 1 dB steps.
+    pub txvga_db: f64,
+    /// The 14 dB RF amplifier, on transmit. The same switch as [`Self::amp`],
+    /// applied when the radio changes direction.
+    pub tx_amp: bool,
+    /// Arm the transmitter.
+    ///
+    /// Off by default, and the default is the point. A HackRF is a wideband
+    /// transmitter with poor harmonic suppression that wants an external
+    /// low-pass filter for any real use; somebody who plugged one in to listen
+    /// should not be one PTT away from radiating. With this off the backend
+    /// publishes no transmit channel at all, so the engine's own capability
+    /// check refuses to key.
+    pub tx_enabled: bool,
+    /// Bias tee on the antenna port — about 3 V at 50 mA. Off by default:
+    /// putting phantom power on someone's feedline uninvited is not a good
+    /// default. Absent on the Jawbreaker and the rad1o, which have no such
+    /// circuit.
+    pub bias_tee: bool,
+    /// Baseband filter bandwidth in Hz; `0.0` means "follow the sample rate",
+    /// which is what almost everyone wants.
+    ///
+    /// Worth leaving alone: the filter is coupled to the zero-IF LO offset, and
+    /// choosing one too narrow silently withdraws the offset rather than merely
+    /// softening the band edges. `sdroxide-hackrf`'s `auto_filter_bw` has the
+    /// arithmetic and a test that pins it.
+    pub filter_bw_hz: f64,
+    /// Crystal error in parts per million.
+    pub ppm: f64,
+    /// Adaptive IQ image correction and DC removal on the host. On by default:
+    /// this is a zero-IF radio, so its own LO leakage sits at the centre of the
+    /// span and the MAX2837's quadrature error puts a mirror image across it.
+    /// Turn it off to see raw hardware output, which is also the one-click way
+    /// to tell a driver problem from a DSP one.
+    pub iq_correction: bool,
+    /// Bulk transfers in flight, and the size of each in KiB. Defaults suit
+    /// every rate; they exist because 20 Msps on a marginal USB 3 port is the
+    /// one case where the geometry has to be tuned by hand.
+    pub transfers: u8,
+    pub transfer_kib: u16,
+}
+
+impl Default for HackRfConfig {
+    fn default() -> Self {
+        HackRfConfig {
+            serial: String::new(),
+            // The rate the LO-offset policy was measured at, and the one that
+            // asks least of the host.
+            sample_rate_hz: 2_000_000.0,
+            lna_db: 16.0,
+            vga_db: 16.0,
+            amp: false,
+            // Minimum drive and no amplifier: the transmitter comes up unable
+            // to emit anything meaningful even if it is armed and keyed.
+            txvga_db: 0.0,
+            tx_amp: false,
+            tx_enabled: false,
+            bias_tee: false,
+            filter_bw_hz: 0.0,
+            ppm: 0.0,
+            iq_correction: true,
+            transfers: 16,
+            transfer_kib: 64,
+        }
+    }
+}
+
+impl HackRfConfig {
+    /// The real gain elements, published in `DeviceCaps::gains` so the generic
+    /// sliders drive them and the engine remembers them across a reopen.
+    ///
+    /// `LNA` is first on purpose: `gains[0]` is what the main window's Gain
+    /// slider reaches, and the LNA is the stage that actually changes
+    /// sensitivity — and the stage that overloads.
+    pub const LNA_ELEMENT: &'static str = "LNA";
+    pub const VGA_ELEMENT: &'static str = "VGA";
+    pub const TXVGA_ELEMENT: &'static str = "TXVGA";
+
+    /// Pseudo-elements carrying settings that are not gains at all.
+    ///
+    /// They ride the existing `SetGain` command so this backend needs no new
+    /// `Command` variant, no `DeviceCaps` field and no engine change. They are
+    /// deliberately absent from `DeviceCaps::gains`, so nothing renders them as
+    /// sliders — the HackRF settings panel drives them directly.
+    ///
+    /// `AMP` and `TXAMP` are two names for one hardware switch. That is not an
+    /// oversight: the radio applies whichever one belongs to the direction it
+    /// is entering, which is how an operator can run the preamp bypassed on
+    /// receive and in circuit on transmit.
+    pub const AMP_ELEMENT: &'static str = "AMP";
+    pub const TXAMP_ELEMENT: &'static str = "TXAMP";
+    pub const BIAS_TEE_ELEMENT: &'static str = "BIASTEE";
+    /// Carried in Hz, not as a table index, so a stored value survives a change
+    /// to the filter table.
+    pub const FILTER_ELEMENT: &'static str = "BBFILT";
+    pub const PPM_ELEMENT: &'static str = "PPM";
+    pub const IQ_CORRECTION_ELEMENT: &'static str = "IQCORR";
+
+    /// The 14 dB RF amplifier's step, for the settings label.
+    pub const AMP_DB: f64 = 14.0;
+
+    /// The rates offered in the settings combo.
+    ///
+    /// The hardware takes anything from 2 to 20 Msps; this is the useful subset.
+    /// Unlike the Airspy HF+ list next door this is not queried from the device
+    /// — a HackRF has no rate table, it synthesises whatever it is asked for —
+    /// so this list is the whole menu.
+    pub const SAMPLE_RATES: [f64; 7] = [2.0e6, 4.0e6, 8.0e6, 10.0e6, 12.5e6, 16.0e6, 20.0e6];
+
+    /// A short note on a rate, for the settings combo. The interesting facts
+    /// are at the two ends: what the datasheet actually covers, and what the
+    /// host and the USB link have to keep up with.
+    pub fn rate_note(rate_hz: f64) -> &'static str {
+        match rate_hz as u32 {
+            2_000_000 => "below the MAX5864's spec — but the usual choice, and 4 MB/s",
+            4_000_000 => "below the MAX5864's spec — 8 MB/s",
+            8_000_000 => "lowest specified rate — 16 MB/s",
+            10_000_000 => "20 MB/s",
+            12_500_000 => "25 MB/s",
+            16_000_000 => "32 MB/s",
+            20_000_000 => "40 MB/s — wants a real USB 3 port and a modern CPU",
+            _ => "",
+        }
+    }
+}
+
 /// AD9361 receive AGC mode. The names are the IIO `gain_control_mode` values,
 /// which is what actually goes on the wire.
 ///
@@ -2350,6 +2546,7 @@ pub struct RadioConfig {
     pub rtltcp: RtlTcpConfig,
     pub rx888: Rx888Config,
     pub airspyhf: AirspyHfConfig,
+    pub hackrf: HackRfConfig,
     pub pluto: PlutoConfig,
     pub sdrplay: SdrPlayConfig,
 }
@@ -2673,7 +2870,11 @@ mod tests {
         // and have no native backend here; steering them at the HF+ interface
         // would be worse than leaving them on SoapySDR.
         assert_eq!(SoapyDeviceInfo::native_backend_for("airspy"), None);
-        assert_eq!(SoapyDeviceInfo::native_backend_for("hackrf"), None);
+        // A HackRF, on the other hand, has a native backend now, and steering
+        // one there matters more than for the receivers: SoapyHackRF loses the
+        // receive amp on the first transmit and never applies the transmit one.
+        assert_eq!(SoapyDeviceInfo::native_backend_for("hackrf"), Some(Backend::HackRf));
+        assert_eq!(SoapyDeviceInfo::native_backend_for("HackRF"), Some(Backend::HackRf));
         assert_eq!(SoapyDeviceInfo::native_backend_for("audio"), None);
     }
 

@@ -412,6 +412,15 @@ pub trait RadioController {
         Vec::new()
     }
 
+    /// List HackRFs on the USB bus (native local client only). Same contract as
+    /// [`RadioController::list_rtlsdr`]: nothing is opened, so it is safe to
+    /// call while one is streaming. The board revision therefore cannot be
+    /// known — that needs a control transfer — so each entry names only what
+    /// the product id gives away.
+    fn list_hackrf(&self) -> Vec<crate::HackRfDevice> {
+        Vec::new()
+    }
+
     /// List the RSPs the SDRplay API service reports (native local client
     /// only). Blocking but brief — the service answers from its own device
     /// table — and safe while one is streaming: enumeration takes the API's
@@ -526,6 +535,17 @@ pub trait RadioController {
     /// reproduce a fault with the right `RUST_LOG` filter set. `None` when no
     /// session has run. Default: nothing to report.
     fn airspyhf_diagnostics(&self) -> Option<String> {
+        None
+    }
+
+    /// The most recent HackRF session trace, for a bug report.
+    ///
+    /// Worth more here than on the receive-only backends: this radio
+    /// transmits, so a fault report needs the *ordering* of what the driver did
+    /// — which control transfers went out around a key-down, and in what order
+    /// — and that is not something an operator can reconstruct from a
+    /// spectrum. `None` when no session has run.
+    fn hackrf_diagnostics(&self) -> Option<String> {
         None
     }
 

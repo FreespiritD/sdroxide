@@ -2377,6 +2377,358 @@ pub(in crate::app) fn settings_airspyhf_tab(
     );
 }
 
+/// HackRF interface: radio, rate, the front end, and — behind its own switch —
+/// the transmitter.
+///
+/// The transmit group is separated and defaults to off on purpose. This is the
+/// only native USB backend here that can key up, it is a wideband transmitter
+/// with poor harmonic suppression, and somebody who plugged one in to listen
+/// should not be one PTT away from radiating.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::app) fn settings_hackrf_tab(
+    ui: &mut egui::Ui,
+    devices: &[sdroxide_types::HackRfDevice],
+    radio_edit: &mut Option<sdroxide_types::RadioConfig>,
+    rescan: &mut bool,
+    copy_report: &mut bool,
+    apply: &mut bool,
+    local: bool,
+    cmds: &mut Vec<Command>,
+) {
+    use sdroxide_types::HackRfConfig;
+    let Some(cfg) = radio_edit.as_mut() else {
+        ui.label("Radio configuration is only available in the native app.");
+        return;
+    };
+
+    // What cannot be changed under a running stream. The rate re-programmes the
+    // clock generator and the baseband filter together, and arming the
+    // transmitter changes how many channels the backend publishes — which is
+    // what the engine's transmit gate reads.
+    let before = (
+        cfg.hackrf.serial.clone(),
+        cfg.hackrf.sample_rate_hz,
+        cfg.hackrf.tx_enabled,
+        cfg.hackrf.transfers,
+        cfg.hackrf.transfer_kib,
+    );
+
+    egui::Grid::new("hackrf-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Radio");
+        local_only(ui, local, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Rescan")
+                    .on_hover_text(
+                        "Re-list the USB bus. No device is opened, so this is safe \
+                         to press while receiving.",
+                    )
+                    .clicked()
+                {
+                    *rescan = true;
+                }
+                let shown = if cfg.hackrf.serial.is_empty() {
+                    "— first one found —".to_string()
+                } else {
+                    cfg.hackrf.serial.clone()
+                };
+                ComboBox::from_id_salt("hackrf_dev").width(300.0).selected_text(shown).show_ui(
+                    ui,
+                    |ui| {
+                        if devices.is_empty() {
+                            ui.label("No HackRF found — press Rescan");
+                        }
+                        ui.selectable_value(
+                            &mut cfg.hackrf.serial,
+                            String::new(),
+                            "— first one found —",
+                        );
+                        for d in devices {
+                            let serial = d.serial.clone().unwrap_or_default();
+                            ui.selectable_value(&mut cfg.hackrf.serial, serial, d.label());
+                        }
+                    },
+                );
+            });
+        });
+        ui.end_row();
+
+        ui.label("Sample rate");
+        ui.horizontal(|ui| {
+            ComboBox::from_id_salt("hackrf_rate")
+                .width(150.0)
+                .selected_text(format!("{:.1} Msps", cfg.hackrf.sample_rate_hz / 1e6))
+                .show_ui(ui, |ui| {
+                    for r in HackRfConfig::SAMPLE_RATES {
+                        ui.selectable_value(
+                            &mut cfg.hackrf.sample_rate_hz,
+                            r,
+                            format!("{:.1} Msps — {}", r / 1e6, HackRfConfig::rate_note(r)),
+                        );
+                    }
+                });
+            ui.add(
+                egui::Label::new(
+                    RichText::new(HackRfConfig::rate_note(cfg.hackrf.sample_rate_hz)).weak(),
+                )
+                .wrap(),
+            );
+        });
+        ui.end_row();
+
+        ui.label("LNA gain");
+        if ui
+            .add(egui::Slider::new(&mut cfg.hackrf.lna_db, 0.0..=40.0).step_by(8.0).suffix(" dB"))
+            .on_hover_text(
+                "Front-end amplifier, in 8 dB steps. This is the stage that \
+                 changes sensitivity — and the stage that overloads first on a \
+                 real antenna.",
+            )
+            .changed()
+        {
+            push_gain(cmds, HackRfConfig::LNA_ELEMENT, cfg.hackrf.lna_db);
+        }
+        ui.end_row();
+
+        ui.label("VGA gain");
+        if ui
+            .add(egui::Slider::new(&mut cfg.hackrf.vga_db, 0.0..=62.0).step_by(2.0).suffix(" dB"))
+            .on_hover_text(
+                "Baseband amplifier after the mixer, in 2 dB steps. Turn this up \
+                 for a weak signal before reaching for the LNA.",
+            )
+            .changed()
+        {
+            push_gain(cmds, HackRfConfig::VGA_ELEMENT, cfg.hackrf.vga_db);
+        }
+        ui.end_row();
+
+        ui.label("RF amp");
+        if ui
+            .checkbox(
+                &mut cfg.hackrf.amp,
+                format!("{:.0} dB preamp on receive", HackRfConfig::AMP_DB),
+            )
+            .on_hover_text(
+                "One switch, shared with the transmit setting below — the radio \
+                 applies whichever belongs to the direction it is entering. Off \
+                 is usually right on a real antenna.",
+            )
+            .changed()
+        {
+            push_gain(cmds, HackRfConfig::AMP_ELEMENT, cfg.hackrf.amp as u8 as f64);
+        }
+        ui.end_row();
+
+        ui.label("Baseband filter");
+        ui.horizontal(|ui| {
+            let shown = if cfg.hackrf.filter_bw_hz <= 0.0 {
+                "Automatic".to_string()
+            } else {
+                format!("{:.2} MHz", cfg.hackrf.filter_bw_hz / 1e6)
+            };
+            let mut picked = cfg.hackrf.filter_bw_hz;
+            ComboBox::from_id_salt("hackrf_bbfilt").width(150.0).selected_text(shown).show_ui(
+                ui,
+                |ui| {
+                    ui.selectable_value(&mut picked, 0.0, "Automatic");
+                    for bw in [
+                        1.75e6, 2.5e6, 3.5e6, 5.0e6, 5.5e6, 6.0e6, 7.0e6, 8.0e6, 9.0e6, 10.0e6,
+                        12.0e6, 14.0e6, 15.0e6, 20.0e6, 24.0e6, 28.0e6,
+                    ] {
+                        ui.selectable_value(&mut picked, bw, format!("{:.2} MHz", bw / 1e6));
+                    }
+                },
+            );
+            if picked != cfg.hackrf.filter_bw_hz {
+                cfg.hackrf.filter_bw_hz = picked;
+                push_gain(cmds, HackRfConfig::FILTER_ELEMENT, picked);
+            }
+            ui.add(
+                egui::Label::new(
+                    RichText::new(
+                        "Leave on Automatic. Choosing one too narrow does not just \
+                         soften the band edges — it withdraws the LO offset that \
+                         keeps the DC spike off your signal.",
+                    )
+                    .weak(),
+                )
+                .wrap(),
+            );
+        });
+        ui.end_row();
+
+        ui.label("Bias tee");
+        if ui
+            .checkbox(&mut cfg.hackrf.bias_tee, "DC on the antenna port")
+            .on_hover_text(
+                "About 3 V at 50 mA down the coax, for an active antenna or a \
+                 preamp. A HackRF One only; the Jawbreaker and rad1o have no \
+                 such circuit.",
+            )
+            .changed()
+        {
+            push_gain(cmds, HackRfConfig::BIAS_TEE_ELEMENT, cfg.hackrf.bias_tee as u8 as f64);
+        }
+        ui.end_row();
+
+        ui.label("IQ correction");
+        if ui
+            .checkbox(&mut cfg.hackrf.iq_correction, "Remove DC and the mirror image")
+            .on_hover_text(
+                "This is a zero-IF radio, so its own LO leakage sits mid-span and \
+                 the mixer's quadrature error puts a mirror image across it. \
+                 Turning this off shows raw hardware output, which is the quick \
+                 way to tell a driver problem from a DSP one.",
+            )
+            .changed()
+        {
+            push_gain(
+                cmds,
+                HackRfConfig::IQ_CORRECTION_ELEMENT,
+                cfg.hackrf.iq_correction as u8 as f64,
+            );
+        }
+        ui.end_row();
+
+        ui.label("Clock trim");
+        if ui
+            .add(
+                egui::DragValue::new(&mut cfg.hackrf.ppm)
+                    .speed(0.1)
+                    .range(-200.0..=200.0)
+                    .suffix(" ppm"),
+            )
+            .on_hover_text("Corrects the reference oscillator.")
+            .changed()
+        {
+            push_gain(cmds, HackRfConfig::PPM_ELEMENT, cfg.hackrf.ppm);
+        }
+        ui.end_row();
+    });
+
+    if cfg.hackrf.bias_tee {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(
+                "Bias tee is ON. Never connect a transceiver, a grounded antenna, \
+                 or a preamp powered from elsewhere while this is enabled — the DC \
+                 goes straight down the feedline.",
+            )
+            .color(crate::theme::YELLOW()),
+        );
+    }
+
+    ui.add_space(8.0);
+    ui.separator();
+    ui.label(RichText::new("Transmit").strong());
+    ui.add_space(4.0);
+
+    egui::Grid::new("hackrf-tx-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Transmitter");
+        ui.checkbox(&mut cfg.hackrf.tx_enabled, "Enabled").on_hover_text(
+            "Off by default. While this is off the backend publishes no transmit \
+             channel at all, so nothing can key the radio. Applies on reconnect.",
+        );
+        ui.end_row();
+
+        if cfg.hackrf.tx_enabled {
+            ui.label("TX VGA gain");
+            if ui
+                .add(
+                    egui::Slider::new(&mut cfg.hackrf.txvga_db, 0.0..=47.0)
+                        .step_by(1.0)
+                        .suffix(" dB"),
+                )
+                .on_hover_text(
+                    "The transmit driver amplifier. Drive is applied digitally \
+                     before this stage, so leave the drive high and set output \
+                     level here — turning drive down instead runs the DAC at a \
+                     fraction of full scale and raises intermodulation.",
+                )
+                .changed()
+            {
+                cmds.push(Command::SetGain {
+                    dir: Direction::Tx,
+                    element: HackRfConfig::TXVGA_ELEMENT.into(),
+                    db: cfg.hackrf.txvga_db,
+                });
+            }
+            ui.end_row();
+
+            ui.label("RF amp");
+            if ui
+                .checkbox(
+                    &mut cfg.hackrf.tx_amp,
+                    format!("{:.0} dB preamp on transmit", HackRfConfig::AMP_DB),
+                )
+                .on_hover_text(
+                    "The same switch as the receive setting above, applied when \
+                     the radio changes direction.",
+                )
+                .changed()
+            {
+                cmds.push(Command::SetGain {
+                    dir: Direction::Tx,
+                    element: HackRfConfig::TXAMP_ELEMENT.into(),
+                    db: cfg.hackrf.tx_amp as u8 as f64,
+                });
+            }
+            ui.end_row();
+        }
+    });
+
+    if cfg.hackrf.tx_enabled {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(
+                "Transmit is armed. Into a dummy load until you have measured it: \
+                 a HackRF's harmonics are strong enough to need an external \
+                 low-pass filter for the band you are on, and it is half duplex, \
+                 so receive stops for the length of every over.",
+            )
+            .color(crate::theme::YELLOW()),
+        );
+    }
+
+    if (
+        cfg.hackrf.serial.clone(),
+        cfg.hackrf.sample_rate_hz,
+        cfg.hackrf.tx_enabled,
+        cfg.hackrf.transfers,
+        cfg.hackrf.transfer_kib,
+    ) != before
+    {
+        *apply = true;
+    }
+
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        local_only(ui, local, |ui| {
+            if ui
+                .button("Copy diagnostic report")
+                .on_hover_text(
+                    "Every command exchanged with the radio this session, in order, \
+                     including the sequence around each key-down.",
+                )
+                .clicked()
+            {
+                *copy_report = true;
+            }
+        });
+    });
+
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "1 MHz – 6 GHz, half duplex. No SoapySDR, no libusb and no libhackrf \
+             needed. The radio and the sample rate take effect on Apply; \
+             everything else applies as you change it.",
+        )
+        .weak(),
+    );
+}
+
 /// SDRplay RSP interface: device, rate, and the RSP's gain model (IF gain
 /// reduction + LNA state + hardware AGC), with the rows a given model lacks
 /// hidden.

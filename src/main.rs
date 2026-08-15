@@ -4,6 +4,7 @@ mod console;
 mod device_registry;
 mod dial;
 mod gui_main;
+mod hackrf_source;
 mod hpsdr_source;
 mod icomnet_source;
 mod local_controller;
@@ -649,6 +650,7 @@ fn probe(cli: &Cli, settings: &Settings) -> anyhow::Result<()> {
     probe_rtlsdr();
     probe_rx888();
     probe_airspyhf();
+    probe_hackrf();
     probe_sdrplay();
     probe_soapy(cli, settings)
 }
@@ -698,6 +700,23 @@ fn probe_airspyhf() {
             // Which model this is cannot be known without opening it — every
             // HF+ enumerates as the same 03eb:800c — so the list does not
             // pretend to. `--example probe` opens one and says.
+            println!("  {}: {}", i, d.label());
+        }
+    }
+    println!();
+}
+
+fn probe_hackrf() {
+    let devices = sdroxide_hackrf::list();
+    if devices.is_empty() {
+        println!("No HackRFs found on USB.");
+    } else {
+        println!("=== HackRF (native USB driver) ===");
+        for (i, d) in devices.iter().enumerate() {
+            // The board *revision* needs a control transfer, so it is not here;
+            // the product id is what enumeration gives away for free, and it is
+            // enough to separate a HackRF One from a Jawbreaker or a rad1o —
+            // which matters, because the three do not tune the same range.
             println!("  {}: {}", i, d.label());
         }
     }
@@ -945,6 +964,7 @@ fn open_configured_source(
         Backend::RtlTcp => open_rtltcp_source(radio, cli.center_hz()),
         Backend::Rx888 => open_rx888_source(radio, cli.center_hz()),
         Backend::AirspyHf => open_airspyhf_source(radio, cli.center_hz()),
+        Backend::HackRf => open_hackrf_source(radio, cli.center_hz()),
         Backend::SdrPlay => open_sdrplay_source(radio, cli.center_hz()),
         Backend::Soapy => open_soapy_source(cli, settings),
         Backend::Auto => {
@@ -1261,6 +1281,86 @@ fn airspyhf_caps(src: &airspyhf_source::AirspyHfSource) -> DeviceCaps {
             max_db: 0.0,
             step_db: att_step_db,
         }],
+        ..DeviceCaps::default()
+    }
+}
+
+/// Build the HackRF source from radio.json. The radio is picked by the suffix
+/// of its USB serial, or the first one found when none is configured.
+fn open_hackrf_source(
+    radio: &RadioConfig,
+    center_hz: f64,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let src = hackrf_source::HackRfSource::open(&radio.hackrf, center_hz)
+        .context("opening HackRF")?;
+    let caps = hackrf_caps(&src);
+    Ok((Box::new(src), caps))
+}
+
+/// Capabilities for a HackRF: wideband IQ, half duplex, and a transmitter that
+/// is only published when it has been armed.
+///
+/// `tx_channels` is the load-bearing field. With `tx_enabled` off it is zero,
+/// which makes `DeviceCaps::is_transmit_capable()` false, which is what the
+/// engine's own transmit gate reads — so an unarmed radio cannot be keyed by
+/// any path, not merely by the ones that remembered to check. A HackRF is a
+/// wideband transmitter with poor harmonic suppression that wants an external
+/// low-pass filter; somebody who plugged one in to listen should not be one
+/// PTT away from radiating.
+///
+/// `full_duplex` stays false: receive genuinely stops for the length of an
+/// over, and claiming otherwise would let the engine keep a receive chain
+/// running against a stream that has been torn down.
+///
+/// The frequency range comes off the radio rather than a constant — a rad1o is
+/// 50–4000 MHz and a Jawbreaker starts at 10 MHz, and telling one of those
+/// owners they can work 6 GHz would be worse than saying nothing.
+///
+/// Three real gain elements, LNA first: `gains[0]` is what the main window's
+/// Gain slider reaches, and the LNA is the stage that actually changes
+/// sensitivity. The switches — both amp settings, the bias tee, the baseband
+/// filter, ppm and the host-side IQ correction — ride pseudo-elements that are
+/// deliberately absent here, so only the HackRF settings panel renders them.
+fn hackrf_caps(src: &hackrf_source::HackRfSource) -> DeviceCaps {
+    use sdroxide_types::{Direction, GainElement, HackRfConfig};
+    let range = src.freq_range();
+    let tx = src.tx_enabled();
+    let mut gains = vec![
+        GainElement {
+            name: HackRfConfig::LNA_ELEMENT.into(),
+            direction: Direction::Rx,
+            min_db: 0.0,
+            max_db: 40.0,
+            step_db: 8.0,
+        },
+        GainElement {
+            name: HackRfConfig::VGA_ELEMENT.into(),
+            direction: Direction::Rx,
+            min_db: 0.0,
+            max_db: 62.0,
+            step_db: 2.0,
+        },
+    ];
+    if tx {
+        gains.push(GainElement {
+            name: HackRfConfig::TXVGA_ELEMENT.into(),
+            direction: Direction::Tx,
+            min_db: 0.0,
+            max_db: 47.0,
+            step_db: 1.0,
+        });
+    }
+    DeviceCaps {
+        driver: "hackrf".into(),
+        label: src.describe(),
+        rx_channels: 1,
+        tx_channels: usize::from(tx),
+        full_duplex: false,
+        audio_mode: false,
+        freq_ranges_rx: vec![range],
+        freq_ranges_tx: if tx { vec![range] } else { Vec::new() },
+        sample_rates: HackRfConfig::SAMPLE_RATES.to_vec(),
+        gains,
         ..DeviceCaps::default()
     }
 }

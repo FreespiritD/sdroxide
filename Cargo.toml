@@ -62,6 +62,7 @@ sdroxide-smartsdr = { path = "crates/sdroxide-smartsdr" }
 sdroxide-rtlsdr = { path = "crates/sdroxide-rtlsdr" }
 sdroxide-rx888 = { path = "crates/sdroxide-rx888" }
 sdroxide-airspyhf = { path = "crates/sdroxide-airspyhf" }
+sdroxide-hackrf = { path = "crates/sdroxide-hackrf" }
 sdroxide-pluto = { path = "crates/sdroxide-pluto" }
 sdroxide-sdrplay = { path = "crates/sdroxide-sdrplay" }
 sdroxide-net = { path = "crates/sdroxide-net" }
@@ -113,6 +114,7 @@ sdroxide-icomnet.workspace = true
 sdroxide-rtlsdr.workspace = true
 sdroxide-rx888.workspace = true
 sdroxide-airspyhf.workspace = true
+sdroxide-hackrf.workspace = true
 sdroxide-pluto.workspace = true
 sdroxide-sdrplay.workspace = true
 sdroxide-ui = { workspace = true, features = ["remote"] }
@@ -167,6 +169,7 @@ assets = [
     ["packaging/linux/60-sdroxide-rtlsdr.rules", "usr/lib/udev/rules.d/", "644"],
     ["packaging/linux/60-sdroxide-rx888.rules", "usr/lib/udev/rules.d/", "644"],
     ["packaging/linux/60-sdroxide-airspyhf.rules", "usr/lib/udev/rules.d/", "644"],
+    ["packaging/linux/60-sdroxide-hackrf.rules", "usr/lib/udev/rules.d/", "644"],
     ["packaging/icons/sdroxide.svg", "usr/share/icons/hicolor/scalable/apps/sdroxide.svg", "644"],
     ["packaging/icons/sdroxide-16.png", "usr/share/icons/hicolor/16x16/apps/sdroxide.png", "644"],
     ["packaging/icons/sdroxide-24.png", "usr/share/icons/hicolor/24x24/apps/sdroxide.png", "644"],
