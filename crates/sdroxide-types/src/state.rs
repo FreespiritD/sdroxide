@@ -107,6 +107,57 @@ pub struct TxState {
     pub tune_drive: f32,
     /// 0.0..=1.0
     pub mic_gain: f32,
+    /// Parametric EQ on the mic/modulator audio (voice modes only).
+    pub eq: TxEqState,
+}
+
+/// One band of [`TxEqState`]: corner/center frequency and gain, plus either Q
+/// (the mid peaking band, where higher is narrower) or shelf slope (the
+/// low/high shelf bands, the RBJ cookbook's `S`, `0.1..=1.0`; `1.0` is the
+/// steepest shelf that stays monotonic).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TxEqBand {
+    pub freq_hz: f32,
+    pub gain_db: f32,
+    pub q: f32,
+}
+
+/// Transmit parametric EQ on the microphone/modulator audio path. Voice
+/// modes only (SSB/AM/FM); digital and CW carry synthesized/keyed audio that
+/// never passes through it. Off by default and flat when turned on, so
+/// enabling it changes nothing on the air until a band is actually moved.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TxEqState {
+    pub enabled: bool,
+    /// Low shelf: cuts/boosts rumble and handling noise.
+    pub low: TxEqBand,
+    /// Mid peak: presence/proximity shaping.
+    pub mid: TxEqBand,
+    /// High shelf: brightness/de-ess.
+    pub high: TxEqBand,
+}
+
+impl Default for TxEqState {
+    fn default() -> Self {
+        TxEqState {
+            enabled: false,
+            low: TxEqBand { freq_hz: 300.0, gain_db: 0.0, q: 0.7 },
+            mid: TxEqBand { freq_hz: 1500.0, gain_db: 0.0, q: 1.0 },
+            high: TxEqBand { freq_hz: 2800.0, gain_db: 0.0, q: 0.7 },
+        }
+    }
+}
+
+impl TxEqState {
+    /// UI range for every band's gain.
+    pub const GAIN_DB_RANGE: std::ops::RangeInclusive<f32> = -15.0..=15.0;
+    pub const LOW_FREQ_HZ_RANGE: std::ops::RangeInclusive<f32> = 100.0..=1000.0;
+    pub const MID_FREQ_HZ_RANGE: std::ops::RangeInclusive<f32> = 300.0..=3000.0;
+    pub const HIGH_FREQ_HZ_RANGE: std::ops::RangeInclusive<f32> = 1000.0..=4000.0;
+    /// Q range for the mid (peaking) band only.
+    pub const MID_Q_RANGE: std::ops::RangeInclusive<f32> = 0.3..=5.0;
+    /// Shelf-slope range for the low/high (shelving) bands.
+    pub const SHELF_SLOPE_RANGE: std::ops::RangeInclusive<f32> = 0.1..=1.0;
 }
 
 /// Decimation off — the receiver runs at the device's own rate.
