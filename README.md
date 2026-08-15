@@ -39,7 +39,8 @@ One binary, three ways to run it:
   over USB or over the network via rtl_tcp),
   RX-888 (native support), SDRplay RSP (native, via the vendor API service),
   SmartSDR (FlexRadio - experimental!), PlutoSDR (native support, experimental!),
-  Icom LAN / RS-BA1 protocol (experimental!)
+  Icom LAN / RS-BA1 protocol (experimental!), HackRF (native support, RX
+  verified / TX unmeasured)
 - **Panadapter** — GPU (wgpu) waterfall + spectrum line, wheel-zoom around the
   cursor, drag-to-pan, per-digit frequency readout, selectable colormaps,
   peak-hold, and **auto-contrast** ("FIT", on by default) that keeps the display
@@ -356,7 +357,7 @@ other ham software). See the [User Manual](docs/USER_MANUAL.md) for setup steps.
 
 ## Radio backends
 
-sdroxide can drive nine kinds of radio, selected on the **Radio** tab of the
+sdroxide can drive fourteen kinds of radio, selected on the **Radio** tab of the
 Settings window. Backend, serial, and radio-audio changes apply live when you
 press **Apply / reconnect**. A radio that isn't there yet at startup — or that
 drops mid-session — is retried in the background and attaches by itself, so
@@ -376,6 +377,14 @@ starting sdroxide before the rig is fine:
   are uncompressed: 1.024 Msps is 16 Mbit/s, 2.4 Msps is 38), and a dropped
   connection reconnects by itself. `rtl_tcp` has no authentication, so keep it
   on a trusted network or reach it through an SSH tunnel.
+
+  **`rsp_tcp` servers** (an SDRplay RSP published the same way) work here too,
+  with the RSP's own controls — antenna input, LNA state, IF gain reduction,
+  AGC and set point, notches, reference out. Start the server with **`-E`**: it
+  greets exactly like a dongle, and the extended block it sends only in that
+  mode is what lets sdroxide name the radio and, more importantly, know when it
+  is streaming **16-bit** samples. Without `-E` a `-b 16` server reads as noise,
+  because the protocol carries nothing that would say otherwise.
 - **RX-888 (USB)** — an RX-888 or RX-888 Mk2 direct-sampling HF receiver
   (LTC2208 16-bit ADC, Cypress FX3), driven directly over USB by a native
   pure-Rust driver. **No SoapySDR, no libusb, and no vendor driver package.**
@@ -414,6 +423,32 @@ starting sdroxide before the rig is fine:
   to open. Receive only. **Not yet verified against real hardware** — see the
   user manual, §5.2.9; the Radio tab has a **Copy diagnostic report** button,
   and that report is what makes a fix possible.
+- **HackRF One (USB)** — a HackRF One (or a Jawbreaker or rad1o), driven
+  directly over USB by a native pure-Rust driver. **No SoapySDR, no libusb and
+  no libhackrf needed**, so it works in every build including the standard
+  `.msi` and `.dmg`. 1 MHz–6 GHz, 2–20 Msps, wideband IQ receive *and*
+  transmit. See "HackRF permissions" under Building for the Linux udev rule.
+
+  **Half duplex**: receive stops for the length of an over, the way the hardware
+  is built. The transmitter is also **off until you arm it** — a HackRF radiates
+  harmonics strong enough to need an external low-pass filter for whatever band
+  you are on, so "Enable transmit" is a deliberate switch on the Radio tab
+  rather than something a receive session leaves one PTT away.
+
+  The gain model is the radio's own: an **LNA** in 8 dB steps, a baseband
+  **VGA** in 2 dB steps, a **TX VGA** in 1 dB steps, and the 14 dB RF amplifier
+  — which is one switch shared between the two directions, offered here as
+  separate receive and transmit settings so you can run the preamp bypassed on
+  receive and in circuit on transmit. sdroxide reprograms the whole front end on
+  every change of direction, which is why that works here and does not through
+  SoapySDR. Bias tee, baseband filter and ppm correction are on the same tab;
+  the board's real tuning range is read off it, so a rad1o is honestly reported
+  as 50–4000 MHz rather than offered a HackRF One's span.
+
+  Receive is verified against hardware; **transmit has not yet been measured**.
+  Into a dummy load first, and the Radio tab has a **Copy diagnostic report**
+  button that records every command exchanged with the radio, in order,
+  including the sequence around each key-down.
 - **SDRplay RSP (USB)** — any SDRplay RSP (RSP1, RSP1A, RSP1B, RSP2, RSPduo,
   RSPdx, RSPdx R2), driven natively through the vendor's **SDRplay API
   service** — no SoapySDR in the path. The RSPs after the original RSP1 have
@@ -450,7 +485,9 @@ starting sdroxide before the rig is fine:
   megasample-per-second stream both ways at once. Not yet hardware-verified —
   see the user manual, §5.2.7.
 - **SoapySDR** — any [SoapySDR](https://github.com/pothosware/SoapySDR) device
-  (wideband IQ) — HackRF, Airspy R2/Mini, LimeSDR and friends. See below.
+  (wideband IQ) — Airspy R2/Mini, LimeSDR, bladeRF and friends. See below. A
+  HackRF reaches sdroxide better through its own interface above, and the device
+  list says so when it finds one.
 - **OpenHPSDR** — Hermes/Metis-family Ethernet SDRs on the LAN (Protocol 1 and
   2). Press **Discover** to scan for devices, or enter the IP manually; pick a
   DDC sample rate (48 kHz–1536 kHz). Not yet hardware-verified — testers can run
@@ -475,11 +512,12 @@ starting sdroxide before the rig is fine:
   transmit is DAX audio the radio modulates. DAX IQ tops out at **192 kHz**,
   which is this backend's widest span.
 
-The wideband-IQ backends (RTL-SDR over USB or rtl_tcp, RX-888, SDRplay,
-SoapySDR, HPSDR, TCI, SmartSDR, PlutoSDR) drive the full panadapter, the
-CW/PSK/RTTY skimmers, and internal demodulation; a CAT rig feeding demodulated
-audio shows only a narrow audio-band slice. RTL-SDR, RX-888 and SDRplay are
-receive-only; the others can transmit.
+The wideband-IQ backends (RTL-SDR over USB or rtl_tcp, RX-888, Airspy HF+,
+SDRplay, HackRF, SoapySDR, HPSDR, TCI, SmartSDR, PlutoSDR) drive the full
+panadapter, the CW/PSK/RTTY skimmers, and internal demodulation; a CAT rig
+feeding demodulated audio shows only a narrow audio-band slice. RTL-SDR, RX-888,
+Airspy HF+ and SDRplay are receive-only; the others can transmit — the HackRF
+and the PlutoSDR half duplex, the rest while still receiving.
 
 Whichever backend you pick, a **converter offset** on the same tab handles an
 external frequency converter: an HF upconverter (Ham It Up, SpyVerter), a
@@ -829,6 +867,37 @@ already works with SDR# or SDR++ there is nothing to do.
 All three models — Dual, Discovery and Ranger — share the id `03eb:800c`, so a
 device list cannot say which one is plugged in. sdroxide asks the receiver once
 it is open, and `--probe` lists what is on the bus.
+
+### HackRF permissions
+
+Same situation again — direct USB access, no vendor package.
+
+**Linux.** Install the packaged udev rule and replug the radio:
+
+```sh
+sudo cp packaging/linux/60-sdroxide-hackrf.rules /usr/lib/udev/rules.d/
+sudo udevadm control --reload
+```
+
+The `.deb` installs this for you. If Great Scott Gadgets' own `53-hackrf.rules`
+is already installed it covers the same ids and there is nothing to do. The rule
+covers the HackRF One (`1d50:6089`), the Jawbreaker (`604b`) and the rad1o
+(`cc15`), plus `1fc9:000c` — the DFU bootloader. sdroxide cannot flash firmware
+and never enters DFU, but a radio left there by an interrupted `hackrf_spiflash`
+is otherwise invisible to a non-root user.
+
+**Windows.** A HackRF carries the Microsoft OS descriptors that ask Windows to
+bind WinUSB by itself, so this normally needs nothing. A radio that has been
+through [Zadig](https://zadig.akeo.ie/) for something else may need Zadig again
+to put it back on WinUSB.
+
+**macOS.** Nothing to do.
+
+The board *revision* is not in the USB descriptors — a rev-9 HackRF One and an
+older one both report `1d50:6089` — so the device list names the family and
+sdroxide asks the radio once it is open. The product id does separate a HackRF
+One from a Jawbreaker or a rad1o, which matters because the three do not tune
+the same range.
 
 ### SDRplay RSP prerequisites
 

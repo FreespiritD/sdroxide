@@ -32,8 +32,10 @@ use sdroxide_types::{RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode, RtlTcpConfig};
 
 use crate::error::{Error, Result};
 use crate::handle::{Ctrl, Pending, RtlSdrHandle, RxStats, Shared, push_iq, ring_for};
-use crate::stream::{convert, sample_lut};
-use proto::{Cmd, GREETING_LEN, Greeting, Tuner};
+use crate::stream::sample_lut;
+use proto::{
+    Cmd, GREETING_LEN, Greeting, RSP_CAPABILITIES_LEN, RspCapabilities, RspSampleFormat, Tuner,
+};
 
 /// How long to wait for the TCP connection itself. A server that is running
 /// answers a LAN connect in milliseconds; this length is for the case where
@@ -45,6 +47,17 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// only after it has opened and configured the dongle, which on a Raspberry Pi
 /// with a cold USB stack is not instant.
 const GREETING_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long to wait for the optional `rsp_tcp` capability block after the
+/// greeting.
+///
+/// This is a *peek*, and it has to be one: the block is only sent by an SDRplay
+/// server started with `-E`, and an ordinary `rtl_tcp` server sends samples
+/// there instead. Four bytes are read either way and kept if they turn out not
+/// to be the magic, so nothing is lost — but a server that has not started
+/// streaming yet would block here forever without a bound. Half a second is far
+/// longer than either case takes on a LAN and is paid once, at connect.
+const RSP_PEEK_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// How long a read may block before the loop goes back to serve control.
 /// Bounds how long a dial drag waits when the stream has gone quiet; while
@@ -76,7 +89,8 @@ const DIRECT_UNKNOWN: u32 = u32::MAX;
 /// as an ordinary error rather than as a stream that never starts.
 pub(crate) fn spawn(cfg: &RtlTcpConfig, center_hz: f64) -> Result<RtlSdrHandle> {
     let (ctrl_tx, ctrl_rx) = crossbeam_channel::unbounded::<Ctrl>();
-    let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<Greeting>>(1);
+    let (ready_tx, ready_rx) =
+        crossbeam_channel::bounded::<Result<(Greeting, Option<RspCapabilities>)>>(1);
 
     let shared = Arc::new(Shared {
         alive: AtomicBool::new(true),
@@ -104,12 +118,18 @@ pub(crate) fn spawn(cfg: &RtlTcpConfig, center_hz: f64) -> Result<RtlSdrHandle> 
         .map_err(|e| Error::Access(format!("could not start the rtl_tcp thread: {e}")))?;
 
     match ready_rx.recv() {
-        Ok(Ok(greeting)) => Ok(RtlSdrHandle::from_parts(
+        Ok(Ok((greeting, rsp))) => Ok(RtlSdrHandle::from_parts(
             rx_cons,
             ctrl_tx,
             shared,
             join,
-            format!("rtl_tcp {endpoint} ({})", greeting.describe()),
+            // An SDRplay server in extended mode is the one case where the far
+            // end says something real about itself, so the label says it back
+            // rather than repeating the R820T it is pretending to be.
+            match &rsp {
+                Some(c) => format!("rsp_tcp {endpoint} ({})", c.describe()),
+                None => format!("rtl_tcp {endpoint} ({})", greeting.describe()),
+            },
             greeting.tuner.name().to_string(),
             // "Upconverts HF in hardware" is what this flag decides, and for a
             // remote dongle the tuner is the only evidence there is; see
@@ -141,7 +161,7 @@ fn run(
     ctrl: crossbeam_channel::Receiver<Ctrl>,
     mut rx: Producer<f32>,
     shared: Arc<Shared>,
-    ready: crossbeam_channel::Sender<Result<Greeting>>,
+    ready: crossbeam_channel::Sender<Result<(Greeting, Option<RspCapabilities>)>>,
 ) {
     let mut client = match Client::connect(&cfg, center_hz) {
         Ok(c) => c,
@@ -153,7 +173,7 @@ fn run(
 
     shared.rate_milli_hz.store((cfg.sample_rate_hz * 1000.0) as u64, Ordering::Relaxed);
     publish_gain(&shared, &client);
-    let _ = ready.send(Ok(client.greeting));
+    let _ = ready.send(Ok((client.greeting, client.rsp.clone())));
 
     if let Err(e) = pump(&mut client, &ctrl, &mut rx, &shared, &cfg) {
         tracing::warn!("rtl_tcp stream stopped: {e}");
@@ -174,6 +194,14 @@ struct Client {
     agc: RtlSdrAgc,
     gain_db: f64,
     bias_tee: bool,
+    /// What an `rsp_tcp` server in extended mode said about itself, if this is
+    /// one. `None` for an ordinary `rtl_tcp` server *and* for an `rsp_tcp`
+    /// server started without `-E` — the two are indistinguishable on the wire,
+    /// which is exactly why the RSP-specific controls stay hidden without it.
+    rsp: Option<RspCapabilities>,
+    /// Bytes read while peeking for the capability block that turned out to be
+    /// samples. Drained by the pump before it touches the socket again.
+    prefix: Vec<u8>,
 }
 
 impl Client {
@@ -195,15 +223,29 @@ impl Client {
             ))
         })?;
         let greeting = Greeting::parse(&buf)?;
+
+        // An `rsp_tcp` server in extended mode follows the greeting with a
+        // 45-byte block; everything else sends samples. Both greet with "RTL0",
+        // so the only way to tell is to look.
+        let (rsp, prefix) = peek_rsp(&sock, &endpoint)?;
+
         sock.set_read_timeout(Some(READ_TIMEOUT))
             .map_err(|e| Error::Net(format!("cannot set a timeout on {endpoint}: {e}")))?;
 
-        tracing::info!(
-            "rtl_tcp {endpoint}: {} — requesting {:.3} Msps ({:.1} Mbit/s on the link)",
-            greeting.describe(),
-            cfg.sample_rate_hz / 1e6,
-            RtlTcpConfig::link_mbit(cfg.sample_rate_hz),
-        );
+        match &rsp {
+            Some(c) => tracing::info!(
+                "rsp_tcp {endpoint}: {} — requesting {:.3} Msps ({:.1} Mbit/s on the link)",
+                c.describe(),
+                cfg.sample_rate_hz / 1e6,
+                RtlTcpConfig::link_mbit(cfg.sample_rate_hz),
+            ),
+            None => tracing::info!(
+                "rtl_tcp {endpoint}: {} — requesting {:.3} Msps ({:.1} Mbit/s on the link)",
+                greeting.describe(),
+                cfg.sample_rate_hz / 1e6,
+                RtlTcpConfig::link_mbit(cfg.sample_rate_hz),
+            ),
+        }
 
         let mut client = Client {
             sock,
@@ -215,6 +257,8 @@ impl Client {
             agc: cfg.agc,
             gain_db: cfg.tuner_gain_db,
             bias_tee: cfg.bias_tee,
+            rsp,
+            prefix,
         };
 
         // Opening order, for the same reasons as the USB backend's `apply`:
@@ -233,6 +277,19 @@ impl Client {
 
     fn send(&mut self, cmd: Cmd, arg: u32) -> Result<()> {
         self.sock.write_all(&proto::frame(cmd, arg)).map_err(|e| {
+            Error::Net(format!("lost the connection to {} while sending: {e}", self.endpoint))
+        })
+    }
+
+    /// Send a raw five-byte command.
+    ///
+    /// Exists for the `rsp_tcp` opcodes, which share this channel and its
+    /// framing but live in their own numbering above the rtl_tcp ones. Kept
+    /// separate from [`Self::send`] so the two spaces cannot be confused at a
+    /// call site — an antenna change sent as a frequency would retune the
+    /// radio to 2 Hz and look like a dead receiver.
+    fn send_raw(&mut self, cmd: proto::RspCmd, arg: u32) -> Result<()> {
+        self.sock.write_all(&proto::frame_rsp(cmd, arg)).map_err(|e| {
             Error::Net(format!("lost the connection to {} while sending: {e}", self.endpoint))
         })
     }
@@ -358,7 +415,7 @@ fn publish_gain(shared: &Arc<Shared>, client: &Client) {
 }
 
 /// Apply coalesced control changes. Order matches the USB backend's `apply`.
-fn apply(client: &mut Client, p: &Pending, odd_carry: &mut Option<u8>) -> Result<()> {
+fn apply(client: &mut Client, p: &Pending, carry: &mut Vec<u8>) -> Result<()> {
     if let Some(ppm) = p.ppm {
         client.send(Cmd::Ppm, ppm as u32)?;
     }
@@ -367,7 +424,7 @@ fn apply(client: &mut Client, p: &Pending, odd_carry: &mut Option<u8>) -> Result
         client.apply_hf_path(client.center)?;
         // The far end restarts its stream on a path change, so a byte held
         // back from before it is no longer half of anything.
-        *odd_carry = None;
+        carry.clear();
     }
     if let Some(hz) = p.center {
         client.set_center(hz)?;
@@ -385,7 +442,116 @@ fn apply(client: &mut Client, p: &Pending, odd_carry: &mut Option<u8>) -> Result
         client.bias_tee = on;
         client.send(Cmd::BiasTee, u32::from(on))?;
     }
+    // Last, because they depend on nothing. A plain `rtl_tcp` server ignores
+    // these opcodes and says nothing about it, which is the protocol working as
+    // designed rather than a failure to detect.
+    for (op, arg) in &p.rsp {
+        client.send_raw(*op, *arg)?;
+    }
     Ok(())
+}
+
+/// Convert a socket read into interleaved `f32`, in whichever format the far
+/// end is sending.
+///
+/// The 8-bit path is the RTL-SDR's own table, shared byte for byte with the USB
+/// backend. The 16-bit one exists only for an `rsp_tcp` server started with
+/// `-b 16`: an RSP's ADC is 14-bit, so 8-bit throws away six bits of dynamic
+/// range on the one receiver family here that has range worth keeping.
+///
+/// `carry` holds the bytes of a partial I/Q pair left by the previous read.
+/// A TCP segment ends wherever it ends, so this is the normal case rather than
+/// a rare one — and the pair is **two** bytes at 8-bit and **four** at 16-bit,
+/// which is why the carry is a small buffer rather than the single byte the USB
+/// path needs. Losing track of it does not corrupt one sample; it swaps I with
+/// Q for the rest of the session, which reads as a mirrored spectrum rather
+/// than as the framing slip it is.
+fn convert_stream(
+    format: RspSampleFormat,
+    bytes: &[u8],
+    lut: &[f32; 256],
+    carry: &mut Vec<u8>,
+    out: &mut Vec<f32>,
+) {
+    out.clear();
+    // Bytes in one complete I/Q pair.
+    let pair = format.bytes_per_component() * 2;
+
+    let joined: &[u8] = if carry.is_empty() {
+        bytes
+    } else {
+        carry.extend_from_slice(bytes);
+        carry.as_slice()
+    };
+
+    let whole = joined.len() / pair * pair;
+    out.reserve(whole / format.bytes_per_component());
+    match format {
+        RspSampleFormat::Uint8 => {
+            for b in &joined[..whole] {
+                out.push(lut[*b as usize]);
+            }
+        }
+        RspSampleFormat::Int16 => {
+            for w in joined[..whole].chunks_exact(2) {
+                out.push(i16::from_le_bytes([w[0], w[1]]) as f32 / 32768.0);
+            }
+        }
+    }
+
+    // Keep whatever did not make up a whole pair. Written this way round —
+    // build the tail, then replace the carry — because `joined` may be
+    // borrowing the carry itself.
+    let tail = joined[whole..].to_vec();
+    *carry = tail;
+}
+
+/// Look for the `rsp_tcp` capability block that may follow the greeting.
+///
+/// Returns what was found and any bytes read that turned out to be samples.
+///
+/// The awkwardness is unavoidable and worth stating. There is no framing here:
+/// after the greeting the socket carries either 45 bytes of capabilities and
+/// then samples, or samples immediately, and both start with whatever the next
+/// four bytes happen to be. So four bytes are read and compared against the
+/// magic. If they do not match they are *samples* and are handed back to be
+/// prepended to the stream — discarding them would put a two-sample hole at the
+/// head of every ordinary `rtl_tcp` session, and reading them as capabilities
+/// would put 45 bytes of noise at the head of every extended one.
+fn peek_rsp(sock: &TcpStream, endpoint: &str) -> Result<(Option<RspCapabilities>, Vec<u8>)> {
+    sock.set_read_timeout(Some(RSP_PEEK_TIMEOUT))
+        .map_err(|e| Error::Net(format!("cannot set a timeout on {endpoint}: {e}")))?;
+
+    let mut magic = [0u8; 4];
+    match (&*sock).read_exact(&mut magic) {
+        Ok(()) => {}
+        // Nothing arrived. A server that has not started streaming yet is not
+        // an extended one — the block comes immediately or not at all.
+        Err(e) if would_block(&e) => return Ok((None, Vec::new())),
+        Err(e) => {
+            return Err(Error::Net(format!("{endpoint} closed after the greeting: {e}")));
+        }
+    }
+    if &magic != proto::RSP_MAGIC {
+        return Ok((None, magic.to_vec()));
+    }
+
+    let mut rest = [0u8; RSP_CAPABILITIES_LEN - 4];
+    (&*sock).read_exact(&mut rest).map_err(|e| {
+        Error::Net(format!(
+            "{endpoint} sent an rsp_tcp capability header but only part of the \
+             block that follows it: {e}"
+        ))
+    })?;
+    let mut whole = magic.to_vec();
+    whole.extend_from_slice(&rest);
+    // The magic matched and the length is exact, so this cannot fail — but
+    // returning the bytes as samples rather than panicking is the safe way to
+    // be wrong.
+    match RspCapabilities::parse(&whole) {
+        Some(c) => Ok((Some(c), Vec::new())),
+        None => Ok((None, whole)),
+    }
 }
 
 fn pump(
@@ -402,9 +568,24 @@ fn pump(
     // normal case here rather than the rare one it is over USB. Carrying it
     // into the next read is what keeps I with Q; dropping it would mirror the
     // spectrum for the rest of the session.
-    let mut odd_carry: Option<u8> = None;
+    let mut carry: Vec<u8> = Vec::new();
     let mut buf = vec![0u8; READ_BYTES];
     let mut scratch: Vec<f32> = Vec::with_capacity(READ_BYTES + 1);
+    // 8-bit unsigned unless an extended `rsp_tcp` server said otherwise. There
+    // is no way to discover a 16-bit stream without that block, so a server on
+    // `-b 16` without `-E` is undetectable and reads as noise — said plainly in
+    // the manual rather than guessed at here.
+    let format = client.rsp.as_ref().map(|c| c.sample_format).unwrap_or_default();
+    // Samples read while peeking for the capability block. They are the head of
+    // the stream and have to go through the same conversion as everything else.
+    if !client.prefix.is_empty() {
+        let head = std::mem::take(&mut client.prefix);
+        convert_stream(format, &head, &lut, &mut carry, &mut scratch);
+        if !scratch.is_empty() {
+            stats.on_iq(scratch.len() / 2);
+            push_iq(rx, &scratch, &mut stats);
+        }
+    }
 
     loop {
         let mut pending = Pending::default();
@@ -418,7 +599,7 @@ fn pump(
             // A failed write means the link is gone, which is a reason to stop
             // — unlike the USB backend, where a rejected setting is local and
             // the stream carries on.
-            apply(client, &pending, &mut odd_carry)?;
+            apply(client, &pending, &mut carry)?;
             publish_gain(shared, client);
         }
 
@@ -432,7 +613,7 @@ fn pump(
                 )));
             }
             Ok(n) => {
-                convert(&buf[..n], &lut, &mut odd_carry, &mut scratch);
+                convert_stream(format, &buf[..n], &lut, &mut carry, &mut scratch);
                 if !scratch.is_empty() {
                     stats.on_iq(scratch.len() / 2);
                     push_iq(rx, &scratch, &mut stats);
@@ -496,6 +677,8 @@ mod tests {
                 agc: RtlSdrAgc::Manual,
                 gain_db: 30.0,
                 bias_tee: false,
+                rsp: None,
+                prefix: Vec::new(),
             },
             _server: server,
             _listener: listener,

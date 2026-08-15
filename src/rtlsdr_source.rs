@@ -15,6 +15,7 @@ use std::time::Duration;
 use sdroxide_dsp::IqCorrect;
 use sdroxide_radio::{Complex32, DC_BLOCK_HZ, IqSource, Result};
 use sdroxide_rtlsdr::RtlSdrHandle;
+use sdroxide_rtlsdr::tcp::proto::RspCmd;
 use sdroxide_types::{RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode, RtlTcpConfig};
 
 /// How long the dongle may deliver nothing before the connection counts as
@@ -112,6 +113,15 @@ impl RtlSdrSource {
         self.handle.sample_rate_hz
     }
 
+    /// Pass one `rsp_tcp` control through, and only over the network. Over USB
+    /// there is no server to send it to, and the element names are shared
+    /// because both interfaces are the same `IqSource`.
+    fn set_rsp(&self, cmd: RspCmd, arg: u32) {
+        if self.remote {
+            self.handle.set_rsp(cmd, arg);
+        }
+    }
+
     pub fn tuner(&self) -> &str {
         &self.handle.tuner
     }
@@ -203,6 +213,35 @@ impl IqSource for RtlSdrSource {
             RtlSdrConfig::BIAS_TEE_ELEMENT => {
                 self.bias_tee = db >= 0.5;
                 self.handle.set_bias_tee(self.bias_tee);
+            }
+            // The `rsp_tcp` controls. Reachable only on the network interface,
+            // and only against an SDRplay server — a plain `rtl_tcp` one does
+            // not know these opcodes and ignores them in silence, which is what
+            // this protocol does with everything it does not recognise. The
+            // settings tab says so rather than pretending to have detected it.
+            RtlTcpConfig::RSP_ANTENNA_ELEMENT => {
+                self.set_rsp(RspCmd::SetAntenna, db.clamp(0.0, 2.0) as u32)
+            }
+            RtlTcpConfig::RSP_LNA_STATE_ELEMENT => {
+                self.set_rsp(RspCmd::SetLnaState, db.clamp(0.0, 9.0) as u32)
+            }
+            RtlTcpConfig::RSP_IFGR_ELEMENT => {
+                self.set_rsp(RspCmd::SetIfGainR, db.clamp(20.0, 59.0) as u32)
+            }
+            RtlTcpConfig::RSP_AGC_ELEMENT => {
+                self.set_rsp(RspCmd::SetAgc, u32::from(db >= 0.5))
+            }
+            RtlTcpConfig::RSP_AGC_SETPOINT_ELEMENT => {
+                // The protocol carries an unsigned argument and the set point
+                // is negative dBfs, so it goes out as its two's-complement bit
+                // pattern — the same way ppm and gain already do.
+                self.set_rsp(RspCmd::SetAgcSetPoint, db.clamp(-72.0, 0.0) as i32 as u32)
+            }
+            RtlTcpConfig::RSP_NOTCH_ELEMENT => {
+                self.set_rsp(RspCmd::SetNotch, db.clamp(0.0, 15.0) as u32)
+            }
+            RtlTcpConfig::RSP_REF_OUT_ELEMENT => {
+                self.set_rsp(RspCmd::SetRefOut, u32::from(db >= 0.5))
             }
             // Purely a host-side correction, so it switches on and off between
             // one block and the next with nothing to reconfigure on the dongle.

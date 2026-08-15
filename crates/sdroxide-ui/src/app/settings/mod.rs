@@ -36,9 +36,9 @@ use self::net::{
 };
 use self::radio::{
     settings_airspyhf_tab, settings_cat_tab, settings_hackrf_tab, settings_hpsdr_tab,
-    settings_icomnet_tab,
-    settings_pluto_tab, settings_rtlsdr_tab, settings_rtltcp_tab, settings_rx888_tab,
-    settings_sdrplay_tab, settings_smartsdr_tab, settings_soapy_devices, settings_tci_tab,
+    settings_icomnet_tab, settings_pluto_tab, settings_rtlsdr_tab, settings_rtltcp_tab,
+    settings_rx888_tab, settings_sdrplay_tab, settings_smartsdr_tab, settings_soapy_devices,
+    settings_tci_tab,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use self::remote::settings_remote_tab;
@@ -366,10 +366,7 @@ impl SdroxideApp {
             // Cheap and opens nothing, same as the RTL-SDR list — and without
             // it a HackRF owner arriving on this tab sees an empty device combo
             // until they think to press Rescan.
-            if self
-                .radio_cfg
-                .as_ref()
-                .is_some_and(|c| c.backend == sdroxide_types::Backend::HackRf)
+            if self.radio_cfg.as_ref().is_some_and(|c| c.backend == sdroxide_types::Backend::HackRf)
             {
                 self.hackrf_devices = self.ctrl.list_hackrf();
             }
@@ -1658,12 +1655,12 @@ impl SdroxideApp {
                     let mut via = wl.gateway_via.join(" ");
                     ui.horizontal(|ui| {
                         ui.add_sized([96.0, 22.0], egui::Label::new("Via"));
-                        if ui.add_sized([200.0, 22.0], egui::TextEdit::singleline(&mut via)).changed()
+                        if ui
+                            .add_sized([200.0, 22.0], egui::TextEdit::singleline(&mut via))
+                            .changed()
                         {
-                            wl.gateway_via = via
-                                .split_whitespace()
-                                .map(|s| s.to_uppercase())
-                                .collect();
+                            wl.gateway_via =
+                                via.split_whitespace().map(|s| s.to_uppercase()).collect();
                         }
                     });
                     ui.label(

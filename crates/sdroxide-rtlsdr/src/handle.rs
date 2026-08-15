@@ -27,6 +27,11 @@ pub(crate) enum Ctrl {
     HfMode(RtlSdrHfMode),
     Ppm(i32),
     BiasTee(bool),
+    /// One `rsp_tcp` control. Carried as an opaque `(opcode, argument)` pair
+    /// rather than a variant apiece because the whole set is one five-byte
+    /// write with no reply and no interaction between them — and because the
+    /// USB backend, which shares this enum, has no use for any of it.
+    Rsp(crate::tcp::proto::RspCmd, u32),
     Shutdown,
 }
 
@@ -41,6 +46,10 @@ pub(crate) enum Ctrl {
 pub(crate) struct Pending {
     pub center: Option<f64>,
     pub gain: Option<f64>,
+    /// `rsp_tcp` controls, last value wins per opcode. A `Vec` rather than a
+    /// field apiece: they are pass-through writes, and a dial drag never
+    /// touches them.
+    pub rsp: Vec<(crate::tcp::proto::RspCmd, u32)>,
     pub agc: Option<RtlSdrAgc>,
     pub hf_mode: Option<RtlSdrHfMode>,
     pub ppm: Option<i32>,
@@ -57,6 +66,10 @@ impl Pending {
             Ctrl::HfMode(v) => self.hf_mode = Some(v),
             Ctrl::Ppm(v) => self.ppm = Some(v),
             Ctrl::BiasTee(v) => self.bias_tee = Some(v),
+            Ctrl::Rsp(op, arg) => match self.rsp.iter_mut().find(|(o, _)| *o == op) {
+                Some(slot) => slot.1 = arg,
+                None => self.rsp.push((op, arg)),
+            },
             Ctrl::Shutdown => self.shutdown = true,
         }
     }
@@ -382,6 +395,16 @@ impl RtlSdrHandle {
 
     pub fn set_bias_tee(&self, on: bool) {
         self.send(Ctrl::BiasTee(on));
+    }
+
+    /// Send one `rsp_tcp` control.
+    ///
+    /// Only meaningful against an SDRplay server; on a plain `rtl_tcp` one the
+    /// opcode is unknown and is ignored in silence, which is what this protocol
+    /// does with everything it does not recognise. The settings tab is what
+    /// keeps these out of reach unless a capability block arrived.
+    pub fn set_rsp(&self, cmd: crate::tcp::proto::RspCmd, arg: u32) {
+        self.send(Ctrl::Rsp(cmd, arg));
     }
 
     /// Stop the stream thread and let the dongle go, without dropping the

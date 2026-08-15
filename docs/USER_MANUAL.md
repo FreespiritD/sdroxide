@@ -90,9 +90,9 @@ or connects to a remote sdroxide server.
 - **Many radio backends:** SoapySDR devices, OpenHPSDR (Hermes/Metis) Ethernet
   SDRs, a TCI server (ExpertSDR3/Thetis), a SmartSDR radio (FlexRadio
   FLEX-6000/8000), RTL-SDR, RX-888, Airspy HF+ and SDRplay RSP receivers over
-  USB, an RTL-SDR published over the network by `rtl_tcp`, a PlutoSDR, or a
-  CAT-controlled radio with audio over a USB sound card (demodulated audio or
-  stereo IQ).
+  USB, a HackRF transceiver over USB, an RTL-SDR published over the network by
+  `rtl_tcp`, a PlutoSDR, or a CAT-controlled radio with audio over a USB sound
+  card (demodulated audio or stereo IQ).
 - **Several radios at once** — each in its own tab with its own tuning, mode,
   panadapter and audio, sharing your memories, logbook and a station-wide
   transmit interlock. Multi-receiver hardware serves one tab per receiver from
@@ -2448,6 +2448,10 @@ radio. Everything below the selector changes to match the choice:
 - **Airspy HF+ (USB)** — an Airspy HF+ Dual, Discovery or Ranger, driven by
   sdroxide's own USB driver with no SoapySDR and no libairspyhf involved. See
   [5.2.9](#529-airspy-hf-usb).
+- **HackRF One (USB)** — a HackRF One, Jawbreaker or rad1o, driven by
+  sdroxide's own USB driver with no SoapySDR and no libhackrf involved. The one
+  USB interface here that transmits, and half duplex. See
+  [5.2.12](#5212-hackrf-one-usb).
 - **SDRplay RSP (USB)** — any RSP, through the vendor's API service. See
   [5.2.8](#528-sdrplay-rsp-usb).
 - **PlutoSDR (network)** — an ADALM-Pluto, driven by sdroxide's own IIOD client
@@ -3540,11 +3544,153 @@ A dropped connection is retried on its own: a server that is restarted, a Pi tha
 reboots, or a client dropped for falling behind all come back without touching
 anything on the Radio tab.
 
+##### SDRplay servers (rsp_tcp)
+
+`rsp_tcp` publishes an SDRplay RSP over the same protocol, and sdroxide connects
+to one through this interface — not the SDRplay one, which drives an RSP on
+*this* machine through the vendor API.
+
+There is a wrinkle worth knowing, because it is not what anyone expects. An
+`rsp_tcp` server greets **exactly like a dongle**: magic `"RTL0"`, tuner type
+`R820T`. It poses as an RTL-SDR so that every existing rtl_tcp client keeps
+working. The `"RSP0"` marker that looks like it ought to be the greeting belongs
+instead to a 45-byte capability block that the server sends *after* the
+greeting, and only when it was started with **`-E`**.
+
+So run the server with `-E` if you can. With it:
+
+- sdroxide names the radio properly on the Device tab — hardware version,
+  antenna inputs, tuner count, IF gain-reduction range and which filters it has —
+  instead of repeating the R820T the server is pretending to be;
+- **16-bit samples work.** A server started with `-b 16` streams signed 16-bit
+  instead of 8-bit, and there is no way to discover that outside extended mode:
+  the protocol carries no such field. Without `-E`, a `-b 16` server's stream is
+  read as 8-bit and looks like noise. This is a real trap and the reason to
+  prefer `-E`; an RSP's ADC is 14-bit, so 8-bit throws away most of what makes
+  the receiver worth having.
+
+The **SDRplay server** group on this tab sends the RSP-specific commands —
+antenna input, LNA state, IF gain reduction, the RSP's own AGC and set point,
+the notch filters, and the reference clock output. They are shown always rather
+than when a server is detected, because there is nothing to detect against a
+server without `-E`. An ordinary `rtl_tcp` server ignores them: this protocol
+has no replies and silently discards commands it does not recognise, which is
+the same reason a bias tee that does not come on is not necessarily this end's
+fault.
+
+The gain controls above the group are the *dongle* ones and do nothing on an
+RSP. Use LNA state and IF gain reduction instead — and note that IF gain
+reduction is a **reduction**, so a bigger number is less signal.
+
 > **rtl_tcp has no authentication and no encryption.** Anyone who can reach the
 > port gets the dongle and can retune it — including turning its bias tee on.
 > Keep it on a network you trust, or reach it through a VPN or an SSH tunnel
 > (`ssh -L 1234:localhost:1234 pi@host`, then connect to `127.0.0.1:1234` here,
 > leaving `rtl_tcp` bound to localhost on the far end).
+
+#### 5.2.12 HackRF One (USB)
+
+A HackRF One — or a Jawbreaker or a rad1o — driven directly over USB by
+sdroxide's own pure-Rust driver. No SoapySDR, no libusb and no libhackrf, so
+this interface is in every build variant on every platform. 1 MHz to 6 GHz,
+2 to 20 Msps, wideband IQ in both directions.
+
+This is the only USB interface here that transmits, and the only one that is
+**half duplex**: receive stops for the length of every over, because the
+hardware has one signal path and switches it. Nothing you can configure changes
+that.
+
+**Permissions.** Linux needs the packaged udev rule — see "HackRF permissions"
+in the README. Windows normally needs nothing: a HackRF carries the Microsoft OS
+descriptors that ask for WinUSB by itself. macOS needs nothing.
+
+**Radio.** Rescan lists what is on the bus. The serial is matched on its
+**suffix**, which is why the list shows only the last eight digits: a HackRF
+serial is 32 hex characters of which the leading half is zeroes on every unit,
+and nobody types the whole thing. Leave it empty for "the first one found".
+
+**Sample rate.** 2 Msps is the default and the gentlest on the host. Everything
+below 8 Msps is outside the MAX5864's specified range — it is what everyone
+uses regardless, and it is the rate the LO-offset behaviour was measured at, so
+it is offered with a note rather than hidden. 20 Msps is 40 MB/s and wants a
+real SuperSpeed port; on a USB 2.0 link sdroxide says so at open rather than
+leaving you to diagnose dropped samples. Changing the rate reopens the radio.
+
+**Gains.** The radio's own model, three stages and a switch:
+
+| Control | Range | Note |
+| --- | --- | --- |
+| LNA | 0–40 dB, 8 dB steps | Front end. The stage that changes sensitivity, and the stage that overloads first on a real antenna. |
+| VGA | 0–62 dB, 2 dB steps | Baseband, after the mixer. Reach for this before the LNA on a weak signal. |
+| TX VGA | 0–47 dB, 1 dB steps | Transmit driver. Only shown once transmit is enabled. |
+| RF amp | 14 dB, on/off | One switch, offered as two settings — see below. |
+
+The hardware **truncates** rather than rounds: ask the LNA for 15 dB and you get
+8. The slider shows back what the radio really did, so it will move under your
+hand at the boundaries. That is the radio being honest, not the UI fighting you.
+
+**The RF amplifier is one switch with two settings.** There is a single 14 dB
+amplifier in the signal path, and it sits in *both* directions. sdroxide gives
+you a receive setting and a transmit setting for it and applies whichever
+belongs to the direction the radio is entering — so you can run the preamp
+bypassed on receive, where a HackRF front end overloads easily on a real
+antenna, and in circuit on transmit for the extra output. This works because
+sdroxide reprograms the entire front end on every change of direction. Reaching
+the same radio through SoapySDR cannot express it at all: there the receive amp
+goes dead after the first over and the transmit amp never engages.
+
+**Baseband filter.** Leave it on Automatic. The filter is coupled to something
+invisible: sdroxide parks the local oscillator a quarter of the span above your
+dial so the radio's own DC spike lands clear of the signal, and it *withdraws*
+that offset when the filter is too narrow to reach where the signal was moved
+to. So a filter chosen by hand and set too low does not merely soften the band
+edges — it silently turns off the DC-spike avoidance, which looks exactly like
+the offset being broken. Automatic picks 0.75 × the sample rate, which always
+leaves room.
+
+**IQ correction.** On by default. This is a zero-IF radio: its own oscillator
+leakage sits at the centre of the span, and the mixer's quadrature error puts a
+mirror image across it. The correction removes both, adaptively. Turning it off
+shows raw hardware output, which is the quick way to tell a driver problem from
+a DSP one.
+
+**Bias tee.** About 3 V at 50 mA on the antenna port, for an active antenna or a
+preamp. A HackRF One only — the Jawbreaker and the rad1o have no such circuit,
+and on those sdroxide does not send the command at all and says so rather than
+leaving a switch that quietly does nothing.
+
+##### Transmit
+
+Off by default, behind an **Enable transmit** switch, and the default is
+deliberate. A HackRF is a wideband transmitter with poor harmonic suppression:
+it wants an external low-pass filter for whatever band you are on, and it will
+happily radiate outside it. Somebody who plugged one in to listen should not be
+one PTT away from that. While the switch is off, sdroxide publishes no transmit
+channel at all, so nothing anywhere in the program can key the radio.
+
+With it on:
+
+- **Into a dummy load until you have measured it.** Check the harmonics and the
+  carrier leakage on a second receiver or an analyser before connecting an
+  antenna.
+- **Drive is applied digitally**, before the transmit VGA. Leave the drive high
+  and set your output level with the TX VGA slider — turning drive down instead
+  runs the DAC at a fraction of full scale, which raises intermodulation and
+  the carrier leakage relative to your signal by the same amount you turned it
+  down.
+- **The carrier sits on your signal.** sdroxide's transmit chain centres the
+  signal at DC and tunes the radio straight to it, so the oscillator's own
+  leakage lands on the carrier frequency rather than off to one side. This is
+  inherent to the current transmit path, not a setting.
+- **Receive stops.** Half duplex. The panadapter freezes for the length of the
+  over and resumes afterwards, and sdroxide throws away what was buffered when
+  the receiver stopped — those samples are from before you keyed up.
+
+> **Transmit has not yet been measured against hardware.** Receive has. If
+> anything about an over looks wrong, the Radio tab's **Copy diagnostic report**
+> button records every command exchanged with the radio in order, including the
+> exact sequence around each key-down — which is the part a bug report needs and
+> the part nobody can reconstruct from a spectrum.
 
 ### 5.3 UI: display preferences and voice announcements
 
@@ -5832,6 +5978,7 @@ to its default, and a partial file is normal rather than a special case.
 | `"RtlTcp"` | RTL-SDR published by `rtl_tcp` | `"rtltcp"` |
 | `"Rx888"` | RX-888 Mk2 | `"rx888"` |
 | `"AirspyHf"` | Airspy HF+ | `"airspyhf"` |
+| `"HackRf"` | HackRF One / Jawbreaker / rad1o | `"hackrf"` |
 | `"SdrPlay"` | SDRplay RSP | `"sdrplay"` |
 
 The per-interface object is only read when `backend` names it, so leaving the

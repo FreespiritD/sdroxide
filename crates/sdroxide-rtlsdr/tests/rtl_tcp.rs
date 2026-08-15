@@ -46,6 +46,34 @@ impl Fake {
     /// Start a server that greets as `tuner` and then streams `stream_bytes`
     /// of a known pattern, recording every command it is sent.
     fn start(tuner: u32, stream_bytes: usize) -> Fake {
+        Fake::start_with(tuner, stream_bytes, None)
+    }
+
+    /// A server that also sends the `rsp_tcp` extended-capability block, the
+    /// way SDRplay's own server does when it is started with `-E`.
+    fn start_rsp(stream_bytes: usize, sample_format: u32, capabilities: u32) -> Fake {
+        let mut c = Vec::from(*b"RSP0");
+        c.extend_from_slice(&1u32.to_be_bytes()); // version
+        c.extend_from_slice(&capabilities.to_be_bytes());
+        c.extend_from_slice(&0u32.to_be_bytes()); // __reserved__
+        c.extend_from_slice(&3u32.to_be_bytes()); // hardware_version
+        c.extend_from_slice(&sample_format.to_be_bytes());
+        c.push(3); // antenna_input_count
+        let mut name = [0u8; 13];
+        name[..4].copy_from_slice(b"HiZ\0");
+        c.extend_from_slice(&name);
+        // third_antenna_freq_limit: the one field the real server does NOT
+        // byte-swap, so the fake must not either.
+        c.extend_from_slice(&30_000_000i32.to_le_bytes());
+        c.push(2); // tuner_count
+        c.push(20); // ifgr_min
+        c.push(59); // ifgr_max
+        assert_eq!(c.len(), 45, "the block is 45 bytes packed");
+        // Tuner 5 (R820T) is what a real rsp_tcp server claims to be.
+        Fake::start_with(5, stream_bytes, Some(c))
+    }
+
+    fn start_with(tuner: u32, stream_bytes: usize, caps: Option<Vec<u8>>) -> Fake {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let cmds = Arc::new(Mutex::new(Vec::new()));
@@ -55,7 +83,7 @@ impl Fake {
         let thread_stop = Arc::clone(&stop);
         let join = std::thread::spawn(move || {
             let Ok((sock, _)) = listener.accept() else { return };
-            serve(sock, tuner, stream_bytes, &thread_cmds, &thread_stop);
+            serve(sock, tuner, stream_bytes, caps, &thread_cmds, &thread_stop);
         });
 
         Fake { addr, cmds, stop, join: Some(join) }
@@ -101,6 +129,7 @@ fn serve(
     mut sock: TcpStream,
     tuner: u32,
     mut stream_bytes: usize,
+    caps: Option<Vec<u8>>,
     cmds: &Mutex<Vec<(u8, u32)>>,
     stop: &AtomicBool,
 ) {
@@ -108,6 +137,13 @@ fn serve(
     greeting.extend_from_slice(&tuner.to_be_bytes());
     greeting.extend_from_slice(&29u32.to_be_bytes());
     if sock.write_all(&greeting).is_err() {
+        return;
+    }
+    // An rsp_tcp server started with -E follows the greeting with this, in the
+    // same breath. Everything else goes straight to samples.
+    if let Some(c) = &caps
+        && sock.write_all(c).is_err()
+    {
         return;
     }
     sock.set_read_timeout(Some(Duration::from_millis(5))).expect("timeout");
@@ -165,6 +201,10 @@ fn config(endpoint: &str) -> RtlTcpConfig {
         hf_mode: RtlSdrHfMode::Auto,
         bias_tee: false,
         iq_correction: true,
+        // The rsp_tcp controls are not what these tests are about, and the
+        // opening handshake does not send them — an SDRplay server is the only
+        // thing that would understand them.
+        ..RtlTcpConfig::default()
     }
 }
 
@@ -317,24 +357,132 @@ fn the_sample_stream_survives_the_segment_boundaries() {
     handle.release();
 }
 
-/// The two ways this goes wrong in the field, and what each has to say.
+/// Something else listening on the port.
 #[test]
 fn a_server_that_is_not_rtl_tcp_says_so() {
-    // Something else listening on the port.
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     std::thread::spawn(move || {
         if let Ok((mut sock, _)) = listener.accept() {
-            let mut g = Vec::from(*b"RSP0");
-            g.extend_from_slice(&[0u8; 8]);
-            let _ = sock.write_all(&g);
+            let _ = sock.write_all(b"HTTP/1.1 404 Not Found\r\n\r\n");
             std::thread::sleep(Duration::from_millis(200));
         }
     });
     let Err(e) = RtlSdrHandle::connect(&config(&addr.to_string()), 100e6) else {
-        panic!("an rsp_tcp greeting must not be taken for rtl_tcp");
+        panic!("a web server must not be taken for rtl_tcp");
     };
-    assert!(e.to_string().contains("rsp_tcp"), "unhelpful: {e}");
+    assert!(e.to_string().contains("RTL0"), "unhelpful: {e}");
+}
+
+/// An `rsp_tcp` server in extended mode is accepted, and its 45-byte
+/// capability block does **not** end up in the sample stream.
+///
+/// This is the regression that motivated the whole change. An SDRplay server
+/// greets with `"RTL0"` exactly like a dongle — the `"RSP0"` magic belongs to
+/// the block that follows, not to the greeting — so before this the block was
+/// read as I/Q and put a burst of noise at the head of every extended session,
+/// with nothing on screen to say why.
+#[test]
+fn an_rsp_tcp_capability_block_is_read_and_not_streamed() {
+    const BYTES: usize = 4_097;
+    // 8-bit format, and every capability bit set.
+    let fake = Fake::start_rsp(BYTES, 1, 0xff);
+    let mut handle =
+        RtlSdrHandle::connect(&config(&fake.endpoint()), 100_100_000.0).expect("connects");
+
+    let want = BYTES - 1;
+    let mut got: Vec<f32> = Vec::with_capacity(want);
+    let mut buf = vec![0f32; 4096];
+    let until = Instant::now() + DEADLINE;
+    while got.len() < want && Instant::now() < until {
+        let n = handle.rx_read(&mut buf);
+        got.extend_from_slice(&buf[..n]);
+        if n == 0 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    assert_eq!(got.len(), want, "the stream stopped short");
+    // The first sample must be the first byte of the *pattern*, not the fifth
+    // byte of the capability block.
+    for (i, v) in got.iter().enumerate() {
+        let expect = expect_sample((i % 256) as u8);
+        assert!(
+            (v - expect).abs() < 1e-6,
+            "sample {i}: {v} != {expect} — the capability block leaked into the stream"
+        );
+    }
+    handle.release();
+}
+
+/// A server streaming 16-bit samples is decoded as 16-bit.
+///
+/// `rsp_tcp -b 16` sends signed little-endian `i16` instead of the 8-bit
+/// unsigned every rtl_tcp client expects. The only way a client can know is the
+/// capability block, so this and the extended mode go together — a `-b 16`
+/// server started without `-E` is undetectable and reads as noise, which the
+/// manual says out loud rather than pretending otherwise.
+#[test]
+fn a_sixteen_bit_server_is_decoded_as_sixteen_bit() {
+    const BYTES: usize = 4_096;
+    // sample_format 2 = INT16.
+    let fake = Fake::start_rsp(BYTES, 2, 0xff);
+    let mut handle =
+        RtlSdrHandle::connect(&config(&fake.endpoint()), 100_100_000.0).expect("connects");
+
+    // Two wire bytes per component now, so the same byte count is half as many
+    // floats.
+    let want = BYTES / 2;
+    let mut got: Vec<f32> = Vec::with_capacity(want);
+    let mut buf = vec![0f32; 4096];
+    let until = Instant::now() + DEADLINE;
+    while got.len() < want && Instant::now() < until {
+        let n = handle.rx_read(&mut buf);
+        got.extend_from_slice(&buf[..n]);
+        if n == 0 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    assert_eq!(got.len(), want, "16-bit halves the float count for the same bytes");
+    for (i, v) in got.iter().enumerate() {
+        let lo = ((2 * i) % 256) as u8;
+        let hi = ((2 * i + 1) % 256) as u8;
+        let expect = i16::from_le_bytes([lo, hi]) as f32 / 32768.0;
+        assert!(
+            (v - expect).abs() < 1e-6,
+            "sample {i}: {v} != {expect} — 16-bit samples read as 8-bit look like noise"
+        );
+    }
+    handle.release();
+}
+
+/// A plain `rtl_tcp` server must lose nothing to the peek that looks for the
+/// capability block. Four bytes are read either way; when they turn out not to
+/// be the magic they are samples and have to be put back.
+#[test]
+fn peeking_for_the_capability_block_costs_a_plain_server_nothing() {
+    const BYTES: usize = 2_048;
+    let fake = Fake::start(5, BYTES);
+    let mut handle =
+        RtlSdrHandle::connect(&config(&fake.endpoint()), 100_100_000.0).expect("connects");
+
+    let mut got: Vec<f32> = Vec::with_capacity(BYTES);
+    let mut buf = vec![0f32; 4096];
+    let until = Instant::now() + DEADLINE;
+    while got.len() < BYTES && Instant::now() < until {
+        let n = handle.rx_read(&mut buf);
+        got.extend_from_slice(&buf[..n]);
+        if n == 0 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    assert_eq!(got.len(), BYTES);
+    for (i, v) in got.iter().enumerate() {
+        let expect = expect_sample((i % 256) as u8);
+        assert!((v - expect).abs() < 1e-6, "sample {i} moved: the peek ate the head");
+    }
+    handle.release();
 }
 
 #[test]

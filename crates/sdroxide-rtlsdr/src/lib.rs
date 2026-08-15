@@ -33,7 +33,7 @@ mod handle;
 mod regs;
 mod rtl2832;
 mod stream;
-mod tcp;
+pub mod tcp;
 mod tuner;
 mod usb;
 

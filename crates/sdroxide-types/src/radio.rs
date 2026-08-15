@@ -1231,6 +1231,31 @@ pub struct RtlTcpConfig {
     /// backend: these are artefacts of the dongle, so they arrive over the
     /// network along with everything else.
     pub iq_correction: bool,
+
+    // --- rsp_tcp only ----------------------------------------------------
+    //
+    // An SDRplay server greets exactly like a dongle, so these are only
+    // reachable when it was started with `-E` and sent a capability block. The
+    // settings tab hides them until one arrives, and each is gated on the bit
+    // the server set for it — an RSP1A has no antenna switch, and offering one
+    // would be a control that silently does nothing.
+    /// Antenna input: 0 = A, 1 = B, 2 = high impedance.
+    pub rsp_antenna: u8,
+    /// LNA state — an index, not a dB figure. Which one is "least gain" depends
+    /// on the model *and* the band, which is why the native SDRplay interface
+    /// exposes a step control rather than a slider and this does the same.
+    pub rsp_lna_state: u8,
+    /// IF gain **reduction** in dB, so a bigger number is less signal. The
+    /// server reports the legal range in its capability block.
+    pub rsp_if_gain_reduction: u8,
+    /// The RSP's own AGC, and the level it aims for in dBfs (negative).
+    pub rsp_agc: bool,
+    pub rsp_agc_setpoint: i32,
+    /// Notch filters, as the protocol's bitmask: AM 1, broadcast 2, DAB 4,
+    /// RF 8.
+    pub rsp_notch: u8,
+    /// Reference clock output on the RSP2/duo.
+    pub rsp_ref_out: bool,
 }
 
 impl Default for RtlTcpConfig {
@@ -1244,6 +1269,15 @@ impl Default for RtlTcpConfig {
             sample_rate_hz: 1_024_000.0,
             ppm: 0,
             tuner_gain_db: 30.0,
+            rsp_antenna: 0,
+            rsp_lna_state: 0,
+            // Mid-scale on every model's range, and roughly where SDRplay's own
+            // tools open.
+            rsp_if_gain_reduction: 40,
+            rsp_agc: true,
+            rsp_agc_setpoint: -30,
+            rsp_notch: 0,
+            rsp_ref_out: false,
             agc: RtlSdrAgc::Manual,
             hf_mode: RtlSdrHfMode::Auto,
             bias_tee: false,
@@ -1255,6 +1289,29 @@ impl Default for RtlTcpConfig {
 impl RtlTcpConfig {
     /// The port `rtl_tcp` listens on when it is not given `-p`.
     pub const DEFAULT_PORT: u16 = 1234;
+
+    /// Pseudo-elements for the `rsp_tcp` controls, riding `SetGain` the way the
+    /// RTL-SDR's own switches do — see [`RtlSdrConfig::AGC_ELEMENT`]. Only
+    /// reachable against an SDRplay server in extended mode; a plain `rtl_tcp`
+    /// server ignores the opcodes, which is harmless because the protocol has
+    /// no replies and never did.
+    pub const RSP_ANTENNA_ELEMENT: &'static str = "RSPANT";
+    pub const RSP_LNA_STATE_ELEMENT: &'static str = "RSPLNA";
+    pub const RSP_IFGR_ELEMENT: &'static str = "RSPIFGR";
+    pub const RSP_AGC_ELEMENT: &'static str = "RSPAGC";
+    pub const RSP_AGC_SETPOINT_ELEMENT: &'static str = "RSPAGCSP";
+    pub const RSP_NOTCH_ELEMENT: &'static str = "RSPNOTCH";
+    pub const RSP_REF_OUT_ELEMENT: &'static str = "RSPREFOUT";
+
+    /// Notch-filter bits, as the `rsp_tcp` protocol packs them into one
+    /// argument. Here rather than in the driver because the settings tab builds
+    /// the mask and is shared with the wasm client, which cannot see
+    /// `sdroxide-rtlsdr`; the driver passes the mask through without looking at
+    /// the bits.
+    pub const RSP_NOTCH_AM: u8 = 1 << 0;
+    pub const RSP_NOTCH_BROADCAST: u8 = 1 << 1;
+    pub const RSP_NOTCH_DAB: u8 = 1 << 2;
+    pub const RSP_NOTCH_RF: u8 = 1 << 3;
 
     /// The configured address as `host:port`, supplying the default port when
     /// the operator typed only a host.

@@ -830,6 +830,120 @@ pub(in crate::app) fn settings_rtltcp_tab(
         );
     }
 
+    ui.add_space(8.0);
+    ui.separator();
+    ui.label(RichText::new("SDRplay server (rsp_tcp)").strong());
+    ui.label(
+        RichText::new(
+            "An SDRplay server greets exactly like a dongle, so these are shown \
+             always rather than when one is detected. Against an ordinary \
+             rtl_tcp server they are simply ignored — the protocol has no \
+             replies and discards commands it does not know. The Device tab \
+             names the server as rsp_tcp once one has identified itself.",
+        )
+        .weak(),
+    );
+    ui.add_space(4.0);
+
+    egui::Grid::new("rsptcp-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Antenna");
+        ui.horizontal(|ui| {
+            for (v, name) in [(0u8, "Input A"), (1, "Input B"), (2, "Hi-Z")] {
+                if ui.selectable_label(cfg.rtltcp.rsp_antenna == v, name).clicked() {
+                    cfg.rtltcp.rsp_antenna = v;
+                    push_gain(cmds, RtlTcpConfig::RSP_ANTENNA_ELEMENT, v as f64);
+                }
+            }
+        });
+        ui.end_row();
+
+        ui.label("LNA state");
+        if ui
+            .add(egui::Slider::new(&mut cfg.rtltcp.rsp_lna_state, 0..=9))
+            .on_hover_text(
+                "A step index, not a dB figure: how much each step is worth \
+                 depends on the RSP model and the band. 0 is the most gain.",
+            )
+            .changed()
+        {
+            push_gain(cmds, RtlTcpConfig::RSP_LNA_STATE_ELEMENT, cfg.rtltcp.rsp_lna_state as f64);
+        }
+        ui.end_row();
+
+        ui.label("IF gain reduction");
+        if ui
+            .add(egui::Slider::new(&mut cfg.rtltcp.rsp_if_gain_reduction, 20..=59).suffix(" dB"))
+            .on_hover_text(
+                "A reduction, so more is less signal. Only obeyed with the RSP's \
+                 AGC off.",
+            )
+            .changed()
+        {
+            push_gain(
+                cmds,
+                RtlTcpConfig::RSP_IFGR_ELEMENT,
+                cfg.rtltcp.rsp_if_gain_reduction as f64,
+            );
+        }
+        ui.end_row();
+
+        ui.label("AGC");
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut cfg.rtltcp.rsp_agc, "Enable").changed() {
+                push_gain(cmds, RtlTcpConfig::RSP_AGC_ELEMENT, cfg.rtltcp.rsp_agc as u8 as f64);
+            }
+            ui.add_enabled_ui(cfg.rtltcp.rsp_agc, |ui| {
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut cfg.rtltcp.rsp_agc_setpoint)
+                            .range(-72..=0)
+                            .suffix(" dBfs"),
+                    )
+                    .on_hover_text("The level the RSP's AGC aims to hold.")
+                    .changed()
+                {
+                    push_gain(
+                        cmds,
+                        RtlTcpConfig::RSP_AGC_SETPOINT_ELEMENT,
+                        cfg.rtltcp.rsp_agc_setpoint as f64,
+                    );
+                }
+            });
+        });
+        ui.end_row();
+
+        ui.label("Notches");
+        ui.horizontal(|ui| {
+            let mut mask = cfg.rtltcp.rsp_notch;
+            for (bit, name) in [
+                (RtlTcpConfig::RSP_NOTCH_AM, "AM"),
+                (RtlTcpConfig::RSP_NOTCH_BROADCAST, "FM"),
+                (RtlTcpConfig::RSP_NOTCH_DAB, "DAB"),
+                (RtlTcpConfig::RSP_NOTCH_RF, "RF"),
+            ] {
+                let mut on = mask & bit != 0;
+                if ui.checkbox(&mut on, name).changed() {
+                    mask = if on { mask | bit } else { mask & !bit };
+                }
+            }
+            if mask != cfg.rtltcp.rsp_notch {
+                cfg.rtltcp.rsp_notch = mask;
+                push_gain(cmds, RtlTcpConfig::RSP_NOTCH_ELEMENT, mask as f64);
+            }
+        });
+        ui.end_row();
+
+        ui.label("Reference out");
+        if ui
+            .checkbox(&mut cfg.rtltcp.rsp_ref_out, "24 MHz clock out")
+            .on_hover_text("RSP2 and RSPduo only.")
+            .changed()
+        {
+            push_gain(cmds, RtlTcpConfig::RSP_REF_OUT_ELEMENT, cfg.rtltcp.rsp_ref_out as u8 as f64);
+        }
+        ui.end_row();
+    });
+
     ui.add_space(4.0);
     ui.label(
         RichText::new(
