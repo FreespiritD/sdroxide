@@ -2883,7 +2883,10 @@ wideband IQ stream and transmitting audio back:
   found, without leaving the dialog.
 
 Receive is wideband IQ (full panadapter and skimmers); transmit sends audio to
-the TCI server, which modulates it.
+the TCI server, which modulates it. Receive reaches 160 MHz and transmit covers
+HF, 6 m and 2 m, so a rig with a VHF section (a SunSDR2 PRO or DX, an MB1) keys
+up on 2 m without a stated TX range; the amateur-band gate keeps you inside your
+region's allocation, and the rig declines anything it cannot do.
 
 > This is sdroxide acting as a TCI *client*. For the other direction — sdroxide
 > acting as the rig so WSJT-X and friends can drive it — see

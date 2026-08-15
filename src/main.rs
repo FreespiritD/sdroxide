@@ -1481,6 +1481,15 @@ fn open_tci_source(
 /// audio (`tx_audio`) which the rig modulates. The rig enforces its own limits.
 /// A secondary receiver (`rx > 0`) has no transmitter: TCI rigs have one, and
 /// it belongs to the receiver-0 radio.
+///
+/// The transmit envelope covers 2 m as well as HF and 6 m. Every Expert
+/// Electronics rig that speaks TCI and has a 2 m section — the SunSDR2 PRO and
+/// DX, the MB1 — transmits there, and receive already reached 160 MHz, so
+/// stopping transmit at 54 MHz left a 2 m-capable transceiver hearing the band
+/// it was refusing to key up on. The upper edge is 148 MHz so that Regions 2
+/// and 3 get their whole allocation; the amateur-band gate that runs straight
+/// after this one is region-aware and holds a Region 1 station to 146 MHz,
+/// and the rig declines anything it cannot do regardless.
 fn tci_caps(address: &str, iq_rate: f64, rx: u32) -> DeviceCaps {
     let (label, tx_channels, tx_audio) = if rx == 0 {
         (format!("TCI {address} ({:.0} kHz IQ)", iq_rate / 1000.0), 1, true)
@@ -1496,7 +1505,7 @@ fn tci_caps(address: &str, iq_rate: f64, rx: u32) -> DeviceCaps {
         tx_audio,
         freq_ranges_rx: vec![(0.0, 160_000_000.0)],
         freq_ranges_tx: if tx_channels > 0 {
-            vec![(1_800_000.0, 54_000_000.0)]
+            vec![(1_800_000.0, 54_000_000.0), (144_000_000.0, 148_000_000.0)]
         } else {
             Vec::new()
         },
@@ -1663,6 +1672,26 @@ mod tests {
         assert!(!Cli::parse_from(["sdroxide"]).oob_tx);
         assert!(Cli::parse_from(["sdroxide", "--oob-tx"]).oob_tx);
         assert!(Settings::default().tx_ham_only, "the shipped default is locked");
+    }
+
+    /// A SunSDR2 DX hears 2 m and transmits on it, and it took an override in
+    /// Settings to make sdroxide agree — the published transmit envelope
+    /// stopped at 6 m. Both halves of the band matter: the HF/6 m block is what
+    /// every TCI rig has, and 2 m is what the VHF ones add.
+    #[test]
+    fn a_tci_rig_may_transmit_on_two_metres() {
+        let caps = tci_caps("127.0.0.1:40001", 312_000.0, 0);
+        assert!(caps.may_tx_hz(14_200_000.0), "HF");
+        assert!(caps.may_tx_hz(50_150_000.0), "6 m");
+        assert!(caps.may_tx_hz(144_300_000.0), "2 m, Region 1");
+        assert!(caps.may_tx_hz(146_520_000.0), "2 m, Regions 2 and 3");
+        // The envelope is still an envelope: the gap between the bands is not
+        // an amateur allocation anywhere, and neither is anything above 2 m.
+        assert!(!caps.may_tx_hz(100_000_000.0), "broadcast FM");
+        assert!(!caps.may_tx_hz(435_000_000.0), "70 cm — no TCI rig reaches it");
+
+        // A second receiver still has no transmitter of its own.
+        assert!(tci_caps("127.0.0.1:40001", 312_000.0, 1).freq_ranges_tx.is_empty());
     }
 
     fn session(freq_hz: f64, mode: sdroxide_types::Mode) -> sdroxide_config::Session {
