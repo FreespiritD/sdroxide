@@ -1669,7 +1669,9 @@ impl SdroxideApp {
                                 if g.label.is_empty() { "" } else { " — " },
                                 g.label,
                             ));
-                            if ui.button("✕").on_hover_text("Forget this gateway").clicked() {
+                            // Text, not a glyph: this font has no ✕ and draws a
+                            // tofu box, which reads as a broken button.
+                            if ui.button("FORGET").on_hover_text("Forget this gateway").clicked() {
                                 remove = Some(i);
                             }
                         });

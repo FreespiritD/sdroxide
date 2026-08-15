@@ -607,7 +607,7 @@ nothing at all, which is why the digits can ship bound when PTT deliberately
 does not.
 
 External programs can trigger the keyer too: with the built-in Hamlib server
-running ([5.8](#58-servers-letting-other-programs-drive-the-radio)),
+running ([5.8](#59-servers-letting-other-programs-drive-the-radio)),
 `\send_voice_mem <1–10>` plays a slot and `\stop_voice_mem` stops it.
 
 > **NOTE:** The keyer is available in every voice mode and in
@@ -841,7 +841,7 @@ the correction keeps being applied whether or not the window is open.
 
 **The picker** lists every satellite the station tracks — the amateur group
 subscription, anything you pasted into the TLE tab
-([5.9](#59-tle-satellites-and-their-frequencies)), and the curated set — with
+([5.9](#510-tle-satellites-and-their-frequencies)), and the curated set — with
 a search box and, once your grid locator is set, live elevation and the next
 pass for each. Pick one and its published links appear: transponders,
 repeaters, beacons, each with its passbands and mode, inverting transponders
@@ -2204,7 +2204,7 @@ care about is always better copied on the panel.
 
 Everything that configures sdroxide lives in one window, opened with the
 **⚙ SETTINGS** button in the System module (the **⚙ SETUP** button in the SPOTS
-window opens the same dialog on its Spots tab). Ten tabs run across the top:
+window opens the same dialog on its Spots tab). Eleven tabs run across the top:
 
 | Tab | What it holds |
 | --- | --- |
@@ -2215,14 +2215,16 @@ window opens the same dialog on its Spots tab). Ten tabs run across the top:
 | **Spots** | DX cluster, POTA, SOTA and PSK Reporter feeds, and the broadcast station list. [5.5](#55-spots-spot-feeds) |
 | **FreeDV** | FreeDV Reporter (qso.freedv.org). [5.6](#56-freedv-freedv-reporter) |
 | **Uploads** | Callsign lookup, QSL upload, confirmation download. [5.7](#57-uploads-callsign-lookup-and-qsl-services) |
-| **Servers** | Hamlib rigctld, the built-in TCI server, and the WSJT-X UDP broadcast. [5.8](#58-servers-letting-other-programs-drive-the-radio) |
+| **Winlink** | The radio-email account, and whether it forwards over the internet or on the air. [5.8](#58-winlink-radio-email-account) |
+| **Servers** | Hamlib rigctld, the built-in TCI server, and the WSJT-X UDP broadcast. [5.9](#59-servers-letting-other-programs-drive-the-radio) |
 | **Remote** | The address of an sdroxide server elsewhere, and the button that connects to it. [7.2](#72-connect-a-native-remote-client) |
-| **TLE** | Satellites to track beyond the amateur set, and their frequencies. [5.9](#59-tle-satellites-and-their-frequencies) |
+| **TLE** | Satellites to track beyond the amateur set, and their frequencies. [5.10](#510-tle-satellites-and-their-frequencies) |
 
 Most settings take effect the moment you change them. The ones that open or
 rebind a connection — the radio itself, the spot feeds, FreeDV Reporter, and the
 two servers — have their own **APPLY** or **Apply / reconnect** button, noted in
-each section below. Nothing here needs a restart.
+each section below, and so does **Winlink**, whose account is read by the next
+forwarding session rather than the moment you type it. Nothing here needs a restart.
 
 Settings are written to the per-user config directory ([§12](#12-configuration-files)):
 display preferences to `config.toml`, the radio to `radio.json`, key/mouse/MIDI
@@ -2234,8 +2236,8 @@ Most of those files describe the *station*, not the screen: the feeds it
 connects to, the servers it offers, the satellites it tracks, the radio it has.
 They live on the machine the radio engine runs on, and the engine tells every
 client what they say — so the **Radio**, **Spots**, **FreeDV**, **Uploads**,
-**Servers** and **TLE** tabs show, and change, the real thing whether you are at
-the shack machine, on a native remote client or in a browser tab. (The Radio tab
+**Winlink**, **Servers** and **TLE** tabs show, and change, the real thing
+whether you are at the shack machine, on a native remote client or in a browser tab. (The Radio tab
 keeps back the parts that are about a *machine* rather than about the radio:
 which interface to open, and the buttons that scan a bus or test an address. See
 [7.4](#74-what-to-know).) `input.json` and the `[ui]` half of
@@ -3862,7 +3864,93 @@ the fields are:
 At the bottom of the tab, **APPLY** saves everything above, and
 **SYNC CONFIRMATIONS** pulls your LoTW/eQSL confirmations into the log.
 
-### 5.8 Servers: letting other programs drive the radio
+### 5.8 Winlink: radio email account
+
+Everything the Winlink mailbox needs to identify itself and decide where to
+forward. What the feature *does* — the MAIL window, composing, the packet
+panel — is [§10](#10-winlink-radio-email); this is the tab.
+
+All of it is stored in plaintext in `net.json`, **the account password
+included**, exactly as the QRZ, Club Log and LoTW credentials on the Uploads tab
+are.
+
+![The Winlink tab: account, route, gateway list and automatic connection](images/settings-winlink.jpg)
+
+#### Winlink account
+
+- **Callsign** — the Winlink account callsign. Upper-cased when it is used, so
+  the case you type does not matter here.
+- **Password** — the **account** password, not the `CMSTelnet` gateway password.
+  It is **case-sensitive**: the login challenge is computed from it, and
+  `FOOBAR` and `FooBar` produce different answers, so it has to be entered
+  exactly as it was issued. sdroxide does not silently upper-case it, because a
+  guess that is wrong fails at the server with nothing but a rejected login to
+  explain it.
+- **Locator** — reported in the session greeting. Cosmetic; nothing depends on
+  it.
+
+An account is created the first time a callsign connects to the CMS, and its
+password arrives as a service message. Winlink validates amateur licences
+automatically for many countries.
+
+#### How to connect
+
+**Route** picks the lane the **CONNECT** button uses:
+
+- **Internet** — forward with the CMS over the internet. Needs no radio, and is
+  how a large share of Winlink traffic actually moves.
+- **Radio (packet)** — call an RMS gateway on the air. The radio has to be in
+  **PACKET** or **PACKET-HF** and your station call (with an SSID) has to be set
+  in the packet setup dialog; nothing transmits until it is. See
+  [§10](#10-winlink-radio-email).
+
+Choosing **Radio (packet)** reveals the gateway fields:
+
+- **Gateway** — the RMS gateway's callsign including SSID, e.g. `OE1XAR-10`.
+- **Via** — digipeaters, in order, separated by spaces. Usually empty: a gateway
+  you can hear directly is a gateway you should call directly.
+
+#### My gateways
+
+Winlink publishes its gateway list through an API that refuses every request
+without an access key sdroxide does not have, so you keep your own list. That is
+what a packet operator does anyway — the two or three gateways reachable from
+one location are learned by trying, and they rarely change.
+
+**+ ADD GATEWAY** saves whatever is in the Gateway and Via fields. Each saved
+entry shows its digipeater path, frequency and speed; **USE** makes it the one
+the next connect calls, and **✕** forgets it. A typed callsign works exactly as
+well as a fetched one would, and if an API key ever arrives the fetched entries
+land in this same list.
+
+#### Internet gateway
+
+- **CMS address** — which server to dial, `server.winlink.org:8772` unless you
+  have a reason. Mostly here for testing.
+- **Client name** — the name announced to the CMS in our station identifier.
+
+> **Client name, and why it is a field you may have to change.** Winlink's
+> production servers accept only client names that have been registered with
+> them, and answer anything else with `*** Unknown client types are not allowed
+> on production servers`. sdroxide is not registered yet, so out of the box a
+> connection to the production CMS is refused. Until that is resolved this field
+> is how an operator gets in. It is deliberately visible here rather than
+> quietly defaulted to another project's name.
+
+#### Automatic connection
+
+**Connect on a timer** polls for mail on its own, **Every** *n* minutes (5 to
+1440). Off by default: a forwarding session keys the transmitter when the route
+is Radio, and nothing here should start doing that unasked.
+
+#### APPLY
+
+**APPLY** persists the account and hands it to the mailbox. Like every other
+network tab, the fields above are edited in a scratch copy until it is pressed —
+*so an account typed in and left unapplied will look saved and still fail with
+"set a Winlink callsign and password" when you press CONNECT.*
+
+### 5.9 Servers: letting other programs drive the radio
 
 The **Servers** tab makes sdroxide the radio for other software. Three sections
 share the tab, one above the other, and all can run at the same time.
@@ -4006,7 +4094,7 @@ This one is **output only**: nothing is read from the socket, so no program on
 it can tune or key the radio. Programs that want to *drive* sdroxide use rigctld
 or the TCI server above.
 
-### 5.9 TLE: satellites and their frequencies
+### 5.10 TLE: satellites and their frequencies
 
 The **TLE** tab decides which satellites the tracker in the 3D view
 ([6](#6-solar-system-3d-view)) follows, and what frequencies it shows for them.
@@ -4467,7 +4555,7 @@ a plain dot; the orbit rings stay on the curated few, because ninety rings at
 once is unreadable.
 
 Which satellites arrive at all is set in the **TLE** settings tab
-([5.9](#59-tle-satellites-and-their-frequencies)) — the amateur group and the
+([5.9](#510-tle-satellites-and-their-frequencies)) — the amateur group and the
 ISS are subscribed by default, and you can add the weather birds, the cubesats
 or your own element sets beside them. A set you paste in there is always drawn
 with its ring and label, and overrides a fetched one for the same satellite.
@@ -4537,7 +4625,7 @@ The built-in list covers the satellites drawn by default plus a few more, and it
 is reference data transcribed from the AMSAT list rather than anything derived
 from the element set — transponders do get switched and schedules do change. Add
 your own or correct a wrong one in the **TLE** settings tab
-([5.9](#59-tle-satellites-and-their-frequencies)), where your entries override
+([5.9](#510-tle-satellites-and-their-frequencies)), where your entries override
 the built-in table. They belong to the station, so the browser's 3D view shows
 them too — it is fed by the same engine — and a correction made at the shack
 machine is on screen in every open tab.
@@ -5448,28 +5536,21 @@ install and nothing to configure beyond the account.
 
 ### Setting up
 
-Settings → **Winlink**:
-
-| Field | What it is |
-| --- | --- |
-| Callsign | Your Winlink account callsign. |
-| Password | The **account** password, not the gateway password. It is case-sensitive — enter it exactly as issued. |
-| Locator | Reported in the session greeting. Cosmetic. |
-| CMS address | Which server to dial. `server.winlink.org:8772` unless you have a reason. |
-| Client name | The name announced to the CMS. See the note below. |
-| Connect on a timer | Poll for mail automatically. |
-
-An account is created the first time a callsign connects to the CMS, and the
-password arrives as a service message. Winlink validates amateur licences
+An account is created the first time a callsign connects to the CMS, and its
+password arrives as a service message; Winlink validates amateur licences
 automatically for many countries.
 
-> **Client name, and why it is a field.** Winlink's production servers accept
-> only client names they have registered, and answer anything else with
-> `*** Unknown client types are not allowed on production servers`. sdroxide is
-> not yet registered with the Winlink Development Team, so out of the box a
-> connection will be refused. Until that is sorted out this field is how an
-> operator gets in. It is deliberately visible rather than quietly defaulted to
-> another project's name.
+Everything sdroxide needs is on **Settings → Winlink**, field by field in
+[§5.8](#58-winlink-radio-email-account): the account callsign and password, the
+route (internet or radio), the gateway to call over the air, and the timer. Two
+of them catch people out — the password is **case-sensitive**, and the tab has
+its own **APPLY** button that has to be pressed before the account reaches the
+mailbox.
+
+> **A connection refused before it starts.** Winlink's production servers accept
+> only client names registered with them. sdroxide is not registered yet, so the
+> **Client name** field on that tab is what gets an operator in for now; see
+> [§5.8](#58-winlink-radio-email-account).
 
 ### Using it
 
