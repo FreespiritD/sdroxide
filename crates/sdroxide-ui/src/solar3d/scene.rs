@@ -28,7 +28,7 @@ mod ink {
         Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
     }
 
-    /// Live accent: the Earth's glow, the active QSO arc, fresh traffic.
+    /// Live accent: the Earth's glow, fresh traffic.
     pub const CYAN: Color32 = c(0x00d0f4);
     /// Quiet accent: orbit rings, body labels — present, not shouting.
     pub const CYAN_DIM: Color32 = c(0x1d9cbe);
@@ -38,7 +38,9 @@ mod ink {
     pub const PINK: Color32 = c(0xff2a55);
     /// Highlight: search hits, the sub-solar point, the solar graticule.
     pub const YELLOW: Color32 = c(0xffd23f);
-    /// Confirmation: the QTH ring, the aurora ovals, confirmed entities.
+    /// Confirmation: the QTH ring, the aurora ovals, confirmed entities — and
+    /// the arc to the station being worked, which is the same statement about
+    /// the same operator's own station.
     pub const GREEN: Color32 = c(0x46e07d);
     /// Near-white: live station dots and the pulse crest on the active arc.
     pub const TEXT_STRONG: Color32 = c(0xe8f4ff);
@@ -378,6 +380,15 @@ pub struct Scene {
     pub draw_stars: bool,
     /// The lightning alight this instant. Shared by every cloud draw.
     pub flashes: Flashes,
+    /// Where the QSO arc reaches its highest point, in world space — what the
+    /// contact card is pinned over. `None` whenever no QSO arc was drawn.
+    ///
+    /// It comes from here rather than being recomputed by the overlay because
+    /// the apex has to be the apex of the arc that was *actually drawn*: it is
+    /// the same slerp midpoint, lifted by the same bulge, through the same
+    /// Earth basis. Two derivations of one point drift apart the moment either
+    /// side is tuned, and the card would float off the arc.
+    pub qso_apex: Option<[f32; 3]>,
 }
 
 impl Default for Globals {
@@ -2089,8 +2100,14 @@ fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, now: f64,
     lapse_arcs(s, st, b, cam, &to_world, home, earth_px, fade, now, anim_t, names);
 
     // The contact being worked, and the decode clicked but not yet answered.
+    //
+    // Green for the live path: it is the one arc on the globe that is *this*
+    // station's, and green is already what the globe uses to say so — the QTH
+    // ring under one end of it is the same colour. Everything else the QSO
+    // layer draws is cyan cooling to violet, so the contact never has to
+    // compete with the traffic for attention.
     for (target, color, width, active) in
-        [(st.digi.dx, ink::CYAN, 5.2, true), (st.digi.preview, ink::YELLOW, 1.6, false)]
+        [(st.digi.dx, ink::GREEN, 5.2, true), (st.digi.preview, ink::YELLOW, 1.6, false)]
     {
         let Some(dx) = target else { continue };
         arc(
@@ -2106,6 +2123,24 @@ fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, now: f64,
             st.digi.transmitting,
         );
     }
+
+    // Where that arc peaks, for the card the overlay hangs there. The slerp
+    // midpoint of the two ends, lifted by the full bulge — which is `arc_points`
+    // at t = 0.5, where `sin(pi t)` is 1, evaluated without sampling the other
+    // ninety-six points again.
+    s.qso_apex = st.digi.dx.and_then(|dx| {
+        let a = ephem::geodetic_to_body(home.0, home.1);
+        let c = ephem::geodetic_to_body(dx.0, dx.1);
+        let omega = a.dot(c).clamp(-1.0, 1.0).acos();
+        let sum = a + c;
+        // Same place, or exactly antipodal: the first has no arc, and the
+        // second has no *unique* midpoint — every meridian through the two is
+        // as good as the next, so there is no honest place to put the card.
+        if omega < 1e-4 || sum.len() < 1e-5 {
+            return None;
+        }
+        Some(to_world(sum.normalize(), 1.0 + arc_bulge(omega)).arr())
+    });
 
     // Name the far end when it is a transmitter rather than a callsign: a
     // weather-fax or broadcast station. The arc already puts a ring on the spot,
@@ -2123,7 +2158,8 @@ fn digi_traffic(s: &mut Scene, st: &SolarUi, b: &Bodies, cam: &Camera, now: f64,
             s.labels.push(Label {
                 world: pos.arr(),
                 text: text.clone(),
-                color: lin_color(ink::CYAN, 0.95 * fade),
+                // The colour of the arc it stands at the end of.
+                color: lin_color(ink::GREEN, 0.95 * fade),
                 offset: [10.0, -7.0],
                 click: Click::None,
                 rank: RANK_ALWAYS,
@@ -3387,6 +3423,91 @@ mod tests {
             |s: &Scene, kind: f32| s.sprites.iter().filter(|sp| sp.params[0] == kind).count();
         assert_eq!(count(&s, SPRITE_GLOW), count(&quiet, SPRITE_GLOW) + 1);
         assert_eq!(count(&s, SPRITE_RING), count(&quiet, SPRITE_RING) + 2);
+    }
+
+    /// The card is hung off `qso_apex`, so the apex has to be a point *on the
+    /// arc*, halfway along it. It is derived rather than sampled — the whole
+    /// point is not to walk ninety-six points again — so this is what stops the
+    /// two derivations drifting apart and the card floating off the arc.
+    #[test]
+    fn the_qso_apex_sits_on_the_arc_halfway_between_its_ends() {
+        let now = 1_784_937_600.0;
+        let plain = build(&earth_view_with_traffic(None), None, now, [1600.0, 900.0], 0.0);
+        let s =
+            build(&earth_view_with_traffic(Some((35.7, 139.7))), None, now, [1600.0, 900.0], 0.0);
+        let apex = s.qso_apex.expect("an arc was drawn, so it has an apex");
+
+        let dist = |a: [f32; 3], b: [f32; 3]| {
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+        };
+        // Every vertex the contact's arc added, both ends of every segment.
+        let added = &s.lines[plain.lines.len()..];
+        let verts: Vec<[f32; 3]> = added.iter().flat_map(|l| [l.a, l.b]).collect();
+
+        // The path runs from the operator's QTH to Tokyo, so its two ground ends
+        // are the furthest-apart pair on it — and the first segment starts at one
+        // of them, because `arc_points` samples from `home` outwards.
+        let home = added[0].a;
+        let (far, span) = verts
+            .iter()
+            .map(|v| (*v, dist(home, *v)))
+            .fold((home, 0.0f32), |a, b| if b.1 > a.1 { b } else { a });
+
+        // On the arc: the apex is one of the points actually drawn, not merely
+        // near them.
+        let off = verts.iter().map(|v| dist(apex, *v)).fold(f32::MAX, f32::min);
+        assert!(off < span * 1e-3, "the apex is {off} off the arc it should sit on (span {span})");
+        // …and halfway along it. Loosely, because the furthest vertex from the
+        // near end is the tip of the far end's anchor tick rather than the last
+        // point of the path itself — a fraction of a percent out, against the
+        // tens of percent a card hung off the wrong point would be.
+        let (a, b) = (dist(apex, home), dist(apex, far));
+        assert!(
+            (a - b).abs() < span * 1e-2,
+            "the apex is {a} from one end and {b} from the other, so it is not the midpoint"
+        );
+    }
+
+    /// No arc, no card: the apex is what the overlay tests to decide whether to
+    /// draw one at all.
+    #[test]
+    fn there_is_no_qso_apex_without_a_contact() {
+        let now = 1_784_937_600.0;
+        let s = build(&earth_view_with_traffic(None), None, now, [1600.0, 900.0], 0.0);
+        assert!(s.qso_apex.is_none(), "an apex with nobody being worked");
+    }
+
+    /// The contact's arc is green, and the traffic around it is not — the one
+    /// thing that tells the operator's own QSO from an hour of other people's.
+    #[test]
+    fn the_active_arc_is_green_and_the_history_behind_it_is_not() {
+        let now = 1_784_937_600i64;
+        let mut st = earth_view_with_history(now);
+        st.digi.dx = Some((35.7, 139.7));
+        let plain = build(&earth_view_with_history(now), None, now as f64, [1600.0, 900.0], 0.0);
+        let s = build(&st, None, now as f64, [1600.0, 900.0], 0.0);
+
+        // Linear-space green, which is what the scene stores.
+        let want = lin(ink::GREEN, 1.0);
+        let hue = |c: [f32; 4]| {
+            let m = c[0].max(c[1]).max(c[2]).max(1e-6);
+            [c[0] / m, c[1] / m, c[2] / m]
+        };
+        let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.05);
+        let added = &s.lines[plain.lines.len()..];
+        // Not every segment: the travelling pulse takes its crest to white, and
+        // that handful of segments is supposed to be the brightest thing on the
+        // arc. The body of it is green.
+        let green = added.iter().filter(|l| close(hue(l.color), hue(want))).count();
+        assert!(
+            green * 4 > added.len() * 3,
+            "only {green} of {} segments of the contact's arc are green",
+            added.len()
+        );
+        assert!(
+            !plain.lines.iter().any(|l| close(hue(l.color), hue(want))),
+            "the traffic behind it is green too, so the contact does not stand out"
+        );
     }
 
     /// The pulse is a travelling band, so the arc's brightest segment has to

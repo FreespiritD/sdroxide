@@ -202,6 +202,13 @@ pub struct SolarUi {
     pub data: Option<Arc<Mutex<SolarData>>>,
     /// FT8/FT4 traffic to plot on the globe.
     pub digi: DigiTraffic,
+    /// Which contact the QSO card is typing out, and when it began typing.
+    ///
+    /// The key is the callsign and the contact's start time together, so
+    /// working the same station twice retypes the card rather than leaving the
+    /// second QSO wearing the first one's finished text. Cleared when the arc
+    /// goes away, which is what makes the next contact start from a blank card.
+    pub qso_card: Option<(String, f64)>,
     /// Award coverage to paint: every DXCC entity, placed, and how far along it
     /// is in the logbook. Republished by the host whenever the log changes.
     ///
@@ -321,6 +328,10 @@ pub struct DigiTraffic {
     /// station or a broadcast station. `None` leaves the arc unlabelled, which
     /// is right for a QSO: the call is on screen twice already.
     pub dx_label: Option<String>,
+    /// What the card over the arc says about the contact in progress. `None`
+    /// when the arc is not a QSO — a weather-fax or broadcast transmitter has
+    /// no reports to exchange and no clock running on it.
+    pub qso: Option<QsoInfo>,
     /// A decode the operator has clicked but not yet answered.
     pub preview: Option<(f64, f64)>,
     /// True while transmitting, which animates the arc.
@@ -330,6 +341,40 @@ pub struct DigiTraffic {
     /// thousand of these every frame is the one part of this that would cost
     /// anything.
     pub history: std::sync::Arc<Vec<crate::digi_map::DigiHit>>,
+}
+
+/// The contact in progress, as the card over the arc's apex reports it.
+///
+/// Assembled where the traffic layer is built, because that is the one place
+/// holding both halves at once: the sequencer's live state and the operator's
+/// own grid and dial. Every field is optional in effect — a QSO that has not
+/// got as far as exchanging reports still deserves a card, and it simply says
+/// less.
+#[derive(Clone, Default, PartialEq)]
+pub struct QsoInfo {
+    /// The station being worked. The card's heading.
+    pub call: String,
+    /// Mode label — "FT8", "FT4", "JS8".
+    pub mode: String,
+    /// Their grid square, when they have sent one.
+    pub grid: Option<String>,
+    /// DXCC entity resolved from the callsign.
+    pub entity: Option<&'static str>,
+    /// Great-circle distance between the two grids, in km.
+    pub distance_km: Option<f64>,
+    /// Initial bearing from us to them, in degrees true.
+    pub bearing_deg: Option<f64>,
+    /// Unix seconds the contact began, for the running clock.
+    pub started_utc: Option<i64>,
+    /// The report we sent them.
+    pub rpt_sent: Option<i16>,
+    /// The report they sent us.
+    pub rpt_rcvd: Option<i16>,
+    /// Their signal at us in the most recent slot they were decoded in — the
+    /// live number, which keeps moving after the reports are settled.
+    pub snr_db: Option<i16>,
+    /// ADIF band name from the dial.
+    pub band: String,
 }
 
 impl SolarUi {
@@ -355,6 +400,7 @@ impl SolarUi {
             sim_offset_s: 0.0,
             data: None,
             digi: DigiTraffic::default(),
+            qso_card: None,
             awards: Default::default(),
             prop: Default::default(),
             prop_rgba: Default::default(),

@@ -270,6 +270,10 @@ impl DigiStations {
             // The caller fills this in when it redirects the arc at a named
             // transmitter instead.
             dx_label: None,
+            // Same division as `dx_label`: this store knows who is on the air,
+            // not what is being said to them. The caller fills it in from the
+            // sequencer's state.
+            qso: None,
             preview,
             transmitting,
             history: self.history(),

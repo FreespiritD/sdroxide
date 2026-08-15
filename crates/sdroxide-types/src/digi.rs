@@ -368,6 +368,30 @@ pub struct DigiStatus {
     /// will take it next. `None` in every other mode, as `cw` and `js8` are.
     #[serde(default)]
     pub wspr: Option<crate::WsprStatus>,
+    /// The contact in progress, beyond the callsign and grid above. `None`
+    /// whenever no station is being worked. See [`QsoLive`].
+    #[serde(default)]
+    pub qso: Option<QsoLive>,
+}
+
+/// The running detail of the contact in progress: when it started and what has
+/// been exchanged so far.
+///
+/// [`DigiStatus`] already names the station being worked (`dx_call`,
+/// `dx_grid`); this is the rest of what only the sequencer knows. A client can
+/// *almost* recover it by re-parsing `transcript`, which is exactly why it is
+/// sent explicitly — two parsers for one exchange is two chances to disagree
+/// about what was sent, and the transcript is written for a human to read.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QsoLive {
+    /// Unix seconds when the contact began — what becomes
+    /// [`QsoRecord::start_utc`] once it is logged.
+    pub started_utc: i64,
+    /// The report we sent them, which is their signal at us.
+    pub rpt_sent: Option<i16>,
+    /// The report they sent us.
+    pub rpt_rcvd: Option<i16>,
 }
 
 /// Live state of the CW decoder.
@@ -539,6 +563,7 @@ impl DigiStatus {
             clock_offset_s: None,
             cw: None,
             wspr: None,
+            qso: None,
         }
     }
 }

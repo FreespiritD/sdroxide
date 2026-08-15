@@ -52,13 +52,18 @@ pub fn distance_km((lat1, lon1): (f64, f64), (lat2, lon2): (f64, f64)) -> f64 {
 
 /// Initial great-circle bearing in degrees (0 = north) from a to b.
 pub fn grid_bearing(a: &str, b: &str) -> Option<f64> {
-    let (lat1, lon1) = grid_to_latlon(a)?;
-    let (lat2, lon2) = grid_to_latlon(b)?;
+    Some(bearing_deg(grid_to_latlon(a)?, grid_to_latlon(b)?))
+}
+
+/// Initial great-circle bearing in degrees (0 = north) from a to b — the
+/// lat/lon form of [`grid_bearing`], for callers that have already placed both
+/// ends.
+pub fn bearing_deg((lat1, lon1): (f64, f64), (lat2, lon2): (f64, f64)) -> f64 {
     let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
     let dl = (lon2 - lon1).to_radians();
     let y = dl.sin() * p2.cos();
     let x = p1.cos() * p2.sin() - p1.sin() * p2.cos() * dl.cos();
-    Some((y.atan2(x).to_degrees() + 360.0) % 360.0)
+    (y.atan2(x).to_degrees() + 360.0) % 360.0
 }
 
 /// Points sampled along the great-circle path a→b as (lat, lon), inclusive.

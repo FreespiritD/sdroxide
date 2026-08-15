@@ -96,9 +96,7 @@ impl TxModem {
     fn new(baud: PacketBaud, rate: f64) -> TxModem {
         match baud {
             PacketBaud::Hf300 => TxModem::Afsk(Box::new(AfskTx::new(rate, AfskProfile::Hf300))),
-            PacketBaud::Vhf1200 => {
-                TxModem::Afsk(Box::new(AfskTx::new(rate, AfskProfile::Vhf1200)))
-            }
+            PacketBaud::Vhf1200 => TxModem::Afsk(Box::new(AfskTx::new(rate, AfskProfile::Vhf1200))),
             PacketBaud::Vhf9600 => TxModem::G3ruh(Box::new(G3ruhTx::new(rate))),
         }
     }
@@ -349,9 +347,7 @@ impl PacketController {
             PacketType::Ua(f) => link.handle(&state::Event::Ua(f.clone()), &mut frames),
             PacketType::Dm(f) => link.handle(&state::Event::Dm(f.clone()), &mut frames),
             PacketType::Disc(f) => link.handle(&state::Event::Disc(f.clone()), &mut frames),
-            PacketType::Iframe(f) => {
-                link.handle(&state::Event::Iframe(f.clone(), cr), &mut frames)
-            }
+            PacketType::Iframe(f) => link.handle(&state::Event::Iframe(f.clone(), cr), &mut frames),
             PacketType::Rr(f) => link.handle(&state::Event::Rr(f.clone(), cr), &mut frames),
             PacketType::Rnr(f) => link.handle(&state::Event::Rnr(f.clone()), &mut frames),
             PacketType::Rej(f) => link.handle(&state::Event::Rej(f.clone()), &mut frames),
@@ -444,7 +440,8 @@ impl PacketController {
     fn build_over(&mut self) {
         let bits_per_flag = 8.0;
         let baud = self.baud.baud();
-        let flags = |ms: u16| ((ms as f64 / 1000.0) * baud / bits_per_flag).ceil().max(1.0) as usize;
+        let flags =
+            |ms: u16| ((ms as f64 / 1000.0) * baud / bits_per_flag).ceil().max(1.0) as usize;
 
         let mut framer = Framer::new();
         framer.push_flags(flags(self.cfg.packet_txdelay_ms));
@@ -536,9 +533,11 @@ impl PacketController {
             level: self.modem.magnitude().clamp(0.0, 1.0),
             heard: self.heard.clone(),
             bad_frames: self.bad_frames,
-            link: self.link.as_ref().filter(|l| l.state.is_state_connected()).and_then(|l| {
-                l.data.peer().map(|p| p.call().to_string())
-            }),
+            link: self
+                .link
+                .as_ref()
+                .filter(|l| l.state.is_state_connected())
+                .and_then(|l| l.data.peer().map(|p| p.call().to_string())),
         }
     }
 
@@ -568,6 +567,7 @@ impl PacketController {
             clock_offset_s: None,
             cw: None,
             wspr: None,
+            qso: None,
         }
     }
 }
@@ -642,10 +642,8 @@ fn slot_samples(cfg: &DigiConfig, rate: f64) -> u32 {
 fn roll() -> u8 {
     let mut b = [0u8; 1];
     if getrandom::fill(&mut b).is_err() {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
+        let nanos =
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
         return (nanos >> 7) as u8;
     }
     b[0]
@@ -979,11 +977,7 @@ mod tests {
     /// channel clears.
     #[test]
     fn csma_waits_at_least_one_slot() {
-        let cfg = DigiConfig {
-            packet_persist: 255,
-            packet_slottime_ms: 100,
-            ..Default::default()
-        };
+        let cfg = DigiConfig { packet_persist: 255, packet_slottime_ms: 100, ..Default::default() };
         let mut c = PacketController::new(Mode::Packet, cfg, 48_000.0);
         c.queue_frame(vec![0u8; 20]);
         // 100 ms at 48 kHz is 4800 samples; one short block is not a slot.

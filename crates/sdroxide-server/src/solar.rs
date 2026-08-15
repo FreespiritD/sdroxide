@@ -690,6 +690,10 @@ mod tests {
             my_grid: "JN78ve".into(),
             dx_grid: None,
             transmitting: false,
+            dx_call: None,
+            mode: "FT8".into(),
+            freq_hz: 14_074_000.0,
+            qso: None,
         });
         l.record(&SolarServerMsg::Decodes(Vec::new()));
         l.record(&SolarServerMsg::SatFreqs(vec![sdroxide_types::SatFreqs::new(

@@ -37,13 +37,20 @@ impl SdroxideApp {
         // Tx1–Tx6 to be part-way through. What an operator means by "in a QSO"
         // there is the station the composer is aimed at, so that is what gets
         // the arc — highlighted exactly as an FT8 contact in progress is.
+        // The call and grid the card describes. Normally the sequencer's, but
+        // JS8 overrides both below for the same reason it overrides the arc.
+        let mut card_call = status.and_then(|s| s.dx_call.clone());
+        let mut card_grid = status.and_then(|s| s.dx_grid.clone());
         if self.state.rx[0].mode.is_js8() {
             let heard =
                 status.and_then(|s| s.js8.as_ref()).map(|j| j.heard.as_slice()).unwrap_or(&[]);
-            traffic.dx = self
-                .js8_grid_for(&self.js8_target, heard)
-                .as_deref()
-                .and_then(sdroxide_types::grid_to_latlon);
+            let grid = self.js8_grid_for(&self.js8_target, heard);
+            traffic.dx = grid.as_deref().and_then(sdroxide_types::grid_to_latlon);
+            // The card names whoever the arc was drawn to, or it captions the
+            // wrong end of it: `dx_call` is the FT8 sequencer's and is always
+            // empty here.
+            card_call = Some(self.js8_target.clone()).filter(|c| !c.trim().is_empty());
+            card_grid = grid;
         }
         // Weather fax has no callsign and no grid to place a station by, but it
         // does have a transmitter with a known location — so the chart being
@@ -76,7 +83,59 @@ impl SdroxideApp {
                 format!("{} · {}", st.name, st.site)
             });
         }
+        // The card only rides a QSO arc. A redirected one — a fax or broadcast
+        // transmitter — has a name and nothing else to report, and it already
+        // wears that name as a label.
+        if traffic.dx_label.is_none() {
+            traffic.qso = self.qso_card_info(traffic.dx, card_call, card_grid);
+        }
         traffic
+    }
+
+    /// What the card over the QSO arc reports: the sequencer's live contact,
+    /// plus the two things only the main window holds — the operator's own grid
+    /// (for the path) and the dial (for the band).
+    ///
+    /// `dx` is the far end the arc was actually drawn to, so the distance and
+    /// bearing describe the line on screen rather than a second guess at it: in
+    /// JS8 the arc goes to the composer's target, whose grid comes from the
+    /// heard list rather than from `dx_grid`. `call` and `grid` follow it for
+    /// the same reason.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn qso_card_info(
+        &self,
+        dx: Option<(f64, f64)>,
+        call: Option<String>,
+        grid: Option<String>,
+    ) -> Option<crate::solar3d::QsoInfo> {
+        let status = self.digi_status.as_ref()?;
+        let call = call.filter(|c| !c.trim().is_empty())?;
+        let home = sdroxide_types::grid_to_latlon(&self.my_grid());
+        let freq_hz = self.state.rx_freq_hz();
+        Some(crate::solar3d::QsoInfo {
+            entity: sdroxide_types::entity_name(&call),
+            // Their signal at us as of the last slot they were heard in, which
+            // keeps moving after the exchanged reports have settled. Newest
+            // first in the decode list, so the first match is the current one.
+            snr_db: self
+                .digi_decodes
+                .iter()
+                .find(|d| d.from.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(&call)))
+                .map(|d| d.snr_db),
+            call,
+            mode: status.mode.label().to_string(),
+            grid: grid.filter(|g| !g.trim().is_empty()),
+            distance_km: home.zip(dx).map(|(a, b)| sdroxide_types::distance_km(a, b)),
+            bearing_deg: home.zip(dx).map(|(a, b)| sdroxide_types::bearing_deg(a, b)),
+            started_utc: status.qso.map(|q| q.started_utc).filter(|t| *t > 0),
+            rpt_sent: status.qso.and_then(|q| q.rpt_sent),
+            rpt_rcvd: status.qso.and_then(|q| q.rpt_rcvd),
+            band: if freq_hz > 0.0 {
+                sdroxide_types::adif_band(freq_hz).to_string()
+            } else {
+                String::new()
+            },
+        })
     }
 
     /// Keep the band-conditions verdicts and the day/night flag current.

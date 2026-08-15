@@ -129,6 +129,21 @@ pub enum SolarServerMsg {
         my_grid: String,
         dx_grid: Option<String>,
         transmitting: bool,
+        /// The station being worked, for the card over the QSO arc. Separate
+        /// from `dx_grid` because either can arrive without the other: a
+        /// callsign whose grid we have not been told yet still names the
+        /// contact, and a redirected arc has a grid and no call at all.
+        #[serde(default)]
+        dx_call: Option<String>,
+        /// The mode's label, as [`sdroxide_types::Mode::label`] gives it.
+        #[serde(default)]
+        mode: String,
+        /// Dial frequency, which is what the card turns into a band.
+        #[serde(default)]
+        freq_hz: f64,
+        /// When the contact began and what has been exchanged.
+        #[serde(default)]
+        qso: Option<sdroxide_types::QsoLive>,
     },
     /// Fresh decodes. The viewer does its own fade bookkeeping, so this is the
     /// same list the flat map sees and the two agree on which stations are up.
@@ -249,6 +264,14 @@ mod tests {
                 my_grid: "JN88".into(),
                 dx_grid: Some("FN42".into()),
                 transmitting: true,
+                dx_call: Some("AB1CD".into()),
+                mode: "FT8".into(),
+                freq_hz: 14_074_000.0,
+                qso: Some(sdroxide_types::QsoLive {
+                    started_utc: 1_784_937_600,
+                    rpt_sent: Some(-12),
+                    rpt_rcvd: Some(-9),
+                }),
             },
             SolarServerMsg::Decodes(Vec::new()),
             SolarServerMsg::Clouds {

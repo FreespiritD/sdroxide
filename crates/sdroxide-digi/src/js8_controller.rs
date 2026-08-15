@@ -1004,6 +1004,7 @@ impl DigiEngine for Js8Controller {
             clock_offset_s: self.clock.offset_s(),
             cw: None,
             wspr: None,
+            qso: None,
         }
     }
 }

@@ -770,6 +770,7 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     // out before the rest of the scene is handed to the paint callback.
     let labels = std::mem::take(&mut scene.labels);
     let picks = std::mem::take(&mut scene.picks);
+    let qso_apex = scene.qso_apex;
     let view_proj = scene.globals.view_proj;
 
     let (sun_img, sun_gen, aurora, aurora_gen, clouds, clouds_gen) = match data {
@@ -829,6 +830,10 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
     // Only if a label did not already take it: a name sits on top of its own
     // body, and clicking the text should not be ambiguous.
     pick_bodies(ui, st, rect, &view_proj, &picks, &resp, took_click);
+    // After the labels, so the contact reads over the traffic around it rather
+    // than through it — a callsign printed across the card is the one place on
+    // this globe where decluttering by rank is not enough.
+    qso_card(ui, st, rect, &view_proj, qso_apex, anim);
     // A phone puts the space weather behind the menu bar's WEATHER chip instead
     // of down the right-hand edge; see [`Place`].
     //
@@ -993,6 +998,248 @@ fn draw_labels(
         }
         _ => false,
     }
+}
+
+/// How long one line of the contact card takes to type itself out.
+const CARD_LINE_S: f64 = 0.5;
+/// Gap between the arc's apex and the bottom of the card, in pixels — enough
+/// that the leader reads as a leader and the arc is not hidden under its own
+/// caption.
+const CARD_LEADER_PX: f32 = 18.0;
+/// The block that trails the text as it is typed. A real terminal cursor rather
+/// than an underscore: it has to be visible over a bright limb as well as over
+/// space.
+const CARD_CURSOR: &str = "▌";
+
+/// One typed row of the contact card.
+struct CardLine {
+    text: String,
+    font: egui::FontId,
+    color: egui::Color32,
+    /// Extra space under this row — the heading gets a little air.
+    gap: f32,
+}
+
+/// The card over the QSO arc: what the contact is, typed out a line at a time.
+///
+/// It is pinned to the arc's apex in *world* space and reprojected every frame,
+/// so it rides the arc as the globe turns rather than sitting at a screen
+/// position that was right once. Behind the eye, or off the edge of the widget,
+/// it simply is not drawn — a caption clamped to the edge no longer points at
+/// anything, and the arc is what it is a caption for.
+///
+/// The typing is not decoration alone. A contact is a thing that happens over a
+/// minute or two, and a card that assembles itself as the QSO runs reads as
+/// live, where the same nine lines appearing at once read as a static panel
+/// that happens to be over the globe.
+fn qso_card(
+    ui: &egui::Ui,
+    st: &mut SolarUi,
+    rect: egui::Rect,
+    view_proj: &[[f32; 4]; 4],
+    apex: Option<[f32; 3]>,
+    now: f64,
+) {
+    let Some(info) = st.digi.qso.clone() else {
+        // No contact: forget where the typing had got to, so the next one
+        // starts from a blank card instead of finishing the last one's text.
+        st.qso_card = None;
+        return;
+    };
+    let Some(anchor) = apex.and_then(|w| project(view_proj, rect, w)) else { return };
+
+    // Working the same station twice is two contacts, and the second gets its
+    // own card — so the start time is part of the identity, not just the call.
+    let key = format!("{}|{}", info.call, info.started_utc.unwrap_or(0));
+    let t0 = match &st.qso_card {
+        Some((k, t)) if *k == key => *t,
+        _ => {
+            st.qso_card = Some((key, now));
+            now
+        }
+    };
+    let elapsed = now - t0;
+
+    let head_font = egui::FontId::monospace(13.0);
+    let font = egui::FontId::monospace(11.0);
+    let mut lines = vec![CardLine {
+        text: info.call.clone(),
+        font: head_font,
+        color: theme::GREEN(),
+        gap: 5.0,
+    }];
+    // A fixed-width label column, which is what makes a monospace card line up
+    // without laying out two galleys per row and measuring between them.
+    let mut row = |label: &str, value: String| {
+        lines.push(CardLine {
+            text: format!("{label:<5}{value}"),
+            font: font.clone(),
+            color: theme::TEXT(),
+            gap: 1.0,
+        });
+    };
+    let mode = match (info.mode.as_str(), info.band.as_str()) {
+        (m, "") => m.to_string(),
+        (m, b) => format!("{m} · {b}"),
+    };
+    row("MODE", mode);
+    if let Some(km) = info.distance_km {
+        row(
+            "PATH",
+            match info.bearing_deg {
+                Some(b) => format!("{km:.0} km · {b:.0}°"),
+                None => format!("{km:.0} km"),
+            },
+        );
+    }
+    if let Some(started) = info.started_utc {
+        row("TIME", elapsed_hms((crate::time::now_unix() - started).max(0)));
+    }
+    // The two halves of the exchange, and then the live number. `SENT` and
+    // `RCVD` are what the contact settled on; `SIG` is what they are doing
+    // right now, which keeps moving after the reports are agreed.
+    if let Some(r) = info.rpt_sent {
+        row("SENT", format!("{r:+} dB"));
+    }
+    if let Some(r) = info.rpt_rcvd {
+        row("RCVD", format!("{r:+} dB"));
+    }
+    if let Some(s) = info.snr_db {
+        row("SIG", format!("{s:+} dB"));
+    }
+    if let Some(g) = &info.grid {
+        row("GRID", g.clone());
+    }
+    if let Some(e) = info.entity {
+        row("DXCC", e.to_string());
+    }
+
+    // Lay the whole card out at its finished size before typing a character of
+    // it. A box that grows as the text arrives is a box that moves the text
+    // already on it, and the reader loses their place every half second.
+    let p = ui.painter();
+    let galleys: Vec<_> =
+        lines.iter().map(|l| p.layout_no_wrap(l.text.clone(), l.font.clone(), l.color)).collect();
+    const PAD: egui::Vec2 = egui::vec2(11.0, 8.0);
+    // Room for the cursor past the longest line, so it never sits on the border.
+    let cursor_w = p.layout_no_wrap(CARD_CURSOR.into(), font.clone(), theme::GREEN()).size().x;
+    let w = galleys.iter().map(|g| g.size().x).fold(0.0, f32::max) + cursor_w + PAD.x * 2.0;
+    let h = galleys.iter().zip(&lines).map(|(g, l)| g.size().y + l.gap).sum::<f32>() + PAD.y * 2.0;
+
+    let Some((card, above)) = card_rect(rect, anchor, egui::vec2(w, h)) else { return };
+
+    // A leader to the apex, so the card is visibly *this* arc's. It leaves from
+    // whichever edge faces the anchor, and from the point on that edge nearest
+    // to it — the card may have been slid sideways to stay on screen.
+    let foot = egui::pos2(
+        anchor.x.clamp(card.left() + 6.0, card.right() - 6.0),
+        if above { card.bottom() } else { card.top() },
+    );
+    p.line_segment([foot, anchor], egui::Stroke::new(1.0, theme::GREEN().gamma_multiply(0.7)));
+    p.circle_filled(anchor, 2.0, theme::GREEN());
+    p.rect_filled(card, 0, theme::BG_DEEP().gamma_multiply(0.82));
+    chrome::paint_cut_border(p, card, theme::GREEN(), egui::Color32::TRANSPARENT);
+
+    // Type it. Line `i` runs from `i * CARD_LINE_S` to the end of its own
+    // half-second, so the whole card is a steady rhythm rather than long lines
+    // taking longer than short ones.
+    let mut y = card.top() + PAD.y;
+    let x = card.left() + PAD.x;
+    let mut typing = false;
+    for (i, (l, g)) in lines.iter().zip(&galleys).enumerate() {
+        let row_h = g.size().y;
+        let total = l.text.chars().count();
+        let Some(shown) = typed_chars(elapsed, i, total) else {
+            break; // and every line below this one is still to come
+        };
+        let head: String = l.text.chars().take(shown).collect();
+        let galley = p.layout_no_wrap(head, l.font.clone(), l.color);
+        let end = x + galley.size().x;
+        p.galley(egui::pos2(x, y), galley, l.color);
+        // The cursor rides the line being typed; when the card is finished it
+        // parks at the end of the last line and blinks, which is what says the
+        // card is live and not a screenshot.
+        let last = i == lines.len() - 1;
+        if shown < total {
+            typing = true;
+            p.text(
+                egui::pos2(end, y),
+                egui::Align2::LEFT_TOP,
+                CARD_CURSOR,
+                l.font.clone(),
+                theme::GREEN(),
+            );
+        } else if last && (now * 1.6).fract() < 0.5 {
+            p.text(
+                egui::pos2(end, y),
+                egui::Align2::LEFT_TOP,
+                CARD_CURSOR,
+                l.font.clone(),
+                theme::GREEN(),
+            );
+        }
+        y += row_h + l.gap;
+    }
+    // The window animates the globe anyway; this only guarantees the cursor
+    // keeps its rhythm if that ever stops.
+    if typing || elapsed < lines.len() as f64 * CARD_LINE_S + 1.0 {
+        ui.ctx().request_repaint();
+    } else {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+    }
+}
+
+/// Where a card of `size` sits when it hangs off `anchor` inside `bounds`, and
+/// whether it ended up above the anchor. `None` when it fits neither way.
+///
+/// Above the anchor by preference, because that is where it belongs — but under
+/// it when there is no room above, which there very often is: the apex is the
+/// *highest* point of the arc, so it is the point most likely to be near the top
+/// of the widget, and a card that disappears whenever the operator zooms in on
+/// their own contact is no card at all. Sideways it slides along the edge rather
+/// than being dropped; the leader still lands on the anchor, which is what says
+/// which arc it belongs to.
+fn card_rect(
+    bounds: egui::Rect,
+    anchor: egui::Pos2,
+    size: egui::Vec2,
+) -> Option<(egui::Rect, bool)> {
+    let above = anchor.y - CARD_LEADER_PX - size.y;
+    let below = anchor.y + CARD_LEADER_PX;
+    let (top, is_above) = if above >= bounds.top() {
+        (above, true)
+    } else if below + size.y <= bounds.bottom() {
+        (below, false)
+    } else {
+        return None; // no room either way — the widget is smaller than the card
+    };
+    let left = (anchor.x - size.x * 0.5)
+        .clamp(bounds.left(), (bounds.right() - size.x).max(bounds.left()));
+    let card = egui::Rect::from_min_size(egui::pos2(left, top), size);
+    bounds.contains_rect(card).then_some((card, is_above))
+}
+
+/// A running QSO's length: `M:SS` until it passes the hour, then `H:MM:SS`.
+fn elapsed_hms(secs: i64) -> String {
+    let (h, m, s) = (secs / 3600, (secs / 60) % 60, secs % 60);
+    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+/// How much of line `line` is on screen `elapsed` seconds after the card
+/// opened, out of `total` characters. `None` before the line's turn comes.
+///
+/// Every line gets the same [`CARD_LINE_S`] whatever its length, so the card
+/// types at a steady beat: a nine-character line finishing in a third of the
+/// time a thirty-character one takes would read as stuttering rather than as
+/// typing.
+fn typed_chars(elapsed: f64, line: usize, total: usize) -> Option<usize> {
+    let t = (elapsed - line as f64 * CARD_LINE_S) / CARD_LINE_S;
+    if t <= 0.0 {
+        return None;
+    }
+    // `ceil`, so a line begins with its first character rather than with an
+    // empty string under a cursor.
+    Some(if t >= 1.0 { total } else { ((t * total as f64).ceil() as usize).min(total) })
 }
 
 /// Let the bodies themselves be clicked, not only their names.
@@ -2468,5 +2715,77 @@ mod tests {
         let award = bottom_right(view, date.top() - 8.0, egui::vec2(140.0, 60.0));
         assert_eq!(award.right(), 788.0, "both boxes hang off the same edge");
         assert!(award.bottom() <= date.top(), "the key must not sit over the date");
+    }
+
+    /// Half a second a line, whatever the line says — which is the whole of the
+    /// timing the operator asked for.
+    #[test]
+    fn the_contact_card_types_one_line_every_half_second() {
+        // Nothing at all before the card opens.
+        assert_eq!(typed_chars(0.0, 0, 10), None);
+        // The first line starts with a character rather than a bare cursor.
+        assert_eq!(typed_chars(0.001, 0, 10), Some(1));
+        assert_eq!(typed_chars(0.25, 0, 10), Some(5));
+        assert_eq!(typed_chars(0.5, 0, 10), Some(10));
+
+        // The second line has not begun while the first is still going, and is
+        // finished half a second after it starts.
+        assert_eq!(typed_chars(0.4, 1, 10), None);
+        assert_eq!(typed_chars(0.75, 1, 10), Some(5));
+        assert_eq!(typed_chars(1.0, 1, 10), Some(10));
+
+        // Length does not change the beat: a long line and a short one both
+        // finish on their own half-second.
+        assert_eq!(typed_chars(1.5, 2, 40), Some(40));
+        assert_eq!(typed_chars(1.5, 2, 3), Some(3));
+        // …and neither ever overruns its own length.
+        assert_eq!(typed_chars(99.0, 0, 7), Some(7));
+
+        // A nine-line card is fully typed in four and a half seconds.
+        assert_eq!(typed_chars(9.0 * CARD_LINE_S, 8, 12), Some(12));
+    }
+
+    /// The card follows the apex, and the apex is the point most likely to be
+    /// near the top of the view — so "no room above" has to mean "go below",
+    /// not "vanish".
+    #[test]
+    fn the_contact_card_flips_below_the_apex_rather_than_disappearing() {
+        let view = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let size = egui::vec2(160.0, 130.0);
+
+        // Room above: the card sits over the apex, centred on it.
+        let (card, above) = card_rect(view, egui::pos2(400.0, 400.0), size).unwrap();
+        assert!(above);
+        assert_eq!(card.center().x, 400.0);
+        assert_eq!(card.bottom(), 400.0 - CARD_LEADER_PX);
+
+        // Apex near the top: the card goes under it instead, still centred.
+        let (card, above) = card_rect(view, egui::pos2(400.0, 20.0), size).unwrap();
+        assert!(!above);
+        assert_eq!(card.center().x, 400.0);
+        assert_eq!(card.top(), 20.0 + CARD_LEADER_PX);
+
+        // Apex against the left edge: slid inside rather than dropped.
+        let (card, _) = card_rect(view, egui::pos2(4.0, 400.0), size).unwrap();
+        assert_eq!(card.left(), 0.0);
+        assert!(view.contains_rect(card));
+        // …and the right edge behaves the same way.
+        let (card, _) = card_rect(view, egui::pos2(796.0, 400.0), size).unwrap();
+        assert_eq!(card.right(), 800.0);
+        assert!(view.contains_rect(card));
+
+        // A view too short for the card either way gets none.
+        let squat = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 120.0));
+        assert!(card_rect(squat, egui::pos2(400.0, 60.0), size).is_none());
+    }
+
+    #[test]
+    fn a_running_contact_shows_a_clock_that_grows_a_field_at_the_hour() {
+        assert_eq!(elapsed_hms(0), "0:00");
+        assert_eq!(elapsed_hms(9), "0:09");
+        assert_eq!(elapsed_hms(84), "1:24");
+        assert_eq!(elapsed_hms(3599), "59:59");
+        assert_eq!(elapsed_hms(3600), "1:00:00");
+        assert_eq!(elapsed_hms(3661), "1:01:01");
     }
 }

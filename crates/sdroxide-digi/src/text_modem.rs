@@ -252,6 +252,7 @@ impl TextModemController {
             clock_offset_s: None,
             cw: None,
             wspr: None,
+            qso: None,
         }
     }
 }

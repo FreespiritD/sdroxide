@@ -58,6 +58,14 @@ pub struct SolarClient {
     pub my_grid: String,
     pub dx_grid: Option<String>,
     pub transmitting: bool,
+    /// The station being worked, the mode and the dial — what the card over the
+    /// QSO arc is built from. This tab has no radio and no sequencer of its
+    /// own, so all three arrive with the status rather than being looked up.
+    pub dx_call: Option<String>,
+    pub mode: String,
+    pub freq_hz: f64,
+    /// When the contact began and what has been exchanged on it.
+    pub qso: Option<sdroxide_types::QsoLive>,
     /// The operator's satellite frequency overrides, in the shape `SolarUi`
     /// takes. Replaced wholesale when the station's config changes, so the
     /// caller adopts it with an `Arc::ptr_eq` check rather than a comparison of
@@ -91,6 +99,10 @@ impl SolarClient {
             my_grid: String::new(),
             dx_grid: None,
             transmitting: false,
+            dx_call: None,
+            mode: String::new(),
+            freq_hz: 0.0,
+            qso: None,
             sat_cfg: Default::default(),
             sent_channel: None,
         })
@@ -200,10 +212,22 @@ impl SolarClient {
             }
             SolarServerMsg::Error(e) => self.link = Link::Down(e),
             SolarServerMsg::Pong => {}
-            SolarServerMsg::Digi { my_grid, dx_grid, transmitting } => {
+            SolarServerMsg::Digi {
+                my_grid,
+                dx_grid,
+                transmitting,
+                dx_call,
+                mode,
+                freq_hz,
+                qso,
+            } => {
                 self.my_grid = my_grid;
                 self.dx_grid = dx_grid;
                 self.transmitting = transmitting;
+                self.dx_call = dx_call;
+                self.mode = mode;
+                self.freq_hz = freq_hz;
+                self.qso = qso;
             }
             SolarServerMsg::Decodes(d) => self.decodes = d,
             SolarServerMsg::Propagation { halflife_s, planes } => {

@@ -4894,14 +4894,40 @@ spark running the newest ones in the direction the signal travelled. That is the
 band's shape over the last hour, drawn: which paths were open, and when they
 opened.
 
-The station you are working is joined to your QTH by a heavy cyan beam with a
-ring on each end and a pulse running the path — outwards to them while you
+The station you are working is joined to your QTH by a heavy **green** beam with
+a ring on each end and a pulse running the path — outwards to them while you
 transmit, back to you the rest of the time — so the QSO in progress is
-unmistakable among an hour of traffic. A decode you have clicked but not yet
-answered gets a thin yellow arc. All of them are true great circles lifted off
-the surface, bowing further out the longer the path: an antipodal contact
-springs well clear of the planet, which is the only way both ends stay visible
-at once on a sphere.
+unmistakable among an hour of traffic. Green is the globe's colour for your own
+station: it is what the QTH ring under one end of the arc already wears. A
+decode you have clicked but not yet answered gets a thin yellow arc. All of them
+are true great circles lifted off the surface, bowing further out the longer the
+path: an antipodal contact springs well clear of the planet, which is the only
+way both ends stay visible at once on a sphere.
+
+**The contact card** rides the top of that arc. It types itself out a line every
+half second as the contact runs, and carries what the QSO *is*:
+
+| Row | What it says |
+| --- | --- |
+| heading | The station you are working. |
+| `MODE` | The mode and the band — `FT8 · 20M`. |
+| `PATH` | Great-circle distance and your initial bearing to them. |
+| `TIME` | How long the contact has been running. |
+| `SENT` | The report you sent them, which is their signal at you. |
+| `RCVD` | The report they sent you. |
+| `SIG` | Their signal at you in the most recent slot — the live number, which keeps moving after the reports are settled. |
+| `GRID` | Their grid square, once they have sent one. |
+| `DXCC` | The entity their callsign resolves to. |
+
+Rows appear only when there is something to put in them, so a contact that has
+not got as far as exchanging reports simply shows a shorter card. It is pinned
+to the arc's highest point in three dimensions rather than to a place on the
+screen, so it rides the arc as you turn the globe, with a leader down to the
+point it belongs to. It sits over that point where there is room and flips under
+it where there is not, and it wears whichever **Window style** you have chosen
+([5.3](#53-ui-display-preferences-and-voice-announcements)), like every other
+window and popup. In JS8 the card follows the arc to whoever the composer is
+aimed at, exactly as the arc itself does.
 
 **Activity** — the controls for that hour of traffic:
 

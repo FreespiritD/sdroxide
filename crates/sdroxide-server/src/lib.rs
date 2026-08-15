@@ -371,10 +371,18 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             shared.solar.observe_paths(paths, sdroxide_types::PropSource::Rbn, now_utc());
         }
         RadioEvent::Ft8Status(s) => {
+            // The dial comes from the state this server holds, as it does for
+            // the decodes above: the card over the arc names a band, and the
+            // solar tab has no radio of its own to ask.
+            let dial = shared.latest.lock().unwrap().state.rx_freq_hz();
             shared.solar.publish(SolarServerMsg::Digi {
                 my_grid: s.config.my_grid.clone(),
                 dx_grid: s.dx_grid.clone(),
                 transmitting: s.transmitting,
+                dx_call: s.dx_call.clone(),
+                mode: s.mode.label().to_string(),
+                freq_hz: dial,
+                qso: s.qso,
             });
         }
         _ => {}

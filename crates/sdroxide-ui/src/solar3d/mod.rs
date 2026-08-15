@@ -47,9 +47,9 @@ use crate::view::Solar3dView;
 
 #[cfg(feature = "remote")]
 pub use app::SolarApp;
-pub use state::DigiTraffic;
 #[cfg(not(target_arch = "wasm32"))]
 use state::SolarUi;
+pub use state::{DigiTraffic, QsoInfo};
 
 /// Stable id of the child viewport, distinct per radio: a split view can
 /// have two radios' solar windows up at once, and one id would be one window

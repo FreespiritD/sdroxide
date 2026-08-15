@@ -76,6 +76,41 @@ impl SolarApp {
             login: Default::default(),
         })
     }
+
+    /// The contact card's content, from what the relay has told this tab.
+    ///
+    /// The same shape the main window builds, and deliberately from the same
+    /// two ends: the operator's grid and the DX's, so the distance describes
+    /// the arc actually drawn. The live `SIG` comes out of the relayed decode
+    /// list, which is the same list the dots are drawn from — this tab does its
+    /// own fade bookkeeping on it and can read a signal report off it too.
+    fn qso_card_info(&self) -> Option<super::QsoInfo> {
+        let call = self.net.dx_call.clone().filter(|c| !c.trim().is_empty())?;
+        let home = sdroxide_types::grid_to_latlon(&self.net.my_grid);
+        let dx = self.net.dx_grid.as_deref().and_then(sdroxide_types::grid_to_latlon);
+        Some(super::QsoInfo {
+            entity: sdroxide_types::entity_name(&call),
+            snr_db: self
+                .net
+                .decodes
+                .iter()
+                .find(|d| d.from.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(&call)))
+                .map(|d| d.snr_db),
+            call,
+            mode: self.net.mode.clone(),
+            grid: self.net.dx_grid.clone().filter(|g| !g.trim().is_empty()),
+            distance_km: home.zip(dx).map(|(a, b)| sdroxide_types::distance_km(a, b)),
+            bearing_deg: home.zip(dx).map(|(a, b)| sdroxide_types::bearing_deg(a, b)),
+            started_utc: self.net.qso.map(|q| q.started_utc).filter(|t| *t > 0),
+            rpt_sent: self.net.qso.and_then(|q| q.rpt_sent),
+            rpt_rcvd: self.net.qso.and_then(|q| q.rpt_rcvd),
+            band: if self.net.freq_hz > 0.0 {
+                sdroxide_types::adif_band(self.net.freq_hz).to_string()
+            } else {
+                String::new()
+            },
+        })
+    }
 }
 
 impl eframe::App for SolarApp {
@@ -116,6 +151,7 @@ impl eframe::App for SolarApp {
         self.state.set_qth(&self.net.my_grid.clone());
         self.state.digi =
             self.stations.traffic(now_t, self.net.dx_grid.as_deref(), None, self.net.transmitting);
+        self.state.digi.qso = self.qso_card_info();
         // The operator's satellite frequencies, as the server last relayed
         // them. Compared by pointer: the client replaces the whole `Arc` when a
         // new table arrives, so this is one word per frame rather than a walk
