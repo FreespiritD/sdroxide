@@ -458,6 +458,11 @@ impl SdroxideApp {
         // The concrete interface types the user chooses between. SoapySDR only
         // appears when compiled in; there is no auto-detect (an unavailable
         // interface falls back to a null source so the user can reconfigure).
+        //
+        // Built in whatever order the reasoning below groups them and sorted by
+        // label at the end: the list is long enough now that an operator looks
+        // for their radio by name rather than reading it through, and sorting
+        // means a backend added here needs no thought about where to put it.
         let mut iface_opts: Vec<sdroxide_types::Backend> = Vec::new();
         if self.soapy_supported {
             iface_opts.push(sdroxide_types::Backend::Soapy);
@@ -475,8 +480,7 @@ impl SdroxideApp {
         // no system library, so it is compiled into every build variant.
         iface_opts.push(sdroxide_types::Backend::RtlSdr);
         // The same driver over a socket instead of the USB bus — pure Rust and
-        // std::net, so it is in every build variant too. Listed next to the USB
-        // entry because the choice between them is only where the dongle is.
+        // std::net, so it is in every build variant too.
         iface_opts.push(sdroxide_types::Backend::RtlTcp);
         // Same reasoning as the RTL-SDR: pure Rust over `nusb`, no system
         // library, so it is in every build variant.
@@ -484,18 +488,21 @@ impl SdroxideApp {
         // Same reasoning again: pure Rust over `nusb`, no libairspyhf and no
         // system library, so it is in every build variant.
         iface_opts.push(sdroxide_types::Backend::AirspyHf);
-        // And again — pure Rust over `nusb`, no libhackrf. The only one of
-        // these USB backends that transmits, which is why it is the only one
-        // whose settings tab has a switch to arm before it will.
         // Same again, and a different radio from the HF+ above despite the
         // name: an R2/Mini is other silicon behind another protocol.
         iface_opts.push(sdroxide_types::Backend::Airspy);
+        // And again — pure Rust over `nusb`, no libhackrf. The only one of
+        // these USB backends that transmits, which is why it is the only one
+        // whose settings tab has a switch to arm before it will.
         iface_opts.push(sdroxide_types::Backend::HackRf);
         // Also in every build variant, but for a different reason: nothing is
         // linked at build time — the vendor's sdrplay_api library is found
         // with dlopen at runtime, and opening explains what to install when
         // it is absent.
         iface_opts.push(sdroxide_types::Backend::SdrPlay);
+        // Case-folded so HackRF lands under H beside HPSDR rather than after
+        // it, which a byte-order sort would do.
+        iface_opts.sort_by_key(|b| b.label().to_ascii_lowercase());
 
         let mut tab = self.settings_tab;
         let mut open = self.show_settings;
