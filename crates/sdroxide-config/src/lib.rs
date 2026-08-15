@@ -795,6 +795,15 @@ pub struct Session {
     pub squelch_db: f32,
     /// Main receiver's noise reduction (engine + strength, or off).
     pub noise_reduction: sdroxide_types::NrLevel,
+    /// How far the raw IQ was being decimated (a power of two; 1 is off).
+    ///
+    /// Kept per radio like everything else in this file, because it is a
+    /// property of what the operator wants to *see* on a given front end: a
+    /// dongle streaming 2.4 Msps to watch 20 m SSB on is left decimated, and
+    /// the same station's 192 kHz IQ rig is not. The engine re-clamps it to
+    /// what the device it opens can carry, so a file written against a wideband
+    /// front end cannot leave a narrow one with no span at all.
+    pub decimation: u32,
     /// Front-end RX gain stages the operator has set, as `(element, dB)` —
     /// the sliders on the Radio tab's device panel.
     ///
@@ -839,6 +848,7 @@ impl Default for Session {
             mic_gain: radio.tx.mic_gain,
             squelch_db: radio.rx[0].squelch_db,
             noise_reduction: radio.rx[0].noise_reduction,
+            decimation: radio.decimation,
             gains: Vec::new(),
             tx_gains: Vec::new(),
             recording_mono: radio.recording_mono,
@@ -1407,6 +1417,7 @@ mod tests {
             mic_gain: 0.6,
             squelch_db: -70.0,
             noise_reduction: sdroxide_types::NrLevel::RnnMed,
+            decimation: 4,
             gains: vec![("LNA".into(), 24.0), ("VGA".into(), 16.0)],
             tx_gains: vec![("PAD".into(), -6.0)],
             recording_mono: true,

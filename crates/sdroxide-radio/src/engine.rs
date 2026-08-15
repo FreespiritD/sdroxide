@@ -19,9 +19,9 @@ use sdroxide_digi::{
     SstvController, TextModemController, WefaxController, WsprController,
 };
 use sdroxide_dsp::{
-    Agc, AutoNotch, DcBlock, Ddc, DeepFilterNr, Demodulator, Duc, Modulator, MonoResampler, Nco,
-    NeuralNr, NoiseBlanker, SpecBleachNr, SpectralNr, SpectrumAnalyzer, StereoResampler,
-    channel_target, make_demod, make_modulator,
+    Agc, AutoNotch, DcBlock, Ddc, Decimator, DeepFilterNr, Demodulator, Duc, Modulator,
+    MonoResampler, Nco, NeuralNr, NoiseBlanker, SpecBleachNr, SpectralNr, SpectrumAnalyzer,
+    StereoResampler, channel_target, make_demod, make_modulator,
 };
 use sdroxide_rigctld::{RigState, RigctldController};
 use sdroxide_skimmer::{SkimmerAction, SkimmerController};
@@ -1246,6 +1246,14 @@ struct Engine {
     audio_mode: bool,
     /// Sound-card sample rate feeding `analyzer` in audio mode.
     radio_fs: f64,
+    /// Front-end decimation, when the operator has asked for any: the raw IQ
+    /// goes through this before the analyzer, the receivers, the skimmer and
+    /// the TCI IQ stream, all of which run at the reduced rate
+    /// ([`RadioState::sample_rate`]) rather than at [`Self::radio_fs`].
+    ///
+    /// `None` is decimation off, and is the case worth keeping free: it is a
+    /// borrow rather than a filter chain of one pass-through stage.
+    decim: Option<Decimator>,
     /// Displayed RF window width in audio mode (Hz).
     audio_bw: f64,
     /// Scratch real-audio buffers for audio mode.
@@ -1370,6 +1378,40 @@ const RETRY_MAX: Duration = Duration::from_secs(15);
 /// interval only decides how much tuning a crash or a kill can lose.
 const SESSION_SAVE_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Run a block of raw IQ through the front-end decimator, if there is one.
+///
+/// With decimation off this hands the block straight back rather than copying
+/// it into `out`, so the ordinary case pays nothing at all.
+fn decimate<'a>(
+    decim: Option<&mut Decimator>,
+    raw: &'a [Complex32],
+    out: &'a mut Vec<Complex32>,
+) -> &'a [Complex32] {
+    match decim {
+        Some(d) => {
+            out.clear();
+            d.process(raw, out);
+            out
+        }
+        None => raw,
+    }
+}
+
+/// The front-end decimation actually usable: `want` rounded *down* to a power
+/// of two and clamped to what this device rate can carry, or 1 for a source
+/// with no IQ to decimate.
+///
+/// Every route in goes through here — the remembered session, the operator's
+/// chip, a remote client's command, and a device swap re-asking the question
+/// for the new front end — so none of them can leave the receiver with a span
+/// narrower than [`sdroxide_types::MIN_DECIMATED_RATE_HZ`].
+fn decimation_for(want: u32, device_rate_hz: f64, audio_mode: bool) -> u32 {
+    if audio_mode || want < 2 {
+        return 1;
+    }
+    (1u32 << want.ilog2()).min(sdroxide_types::max_decimation(device_rate_hz))
+}
+
 fn engine_thread(
     source: Box<dyn IqSource>,
     caps: DeviceCaps,
@@ -1422,9 +1464,22 @@ fn engine_thread(
         skim_cfg
     };
 
+    // Read before the DSP below rather than with the rest of the session
+    // further down: the remembered decimation decides what rate the analyzer
+    // and the receiver chain are built at, and building them at the device rate
+    // first would mean tearing them down again before the first block.
+    let session = engine_cfg.remember_session.then(|| engine_cfg.store.load_session());
+    state.decimation =
+        decimation_for(session.as_ref().map_or(1, |s| s.decimation), radio_fs, audio_mode);
+    let decim = (state.decimation > 1).then(|| Decimator::new(state.decimation));
+    state.sample_rate = radio_fs / state.decimation as f64;
+
     let cfg = SpectrumConfig::default();
-    // In audio mode the analyzer FFTs the real audio at the card rate.
-    let analyzer = SpectrumAnalyzer::new(cfg.fft_size as usize, radio_fs, cfg.avg_tc);
+    // In audio mode the analyzer FFTs the real audio at the card rate;
+    // otherwise it sees whatever the decimation left, which is what every span
+    // downstream is measured in.
+    let analyzer_rate = if audio_mode { radio_fs } else { state.sample_rate };
+    let analyzer = SpectrumAnalyzer::new(cfg.fft_size as usize, analyzer_rate, cfg.avg_tc);
 
     // In audio mode there is no RxChain (the source is already audio); the
     // speaker path is a plain resampler → mixer instead.
@@ -1468,7 +1523,6 @@ fn engine_thread(
     // radio actually was: a start that overrode the dial (`--freq`, or a
     // CAT rig reporting its own) is a difference like any other, and gets
     // written even if nothing is touched afterwards.
-    let session = engine_cfg.remember_session.then(|| engine_cfg.store.load_session());
     // Volume, RX gain, AGC mode, squelch, noise reduction, drive, mic gain and
     // the recording channel layout have no command-line override, so the
     // remembered session (if any) always wins over the hardcoded defaults
@@ -1598,6 +1652,7 @@ fn engine_thread(
         tci_last_snap: None,
         audio_mode,
         radio_fs,
+        decim,
         audio_bw,
         audio_re: Vec::new(),
         audio_play: Vec::new(),
@@ -1720,6 +1775,9 @@ fn engine_thread(
     engine.update_tuning();
 
     let mut buf = vec![Complex32::default(); 16_384];
+    // Where a decimated block lands. A local rather than a field on the engine,
+    // so the borrow of the decimator ends before the samples are handed on.
+    let mut dbuf: Vec<Complex32> = Vec::new();
     let mut next_frame = Instant::now();
     let mut next_meters = Instant::now();
     let mut next_session = Instant::now() + SESSION_SAVE_INTERVAL;
@@ -1811,7 +1869,8 @@ fn engine_thread(
             // over on the air as chirps. See `IqSource::read_available`.
             if engine.caps.full_duplex && !engine.audio_mode {
                 if let Ok(n @ 1..) = engine.source.read_available(&mut buf) {
-                    engine.run_audio(&buf[..n]);
+                    let iq = decimate(engine.decim.as_mut(), &buf[..n], &mut dbuf);
+                    engine.run_audio(iq);
                 }
             }
         } else {
@@ -1819,11 +1878,16 @@ fn engine_thread(
                 Ok(0) => continue, // timeout
                 Ok(n) if engine.audio_mode => engine.run_audio_mode(&buf[..n]),
                 Ok(n) => {
+                    // Blanking comes first, at the device rate: an impulse is
+                    // only an impulse before the anti-alias filter smears it
+                    // over a filter length, and after decimation there would be
+                    // nothing left for the blanker to recognise.
                     if engine.state.noise_blanker {
                         engine.nb.process(&mut buf[..n]);
                     }
-                    engine.analyzer.process(&buf[..n]);
-                    engine.run_audio(&buf[..n]);
+                    let iq = decimate(engine.decim.as_mut(), &buf[..n], &mut dbuf);
+                    engine.analyzer.process(iq);
+                    engine.run_audio(iq);
                 }
                 Err(e) => {
                     let _ = engine.event_tx.send(RadioEvent::ConnectionLost(e.to_string()));
@@ -3103,6 +3167,7 @@ impl Engine {
                 self.update_tuning();
             }
             SetSampleRate(_) => { /* needs stream re-open; deferred */ }
+            SetDecimation(factor) => self.set_decimation(factor),
             SetBand(band) => {
                 self.stop_scan_for_operator();
                 self.change_band(band);
@@ -5445,7 +5510,7 @@ impl Engine {
         // Ask about the centre the front end would actually sit on, not the
         // dial: on a radio that parks its LO clear of the VFO they differ, and
         // it is the LO that has to be in range.
-        let offset = self.source.lo_offset_hz();
+        let offset = self.lo_offset_hz();
         if ![hz + offset, hz - offset, hz].into_iter().any(|c| self.can_tune(c)) {
             debug!(hz, "WSPR hop skipped: outside the receive range");
             return;
@@ -5919,6 +5984,7 @@ impl Engine {
             mic_gain: self.state.tx.mic_gain,
             squelch_db: self.state.rx[0].squelch_db,
             noise_reduction: self.state.rx[0].noise_reduction,
+            decimation: self.state.decimation,
             // What the operator asked for rather than what the device currently
             // reports, for the antennas' reason again: a front end with no gain
             // to set — a CAT rig, a file — must not erase the stages a real
@@ -6102,6 +6168,70 @@ impl Engine {
         self.mic = mic;
     }
 
+    /// Set how far the raw IQ is decimated before the receiver sees it.
+    ///
+    /// The hardware is left streaming exactly as it was: this is not a rate the
+    /// device is ever told about, so there is no stream restart, no gap and no
+    /// risk of a front end refusing the new setting. What does change is the
+    /// rate every piece of DSP downstream was built for, and none of that can
+    /// be retuned in place — so the same set a device swap rebuilds is rebuilt
+    /// here, for the same reason.
+    ///
+    /// A request the device cannot carry (or any request at all in audio mode,
+    /// where there is no IQ) comes back from [`decimation_for`] as the nearest
+    /// factor that works, so the state the operator is shown is always the one
+    /// the receiver is actually running.
+    fn set_decimation(&mut self, factor: u32) {
+        let factor = decimation_for(factor, self.radio_fs, self.audio_mode);
+        if factor == self.state.decimation {
+            return;
+        }
+        self.state.decimation = factor;
+        self.decim = (factor > 1).then(|| Decimator::new(factor));
+        self.state.sample_rate = self.radio_fs / factor as f64;
+
+        self.analyzer = SpectrumAnalyzer::new(
+            self.cfg.fft_size as usize,
+            self.state.sample_rate,
+            self.cfg.avg_tc,
+        );
+        if self.mixer.is_some() {
+            self.main =
+                Some(RxChain::new(self.state.sample_rate, &self.state.rx[0], self.audio_out_rate));
+            self.sub = self.state.sub_rx_enabled.then(|| {
+                RxChain::new(self.state.sample_rate, &self.state.rx[1], self.audio_out_rate)
+            });
+        }
+        // The digital-mode controller and its high-resolution waterfall are fed
+        // at the main chain's channel rate, which the rebuild above just moved.
+        self.digi = None;
+        self.channel_analyzer = None;
+        self.skimmer = None;
+        self.skim_ddc = None;
+        self.skim_buf.clear();
+        // Dropped outright rather than left to `sync_tci_iq`'s own comparison:
+        // two device rates can snap to the same client rate, and it would then
+        // keep a decimation chain built for the rate we have just left.
+        self.tci_iq_ddc = None;
+        self.tci_iq_buf.clear();
+        self.tci_iq_ilv.clear();
+        self.sync_digi_mode();
+        self.sync_skimmer();
+        self.sync_audio_tap();
+        self.sync_tci_iq();
+        info!(factor, rate = self.state.sample_rate, "front-end decimation");
+
+        // A narrower span may not reach where the sub receiver was parked, and
+        // a zero-IF front end's LO offset shrinks with the span (see
+        // [`Self::lo_offset_hz`]) — so both the sub and the hardware centre are
+        // re-derived before the next block arrives.
+        self.reseat_sub_freq();
+        self.keep_vfo_in_span();
+        self.update_tuning();
+        self.emit_state();
+        self.save_session();
+    }
+
     /// Rebuild the IQ front-end at runtime (backend / CAT audio / HPSDR-TCI
     /// address changed). Opens the new source via the [`ReopenFn`] factory and
     /// only swaps on success, so a bad config leaves the current interface
@@ -6250,6 +6380,11 @@ impl Engine {
         self.audio_mode = self.caps.audio_mode;
         self.radio_fs = self.source.sample_rate();
         self.audio_bw = self.source.display_bandwidth().unwrap_or(self.radio_fs / 2.0);
+        // The decimation is the operator's, so it carries across the swap — but
+        // re-asked of the new front end, which may not have the bandwidth to
+        // spare for it (or, in audio mode, any IQ to decimate at all).
+        let decimation = decimation_for(self.state.decimation, self.radio_fs, self.audio_mode);
+        self.decim = (decimation > 1).then(|| Decimator::new(decimation));
 
         // A swap changes the front end, not the operating position. The mode,
         // filters, AGC, audio levels, transmit levels, RIT/XIT, split and the
@@ -6263,7 +6398,8 @@ impl Engine {
         // still.
         let mut state = RadioState {
             center_hz: self.source.center_hz(),
-            sample_rate: self.source.sample_rate(),
+            sample_rate: self.radio_fs / decimation as f64,
+            decimation,
             gains: self.source.current_gains(),
             tx_gains: self.source.current_tx_gains(),
             antenna_rx: self.source.current_antenna(),
@@ -6298,9 +6434,13 @@ impl Engine {
         self.restore_antennas();
         self.restore_gains();
 
-        // Rebuild the device analyzer for the new rate.
+        // Rebuild the device analyzer for the new rate — the decimated one off
+        // an IQ front end, since that is what it is fed and what `make_frame`
+        // measures its bins against; the card rate in audio mode, where the
+        // analyzer FFTs the rig's audio directly.
+        let analyzer_rate = if self.audio_mode { self.radio_fs } else { self.state.sample_rate };
         self.analyzer =
-            SpectrumAnalyzer::new(self.cfg.fft_size as usize, self.radio_fs, self.cfg.avg_tc);
+            SpectrumAnalyzer::new(self.cfg.fft_size as usize, analyzer_rate, self.cfg.avg_tc);
 
         // Drop rate-dependent / stateful DSP so it rebuilds for the new source.
         self.tx = None;
@@ -7298,6 +7438,20 @@ impl Engine {
         }
     }
 
+    /// How far above the VFO this front end's LO is parked, in the span the
+    /// receiver actually sees.
+    ///
+    /// A zero-IF device asks for a quarter of *its* span, which is a quarter of
+    /// the decimated one divided by the factor — the offset has to shrink with
+    /// the span, or the LO would be parked outside the bandwidth the decimator
+    /// keeps and the VFO would land on a piece of spectrum that is no longer
+    /// there. Scaling it keeps the same fraction of the visible span, so a
+    /// decimated receiver sits exactly as far off DC, relatively, as an
+    /// undecimated one.
+    fn lo_offset_hz(&self) -> f64 {
+        self.source.lo_offset_hz() / self.state.decimation as f64
+    }
+
     /// How far the active VFO has to stay from the hardware LO.
     ///
     /// Zero on a front end whose LO is clean (`lo_offset_hz` == 0), so its
@@ -7307,7 +7461,7 @@ impl Engine {
     /// offset itself, because a guard a retune could not satisfy would make
     /// [`Self::keep_vfo_in_span`] retune on every single call.
     fn lo_guard_hz(&self) -> f64 {
-        let offset = self.source.lo_offset_hz();
+        let offset = self.lo_offset_hz();
         if offset <= 0.0 {
             return 0.0;
         }
@@ -7325,7 +7479,7 @@ impl Engine {
     /// the VFO last: a DC spike inside the passband is a poorer receiver, but a
     /// receiver, which "outside the tuning range" is not.
     fn retune_for_vfo(&mut self, vfo_hz: f64) -> bool {
-        let offset = self.source.lo_offset_hz();
+        let offset = self.lo_offset_hz();
         let center = [vfo_hz + offset, vfo_hz - offset, vfo_hz]
             .into_iter()
             .find(|&c| self.can_tune(c))

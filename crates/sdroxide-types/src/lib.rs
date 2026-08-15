@@ -153,7 +153,8 @@ pub use speech::{
 pub use spot::{Spot, SpotKind};
 pub use sstv::{SstvMode, SstvStatus};
 pub use state::{
-    MAX_MANUAL_GAIN_DB, OffsetState, RadioState, RxId, RxState, SQUELCH_OPEN_DB, TxState, Vfo,
+    MAX_DECIMATION, MAX_MANUAL_GAIN_DB, MIN_DECIMATED_RATE_HZ, OffsetState, RadioState, RxId,
+    RxState, SQUELCH_OPEN_DB, TxState, Vfo, max_decimation,
 };
 pub use station::StationConfig;
 pub use tciserver::TciServerConfig;

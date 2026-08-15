@@ -48,7 +48,9 @@ or connects to a remote sdroxide server.
   (spectrum-painting) mode.
 - **Receive controls:** AGC (Off/Slow/Med/Fast), volume, mute, squelch, an
   impulse noise blanker, an adaptive auto-notch (constant-tone canceller),
-  noise reduction (four engines, three strengths each), RIT, and a
+  noise reduction (four engines, three strengths each), front-end decimation
+  (trade span for resolution, processing gain and CPU on any IQ radio), RIT,
+  and a
   draggable filter passband. On NFM, the CTCSS tone or DCS stream under the
   signal is decoded and shown, and can be made a condition of the squelch.
 - **Transmit** (on TX-capable rigs): PTT, TUNE, drive and tune-drive levels,
@@ -297,6 +299,38 @@ can't quietly add itself to the one you set here.
   seeds it from the level the AGC was holding at that moment, so nothing jumps;
   from there it is yours to set, and it stays put however the signal moves.
 - **Vol** — audio volume.
+- **DEC** — **front-end decimation**: keep the middle `1/N` of the span the radio
+  streams and throw the rest away, before any of it reaches the receiver. Click
+  to cycle `off / 2 / 4 / 8 …`; the button reads what is running (`DEC /8`), and
+  hovering it tells you the span you are left with.
+
+  It shows on any radio that delivers IQ and has bandwidth to spare, and applies
+  to all of them equally — a dongle at 2.4 Msps, a HackRF at 2 Msps, an RSP, a
+  Pluto. A radio already streaming a narrow span (an HPSDR at 48 kHz, say)
+  offers no button, because there would be nothing left to decimate to. The
+  floor is 48 kHz: that is one receiver channel, and below it the waterfall
+  stops being a band display.
+
+  What you gain:
+  - **Resolution.** The same 4096-point FFT spread over an eighth of the
+    bandwidth is eight times finer. A crowded CW pile-up or an FT8 sub-band
+    resolves into separate signals instead of a smear.
+  - **A quieter noise floor.** Every halving throws away half the noise power
+    with half the bandwidth: 3 dB per step, 9 dB at `/8`. The signal you are
+    listening to is unchanged, so this is real processing gain, and weak signals
+    stand further out of the grass.
+  - **CPU.** Everything downstream — the FFT, both receivers' downconverters,
+    the skimmers, the IQ a TCI client is being fed — runs at the reduced rate.
+    On a small machine this is the difference between a 2.4 Msps dongle being
+    comfortable and not.
+
+  What you give up is the band either side of the kept span. The dial still
+  tunes anywhere: as you tune past the edge the radio simply moves its LO and
+  the narrower window follows you. Nothing is reconfigured in the hardware —
+  the radio keeps streaming exactly as it was — so the setting takes effect on
+  the next block of samples, with no gap in the audio and no risk of a device
+  refusing it. The sub receiver still has to live inside the span, so if it was
+  parked outside the new one it is moved back in.
 - **MUTE** (Filter/Noise row) — mute the receiver (keyboard shortcut **M**).
 - **SQL** (Filter/Noise module) — squelch; below the open threshold it reads
   `off`.
@@ -394,9 +428,10 @@ panadapter: two vertical grip lines mark the filter's low and high edges (they
 brighten to orange when you can grab them). Drag an edge to widen or narrow the
 passband. The grips work on both the spectrum and the waterfall.
 
-The volume, AGC mode and manual gain, the squelch and the noise reduction are
-remembered in `session.json` and restored the next time you start, along with
-the front end's own gain stages ([§5.2.1](#521-soapysdr-devices)). They are
+The volume, AGC mode and manual gain, the squelch, the noise reduction and the
+decimation are remembered in `session.json` and restored the next time you
+start, along with the front end's own gain stages
+([§5.2.1](#521-soapysdr-devices)). They are
 settings you arrive at by ear against your own antenna and noise floor, so
 sdroxide brings the receiver back up where you left it rather than on defaults.
 

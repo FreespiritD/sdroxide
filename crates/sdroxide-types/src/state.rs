@@ -109,6 +109,38 @@ pub struct TxState {
     pub mic_gain: f32,
 }
 
+/// Decimation off — the receiver runs at the device's own rate.
+fn no_decimation() -> u32 {
+    1
+}
+
+/// The narrowest span decimation may leave.
+///
+/// The receiver's DDC takes the span down to a ~48 kHz channel, so this is the
+/// point where there is exactly one channel left in it and nothing to tune
+/// across. It is also about where a decimated waterfall stops being a band
+/// display and becomes a single-signal one.
+pub const MIN_DECIMATED_RATE_HZ: f64 = 48_000.0;
+
+/// The deepest decimation offered, whatever the device rate. Past this the
+/// operator is asking for a spectrum display of one signal, which is what the
+/// digital modes' channel waterfall already is.
+pub const MAX_DECIMATION: u32 = 64;
+
+/// The deepest decimation a device streaming `device_rate_hz` can carry without
+/// falling through [`MIN_DECIMATED_RATE_HZ`]. `1` means this device has no
+/// bandwidth to spare and the control has nothing to offer.
+///
+/// Both the engine and the RX box work from this, so a rate the operator cannot
+/// reach through the UI is also one a remote client cannot ask the engine for.
+pub fn max_decimation(device_rate_hz: f64) -> u32 {
+    let mut factor = 1;
+    while factor < MAX_DECIMATION && device_rate_hz / (factor * 2) as f64 >= MIN_DECIMATED_RATE_HZ {
+        factor *= 2;
+    }
+    factor
+}
+
 /// Complete radio state snapshot. Kept small (~300 bytes serialized) so full
 /// snapshots — never deltas — travel on every change, latest-wins.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -120,8 +152,19 @@ pub struct RadioState {
 
     /// SDR hardware center frequency.
     pub center_hz: f64,
-    /// SDR hardware sample rate.
+    /// The rate the receiver chain actually runs at: the device's own sample
+    /// rate divided by [`Self::decimation`]. This — not the hardware figure —
+    /// is what the span on screen, the DDCs and everything else derived from
+    /// "how much bandwidth is there" are built from.
     pub sample_rate: f64,
+    /// How far the raw IQ is decimated before anything downstream sees it, as
+    /// a power of two. 1 is off, which is what a device streaming a rate the
+    /// operator wants to see all of runs at.
+    ///
+    /// Defaulted for peers that predate it, which is also what a device with no
+    /// IQ to decimate (a CAT rig on a sound card) always reports.
+    #[serde(default = "no_decimation")]
+    pub decimation: u32,
 
     /// Indexed by [`RxId::index`]: main, sub.
     pub rx: [RxState; 2],
@@ -195,6 +238,7 @@ impl Default for RadioState {
             split: false,
             center_hz: freq,
             sample_rate: 1_536_000.0,
+            decimation: no_decimation(),
             rx: [RxState::with_mode(mode), RxState::with_mode(mode)],
             sub_rx_enabled: false,
             sub_rx_hz: 0.0, // never placed; the engine parks it on first use

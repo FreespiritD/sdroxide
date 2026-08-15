@@ -541,13 +541,17 @@ impl SdroxideApp {
         if self.view.is_unset() {
             return; // spectrum_view will fit and center on first draw
         }
-        // A restored zoom only means anything against the front end it was
-        // saved with. Come up on a different interface — or on the same one at
-        // another sample rate — and last session's window can be wider than the
+        // A zoom window only means anything against the span the front end is
+        // delivering. Come up on a different interface — or on the same one at
+        // another sample rate — and the restored window can be wider than the
         // whole passband, which draws the spectrum squeezed into part of the
-        // panadapter with dead space either side. Only the width is wrong;
-        // where it sits is settled just below.
-        if first && self.state.sample_rate > 0.0 && self.view.span() > self.state.sample_rate {
+        // panadapter with dead space either side. The same thing happens
+        // mid-session the moment the operator decimates the front end, so this
+        // is checked on every state rather than only on the first: it costs a
+        // comparison, and the window is only ever *narrowed* to a span that is
+        // really there. Only the width is settled here; where it sits is
+        // settled just below.
+        if self.state.sample_rate > 0.0 && self.view.span() > self.state.sample_rate {
             self.view.fit(self.state.center_hz, self.state.sample_rate);
         }
         let moved = (vfo - prev_vfo).abs() > 0.5;

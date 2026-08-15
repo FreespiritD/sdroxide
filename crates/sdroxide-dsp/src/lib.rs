@@ -44,7 +44,7 @@ pub use g3ruh::{G3ruhRx, G3ruhTx, Scrambler};
 pub use ctcss::{SubToneDetect, golay23_decode, golay23_encode};
 pub use cw::{CwDecoder, CwRx, CwTx, morse_decode, morse_encode, text_duration_s};
 pub use ddc::Ddc;
-pub use decim::{FirDecim, HalfbandDecim, RealFirDecim, lowpass_taps};
+pub use decim::{Decimator, FirDecim, HalfbandDecim, RealFirDecim, lowpass_taps};
 pub use demod::{ComplexDcBlock, DcBlock, Demodulator, channel_target, make_demod};
 pub use dfnr::DeepFilterNr;
 pub use fir::{ComplexFir, RealFir, bandpass_taps};

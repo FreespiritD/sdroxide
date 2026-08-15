@@ -1541,7 +1541,11 @@ impl SdroxideApp {
             };
         let rx_row = 205.0
             + if self.rx_gain().is_some() { 180.0 } else { 0.0 }
-            + if self.state.rx[0].agc == AgcMode::Off { 170.0 } else { 0.0 };
+            + if self.state.rx[0].agc == AgcMode::Off { 170.0 } else { 0.0 }
+            // "DEC off" and "DEC /64" measure the same, so the chip has one
+            // width whatever it is set to — it either rides this row or, on a
+            // radio with no span to spare, is not drawn at all.
+            + if self.decim_range().is_some() { 66.0 } else { 0.0 };
         noise_row.max(rx_row) + 16.0
     }
 
@@ -1574,6 +1578,67 @@ impl SdroxideApp {
 
     fn rx_gain(&self) -> Option<GainElement> {
         self.rx_gains().first().cloned()
+    }
+
+    /// The device rate the front end is streaming, and the deepest decimation
+    /// it has the bandwidth for. `None` on a radio with no IQ to decimate — a
+    /// CAT rig on a sound card — and on one already streaming so narrow a span
+    /// that halving it would leave a single channel.
+    fn decim_range(&self) -> Option<(f64, u32)> {
+        if self.caps.as_ref().is_some_and(|c| c.audio_mode) {
+            return None;
+        }
+        // The published rate is what the receiver runs at, which is already
+        // divided by whatever decimation is in force; the device's own rate —
+        // the one the ceiling is worked out from — is the two multiplied back
+        // together.
+        let device_hz = self.state.sample_rate * self.state.decimation.max(1) as f64;
+        let max = sdroxide_types::max_decimation(device_hz);
+        (max > 1).then_some((device_hz, max))
+    }
+
+    /// Front-end decimation: how much of the span to throw away before the
+    /// receiver sees any of it.
+    ///
+    /// A cycling chip rather than a combo, for the reason set out beside the
+    /// AGC chip in [`Self::rx_controls`]. It sits with the front-end gain
+    /// rather than with the noise chips because it is the same kind of control
+    /// — what the receiver is given to work with, decided once for the whole
+    /// radio, rather than something done to one receiver's audio afterwards.
+    fn decim_chip(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
+        let Some((device_hz, max)) = self.decim_range() else { return };
+        let now = self.state.decimation.max(1);
+        let label = if now > 1 { format!("DEC /{now}") } else { "DEC off".to_string() };
+        let span_hz = device_hz / now as f64;
+        let span = if span_hz >= 1e6 {
+            format!("{:.3} MHz", span_hz / 1e6)
+        } else {
+            format!("{:.0} kHz", span_hz / 1e3)
+        };
+        let what = if now > 1 {
+            format!(
+                "Front-end decimation: the receiver is being given the middle 1/{now} of the \
+                 {:.3} Msps this radio streams — {span} — and the rest is thrown away before \
+                 any of it reaches the receiver.",
+                device_hz / 1e6,
+            )
+        } else {
+            format!(
+                "Front-end decimation, off: the receiver sees the whole {span} this radio \
+                 streams.",
+            )
+        };
+        let hint = format!(
+            "{what}\n\n\
+             A narrower span means finer waterfall resolution, a quieter noise floor \
+             (3 dB per halving) and less CPU — at the cost of the band either side of it. \
+             The dial still tunes anywhere; the radio moves its LO to follow.\n\n\
+             Click to cycle: off / 2 / 4 … {max}."
+        );
+        if crate::chrome::chip(ui, now > 1, label).on_hover_text(hint).clicked() {
+            let next = if now * 2 > max { 1 } else { now * 2 };
+            cmds.push(Command::SetDecimation(next));
+        }
     }
 
     /// The receiver and filter/noise controls — the body of the RX box, and of
@@ -1639,6 +1704,7 @@ impl SdroxideApp {
                     cmds.push(Command::SetGain { dir: Direction::Rx, element: g.name.clone(), db });
                 }
             }
+            self.decim_chip(ui, cmds);
             // A cycling chip rather than a combo: a combo inside a menu
             // opens a second popup layer, and clicking it counts as
             // "outside" and closes the menu it was opened from. Four

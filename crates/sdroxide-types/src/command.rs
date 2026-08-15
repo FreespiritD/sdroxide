@@ -21,6 +21,13 @@ pub enum Command {
     SetSplit(bool),
     SetCenter(f64),
     SetSampleRate(f64),
+    /// Decimate the raw IQ by this power of two before the receiver sees it,
+    /// trading span for processing gain and CPU. `1` turns it off.
+    ///
+    /// The engine rounds down to a power of two and clamps to what the device
+    /// rate can carry (see [`crate::max_decimation`]), so a client may send any
+    /// factor and get the nearest one it can actually have.
+    SetDecimation(u32),
     /// Engine applies band-stack recall (or the band default entry).
     SetBand(Band),
 
