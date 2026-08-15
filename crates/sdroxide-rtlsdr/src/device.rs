@@ -14,7 +14,7 @@ use crate::regs;
 use crate::rtl2832::{DirectSampling, Rtl2832};
 use crate::tuner::{
     self,
-    r82xx::{GainSetting, R82xx},
+    r82xx::{Chip, GainSetting, R82xx},
 };
 use crate::usb::UsbDev;
 
@@ -44,22 +44,34 @@ impl Device {
     /// Open, initialise and configure a dongle from persisted settings.
     pub fn open(cfg: &RtlSdrConfig, center_hz: f64) -> Result<Device> {
         let usb = UsbDev::open(cfg.serial.as_deref())?;
-        let is_blog_v4 = usb.is_blog_v4();
+        let descriptor_v4 = usb.is_blog_v4();
         let usb_label = usb.label().to_string();
 
         let mut rtl = Rtl2832::new(usb);
         rtl.init_baseband()?;
 
-        // Probe and initialise the tuner with the repeater open throughout.
+        // Probe the tuner with the repeater open, then close it: the EEPROM
+        // read below is on the demodulator's own bus, not the tuner's.
         rtl.i2c_repeater(true)?;
         let probed = tuner::probe(&rtl);
-        let chip = match probed {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = rtl.i2c_repeater(false);
-                return Err(e);
-            }
-        };
+        let closed = rtl.i2c_repeater(false);
+        let chip = probed?;
+        closed?;
+
+        // Settle what the descriptors could not. Every V4 is an R828D, so the
+        // tuner has a veto: the upconverter offset and the 28.8 MHz reference
+        // would wreck an R820T that merely claimed the name. A dongle that
+        // already named itself needs no second opinion, which reserves the
+        // EEPROM round trip for the case that needs rescuing — a V4 on a host
+        // that did not hand us its USB strings.
+        //
+        // This is upstream's order too: `librtlsdr` probes the tuner, then
+        // reads the EEPROM, then initialises, so the pause between the R828D's
+        // reset pulse and its init is one a V4 already tolerates.
+        let is_blog_v4 = chip == Chip::R828D && (descriptor_v4 || rtl.usb().reads_as_blog_v4());
+
+        // Initialise the tuner, repeater open throughout.
+        rtl.i2c_repeater(true)?;
         let tuner = tuner::open(&rtl, chip, is_blog_v4, cfg.ppm);
         rtl.i2c_repeater(false)?;
         let tuner = tuner?;

@@ -118,7 +118,7 @@ impl R82xx {
             regs: [0; NUM_REGS],
             int_freq: crate::rtl2832::R82XX_IF_FREQ,
             has_lock: false,
-            xtal: crate::regs::apply_ppm(chip.nominal_xtal_hz(), ppm),
+            xtal: crate::regs::apply_ppm(Self::reference_xtal_hz(chip, is_blog_v4), ppm),
             fil_cal_code: 0,
             band: None,
             input: 0,
@@ -135,10 +135,23 @@ impl R82xx {
         self.is_blog_v4
     }
 
+    /// The tuner's PLL reference, before ppm correction.
+    ///
+    /// A stock R828D board clocks the tuner from its own 16 MHz crystal, but a
+    /// Blog V4 runs it from the demodulator's 28.8 MHz reference — the same
+    /// clock its upconverter mixes against, which is why the crossover and the
+    /// reference are the same number. Handing a V4 the 16 MHz figure is the
+    /// mirror of the hazard on [`R828D_XTAL_HZ`] and puts every frequency out
+    /// by the same factor of 1.8.
+    fn reference_xtal_hz(chip: Chip, is_blog_v4: bool) -> f64 {
+        if is_blog_v4 { crate::regs::RTL_XTAL_HZ } else { chip.nominal_xtal_hz() }
+    }
+
     /// Re-derive the PLL reference from a new ppm figure. The caller must
     /// retune afterwards for it to take effect.
     pub fn set_ppm(&mut self, ppm: i32) {
-        self.xtal = crate::regs::apply_ppm(self.chip.nominal_xtal_hz(), ppm);
+        self.xtal =
+            crate::regs::apply_ppm(Self::reference_xtal_hz(self.chip, self.is_blog_v4), ppm);
         self.last_lo_hz = None;
     }
 
@@ -458,14 +471,23 @@ impl R82xx {
         self.write_reg_mask(dev, 0x1a, 0x08, 0x08)
     }
 
+    /// The frequency the tuner itself must reach for a given dial setting.
+    ///
+    /// A Blog V4 sums HF with a 28.8 MHz reference on board, so below the
+    /// crossover the tuner sees the dial shifted up by it. The result is *not*
+    /// spectrum-inverted and no offset is applied anywhere else, so the
+    /// operator sees one continuous 0–1766 MHz radio.
+    fn tuned_freq_hz(&self, dial_hz: f64) -> f64 {
+        if self.is_blog_v4 && dial_hz < V4_HF_CROSSOVER_HZ {
+            dial_hz + V4_HF_CROSSOVER_HZ
+        } else {
+            dial_hz
+        }
+    }
+
     /// Tune to `hz`, handling the Blog V4's upconverter and input switching.
     pub fn set_freq(&mut self, dev: &Rtl2832, hz: f64) -> Result<()> {
-        // A Blog V4 sums HF with a 28.8 MHz reference on board. The result is
-        // *not* spectrum-inverted and no offset is applied anywhere else, so
-        // the operator sees one continuous 0–1766 MHz radio.
-        let upconverted =
-            if self.is_blog_v4 && hz < V4_HF_CROSSOVER_HZ { hz + V4_HF_CROSSOVER_HZ } else { hz };
-        let lo_hz = upconverted + self.int_freq;
+        let lo_hz = self.tuned_freq_hz(hz) + self.int_freq;
 
         if self.last_lo_hz == Some(lo_hz) && self.has_lock {
             return Ok(());
@@ -647,5 +669,38 @@ impl R82xx {
     /// The gain values this tuner can produce, in dB.
     pub fn gains_db() -> impl Iterator<Item = f64> {
         GAINS_TENTH_DB.iter().map(|g| *g as f64 / 10.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Blog V4 is an R828D that does *not* take the R828D crystal. Getting
+    /// this backwards is silent: the PLL locks, the dongle streams, and every
+    /// frequency is out by 28.8/16.
+    #[test]
+    fn a_blog_v4_keeps_the_28_8_mhz_reference() {
+        assert_eq!(R82xx::reference_xtal_hz(Chip::R828D, true), 28_800_000.0);
+        assert_eq!(R82xx::reference_xtal_hz(Chip::R828D, false), R828D_XTAL_HZ);
+        assert_eq!(R82xx::reference_xtal_hz(Chip::R820T, false), R820T_XTAL_HZ);
+    }
+
+    /// Only a V4 upconverts, and only below the crossover. The 7.056 MHz here
+    /// is the dial from the bug report that started this: a V4 parked on 40 m
+    /// must put its tuner at 35.856 MHz, not refuse to reach it.
+    #[test]
+    fn a_blog_v4_upconverts_below_the_crossover() {
+        let v4 = R82xx::new(Chip::R828D, true, 0);
+        assert_eq!(v4.tuned_freq_hz(7_056_158.0), 7_056_158.0 + 28_800_000.0);
+        assert_eq!(v4.tuned_freq_hz(14.1e6), 14.1e6 + 28_800_000.0);
+        // At and above the crossover the tuner reaches directly.
+        assert_eq!(v4.tuned_freq_hz(V4_HF_CROSSOVER_HZ), V4_HF_CROSSOVER_HZ);
+        assert_eq!(v4.tuned_freq_hz(100e6), 100e6);
+
+        // A stock R828D has no upconverter to offset for; HF there is the
+        // demodulator's problem, via direct sampling.
+        let plain = R82xx::new(Chip::R828D, false, 0);
+        assert_eq!(plain.tuned_freq_hz(7_056_158.0), 7_056_158.0);
     }
 }

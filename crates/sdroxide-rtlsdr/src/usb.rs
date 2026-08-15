@@ -123,6 +123,21 @@ fn known_name(vid: u16, pid: u16) -> Option<&'static str> {
 /// sticks, so it identifies nothing and must not be persisted as a selection.
 pub const GENERIC_SERIAL: &str = "00000001";
 
+/// The strings a Blog V4 is programmed with. `librtlsdr`'s own
+/// `rtlsdr_check_dongle_model` matches on exactly this pair, so a dongle that
+/// the reference driver calls a V4 is one here too.
+const BLOG_V4_MANUFACTURER: &str = "RTLSDRBlog";
+const BLOG_V4_PRODUCT: &str = "Blog V4";
+
+/// Whether a manufacturer/product pair identifies a Blog V4.
+///
+/// An absent manufacturer means "unknown", not "not a V4" — see the note in
+/// [`UsbDev::open`] on what Windows does and does not cache.
+fn strings_say_blog_v4(manufacturer: &str, product: &str) -> bool {
+    product.eq_ignore_ascii_case(BLOG_V4_PRODUCT)
+        && (manufacturer.is_empty() || manufacturer.eq_ignore_ascii_case(BLOG_V4_MANUFACTURER))
+}
+
 /// Enumerate the RTL-SDR dongles present on the USB bus.
 ///
 /// Non-invasive: no device is opened. The strings come from sysfs on Linux, the
@@ -250,8 +265,14 @@ impl UsbDev {
         // The Blog V4 has no silicon-level marker; the strings are exactly how
         // the blog fork identifies it too. Getting this wrong costs HF: a V4
         // needs the upconverter path, a V3 needs direct sampling.
-        let is_blog_v4 = manufacturer.eq_ignore_ascii_case("RTLSDRBlog")
-            && product.eq_ignore_ascii_case("Blog V4");
+        //
+        // An absent manufacturer must read as "unknown", not as "not a V4":
+        // `nusb` reports `None` for it on Windows unconditionally, because
+        // Windows caches only the bus-reported *product* description. Requiring
+        // both strings therefore made every V4 on Windows fall through to
+        // direct sampling, which that board does not implement — the operator
+        // gets a spectrum full of noise and no signals at all.
+        let is_blog_v4 = strings_say_blog_v4(&manufacturer, &product);
 
         let label = if product.is_empty() {
             table.to_string()
@@ -290,9 +311,58 @@ impl UsbDev {
         self.serial.as_deref()
     }
 
-    /// Whether this is an RTL-SDR Blog V4 (R828D with an on-board upconverter).
+    /// Whether the USB descriptors say this is an RTL-SDR Blog V4 (an R828D
+    /// with an on-board upconverter).
+    ///
+    /// Trustworthy when it answers yes — the descriptors are served straight
+    /// out of the EEPROM checked by [`UsbDev::reads_as_blog_v4`] — but a no can
+    /// mean "the OS did not give us the strings", so that is the fallback.
     pub fn is_blog_v4(&self) -> bool {
         self.is_blog_v4
+    }
+
+    /// Ask the dongle itself whether it is a Blog V4, by reading the strings
+    /// out of its configuration EEPROM.
+    ///
+    /// This is how `librtlsdr` identifies a V4: `rtlsdr_check_dongle_model`
+    /// reads the EEPROM and never consults the descriptors at all. It is the
+    /// only route that survives an OS which did not cache them — a Windows box
+    /// with the dongle bound to WinUSB through Zadig can report it as "Bulk-In,
+    /// Interface (Interface 0)", losing the product string as well as the
+    /// manufacturer one.
+    ///
+    /// Reads only as far as the product string. One control transfer per byte
+    /// at about 2 ms each, so the whole 256-byte image would cost half a second
+    /// of open time to answer a question the first 47 bytes settle.
+    ///
+    /// The caller must have the I2C repeater closed: the EEPROM sits on the
+    /// demodulator's own bus, and an open repeater routes to the tuner instead.
+    ///
+    /// Any failure reads as "not a V4". Plenty of dongles have no EEPROM at
+    /// all, and an unreadable one must not stop the radio from opening.
+    pub fn reads_as_blog_v4(&self) -> bool {
+        // Header, then the manufacturer and product descriptors: 9 + 22 + 16 =
+        // 47 bytes on a V4, with slack for a longer manufacturer string.
+        const NEEDED: usize = 64;
+        let raw = match self.read_eeprom(0, NEEDED) {
+            Ok(raw) => raw,
+            Err(e) => {
+                tracing::debug!("EEPROM unreadable ({e}); treating as not a Blog V4");
+                return false;
+            }
+        };
+        let Some(eeprom) = parse_eeprom(&raw) else {
+            tracing::debug!("no valid EEPROM image; treating as not a Blog V4");
+            return false;
+        };
+        let hit = strings_say_blog_v4(&eeprom.manufacturer, &eeprom.product);
+        tracing::debug!(
+            "EEPROM reports manufacturer {:?}, product {:?} — {}",
+            eeprom.manufacturer,
+            eeprom.product,
+            if hit { "a Blog V4" } else { "not a Blog V4" }
+        );
+        hit
     }
 
     /// Borrow the interface so the streaming code can open the bulk endpoint.
@@ -516,6 +586,34 @@ mod tests {
         assert!(parse_eeprom(&[0u8; 256]).is_none());
         assert!(parse_eeprom(&[0xff; 256]).is_none());
         assert!(parse_eeprom(&[0x28]).is_none(), "too short to hold the header");
+    }
+
+    /// The regression this pair guards: Windows never reports a manufacturer
+    /// string, so demanding one identified every V4 there as an ordinary
+    /// R828D, sent it down the direct-sampling path it has no wiring for, and
+    /// left the operator with a waterfall of pure noise.
+    #[test]
+    fn identifies_a_v4_without_a_manufacturer_string() {
+        assert!(strings_say_blog_v4("RTLSDRBlog", "Blog V4"), "both strings, as Linux reports");
+        assert!(strings_say_blog_v4("", "Blog V4"), "product only, as Windows reports");
+    }
+
+    #[test]
+    fn does_not_mistake_other_dongles_for_a_v4() {
+        assert!(!strings_say_blog_v4("Realtek", "RTL2838UHIDIR"), "generic R820T2 stick");
+        assert!(!strings_say_blog_v4("RTLSDRBlog", "Blog V3"), "the V3 direct-samples instead");
+        assert!(!strings_say_blog_v4("", ""), "nothing known either way");
+        assert!(!strings_say_blog_v4("Nooelec", "Blog V4"), "product alone is not enough");
+    }
+
+    /// The detection read stops after the product string, so the parser must
+    /// return those two fields from a buffer that ends mid-serial.
+    #[test]
+    fn detects_a_v4_from_a_truncated_read() {
+        let mut d = image(0x0bda, 0x2838, &["RTLSDRBlog", "Blog V4", "00000001"]);
+        d.truncate(64);
+        let e = parse_eeprom(&d).expect("valid image");
+        assert!(strings_say_blog_v4(&e.manufacturer, &e.product));
     }
 
     /// Erased flash after the last programmed string must stop the walk rather
