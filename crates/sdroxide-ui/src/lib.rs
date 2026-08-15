@@ -55,6 +55,41 @@ pub use solar3d::SolarApp;
 /// wgpu version (project rule).
 pub use eframe::egui_wgpu;
 
+/// The wgpu setup every sdroxide window opens with.
+///
+/// eframe's default asks the device for `wgpu::Limits::default()` — the WebGPU
+/// baseline — on every backend but GL. Real GPUs are allowed to sit *below*
+/// that baseline, and the request then fails outright rather than degrading,
+/// taking the window with it: a Raspberry Pi 5 (V3D) grants 15 inter-stage
+/// shader variables where the baseline asks for 16, and eframe exits with
+///
+/// > Limit 'max_inter_stage_shader_variables' value 16 is better than allowed 15
+///
+/// Nothing here needs the baseline. The busiest shader in the tree passes three
+/// varyings, and every texture is already built against `device.limits()` —
+/// `solar3d` and `login_globe` pick the mip level that fits, and the
+/// waterfall's atlas is a fixed 2048². So ask for exactly what the adapter
+/// reports, a request no adapter can refuse, and let the drawing code adapt to
+/// what it gets, which is what it already does.
+///
+/// This also *lifts* limits on the GL backend, where eframe asks for the WebGL2
+/// downlevel defaults: a native GL context that can do better now says so, and
+/// the globe gets its full-resolution maps instead of the 2048-pixel cap.
+pub fn wgpu_options() -> egui_wgpu::WgpuConfiguration {
+    use egui_wgpu::wgpu;
+    let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    setup.device_descriptor =
+        std::sync::Arc::new(|adapter: &wgpu::Adapter| wgpu::DeviceDescriptor {
+            label: Some("sdroxide"),
+            required_limits: adapter.limits(),
+            ..Default::default()
+        });
+    egui_wgpu::WgpuConfiguration {
+        wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(setup),
+        ..Default::default()
+    }
+}
+
 /// The application icon, for [`eframe::egui::ViewportBuilder::with_icon`].
 ///
 /// This is what window managers show in the taskbar/dock and in alt-tab; the

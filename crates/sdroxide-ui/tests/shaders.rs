@@ -71,6 +71,45 @@ fn uniform_structs_are_16_byte_multiples() {
     }
 }
 
+/// Every window asks its adapter for exactly the limits that adapter reports
+/// (`sdroxide_ui::wgpu_options`), so the shaders have to live inside what the
+/// humblest supported GPU grants rather than inside the WebGPU baseline. The
+/// binding constraint is the number of vertex→fragment variables: WebGL2 and
+/// wgpu's downlevel defaults allow 15, and a Raspberry Pi 5 (V3D) allows
+/// exactly that. Exceeding it is a pipeline-creation failure on that hardware
+/// and invisible on a developer's machine, which grants 16 or more.
+#[test]
+fn shaders_stay_within_the_downlevel_varying_budget() {
+    // `wgpu::Limits::downlevel_defaults().max_inter_stage_shader_variables`.
+    // Spelled out because this test only pulls in naga, not wgpu.
+    const MAX_INTER_STAGE: usize = 15;
+    for (name, src) in SHADERS {
+        let module = parse(name, src);
+        for ep in &module.entry_points {
+            if ep.stage != naga::ShaderStage::Vertex {
+                continue;
+            }
+            let Some(result) = &ep.function.result else { continue };
+            // A vertex stage either returns one located value or a struct whose
+            // members carry the locations; `@builtin(position)` is not one of
+            // them and does not count against the budget.
+            let used = match &module.types[result.ty].inner {
+                naga::TypeInner::Struct { members, .. } => members
+                    .iter()
+                    .filter(|m| matches!(m.binding, Some(naga::Binding::Location { .. })))
+                    .count(),
+                _ => usize::from(matches!(result.binding, Some(naga::Binding::Location { .. }))),
+            };
+            assert!(
+                used <= MAX_INTER_STAGE,
+                "{name}: `{}` passes {used} inter-stage variables; devices that grant only \
+                 {MAX_INTER_STAGE} (WebGL2, Raspberry Pi 5) reject the pipeline",
+                ep.name,
+            );
+        }
+    }
+}
+
 /// The propagation shader filters the heat with a 4×4 cubic, which means it has
 /// to know how many texels the grid has. A silent mismatch would not fail to
 /// compile — it would smear the map by the ratio, which nobody would read as a

@@ -215,11 +215,17 @@ impl Default for UiSettings {
 
 impl UiSettings {
     /// Selectable frame rates for the UI combo.
-    pub const FPS_OPTIONS: [u32; 3] = [30, 60, 90];
+    ///
+    /// The rates below 30 are for machines that cannot keep up — a Raspberry Pi
+    /// driving a 4K panel, a remote client on a thin laptop. They cost detail in
+    /// the waterfall (fewer distinct rows; the scroll speed is absolute, so a
+    /// row is simply repeated) and nothing else: the engine still processes
+    /// every sample, and only the spectrum frame it publishes slows down.
+    pub const FPS_OPTIONS: [u32; 6] = [5, 10, 15, 30, 60, 90];
 
     /// Frame rate clamped to a sane range (guards a hand-edited config).
     pub fn fps(self) -> u32 {
-        self.frame_rate_fps.clamp(10, 240)
+        self.frame_rate_fps.clamp(5, 240)
     }
 
     /// Waterfall scroll rate in rows per second. Absolute (independent of the

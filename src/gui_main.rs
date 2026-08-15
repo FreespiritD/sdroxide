@@ -151,6 +151,9 @@ pub fn run_multi(
 
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        // Limits taken from the adapter rather than eframe's WebGPU baseline,
+        // so a GPU that grants less than the baseline still opens a window.
+        wgpu_options: sdroxide_ui::wgpu_options(),
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([800.0, 500.0])
@@ -330,6 +333,7 @@ fn remote_factory() -> sdroxide_ui::RemoteFactory {
 pub fn run_remote(url: &str) -> Result<()> {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        wgpu_options: sdroxide_ui::wgpu_options(),
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([800.0, 500.0])

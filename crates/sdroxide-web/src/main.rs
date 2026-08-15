@@ -76,23 +76,20 @@ mod web {
     fn web_options(search: &str) -> eframe::WebOptions {
         use sdroxide_ui::egui_wgpu::{self, wgpu};
 
+        // Adapter-reported limits either way — see `sdroxide_ui::wgpu_options`.
+        let mut options = sdroxide_ui::wgpu_options();
         let backends = if search.contains("gfx=webgl") {
             wgpu::Backends::GL
         } else if search.contains("gfx=webgpu") {
             wgpu::Backends::BROWSER_WEBGPU
         } else {
-            return eframe::WebOptions::default();
+            return eframe::WebOptions { wgpu_options: options, ..Default::default() };
         };
 
-        let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
-        setup.instance_descriptor.backends = backends;
-        eframe::WebOptions {
-            wgpu_options: egui_wgpu::WgpuConfiguration {
-                wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(setup),
-                ..Default::default()
-            },
-            ..Default::default()
+        if let egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_setup {
+            setup.instance_descriptor.backends = backends;
         }
+        eframe::WebOptions { wgpu_options: options, ..Default::default() }
     }
 
     pub fn run() {

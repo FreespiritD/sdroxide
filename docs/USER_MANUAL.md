@@ -3551,8 +3551,12 @@ spoken announcements below them under `[speech]`:
   windows wear, chosen separately: **Angled** (the classic cut-corner look),
   **Rectangular**, **Rounded**, **Gradient** (a vertical shaded fill), or
   **3D bevel** (a raised lit edge). Also applied immediately.
-- **Screen update rate** — the GUI/spectrum frame rate (30, 60, or 90 fps).
-  Higher looks smoother and costs more CPU/GPU.
+- **Screen update rate** — the GUI/spectrum frame rate (5, 10, 15, 30, 60 or 90
+  fps). Higher looks smoother and costs more CPU/GPU. The rates below 30 are
+  there for machines that cannot keep up — a single-board computer, a big screen
+  on modest graphics: the radio itself is unaffected (the engine still processes
+  every sample and audio never stutters), you simply see fewer spectrum frames,
+  and the waterfall repeats rows to keep its scroll speed.
 - **Waterfall scroll speed** — how fast the waterfall scrolls: **Slow** (5
   rows/s), **Medium** (28) or **Fast** (56). Fast trades screen time for
   vertical resolution, which is what you want when a CW or FT8 trace is smearing
