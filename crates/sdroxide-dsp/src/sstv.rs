@@ -356,6 +356,9 @@ pub struct SstvRx {
     // Rolling ring of recent instantaneous-frequency samples, so we can look
     // back over a whole line once its trailing sync arrives.
     hist: Vec<f64>,
+    // Samples of history to guarantee (~1.2 s); `hist` runs a little past it
+    // between compactions. See `push_hist`.
+    hist_cap: usize,
     // Absolute sample index of hist[0].
     hist_base: u64,
     sample_idx: u64,
@@ -367,6 +370,8 @@ pub struct SstvRx {
     line: u16,
     // Sample index where the current line's decoding should start.
     line_start: u64,
+    // Length of the current line, cached because `step_image` runs per sample.
+    line_samples: u64,
     // Robot 4:2:0 chroma carried between lines.
     last_cr: Vec<u8>,
     last_cb: Vec<u8>,
@@ -402,6 +407,8 @@ impl VisState {
 impl SstvRx {
     pub fn new(rate: f64) -> Self {
         let mix_hz = 1900.0f32;
+        // Keep ~1.2 s of history (enough for the slowest line + sync search).
+        let hist_cap = (rate * 1.2) as usize;
         SstvRx {
             rate,
             mix_ph: 0.0,
@@ -413,12 +420,14 @@ impl SstvRx {
             have_prev: false,
             phase: RxPhase::Hunt,
             mode: SstvMode::Scottie1,
-            hist: Vec::new(),
+            hist: Vec::with_capacity(hist_cap + hist_cap / 4 + 1),
+            hist_cap,
             hist_base: 0,
             sample_idx: 0,
             vis_state: VisState::reset(),
             line: 0,
             line_start: 0,
+            line_samples: 0,
             last_cr: Vec::new(),
             last_cb: Vec::new(),
             expected: None,
@@ -497,11 +506,16 @@ impl SstvRx {
     }
 
     fn push_hist(&mut self, hz: f64) {
-        // Keep ~1.2 s of history (enough for the slowest line + sync search).
-        let cap = (self.rate * 1.2) as usize;
         self.hist.push(hz);
-        if self.hist.len() > cap {
-            let drop = self.hist.len() - cap;
+        // Compact in blocks, never per sample. Trimming one element per push
+        // memmoves the whole ~1.2 s buffer (≈460 kB at 48 kHz) on every sample
+        // — several GB/s of pointless copying that dwarfs the rest of the
+        // demodulator and starves the audio and display running on the same
+        // thread. Letting it overshoot by a quarter amortises that away; the
+        // guarantee callers rely on (at least `hist_cap` samples of history) is
+        // unchanged, since the buffer only ever holds *more* than before.
+        if self.hist.len() > self.hist_cap + self.hist_cap / 4 {
+            let drop = self.hist.len() - self.hist_cap;
             self.hist.drain(0..drop);
             self.hist_base += drop as u64;
         }
@@ -580,10 +594,12 @@ impl SstvRx {
         self.try_freerun(out);
     }
 
-    /// Total samples per scan line for `mode`.
-    fn line_period_samples(&self, mode: SstvMode) -> f64 {
+    /// Total samples per scan line for `mode`, at line index `line` (only the
+    /// Robot modes vary by line, and then only in which chroma they carry —
+    /// the duration is the same either way).
+    fn line_period_samples(&self, mode: SstvMode, line: u16) -> f64 {
         let (w, _) = mode.dimensions();
-        line_segments(mode, w, 0)
+        line_segments(mode, w, line)
             .iter()
             .map(|s| match s {
                 Seg::Tone { dur, .. } => *dur * self.rate,
@@ -595,7 +611,7 @@ impl SstvRx {
     /// Count how many recent sync gaps are an integer multiple of `mode`'s line
     /// period (within tolerance) — i.e. how well the cadence fits that mode.
     fn cadence_hits(&self, mode: SstvMode) -> u32 {
-        let period = self.line_period_samples(mode);
+        let period = self.line_period_samples(mode, 0);
         let mut hits = 0;
         for w in self.sync_hist.windows(2) {
             let gap = w[1].0 as f64 - w[0].0 as f64;
@@ -665,6 +681,7 @@ impl SstvRx {
         self.phase = RxPhase::Image;
         self.line = 0;
         self.line_start = first_line_start;
+        self.line_samples = self.line_period_samples(mode, 0) as u64;
         let (w, _) = mode.dimensions();
         self.last_cr = vec![128u8; (w / 2) as usize];
         self.last_cb = vec![128u8; (w / 2) as usize];
@@ -676,23 +693,17 @@ impl SstvRx {
 
     // ── image line decode ──
     fn step_image(&mut self, out: &mut Vec<SstvEvent>) {
-        let (w, h) = self.mode.dimensions();
-        let line_dur: f64 = line_segments(self.mode, w, self.line)
-            .iter()
-            .map(|s| match s {
-                Seg::Tone { dur, .. } => *dur,
-                Seg::Scan { width, px, .. } => *width as f64 * *px,
-            })
-            .sum();
-        let line_samples = (line_dur * self.rate) as u64;
-
-        // Decode a line once its full duration of history is available.
+        // Decode a line once its full duration of history is available. This
+        // runs on every sample, so the line length comes from the cached value
+        // rather than rebuilding the segment plan (and its allocation) here.
+        let line_samples = self.line_samples;
         if self.sample_idx < self.line_start + line_samples + (0.02 * self.rate) as u64 {
             return;
         }
 
         // Re-align each line to its 1200 Hz sync pulse (corrects timing error
         // and clock slant on real off-air signals).
+        let (w, h) = self.mode.dimensions();
         let start = self.realign_sync(self.line_start, self.mode, w, self.line);
         let rgb = self.decode_line(self.mode, w, self.line, start);
         out.push(SstvEvent::Line { y: self.line, rgb });
@@ -703,6 +714,8 @@ impl SstvRx {
             out.push(SstvEvent::ImageComplete);
             self.phase = RxPhase::Hunt;
             self.vis_state = VisState::reset();
+        } else {
+            self.line_samples = self.line_period_samples(self.mode, self.line) as u64;
         }
     }
 
