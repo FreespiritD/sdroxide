@@ -652,6 +652,17 @@ pub struct HpsdrConfig {
     /// `radio.json` on DDC 0, exactly as before.
     #[serde(default)]
     pub ddc: u8,
+    /// How far ahead of real time the engine may fill this board's transmit
+    /// ring before it paces production back down, in ms. Unlike
+    /// [`IcomNetConfig::tx_latency_ms`], the board holds no such buffer itself
+    /// — OpenHPSDR has no such setting — so this only widens the cushion the
+    /// engine leaves in the ring on *this* side of the network. Higher
+    /// survives a worse link (WiFi, a VPN) at the cost of transmit-audio and
+    /// PTT latency; the low default is right for a direct wired connection,
+    /// where the link's own jitter is negligible. See
+    /// [`HpsdrConfig::default_tx_latency_ms`].
+    #[serde(default = "HpsdrConfig::default_tx_latency_ms")]
+    pub tx_latency_ms: f64,
 }
 
 impl Default for HpsdrConfig {
@@ -667,6 +678,7 @@ impl Default for HpsdrConfig {
             io_rx_input: HpsdrIoRxInput::Radio,
             ppm: 0.0,
             ddc: 0,
+            tx_latency_ms: Self::default_tx_latency_ms(),
         }
     }
 }
@@ -700,6 +712,19 @@ impl HpsdrConfig {
     pub fn default_pa_enable() -> bool {
         true
     }
+
+    /// Matches the cushion every other backend gets: enough to absorb ordinary
+    /// scheduling jitter on a direct wired connection, short enough to keep
+    /// transmit-audio and PTT latency unnoticeable. See
+    /// [`HpsdrConfig::tx_latency_ms`].
+    pub fn default_tx_latency_ms() -> f64 {
+        30.0
+    }
+
+    /// Range offered in the UI. The floor keeps the round trip to the board
+    /// from dominating; the ceiling is Icom LAN's own transmit-buffer ceiling,
+    /// so the two controls read the same way.
+    pub const TX_LATENCY_MS_RANGE: std::ops::RangeInclusive<f64> = 10.0..=1000.0;
 
     /// Supported DDC sample rates (Hz) for Protocol 2 boards.
     pub const SAMPLE_RATES: [f64; 6] =

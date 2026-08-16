@@ -47,6 +47,8 @@ pub struct HpsdrSource {
     /// wants an edge.
     ptt: bool,
     label: String,
+    /// See [`sdroxide_types::HpsdrConfig::tx_latency_ms`].
+    tx_latency_ms: f64,
 }
 
 impl HpsdrSource {
@@ -100,6 +102,7 @@ impl HpsdrSource {
             label,
             rx: Some(rx),
             board: Some(board),
+            tx_latency_ms: cfg.tx_latency_ms,
         })
     }
 
@@ -268,5 +271,13 @@ impl IqSource for HpsdrSource {
         if let Some(rx) = self.rx.as_mut() {
             rx.discard_pending_rx();
         }
+    }
+
+    /// See [`sdroxide_types::HpsdrConfig::tx_latency_ms`]: this board holds no
+    /// transmit buffer of its own to widen, so raising this only widens the
+    /// cushion the engine leaves before the board's TX ring on this side of
+    /// the network.
+    fn tx_pace_cushion_ms(&self) -> f64 {
+        self.tx_latency_ms
     }
 }
