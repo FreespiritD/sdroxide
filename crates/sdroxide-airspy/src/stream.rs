@@ -61,6 +61,27 @@ fn geometry(cfg: &AirspyConfig) -> (usize, usize) {
     (n, bytes.max(GRANULE))
 }
 
+/// Arm the endpoint *after* the receiver is told to run, never before.
+///
+/// `set_receiver_mode(RECEIVER_MODE_RX)` in the firmware calls
+/// `usb_endpoint_init(&usb_endpoint_bulk_in)`, which flushes the bulk IN
+/// endpoint and resets its data toggle. Reads posted before that are posted
+/// against an endpoint that is about to be pulled out from under them: the
+/// receiver is stopped, so nothing answers the IN tokens, and then the endpoint
+/// is re-initialised underneath the queue. On macOS the first read comes back
+/// with a transport error and the host controller stops servicing the pipe, so
+/// the stream never starts at all — a receiver that configures perfectly and
+/// then sends nothing.
+///
+/// libairspy's `airspy_start_rx` is explicit about the order: mode off, clear
+/// the halt, mode RX, *then* submit. This is that order, and it is the reason
+/// [`open_endpoint`] and [`prime`] are two functions rather than one.
+fn prime(ep: &mut nusb::Endpoint<Bulk, In>, in_flight: usize, transfer_bytes: usize) {
+    while ep.pending() < in_flight {
+        ep.submit(ep.allocate(transfer_bytes));
+    }
+}
+
 /// Open the receiver and start the stream thread.
 ///
 /// The device is opened *on the thread* so that all control transfers happen on
@@ -196,8 +217,9 @@ fn pump(
     // `decode_raw`.
     let mut carry: Vec<u8> = Vec::with_capacity(PACKED_GROUP_BYTES);
 
-    let mut ep = open_endpoint(dev, in_flight, transfer_bytes)?;
+    let mut ep = open_endpoint(dev)?;
     dev.start()?;
+    prime(&mut ep, in_flight, transfer_bytes);
 
     loop {
         // 1. Collapse the whole control channel, then apply each field once.
@@ -212,21 +234,26 @@ fn pump(
             // A rate change is not a setting on this receiver — it stops the
             // sample flow, so the endpoint has to come down with it.
             if let Some(hz) = pending.rate {
+                // Stop the receiver *before* the endpoint comes down, as
+                // libairspy's `airspy_stop_rx` does. Cancelling reads under a
+                // running stream leaves the receiver pushing into a queue that
+                // is going away, which is the same wedged-pipe hazard `prime`
+                // exists to avoid at the other end.
+                let _ = dev.stop();
                 close(ep);
                 let outcome = rebuild(dev, hz, &mut dsp, &mut stats, shared, trace);
                 // Whatever was mid-group belonged to the old rate.
                 carry.clear();
-                ep = open_endpoint(dev, in_flight, transfer_bytes)?;
+                ep = open_endpoint(dev)?;
                 dev.start()?;
+                prime(&mut ep, in_flight, transfer_bytes);
                 if let Err(e) = outcome {
                     tracing::warn!("Airspy: rate change failed: {e}");
                     trace.note(format!("rate change failed: {e}"));
                 }
             } else {
                 // Keep the hardware fed while we talk on endpoint 0.
-                while ep.pending() < in_flight {
-                    ep.submit(ep.allocate(transfer_bytes));
-                }
+                prime(&mut ep, in_flight, transfer_bytes);
             }
             if let Err(e) = apply(dev, &pending, &mut dsp) {
                 // A setting that cannot be applied is worth saying out loud,
@@ -239,9 +266,7 @@ fn pump(
 
         // 2. Refill before draining, so the queue is never empty while the
         //    receiver is producing.
-        while ep.pending() < in_flight {
-            ep.submit(ep.allocate(transfer_bytes));
-        }
+        prime(&mut ep, in_flight, transfer_bytes);
 
         // 3. Drain every completion that is ready, not just one. Blocking only
         //    on the first; the rest are polled. Taking one per iteration
@@ -283,23 +308,38 @@ fn pump(
                             .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
                     }
                 }
+                // A cancellation is this driver's own doing — a teardown or a
+                // rate change — and the buffer simply comes back unused.
                 Err(TransferError::Cancelled) => {}
                 Err(TransferError::Disconnected) => {
                     return Err(Error::NotFound("the Airspy was unplugged".into()));
                 }
-                Err(TransferError::Stall) => {
-                    tracing::warn!("Airspy endpoint stalled; clearing and resynchronising");
-                    trace.note("bulk endpoint stalled; cleared");
+                // Everything else is treated as a halted pipe, not only the
+                // error that says so.
+                //
+                // A stall is the *named* case, but it is not the only one that
+                // wedges an endpoint: macOS stops servicing a pipe after a
+                // transport error of any kind and will not resume until the
+                // halt is cleared, and which `TransferError` a given failure
+                // arrives as is the OS backend's choice, not the receiver's.
+                // Clearing after an error that did not need it costs one
+                // control transfer; *not* clearing after one that did costs the
+                // whole stream, silently, until the program is restarted.
+                Err(e) => {
+                    let stalled = matches!(e, TransferError::Stall);
+                    tracing::warn!("Airspy transfer error ({e}); clearing the endpoint");
                     let _ = ep.clear_halt().wait();
                     // The stream restarts from a packet boundary, so the filter
                     // history and the packing phase both belong to nothing.
                     dsp.reset();
                     carry.clear();
-                    stats.on_stall();
-                }
-                Err(e) => {
-                    tracing::debug!("Airspy transfer error: {e}");
-                    stats.on_error();
+                    if stalled {
+                        stats.on_stall();
+                    }
+                    // Named once, then counted: at sixty transfers a second an
+                    // error per line would push the whole opening sequence out
+                    // of a bounded trace.
+                    stats.on_error(&format!("{e}"), trace);
                 }
             }
 
@@ -321,6 +361,9 @@ fn pump(
     }
 
     trace.note(format!("stream ended: {}", stats.summary()));
+    // Stopped first, endpoint down second — the same order as the rate change,
+    // and for the same reason.
+    let _ = dev.stop();
     close(ep);
     Ok(())
 }
@@ -433,24 +476,22 @@ fn rebuild(
     r
 }
 
-fn open_endpoint(
-    dev: &Device,
-    in_flight: usize,
-    transfer_bytes: usize,
-) -> Result<nusb::Endpoint<Bulk, In>> {
+/// Open the bulk endpoint and clear its halt, leaving it **unarmed**.
+///
+/// Nothing is submitted here: see [`prime`], which must not run until the
+/// receiver has been told to transmit.
+fn open_endpoint(dev: &Device) -> Result<nusb::Endpoint<Bulk, In>> {
     let mut ep = dev
         .usb()
         .interface()
         .endpoint::<Bulk, In>(BULK_EP)
         .map_err(|e| Error::Access(format!("cannot open the Airspy bulk endpoint: {e}")))?;
-    // libairspy clears this halt every time it programs a rate, and it is worth
-    // keeping: a session that died mid-stream can leave the endpoint halted,
-    // and nothing else in an open would clear it. It also resets the data
-    // toggle, which is what the receiver assumes when its own stream restarts.
+    // libairspy clears this halt between stopping and starting the receiver,
+    // and it is worth keeping: a session that died mid-stream can leave the
+    // endpoint halted, and nothing else in an open would clear it. It also
+    // resets the host's data toggle, which is what the receiver assumes when
+    // `set_receiver_mode(RX)` re-initialises its own end.
     let _ = ep.clear_halt().wait();
-    for _ in 0..in_flight {
-        ep.submit(ep.allocate(transfer_bytes));
-    }
     Ok(ep)
 }
 

@@ -90,6 +90,10 @@ pub(crate) struct RxStats {
     total_dropped: u64,
     total_errors: u64,
     stalls: u64,
+    /// The first transfer error's text, kept because it is the one fact a
+    /// field report cannot be reconstructed without — and because tracing every
+    /// error would push the opening sequence out of a bounded trace.
+    first_error: Option<String>,
 }
 
 impl RxStats {
@@ -105,6 +109,7 @@ impl RxStats {
             total_dropped: 0,
             total_errors: 0,
             stalls: 0,
+            first_error: None,
         }
     }
 
@@ -121,14 +126,23 @@ impl RxStats {
         self.total_dropped += pairs as u64;
     }
 
-    pub(crate) fn on_error(&mut self) {
+    /// Count a transfer error, and put the *first* one's text in the trace.
+    ///
+    /// Named once rather than every time: a wedged endpoint can produce one
+    /// error per transfer, and a line apiece would flush the opening sequence
+    /// out of the trace ring — which is the part of a field report that says
+    /// how the receiver was configured. The count carries the rest.
+    pub(crate) fn on_error(&mut self, what: &str, trace: &Trace) {
         self.win_errors += 1;
         self.total_errors += 1;
+        if self.first_error.is_none() {
+            self.first_error = Some(what.to_string());
+            trace.note(format!("first transfer error: {what}"));
+        }
     }
 
     pub(crate) fn on_stall(&mut self) {
         self.stalls += 1;
-        self.on_error();
     }
 
     /// Restart the clock measurement after a discontinuity — a rate change
@@ -158,33 +172,68 @@ impl RxStats {
 
     pub(crate) fn summary(&self) -> String {
         format!(
-            "{} samples, {} dropped, {} transfer errors, {} endpoint stalls; {}",
+            "{} samples, {} dropped, {} transfer errors{}, {} endpoint stalls; {}",
             self.total_samples,
             self.total_dropped,
             self.total_errors,
+            match &self.first_error {
+                Some(e) => format!(" (first: {e})"),
+                None => String::new(),
+            },
             self.stalls,
             self.clock_error()
         )
     }
 
+    /// Report on the window just ended — but only when there is something worth
+    /// reporting, and only in the terms that actually apply.
+    ///
+    /// **A silent stream is a report.** Nothing arriving at all is the most
+    /// important thing this can say and it used to say nothing: the old line
+    /// appeared only when there were drops or errors, and it named the ring and
+    /// the DSP thread whether or not a single sample had been dropped. A
+    /// receiver that is not sending and a host that cannot keep up are opposite
+    /// faults, and the trace has to tell them apart.
     pub(crate) fn tick(&mut self, trace: &Trace) {
         let dt = self.since.elapsed();
         if dt < STATS_INTERVAL {
             return;
         }
         let ksps = self.win_samples as f64 / dt.as_secs_f64() / 1000.0;
-        if self.win_dropped > 0 || self.win_errors > 0 {
-            let line = format!(
-                "Airspy RX: {} samples ({ksps:.1} ksps) over {:.2}s; \
-                 {} sample(s) DROPPED (RX ring full — the DSP thread is not keeping up; \
-                 try a lower sample rate), {} transfer error(s); totals {} dropped / {} errors",
+        let silent = self.win_samples == 0;
+        if self.win_dropped > 0 || self.win_errors > 0 || silent {
+            let mut line = format!(
+                "Airspy RX: {} samples ({ksps:.1} ksps) over {:.2}s",
                 self.win_samples,
                 dt.as_secs_f64(),
-                self.win_dropped,
-                self.win_errors,
-                self.total_dropped,
-                self.total_errors,
             );
+            if silent {
+                line.push_str(
+                    "; NOTHING ARRIVED — the receiver is not sending, which is a \
+                     different fault from not keeping up",
+                );
+            }
+            if self.win_dropped > 0 {
+                line.push_str(&format!(
+                    "; {} sample(s) DROPPED (RX ring full — the DSP thread is not \
+                     keeping up; try a lower sample rate)",
+                    self.win_dropped
+                ));
+            }
+            if self.win_errors > 0 {
+                line.push_str(&format!(
+                    "; {} transfer error(s){}",
+                    self.win_errors,
+                    match &self.first_error {
+                        Some(e) => format!(", first was {e}"),
+                        None => String::new(),
+                    }
+                ));
+            }
+            line.push_str(&format!(
+                "; totals {} dropped / {} errors",
+                self.total_dropped, self.total_errors
+            ));
             tracing::warn!("{line}");
             trace.note(line);
         } else {
@@ -479,6 +528,47 @@ mod tests {
             assert_eq!(cap % 2, 0, "{rate}");
             assert!(cap as f64 >= rate * 2.0 * 0.5, "{rate}: {cap} floats");
         }
+    }
+
+    /// A receiver that sends nothing has to say so, in its own words.
+    ///
+    /// This is the line a field report is read from. It used to be emitted only
+    /// when something was dropped or errored, and it blamed the ring and the
+    /// DSP thread either way — so a stream that never started read as one that
+    /// could not keep up, which is the opposite fault and sends the next hour
+    /// in the wrong direction.
+    #[test]
+    fn a_silent_window_says_nothing_arrived_and_does_not_blame_the_ring() {
+        let trace = Trace::new();
+        let mut stats = RxStats::new(3.0e6);
+        stats.since = Instant::now() - STATS_INTERVAL - Duration::from_millis(10);
+        stats.tick(&trace);
+
+        let dump = trace.dump();
+        assert!(dump.contains("NOTHING ARRIVED"), "{dump}");
+        assert!(!dump.contains("DROPPED"), "nothing was dropped: {dump}");
+
+        // The first error is named once, and only once, however many follow.
+        let mut stats = RxStats::new(3.0e6);
+        let trace = Trace::new();
+        stats.on_error("Unknown(0xe00002ed)", &trace);
+        stats.on_error("Unknown(0xe00002ed)", &trace);
+        stats.on_error("Stall", &trace);
+        assert_eq!(stats.total_errors, 3);
+        assert_eq!(dump_lines(&trace, "first transfer error"), 1);
+        assert!(trace.dump().contains("0xe00002ed"));
+
+        // And a window with samples and no trouble stays quiet.
+        let trace = Trace::new();
+        let mut stats = RxStats::new(3.0e6);
+        stats.on_iq(4096);
+        stats.since = Instant::now() - STATS_INTERVAL - Duration::from_millis(10);
+        stats.tick(&trace);
+        assert!(!trace.dump().contains("Airspy RX:"), "{}", trace.dump());
+    }
+
+    fn dump_lines(trace: &Trace, needle: &str) -> usize {
+        trace.dump().lines().filter(|l| l.contains(needle)).count()
     }
 
     /// A partial push would leave the ring one float out of step and swap I
