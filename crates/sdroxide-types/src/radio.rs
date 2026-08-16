@@ -218,16 +218,37 @@ pub enum CatFamily {
     /// Kenwood profile can drive: DATA is a mode here instead of a flag, and
     /// the two disagree about what keys the transmitter.
     Elecraft,
+    /// Not a radio at all: an already-running Hamlib `rigctld`, over TCP.
+    ///
+    /// The catch-all. Every profile above drives one manufacturer's rigs
+    /// natively and does things a translation layer cannot — reading the model
+    /// off the radio to scale its meters, pinning a data sub-mode, keying from
+    /// the rig's own text buffer — but between them they still cover only five
+    /// makes. Hamlib covers a couple of hundred, and where it is already
+    /// installed and working there is no reason to be locked out of it.
+    ///
+    /// What is given up is real: the daemon exposes frequency, mode, PTT,
+    /// power, the S-meter and the SWR, and nothing at all of the keyer chunking
+    /// or the per-model filter tables. Prefer a native profile where one fits
+    /// the radio.
+    Rigctld,
 }
 
 impl CatFamily {
-    pub const ALL: [CatFamily; 5] = [
+    pub const ALL: [CatFamily; 6] = [
         CatFamily::Xiegu,
         CatFamily::Icom,
         CatFamily::Yaesu,
         CatFamily::Kenwood,
         CatFamily::Elecraft,
+        CatFamily::Rigctld,
     ];
+
+    /// Whether this family reaches the radio over the network rather than a
+    /// serial port, in which case the serial settings mean nothing.
+    pub fn is_network(self) -> bool {
+        self == CatFamily::Rigctld
+    }
     pub fn label(self) -> &'static str {
         match self {
             CatFamily::Xiegu => "Xiegu",
@@ -235,6 +256,7 @@ impl CatFamily {
             CatFamily::Yaesu => "Yaesu",
             CatFamily::Kenwood => "Kenwood",
             CatFamily::Elecraft => "Elecraft",
+            CatFamily::Rigctld => "Hamlib rigctld (network)",
         }
     }
 }
@@ -625,11 +647,22 @@ pub struct CatConfig {
     /// deserialise costs.
     #[serde(default)]
     pub icom_model: IcomModel,
+    /// `host:port` of the Hamlib `rigctld` to drive, for
+    /// [`CatFamily::Rigctld`]. Defaulted so a config written before this
+    /// existed still loads.
+    #[serde(default = "default_rigctld_addr")]
+    pub rigctld_addr: String,
     /// Which `TX` command keys a Kenwood.
     pub kenwood_send: KenwoodSend,
     pub format: SoundFormat,
     /// Displayed panadapter bandwidth for demod-audio mode (Hz).
     pub audio_bw_hz: f64,
+}
+
+/// Where a `rigctld` listens unless told otherwise — the daemon's own default
+/// port, on this machine.
+fn default_rigctld_addr() -> String {
+    "127.0.0.1:4532".to_string()
 }
 
 impl Default for CatConfig {
@@ -644,6 +677,7 @@ impl Default for CatConfig {
             cw_keying: CwKeying::default(),
             icom_radio_id: 0x70,
             icom_model: IcomModel::default(),
+            rigctld_addr: default_rigctld_addr(),
             kenwood_send: KenwoodSend::default(),
             format: SoundFormat::default(),
             audio_bw_hz: 4000.0,

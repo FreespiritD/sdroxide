@@ -2671,13 +2671,29 @@ separately from your computer's own speakers and microphone.
 
 - **Serial port** — the radio's CAT serial port. On Linux, USB-style ports
   (`/dev/ttyACM*`, `/dev/ttyUSB*`) are listed first.
-- **CAT family** — `Xiegu`, `Icom`, `Yaesu`, `Kenwood`, or `Elecraft`. The last
-  three all speak ASCII commands ending in `;` and look interchangeable, but
-  they are not: a Kenwood driven as a Yaesu rejects every retune and *keys up
-  without unkeying*, because `TX0;` — Yaesu's unkey — is a transmit command on
+- **CAT family** — `Xiegu`, `Icom`, `Yaesu`, `Kenwood`, `Elecraft`, or
+  `Hamlib rigctld (network)`. The five native profiles drive one manufacturer's
+  rigs each; the sixth talks to an already-running Hamlib daemon and covers
+  everything else, less well (see **rigctld address** below).
+
+  Three of the native ones speak ASCII commands ending in `;` and look
+  interchangeable, but they are not. A Kenwood driven as a Yaesu rejects every
+  retune and *keys up without unkeying*, because `TX0;` — Yaesu's unkey — is a transmit command on
   a Kenwood. An Elecraft driven as a Kenwood tunes and keys correctly and then
   goes out on the wrong sideband in every digital mode, because DATA is a
   *mode* there (`MD6`/`MD9`) rather than a flag beside one. Pick the right one.
+- **rigctld address** (Hamlib rigctld only) — `host:port` of a running Hamlib
+  `rigctld`. `127.0.0.1:4532` is the daemon's own default, on this machine.
+  Start one with, for example, `rigctld -m 2028 -r /dev/ttyUSB0 -s 38400`, where
+  `-m` is the Hamlib model number for your radio (`rigctl -l` lists them).
+
+  This is the catch-all, for a radio none of the native families covers. It
+  reaches the frequency, mode, PTT, transmit power, S-meter and SWR — and
+  nothing else: no keying from the rig's own text buffer, no receive filter, no
+  per-model meter scales. Where one of the families above fits your radio it
+  does more, so prefer it. The serial settings disappear when this is selected,
+  because the link is a socket; `PTT method` `DTR` and `RTS` key nothing over
+  one, so use `CAT` or `VOX`.
 - **Radio** (Elecraft only) — not a setting, just a reminder of what the profile
   covers: the K3 command set, which the K3S, KX3, KX2 and K4 all answer. How
   many watts the **Drive** slider spans is read from the rig itself when the
@@ -6437,6 +6453,15 @@ The **`OM;`** query at connect found no power amplifier, so the slider spans
 12 W rather than 110. On a K3 that means the KPA3 was not detected; on a KX3 or
 KX2, that the KXPA100 is not attached over its control cable. Check the log line
 `Elecraft CAT: rig identified` for what the radio said it was.
+
+**The rigctld link will not open.**
+Check that a daemon is actually listening — `rigctl -m 2 -r localhost:4532 f`
+asks the one on this machine for its frequency — and that the address matches.
+The log line `CAT open failed: Connection refused` means nothing is listening
+there; `CAT link open` means the socket came up and any remaining fault is
+between the daemon and the radio, not between sdroxide and the daemon. Note
+also that `PTT method` `DTR` and `RTS` key nothing over a socket: a network link
+has no control lines. Use `CAT`, which asks the daemon to key the radio.
 
 **The Elecraft answers nothing at all.**
 Check **Baud**: a K3, K3S, KX3 or KX2 goes no faster than 38400 (`CONFIG:RS232`

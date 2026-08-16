@@ -74,7 +74,7 @@ impl AudioCatSource {
                  default, which is not this radio unless it happens to be the default. Pick its \
                  card under Settings → General → Radio audio.",
                 cfg.family.label(),
-                cfg.serial.path,
+                sdroxide_cat::link_label(&cfg),
                 match (audio_in.is_none(), audio_out.is_none()) {
                     (true, true) => "receive and transmit",
                     (true, false) => "receive",
@@ -136,7 +136,8 @@ impl AudioCatSource {
         let tx_resampler =
             out.as_ref().and_then(|(o, _)| MonoResampler::new(48_000.0, o.sample_rate));
 
-        let label = format!("CAT rig ({}) on {}", cfg.family.label(), cfg.serial.path);
+        let label =
+            format!("CAT rig ({}) on {}", cfg.family.label(), sdroxide_cat::link_label(&cfg));
         let audio_bw = cfg.audio_bw_hz;
         let format = cfg.format;
         let cat = sdroxide_cat::spawn(cfg);

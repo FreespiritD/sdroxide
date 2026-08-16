@@ -62,71 +62,114 @@ pub(in crate::app) fn settings_cat_tab(
             ui.end_row();
         }
 
-        ui.label("Serial port");
-        let shown = if cfg.cat.serial.path.is_empty() {
-            "— select —".to_string()
-        } else {
-            cfg.cat.serial.path.clone()
-        };
-        // The list is of *this* machine's ports. Where the rig is elsewhere the
-        // stored path is still worth showing — it says which port the engine is
-        // using — but there is nothing here to choose from.
-        local_only(ui, local, |ui| {
-            ComboBox::from_id_salt("serport").width(260.0).selected_text(shown).show_ui(ui, |ui| {
-                for p in serial_ports {
-                    if ui.selectable_label(&cfg.cat.serial.path == p, p).clicked() {
-                        cfg.cat.serial.path = p.clone();
-                    }
-                }
-            });
-        });
-        ui.end_row();
-
         ui.label("CAT family");
         enum_combo(ui, "fam", &mut cfg.cat.family, &CatFamily::ALL, CatFamily::label);
         ui.end_row();
 
-        ui.label("Baud");
-        ComboBox::from_id_salt("baud").selected_text(cfg.cat.serial.baud.to_string()).show_ui(
-            ui,
-            |ui| {
-                for b in [4800u32, 9600, 19200, 38400, 57600, 115200] {
-                    if ui.selectable_label(cfg.cat.serial.baud == b, b.to_string()).clicked() {
-                        cfg.cat.serial.baud = b;
-                    }
-                }
-            },
-        );
-        ui.end_row();
+        // A network family reaches the radio over a socket, so every serial
+        // setting below is about a port nothing will open. Drawing them would
+        // invite an operator to fix a connection problem by changing a baud
+        // rate that has no part in it.
+        let serial = !cfg.cat.family.is_network();
 
-        ui.label("Data bits");
-        ComboBox::from_id_salt("databits")
-            .selected_text(cfg.cat.serial.data_bits.to_string())
-            .show_ui(ui, |ui| {
-                for d in [7u8, 8] {
-                    if ui.selectable_label(cfg.cat.serial.data_bits == d, d.to_string()).clicked() {
-                        cfg.cat.serial.data_bits = d;
-                    }
-                }
+        if cfg.cat.family == CatFamily::Rigctld {
+            ui.label("rigctld address").on_hover_text(
+                "host:port of a running Hamlib rigctld — 127.0.0.1:4532 is its \
+                 own default, on this machine.\n\n\
+                 Start one with, for example, \
+                 `rigctld -m 2028 -r /dev/ttyUSB0 -s 38400`, where -m is the \
+                 Hamlib model number for your radio (`rigctl -l` lists them).\n\n\
+                 This is the catch-all: it reaches the frequency, mode, PTT, \
+                 power, S-meter and SWR and nothing else. Where one of the \
+                 native families above fits your radio it does more — keying \
+                 from the rig's own text buffer, the receive filter, and \
+                 per-model meter scales.",
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut cfg.cat.rigctld_addr)
+                    .desired_width(200.0)
+                    .hint_text("127.0.0.1:4532"),
+            );
+            ui.end_row();
+        }
+
+        if serial {
+            ui.label("Serial port");
+            let shown = if cfg.cat.serial.path.is_empty() {
+                "— select —".to_string()
+            } else {
+                cfg.cat.serial.path.clone()
+            };
+            // The list is of *this* machine's ports. Where the rig is elsewhere
+            // the stored path is still worth showing — it says which port the
+            // engine is using — but there is nothing here to choose from.
+            local_only(ui, local, |ui| {
+                ComboBox::from_id_salt("serport").width(260.0).selected_text(shown).show_ui(
+                    ui,
+                    |ui| {
+                        for p in serial_ports {
+                            if ui.selectable_label(&cfg.cat.serial.path == p, p).clicked() {
+                                cfg.cat.serial.path = p.clone();
+                            }
+                        }
+                    },
+                );
             });
-        ui.end_row();
+            ui.end_row();
+        }
 
-        ui.label("Parity");
-        enum_combo(ui, "parity", &mut cfg.cat.serial.parity, &Parity::ALL, Parity::label);
-        ui.end_row();
+        if serial {
+            ui.label("Baud");
+            ComboBox::from_id_salt("baud").selected_text(cfg.cat.serial.baud.to_string()).show_ui(
+                ui,
+                |ui| {
+                    for b in [4800u32, 9600, 19200, 38400, 57600, 115200] {
+                        if ui.selectable_label(cfg.cat.serial.baud == b, b.to_string()).clicked() {
+                            cfg.cat.serial.baud = b;
+                        }
+                    }
+                },
+            );
+            ui.end_row();
 
-        ui.label("Stop bits");
-        enum_combo(ui, "stop", &mut cfg.cat.serial.stop_bits, &StopBits::ALL, StopBits::label);
-        ui.end_row();
+            ui.label("Data bits");
+            ComboBox::from_id_salt("databits")
+                .selected_text(cfg.cat.serial.data_bits.to_string())
+                .show_ui(ui, |ui| {
+                    for d in [7u8, 8] {
+                        if ui
+                            .selectable_label(cfg.cat.serial.data_bits == d, d.to_string())
+                            .clicked()
+                        {
+                            cfg.cat.serial.data_bits = d;
+                        }
+                    }
+                });
+            ui.end_row();
 
-        ui.label("Force RTS");
-        enum_combo(ui, "rts", &mut cfg.cat.serial.force_rts, &LineState::ALL, LineState::label);
-        ui.end_row();
-        ui.label("Force DTR");
-        enum_combo(ui, "dtr", &mut cfg.cat.serial.force_dtr, &LineState::ALL, LineState::label);
-        ui.end_row();
+            ui.label("Parity");
+            enum_combo(ui, "parity", &mut cfg.cat.serial.parity, &Parity::ALL, Parity::label);
+            ui.end_row();
 
-        ui.label("PTT method");
+            ui.label("Stop bits");
+            enum_combo(ui, "stop", &mut cfg.cat.serial.stop_bits, &StopBits::ALL, StopBits::label);
+            ui.end_row();
+
+            ui.label("Force RTS");
+            enum_combo(ui, "rts", &mut cfg.cat.serial.force_rts, &LineState::ALL, LineState::label);
+            ui.end_row();
+            ui.label("Force DTR");
+            enum_combo(ui, "dtr", &mut cfg.cat.serial.force_dtr, &LineState::ALL, LineState::label);
+            ui.end_row();
+        }
+
+        ui.label("PTT method").on_hover_text(if serial {
+            "How transmit is keyed."
+        } else {
+            "How transmit is keyed. A network link has no control lines, so \
+             DTR and RTS key nothing here — use CAT, which asks the daemon to \
+             key the radio, or VOX."
+        });
         enum_combo(ui, "ptt", &mut cfg.cat.ptt, &PttMethod::ALL, PttMethod::label);
         ui.end_row();
 

@@ -10,15 +10,15 @@
 pub mod civ;
 mod elecraft;
 mod kenwood;
+mod rigctld;
 mod yaesu;
 
-use std::io::Write;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use sdroxide_types::{
     CatConfig, CatFamily, CwKeying, DigiMode, LineState, Mode, ModeControl, Parity, PttMethod,
-    SerialConfig, StopBits, TxTelemetry,
+    StopBits, TxTelemetry,
 };
 use tracing::{info, warn};
 
@@ -387,6 +387,7 @@ fn make_protocol(cfg: &CatConfig) -> Box<dyn Protocol> {
         CatFamily::Yaesu => Box::new(yaesu::Yaesu::new()),
         CatFamily::Kenwood => Box::new(kenwood::Kenwood::new(cfg.kenwood_send)),
         CatFamily::Elecraft => Box::new(elecraft::Elecraft::new()),
+        CatFamily::Rigctld => Box::new(rigctld::Rigctld::new()),
     }
 }
 
@@ -502,7 +503,7 @@ impl Drop for CatHandle {
 /// startup so the app adopts the radio's state instead of overwriting it.
 /// Returns `None` if the port can't be opened or the rig doesn't answer.
 pub fn query_once(cfg: &CatConfig) -> Option<(Option<f64>, Option<Mode>)> {
-    let mut port = open_port(&cfg.serial).ok()?;
+    let mut port = open_link(cfg).ok()?;
     let mut protocol = make_protocol(cfg);
     for req in protocol.poll_requests() {
         let _ = port.write_all(&req);
@@ -613,11 +614,7 @@ const FILTER_GAP: Duration = Duration::from_millis(250);
 
 /// Write one frame, leaving at least [`FRAME_GAP`] since the last one went out.
 /// Returns true on a write error — the caller's signal to reconnect.
-fn write_frame(
-    port: &mut dyn serialport::SerialPort,
-    frame: &[u8],
-    last_write: &mut Instant,
-) -> bool {
+fn write_frame(port: &mut dyn Link, frame: &[u8], last_write: &mut Instant) -> bool {
     let since = last_write.elapsed();
     if since < FRAME_GAP {
         std::thread::sleep(FRAME_GAP - since);
@@ -634,7 +631,7 @@ fn write_frame(
 /// key-down free: the rig is served one frame at a time, and a needless one in
 /// front of a PTT delays the transmitter coming up.
 fn write_power(
-    port: &mut dyn serialport::SerialPort,
+    port: &mut dyn Link,
     protocol: &mut dyn Protocol,
     frac: f32,
     last_sent: &mut Option<f32>,
@@ -690,26 +687,98 @@ impl ModeMemory {
     }
 }
 
-fn open_port(s: &SerialConfig) -> serialport::Result<Box<dyn serialport::SerialPort>> {
+/// The link to the radio: a serial port, or a TCP connection to a `rigctld`.
+///
+/// Everything above this point is bytes in and bytes out, which is why the
+/// network case fits at all — a rigctld speaks a line protocol over a socket
+/// exactly as a transceiver speaks a frame protocol over a wire, and the
+/// driver's rate limiting, coalescing and reconnection all mean the same thing
+/// on both. The one thing that does not carry over is the pair of control
+/// lines, which a socket simply does not have.
+trait Link: Send {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize>;
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()>;
+    fn flush(&mut self) -> std::io::Result<()>;
+    /// Drive RTS, where there is one. A network link has none, so a `PTT
+    /// method` of RTS or DTR keys nothing there — see [`PttMethod`].
+    fn set_rts(&mut self, _on: bool) {}
+    fn set_dtr(&mut self, _on: bool) {}
+}
+
+impl Link for Box<dyn serialport::SerialPort> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(self, buf)
+    }
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        std::io::Write::write_all(self, buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(self)
+    }
+    fn set_rts(&mut self, on: bool) {
+        let _ = self.write_request_to_send(on);
+    }
+    fn set_dtr(&mut self, on: bool) {
+        let _ = self.write_data_terminal_ready(on);
+    }
+}
+
+impl Link for std::net::TcpStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(self, buf)
+    }
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        std::io::Write::write_all(self, buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(self)
+    }
+}
+
+/// How long a read waits before giving the loop its turn back. The same on both
+/// transports: the driver polls, so a read that blocks is a driver that cannot
+/// write.
+const READ_TIMEOUT: Duration = Duration::from_millis(50);
+
+/// Open whichever link this configuration describes.
+fn open_link(cfg: &CatConfig) -> std::io::Result<Box<dyn Link>> {
+    if cfg.family == CatFamily::Rigctld {
+        let stream = std::net::TcpStream::connect(cfg.rigctld_addr.trim())?;
+        stream.set_read_timeout(Some(READ_TIMEOUT))?;
+        // Every command here is a handful of bytes that wants to be on the wire
+        // now: a key-down waiting on Nagle for another 40 ms is an over that
+        // starts late.
+        let _ = stream.set_nodelay(true);
+        return Ok(Box::new(stream));
+    }
+    let s = &cfg.serial;
     let port = serialport::new(&s.path, s.baud)
         .data_bits(map_data_bits(s.data_bits))
         .parity(map_parity(s.parity))
         .stop_bits(map_stop(s.stop_bits))
-        .timeout(Duration::from_millis(50))
-        .open()?;
-    Ok(port)
+        .timeout(READ_TIMEOUT)
+        .open()
+        .map_err(std::io::Error::other)?;
+    Ok(Box::new(port))
+}
+
+/// What to call this link in the log — a port and a baud rate, or a host.
+pub fn link_label(cfg: &CatConfig) -> String {
+    match cfg.family {
+        CatFamily::Rigctld => format!("rigctld at {}", cfg.rigctld_addr.trim()),
+        _ => format!("{} at {} baud", cfg.serial.path, cfg.serial.baud),
+    }
 }
 
 /// Apply a forced control-line level (ignored when `LineState::None`). If a
 /// line is used for PTT, PTT owns it instead (handled in the loop).
-fn apply_line(port: &mut dyn serialport::SerialPort, forced: LineState, rts: bool) {
+fn apply_line(port: &mut dyn Link, forced: LineState, rts: bool) {
     let level = match forced {
         LineState::None => return,
         LineState::High => true,
         LineState::Low => false,
     };
-    let _ =
-        if rts { port.write_request_to_send(level) } else { port.write_data_terminal_ready(level) };
+    if rts { port.set_rts(level) } else { port.set_dtr(level) }
 }
 
 fn serial_thread(
@@ -747,23 +816,22 @@ fn serial_thread(
 
     loop {
         // (Re)open the port, retrying on failure.
-        let mut port = match open_port(&cfg.serial) {
+        let mut port = match open_link(&cfg) {
             Ok(p) => {
                 // The PTT method belongs in this line: a rig that answers every
                 // read and still refuses to key is nearly always one being asked
                 // to key some way it isn't set up for, and this is where that
                 // shows.
                 info!(
-                    path = %cfg.serial.path,
-                    baud = cfg.serial.baud,
+                    link = %link_label(&cfg),
                     family = cfg.family.label(),
                     ptt = cfg.ptt.label(),
-                    "CAT port open"
+                    "CAT link open"
                 );
                 p
             }
             Err(e) => {
-                warn!(path = %cfg.serial.path, "CAT open failed: {e}");
+                warn!(link = %link_label(&cfg), "CAT open failed: {e}");
                 // Wait, but still honor a Stop.
                 match cmd_rx.recv_timeout(Duration::from_secs(2)) {
                     Ok(CatCmd::Stop) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
@@ -782,12 +850,8 @@ fn serial_thread(
         }
         // Deassert PTT line at start.
         match cfg.ptt {
-            PttMethod::Rts => {
-                let _ = port.write_request_to_send(false);
-            }
-            PttMethod::Dtr => {
-                let _ = port.write_data_terminal_ready(false);
-            }
+            PttMethod::Rts => port.set_rts(false),
+            PttMethod::Dtr => port.set_dtr(false),
             _ => {}
         }
         // When the last frame went out, so consecutive writes can be spaced
@@ -911,8 +975,14 @@ fn serial_thread(
                         }
                         let failed = match cfg.ptt {
                             PttMethod::Vox => false,
-                            PttMethod::Rts => port.write_request_to_send(on).is_err(),
-                            PttMethod::Dtr => port.write_data_terminal_ready(on).is_err(),
+                            PttMethod::Rts => {
+                                port.set_rts(on);
+                                false
+                            }
+                            PttMethod::Dtr => {
+                                port.set_dtr(on);
+                                false
+                            }
                             PttMethod::Cat => {
                                 let f = protocol.ptt(on);
                                 ptt_written = on.then(Instant::now);
@@ -1161,7 +1231,14 @@ fn serial_thread(
                         }
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+                // A read that found nothing in its window. Which of the two
+                // kinds arrives is the transport's business — a serial port
+                // times out, a socket would block — and neither is an error.
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) => {}
                 Err(e) => {
                     warn!("CAT read error: {e}");
                     break 'io true;
