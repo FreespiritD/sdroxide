@@ -4031,8 +4031,18 @@ what `spyserver` listens on unless its config file says otherwise. A hostname,
 an IPv4 address or a bracketed IPv6 literal all work. Takes effect on Apply.
 
 On the far end, check that `spyserver.config` binds an address other machines
-can reach. Bound to `127.0.0.1` — which several packaged configs are — it
-accepts connections only from the machine it is running on.
+can reach. Bound to `127.0.0.1` it accepts connections only from the machine it
+is running on.
+
+Two other keys in that file are worth knowing about before you start it:
+
+- **`list_in_directory` defaults to `1`**, which publishes your receiver — with
+  the owner name, antenna description and *antenna location* you filled in — to
+  Airspy's public directory for anyone to connect to. Set it to `0` unless
+  being listed is what you want.
+- **`allow_control`** decides whether a client may retune the receiver and
+  change its gain. With it off, or with another client already holding control,
+  sdroxide is limited to the slice that client is receiving — see below.
 
 **Test connection** connects, reads what the server says about itself, and
 disconnects again *without starting a stream*, so it is safe to press against a
@@ -4052,6 +4062,11 @@ the wideband interface, and about 96 kHz on the VFO one — enough for every mod
 here including wide FM, at roughly 1.5 Mbit/s at 8 bits. Press Test connection
 to see what the stages come to on the server you are pointed at. Takes effect on
 Apply.
+
+Measured against `spyserver` on an RTL-SDR at 2.048 Msps, the two interfaces
+came out at 8.4 Mbit/s and 1.3 Mbit/s for the same band coverage — the wideband
+one carrying 512 kHz of I/Q, the VFO one carrying 64 kHz of I/Q plus the whole
+1.7 MHz as an FFT. On an Airspy at 10 Msps the gap is far wider.
 
 **Sample format** decides what a rate costs on the link: 16-bit is twice 8-bit,
 and 32-bit float is four times it for no more information than the receiver's
@@ -4093,6 +4108,10 @@ slid on every retune would be one nobody could steer by.
 The dropdown beside it is how much of the receiver the strip covers. *Whole
 band* is the widest view there is; narrowing it puts the same number of bins
 across less spectrum, which is finer detail over a smaller stretch.
+
+Note that "whole band" is the receiver's **analog bandwidth**, which is not its
+sample rate and is often noticeably less: an RTL-SDR running at 2.048 Msps
+reports 1.7 MHz here. The strip is labelled with what actually arrives.
 
 **Strip dB window** is the range the server quantises its FFT into before
 sending it, one byte a bin — so it decides how finely the strip is *measured*,
