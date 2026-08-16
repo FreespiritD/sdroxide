@@ -46,6 +46,22 @@ pub const DISPLAY_BINS: usize = 2048;
 /// the remote-client WebSocket.
 const METER_INTERVAL: Duration = Duration::from_millis(33);
 
+/// How often the RDS snapshot goes out. Far slower than the meters: a station
+/// name changes never, radio text every few seconds, and the only thing arriving
+/// continuously is the diagnostics log, which is a delta and so costs the same
+/// whatever the cadence.
+const RDS_INTERVAL: Duration = Duration::from_millis(500);
+
+/// How far the dial has to move before the RDS decoder is told to forget the
+/// station.
+///
+/// Broadcast channels are at least 100 kHz apart, so anything within half of
+/// that is still the same station and a nudge of the tuning should not blank the
+/// display. Anything further is somebody else, and leaving the previous
+/// station's name sitting under the new one's audio is worse than showing
+/// nothing for the second it takes to re-acquire.
+const RDS_RETUNE_HZ: f64 = 50_000.0;
+
 pub struct EngineHandles {
     pub cmd_tx: Sender<Command>,
     pub event_rx: Receiver<RadioEvent>,
@@ -632,6 +648,20 @@ impl RxChain {
 
     fn sub_tone(&self) -> Option<sdroxide_types::SubTone> {
         self.demod.as_ref().and_then(|d| d.sub_tone())
+    }
+
+    /// What the RDS decoder has made of the station since the last poll, or
+    /// `None` when nothing has moved. Only WFM ever answers.
+    fn take_rds(&mut self) -> Option<sdroxide_types::RdsData> {
+        self.demod.as_mut().and_then(|d| d.take_rds())
+    }
+
+    /// Forget the station: the dial has moved, and the demod cannot see that for
+    /// itself because the DDC ahead of it absorbs the retune.
+    fn reset_rds(&mut self) {
+        if let Some(d) = self.demod.as_mut() {
+            d.reset_rds();
+        }
     }
 }
 
@@ -1228,6 +1258,10 @@ struct Engine {
     /// Most recent S-meter reading, so rigctld's `STRENGTH` level has a value
     /// to report between meter updates.
     last_s_dbm: f32,
+    /// Dial the RDS decoder was last reading, so a retune can be told from the
+    /// endless small offset changes this engine makes for its own reasons
+    /// (centre moves, satellite Doppler). See [`RDS_RETUNE_HZ`].
+    rds_dial_hz: f64,
     /// WSJT-X UDP broadcast: decodes, status and logged QSOs sent out for
     /// GridTracker, JTAlert, N1MM+ and Log4OM. Present while enabled.
     wsjtx: Option<sdroxide_wsjtx::WsjtxUdp>,
@@ -1678,6 +1712,7 @@ fn engine_thread(
         rigctld_err: None,
         rigctld_seen: None,
         last_s_dbm: -127.0,
+        rds_dial_hz: 0.0,
         tci_srv: None,
         tci_cfg: TciServerConfig::default(),
         tci_srv_err: None,
@@ -1829,6 +1864,7 @@ fn engine_thread(
     let mut dbuf: Vec<Complex32> = Vec::new();
     let mut next_frame = Instant::now();
     let mut next_meters = Instant::now();
+    let mut next_rds = Instant::now();
     let mut next_session = Instant::now() + SESSION_SAVE_INTERVAL;
 
     loop {
@@ -1988,6 +2024,15 @@ fn engine_thread(
             if let Some(m) = meters {
                 engine.last_s_dbm = m.s_dbm;
                 let _ = engine.event_tx.send(RadioEvent::Meters(m));
+            }
+        }
+        if now >= next_rds {
+            next_rds = now + RDS_INTERVAL;
+            // Main receiver only, like the stereo indicator: RDS belongs to the
+            // station being listened to, and a sub receiver parked on a second
+            // broadcast would have nowhere to show it.
+            if let Some(rds) = engine.main.as_mut().and_then(|c| c.take_rds()) {
+                let _ = engine.event_tx.send(RadioEvent::Rds(rds));
             }
         }
         if now >= next_session {
@@ -6676,6 +6721,18 @@ impl Engine {
         }
         self.reseat_sub_freq();
         let sub_offset = self.state.sub_rx_hz - self.state.center_hz;
+        // A retune is the one thing the demod cannot see for itself: the DDC
+        // ahead of it absorbs the move and the composite carries on looking like
+        // a station. Judged on the dial rather than on the DDC offset, which also
+        // moves when the front end recentres or a satellite lock tracks Doppler
+        // — neither of which is a different station.
+        let dial = self.state.rx_freq_hz();
+        if (dial - self.rds_dial_hz).abs() > RDS_RETUNE_HZ {
+            self.rds_dial_hz = dial;
+            if let Some(c) = self.main.as_mut() {
+                c.reset_rds();
+            }
+        }
         if let Some(c) = self.main.as_mut() {
             c.set_offset_hz(main_offset);
         }

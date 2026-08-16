@@ -150,6 +150,7 @@ async fn run_session(
         tle_subs,
         sat_track,
         radio,
+        rds,
     ) = {
         let latest = shared.latest.lock().unwrap();
         (
@@ -166,6 +167,7 @@ async fn run_session(
             latest.tle_subs.clone(),
             latest.sat_track.clone(),
             latest.radio.clone(),
+            latest.rds.clone(),
         )
     };
     let ack = ServerMsg::HelloAck { proto: PROTO_VERSION, caps, state, rx_codec, tx_codec };
@@ -197,6 +199,12 @@ async fn run_session(
     // Likewise the voice keyer's slots, announced once at engine start.
     if let Some(v) = voice {
         let _ = socket.send(msg(&ServerMsg::VoiceStatus(v))).await;
+    }
+    // The station the radio is sitting on, if it is a WFM broadcast carrying
+    // RDS. A condition rather than an event: the name and programme type may
+    // have arrived minutes ago and will not be sent again until they change.
+    if let Some(d) = rds {
+        let _ = socket.send(msg(&ServerMsg::Rds(d))).await;
     }
     // And the transmit-image presets, for the same reason. The received
     // galleries are not replayed: a panel lists its store when it opens, which

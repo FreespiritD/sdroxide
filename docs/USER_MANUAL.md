@@ -52,7 +52,9 @@ or connects to a remote sdroxide server.
   (trade span for resolution, processing gain and CPU on any IQ radio), RIT,
   and a
   draggable filter passband. On NFM, the CTCSS tone or DCS stream under the
-  signal is decoded and shown, and can be made a condition of the squelch.
+  signal is decoded and shown, and can be made a condition of the squelch. On
+  WFM, broadcast stereo and **RDS/RBDS** are decoded automatically — the station
+  name, programme type, radio text, what is playing, and the station's clock.
 - **Transmit** (on TX-capable rigs): PTT, TUNE, drive and tune-drive levels,
   mic gain, XIT, and a transmit meter (power / SWR / ALC). A ham-band-only
   transmit lockout is on by default. While transmitting, the panadapter shows a
@@ -388,6 +390,63 @@ can't quietly add itself to the one you set here.
   mono sum. Clean mono beats noisy stereo, and the blend is gradual enough that
   you will not hear it switch. Forcing mono is still worth doing on a marginal
   signal you want to listen to for a long time.
+- **RDS** (WFM only) — the **data the station carries beside its audio**: what it
+  is called, what it is playing, and what else it wants you to know. The chip
+  lights when data is actually arriving, so it answers "does this transmitter
+  carry RDS?" without your opening anything. Click it for the window.
+
+  The station name appears in about a second, the radio text in a few more, and
+  the rest as it comes. Decoding runs the whole time you are on WFM, whether or
+  not the window is open, so it is already filled in when you do open it.
+
+  What the window shows:
+
+  - **The name** — the eight characters the station calls itself. Some
+    broadcasters abuse this field by scrolling a message through it a word at a
+    time; sdroxide only shows a name it has seen twice running, which stops a
+    fragment of somebody's advertisement being displayed as the station's name,
+    but on those stations the name will still change as you watch. That is the
+    station doing it, not the receiver.
+  - **Identity** — the programme identification code, a number that is the
+    station's real name as far as the standard is concerned. In North America it
+    spells out the call letters, and those are shown beside it.
+  - **Programme** — one of 32 categories. Which 32 depends on the standard: the
+    same five bits mean *Education* in Europe and *Rock* in the United States.
+    See the selector below.
+  - **Radio text** — 64 characters the station can put anything in, and usually
+    the artist and title. Where the station tags them properly (RadioText+),
+    they are lifted out and shown on their own line under the name.
+  - **Traffic** — whether this station carries traffic announcements at all, and
+    whether one is on the air right now.
+  - **Station clock**, and **also on** — the other frequencies carrying the same
+    programme, which is what a car radio follows when you drive out of range.
+
+  **RDS or RBDS** — the selector at the top. They are the same signal; the
+  difference is which table of programme types to read it against, and whether to
+  spell the identity code out as call letters. **Auto** decides from the country
+  code the station sends, which most stations outside North America do. Where one
+  does not, auto falls back to guessing from the identity code, and that guess
+  can be wrong — the call-letter range overlaps identity codes that are perfectly
+  ordinary elsewhere. Set it by hand when the programme type reads like nonsense.
+  Nothing is re-decoded when you change it: the raw codes are already here, so
+  everything on screen re-labels itself at once.
+
+  **DIAGNOSTICS**, the second tab, is for when the first one is empty or
+  flickering. It shows whether the decoder is in sync, how many groups have
+  arrived, what fraction of blocks failed their check, and a running log of the
+  groups themselves. The block error rate is the number to watch: it counts
+  repaired blocks as errors on purpose, so it starts climbing before anything
+  visibly breaks, and a station sitting at a few per cent is one that will drop
+  out when a lorry goes past. A station sending no group 2A sends no radio text —
+  the group list will tell you that, where the blank field cannot.
+
+  Two things are deliberately not shown. **Traffic message channel** data is
+  decoded by nobody here: the messages are numeric references into a licensed
+  location database, and without it "event 108 at location 12345" is all there is
+  to say. And accented characters come out as `·`. The standard has its own
+  character table above plain ASCII, which this build does not reproduce, and a
+  wrong letter in a station's name is indistinguishable from a bad decode in a
+  way that a dot is not.
 - **Tone** (NFM only) — the **CTCSS tone or DCS code** under the signal. Analog
   FM systems carry a sub-audible tone below the voice so a receiver can ignore
   traffic that is not theirs, and the button shows what is arriving: `88.5` for a
@@ -6865,7 +6924,7 @@ using. Bind them under **Speech** on the Controls tab:
 | CW | Morse (continuous wave). Decoded on a waterfall cursor, with type-ahead keyboard sending — see [2.13](#214-cw-decoding-and-keyboard-sending). |
 | AM | Amplitude modulation. |
 | SAM | Synchronous AM. |
-| NFM / WFM | Narrow / wide FM. WFM decodes broadcast stereo automatically. |
+| NFM / WFM | Narrow / wide FM. WFM decodes broadcast stereo and RDS/RBDS automatically. |
 | DIGU / DIGL | Data over USB / LSB (general digital). |
 | DSB | Double sideband. |
 | SPEC | Spectrum only (no demodulation). |

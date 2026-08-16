@@ -313,7 +313,14 @@ use sdroxide_types::{
 /// Without it a client could reach a second radio only if somebody typed its
 /// address in by hand, and could never put the station's radios in tabs the
 /// way it does with the ones plugged into this machine.
-pub const PROTO_VERSION: u16 = 57;
+/// **58** — RDS/RBDS on WFM broadcast: [`ServerMsg::Rds`], appended last. A
+/// remote client gets the station name, programme type, radio text and
+/// now-playing tags the same way the local one does, because the decoding
+/// happens where the radio is and only the result travels. Cached and replayed
+/// on connect like the other announced-once state: the station being listened to
+/// is a *condition*, not an event, and a browser tab that attaches after the
+/// dial stopped moving would otherwise sit blank until the text next changed.
+pub const PROTO_VERSION: u16 = 58;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -629,6 +636,10 @@ pub enum ServerMsg {
         me: u32,
         radios: Vec<RadioInfo>,
     },
+    /// What the RDS/RBDS decoder has made of the WFM station on the main
+    /// receiver. A snapshot, except for the group log inside it, which is a
+    /// delta the client accumulates — see [`sdroxide_types::RdsData`].
+    Rds(sdroxide_types::RdsData),
 }
 
 /// One radio in a station's roster, as a client sees it.

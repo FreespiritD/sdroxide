@@ -260,6 +260,14 @@ pub enum RadioEvent {
         folder: crate::MailFolder,
         mid: String,
     },
+    /// What the RDS/RBDS decoder has made of the WFM station on the main
+    /// receiver: the station picture, plus the groups decoded since the previous
+    /// one. Emitted twice a second while anything is moving, and once with
+    /// everything cleared whenever the dial leaves a station.
+    ///
+    /// A snapshot everywhere except [`crate::RdsData::groups`], which is a delta
+    /// — see the type for why the diagnostics log is not resent whole.
+    Rds(crate::RdsData),
 }
 
 /// Snapshot of the frontend's switchable sound devices (native clients).

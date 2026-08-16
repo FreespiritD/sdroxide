@@ -130,6 +130,13 @@ pub struct ViewState {
     /// window itself is native-only, but this rides in `ViewState` on both
     /// targets so the persisted blob stays identical across builds.
     pub solar3d: Solar3dView,
+    /// Which programme-type table the RDS window reads a station against.
+    ///
+    /// A display preference rather than anything the radio does — the raw codes
+    /// travel either way — so it lives here, per radio, and takes effect on what
+    /// has already been received.
+    #[serde(default)]
+    pub rds_standard: sdroxide_types::RdsStandard,
 }
 
 /// Layer visibility bits for [`Solar3dView::layers`].
@@ -439,6 +446,7 @@ impl Default for ViewState {
             view_lo_hz: 0.0,
             view_hi_hz: 0.0,
             pre_digi_view: None,
+            rds_standard: sdroxide_types::RdsStandard::default(),
             db_floor: -120.0,
             db_ceil: -20.0,
             auto_fit: auto_fit_default(),

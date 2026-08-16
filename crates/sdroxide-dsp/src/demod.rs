@@ -3,11 +3,12 @@
 //! The wanted signal's carrier sits at DC; the passband filter edges are in
 //! Hz relative to that carrier (negative = lower sideband).
 
-use sdroxide_types::{Mode, SubTone};
+use sdroxide_types::{Mode, RdsData, SubTone};
 
 use crate::Complex32;
 use crate::decim::RealFirDecim;
 use crate::fir::{ComplexFir, RealFir, bandpass_taps};
+use crate::rds::RdsRx;
 
 const PASSBAND_TAPS: usize = 331;
 
@@ -60,6 +61,20 @@ pub trait Demodulator: Send {
     fn sub_tone(&self) -> Option<SubTone> {
         None
     }
+
+    /// What the RDS decoder has made of the station since this was last called,
+    /// or `None` from a demod with no data subcarrier to read — and from the WFM
+    /// demod whenever nothing has moved.
+    ///
+    /// Draining rather than borrowing: the snapshot carries the groups decoded
+    /// since the previous call, which have to be handed over exactly once.
+    fn take_rds(&mut self) -> Option<RdsData> {
+        None
+    }
+
+    /// Forget the station the RDS decoder was reading. The demod cannot see a
+    /// retune — the DDC ahead of it absorbs that — so the engine has to say.
+    fn reset_rds(&mut self) {}
 }
 
 /// The channel rate a mode's demodulator wants from the DDC.
@@ -637,6 +652,9 @@ pub struct WfmDemod {
     stereo: Option<PilotPll>,
     /// Operator override; `false` forces mono.
     stereo_enabled: bool,
+    /// The data subcarrier, read off the same composite the pilot PLL sees.
+    /// `None` when the channel rate is too low to carry 57 kHz.
+    rds: Option<RdsRx>,
     filtered: Vec<Complex32>,
     mpx: Vec<f32>,
     side_mix: Vec<f32>,
@@ -678,6 +696,7 @@ impl WfmDemod {
             deemph_alpha: 1.0 - (-1.0 / (rate * 50e-6)).exp() as f32,
             stereo: (rate >= WFM_STEREO_MIN_RATE).then(|| PilotPll::new(rate)),
             stereo_enabled: true,
+            rds: RdsRx::new(rate),
             filtered: Vec::new(),
             mpx: Vec::new(),
             side_mix: Vec::new(),
@@ -710,6 +729,21 @@ impl Demodulator for WfmDemod {
         if let Some(pll) = self.stereo.as_mut() {
             self.side_mix.clear();
             pll.run(&self.mpx, &mut self.side_mix, want_stereo);
+        }
+
+        // RDS, on the same raw composite and for the same reason: 57 kHz is
+        // 25 dB down the far side of the de-emphasis curve. Run before it, and
+        // regardless of the stereo override — the data is not the audio, and an
+        // operator listening in mono still wants to know what station this is.
+        //
+        // The pilot's tracked frequency, tripled, retunes the RDS
+        // down-converter: the subcarrier is locked to the pilot's third
+        // harmonic, so this hands the data loop a carrier estimate measured on a
+        // tone five times its size. When the pilot is not locked the decoder
+        // falls back to nominal and finds the rest itself.
+        if let Some(rds) = self.rds.as_mut() {
+            rds.set_pilot_hz(self.stereo.as_ref().and_then(|p| p.tracked_hz()));
+            rds.process(&self.mpx);
         }
 
         // De-emphasis ahead of the low-pass rather than after it. Both are LTI
@@ -762,6 +796,16 @@ impl Demodulator for WfmDemod {
         self.stereo_enabled = on;
     }
 
+    fn take_rds(&mut self) -> Option<RdsData> {
+        self.rds.as_mut()?.take()
+    }
+
+    fn reset_rds(&mut self) {
+        if let Some(rds) = self.rds.as_mut() {
+            rds.reset();
+        }
+    }
+
     fn set_filter(&mut self, _lo: f32, _hi: f32) {
         // WFM bandwidth is fixed by the broadcast standard.
     }
@@ -784,6 +828,8 @@ impl Demodulator for WfmDemod {
 /// first and the error is taken from the average.
 struct PilotPll {
     phase: f64,
+    /// Sample rate, kept so the tracked frequency can be reported in Hz.
+    rate: f64,
     /// Tracked offset from nominal, in rad/sample.
     freq: f64,
     nominal: f64,
@@ -861,6 +907,7 @@ impl PilotPll {
         let rate32 = rate as f32;
         PilotPll {
             phase: 0.0,
+            rate,
             freq: 0.0,
             nominal: std::f64::consts::TAU * 19_000.0 / rate,
             alpha: 2.0 * 0.707 * wn,
@@ -981,5 +1028,13 @@ impl PilotPll {
 
     fn blend(&self) -> f32 {
         self.blend
+    }
+
+    /// Where the loop is actually tracking the pilot, in Hz, or `None` while it
+    /// is not locked and the figure would be whatever noise last pulled it to.
+    ///
+    /// Exists for the RDS decoder, whose subcarrier is this frequency tripled.
+    fn tracked_hz(&self) -> Option<f64> {
+        self.locked.then(|| (self.nominal + self.freq) * self.rate / std::f64::consts::TAU)
     }
 }

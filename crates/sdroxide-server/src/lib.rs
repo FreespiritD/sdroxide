@@ -34,7 +34,7 @@ use tracing::{info, warn};
 use sdroxide_proto::solar::SolarServerMsg;
 use sdroxide_proto::{AudioCodec, ServerMsg};
 use sdroxide_types::{
-    Command, DeviceCaps, DigiStatus, MemoryChannel, RadioEvent, RadioState, SpectrumFrame,
+    Command, DeviceCaps, DigiStatus, MemoryChannel, RadioEvent, RadioState, RdsData, SpectrumFrame,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -169,6 +169,12 @@ pub(crate) struct Latest {
     /// file here, so a client elsewhere has no copy, and the settings panel it
     /// feeds would otherwise open on defaults and write them back.
     pub radio: Option<Box<sdroxide_types::RadioConfig>>,
+    /// What the RDS decoder has made of the station currently tuned. Replayed on
+    /// connect for the same reason as `digi` and `voice`: which station is being
+    /// listened to is a standing condition, and a client that attaches after the
+    /// dial stopped moving would otherwise show nothing until the radio text next
+    /// changed — which on some stations is never.
+    pub rds: Option<sdroxide_types::RdsData>,
 }
 
 /// Everything the routes are served out of: the station's radios and the two
@@ -606,6 +612,16 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             }
             RadioEvent::Ft8QsoLogged(r) => Some(ServerMsg::Ft8QsoLogged(r)),
             RadioEvent::WsprSpots(s) => Some(ServerMsg::WsprSpots(s)),
+            RadioEvent::Rds(d) => {
+                // Cached without the group log: that part is a delta, and
+                // replaying one batch of it to a client that joined later would
+                // put a few seconds of somebody else's diagnostics at the head
+                // of its own log. The station picture is what a fresh client
+                // needs, and it is the part that is a condition rather than an
+                // event.
+                latest.rds = Some(RdsData { groups: Vec::new(), ..d.clone() });
+                Some(ServerMsg::Rds(d))
+            }
             RadioEvent::SkimmerSpots(s) => Some(ServerMsg::SkimmerSpots(s)),
             RadioEvent::SstvLine { image_id, y, rgb } => {
                 Some(ServerMsg::SstvLine { image_id, y, rgb })

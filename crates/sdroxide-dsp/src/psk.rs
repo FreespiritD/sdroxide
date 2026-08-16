@@ -315,7 +315,7 @@ impl Default for VaricodeRx {
 /// Written out rather than hand-picked because the frequency term is what sets
 /// how much carrier offset the Costas loop can pull in, and eyeballing it is how
 /// a loop ends up taking half a minute to acquire a few Hz.
-fn loop_gains(bw: f32) -> (f32, f32) {
+pub(crate) fn loop_gains(bw: f32) -> (f32, f32) {
     let damp = 0.707f32;
     let theta = bw / (damp + 0.25 / damp);
     let denom = 1.0 + 2.0 * damp * theta + theta * theta;

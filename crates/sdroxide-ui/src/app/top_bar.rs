@@ -980,7 +980,10 @@ impl SdroxideApp {
     /// hangs off — the phone's hugging chip or the tablet's stretched one —
     /// and dresses it with its hover text, so the two strips cannot drift.
     fn rx_menu(&mut self, ui: &mut egui::Ui, btn: egui::Response, cmds: &mut Vec<Command>) {
-        let btn = btn.on_hover_text("Volume, gain, AGC, squelch and the noise controls");
+        let btn = btn.on_hover_text(
+            "Volume, gain, AGC, squelch, the noise controls, and the RDS readout on FM \
+             broadcast",
+        );
         crate::chrome::menu_popup(ui, &btn, |ui| {
             crate::chrome::menu_caption(ui, "Receiver");
             self.rx_controls(ui, cmds, true);
@@ -1867,6 +1870,21 @@ impl SdroxideApp {
                 if crate::chrome::chip(ui, want && locked, "ST").on_hover_text(hover).clicked() {
                     self.state.rx[0].wfm_stereo = !want; // optimistic echo
                     cmds.push(Command::SetWfmStereo { rx: RxId::Main, on: !want });
+                }
+                // RDS: what the station says about itself on its 57 kHz data
+                // subcarrier. Lit while data is actually arriving, so the chip
+                // answers "does this station carry it?" without opening
+                // anything. Decoding runs whether or not the window is open.
+                let rds = self.rds.as_ref().is_some_and(|r| r.sync);
+                let hover = match self.rds.as_ref().and_then(|r| r.ps.clone()) {
+                    Some(ps) if rds => format!("RDS: {ps}. Click for the station's data"),
+                    _ if rds => "RDS data is arriving — click to see it".to_string(),
+                    _ => "RDS — no data on this station. Click anyway for the decoder's \
+                          diagnostics"
+                        .to_string(),
+                };
+                if crate::chrome::chip(ui, rds, "RDS").on_hover_text(hover).clicked() {
+                    self.show_rds = !self.show_rds;
                 }
             }
             // CTCSS/DCS: what is coming in, and optionally what has to be

@@ -51,7 +51,7 @@ One binary, three ways to run it:
   switched.
 - **Modes** — SSB (USB/LSB), CW, AM, SAM, NFM (with **CTCSS/DCS** decoding and
   tone squelch), WFM (with broadcast
-  pilot-tone **stereo**), DSB, DIGU/DIGL, a
+  pilot-tone **stereo** and **RDS/RBDS**), DSB, DIGU/DIGL, a
   spectrum-only mode, **FT8/FT4/FT2**, **JS8** (all four speeds, with directed
   messaging, heartbeats and multi-frame free text), the keyboard modes
   **PSK31**, **RTTY**,

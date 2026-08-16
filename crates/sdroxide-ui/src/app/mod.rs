@@ -26,6 +26,7 @@ pub(in crate::app) mod logbook;
 pub(in crate::app) mod net;
 pub(in crate::app) mod panels;
 pub(crate) mod persist;
+pub(in crate::app) mod rds;
 pub(in crate::app) mod sat;
 pub(in crate::app) mod scanner;
 pub(in crate::app) mod settings;
@@ -240,6 +241,20 @@ pub struct SdroxideApp {
     pluto_test_result: Option<TestOutcome>,
     seen_first_state: bool,
     show_memories: bool,
+    /// The RDS window. Opened from the RDS chip in the receive menu, which only
+    /// appears on WFM.
+    show_rds: bool,
+    /// Which half of the RDS window is showing.
+    rds_tab: rds::RdsTab,
+    /// The station picture from the engine's RDS decoder, minus the group log —
+    /// that arrives as a delta and is accumulated into `rds_log`.
+    rds: Option<sdroxide_types::RdsData>,
+    /// The diagnostics log, oldest first, capped at [`rds::RDS_LOG_ROWS`].
+    rds_log: std::collections::VecDeque<sdroxide_types::RdsGroupLog>,
+    /// Absolute index the next group in `rds_log` should have, so a batch that
+    /// was dropped between here and the engine shows as a gap rather than
+    /// silently closing up.
+    rds_next_seq: u64,
     show_scanner: bool,
     show_settings: bool,
     /// Voice keyer: the engine's slot list and what it is doing, the window's
@@ -774,6 +789,11 @@ impl SdroxideApp {
             pluto_test_result: None,
             seen_first_state: false,
             show_memories: false,
+            show_rds: false,
+            rds_tab: rds::RdsTab::default(),
+            rds: None,
+            rds_log: std::collections::VecDeque::new(),
+            rds_next_seq: 0,
             show_scanner: false,
             show_settings: false,
             voice: sdroxide_types::VoiceStatus::default(),

@@ -569,6 +569,7 @@ impl eframe::App for SdroxideApp {
 
         self.memories_window(&ctx, &mut cmds);
         self.scanner_window(&ctx, &mut cmds);
+        self.rds_window(&ctx);
         self.voice_window(&ctx, &mut cmds);
         self.settings_window(&ctx, &mut cmds);
         self.digi_settings_window(&ctx, &mut cmds);
@@ -917,6 +918,7 @@ impl SdroxideApp {
                     self.wefax.clear_live();
                 }
                 RadioEvent::WefaxStatus(s) => self.wefax.status = s,
+                RadioEvent::Rds(d) => self.on_rds(d),
                 RadioEvent::SstvStatus(s) => {
                     // Adopt a *newly* detected RX mode for the next transmit, but
                     // don't re-apply a steady detection every frame — that would

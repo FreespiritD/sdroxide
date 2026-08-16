@@ -28,6 +28,7 @@ mod probe;
 mod prop_store;
 mod propagation;
 mod radio;
+mod rds;
 pub mod region;
 mod rifp;
 mod rigctld;
@@ -128,6 +129,10 @@ pub use radio::{
     SdrPlayDevice, SdrPlayDuoTuner, SdrPlayModel, SerialConfig, SmartSdrConfig, SmartSdrDevice,
     SoapyDeviceInfo, SoundFormat, SpyServerConfig, SpyServerFormat, StopBits, TciConfig,
     converter_preset_name, format_freq_ranges, hackrf_serial_matches, parse_freq_ranges,
+};
+pub use rds::{
+    RdsClock, RdsData, RdsGroupLog, RdsStandard, RdsStats, RtPlus, af_code_hz, pi_callsign,
+    pty_name, rt_plus_class,
 };
 pub use region::{Region, region, set_region};
 pub use rifp::{
