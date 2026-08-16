@@ -193,7 +193,7 @@ fn spot_color(spot: &SkimmerSpot, hovered: bool) -> Color32 {
     } else if spot.callsign.is_some() {
         crate::theme::scope().accent_dim
     } else {
-        Color32::from_gray(78)
+        crate::theme::scope_gray(78)
     }
 }
 
@@ -483,7 +483,7 @@ fn draw_net_box(p: &egui::Painter, b: &NetBox, spot: &Spot, hovered: bool, alpha
     let g = p.layout_no_wrap(spot.call.clone(), FontId::monospace(NET_CALL_PT * fs), call_col);
     p.galley(pos2(x, cy - g.size().y * 0.5), g.clone(), call_col);
     x += g.size().x + 6.0;
-    let tag_col = fade(Color32::from_gray(180), alpha);
+    let tag_col = fade(crate::theme::scope_gray(180), alpha);
     let tg = p.layout_no_wrap(
         spot.kind.label().to_string(),
         FontId::monospace(NET_TAG_PT * fs),
@@ -1283,7 +1283,7 @@ pub fn show_ext(
         let col = if hover_resize || resizing {
             crate::theme::scope().accent
         } else {
-            Color32::from_gray(70)
+            crate::theme::scope_gray(70)
         };
         for dx in [-16.0f32, 0.0, 16.0] {
             painter.line_segment(
@@ -1342,8 +1342,11 @@ pub fn show_ext(
             let hot = hover_edge == Some(e) || edge == Some(e);
             let w = if hot { 2.0 } else { 1.0 };
             if spec_h > 1.0 {
-                let color =
-                    if hot { Color32::from_rgb(255, 170, 90) } else { Color32::from_gray(90) };
+                let color = if hot {
+                    Color32::from_rgb(255, 170, 90)
+                } else {
+                    crate::theme::scope_gray(90)
+                };
                 painter.vline(x, spec_rect.y_range(), Stroke::new(w, color));
             }
             let wf_color = if hot {
@@ -1560,7 +1563,7 @@ pub fn show_ext(
                     &wf_rect,
                     spec_h,
                     view.freq_to_x(dial, &rect),
-                    Color32::from_gray(150),
+                    crate::theme::scope_gray(150),
                     true,
                 );
             }
@@ -1707,7 +1710,7 @@ pub fn show_ext(
                     &painter,
                     pos2(wf_rect.left() + 2.0, y + 1.0),
                     &text,
-                    Color32::from_gray(215),
+                    crate::theme::scope_gray(215),
                     wf_rect,
                 );
             }
@@ -2047,7 +2050,7 @@ fn compute_trace(
 }
 
 fn draw_grid(painter: &egui::Painter, view: &ViewState, rect: &Rect) {
-    let grid = Stroke::new(0.5, Color32::from_gray(42));
+    let grid = Stroke::new(0.5, crate::theme::scope_gray(42));
     // dB lines every 20 dB of the display range.
     let range = view.db_ceil - view.db_floor;
     if range > 1.0 {
@@ -2061,7 +2064,7 @@ fn draw_grid(painter: &egui::Painter, view: &ViewState, rect: &Rect) {
                 Align2::LEFT_BOTTOM,
                 format!("{db:.0}"),
                 FontId::monospace(9.0 * crate::theme::panadapter_font_scale()),
-                Color32::from_gray(110),
+                crate::theme::scope_gray(110),
             );
             db += 20.0;
         }
@@ -2079,14 +2082,14 @@ fn draw_scale(painter: &egui::Painter, view: &ViewState, rect: &Rect) {
         painter.vline(
             x,
             egui::Rangef::new(rect.top(), rect.top() + 5.0),
-            Stroke::new(1.0, Color32::from_gray(120)),
+            Stroke::new(1.0, crate::theme::scope_gray(120)),
         );
         painter.text(
             pos2(x, rect.center().y + 2.0),
             Align2::CENTER_CENTER,
             format!("{:.4}", hz / 1e6),
             FontId::monospace(10.0 * crate::theme::panadapter_font_scale()),
-            Color32::from_gray(190),
+            crate::theme::scope_gray(190),
         );
     }
 }

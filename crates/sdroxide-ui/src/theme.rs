@@ -27,6 +27,10 @@ pub struct Palette {
     /// pick a shade by hand — [`gray`], [`continent_color`], the few widgets
     /// that mix their own tints — asks this rather than sniffing a luminance.
     pub light: bool,
+    /// The theme has no dim register: nothing is faint on purpose, and
+    /// [`gray`] lifts the hand-written grey scale up to meet the ink instead
+    /// of reproducing it.
+    pub no_dim: bool,
     pub bg_deep: Color32,
     pub panel: Color32,
     pub input_bg: Color32,
@@ -100,6 +104,7 @@ const fn c(rgb: u32) -> Color32 {
 /// screenshot in the manual shows.
 const DEFAULT: Palette = Palette {
     light: false,
+    no_dim: false,
     bg_deep: c(0x050810),
     panel: c(0x0b111e),
     input_bg: c(0x04070e),
@@ -138,6 +143,7 @@ const DEFAULT: Palette = Palette {
 /// warm attention gold on purpose — they are the second alert tier.
 const GREEN_PHOSPHOR: Palette = Palette {
     light: false,
+    no_dim: false,
     bg_deep: c(0x020703),
     panel: c(0x04120a),
     input_bg: c(0x010704),
@@ -175,6 +181,7 @@ const GREEN_PHOSPHOR: Palette = Palette {
 /// amber family.
 const AMBER_PHOSPHOR: Palette = Palette {
     light: false,
+    no_dim: false,
     bg_deep: c(0x070402),
     panel: c(0x120c04),
     input_bg: c(0x070401),
@@ -211,6 +218,7 @@ const AMBER_PHOSPHOR: Palette = Palette {
 /// The default's structure with teal accents and orange chrome.
 const TEAL_ORANGE: Palette = Palette {
     light: false,
+    no_dim: false,
     bg_deep: c(0x040e0d),
     panel: c(0x0b1e1c),
     input_bg: c(0x040b0a),
@@ -250,6 +258,7 @@ const TEAL_ORANGE: Palette = Palette {
 /// whole UI come out multi-coloured.
 const RAINBOW: Palette = Palette {
     light: false,
+    no_dim: false,
     bg_deep: c(0x050810),
     panel: c(0x0b111e),
     input_bg: c(0x04070e),
@@ -305,6 +314,7 @@ const RAINBOW: Palette = Palette {
 /// the white here, and the page is the grey they sit on.
 const LIGHT: Palette = Palette {
     light: true,
+    no_dim: false,
     bg_deep: c(0xeaeef4),  // the page the panels sit on
     panel: c(0xffffff),    // the panels themselves: plain white
     input_bg: c(0xf2f5fa), // fields, recessed a step off the panel
@@ -342,9 +352,71 @@ const LIGHT: Palette = Palette {
     hazard_dark: c(0x161204),
 };
 
+/// White on black, and nothing between them that does not have to be there.
+///
+/// The other themes spend most of their range on shades that mean "this is
+/// here but is not what you are looking at" — a border a step off the panel, a
+/// caption a step off the body text. This one has no such register. Every ink
+/// role is at least 7:1 against the panel (the figure below each is its actual
+/// ratio), every border is a shade you can see from across the room, and
+/// [`gray`] lifts the whole hand-written grey scale up to meet them rather
+/// than mirroring it — see there for what that costs.
+///
+/// The accents are the ones a high-contrast display convention already uses,
+/// so they arrive meaning what an operator expects: cyan selects, yellow
+/// warns, green confirms, red stops.
+const HIGH_CONTRAST: Palette = Palette {
+    light: false,
+    no_dim: true,
+    // Pure black page. `panel` is a hair off it only because the page has to
+    // stay behind the panels in every theme; the *border* is what separates
+    // them here, not the fill.
+    bg_deep: c(0x000000),
+    panel: c(0x0a0a0a),
+    input_bg: c(0x000000),
+    // Button faces stay near-black on purpose, and their *border* is what
+    // makes them buttons — the same bargain every high-contrast convention
+    // strikes. A face light enough to read against the panel on its own would
+    // have to take the white label with it, and 19.8:1 of label is worth more
+    // than a visible fill.
+    fill: c(0x1a1a1a),
+    fill_hover: c(0x333333),
+    fill_active: c(0x4d4d4d),
+    line: c(0x8c8c8c),     //  5.9:1 — a border nobody has to hunt for
+    line_lit: c(0xffffff), // 19.8:1
+    text: c(0xffffff),     // 19.8:1
+    text_strong: c(0xffffff),
+    cyan: c(0x1aebff),     // 13.6:1 — selections, headings, links
+    cyan_dim: c(0x9fe8ff), // 14.6:1 — a *second hue*, not a dimmer one
+    pink: c(0xff66ff),     //  8.1:1 — window borders and chrome strokes
+    yellow: c(0xffff00),   // 18.4:1
+    green: c(0x3ff23f),    // 13.2:1
+    ink_on_cyan: c(0x000000),
+    ink_on_bright: c(0x000000),
+    red_deep: c(0xff5555),
+    // Row tints dark enough that white ink still clears 15:1 on them, and
+    // saturated enough to read as a band rather than as a smudge.
+    cq_bg: c(0x4d001f),
+    tome_bg: c(0x4d3a00),
+    done_bg: c(0x004d24),
+    row_bg: c(0x000000),
+    row_hover: c(0x333333),
+    scroll_track: c(0x1a1a1a),
+    scroll_handle: c(0xffffff),
+    scroll_handle_hover: c(0x1aebff),
+    scroll_handle_drag: c(0xffff00),
+    faint_bg: c(0x1a1a1a),
+    // 6.3:1, and as bright as it can be while still being unmistakably red:
+    // the green and blue a brighter one would need are exactly what would turn
+    // it salmon. The one role where the hue outranks the ratio.
+    alert: c(0xff5555),
+    hazard: c(0xffff00),
+    hazard_dark: c(0x000000),
+};
+
 /// Indexed by [`theme_index`].
-static PALETTES: [Palette; 6] =
-    [DEFAULT, GREEN_PHOSPHOR, AMBER_PHOSPHOR, TEAL_ORANGE, RAINBOW, LIGHT];
+static PALETTES: [Palette; 7] =
+    [DEFAULT, GREEN_PHOSPHOR, AMBER_PHOSPHOR, TEAL_ORANGE, RAINBOW, LIGHT, HIGH_CONTRAST];
 
 /// The S-meter instrument's colours: the face wash, the backlight bloom, the
 /// cool-side (below the red-line) inks, the bar's recessed rail, and the cool
@@ -355,14 +427,31 @@ static PALETTES: [Palette; 6] =
 /// the needle's red-line, the TX backlight, the hot tick/label inks, the
 /// amber-to-red ramp tops — stays red in every theme, the same rule that keeps
 /// [`ALERT`] red.
+/// What the S-meter's face is made of. The instrument's *behaviour* turns on
+/// this, not just its shades: which way a lit edge shades, whether the needle
+/// blooms, and which of the three reds the over-the-red-line half is printed
+/// in. See `widgets::smeter`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeterFace {
+    /// Lit glass over a near-black dial — the historic instrument.
+    Glass,
+    /// A printed white card, as a moving-coil meter has always been made.
+    Paper,
+    /// Glass again, but with every shade pushed to the ends of the range:
+    /// white graduations, a white pointer, nothing decoratively faint.
+    Contrast,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeterPalette {
-    /// The face is a *printed dial* — white card, black graduations, a black
-    /// needle — rather than lit glass. The whole instrument turns on this: the
-    /// backlight stops glowing, the bloom under the lit arc goes away, the
-    /// leading edge of a bar shades darker instead of lighter, and the hot
-    /// half of every scale takes its deeper reds. See `widgets::smeter`.
-    pub paper: bool,
+    pub face: MeterFace,
+    /// The needle: the blade's root, its length, and the last tenth at the
+    /// point, plus the halo it throws. Three stops rather than two because
+    /// the flare at the tip is what makes a lit blade read as lit.
+    pub needle_root: Color32,
+    pub needle_mid: Color32,
+    pub needle_tip: Color32,
+    pub needle_glow: Color32,
     pub face_top: Color32,
     pub face_bot: Color32,
     /// Specular hairline along the top of the glass.
@@ -389,7 +478,11 @@ pub struct MeterPalette {
 
 /// The historic instrument: navy glass, cyan backlight, ice at S9.
 const METER_DEFAULT: MeterPalette = MeterPalette {
-    paper: false,
+    face: MeterFace::Glass,
+    needle_root: c(0x9e0c22),
+    needle_mid: c(0xff2c38),
+    needle_tip: c(0xffe2e6),
+    needle_glow: c(0xff3c46),
     face_top: c(0x111b2b),
     face_bot: c(0x03060c),
     glass: c(0x2c4460),
@@ -410,7 +503,11 @@ const METER_DEFAULT: MeterPalette = MeterPalette {
 };
 
 const METER_GREEN: MeterPalette = MeterPalette {
-    paper: false,
+    face: MeterFace::Glass,
+    needle_root: c(0x9e0c22),
+    needle_mid: c(0xff2c38),
+    needle_tip: c(0xffe2e6),
+    needle_glow: c(0xff3c46),
     face_top: c(0x0c2112),
     face_bot: c(0x020803),
     glass: c(0x2c6040),
@@ -431,7 +528,11 @@ const METER_GREEN: MeterPalette = MeterPalette {
 };
 
 const METER_AMBER: MeterPalette = MeterPalette {
-    paper: false,
+    face: MeterFace::Glass,
+    needle_root: c(0x9e0c22),
+    needle_mid: c(0xff2c38),
+    needle_tip: c(0xffe2e6),
+    needle_glow: c(0xff3c46),
     face_top: c(0x211809),
     face_bot: c(0x080502),
     glass: c(0x60482c),
@@ -452,7 +553,11 @@ const METER_AMBER: MeterPalette = MeterPalette {
 };
 
 const METER_TEAL: MeterPalette = MeterPalette {
-    paper: false,
+    face: MeterFace::Glass,
+    needle_root: c(0x9e0c22),
+    needle_mid: c(0xff2c38),
+    needle_tip: c(0xffe2e6),
+    needle_glow: c(0xff3c46),
     face_top: c(0x0c2320),
     face_bot: c(0x030b0a),
     glass: c(0x2c605a),
@@ -482,7 +587,13 @@ const METER_TEAL: MeterPalette = MeterPalette {
 /// Everything downstream keys off [`MeterPalette::paper`]; the values here are
 /// only the shades.
 const METER_LIGHT: MeterPalette = MeterPalette {
-    paper: true,
+    face: MeterFace::Paper,
+    // Painted metal, darkening rather than flaring towards the point, and
+    // throwing no light of its own — the glow is what the blade would emit.
+    needle_root: c(0x4a5159),
+    needle_mid: c(0x11151a),
+    needle_tip: c(0x000000),
+    needle_glow: Color32::TRANSPARENT,
     face_top: c(0xffffff),
     face_bot: c(0xeef0f3), // card stock, very slightly shaded toward the bottom
     glass: c(0xc3c9d1),    // the bezel hairline — no specular left to catch
@@ -509,11 +620,49 @@ const METER_LIGHT: MeterPalette = MeterPalette {
     ramp_hi: c(0x00a0c6),
 };
 
+/// The High-contrast instrument: the same glass, with every shade driven to
+/// the ends of the range. White graduations, a white pointer, and ramps that
+/// stay bright the whole way up their cool halves.
+const METER_HIGH_CONTRAST: MeterPalette = MeterPalette {
+    face: MeterFace::Contrast,
+    // A white blade. It needs no flare at the tip to read as lit — there is
+    // nothing brighter to flare to — and no bloom, which would only fog the
+    // graduations it crosses.
+    needle_root: c(0xd9d9d9),
+    needle_mid: c(0xffffff),
+    needle_tip: c(0xffffff),
+    needle_glow: Color32::TRANSPARENT,
+    face_top: c(0x0d0d0d),
+    face_bot: c(0x000000),
+    glass: c(0x999999),
+    backlight: c(0x1aebff),
+    readout: c(0xffffff),
+    subdued: c(0xcccccc), // 16.1:1 — the "secondary" reading, barely secondary
+    tick_minor: c(0xb3b3b3),
+    tick_major: c(0xffffff),
+    label: c(0xffffff),
+    grid_line: c(0x808080), //  5.0:1 — a rule you can follow, not a hint
+    grid_label: c(0xcccccc),
+    rail_top: c(0x000000),
+    rail_bot: c(0x262626),
+    rail_edge: c(0xb3b3b3),
+    ramp_lo: c(0x3399ff), //  7.1:1
+    ramp_mid: c(0x00ddff),
+    ramp_hi: c(0xccffff),
+};
+
 /// Indexed by [`theme_index`], like [`PALETTES`]. Rainbow keeps the historic
 /// navy instrument: its grounds are the default's, and the meter already
 /// reads in the accents the ramps give it.
-static METER_PALETTES: [MeterPalette; 6] =
-    [METER_DEFAULT, METER_GREEN, METER_AMBER, METER_TEAL, METER_DEFAULT, METER_LIGHT];
+static METER_PALETTES: [MeterPalette; 7] = [
+    METER_DEFAULT,
+    METER_GREEN,
+    METER_AMBER,
+    METER_TEAL,
+    METER_DEFAULT,
+    METER_LIGHT,
+    METER_HIGH_CONTRAST,
+];
 
 /// The current theme's S-meter instrument colours.
 #[inline]
@@ -592,14 +741,17 @@ const SCOPE_LIGHT: ScopePalette = ScopePalette {
     chrome: c(0xff3d63),
 };
 
-/// Indexed by [`theme_index`], like [`PALETTES`].
-static SCOPE_PALETTES: [ScopePalette; 6] = [
+/// Indexed by [`theme_index`], like [`PALETTES`]. High contrast lends the
+/// instruments its own roles like any other dark theme — its accents were
+/// already picked to sit on black, which is what the glass is.
+static SCOPE_PALETTES: [ScopePalette; 7] = [
     scope_from(&DEFAULT),
     scope_from(&GREEN_PHOSPHOR),
     scope_from(&AMBER_PHOSPHOR),
     scope_from(&TEAL_ORANGE),
     scope_from(&RAINBOW),
     SCOPE_LIGHT,
+    scope_from(&HIGH_CONTRAST),
 ];
 
 /// The current theme's instrument inks — see [`ScopePalette`].
@@ -681,14 +833,34 @@ const SCOPE_MAP_LIGHT: MapPalette = MapPalette {
     shell: c(0xffffff),
 };
 
+/// The High-contrast map. Still a night sky — black is the highest contrast
+/// ground there is for the bright markers — but the continents are stippled in
+/// a grey you can actually make out, rather than the slate-teal that reads as
+/// texture more than as land.
+const MAP_HIGH_CONTRAST: MapPalette = MapPalette {
+    sea: c(0x000000),
+    land: c(0x7a7a7a), // 4.9:1 on the sea — the coastline, not a suggestion
+    station: c(0xffffff),
+    trail: c(0x1aebff),
+    comet: c(0x1aebff),
+    home: c(0x3ff23f),
+    dx: c(0xff5555),
+    hover: c(0xffff00),
+    preview: c(0xff66ff),
+    hint: Color32::from_rgba_premultiplied(200, 200, 200, 200),
+    frame: c(0xff5555),
+    shell: c(0x000000),
+};
+
 /// Indexed by [`theme_index`], like [`PALETTES`].
-static MAP_PALETTES: [MapPalette; 6] = [
+static MAP_PALETTES: [MapPalette; 7] = [
     map_from(&DEFAULT),
     map_from(&GREEN_PHOSPHOR),
     map_from(&AMBER_PHOSPHOR),
     map_from(&TEAL_ORANGE),
     map_from(&RAINBOW),
     SCOPE_MAP_LIGHT,
+    MAP_HIGH_CONTRAST,
 ];
 
 /// The current theme's world-map inks — see [`MapPalette`].
@@ -714,6 +886,7 @@ const fn theme_index(t: UiTheme) -> u8 {
         UiTheme::TealOrange => 3,
         UiTheme::Rainbow => 4,
         UiTheme::Light => 5,
+        UiTheme::HighContrast => 6,
     }
 }
 
@@ -753,6 +926,46 @@ pub fn is_light() -> bool {
     palette().light
 }
 
+/// [`gray`] for a theme with no dim register: the ink half of the scale is
+/// lifted until even its bottom clears 7:1, and the surface half is left where
+/// it is.
+///
+/// The split is at [`GRAY_KNEE`], and it is a real seam — 64 comes back as 64
+/// and 65 as 155 — which is safe only because nothing uses the levels around
+/// it. The scale has always had two populations with a wide gap between them:
+/// the recessed *surfaces* (a progress trough at 24, an image mount at 6, an
+/// unlit indicator at 48) and the de-emphasised *ink* (a caption at 110, a
+/// unit suffix at 140). Lifting the surfaces too would make a bar's empty half
+/// as loud as its full one, and an unlit indicator brighter than the lit one
+/// beside it; leaving the ink alone would miss the whole point of the theme.
+fn lifted(level: u8) -> u8 {
+    if level <= GRAY_KNEE {
+        return level;
+    }
+    let t = (level - GRAY_KNEE) as u16;
+    let span = (255 - GRAY_KNEE) as u16;
+    (GRAY_FLOOR as u16 + t * (255 - GRAY_FLOOR as u16) / span) as u8
+}
+
+/// Where [`lifted`] stops treating a level as a surface and starts treating it
+/// as ink.
+const GRAY_KNEE: u8 = 64;
+/// The dimmest ink [`lifted`] will hand back: 7.4:1 on the high-contrast
+/// panel, so even the faintest caption in the UI clears AAA.
+const GRAY_FLOOR: u8 = 155;
+
+/// [`gray`] for a mark painted on an instrument's dark glass rather than on
+/// the panel — the panadapter's spot borders, its resize grip, the mini-scope
+/// grids.
+///
+/// The two differ only on the Light theme, where the chrome inverted and the
+/// glass did not: `gray` would hand these a shade picked for white paper and
+/// paint it onto black. Everywhere else they agree, high contrast included,
+/// where both lift.
+pub fn scope_gray(level: u8) -> Color32 {
+    if palette().no_dim { Color32::from_gray(lifted(level)) } else { Color32::from_gray(level) }
+}
+
 /// One sRGB channel, decoded to light.
 fn to_linear(ch: u8) -> f32 {
     let c = ch as f32 / 255.0;
@@ -790,6 +1003,9 @@ fn luminance(c: Color32) -> f32 {
 /// bit.
 pub fn gray(level: u8) -> Color32 {
     let p = palette();
+    if p.no_dim {
+        return Color32::from_gray(lifted(level));
+    }
     if !p.light {
         return Color32::from_gray(level);
     }
@@ -1480,7 +1696,8 @@ mod tests {
         let i = theme_index(UiTheme::Light) as usize;
         let (scope, map, meter) = (&SCOPE_PALETTES[i], &MAP_PALETTES[i], &METER_PALETTES[i]);
 
-        assert!(meter.paper, "the Light meter is a printed dial");
+        assert_eq!(meter.face, MeterFace::Paper, "the Light meter is a printed dial");
+        assert_eq!(meter.needle_tip, Color32::BLACK, "a printed pointer is black at the point");
         assert!(
             luminance(meter.face_top) > 0.5 && luminance(meter.readout) < 0.1,
             "the paper dial wants dark ink on a light card"
@@ -1566,6 +1783,86 @@ mod tests {
                 "darkening {rgb:?} moved its hue"
             );
         }
+    }
+
+    /// The High-contrast theme has no dim register anywhere an operator reads.
+    ///
+    /// Every one of its ink roles clears AAA on the panel, every hand-written
+    /// grey that [`gray`] hands back as *ink* clears it too, and the row tints
+    /// a decode list paints behind white text do not eat into it. This is the
+    /// whole promise of the theme, and it is spread over a palette, a grey
+    /// scale and an instrument, so it is asserted in one place.
+    #[test]
+    fn the_high_contrast_theme_has_no_dim_register() {
+        let i = theme_index(UiTheme::HighContrast) as usize;
+        let p = &PALETTES[i];
+        assert!(p.no_dim, "the High-contrast palette must declare itself");
+        assert!(!p.light, "it is white on black, not black on white");
+
+        for (ink, name, floor) in [
+            (p.text, "text", 7.0),
+            (p.text_strong, "text_strong", 7.0),
+            (p.cyan, "cyan", 7.0),
+            (p.cyan_dim, "cyan_dim", 7.0),
+            (p.pink, "pink", 7.0),
+            (p.yellow, "yellow", 7.0),
+            (p.green, "green", 7.0),
+            // The one role where the hue outranks the ratio: a red bright
+            // enough for AAA is no longer a red. AA, and no lower.
+            (p.alert, "alert", 4.5),
+            // Borders are UI components, not text — WCAG asks 3:1 of them.
+            (p.line, "line", 4.5),
+            (p.line_lit, "line_lit", 7.0),
+        ] {
+            let r = contrast(ink, p.panel);
+            assert!(r >= floor, "High-contrast {name} is {r:.2}:1 on the panel — needs {floor}:1");
+        }
+        for (bg, name) in [
+            (p.cq_bg, "cq_bg"),
+            (p.tome_bg, "tome_bg"),
+            (p.done_bg, "done_bg"),
+            (p.row_hover, "row_hover"),
+        ] {
+            let r = contrast(p.text, bg);
+            assert!(r >= 7.0, "High-contrast text is {r:.2}:1 on {name} — needs 7:1");
+        }
+
+        // The lifted grey scale: every level the UI uses as ink comes back
+        // above AAA, and every level it uses as a *surface* is left alone.
+        for level in [70u8, 90, 110, 120, 140, 150, 190] {
+            let r = contrast(Color32::from_gray(lifted(level)), p.panel);
+            assert!(r >= 7.0, "lifted grey {level} is {r:.2}:1 — needs 7:1");
+        }
+        for level in [6u8, 20, 24, 38, 45, 48, 60] {
+            assert_eq!(level, lifted(level), "a surface grey was lifted into the ink range");
+        }
+        // Nothing in the codebase sits in the seam, which is the only reason
+        // the seam is safe. If a call site ever lands here, it has to be
+        // classified as ink or as surface first.
+        assert!(GRAY_KNEE > 60 && GRAY_FLOOR > GRAY_KNEE);
+
+        // The instrument follows: a white pointer, white graduations, and a
+        // "subdued" reading that is barely subdued.
+        let m = &METER_PALETTES[i];
+        assert_eq!(m.face, MeterFace::Contrast);
+        assert_eq!(m.needle_mid, Color32::WHITE, "the high-contrast pointer is white");
+        assert_eq!(m.needle_glow, Color32::TRANSPARENT, "a white blade throws no halo");
+        for (ink, name) in [
+            (m.readout, "readout"),
+            (m.subdued, "subdued"),
+            (m.tick_minor, "tick_minor"),
+            (m.tick_major, "tick_major"),
+            (m.label, "label"),
+            (m.grid_label, "grid_label"),
+        ] {
+            let r = contrast(ink, m.face_bot);
+            assert!(r >= 7.0, "High-contrast meter {name} is {r:.2}:1 on the dial — needs 7:1");
+        }
+
+        // …and so does the map: the continents have to be findable.
+        let map = &MAP_PALETTES[i];
+        let r = contrast(map.land, map.sea);
+        assert!(r >= 4.5, "High-contrast land is {r:.2}:1 on the sea — needs 4.5:1");
     }
 
     /// [`gray`] hands the dark themes their historic level back untouched, and

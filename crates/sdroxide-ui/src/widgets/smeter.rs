@@ -39,43 +39,68 @@ pub(crate) const NEEDLE_FACE_MAX_W: f32 = 430.0;
 /// logarithmic scale, the end of travel falls out as 3² = 9:1.
 const SWR_MAX: f32 = 9.0;
 
-/// The transmit backlight — red in every theme, like [`RED`] and the hot inks
+/// The current theme's instrument colours: face, needle, backlight, cool-side
+/// inks and ramps.
+fn meter() -> &'static crate::theme::MeterPalette {
+    crate::theme::meter_palette()
+}
+
+/// Whether the face is a printed dial rather than lit glass.
+///
+/// Only the *paper* face changes the instrument's physics — no bloom, a cast
+/// shadow instead of a halo, marks that shade darker than the fill rather than
+/// lighter — so this is the one distinction the drawing code asks about
+/// directly. Which of the three reds to print in goes through [`hot`] instead.
+fn paper() -> bool {
+    meter().face == crate::theme::MeterFace::Paper
+}
+
+/// Whether the face blooms on receive: the backlight rising behind the scale
+/// and the halo under the lit arc.
+///
+/// A bloom is light spread thin, which is the exact opposite of what the
+/// high-contrast face is for — both of them fog the graduations they sit
+/// behind, and against black they buy nothing the graduations were not already
+/// saying. The printed dial has no lamp either, but it keeps its pale wash:
+/// 30% of a near-white over white card is not light spread thin, it is
+/// nothing, and it is what makes the card look like card.
+fn blooms() -> bool {
+    meter().face != crate::theme::MeterFace::Contrast
+}
+
+/// One of the reds that mean "past the red-line", in the shade the current
+/// face needs.
+///
+/// The hot half of every scale stays red on every face — that rule has not
+/// moved. What changes is only *which* red. The lit-glass shades are picked to
+/// glow off a near-black dial: on white card they sit at 1.6:1 to 3:1 and read
+/// as pastel decoration rather than as a warning, and on the high-contrast
+/// face the muted ones among them — the minor graduations above S9 especially
+/// — would be the only dim thing left on the instrument.
+fn hot(glass: Color32, print: Color32, bright: Color32) -> Color32 {
+    match meter().face {
+        crate::theme::MeterFace::Glass => glass,
+        crate::theme::MeterFace::Paper => print,
+        crate::theme::MeterFace::Contrast => bright,
+    }
+}
+
+/// The red-line red: the transmit chip's accent.
+#[allow(non_snake_case)]
+fn RED() -> Color32 {
+    hot(c(0xff3c46), c(0xc40024), c(0xff5555))
+}
+
+/// The transmit backlight — red on every face, like [`RED`] and the hot inks
 /// below. The themed half of the instrument lives in
 /// [`crate::theme::MeterPalette`]; everything that means "past the red-line"
 /// or "transmitting" deliberately does not.
 ///
 /// On the paper dial this is not a backlight but a wash: 34% of it over white
 /// card comes out a clear rose, which is the same message by other means.
-const BACKLIGHT_TX: Color32 = Color32::from_rgb(0x8e, 0x1e, 0x2c);
-
-/// The current theme's instrument colours: face wash, backlight, cool-side
-/// inks and ramps.
-fn meter() -> &'static crate::theme::MeterPalette {
-    crate::theme::meter_palette()
-}
-
-/// Whether the face is a printed dial rather than lit glass — see
-/// [`crate::theme::MeterPalette::paper`].
-fn paper() -> bool {
-    meter().paper
-}
-
-/// One of the reds that mean "past the red-line", in the shade the current
-/// face needs.
-///
-/// The hot half of every scale stays red in every theme — that rule has not
-/// moved. What changes on a paper dial is only *which* red: the lit-glass
-/// shades are picked to glow off a near-black face and sit at 1.6:1 to 3:1
-/// against white card, where they would read as pastel decoration rather than
-/// as a warning.
-fn hot(glass: Color32, print: Color32) -> Color32 {
-    if paper() { print } else { glass }
-}
-
-/// The red-line red: the needle's bloom on glass, the transmit chip's accent.
 #[allow(non_snake_case)]
-fn RED() -> Color32 {
-    hot(Color32::from_rgb(255, 60, 70), Color32::from_rgb(0xc4, 0x00, 0x24))
+fn BACKLIGHT_TX() -> Color32 {
+    hot(c(0x8e1e2c), c(0x8e1e2c), c(0xff3344))
 }
 
 /// Readout text: the headline value and the smaller sub-reading beside it.
@@ -91,39 +116,32 @@ fn SUBDUED() -> Color32 {
 }
 
 /// Tick and label inks, cool (below the red-line, themed) and hot (above it,
-/// always red).
+/// always red — see [`hot`] for which red).
 #[allow(non_snake_case)]
 fn TICK_MINOR() -> [Color32; 2] {
-    [
-        meter().tick_minor,
-        hot(Color32::from_rgb(0x93, 0x4e, 0x52), Color32::from_rgb(0x9c, 0x2b, 0x2b)),
-    ]
+    [meter().tick_minor, hot(c(0x934e52), c(0x9c2b2b), c(0xff8080))]
 }
 #[allow(non_snake_case)]
 fn TICK_MAJOR() -> [Color32; 2] {
-    [
-        meter().tick_major,
-        hot(Color32::from_rgb(0xff, 0x92, 0x8a), Color32::from_rgb(0xa8, 0x0e, 0x20)),
-    ]
+    [meter().tick_major, hot(c(0xff928a), c(0xa80e20), c(0xff9999))]
 }
 #[allow(non_snake_case)]
 fn LABEL() -> [Color32; 2] {
-    [meter().label, hot(Color32::from_rgb(0xff, 0x7d, 0x74), Color32::from_rgb(0xa8, 0x0e, 0x20))]
+    [meter().label, hot(c(0xff7d74), c(0xa80e20), c(0xff8080))]
 }
 /// Trace-view gridlines and the axis labels beside them, cool and hot.
 #[allow(non_snake_case)]
 fn GRID_LINE() -> [Color32; 2] {
-    [
-        meter().grid_line,
-        hot(Color32::from_rgb(0x47, 0x23, 0x2b), Color32::from_rgb(0xe7, 0xc2, 0xc6)),
-    ]
+    [meter().grid_line, hot(c(0x47232b), c(0xe7c2c6), c(0xb36e6e))]
 }
 #[allow(non_snake_case)]
 fn GRID_LABEL() -> [Color32; 2] {
-    [
-        meter().grid_label,
-        hot(Color32::from_rgb(0xbb, 0x60, 0x5d), Color32::from_rgb(0x9c, 0x3a, 0x38)),
-    ]
+    [meter().grid_label, hot(c(0xbb605d), c(0x9c3a38), c(0xffa3a3))]
+}
+
+/// `c(0xff2a55)` — one hex triple, so a three-way [`hot`] still fits on a line.
+const fn c(rgb: u32) -> Color32 {
+    Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }
 
 /// Position on the S-scale for `dbm`, 0.0 (S0) … 1.0 (S9+60).
@@ -212,9 +230,9 @@ fn s_stops() -> Vec<Stop> {
         (0.00, m.ramp_lo),
         (0.26, m.ramp_mid),
         (0.4737, m.ramp_hi),
-        (0.4738, hot(Color32::from_rgb(0xff, 0xd2, 0x3f), Color32::from_rgb(0xc8, 0x8a, 0x00))),
-        (0.74, hot(Color32::from_rgb(0xff, 0x8a, 0x3f), Color32::from_rgb(0xc4, 0x5c, 0x00))),
-        (1.00, hot(Color32::from_rgb(0xff, 0x2a, 0x55), Color32::from_rgb(0xc4, 0x00, 0x24))),
+        (0.4738, hot(c(0xffd23f), c(0xc88a00), c(0xffff00))),
+        (0.74, hot(c(0xff8a3f), c(0xc45c00), c(0xffaa33))),
+        (1.00, hot(c(0xff2a55), c(0xc40024), c(0xff5555))),
     ]
 }
 
@@ -224,11 +242,11 @@ fn s_stops() -> Vec<Stop> {
 /// restyling.
 fn swr_stops() -> Vec<Stop> {
     vec![
-        (0.00, hot(Color32::from_rgb(0x3f, 0xe0, 0x86), Color32::from_rgb(0x0d, 0x70, 0x30))),
-        (0.32, hot(Color32::from_rgb(0x9d, 0xe0, 0x5c), Color32::from_rgb(0x5c, 0x7d, 0x0a))),
-        (0.4999, hot(Color32::from_rgb(0xff, 0xc0, 0x3a), Color32::from_rgb(0xc8, 0x8a, 0x00))),
-        (0.50, hot(Color32::from_rgb(0xff, 0x3c, 0x46), Color32::from_rgb(0xc4, 0x00, 0x24))),
-        (1.00, hot(Color32::from_rgb(0xd6, 0x0c, 0x2e), Color32::from_rgb(0x8c, 0x00, 0x1a))),
+        (0.00, hot(c(0x3fe086), c(0x0d7030), c(0x3ff23f))),
+        (0.32, hot(c(0x9de05c), c(0x5c7d0a), c(0xcaff3f))),
+        (0.4999, hot(c(0xffc03a), c(0xc88a00), c(0xffff00))),
+        (0.50, hot(c(0xff3c46), c(0xc40024), c(0xff5555))),
+        (1.00, hot(c(0xd60c2e), c(0x8c001a), c(0xff3333))),
     ]
 }
 
@@ -239,8 +257,8 @@ fn alc_stops() -> Vec<Stop> {
     vec![
         (0.00, m.ramp_mid),
         (0.70, m.ramp_hi),
-        (0.86, hot(Color32::from_rgb(0xff, 0xd2, 0x3f), Color32::from_rgb(0xc8, 0x8a, 0x00))),
-        (1.00, hot(Color32::from_rgb(0xff, 0x2a, 0x55), Color32::from_rgb(0xc4, 0x00, 0x24))),
+        (0.86, hot(c(0xffd23f), c(0xc88a00), c(0xffff00))),
+        (1.00, hot(c(0xff2a55), c(0xc40024), c(0xff5555))),
     ]
 }
 
@@ -315,6 +333,17 @@ fn grad_h(p: &Painter, rect: Rect, f0: f32, f1: f32, col: impl Fn(f32) -> Color3
 /// leading edge that fades into the page instead of marking it.
 fn lift(c: Color32, amount: f32) -> Color32 {
     shade(c, if paper() { -amount } else { amount })
+}
+
+/// The unlit remainder of a rail: the ramp's own hue at `amount` of its
+/// strength, so the red zone is visible before the bar ever reaches it.
+///
+/// Taken down less far on the high-contrast face. The standard fraction leaves
+/// the hot end of the travel at about 2:1 against black — enough to hint at,
+/// not enough to read — and how much scale is left is exactly the thing a
+/// meter is being looked at for.
+fn unlit(c: Color32, amount: f32) -> Color32 {
+    c.linear_multiply(if blooms() { amount } else { amount * 1.9 })
 }
 
 /// Lighten (`amount` > 0) or darken a colour, keeping its alpha.
@@ -614,12 +643,21 @@ fn face(ui: &mut Ui, size: Vec2, tx: bool) -> (Rect, Response) {
     grad_v(&p, rect, m.face_top, m.face_bot);
     // Backlight bloom rising from behind the scale, and a hairline of specular
     // along the top edge so the glass reads as glass.
-    glow(
-        &p,
-        pos2(rect.center().x, rect.top() + rect.height() * 0.72),
-        rect.width() * 0.52,
-        if tx { BACKLIGHT_TX.linear_multiply(0.34) } else { m.backlight.linear_multiply(0.30) },
-    );
+    //
+    // Transmit keeps its red wash on every face — whether RF is leaving the
+    // antenna is not decoration. Receive gets one only where the face blooms.
+    if tx || blooms() {
+        glow(
+            &p,
+            pos2(rect.center().x, rect.top() + rect.height() * 0.72),
+            rect.width() * 0.52,
+            if tx {
+                BACKLIGHT_TX().linear_multiply(0.34)
+            } else {
+                m.backlight.linear_multiply(0.30)
+            },
+        );
+    }
     p.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, m.glass.linear_multiply(0.7)));
     (rect, resp)
 }
@@ -788,7 +826,7 @@ fn bar_row(p: &Painter, rect: Rect, scale: &Scale, frac: f32, peak: Option<f32>)
     let inner = rect.shrink(1.0);
     // The unlit remainder of the rail keeps the ramp's hue, so the red zone is
     // visible before the bar ever reaches it.
-    grad_h(p, inner, 0.0, 1.0, |f| ramp(&scale.stops, f).linear_multiply(0.16));
+    grad_h(p, inner, 0.0, 1.0, |f| unlit(ramp(&scale.stops, f), 0.16));
 
     let x = inner.left() + inner.width() * frac.clamp(0.0, 1.0);
     if x > inner.left() {
@@ -903,26 +941,17 @@ fn draw_needle(p: &Painter, pivot: Pos2, a: f32, r_tip: f32, k: f32) {
     // Width and colour along the blade. Only the outer third is ever on-box, so
     // the taper is tuned to look right there.
     const PROFILE: &[(f32, f32)] = &[(0.0, 1.0), (0.6, 0.82), (0.9, 0.48), (1.0, 0.05)];
-    // Two needles, because they are two different objects. On lit glass the
-    // blade is a filament: dark red at the root, hot red along it, flaring
-    // almost white at the tip. A moving-coil meter's pointer is a piece of
-    // painted metal — black, darkening rather than brightening towards the
-    // tip, with no glow of its own at all.
-    let (root, mid, tip) = if paper() {
-        (
-            Color32::from_rgb(0x4a, 0x51, 0x59),
-            Color32::from_rgb(0x11, 0x15, 0x1a),
-            Color32::from_rgb(0x00, 0x00, 0x00),
-        )
-    } else {
-        (
-            Color32::from_rgb(0x9e, 0x0c, 0x22),
-            Color32::from_rgb(0xff, 0x2c, 0x38),
-            Color32::from_rgb(0xff, 0xe2, 0xe6),
-        )
-    };
+    // On lit glass the blade is a filament: dark red at the root, hot red
+    // along it, flaring almost white at the tip. A moving-coil meter's pointer
+    // is painted metal, and a high-contrast one is plain white — so the three
+    // stops come from the palette rather than from here.
+    let m = meter();
     let ink = |t: f32| {
-        if t < 0.9 { mix(root, mid, t / 0.9) } else { mix(mid, tip, (t - 0.9) / 0.1) }
+        if t < 0.9 {
+            mix(m.needle_root, m.needle_mid, t / 0.9)
+        } else {
+            mix(m.needle_mid, m.needle_tip, (t - 0.9) / 0.1)
+        }
     };
 
     // `soft` fades the blade out sideways, which is what makes the bloom read
@@ -942,11 +971,15 @@ fn draw_needle(p: &Painter, pivot: Pos2, a: f32, r_tip: f32, k: f32) {
 
     // The bloom is the blade's own light, so a printed pointer has none — it
     // gets the cast shadow alone, softer and closer in than the one a lit
-    // needle throws.
+    // needle throws. A white blade has none either: there is nothing brighter
+    // for it to flare to, and a halo would only fog the graduations it
+    // crosses.
     if paper() {
         blade(3.4 * k, vec2(1.0, 1.5), false, &|_| Color32::from_black_alpha(38));
     } else {
-        blade(7.0 * k, Vec2::ZERO, true, &|_| RED().linear_multiply(0.22));
+        if m.needle_glow != Color32::TRANSPARENT {
+            blade(7.0 * k, Vec2::ZERO, true, &|_| m.needle_glow.linear_multiply(0.22));
+        }
         blade(3.6 * k, vec2(1.5, 2.0), false, &|_| Color32::from_black_alpha(150));
     }
     blade(3.2 * k, Vec2::ZERO, false, &ink);
@@ -980,8 +1013,8 @@ fn show_needle(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
 
     // Rail: the whole span dimmed, the travelled part lit, with a bloom under
     // the lit part so the instrument looks illuminated rather than printed.
-    arc_band(&p, &arc, rail, 0.0, 1.0, |f| col(f).linear_multiply(0.18));
-    if !paper() {
+    arc_band(&p, &arc, rail, 0.0, 1.0, |f| unlit(col(f), 0.18));
+    if blooms() && !paper() {
         arc_glow(&p, &arc, band * 3.2, 0.0, frac, |f| col(f).linear_multiply(0.22));
     }
     arc_band(&p, &arc, rail, 0.0, frac, col);

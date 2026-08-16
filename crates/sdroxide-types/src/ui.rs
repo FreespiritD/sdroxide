@@ -96,6 +96,11 @@ pub enum UiTheme {
     /// solar globe) keep their dark glass: a waterfall has no bright-ground
     /// form, and a signal display is read the same way in every theme.
     Light,
+    /// White on black at the highest contrast the screen can give, with every
+    /// dim shade in the UI pulled up to meet it — nothing is decoratively
+    /// faint. For low vision, for glare, and for a display that has lost its
+    /// contrast.
+    HighContrast,
     /// The classic navy/cyan/pink look. Declared last because serde demands
     /// the catch-all be the final variant: it also swallows an unrecognised
     /// value in a hand-edited config, so a typo degrades to the default theme
@@ -106,9 +111,10 @@ pub enum UiTheme {
 }
 
 impl UiTheme {
-    pub const ALL: [UiTheme; 6] = [
+    pub const ALL: [UiTheme; 7] = [
         UiTheme::Default,
         UiTheme::Light,
+        UiTheme::HighContrast,
         UiTheme::GreenPhosphor,
         UiTheme::AmberPhosphor,
         UiTheme::TealOrange,
@@ -119,6 +125,7 @@ impl UiTheme {
         match self {
             UiTheme::Default => "Default",
             UiTheme::Light => "Light",
+            UiTheme::HighContrast => "High contrast",
             UiTheme::GreenPhosphor => "Green phosphor",
             UiTheme::AmberPhosphor => "Amber phosphor",
             UiTheme::TealOrange => "Teal / orange",
