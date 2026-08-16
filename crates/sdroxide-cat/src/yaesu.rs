@@ -102,23 +102,39 @@ struct ModelCaps {
     /// Widths at or below which `NA` has to select the narrow position first,
     /// or `None` on a generation that has no such switch.
     narrow_max: Option<(u32, u32)>,
+    /// The `KY` parameter that plays back the *stored-text* memory [`CW_MEM`]
+    /// was written to. See [`caps_for`] for why this is not a constant.
+    cw_play: u8,
 }
 
 /// The model behind an `ID;` reply, or `None` for one this file has no tables
 /// for — where the rig's filter is then left exactly as the operator set it.
 fn caps_for(id: u32) -> Option<ModelCaps> {
+    // A Yaesu keyer holds two kinds of memory on the same five channels: the
+    // ones recorded from the paddle, played by `KY1`..`KY5`, and the ones
+    // *written as text* by `KM`, played by `KY6`..`KYA`. The two are not
+    // interchangeable, and playing the wrong one is silent: the rig transmits
+    // whatever the operator once recorded on that channel, or nothing at all if
+    // they never recorded anything, while sdroxide's panel colours the text as
+    // sent.
+    //
+    // The FT-710 is the single model of the family that inverts this and plays
+    // its stored text from `KY1`..`KY5`. Nothing on the wire distinguishes it,
+    // which is why the model is asked for.
     let (ft991, ftdx101) = (
         ModelCaps {
             name: "FT-991",
             cw_widths: FT991_CW_WIDTHS,
             ssb_widths: FT991_SSB_WIDTHS,
             narrow_max: Some((FT991_CW_NARROW_MAX, FT991_SSB_NARROW_MAX)),
+            cw_play: CW_MEM + 5,
         },
         ModelCaps {
             name: "FTDX101",
             cw_widths: FTDX101_CW_WIDTHS,
             ssb_widths: FTDX101_SSB_WIDTHS,
             narrow_max: None,
+            cw_play: CW_MEM + 5,
         },
     );
     Some(match id {
@@ -128,14 +144,20 @@ fn caps_for(id: u32) -> Option<ModelCaps> {
         761 => ModelCaps { name: "FTDX10", ..ftdx101 },
         681 => ModelCaps { name: "FTDX101D", ..ftdx101 },
         682 => ModelCaps { name: "FTDX101MP", ..ftdx101 },
-        800 => ModelCaps { name: "FT-710", ..ftdx101 },
+        800 => ModelCaps { name: "FT-710", cw_play: CW_MEM, ..ftdx101 },
         _ => return None,
     })
 }
 
-/// What is assumed before `ID;` has been answered: no filter tables at all.
-const UNKNOWN_CAPS: ModelCaps =
-    ModelCaps { name: "unidentified", cw_widths: &[], ssb_widths: &[], narrow_max: None };
+/// What is assumed before `ID;` has been answered: no filter tables at all, and
+/// the keyer playback range every model of the family but one uses.
+const UNKNOWN_CAPS: ModelCaps = ModelCaps {
+    name: "unidentified",
+    cw_widths: &[],
+    ssb_widths: &[],
+    narrow_max: None,
+    cw_play: CW_MEM + 5,
+};
 
 pub struct Yaesu {
     buf: String,
@@ -390,12 +412,9 @@ impl Protocol for Yaesu {
             // path exists to fix. Idempotent, so it rides with every chunk.
             b"BI1;".to_vec(),
             format!("KM{CW_MEM}{msg};").into_bytes(),
-            // Playback of a *stored text* memory is the 6..A range; 1..5 plays
-            // the paddle-recorded memories, which is not what `KM` wrote.
-            // (The FT-710 is the exception and uses 1..5 — it is also the one
-            // model of the family sdroxide has no other reason to special-case,
-            // so it is left for a report from someone holding one.)
-            format!("KY{};", CW_MEM + 5).into_bytes(),
+            // Which parameter plays back what `KM` just wrote is a question
+            // about the model, not the family — see `caps_for`.
+            format!("KY{};", self.caps.cw_play).into_bytes(),
         ]
     }
 
@@ -580,10 +599,33 @@ mod tests {
     #[test]
     fn cw_text_is_stored_then_played() {
         let mut y = Yaesu::new();
-        let frames = y.send_cw("cq de w1aw");
-        let sent: Vec<String> =
-            frames.iter().map(|f| String::from_utf8_lossy(f).into_owned()).collect();
-        assert_eq!(sent, vec!["BI1;", "KM1CQ DE W1AW;", "KY6;"]);
+        assert_eq!(frames(y.send_cw("cq de w1aw")), vec!["BI1;", "KM1CQ DE W1AW;", "KY6;"]);
+    }
+
+    /// The FT-710 plays its *stored-text* memories from `KY1`..`KY5`, where the
+    /// rest of the family plays the paddle-recorded ones. Play the wrong range
+    /// and the rig sends whatever the operator once recorded on that channel —
+    /// or, far more often, nothing at all — while the panel colours the text as
+    /// though it went out.
+    #[test]
+    fn the_ft_710_plays_its_stored_text_from_the_other_half_of_the_range() {
+        let mut y = Yaesu::new();
+        parse_str(&mut y, "ID0800;");
+        assert_eq!(frames(y.send_cw("test")), vec!["BI1;", "KM1TEST;", "KY1;"]);
+
+        // Every other model of the family, including the FTDX10 it otherwise
+        // shares its tables with.
+        for id in ["ID0761;", "ID0570;", "ID0135;", "ID0681;"] {
+            let mut y = Yaesu::new();
+            parse_str(&mut y, id);
+            assert_eq!(frames(y.send_cw("test")).last().unwrap(), "KY6;", "{id}");
+        }
+
+        // And an unidentified rig uses the range all but one model wants, which
+        // is the safer default: it is also what the memory `KM` just wrote is
+        // *called* on every rig but the FT-710.
+        let mut y = Yaesu::new();
+        assert_eq!(frames(y.send_cw("test")).last().unwrap(), "KY6;");
     }
 
     #[test]

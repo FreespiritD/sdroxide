@@ -2749,6 +2749,14 @@ What that needs on the radio:
   overwrites whatever you had stored in CW memory 1. Kenwood and Elecraft stream
   the text straight to the keyer (`KY`), 24 characters at a time, and leave your
   stored messages alone.
+
+  A Yaesu keyer holds two kinds of memory on the same five channels: the ones
+  recorded from the paddle, and the ones written as text. Which playback command
+  reaches the text differs by model — the FT-710 is the one radio of the family
+  that inverts it — so sdroxide asks the rig what it is (`ID;`) at connect and
+  keys accordingly. Getting this wrong is silent: the rig transmits whatever was
+  recorded on that channel, or nothing at all, while the CW panel colours your
+  text as sent.
 - **The Drive slider is the power CW goes out at.** Nothing sdroxide sends
   reaches the air here — the rig keys its own transmitter — so the level of the
   audio going into its sound card means nothing in CW, and the transmit level is
