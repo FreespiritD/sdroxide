@@ -263,10 +263,12 @@ mod tests {
         let frame = vec![0x82, 0xA0, kiss::FEND, 0x03, kiss::FESC, 0xF0, b'h', b'i'];
         c.write_all(&kiss::escape(&frame)).unwrap();
 
-        let got = wait_for(|| s.poll().into_iter().find_map(|r| match r {
-            KissRequest::Send(f) => Some(f),
-            _ => None,
-        }));
+        let got = wait_for(|| {
+            s.poll().into_iter().find_map(|r| match r {
+                KissRequest::Send(f) => Some(f),
+                _ => None,
+            })
+        });
         assert_eq!(got, frame, "the frame did not survive the socket");
     }
 
@@ -305,10 +307,12 @@ mod tests {
         // Command 1 = TXDELAY, value 40 (units of 10 ms).
         c.write_all(&[kiss::FEND, 0x01, 40, kiss::FEND]).unwrap();
 
-        let got = wait_for(|| s.poll().into_iter().find_map(|r| match r {
-            KissRequest::Parameter(cmd, v) => Some((cmd, v)),
-            _ => None,
-        }));
+        let got = wait_for(|| {
+            s.poll().into_iter().find_map(|r| match r {
+                KissRequest::Parameter(cmd, v) => Some((cmd, v)),
+                _ => None,
+            })
+        });
         assert_eq!(got, (Command::TxDelay, 40));
     }
 
@@ -322,10 +326,12 @@ mod tests {
         c.write_all(&[kiss::FEND, 0x00, kiss::FESC, 0x99, kiss::FEND]).unwrap();
         c.write_all(&kiss::escape(&good)).unwrap();
 
-        let got = wait_for(|| s.poll().into_iter().find_map(|r| match r {
-            KissRequest::Send(f) => Some(f),
-            _ => None,
-        }));
+        let got = wait_for(|| {
+            s.poll().into_iter().find_map(|r| match r {
+                KissRequest::Send(f) => Some(f),
+                _ => None,
+            })
+        });
         assert_eq!(got, good, "a bad frame poisoned the stream");
     }
 

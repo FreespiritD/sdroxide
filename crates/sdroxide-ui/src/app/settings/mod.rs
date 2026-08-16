@@ -75,6 +75,25 @@ pub(in crate::app) enum SettingsTab {
     Tle,
 }
 
+/// A "Test connection" button's state: still asking, or an answer.
+///
+/// The waiting half exists because the answer may come from another machine.
+/// Where the radio is local the test blocks for its couple of seconds and the
+/// result is simply there afterwards; over a session the press, the connect and
+/// the reply are three separate moments, and a button that showed nothing in
+/// between would be pressed again.
+#[derive(Clone, PartialEq)]
+pub(in crate::app) enum TestOutcome {
+    Waiting,
+    Done(Result<String, String>),
+}
+
+/// How long a device question may stay unanswered before the controls that ask
+/// are usable again. Only reached when something went wrong — the server
+/// dropped the request under load, or the session went away mid-scan — so it is
+/// set well past the slowest of them (a five-second connection test).
+const PROBE_TIMEOUT_S: f64 = 20.0;
+
 /// Transient state of the TLE tab — what is in the paste box, which rows are
 /// unfolded. Not persisted: none of it is a setting, it is where the operator
 /// happens to be in the dialog.
@@ -107,19 +126,23 @@ pub(in crate::app) struct SatEditState {
 pub(in crate::app) struct SettingsIo<'a> {
     iface_opts: &'a [sdroxide_types::Backend],
     radio_edit: &'a mut Option<sdroxide_types::RadioConfig>,
-    /// Whether the radio is on *this* machine's buses and network.
+    /// Whether the controls that ask a question about a *machine* — which
+    /// dongles are on the USB bus, which serial ports exist, what a Discover
+    /// broadcast finds, whether an address answers — can be used.
     ///
-    /// The interface's settings travel to a remote client — they describe the
-    /// device, and the engine writes them wherever it lives. What cannot travel
-    /// is everything that answers a question about a machine: which dongles are
-    /// on the USB bus, which serial ports exist, what a Discover broadcast
-    /// finds, whether an address answers. Those are enumerated locally, so a
-    /// remote client asking them would get its *own* answers — a laptop's sound
-    /// cards offered as the shack rig's, a dongle list from the wrong bus. The
-    /// controls that do it are disabled rather than left to lie, and choosing
-    /// the interface itself goes with them: the operator is not there to plug
-    /// the new one in.
-    local_devices: bool,
+    /// They are asked of the machine the radio is attached to rather than
+    /// answered locally ([`sdroxide_types::DeviceProbe`]), so they work from a
+    /// remote or browser client too and describe the right computer. False only
+    /// where that machine has said it does not answer them, or while one is
+    /// still in flight — a press that crossed the network is visibly in
+    /// progress rather than looking like it did nothing.
+    can_probe: bool,
+    /// Whether the engine is in this process, so this dialog is editing files
+    /// on the machine in front of the operator. Wording only: what is
+    /// *changeable* is decided by `can_probe` above and by whether the config
+    /// has arrived, but a note that says "saved on the machine the radio is
+    /// attached to" is only worth making when that is somewhere else.
+    local_engine: bool,
     /// Converter offset in Hz, buffered until Apply — see
     /// `SdroxideApp::converter_edit_hz`.
     converter_hz: &'a mut Option<f64>,
@@ -344,6 +367,82 @@ pub(in crate::app) fn enum_combo<T: PartialEq + Copy>(
 }
 
 impl SdroxideApp {
+    /// Ask the machine the radio is attached to a question about its devices.
+    ///
+    /// Answered on the spot where that machine is this one, and otherwise sent
+    /// over the session to come back through
+    /// [`SdroxideApp::apply_probe_answer`]. Callers do not care which: they ask
+    /// and then draw whatever list they have.
+    pub(in crate::app) fn ask_device(
+        &mut self,
+        ctx: &egui::Context,
+        req: sdroxide_types::DeviceProbe,
+    ) {
+        // Before the ask, not after: a local answer arrives inside this call
+        // and would be overwritten by its own "waiting".
+        if let sdroxide_types::DeviceProbe::Test(t) = &req {
+            self.set_test_outcome(t.kind(), TestOutcome::Waiting);
+        }
+        match self.ctrl.probe(req) {
+            Some(answer) => self.apply_probe_answer(ctx, answer),
+            None => {
+                self.probe_waiting += 1;
+                self.probe_wait_until = crate::time::now_unix_f64() + PROBE_TIMEOUT_S;
+            }
+        }
+    }
+
+    /// File one answer where the dialog will draw it.
+    pub(in crate::app) fn apply_probe_answer(
+        &mut self,
+        ctx: &egui::Context,
+        answer: sdroxide_types::ProbeAnswer,
+    ) {
+        use sdroxide_types::ProbeAnswer as A;
+        self.probe_waiting = self.probe_waiting.saturating_sub(1);
+        match answer {
+            A::Host { soapy } => self.soapy_supported = soapy,
+            A::RadioAudio { inputs, outputs } => self.radio_audio_devices = Some((inputs, outputs)),
+            A::SerialPorts(p) => self.serial_ports = p,
+            A::RtlSdr(d) => self.rtlsdr_devices = d,
+            A::Rx888(d) => self.rx888_devices = d,
+            A::AirspyHf(d) => self.airspyhf_devices = d,
+            A::Airspy(d) => self.airspy_devices = d,
+            A::HackRf(d) => self.hackrf_devices = d,
+            A::SdrPlay(d) => self.sdrplay_devices = d,
+            // `Some` even when empty: "enumerated and found nothing" is a
+            // different thing from "not enumerated yet", and only this one
+            // means the operator should go looking for a driver.
+            A::Soapy(d) => self.soapy_devices = Some(d),
+            A::Hpsdr(d) => self.hpsdr_devices = d,
+            A::SmartSdr(d) => self.smartsdr_devices = d,
+            A::Pluto(d) => self.pluto_devices = d,
+            A::Test(kind, result) => self.set_test_outcome(kind, TestOutcome::Done(result)),
+            // Straight to the clipboard, which is what the button that asked
+            // for it promised — from here it goes into a bug report.
+            A::Report(_, text) => ctx.copy_text(text),
+            // The far end does not answer device questions. Said once, remembered
+            // for the session: the controls that ask grey out with a reason
+            // instead of each one having to discover it for itself.
+            A::Unsupported => {
+                self.probes_answered = false;
+                self.probe_waiting = 0;
+            }
+        }
+    }
+
+    fn set_test_outcome(&mut self, kind: sdroxide_types::TestKind, outcome: TestOutcome) {
+        use sdroxide_types::TestKind as K;
+        let slot = match kind {
+            K::Tci => &mut self.tci_test_result,
+            K::SpyServer => &mut self.spyserver_test_result,
+            K::IcomNet => &mut self.icomnet_test_result,
+            K::SmartSdr => &mut self.smartsdr_test_result,
+            K::Pluto => &mut self.pluto_test_result,
+        };
+        *slot = Some(outcome);
+    }
+
     pub(in crate::app) fn settings_window(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
         // Query slow lists (cpal devices, serial ports, radio config) once per
         // dialog-open; a pick invalidates so the selection refreshes.
@@ -359,8 +458,12 @@ impl SdroxideApp {
         } else if !self.audio_devices_queried {
             self.audio_devices = self.ctrl.audio_devices();
             self.radio_cfg = self.ctrl.radio_config();
-            self.serial_ports = self.ctrl.serial_ports();
             (self.midi_in_ports, self.midi_out_ports) = self.input.midi_ports();
+            // What the radio's machine can do at all, which decides whether
+            // SoapySDR is offered as an interface — so it is asked before the
+            // list below is built rather than when somebody reaches for it.
+            self.ask_device(ctx, sdroxide_types::DeviceProbe::Host);
+            self.ask_device(ctx, sdroxide_types::DeviceProbe::SerialPorts);
             // Everything the *station* is set to — the network cockpit, the two
             // built-in servers, the WSJT-X broadcast and the satellites — was
             // seeded from `RadioEvent::StationConfig` and needs no query here:
@@ -379,7 +482,13 @@ impl SdroxideApp {
             // waterfall colours. Rescan re-runs it for anyone switching to it.
             if self.radio_cfg.as_ref().is_some_and(|c| c.backend == sdroxide_types::Backend::Soapy)
             {
-                self.soapy_devices = Some(self.ctrl.list_soapy());
+                self.ask_device(ctx, sdroxide_types::DeviceProbe::Soapy);
+            }
+            // The sound cards the rig itself is wired to, which are the CAT
+            // interface's *device* — on any other backend the audio is in-band
+            // and there is nothing here to choose.
+            if self.radio_cfg.as_ref().is_some_and(|c| c.backend == sdroxide_types::Backend::Cat) {
+                self.ask_device(ctx, sdroxide_types::DeviceProbe::RadioAudio);
             }
             // The RSP tab draws itself from the model in this list — which
             // antenna ports exist, whether there is an HDR path, how far the
@@ -392,18 +501,18 @@ impl SdroxideApp {
                 .as_ref()
                 .is_some_and(|c| c.backend == sdroxide_types::Backend::SdrPlay)
             {
-                self.sdrplay_devices = self.ctrl.list_sdrplay();
+                self.ask_device(ctx, sdroxide_types::DeviceProbe::SdrPlay);
             }
             // Cheap and opens nothing, same as the RTL-SDR list — and without
             // it a HackRF owner arriving on this tab sees an empty device combo
             // until they think to press Rescan.
             if self.radio_cfg.as_ref().is_some_and(|c| c.backend == sdroxide_types::Backend::HackRf)
             {
-                self.hackrf_devices = self.ctrl.list_hackrf();
+                self.ask_device(ctx, sdroxide_types::DeviceProbe::HackRf);
             }
             if self.radio_cfg.as_ref().is_some_and(|c| c.backend == sdroxide_types::Backend::Airspy)
             {
-                self.airspy_devices = self.ctrl.list_airspy();
+                self.ask_device(ctx, sdroxide_types::DeviceProbe::Airspy);
             }
             self.audio_devices_queried = true;
         } else if self.radio_cfg.is_none() {
@@ -414,6 +523,12 @@ impl SdroxideApp {
             // available in the native app" until the dialog was closed and
             // reopened. One `Option` clone a frame, and only while it is empty.
             self.radio_cfg = self.ctrl.radio_config();
+        }
+        // A question that was never answered — the far end dropped it under
+        // load, or the session went away mid-scan — must not leave the controls
+        // that ask dark for the rest of the session.
+        if self.probe_waiting > 0 && crate::time::now_unix_f64() > self.probe_wait_until {
+            self.probe_waiting = 0;
         }
         // Edits collected here and applied after the window closure, which
         // borrows `&self` and so can't touch `&mut self.ctrl`.
@@ -591,7 +706,12 @@ impl SdroxideApp {
                         &mut SettingsIo {
                             iface_opts: &iface_opts,
                             radio_edit: &mut radio_edit,
-                            local_devices: owns_server,
+                            // Both of these questions are asked of the machine
+                            // the radio is on, which may not be this one: it
+                            // answers the device lists over the session, and
+                            // stays quiet only if it was built without a way to.
+                            can_probe: self.probes_answered && self.probe_waiting == 0,
+                            local_engine: owns_server,
                             converter_hz: &mut converter_hz,
                             ranges: &mut ranges,
                             audio_pick: &mut audio_pick,
@@ -766,147 +886,151 @@ impl SdroxideApp {
             self.ctrl.set_audio_device(output, name);
             self.audio_devices_queried = false;
         }
+        // Every device question below is asked after the window closure, which
+        // is what lets it take `&mut self`. Where the radio is on this machine
+        // the answer is back before the next frame; where it is elsewhere the
+        // question crosses the session and the answer arrives later, into the
+        // same lists — see `SdroxideApp::ask_device`.
+        use sdroxide_types::{DeviceProbe as P, ProbeTest as T, ReportKind as R};
         if hpsdr_discover {
-            // Blocking LAN scan (~1.5 s); done after the window closure so it can
-            // take `&self.ctrl`. Results feed the device dropdown next frame.
-            self.hpsdr_devices = self.ctrl.discover_hpsdr();
+            // A LAN scan (~1.5 s), on the radio's network — which is the only
+            // one an HPSDR announcement would arrive on.
+            self.ask_device(ctx, P::Hpsdr);
         }
         if rtlsdr_rescan {
             // USB enumeration only — no device is opened, so this is safe to
             // press at any time, including while a dongle is streaming.
-            self.rtlsdr_devices = self.ctrl.list_rtlsdr();
+            self.ask_device(ctx, P::RtlSdr);
         }
         if sdrplay_rescan {
-            self.sdrplay_devices = self.ctrl.list_sdrplay();
+            self.ask_device(ctx, P::SdrPlay);
         }
         if soapy_rescan {
             // Loads every installed SoapySDR module and asks each to scan, so
             // it can take a moment; on demand only, never per frame.
-            self.soapy_devices = Some(self.ctrl.list_soapy());
+            self.ask_device(ctx, P::Soapy);
         }
         if rx888_rescan {
-            self.rx888_devices = self.ctrl.list_rx888();
+            self.ask_device(ctx, P::Rx888);
         }
         if airspyhf_rescan {
-            self.airspyhf_devices = self.ctrl.list_airspyhf();
+            self.ask_device(ctx, P::AirspyHf);
         }
         if airspyhf_copy_report {
             // This backend has not been verified against hardware, so the trace
             // is how a fault gets reported without asking anybody to reproduce
-            // it under a log filter.
-            let report = self
-                .ctrl
-                .airspyhf_diagnostics()
-                .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
-            ctx.copy_text(report);
+            // it under a log filter. It describes the session the *engine* ran,
+            // so it is fetched from there and lands on this clipboard.
+            self.ask_device(ctx, P::Report(R::AirspyHf));
         }
         if airspy_rescan {
-            self.airspy_devices = self.ctrl.list_airspy();
+            self.ask_device(ctx, P::Airspy);
         }
         if airspy_copy_report {
-            let report = self
-                .ctrl
-                .airspy_diagnostics()
-                .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
-            ctx.copy_text(report);
+            self.ask_device(ctx, P::Report(R::Airspy));
         }
         if hackrf_rescan {
-            self.hackrf_devices = self.ctrl.list_hackrf();
+            self.ask_device(ctx, P::HackRf);
         }
         if hackrf_copy_report {
             // Worth more on this backend than on the receive-only ones: a
             // transmit fault is about the *order* control transfers went out
             // in around a key-down, which nobody can reconstruct from a
             // spectrum.
-            let report = self
-                .ctrl
-                .hackrf_diagnostics()
-                .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
-            ctx.copy_text(report);
+            self.ask_device(ctx, P::Report(R::HackRf));
         }
         if tci_test {
-            // Blocking connect (~up to 3 s); after the closure so it can take
-            // `&self.ctrl`. The result is shown in the TCI section next frame.
             if let Some(cfg) = &radio_edit {
-                self.tci_test_result = Some(self.ctrl.test_tci(&cfg.tci.address));
+                let address = cfg.tci.address.clone();
+                self.ask_device(ctx, P::Test(T::Tci(address)));
             }
         }
-        // Blocking connect (~up to 5 s); after the closure so it can take
-        // `&self.ctrl`. Tests the address *typed in the dialog* rather than
-        // the applied one, and against the block belonging to whichever of the
-        // two SpyServer interfaces is selected — they are usually different
-        // servers, and answering about the other one would be a lie that looks
-        // like a success.
+        // Tests the address *typed in the dialog* rather than the applied one,
+        // and against the block belonging to whichever of the two SpyServer
+        // interfaces is selected — they are usually different servers, and
+        // answering about the other one would be a lie that looks like a
+        // success.
         if let (true, Some(cfg)) = (spyserver_test, &radio_edit) {
             let block = if cfg.backend == sdroxide_types::Backend::SpyServerVfo {
                 &cfg.spyserver_vfo
             } else {
                 &cfg.spyserver
             };
-            self.spyserver_test_result = Some(if block.address.trim().is_empty() {
-                Err("enter the server's address first".to_string())
+            if block.address.trim().is_empty() {
+                // Answered here rather than sent: nothing on the far end can
+                // say anything useful about an empty address.
+                self.set_test_outcome(
+                    sdroxide_types::TestKind::SpyServer,
+                    TestOutcome::Done(Err("enter the server's address first".to_string())),
+                );
             } else {
-                self.ctrl.test_spyserver(&block.endpoint())
-            });
+                let endpoint = block.endpoint();
+                self.ask_device(ctx, P::Test(T::SpyServer(endpoint)));
+            }
         }
         if smartsdr_discover {
             // A passive listen (~2.5 s) — radios broadcast unprompted, so
             // nothing is sent and nothing on the network is disturbed.
-            self.smartsdr_devices = self.ctrl.discover_smartsdr();
+            self.ask_device(ctx, P::SmartSdr);
         }
         if smartsdr_test {
             if let Some(cfg) = &radio_edit {
-                self.smartsdr_test_result = Some(match cfg.smartsdr.target() {
-                    Some(addr) => self.ctrl.test_smartsdr(addr),
-                    None => {
-                        Err("no radio selected — press Discover, or enter an address".to_string())
-                    }
-                });
+                match cfg.smartsdr.target().map(str::to_string) {
+                    Some(addr) => self.ask_device(ctx, P::Test(T::SmartSdr(addr))),
+                    None => self.set_test_outcome(
+                        sdroxide_types::TestKind::SmartSdr,
+                        TestOutcome::Done(Err(
+                            "no radio selected — press Discover, or enter an address".to_string(),
+                        )),
+                    ),
+                }
             }
         }
-        // Blocking connect (~up to 5 s); after the closure so it can take
-        // `&self.ctrl`. Tests what is *typed in the dialog*, not what was last
-        // applied — a test that ignored an edited address would be answering a
-        // question nobody asked.
+        // What is *typed in the dialog*, not what was last applied — a test
+        // that ignored an edited address would be answering a question nobody
+        // asked.
         if let (true, Some(cfg)) = (icomnet_test, &radio_edit) {
-            self.icomnet_test_result = Some(if cfg.icomnet.address.trim().is_empty() {
-                Err("enter the radio's address first".to_string())
+            if cfg.icomnet.address.trim().is_empty() {
+                self.set_test_outcome(
+                    sdroxide_types::TestKind::IcomNet,
+                    TestOutcome::Done(Err("enter the radio's address first".to_string())),
+                );
             } else {
-                self.ctrl.test_icomnet(&cfg.icomnet)
-            });
+                let icomnet = Box::new(cfg.icomnet.clone());
+                self.ask_device(ctx, P::Test(T::IcomNet(icomnet)));
+            }
         }
         if icomnet_copy_report {
-            let report = self
-                .ctrl
-                .icomnet_diagnostics()
-                .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
-            ctx.copy_text(report);
+            self.ask_device(ctx, P::Report(R::IcomNet));
         }
         if smartsdr_copy_report {
             // The whole point of the trace is that a user can hand it over
             // without reproducing the fault under a log filter.
-            let report = self
-                .ctrl
-                .smartsdr_diagnostics()
-                .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
-            ctx.copy_text(report);
+            self.ask_device(ctx, P::Report(R::SmartSdr));
         }
         if pluto_discover {
             // An mDNS query plus a direct try of the USB gadget's address
-            // (~1.5 s); after the closure so it can take `&self.ctrl`.
-            self.pluto_devices = self.ctrl.discover_pluto();
+            // (~1.5 s), both from where the Pluto is plugged in.
+            self.ask_device(ctx, P::Pluto);
         }
         if pluto_test {
             if let Some(cfg) = &radio_edit {
-                self.pluto_test_result = Some(self.ctrl.test_pluto(&cfg.pluto.target()));
+                let target = cfg.pluto.target();
+                self.ask_device(ctx, P::Test(T::Pluto(target)));
             }
         }
         if pluto_copy_report {
-            let report = self
-                .ctrl
-                .pluto_diagnostics()
-                .unwrap_or_else(|| "No diagnostics available on this client.".to_string());
-            ctx.copy_text(report);
+            self.ask_device(ctx, P::Report(R::Pluto));
+        }
+        // Switching *to* the CAT interface inside the open dialog: its sound
+        // cards were not among the questions asked when it opened, and the two
+        // pickers are the whole of choosing that interface's device.
+        if radio_edit.as_ref().is_some_and(|c| c.backend == sdroxide_types::Backend::Cat)
+            && self.radio_audio_devices.is_none()
+            && self.probes_answered
+            && self.probe_waiting == 0
+        {
+            self.ask_device(ctx, P::RadioAudio);
         }
         if apply_iface {
             // The fields that wait for this moment, so the radio is never
@@ -1147,65 +1271,57 @@ impl SdroxideApp {
                 // The radio's own sound card is only used by the CAT / Audio
                 // interface; every other backend carries its audio in-band.
                 //
-                // Local only, and not because the setting is: `audio_devices`
-                // is *this* screen's sound cards, and the rig is plugged into
-                // the engine's. Offering a laptop's built-in microphone as the
-                // shack transceiver's transmit path is worse than offering
-                // nothing at all.
-                if backend == Some(Backend::Cat) && !io.local_devices {
+                // These are the cards on the machine the *rig* is plugged into,
+                // asked for by name rather than taken from `audio_devices` —
+                // that list is this screen's own speaker and microphone, and
+                // offering a laptop's built-in mic as the shack transceiver's
+                // transmit path would be worse than offering nothing at all.
+                if backend == Some(Backend::Cat) && self.radio_audio_devices.is_none() {
                     ui.add_space(8.0);
                     ui.label(RichText::new("Radio audio (sound card)").strong());
                     ui.label(
                         RichText::new(
-                            "Set on the machine the radio is plugged into — the sound cards \
-                             listed here are this screen's, not its.",
+                            "Waiting for the sound cards on the machine the radio is plugged \
+                             into.",
                         )
                         .weak(),
                     );
                 }
-                if backend == Some(Backend::Cat) && io.local_devices {
-                    if let (Some(devs), Some(cfg)) =
-                        (self.audio_devices.as_ref(), io.radio_edit.as_mut())
-                    {
-                        ui.add_space(8.0);
-                        ui.label(RichText::new("Radio audio (sound card)").strong());
-                        egui::Grid::new("radio-audio").num_columns(2).spacing([12.0, 6.0]).show(
-                            ui,
-                            |ui| {
-                                let (ci, co) =
-                                    (cfg.radio_audio_in.clone(), cfg.radio_audio_out.clone());
-                                ui.label("From radio (RX)");
-                                device_combo(ui, "r-in", &devs.inputs, &ci, |n| {
-                                    cfg.radio_audio_in = n
-                                });
-                                ui.end_row();
-                                ui.label("To radio (TX)");
-                                device_combo(ui, "r-out", &devs.outputs, &co, |n| {
-                                    cfg.radio_audio_out = n
-                                });
-                                ui.end_row();
-                            },
+                if backend == Some(Backend::Cat)
+                    && let (Some((inputs, outputs)), Some(cfg)) =
+                        (self.radio_audio_devices.as_ref(), io.radio_edit.as_mut())
+                {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("Radio audio (sound card)").strong());
+                    egui::Grid::new("radio-audio").num_columns(2).spacing([12.0, 6.0]).show(
+                        ui,
+                        |ui| {
+                            let (ci, co) =
+                                (cfg.radio_audio_in.clone(), cfg.radio_audio_out.clone());
+                            ui.label("From radio (RX)");
+                            device_combo(ui, "r-in", inputs, &ci, |n| cfg.radio_audio_in = n);
+                            ui.end_row();
+                            ui.label("To radio (TX)");
+                            device_combo(ui, "r-out", outputs, &co, |n| cfg.radio_audio_out = n);
+                            ui.end_row();
+                        },
+                    );
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("Apply / reconnect")
+                            .on_hover_text("Reopen the CAT rig with these sound cards — no restart")
+                            .clicked()
+                        {
+                            *io.apply_iface = true;
+                        }
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new("Reconnects the radio without restarting.").weak(),
+                            )
+                            .wrap(),
                         );
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            if ui
-                                .button("Apply / reconnect")
-                                .on_hover_text(
-                                    "Reopen the CAT rig with these sound cards — no restart",
-                                )
-                                .clicked()
-                            {
-                                *io.apply_iface = true;
-                            }
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new("Reconnects the radio without restarting.")
-                                        .weak(),
-                                )
-                                .wrap(),
-                            );
-                        });
-                    }
+                    });
                 }
 
                 if let Some(access) = io.access_edit.as_deref_mut() {
@@ -1253,16 +1369,18 @@ impl SdroxideApp {
                 });
                 egui::Grid::new("iface-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                     ui.label(RichText::new("Radio interface").strong());
-                    // Which interface, only where the hardware is. Everything
-                    // below this row describes the device and travels; *this*
-                    // row would reopen the far end onto something else, and
-                    // nobody is standing there to plug it in if it isn't there.
-                    if io.local_devices {
+                    // Switching the far end's interface is allowed: the device
+                    // lists below come from that machine, so this is a choice
+                    // between radios that are actually there, and a reopen that
+                    // fails leaves the old one running. What it needs is those
+                    // lists — with nothing to choose from there is nothing to
+                    // choose, so the row is a label until they can be had.
+                    if io.can_probe {
                         enum_combo(ui, "iface", &mut cfg.backend, io.iface_opts, Backend::label);
                     } else {
                         ui.label(backend.label()).on_hover_text(
-                            "Which interface the server uses is set on the machine it runs \
-                             on. Its settings are below and can be changed from here.",
+                            "Waiting for the machine the radio is attached to. Its interface \
+                             settings are below and can be changed from here meanwhile.",
                         );
                     }
                     ui.end_row();
@@ -1443,7 +1561,7 @@ impl SdroxideApp {
                             ui,
                             self.soapy_devices.as_deref(),
                             io.soapy_rescan,
-                            io.local_devices,
+                            io.can_probe,
                         );
                     }
                     Backend::Hpsdr => settings_hpsdr_tab(
@@ -1451,18 +1569,18 @@ impl SdroxideApp {
                         &self.hpsdr_devices,
                         io.radio_edit,
                         io.hpsdr_discover,
-                        io.local_devices,
+                        io.can_probe,
                         cmds,
                     ),
                     Backend::Cat => {
-                        settings_cat_tab(ui, &self.serial_ports, io.radio_edit, io.local_devices)
+                        settings_cat_tab(ui, &self.serial_ports, io.radio_edit, io.can_probe)
                     }
                     Backend::Tci => settings_tci_tab(
                         ui,
                         io.radio_edit,
                         io.tci_test,
                         &self.tci_test_result,
-                        io.local_devices,
+                        io.can_probe,
                     ),
                     Backend::IcomNet => settings_icomnet_tab(
                         ui,
@@ -1470,7 +1588,7 @@ impl SdroxideApp {
                         io.icomnet_test,
                         io.icomnet_copy_report,
                         &self.icomnet_test_result,
-                        io.local_devices,
+                        io.can_probe,
                     ),
                     Backend::SmartSdr => settings_smartsdr_tab(
                         ui,
@@ -1480,7 +1598,7 @@ impl SdroxideApp {
                         io.smartsdr_test,
                         io.smartsdr_copy_report,
                         &self.smartsdr_test_result,
-                        io.local_devices,
+                        io.can_probe,
                     ),
                     Backend::Pluto => settings_pluto_tab(
                         ui,
@@ -1490,7 +1608,7 @@ impl SdroxideApp {
                         io.pluto_test,
                         io.pluto_copy_report,
                         &self.pluto_test_result,
-                        io.local_devices,
+                        io.can_probe,
                         cmds,
                     ),
                     Backend::RtlSdr => settings_rtlsdr_tab(
@@ -1498,7 +1616,7 @@ impl SdroxideApp {
                         &self.rtlsdr_devices,
                         io.radio_edit,
                         io.rtlsdr_rescan,
-                        io.local_devices,
+                        io.can_probe,
                         cmds,
                     ),
                     // No device list: the dongle is the server's, and the
@@ -1514,7 +1632,7 @@ impl SdroxideApp {
                         backend == Backend::SpyServerVfo,
                         io.spyserver_test,
                         &self.spyserver_test_result,
-                        io.local_devices,
+                        io.can_probe,
                         cmds,
                     ),
                     Backend::Rx888 => settings_rx888_tab(
@@ -1523,7 +1641,7 @@ impl SdroxideApp {
                         io.radio_edit,
                         io.rx888_rescan,
                         io.apply_iface,
-                        io.local_devices,
+                        io.can_probe,
                         cmds,
                     ),
                     Backend::AirspyHf => settings_airspyhf_tab(
@@ -1534,7 +1652,7 @@ impl SdroxideApp {
                         io.airspyhf_rescan,
                         io.airspyhf_copy_report,
                         io.apply_iface,
-                        io.local_devices,
+                        io.can_probe,
                         cmds,
                     ),
                     Backend::Airspy => settings_airspy_tab(
@@ -1545,7 +1663,7 @@ impl SdroxideApp {
                         io.airspy_rescan,
                         io.airspy_copy_report,
                         io.apply_iface,
-                        io.local_devices,
+                        io.can_probe,
                         cmds,
                     ),
                     Backend::HackRf => settings_hackrf_tab(
@@ -1555,7 +1673,7 @@ impl SdroxideApp {
                         io.hackrf_rescan,
                         io.hackrf_copy_report,
                         io.apply_iface,
-                        io.local_devices,
+                        io.can_probe,
                         cmds,
                     ),
                     Backend::SdrPlay => settings_sdrplay_tab(
@@ -1565,7 +1683,7 @@ impl SdroxideApp {
                         io.radio_edit,
                         io.sdrplay_rescan,
                         io.apply_iface,
-                        io.local_devices,
+                        io.can_probe,
                         cmds,
                     ),
                     // Legacy configs may still carry the removed auto-detect
@@ -1574,13 +1692,13 @@ impl SdroxideApp {
                     // is a label there — so say who has to.
                     Backend::Auto => {
                         ui.label(
-                            RichText::new(if io.local_devices {
+                            RichText::new(if io.can_probe {
                                 "Pick a radio interface above (this configuration used the \
                                  removed auto-detect mode)."
                             } else {
-                                "This configuration used the removed auto-detect mode. An \
-                                 interface has to be chosen on the machine the radio is \
-                                 attached to."
+                                "This configuration used the removed auto-detect mode. Pick an \
+                                 interface above once the machine the radio is attached to has \
+                                 answered."
                             })
                             .weak(),
                         );
@@ -1589,12 +1707,12 @@ impl SdroxideApp {
                     // interface is chosen, so choosing one is the whole page.
                     Backend::None => {
                         ui.label(
-                            RichText::new(if io.local_devices {
+                            RichText::new(if io.can_probe {
                                 "This radio has no interface yet — pick one above and press \
                                  Apply / reconnect."
                             } else {
-                                "This radio has no interface yet. One has to be chosen on the \
-                                 machine the radio is attached to."
+                                "This radio has no interface yet. One can be picked above once \
+                                 the machine the radio is attached to has answered."
                             })
                             .weak(),
                         );
@@ -1602,16 +1720,17 @@ impl SdroxideApp {
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
-                    // Remotely this button reopens the radio the server already
-                    // has, on the settings just edited — it cannot switch to a
-                    // different interface, because the row that would choose
-                    // one is a label there.
+                    // The same button either way: it reopens whichever radio
+                    // the engine has, on the settings just edited — including a
+                    // different interface, which from a remote client is how a
+                    // headless station is moved from one device to another.
                     if ui
                         .button("Apply / reconnect")
-                        .on_hover_text(if io.local_devices {
+                        .on_hover_text(if io.local_engine {
                             "Switch to this interface now — no restart needed"
                         } else {
-                            "Reopen the server's radio on these settings — no restart needed"
+                            "Switch the server's radio to this interface now — no restart \
+                             needed. The old one keeps running if the new one cannot be opened."
                         })
                         .clicked()
                     {
@@ -1621,13 +1740,13 @@ impl SdroxideApp {
                     // narrow window doesn't push this under the scrollbar.
                     ui.add(
                         egui::Label::new(
-                            RichText::new(if io.local_devices {
+                            RichText::new(if io.local_engine {
                                 "Switches the live radio without restarting."
                             } else {
                                 "Everything above is the server's own configuration, and \
                                  changes are saved there. Most settings apply as you change \
                                  them; the ones fixed when the device is opened — the sample \
-                                 rate, an address — need this button."
+                                 rate, an address, the interface itself — need this button."
                             })
                             .weak(),
                         )

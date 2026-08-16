@@ -65,6 +65,10 @@ async fn spawn_server(port: u16, access: Option<AccessFn>) {
         port,
         web_root: None,
         access,
+        // These tests are about the session, not about this machine's buses:
+        // a prober that answers from a table keeps them off whatever hardware
+        // the test runner happens to have, while still exercising the lane.
+        probe: None,
     }));
     tokio::time::sleep(Duration::from_millis(400)).await;
 }

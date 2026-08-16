@@ -255,10 +255,7 @@ pub struct Timer {
 
 impl Default for Timer {
     fn default() -> Self {
-        Self {
-            running: false,
-            expiry: std::time::Instant::now(),
-        }
+        Self { running: false, expiry: std::time::Instant::now() }
     }
 }
 
@@ -288,10 +285,7 @@ impl Timer {
         if !self.running {
             return None;
         }
-        Some(
-            self.expiry
-                .saturating_duration_since(std::time::Instant::now()),
-        )
+        Some(self.expiry.saturating_duration_since(std::time::Instant::now()))
     }
 
     /// Stop timer.
@@ -738,18 +732,10 @@ impl Data {
         // RNR if not `F==1 && (RR || RNR || I)`.
         if self.own_receiver_busy {
             // 1998 spec doesn't say, but 2017 spec says "Response".
-            Action::SendRnr {
-                pf,
-                nr: self.vr,
-                command: false,
-            }
+            Action::SendRnr { pf, nr: self.vr, command: false }
         } else {
             // 1998 spec says commmand, which is wrong.
-            Action::SendRr {
-                pf,
-                nr: self.vr,
-                command: false,
-            }
+            Action::SendRr { pf, nr: self.vr, command: false }
         }
     }
 
@@ -764,10 +750,7 @@ impl Data {
     /// Page 107.
     #[must_use]
     fn invoke_retransmission(&mut self, _nr: u8) -> Vec<Action> {
-        self.iframe_resend_queue
-            .iter()
-            .map(|i| Action::SendIframe(i.clone()))
-            .collect()
+        self.iframe_resend_queue.iter().map(|i| Action::SendIframe(i.clone())).collect()
     }
 
     /// Select a new T1 value based off of the roundtrip time.
@@ -809,17 +792,9 @@ impl Data {
         self.acknowledge_pending = false;
         self.t1.start(self.t1v); // TODO: what timer value?
         if self.own_receiver_busy {
-            Action::SendRnr {
-                pf: true,
-                nr: self.vr,
-                command: true,
-            }
+            Action::SendRnr { pf: true, nr: self.vr, command: true }
         } else {
-            Action::SendRr {
-                pf: true,
-                nr: self.vr,
-                command: true,
-            }
+            Action::SendRr { pf: true, nr: self.vr, command: true }
         }
     }
 
@@ -868,10 +843,7 @@ impl Data {
             assert!(!self.iframe_resend_queue.is_empty());
             self.iframe_resend_queue.pop_front();
             self.va = (self.va + 1) % self.modulus.as_u8();
-            if self
-                .experiments
-                .contains(&Experiment::ResetRetryOnAckUpdate)
-            {
+            if self.experiments.contains(&Experiment::ResetRetryOnAckUpdate) {
                 self.rc = 0;
             }
         }
@@ -971,16 +943,11 @@ impl Data {
                 break;
             }
             if self.vs == (self.va + self.k) % self.modulus.as_u8() {
-                debug!(
-                    "rax25: tx window full with more data ({} bytes) to send!",
-                    self.obuf.len()
-                );
+                debug!("rax25: tx window full with more data ({} bytes) to send!", self.obuf.len());
                 break;
             }
-            let payload = self
-                .obuf
-                .drain(..std::cmp::min(self.mtu_out, self.obuf.len()))
-                .collect::<Vec<_>>();
+            let payload =
+                self.obuf.drain(..std::cmp::min(self.mtu_out, self.obuf.len())).collect::<Vec<_>>();
             let ns = self.vs;
             self.vs = (self.vs + 1) % self.modulus.as_u8();
             self.acknowledge_pending = false;
@@ -990,13 +957,7 @@ impl Data {
                 self.t3.stop();
                 self.t1.start(self.srt);
             }
-            let i = Iframe {
-                ns,
-                nr: self.vr,
-                poll: false,
-                pid: 0xF0,
-                payload,
-            };
+            let i = Iframe { ns, nr: self.vr, poll: false, pid: 0xF0, payload };
             self.iframe_resend_queue.push_back(i.clone());
             act.push(Action::SendIframe(i));
         }
@@ -1211,20 +1172,13 @@ impl State for Disconnected {
 
     // Page 85.
     fn connect(&self, data: &mut Data, addr: &Addr, ext: bool) -> Vec<Action> {
-        data.modulus = if ext {
-            Modulus::Extended
-        } else {
-            Modulus::Standard
-        };
+        data.modulus = if ext { Modulus::Extended } else { Modulus::Standard };
         // It says "SAT" in the PDF, but surely means SRT?
         data.peer = Some(addr.clone());
         data.srt = data.srt_default;
         data.t1v = 2 * data.srt;
         data.layer3_initiated = true;
-        vec![
-            Action::State(Box::new(AwaitingConnection::new())),
-            data.establish_data_link(),
-        ]
+        vec![Action::State(Box::new(AwaitingConnection::new())), data.establish_data_link()]
     }
 
     // Figure C4.1
@@ -1360,9 +1314,7 @@ impl State for AwaitingConnection {
         data.vr = 0;
         data.rc = 0; // Missing from 1998 & 2017 spec, but done by direwolf.
         data.select_t1_value();
-        vec![Action::State(Box::new(Connected::new(
-            ConnectedState::Connected,
-        )))]
+        vec![Action::State(Box::new(Connected::new(ConnectedState::Connected)))]
     }
 
     // Page 86.
@@ -1381,10 +1333,7 @@ impl State for AwaitingConnection {
         // 1998&2017 bug: It says "requeue". What does that even mean? Run this
         // same function again?
         data.t1.stop(); // Because we're heading into Disconnected.
-        vec![
-            Action::SendDisc { pf: true },
-            Action::State(Box::new(Disconnected::new())),
-        ]
+        vec![Action::SendDisc { pf: true }, Action::State(Box::new(Disconnected::new()))]
     }
 }
 
@@ -1438,10 +1387,7 @@ impl State for AwaitingRelease {
             // The 1998 spec doesn't say, but if we're going disconnected, then
             // there's no need for timers.
             data.t3.stop();
-            return vec![
-                Action::DlError(DlError::H),
-                Action::State(Box::new(Disconnected::new())),
-            ];
+            return vec![Action::DlError(DlError::H), Action::State(Box::new(Disconnected::new()))];
         }
         data.rc += 1;
         data.select_t1_value();
@@ -1455,10 +1401,7 @@ impl State for AwaitingRelease {
         data.t1.stop();
         debug!("rax25: DL-DISCONNECT confirm");
         // 1998&2017 bug: Doesn't specify pf.
-        vec![
-            Action::SendDm { pf: false },
-            Action::State(Box::new(Disconnected::new())),
-        ]
+        vec![Action::SendDm { pf: false }, Action::State(Box::new(Disconnected::new()))]
     }
 
     // TODO: More handlers.
@@ -1535,9 +1478,7 @@ impl Connected {
             if data.vs == data.va {
                 data.t3.start(data.t3v);
                 data.rc = 0; // Added in 2017 spec, page 95.
-                act.push(Action::State(Box::new(Connected::new(
-                    ConnectedState::Connected,
-                ))));
+                act.push(Action::State(Box::new(Connected::new(ConnectedState::Connected))));
             } else {
                 act.extend(data.invoke_retransmission(packet.nr));
 
@@ -1629,10 +1570,7 @@ impl State for Connected {
         data.rc = 0;
         data.t1.start(data.srt); // TODO: with what timer?
         data.t3.stop();
-        vec![
-            Action::SendDisc { pf: true },
-            Action::State(Box::new(AwaitingRelease::new())),
-        ]
+        vec![Action::SendDisc { pf: true }, Action::State(Box::new(AwaitingRelease::new()))]
     }
 
     // Page 92 & 98.
@@ -1680,10 +1618,7 @@ impl State for Connected {
         data.clear_iframe_queue();
         data.t1.stop();
         data.t3.stop();
-        vec![
-            Action::DlError(DlError::E),
-            Action::State(Box::new(Disconnected::new())),
-        ]
+        vec![Action::DlError(DlError::E), Action::State(Box::new(Disconnected::new()))]
     }
 
     // Page 93 & 100.
@@ -1760,19 +1695,13 @@ impl State for Connected {
             data.select_t1_value();
             data.t3.start(data.t3v);
             data.rc = 0;
-            actions.push(Action::State(Box::new(Connected::new(
-                ConnectedState::Connected,
-            ))));
+            actions.push(Action::State(Box::new(Connected::new(ConnectedState::Connected))));
         }
         if data.own_receiver_busy {
             // discord (implicit)
             debug!("rax25: Discarding iframe because busy and being polled");
             if p.poll {
-                actions.push(Action::SendRnr {
-                    pf: true,
-                    nr: data.vr,
-                    command: false,
-                });
+                actions.push(Action::SendRnr { pf: true, nr: data.vr, command: false });
                 data.acknowledge_pending = false;
             }
             return actions;
@@ -1796,11 +1725,7 @@ impl State for Connected {
                 data.vr = (data.vr + 1) % data.modulus.as_u8();
             }
             if p.poll {
-                actions.push(Action::SendRr {
-                    pf: true,
-                    nr: data.vr,
-                    command: false,
-                });
+                actions.push(Action::SendRr { pf: true, nr: data.vr, command: false });
                 data.acknowledge_pending = false;
                 return actions;
             }
@@ -1814,11 +1739,7 @@ impl State for Connected {
         if data.reject_exception {
             // discard frame (implicit)
             if p.poll {
-                actions.push(Action::SendRr {
-                    pf: true,
-                    nr: data.vr,
-                    command: false,
-                });
+                actions.push(Action::SendRr { pf: true, nr: data.vr, command: false });
                 data.acknowledge_pending = false;
             }
             return actions;
@@ -1832,10 +1753,7 @@ impl State for Connected {
             //
             // Maybe skip a duplicate?
             data.reject_exception = true;
-            actions.push(Action::SendRej {
-                pf: p.poll,
-                nr: data.vr,
-            });
+            actions.push(Action::SendRej { pf: p.poll, nr: data.vr });
             data.acknowledge_pending = false;
             return actions;
         }
@@ -1850,10 +1768,7 @@ impl State for Connected {
         // TODO: Maybe a version of if in_range(p.ns) {
         if p.ns != (data.vr + 1) % data.modulus.as_u8() {
             // discard iframe (implicit)
-            actions.push(Action::SendRej {
-                pf: p.poll,
-                nr: data.vr,
-            });
+            actions.push(Action::SendRej { pf: p.poll, nr: data.vr });
             data.acknowledge_pending = false;
             return actions;
         }
@@ -2188,14 +2103,8 @@ mod tests {
 
         // First attempt.
         dbg!("First attempt");
-        let (con, events) = handle(
-            &con,
-            &mut data,
-            &Event::Connect {
-                addr: Addr::new("M0THC-2")?,
-                ext: false,
-            },
-        );
+        let (con, events) =
+            handle(&con, &mut data, &Event::Connect { addr: Addr::new("M0THC-2")?, ext: false });
         let con = con.unwrap();
         assert_eq!(con.name(), "AwaitingConnection");
         assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
@@ -2247,11 +2156,8 @@ mod tests {
         data.able_to_establish = true; // TODO: implement some sort of listen()
         let con = Disconnected::new();
 
-        let (con, events) = handle(
-            &con,
-            &mut data,
-            &Event::Sabm(Sabm { poll: true }, Addr::new("M0THC-2")?),
-        );
+        let (con, events) =
+            handle(&con, &mut data, &Event::Sabm(Sabm { poll: true }, Addr::new("M0THC-2")?));
         let con = con.unwrap();
         assert_eq!(con.name(), "Connected");
         assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));

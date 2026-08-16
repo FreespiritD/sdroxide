@@ -736,6 +736,13 @@ impl SdroxideApp {
     /// logging and reconnecting while another tab is up front. The unbounded
     /// event channel must never be left to back up.
     pub(crate) fn drain_events(&mut self, ctx: &egui::Context, now: f64) {
+        // Answers to the settings dialog's device questions. Drained here
+        // rather than in the dialog: they come from another machine, so one can
+        // land in the frame after it was closed, and an answer left in the
+        // queue would be applied to whatever the dialog was asking next time.
+        while let Some(answer) = self.ctrl.poll_probe() {
+            self.apply_probe_answer(ctx, answer);
+        }
         while let Some(ev) = self.ctrl.poll_event() {
             match ev {
                 RadioEvent::Capabilities(c) => {

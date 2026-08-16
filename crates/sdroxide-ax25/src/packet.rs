@@ -13,8 +13,8 @@
 //! Section numbers in the comments are the AX.25 specification's, kept from
 //! upstream — they are the most useful thing in the file.
 
-use crate::addr::Addr;
 use crate::Ax25Error;
+use crate::addr::Addr;
 
 type Result<T, E = Ax25Error> = std::result::Result<T, E>;
 
@@ -240,11 +240,7 @@ impl Packet {
             command_response: false,
             command_response_la: true,
             rr_dist1: false,
-            packet_type: PacketType::Ui(Ui {
-                pid: 0xf0,
-                push: false,
-                payload: payload.into(),
-            }),
+            packet_type: PacketType::Ui(Ui { pid: 0xf0, push: false, payload: payload.into() }),
         }
     }
     /// Get the packet type.
@@ -295,10 +291,7 @@ impl Packet {
                     0
                 },
         );
-        ret.extend(
-            self.dst
-                .serialize(false, self.command_response, self.rr_dist1, false),
-        );
+        ret.extend(self.dst.serialize(false, self.command_response, self.rr_dist1, false));
         assert_ne!(self.command_response, self.command_response_la);
         ret.extend(self.src.serialize(
             self.digipeater.is_empty(),
@@ -463,15 +456,12 @@ impl Packet {
                 )
             } else {
                 if rest.len() < 2 {
-                    return Err(Ax25Error::Parse("AX.25 in ext mode, but S/U frame is too short".into()));
+                    return Err(Ax25Error::Parse(
+                        "AX.25 in ext mode, but S/U frame is too short".into(),
+                    ));
                 }
                 let control2 = rest[1];
-                (
-                    control2 & 1 == 1,
-                    (control2 >> 1) & 127,
-                    (control1 >> 1) & 127,
-                    &rest[2..],
-                )
+                (control2 & 1 == 1, (control2 >> 1) & 127, (control1 >> 1) & 127, &rest[2..])
             }
         };
         Ok(Packet {
@@ -514,10 +504,7 @@ impl Packet {
                         payload: bytes[1..].to_vec(),
                     }),
                     CONTROL_XID => PacketType::Xid(Xid { poll }),
-                    CONTROL_TEST => PacketType::Test(Test {
-                        poll,
-                        payload: bytes.to_vec(),
-                    }),
+                    CONTROL_TEST => PacketType::Test(Test { poll, payload: bytes.to_vec() }),
                     c => todo!("Control {c:b} not implemented"),
                 },
                 _ => panic!("Logic error: {control1} & 3 > 3"),
@@ -549,4 +536,3 @@ pub trait Hub {
     /// All packets get delivered to all clones.
     fn clone(&self) -> Box<dyn Hub>;
 }
-

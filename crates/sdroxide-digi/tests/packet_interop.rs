@@ -19,7 +19,6 @@
 use sdroxide_ax25::Deframer;
 use sdroxide_dsp::{AfskProfile, AfskRx};
 
-
 /// The two frames in every reference file, as (source, destination, payload).
 const EXPECTED: [(&str, &str, &str); 2] = [
     ("OE3JJS", "APDW12", "Hello from sdroxide packet\n"),
@@ -110,12 +109,8 @@ fn ui_frame(dest: &str, src: &str, payload: &[u8]) -> Vec<u8> {
             Some((b, s)) => (b, s.parse::<u8>().unwrap()),
             None => (call, 0),
         };
-        let mut v: Vec<u8> = base
-            .bytes()
-            .chain(std::iter::repeat(b' '))
-            .take(6)
-            .map(|c| c << 1)
-            .collect();
+        let mut v: Vec<u8> =
+            base.bytes().chain(std::iter::repeat(b' ')).take(6).map(|c| c << 1).collect();
         v.push((ssid << 1) | 0b0110_0000 | u8::from(last) | if hi { 0x80 } else { 0 });
         v
     };
@@ -190,7 +185,8 @@ fn atest_reads_us(profile: AfskProfile, baud: u32) {
         return;
     }
     let audio = our_transmission(profile);
-    let path = std::env::temp_dir().join(format!("sdroxide-packet-{baud}-{}.wav", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("sdroxide-packet-{baud}-{}.wav", std::process::id()));
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 48_000,
@@ -304,7 +300,8 @@ fn direwolf_reads_our_9600_baud_transmission() {
         return;
     }
     let audio = our_g3ruh_transmission();
-    let path = std::env::temp_dir().join(format!("sdroxide-packet-9600-{}.wav", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("sdroxide-packet-9600-{}.wav", std::process::id()));
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 48_000,
@@ -387,7 +384,11 @@ fn the_codec_parses_direwolfs_frames() {
 /// `on_rx_audio`, and a decoder that only works when it sees a whole
 /// transmission at once would pass every other test in this file and decode
 /// nothing on the air.
-fn monitor_lines(file: &str, mode: sdroxide_types::Mode, baud: sdroxide_types::PacketBaud) -> Vec<sdroxide_types::PacketHeard> {
+fn monitor_lines(
+    file: &str,
+    mode: sdroxide_types::Mode,
+    baud: sdroxide_types::PacketBaud,
+) -> Vec<sdroxide_types::PacketHeard> {
     let audio = wav(file);
     let cfg = sdroxide_types::DigiConfig { packet_baud: baud, ..Default::default() };
     let mut c = sdroxide_digi::PacketController::new(mode, cfg, 48_000.0);
@@ -399,7 +400,11 @@ fn monitor_lines(file: &str, mode: sdroxide_types::Mode, baud: sdroxide_types::P
 
 #[test]
 fn the_controller_monitors_a_1200_baud_channel() {
-    let heard = monitor_lines("ref1200.wav", sdroxide_types::Mode::Packet, sdroxide_types::PacketBaud::Vhf1200);
+    let heard = monitor_lines(
+        "ref1200.wav",
+        sdroxide_types::Mode::Packet,
+        sdroxide_types::PacketBaud::Vhf1200,
+    );
     assert_eq!(heard.len(), 2, "expected two frames, got {heard:?}");
     assert_eq!(heard[0].from, "OE3JJS");
     assert_eq!(heard[0].to, "APDW12");
@@ -413,14 +418,22 @@ fn the_controller_monitors_a_1200_baud_channel() {
 
 #[test]
 fn the_controller_monitors_a_9600_baud_channel() {
-    let heard = monitor_lines("ref9600.wav", sdroxide_types::Mode::Packet, sdroxide_types::PacketBaud::Vhf9600);
+    let heard = monitor_lines(
+        "ref9600.wav",
+        sdroxide_types::Mode::Packet,
+        sdroxide_types::PacketBaud::Vhf9600,
+    );
     assert_eq!(heard.len(), 2, "expected two frames, got {heard:?}");
     assert_eq!(heard[0].text, "Hello from sdroxide packet");
 }
 
 #[test]
 fn the_controller_monitors_an_hf_channel() {
-    let heard = monitor_lines("ref300.wav", sdroxide_types::Mode::PacketHf, sdroxide_types::PacketBaud::Hf300);
+    let heard = monitor_lines(
+        "ref300.wav",
+        sdroxide_types::Mode::PacketHf,
+        sdroxide_types::PacketBaud::Hf300,
+    );
     assert_eq!(heard.len(), 2, "expected two frames, got {heard:?}");
     assert_eq!(heard[0].text, "Hello from sdroxide packet");
 }
@@ -460,7 +473,10 @@ fn carrier_detect_follows_the_channel() {
 /// in 480-sample blocks. A modem test cannot catch a TXDELAY that is too short
 /// or a tail that truncates the closing flag; those show up here, and otherwise
 /// only as a gateway that never answers.
-fn controller_beacon_audio(baud: sdroxide_types::PacketBaud, mode: sdroxide_types::Mode) -> Vec<f32> {
+fn controller_beacon_audio(
+    baud: sdroxide_types::PacketBaud,
+    mode: sdroxide_types::Mode,
+) -> Vec<f32> {
     let cfg = sdroxide_types::DigiConfig {
         packet_baud: baud,
         packet_mycall: "OE3JJS-10".into(),
@@ -553,19 +569,22 @@ fn atest_reads(audio: &[f32], baud: u32, want: &str) {
 
 #[test]
 fn direwolf_reads_the_controllers_1200_baud_beacon() {
-    let audio = controller_beacon_audio(sdroxide_types::PacketBaud::Vhf1200, sdroxide_types::Mode::Packet);
+    let audio =
+        controller_beacon_audio(sdroxide_types::PacketBaud::Vhf1200, sdroxide_types::Mode::Packet);
     atest_reads(&audio, 1200, "OE3JJS-10>BEACON");
 }
 
 #[test]
 fn direwolf_reads_the_controllers_9600_baud_beacon() {
-    let audio = controller_beacon_audio(sdroxide_types::PacketBaud::Vhf9600, sdroxide_types::Mode::Packet);
+    let audio =
+        controller_beacon_audio(sdroxide_types::PacketBaud::Vhf9600, sdroxide_types::Mode::Packet);
     atest_reads(&audio, 9600, "OE3JJS-10>BEACON");
 }
 
 #[test]
 fn direwolf_reads_the_controllers_hf_beacon() {
-    let audio = controller_beacon_audio(sdroxide_types::PacketBaud::Hf300, sdroxide_types::Mode::PacketHf);
+    let audio =
+        controller_beacon_audio(sdroxide_types::PacketBaud::Hf300, sdroxide_types::Mode::PacketHf);
     atest_reads(&audio, 300, "OE3JJS-10>BEACON");
 }
 
@@ -624,11 +643,8 @@ fn station(call: &str) -> Station {
         ..Default::default()
     };
     let mut ctl = PacketController::new(Mode::Packet, cfg, 48_000.0);
-    let (port, endpoint) = port_pair(LinkConfig {
-        me: Addr::new(call).unwrap(),
-        paclen: 128,
-        maxframe: 4,
-    });
+    let (port, endpoint) =
+        port_pair(LinkConfig { me: Addr::new(call).unwrap(), paclen: 128, maxframe: 4 });
     ctl.attach_port(endpoint);
     Station { ctl, port }
 }
@@ -687,7 +703,11 @@ fn two_stations_connect_and_exchange_data() {
     let mut b = station("OE3JJS-1");
 
     a.port
-        .send(PortRequest::Connect { peer: Addr::new("OE3JJS-1").unwrap(), via: vec![], ext: false })
+        .send(PortRequest::Connect {
+            peer: Addr::new("OE3JJS-1").unwrap(),
+            via: vec![],
+            ext: false,
+        })
         .unwrap();
 
     let mut connected = false;

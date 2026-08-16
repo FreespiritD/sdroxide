@@ -3,6 +3,7 @@ mod airspyhf_source;
 mod audio_cat_source;
 mod console;
 mod device_registry;
+mod devices;
 mod dial;
 mod gui_main;
 mod hackrf_source;
@@ -1361,8 +1362,8 @@ fn open_hackrf_source(
     radio: &RadioConfig,
     center_hz: f64,
 ) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
-    let src = hackrf_source::HackRfSource::open(&radio.hackrf, center_hz)
-        .context("opening HackRF")?;
+    let src =
+        hackrf_source::HackRfSource::open(&radio.hackrf, center_hz).context("opening HackRF")?;
     let caps = hackrf_caps(&src);
     Ok((Box::new(src), caps))
 }

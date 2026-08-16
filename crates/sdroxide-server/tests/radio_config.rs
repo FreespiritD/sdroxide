@@ -7,6 +7,11 @@
 //! stages and have no `DeviceCaps` entry to ride — this lane is the only route
 //! they have.
 //!
+//! The last part of the test is the same lane carrying the biggest change of
+//! all: *which interface* the far end has open. On a headless server there is
+//! nobody standing at the machine to pick one, so it has to be possible from
+//! here, and the radio that comes back has to be announced.
+//!
 //! Its own test binary because it redirects the config directory through the
 //! environment, which is process-global: the tests in `session.rs` read that
 //! directory, and must not find it moved out from under them.
@@ -80,7 +85,7 @@ fn far_end_dongle() -> RadioConfig {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_servers_interface_configuration_is_replayed_and_can_be_edited() {
+async fn the_servers_interface_is_replayed_editable_and_switchable_from_a_client() {
     let root = std::env::temp_dir().join(format!("sdroxide-radiocfg-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("scratch config dir");
@@ -96,6 +101,25 @@ async fn the_servers_interface_configuration_is_replayed_and_can_be_edited() {
     // The source is a signal generator rather than a dongle — this lane carries
     // the *configuration*, and does not care what the front end turned out to
     // be. What matters is that the engine's store is the scratch directory.
+    // What the engine builds when a client asks it to reopen: the binary's
+    // factory reads `radio.json` and opens whatever backend it names, and this
+    // stands in for that, reporting the backend it was asked for as the label.
+    // That is what makes the assertion at the end of this test possible — the
+    // reopen is otherwise invisible from a socket.
+    let factory_store = store.clone();
+    let reopen: sdroxide_radio::ReopenFn = Box::new(move |center: f64| {
+        let backend = factory_store.load_radio_config().backend;
+        Ok((
+            Box::new(SigGenSource::demo(1_536_000.0, center)) as Box<dyn sdroxide_radio::IqSource>,
+            DeviceCaps {
+                driver: "siggen".into(),
+                label: format!("reopened on {backend:?}"),
+                rx_channels: 1,
+                freq_ranges_rx: vec![(0.0, 6e9)],
+                ..DeviceCaps::default()
+            },
+        ))
+    });
     let handles = start_engine(
         Box::new(SigGenSource::demo(1_536_000.0, 14_200_000.0)),
         DeviceCaps {
@@ -105,7 +129,7 @@ async fn the_servers_interface_configuration_is_replayed_and_can_be_edited() {
             freq_ranges_rx: vec![(0.0, 6e9)],
             ..DeviceCaps::default()
         },
-        EngineConfig::default(),
+        EngineConfig { reopen: Some(reopen), ..EngineConfig::default() },
     );
     tokio::spawn(serve(ServerParams {
         cmd_tx: handles.cmd_tx,
@@ -118,6 +142,9 @@ async fn the_servers_interface_configuration_is_replayed_and_can_be_edited() {
         port: PORT,
         web_root: None,
         access: None,
+        // Device questions have their own test binary (`probe.rs`); this one
+        // is about the configuration, and answers none.
+        probe: None,
     }));
     // Long enough that the engine's one startup announcement is already behind
     // us when the client arrives — which is the case the replay exists for.
@@ -175,6 +202,37 @@ async fn the_servers_interface_configuration_is_replayed_and_can_be_edited() {
         store.load_radio_config(),
         edited,
         "radio.json on the engine's machine was not updated"
+    );
+
+    // And the whole point of the lane: a client changes *which interface* the
+    // far end has open and asks it to reopen. Nobody is at the other machine —
+    // this is a headless server — so the switch has to happen from here, and
+    // the radio that comes back has to be announced, because it is a different
+    // radio with different gains, ports and ranges.
+    let mut switched = edited.clone();
+    switched.backend = Backend::Cat;
+    send(
+        &mut ws,
+        &ClientMsg::Command(Command::SetRadioConfig {
+            cfg: Box::new(switched.clone()),
+            reopen: true,
+        }),
+    )
+    .await;
+
+    let caps = loop {
+        if let ServerMsg::Capabilities(c) = recv_msg(&mut ws).await {
+            break c;
+        }
+    };
+    assert_eq!(
+        caps.label, "reopened on Cat",
+        "the engine did not reopen on the interface the client chose"
+    );
+    assert_eq!(
+        store.load_radio_config().backend,
+        Backend::Cat,
+        "the switch was not persisted where the radio is"
     );
 
     let _ = std::fs::remove_dir_all(&root);

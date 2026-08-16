@@ -76,7 +76,7 @@ fn main() {
             Err(tungstenite::Error::Io(e))
                 if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut =>
             {
-                continue
+                continue;
             }
             Err(e) => {
                 checks.push((false, format!("connection: {e}")));

@@ -24,6 +24,7 @@ mod meters;
 mod mode;
 mod netcfg;
 mod pictures;
+mod probe;
 mod prop_store;
 mod propagation;
 mod radio;
@@ -108,6 +109,7 @@ pub use pictures::{
     IMAGE_THUMB_EDGE, IMAGE_UPLOAD_MAX, ImageEntry, ImageKind, ImageListing, ImagePresets,
     ImageSlotInfo, received_at, safe_name,
 };
+pub use probe::{DeviceProbe, ProbeAnswer, ProbeTest, ReportKind, TestKind};
 pub use prop_store::{PropSources, PropStore};
 pub use propagation::{
     BandPlane, DEFAULT_HALFLIFE_S as PROP_DEFAULT_HALFLIFE_S, DEFAULT_HM_KM, GRID_CELLS,

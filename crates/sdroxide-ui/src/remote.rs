@@ -129,6 +129,9 @@ pub struct RemoteController {
     /// did. See [`RADIO_CFG_COALESCE_S`].
     radio_cfg_dirty: bool,
     radio_cfg_sent: f64,
+    /// Answers to the settings dialog's device questions, in the order the
+    /// server ran them. Drained by [`RadioController::poll_probe`].
+    probe_answers: VecDeque<sdroxide_types::ProbeAnswer>,
 }
 
 /// How long an edited interface configuration is held before it goes out.
@@ -170,6 +173,7 @@ impl RemoteController {
             radio_cfg: None,
             radio_cfg_dirty: false,
             radio_cfg_sent: 0.0,
+            probe_answers: VecDeque::new(),
         })
     }
 
@@ -315,6 +319,14 @@ impl RemoteController {
                 }
                 self.pending.push_back(RadioEvent::RadioConfig(c));
             }
+            // Its own queue rather than the event stream: this is the answer to
+            // a question the settings dialog asked, not something the engine
+            // announced, and the UI drains it where it asked.
+            ServerMsg::ProbeAnswer(a) => self.probe_answers.push_back(*a),
+            // The far end opened a different radio. The UI already knows what
+            // to do with this — it is the same event an in-process engine
+            // sends when it adopts a source.
+            ServerMsg::Capabilities(c) => self.pending.push_back(RadioEvent::Capabilities(c)),
         }
     }
 
@@ -410,7 +422,7 @@ impl RadioController for RemoteController {
         // than by anything arriving, so without a frame to release it on, the
         // last nudge of a slider would sit here until something else woke the
         // app up.
-        !self.pending.is_empty() || self.radio_cfg_dirty
+        !self.pending.is_empty() || self.radio_cfg_dirty || !self.probe_answers.is_empty()
     }
 
     fn can_reconnect(&self) -> bool {
@@ -460,6 +472,9 @@ impl RadioController for RemoteController {
         // must not be applied to it. The fresh session announces its own.
         self.radio_cfg = None;
         self.radio_cfg_dirty = false;
+        // And an answer from the dead session: it describes a machine this
+        // socket may not even be reaching any more.
+        self.probe_answers.clear();
         Ok(())
     }
 
@@ -492,6 +507,18 @@ impl RadioController for RemoteController {
 
     fn reopen_source(&mut self) {
         self.flush_radio_config(true);
+    }
+
+    /// Ask the engine host, and answer nothing here: every one of these is a
+    /// question about *its* buses, ports and network. `None` says so — the UI
+    /// waits for [`RemoteController::poll_probe`].
+    fn probe(&mut self, req: sdroxide_types::DeviceProbe) -> Option<sdroxide_types::ProbeAnswer> {
+        self.send_msg(ClientMsg::Probe(req));
+        None
+    }
+
+    fn poll_probe(&mut self) -> Option<sdroxide_types::ProbeAnswer> {
+        self.probe_answers.pop_front()
     }
 }
 

@@ -364,11 +364,7 @@ fn send_our_handshake<T: Read + Write>(
         send_line(wire, &format!(";PR: {response}"), out)?;
     }
 
-    send_line(
-        wire,
-        &format!("; {} DE {} ({})", cfg.target_call, cfg.callsign, cfg.locator),
-        out,
-    )?;
+    send_line(wire, &format!("; {} DE {} ({})", cfg.target_call, cfg.callsign, cfg.locator), out)?;
     Ok(())
 }
 

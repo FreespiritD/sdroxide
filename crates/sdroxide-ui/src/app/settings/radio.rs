@@ -15,18 +15,21 @@ use crate::app::settings::enum_combo;
 ///
 /// One wording rather than a dozen: every one of these buttons asks a question
 /// about a *machine* — what is on its USB bus, which serial ports it has,
-/// whether an address answers from where it stands — and on a remote client
-/// this screen is not that machine. The settings around them describe the
-/// device instead, so they travel.
-const NOT_FROM_HERE: &str = "Only from the machine the radio is attached to: this asks about \
-                             its hardware and its network, not this screen's.";
+/// whether an address answers from where it stands. That machine is the one the
+/// radio is attached to, which may not be this screen, so the question is sent
+/// there and the answer comes back ([`sdroxide_types::DeviceProbe`]). These
+/// controls are therefore live from a remote or browser client too, and are
+/// only dark while an earlier question is still out — or where that machine
+/// answers none at all.
+const NO_ANSWER_YET: &str = "Waiting for the machine the radio is attached to: these ask about \
+                             its hardware and its network, and it answers one at a time.";
 
-/// Draw a control that only works where the radio is, greyed out and explained
-/// when this screen is somewhere else.
-fn local_only<R>(ui: &mut egui::Ui, local: bool, add: impl FnOnce(&mut egui::Ui) -> R) {
-    let group = ui.add_enabled_ui(local, add);
-    if !local {
-        group.response.on_hover_text(NOT_FROM_HERE);
+/// Draw a control that has to ask the radio's own machine, greyed out and
+/// explained while that machine has not answered.
+fn probe_only<R>(ui: &mut egui::Ui, can_probe: bool, add: impl FnOnce(&mut egui::Ui) -> R) {
+    let group = ui.add_enabled_ui(can_probe, add);
+    if !can_probe {
+        group.response.on_hover_text(NO_ANSWER_YET);
     }
 }
 
@@ -36,14 +39,14 @@ pub(in crate::app) fn settings_cat_tab(
     ui: &mut egui::Ui,
     serial_ports: &[String],
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
-    local: bool,
+    can_probe: bool,
 ) {
     use sdroxide_types::{
         CatFamily, CwKeying, DigiMode, IcomModel, KenwoodSend, LineState, ModeControl, Parity,
         PttMethod, SoundFormat, StopBits,
     };
     let Some(cfg) = radio_edit.as_mut() else {
-        ui.label("Radio configuration is only available in the native app.");
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
     };
     egui::Grid::new("cat-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
@@ -103,7 +106,7 @@ pub(in crate::app) fn settings_cat_tab(
             // The list is of *this* machine's ports. Where the rig is elsewhere
             // the stored path is still worth showing — it says which port the
             // engine is using — but there is nothing here to choose from.
-            local_only(ui, local, |ui| {
+            probe_only(ui, can_probe, |ui| {
                 ComboBox::from_id_salt("serport").width(260.0).selected_text(shown).show_ui(
                     ui,
                     |ui| {
@@ -291,19 +294,19 @@ pub(in crate::app) fn settings_hpsdr_tab(
     devices: &[sdroxide_types::HpsdrDevice],
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     discover: &mut bool,
-    local: bool,
+    can_probe: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::HpsdrConfig;
     let Some(cfg) = radio_edit.as_mut() else {
-        ui.label("Radio configuration is only available in the native app.");
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
     };
     egui::Grid::new("hpsdr-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Devices");
         // The scan goes out on this machine's LAN; the radio is on the
         // engine's. The manual IP below is typed, so it still works from here.
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Discover").clicked() {
                     *discover = true;
@@ -527,12 +530,12 @@ pub(in crate::app) fn settings_rtlsdr_tab(
     devices: &[sdroxide_types::RtlSdrDevice],
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     rescan: &mut bool,
-    local: bool,
+    can_probe: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::{RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode};
     let Some(cfg) = radio_edit.as_mut() else {
-        ui.label("Radio configuration is only available in the native app.");
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
     };
 
@@ -540,7 +543,7 @@ pub(in crate::app) fn settings_rtlsdr_tab(
         ui.label("Dongle");
         // Which dongle is the one row here that names a USB bus rather than the
         // radio. Everything below reaches the dongle wherever it is plugged in.
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             ui.horizontal(|ui| {
                 if ui
                     .button("Rescan")
@@ -748,7 +751,7 @@ pub(in crate::app) fn settings_rtltcp_tab(
 ) {
     use sdroxide_types::{RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode, RtlTcpConfig};
     let Some(cfg) = radio_edit.as_mut() else {
-        ui.label("Radio configuration is only available in the native app.");
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
     };
 
@@ -1081,13 +1084,13 @@ pub(in crate::app) fn settings_spyserver_tab(
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     vfo: bool,
     test: &mut bool,
-    test_result: &Option<Result<String, String>>,
-    local: bool,
+    test_result: &Option<crate::app::settings::TestOutcome>,
+    can_probe: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::{SpyServerConfig, SpyServerFormat};
     let Some(radio) = radio_edit.as_mut() else {
-        ui.label("Radio configuration is only available in the native app.");
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
     };
     let cfg = if vfo { &mut radio.spyserver_vfo } else { &mut radio.spyserver };
@@ -1372,7 +1375,7 @@ pub(in crate::app) fn settings_spyserver_tab(
         // The test connects from wherever it is pressed, so a green answer in a
         // browser would only say *this screen* can reach the server — a
         // different question from the one being asked.
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             if ui
                 .button("Test connection")
                 .on_hover_text(
@@ -1406,12 +1409,12 @@ pub(in crate::app) fn settings_tci_tab(
     ui: &mut egui::Ui,
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     tci_test: &mut bool,
-    test_result: &Option<Result<String, String>>,
-    local: bool,
+    test_result: &Option<crate::app::settings::TestOutcome>,
+    can_probe: bool,
 ) {
     use sdroxide_types::TciConfig;
     let Some(cfg) = radio_edit.as_mut() else {
-        ui.label("Radio configuration is only available in the native app.");
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
     };
     egui::Grid::new("tci-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
@@ -1462,7 +1465,7 @@ pub(in crate::app) fn settings_tci_tab(
         // The test opens its own socket from wherever it is pressed, so a
         // green answer here would only say this screen can reach the rig — a
         // different question from the one being asked.
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             if ui.button("Test connection").clicked() {
                 *tci_test = true;
             }
@@ -1488,12 +1491,12 @@ pub(in crate::app) fn settings_icomnet_tab(
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     test: &mut bool,
     copy_report: &mut bool,
-    test_result: &Option<Result<String, String>>,
-    local: bool,
+    test_result: &Option<crate::app::settings::TestOutcome>,
+    can_probe: bool,
 ) {
     use sdroxide_types::{CwKeying, IcomNetConfig, IcomRxSource};
     let Some(cfg) = radio_edit.as_mut() else {
-        ui.label("Radio configuration is only available in the native app.");
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
     };
     let net = &mut cfg.icomnet;
@@ -1620,7 +1623,7 @@ pub(in crate::app) fn settings_icomnet_tab(
         // Both reach for this machine: the test opens its own socket from here,
         // and the trace is of the session *this* process ran. The engine's own
         // is on the engine's machine.
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Test connection").clicked() {
                     *test = true;
@@ -1672,9 +1675,23 @@ fn sdroxide_icomnet_hint() -> &'static str {
 /// whatever interface it had, but a green "Connected" on its own reads as
 /// "done". A field report came from exactly that gap — a tested Pluto, an
 /// unpressed Apply, and a blank screen.
-fn test_result_line(ui: &mut egui::Ui, result: &Option<Result<String, String>>) {
+///
+/// The waiting line matters for the same kind of reason: the connection is made
+/// from the machine the radio is on, so from a remote client the press and the
+/// answer are seconds and a network apart, and a button that showed nothing in
+/// between would be pressed again.
+fn test_result_line(ui: &mut egui::Ui, result: &Option<crate::app::settings::TestOutcome>) {
+    use crate::app::settings::TestOutcome;
+    let result = match result {
+        None => return,
+        Some(TestOutcome::Waiting) => {
+            ui.label(RichText::new("Testing…").weak());
+            return;
+        }
+        Some(TestOutcome::Done(r)) => r,
+    };
     match result {
-        Some(Ok(s)) => {
+        Ok(s) => {
             ui.label(
                 RichText::new(format!("Connected: {s}")).color(Color32::from_rgb(90, 200, 110)),
             );
@@ -1686,10 +1703,9 @@ fn test_result_line(ui: &mut egui::Ui, result: &Option<Result<String, String>>) 
                 .weak(),
             );
         }
-        Some(Err(e)) => {
+        Err(e) => {
             ui.label(RichText::new(format!("Failed: {e}")).color(Color32::from_rgb(230, 90, 80)));
         }
-        None => {}
     }
 }
 
@@ -1710,13 +1726,13 @@ pub(in crate::app) fn settings_pluto_tab(
     discover: &mut bool,
     test: &mut bool,
     copy_report: &mut bool,
-    test_result: &Option<Result<String, String>>,
-    local: bool,
+    test_result: &Option<crate::app::settings::TestOutcome>,
+    can_probe: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::{PlutoAgc, PlutoConfig};
     let Some(cfg) = radio_edit.as_mut() else {
-        ui.label("Radio configuration is only available in the native app.");
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
     };
 
@@ -1729,7 +1745,7 @@ pub(in crate::app) fn settings_pluto_tab(
         // The mDNS query and the USB-gadget probe both go out from here, and a
         // Pluto on a USB cable is only reachable from the machine it is plugged
         // into. The Address row below is typed, so it still works from here.
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Discover").clicked() {
                     *discover = true;
@@ -1937,7 +1953,7 @@ pub(in crate::app) fn settings_pluto_tab(
         ui.label("");
         // Both run here: the test opens the radio from this machine, and the
         // trace is of this process's own session.
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             ui.horizontal(|ui| {
                 if ui
                     .button("Test connection")
@@ -2001,12 +2017,12 @@ pub(in crate::app) fn settings_smartsdr_tab(
     discover: &mut bool,
     test: &mut bool,
     copy_report: &mut bool,
-    test_result: &Option<Result<String, String>>,
-    local: bool,
+    test_result: &Option<crate::app::settings::TestOutcome>,
+    can_probe: bool,
 ) {
     use sdroxide_types::SmartSdrConfig;
     let Some(cfg) = radio_edit.as_mut() else {
-        ui.label("Radio configuration is only available in the native app.");
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
     };
 
@@ -2019,7 +2035,7 @@ pub(in crate::app) fn settings_smartsdr_tab(
         // The broadcasts a FLEX sends reach its own network segment, which is
         // the engine's, not this screen's. The Address row below is typed, so
         // it still works from here.
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Discover").clicked() {
                     *discover = true;
@@ -2106,7 +2122,7 @@ pub(in crate::app) fn settings_smartsdr_tab(
         ui.label("");
         // Both run here: the test opens its own connection from this machine,
         // and the trace is of this process's own session.
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             ui.horizontal(|ui| {
                 if ui
                     .button("Test connection")
@@ -2165,19 +2181,19 @@ pub(in crate::app) fn settings_soapy_devices(
     ui: &mut egui::Ui,
     devices: Option<&[sdroxide_types::SoapyDeviceInfo]>,
     rescan: &mut bool,
-    local: bool,
+    can_probe: bool,
 ) {
     use sdroxide_types::SoapyDeviceInfo;
 
-    // The whole section, not just the button: the list below is what *this*
-    // machine's installed modules found, and shown beside a radio that is
-    // somewhere else it would be read as that radio's.
-    if !local {
+    // The list is what the *radio's* machine found, which is where the modules
+    // are installed and where `device_args` is read from. Until it has
+    // answered there is nothing here worth drawing a Rescan button beside.
+    if !can_probe && devices.is_none() {
         ui.label(RichText::new("Devices SoapySDR can see").strong());
         ui.label(
             RichText::new(
-                "Enumerated on the machine the radio is attached to, where the modules \
-                 are installed. Which device it opens is `device_args` in that machine's \
+                "Waiting for the machine the radio is attached to, where the modules are \
+                 installed. Which device it opens is `device_args` in that machine's \
                  config.toml, or its --device.",
             )
             .weak(),
@@ -2187,16 +2203,18 @@ pub(in crate::app) fn settings_soapy_devices(
 
     ui.horizontal(|ui| {
         ui.label(RichText::new("Devices SoapySDR can see").strong());
-        if ui
-            .button("Rescan")
-            .on_hover_text(
-                "Ask every installed SoapySDR module to scan. Nothing is opened, \
-                 so this is safe while receiving — but it can take a moment.",
-            )
-            .clicked()
-        {
-            *rescan = true;
-        }
+        probe_only(ui, can_probe, |ui| {
+            if ui
+                .button("Rescan")
+                .on_hover_text(
+                    "Ask every installed SoapySDR module to scan. Nothing is opened, \
+                     so this is safe while receiving — but it can take a moment.",
+                )
+                .clicked()
+            {
+                *rescan = true;
+            }
+        });
     });
 
     let Some(devices) = devices else {
@@ -2395,12 +2413,12 @@ pub(in crate::app) fn settings_rx888_tab(
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     rescan: &mut bool,
     apply: &mut bool,
-    local: bool,
+    can_probe: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::Rx888Config;
     let Some(cfg) = radio_edit.as_mut() else {
-        ui.label("Radio configuration is only available in the native app.");
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
     };
 
@@ -2417,7 +2435,7 @@ pub(in crate::app) fn settings_rx888_tab(
         ui.label("Receiver");
         // Which receiver is this panel's one row about a USB bus; everything
         // below reaches the device wherever it is plugged in.
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             ui.horizontal(|ui| {
                 if ui
                     .button("Rescan")
@@ -2647,12 +2665,12 @@ pub(in crate::app) fn settings_airspyhf_tab(
     rescan: &mut bool,
     copy_report: &mut bool,
     apply: &mut bool,
-    local: bool,
+    can_probe: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::AirspyHfConfig;
     let Some(cfg) = radio_edit.as_mut() else {
-        ui.label("Radio configuration is only available in the native app.");
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
     };
 
@@ -2683,7 +2701,7 @@ pub(in crate::app) fn settings_airspyhf_tab(
         ui.label("Receiver");
         // Which receiver is this panel's one row about a USB bus; everything
         // below reaches the device wherever it is plugged in.
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             ui.horizontal(|ui| {
                 if ui
                     .button("Rescan")
@@ -2882,7 +2900,7 @@ pub(in crate::app) fn settings_airspyhf_tab(
         ui.label("");
         // The trace is of the session *this* process ran; the engine's own is
         // on the engine's machine.
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             if ui
                 .button("Copy diagnostic report")
                 .on_hover_text(
@@ -2950,12 +2968,12 @@ pub(in crate::app) fn settings_airspy_tab(
     rescan: &mut bool,
     copy_report: &mut bool,
     apply: &mut bool,
-    local: bool,
+    can_probe: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::{AirspyConfig, AirspyGain};
     let Some(cfg) = radio_edit.as_mut() else {
-        ui.label("Radio configuration is only available in the native app.");
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
     };
 
@@ -2973,7 +2991,7 @@ pub(in crate::app) fn settings_airspy_tab(
 
     egui::Grid::new("airspy-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Receiver");
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             ui.horizontal(|ui| {
                 if ui
                     .button("Rescan")
@@ -3179,7 +3197,7 @@ pub(in crate::app) fn settings_airspy_tab(
     }
 
     ui.add_space(6.0);
-    local_only(ui, local, |ui| {
+    probe_only(ui, can_probe, |ui| {
         if ui
             .button("Copy diagnostic report")
             .on_hover_text(
@@ -3226,12 +3244,12 @@ pub(in crate::app) fn settings_hackrf_tab(
     rescan: &mut bool,
     copy_report: &mut bool,
     apply: &mut bool,
-    local: bool,
+    can_probe: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::HackRfConfig;
     let Some(cfg) = radio_edit.as_mut() else {
-        ui.label("Radio configuration is only available in the native app.");
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
     };
 
@@ -3261,7 +3279,7 @@ pub(in crate::app) fn settings_hackrf_tab(
 
     egui::Grid::new("hackrf-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Radio");
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             ui.horizontal(|ui| {
                 if ui
                     .button("Rescan")
@@ -3560,7 +3578,7 @@ pub(in crate::app) fn settings_hackrf_tab(
 
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             if ui
                 .button("Copy diagnostic report")
                 .on_hover_text(
@@ -3612,12 +3630,12 @@ pub(in crate::app) fn settings_sdrplay_tab(
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,
     rescan: &mut bool,
     apply: &mut bool,
-    local: bool,
+    can_probe: bool,
     cmds: &mut Vec<Command>,
 ) {
     use sdroxide_types::{SdrPlayAgc, SdrPlayConfig, SdrPlayDuoTuner, SdrPlayModel};
     let Some(cfg) = radio_edit.as_mut() else {
-        ui.label("Radio configuration is only available in the native app.");
+        ui.label("Waiting for the configuration of the machine the radio is attached to.");
         return;
     };
 
@@ -3661,7 +3679,7 @@ pub(in crate::app) fn settings_sdrplay_tab(
         ui.label("Receiver");
         // The service that answers this is the one on the engine's machine;
         // everything below reaches the RSP through it.
-        local_only(ui, local, |ui| {
+        probe_only(ui, can_probe, |ui| {
             ui.horizontal(|ui| {
                 if ui
                     .button("Rescan")

@@ -283,6 +283,11 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>, audio_caps: A
                         }
                     }
                 }
+                // Not into the engine: a bus scan or a connection test blocks
+                // for as long as the hardware takes, and the engine thread is
+                // the one carrying the radio. Its own worker answers, in the
+                // order these arrive — see `crate::probe`.
+                Ok(ClientMsg::Probe(req)) => crate::probe::ask(shared, req),
                 Ok(ClientMsg::Ping(t)) => {
                     if let Some(s) = shared.session.lock().unwrap().as_ref() {
                         let _ = s.reliable.try_send(ServerMsg::Pong(t));

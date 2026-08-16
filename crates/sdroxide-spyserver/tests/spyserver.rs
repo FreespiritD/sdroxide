@@ -587,12 +587,7 @@ fn the_configured_gain_survives_the_servers_opening_sync() {
         max_gain: 21,
         ..Spec::default()
     });
-    let cfg = SpyServerConfig {
-        gain_index: 9,
-        iq_decimation: 4,
-        fft_enabled: false,
-        ..fake.cfg()
-    };
+    let cfg = SpyServerConfig { gain_index: 9, iq_decimation: 4, fft_enabled: false, ..fake.cfg() };
     let _h = SpyServerHandle::connect_wideband(&cfg, 100_000_000.0).expect("connect");
 
     assert!(eventually(Duration::from_secs(2), || fake

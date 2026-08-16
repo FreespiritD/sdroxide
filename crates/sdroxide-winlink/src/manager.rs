@@ -407,11 +407,10 @@ fn run_session(
 ) -> Option<String> {
     match route {
         WinlinkRoute::Telnet { address } => {
-            let mut transport =
-                match TelnetTransport::dial(address, &cfg.callsign, DIAL_TIMEOUT) {
-                    Ok(t) => t,
-                    Err(e) => return Some(e.to_string()),
-                };
+            let mut transport = match TelnetTransport::dial(address, &cfg.callsign, DIAL_TIMEOUT) {
+                Ok(t) => t,
+                Err(e) => return Some(e.to_string()),
+            };
             outcome.log.extend(transport.login_log().iter().cloned());
             match session::run_into(&mut transport, cfg, outbound, outcome) {
                 Ok(()) => None,
@@ -421,17 +420,16 @@ fn run_session(
         WinlinkRoute::Packet { gateway, via } => {
             let port = port.expect("connect() proved the link exists before spawning");
             outcome.log.push(format!("> calling {gateway}"));
-            let mut transport =
-                match Ax25Transport::connect(
-                    port,
-                    gateway,
-                    via,
-                    RADIO_DIAL_TIMEOUT,
-                    Arc::clone(cancel),
-                ) {
-                    Ok(t) => t,
-                    Err(e) => return Some(e.to_string()),
-                };
+            let mut transport = match Ax25Transport::connect(
+                port,
+                gateway,
+                via,
+                RADIO_DIAL_TIMEOUT,
+                Arc::clone(cancel),
+            ) {
+                Ok(t) => t,
+                Err(e) => return Some(e.to_string()),
+            };
             outcome.log.push(format!("< connected to {gateway}"));
             match session::run_into(&mut transport, cfg, outbound, outcome) {
                 Ok(()) => None,

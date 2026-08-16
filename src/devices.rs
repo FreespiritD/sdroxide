@@ -1,0 +1,127 @@
+//! What this machine has to offer a radio: buses, ports, sound cards, and the
+//! addresses that answer from here.
+//!
+//! One function, because there are two callers and they must not drift apart.
+//! The GUI asks it directly (the radio is on the same machine as the dialog),
+//! and in server mode the same function is handed to `sdroxide-server` as its
+//! [`sdroxide_server::ProbeFn`], so a remote or browser client's Rescan,
+//! Discover and Test buttons describe *this* computer rather than the one the
+//! operator happens to be sitting at. Every backend is reached from the binary,
+//! which is why this lives here and not in a library crate.
+//!
+//! Everything here blocks — anywhere from a USB enumeration to a five-second
+//! connection test — so callers run it off their hot path: the GUI after the
+//! settings window closure, the server on its own probe thread.
+
+use sdroxide_types::{DeviceProbe, ProbeAnswer, ProbeTest, ReportKind};
+use tracing::warn;
+
+/// Answer one device question about this machine.
+pub fn probe(req: DeviceProbe) -> ProbeAnswer {
+    match req {
+        DeviceProbe::Host => ProbeAnswer::Host { soapy: cfg!(feature = "soapy") },
+        DeviceProbe::RadioAudio => ProbeAnswer::RadioAudio {
+            inputs: sdroxide_audio::input_device_names(),
+            outputs: sdroxide_audio::output_device_names(),
+        },
+        DeviceProbe::SerialPorts => ProbeAnswer::SerialPorts(sdroxide_cat::available_ports()),
+        DeviceProbe::RtlSdr => ProbeAnswer::RtlSdr(sdroxide_rtlsdr::list()),
+        DeviceProbe::Rx888 => ProbeAnswer::Rx888(sdroxide_rx888::list()),
+        DeviceProbe::AirspyHf => ProbeAnswer::AirspyHf(sdroxide_airspyhf::list()),
+        DeviceProbe::Airspy => ProbeAnswer::Airspy(sdroxide_airspy::list()),
+        DeviceProbe::HackRf => ProbeAnswer::HackRf(sdroxide_hackrf::list()),
+        DeviceProbe::SdrPlay => ProbeAnswer::SdrPlay(sdroxide_sdrplay::list()),
+        DeviceProbe::Soapy => ProbeAnswer::Soapy(soapy_devices()),
+        DeviceProbe::Hpsdr => ProbeAnswer::Hpsdr(sdroxide_hpsdr::discover_default()),
+        DeviceProbe::SmartSdr => ProbeAnswer::SmartSdr(crate::smartsdr_source::discover()),
+        DeviceProbe::Pluto => ProbeAnswer::Pluto(sdroxide_pluto::discover_default()),
+        DeviceProbe::Test(t) => ProbeAnswer::Test(t.kind(), test(&t)),
+        DeviceProbe::Report(k) => ProbeAnswer::Report(k, report(k)),
+    }
+}
+
+/// The whole SoapySDR enumeration, pseudo-drivers included: this feeds a list
+/// the operator reads, and a sound card that is being skipped is exactly what
+/// they need to see named. The *automatic* pick filters it (see
+/// `selectable_soapy_devices` in main.rs).
+#[cfg(feature = "soapy")]
+fn soapy_devices() -> Vec<sdroxide_types::SoapyDeviceInfo> {
+    sdroxide_radio::enumerate_devices("")
+        .unwrap_or_else(|e| {
+            warn!("SoapySDR enumeration failed: {e}");
+            Vec::new()
+        })
+        .into_iter()
+        .map(|d| sdroxide_types::SoapyDeviceInfo { driver: d.driver, label: d.label, args: d.args })
+        .collect()
+}
+
+/// Nothing to enumerate in a build without SoapySDR — and the interface is not
+/// offered either, so nobody can be looking at this list.
+#[cfg(not(feature = "soapy"))]
+fn soapy_devices() -> Vec<sdroxide_types::SoapyDeviceInfo> {
+    Vec::new()
+}
+
+/// Open, ask what is there, and hang up. Every one of these stops short of
+/// taking the radio over: the engine keeps running whatever interface it had,
+/// and a test that evicted somebody's running session would be a poor thing for
+/// a button labelled "Test connection" to do.
+fn test(t: &ProbeTest) -> Result<String, String> {
+    use std::time::Duration;
+    match t {
+        ProbeTest::Tci(address) => sdroxide_tci::test_connection(address, Duration::from_secs(3)),
+        ProbeTest::SpyServer(address) => {
+            sdroxide_spyserver::test_connection(address, Duration::from_secs(3))
+        }
+        ProbeTest::SmartSdr(address) => {
+            sdroxide_smartsdr::test_connection(address, Duration::from_secs(3))
+        }
+        ProbeTest::Pluto(address) => {
+            sdroxide_pluto::test_connection(address, Duration::from_secs(3))
+        }
+        ProbeTest::IcomNet(cfg) => {
+            sdroxide_icomnet::test_connection(sdroxide_icomnet::IcomNetOptions {
+                address: cfg.address.clone(),
+                control_port: cfg.control_port,
+                username: cfg.username.clone(),
+                password: cfg.password.clone(),
+                client_name: "sdroxide".into(),
+                rx_sample_rate: cfg.sample_rate_hz,
+                tx_sample_rate: cfg.sample_rate_hz,
+                tx_buffer_ms: cfg.tx_latency_ms,
+                civ_address_override: cfg.civ_address_override,
+                timeout: Duration::from_secs(5),
+            })
+        }
+    }
+}
+
+/// The last session's trace from a backend that has not been verified against
+/// hardware, so a fault can be reported without asking anyone to reproduce it
+/// under a log filter. Where nothing has run yet, the answer says what to press
+/// first rather than coming back empty.
+fn report(kind: ReportKind) -> String {
+    match kind {
+        ReportKind::IcomNet => crate::icomnet_source::diagnostics_or_hint(),
+        ReportKind::SmartSdr => crate::smartsdr_source::diagnostics_or_hint(),
+        ReportKind::Pluto => sdroxide_pluto::diagnostics().unwrap_or_else(|| {
+            "No PlutoSDR session has run yet — press Test connection or \
+             Apply / reconnect first."
+                .to_string()
+        }),
+        ReportKind::AirspyHf => sdroxide_airspyhf::diagnostics().unwrap_or_else(|| {
+            "No Airspy HF+ session has run yet — press Apply / reconnect \
+             first, or run `cargo run -p sdroxide-airspyhf --example probe`."
+                .to_string()
+        }),
+        ReportKind::Airspy => sdroxide_airspy::diagnostics().unwrap_or_else(|| {
+            "No Airspy R2/Mini session has run yet — press Apply / reconnect \
+             first, or run `cargo run -p sdroxide-airspy --example probe`."
+                .to_string()
+        }),
+        ReportKind::HackRf => sdroxide_hackrf::diagnostics().unwrap_or_else(|| {
+            "No HackRF session has run yet — press Apply / reconnect first.".to_string()
+        }),
+    }
+}

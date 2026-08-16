@@ -226,10 +226,9 @@ impl Ax25Transport {
                 TransportError::Connect(gateway.into(), std::io::Error::other(e.to_string()))
             })?;
 
-        port.send(sdroxide_ax25::PortRequest::Connect { peer, via: digis, ext: false })
-            .map_err(|e| {
-                TransportError::Connect(gateway.into(), std::io::Error::other(e.to_string()))
-            })?;
+        port.send(sdroxide_ax25::PortRequest::Connect { peer, via: digis, ext: false }).map_err(
+            |e| TransportError::Connect(gateway.into(), std::io::Error::other(e.to_string())),
+        )?;
 
         let deadline = std::time::Instant::now() + timeout;
         let mut inbox = std::collections::VecDeque::new();
@@ -243,16 +242,12 @@ impl Ax25Transport {
                     std::io::Error::new(std::io::ErrorKind::Interrupted, "stopped"),
                 ));
             }
-            let left = deadline
-                .saturating_duration_since(std::time::Instant::now())
-                .min(CANCEL_POLL);
+            let left =
+                deadline.saturating_duration_since(std::time::Instant::now()).min(CANCEL_POLL);
             if deadline <= std::time::Instant::now() {
                 return Err(TransportError::Connect(
                     gateway.into(),
-                    std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "the gateway did not answer",
-                    ),
+                    std::io::Error::new(std::io::ErrorKind::TimedOut, "the gateway did not answer"),
                 ));
             }
             match port.recv_timeout(left).map_err(|e| {
@@ -317,10 +312,7 @@ impl Ax25Transport {
                 // session. Fail rather than wait for ever on a link that no
                 // longer has another end.
                 Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::BrokenPipe,
-                        e.to_string(),
-                    ));
+                    return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string()));
                 }
             }
         }

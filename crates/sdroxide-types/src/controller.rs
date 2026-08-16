@@ -366,217 +366,31 @@ pub trait RadioController {
         let _ = (output, name);
     }
 
-    /// Whether this build can drive SoapySDR devices (compiled with the `soapy`
-    /// feature). The settings UI offers the SoapySDR interface only when true.
-    /// Default false (remote clients don't own the server's hardware).
-    fn soapy_supported(&self) -> bool {
-        false
-    }
-
-    /// Serial ports available for CAT control (native local client only).
-    fn serial_ports(&self) -> Vec<String> {
-        Vec::new()
-    }
-
-    /// Scan the LAN for OpenHPSDR devices (native local client only). Blocking —
-    /// the settings UI calls this on demand (a "Discover" button), not per frame.
-    /// Default empty: the browser/remote client can't scan the server's network.
-    fn discover_hpsdr(&self) -> Vec<crate::HpsdrDevice> {
-        Vec::new()
-    }
-
-    /// List RTL-SDR dongles on the USB bus (native local client only). Fast
-    /// and non-invasive — no device is opened — so the settings UI may call it
-    /// on demand as often as the operator presses Rescan, including while a
-    /// dongle is streaming. Default empty: a browser client cannot see the
-    /// server's USB bus.
-    fn list_rtlsdr(&self) -> Vec<crate::RtlSdrDevice> {
-        Vec::new()
-    }
-
-    /// List RX-888 receivers on the USB bus (native local client only). Same
-    /// contract as [`RadioController::list_rtlsdr`]: nothing is opened, so it is
-    /// safe to call while one is streaming. Devices still sitting in their boot
-    /// ROM are included and flagged, because that is the normal state of an
-    /// RX-888 that has just been plugged in.
-    fn list_rx888(&self) -> Vec<crate::Rx888Device> {
-        Vec::new()
-    }
-
-    /// List Airspy HF+ receivers on the USB bus (native local client only).
-    /// Same contract as [`RadioController::list_rtlsdr`]: nothing is opened, so
-    /// it is safe to call while one is streaming. Which model each one is
-    /// cannot be told from the bus — every HF+ shares a product id — so the
-    /// entries name the family and not the model.
-    fn list_airspyhf(&self) -> Vec<crate::AirspyHfDevice> {
-        Vec::new()
-    }
-
-    /// List Airspy R2 / Mini receivers on the USB bus (native local client
-    /// only). Same contract as [`RadioController::list_rtlsdr`]: nothing is
-    /// opened, so it is safe to call while one is streaming. Which model each
-    /// one is cannot be told from the bus — an R2 and a Mini share a product id
-    /// *and* a product string — so the entries name neither.
-    fn list_airspy(&self) -> Vec<crate::AirspyDevice> {
-        Vec::new()
-    }
-
-    /// List HackRFs on the USB bus (native local client only). Same contract as
-    /// [`RadioController::list_rtlsdr`]: nothing is opened, so it is safe to
-    /// call while one is streaming. The board revision therefore cannot be
-    /// known — that needs a control transfer — so each entry names only what
-    /// the product id gives away.
-    fn list_hackrf(&self) -> Vec<crate::HackRfDevice> {
-        Vec::new()
-    }
-
-    /// List the RSPs the SDRplay API service reports (native local client
-    /// only). Blocking but brief — the service answers from its own device
-    /// table — and safe while one is streaming: enumeration takes the API's
-    /// device lock only long enough to read the list. Default empty: a browser
-    /// client cannot reach the server's SDRplay service, and neither can a
-    /// machine without the vendor API installed.
-    fn list_sdrplay(&self) -> Vec<crate::SdrPlayDevice> {
-        Vec::new()
-    }
-
-    /// Enumerate the SoapySDR devices this machine can see (native local client
-    /// only, and only in a build with the `soapy` feature).
+    /// Ask the machine the radio is attached to about its devices.
     ///
-    /// Unlike the lists above this one is *not* free: enumeration loads every
-    /// installed SoapySDR module and asks each to scan, which on a bundle
-    /// install means probing several buses. The settings UI therefore calls it
-    /// on dialog-open and on Rescan, never per frame.
-    fn list_soapy(&self) -> Vec<crate::SoapyDeviceInfo> {
-        Vec::new()
-    }
-
-    /// Test a TCI server connection at `address` (`host:port`). Blocking — the
-    /// settings UI calls this on demand (a "Test connection" button). Returns a
-    /// success summary or an error message. Default: unsupported (remote client).
-    fn test_tci(&self, _address: &str) -> Result<String, String> {
-        Err("not supported on this client".into())
-    }
-
-    /// Test a SpyServer at `address` (`host:port`). Blocking, on demand.
+    /// Three answers, and the caller has to handle all of them:
     ///
-    /// Worth having where `rtl_tcp` has no counterpart: this protocol answers.
-    /// The reply names the receiver on the far end, the range of rates it
-    /// offers and whether this client would be allowed to tune it — most of
-    /// what an operator wants to know before pressing Apply. It stops short of
-    /// starting a stream, so it is safe against a server somebody else is
-    /// using. Default: unsupported (remote client).
-    fn test_spyserver(&self, _address: &str) -> Result<String, String> {
-        Err("not supported on this client".into())
-    }
-
-    /// Test an Icom LAN connection. Blocking, on demand.
+    /// - `Some(answer)` — the radio is on this machine and here is the answer.
+    /// - `None` — the question was sent to the machine that has the radio; the
+    ///   answer arrives later from [`RadioController::poll_probe`].
+    /// - `Some(ProbeAnswer::Unsupported)` — nobody can answer it from here.
     ///
-    /// There is no discovery counterpart: an Icom does not announce itself on
-    /// the network, so the address is always typed in and the only question
-    /// worth answering is whether what is at that address is a radio that will
-    /// let us in. Default: unsupported (remote client).
-    fn test_icomnet(&self, _cfg: &crate::IcomNetConfig) -> Result<String, String> {
-        Err("not supported on this client".into())
-    }
-
-    /// The most recent Icom LAN session trace, for a bug report.
+    /// The default is the last of those: a controller that owns no hardware and
+    /// has nowhere to forward the question to says so, so the buttons that ask
+    /// can be greyed out with a reason rather than left looking broken.
     ///
-    /// This backend has not been verified against hardware, so the settings UI
-    /// offers the trace as copyable text rather than expecting a user to
-    /// reproduce a fault with the right `RUST_LOG` filter set. `None` when no
-    /// session has run. Default: nothing to report.
-    fn icomnet_diagnostics(&self) -> Option<String> {
-        None
+    /// Several of these block for a second or more (a LAN scan, a connection
+    /// test), so this is called on demand — a dialog opening, a button pressed —
+    /// and never per frame.
+    fn probe(&mut self, req: crate::DeviceProbe) -> Option<crate::ProbeAnswer> {
+        let _ = req;
+        Some(crate::ProbeAnswer::Unsupported)
     }
 
-    /// Listen for FlexRadio discovery broadcasts (native local client only).
-    /// Blocking for a couple of seconds — the settings UI calls it on demand
-    /// from a "Discover" button, not per frame. Default empty: a browser client
-    /// cannot see the server's network.
-    fn discover_smartsdr(&self) -> Vec<crate::SmartSdrDevice> {
-        Vec::new()
-    }
-
-    /// Test a SmartSDR radio at `address`. Blocking, on demand.
-    ///
-    /// Implementations must stop short of registering as a GUI client: on a
-    /// radio without multiFLEX that would evict whatever client the operator is
-    /// actually using, which is a poor thing for a "Test connection" button to
-    /// do. Default: unsupported (remote client).
-    fn test_smartsdr(&self, _address: &str) -> Result<String, String> {
-        Err("not supported on this client".into())
-    }
-
-    /// Scan for PlutoSDRs (native local client only). Blocking for a couple of
-    /// seconds — the settings UI calls it on demand from a "Discover" button,
-    /// not per frame.
-    ///
-    /// Asks mDNS *and* opens the USB gadget's default address, because a Pluto
-    /// on the end of a USB cable often has no reachable mDNS responder. Default
-    /// empty: a browser client cannot see the server's network.
-    fn discover_pluto(&self) -> Vec<crate::PlutoDevice> {
-        Vec::new()
-    }
-
-    /// Test a PlutoSDR at `address` (`host[:port]`). Blocking, on demand.
-    ///
-    /// Reads the front-end limits as well as the identity, so the answer states
-    /// the tuning range *this* board has — a stock AD9363 and one unlocked to
-    /// AD9364 differ by an octave and a half, and only the device knows which
-    /// it is. Default: unsupported (remote client).
-    fn test_pluto(&self, _address: &str) -> Result<String, String> {
-        Err("not supported on this client".into())
-    }
-
-    /// The most recent PlutoSDR session trace, for a bug report.
-    ///
-    /// This backend has not been verified against hardware, so the settings UI
-    /// offers the trace as copyable text rather than expecting a user to
-    /// reproduce a fault with the right `RUST_LOG` filter set. `None` when no
-    /// session has run.
-    fn pluto_diagnostics(&self) -> Option<String> {
-        None
-    }
-
-    /// The most recent SmartSDR session trace, for a bug report.
-    ///
-    /// This backend has not been verified against hardware, so the settings UI
-    /// offers the trace as copyable text rather than expecting a user to
-    /// reproduce a fault with the right `RUST_LOG` filter set. `None` when no
-    /// session has run. Default: nothing to report.
-    fn smartsdr_diagnostics(&self) -> Option<String> {
-        None
-    }
-
-    /// The most recent Airspy HF+ session trace, for a bug report.
-    ///
-    /// This backend has not been verified against hardware, so the settings UI
-    /// offers the trace as copyable text rather than expecting a user to
-    /// reproduce a fault with the right `RUST_LOG` filter set. `None` when no
-    /// session has run. Default: nothing to report.
-    fn airspyhf_diagnostics(&self) -> Option<String> {
-        None
-    }
-
-    /// The most recent Airspy R2/Mini session trace, for a bug report.
-    ///
-    /// This backend has not been verified against hardware, so the settings UI
-    /// offers the trace as copyable text rather than expecting a user to
-    /// reproduce a fault with the right `RUST_LOG` filter set. `None` when no
-    /// session has run.
-    fn airspy_diagnostics(&self) -> Option<String> {
-        None
-    }
-
-    /// The most recent HackRF session trace, for a bug report.
-    ///
-    /// Worth more here than on the receive-only backends: this radio
-    /// transmits, so a fault report needs the *ordering* of what the driver did
-    /// — which control transfers went out around a key-down, and in what order
-    /// — and that is not something an operator can reconstruct from a
-    /// spectrum. `None` when no session has run.
-    fn hackrf_diagnostics(&self) -> Option<String> {
+    /// Answers to earlier [`RadioController::probe`] calls that went to another
+    /// machine. Drained each frame like [`RadioController::poll_event`]; always
+    /// empty where probes are answered in-process.
+    fn poll_probe(&mut self) -> Option<crate::ProbeAnswer> {
         None
     }
 
@@ -595,7 +409,10 @@ pub trait RadioController {
 
     /// Rebuild the IQ source from the persisted radio config at runtime, so a
     /// backend / CAT-audio / HPSDR-TCI-address change takes effect without a
-    /// restart. Call after [`RadioController::set_radio_config`]. No-op on the
-    /// remote client (the server owns its hardware).
+    /// restart. Call after [`RadioController::set_radio_config`].
+    ///
+    /// Implemented by the remote client too — it asks the engine host to do it,
+    /// which is what lets an operator away from the shack switch the server's
+    /// radio over to another device without anyone restarting it.
     fn reopen_source(&mut self) {}
 }

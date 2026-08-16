@@ -131,11 +131,7 @@ impl Addr {
                 .trim_end()
                 .to_string();
             let ssid = (bytes[6] >> 1) & 15;
-            if ssid > 0 {
-                call + "-" + &ssid.to_string()
-            } else {
-                call
-            }
+            if ssid > 0 { call + "-" + &ssid.to_string() } else { call }
         };
         Self::new_bits(
             &call,
@@ -219,8 +215,17 @@ mod tests {
             assert!(Addr::new(good).is_ok(), "{good} should be a valid callsign");
         }
         for bad in [
-            "", "AB", "TOOLONGCALL", "OE3JJS-16", "OE3JJS-", "OE3JJS-01", "OE3JJS-1x", "OE3-JJS",
-            "OE3JJS-99", "OE/JJS", "OE3JJS-1-2",
+            "",
+            "AB",
+            "TOOLONGCALL",
+            "OE3JJS-16",
+            "OE3JJS-",
+            "OE3JJS-01",
+            "OE3JJS-1x",
+            "OE3-JJS",
+            "OE3JJS-99",
+            "OE/JJS",
+            "OE3JJS-1-2",
         ] {
             assert!(Addr::new(bad).is_err(), "{bad} should be rejected");
         }

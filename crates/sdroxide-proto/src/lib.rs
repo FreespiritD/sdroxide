@@ -288,7 +288,25 @@ use sdroxide_types::{
 /// dialog is built from. Postcard is not self-describing, so a v54 client
 /// would not fail to find them; it would decode the fields after them from the
 /// wrong offset.
-pub const PROTO_VERSION: u16 = 55;
+/// v56: device questions travel. A new `ClientMsg::Probe` and a new
+/// `ServerMsg::ProbeAnswer`, both appended last, so no surviving discriminant
+/// moves. Every other setting in `radio.json` describes a device and therefore
+/// means the same thing wherever it is read; the discovery controls beside them
+/// ask about a *machine* — what is on its USB bus, which serial ports it has,
+/// what a broadcast finds on its network, which sound cards the rig could be
+/// plugged into — and a client that answered those locally would be describing
+/// the wrong computer. So they were greyed out, and with them the interface
+/// selector: with no list to pick from there was nothing to choose. Now the
+/// question is asked of the machine the radio is attached to and the answer
+/// comes back over the session, which is what makes changing the radio on a
+/// `--server` instance possible from a remote or browser client at all. The
+/// version bump is for the usual reason: a v55 client cannot decode an answer
+/// it has never heard of, and would report a protocol error instead of the
+/// truth, which is that the server is offering it something new. `ServerMsg`
+/// also gained `Capabilities`, appended after it: with the interface
+/// changeable from a client, the radio a session is talking to can become a
+/// different one mid-session, and what it can do has to follow.
+pub const PROTO_VERSION: u16 = 56;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -337,6 +355,15 @@ pub enum ClientMsg {
         username: String,
         password: String,
     },
+    /// A question about the machine the radio is attached to — which dongles
+    /// are on its bus, which serial ports it has, whether an address answers
+    /// from there. Answered with [`ServerMsg::ProbeAnswer`].
+    ///
+    /// Appended last, for the reason above. Only read from a signed-in session,
+    /// like every other command: these open sockets and scan buses on the
+    /// server's behalf, and the client that may do that is the one that may
+    /// already point the radio at any address it likes.
+    Probe(sdroxide_types::DeviceProbe),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -560,6 +587,24 @@ pub enum ServerMsg {
         folder: sdroxide_types::MailFolder,
         mid: String,
     },
+    /// What this machine found, answering [`ClientMsg::Probe`].
+    ///
+    /// No request id: the answer names what it is an answer to, probes are run
+    /// one at a time in the order they arrive, and the socket preserves that
+    /// order — so a second Rescan cannot be overtaken by the first.
+    ProbeAnswer(Box<sdroxide_types::ProbeAnswer>),
+    /// The radio's capabilities changed under a live session: the engine opened
+    /// a different front end.
+    ///
+    /// These used to ride [`ServerMsg::HelloAck`] alone, on the reasoning that
+    /// a session's radio is the one it connected to. That stopped being true
+    /// when the interface became changeable from here — swap a dongle for a
+    /// transceiver and the gain stages, the antenna ports, the tuning ranges
+    /// and whether there is a transmitter at all are different, and a client
+    /// still drawing the old ones would be offering controls the radio does not
+    /// have. It also covers the case that was always possible: an interface
+    /// that was not there at startup and attached later.
+    Capabilities(DeviceCaps),
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {
@@ -976,6 +1021,50 @@ mod tests {
             let c =
                 ClientMsg::Command(Command::SetRadioConfig { cfg: Box::new(cfg.clone()), reopen });
             assert_eq!(decode::<ClientMsg>(&encode(&c).unwrap()).unwrap(), c);
+        }
+    }
+
+    /// Device questions and their answers, both ways.
+    ///
+    /// One of each shape rather than every variant: a payload-less request, one
+    /// carrying an address, one carrying a whole config block, and answers
+    /// holding a device list, a test outcome and a refusal. Those are the four
+    /// encodings; a variant added to any of them rides one of these.
+    #[test]
+    fn roundtrip_device_probes() {
+        use sdroxide_types::{
+            DeviceProbe, IcomNetConfig, ProbeAnswer, ProbeTest, RtlSdrDevice, TestKind,
+        };
+
+        let asks = [
+            DeviceProbe::RtlSdr,
+            DeviceProbe::Test(ProbeTest::Tci("shack.local:40001".into())),
+            DeviceProbe::Test(ProbeTest::IcomNet(Box::new(IcomNetConfig {
+                address: "705.local".into(),
+                username: "oe1test".into(),
+                password: "pässwörd".into(),
+                ..IcomNetConfig::default()
+            }))),
+        ];
+        for a in asks {
+            let m = ClientMsg::Probe(a);
+            assert_eq!(decode::<ClientMsg>(&encode(&m).unwrap()).unwrap(), m);
+        }
+
+        let answers = [
+            ProbeAnswer::RtlSdr(vec![RtlSdrDevice {
+                serial: Some("00000001".into()),
+                name: "Generic RTL2832U OEM".into(),
+                vid: 0x0bda,
+                pid: 0x2838,
+            }]),
+            ProbeAnswer::Test(TestKind::Pluto, Ok("AD9364, 70 MHz – 6 GHz".into())),
+            ProbeAnswer::Test(TestKind::Tci, Err("connection refused".into())),
+            ProbeAnswer::Unsupported,
+        ];
+        for a in answers {
+            let m = ServerMsg::ProbeAnswer(Box::new(a));
+            assert_eq!(decode::<ServerMsg>(&encode(&m).unwrap()).unwrap(), m);
         }
     }
 

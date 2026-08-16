@@ -60,7 +60,7 @@ use self::persist::{
     load_broadcast_stations, load_qso_log, load_speech_settings, load_ui_settings,
 };
 use self::settings::servers::TciServerStatus;
-use self::settings::{SatEditState, SettingsTab};
+use self::settings::{SatEditState, SettingsTab, TestOutcome};
 
 pub struct SdroxideApp {
     ctrl: Box<dyn RadioController>,
@@ -118,8 +118,26 @@ pub struct SdroxideApp {
     /// opens (cpal enumeration is too slow for per-frame).
     audio_devices: Option<AudioDevices>,
     audio_devices_queried: bool,
-    /// Whether this build can drive SoapySDR (offered as an interface option).
+    /// Whether the build *the radio is attached to* can drive SoapySDR — that
+    /// interface is offered only when it can. Answered by
+    /// [`sdroxide_types::DeviceProbe::Host`], so on a remote client this is the
+    /// server's answer and not this screen's.
     soapy_supported: bool,
+    /// The sound cards on the radio's machine, for the CAT / Audio interface:
+    /// (inputs, outputs). Distinct from `audio_devices`, which is *this*
+    /// screen's speaker and microphone — the two are the same list only when
+    /// the radio is on this machine. `None` until asked for.
+    radio_audio_devices: Option<(Vec<String>, Vec<String>)>,
+    /// Whether the far end answers device questions at all. False only after it
+    /// has said so ([`sdroxide_types::ProbeAnswer::Unsupported`]), which greys
+    /// out the controls that ask rather than leaving them to look broken.
+    probes_answered: bool,
+    /// Device questions asked of another machine and not yet answered, and when
+    /// to stop waiting. The discovery controls are disabled meanwhile, so a
+    /// press that has crossed the network is visibly in flight instead of
+    /// looking like it did nothing.
+    probe_waiting: u32,
+    probe_wait_until: f64,
     /// Settings dialog: current tab, plus the radio-backend config + serial
     /// ports loaded once on open (edited live, persisted on change).
     ///
@@ -169,18 +187,20 @@ pub struct SdroxideApp {
     /// interface, or Rescan). `None` = not enumerated yet, which is a different
     /// thing from "enumerated and found nothing".
     soapy_devices: Option<Vec<sdroxide_types::SoapyDeviceInfo>>,
-    /// Result of the last TCI "Test connection" (Ok summary / Err message).
-    tci_test_result: Option<Result<String, String>>,
-    icomnet_test_result: Option<Result<String, String>>,
-    spyserver_test_result: Option<Result<String, String>>,
+    /// Result of the last TCI "Test connection" (Ok summary / Err message), or
+    /// [`TestOutcome::Waiting`] while the machine with the radio on it is still
+    /// answering.
+    tci_test_result: Option<TestOutcome>,
+    icomnet_test_result: Option<TestOutcome>,
+    spyserver_test_result: Option<TestOutcome>,
     /// FlexRadios found by the last SmartSDR "Discover" listen.
     smartsdr_devices: Vec<sdroxide_types::SmartSdrDevice>,
     /// Result of the last SmartSDR "Test connection".
-    smartsdr_test_result: Option<Result<String, String>>,
+    smartsdr_test_result: Option<TestOutcome>,
     /// PlutoSDRs found by the last "Discover" (mDNS plus the gadget address).
     pluto_devices: Vec<sdroxide_types::PlutoDevice>,
     /// Result of the last PlutoSDR "Test connection".
-    pluto_test_result: Option<Result<String, String>>,
+    pluto_test_result: Option<TestOutcome>,
     seen_first_state: bool,
     show_memories: bool,
     show_scanner: bool,
@@ -640,7 +660,6 @@ impl SdroxideApp {
         // Copied out before `view` is moved into the struct below.
         #[cfg(not(target_arch = "wasm32"))]
         let solar3d_view = view.solar3d;
-        let soapy_supported = ctrl.soapy_supported();
         #[cfg(target_arch = "wasm32")]
         let _ = &wgpu_render_state;
         SdroxideApp {
@@ -673,7 +692,19 @@ impl SdroxideApp {
             trace_cache: spectrum_view::TraceCache::default(),
             audio_devices: None,
             audio_devices_queried: false,
-            soapy_supported,
+            // Asked for when the settings dialog opens, along with everything
+            // else about the machine the radio is on — see
+            // `SdroxideApp::ask_device`. Until then the interface list simply
+            // does not offer SoapySDR, which is the safe way round: the list is
+            // only ever read inside that dialog.
+            soapy_supported: false,
+            radio_audio_devices: None,
+            // Believed until the far end says otherwise: the answer costs a
+            // round trip, and greying the controls out until one arrives would
+            // make every session start by looking like the old, local-only one.
+            probes_answered: true,
+            probe_waiting: 0,
+            probe_wait_until: 0.0,
             settings_tab: SettingsTab::General,
             ui_settings,
             applied_look: (ui_settings.theme, ui_settings.button_style, ui_settings.window_style),

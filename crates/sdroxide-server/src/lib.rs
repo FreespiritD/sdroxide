@@ -11,6 +11,7 @@
 //! the latest state/caps/memories so a new session can be greeted instantly.
 
 mod auth;
+mod probe;
 mod session;
 mod solar;
 
@@ -49,6 +50,8 @@ pub enum ServerError {
 /// empty, leaves the server open to anyone who can reach the port.
 pub type AccessFn = Box<dyn Fn() -> sdroxide_types::RemoteAccess + Send + Sync>;
 
+pub use probe::ProbeFn;
+
 pub struct ServerParams {
     pub cmd_tx: crossbeam_channel::Sender<Command>,
     pub event_rx: crossbeam_channel::Receiver<RadioEvent>,
@@ -65,6 +68,14 @@ pub struct ServerParams {
     pub web_root: Option<PathBuf>,
     /// Who may connect. `None` leaves the server open — see [`AccessFn`].
     pub access: Option<AccessFn>,
+    /// How this machine answers a remote client's device questions — what is on
+    /// its USB bus, which serial ports it has, whether an address answers from
+    /// here. `None` refuses them all, and the client greys out the controls
+    /// that ask rather than showing an empty list as if there were no radios.
+    ///
+    /// Supplied by the caller because only the binary knows how to reach each
+    /// backend; see [`ProbeFn`].
+    pub probe: Option<ProbeFn>,
 }
 
 pub(crate) struct SessionTx {
@@ -145,6 +156,10 @@ pub(crate) struct Shared {
     /// one-attempt-at-a-time rule and the lockout after a wrong password apply
     /// across the whole server rather than per socket. See [`auth`].
     pub auth: auth::AuthGate,
+    /// The thread that answers device questions. Set once, immediately after
+    /// this struct is built — it needs a handle to it, and this is how the two
+    /// are tied together without a second `Arc`. See [`probe`].
+    pub probes: std::sync::OnceLock<probe::ProbeWorker>,
 }
 
 /// Build a tokio runtime and serve until the process exits.
@@ -165,7 +180,9 @@ pub async fn serve(params: ServerParams) -> Result<(), ServerError> {
         wide_spectrum_rx,
         solar: solar::SolarHub::default(),
         auth: auth::AuthGate::new(params.access),
+        probes: std::sync::OnceLock::new(),
     });
+    let _ = shared.probes.set(probe::ProbeWorker::start(params.probe, &shared));
 
     {
         let shared = shared.clone();
@@ -394,8 +411,13 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
         let mut latest = shared.latest.lock().unwrap();
         match ev {
             RadioEvent::Capabilities(c) => {
-                latest.caps = c;
-                None // delivered via HelloAck
+                // Cached for the next client's `HelloAck`, and sent to whoever
+                // is on now: the engine emits this when it adopts a source, so
+                // it means the radio under this session has just changed —
+                // either because a client switched the interface or because one
+                // that was missing at startup has attached.
+                latest.caps = c.clone();
+                Some(ServerMsg::Capabilities(c))
             }
             RadioEvent::State(s) => {
                 latest.state = s.clone();

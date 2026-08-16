@@ -68,6 +68,12 @@ pub fn run(
         // running beside this server — should not have to restart the server
         // and drop whoever is on it for the change to hold.
         access: Some(Box::new(sdroxide_config::load_remote_access)),
+        // The same enumeration the local settings dialog uses, offered to
+        // whoever is connected. Without it the Rescan / Discover / Test buttons
+        // on a remote or browser client have nothing to answer them, and a
+        // headless station's radio could only be changed by editing
+        // `radio.json` on this machine and restarting.
+        probe: Some(Box::new(crate::devices::probe)),
     })?;
     Ok(())
 }

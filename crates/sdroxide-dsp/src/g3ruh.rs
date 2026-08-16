@@ -284,8 +284,7 @@ mod tests {
         // hearing now.
         let mut rx = Scrambler { lfsr: 0xdead_beef };
         let data: Vec<bool> = (0..200).map(|i| (i * 5 + i / 7) % 3 == 0).collect();
-        let recovered: Vec<bool> =
-            data.iter().map(|&b| rx.descramble(tx.scramble(b))).collect();
+        let recovered: Vec<bool> = data.iter().map(|&b| rx.descramble(tx.scramble(b))).collect();
         assert_eq!(&recovered[17..], &data[17..], "descrambler never synchronised");
     }
 

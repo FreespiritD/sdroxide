@@ -30,4 +30,3 @@ pub use message::{Attachment, Message, MessageError};
 pub use secure::login_response;
 pub use session::{SessionConfig, SessionError, SessionOutcome};
 pub use transport::{TelnetTransport, Transport, TransportError};
-

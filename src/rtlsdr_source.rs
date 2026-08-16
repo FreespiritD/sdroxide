@@ -228,9 +228,7 @@ impl IqSource for RtlSdrSource {
             RtlTcpConfig::RSP_IFGR_ELEMENT => {
                 self.set_rsp(RspCmd::SetIfGainR, db.clamp(20.0, 59.0) as u32)
             }
-            RtlTcpConfig::RSP_AGC_ELEMENT => {
-                self.set_rsp(RspCmd::SetAgc, u32::from(db >= 0.5))
-            }
+            RtlTcpConfig::RSP_AGC_ELEMENT => self.set_rsp(RspCmd::SetAgc, u32::from(db >= 0.5)),
             RtlTcpConfig::RSP_AGC_SETPOINT_ELEMENT => {
                 // The protocol carries an unsigned argument and the set point
                 // is negative dBfs, so it goes out as its two's-complement bit

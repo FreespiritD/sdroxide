@@ -5724,15 +5724,20 @@ stranger cannot lock you out of your own radio by opening a socket to it.
   survives a restart there. Most settings take effect as you move them; the ones
   that are fixed when a device is opened — a sample rate, an address — wait for
   **Apply / reconnect**, which reopens the server's radio without restarting it.
-- **What does not travel** is everything that asks a question about a *machine*
-  rather than about the radio: **Rescan**, **Discover**, **Test connection**,
-  the diagnostic-report buttons, the serial-port list, and the CAT sound-card
-  pickers. Those enumerate the USB bus, the serial ports and the network of
-  whichever computer they run on, and from a remote client that is the wrong
-  one — so they are greyed out with a note rather than left to answer about your
-  laptop. Choosing the *interface* itself goes with them: nobody is at the far
-  end to plug in the device you switched to. Set those on the machine the radio
-  is attached to.
+- **The device questions are asked over there too.** **Rescan**, **Discover**,
+  **Test connection**, the diagnostic-report buttons, the serial-port list and
+  the CAT sound-card pickers all ask about a *machine* — its USB bus, its serial
+  ports, its network — and every one of them is put to the machine the radio is
+  attached to, not to the computer you are sitting at. So a remote or browser
+  client lists the dongles on the *server's* bus, the sound cards the *rig* is
+  wired to, and gets a connection test made from where the radio is. Choosing
+  the **interface** itself travels with them: pick another one, press **Apply /
+  reconnect**, and the server switches radios without a restart. If the new one
+  cannot be opened — nobody is at the far end to plug it in — the old one keeps
+  running and the error comes back to you.
+
+  The buttons grey out briefly while an earlier question is still out; the far
+  end answers one at a time, so a bus scan cannot interrupt the radio.
 - **One client at a time.** A second connection is refused with a "server busy"
   message.
 - **If the link drops**, the client shows what went wrong in place of the
@@ -5793,8 +5798,10 @@ below. **Settings → Radio** shows the server device's own settings panel — i
 gains, its antenna ports, and everything else its interface has, read from and
 written back to the `radio.json` on the machine the radio is attached to
 ([7.4](#74-what-to-know)) — so you can swap feedline, wind an LNA back or take
-a dongle's AGC off from a phone. Which interface the server opens, and the
-buttons that scan a bus or test an address, stay on the machine that runs it.
+a dongle's AGC off from a phone. Which interface the server opens is reachable
+from here too: the Rescan and Discover buttons enumerate the *server's* buses
+and network, so you can pick another radio out of that list and press **Apply /
+reconnect**.
 The [solar system 3D view](#6-solar-system-3d-view) works too: **☀ 3D**
 opens it in a new tab, which connects to a separate read-only endpoint and so
 does not consume the single control connection — though it is challenged for the
@@ -6444,12 +6451,12 @@ normally edit these through the GUI rather than by hand.
 ### 11.1 Choosing the radio interface without a GUI
 
 Settings → Radio is the normal way to configure an interface, and a remote or
-browser client can use it for everything except *which* interface to open:
-that is a property of the machine the radio is plugged into, along with the
-buttons that scan a bus or test an address ([7.4](#74-what-to-know)). On a
-headless server — a container, a systemd unit, a box with no display — picking
-the interface leaves `radio.json`, so here is what it contains. Once one is
-open, the settings under it can be reached from a client like any other.
+browser client can use all of it — including *which* interface to open, because
+the device lists it is chosen from are enumerated on the machine the radio is
+plugged into and sent to the client ([7.4](#74-what-to-know)). What follows is
+for the times there is no client either: a first boot with nothing configured, a
+container image, a machine being provisioned. Picking the interface by hand
+means writing `radio.json`, so here is what it contains.
 
 Only the keys you want to change need to be present. Everything else falls back
 to its default, and a partial file is normal rather than a special case.

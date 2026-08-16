@@ -64,8 +64,8 @@ fn the_transport_carries_a_conversation() {
         endpoint.emit(PortEvent::Disconnected);
     });
 
-    let mut t =
-        Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5), quiet()).expect("connect");
+    let mut t = Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5), quiet())
+        .expect("connect");
     assert_eq!(t.target_call(), "OE1XAR-10");
     assert!(t.describe().contains("OE1XAR-10"));
 
@@ -94,8 +94,8 @@ fn a_clean_hangup_delivers_the_last_bytes_first() {
         endpoint.emit(PortEvent::Disconnected);
     });
 
-    let mut t =
-        Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5), quiet()).expect("connect");
+    let mut t = Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5), quiet())
+        .expect("connect");
     let mut buf = [0u8; 16];
     let n = t.read(&mut buf).expect("read");
     assert_eq!(&buf[..n], b"FQ\r", "the last block was lost to the hangup");
@@ -113,8 +113,8 @@ fn a_failed_link_is_an_error_not_an_eof() {
         endpoint.emit(PortEvent::Failed("retries exhausted".into()));
     });
 
-    let mut t =
-        Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5), quiet()).expect("connect");
+    let mut t = Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5), quiet())
+        .expect("connect");
     let mut buf = [0u8; 16];
     let e = t.read(&mut buf).expect_err("a dead link must not read as EOF");
     assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe);
@@ -140,8 +140,9 @@ fn a_second_session_is_refused() {
         std::thread::sleep(Duration::from_secs(2));
     });
 
-    let first = Ax25Transport::connect(handle.clone(), "OE1XAR-10", &[], Duration::from_secs(5), quiet())
-        .expect("first");
+    let first =
+        Ax25Transport::connect(handle.clone(), "OE1XAR-10", &[], Duration::from_secs(5), quiet())
+            .expect("first");
     let e = Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_millis(200), quiet())
         .expect_err("two sessions took one radio");
     assert!(e.to_string().contains("already in use"), "{e}");
@@ -198,9 +199,14 @@ fn an_abort_stops_a_session_waiting_on_a_quiet_link() {
         std::thread::sleep(Duration::from_secs(30));
     });
 
-    let mut t =
-        Ax25Transport::connect(handle, "OE1XAR-10", &[], Duration::from_secs(5), Arc::clone(&cancel))
-            .expect("connect");
+    let mut t = Ax25Transport::connect(
+        handle,
+        "OE1XAR-10",
+        &[],
+        Duration::from_secs(5),
+        Arc::clone(&cancel),
+    )
+    .expect("connect");
 
     let c = Arc::clone(&cancel);
     std::thread::spawn(move || {
