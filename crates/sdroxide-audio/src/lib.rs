@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
@@ -30,6 +31,17 @@ fn supported_format(f: SampleFormat) -> bool {
             | SampleFormat::U8
     )
 }
+
+/// How long one refused open may take before the remaining candidate
+/// configurations are abandoned.
+///
+/// A device that merely won't run a configuration says so in milliseconds, so
+/// working down the list costs nothing. A device the sound stack is *stuck* on
+/// is a different animal: ALSA's PulseAudio plugin asked to open a PipeWire
+/// monitor of a card sdroxide already holds waits its full 30-second timeout
+/// before failing, and every further candidate spends that timeout again. Once
+/// an open has been that slow, the configuration was never the problem.
+const SLOW_REFUSAL: Duration = Duration::from_secs(5);
 
 /// Configs to try opening, in order: the best pick from the advertised
 /// ranges, then the device's own default. The default matters on Windows:
@@ -593,6 +605,7 @@ pub fn start_input(
         let rate = config.sample_rate;
         let channels = config.channels;
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize);
+        let started = Instant::now();
         match spawn_input(&device, &config, fmt, false, producer) {
             Ok(stream) => {
                 info!(rate, format = ?fmt, device = %label, "mic input running");
@@ -604,10 +617,84 @@ pub fn start_input(
             Err(e) => {
                 warn!("mic input {channels}ch {rate} Hz {fmt:?} refused: {e}");
                 last = e;
+                if slow_refusal(&label, started.elapsed()) {
+                    break;
+                }
             }
         }
     }
     Err(last)
+}
+
+/// A microphone open running on a thread of its own, handed back so the caller
+/// can get on with bringing the radio up.
+///
+/// Opening a capture device is normally instant, but it is a blocking call into
+/// the platform's sound stack and that stack can sit on it for a long time —
+/// see [`SLOW_REFUSAL`]. Startup must not be that call's hostage: the radio
+/// comes up, and the microphone joins it whenever it arrives.
+///
+/// Dropping this abandons the open. The thread runs to completion regardless —
+/// nothing can cancel a call already inside the sound stack — but its result
+/// goes nowhere, so the stream is closed again the moment it exists and the
+/// device is released.
+pub struct PendingInput {
+    rx: std::sync::mpsc::Receiver<Result<(AudioInput, rtrb::Consumer<f32>), AudioError>>,
+    done: bool,
+}
+
+impl PendingInput {
+    /// The finished open, or `None` while it is still running. Yields its
+    /// result once; every later call is `None`.
+    pub fn take(&mut self) -> Option<Result<(AudioInput, rtrb::Consumer<f32>), AudioError>> {
+        if self.done {
+            return None;
+        }
+        match self.rx.try_recv() {
+            Ok(result) => {
+                self.done = true;
+                Some(result)
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            // The opener died without answering; nothing more is coming.
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.done = true;
+                Some(Err(AudioError::Build("the microphone open did not finish".into())))
+            }
+        }
+    }
+}
+
+/// [`start_input`] on a background thread — poll the returned handle for the
+/// stream instead of waiting for it.
+pub fn start_input_background(device_name: Option<String>, preferred_rate: u32) -> PendingInput {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let fallback = tx.clone();
+    let spawned = std::thread::Builder::new()
+        .name("mic-open".into())
+        .spawn(move || {
+            let _ = tx.send(start_input(device_name.as_deref(), preferred_rate));
+        })
+        .is_ok();
+    if !spawned {
+        let _ = fallback.send(Err(AudioError::Build("could not spawn the mic opener".into())));
+    }
+    PendingInput { rx, done: false }
+}
+
+/// Whether an open took long enough that the sound stack, not the configuration,
+/// is what refused it — in which case the remaining candidates are not worth the
+/// same wait. Logs the reason it is giving up.
+fn slow_refusal(label: &str, took: Duration) -> bool {
+    if took < SLOW_REFUSAL {
+        return false;
+    }
+    warn!(
+        device = %label,
+        "the sound stack sat on that open for {took:.0?}; not spending it again on the \
+         remaining configurations"
+    );
+    true
 }
 
 /// Like [`start_input`] but keeps the first TWO channels interleaved (L, R) —
@@ -636,6 +723,7 @@ pub fn start_input_stereo(
         let rate = config.sample_rate;
         let channels = hw_channels.unwrap_or(config.channels);
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize * 2);
+        let started = Instant::now();
         match spawn_input(&device, &config, fmt, true, producer) {
             Ok(stream) => {
                 info!(rate, stream_channels = config.channels, hw_channels = channels, format = ?fmt, device = %label, "radio IQ input running");
@@ -647,6 +735,9 @@ pub fn start_input_stereo(
             Err(e) => {
                 warn!("radio IQ input {}ch {rate} Hz {fmt:?} refused: {e}", config.channels);
                 last = e;
+                if slow_refusal(&label, started.elapsed()) {
+                    break;
+                }
             }
         }
     }
@@ -675,6 +766,7 @@ pub fn start_output(
         let channels = config.channels;
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize * 2);
         let underruns = Arc::new(AtomicU64::new(0));
+        let started = Instant::now();
         match spawn_output(&device, &config, fmt, consumer, underruns.clone()) {
             Ok(stream) => {
                 info!(rate, channels, format = ?fmt, device = %label, "audio output running");
@@ -686,6 +778,9 @@ pub fn start_output(
             Err(e) => {
                 warn!("audio output {channels}ch {rate} Hz {fmt:?} refused: {e}");
                 last = e;
+                if slow_refusal(&label, started.elapsed()) {
+                    break;
+                }
             }
         }
     }
@@ -694,7 +789,42 @@ pub fn start_output(
 
 #[cfg(test)]
 mod tests {
-    use super::NameAssigner;
+    use super::{NameAssigner, PendingInput};
+    use std::time::{Duration, Instant};
+
+    /// The whole point of the background open: whatever the sound stack does
+    /// with the request, asking is instant. A default input that PipeWire
+    /// cannot deliver — a monitor of a card sdroxide already holds — sat in the
+    /// ALSA PulseAudio plugin for 30 seconds per candidate configuration, and
+    /// that used to be startup's wait, not a worker thread's.
+    #[test]
+    fn asking_for_the_microphone_does_not_block_the_caller() {
+        let started = Instant::now();
+        let pending = super::start_input_background(None, 48_000);
+        let asked = started.elapsed();
+        drop(pending); // abandons the open; the worker closes whatever it got
+        assert!(asked < Duration::from_secs(1), "starting the open took {asked:?}");
+    }
+
+    /// An opener that dies without answering has to say so, or the caller polls
+    /// a handle that will never land for as long as the radio is up.
+    #[test]
+    fn an_opener_that_never_answers_is_reported_not_awaited() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(tx);
+        let mut pending = PendingInput { rx, done: false };
+        assert!(matches!(pending.take(), Some(Err(_))));
+        assert!(pending.take().is_none(), "the answer is handed over once");
+    }
+
+    /// A refusal that took real time is the sound stack's, not the
+    /// configuration's — the remaining candidates would each spend the same
+    /// wait, which is how one wedged device turned into a minute of startup.
+    #[test]
+    fn only_a_slow_refusal_abandons_the_other_configurations() {
+        assert!(!super::slow_refusal("a device", Duration::from_millis(3)));
+        assert!(super::slow_refusal("a wedged device", Duration::from_secs(30)));
+    }
 
     #[test]
     fn device_enumeration_works() {

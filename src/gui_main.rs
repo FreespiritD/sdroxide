@@ -4,7 +4,7 @@
 use anyhow::Result;
 use sdroxide_config::Settings;
 use sdroxide_radio::{
-    AudioParams, EngineConfig, IqSource, MicParams, ReopenFn, StoreSync, TxGate, start_engine,
+    AudioParams, EngineConfig, IqSource, ReopenFn, StoreSync, TxGate, start_engine,
 };
 use sdroxide_types::{DeviceCaps, Mode};
 use std::sync::Arc;
@@ -50,24 +50,19 @@ fn build_controller(
                 (None, None)
             }
         };
-    let (mic_in, mic_params) = if boot.caps.is_transmit_capable() {
-        match sdroxide_audio::start_input(settings.audio_input.as_deref(), 48_000) {
-            Ok((input, consumer)) => {
-                let rate = input.sample_rate;
-                (Some(input), Some(MicParams { consumer, rate }))
-            }
-            Err(e) => {
-                warn!("no microphone ({e}); TX carries silence");
-                (None, None)
-            }
-        }
-    } else {
-        (None, None)
-    };
+    // Opening the microphone is a blocking call into the sound stack, and that
+    // stack can sit on it for half a minute at a time — the system's default
+    // source being a monitor of a card this radio has already claimed is enough
+    // to do it. So it happens on a thread of its own and the controller hands it
+    // to the engine when it lands; the radio does not wait to come up.
+    let pending_mic = boot
+        .caps
+        .is_transmit_capable()
+        .then(|| sdroxide_audio::start_input_background(settings.audio_input.clone(), 48_000));
 
     let cfg = EngineConfig {
         audio: audio_params,
-        mic: mic_params,
+        mic: None,
         cal_offset_db: settings.cal_offset_db as f32,
         initial_mode: boot.initial_mode,
         initial_antenna: boot.initial_antenna,
@@ -86,7 +81,7 @@ fn build_controller(
     LocalController::new(
         handles,
         audio_out,
-        mic_in,
+        pending_mic,
         settings.audio_output.clone(),
         settings.audio_input.clone(),
         boot.store,
@@ -190,6 +185,10 @@ struct CpalBridge {
     out: Option<sdroxide_radio::rtrb::Producer<f32>>,
     _mic: Option<sdroxide_audio::AudioInput>,
     mic: Option<sdroxide_radio::rtrb::Consumer<f32>>,
+    /// The microphone open, while it is still running — same reasoning as the
+    /// local radios': it blocks for as long as the sound stack wants, and this
+    /// is the UI thread.
+    pending_mic: Option<sdroxide_audio::PendingInput>,
     mic_resampler: Option<sdroxide_dsp::MonoResampler>,
     raw: Vec<f32>,
     /// Selected device names; `None` = system default.
@@ -208,6 +207,7 @@ impl CpalBridge {
             out: None,
             _mic: None,
             mic: None,
+            pending_mic: None,
             mic_resampler: None,
             raw: Vec::new(),
             out_name: settings.audio_output.clone(),
@@ -229,10 +229,21 @@ impl CpalBridge {
             Err(e) => warn!("no audio output ({e}); running silent"),
         }
     }
+
+    /// Start the open; [`CpalBridge::poll_pending_mic`] finishes it. Assigning
+    /// `pending_mic` drops any open still in flight, so an earlier pick cannot
+    /// land on top of a later one.
     fn open_input(&mut self) {
         self._mic = None;
         self.mic = None;
-        match sdroxide_audio::start_input(self.in_name.as_deref(), 48_000) {
+        self.pending_mic =
+            Some(sdroxide_audio::start_input_background(self.in_name.clone(), 48_000));
+    }
+
+    fn poll_pending_mic(&mut self) {
+        let Some(result) = self.pending_mic.as_mut().and_then(|p| p.take()) else { return };
+        self.pending_mic = None;
+        match result {
             Ok((i, c)) => {
                 self.mic_resampler = sdroxide_dsp::MonoResampler::new(i.sample_rate, 48_000.0);
                 self._mic = Some(i);
@@ -257,6 +268,7 @@ impl sdroxide_ui::AudioBridge for CpalBridge {
         }
     }
     fn pull_mic(&mut self, out_vec: &mut Vec<f32>) {
+        self.poll_pending_mic();
         let Some(mic) = self.mic.as_mut() else { return };
         self.raw.clear();
         while let Ok(s) = mic.pop() {

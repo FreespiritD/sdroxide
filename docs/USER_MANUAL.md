@@ -2400,6 +2400,14 @@ separate from any sound card wired to a radio:
 Both default to **System default** and can be changed live. In `config.toml`
 they are `audio_output` and `audio_input`.
 
+The microphone is opened in the background — at startup and whenever you change
+the selection. A capture device the system's sound server cannot deliver can take
+half a minute to say so (the classic case is a default input that is a *monitor*
+of the very sound card sdroxide has just claimed for a radio), and neither
+startup nor the window waits that out: the radio comes up, and the microphone
+joins it when its open finishes. If the open fails, transmit carries silence and
+the log says which device refused.
+
 **Radio audio (sound card)** — a third section appears below those two, but
 *only when the radio interface is CAT / Audio* ([5.2.2](#522-cat-radios-serial-control--usb-audio)):
 every other backend carries its audio in-band and needs no sound card, which is

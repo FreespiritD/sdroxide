@@ -22,6 +22,14 @@ pub struct LocalController {
     /// Live cpal streams (they must outlive their ring endpoints in the engine).
     audio_out: Option<sdroxide_audio::AudioOutput>,
     mic_in: Option<sdroxide_audio::AudioInput>,
+    /// A microphone open still running. Opening a capture device can block for
+    /// as long as the sound stack feels like it (see
+    /// [`sdroxide_audio::PendingInput`]), which is time neither startup nor the
+    /// UI thread has to spare, so the open happens on a thread of its own and
+    /// [`LocalController::poll_pending_mic`] hands it to the engine when it
+    /// lands. TX before then carries silence, exactly as it does with no
+    /// microphone at all.
+    pending_mic: Option<sdroxide_audio::PendingInput>,
     /// Currently selected device names; `None` = system default.
     out_name: Option<String>,
     in_name: Option<String>,
@@ -33,7 +41,7 @@ impl LocalController {
     pub fn new(
         mut handles: EngineHandles,
         audio_out: Option<sdroxide_audio::AudioOutput>,
-        mic_in: Option<sdroxide_audio::AudioInput>,
+        pending_mic: Option<sdroxide_audio::PendingInput>,
         out_name: Option<String>,
         in_name: Option<String>,
         store: sdroxide_config::Store,
@@ -46,10 +54,26 @@ impl LocalController {
             swap_tx: handles.swap_tx,
             thread: handles.thread.take(),
             audio_out,
-            mic_in,
+            mic_in: None,
+            pending_mic,
             out_name,
             in_name,
             store,
+        }
+    }
+
+    /// Give the engine the microphone as soon as its open finishes. Cheap
+    /// enough to call every frame: one non-blocking channel poll.
+    fn poll_pending_mic(&mut self) {
+        let Some(result) = self.pending_mic.as_mut().and_then(|p| p.take()) else { return };
+        self.pending_mic = None;
+        match result {
+            Ok((input, consumer)) => {
+                let rate = input.sample_rate;
+                self.mic_in = Some(input);
+                let _ = self.swap_tx.send(EngineSwap::Input(Some(MicParams { consumer, rate })));
+            }
+            Err(e) => warn!("no microphone ({e}); TX carries silence"),
         }
     }
 
@@ -69,6 +93,7 @@ impl RadioController for LocalController {
     }
 
     fn poll_event(&mut self) -> Option<RadioEvent> {
+        self.poll_pending_mic();
         if let Ok(ev) = self.event_rx.try_recv() {
             return Some(ev);
         }
@@ -119,19 +144,15 @@ impl RadioController for LocalController {
             }
             self.out_name = name;
         } else {
+            // Release the old device and take the engine off it first, then
+            // open the new one in the background: the operator picked from a
+            // list, and that click must not freeze the UI for however long the
+            // sound stack takes to answer. Assigning `pending_mic` drops any
+            // open still in flight, so an earlier pick can never land on top of
+            // this one.
             self.mic_in = None;
-            match sdroxide_audio::start_input(name.as_deref(), 48_000) {
-                Ok((input, consumer)) => {
-                    let rate = input.sample_rate;
-                    self.mic_in = Some(input);
-                    let _ =
-                        self.swap_tx.send(EngineSwap::Input(Some(MicParams { consumer, rate })));
-                }
-                Err(e) => {
-                    warn!("audio input {name:?}: {e}; TX carries silence");
-                    let _ = self.swap_tx.send(EngineSwap::Input(None));
-                }
-            }
+            let _ = self.swap_tx.send(EngineSwap::Input(None));
+            self.pending_mic = Some(sdroxide_audio::start_input_background(name.clone(), 48_000));
             self.in_name = name;
         }
         self.persist_selection();
@@ -270,8 +291,7 @@ impl RadioController for LocalController {
     fn hackrf_diagnostics(&self) -> Option<String> {
         Some(match sdroxide_hackrf::diagnostics() {
             Some(t) => t,
-            None => "No HackRF session has run yet — press Apply / reconnect first."
-                .to_string(),
+            None => "No HackRF session has run yet — press Apply / reconnect first.".to_string(),
         })
     }
 
@@ -310,6 +330,9 @@ impl RadioController for LocalController {
         self.swap_tx = dead_swap;
         self.audio_out = None;
         self.mic_in = None;
+        // An open still in flight is abandoned rather than waited for; whatever
+        // it opens is closed again as soon as it exists.
+        self.pending_mic = None;
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
