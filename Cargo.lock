@@ -5414,6 +5414,7 @@ dependencies = [
  "image",
  "js-sys",
  "naga 30.0.0",
+ "pollster",
  "rfd",
  "ron",
  "sdroxide-config",

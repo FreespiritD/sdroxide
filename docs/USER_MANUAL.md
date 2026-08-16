@@ -6517,6 +6517,32 @@ press **Apply / reconnect** (Radio tab, or under the CAT radio-audio settings).
 Audio output/input device changes apply immediately. If a change still seems
 stuck, press Apply / reconnect again.
 
+**The display flickers, or sdroxide uses more CPU on a Raspberry Pi than it
+should.**
+Both are the same setting seen from either side. Mesa's Vulkan driver for the
+Pi's V3D GPU (V3DV, on the Pi 4, 5, 400 and 500) makes the picture flicker —
+unusably so on some compositors, and not only under sdroxide; other wgpu and
+Vulkan applications flicker on the same driver. sdroxide looks for that adapter
+at startup and renders through OpenGL ES instead, saying so in the log:
+
+```
+sdroxide: the Raspberry Pi's V3D through Mesa's Vulkan driver (V3DV) flickers,
+so this window renders through OpenGL ES instead.
+```
+
+The GLES path is steady but costs roughly one core of the four — 237% CPU
+against 140% on an RTL-SDR at 2.4 Msps, so on a Pi 5 that is a quarter of the
+machine. If your desktop turns out not to flicker under Vulkan, take it back
+with
+
+```
+WGPU_BACKEND=vulkan sdroxide
+```
+
+`WGPU_BACKEND` (`vulkan`, `gl`, `metal`, `dx12`) pins the renderer on any
+machine, and pinning it also turns the check above off — so `WGPU_BACKEND=gl`
+is how to force the steady path on a GPU sdroxide does not know about.
+
 ---
 
 ## 14. Appendix

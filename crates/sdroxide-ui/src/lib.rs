@@ -75,6 +75,9 @@ pub use eframe::egui_wgpu;
 /// This also *lifts* limits on the GL backend, where eframe asks for the WebGL2
 /// downlevel defaults: a native GL context that can do better now says so, and
 /// the globe gets its full-resolution maps instead of the 2048-pixel cap.
+///
+/// The same Pi is also the one machine where the backend itself is not left to
+/// eframe — see [`v3dv_backends`].
 pub fn wgpu_options() -> egui_wgpu::WgpuConfiguration {
     use egui_wgpu::wgpu;
     let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
@@ -84,9 +87,160 @@ pub fn wgpu_options() -> egui_wgpu::WgpuConfiguration {
             required_limits: adapter.limits(),
             ..Default::default()
         });
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(backends) = v3dv_backends(setup.instance_descriptor.backends) {
+        setup.instance_descriptor.backends = backends;
+    }
     egui_wgpu::WgpuConfiguration {
         wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(setup),
         ..Default::default()
+    }
+}
+
+/// What an adapter says about itself, cut down to the two strings and the
+/// backend that [`prefer_gl_over_v3dv`] decides on.
+///
+/// wgpu's own `AdapterInfo` would do, but it carries a dozen fields and gains
+/// more with each release, which would make the test below a chore to keep
+/// compiling for no gain.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+struct AdapterSummary {
+    backend: egui_wgpu::wgpu::Backend,
+    /// e.g. `"V3D 7.1.10.2"`.
+    name: String,
+    /// e.g. `"V3DV Mesa"`.
+    driver: String,
+}
+
+/// Whether the Raspberry Pi's GPU is here behind Mesa's Vulkan driver.
+///
+/// V3D is the 3D block in the Broadcom SoCs on the Pi 4 and Pi 5 (and so the
+/// Pi 400/500). Mesa drives it two ways: **V3DV** for Vulkan and a GLES 3.1
+/// driver for OpenGL, and both enumerate as adapters named `V3D <version>`,
+/// which is why the backend has to be part of the test.
+///
+/// Rendering through V3DV flickers — on a Pi 500 under labwc badly enough to be
+/// unusable — and it is not sdroxide-specific: the same driver flickers under
+/// other wgpu and Vulkan applications (gfx-rs/wgpu#1467, warpdotdev/warp#4879).
+/// The GLES path on the same GPU is steady, so that is what this picks, at a
+/// cost of roughly one core of four (measured 237% CPU against 140% on an
+/// RTL-SDR at 2.4 Msps).
+#[cfg(not(target_arch = "wasm32"))]
+fn prefer_gl_over_v3dv(adapters: &[AdapterSummary]) -> bool {
+    adapters.iter().any(|a| {
+        a.backend == egui_wgpu::wgpu::Backend::Vulkan
+            && (a.driver.contains("V3DV") || a.name.to_ascii_uppercase().starts_with("V3D "))
+    })
+}
+
+/// The backends to open the window with, or `None` to leave eframe's choice
+/// alone — which is every machine but a Raspberry Pi.
+///
+/// Asking wgpu costs an instance and an enumeration, so this only asks where
+/// the answer can be yes: V3D ships in Raspberry Pi silicon and nothing else,
+/// so nothing but Linux on ARM pays for the probe. Enumerating Vulkan alone
+/// keeps it to the library eframe is about to load anyway, and needs no display
+/// handle (which does not exist yet at this point in startup, and which GLES
+/// would want).
+///
+/// `WGPU_BACKEND` stays the override in both directions — it is read before
+/// anything else here, so `WGPU_BACKEND=vulkan` puts the core back on a Pi for
+/// anyone who would rather have the flicker.
+#[cfg(not(target_arch = "wasm32"))]
+fn v3dv_backends(configured: egui_wgpu::wgpu::Backends) -> Option<egui_wgpu::wgpu::Backends> {
+    use egui_wgpu::wgpu;
+
+    if !cfg!(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "arm"))) {
+        return None;
+    }
+    // Whatever the environment names, it means it.
+    if wgpu::Backends::from_env().is_some() {
+        return None;
+    }
+    // Neither half of the swap is on the table otherwise.
+    if !configured.contains(wgpu::Backends::VULKAN) || !configured.contains(wgpu::Backends::GL) {
+        return None;
+    }
+
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::VULKAN,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    // `enumerate_adapters` is a future only for the browser's sake; natively it
+    // is already resolved by the time it is returned.
+    let adapters: Vec<AdapterSummary> =
+        pollster::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN))
+            .iter()
+            .map(|a| {
+                let info = a.get_info();
+                AdapterSummary { backend: info.backend, name: info.name, driver: info.driver }
+            })
+            .collect();
+
+    if !prefer_gl_over_v3dv(&adapters) {
+        return None;
+    }
+    eprintln!(
+        "sdroxide: the Raspberry Pi's V3D through Mesa's Vulkan driver (V3DV) flickers, \
+         so this window renders through OpenGL ES instead. \
+         Set WGPU_BACKEND=vulkan to use Vulkan anyway — about one core cheaper, and it \
+         may not flicker on your compositor."
+    );
+    Some(wgpu::Backends::GL)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod v3dv_tests {
+    use super::{AdapterSummary, prefer_gl_over_v3dv};
+    use crate::egui_wgpu::wgpu::Backend;
+
+    fn adapter(backend: Backend, name: &str, driver: &str) -> AdapterSummary {
+        AdapterSummary { backend, name: name.to_owned(), driver: driver.to_owned() }
+    }
+
+    /// The three adapters a Pi 500 running Raspberry Pi OS bookworm reports,
+    /// verbatim from the bug report (Mesa 24.2.8, kernel 6.12.96+rpt-rpi-2712).
+    #[test]
+    fn a_pi_500_asks_for_gl() {
+        let pi = [
+            adapter(Backend::Vulkan, "V3D 7.1.10.2", "V3DV Mesa"),
+            adapter(Backend::Vulkan, "llvmpipe (LLVM 15.0.6, 128 bits)", "llvmpipe"),
+            adapter(Backend::Gl, "V3D 7.1.10.2", ""),
+        ];
+        assert!(prefer_gl_over_v3dv(&pi));
+    }
+
+    /// The GLES driver names its adapter `V3D` too, so seeing that name is not
+    /// on its own a reason to move: the swap has to be off Vulkan specifically,
+    /// or a machine already on GL would be told to switch to where it is.
+    #[test]
+    fn the_gl_adapter_alone_is_not_a_reason() {
+        let already_gl = [adapter(Backend::Gl, "V3D 7.1.10.2", "")];
+        assert!(!prefer_gl_over_v3dv(&already_gl));
+    }
+
+    /// Every other machine keeps the renderer it had.
+    #[test]
+    fn other_gpus_are_left_alone() {
+        let desktop = [
+            adapter(Backend::Vulkan, "AMD Radeon RX 7900 XTX (RADV NAVI31)", "radv"),
+            adapter(Backend::Vulkan, "NVIDIA GeForce RTX 4090", "NVIDIA"),
+            adapter(Backend::Vulkan, "Intel(R) Arc(tm) A770", "Intel open-source Mesa driver"),
+            adapter(Backend::Vulkan, "llvmpipe (LLVM 15.0.6, 128 bits)", "llvmpipe"),
+            // An ARM board that is not a Pi.
+            adapter(Backend::Vulkan, "NVIDIA Tegra Orin (nvgpu)", "NVIDIA"),
+            adapter(Backend::Vulkan, "Mali-G610", "Mali-G610"),
+        ];
+        assert!(!prefer_gl_over_v3dv(&desktop));
+    }
+
+    /// A future Mesa that renames the driver string still gets caught by the
+    /// adapter name, and one that renames the adapter by the driver string.
+    #[test]
+    fn either_half_of_the_name_is_enough() {
+        assert!(prefer_gl_over_v3dv(&[adapter(Backend::Vulkan, "Broadcom V3D", "V3DV Mesa")]));
+        assert!(prefer_gl_over_v3dv(&[adapter(Backend::Vulkan, "v3d 9.0.0.0", "Mesa")]));
     }
 }
 

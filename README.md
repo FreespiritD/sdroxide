@@ -992,6 +992,15 @@ sdroxide --server --web-root crates/sdroxide-web/dist
 sdroxide --connect 192.168.1.10:4950
 ```
 
+**Raspberry Pi 4/5 (and 400/500).** Mesa's Vulkan driver for the Pi's V3D GPU
+(V3DV) makes the display flicker, even in other
+wgpu and Vulkan applications. sdroxide detects that adapter at startup and
+renders through OpenGL ES instead, which is steady. That costs roughly one core
+of the four (237% CPU against 140% on an RTL-SDR at 2.4 Msps), so if your
+desktop does not flicker under Vulkan, `WGPU_BACKEND=vulkan sdroxide` takes it
+back. `WGPU_BACKEND` is honoured on every machine, and pins the renderer either
+way.
+
 ## Startup parameters
 
 | Flag | Description |
