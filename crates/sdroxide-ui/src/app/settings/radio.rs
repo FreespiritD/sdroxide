@@ -181,6 +181,21 @@ pub(in crate::app) fn settings_cat_tab(
             ui.end_row();
         }
 
+        if cfg.cat.family == CatFamily::Elecraft {
+            ui.label("Radio");
+            ui.label(RichText::new("K3 · K3S · KX3 · KX2 · K4").weak()).on_hover_text(
+                "One profile covers the family: the K3 command set, which the \
+                 KX3, KX2 and K4 all answer. There is nothing to pick here — \
+                 how many watts the Drive slider spans (12 on a bare KX2 or \
+                 KX3, 110 with a KPA3 or a KXPA100) is read from the rig's own \
+                 option-module query when the port opens.\n\n\
+                 Note the baud rates above: the K3, K3S, KX3 and KX2 go no \
+                 faster than 38400, and a rig set below the rate chosen here \
+                 answers nothing at all.",
+            );
+            ui.end_row();
+        }
+
         if matches!(cfg.cat.family, CatFamily::Icom | CatFamily::Xiegu) {
             ui.label("Radio ID (hex)");
             let mut hex = format!("{:02X}", cfg.cat.icom_radio_id);

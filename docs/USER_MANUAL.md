@@ -4,8 +4,8 @@ SDRoxide is a PowerSDR/Thetis-style software-defined-radio transceiver. It gives
 you a panadapter and waterfall, dual VFOs, a full set of receive and transmit
 controls, FT8/FT4/FT2 digital modes with an integrated logbook, a wideband CW
 skimmer, and the ability to drive either a SoapySDR device or a CAT-controlled
-radio (such as a Xiegu, Icom, Yaesu, or Kenwood) with audio over a USB sound
-card. The
+radio (such as a Xiegu, Icom, Yaesu, Kenwood, or Elecraft) with audio over a USB
+sound card. The
 same interface runs as a native desktop application, streams to a web browser,
 or connects to a remote sdroxide server.
 
@@ -579,7 +579,10 @@ next call.
 > that way natively; Yaesu and Kenwood take a number of watts and have no way to
 > say how many they have, so their sliders are read against 100 W — right for
 > nearly every rig those dialects cover, and low (never high) for the few that
-> go above it, such as an FTDX101MP or a TS-480HX.
+> go above it, such as an FTDX101MP or a TS-480HX. Elecraft takes watts too but
+> *can* be asked: the option-module query at connect says whether there is a
+> KPA3 or a KXPA100 on the end of the cable, which is the difference between a
+> slider that spans 110 W and one that spans a KX2's 12.
 
 **Drive and the hardware's TX gain are not the same control.** On an IQ radio —
 a Pluto, an HPSDR board, an SDRplay or a SoapySDR device — Drive is *digital*:
@@ -2668,11 +2671,17 @@ separately from your computer's own speakers and microphone.
 
 - **Serial port** — the radio's CAT serial port. On Linux, USB-style ports
   (`/dev/ttyACM*`, `/dev/ttyUSB*`) are listed first.
-- **CAT family** — `Xiegu`, `Icom`, `Yaesu`, or `Kenwood`. Kenwood and Yaesu
-  both speak ASCII commands ending in `;` and look interchangeable, but they are
-  not: a Kenwood driven as a Yaesu rejects every retune and *keys up without
-  unkeying*, because `TX0;` — Yaesu's unkey — is a transmit command on a
-  Kenwood. Pick the right one.
+- **CAT family** — `Xiegu`, `Icom`, `Yaesu`, `Kenwood`, or `Elecraft`. The last
+  three all speak ASCII commands ending in `;` and look interchangeable, but
+  they are not: a Kenwood driven as a Yaesu rejects every retune and *keys up
+  without unkeying*, because `TX0;` — Yaesu's unkey — is a transmit command on
+  a Kenwood. An Elecraft driven as a Kenwood tunes and keys correctly and then
+  goes out on the wrong sideband in every digital mode, because DATA is a
+  *mode* there (`MD6`/`MD9`) rather than a flag beside one. Pick the right one.
+- **Radio** (Elecraft only) — not a setting, just a reminder of what the profile
+  covers: the K3 command set, which the K3S, KX3, KX2 and K4 all answer. How
+  many watts the **Drive** slider spans is read from the rig itself when the
+  port opens, so there is nothing to choose.
 - **Baud**, **Data bits**, **Parity**, **Stop bits** — the serial line settings
   (for example 19200 8N1 for a Xiegu X6100).
 - **Force RTS** / **Force DTR** — hold a control line high or low (some
@@ -2719,12 +2728,14 @@ What that needs on the radio:
   every mode except CW — so sdroxide sends it only once the rig has reported
   that it is in CW, rather than risk turning VOX on under a live sound card. If
   you key CW with **Mode control** set to `Radio controlled`, turn break-in on
-  at the radio yourself.
-- **The panel's WPM is sent to the rig's keyer** (Yaesu and Kenwood `KS`, Icom
-  keyer speed),
+  at the radio yourself. Elecraft needs none of this: a `KY` message keys the
+  transmitter itself there, the way a recorded message does.
+- **The panel's WPM is sent to the rig's keyer** (Yaesu, Kenwood and Elecraft
+  `KS`, Icom keyer speed),
   so the speed chip in the CW panel is the speed on the air. Farnsworth spacing
   is the sidetone keyer's and has no equivalent in a rig's keyer, so it does not
-  apply on this route.
+  apply on this route. Elecraft's keyer stops at 8 and 50 WPM, so the panel's
+  ends are clamped to those.
 - **A longer break-in delay, and consider SEND ON RETURN.** The rig takes the
   text a message at a time and switches to transmit for each one, so how often
   it drops back to receive is set by two things sdroxide does not control: your
@@ -2735,9 +2746,9 @@ What that needs on the radio:
   sentence.
 - **Yaesu only: keyer memory 1 is used as scratch.** Yaesu has no streaming
   keying command — text can only be stored and played back — so sending CW
-  overwrites whatever you had stored in CW memory 1. Kenwood streams the text
-  straight to the keyer (`KY`), 24 characters at a time, and leaves your stored
-  messages alone.
+  overwrites whatever you had stored in CW memory 1. Kenwood and Elecraft stream
+  the text straight to the keyer (`KY`), 24 characters at a time, and leave your
+  stored messages alone.
 - **The Drive slider is the power CW goes out at.** Nothing sdroxide sends
   reaches the air here — the rig keys its own transmitter — so the level of the
   audio going into its sound card means nothing in CW, and the transmit level is
@@ -2756,6 +2767,24 @@ setup and for radios whose keyer sdroxide cannot drive.
 > how this family turns split off. sdroxide carries RIT, XIT and split on the
 > dial itself, and it tunes VFO A — so a rig left on VFO B or in memory mode
 > would answer every frequency read and ignore every retune.
+
+> **Note (Elecraft):** at connect sdroxide does the same — auto-information off,
+> clarifier cleared, RIT, XIT and split off — and two things besides. It puts
+> the rig into `K20;K31;`, because a K3 left in K2 command mode 1 or 3 by
+> whatever ran before reports DATA and DATA-REV *as LSB and USB*, so it would
+> look like a radio that never leaves SSB. And it asks the rig what it is
+> (`OM;`), which is where the **Drive** slider's scale comes from: 110 W with a
+> KPA3 or a KXPA100 fitted, 12 W without one. Until that answer arrives the
+> slider is the QRP scale, so the first moments after connect can only ask for
+> *less* power than the radio has, never more.
+>
+> Setting the mode sends `DT0;` after the mode itself, which pins DATA to
+> **DATA A** — the sound-card path. It has to: `MD6;` on its own restores
+> whichever of the four sub-modes that band was last left in, and on a rig used
+> for RTTY that is the K3's own FSK keyer, which has nothing to send. For the
+> same reason sdroxide follows the rig into DATA only when it reports DATA A;
+> left in AFSK A, FSK D or PSK D it reports no mode at all rather than one the
+> two would then argue about.
 
 > **Note:** on a Yaesu USB interface the *Enhanced* port is the CAT port
 > configured above. The *Standard* port is the one whose RTS/DTR lines are wired
@@ -6270,8 +6299,8 @@ format** to **Demod audio**.
 On the **Radio** tab, set **Mode control** to **CAT**. For FT8/FT4/FT2, set
 **Digimode mode** to **USB** or **DIGI** as your rig expects. Check the serial
 port, baud, and (for Icom/Xiegu) the **Radio ID**. Check **CAT family** as well:
-Kenwood and Yaesu look alike on the wire and neither one obeys the other's
-commands.
+Kenwood, Yaesu and Elecraft look alike on the wire and none of them obeys the
+others' commands.
 
 **The CAT radio follows my dial but ignores frequency changes from sdroxide.**
 Take the radio out of memory mode: most rigs answer a frequency *read* from a
@@ -6299,13 +6328,40 @@ audio sdroxide transmits.
 On a TS-2000, set **Send command** back to `TS-2000 style (TX;)`. `TX1;` is
 DATA SEND on a TS-590 but *transmit on the sub-band* on a TS-2000.
 
+**The Elecraft goes into plain SSB for FT8 instead of DATA.**
+**CAT family** is set to `Kenwood`. DATA is a flag beside the mode there (`DA`)
+but a mode of its own here (`MD6`), so the Kenwood profile leaves a K3 in USB
+and then earns a rejection for the flag — with nothing to show that anything was
+refused. Set the family to `Elecraft`.
+
+**The Elecraft is in DATA but nothing decodes, and sdroxide shows no mode.**
+The rig is in the wrong DATA *sub-mode*. `MD6` restores whichever of DATA A,
+AFSK A, FSK D and PSK D that band was last left in, and only DATA A is the
+sound-card path; the other three hand the over to the K3's own modems. Set
+**Mode control** to `CAT` and pick the mode in sdroxide, which sends `DT0;`
+behind the mode and pins it — or press **DATA MD** at the radio until it reads
+`DATA A`.
+
+**The Elecraft's Drive slider only reaches a fraction of the rig's power.**
+The **`OM;`** query at connect found no power amplifier, so the slider spans
+12 W rather than 110. On a K3 that means the KPA3 was not detected; on a KX3 or
+KX2, that the KXPA100 is not attached over its control cable. Check the log line
+`Elecraft CAT: rig identified` for what the radio said it was.
+
+**The Elecraft answers nothing at all.**
+Check **Baud**: a K3, K3S, KX3 or KX2 goes no faster than 38400 (`CONFIG:RS232`
+at the radio), so choosing 57600 or 115200 here leaves the link mute in both
+directions. Only a K4 runs above that.
+
 **CW transmits nothing.**
 Set **CW keying** to **Rig keyer (CAT)** on the Radio tab — see
 [5.2.2](#522-cat-radios-serial-control--usb-audio). A rig in CW
 ignores audio sent to its sound card, so it can only be keyed from text. On
 Yaesu also check that CW memory 1 is free to be overwritten; on Kenwood, that
 break-in is on (sdroxide only asserts it when the rig has reported CW, because
-the same command is the VOX switch in every other mode); on any rig, that
+the same command is the VOX switch in every other mode); on Elecraft, that the
+rig is not sitting in a limited-access state such as BSET or VFO REV, where it
+answers `?;` and does nothing; on any rig, that
 the radio is actually in CW (**Mode control** = `CAT`) and that the **Drive**
 slider — which *is* the rig's output power on a CAT rig, in CW as in every other
 mode — is not down at the bottom.

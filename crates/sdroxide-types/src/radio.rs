@@ -212,17 +212,29 @@ pub enum CatFamily {
     Icom,
     Yaesu,
     Kenwood,
+    /// K3, K3S, KX3, KX2 — and a K4, which answers the same command set.
+    ///
+    /// A dialect of Kenwood's rather than a family of its own, but not one the
+    /// Kenwood profile can drive: DATA is a mode here instead of a flag, and
+    /// the two disagree about what keys the transmitter.
+    Elecraft,
 }
 
 impl CatFamily {
-    pub const ALL: [CatFamily; 4] =
-        [CatFamily::Xiegu, CatFamily::Icom, CatFamily::Yaesu, CatFamily::Kenwood];
+    pub const ALL: [CatFamily; 5] = [
+        CatFamily::Xiegu,
+        CatFamily::Icom,
+        CatFamily::Yaesu,
+        CatFamily::Kenwood,
+        CatFamily::Elecraft,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             CatFamily::Xiegu => "Xiegu",
             CatFamily::Icom => "Icom",
             CatFamily::Yaesu => "Yaesu",
             CatFamily::Kenwood => "Kenwood",
+            CatFamily::Elecraft => "Elecraft",
         }
     }
 }

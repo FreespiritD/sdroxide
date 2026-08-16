@@ -8,6 +8,7 @@
 /// Icom CI-V framing and parsing. Public because the Icom LAN backend tunnels
 /// the same protocol over UDP and must not carry a second copy of it.
 pub mod civ;
+mod elecraft;
 mod kenwood;
 mod yaesu;
 
@@ -258,17 +259,21 @@ impl Protocol for Civ {
     }
 }
 
-/// Output power the ASCII families are assumed to have at full scale, in watts.
+/// Output power Yaesu and Kenwood rigs are assumed to have at full scale, in
+/// watts.
 ///
-/// Yaesu's and Kenwood's `PC` sets a *number of watts*, and neither family has
-/// a command that says how many the rig has — so a 0..1 fraction can only be
-/// turned into one against an assumption. A hundred watts is what all but a
-/// handful of the rigs these two dialects cover put out (the FT-891, FT-991A,
-/// FTDX10, FTDX101D, FT-710, TS-590, TS-2000, TS-890 are all 100 W), and the
-/// exceptions are the *bigger* ones — an FTDX101MP or a TS-480HX simply tops
-/// out at half the slider. Erring low is the right way to be wrong about a
-/// transmitter. CI-V needs none of this: Icom's power level spans whatever the
-/// radio has, so the fraction is the setting.
+/// Both families' `PC` sets a *number of watts*, and neither has a command that
+/// says how many the rig has — so a 0..1 fraction can only be turned into one
+/// against an assumption. A hundred watts is what all but a handful of the rigs
+/// these two dialects cover put out (the FT-891, FT-991A, FTDX10, FTDX101D,
+/// FT-710, TS-590, TS-2000, TS-890 are all 100 W), and the exceptions are the
+/// *bigger* ones — an FTDX101MP or a TS-480HX simply tops out at half the
+/// slider. Erring low is the right way to be wrong about a transmitter.
+///
+/// The other two families need none of this. Icom's power level spans whatever
+/// the radio has, so the fraction is the setting; and Elecraft, whose rigs run
+/// from a 12 W KX2 to a 110 W K3, has an `OM` query that says which one is on
+/// the other end of the cable.
 const ASCII_FULL_POWER_W: f32 = 100.0;
 
 /// `PC` — set output power (Yaesu "new CAT" and Kenwood alike). The three-digit
@@ -298,6 +303,7 @@ fn make_protocol(cfg: &CatConfig) -> Box<dyn Protocol> {
         }
         CatFamily::Yaesu => Box::new(yaesu::Yaesu::new()),
         CatFamily::Kenwood => Box::new(kenwood::Kenwood::new(cfg.kenwood_send)),
+        CatFamily::Elecraft => Box::new(elecraft::Elecraft::new()),
     }
 }
 
