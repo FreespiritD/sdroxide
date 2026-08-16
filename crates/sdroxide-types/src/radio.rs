@@ -76,10 +76,30 @@ pub enum Backend {
     /// for the length of an over. Appended last, for the same reason as
     /// `SmartSdr` above.
     HackRf,
+    /// A receiver published by a SpyServer — Airspy's own server and the
+    /// several re-implementations that speak its protocol — delivering
+    /// wideband I/Q the way every other SDR here does. The far end owns the
+    /// hardware; this end asks it for a decimation stage and receives that
+    /// slice of its ADC. Appended last, for the same reason as `SmartSdr`
+    /// above.
+    SpyServer,
+    /// The same servers, in their low-bandwidth mode: a *narrow* I/Q stream
+    /// that follows the dial, plus a separate low-rate FFT of the whole band
+    /// for the full-band strip.
+    ///
+    /// A separate interface rather than a mode of [`Backend::SpyServer`]
+    /// because what it delivers is a different shape — a receiver whose
+    /// panadapter is a few tens of kHz wide, and whose band view is a picture
+    /// the server drew rather than anything this end can demodulate — and
+    /// because the two offer different sample-rate ladders. It is the
+    /// interface for a link that cannot carry megabits: WiFi at the far end of
+    /// a property, or a cellular modem. Appended last, for the same reason as
+    /// `SmartSdr` above.
+    SpyServerVfo,
 }
 
 impl Backend {
-    pub const ALL: [Backend; 15] = [
+    pub const ALL: [Backend; 17] = [
         Backend::Auto,
         Backend::Soapy,
         Backend::Cat,
@@ -90,6 +110,8 @@ impl Backend {
         Backend::Pluto,
         Backend::RtlSdr,
         Backend::RtlTcp,
+        Backend::SpyServer,
+        Backend::SpyServerVfo,
         Backend::Rx888,
         Backend::AirspyHf,
         Backend::Airspy,
@@ -108,6 +130,8 @@ impl Backend {
             Backend::Pluto => "PlutoSDR (network)",
             Backend::RtlSdr => "RTL-SDR (USB)",
             Backend::RtlTcp => "RTL-SDR over rtl_tcp (network)",
+            Backend::SpyServer => "SpyServer (network)",
+            Backend::SpyServerVfo => "SpyServer VFO+FFT, low bandwidth (network)",
             Backend::Rx888 => "RX-888 (USB)",
             Backend::AirspyHf => "Airspy HF+ (USB)",
             Backend::Airspy => "Airspy R2 / Mini (USB)",
@@ -1549,6 +1573,227 @@ impl RtlTcpConfig {
     pub fn link_mbit(rate_hz: f64) -> f64 {
         // Two bytes per complex sample, eight bits to the byte.
         rate_hz * 2.0 * 8.0 / 1e6
+    }
+}
+
+/// Sample format the server sends I/Q in.
+///
+/// The protocol also defines a 24-bit integer format, which is deliberately
+/// absent: no open client decodes it, the servers that offer it are rare, and
+/// a format guessed at rather than implemented would arrive as noise. A server
+/// that *forces* it is refused at connect, with the reason said out loud,
+/// rather than being fed to a decoder that would misread it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SpyServerFormat {
+    /// 8-bit unsigned, two bytes a complex sample. Half the bandwidth of the
+    /// 16-bit format and the reason SpyServer works over a domestic uplink at
+    /// all.
+    #[default]
+    Uint8,
+    /// 16-bit signed. Worth it on a receiver whose ADC has range to keep — an
+    /// Airspy HF+ is 18-bit internally — and only on a link that can carry it.
+    Int16,
+    /// 32-bit float. Twice the bandwidth of 16-bit for no more information
+    /// than the ADC had; offered because some servers force it.
+    Float32,
+}
+
+impl SpyServerFormat {
+    pub const ALL: [SpyServerFormat; 3] =
+        [SpyServerFormat::Uint8, SpyServerFormat::Int16, SpyServerFormat::Float32];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SpyServerFormat::Uint8 => "8-bit (lowest bandwidth)",
+            SpyServerFormat::Int16 => "16-bit",
+            SpyServerFormat::Float32 => "32-bit float",
+        }
+    }
+
+    /// Bytes per complex sample on the wire — what decides the link cost.
+    pub fn bytes_per_sample(self) -> usize {
+        match self {
+            SpyServerFormat::Uint8 => 2,
+            SpyServerFormat::Int16 => 4,
+            SpyServerFormat::Float32 => 8,
+        }
+    }
+
+    /// The wire value for `IQ_FORMAT`. Paired with [`Self::from_wire`]; keep
+    /// the two in step.
+    pub fn wire(self) -> u32 {
+        match self {
+            SpyServerFormat::Uint8 => 1,
+            SpyServerFormat::Int16 => 2,
+            SpyServerFormat::Float32 => 4,
+        }
+    }
+
+    /// A server's `ForcedIQFormat`, when it is one this end can decode.
+    /// `None` covers "not forced" (0) and the two formats deliberately absent
+    /// above, which the caller reports rather than substitutes.
+    pub fn from_wire(v: u32) -> Option<SpyServerFormat> {
+        match v {
+            1 => Some(SpyServerFormat::Uint8),
+            2 => Some(SpyServerFormat::Int16),
+            4 => Some(SpyServerFormat::Float32),
+            _ => None,
+        }
+    }
+
+    /// Format as a number, so it can ride the existing `SetGain` command on a
+    /// pseudo-element. Paired with [`Self::from_code`].
+    pub fn code(self) -> u8 {
+        match self {
+            SpyServerFormat::Uint8 => 0,
+            SpyServerFormat::Int16 => 1,
+            SpyServerFormat::Float32 => 2,
+        }
+    }
+
+    pub fn from_code(code: u8) -> SpyServerFormat {
+        match code {
+            1 => SpyServerFormat::Int16,
+            2 => SpyServerFormat::Float32,
+            _ => SpyServerFormat::Uint8,
+        }
+    }
+}
+
+/// A receiver published by a SpyServer, in either of the two interfaces that
+/// reach one ([`Backend::SpyServer`] and [`Backend::SpyServerVfo`]).
+///
+/// One type for both, because the server, the handshake and every control
+/// below are the same; only which streams are asked for differs, and that is
+/// the interface the operator picked rather than anything stored here.
+///
+/// Almost nothing is a frequency or a rate in Hz. The server publishes its own
+/// ladder — `MaximumSampleRate / 2ⁿ` — which is a property of the far end and
+/// of the receiver behind it, and which nothing on this side can know before
+/// connecting. So what is stored is the *stage*, which is also what the wire
+/// carries, and which stays meaningful when the same settings are pointed at a
+/// different server.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpyServerConfig {
+    /// `host` or `host:port` of the server. The port may be left off and
+    /// defaults to 5555, which is what `spyserver` listens on unless its
+    /// config says otherwise — see [`Self::endpoint`].
+    pub address: String,
+    /// I/Q decimation stage, or [`Self::AUTO_DECIMATION`] to let the program
+    /// pick the stage nearest the interface's target rate once the server has
+    /// said what it offers.
+    pub iq_decimation: i32,
+    pub iq_format: SpyServerFormat,
+    /// The server's gain stage, as an **index**, not a dB figure. What each
+    /// index means is the far-end receiver's business and the protocol never
+    /// says; see [`Self::GAIN_ELEMENT`].
+    pub gain_index: u32,
+    /// Let the program compute the digital gain from the device type, the gain
+    /// index and the decimation stage, the way every other client does.
+    /// Switching this off exposes [`Self::digital_gain_db`].
+    pub auto_digital_gain: bool,
+    pub digital_gain_db: f64,
+    /// Ask the server for its FFT stream, which feeds the full-band strip.
+    ///
+    /// On by default in both interfaces: a 2048-bin frame is 2 KB and arrives
+    /// a dozen or so times a second, which is a rounding error beside the I/Q
+    /// even at 8-bit, and it buys a view of the whole band rather than of the
+    /// slice being received. It is the *only* band view in the VFO interface.
+    pub fft_enabled: bool,
+    /// FFT decimation stage. `0` is the device's full bandwidth, which is the
+    /// widest view there is and the default.
+    pub fft_decimation: u32,
+    /// Top of the FFT's dB window, and how far down from it the scale reaches.
+    /// The server quantises its bins into this window before sending them, so
+    /// these decide the resolution of what arrives, not just how it is drawn.
+    pub fft_db_offset: f64,
+    pub fft_db_range: f64,
+    /// Remove the DC spike and mirror image in DSP. Whether the receiver on
+    /// the far end needs it depends on what it is — an Airspy HF+ does not, an
+    /// RTL-SDR does — and the protocol does not say, so it is left to the
+    /// operator with the usual default of on.
+    pub iq_correction: bool,
+}
+
+impl Default for SpyServerConfig {
+    fn default() -> Self {
+        SpyServerConfig {
+            address: format!("127.0.0.1:{}", SpyServerConfig::DEFAULT_PORT),
+            iq_decimation: SpyServerConfig::AUTO_DECIMATION,
+            iq_format: SpyServerFormat::Uint8,
+            gain_index: 0,
+            auto_digital_gain: true,
+            digital_gain_db: 20.0,
+            fft_enabled: true,
+            fft_decimation: 0,
+            // The protocol's own widest window, and what every reference client
+            // opens with. Auto-levelling in the engine sets what is actually
+            // *drawn*; this only decides how finely the server quantises.
+            fft_db_offset: 0.0,
+            fft_db_range: SpyServerConfig::FFT_DB_RANGE_MAX,
+            iq_correction: true,
+        }
+    }
+}
+
+impl SpyServerConfig {
+    /// The port `spyserver` listens on out of the box.
+    pub const DEFAULT_PORT: u16 = 5555;
+
+    /// [`Self::iq_decimation`] meaning "whichever stage is nearest the target
+    /// rate for this interface". Negative so it cannot collide with a stage.
+    pub const AUTO_DECIMATION: i32 = -1;
+
+    /// What `AUTO_DECIMATION` aims for in the wideband interface: about a
+    /// megasample, which is 16 Mbit/s at 8-bit — a wired LAN or a good WiFi
+    /// hop — and wide enough to be worth calling a panadapter.
+    pub const WIDEBAND_TARGET_RATE_HZ: f64 = 1_000_000.0;
+
+    /// The same for the VFO interface. 96 kHz is 1.5 Mbit/s at 8-bit, carries
+    /// every mode this program demodulates including the wide FM broadcast
+    /// skirts, and fits down a cellular uplink with room to spare.
+    pub const VFO_TARGET_RATE_HZ: f64 = 96_000.0;
+
+    /// Bounds the protocol states for the FFT window and the bin count. Here
+    /// rather than in the driver because the settings tab clamps against them
+    /// and is shared with the wasm client, which cannot see
+    /// `sdroxide-spyserver`.
+    pub const FFT_DB_RANGE_MIN: f64 = 10.0;
+    pub const FFT_DB_RANGE_MAX: f64 = 150.0;
+    pub const FFT_DB_OFFSET_MIN: f64 = -100.0;
+    pub const FFT_DB_OFFSET_MAX: f64 = 100.0;
+    pub const DISPLAY_PIXELS_MIN: u32 = 100;
+    pub const DISPLAY_PIXELS_MAX: u32 = 1 << 15;
+
+    /// Pseudo-elements, riding `SetGain` the way the RTL-SDR's switches do —
+    /// see [`RtlSdrConfig::AGC_ELEMENT`].
+    ///
+    /// `SPYGAIN` is the odd one: it carries an **index** into the far-end
+    /// receiver's gain table, not a number of dB, and `GainElement` has no
+    /// other field to put it in. The same is already true of the SDRplay
+    /// backend's LNA state. What an index means depends on the model and on
+    /// the band, so no dB mapping is invented here — the settings tab says so
+    /// instead.
+    pub const GAIN_ELEMENT: &'static str = "SPYGAIN";
+    pub const AUTO_DIGITAL_GAIN_ELEMENT: &'static str = "SPYAUTOG";
+    pub const DIGITAL_GAIN_ELEMENT: &'static str = "SPYDGAIN";
+    pub const FFT_ENABLED_ELEMENT: &'static str = "SPYFFT";
+    pub const FFT_DECIMATION_ELEMENT: &'static str = "SPYFFTDEC";
+    pub const FFT_DB_OFFSET_ELEMENT: &'static str = "SPYFFTOFF";
+    pub const FFT_DB_RANGE_ELEMENT: &'static str = "SPYFFTRNG";
+    pub const IQ_CORRECTION_ELEMENT: &'static str = "IQCORR";
+
+    /// The configured address as `host:port`, supplying the default port when
+    /// the operator typed only a host. Same rule as
+    /// [`RtlTcpConfig::endpoint`], including the bracketed-IPv6 case.
+    pub fn endpoint(&self) -> String {
+        let a = self.address.trim();
+        let has_port = match a.rfind(']') {
+            Some(close) => a[close + 1..].starts_with(':'),
+            None => a.contains(':'),
+        };
+        if has_port { a.to_string() } else { format!("{a}:{}", Self::DEFAULT_PORT) }
     }
 }
 
@@ -3090,6 +3335,13 @@ pub struct RadioConfig {
     pub smartsdr: SmartSdrConfig,
     pub rtlsdr: RtlSdrConfig,
     pub rtltcp: RtlTcpConfig,
+    pub spyserver: SpyServerConfig,
+    /// The VFO+FFT interface's own block. Same type as `spyserver` above, kept
+    /// apart because the two are different interfaces in the picker and an
+    /// operator who has both configured means two different servers as often
+    /// as one — and because the decimation stage that suits a wideband stream
+    /// is nowhere near the one that suits a narrow one.
+    pub spyserver_vfo: SpyServerConfig,
     pub rx888: Rx888Config,
     pub airspyhf: AirspyHfConfig,
     pub airspy: AirspyConfig,
@@ -3204,6 +3456,54 @@ mod tests {
         let cfg: RadioConfig = serde_json::from_str(r#"{"backend": "RtlSdr"}"#).expect("parses");
         assert_eq!(cfg.backend, Backend::RtlSdr);
         assert_eq!(cfg.rtltcp, RtlTcpConfig::default(), "a config with no rtl_tcp block");
+    }
+
+    /// The two SpyServer interfaces are separate entries with separate blocks,
+    /// and an older `radio.json` that predates both still loads.
+    #[test]
+    fn both_spyserver_interfaces_are_offered_and_named_on_the_wire() {
+        assert!(Backend::ALL.contains(&Backend::SpyServer));
+        assert!(Backend::ALL.contains(&Backend::SpyServerVfo));
+        assert_eq!(serde_json::to_string(&Backend::SpyServer).unwrap(), "\"SpyServer\"");
+        assert_eq!(serde_json::to_string(&Backend::SpyServerVfo).unwrap(), "\"SpyServerVfo\"");
+        assert_ne!(Backend::SpyServer.label(), Backend::SpyServerVfo.label());
+
+        let cfg: RadioConfig = serde_json::from_str(r#"{"backend": "RtlTcp"}"#).expect("parses");
+        assert_eq!(cfg.spyserver, SpyServerConfig::default(), "a config with no spyserver block");
+        assert_eq!(cfg.spyserver_vfo, SpyServerConfig::default());
+
+        // Two blocks, and they really are independent — an operator with a
+        // wideband receiver on the LAN and a narrowband one over cellular is
+        // the case this split exists for.
+        let cfg: RadioConfig = serde_json::from_str(
+            r#"{"backend":"SpyServerVfo",
+                "spyserver":{"address":"pi.local"},
+                "spyserver_vfo":{"address":"remote.example:5556","iq_decimation":7}}"#,
+        )
+        .expect("parses");
+        assert_eq!(cfg.spyserver.endpoint(), "pi.local:5555");
+        assert_eq!(cfg.spyserver_vfo.endpoint(), "remote.example:5556");
+        assert_eq!(cfg.spyserver_vfo.iq_decimation, 7);
+        assert_eq!(cfg.spyserver.iq_decimation, SpyServerConfig::AUTO_DECIMATION);
+    }
+
+    /// The format decides what a rate costs on the link, which is the number
+    /// that decides whether a remote receiver works at all.
+    #[test]
+    fn the_sample_format_round_trips_and_states_its_wire_cost() {
+        for f in SpyServerFormat::ALL {
+            assert_eq!(SpyServerFormat::from_code(f.code()), f);
+            assert_eq!(SpyServerFormat::from_wire(f.wire()), Some(f));
+            assert!(!f.label().is_empty());
+        }
+        assert_eq!(SpyServerFormat::Uint8.bytes_per_sample(), 2);
+        assert_eq!(SpyServerFormat::Int16.bytes_per_sample(), 4);
+        assert_eq!(SpyServerFormat::Float32.bytes_per_sample(), 8);
+        // 24-bit and the 4-bit FFT coding are deliberately absent, and must not
+        // be silently mapped onto something this program would then misread.
+        assert_eq!(SpyServerFormat::from_wire(3), None, "24-bit");
+        assert_eq!(SpyServerFormat::from_wire(5), None, "the 4-bit differential coding");
+        assert_eq!(SpyServerFormat::from_wire(0), None, "the protocol's 'invalid'");
     }
 
     /// The port may be left off, and an IPv6 literal is all colons — so the

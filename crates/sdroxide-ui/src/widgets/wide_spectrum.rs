@@ -56,6 +56,9 @@ pub struct WideWaterfall {
     palette: usize,
     /// The dB window the newest row was built with, for the scale readout.
     levels: (f32, f32),
+    /// The centre and span the history was drawn against — see
+    /// [`WideWaterfall::push`].
+    window: Option<(f64, f64)>,
 }
 
 impl WideWaterfall {
@@ -64,6 +67,27 @@ impl WideWaterfall {
         if frame.seq == self.last_seq && !self.rows.is_empty() {
             return;
         }
+        // Every row is drawn against the *newest* frame's axis, so history from
+        // before a centre or span change is history at the wrong frequency.
+        // Throw it away rather than smear it.
+        //
+        // This lane's first backend, the RX-888, has a centre that cannot move
+        // — its full band is the whole ADC — so nothing needed this until a
+        // front end whose window slides arrived. An Icom's scope, which follows
+        // the dial, has had the same latent smear all along.
+        //
+        // The threshold is one column's worth of the new span: a re-centre of
+        // less than a pixel is not visible, and throwing six seconds of band
+        // away for it would be its own bug.
+        let moved = self.window.is_some_and(|(c, s)| {
+            (frame.span_hz - s).abs() > 1.0
+                || (frame.center_hz - c).abs() > frame.span_hz / COLS as f64
+        });
+        if moved {
+            self.rows.clear();
+            self.tex = None;
+        }
+        self.window = Some((frame.center_hz, frame.span_hz));
         self.last_seq = frame.seq;
         self.levels = (frame.db_floor, frame.db_ceil);
         self.palette = palette;
@@ -91,6 +115,7 @@ impl WideWaterfall {
         self.rows.clear();
         self.tex = None;
         self.last_seq = 0;
+        self.window = None;
     }
 
     fn texture(&mut self, ctx: &egui::Context) -> Option<&TextureHandle> {
@@ -298,6 +323,50 @@ mod tests {
         // being mistaken for one already shown.
         wf.push(&frame(1, vec![9; 2048]), 0);
         assert_eq!(wf.rows.len(), 1);
+    }
+
+    /// Every row is drawn against the newest frame's axis, so history from
+    /// before the window moved is history at the wrong frequency. A front end
+    /// whose band view slides — a SpyServer's FFT, an Icom's scope following
+    /// the dial — would otherwise smear six seconds of another band across the
+    /// strip, plausibly enough that nobody would question it.
+    #[test]
+    fn moving_the_window_throws_the_history_away() {
+        let mut wf = WideWaterfall::default();
+        for seq in 1..=5 {
+            wf.push(&frame(seq, vec![9; 64]), 0);
+        }
+        assert_eq!(wf.rows.len(), 5);
+
+        // A re-centre by a whole megahertz: the old rows are somewhere else.
+        let mut moved = frame(6, vec![9; 64]);
+        moved.center_hz += 1e6;
+        wf.push(&moved, 0);
+        assert_eq!(wf.rows.len(), 1, "the history was drawn against the old centre");
+
+        // A span change does it too — the axis is stretched, not shifted.
+        let mut zoomed = frame(7, vec![9; 64]);
+        zoomed.center_hz = moved.center_hz;
+        zoomed.span_hz /= 2.0;
+        wf.push(&zoomed, 0);
+        assert_eq!(wf.rows.len(), 1);
+    }
+
+    /// ...but not for a wobble smaller than a pixel. Throwing the band away
+    /// over a sub-column drift would be its own bug, and a re-centre that
+    /// lands within rounding of where it was is exactly what a rate-limited
+    /// servo produces.
+    #[test]
+    fn a_sub_pixel_drift_keeps_the_history() {
+        let mut wf = WideWaterfall::default();
+        for seq in 1..=4 {
+            wf.push(&frame(seq, vec![9; 64]), 0);
+        }
+        let mut nudged = frame(5, vec![9; 64]);
+        // One tenth of a column of a 32.4 MHz span across 1024 columns.
+        nudged.center_hz += nudged.span_hz / COLS as f64 / 10.0;
+        wf.push(&nudged, 0);
+        assert_eq!(wf.rows.len(), 5, "a sub-column nudge is not a new band");
     }
 
     #[test]

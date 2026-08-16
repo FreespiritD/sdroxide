@@ -278,7 +278,17 @@ use sdroxide_types::{
 /// (`SolarServerMsg`'s per-band planes, and the band masks the globe and map
 /// carry). A v53 client would file 2 m's plane under 4 m and 70 cm's under 2 m,
 /// which is the one thing a version byte exists to prevent.
-pub const PROTO_VERSION: u16 = 54;
+/// v55: SpyServer, as two interfaces. `Backend::SpyServer` and
+/// `Backend::SpyServerVfo` are appended so no existing discriminant moves, and
+/// `RadioConfig` gained a `spyserver` and a `spyserver_vfo` block. Both halves
+/// force the bump, for the two reasons v51 and v53 already set out: a new
+/// `Backend` discriminant is a value a v54 client has never heard of, and two
+/// new `RadioConfig` fields change the layout of every message that struct
+/// rides in — which is `ServerMsg::RadioConfig`, the message the settings
+/// dialog is built from. Postcard is not self-describing, so a v54 client
+/// would not fail to find them; it would decode the fields after them from the
+/// wrong offset.
+pub const PROTO_VERSION: u16 = 55;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

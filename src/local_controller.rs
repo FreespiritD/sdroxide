@@ -197,6 +197,10 @@ impl RadioController for LocalController {
         sdroxide_tci::test_connection(address, std::time::Duration::from_secs(3))
     }
 
+    fn test_spyserver(&self, address: &str) -> Result<String, String> {
+        sdroxide_spyserver::test_connection(address, std::time::Duration::from_secs(3))
+    }
+
     fn test_icomnet(&self, cfg: &sdroxide_types::IcomNetConfig) -> Result<String, String> {
         sdroxide_icomnet::test_connection(sdroxide_icomnet::IcomNetOptions {
             address: cfg.address.clone(),

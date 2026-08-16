@@ -1062,6 +1062,346 @@ pub(in crate::app) fn settings_rtltcp_tab(
 /// TCI interface: WebSocket server address, IQ sample rate, and a
 /// Test-connection button (the interface is chosen by the selector in
 /// `settings_body`).
+/// Settings → Radio for a SpyServer, in either of the two interfaces that
+/// reach one.
+///
+/// One function for both, because the server, the handshake and every control
+/// below are the same; `vfo` only changes which config block is edited and
+/// what the explanatory text says the interface is for.
+///
+/// No device list and no rate list in Hz. This protocol publishes the receiver
+/// behind it — its ladder, its tuning range, its gain stages — but only once a
+/// connection is open, and this screen may be running in a browser on the far
+/// side of the world from the machine that will do the connecting. So what is
+/// stored is the *decimation stage*, which is what the wire carries and what
+/// stays meaningful when the same settings are pointed at another server, and
+/// the Test button is how an operator finds out what the stages mean here.
+pub(in crate::app) fn settings_spyserver_tab(
+    ui: &mut egui::Ui,
+    radio_edit: &mut Option<sdroxide_types::RadioConfig>,
+    vfo: bool,
+    test: &mut bool,
+    test_result: &Option<Result<String, String>>,
+    local: bool,
+    cmds: &mut Vec<Command>,
+) {
+    use sdroxide_types::{SpyServerConfig, SpyServerFormat};
+    let Some(radio) = radio_edit.as_mut() else {
+        ui.label("Radio configuration is only available in the native app.");
+        return;
+    };
+    let cfg = if vfo { &mut radio.spyserver_vfo } else { &mut radio.spyserver };
+    let salt = if vfo { "spyservervfo" } else { "spyserver" };
+
+    egui::Grid::new(format!("{salt}-grid")).num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Server address").on_hover_text(
+            "Where spyserver is listening: an address, or an address and port. \
+             The port defaults to 5555, which is spyserver's own default.\n\n\
+             On the far end, check that its config file binds an address other \
+             machines can reach — bound to 127.0.0.1 it only accepts \
+             connections from that same machine.\n\nTakes effect on Apply.",
+        );
+        ui.add(
+            egui::TextEdit::singleline(&mut cfg.address)
+                .desired_width(220.0)
+                .hint_text("host or host:port, e.g. raspberrypi.local:5555"),
+        );
+        ui.end_row();
+
+        ui.label("I/Q bandwidth").on_hover_text(if vfo {
+            "How wide a slice of the band arrives as I/Q — and so how much of \
+             the link this uses. This is the *demodulated* window: it follows \
+             the dial, and everything wider than it is the server's FFT in the \
+             strip above the panadapter.\n\n\
+             Automatic aims at about 96 kHz, which carries every mode here \
+             including wide FM and still fits down a cellular uplink. \
+             Takes effect on Apply."
+        } else {
+            "Which stage of the server's own rate ladder to ask for. Every \
+             receiver has a different ladder — it is its maximum rate halved \
+             stage by stage — so this is stored as the stage rather than as a \
+             figure in hertz, and the same setting still means something \
+             sensible pointed at a different server.\n\n\
+             Automatic aims at about 1 Msps. Press Test connection to see what \
+             the stages come to on this server. Takes effect on Apply."
+        });
+        let shown = if cfg.iq_decimation < 0 {
+            let target = if vfo {
+                SpyServerConfig::VFO_TARGET_RATE_HZ
+            } else {
+                SpyServerConfig::WIDEBAND_TARGET_RATE_HZ
+            };
+            format!("Automatic (nearest {:.0} kHz)", target / 1e3)
+        } else {
+            format!(
+                "Stage {} — the server's rate ÷ {}",
+                cfg.iq_decimation,
+                1u32 << cfg.iq_decimation.min(20)
+            )
+        };
+        ComboBox::from_id_salt(format!("{salt}_decim")).width(260.0).selected_text(shown).show_ui(
+            ui,
+            |ui| {
+                if ui.selectable_label(cfg.iq_decimation < 0, "Automatic").clicked() {
+                    cfg.iq_decimation = SpyServerConfig::AUTO_DECIMATION;
+                }
+                // The ladder's real depth is the server's, and it is not known
+                // here. Sixteen stages is past what any of them offer; a stage
+                // this server has not got falls back to the nearest it has, and
+                // says so in the log.
+                for stage in 0..16i32 {
+                    let sel = cfg.iq_decimation == stage;
+                    let label = format!("Stage {stage} — rate ÷ {}", 1u32 << stage.min(20));
+                    if ui.selectable_label(sel, label).clicked() {
+                        cfg.iq_decimation = stage;
+                    }
+                }
+            },
+        );
+        ui.end_row();
+
+        ui.label("Sample format").on_hover_text(
+            "Bits per component on the wire, and so what this costs on the \
+             link: 16-bit is twice 8-bit, and 32-bit float is four times it for \
+             no more information than the receiver's ADC had.\n\n\
+             8-bit is what makes a remote receiver work over a domestic uplink \
+             and is right for almost everything. A server may override this — \
+             some are configured to insist on one format — and says so in the \
+             log when it does. Takes effect on Apply.",
+        );
+        let mut fmt = cfg.iq_format;
+        enum_combo(
+            ui,
+            &format!("{salt}_fmt"),
+            &mut fmt,
+            &SpyServerFormat::ALL,
+            SpyServerFormat::label,
+        );
+        cfg.iq_format = fmt;
+        ui.end_row();
+
+        ui.label("Gain").on_hover_text(
+            "The server's gain stage, as an index — not a number of decibels. \
+             What each index means belongs to the receiver on the far end and \
+             changes with the band, and the protocol never says, so nothing \
+             here can turn it into dB without inventing a figure.\n\n\
+             The real range is the server's and is only known once connected; \
+             an index past it is clamped. Applies immediately — no reconnect.",
+        );
+        let mut gain = cfg.gain_index as i32;
+        if ui.add(egui::DragValue::new(&mut gain).range(0..=45).prefix("index ")).changed() {
+            cfg.gain_index = gain.max(0) as u32;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: SpyServerConfig::GAIN_ELEMENT.to_string(),
+                db: f64::from(cfg.gain_index),
+            });
+        }
+        ui.end_row();
+
+        ui.label("Digital gain").on_hover_text(
+            "How far the server scales its samples up before quantising them \
+             for the wire. Automatic computes it the way every other client \
+             does — from the receiver type, the gain index and the decimation \
+             stage — and is almost always right.\n\n\
+             It matters most at 8 bits: a signal sitting far below full scale \
+             loses its lower bits to the quantiser, and the scaling is what \
+             puts it back. Applies immediately.",
+        );
+        ui.horizontal(|ui| {
+            let mut auto = cfg.auto_digital_gain;
+            if ui.checkbox(&mut auto, "Automatic").changed() {
+                cfg.auto_digital_gain = auto;
+                cmds.push(Command::SetGain {
+                    dir: Direction::Rx,
+                    element: SpyServerConfig::AUTO_DIGITAL_GAIN_ELEMENT.to_string(),
+                    db: f64::from(u8::from(auto)),
+                });
+            }
+            ui.add_enabled_ui(!cfg.auto_digital_gain, |ui| {
+                if ui
+                    .add(egui::DragValue::new(&mut cfg.digital_gain_db).range(0..=60).suffix(" dB"))
+                    .changed()
+                {
+                    cmds.push(Command::SetGain {
+                        dir: Direction::Rx,
+                        element: SpyServerConfig::DIGITAL_GAIN_ELEMENT.to_string(),
+                        db: cfg.digital_gain_db,
+                    });
+                }
+            });
+        });
+        ui.end_row();
+
+        ui.label("Full-band strip").on_hover_text(if vfo {
+            "The server's own FFT of the whole band, drawn in the strip above \
+             the panadapter. In this interface it is the only band view there \
+             is — the panadapter itself is only as wide as the I/Q being \
+             received.\n\n\
+             Switching it off leaves a receiver with no way to see anything it \
+             is not already tuned to. Applies immediately, with a short break \
+             in the audio while the server changes what it is sending."
+        } else {
+            "Ask the server for a low-rate FFT of the whole band as well as \
+             the I/Q, and draw it in the strip above the panadapter.\n\n\
+             It costs almost nothing — a couple of kilobytes a frame, a dozen \
+             or so times a second — and it shows the whole receiver rather \
+             than the slice being demodulated. Worth switching off only on a \
+             link where every byte counts. Applies immediately, with a short \
+             break in the audio."
+        });
+        ui.horizontal(|ui| {
+            let mut on = cfg.fft_enabled;
+            if ui.checkbox(&mut on, "Show").changed() {
+                cfg.fft_enabled = on;
+                cmds.push(Command::SetGain {
+                    dir: Direction::Rx,
+                    element: SpyServerConfig::FFT_ENABLED_ELEMENT.to_string(),
+                    db: f64::from(u8::from(on)),
+                });
+            }
+            ui.add_enabled_ui(cfg.fft_enabled, |ui| {
+                let shown = if cfg.fft_decimation == 0 {
+                    "whole band".to_string()
+                } else {
+                    format!("÷ {}", 1u32 << cfg.fft_decimation.min(20))
+                };
+                ComboBox::from_id_salt(format!("{salt}_fftdec"))
+                    .width(130.0)
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        for stage in 0..8u32 {
+                            let sel = cfg.fft_decimation == stage;
+                            let label = if stage == 0 {
+                                "whole band".to_string()
+                            } else {
+                                format!("÷ {}", 1u32 << stage)
+                            };
+                            if ui.selectable_label(sel, label).clicked() {
+                                cfg.fft_decimation = stage;
+                                cmds.push(Command::SetGain {
+                                    dir: Direction::Rx,
+                                    element: SpyServerConfig::FFT_DECIMATION_ELEMENT.to_string(),
+                                    db: f64::from(stage),
+                                });
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "How much of the receiver the strip covers. The whole \
+                         band is the widest view there is; narrowing it puts \
+                         the same number of bins across less spectrum, which \
+                         is finer detail over a smaller stretch.",
+                    );
+            });
+        });
+        ui.end_row();
+
+        ui.label("Strip dB window").on_hover_text(
+            "The server quantises its FFT into this window before sending it, \
+             one byte a bin — so these decide how finely the strip is \
+             measured, not just how it is drawn. The floor and ceiling the \
+             strip is *displayed* with are set by the engine's own \
+             auto-levelling and are a separate thing.\n\n\
+             The default 150 dB is the whole protocol range and needs no \
+             attention. Narrowing it around the noise floor buys resolution on \
+             a receiver whose signals all sit in a small part of the scale. \
+             Applies immediately.",
+        );
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(cfg.fft_enabled, |ui| {
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut cfg.fft_db_offset)
+                            .range(
+                                SpyServerConfig::FFT_DB_OFFSET_MIN
+                                    ..=SpyServerConfig::FFT_DB_OFFSET_MAX,
+                            )
+                            .prefix("top ")
+                            .suffix(" dB"),
+                    )
+                    .changed()
+                {
+                    cmds.push(Command::SetGain {
+                        dir: Direction::Rx,
+                        element: SpyServerConfig::FFT_DB_OFFSET_ELEMENT.to_string(),
+                        db: cfg.fft_db_offset,
+                    });
+                }
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut cfg.fft_db_range)
+                            .range(
+                                SpyServerConfig::FFT_DB_RANGE_MIN
+                                    ..=SpyServerConfig::FFT_DB_RANGE_MAX,
+                            )
+                            .prefix("range ")
+                            .suffix(" dB"),
+                    )
+                    .changed()
+                {
+                    cmds.push(Command::SetGain {
+                        dir: Direction::Rx,
+                        element: SpyServerConfig::FFT_DB_RANGE_ELEMENT.to_string(),
+                        db: cfg.fft_db_range,
+                    });
+                }
+            });
+        });
+        ui.end_row();
+
+        ui.label("I/Q correction").on_hover_text(
+            "Remove the DC spike and the mirror image in DSP, on this side. \
+             Whether the receiver on the far end needs it depends on what it \
+             is — an Airspy HF+ does not, an RTL-SDR does — and the protocol \
+             does not say which it is talking to. Applies immediately.",
+        );
+        let mut iq = cfg.iq_correction;
+        if ui.checkbox(&mut iq, "Enabled").changed() {
+            cfg.iq_correction = iq;
+            cmds.push(Command::SetGain {
+                dir: Direction::Rx,
+                element: SpyServerConfig::IQ_CORRECTION_ELEMENT.to_string(),
+                db: f64::from(u8::from(iq)),
+            });
+        }
+        ui.end_row();
+
+        ui.label("");
+        // The test connects from wherever it is pressed, so a green answer in a
+        // browser would only say *this screen* can reach the server — a
+        // different question from the one being asked.
+        local_only(ui, local, |ui| {
+            if ui
+                .button("Test connection")
+                .on_hover_text(
+                    "Connect, read what the server says about its receiver, and \
+                     disconnect again — without starting a stream, so it is safe \
+                     to press against a server somebody else is using.",
+                )
+                .clicked()
+            {
+                *test = true;
+            }
+        });
+        ui.end_row();
+    });
+    test_result_line(ui, test_result);
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new(if vfo {
+            "Receive only. The panadapter is the narrow I/Q window, which follows the dial; \
+             the band view is the server's FFT in the strip above it. Press \"Apply / \
+             reconnect\" to switch without a restart."
+        } else {
+            "Receive only. Wideband I/Q, the same as any local SDR. Press \"Apply / reconnect\" \
+             to switch without a restart."
+        })
+        .weak(),
+    );
+}
+
 pub(in crate::app) fn settings_tci_tab(
     ui: &mut egui::Ui,
     radio_edit: &mut Option<sdroxide_types::RadioConfig>,

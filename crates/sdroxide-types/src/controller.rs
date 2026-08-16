@@ -458,6 +458,18 @@ pub trait RadioController {
         Err("not supported on this client".into())
     }
 
+    /// Test a SpyServer at `address` (`host:port`). Blocking, on demand.
+    ///
+    /// Worth having where `rtl_tcp` has no counterpart: this protocol answers.
+    /// The reply names the receiver on the far end, the range of rates it
+    /// offers and whether this client would be allowed to tune it — most of
+    /// what an operator wants to know before pressing Apply. It stops short of
+    /// starting a stream, so it is safe against a server somebody else is
+    /// using. Default: unsupported (remote client).
+    fn test_spyserver(&self, _address: &str) -> Result<String, String> {
+        Err("not supported on this client".into())
+    }
+
     /// Test an Icom LAN connection. Blocking, on demand.
     ///
     /// There is no discovery counterpart: an Icom does not announce itself on

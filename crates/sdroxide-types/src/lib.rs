@@ -124,8 +124,8 @@ pub use radio::{
     Parity, PlutoAgc, PlutoConfig, PlutoDevice, PttMethod, RadioConfig, RtlSdrAgc, RtlSdrConfig,
     RtlSdrDevice, RtlSdrHfMode, RtlTcpConfig, Rx888Config, Rx888Device, SdrPlayAgc, SdrPlayConfig,
     SdrPlayDevice, SdrPlayDuoTuner, SdrPlayModel, SerialConfig, SmartSdrConfig, SmartSdrDevice,
-    SoapyDeviceInfo, SoundFormat, StopBits, TciConfig, converter_preset_name, format_freq_ranges,
-    hackrf_serial_matches, parse_freq_ranges,
+    SoapyDeviceInfo, SoundFormat, SpyServerConfig, SpyServerFormat, StopBits, TciConfig,
+    converter_preset_name, format_freq_ranges, hackrf_serial_matches, parse_freq_ranges,
 };
 pub use region::{Region, region, set_region};
 pub use rifp::{

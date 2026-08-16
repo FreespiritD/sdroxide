@@ -2486,6 +2486,14 @@ radio. Everything below the selector changes to match the choice:
 - **RTL-SDR over rtl_tcp (network)** — the same dongle plugged into another
   machine — a Raspberry Pi at the antenna, say — and published with `rtl_tcp`.
   See [5.2.11](#5211-rtl-sdr-over-rtl_tcp-network-dongles).
+- **SpyServer (network)** — a receiver published with Airspy's `spyserver` or
+  one of the servers that speak the same protocol: an Airspy, an Airspy HF+ or
+  an RTL-SDR behind it. Wideband I/Q, receive only. See
+  [5.2.14](#5214-spyserver-network-receivers).
+- **SpyServer VFO+FFT, low bandwidth (network)** — the same servers in the mode
+  that fits down a WiFi or cellular link: a narrow I/Q stream that follows the
+  dial, plus the server's own FFT of the whole band for the full-band strip.
+  See [5.2.14](#5214-spyserver-network-receivers).
 - **RX-888 (USB)** — an RX-888 / RX-888 Mk2 direct-sampling receiver, likewise
   driven directly over USB, with its firmware bundled and uploaded for it.
 - **Airspy HF+ (USB)** — an Airspy HF+ Dual, Discovery or Ranger, driven by
@@ -3996,6 +4004,142 @@ the spur goes when you do.
 > receiver, the sample-rate arithmetic (which is where a span that is half or
 > double what it should be would show), and the first samples both as raw 12-bit
 > values and decoded as I/Q pairs.
+
+#### 5.2.14 SpyServer (network receivers)
+
+**SpyServer** is Airspy's own network server. It works with Airspy R2/Mini, 
+Airspy HF+, or RTL-SDR. Receive only.
+
+There are **two interfaces** in the picker, and the choice between them is
+about the link rather than about the radio:
+
+- **SpyServer (network)** asks for wideband I/Q, exactly as a local SDR
+  delivers it. This is designed for use via LAN.
+- **SpyServer VFO+FFT, low bandwidth (network)** asks for a *narrow* I/Q window
+  that follows the dial, plus the server's own FFT of the whole band. Designed for 
+  use on slower WiFi, on a cellular modem, or other bandwidth-limited links.
+
+They are separate entries with separate settings, because an operator with both
+usually has two different servers — one at the mast and one far away — and
+because a decimation stage that suits a wideband stream is nowhere near one
+that suits a narrow one.
+
+Everything below applies to both unless it says otherwise.
+
+**Server address** — `host` or `host:port`. The port defaults to 5555, which is
+what `spyserver` listens on unless its config file says otherwise. A hostname,
+an IPv4 address or a bracketed IPv6 literal all work. Takes effect on Apply.
+
+On the far end, check that `spyserver.config` binds an address other machines
+can reach. Bound to `127.0.0.1` — which several packaged configs are — it
+accepts connections only from the machine it is running on.
+
+**Test connection** connects, reads what the server says about itself, and
+disconnects again *without starting a stream*, so it is safe to press against a
+server somebody else is using. This is worth doing before Apply, because unlike
+`rtl_tcp` this protocol answers: the reply names the receiver on the far end,
+the range of rates it offers, and whether this end would be allowed to tune it.
+
+**I/Q bandwidth** is a **decimation stage**, not a figure in hertz. Every
+receiver has a different ladder — its maximum rate halved stage by stage from
+whatever floor the server sets — and none of it is known until a connection is
+open, which may be from a machine on the other side of the world from this
+screen. Storing the stage means the same setting still means something sensible
+when it is pointed at a different server, and it is what the protocol carries.
+
+**Automatic** is the default and is usually right. It aims at about 1 Msps on
+the wideband interface, and about 96 kHz on the VFO one — enough for every mode
+here including wide FM, at roughly 1.5 Mbit/s at 8 bits. Press Test connection
+to see what the stages come to on the server you are pointed at. Takes effect on
+Apply.
+
+**Sample format** decides what a rate costs on the link: 16-bit is twice 8-bit,
+and 32-bit float is four times it for no more information than the receiver's
+ADC had. **8-bit is what makes a remote receiver work over a domestic uplink**
+and is right for almost everything; 16-bit is worth it on an Airspy HF+ over a
+wired link, where there is real dynamic range to keep. A server configured to
+insist on one format overrides this and says so in the log. Takes effect on
+Apply.
+
+**Gain** is the server's gain stage, as an **index** — not a number of decibels.
+What each index is worth belongs to the receiver on the far end and changes with
+the band, and the protocol never says, so nothing here can turn it into dB
+without inventing a figure. The real range is the server's; an index past it is
+clamped. Applies immediately.
+
+**Digital gain** is how far the server scales its samples up before quantising
+them for the wire. **Automatic** computes it the way every other client does —
+from the receiver type, the gain index and the decimation stage — and is almost
+always right. It matters most at 8 bits: a signal sitting far below full scale
+loses its lower bits to the quantiser, and this is what puts them back. An
+Airspy HF+ behind an 8-bit server gets 32 dB of it before anything else, because
+its analog dynamic range leaves its I/Q a long way down the scale.
+
+**Full-band strip** asks the server for a low-rate FFT of the whole band as well
+as the I/Q, and draws it in the strip above the panadapter (the **WIDE** chip in
+the Display module shows and hides it). It costs almost nothing — a couple of
+kilobytes a frame, a dozen or so times a second — and it shows the whole
+receiver rather than the slice being demodulated. Clicking anywhere in it tunes
+there.
+
+**In the VFO interface this is the only band view there is**, because the
+panadapter itself is only as wide as the I/Q being received. Switching it off
+leaves a receiver with no way to see anything it is not already tuned to.
+
+The band view **holds still** while the dial roams inside it, and re-centres
+only when you reach its outer third. That is deliberate: a band picture that
+slid on every retune would be one nobody could steer by.
+
+The dropdown beside it is how much of the receiver the strip covers. *Whole
+band* is the widest view there is; narrowing it puts the same number of bins
+across less spectrum, which is finer detail over a smaller stretch.
+
+**Strip dB window** is the range the server quantises its FFT into before
+sending it, one byte a bin — so it decides how finely the strip is *measured*,
+not how it is drawn. The floor and ceiling the strip is displayed with are the
+engine's own auto-levelling and are a separate thing. The default 150 dB is the
+whole protocol range and needs no attention.
+
+**I/Q correction** removes the DC spike and the mirror image in DSP, on this
+side. Whether the receiver on the far end needs it depends on what it is — an
+Airspy HF+ does not, an RTL-SDR does — and the protocol does not say which it
+is talking to, so it is left to you, on by default.
+
+##### When somebody else owns the receiver
+
+A SpyServer can serve several clients, and only one of them owns the tuning.
+When another client has it:
+
+- Tuning is limited to the slice that client is already receiving — the
+  receiver's full bandwidth minus your own window. A dial move outside it is
+  refused with the reachable range named, rather than quietly landing somewhere
+  the samples are not.
+- The gain is theirs. No gain control is offered at all, because one that was
+  silently ignored would be worse than none.
+- When they retune, your span moves with it and sdroxide follows rather than
+  fighting back.
+- A line on screen says all of this, so a dial that will not move is never a
+  mystery.
+
+Which of these applies is decided by the server and can change while you are
+connected.
+
+##### What is not implemented
+
+Two encodings in this protocol are documented nowhere and thus not implemented:
+
+- **24-bit I/Q** is refused by name. A server that *forces* it fails the connect
+  with that as the reason, rather than being fed to a decoder that would misread
+  it as noise.
+- **4-bit differential FFT** is never requested. A server that sends one anyway
+  is ignored — the strip stays empty and the receiver carries on.
+
+The protocol's demodulated-audio streams are not used either: sdroxide
+demodulates its own.
+
+> **Security.** SpyServer has no authentication and no encryption. A server you
+> run is reachable by anyone who can reach the port, and a public one sees your
+> address. Keep a private server on a trusted network or behind an SSH tunnel.
 
 ### 5.3 UI: display preferences and voice announcements
 
@@ -6236,7 +6380,7 @@ sdroxide stores its settings under the per-user config directory:
 | File | Format | Contents |
 | --- | --- | --- |
 | `config.toml` | TOML | General settings: `device_args`, `sample_rate`, `cal_offset_db`, `spectrum_fft`, `spectrum_fps`, `server_bind`, `server_port`, `tx_ham_only`, `audio_output`, `audio_input`, `region` (`"R1"` / `"R2"` / `"R3"` — the IARU region every band plan follows, [§5.1](#51-general-station-audio-and-remote-access)), plus the `[ui]` display preferences (including `theme`, `button_style` and `window_style`), the `[speech]` announcement settings ([§5.3](#53-ui-display-preferences-and-voice-announcements)), the `[remote_access]` sign-in that server mode demands ([§7.3](#73-sign-in-who-may-operate-the-station), stored in plaintext) and the `[remote_server]` address the **Remote** tab dials ([§7.2](#72-connect-a-native-remote-client)). Belongs to the machine the engine runs on — except `[ui]`, `[speech]` and `[remote_server]`, which belong to the screen in front of you. |
-| `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/rtl_tcp/RX-888/Airspy HF+/SDRplay/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
+| `radio.json` | JSON | Which radio interface is selected and everything that configures it — the CAT/HPSDR/TCI/SmartSDR/RTL-SDR/rtl_tcp/SpyServer/RX-888/Airspy HF+/SDRplay/PlutoSDR sections, the converter offset and stated tuning ranges, and the radio's sound-card device names. |
 | `digi.json` | JSON | Digital-mode operator settings: your callsign and grid, FT8/FT4/FT2 TX period, auto-sequence and message templates, and the WSPR beacon's duty cycle, power and band-hop list. |
 | `memories.json` | JSON | Saved memory channels. |
 | `bandstacks.json` | JSON | Per-band memory of your last frequency/mode/filter (up to three per band). |
@@ -6307,6 +6451,8 @@ to its default, and a partial file is normal rather than a special case.
 | `"Pluto"` | ADALM-Pluto over IIOD | `"pluto"` |
 | `"RtlSdr"` | RTL-SDR dongle | `"rtlsdr"` |
 | `"RtlTcp"` | RTL-SDR published by `rtl_tcp` | `"rtltcp"` |
+| `"SpyServer"` | A receiver published by a SpyServer | `"spyserver"` |
+| `"SpyServerVfo"` | The same, narrow I/Q + the server's FFT | `"spyserver_vfo"` |
 | `"Rx888"` | RX-888 Mk2 | `"rx888"` |
 | `"AirspyHf"` | Airspy HF+ | `"airspyhf"` |
 | `"Airspy"` | Airspy R2 / Mini | `"airspy"` |

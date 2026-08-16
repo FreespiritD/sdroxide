@@ -16,6 +16,7 @@ mod rx888_source;
 mod sdrplay_source;
 mod server_main;
 mod smartsdr_source;
+mod spyserver_source;
 mod tci_source;
 
 use anyhow::{Context, bail};
@@ -981,6 +982,8 @@ fn open_configured_source(
         Backend::Pluto => open_pluto_source(radio, cli.center_hz(), cli.rate),
         Backend::RtlSdr => open_rtlsdr_source(radio, cli.center_hz()),
         Backend::RtlTcp => open_rtltcp_source(radio, cli.center_hz()),
+        Backend::SpyServer => open_spyserver_source(radio, cli.center_hz()),
+        Backend::SpyServerVfo => open_spyserver_vfo_source(radio, cli.center_hz()),
         Backend::Rx888 => open_rx888_source(radio, cli.center_hz()),
         Backend::AirspyHf => open_airspyhf_source(radio, cli.center_hz()),
         Backend::Airspy => open_airspy_source(radio, cli.center_hz()),
@@ -1623,6 +1626,87 @@ fn rtlsdr_caps(src: &rtlsdr_source::RtlSdrSource, driver: &str) -> DeviceCaps {
             // the nearest and reported back, so a fine slider is honest enough.
             step_db: 0.1,
         }],
+        ..DeviceCaps::default()
+    }
+}
+
+/// Build the wideband SpyServer source from radio.json.
+fn open_spyserver_source(
+    radio: &RadioConfig,
+    center_hz: f64,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let src = spyserver_source::SpyServerSource::connect_wideband(&radio.spyserver, center_hz)
+        .with_context(|| {
+            format!("connecting to the SpyServer at {}", radio.spyserver.endpoint())
+        })?;
+    let caps = spyserver_caps(&src, "spyserver");
+    Ok((Box::new(src), caps))
+}
+
+/// The same server in its low-bandwidth shape: a narrow I/Q window that
+/// follows the dial, and the server's FFT for the full-band strip.
+fn open_spyserver_vfo_source(
+    radio: &RadioConfig,
+    center_hz: f64,
+) -> anyhow::Result<(Box<dyn IqSource>, DeviceCaps)> {
+    let src = spyserver_source::SpyServerSource::connect_vfo(&radio.spyserver_vfo, center_hz)
+        .with_context(|| {
+            format!("connecting to the SpyServer at {}", radio.spyserver_vfo.endpoint())
+        })?;
+    let caps = spyserver_caps(&src, "spyserver-vfo");
+    Ok((Box::new(src), caps))
+}
+
+/// Capabilities for a SpyServer: wideband or narrowband I/Q, receive only.
+///
+/// Unlike `rtl_tcp`, this protocol answers, so almost everything here is what
+/// the far end actually said rather than what was asked for. Two things still
+/// depend on *who owns the receiver*, and both matter:
+///
+/// The tuning range is the whole device only while this client has control.
+/// When another client owns it, all this end may do is slide its own window
+/// inside the slice that client is receiving, and publishing the device's full
+/// range would offer frequencies that reach nothing.
+///
+/// The gain is the owner's, not ours, on such a server — so no gain element is
+/// published at all. A slider that is silently ignored is worse than no slider.
+///
+/// Both are read once here, at open. A device centre the owner moves later
+/// leaves this range stale, which is why the refusal in
+/// `SpyServerSource::set_center_hz` reads the live figures instead: the caps
+/// only decide what the UI *offers*.
+fn spyserver_caps(src: &spyserver_source::SpyServerSource, driver: &str) -> DeviceCaps {
+    let info = *src.info();
+    let (lo, hi) = src.tuning_window();
+    let gains = if info.maximum_gain_index == 0 || !src.can_control() {
+        Vec::new()
+    } else {
+        vec![sdroxide_types::GainElement {
+            name: sdroxide_types::SpyServerConfig::GAIN_ELEMENT.into(),
+            direction: sdroxide_types::Direction::Rx,
+            // An index into the far end's gain table, carried in a field named
+            // for decibels because `GainElement` has no other — the same thing
+            // the SDRplay backend's LNA state already does. What an index means
+            // depends on the receiver and on the band, so no dB mapping is
+            // invented; the settings tab says so instead.
+            min_db: 0.0,
+            max_db: f64::from(info.maximum_gain_index),
+            step_db: 1.0,
+        }]
+    };
+    DeviceCaps {
+        driver: driver.into(),
+        label: src.describe(),
+        rx_channels: 1,
+        tx_channels: 0,
+        audio_mode: false,
+        freq_ranges_rx: vec![(lo, hi)],
+        sample_rates: src.available_rates(),
+        gains,
+        // Another client's retunes move this receiver out from under us, and
+        // the engine has to adopt such moves rather than answer them — which is
+        // exactly what this flag means.
+        shared_lo_rx: !src.can_control(),
         ..DeviceCaps::default()
     }
 }

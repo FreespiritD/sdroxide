@@ -172,6 +172,7 @@ pub struct SdroxideApp {
     /// Result of the last TCI "Test connection" (Ok summary / Err message).
     tci_test_result: Option<Result<String, String>>,
     icomnet_test_result: Option<Result<String, String>>,
+    spyserver_test_result: Option<Result<String, String>>,
     /// FlexRadios found by the last SmartSDR "Discover" listen.
     smartsdr_devices: Vec<sdroxide_types::SmartSdrDevice>,
     /// Result of the last SmartSDR "Test connection".
@@ -692,6 +693,7 @@ impl SdroxideApp {
             soapy_devices: None,
             tci_test_result: None,
             icomnet_test_result: None,
+            spyserver_test_result: None,
             smartsdr_devices: Vec::new(),
             smartsdr_test_result: None,
             pluto_devices: Vec::new(),
@@ -997,6 +999,11 @@ impl SdroxideApp {
             // Named apart from the USB one: on a station with both, which tab
             // is the dongle on the mast is exactly what needs telling apart.
             "rtltcp" => "RTL-SDR (rtl_tcp)".into(),
+            // The two SpyServer interfaces are named apart for the same
+            // reason: which tab is the low-bandwidth one is the thing an
+            // operator running both needs to see at a glance.
+            "spyserver" => "SpyServer".into(),
+            "spyserver-vfo" => "SpyServer (VFO)".into(),
             "rx888" => "RX-888".into(),
             // Distinct from the `"airspy"` arm below, which is SoapySDR's
             // driver for the R2 and Mini — a different radio entirely.

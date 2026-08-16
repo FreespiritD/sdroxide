@@ -1,0 +1,18 @@
+[package]
+name = "sdroxide-spyserver"
+version.workspace = true
+edition.workspace = true
+
+# Native-only SpyServer client — the protocol Airspy's `spyserver` speaks, and
+# with it every Airspy, Airspy HF+ and RTL-SDR published that way. Pure Rust
+# over `std::net`, so there is nothing to install and no feature to gate it on.
+# Must never be a dependency of any wasm-targeted crate.
+[dependencies]
+sdroxide-types.workspace = true
+crossbeam-channel.workspace = true
+rtrb.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

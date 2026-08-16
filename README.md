@@ -357,7 +357,7 @@ other ham software). See the [User Manual](docs/USER_MANUAL.md) for setup steps.
 
 ## Radio backends
 
-sdroxide can drive fifteen kinds of radio, selected on the **Radio** tab of the
+sdroxide can drive seventeen kinds of radio, selected on the **Radio** tab of the
 Settings window. Backend, serial, and radio-audio changes apply live when you
 press **Apply / reconnect**. A radio that isn't there yet at startup — or that
 drops mid-session — is retried in the background and attaches by itself, so
@@ -370,6 +370,7 @@ starting sdroxide before the rig is fine:
   an RTL-SDR Blog V4's built-in upconverter, or on other sticks by direct
   sampling the ADC's Q branch (the V3's HF port). Bias tee and ppm correction
   are on the Radio tab; see "RTL-SDR permissions" under Building.
+  
 - **RTL-SDR over rtl_tcp (network)** — the same dongle on another machine — a
   Raspberry Pi at the antenna, say — published with `rtl_tcp -a 0.0.0.0`. The
   same controls as the USB interface, since it is the same radio; the far end
@@ -378,13 +379,27 @@ starting sdroxide before the rig is fine:
   connection reconnects by itself. `rtl_tcp` has no authentication, so keep it
   on a trusted network or reach it through an SSH tunnel.
 
-  **`rsp_tcp` servers** (an SDRplay RSP published the same way) work here too,
+- **`rsp_tcp` servers** (an SDRplay RSP published the same way) work here too,
   with the RSP's own controls — antenna input, LNA state, IF gain reduction,
   AGC and set point, notches, reference out. Start the server with **`-E`**: it
   greets exactly like a dongle, and the extended block it sends only in that
   mode is what lets sdroxide name the radio and, more importantly, know when it
   is streaming **16-bit** samples. Without `-E` a `-b 16` server reads as noise,
   because the protocol carries nothing that would say otherwise.
+
+- **SpyServer (network)** — any receiver somebody has published with Airspy's
+  `spyserver`, or one of the servers that speak the same protocol: an Airspy
+  R2/Mini, an Airspy HF+, or an RTL-SDR behind it. Receive only.
+  A server whose receiver another client already owns still works: tuning is
+  limited to the slice that client is receiving.
+
+- **SpyServer VFO+FFT, low bandwidth (network)** — the same servers, in the
+  mode that makes a remote receiver usable over WiFi or a cellular modem. The
+  server sends a *narrow* I/Q stream that follows the dial — 96 kHz, about
+  1.5 Mbit/s at 8-bit — plus a low-rate FFT of the whole band, a couple of
+  kilobytes a frame. Roughly a hundredth of the link a wideband Airspy stream
+  needs.
+
 - **RX-888 (USB)** — an RX-888 or RX-888 Mk2 direct-sampling HF receiver
   (LTC2208 16-bit ADC, Cypress FX3), driven directly over USB by a native
   pure-Rust driver. **No SoapySDR, no libusb, and no vendor driver package.**
@@ -400,6 +415,7 @@ starting sdroxide before the rig is fine:
   converted to complex baseband on the host, which is why retuning anywhere in
   HF is instantaneous, and why it wants a modern CPU and a real USB 3 port.
   Receive only; the VHF/UHF tuner is not driven.
+
 - **Airspy HF+ (USB)** — an Airspy HF+ Dual, Discovery or Ranger, driven
   directly over USB by a native pure-Rust driver. **No SoapySDR, no libusb and
   no libairspyhf needed**, so it works in every build including the standard
@@ -423,6 +439,7 @@ starting sdroxide before the rig is fine:
   to open. Receive only. **Not yet verified against real hardware** — see the
   user manual, §5.2.9; the Radio tab has a **Copy diagnostic report** button,
   and that report is what makes a fix possible.
+
 - **Airspy R2 / Mini (USB)** — an Airspy R2 or Airspy Mini, driven directly
   over USB by a native pure-Rust driver. **No SoapySDR, no libusb and no
   libairspy needed**, so it works in every build including the standard `.msi`
@@ -448,6 +465,7 @@ starting sdroxide before the rig is fine:
 
   **Not yet verified against real hardware** — the Radio tab has a **Copy
   diagnostic report** button, and that report is what makes a fix possible.
+
 - **HackRF One / Pro (USB)** — a HackRF One or HackRF Pro (or a Jawbreaker or
   rad1o), driven directly over USB by a native pure-Rust driver. **No SoapySDR,
   no libusb and no libhackrf needed**, so it works in every build including the
@@ -485,6 +503,7 @@ starting sdroxide before the rig is fine:
   been measured, and HackRF Pro is unverified** — the Pro path is
   transcribed from Great Scott Gadgets' firmware and libhackrf sources. In case of problems, use the **Copy diagnostic report** button
   which  records every command exchanged with the radio.
+
 - **SDRplay RSP (USB)** — any SDRplay RSP (RSP1, RSP1A, RSP1B, RSP2, RSPduo,
   RSPdx, RSPdx R2), driven natively through the vendor's **SDRplay API
   service** — no SoapySDR in the path. The RSPs after the original RSP1 have
@@ -502,6 +521,7 @@ starting sdroxide before the rig is fine:
   filters, bias tee, RSP2/RSPdx antenna selection, RSPduo tuner selection and
   RSPdx HDR mode are available on the Radio tab, and only the rows the selected
   model actually supports are shown.
+
 - **PlutoSDR (network)** — an ADALM-Pluto, driven directly over the **IIOD**
   protocol its on-board daemon serves. **No SoapySDR and no libiio**, so it
   works in every build including the standard `.msi` and `.dmg`. Wideband IQ
@@ -520,20 +540,25 @@ starting sdroxide before the rig is fine:
   length of an over, because a USB 2.0 gadget will not carry a
   megasample-per-second stream both ways at once. Not yet hardware-verified —
   see the user manual, §5.2.7.
+
 - **SoapySDR** — any [SoapySDR](https://github.com/pothosware/SoapySDR) device
   (wideband IQ) — LimeSDR, bladeRF, USRP and friends. See below. A HackRF or an
   Airspy reaches sdroxide better through its own interface above, and the device
   list says so when it finds one.
+
 - **OpenHPSDR** — Hermes/Metis-family Ethernet SDRs on the LAN (Protocol 1 and
   2). Press **Discover** to scan for devices, or enter the IP manually; pick a
   DDC sample rate (48 kHz–1536 kHz). Not yet hardware-verified — testers can run
   `RUST_LOG=sdroxide_hpsdr=debug sdroxide` for connection/RX diagnostics (see the
   user manual, §5.4).
+
 - **CAT / Audio** — a CAT-controlled rig (Icom/CI-V, Yaesu, Xiegu) with audio
   over a USB sound card, as either demodulated mono audio or stereo IQ.
+
 - **TCI** — a TCI (Transceiver Control Interface) server such as ExpertSDR3 
   over WebSocket (default `127.0.0.1:50001`): wideband IQ receive plus 
   audio transmit.
+
 - **Icom LAN** — an Icom on its own Ethernet/WiFi port (IC-7300MK2, IC-705,
   IC-9700, IC-7610, IC-905, IC-R8600), speaking the same IP-remote protocol as
   RS-BA1 — no RS-BA1 licence and no PC at the radio. Control, audio and the
@@ -541,6 +566,7 @@ starting sdroxide before the rig is fine:
   any Icom; the audio stream carries either demodulated AF or the 12 kHz DRM IF,
   and sdroxide can demodulate the latter itself over about ±12 kHz. Not yet
   hardware-verified.
+
 - **SmartSDR / FlexRadio** — a FLEX-6000 or FLEX-8000 on the LAN. Press
   **Discover** to listen for radios (they announce themselves), or enter an
   address for one reached over a router or VPN. Receive is a **DAX IQ** stream,

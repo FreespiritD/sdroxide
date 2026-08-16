@@ -38,7 +38,7 @@ use self::radio::{
     settings_airspy_tab, settings_airspyhf_tab, settings_cat_tab, settings_hackrf_tab,
     settings_hpsdr_tab, settings_icomnet_tab, settings_pluto_tab, settings_rtlsdr_tab,
     settings_rtltcp_tab, settings_rx888_tab, settings_sdrplay_tab, settings_smartsdr_tab,
-    settings_soapy_devices, settings_tci_tab,
+    settings_soapy_devices, settings_spyserver_tab, settings_tci_tab,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use self::remote::settings_remote_tab;
@@ -149,6 +149,7 @@ pub(in crate::app) struct SettingsIo<'a> {
     tci_test: &'a mut bool,
     /// Connect to the Icom, report what it is, and disconnect (blocking).
     icomnet_test: &'a mut bool,
+    spyserver_test: &'a mut bool,
     /// Copy the last Icom LAN session's trace to the clipboard.
     icomnet_copy_report: &'a mut bool,
     /// Listen for FlexRadio discovery broadcasts (a couple of seconds, blocking).
@@ -433,6 +434,7 @@ impl SdroxideApp {
         let mut soapy_rescan = false;
         let mut tci_test = false;
         let mut icomnet_test = false;
+        let mut spyserver_test = false;
         let mut icomnet_copy_report = false;
         let mut smartsdr_discover = false;
         let mut smartsdr_test = false;
@@ -507,6 +509,10 @@ impl SdroxideApp {
         // The same driver over a socket instead of the USB bus — pure Rust and
         // std::net, so it is in every build variant too.
         iface_opts.push(sdroxide_types::Backend::RtlTcp);
+        // Pure Rust over std::net as well: any receiver somebody has published
+        // with spyserver, in either of the two shapes it can send.
+        iface_opts.push(sdroxide_types::Backend::SpyServer);
+        iface_opts.push(sdroxide_types::Backend::SpyServerVfo);
         // Same reasoning as the RTL-SDR: pure Rust over `nusb`, no system
         // library, so it is in every build variant.
         iface_opts.push(sdroxide_types::Backend::Rx888);
@@ -604,6 +610,7 @@ impl SdroxideApp {
                             smartsdr_discover: &mut smartsdr_discover,
                             smartsdr_test: &mut smartsdr_test,
                             icomnet_test: &mut icomnet_test,
+                            spyserver_test: &mut spyserver_test,
                             icomnet_copy_report: &mut icomnet_copy_report,
                             smartsdr_copy_report: &mut smartsdr_copy_report,
                             pluto_discover: &mut pluto_discover,
@@ -823,6 +830,24 @@ impl SdroxideApp {
             if let Some(cfg) = &radio_edit {
                 self.tci_test_result = Some(self.ctrl.test_tci(&cfg.tci.address));
             }
+        }
+        // Blocking connect (~up to 5 s); after the closure so it can take
+        // `&self.ctrl`. Tests the address *typed in the dialog* rather than
+        // the applied one, and against the block belonging to whichever of the
+        // two SpyServer interfaces is selected — they are usually different
+        // servers, and answering about the other one would be a lie that looks
+        // like a success.
+        if let (true, Some(cfg)) = (spyserver_test, &radio_edit) {
+            let block = if cfg.backend == sdroxide_types::Backend::SpyServerVfo {
+                &cfg.spyserver_vfo
+            } else {
+                &cfg.spyserver
+            };
+            self.spyserver_test_result = Some(if block.address.trim().is_empty() {
+                Err("enter the server's address first".to_string())
+            } else {
+                self.ctrl.test_spyserver(&block.endpoint())
+            });
         }
         if smartsdr_discover {
             // A passive listen (~2.5 s) — radios broadcast unprompted, so
@@ -1401,7 +1426,11 @@ impl SdroxideApp {
                 }
                 ui.separator();
 
-                match cfg.backend {
+                // Read out before the match: the arms below hand `io.radio_edit`
+                // to a tab function, which cannot happen while `cfg` — a borrow
+                // of that same field — is still alive.
+                let backend = cfg.backend;
+                match backend {
                     Backend::Soapy => {
                         self.settings_device_tab(ui, cmds);
                         ui.add_space(4.0);
@@ -1471,6 +1500,18 @@ impl SdroxideApp {
                     // protocol has no enumeration — there is nothing to rescan
                     // and nothing to pick from.
                     Backend::RtlTcp => settings_rtltcp_tab(ui, io.radio_edit, cmds),
+                    // Likewise no device list: the receiver is the server's,
+                    // and the protocol has no enumeration. What it does have
+                    // is an answer — the Test button reads it back.
+                    Backend::SpyServer | Backend::SpyServerVfo => settings_spyserver_tab(
+                        ui,
+                        io.radio_edit,
+                        backend == Backend::SpyServerVfo,
+                        io.spyserver_test,
+                        &self.spyserver_test_result,
+                        io.local_devices,
+                        cmds,
+                    ),
                     Backend::Rx888 => settings_rx888_tab(
                         ui,
                         &self.rx888_devices,
