@@ -264,12 +264,10 @@ pub(in crate::app) struct SettingsIo<'a> {
     /// Radio-management actions from the roster strip at the top of the Radio
     /// page — switch/add/close/mute/rename — collected here like every other
     /// edit and handed to the multi-radio shell after the frame.
-    #[cfg(not(target_arch = "wasm32"))]
     radio_tabs: &'a mut Vec<crate::app::RadioTabRequest>,
     /// The rename field's buffer: (radio id, text as typed). UI-owned until
     /// the edit commits, so the roster's per-frame republish cannot fight the
     /// keyboard — see `SdroxideApp::radio_name_edit`.
-    #[cfg(not(target_arch = "wasm32"))]
     radio_name_edit: &'a mut Option<(u32, String)>,
     /// Spoken announcements, edited in place and written back after the
     /// window closure like every other buffer here.
@@ -657,9 +655,7 @@ impl SdroxideApp {
         // window here and handed back to it below, the way `ui_edit` is.
         #[cfg(not(target_arch = "wasm32"))]
         let mut solar_cloud_march = self.solar.cloud_march();
-        #[cfg(not(target_arch = "wasm32"))]
         let mut radio_tab_reqs: Vec<crate::app::RadioTabRequest> = Vec::new();
-        #[cfg(not(target_arch = "wasm32"))]
         let mut radio_name_edit = self.radio_name_edit.take();
         // The window does its own scrolling, so its bar can only be themed
         // through the context style — lend the palette for the length of the
@@ -780,9 +776,7 @@ impl SdroxideApp {
                             solar_cloud_march: Some(&mut solar_cloud_march),
                             #[cfg(target_arch = "wasm32")]
                             solar_cloud_march: None,
-                            #[cfg(not(target_arch = "wasm32"))]
                             radio_tabs: &mut radio_tab_reqs,
-                            #[cfg(not(target_arch = "wasm32"))]
                             radio_name_edit: &mut radio_name_edit,
                             region_edit: &mut region_edit,
                             tx_eq_edit: &mut tx_eq_edit,
@@ -798,9 +792,7 @@ impl SdroxideApp {
         self.show_settings = open;
         self.settings_tab = tab;
         // The multi-radio shell drains these after the frame.
-        #[cfg(not(target_arch = "wasm32"))]
         self.radio_tab_requests.append(&mut radio_tab_reqs);
-        #[cfg(not(target_arch = "wasm32"))]
         {
             self.radio_name_edit = radio_name_edit;
         }
@@ -1336,7 +1328,6 @@ impl SdroxideApp {
                 // radios are configured, and — with the main window's tab area
                 // hidden until there is more than one — where the second radio
                 // is added in the first place.
-                #[cfg(not(target_arch = "wasm32"))]
                 self.settings_radio_roster(ui, io.radio_tabs, io.radio_name_edit);
                 let Some(cfg) = io.radio_edit.as_mut() else {
                     // A remote client cannot choose the server's interface or
@@ -2295,7 +2286,6 @@ impl SdroxideApp {
 /// is where the second one is added. Actions cannot be taken here — the tab
 /// set lives in the multi-radio shell, not in this tab — so they are queued as
 /// [`crate::app::RadioTabRequest`]s and the shell acts on them after the frame.
-#[cfg(not(target_arch = "wasm32"))]
 impl SdroxideApp {
     fn settings_radio_roster(
         &self,

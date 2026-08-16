@@ -436,6 +436,14 @@ pub trait RadioController {
     fn peer_url(&self) -> Option<String> {
         None
     }
+
+    /// What the far end calls the radio this connection is on. Used to name a
+    /// tab that arrived without a name of its own — the browser client, where
+    /// nobody typed an address to name it after. `None` until the far end has
+    /// said, and always for an in-process engine.
+    fn peer_name(&self) -> Option<String> {
+        None
+    }
 }
 
 /// One of the far end's other radios: what to call it, and where to reach it.

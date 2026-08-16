@@ -66,7 +66,9 @@ struct Tab {
     muted: bool,
     /// Somebody else's station, reached over the network. It has no entry in
     /// this machine's radio roster, so closing or renaming it must not go
-    /// looking for one.
+    /// looking for one. In the browser there is no roster and every tab is
+    /// one of these, so nothing there has cause to ask.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     remote: bool,
 }
 
@@ -275,6 +277,7 @@ impl MultiApp {
                     }
                 }
                 RadioTabRequest::Add => self.add_tab(ctx),
+                #[cfg(not(target_arch = "wasm32"))]
                 RadioTabRequest::Connect { url, name } => self.connect_tab(&url, name, ctx),
                 RadioTabRequest::Close(id) => {
                     if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
@@ -286,13 +289,17 @@ impl MultiApp {
                         t.muted = muted;
                         t.app.mute_tab(muted);
                     }
+                    self.sync_audio();
                 }
                 RadioTabRequest::Rename { id, name } => {
                     if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
                         t.name = name.clone();
                         // A connection has no roster entry to record it in —
                         // the name it was given is the address it was dialled
-                        // at, and it lasts as long as the connection does.
+                        // at, and it lasts as long as the connection does. In
+                        // the browser there is no roster at all: every tab
+                        // there is somebody else's radio.
+                        #[cfg(not(target_arch = "wasm32"))]
                         if !t.remote
                             && let Err(e) = sdroxide_config::rename_radio(id, &name)
                         {
@@ -316,6 +323,9 @@ impl MultiApp {
                         t.muted = muted;
                         t.app.mute_tab(muted);
                     }
+                    // In the browser, unmuting a radio that is not on screen
+                    // must not put two of them through the one output.
+                    self.sync_audio();
                 }
                 StripAction::Add => self.add_tab(ctx),
             }
@@ -408,7 +418,25 @@ impl MultiApp {
         self.tabs[self.focused].app.set_focused(false, ctx);
         self.focused = i;
         self.tabs[i].app.set_focused(true, ctx);
+        self.sync_audio();
     }
+
+    /// The browser has one sound output for the whole page — a single worklet,
+    /// fed by whichever tab pushes into it — so exactly one radio may be
+    /// audible there, and it is the one the operator is on. A native client
+    /// gives every radio a stream of its own and lets the sound system mix
+    /// them, which is why this rule is the browser's alone.
+    #[cfg(target_arch = "wasm32")]
+    fn sync_audio(&mut self) {
+        let focused = self.focused;
+        for (i, tab) in self.tabs.iter_mut().enumerate() {
+            let silent = tab.muted || i != focused;
+            tab.app.mute_tab(silent);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sync_audio(&mut self) {}
 
     fn add_tab(&mut self, ctx: &egui::Context) {
         let Some(factory) = self.factory.as_mut() else { return };
@@ -449,6 +477,19 @@ impl MultiApp {
     /// too, which is what keeps two tabs of the same station from opening each
     /// other for ever.
     fn open_peer_radios(&mut self, ctx: &egui::Context) {
+        // A tab that arrived without a name of its own takes the station's,
+        // once the station has said what that is: the browser client dials the
+        // page's own host, so there is no address anybody typed to name it
+        // after. A tab that *was* named — dialled from Settings → Remote, or
+        // renamed since — keeps what it has.
+        for tab in &mut self.tabs {
+            if tab.name.is_empty()
+                && let Some(name) = tab.app.peer_name()
+                && !name.trim().is_empty()
+            {
+                tab.name = name;
+            }
+        }
         if self.remote.is_none() {
             return;
         }
@@ -489,11 +530,13 @@ impl MultiApp {
     }
 
     /// Dial another sdroxide server and give it a tab of its own — Settings →
-    /// Remote's CONNECT button.
+    /// Remote's CONNECT button, which is native-only (see
+    /// [`RadioTabRequest::Connect`](crate::app::RadioTabRequest)).
     ///
     /// The verdict goes back to the tab that asked, not to the new one: a
     /// connection that never opened has no tab to report from, and the dialog
     /// the operator is looking at is where they are expecting an answer.
+    #[cfg(not(target_arch = "wasm32"))]
     fn connect_tab(&mut self, url: &str, name: String, ctx: &egui::Context) {
         let origin = self.focused;
         if self.remote.is_none() {
@@ -552,6 +595,9 @@ impl MultiApp {
         for tab in &mut self.tabs {
             tab.app.set_shared_log(true);
         }
+        // A radio that arrives behind the one on screen must not start talking
+        // over it where there is only one output to talk through.
+        self.sync_audio();
         self.tabs.len() - 1
     }
 
@@ -580,7 +626,9 @@ impl MultiApp {
         tab.app.shutdown_ctrl();
         // Closing a connection hangs up and nothing more: it was never in this
         // machine's roster, and the station at the other end is not ours to
-        // remove from anything.
+        // remove from anything. (The browser has no roster to remove from
+        // either — see the rename above.)
+        #[cfg(not(target_arch = "wasm32"))]
         if !tab.remote
             && let Err(e) = sdroxide_config::remove_radio(tab.id)
         {

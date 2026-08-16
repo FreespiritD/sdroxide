@@ -132,6 +132,11 @@ pub struct RemoteController {
     /// Answers to the settings dialog's device questions, in the order the
     /// server ran them. Drained by [`RadioController::poll_probe`].
     probe_answers: VecDeque<sdroxide_types::ProbeAnswer>,
+    /// The tab strip's mute: this radio's audio is not played *here*. The
+    /// stream keeps arriving and the engine keeps decoding, recording and
+    /// metering — only the speaker path stops, which is what the chip means
+    /// for a local radio too.
+    muted: bool,
     /// The far end's roster and which of it this session is on, as announced
     /// in the handshake. `None` until it lands, and re-announced on every
     /// reconnect — the station may have gained or lost a radio in between.
@@ -190,6 +195,7 @@ impl RemoteController {
             radio_cfg_dirty: false,
             radio_cfg_sent: 0.0,
             probe_answers: VecDeque::new(),
+            muted: false,
             peers: None,
         })
     }
@@ -237,6 +243,9 @@ impl RemoteController {
             ServerMsg::Memories(m) => self.pending.push_back(RadioEvent::Memories(m)),
             ServerMsg::MemoryFolders(f) => self.pending.push_back(RadioEvent::MemoryFolders(f)),
             ServerMsg::Scanner(c) => self.pending.push_back(RadioEvent::Scanner(c)),
+            // Dropped rather than decoded when this radio is muted: the work
+            // saved is the point on a browser tab holding several radios.
+            ServerMsg::RxAudio { .. } if self.muted => {}
             ServerMsg::RxAudio { payload, .. } => {
                 if let Some(bridge) = self.audio.as_mut() {
                     // Only the PCM16 downlink is decoded client-side; an
@@ -466,6 +475,15 @@ impl RadioController for RemoteController {
                 url: radio_url(&self.url, r.id),
             })
             .collect()
+    }
+
+    fn set_muted(&mut self, muted: bool) {
+        self.muted = muted;
+    }
+
+    fn peer_name(&self) -> Option<String> {
+        let (me, radios) = self.peers.as_ref()?;
+        radios.iter().find(|r| r.id == *me).map(|r| r.name.clone())
     }
 
     fn peer_url(&self) -> Option<String> {

@@ -23,7 +23,6 @@ mod login;
 mod login_globe;
 /// Multi-radio shell: one window, one radio per tab. Native-only — the
 /// browser client drives a single (remote) radio.
-#[cfg(not(target_arch = "wasm32"))]
 mod multi;
 mod prop_map;
 #[cfg(feature = "remote")]
@@ -41,7 +40,6 @@ mod wefax;
 mod widgets;
 
 pub use app::SdroxideApp;
-#[cfg(not(target_arch = "wasm32"))]
 pub use multi::{MultiApp, RadioFactory, RadioTab, RemoteFactory};
 #[cfg(feature = "remote")]
 pub use remote::{AudioBridge, RemoteController};

@@ -5,7 +5,7 @@
 mod web {
     use eframe::wasm_bindgen::{self, JsCast, prelude::*};
     use sdroxide_proto::AudioCaps;
-    use sdroxide_ui::{AudioBridge, RemoteController, SdroxideApp, SolarApp};
+    use sdroxide_ui::{AudioBridge, MultiApp, RadioTab, RemoteController, SolarApp};
 
     // Implemented in assets/audio_bridge.js (loaded by index.html).
     #[wasm_bindgen(js_namespace = ["window", "sdroxideAudio"])]
@@ -103,6 +103,29 @@ mod web {
             .and_then(|v| v.parse::<u32>().ok())
     }
 
+    /// One radio of the station, as a tab: its own socket and its own audio
+    /// bridge, exactly as a native client gives each radio its own sound
+    /// stream.
+    fn radio_tab(url: &str, id: u32, ctx: &eframe::egui::Context) -> Result<RadioTab, String> {
+        let ctx = ctx.clone();
+        // Deadline hint, not an immediate repaint — see the native remote
+        // client for rationale.
+        let ctrl =
+            RemoteController::connect(url, Some(Box::new(WebAudioBridge::default())), move || {
+                ctx.request_repaint_after(std::time::Duration::from_millis(33))
+            })?;
+        // Deliberately unnamed: nobody typed an address here — the page came
+        // from this station — so the shell fills the name in from what the
+        // station calls the radio, as it does for the rest of the roster.
+        Ok(RadioTab { id, name: String::new(), ctrl: Box::new(ctrl) })
+    }
+
+    /// The dialler the shell uses for the station's further radios.
+    fn radio_tab_factory()
+    -> impl FnMut(&str, u32, &eframe::egui::Context) -> Result<RadioTab, String> {
+        |url: &str, id: u32, ctx: &eframe::egui::Context| radio_tab(url, id, ctx)
+    }
+
     pub fn run() {
         console_error_panic_hook::set_once();
 
@@ -152,11 +175,14 @@ mod web {
                     )
                     .await
             } else {
-                // `?radio=N` picks one of a station's radios; without it this
-                // page opens the first, which is the whole of what a station
-                // with one radio has. The list is at `/radios` on the same
-                // host, and a browser can be pointed straight at it.
-                let url = match radio_query(&search) {
+                // `?radio=N` opens one of a station's radios; without it this
+                // page opens the first. Either way the station says what else
+                // it has and the shell brings the rest up as tabs, so a
+                // browser holds a whole station exactly as the desktop client
+                // does. (The list is also at `/radios` on the same host, for
+                // anyone looking from outside the app.)
+                let first = radio_query(&search);
+                let url = match first {
                     Some(id) => format!("{ws_proto}://{host}/ws/{id}"),
                     None => format!("{ws_proto}://{host}/ws"),
                 };
@@ -167,18 +193,17 @@ mod web {
                         // Connect inside the creator so the socket can wake the UI
                         // (repaint) the moment a message arrives.
                         Box::new(move |cc| {
-                            let ctx = cc.egui_ctx.clone();
-                            // Deadline hint, not an immediate repaint — see the
-                            // native remote client for rationale.
-                            let ctrl = RemoteController::connect(
-                                &url,
-                                Some(Box::new(WebAudioBridge::default())),
-                                move || {
-                                    ctx.request_repaint_after(std::time::Duration::from_millis(33))
-                                },
-                            )
-                            .map_err(|e| format!("websocket connect: {e}"))?;
-                            Ok(Box::new(SdroxideApp::new(cc, Box::new(ctrl))))
+                            let tab = radio_tab(&url, first.unwrap_or(0), &cc.egui_ctx)
+                                .map_err(|e| format!("websocket connect: {e}"))?;
+                            // No radio factory: a browser has no hardware of
+                            // its own to open. The remote one is what the
+                            // station's further radios arrive through.
+                            Ok(Box::new(MultiApp::new(
+                                cc,
+                                vec![tab],
+                                None,
+                                Some(Box::new(radio_tab_factory())),
+                            )))
                         }),
                     )
                     .await

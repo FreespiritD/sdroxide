@@ -275,8 +275,8 @@ pub fn init(rs: &RenderState) {
 
 /// Drop one radio's textures when its tab closes; ~8 MB apiece otherwise
 /// leaks for the life of the process. `None` render state (no wgpu) is a no-op.
-/// Native-only like the tab strip itself — the browser client is single-radio.
-#[cfg(not(target_arch = "wasm32"))]
+/// Wanted in the browser as much as in the shack: a browser tab holding a
+/// station's radios closes them one at a time too.
 pub fn retire(rs: Option<&RenderState>, wf_id: u64) {
     if let Some(rs) = rs
         && let Some(reg) = rs.renderer.write().callback_resources.get_mut::<WaterfallRegistry>()

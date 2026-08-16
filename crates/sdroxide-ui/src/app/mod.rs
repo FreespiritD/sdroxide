@@ -547,32 +547,27 @@ pub struct SdroxideApp {
     /// The station's radio roster as the shell last published it, drawn at the
     /// top of Settings → Radio. Empty outside a multi-radio session (remote
     /// clients, the browser), which is also what hides the area there.
-    #[cfg(not(target_arch = "wasm32"))]
     radio_roster: Vec<RadioChip>,
     /// Whether the shell can build a radio of this machine's own — false in a
     /// client that only ever drives somebody else's station (`--connect`),
     /// where the roster's "+" would open nothing. Connecting to a *further*
     /// server is a different matter and stays available there.
-    #[cfg(not(target_arch = "wasm32"))]
     can_add_radio: bool,
     /// Radio-management actions the settings dialog asked for this frame. The
     /// dialog lives inside one tab and cannot reach the shell that owns the
     /// tab set, so requests are returned as values and drained by
     /// [`crate::multi::MultiApp`] after the frame — the same arrangement the
     /// solar window's LOCK button uses.
-    #[cfg(not(target_arch = "wasm32"))]
     radio_tab_requests: Vec<RadioTabRequest>,
     /// The radio rename in progress on the settings page: (radio id, text as
     /// typed). UI-owned until the edit commits — the roster republishes every
     /// frame, and a field bound straight to it would fight the keyboard —
     /// exactly like `voice_name_edit` and `mem_folder_edit`.
-    #[cfg(not(target_arch = "wasm32"))]
     radio_name_edit: Option<(u32, String)>,
 }
 
 /// One radio in the roster the shell publishes to the focused tab — what a
 /// tab chip shows, wherever it is drawn.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 pub(crate) struct RadioChip {
     pub id: u32,
@@ -589,7 +584,6 @@ pub(crate) struct RadioChip {
     pub focused: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl RadioChip {
     /// What a tab chip shows: the operator's name, else the derived default.
     pub fn display_name(&self) -> &str {
@@ -599,7 +593,6 @@ impl RadioChip {
 
 /// A radio-management action requested from inside a tab (the settings
 /// dialog's copy of the strip), acted on by the shell.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) enum RadioTabRequest {
     /// Switch to this radio, carrying the settings dialog along: the origin's
     /// closes, the target's opens on its Radio page.
@@ -609,6 +602,12 @@ pub(crate) enum RadioTabRequest {
     /// URL and, if it answers, show it under `name`. Queued by the **Remote**
     /// tab's CONNECT button — the connection is made by the shell, because
     /// only it can add a tab to hold it.
+    ///
+    /// Native only, like the Remote tab that queues it: the address it dials
+    /// is remembered in this machine's `config.toml`, which a browser has no
+    /// equivalent of. A browser client reaches the radios of the station that
+    /// served it, which arrive by themselves.
+    #[cfg(not(target_arch = "wasm32"))]
     Connect {
         url: String,
         name: String,
@@ -881,22 +880,17 @@ impl SdroxideApp {
             view_key,
             shared_log: false,
             radio_id,
-            #[cfg(not(target_arch = "wasm32"))]
             radio_roster: Vec::new(),
             // Set by the shell, which is the only thing that knows whether it
             // was given a factory.
-            #[cfg(not(target_arch = "wasm32"))]
             can_add_radio: false,
-            #[cfg(not(target_arch = "wasm32"))]
             radio_tab_requests: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             radio_name_edit: None,
         }
     }
 
     /// Set the focus flag without side effects — used while a multi-radio
     /// session is being assembled, before there is a first frame.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn set_focused_flag(&mut self, focused: bool) {
         self.focused = focused;
     }
@@ -905,7 +899,6 @@ impl SdroxideApp {
     /// announcer — the backlog of state changes that happened in the
     /// background is where the radio *is*, not news to recite — and restores
     /// the window title this tab owns while it is up front.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn set_focused(&mut self, focused: bool, ctx: &egui::Context) {
         if self.focused == focused {
             return;
@@ -934,27 +927,23 @@ impl SdroxideApp {
     }
 
     /// Multi-radio: mark the logbook file as shared with other tabs.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn set_shared_log(&mut self, shared: bool) {
         self.shared_log = shared;
     }
 
     /// Whether this radio is on the air — the tab strip's TX badge.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn tab_tx_on(&self) -> bool {
         self.state.tx.ptt || self.state.tx.tune
     }
 
     /// Whether this radio's engine reported a lost connection — the tab
     /// strip's warning badge.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn tab_error(&self) -> bool {
         self.error.is_some()
     }
 
     /// The tab strip's mute toggle — silences this radio's speaker path in the
     /// engine; everything else keeps running.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn mute_tab(&mut self, muted: bool) {
         self.ctrl.set_muted(muted);
     }
@@ -962,26 +951,26 @@ impl SdroxideApp {
     /// The other radios of the station this tab is connected to, and the
     /// address this tab itself is on — what the shell needs to put the rest of
     /// a station's radios in tabs beside it. Both empty for a local radio.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn peer_radios(&self) -> Vec<sdroxide_types::PeerRadio> {
         self.ctrl.peer_radios()
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn peer_url(&self) -> Option<String> {
         self.ctrl.peer_url()
     }
 
+    pub(crate) fn peer_name(&self) -> Option<String> {
+        self.ctrl.peer_name()
+    }
+
     /// Detach from this radio: disconnect the engine, drop the audio streams,
     /// join the DSP thread. Tab close and app exit.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn shutdown_ctrl(&mut self) {
         self.ctrl.shutdown();
     }
 
     /// Open the Settings dialog on the Radio tab — where a freshly added
     /// radio, which has no interface yet, is configured.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn open_radio_settings(&mut self) {
         self.show_settings = true;
         self.settings_tab = SettingsTab::Radio;
@@ -989,14 +978,12 @@ impl SdroxideApp {
 
     /// Close the Settings dialog — the shell moves it to another tab when the
     /// operator switches radios from inside it.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn close_settings(&mut self) {
         self.show_settings = false;
     }
 
     /// The shell's per-frame publication of the radio roster (see
     /// [`SdroxideApp::radio_roster`]).
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn set_radio_roster(&mut self, roster: Vec<RadioChip>) {
         self.radio_roster = roster;
     }
@@ -1004,7 +991,6 @@ impl SdroxideApp {
     /// Whether the shell can open a radio attached to this machine (see
     /// [`SdroxideApp::can_add_radio`]). Set once, when the session is
     /// assembled.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn set_can_add_radio(&mut self, can: bool) {
         self.can_add_radio = can;
     }
@@ -1013,6 +999,8 @@ impl SdroxideApp {
     /// [`SdroxideApp::remote_status`]). Success is reported on the tab as well
     /// as by the new radio appearing, because the operator may well be looking
     /// at the dialog rather than at the strip behind it.
+    ///
+    /// Native only, like the Remote tab itself.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn set_remote_status(&mut self, status: Result<String, String>) {
         self.remote_status = Some(status);
@@ -1020,7 +1008,6 @@ impl SdroxideApp {
 
     /// Drain the radio-management requests the settings dialog queued this
     /// frame (see [`SdroxideApp::radio_tab_requests`]).
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn take_radio_tab_requests(&mut self) -> Vec<RadioTabRequest> {
         std::mem::take(&mut self.radio_tab_requests)
     }
@@ -1028,7 +1015,6 @@ impl SdroxideApp {
     /// Put a message in this tab's dismissable notice banner. The shell uses
     /// it for failures that have no strip to appear in (adding a radio while
     /// the main window's tab area is hidden).
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn show_notice(&mut self, text: String) {
         self.radio_notice = Some(text);
     }
@@ -1040,7 +1026,6 @@ impl SdroxideApp {
     /// no capabilities yet), where the shell falls back to a neutral
     /// "Radio N" — deliberately not "New radio", because the stand-in is also
     /// what a fully configured radio runs on while it is unreachable.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn interface_name(&self) -> Option<String> {
         let caps = self.caps.as_ref()?;
         Some(match caps.driver.as_str() {
