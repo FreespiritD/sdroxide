@@ -73,7 +73,7 @@ impl SdroxideApp {
                     ui.label(
                         RichText::new(format!("{} rx", self.digi_decodes.len()))
                             .size(10.0)
-                            .color(Color32::from_gray(120)),
+                            .color(crate::theme::gray(120)),
                     );
                 });
             });
@@ -259,7 +259,7 @@ impl SdroxideApp {
                         RichText::new(format!("{tstr} UTC"))
                             .size(9.5)
                             .monospace()
-                            .color(Color32::from_gray(130)),
+                            .color(crate::theme::gray(130)),
                     );
                 });
                 ui.separator();
@@ -283,7 +283,7 @@ impl SdroxideApp {
                         Some(sdroxide_types::Highlight::NewCall) => {
                             ("NEW", crate::theme::CYAN_DIM())
                         }
-                        Some(sdroxide_types::Highlight::Dupe) => ("DUPE", Color32::from_gray(85)),
+                        Some(sdroxide_types::Highlight::Dupe) => ("DUPE", crate::theme::gray(85)),
                         None => ("", Color32::TRANSPARENT),
                     };
                     let dupe = novelty.dupe;
@@ -319,14 +319,14 @@ impl SdroxideApp {
                         RichText::new(format!("{:.0}", d.audio_hz))
                             .monospace()
                             .size(12.0)
-                            .color(Color32::from_gray(120)),
+                            .color(crate::theme::gray(120)),
                     );
                     // Callsign — wider proportional (button) font.
                     let call_lbl =
                         egui::Label::new(RichText::new(&who).size(15.0).strong().color(if to_me {
                             crate::theme::YELLOW()
                         } else if d.from.is_none() || dupe {
-                            Color32::from_gray(105)
+                            crate::theme::gray(105)
                         } else if cq {
                             crate::theme::GREEN()
                         } else {
@@ -341,7 +341,7 @@ impl SdroxideApp {
                     // without reading a single callsign.
                     let cont_lbl = egui::Label::new(
                         RichText::new(continent).monospace().size(11.0).strong().color(if dupe {
-                            Color32::from_gray(85)
+                            crate::theme::gray(85)
                         } else {
                             crate::theme::continent_color(continent)
                         }),
@@ -358,7 +358,7 @@ impl SdroxideApp {
                     );
                     let msg_lbl =
                         egui::Label::new(RichText::new(&d.message).monospace().size(12.5).color(
-                            if dupe { Color32::from_gray(95) } else { crate::theme::TEXT() },
+                            if dupe { crate::theme::gray(95) } else { crate::theme::TEXT() },
                         ))
                         .truncate();
                     // REPLY and the queue button, drawn right-to-left so they
@@ -684,7 +684,7 @@ impl SdroxideApp {
                         ui.label(
                             RichText::new(format!("Session: {session} QSO"))
                                 .size(11.0)
-                                .color(Color32::from_gray(150)),
+                                .color(crate::theme::gray(150)),
                         )
                         .on_hover_text("QSOs worked since sdroxide was started");
                         if ui
@@ -879,7 +879,7 @@ impl SdroxideApp {
                                     if s.tx_even { "even" } else { "odd" }
                                 ))
                                 .size(11.0)
-                                .color(Color32::from_gray(140)),
+                                .color(crate::theme::gray(140)),
                             );
                             // What everyone else's timing says about ours. A
                             // clock far enough out that nobody can decode us
@@ -889,7 +889,7 @@ impl SdroxideApp {
                                 use sdroxide_types::ClockHealth::*;
                                 let health = sdroxide_types::clock_health(off);
                                 let col = match health {
-                                    Good => Color32::from_gray(140),
+                                    Good => crate::theme::gray(140),
                                     Marginal => crate::theme::YELLOW(),
                                     Bad => crate::theme::PINK(),
                                 };
@@ -960,14 +960,14 @@ impl SdroxideApp {
                             ui.label(
                                 RichText::new("no active QSO — pick a decode to reply, or Call CQ")
                                     .size(11.0)
-                                    .color(Color32::from_gray(120)),
+                                    .color(crate::theme::gray(120)),
                             );
                         }
                     }
                 }
                 None => {
                     ui.label(
-                        RichText::new("FT8 engine idle").size(12.0).color(Color32::from_gray(130)),
+                        RichText::new("FT8 engine idle").size(12.0).color(crate::theme::gray(130)),
                     );
                 }
             }
@@ -988,7 +988,7 @@ impl SdroxideApp {
                 );
                 for c in &fox_queue {
                     let col =
-                        if c.working { crate::theme::GREEN() } else { Color32::from_gray(150) };
+                        if c.working { crate::theme::GREEN() } else { crate::theme::gray(150) };
                     ui.label(RichText::new(&c.call).size(11.5).strong().color(col)).on_hover_text(
                         format!(
                             "{} · {:+} dB{}",
@@ -1016,7 +1016,7 @@ impl SdroxideApp {
                 );
                 for (i, q) in call_queue.iter().enumerate() {
                     // The one going next is the one worth reading first.
-                    let col = if i == 0 { crate::theme::GREEN() } else { Color32::from_gray(150) };
+                    let col = if i == 0 { crate::theme::GREEN() } else { crate::theme::gray(150) };
                     if crate::chrome::chip(ui, false, RichText::new(&q.call).size(11.5).color(col))
                         .on_hover_text(format!(
                             "{} · {:+} dB · {:.0} Hz{}\nClick to remove",
@@ -1106,7 +1106,7 @@ impl SdroxideApp {
                                         RichText::new(format!("→ {msg}"))
                                             .monospace()
                                             .size(11.5)
-                                            .color(Color32::from_gray(150)),
+                                            .color(crate::theme::gray(150)),
                                     );
                                 }
                             }
@@ -1115,7 +1115,7 @@ impl SdroxideApp {
                                     RichText::new("— no messages —")
                                         .monospace()
                                         .size(11.5)
-                                        .color(Color32::from_gray(90)),
+                                        .color(crate::theme::gray(90)),
                                 );
                             }
                         });

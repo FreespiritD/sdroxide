@@ -4174,13 +4174,15 @@ spoken announcements below them under `[speech]`:
   menus in a small desktop window rather than a strip wrapped over three rows.
   See [8.4](#84-phones-and-tablets) for what each one shows.
 - **Theme** — the colour scheme for the whole UI: **Default** (the navy, cyan
-  and hot pink every screenshot in this manual shows), **Green phosphor** and
-  **Amber phosphor** (monochrome CRT looks), **Teal / orange**, or **Rainbow**
-  (the accents spread across the spectrum). Applied the moment it is picked, no
-  restart. The phosphor themes keep transmit, SWR and error indications red on
-  purpose — whether RF is leaving the antenna is never left to a shade of
-  green. Content colours (the waterfall palette below, the band plan, the map)
-  are their own and do not change with the theme.
+  and hot pink every screenshot in this manual shows), **Light** (white panels
+  and near-black text, for a bright shack or a screen read in daylight),
+  **Green phosphor** and **Amber phosphor** (monochrome CRT looks), **Teal /
+  orange**, or **Rainbow** (the accents spread across the spectrum). Applied
+  the moment it is picked, no restart. Every theme keeps transmit, SWR and
+  error indications red on purpose — whether RF is leaving the antenna is never
+  left to a shade of green. Content colours (the waterfall palette below, the
+  band plan) are their own and do not change with the theme.
+
 - **Button style** / **Window style** — the shape the buttons and the floating
   windows wear, chosen separately: **Angled** (the classic cut-corner look),
   **Rectangular**, **Rounded**, **Gradient** (a vertical shaded fill), or

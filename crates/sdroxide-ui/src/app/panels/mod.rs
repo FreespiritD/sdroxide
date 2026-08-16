@@ -195,7 +195,7 @@ impl SdroxideApp {
                 ui.label(
                     RichText::new(format!("top ≈ {:.0} paths", self.prop_heat.peak_paths))
                         .size(9.0)
-                        .color(eframe::egui::Color32::from_gray(110)),
+                        .color(crate::theme::gray(110)),
                 );
             }
         });
@@ -473,7 +473,7 @@ impl SdroxideApp {
                             ui.label(
                                 RichText::new(format!("{} rx", self.digi_decodes.len()))
                                     .size(10.0)
-                                    .color(egui::Color32::from_gray(120)),
+                                    .color(crate::theme::gray(120)),
                             );
                         });
                     }

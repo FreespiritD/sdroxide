@@ -158,20 +158,33 @@ impl eframe::App for SdroxideApp {
         // rides above the panadapter with a dismiss button, so a silent RX
         // failure is explained rather than reading as "waiting for spectrum".
         if let Some(notice) = self.radio_notice.clone() {
+            // Amber wash, amber rule, readable ink — the second pair is the
+            // same banner turned the other way up, for a theme whose panels
+            // are white and which would otherwise get pale text on a dark
+            // strip in the middle of a bright page.
+            let (wash, rule, mark, ink) = if crate::theme::is_light() {
+                (
+                    Color32::from_rgb(255, 243, 205),
+                    Color32::from_rgb(178, 122, 0),
+                    Color32::from_rgb(140, 92, 0),
+                    Color32::from_rgb(58, 44, 8),
+                )
+            } else {
+                (
+                    Color32::from_rgb(60, 45, 10),
+                    Color32::from_rgb(210, 160, 40),
+                    Color32::from_rgb(255, 190, 70),
+                    Color32::from_rgb(240, 220, 180),
+                )
+            };
             egui::Frame::new()
-                .fill(Color32::from_rgb(60, 45, 10))
-                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(210, 160, 40)))
+                .fill(wash)
+                .stroke(egui::Stroke::new(1.0, rule))
                 .inner_margin(egui::Margin::symmetric(8, 5))
                 .show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            RichText::new("⚠").size(15.0).color(Color32::from_rgb(255, 190, 70)),
-                        );
-                        ui.label(
-                            RichText::new(notice)
-                                .size(13.0)
-                                .color(Color32::from_rgb(240, 220, 180)),
-                        );
+                        ui.label(RichText::new("⚠").size(15.0).color(mark));
+                        ui.label(RichText::new(notice).size(13.0).color(ink));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.small_button("Dismiss").clicked() {
                                 self.radio_notice = None;
@@ -195,7 +208,7 @@ impl eframe::App for SdroxideApp {
                 // Roughly where `centered_and_justified` used to put the text,
                 // with the button under it rather than beside it.
                 ui.add_space(ui.available_height() * 0.4);
-                ui.label(RichText::new(err).size(18.0).color(Color32::RED));
+                ui.label(RichText::new(err).size(18.0).color(crate::theme::ALERT()));
                 if offer_retry {
                     ui.add_space(14.0);
                     retry = ui.button(RichText::new("Reconnect").size(16.0)).clicked();

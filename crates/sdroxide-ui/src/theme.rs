@@ -23,6 +23,10 @@ use sdroxide_types::{ChromeStyle, FontSize, UiTheme};
 /// primary accent", whatever hue a theme gives it).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Palette {
+    /// True where the chrome sits on a bright ground. Everything that has to
+    /// pick a shade by hand — [`gray`], [`continent_color`], the few widgets
+    /// that mix their own tints — asks this rather than sniffing a luminance.
+    pub light: bool,
     pub bg_deep: Color32,
     pub panel: Color32,
     pub input_bg: Color32,
@@ -43,6 +47,12 @@ pub struct Palette {
     pub green: Color32,
     /// Dark ink used on top of accent fills.
     pub ink_on_cyan: Color32,
+    /// Ink for the chips whose fill is one of the *bright* accents — the
+    /// yellow tone-squelch chip, the green satellite/scan chips. Black
+    /// everywhere the accents are bright; on a light ground those accents are
+    /// dark enough to read as text on white, so their chips take white ink
+    /// instead.
+    pub ink_on_bright: Color32,
     /// Red-accent chrome (cyberpunk box borders / list rows).
     pub red_deep: Color32,
     pub cq_bg: Color32,
@@ -69,6 +79,14 @@ pub struct Palette {
     /// themes are monochrome everywhere else, but whether RF is leaving the
     /// antenna is never left to a shade of green.
     pub alert: Color32,
+    /// The bright stripe of the yellow/black hazard bars ([manual section
+    /// rules, the CME arrival banner](crate::chrome::hazard_stripes)). Its own
+    /// role rather than [`Self::yellow`] because a hazard bar is a *fill* next
+    /// to a dark stripe, not ink on the panel: it stays bright amber even
+    /// where the warning text has had to go dark to survive a white ground.
+    pub hazard: Color32,
+    /// The dark stripe those bars alternate with.
+    pub hazard_dark: Color32,
 }
 
 /// `c(0x00d0f4)` — a palette entry from one hex triple, so a theme reads as a
@@ -81,6 +99,7 @@ const fn c(rgb: u32) -> Color32 {
 /// stay bit-exact to the historic constants — it is the default every
 /// screenshot in the manual shows.
 const DEFAULT: Palette = Palette {
+    light: false,
     bg_deep: c(0x050810),
     panel: c(0x0b111e),
     input_bg: c(0x04070e),
@@ -97,6 +116,7 @@ const DEFAULT: Palette = Palette {
     yellow: c(0xffd23f),
     green: c(0x46e07d),
     ink_on_cyan: c(0x021019),
+    ink_on_bright: Color32::BLACK,
     red_deep: c(0x6e182c),
     cq_bg: c(0x240c15),
     tome_bg: c(0x2c2406),
@@ -109,12 +129,15 @@ const DEFAULT: Palette = Palette {
     scroll_handle_drag: c(0xff2a55),  // = pink
     faint_bg: c(0x0e1626),
     alert: c(0xff2a55), // = the historic pink, which doubled as the error colour
+    hazard: c(0xffd23f),
+    hazard_dark: c(0x161204),
 };
 
 /// Green CRT phosphor: every role brightness-graded within one green family
 /// on a near-black ground. `yellow` keeps its warning hue and `tome_bg` its
 /// warm attention gold on purpose — they are the second alert tier.
 const GREEN_PHOSPHOR: Palette = Palette {
+    light: false,
     bg_deep: c(0x020703),
     panel: c(0x04120a),
     input_bg: c(0x010704),
@@ -131,6 +154,7 @@ const GREEN_PHOSPHOR: Palette = Palette {
     yellow: c(0xffd23f),
     green: c(0x46e07d),
     ink_on_cyan: c(0x021203),
+    ink_on_bright: Color32::BLACK,
     red_deep: c(0x124a26),
     cq_bg: c(0x0c2412),
     tome_bg: c(0x2c2406),
@@ -143,11 +167,14 @@ const GREEN_PHOSPHOR: Palette = Palette {
     scroll_handle_drag: c(0xb3ffcc),
     faint_bg: c(0x08180d),
     alert: c(0xff2a3c),
+    hazard: c(0xffd23f),
+    hazard_dark: c(0x161204),
 };
 
 /// Amber CRT phosphor — the same grading as [`GREEN_PHOSPHOR`] in a warm
 /// amber family.
 const AMBER_PHOSPHOR: Palette = Palette {
+    light: false,
     bg_deep: c(0x070402),
     panel: c(0x120c04),
     input_bg: c(0x070401),
@@ -164,6 +191,7 @@ const AMBER_PHOSPHOR: Palette = Palette {
     yellow: c(0xffd23f),
     green: c(0xffc966),
     ink_on_cyan: c(0x120902),
+    ink_on_bright: Color32::BLACK,
     red_deep: c(0x4a3512),
     cq_bg: c(0x241a0c),
     tome_bg: c(0x2c2406),
@@ -176,10 +204,13 @@ const AMBER_PHOSPHOR: Palette = Palette {
     scroll_handle_drag: c(0xffdb99),
     faint_bg: c(0x181008),
     alert: c(0xff2a3c),
+    hazard: c(0xffd23f),
+    hazard_dark: c(0x161204),
 };
 
 /// The default's structure with teal accents and orange chrome.
 const TEAL_ORANGE: Palette = Palette {
+    light: false,
     bg_deep: c(0x040e0d),
     panel: c(0x0b1e1c),
     input_bg: c(0x040b0a),
@@ -196,6 +227,7 @@ const TEAL_ORANGE: Palette = Palette {
     yellow: c(0xffd23f),
     green: c(0x46e07d),
     ink_on_cyan: c(0x021917),
+    ink_on_bright: Color32::BLACK,
     red_deep: c(0x6e3a18),
     cq_bg: c(0x241505),
     tome_bg: c(0x2c2406),
@@ -208,6 +240,8 @@ const TEAL_ORANGE: Palette = Palette {
     scroll_handle_drag: c(0xff8a3f),
     faint_bg: c(0x0e2622),
     alert: c(0xff2a55),
+    hazard: c(0xffd23f),
+    hazard_dark: c(0x161204),
 };
 
 /// The default's dark navy grounds with the hues spread across the roles —
@@ -215,6 +249,7 @@ const TEAL_ORANGE: Palette = Palette {
 /// status. Different roles light different features, which is what makes the
 /// whole UI come out multi-coloured.
 const RAINBOW: Palette = Palette {
+    light: false,
     bg_deep: c(0x050810),
     panel: c(0x0b111e),
     input_bg: c(0x04070e),
@@ -231,6 +266,7 @@ const RAINBOW: Palette = Palette {
     yellow: c(0xffa53f),
     green: c(0x46e07d),
     ink_on_cyan: c(0x040d19),
+    ink_on_bright: Color32::BLACK,
     red_deep: c(0x6e182c),
     cq_bg: c(0x240c15),
     tome_bg: c(0x2c2406),
@@ -243,10 +279,72 @@ const RAINBOW: Palette = Palette {
     scroll_handle_drag: c(0xff2ad5),
     faint_bg: c(0x0e1626),
     alert: c(0xff2a55),
+    hazard: c(0xffa53f),
+    hazard_dark: c(0x161204),
+};
+
+/// The one theme on a bright ground: white panels, near-black ink, and accents
+/// darkened until each of them clears 4.5:1 against white *as text* — the
+/// figure below every colour is its contrast ratio on the panel.
+///
+/// That is what forces the accents to be so dark. Every accent role doubles as
+/// ink somewhere (`green` is a "worked before" tick and a signal-report
+/// column, `yellow` is a warning line, `cyan` is every heading and link), so a
+/// bright green or a bright yellow — legible on navy, ~1.5:1 on white — would
+/// be unreadable in exactly the places an operator glances at fastest. Each
+/// one keeps its hue and gives up its brightness instead. The chips those
+/// accents fill take white ink ([`Palette::ink_on_bright`]) rather than the
+/// black the dark themes use.
+///
+/// The instruments are not in here: see [`SCOPE_LIGHT`] and [`METER_LIGHT`].
+/// The *order* of the grounds is what carries over from the dark themes, not
+/// their direction: `bg_deep` is the page a panel sits on, `fill` is a raised
+/// control face, and each step away from `panel` is a step further from it.
+/// Reading them upside down would put a lit tab behind the strip and a button
+/// face into the page, so every one of them is mirrored together — panels are
+/// the white here, and the page is the grey they sit on.
+const LIGHT: Palette = Palette {
+    light: true,
+    bg_deep: c(0xeaeef4),  // the page the panels sit on
+    panel: c(0xffffff),    // the panels themselves: plain white
+    input_bg: c(0xf2f5fa), // fields, recessed a step off the panel
+    fill: c(0xe4eaf3),     // button faces, raised → darker on a light ground
+    fill_hover: c(0xd3dcea),
+    fill_active: c(0xbecddf),
+    line: c(0xaab6c6),        // 2.2:1 — a border, never text
+    line_lit: c(0x64748b),    // 4.9:1
+    text: c(0x1b2431),        // 14.6:1
+    text_strong: c(0x000913), // 19.5:1
+    cyan: c(0x005a78),        //  7.7:1 — deep teal, still the primary accent
+    cyan_dim: c(0x17708d),    //  5.6:1
+    pink: c(0xb8123c),        //  6.6:1 — the chrome accent, a deep crimson
+    yellow: c(0x8a5a00),      //  5.9:1 — amber taken down to where it reads
+    green: c(0x0d7030),       //  6.2:1 — likewise green
+    ink_on_cyan: c(0xffffff),
+    ink_on_bright: c(0xffffff),
+    red_deep: c(0xa8324e),
+    cq_bg: c(0xffe1e9), // the row tints: pale washes, so the ink stays near-black
+    tome_bg: c(0xffedbe),
+    done_bg: c(0xd5f2df),
+    row_bg: c(0xf8fafc),
+    row_hover: c(0xe7eef7),
+    // Inverted with everything else: in the dark themes the gutter is a touch
+    // *lighter* than the list behind it, here it has to be a touch darker.
+    scroll_track: c(0xe4eaf3),
+    scroll_handle: c(0x5d7186),
+    scroll_handle_hover: c(0x005a78), // = cyan
+    scroll_handle_drag: c(0xb8123c),  // = pink
+    faint_bg: c(0xeff3f8),
+    alert: c(0xc40024), // 6.2:1, and still unmistakably red
+    // A hazard bar is a fill, not ink: it keeps the bright amber every other
+    // theme uses, against the same near-black stripe.
+    hazard: c(0xffd23f),
+    hazard_dark: c(0x161204),
 };
 
 /// Indexed by [`theme_index`].
-static PALETTES: [Palette; 5] = [DEFAULT, GREEN_PHOSPHOR, AMBER_PHOSPHOR, TEAL_ORANGE, RAINBOW];
+static PALETTES: [Palette; 6] =
+    [DEFAULT, GREEN_PHOSPHOR, AMBER_PHOSPHOR, TEAL_ORANGE, RAINBOW, LIGHT];
 
 /// The S-meter instrument's colours: the face wash, the backlight bloom, the
 /// cool-side (below the red-line) inks, the bar's recessed rail, and the cool
@@ -259,6 +357,12 @@ static PALETTES: [Palette; 5] = [DEFAULT, GREEN_PHOSPHOR, AMBER_PHOSPHOR, TEAL_O
 /// [`ALERT`] red.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeterPalette {
+    /// The face is a *printed dial* — white card, black graduations, a black
+    /// needle — rather than lit glass. The whole instrument turns on this: the
+    /// backlight stops glowing, the bloom under the lit arc goes away, the
+    /// leading edge of a bar shades darker instead of lighter, and the hot
+    /// half of every scale takes its deeper reds. See `widgets::smeter`.
+    pub paper: bool,
     pub face_top: Color32,
     pub face_bot: Color32,
     /// Specular hairline along the top of the glass.
@@ -285,6 +389,7 @@ pub struct MeterPalette {
 
 /// The historic instrument: navy glass, cyan backlight, ice at S9.
 const METER_DEFAULT: MeterPalette = MeterPalette {
+    paper: false,
     face_top: c(0x111b2b),
     face_bot: c(0x03060c),
     glass: c(0x2c4460),
@@ -305,6 +410,7 @@ const METER_DEFAULT: MeterPalette = MeterPalette {
 };
 
 const METER_GREEN: MeterPalette = MeterPalette {
+    paper: false,
     face_top: c(0x0c2112),
     face_bot: c(0x020803),
     glass: c(0x2c6040),
@@ -325,6 +431,7 @@ const METER_GREEN: MeterPalette = MeterPalette {
 };
 
 const METER_AMBER: MeterPalette = MeterPalette {
+    paper: false,
     face_top: c(0x211809),
     face_bot: c(0x080502),
     glass: c(0x60482c),
@@ -345,6 +452,7 @@ const METER_AMBER: MeterPalette = MeterPalette {
 };
 
 const METER_TEAL: MeterPalette = MeterPalette {
+    paper: false,
     face_top: c(0x0c2320),
     face_bot: c(0x030b0a),
     glass: c(0x2c605a),
@@ -364,16 +472,229 @@ const METER_TEAL: MeterPalette = MeterPalette {
     ramp_hi: c(0x8effef),
 };
 
+/// The Light theme's instrument: not lit glass at all, but a *printed dial* —
+/// a white card with black graduations and a black needle, the way a
+/// moving-coil meter has always been made. It is the one thing on the light
+/// theme that is not simply the dark look inverted: an illuminated instrument
+/// on a white desk would read as a hole cut in the page, and a paper meter is
+/// what the ground it now sits on actually calls for.
+///
+/// Everything downstream keys off [`MeterPalette::paper`]; the values here are
+/// only the shades.
+const METER_LIGHT: MeterPalette = MeterPalette {
+    paper: true,
+    face_top: c(0xffffff),
+    face_bot: c(0xeef0f3), // card stock, very slightly shaded toward the bottom
+    glass: c(0xc3c9d1),    // the bezel hairline — no specular left to catch
+    // Not a backlight any more: a wash this pale is what the RX bloom becomes
+    // once it is 30% alpha over white, i.e. very nearly nothing.
+    backlight: c(0xdde5ee),
+    readout: c(0x10151b),    // 16.6:1 on the card
+    subdued: c(0x59636e),    //  5.9:1
+    tick_minor: c(0x3d444c), //  9.7:1
+    tick_major: c(0x0a0d11),
+    label: c(0x0a0d11),
+    grid_line: c(0xc0c7cf),
+    grid_label: c(0x59636e),
+    // The bar's trough, shaded the same way round as every other theme's — a
+    // shadow under the top lip — just lighter throughout.
+    rail_top: c(0xd6dbe2),
+    rail_bot: c(0xf1f3f6),
+    rail_edge: c(0xa9b2bd),
+    // Ink, not light: the cool half of the ramps has to be readable *as a
+    // printed band* on white, so it runs deep teal → cyan rather than climbing
+    // to ice.
+    ramp_lo: c(0x16576e),
+    ramp_mid: c(0x0d7c9c),
+    ramp_hi: c(0x00a0c6),
+};
+
 /// Indexed by [`theme_index`], like [`PALETTES`]. Rainbow keeps the historic
 /// navy instrument: its grounds are the default's, and the meter already
 /// reads in the accents the ramps give it.
-static METER_PALETTES: [MeterPalette; 5] =
-    [METER_DEFAULT, METER_GREEN, METER_AMBER, METER_TEAL, METER_DEFAULT];
+static METER_PALETTES: [MeterPalette; 6] =
+    [METER_DEFAULT, METER_GREEN, METER_AMBER, METER_TEAL, METER_DEFAULT, METER_LIGHT];
 
 /// The current theme's S-meter instrument colours.
 #[inline]
 pub fn meter_palette() -> &'static MeterPalette {
     &METER_PALETTES[THEME.load(Ordering::Relaxed) as usize]
+}
+
+/// What the *instruments* are drawn with: the panadapter and its waterfall,
+/// the wide spectrum, the world map, the solar globe's cards.
+///
+/// These stay on a dark ground in every theme, the Light one included. A
+/// waterfall has no bright-ground form — every colour map runs from black up
+/// through its hot end, and a signal display inverted per theme would be read
+/// wrongly by anyone who had ever used it the other way round. So the
+/// instruments keep their glass and this palette carries the inks that go on
+/// it, exactly as [`MeterPalette`] already did for the S-meter.
+///
+/// For the five dark themes each field is that theme's own role, unchanged —
+/// see [`scope_from`]. Only [`SCOPE_LIGHT`] differs, and only because the
+/// main palette's accents went dark to survive a white panel.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScopePalette {
+    /// Canvas behind an instrument that has no image of its own to fill it —
+    /// the world map's ocean.
+    pub ground: Color32,
+    /// The ground *outside* an instrument's cut-corner border, used to mask
+    /// its square fill corners.
+    pub shell: Color32,
+    /// Labels and readouts painted straight onto the glass.
+    pub ink: Color32,
+    /// The same, for the one under the pointer.
+    pub ink_strong: Color32,
+    /// Rules and dividers drawn on it — the band-plan strip's inner edge.
+    pub line: Color32,
+    pub accent: Color32,
+    pub accent_dim: Color32,
+    /// Worked/heard/good markers.
+    pub good: Color32,
+    /// Measurement and warning marks.
+    pub warn: Color32,
+    /// The instrument's own frame and corner brackets.
+    pub chrome: Color32,
+}
+
+/// A theme whose chrome is already dark lends the instruments its own roles.
+const fn scope_from(p: &Palette) -> ScopePalette {
+    ScopePalette {
+        ground: p.input_bg,
+        shell: p.bg_deep,
+        ink: p.text,
+        ink_strong: p.text_strong,
+        line: p.line_lit,
+        accent: p.cyan,
+        accent_dim: p.cyan_dim,
+        good: p.green,
+        warn: p.yellow,
+        chrome: p.pink,
+    }
+}
+
+/// The Light theme's instrument inks. Structurally the default's — bright
+/// accents on dark glass — with the grounds pulled to a neutral graphite so
+/// the panadapter sits on the white page as a component rather than a void.
+const SCOPE_LIGHT: ScopePalette = ScopePalette {
+    ground: c(0x0d1117),
+    // Not the palette's white `bg_deep`: this masks the border's corners, and
+    // white wedges cut out of the instrument's frame would read as damage.
+    shell: c(0x1b2431),
+    ink: c(0xc3cedb),
+    ink_strong: c(0xeaf2fa),
+    line: c(0x39485c),
+    accent: c(0x22d3ee),
+    accent_dim: c(0x2a9db8),
+    good: c(0x46e07d),
+    warn: c(0xffd23f),
+    chrome: c(0xff3d63),
+};
+
+/// Indexed by [`theme_index`], like [`PALETTES`].
+static SCOPE_PALETTES: [ScopePalette; 6] = [
+    scope_from(&DEFAULT),
+    scope_from(&GREEN_PHOSPHOR),
+    scope_from(&AMBER_PHOSPHOR),
+    scope_from(&TEAL_ORANGE),
+    scope_from(&RAINBOW),
+    SCOPE_LIGHT,
+];
+
+/// The current theme's instrument inks — see [`ScopePalette`].
+#[inline]
+pub fn scope() -> &'static ScopePalette {
+    &SCOPE_PALETTES[THEME.load(Ordering::Relaxed) as usize]
+}
+
+/// The flat world map's inks: the sea it is drawn on, the dot matrix of land,
+/// and every marker that can appear on it.
+///
+/// Its own palette rather than the [`ScopePalette`] because the map is the one
+/// instrument that *does* follow the ground. A waterfall has no bright form —
+/// its colour maps start at black — but a map plainly does: pale sea, land
+/// picked out on it, dark markers. So on the Light theme the panadapter stays
+/// glass and the map turns into an atlas, and the two need separate sets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MapPalette {
+    pub sea: Color32,
+    /// The dot matrix the continents are stippled in.
+    pub land: Color32,
+    /// A decoded station with a known grid: a neutral dot, faded by age. Also
+    /// the head of the transmit comet — the one mark that has to out-read
+    /// every coloured one around it.
+    pub station: Color32,
+    /// The great-circle path to the current DX, and the comet that runs along
+    /// it while transmitting.
+    pub trail: Color32,
+    pub comet: Color32,
+    /// Home, the worked DX, the row under the pointer, and a decode clicked
+    /// but not yet answered. Each is drawn as a core in this colour with a
+    /// low-alpha halo of it behind.
+    pub home: Color32,
+    pub dx: Color32,
+    pub hover: Color32,
+    pub preview: Color32,
+    /// The "double-click to reframe" hint — carries its own alpha.
+    pub hint: Color32,
+    /// The map's frame, and the colour behind it that masks the cut corners.
+    pub frame: Color32,
+    pub shell: Color32,
+}
+
+/// The dark themes' map: a near-black sea with slate-teal continents, white
+/// station dots, and the theme's own accents on the markers.
+const fn map_from(p: &Palette) -> MapPalette {
+    MapPalette {
+        sea: p.input_bg,
+        land: c(0x1c4458),
+        station: Color32::WHITE,
+        trail: c(0x00d0f4),
+        comet: c(0x78f0ff),
+        home: p.green,
+        dx: p.pink,
+        hover: p.yellow,
+        preview: c(0xffd23f),
+        hint: Color32::from_rgba_premultiplied(90, 90, 90, 90),
+        frame: p.red_deep,
+        shell: p.bg_deep,
+    }
+}
+
+/// The Light theme's map, read as a printed atlas: pale sea, land stippled a
+/// few shades into it, and markers dark enough to be found on both.
+const SCOPE_MAP_LIGHT: MapPalette = MapPalette {
+    sea: c(0xdbe7f1),
+    land: c(0x6b93a7),
+    station: c(0x111a24), // the white dots inverted — anything paler vanishes
+    trail: c(0x006d8f),
+    comet: c(0x0b6ea8),
+    home: c(0x0b6129),
+    dx: c(0xa8102f),
+    hover: c(0x9c6100),
+    preview: c(0xa87a00),
+    hint: Color32::from_rgba_premultiplied(0, 0, 0, 110),
+    frame: c(0xa8324e),
+    // The map is inside a panel here, and a wedge of the *page* colour cut out
+    // of its corners would read as a gap rather than as a bevel.
+    shell: c(0xffffff),
+};
+
+/// Indexed by [`theme_index`], like [`PALETTES`].
+static MAP_PALETTES: [MapPalette; 6] = [
+    map_from(&DEFAULT),
+    map_from(&GREEN_PHOSPHOR),
+    map_from(&AMBER_PHOSPHOR),
+    map_from(&TEAL_ORANGE),
+    map_from(&RAINBOW),
+    SCOPE_MAP_LIGHT,
+];
+
+/// The current theme's world-map inks — see [`MapPalette`].
+#[inline]
+pub fn map() -> &'static MapPalette {
+    &MAP_PALETTES[THEME.load(Ordering::Relaxed) as usize]
 }
 
 /// Indexed by [`style_index`].
@@ -392,6 +713,7 @@ const fn theme_index(t: UiTheme) -> u8 {
         UiTheme::AmberPhosphor => 2,
         UiTheme::TealOrange => 3,
         UiTheme::Rainbow => 4,
+        UiTheme::Light => 5,
     }
 }
 
@@ -423,6 +745,59 @@ pub fn set_look(theme: UiTheme, buttons: ChromeStyle, windows: ChromeStyle) {
 #[inline]
 pub fn palette() -> &'static Palette {
     &PALETTES[THEME.load(Ordering::Relaxed) as usize]
+}
+
+/// Whether the chrome currently sits on a bright ground.
+#[inline]
+pub fn is_light() -> bool {
+    palette().light
+}
+
+/// One sRGB channel, decoded to light.
+fn to_linear(ch: u8) -> f32 {
+    let c = ch as f32 / 255.0;
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// Light, encoded back to one sRGB channel.
+fn from_linear(v: f32) -> u8 {
+    let v = v.clamp(0.0, 1.0);
+    let c = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    (c * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// WCAG relative luminance.
+fn luminance(c: Color32) -> f32 {
+    0.2126 * to_linear(c.r()) + 0.7152 * to_linear(c.g()) + 0.0722 * to_linear(c.b())
+}
+
+/// A neutral grey from the historic dark-theme scale, re-levelled for the
+/// current theme.
+///
+/// Most of the UI's secondary text — "no memories yet", the units beside a
+/// readout, a dupe's greyed-out callsign — was written as a literal
+/// `Color32::from_gray(N)`, a scale that only means anything against a
+/// near-black panel. Read straight onto white, `from_gray(150)` is 3.0:1:
+/// visible, but well under the 4.5:1 a callsign glanced at off a list
+/// deserves, and `from_gray(48)` — the "off" state of every little indicator
+/// dot — would come out darker than the lit one.
+///
+/// So the level is *mirrored* rather than reused: the returned grey stands at
+/// the same contrast from this theme's panel that `from_gray(level)` stood at
+/// from the dark themes'. Dim stays dim, bright stays bright, and the ratio an
+/// operator actually reads by is preserved — 150 lands on 96 (6.3:1 both
+/// ways), 48 on 221. Dark themes get `from_gray(level)` straight back, bit for
+/// bit.
+pub fn gray(level: u8) -> Color32 {
+    let p = palette();
+    if !p.light {
+        return Color32::from_gray(level);
+    }
+    /// Luminance of [`DEFAULT`]`.panel` — the ground the historic grey scale
+    /// was picked against.
+    const DARK_PANEL: f32 = 0.005_657;
+    let ratio = (to_linear(level) + 0.05) / (DARK_PANEL + 0.05);
+    Color32::from_gray(from_linear((luminance(p.panel) + 0.05) / ratio - 0.05))
 }
 
 /// The shape buttons currently wear.
@@ -514,6 +889,9 @@ palette_accessors! {
     YELLOW => yellow,
     GREEN => green,
     INK_ON_CYAN => ink_on_cyan,
+    INK_ON_BRIGHT => ink_on_bright,
+    HAZARD => hazard,
+    HAZARD_DARK => hazard_dark,
     RED_DEEP => red_deep,
     CQ_BG => cq_bg,
     TOME_BG => tome_bg,
@@ -527,10 +905,58 @@ palette_accessors! {
     ALERT => alert,
 }
 
+/// A colour that came from *data* rather than the palette — a spot kind, a
+/// band-plan segment — brought onto the current ground.
+///
+/// These are picked once, in `sdroxide-types`, for every client that draws
+/// them, and they are picked for a dark one: pastels around 0.5 to 0.7
+/// luminance, which land between 1.4:1 and 2.5:1 on white. Rather than a
+/// second table that would have to be kept in step with the first, this takes
+/// the exposure down until the colour clears about 5.5:1, in linear light so
+/// the hue and the relative saturation survive the trip.
+///
+/// Returns the colour untouched on every dark theme.
+pub fn data_ink(rgb: (u8, u8, u8)) -> Color32 {
+    let (r, g, b) = rgb;
+    let c = Color32::from_rgb(r, g, b);
+    if !palette().light {
+        return c;
+    }
+    /// The luminance the darkened colour aims for: 5.8:1 against white.
+    const TARGET: f32 = 0.13;
+    let lum = luminance(c);
+    if lum <= TARGET {
+        return c;
+    }
+    let k = TARGET / lum;
+    Color32::from_rgb(
+        from_linear(to_linear(r) * k),
+        from_linear(to_linear(g) * k),
+        from_linear(to_linear(b) * k),
+    )
+}
+
 /// A colour per continent, so a list of decodes reads as a map at a glance —
 /// which way the band is open is visible before a single callsign is read.
 /// Anything unrecognised comes back grey.
+///
+/// The Light theme needs its own set: these are ink, and the pastel-bright
+/// originals sit between 1.3:1 and 1.9:1 on white — the whole cue would
+/// disappear. Same seven hues, taken down to 4.6:1 or better, and kept as far
+/// apart from each other as they were.
 pub fn continent_color(code: &str) -> Color32 {
+    if palette().light {
+        return match code {
+            "EU" => c(0x1d4ed8),
+            "NA" => c(0x0d7030),
+            "SA" => c(0x9a4a00),
+            "AS" => c(0xb01a80),
+            "AF" => c(0x7a5600),
+            "OC" => c(0x00706b),
+            "AN" => c(0x4a5c73),
+            _ => gray(110),
+        };
+    }
     match code {
         "EU" => Color32::from_rgb(0x7c, 0xa8, 0xff),
         "NA" => Color32::from_rgb(0x46, 0xe0, 0x7d),
@@ -571,10 +997,14 @@ pub fn apply_visuals(ctx: &egui::Context) {
         _ => CornerRadius::ZERO,
     };
 
-    ctx.set_theme(egui::Theme::Dark);
+    // egui reads `dark_mode` itself in a few places we never set by hand — the
+    // shadow under a window, the tint on a disabled widget, `Color32::
+    // placeholder` fallbacks — so it has to agree with the palette or those
+    // land inverted.
+    ctx.set_theme(if p.light { egui::Theme::Light } else { egui::Theme::Dark });
     ctx.all_styles_mut(|style| {
         let v = &mut style.visuals;
-        v.dark_mode = true;
+        v.dark_mode = !p.light;
         v.panel_fill = p.panel;
         v.window_fill = p.panel;
         v.extreme_bg_color = p.input_bg;
@@ -954,5 +1384,231 @@ mod tests {
                 p.alert
             );
         }
+    }
+
+    /// WCAG contrast between two opaque colours.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let (x, y) = (luminance(a), luminance(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// Every role the Light theme uses as *ink* clears 4.5:1 on its panel.
+    ///
+    /// This is the whole reason that palette's accents are as dark as they
+    /// are, and it is an easy thing to undo by eye: `green` and `yellow` in
+    /// particular look wrong beside the other themes' columns and invite being
+    /// "fixed" back to a bright hue — at which point a signal report or a
+    /// warning line lands at about 1.5:1 on white and cannot be read at all.
+    #[test]
+    fn the_light_theme_has_no_bright_ink_on_white() {
+        let p = &PALETTES[theme_index(UiTheme::Light) as usize];
+        assert!(p.light, "the Light palette must declare itself light");
+        for (ink, name) in [
+            (p.text, "text"),
+            (p.text_strong, "text_strong"),
+            (p.cyan, "cyan"),
+            (p.cyan_dim, "cyan_dim"),
+            (p.pink, "pink"),
+            (p.yellow, "yellow"),
+            (p.green, "green"),
+            (p.alert, "alert"),
+        ] {
+            let r = contrast(ink, p.panel);
+            assert!(r >= 4.5, "Light {name} is {r:.2}:1 on the panel — needs 4.5:1");
+        }
+        // …and on the row tints a decode list paints behind that ink.
+        for (bg, name) in [(p.cq_bg, "cq_bg"), (p.tome_bg, "tome_bg"), (p.done_bg, "done_bg")] {
+            let r = contrast(p.text, bg);
+            assert!(r >= 4.5, "Light text is {r:.2}:1 on {name} — needs 4.5:1");
+        }
+        // The ink each accent fill carries has to clear it the other way too.
+        for (fill, name) in [(p.cyan, "cyan"), (p.green, "green"), (p.yellow, "yellow")] {
+            let ink = if name == "cyan" { p.ink_on_cyan } else { p.ink_on_bright };
+            let r = contrast(ink, fill);
+            assert!(r >= 4.5, "Light ink on the {name} chip is {r:.2}:1 — needs 4.5:1");
+        }
+    }
+
+    /// The Light theme mirrors the *depth* of the grounds.
+    ///
+    /// A tab, a module box and a button face each place themselves by stepping
+    /// away from `panel`, and on a bright ground every one of those steps has
+    /// to go the other way — a button face lighter than a white panel is not a
+    /// raised control, it is nothing at all.
+    ///
+    /// The page is the exception, and is checked the other way on purpose: it
+    /// sits *behind* the panels in both, so it stays the darker of the two
+    /// however bright the theme is. Mirroring it too would light the
+    /// unselected tabs and sink the selected one.
+    #[test]
+    fn the_light_theme_mirrors_the_ground_order() {
+        let (d, l) = (&DEFAULT, &PALETTES[theme_index(UiTheme::Light) as usize]);
+        for (dark_a, dark_b, light_a, light_b, what) in [
+            (d.panel, d.fill, l.panel, l.fill, "panel vs button face"),
+            (d.fill, d.fill_hover, l.fill, l.fill_hover, "button face vs hover"),
+            (d.fill_hover, d.fill_active, l.fill_hover, l.fill_active, "hover vs active"),
+            (d.panel, d.line, l.panel, l.line, "panel vs border"),
+            (d.line, d.line_lit, l.line, l.line_lit, "border vs lit border"),
+            (d.row_bg, d.scroll_track, l.row_bg, l.scroll_track, "list vs scroll gutter"),
+        ] {
+            let dark_step = luminance(dark_b) - luminance(dark_a);
+            let light_step = luminance(light_b) - luminance(light_a);
+            assert!(
+                dark_step * light_step < 0.0,
+                "Light did not mirror {what}: {dark_step:+.4} dark, {light_step:+.4} light"
+            );
+        }
+        for p in PALETTES.iter() {
+            assert!(
+                luminance(p.bg_deep) < luminance(p.panel),
+                "a palette put its page in front of its panels"
+            );
+        }
+    }
+
+    /// The instruments do *not* follow the ground — except the map, which
+    /// does.
+    ///
+    /// A waterfall's colour maps all start at black, so a bright panadapter
+    /// has no form to take; a map plainly does. That split is the whole reason
+    /// [`ScopePalette`] and [`MapPalette`] are separate, and it is invisible
+    /// from any one call site, so it is asserted here: the Light theme's scope
+    /// inks have to stay *brighter* than its glass, and its map inks *darker*
+    /// than its sea.
+    #[test]
+    fn the_light_theme_keeps_its_glass_dark_and_its_map_bright() {
+        let i = theme_index(UiTheme::Light) as usize;
+        let (scope, map, meter) = (&SCOPE_PALETTES[i], &MAP_PALETTES[i], &METER_PALETTES[i]);
+
+        assert!(meter.paper, "the Light meter is a printed dial");
+        assert!(
+            luminance(meter.face_top) > 0.5 && luminance(meter.readout) < 0.1,
+            "the paper dial wants dark ink on a light card"
+        );
+        for (face, name) in [(scope.ground, "scope ground"), (scope.shell, "scope shell")] {
+            assert!(luminance(face) < 0.06, "the Light {name} must stay dark glass");
+        }
+        for (ink, name) in [
+            (scope.ink, "ink"),
+            (scope.accent, "accent"),
+            (scope.good, "good"),
+            (scope.warn, "warn"),
+            (scope.chrome, "chrome"),
+        ] {
+            let r = contrast(ink, scope.ground);
+            assert!(r >= 4.5, "Light scope {name} is {r:.2}:1 on the glass — needs 4.5:1");
+        }
+
+        assert!(luminance(map.sea) > 0.5, "the Light map is an atlas, not a night sky");
+        for (ink, name) in [
+            (map.land, "land"),
+            (map.station, "station"),
+            (map.trail, "trail"),
+            (map.home, "home"),
+            (map.dx, "dx"),
+            (map.hover, "hover"),
+            (map.frame, "frame"),
+        ] {
+            assert!(
+                luminance(ink) < luminance(map.sea),
+                "Light map {name} is lighter than the sea it is drawn on"
+            );
+        }
+        // The station dot is the neutral one every coloured marker is read
+        // against, and the one the user has to be able to find: 7:1.
+        let r = contrast(map.station, map.sea);
+        assert!(r >= 7.0, "Light map station dots are {r:.2}:1 on the sea — needs 7:1");
+    }
+
+    /// [`data_ink`] leaves a dark theme's data colours alone and brings a
+    /// bright one's down to where they can be read, without turning them grey.
+    #[test]
+    fn data_colours_keep_their_hue_when_they_are_darkened() {
+        // The spot-kind colours, as `sdroxide-types` publishes them.
+        for rgb in [(120u8, 220u8, 255u8), (120, 230, 140), (255, 190, 90), (210, 150, 255)] {
+            let (r, g, b) = rgb;
+            assert_eq!(
+                Color32::from_rgb(r, g, b),
+                data_ink(rgb),
+                "a dark theme's data colour drifted"
+            );
+        }
+
+        let light = &PALETTES[theme_index(UiTheme::Light) as usize];
+        let darkened = |rgb: (u8, u8, u8)| {
+            const TARGET: f32 = 0.13;
+            let c = Color32::from_rgb(rgb.0, rgb.1, rgb.2);
+            let k = TARGET / luminance(c);
+            Color32::from_rgb(
+                from_linear(to_linear(rgb.0) * k),
+                from_linear(to_linear(rgb.1) * k),
+                from_linear(to_linear(rgb.2) * k),
+            )
+        };
+        for rgb in [(120u8, 220u8, 255u8), (120, 230, 140), (255, 190, 90), (210, 150, 255)] {
+            let c = darkened(rgb);
+            let r = contrast(c, light.panel);
+            assert!(r >= 4.5, "a darkened {rgb:?} is {r:.2}:1 on white — needs 4.5:1");
+            // Still that colour: the channel with the most of it going in has
+            // the most of it coming out.
+            let arg_max = |(r, g, b): (u8, u8, u8)| {
+                if r >= g && r >= b {
+                    0
+                } else if g >= b {
+                    1
+                } else {
+                    2
+                }
+            };
+            assert_eq!(
+                arg_max(rgb),
+                arg_max((c.r(), c.g(), c.b())),
+                "darkening {rgb:?} moved its hue"
+            );
+        }
+    }
+
+    /// [`gray`] hands the dark themes their historic level back untouched, and
+    /// gives the Light theme the *same contrast* the other way up.
+    ///
+    /// Equal contrast, not more: these levels are the UI's de-emphasised ink,
+    /// and a mirror that quietly promoted them would flatten the difference
+    /// between a caption and the body text beside it. What the mirror does
+    /// guarantee is that the ordering survives — an unlit indicator stays
+    /// fainter than a caption, which stays fainter than the ink.
+    #[test]
+    fn the_grey_scale_is_mirrored_not_reused() {
+        // Deliberately does not call `set_look` — the theme atomic is
+        // process-wide and the tests run in parallel.
+        for level in [8u8, 48, 70, 90, 110, 150, 190] {
+            assert_eq!(Color32::from_gray(level), gray(level), "a dark theme's grey drifted");
+        }
+
+        let light = &PALETTES[theme_index(UiTheme::Light) as usize];
+        let mirrored = |level: u8| {
+            const DARK_PANEL: f32 = 0.005_657;
+            let ratio = (to_linear(level) + 0.05) / (DARK_PANEL + 0.05);
+            Color32::from_gray(from_linear((luminance(light.panel) + 0.05) / ratio - 0.05))
+        };
+        for level in [48u8, 70, 90, 110, 120, 150, 190] {
+            let (was, now) = (
+                contrast(Color32::from_gray(level), DEFAULT.panel),
+                contrast(mirrored(level), light.panel),
+            );
+            assert!(
+                (was - now).abs() / was < 0.05,
+                "grey {level} was {was:.2}:1 on navy and came back {now:.2}:1 on white"
+            );
+            // On the other side of the panel from where it started.
+            assert!(
+                luminance(mirrored(level)) < luminance(light.panel),
+                "grey {level} came back lighter than the panel it sits on"
+            );
+        }
+        // The ordering the whole scale rests on: an unlit indicator is fainter
+        // than a caption, and a caption is fainter than the body ink.
+        let faint = |c: Color32| contrast(c, light.panel);
+        assert!(faint(mirrored(48)) < faint(mirrored(150)));
+        assert!(faint(mirrored(150)) < faint(light.text));
     }
 }

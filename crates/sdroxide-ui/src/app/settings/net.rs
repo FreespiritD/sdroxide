@@ -171,7 +171,7 @@ pub(in crate::app) fn broadcast_stations_settings(
         .weak(),
     );
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Season").size(11.0).color(Color32::from_gray(150)));
+        ui.label(RichText::new("Season").size(11.0).color(crate::theme::gray(150)));
         ui.label(
             RichText::new(season.to_uppercase())
                 .monospace()
@@ -183,7 +183,7 @@ pub(in crate::app) fn broadcast_stations_settings(
         } else if cached {
             ("downloaded".to_string(), crate::theme::GREEN())
         } else {
-            ("using the built-in copy".to_string(), Color32::from_gray(150))
+            ("using the built-in copy".to_string(), crate::theme::gray(150))
         };
         ui.label(RichText::new(text).size(11.0).color(colour));
     });
@@ -211,7 +211,7 @@ pub(in crate::app) fn broadcast_stations_settings(
                 RichText::new(p.display().to_string())
                     .monospace()
                     .size(10.5)
-                    .color(Color32::from_gray(150)),
+                    .color(crate::theme::gray(150)),
             )
             .truncate(),
         );

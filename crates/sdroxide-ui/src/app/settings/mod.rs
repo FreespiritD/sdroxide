@@ -1709,7 +1709,7 @@ impl SdroxideApp {
                     )
                     .size(9.5)
                     .italics()
-                    .color(egui::Color32::from_gray(110)),
+                    .color(crate::theme::gray(110)),
                 );
 
                 net_heading(ui, "POTA / SOTA / PSK Reporter");
@@ -2021,7 +2021,7 @@ impl SdroxideApp {
                          LoTW/eQSL confirmations are downloaded here to mark worked-vs-confirmed.",
                     )
                     .size(10.5)
-                    .color(Color32::from_gray(140)),
+                    .color(crate::theme::gray(140)),
                 );
 
                 ui.add_space(8.0);
@@ -2197,7 +2197,10 @@ impl SdroxideApp {
             for chip in &self.radio_roster {
                 let mut label = RichText::new(chip.display_name()).size(12.5);
                 if chip.focused {
-                    label = label.strong().color(crate::theme::TEXT_STRONG());
+                    // The ink a *selected* chip carries, not the panel's:
+                    // this sits on the accent fill, and the strong body
+                    // colour is the one shade guaranteed to be closest to it.
+                    label = label.strong().color(crate::theme::INK_ON_CYAN());
                 }
                 if crate::chrome::chip(ui, chip.focused, label)
                     .on_hover_text(if chip.focused {

@@ -42,7 +42,7 @@ impl SdroxideApp {
             ui.label(
                 RichText::new(format!("{audio_hz:.0} Hz"))
                     .size(11.0)
-                    .color(Color32::from_gray(150)),
+                    .color(crate::theme::gray(150)),
             );
             if crate::chrome::chip(ui, false, "−").on_hover_text("Tune down 10 Hz").clicked() {
                 cmds.push(Command::SetDigiAudioFreq((audio_hz - 10.0).clamp(200.0, 3500.0)));
@@ -96,7 +96,7 @@ impl SdroxideApp {
                                     RichText::new("— listening —")
                                         .monospace()
                                         .size(12.0)
-                                        .color(Color32::from_gray(90)),
+                                        .color(crate::theme::gray(90)),
                                 );
                             } else {
                                 ui.add(
@@ -295,7 +295,7 @@ impl SdroxideApp {
             ui.label(
                 RichText::new(format!("{audio_hz:.0} Hz"))
                     .size(11.0)
-                    .color(Color32::from_gray(150)),
+                    .color(crate::theme::gray(150)),
             );
             if crate::chrome::chip(ui, false, "−").on_hover_text("Tune down 10 Hz").clicked() {
                 cmds.push(Command::SetDigiAudioFreq(audio_hz - 10.0));
@@ -356,7 +356,7 @@ impl SdroxideApp {
                 ui.label(
                     RichText::new(format!("{:.1} char/s", variant.chars_per_sec()))
                         .size(10.5)
-                        .color(Color32::from_gray(120)),
+                        .color(crate::theme::gray(120)),
                 );
             });
         });

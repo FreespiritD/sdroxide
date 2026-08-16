@@ -140,7 +140,7 @@ impl SdroxideApp {
         });
         ui.separator();
         if self.memories.is_empty() && self.mem_folders.is_empty() {
-            ui.label(RichText::new("no memories yet").color(Color32::from_gray(120)));
+            ui.label(RichText::new("no memories yet").color(crate::theme::gray(120)));
         } else if !self.mem_folders.is_empty() {
             ui.label(
                 RichText::new("drag a memory onto a folder to file it, below them to unfile it")
@@ -491,9 +491,9 @@ impl SdroxideApp {
                                         crate::theme::CYAN(),
                                     )
                                 } else if slot.is_empty() {
-                                    ("—".to_string(), Color32::from_gray(110))
+                                    ("—".to_string(), crate::theme::gray(110))
                                 } else {
-                                    (format!("{:.1} s", slot.len_s), Color32::from_gray(170))
+                                    (format!("{:.1} s", slot.len_s), crate::theme::gray(170))
                                 };
                                 ui.add_sized(
                                     [88.0, 18.0],

@@ -4,7 +4,7 @@
 //! panels share, reachable from any of them. The identity half is the same
 //! store the Settings dialog's General tab edits.
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use sdroxide_types::Command;
 
 use crate::app::SdroxideApp;
@@ -355,7 +355,7 @@ impl SdroxideApp {
                 ui.label(
                     RichText::new("Message templates  {MYCALL} {MYGRID} {DX} {REPORT}")
                         .size(10.5)
-                        .color(Color32::from_gray(150)),
+                        .color(crate::theme::gray(150)),
                 );
                 egui::Grid::new("digi-msgs").num_columns(2).show(ui, |ui| {
                     for (label, field) in [

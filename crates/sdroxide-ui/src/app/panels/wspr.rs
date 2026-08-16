@@ -163,7 +163,7 @@ impl SdroxideApp {
                 } else {
                     format!("{} rx", self.wspr_spots.len())
                 };
-                ui.label(RichText::new(label).size(10.0).color(Color32::from_gray(120)));
+                ui.label(RichText::new(label).size(10.0).color(crate::theme::gray(120)));
             });
         });
 
@@ -222,7 +222,7 @@ impl SdroxideApp {
                 ui.label(
                     RichText::new(format!("{}:{:02}", left / 60, left % 60))
                         .size(10.5)
-                        .color(Color32::from_gray(140)),
+                        .color(crate::theme::gray(140)),
                 )
                 .on_hover_text(
                     "Time left in this two-minute slot. At the end of it the recording goes to \
@@ -390,7 +390,7 @@ impl SdroxideApp {
                 cmds.push(Command::SetDigiConfig(self.digi_cfg_edit.clone()));
             }
             ui.label(
-                RichText::new("what you actually radiate").size(9.5).color(Color32::from_gray(110)),
+                RichText::new("what you actually radiate").size(9.5).color(crate::theme::gray(110)),
             )
             .on_hover_text(
                 "This goes out in the message, and everyone who hears you judges the path by \
@@ -508,7 +508,7 @@ impl SdroxideApp {
             .color(if call.is_empty() || grid.is_empty() {
                 crate::theme::YELLOW()
             } else {
-                Color32::from_gray(110)
+                crate::theme::gray(110)
             }),
         );
         // The engine's verdict, not the panel's guess: it is whatever the
@@ -607,7 +607,7 @@ fn wspr_row(ui: &mut egui::Ui, s: &WsprSpot, home: Option<(f64, f64)>, now: i64)
                     egui::Label::new(
                         RichText::new(km.map(|k| format!("{k:.0} km")).unwrap_or_default())
                             .size(9.5)
-                            .color(Color32::from_gray(150)),
+                            .color(crate::theme::gray(150)),
                     ),
                 );
                 row_cell(
@@ -618,7 +618,7 @@ fn wspr_row(ui: &mut egui::Ui, s: &WsprSpot, home: Option<(f64, f64)>, now: i64)
                     egui::Label::new(
                         RichText::new(power_label(s.power_dbm))
                             .size(9.5)
-                            .color(Color32::from_gray(130)),
+                            .color(crate::theme::gray(130)),
                     ),
                 );
                 // When, in UTC, which is the only clock this mode has.
@@ -638,7 +638,7 @@ fn wspr_row(ui: &mut egui::Ui, s: &WsprSpot, home: Option<(f64, f64)>, now: i64)
                         RichText::new(format!("{:02}:{:02}", t / 3600, (t % 3600) / 60))
                             .size(9.5)
                             .monospace()
-                            .color(Color32::from_gray(120)),
+                            .color(crate::theme::gray(120)),
                     )
                     .on_hover_text(format!(
                         "{:02}:{:02} UTC — {} ago",

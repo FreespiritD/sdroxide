@@ -189,9 +189,9 @@ struct SpotBox {
 /// callsign is known, grey otherwise.
 fn spot_color(spot: &SkimmerSpot, hovered: bool) -> Color32 {
     if hovered {
-        crate::theme::CYAN()
+        crate::theme::scope().accent
     } else if spot.callsign.is_some() {
-        crate::theme::CYAN_DIM()
+        crate::theme::scope().accent_dim
     } else {
         Color32::from_gray(78)
     }
@@ -322,8 +322,11 @@ fn draw_spot_box(
     if callsign_only {
         if let Some(call) = &spot.callsign {
             // FT8 message text starts with "CQ" for callers; colour those green.
-            let base =
-                if spot.text.starts_with("CQ") { crate::theme::GREEN() } else { Color32::WHITE };
+            let base = if spot.text.starts_with("CQ") {
+                crate::theme::scope().good
+            } else {
+                Color32::WHITE
+            };
             let cc = fade(base, alpha);
             let g = p.layout_no_wrap(call.clone(), FontId::monospace(SPOT_CALL_PT * fs), cc);
             p.galley(pos2(rect.left() + pad, cy - g.size().y * 0.5), g, cc);
@@ -333,7 +336,7 @@ fn draw_spot_box(
 
     let mut x = rect.left() + pad;
     if let Some(call) = &spot.callsign {
-        let cc = fade(crate::theme::GREEN(), alpha);
+        let cc = fade(crate::theme::scope().good, alpha);
         let g = p.layout_no_wrap(call.clone(), FontId::monospace(SPOT_CALL_PT * fs), cc);
         p.galley(pos2(x, cy - g.size().y * 0.5), g.clone(), cc);
         x += g.size().x + 6.0;
@@ -348,7 +351,7 @@ fn draw_spot_box(
         return;
     }
     let text = if spot.text.is_empty() { "…" } else { spot.text.as_str() };
-    let col = fade(crate::theme::TEXT(), alpha);
+    let col = fade(crate::theme::scope().ink, alpha);
     let g = p.layout_no_wrap(text.to_string(), FontId::monospace(SPOT_MSG_PT * fs), col);
     let ty = cy - g.size().y * 0.5;
     // Left-align while it fits; once it overflows, pin the tail to the right.
@@ -1277,8 +1280,11 @@ pub fn show_ext(
     {
         let cy = scale_rect.top() + 1.5;
         let cx = scale_rect.center().x;
-        let col =
-            if hover_resize || resizing { crate::theme::CYAN() } else { Color32::from_gray(70) };
+        let col = if hover_resize || resizing {
+            crate::theme::scope().accent
+        } else {
+            Color32::from_gray(70)
+        };
         for dx in [-16.0f32, 0.0, 16.0] {
             painter.line_segment(
                 [pos2(cx + dx - 6.0, cy), pos2(cx + dx + 6.0, cy)],
@@ -1448,7 +1454,7 @@ pub fn show_ext(
                 sdroxide_types::FOX_ZONE_MAX_HZ as f64,
                 sdroxide_types::HOUND_ZONE_MAX_HZ as f64,
                 "HOUNDS",
-                crate::theme::CYAN(),
+                crate::theme::scope().accent,
                 mine(sdroxide_types::DxpedMode::Hound),
             ),
         ] {
@@ -1495,7 +1501,7 @@ pub fn show_ext(
         let hz = state.rx_freq_hz() + a as f64;
         if in_view(hz) {
             let x = view.freq_to_x(hz, &rect);
-            painter.vline(x, spec_rect.y_range(), Stroke::new(1.5, crate::theme::CYAN()));
+            painter.vline(x, spec_rect.y_range(), Stroke::new(1.5, crate::theme::scope().accent));
             painter.vline(
                 x,
                 wf_rect.y_range(),
@@ -1774,10 +1780,10 @@ pub fn show_ext(
     crate::chrome::paint_cut_border(
         &painter,
         rect.shrink(0.8),
-        crate::theme::PINK(),
-        crate::theme::BG_DEEP(),
+        crate::theme::scope().chrome,
+        crate::theme::scope().shell,
     );
-    crate::chrome::corner_brackets(&painter, rect, crate::theme::PINK());
+    crate::chrome::corner_brackets(&painter, rect, crate::theme::scope().chrome);
 }
 
 /// How long the released bandwidth measurement lingers while fading out.
@@ -1795,7 +1801,7 @@ fn draw_bw_measure(
     alpha: f32,
 ) {
     let a = alpha.clamp(0.0, 1.0);
-    let base = crate::theme::YELLOW();
+    let base = crate::theme::scope().warn;
     let color = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), (255.0 * a) as u8);
     let stroke = Stroke::new(1.5, color);
 

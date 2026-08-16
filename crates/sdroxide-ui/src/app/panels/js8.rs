@@ -485,7 +485,7 @@ impl SdroxideApp {
                         Some(sdroxide_types::Highlight::NewCall) => {
                             ("NEW", crate::theme::CYAN_DIM())
                         }
-                        Some(sdroxide_types::Highlight::Dupe) => ("DUPE", Color32::from_gray(85)),
+                        Some(sdroxide_types::Highlight::Dupe) => ("DUPE", crate::theme::gray(85)),
                         None => ("", Color32::TRANSPARENT),
                     };
                     let dupe = novelty.dupe;
@@ -509,7 +509,7 @@ impl SdroxideApp {
                         RichText::new(&h.call).size(15.0).strong().color(if to_me {
                             crate::theme::YELLOW()
                         } else if dupe {
-                            Color32::from_gray(105)
+                            crate::theme::gray(105)
                         } else if calling {
                             crate::theme::GREEN()
                         } else {
@@ -521,7 +521,7 @@ impl SdroxideApp {
                         egui::Label::new(RichText::new(badge).size(9.5).strong().color(badge_col));
                     let cont_lbl = egui::Label::new(
                         RichText::new(continent).monospace().size(11.0).strong().color(if dupe {
-                            Color32::from_gray(85)
+                            crate::theme::gray(85)
                         } else {
                             crate::theme::continent_color(continent)
                         }),
@@ -529,7 +529,7 @@ impl SdroxideApp {
                     let said = msg.map(js8_msg_summary).unwrap_or_default();
                     let msg_lbl =
                         egui::Label::new(RichText::new(said).monospace().size(12.5).color(
-                            if dupe { Color32::from_gray(95) } else { crate::theme::TEXT() },
+                            if dupe { crate::theme::gray(95) } else { crate::theme::TEXT() },
                         ))
                         .truncate();
                     let reply_btn = |ui: &mut egui::Ui| {
@@ -611,7 +611,7 @@ impl SdroxideApp {
                                                         // Dimmer for a grid the database
                                                         // supplied rather than the air.
                                                         .color(if looked_up {
-                                                            Color32::from_gray(110)
+                                                            crate::theme::gray(110)
                                                         } else {
                                                             crate::theme::CYAN_DIM()
                                                         }),
@@ -641,7 +641,7 @@ impl SdroxideApp {
                                         RichText::new(format!("{:.0}", h.audio_hz))
                                             .monospace()
                                             .size(12.0)
-                                            .color(Color32::from_gray(120)),
+                                            .color(crate::theme::gray(120)),
                                     ),
                                 );
                                 row_cell(ui, 92.0, ch, false, call_lbl);
@@ -659,7 +659,7 @@ impl SdroxideApp {
                                             // Dimmer for a grid the database
                                             // supplied rather than the air.
                                             .color(if looked_up {
-                                                Color32::from_gray(110)
+                                                crate::theme::gray(110)
                                             } else {
                                                 crate::theme::CYAN_DIM()
                                             }),

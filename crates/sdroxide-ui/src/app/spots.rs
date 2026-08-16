@@ -5,7 +5,7 @@
 //! one list filtered by kind, by the current view span, and by a fuzzy search.
 //! Clicking one tunes the radio and pre-fills the logbook.
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use sdroxide_types::{Command, Mode, RxId, Spot, SpotKind};
 
 use crate::theme::ThemedScroll;
@@ -59,9 +59,8 @@ fn spot_haystack(s: &Spot) -> String {
 /// One clickable spot row for the spots window: kind badge, call, frequency,
 /// mode, age or schedule, and the park/summit/transmitter reference or comment.
 fn spot_row(ui: &mut egui::Ui, s: &Spot, now_utc: i64, needed: bool) -> egui::Response {
-    let (r, g, b) = s.kind.color();
-    let kind_col = Color32::from_rgb(r, g, b);
-    let gray = Color32::from_gray(150);
+    let kind_col = crate::theme::data_ink(s.kind.color());
+    let gray = crate::theme::gray(150);
     let inner = egui::Frame::new()
         .fill(crate::theme::ROW_BG())
         .inner_margin(egui::Margin { left: 8, right: 6, top: 4, bottom: 4 })
@@ -122,7 +121,7 @@ fn spot_row(ui: &mut egui::Ui, s: &Spot, now_utc: i64, needed: bool) -> egui::Re
                 col(
                     ui,
                     76.0,
-                    egui::Label::new(RichText::new(when).size(10.5).color(Color32::from_gray(120))),
+                    egui::Label::new(RichText::new(when).size(10.5).color(crate::theme::gray(120))),
                 );
                 if needed {
                     col(
@@ -356,7 +355,7 @@ impl SdroxideApp {
                     }
                 });
                 if let Some(s) = &self.net_status {
-                    ui.label(RichText::new(s).size(11.0).color(Color32::from_gray(150)));
+                    ui.label(RichText::new(s).size(11.0).color(crate::theme::gray(150)));
                 }
                 ui.separator();
                 // Filter by the category chips, then rank by how well each row
@@ -399,7 +398,7 @@ impl SdroxideApp {
                         } else {
                             "nothing matches the search"
                         };
-                        ui.label(RichText::new(msg).color(Color32::from_gray(120)));
+                        ui.label(RichText::new(msg).color(crate::theme::gray(120)));
                     }
                 });
             });

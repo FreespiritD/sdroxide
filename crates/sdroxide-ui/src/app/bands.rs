@@ -29,7 +29,9 @@ use crate::app::SdroxideApp;
 
 /// Column headings and everything the reader is not meant to look at first —
 /// the same grey the propagation chip row uses for its scale caption.
-const DIM_INK: Color32 = Color32::from_gray(110);
+fn dim_ink() -> Color32 {
+    crate::theme::gray(110)
+}
 
 /// The colour a verdict is shown in.
 ///
@@ -41,7 +43,7 @@ pub(in crate::app) fn rating_color(r: BandRating) -> Option<Color32> {
         BandRating::Good => Some(crate::theme::GREEN()),
         BandRating::Fair => Some(crate::theme::YELLOW()),
         BandRating::Poor => Some(crate::theme::PINK()),
-        BandRating::Closed => Some(DIM_INK),
+        BandRating::Closed => Some(dim_ink()),
         BandRating::Unknown => None,
     }
 }
@@ -78,7 +80,7 @@ impl SdroxideApp {
 
     fn bands_body(&mut self, ui: &mut egui::Ui) {
         let field = self.prop.peek();
-        let dim = |s: &str| RichText::new(s).size(9.5).color(DIM_INK);
+        let dim = |s: &str| RichText::new(s).size(9.5).color(dim_ink());
 
         ui.horizontal(|ui| {
             ui.label(

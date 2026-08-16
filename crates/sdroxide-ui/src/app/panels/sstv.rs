@@ -512,7 +512,7 @@ fn rifp_chunk_map(ui: &mut egui::Ui, session: &sdroxide_types::RifpSession) {
     let cells = session.total.max(session.have) as usize;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(120.0, 10.0), egui::Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 2.0, Color32::from_gray(20));
+    p.rect_filled(rect, 2.0, crate::theme::gray(20));
     let have = |i: usize| session.map.get(i / 8).is_some_and(|b| b >> (i % 8) & 1 != 0);
     if cells > 0 && cells <= rect.width() as usize {
         let cw = rect.width() / cells as f32;
@@ -535,7 +535,7 @@ fn rifp_chunk_map(ui: &mut egui::Ui, session: &sdroxide_types::RifpSession) {
     p.rect_stroke(
         rect,
         2.0,
-        egui::Stroke::new(1.0, Color32::from_gray(60)),
+        egui::Stroke::new(1.0, crate::theme::gray(60)),
         egui::StrokeKind::Inside,
     );
     resp.on_hover_text("Chunks received (lit) and still missing (dark)");
@@ -544,18 +544,18 @@ fn rifp_chunk_map(ui: &mut egui::Ui, session: &sdroxide_types::RifpSession) {
 fn sstv_level_bar(ui: &mut egui::Ui, level: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(90.0, 10.0), egui::Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 2.0, Color32::from_gray(20));
+    p.rect_filled(rect, 2.0, crate::theme::gray(20));
     // Log scale (~ -60..0 dBFS mean-abs) so weak-but-decodable signals still show.
     let db = 20.0 * level.max(1e-6).log10();
     let frac = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
     let mut fill = rect;
     fill.set_width(rect.width() * frac);
-    let col = if frac > 0.06 { crate::theme::GREEN() } else { Color32::from_gray(45) };
+    let col = if frac > 0.06 { crate::theme::GREEN() } else { crate::theme::gray(45) };
     p.rect_filled(fill, 2.0, col);
     p.rect_stroke(
         rect,
         2.0,
-        egui::Stroke::new(1.0, Color32::from_gray(60)),
+        egui::Stroke::new(1.0, crate::theme::gray(60)),
         egui::StrokeKind::Inside,
     );
 }
@@ -962,7 +962,7 @@ impl SdroxideApp {
                                 ui.painter().rect_stroke(
                                     rect,
                                     2.0,
-                                    egui::Stroke::new(1.0, Color32::from_gray(70)),
+                                    egui::Stroke::new(1.0, crate::theme::gray(70)),
                                     egui::StrokeKind::Inside,
                                 );
                                 ui.painter().text(
@@ -970,7 +970,7 @@ impl SdroxideApp {
                                     egui::Align2::CENTER_CENTER,
                                     "+",
                                     egui::FontId::proportional(22.0),
-                                    Color32::from_gray(110),
+                                    crate::theme::gray(110),
                                 );
                                 resp
                             };
@@ -1000,7 +1000,7 @@ impl SdroxideApp {
                                 egui::Align2::CENTER_CENTER,
                                 format!("{}", i + 1),
                                 egui::FontId::proportional(10.0),
-                                if sel { crate::theme::CYAN() } else { Color32::from_gray(170) },
+                                if sel { crate::theme::CYAN() } else { crate::theme::gray(170) },
                             );
                             let resp = resp.on_hover_text(
                                 "Click to edit this slot's message · double-click to load an image",
@@ -1052,7 +1052,7 @@ impl SdroxideApp {
                     let gap = 6.0;
                     let preview_h = (ui.available_height() * 0.45).clamp(80.0, 260.0);
                     egui::Frame::new()
-                        .fill(Color32::from_gray(6))
+                        .fill(crate::theme::gray(6))
                         .stroke(egui::Stroke::new(1.0, crate::theme::LINE_LIT()))
                         .inner_margin(2.0)
                         .show(ui, |ui| {

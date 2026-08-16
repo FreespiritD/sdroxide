@@ -4,7 +4,7 @@
 //! status view: sync state, SNR, and the reporting the mode does to FreeDV
 //! Reporter on the operator's behalf.
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use sdroxide_types::Command;
 
 use crate::app::SdroxideApp;
@@ -56,7 +56,7 @@ impl SdroxideApp {
             ui.painter_at(lamp).circle_filled(
                 lamp.center(),
                 5.5,
-                if lit { crate::theme::GREEN() } else { Color32::from_gray(48) },
+                if lit { crate::theme::GREEN() } else { crate::theme::gray(48) },
             );
             ui.label(
                 RichText::new(if transmitting {
@@ -71,11 +71,11 @@ impl SdroxideApp {
                 .color(if lit {
                     crate::theme::GREEN()
                 } else {
-                    Color32::from_gray(130)
+                    crate::theme::gray(130)
                 }),
             );
             ui.add_space(16.0);
-            let dim = Color32::from_gray(150);
+            let dim = crate::theme::gray(150);
             if rade.sync && !transmitting {
                 ui.label(
                     RichText::new(format!("SNR {:.0} dB", rade.snr_db))
@@ -104,7 +104,7 @@ impl SdroxideApp {
             let (bar, _) =
                 ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), egui::Sense::hover());
             let p = ui.painter_at(bar);
-            p.rect_filled(bar, 0.0, Color32::from_gray(22));
+            p.rect_filled(bar, 0.0, crate::theme::gray(22));
             let level = rade.rx_level.clamp(0.0, 1.0);
             if level > 0.0 && !transmitting {
                 let mut fill = bar;
@@ -144,7 +144,7 @@ impl SdroxideApp {
                  there.",
             )
             .size(10.5)
-            .color(Color32::from_gray(125)),
+            .color(crate::theme::gray(125)),
         );
         if rade.dropped > 0 {
             ui.add_space(6.0);

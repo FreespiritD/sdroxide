@@ -4,7 +4,7 @@
 //! the CAT / Audio interface, since every other backend carries its audio
 //! in-band.
 
-use eframe::egui::{self, Color32, ComboBox, RichText};
+use eframe::egui::{self, ComboBox, RichText};
 use sdroxide_types::{Region, RemoteAccess};
 
 use crate::app::SdroxideApp;
@@ -118,7 +118,7 @@ pub(in crate::app) fn remote_access_settings(ui: &mut egui::Ui, access: &mut Rem
             "Stored in the clear in config.toml, like the other passwords sdroxide keeps.",
         )
         .size(10.5)
-        .color(Color32::from_gray(140)),
+        .color(crate::theme::gray(140)),
     );
 }
 
@@ -184,7 +184,7 @@ impl SdroxideApp {
                     .to_string(),
             })
             .size(10.5)
-            .color(Color32::from_gray(140)),
+            .color(crate::theme::gray(140)),
         );
     }
 

@@ -43,7 +43,7 @@ impl SdroxideApp {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("CW").size(11.0).strong().color(crate::theme::CYAN()));
             ui.label(
-                RichText::new(format!("{pitch:.0} Hz")).size(11.0).color(Color32::from_gray(150)),
+                RichText::new(format!("{pitch:.0} Hz")).size(11.0).color(crate::theme::gray(150)),
             )
             .on_hover_text(
                 "The tone being copied, and the tone transmitted — in CW they are the \
@@ -63,7 +63,7 @@ impl SdroxideApp {
             ui.painter_at(lamp).circle_filled(
                 lamp.center(),
                 4.5,
-                if cw.locked { crate::theme::GREEN() } else { Color32::from_gray(48) },
+                if cw.locked { crate::theme::GREEN() } else { crate::theme::gray(48) },
             );
             if cw.locked {
                 ui.label(
@@ -76,7 +76,7 @@ impl SdroxideApp {
                 ui.label(
                     RichText::new(format!("{:+.0} dB", cw.snr_db))
                         .size(10.5)
-                        .color(Color32::from_gray(140)),
+                        .color(crate::theme::gray(140)),
                 )
                 .on_hover_text("Signal to noise in 500 Hz — the same figure a report quotes");
                 // Only worth showing once it is a real mistune rather than a
@@ -94,7 +94,7 @@ impl SdroxideApp {
                     );
                 }
             } else {
-                ui.label(RichText::new("— listening —").size(10.5).color(Color32::from_gray(100)));
+                ui.label(RichText::new("— listening —").size(10.5).color(crate::theme::gray(100)));
             }
 
             crate::chrome::row_tail(ui, |ui| {
@@ -136,7 +136,7 @@ impl SdroxideApp {
                                     RichText::new("— nothing copied yet —")
                                         .monospace()
                                         .size(12.0)
-                                        .color(Color32::from_gray(90)),
+                                        .color(crate::theme::gray(90)),
                                 );
                             } else {
                                 ui.add(

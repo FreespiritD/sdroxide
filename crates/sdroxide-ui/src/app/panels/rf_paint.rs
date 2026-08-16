@@ -256,7 +256,7 @@ impl SdroxideApp {
             let (bar, _) =
                 ui.allocate_exact_size(egui::vec2(ui.available_width(), 3.0), egui::Sense::hover());
             let p = ui.painter_at(bar);
-            p.rect_filled(bar, 0.0, Color32::from_gray(24));
+            p.rect_filled(bar, 0.0, crate::theme::gray(24));
             if transmitting {
                 let mut fill = bar;
                 fill.set_width(bar.width() * progress);

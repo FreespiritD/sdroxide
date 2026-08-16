@@ -71,7 +71,11 @@ pub fn angled_frame<R>(ui: &mut Ui, accent: Color32, add: impl FnOnce(&mut Ui) -
 /// at the top and falling off dark at the bottom.
 fn panel_gradient(rect: Rect) -> Shape {
     let panel = theme::PANEL();
-    grad_rect(rect, lerp(panel, Color32::WHITE, 0.06), lerp(panel, Color32::BLACK, 0.45))
+    // The light falls from above either way. On a dark panel the fall-off has
+    // most of the range to work in; on a white one the same 45% would take the
+    // bottom of every panel down to mid-grey, so it is a tenth of that.
+    let shade = if theme::is_light() { 0.10 } else { 0.45 };
+    grad_rect(rect, lerp(panel, Color32::WHITE, 0.06), lerp(panel, Color32::BLACK, shade))
 }
 
 /// Restyle a floating window's body for the current window style — call it
@@ -294,12 +298,11 @@ fn paint_angled_border(p: &Painter, rect: Rect, color: Color32, mask: Color32) {
 /// view. Shared so the two cannot drift apart.
 pub fn hazard_stripes(p: &Painter, rect: Rect, stripe_w: f32) {
     let clip = p.with_clip_rect(rect);
-    let dark = Color32::from_rgb(0x16, 0x12, 0x04);
     let h = rect.height();
     let mut x = rect.left() - h;
     let mut k = 0i32;
     while x < rect.right() + stripe_w {
-        let color = if k % 2 == 0 { theme::YELLOW() } else { dark };
+        let color = if k % 2 == 0 { theme::HAZARD() } else { theme::HAZARD_DARK() };
         clip.add(Shape::convex_polygon(
             vec![
                 pos2(x, rect.bottom()),
@@ -647,7 +650,7 @@ pub fn split_handle(ui: &mut Ui, size: egui::Vec2, bg: Option<Color32>) -> Respo
     if let Some(bg) = bg {
         p.rect_filled(rect, 0.0, bg);
     }
-    let col = if hot { theme::CYAN() } else { Color32::from_gray(70) };
+    let col = if hot { theme::CYAN() } else { theme::gray(70) };
     let (cx, cy) = (rect.center().x, rect.center().y);
     for d in [-16.0f32, 0.0, 16.0] {
         let seg = if columns {

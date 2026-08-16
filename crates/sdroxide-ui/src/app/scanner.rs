@@ -60,7 +60,7 @@ impl SdroxideApp {
                     scan.running,
                     label,
                     crate::theme::GREEN(),
-                    egui::Color32::BLACK,
+                    crate::theme::INK_ON_BRIGHT(),
                 )
                 .clicked()
                 {

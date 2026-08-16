@@ -1011,7 +1011,7 @@ impl SdroxideApp {
                         RichText::new(self.inactive_vfo_label())
                             .monospace()
                             .size(12.0)
-                            .color(Color32::from_gray(120)),
+                            .color(crate::theme::gray(120)),
                     );
                 });
             }
@@ -1240,7 +1240,7 @@ impl SdroxideApp {
                         RichText::new(inactive)
                             .monospace()
                             .size(12.0)
-                            .color(Color32::from_gray(120)),
+                            .color(crate::theme::gray(120)),
                     );
                     // Push the band/mode chip to the bottom of the column by
                     // its measured height. A literal here would leave the
@@ -1996,7 +1996,7 @@ impl SdroxideApp {
                 heard == armed,
                 label,
                 crate::theme::YELLOW(),
-                Color32::BLACK,
+                crate::theme::INK_ON_BRIGHT(),
             ),
             None => crate::chrome::chip(ui, heard.is_some(), label),
         }
@@ -2495,7 +2495,7 @@ impl SdroxideApp {
                     ui.label(
                         RichText::new("needs a wideband IQ source")
                             .size(9.5)
-                            .color(Color32::from_gray(150)),
+                            .color(crate::theme::gray(150)),
                     );
                 }
 
@@ -2763,7 +2763,14 @@ impl SdroxideApp {
         // Doppler is being applied whether or not the window is open, and
         // that has to be visible.
         let sat_chip = if self.sat_track.is_some() {
-            accent_chip_stretched(ui, true, sat_label, crate::theme::GREEN(), Color32::BLACK, extra)
+            accent_chip_stretched(
+                ui,
+                true,
+                sat_label,
+                crate::theme::GREEN(),
+                crate::theme::INK_ON_BRIGHT(),
+                extra,
+            )
         } else {
             chip_stretched(ui, self.show_sat, sat_label, extra)
         };
@@ -2802,7 +2809,7 @@ impl SdroxideApp {
                 true,
                 scan_label,
                 if scan.holding { crate::theme::GREEN() } else { crate::theme::CYAN() },
-                Color32::BLACK,
+                crate::theme::INK_ON_BRIGHT(),
                 extra,
             )
         } else {

@@ -874,7 +874,7 @@ fn scene(ui: &mut egui::Ui, st: &mut SolarUi, data: Option<&SolarData>) {
             egui::Align2::RIGHT_TOP,
             "QTH not set — enter your grid square in Settings",
             egui::FontId::proportional(12.5),
-            theme::YELLOW(),
+            theme::scope().warn,
         );
     }
 }
@@ -974,7 +974,7 @@ fn draw_labels(
 
         // A dark halo, so a label stays readable over the bright solar disk as
         // well as over empty space.
-        let color = if hovered { theme::TEXT_STRONG() } else { l.color };
+        let color = if hovered { theme::scope().ink_strong } else { l.color };
         let shadow = egui::Color32::from_black_alpha(color.a().saturating_sub(40));
         p.text(
             pos + egui::vec2(1.0, 1.0),
@@ -2523,14 +2523,14 @@ fn clouds_note(ui: &egui::Ui, st: &SolarUi, data: Option<&SolarData>, rect: egui
     );
 
     let p = ui.painter();
-    let galley = p.layout_no_wrap(text, egui::FontId::proportional(10.5), theme::LINE_LIT());
+    let galley = p.layout_no_wrap(text, egui::FontId::proportional(10.5), theme::scope().line);
     if galley.size().x > rect.width() - 40.0 {
         return;
     }
     p.galley(
         egui::pos2(rect.left() + 14.0, rect.bottom() - galley.size().y - 8.0),
         galley,
-        theme::LINE_LIT(),
+        theme::scope().line,
     );
 }
 

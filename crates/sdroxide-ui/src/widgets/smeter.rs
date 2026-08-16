@@ -39,17 +39,43 @@ pub(crate) const NEEDLE_FACE_MAX_W: f32 = 430.0;
 /// logarithmic scale, the end of travel falls out as 3² = 9:1.
 const SWR_MAX: f32 = 9.0;
 
-const RED: Color32 = Color32::from_rgb(255, 60, 70);
 /// The transmit backlight — red in every theme, like [`RED`] and the hot inks
 /// below. The themed half of the instrument lives in
 /// [`crate::theme::MeterPalette`]; everything that means "past the red-line"
 /// or "transmitting" deliberately does not.
+///
+/// On the paper dial this is not a backlight but a wash: 34% of it over white
+/// card comes out a clear rose, which is the same message by other means.
 const BACKLIGHT_TX: Color32 = Color32::from_rgb(0x8e, 0x1e, 0x2c);
 
 /// The current theme's instrument colours: face wash, backlight, cool-side
 /// inks and ramps.
 fn meter() -> &'static crate::theme::MeterPalette {
     crate::theme::meter_palette()
+}
+
+/// Whether the face is a printed dial rather than lit glass — see
+/// [`crate::theme::MeterPalette::paper`].
+fn paper() -> bool {
+    meter().paper
+}
+
+/// One of the reds that mean "past the red-line", in the shade the current
+/// face needs.
+///
+/// The hot half of every scale stays red in every theme — that rule has not
+/// moved. What changes on a paper dial is only *which* red: the lit-glass
+/// shades are picked to glow off a near-black face and sit at 1.6:1 to 3:1
+/// against white card, where they would read as pastel decoration rather than
+/// as a warning.
+fn hot(glass: Color32, print: Color32) -> Color32 {
+    if paper() { print } else { glass }
+}
+
+/// The red-line red: the needle's bloom on glass, the transmit chip's accent.
+#[allow(non_snake_case)]
+fn RED() -> Color32 {
+    hot(Color32::from_rgb(255, 60, 70), Color32::from_rgb(0xc4, 0x00, 0x24))
 }
 
 /// Readout text: the headline value and the smaller sub-reading beside it.
@@ -68,24 +94,36 @@ fn SUBDUED() -> Color32 {
 /// always red).
 #[allow(non_snake_case)]
 fn TICK_MINOR() -> [Color32; 2] {
-    [meter().tick_minor, Color32::from_rgb(0x93, 0x4e, 0x52)]
+    [
+        meter().tick_minor,
+        hot(Color32::from_rgb(0x93, 0x4e, 0x52), Color32::from_rgb(0x9c, 0x2b, 0x2b)),
+    ]
 }
 #[allow(non_snake_case)]
 fn TICK_MAJOR() -> [Color32; 2] {
-    [meter().tick_major, Color32::from_rgb(0xff, 0x92, 0x8a)]
+    [
+        meter().tick_major,
+        hot(Color32::from_rgb(0xff, 0x92, 0x8a), Color32::from_rgb(0xa8, 0x0e, 0x20)),
+    ]
 }
 #[allow(non_snake_case)]
 fn LABEL() -> [Color32; 2] {
-    [meter().label, Color32::from_rgb(0xff, 0x7d, 0x74)]
+    [meter().label, hot(Color32::from_rgb(0xff, 0x7d, 0x74), Color32::from_rgb(0xa8, 0x0e, 0x20))]
 }
 /// Trace-view gridlines and the axis labels beside them, cool and hot.
 #[allow(non_snake_case)]
 fn GRID_LINE() -> [Color32; 2] {
-    [meter().grid_line, Color32::from_rgb(0x47, 0x23, 0x2b)]
+    [
+        meter().grid_line,
+        hot(Color32::from_rgb(0x47, 0x23, 0x2b), Color32::from_rgb(0xe7, 0xc2, 0xc6)),
+    ]
 }
 #[allow(non_snake_case)]
 fn GRID_LABEL() -> [Color32; 2] {
-    [meter().grid_label, Color32::from_rgb(0xbb, 0x60, 0x5d)]
+    [
+        meter().grid_label,
+        hot(Color32::from_rgb(0xbb, 0x60, 0x5d), Color32::from_rgb(0x9c, 0x3a, 0x38)),
+    ]
 }
 
 /// Position on the S-scale for `dbm`, 0.0 (S0) … 1.0 (S9+60).
@@ -174,9 +212,9 @@ fn s_stops() -> Vec<Stop> {
         (0.00, m.ramp_lo),
         (0.26, m.ramp_mid),
         (0.4737, m.ramp_hi),
-        (0.4738, Color32::from_rgb(0xff, 0xd2, 0x3f)),
-        (0.74, Color32::from_rgb(0xff, 0x8a, 0x3f)),
-        (1.00, Color32::from_rgb(0xff, 0x2a, 0x55)),
+        (0.4738, hot(Color32::from_rgb(0xff, 0xd2, 0x3f), Color32::from_rgb(0xc8, 0x8a, 0x00))),
+        (0.74, hot(Color32::from_rgb(0xff, 0x8a, 0x3f), Color32::from_rgb(0xc4, 0x5c, 0x00))),
+        (1.00, hot(Color32::from_rgb(0xff, 0x2a, 0x55), Color32::from_rgb(0xc4, 0x00, 0x24))),
     ]
 }
 
@@ -186,11 +224,11 @@ fn s_stops() -> Vec<Stop> {
 /// restyling.
 fn swr_stops() -> Vec<Stop> {
     vec![
-        (0.00, Color32::from_rgb(0x3f, 0xe0, 0x86)),
-        (0.32, Color32::from_rgb(0x9d, 0xe0, 0x5c)),
-        (0.4999, Color32::from_rgb(0xff, 0xc0, 0x3a)),
-        (0.50, Color32::from_rgb(0xff, 0x3c, 0x46)),
-        (1.00, Color32::from_rgb(0xd6, 0x0c, 0x2e)),
+        (0.00, hot(Color32::from_rgb(0x3f, 0xe0, 0x86), Color32::from_rgb(0x0d, 0x70, 0x30))),
+        (0.32, hot(Color32::from_rgb(0x9d, 0xe0, 0x5c), Color32::from_rgb(0x5c, 0x7d, 0x0a))),
+        (0.4999, hot(Color32::from_rgb(0xff, 0xc0, 0x3a), Color32::from_rgb(0xc8, 0x8a, 0x00))),
+        (0.50, hot(Color32::from_rgb(0xff, 0x3c, 0x46), Color32::from_rgb(0xc4, 0x00, 0x24))),
+        (1.00, hot(Color32::from_rgb(0xd6, 0x0c, 0x2e), Color32::from_rgb(0x8c, 0x00, 0x1a))),
     ]
 }
 
@@ -201,8 +239,8 @@ fn alc_stops() -> Vec<Stop> {
     vec![
         (0.00, m.ramp_mid),
         (0.70, m.ramp_hi),
-        (0.86, Color32::from_rgb(0xff, 0xd2, 0x3f)),
-        (1.00, Color32::from_rgb(0xff, 0x2a, 0x55)),
+        (0.86, hot(Color32::from_rgb(0xff, 0xd2, 0x3f), Color32::from_rgb(0xc8, 0x8a, 0x00))),
+        (1.00, hot(Color32::from_rgb(0xff, 0x2a, 0x55), Color32::from_rgb(0xc4, 0x00, 0x24))),
     ]
 }
 
@@ -266,6 +304,17 @@ fn grad_h(p: &Painter, rect: Rect, f0: f32, f1: f32, col: impl Fn(f32) -> Color3
     }
     p.add(Shape::mesh(top));
     p.add(Shape::mesh(bot));
+}
+
+/// Make `c` stand out from the fill around it by `amount` — a lit edge, a peak
+/// marker, a cap on the trace.
+///
+/// Away from the face, whichever way that is: on lit glass the mark is
+/// brighter than the bar it rides on, and on white card it is darker. Doing
+/// this by hand at each call site is how a printed instrument ends up with a
+/// leading edge that fades into the page instead of marking it.
+fn lift(c: Color32, amount: f32) -> Color32 {
+    shade(c, if paper() { -amount } else { amount })
 }
 
 /// Lighten (`amount` > 0) or darken a colour, keeping its alpha.
@@ -518,7 +567,7 @@ fn reading(meters: Option<&Meters>) -> Reading {
                 scale: swr_scale(),
                 frac: swr_frac(swr),
                 chip: format!("SWR {swr:.1}"),
-                accent: RED,
+                accent: RED(),
                 right: power,
                 right_strong: true,
             },
@@ -528,7 +577,7 @@ fn reading(meters: Option<&Meters>) -> Reading {
                 scale: alc_scale(),
                 frac: tx.alc.clamp(0.0, 1.0),
                 chip: "TX".to_string(),
-                accent: RED,
+                accent: RED(),
                 right: power,
                 right_strong: true,
             },
@@ -589,12 +638,19 @@ fn border(ui: &Ui, rect: Rect) {
 /// A small tag: gradient-filled, accent-outlined, with the text inside. Returns
 /// its rect so the caller can lay the next element out beside it.
 fn chip(p: &Painter, top_left: Pos2, text: &str, accent: Color32, pt: f32) -> Rect {
-    let g = p.layout_no_wrap(text.to_owned(), FontId::monospace(pt), Color32::WHITE);
+    // On glass the label is the accent lifted towards white; on card there is
+    // nothing above it to lift towards, so it goes the other way. Baked into
+    // the galley rather than passed to `Painter::galley`: that argument is
+    // only a *fallback* for sections with no colour of their own, so a galley
+    // laid out in white would stay white on both faces.
+    let ink =
+        if paper() { mix(accent, Color32::BLACK, 0.2) } else { mix(accent, Color32::WHITE, 0.65) };
+    let g = p.layout_no_wrap(text.to_owned(), FontId::monospace(pt), ink);
     let pad = vec2(5.0, 1.5);
     let rect = Rect::from_min_size(top_left, g.size() + pad * 2.0);
     grad_v(p, rect, accent.linear_multiply(0.40), accent.linear_multiply(0.14));
     p.rect_stroke(rect, 0.0, Stroke::new(1.0, accent.linear_multiply(0.80)), StrokeKind::Inside);
-    p.galley(rect.min + pad, g, mix(accent, Color32::WHITE, 0.65));
+    p.galley(rect.min + pad, g, ink);
     rect
 }
 
@@ -742,7 +798,7 @@ fn bar_row(p: &Painter, rect: Rect, scale: &Scale, frac: f32, peak: Option<f32>)
         p.vline(
             x - 0.5,
             Rangef::new(inner.top(), inner.bottom()),
-            Stroke::new(1.5, shade(ramp(&scale.stops, frac), 0.65)),
+            Stroke::new(1.5, lift(ramp(&scale.stops, frac), 0.65)),
         );
     }
     if let Some(pk) = peak {
@@ -750,7 +806,7 @@ fn bar_row(p: &Painter, rect: Rect, scale: &Scale, frac: f32, peak: Option<f32>)
         p.vline(
             px,
             Rangef::new(inner.top(), inner.bottom()),
-            Stroke::new(1.5, shade(ramp(&scale.stops, pk), 0.55)),
+            Stroke::new(1.5, lift(ramp(&scale.stops, pk), 0.55)),
         );
     }
 }
@@ -847,16 +903,26 @@ fn draw_needle(p: &Painter, pivot: Pos2, a: f32, r_tip: f32, k: f32) {
     // Width and colour along the blade. Only the outer third is ever on-box, so
     // the taper is tuned to look right there.
     const PROFILE: &[(f32, f32)] = &[(0.0, 1.0), (0.6, 0.82), (0.9, 0.48), (1.0, 0.05)];
+    // Two needles, because they are two different objects. On lit glass the
+    // blade is a filament: dark red at the root, hot red along it, flaring
+    // almost white at the tip. A moving-coil meter's pointer is a piece of
+    // painted metal — black, darkening rather than brightening towards the
+    // tip, with no glow of its own at all.
+    let (root, mid, tip) = if paper() {
+        (
+            Color32::from_rgb(0x4a, 0x51, 0x59),
+            Color32::from_rgb(0x11, 0x15, 0x1a),
+            Color32::from_rgb(0x00, 0x00, 0x00),
+        )
+    } else {
+        (
+            Color32::from_rgb(0x9e, 0x0c, 0x22),
+            Color32::from_rgb(0xff, 0x2c, 0x38),
+            Color32::from_rgb(0xff, 0xe2, 0xe6),
+        )
+    };
     let ink = |t: f32| {
-        if t < 0.9 {
-            mix(Color32::from_rgb(0x9e, 0x0c, 0x22), Color32::from_rgb(0xff, 0x2c, 0x38), t / 0.9)
-        } else {
-            mix(
-                Color32::from_rgb(0xff, 0x2c, 0x38),
-                Color32::from_rgb(0xff, 0xe2, 0xe6),
-                (t - 0.9) / 0.1,
-            )
-        }
+        if t < 0.9 { mix(root, mid, t / 0.9) } else { mix(mid, tip, (t - 0.9) / 0.1) }
     };
 
     // `soft` fades the blade out sideways, which is what makes the bloom read
@@ -874,8 +940,15 @@ fn draw_needle(p: &Painter, pivot: Pos2, a: f32, r_tip: f32, k: f32) {
         p.add(Shape::mesh(right));
     };
 
-    blade(7.0 * k, Vec2::ZERO, true, &|_| RED.linear_multiply(0.22));
-    blade(3.6 * k, vec2(1.5, 2.0), false, &|_| Color32::from_black_alpha(150));
+    // The bloom is the blade's own light, so a printed pointer has none — it
+    // gets the cast shadow alone, softer and closer in than the one a lit
+    // needle throws.
+    if paper() {
+        blade(3.4 * k, vec2(1.0, 1.5), false, &|_| Color32::from_black_alpha(38));
+    } else {
+        blade(7.0 * k, Vec2::ZERO, true, &|_| RED().linear_multiply(0.22));
+        blade(3.6 * k, vec2(1.5, 2.0), false, &|_| Color32::from_black_alpha(150));
+    }
     blade(3.2 * k, Vec2::ZERO, false, &ink);
 }
 
@@ -908,7 +981,9 @@ fn show_needle(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
     // Rail: the whole span dimmed, the travelled part lit, with a bloom under
     // the lit part so the instrument looks illuminated rather than printed.
     arc_band(&p, &arc, rail, 0.0, 1.0, |f| col(f).linear_multiply(0.18));
-    arc_glow(&p, &arc, band * 3.2, 0.0, frac, |f| col(f).linear_multiply(0.22));
+    if !paper() {
+        arc_glow(&p, &arc, band * 3.2, 0.0, frac, |f| col(f).linear_multiply(0.22));
+    }
     arc_band(&p, &arc, rail, 0.0, frac, col);
 
     // Graduations, inside the rail.
@@ -937,7 +1012,7 @@ fn show_needle(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
         let a = arc.ang(pk);
         p.line_segment(
             [arc.at(rail.0, a), arc.at(rad + band * 2.0, a)],
-            Stroke::new(1.6, shade(col(pk), 0.6)),
+            Stroke::new(1.6, lift(col(pk), 0.6)),
         );
     }
 
@@ -1088,14 +1163,14 @@ fn show_trace(ui: &mut Ui, meters: Option<&Meters>, size: Vec2) -> Response {
             pos2(plot.right(), y + 1.5 * k),
         ),
         0.0,
-        shade(col(r.frac), 0.4),
+        lift(col(r.frac), 0.4),
     );
 
     // The trace runs full-bleed, so the header needs a scrim under it.
     grad_v(
         &p,
         Rect::from_min_max(rect.left_top(), pos2(rect.right(), head_bottom)),
-        Color32::from_black_alpha(180),
+        if paper() { Color32::from_white_alpha(215) } else { Color32::from_black_alpha(180) },
         Color32::TRANSPARENT,
     );
     header(&p, rect, &r, k);

@@ -10,7 +10,7 @@
 //! reason. Ticking "remember" is what stops that being two sign-ins — the
 //! second tab finds the first one's answer and offers it without asking.
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use sdroxide_types::{AuthPhase, RemoteAccess};
 
 /// What the operator has typed, and what to do with it.
@@ -262,7 +262,7 @@ fn card(
         ui.label(
             RichText::new("Keeps the password on this device, in the clear.")
                 .size(10.5)
-                .color(Color32::from_gray(140)),
+                .color(crate::theme::gray(140)),
         );
     }
 
@@ -290,7 +290,7 @@ fn card(
                  moment.",
             )
             .size(11.0)
-            .color(Color32::from_gray(140)),
+            .color(crate::theme::gray(140)),
         );
     }
 }

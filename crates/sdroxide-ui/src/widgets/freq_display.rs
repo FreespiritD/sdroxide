@@ -13,7 +13,17 @@ pub const DIGIT_SIZE: f32 = 40.0;
 /// Smooth-scroll points per tuning step.
 const SCROLL_STEP: f32 = 30.0;
 /// The lit digits' amber, shared by both readouts and the type-in field.
-const DIGIT_INK: Color32 = Color32::from_rgb(255, 209, 66);
+///
+/// The readout is the one number an operator reads from across the shack, so
+/// it does not get to be low-contrast: on a light theme the same amber is
+/// taken down to 6.3:1 rather than glowing at 1.7:1 on a white module face.
+fn digit_ink() -> Color32 {
+    if crate::theme::is_light() {
+        Color32::from_rgb(0x8f, 0x50, 0x00)
+    } else {
+        Color32::from_rgb(255, 209, 66)
+    }
+}
 
 /// Shows `hz` as a 10-digit tunable readout. Returns `Some(new_hz)` on change.
 ///
@@ -32,14 +42,14 @@ pub fn show(ui: &mut Ui, id: egui::Id, hz: f64, wheel: WheelSettings, size: f32)
         for p in (0..10u32).rev() {
             if p < 9 && (p + 1) % 3 == 0 {
                 ui.add(Label::new(
-                    RichText::new(".").monospace().size(size).color(Color32::from_gray(110)),
+                    RichText::new(".").monospace().size(size).color(crate::theme::gray(110)),
                 ));
             }
 
             let step = 10i64.pow(p);
             let digit = (freq / step) % 10;
             let leading_zero = p > 0 && freq < step;
-            let color = if leading_zero { Color32::from_gray(70) } else { DIGIT_INK };
+            let color = if leading_zero { crate::theme::gray(70) } else { digit_ink() };
 
             let resp = ui
                 .add(
@@ -51,7 +61,11 @@ pub fn show(ui: &mut Ui, id: egui::Id, hz: f64, wheel: WheelSettings, size: f32)
                 .on_hover_cursor(egui::CursorIcon::ResizeVertical);
 
             if resp.hovered() {
-                ui.painter().hline(resp.rect.x_range(), resp.rect.bottom() - 1.0, (2.0, DIGIT_INK));
+                ui.painter().hline(
+                    resp.rect.x_range(),
+                    resp.rect.bottom() - 1.0,
+                    (2.0, digit_ink()),
+                );
                 let scroll = if wheel.digit_wheel {
                     let s = ui.input(|i| i.smooth_scroll_delta.y);
                     if wheel.invert { -s } else { s }
@@ -90,7 +104,7 @@ pub fn show(ui: &mut Ui, id: egui::Id, hz: f64, wheel: WheelSettings, size: f32)
                 freq = zero_from_digit(freq, step);
             }
         }
-        ui.add(Label::new(RichText::new(" Hz").size(size * 0.3).color(Color32::from_gray(140))));
+        ui.add(Label::new(RichText::new(" Hz").size(size * 0.3).color(crate::theme::gray(140))));
     });
 
     (freq != orig).then_some(freq as f64)
@@ -135,19 +149,19 @@ fn show_dial(ui: &mut Ui, id: egui::Id, edit_id: egui::Id, hz: f64, size: f32) {
             for p in (0..10u32).rev() {
                 if p < 9 && (p + 1) % 3 == 0 {
                     ui.add(Label::new(
-                        RichText::new(".").monospace().size(size).color(Color32::from_gray(110)),
+                        RichText::new(".").monospace().size(size).color(crate::theme::gray(110)),
                     ));
                 }
                 let step = 10i64.pow(p);
                 let digit = (freq / step) % 10;
                 let leading_zero = p > 0 && freq < step;
-                let color = if leading_zero { Color32::from_gray(70) } else { DIGIT_INK };
+                let color = if leading_zero { crate::theme::gray(70) } else { digit_ink() };
                 ui.add(Label::new(
                     RichText::new(format!("{digit}")).monospace().size(size).color(color),
                 ));
             }
             ui.add(Label::new(
-                RichText::new(" Hz").size(size * 0.3).color(Color32::from_gray(140)),
+                RichText::new(" Hz").size(size * 0.3).color(crate::theme::gray(140)),
             ));
         })
         .response;
@@ -157,7 +171,7 @@ fn show_dial(ui: &mut Ui, id: egui::Id, edit_id: egui::Id, hz: f64, size: f32) {
         .on_hover_cursor(egui::CursorIcon::Text)
         .on_hover_text("Tap to type a frequency");
     if resp.hovered() {
-        ui.painter().hline(row.rect.x_range(), row.rect.bottom() - 1.0, (2.0, DIGIT_INK));
+        ui.painter().hline(row.rect.x_range(), row.rect.bottom() - 1.0, (2.0, digit_ink()));
     }
     if resp.clicked() {
         ui.data_mut(|d| {
@@ -196,11 +210,11 @@ fn edit_field(
             egui::TextEdit::singleline(&mut text)
                 .id(field_id)
                 .font(egui::FontId::monospace(size))
-                .text_color(DIGIT_INK)
+                .text_color(digit_ink())
                 .margin(egui::Margin::ZERO)
                 .desired_width(digits_w),
         );
-        ui.add(Label::new(RichText::new(" MHz").size(size * 0.3).color(Color32::from_gray(140))));
+        ui.add(Label::new(RichText::new(" MHz").size(size * 0.3).color(crate::theme::gray(140))));
 
         if ui.data_mut(|d| d.remove_temp::<bool>(id.with("fresh"))).is_some() {
             resp.request_focus();

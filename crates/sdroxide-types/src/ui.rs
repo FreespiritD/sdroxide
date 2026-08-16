@@ -91,6 +91,11 @@ pub enum UiTheme {
     AmberPhosphor,
     TealOrange,
     Rainbow,
+    /// White panels, near-black ink, dark saturated accents — the one theme
+    /// that inverts the ground. The instruments (panadapter, S-meter, map,
+    /// solar globe) keep their dark glass: a waterfall has no bright-ground
+    /// form, and a signal display is read the same way in every theme.
+    Light,
     /// The classic navy/cyan/pink look. Declared last because serde demands
     /// the catch-all be the final variant: it also swallows an unrecognised
     /// value in a hand-edited config, so a typo degrades to the default theme
@@ -101,8 +106,9 @@ pub enum UiTheme {
 }
 
 impl UiTheme {
-    pub const ALL: [UiTheme; 5] = [
+    pub const ALL: [UiTheme; 6] = [
         UiTheme::Default,
+        UiTheme::Light,
         UiTheme::GreenPhosphor,
         UiTheme::AmberPhosphor,
         UiTheme::TealOrange,
@@ -112,11 +118,18 @@ impl UiTheme {
     pub fn label(self) -> &'static str {
         match self {
             UiTheme::Default => "Default",
+            UiTheme::Light => "Light",
             UiTheme::GreenPhosphor => "Green phosphor",
             UiTheme::AmberPhosphor => "Amber phosphor",
             UiTheme::TealOrange => "Teal / orange",
             UiTheme::Rainbow => "Rainbow",
         }
+    }
+
+    /// True where the chrome sits on a bright ground, so anything that has to
+    /// pick an ink or a shade by hand knows which way round the world is.
+    pub fn is_light(self) -> bool {
+        matches!(self, UiTheme::Light)
     }
 }
 

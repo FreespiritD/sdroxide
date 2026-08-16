@@ -279,7 +279,7 @@ impl SdroxideApp {
                         ui.label(
                             RichText::new(format!("{} QSO", self.qso_log.len()))
                                 .size(11.0)
-                                .color(Color32::from_gray(150)),
+                                .color(crate::theme::gray(150)),
                         );
                     });
                 });
@@ -505,7 +505,7 @@ impl SdroxideApp {
             ui.add_space(8.0);
             ui.label(
                 RichText::new("no QSOs yet — run FT8/FT4 or add a manual entry")
-                    .color(Color32::from_gray(120)),
+                    .color(crate::theme::gray(120)),
             );
             return;
         }
@@ -541,7 +541,7 @@ impl SdroxideApp {
                         group.len()
                     ))
                     .size(10.5)
-                    .color(Color32::from_gray(130)),
+                    .color(crate::theme::gray(130)),
                 );
             });
             ui.add_space(2.0);
@@ -564,7 +564,7 @@ impl SdroxideApp {
                                 );
                                 c.add(lbl);
                             };
-                            let gray = Color32::from_gray(150);
+                            let gray = crate::theme::gray(150);
                             col(
                                 ui,
                                 40.0,
@@ -627,7 +627,7 @@ impl SdroxideApp {
                             let (qsl_txt, qsl_col) = if r.is_confirmed() {
                                 ("✓", crate::theme::GREEN())
                             } else if r.lotw_sent || r.eqsl_sent || r.qrz_sent || r.clublog_sent {
-                                ("↑", Color32::from_gray(140))
+                                ("↑", crate::theme::gray(140))
                             } else {
                                 ("", gray)
                             };
@@ -705,7 +705,7 @@ impl SdroxideApp {
                                             egui::Label::new(
                                                 RichText::new(&r.comment)
                                                     .size(11.5)
-                                                    .color(Color32::from_gray(120)),
+                                                    .color(crate::theme::gray(120)),
                                             )
                                             .truncate(),
                                         );

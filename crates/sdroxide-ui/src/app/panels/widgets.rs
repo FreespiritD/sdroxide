@@ -28,7 +28,7 @@ pub(in crate::app) fn station_card(
     cq_for_us: bool,
 ) {
     ui.set_max_width(300.0);
-    let dim = Color32::from_gray(140);
+    let dim = crate::theme::gray(140);
     match d.from.as_deref() {
         Some(call) => {
             ui.label(RichText::new(call).size(16.0).strong().color(crate::theme::TEXT_STRONG()));
@@ -92,9 +92,9 @@ pub(in crate::app) fn station_card(
     } else if novelty.new_call {
         ("Not worked before".to_string(), crate::theme::CYAN_DIM())
     } else if novelty.dupe {
-        (format!("Worked before on {band_label}"), Color32::from_gray(130))
+        (format!("Worked before on {band_label}"), crate::theme::gray(130))
     } else {
-        ("Worked before, but not on this band".to_string(), Color32::from_gray(150))
+        ("Worked before, but not on this band".to_string(), crate::theme::gray(150))
     };
     ui.label(RichText::new(worked).size(12.0).color(col));
 
@@ -201,7 +201,7 @@ pub(in crate::app) fn slot_bar(
     let (bar, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 5.0), egui::Sense::hover());
     let p = ui.painter_at(bar);
-    p.rect_filled(bar, 0.0, Color32::from_gray(24));
+    p.rect_filled(bar, 0.0, crate::theme::gray(24));
 
     let frac = (into_slot / t.slot_s).clamp(0.0, 1.0) as f32;
     let mut fill = bar;
@@ -226,7 +226,7 @@ pub(in crate::app) fn slot_bar(
         p.rect_filled(
             egui::Rect::from_min_size(egui::pos2(x, bar.top()), egui::vec2(1.0, bar.height())),
             0.0,
-            Color32::from_gray(150),
+            crate::theme::gray(150),
         );
     }
     resp

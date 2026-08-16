@@ -8,7 +8,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 
 use crate::theme::ThemedScroll;
 
@@ -39,11 +39,11 @@ fn award_cell_grid(
         ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
         for (label, st) in items {
             let (bg, fg) = if st.confirmed {
-                (crate::theme::GREEN(), Color32::from_rgb(8, 18, 12))
+                (crate::theme::GREEN(), crate::theme::INK_ON_BRIGHT())
             } else if st.worked {
-                (crate::theme::YELLOW(), Color32::from_rgb(20, 16, 6))
+                (crate::theme::YELLOW(), crate::theme::INK_ON_BRIGHT())
             } else {
-                (Color32::from_gray(38), Color32::from_gray(110))
+                (crate::theme::gray(38), crate::theme::gray(110))
             };
             let (rect, _) = ui.allocate_exact_size(egui::vec2(cell_w, 20.0), egui::Sense::hover());
             let p = ui.painter_at(rect);
@@ -115,7 +115,7 @@ impl SdroxideApp {
             .show(ctx, |ui| {
                 crate::chrome::window_body_bg(ui);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Band").size(11.0).color(Color32::from_gray(150)));
+                    ui.label(RichText::new("Band").size(11.0).color(crate::theme::gray(150)));
                     for b in bands {
                         let label = if b.is_empty() { "All" } else { b };
                         if crate::chrome::chip(ui, self.awards_band == b, label).clicked() {

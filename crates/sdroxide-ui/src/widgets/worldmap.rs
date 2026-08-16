@@ -97,6 +97,12 @@ impl MapView {
     }
 }
 
+/// `c` at `a`/255 opacity — the halo behind a marker, or a station dot faded
+/// by age. Takes the alpha as a float because every caller is scaling one.
+fn alpha(c: Color32, a: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a.clamp(0.0, 255.0) as u8)
+}
+
 /// Wrap a longitude delta into [-180, 180).
 fn wrap180(mut d: f64) -> f64 {
     d = (d + 180.0).rem_euclid(360.0) - 180.0;
@@ -262,7 +268,8 @@ pub fn show(
         return;
     }
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, 0.0, theme::INPUT_BG());
+    let map = theme::map();
+    p.rect_filled(rect, 0.0, map.sea);
 
     // ── Ease the view toward the target (fit home + all contacts) ──
     let aspect = (rect.height() / rect.width()) as f64;
@@ -343,7 +350,7 @@ pub fn show(
     let cell_w = rect.width() / cols as f32;
     let cell_h = rect.height() / rows as f32;
     let dot_r = (cell_w.min(cell_h) * 0.44).max(0.7);
-    let land = Color32::from_rgb(0x1c, 0x44, 0x58);
+    let land = map.land;
 
     for row in 0..rows {
         let fy = (row as f64 + 0.5) / rows as f64; // 0 top .. 1 bottom
@@ -372,19 +379,17 @@ pub fn show(
         pos2(x, y)
     };
 
-    // Every decoded station with a known grid, as small white dots that fade
-    // with age (`alpha`). The active DX (pink), the clicked preview (amber) and
-    // home (green) are painted over these below, so a selected/answered station
-    // keeps its own colour.
+    // Every decoded station with a known grid, as small neutral dots that fade
+    // with age (`alpha`). The active DX, the clicked preview and home are
+    // painted over these below, so a selected/answered station keeps its own
+    // colour.
     for d in stations {
         if d.fade <= 0.0 {
             continue;
         }
         let c = project(d.lat, d.lon);
-        let halo = (55.0 * d.fade) as u8;
-        let core = (255.0 * d.fade) as u8;
-        p.circle_filled(c, 2.6, Color32::from_rgba_unmultiplied(255, 255, 255, halo));
-        p.circle_filled(c, 1.7, Color32::from_rgba_unmultiplied(255, 255, 255, core));
+        p.circle_filled(c, 2.6, alpha(map.station, 55.0 * d.fade));
+        p.circle_filled(c, 1.7, alpha(map.station, 255.0 * d.fade));
     }
     // Keep the slow fade progressing even after the zoom has settled.
     if !stations.is_empty() {
@@ -393,46 +398,43 @@ pub fn show(
 
     // Network spots (DX cluster / POTA / SOTA / PSK) as small kind-coloured
     // diamonds — drawn under the home/DX markers so an active QSO stays clear.
-    for &(lat, lon, (r, g, b)) in spots {
+    for &(lat, lon, rgb) in spots {
         let c = project(lat, lon);
-        p.circle_filled(c, dot_r + 2.0, Color32::from_rgba_unmultiplied(r, g, b, 55));
-        p.circle_filled(c, 2.2, Color32::from_rgb(r, g, b));
+        let kind = theme::data_ink(rgb);
+        p.circle_filled(c, dot_r + 2.0, alpha(kind, 55.0));
+        p.circle_filled(c, 2.2, kind);
     }
 
     // Great-circle path as a dotted cyan trail (dots avoid antimeridian wrap).
     if let (Some(hll), Some(dll)) = (home, dx) {
         for (lat, lon) in great_circle_points(hll, dll, 90) {
-            p.circle_filled(
-                project(lat, lon),
-                dot_r.max(1.0),
-                Color32::from_rgba_unmultiplied(0, 208, 244, 150),
-            );
+            p.circle_filled(project(lat, lon), dot_r.max(1.0), alpha(map.trail, 150.0));
         }
     }
 
     // Faint amber preview marker for a clicked-but-unanswered decode.
     if let Some((lat, lon)) = preview {
         let c = project(lat, lon);
-        p.circle_filled(c, dot_r + 3.0, Color32::from_rgba_unmultiplied(255, 210, 63, 45));
-        p.circle_filled(c, 2.4, Color32::from_rgba_unmultiplied(255, 210, 63, 190));
+        p.circle_filled(c, dot_r + 3.0, alpha(map.preview, 45.0));
+        p.circle_filled(c, 2.4, alpha(map.preview, 190.0));
     }
 
     // Endpoints with a glow.
     if let Some((lat, lon)) = home {
         let c = project(lat, lon);
-        p.circle_filled(c, dot_r + 3.0, Color32::from_rgba_unmultiplied(70, 224, 125, 60));
-        p.circle_filled(c, 2.6, theme::GREEN());
+        p.circle_filled(c, dot_r + 3.0, alpha(map.home, 60.0));
+        p.circle_filled(c, 2.6, map.home);
     }
     if let Some((lat, lon)) = dx {
         let c = project(lat, lon);
-        p.circle_filled(c, dot_r + 3.5, Color32::from_rgba_unmultiplied(255, 42, 85, 70));
-        p.circle_filled(c, 3.0, theme::PINK());
+        p.circle_filled(c, dot_r + 3.5, alpha(map.dx, 70.0));
+        p.circle_filled(c, 3.0, map.dx);
     }
-    // Bright yellow dot for the decode row hovered in the table (drawn on top).
+    // The decode row hovered in the table (drawn on top).
     if let Some((lat, lon)) = hover {
         let c = project(lat, lon);
-        p.circle_filled(c, dot_r + 4.0, Color32::from_rgba_unmultiplied(255, 238, 0, 80));
-        p.circle_filled(c, 3.2, theme::YELLOW());
+        p.circle_filled(c, dot_r + 4.0, alpha(map.hover, 80.0));
+        p.circle_filled(c, 3.2, map.hover);
     }
 
     // Animated pulse travelling home → dx while we transmit toward the contact.
@@ -447,19 +449,15 @@ pub fn show(
                 for k in 1..=6usize {
                     if head >= k {
                         let (la, lo) = pts[head - k];
-                        let a = 150u8.saturating_sub(k as u8 * 22);
-                        p.circle_filled(
-                            project(la, lo),
-                            dot_r.max(1.2),
-                            Color32::from_rgba_unmultiplied(120, 240, 255, a),
-                        );
+                        let a = 150.0 - (k as f32) * 22.0;
+                        p.circle_filled(project(la, lo), dot_r.max(1.2), alpha(map.comet, a));
                     }
                 }
                 // Bright leading head with a glow.
                 let (la, lo) = pts[head];
                 let c = project(la, lo);
-                p.circle_filled(c, dot_r + 4.0, Color32::from_rgba_unmultiplied(120, 240, 255, 70));
-                p.circle_filled(c, 3.2, Color32::WHITE);
+                p.circle_filled(c, dot_r + 4.0, alpha(map.comet, 70.0));
+                p.circle_filled(c, 3.2, map.station);
                 // ~30 fps is plenty for the comet; an unconditional repaint
                 // would drive the whole app at vsync rate during TX.
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
@@ -475,12 +473,12 @@ pub fn show(
             Align2::RIGHT_BOTTOM,
             "DOUBLE-CLICK TO REFRAME",
             FontId::proportional(9.0),
-            Color32::from_white_alpha(90),
+            map.hint,
         );
     }
 
     // Frame (red-accent, matching the QSO section panels).
-    crate::chrome::paint_cut_border(&p, rect.shrink(0.5), theme::RED_DEEP(), theme::BG_DEEP());
+    crate::chrome::paint_cut_border(&p, rect.shrink(0.5), map.frame, map.shell);
 }
 
 #[cfg(test)]
