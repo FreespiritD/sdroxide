@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AgcMode, Band, DigiConfig, Direction, ImageKind, Mode, NetworkConfig, NrLevel, QsoStep,
     RadioConfig, RigctldConfig, RotatorConfig, RxId, SatConfig, SatLockConfig, SkimmerSettings,
-    SpectrumConfig, SstvMode, TciServerConfig, UploadTarget, Vfo, WsjtxConfig,
+    SpectrumConfig, SstvMode, TciServerConfig, TxEqState, UploadTarget, Vfo, WsjtxConfig,
 };
 
 /// The single control vocabulary. The GUI, the WebSocket protocol, and the
@@ -108,6 +108,11 @@ pub enum Command {
     SetTxDrive(f32),
     SetTuneDrive(f32),
     SetMicGain(f32),
+    /// Whole new state for the transmit parametric EQ (voice modes only),
+    /// sent as a full snapshot on every band/enable change, the same
+    /// "always whole, never a delta" way [`crate::RadioState`] itself is
+    /// broadcast.
+    SetTxEq(TxEqState),
 
     // Voice keyer (10 recorded messages; see [`crate::VoiceStatus`])
     /// Start recording the microphone into a slot (`Some`), or stop and store

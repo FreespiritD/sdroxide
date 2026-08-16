@@ -534,6 +534,19 @@ On a TX-capable rig the **Transmit** module appears:
 - **Tune** — the (lower) drive level used by TUNE.
 - **Mic** — microphone gain.
 
+**Transmit EQ** (Settings → Radio, above the per-interface section, since it
+applies the same way whichever radio interface is selected) is a 3-band
+parametric equalizer on the microphone audio, ahead of the modulator: **Low
+shelf** (cuts/boosts rumble and handling noise), **Mid peak** (presence, a
+narrow bump or dip somewhere in the voice band), and **High shelf**
+(brightness/de-ess). Each band has its own frequency and gain (dB), and the
+mid band also has a **Q** (how narrow the bump is) while the two shelves have
+a **Slope** instead (how sharply they roll off). Off by default, and flat
+(0 dB every band) the first time you turn it on, so enabling it changes
+nothing until you actually move a slider. Voice modes only (SSB/AM/FM);
+digital modes and CW carry synthesized or keyed audio that never reaches it.
+Applies immediately, like the IARU region setting: there is no Apply step.
+
 > **Transmit safety:** by default sdroxide refuses to transmit outside the
 > amateur bands (`tx_ham_only`). Transmit hardware gains start at minimum and
 > the tune drive defaults low. Raise drive deliberately. The band lockout can

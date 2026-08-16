@@ -790,6 +790,10 @@ pub struct Session {
     pub tune_drive: f32,
     /// Mic gain, 0.0..=1.0.
     pub mic_gain: f32,
+    /// Transmit parametric EQ (voice modes only). Absent in a session written
+    /// before this existed, in which case `#[serde(default)]` above gives it
+    /// [`sdroxide_types::TxEqState::default`], disabled and flat.
+    pub tx_eq: sdroxide_types::TxEqState,
     /// Main receiver's squelch threshold, in dBFS.
     /// [`sdroxide_types::SQUELCH_OPEN_DB`] = always open.
     pub squelch_db: f32,
@@ -846,6 +850,7 @@ impl Default for Session {
             drive: radio.tx.drive,
             tune_drive: radio.tx.tune_drive,
             mic_gain: radio.tx.mic_gain,
+            tx_eq: radio.tx.eq,
             squelch_db: radio.rx[0].squelch_db,
             noise_reduction: radio.rx[0].noise_reduction,
             decimation: radio.decimation,
@@ -1415,6 +1420,12 @@ mod tests {
             drive: 0.4,
             tune_drive: 0.2,
             mic_gain: 0.6,
+            tx_eq: sdroxide_types::TxEqState {
+                enabled: true,
+                low: sdroxide_types::TxEqBand { freq_hz: 250.0, gain_db: -3.0, q: 0.8 },
+                mid: sdroxide_types::TxEqBand { freq_hz: 1800.0, gain_db: 4.0, q: 1.2 },
+                high: sdroxide_types::TxEqBand { freq_hz: 3000.0, gain_db: 2.0, q: 0.6 },
+            },
             squelch_db: -70.0,
             noise_reduction: sdroxide_types::NrLevel::RnnMed,
             decimation: 4,
@@ -1440,6 +1451,7 @@ mod tests {
         assert_eq!(old.drive, radio.tx.drive);
         assert_eq!(old.tune_drive, radio.tx.tune_drive);
         assert_eq!(old.mic_gain, radio.tx.mic_gain);
+        assert_eq!(old.tx_eq, radio.tx.eq);
         assert_eq!(old.recording_mono, radio.recording_mono);
         // Likewise the receive settings added after those: an operator upgrading
         // into this comes up squelch-open with NR off, exactly as they always
