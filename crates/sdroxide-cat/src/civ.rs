@@ -110,6 +110,29 @@ pub fn set_mode_frame(radio: u8, m: Mode) -> Vec<u8> {
 pub fn read_mode_frame(radio: u8) -> Vec<u8> {
     frame(radio, 0x04, &[])
 }
+
+/// The mode, and on a model that has one, the DATA-mode switch beside it.
+///
+/// CI-V has no separate DATA mode: USB and USB-DATA are the same mode byte
+/// (`0x01`), and what tells them apart is a second command. Without it a
+/// digital-mode over goes out of the *microphone* input with the rig's speech
+/// processing and SSB transmit filter in the path — audible on the air as a
+/// signal that is wide, compressed and short of the passband its decoder wants.
+///
+/// `data_sub` is the `1A` sub-command that carries the switch on this model
+/// (see `IcomModel::data_mode_sub`), or `None` where there is none — an
+/// IC-7000 selects its data input at the radio, and nothing here can reach it.
+pub fn set_mode_frames(radio: u8, m: Mode, data_sub: Option<u8>) -> Vec<Vec<u8>> {
+    let mut out = vec![set_mode_frame(radio, m)];
+    if let Some(sub) = data_sub {
+        // Filter 1 alongside the switch, which is the same filter the mode
+        // command above selects — so the pair leave the rig somewhere
+        // consistent rather than in the mode's filter and the data mode's.
+        let on = m.is_digital() && !m.is_carrier_centered();
+        out.push(frame(radio, 0x1A, &[sub, on as u8, 0x01]));
+    }
+    out
+}
 pub fn ptt_frame(radio: u8, on: bool) -> Vec<u8> {
     frame(radio, 0x1C, &[0x00, on as u8])
 }
@@ -645,6 +668,43 @@ mod tests {
             .collect();
         assert_eq!(freqs, vec![7_055_000.0]);
         assert!(buf.is_empty());
+    }
+
+    /// On CI-V, USB and USB-DATA are the *same* mode byte. What separates them
+    /// is a second command — and whether the rig has it, and which sub-command
+    /// carries it, is a property of the model.
+    #[test]
+    fn data_mode_rides_beside_the_mode_rather_than_inside_it() {
+        let mode = |m, sub| set_mode_frames(0x94, m, sub);
+        // An IC-7300: USB for the mode, then the DATA switch on `1A 06`.
+        assert_eq!(
+            mode(Mode::Ft8, Some(0x06)),
+            vec![
+                vec![0xFE, 0xFE, 0x94, 0xE0, 0x06, 0x01, 0x01, 0xFD],
+                vec![0xFE, 0xFE, 0x94, 0xE0, 0x1A, 0x06, 0x01, 0x01, 0xFD],
+            ]
+        );
+        // Plain USB is the same mode byte with the switch explicitly *off* —
+        // without that, a rig left in DATA by the last over would stay there.
+        assert_eq!(
+            mode(Mode::Usb, Some(0x06)),
+            vec![
+                vec![0xFE, 0xFE, 0x94, 0xE0, 0x06, 0x01, 0x01, 0xFD],
+                vec![0xFE, 0xFE, 0x94, 0xE0, 0x1A, 0x06, 0x00, 0x01, 0xFD],
+            ]
+        );
+        // The IC-7200 does the same job from sub-command 04.
+        assert_eq!(mode(Mode::Ft8, Some(0x04))[1][5], 0x04);
+        // An IC-7000 has no such command, and a Xiegu is not an Icom at all:
+        // both get the mode and nothing else.
+        assert_eq!(mode(Mode::Ft8, None).len(), 1);
+        assert_eq!(mode(Mode::Ft8, None)[0], set_mode_frame(0x94, Mode::Ft8));
+
+        // A carrier-centred mode is data over FM, not over a sideband: the rig
+        // goes to FM and the DATA switch stays off, because the switch selects
+        // a *sideband* data path the mode does not use.
+        assert_eq!(mode(Mode::Rifp, Some(0x06))[1][6], 0x00);
+        assert_eq!(mode(Mode::Rifp, Some(0x06))[0][5], 0x05); // FM
     }
 
     /// Icom's filter is an index, but unlike Yaesu's it comes from a formula

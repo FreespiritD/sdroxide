@@ -36,10 +36,9 @@ use self::net::{
 };
 use self::radio::{
     settings_airspy_tab, settings_airspyhf_tab, settings_cat_tab, settings_hackrf_tab,
-    settings_hpsdr_tab,
-    settings_icomnet_tab, settings_pluto_tab, settings_rtlsdr_tab, settings_rtltcp_tab,
-    settings_rx888_tab, settings_sdrplay_tab, settings_smartsdr_tab, settings_soapy_devices,
-    settings_tci_tab,
+    settings_hpsdr_tab, settings_icomnet_tab, settings_pluto_tab, settings_rtlsdr_tab,
+    settings_rtltcp_tab, settings_rx888_tab, settings_sdrplay_tab, settings_smartsdr_tab,
+    settings_soapy_devices, settings_tci_tab,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use self::remote::settings_remote_tab;
@@ -401,10 +400,7 @@ impl SdroxideApp {
             {
                 self.hackrf_devices = self.ctrl.list_hackrf();
             }
-            if self
-                .radio_cfg
-                .as_ref()
-                .is_some_and(|c| c.backend == sdroxide_types::Backend::Airspy)
+            if self.radio_cfg.as_ref().is_some_and(|c| c.backend == sdroxide_types::Backend::Airspy)
             {
                 self.airspy_devices = self.ctrl.list_airspy();
             }
@@ -1353,7 +1349,10 @@ impl SdroxideApp {
                 if self.caps.as_ref().is_some_and(|c| c.is_transmit_capable()) {
                     ui.separator();
                     ui.label(
-                        RichText::new("Transmit EQ").size(14.0).strong().color(crate::theme::CYAN()),
+                        RichText::new("Transmit EQ")
+                            .size(14.0)
+                            .strong()
+                            .color(crate::theme::CYAN()),
                     );
                     ui.add_space(4.0);
                     ui.checkbox(&mut io.tx_eq_edit.enabled, "Enabled").on_hover_text(

@@ -239,6 +239,121 @@ impl CatFamily {
     }
 }
 
+/// Which Icom is on the other end of the CI-V link.
+///
+/// CI-V is one protocol across the whole range, so almost nothing here depends
+/// on the model — the frequency, the mode, the meters and the power all work
+/// the same on every one of them. Two things do not, and both are the sort that
+/// fail quietly:
+///
+/// * **The transceiver address.** Every model ships with a different one, and a
+///   frame addressed to the wrong number is simply ignored — a radio that
+///   answers nothing at all, with no error anywhere to say why. Picking the
+///   model fills it in.
+/// * **DATA mode.** On CI-V, USB and USB-DATA are the *same* mode byte; what
+///   separates them is a second command (`1A 06`) that most but not all models
+///   have. Without it a digital-mode over goes out through the microphone
+///   input, with the rig's speech processing and SSB filter in the path.
+///
+/// [`IcomModel::Other`] leaves both to the operator: the address is typed by
+/// hand and no DATA-mode command is sent, which is the only safe answer for a
+/// radio this list has never been told about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum IcomModel {
+    #[default]
+    Ic7300,
+    Ic7300Mk2,
+    Ic705,
+    Ic905,
+    Ic9700,
+    Ic7610,
+    Ic7100,
+    Ic7410,
+    Ic7600,
+    Ic7700,
+    Ic7800,
+    Ic9100,
+    Ic7200,
+    Ic7000,
+    Other,
+}
+
+impl IcomModel {
+    pub const ALL: [IcomModel; 15] = [
+        IcomModel::Ic7300,
+        IcomModel::Ic7300Mk2,
+        IcomModel::Ic705,
+        IcomModel::Ic905,
+        IcomModel::Ic9700,
+        IcomModel::Ic7610,
+        IcomModel::Ic7100,
+        IcomModel::Ic7410,
+        IcomModel::Ic7600,
+        IcomModel::Ic7700,
+        IcomModel::Ic7800,
+        IcomModel::Ic9100,
+        IcomModel::Ic7200,
+        IcomModel::Ic7000,
+        IcomModel::Other,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            IcomModel::Ic7300 => "IC-7300",
+            IcomModel::Ic7300Mk2 => "IC-7300MK2",
+            IcomModel::Ic705 => "IC-705",
+            IcomModel::Ic905 => "IC-905",
+            IcomModel::Ic9700 => "IC-9700",
+            IcomModel::Ic7610 => "IC-7610",
+            IcomModel::Ic7100 => "IC-7100",
+            IcomModel::Ic7410 => "IC-7410",
+            IcomModel::Ic7600 => "IC-7600",
+            IcomModel::Ic7700 => "IC-7700",
+            IcomModel::Ic7800 => "IC-7800",
+            IcomModel::Ic9100 => "IC-9100",
+            IcomModel::Ic7200 => "IC-7200",
+            IcomModel::Ic7000 => "IC-7000",
+            IcomModel::Other => "Other (set the address by hand)",
+        }
+    }
+
+    /// The address this model leaves the factory with. `None` for
+    /// [`IcomModel::Other`], where the operator types it.
+    pub fn civ_addr(self) -> Option<u8> {
+        Some(match self {
+            IcomModel::Ic7300 => 0x94,
+            IcomModel::Ic7300Mk2 => 0xB6,
+            IcomModel::Ic705 => 0xA4,
+            IcomModel::Ic905 => 0xAC,
+            IcomModel::Ic9700 => 0xA2,
+            IcomModel::Ic7610 => 0x98,
+            IcomModel::Ic7100 => 0x88,
+            IcomModel::Ic7410 => 0x80,
+            IcomModel::Ic7600 => 0x7A,
+            IcomModel::Ic7700 => 0x74,
+            IcomModel::Ic7800 => 0x6A,
+            IcomModel::Ic9100 => 0x7C,
+            IcomModel::Ic7200 => 0x76,
+            IcomModel::Ic7000 => 0x70,
+            IcomModel::Other => return None,
+        })
+    }
+
+    /// The `1A` sub-command that switches DATA mode on this model, or `None`
+    /// where there is none.
+    ///
+    /// `06` on everything current. The IC-7200 is the odd one — it does the
+    /// same job from `04` — and the IC-7000 has no such command at all: its
+    /// data input is selected at the radio, not over CI-V.
+    pub fn data_mode_sub(self) -> Option<u8> {
+        match self {
+            IcomModel::Ic7200 => Some(0x04),
+            IcomModel::Ic7000 | IcomModel::Other => None,
+            _ => Some(0x06),
+        }
+    }
+}
+
 /// Which transceiver generation's `TX` command keys the rig.
 ///
 /// Really a question about the rig, not about sdroxide: the two generations
@@ -504,6 +619,12 @@ pub struct CatConfig {
     pub cw_keying: CwKeying,
     /// Icom CI-V transceiver address (hex byte), e.g. 0x70 for many rigs.
     pub icom_radio_id: u8,
+    /// Which Icom, for the handful of things CI-V does not do the same way on
+    /// all of them. Defaulted so a config written before this existed still
+    /// loads — see the note on [`KenwoodSend::Ts2000`] for what a failed
+    /// deserialise costs.
+    #[serde(default)]
+    pub icom_model: IcomModel,
     /// Which `TX` command keys a Kenwood.
     pub kenwood_send: KenwoodSend,
     pub format: SoundFormat,
@@ -522,6 +643,7 @@ impl Default for CatConfig {
             digi_mode: DigiMode::default(),
             cw_keying: CwKeying::default(),
             icom_radio_id: 0x70,
+            icom_model: IcomModel::default(),
             kenwood_send: KenwoodSend::default(),
             format: SoundFormat::default(),
             audio_bw_hz: 4000.0,

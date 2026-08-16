@@ -252,11 +252,7 @@ impl crate::app::SdroxideApp {
             // anything is happening — and a greyed-out CONNECT says nothing
             // about how to get out of it.
             if busy {
-                if ui
-                    .button("ABORT")
-                    .on_hover_text("Stop the session in progress")
-                    .clicked()
-                {
+                if ui.button("ABORT").on_hover_text("Stop the session in progress").clicked() {
                     cmds.push(Command::WinlinkAbort);
                 }
             } else if ui.button("CONNECT").clicked() {

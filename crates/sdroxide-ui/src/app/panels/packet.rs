@@ -22,8 +22,7 @@ impl SdroxideApp {
         cmds: &mut Vec<Command>,
         panel_h: f32,
     ) {
-        let st: Option<PacketStatus> =
-            self.digi_status.as_ref().and_then(|s| s.packet.clone());
+        let st: Option<PacketStatus> = self.digi_status.as_ref().and_then(|s| s.packet.clone());
         let Some(st) = st else {
             ui.label(RichText::new("starting the packet modem…").weak());
             return;
@@ -72,8 +71,7 @@ impl SdroxideApp {
                             // Our own traffic in a different colour: an
                             // operator needs to tell their beacon going out
                             // from somebody answering it.
-                            let colour =
-                                if h.sent { theme::GREEN() } else { theme::CYAN_DIM() };
+                            let colour = if h.sent { theme::GREEN() } else { theme::CYAN_DIM() };
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(
                                     RichText::new(format!("{}>{}{via}", h.from, h.to))

@@ -39,8 +39,8 @@ pub(in crate::app) fn settings_cat_tab(
     local: bool,
 ) {
     use sdroxide_types::{
-        CatFamily, CwKeying, DigiMode, KenwoodSend, LineState, ModeControl, Parity, PttMethod,
-        SoundFormat, StopBits,
+        CatFamily, CwKeying, DigiMode, IcomModel, KenwoodSend, LineState, ModeControl, Parity,
+        PttMethod, SoundFormat, StopBits,
     };
     let Some(cfg) = radio_edit.as_mut() else {
         ui.label("Radio configuration is only available in the native app.");
@@ -193,6 +193,35 @@ pub(in crate::app) fn settings_cat_tab(
                  faster than 38400, and a rig set below the rate chosen here \
                  answers nothing at all.",
             );
+            ui.end_row();
+        }
+
+        if cfg.cat.family == CatFamily::Icom {
+            ui.label("Radio model").on_hover_text(
+                "Which Icom, for the two things CI-V does not do the same way \
+                 on all of them.\n\n\
+                 The transceiver address below is filled in from it: every \
+                 model ships with a different one, and a frame sent to the \
+                 wrong address is simply ignored — a radio that answers \
+                 nothing, with no error anywhere to say why.\n\n\
+                 It also decides whether sdroxide can select DATA mode. On \
+                 CI-V, USB and USB-DATA are the same mode byte and a separate \
+                 command tells them apart; without it a digital-mode over goes \
+                 out through the microphone input, with the rig's speech \
+                 processing and SSB filter in the path.\n\n\
+                 \"Other\" leaves the address to you and sends no DATA-mode \
+                 command at all.",
+            );
+            let before = cfg.cat.icom_model;
+            enum_combo(ui, "icommodel", &mut cfg.cat.icom_model, &IcomModel::ALL, IcomModel::label);
+            // Only on a change, so an operator who has deliberately re-addressed
+            // their radio does not have it overwritten every time this dialog
+            // is drawn.
+            if cfg.cat.icom_model != before
+                && let Some(addr) = cfg.cat.icom_model.civ_addr()
+            {
+                cfg.cat.icom_radio_id = addr;
+            }
             ui.end_row();
         }
 

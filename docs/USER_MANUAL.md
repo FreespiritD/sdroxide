@@ -2708,6 +2708,23 @@ separately from your computer's own speakers and microphone.
   The default is `TS-2000 style`, because the two mistakes are not equally bad:
   a TS-590 set wrong transmits silence, while a TS-2000 set wrong transmits on
   the **sub-band** — another band entirely.
+- **Radio model** (Icom only) — which Icom, for the two things CI-V does *not*
+  do the same way on all of them:
+  - The **transceiver address**, which is filled in from the model. Every one
+    ships with a different one, and a frame sent to the wrong address is simply
+    ignored — a radio that answers nothing at all, with no error anywhere to say
+    why. It is only overwritten when you change the model, so a rig you have
+    deliberately re-addressed stays as you set it.
+  - **DATA mode.** On CI-V, USB and USB-DATA are the *same* mode byte; a second
+    command tells them apart, and not every model has it. Without it a
+    digital-mode over goes out through the microphone input, with the rig's
+    speech processing and SSB transmit filter in the path — wide, compressed,
+    and short of the passband the decoder at the other end wants.
+
+  `Other` leaves the address to you and sends no DATA-mode command at all, which
+  is the only safe answer for a radio this list has never been told about. The
+  IC-7000 is listed but has no such command either: its data input is selected
+  at the radio.
 - **Radio ID (hex)** — the CI-V address, for Icom and Xiegu radios.
 
 Scroll down for **Apply / reconnect**, which reopens the rig with the new

@@ -264,8 +264,11 @@ impl WefaxUi {
     /// enough to look right and not close enough to fetch by.
     pub fn hold_fresh(&mut self, ctx: &egui::Context, png: &[u8]) {
         self.fresh = decode_gray(png).map(|(gray, w, h)| {
-            let tex =
-                ctx.load_texture("wefax-fresh", gray_image(&gray, w, h), egui::TextureOptions::LINEAR);
+            let tex = ctx.load_texture(
+                "wefax-fresh",
+                gray_image(&gray, w, h),
+                egui::TextureOptions::LINEAR,
+            );
             (tex, png.to_vec())
         });
     }

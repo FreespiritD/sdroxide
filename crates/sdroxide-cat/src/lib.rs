@@ -176,6 +176,9 @@ trait Protocol: Send {
 /// CI-V protocol (Icom + Xiegu). `radio` is the CI-V transceiver address.
 struct Civ {
     radio: u8,
+    /// The `1A` sub-command that switches DATA mode on this model, or `None`
+    /// where the model has none — see [`civ::set_mode_frames`].
+    data_sub: Option<u8>,
     /// The rig answered "NG" since this was last read (see
     /// [`Protocol::refused`]).
     nak: bool,
@@ -186,7 +189,7 @@ impl Protocol for Civ {
         civ::set_freq_frame(self.radio, hz)
     }
     fn set_mode(&mut self, m: Mode) -> Vec<u8> {
-        civ::set_mode_frame(self.radio, m)
+        civ::set_mode_frames(self.radio, m, self.data_sub).concat()
     }
     fn ptt(&self, on: bool) -> Vec<u8> {
         civ::ptt_frame(self.radio, on)
@@ -347,9 +350,14 @@ fn pc_parse(rest: &str) -> Option<f32> {
 
 fn make_protocol(cfg: &CatConfig) -> Box<dyn Protocol> {
     match cfg.family {
-        CatFamily::Xiegu | CatFamily::Icom => {
-            Box::new(Civ { radio: cfg.icom_radio_id, nak: false })
-        }
+        // A Xiegu speaks the dialect but is not an Icom: none of the model
+        // table applies to it, so it gets the plain mode command.
+        CatFamily::Xiegu => Box::new(Civ { radio: cfg.icom_radio_id, data_sub: None, nak: false }),
+        CatFamily::Icom => Box::new(Civ {
+            radio: cfg.icom_radio_id,
+            data_sub: cfg.icom_model.data_mode_sub(),
+            nak: false,
+        }),
         CatFamily::Yaesu => Box::new(yaesu::Yaesu::new()),
         CatFamily::Kenwood => Box::new(kenwood::Kenwood::new(cfg.kenwood_send)),
         CatFamily::Elecraft => Box::new(elecraft::Elecraft::new()),
@@ -1138,6 +1146,7 @@ mod tests {
         make_protocol(&CatConfig {
             family: CatFamily::Icom,
             icom_radio_id: 0x94,
+            icom_model: sdroxide_types::IcomModel::Ic7300,
             ..CatConfig::default()
         })
     }
