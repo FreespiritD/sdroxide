@@ -85,6 +85,8 @@ pub struct Station {
     pub focus: Focus,
     /// Yaw relative to `relative_to`, radians.
     pub yaw_offset: f32,
+    /// Pitch above `relative_to`'s own elevation, radians — which is the
+    /// ecliptic plane for every bearing but the operator's QTH.
     pub pitch: f32,
     /// What the yaw is measured from.
     pub relative_to: Bearing,
@@ -94,34 +96,99 @@ pub struct Station {
     /// Slow yaw drift while holding the station, radians/second. Keeps a long
     /// dwell from reading as a frozen frame.
     pub drift: f32,
+    /// Distance at the *end* of the dwell, in radii: the shot dollies from
+    /// `radii` to this across the whole hold, eased at both ends so it leaves
+    /// and arrives at rest. `None` holds the distance it flew in at.
+    pub radii_end: Option<f32>,
+    /// Pitch at the end of the dwell, the same way. This is how a station
+    /// travels *towards* something during its hold rather than turning on the
+    /// spot: the camera climbs from one side of a place to over the top of it.
+    pub pitch_end: Option<f32>,
+    /// How far the focus body is pushed below the centre of the frame, in its
+    /// own radii.
+    ///
+    /// `1.0` lays its horizon exactly across the middle — the view axis then
+    /// grazes the sphere, whatever the distance — so the body fills the lower
+    /// half of the screen and space the upper. `0.0` centres it, which is what
+    /// every wide shot wants.
+    pub drop: f32,
+    /// How much of the framing is drawn afresh each lap.
+    pub jitter: Jitter,
 }
+
+/// The spread a station is composed within, rather than at.
+///
+/// A shot that is meant to be *a* descent rather than *the* descent gets one;
+/// every other station is [`FIXED`] and frames identically every lap, the way a
+/// scripted station should.
+#[derive(Clone, Copy)]
+pub struct Jitter {
+    /// Azimuth spread, radians. Shared by both ends of a dolly, so the move
+    /// happens at one bearing instead of swinging round mid-shot.
+    pub yaw: f32,
+    /// Pitch spread, radians, drawn separately for each end of a dolly.
+    pub pitch: f32,
+    /// Spread on how far out the shot *starts*, as a fraction of its own
+    /// distance. Only the start: where a dolly is going is the point of it,
+    /// and a descent that sometimes stopped short of orbit would just read as
+    /// one that had lost its nerve.
+    pub dist: f32,
+}
+
+/// A station that composes the same way on every lap.
+pub const FIXED: Jitter = Jitter { yaw: 0.0, pitch: 0.0, dist: 0.0 };
 
 /// The live direction a station's yaw is measured against.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Bearing {
-    /// Absolute yaw in the ecliptic frame.
-    World,
     /// The Sun's bearing as seen from the Earth.
     SunFromEarth,
     /// The Earth's bearing as seen from the Sun.
     EarthFromSun,
     /// The Moon's bearing as seen from the Earth.
     MoonFromEarth,
+    /// The operator's own QTH, as seen from the Earth's centre.
+    ///
+    /// The only bearing that carries an **elevation** as well: a station hung
+    /// off it is framed at the operator's latitude rather than out on the
+    /// ecliptic equator, which is the entire point of aiming at somebody's
+    /// grid square. With no grid entered it degenerates to a fixed direction in
+    /// the ecliptic frame, which still composes — it is simply aimed at nobody.
+    HomeFromEarth,
 }
 
 const DEG: f32 = std::f32::consts::PI / 180.0;
 
+/// Where the day/night line lies, as a yaw offset from the Sun's bearing.
+///
+/// The Earth turns anticlockwise seen from the north, so a place 90° round from
+/// the subsolar point *in the direction it is turning* has had its noon already
+/// and is running out of daylight: that limb is the evening one. The other is
+/// the morning. Both are exactly edge-on to the terminator plane at any pitch,
+/// because the Sun's bearing lies in the ecliptic the camera measures from.
+const DUSK: f32 = 90.0 * DEG;
+const DAWN: f32 = -90.0 * DEG;
+
 /// The tour, in order. Between them the camera eases for [`TRANSITION_S`].
+///
+/// One shot of the Sun itself, and the rest of the loop over the planet the
+/// operator is actually working from — which is the one the log, the greyline
+/// and the satellites are all about.
 pub const STATIONS: &[Station] = &[
     Station {
-        name: "ECLIPTIC OVERHEAD",
+        name: "SUNSIDE",
         focus: Focus::Sun,
+        // Face-on to the disk SDO photographs, from the Earth's direction.
         yaw_offset: 0.0,
-        pitch: 84.0 * DEG,
-        relative_to: Bearing::World,
-        radii: 500.0,
-        dwell_s: 14.0,
-        drift: 1.8 * DEG,
+        pitch: 6.0 * DEG,
+        relative_to: Bearing::EarthFromSun,
+        radii: 3.4,
+        dwell_s: 16.0,
+        drift: 0.5 * DEG,
+        radii_end: None,
+        pitch_end: None,
+        drop: 0.0,
+        jitter: FIXED,
     },
     Station {
         name: "EARTH SHOULDER",
@@ -133,38 +200,44 @@ pub const STATIONS: &[Station] = &[
         radii: 14.0,
         dwell_s: 12.0,
         drift: 0.9 * DEG,
+        radii_end: None,
+        pitch_end: None,
+        drop: 0.0,
+        jitter: FIXED,
     },
     Station {
-        name: "SUNSIDE",
-        focus: Focus::Sun,
-        // Face-on to the disk SDO photographs, from the Earth's direction.
-        yaw_offset: 0.0,
-        pitch: 6.0 * DEG,
-        relative_to: Bearing::EarthFromSun,
-        radii: 3.4,
-        dwell_s: 16.0,
-        drift: 0.5 * DEG,
-    },
-    Station {
-        name: "TERMINATOR",
+        name: "DUSK LINE",
         focus: Focus::Earth,
-        // Side-on to the day/night line.
-        yaw_offset: 90.0 * DEG,
-        pitch: 14.0 * DEG,
+        // Past the evening limb, so the frame is mostly the night coming on and
+        // the sunset line runs down the lit edge of it.
+        yaw_offset: DUSK + 15.0 * DEG,
+        pitch: 37.0 * DEG,
         relative_to: Bearing::SunFromEarth,
-        radii: 3.4,
-        dwell_s: 12.0,
-        drift: 1.1 * DEG,
+        radii: 2.1,
+        dwell_s: 11.0,
+        drift: -0.8 * DEG,
+        radii_end: None,
+        pitch_end: None,
+        drop: 0.0,
+        jitter: FIXED,
     },
     Station {
-        name: "POLAR SUN",
-        focus: Focus::Sun,
-        yaw_offset: 40.0 * DEG,
-        pitch: 78.0 * DEG,
-        relative_to: Bearing::EarthFromSun,
-        radii: 7.0,
-        dwell_s: 12.0,
-        drift: 1.6 * DEG,
+        name: "HOME ORBIT",
+        focus: Focus::Earth,
+        // Low over the operator's own meridian, closing on the grid square from
+        // well south of it across the whole dwell. It stops short rather than
+        // flying over the top: a place directly beneath the camera is off the
+        // bottom of a frame whose horizon sits on the middle of the screen.
+        yaw_offset: 0.0,
+        pitch: -40.0 * DEG,
+        relative_to: Bearing::HomeFromEarth,
+        radii: 0.78,
+        dwell_s: 20.0,
+        drift: 0.3 * DEG,
+        radii_end: Some(0.64),
+        pitch_end: Some(-16.0 * DEG),
+        drop: 1.0,
+        jitter: FIXED,
     },
     Station {
         name: "LUNAR DIAGONAL",
@@ -175,6 +248,60 @@ pub const STATIONS: &[Station] = &[
         radii: 2.6,
         dwell_s: 10.0,
         drift: 1.3 * DEG,
+        radii_end: None,
+        pitch_end: None,
+        drop: 0.0,
+        jitter: FIXED,
+    },
+    Station {
+        name: "TERMINATOR",
+        focus: Focus::Earth,
+        // Side-on to the day/night line, shallow and wide — the greyline as the
+        // propagation panels draw it.
+        yaw_offset: DUSK,
+        pitch: 14.0 * DEG,
+        relative_to: Bearing::SunFromEarth,
+        radii: 3.4,
+        dwell_s: 12.0,
+        drift: 1.1 * DEG,
+        radii_end: None,
+        pitch_end: None,
+        drop: 0.0,
+        jitter: FIXED,
+    },
+    Station {
+        name: "ORBIT DESCENT",
+        focus: Focus::Earth,
+        // The long fall in: from far enough out that the Earth is a marble, down
+        // to orbit, on a bearing and a starting height drawn fresh each lap so
+        // it is never twice the same descent. Kept off the far night side, so
+        // there is always daylight on the globe it is falling towards.
+        yaw_offset: 20.0 * DEG,
+        pitch: 44.0 * DEG,
+        relative_to: Bearing::SunFromEarth,
+        radii: 26.0,
+        dwell_s: 21.0,
+        drift: 0.45 * DEG,
+        radii_end: Some(1.15),
+        pitch_end: Some(7.0 * DEG),
+        drop: 0.55,
+        jitter: Jitter { yaw: 100.0 * DEG, pitch: 13.0 * DEG, dist: 0.45 },
+    },
+    Station {
+        name: "DAWN LINE",
+        focus: Focus::Earth,
+        // The other side of the same line, from below the ecliptic and out over
+        // the dark: the ground in frame is the ground about to have sunrise.
+        yaw_offset: DAWN - 15.0 * DEG,
+        pitch: -31.0 * DEG,
+        relative_to: Bearing::SunFromEarth,
+        radii: 2.3,
+        dwell_s: 11.0,
+        drift: 0.8 * DEG,
+        radii_end: None,
+        pitch_end: None,
+        drop: 0.0,
+        jitter: FIXED,
     },
     Station {
         name: "SOLAR VANTAGE",
@@ -186,18 +313,38 @@ pub const STATIONS: &[Station] = &[
         radii: 90.0,
         dwell_s: 12.0,
         drift: 0.35 * DEG,
+        radii_end: None,
+        pitch_end: None,
+        drop: 0.0,
+        jitter: FIXED,
     },
     Station {
-        name: "INNER SYSTEM",
+        name: "SYSTEM ANGLED",
         focus: Focus::Sun,
+        // Back off far enough for the outer planets' orbits to be in frame, and
+        // hold it well off the ecliptic so the orbits read as rings rather than
+        // as the single line an edge-on view collapses them to.
         yaw_offset: 25.0 * DEG,
-        pitch: 34.0 * DEG,
+        pitch: 30.0 * DEG,
         relative_to: Bearing::EarthFromSun,
-        radii: 340.0,
-        dwell_s: 12.0,
-        drift: 0.8 * DEG,
+        radii: 2400.0,
+        dwell_s: 14.0,
+        drift: 0.55 * DEG,
+        radii_end: None,
+        pitch_end: None,
+        drop: 0.0,
+        jitter: FIXED,
     },
 ];
+
+/// The closest the eye may come to the body it is orbiting, in that body's
+/// radii, for a station that deliberately flies inside the camera's ordinary
+/// framing limit.
+///
+/// [`dist_range`] keeps the camera 1.6 radii out, which is what it takes to
+/// hold a whole globe in frame. An orbital shot is *meant* to be inside that —
+/// but not inside the atmosphere.
+const ORBIT_FLOOR: f32 = 1.08;
 
 /// Ease between stations. Long enough to read as a camera move, short enough
 /// not to be most of the loop.
@@ -468,6 +615,13 @@ pub struct Tour {
     /// from wherever the camera actually is rather than from the station it
     /// happened to be heading for.
     last_pivot: (V3, f32),
+    /// How many times the loop has come round, and so which draw the stations
+    /// with a [`Jitter`] are composing from.
+    lap: u32,
+    /// The operator's QTH, latitude and longitude in degrees — what
+    /// [`Bearing::HomeFromEarth`] is measured against. Handed in every step,
+    /// because the grid can be edited while the tour is flying.
+    home: Option<(f64, f64)>,
 }
 
 impl Default for Tour {
@@ -482,6 +636,8 @@ impl Default for Tour {
             resume_pending: false,
             leg: Leg::Station,
             last_pivot: (V3::ZERO, 1.0),
+            lap: 0,
+            home: None,
         }
     }
 }
@@ -524,7 +680,8 @@ impl Tour {
     /// because a path being worked *now* is the one thing on this globe worth
     /// watching more than the scripted loop. `sat` is the satellite lock, and
     /// it outranks even the contact: an operator locked onto a bird is
-    /// working *through* it, so the bird is the show.
+    /// working *through* it, so the bird is the show. `home` is the operator's
+    /// own QTH, which the low pass is aimed at.
     pub fn step(
         &mut self,
         view: &mut crate::view::Solar3dView,
@@ -532,7 +689,9 @@ impl Tour {
         dt: f32,
         qso: Option<QsoPath>,
         sat: Option<SatPath>,
+        home: Option<(f64, f64)>,
     ) -> (V3, f32) {
+        self.home = home;
         if std::mem::take(&mut self.resume_pending) {
             self.resume_near(view, b);
         }
@@ -577,7 +736,10 @@ impl Tour {
         let station = self.station();
         let (target, target_focus) = match frame {
             Some(f) => f,
-            None => (self.pose_of(station, b), b.focus(station.focus)),
+            None => {
+                let p = self.pose_of(station, b);
+                (p, self.focus_of(station, b, p))
+            }
         };
 
         let pivot;
@@ -613,20 +775,34 @@ impl Tour {
         } else {
             // Dwell. A slow drift keeps the frame alive rather than freezing.
             let held = self.elapsed - TRANSITION_S;
-            let drift = match frame {
-                Some(_) => QSO_SWAY * (held * QSO_SWAY_RATE).sin(),
-                None => station.drift * held,
-            };
-            Pose { yaw: target.yaw + drift, ..target }.apply(view);
-            pivot = target_focus;
+            match frame {
+                Some(_) => {
+                    Pose { yaw: target.yaw + QSO_SWAY * (held * QSO_SWAY_RATE).sin(), ..target }
+                        .apply(view);
+                    pivot = target_focus;
+                }
+                None => {
+                    // A station may travel while it is held — a dolly in, a
+                    // climb — so where it pivots has to be recomputed from the
+                    // pose it is actually at, not from the one it arrived at.
+                    let held_pose = self.held_pose(station, b, held);
+                    held_pose.apply(view);
+                    pivot = self.focus_of(station, b, held_pose);
+                }
+            }
             // A contact is held for as long as it lasts; only the tour's own
             // stations time out.
             if frame.is_none() && held >= station.dwell_s {
                 self.index = (self.index + 1) % STATIONS.len();
+                if self.index == 0 {
+                    // Round again: the stations that compose themselves afresh
+                    // draw new numbers.
+                    self.lap = self.lap.wrapping_add(1);
+                }
                 self.from = Pose::new(view.yaw, view.pitch, view.dist);
                 // Hand the *current* pivot to the next move, so the flight
                 // starts exactly where this one ended.
-                self.from_focus = target_focus;
+                self.from_focus = pivot;
                 self.from_is_station = true;
                 self.elapsed = 0.0;
             }
@@ -669,21 +845,154 @@ impl Tour {
         &STATIONS[(i.rem_euclid(n)) as usize]
     }
 
+    /// The pose a station is flown to: how it composes at the instant it is
+    /// reached, which for a moving shot is the start of the move.
     fn pose_of(&self, s: &Station, b: &Bodies) -> Pose {
-        let bearing = match s.relative_to {
-            Bearing::World => 0.0,
-            Bearing::SunFromEarth => yaw_of(V3::ZERO - b.earth),
-            Bearing::EarthFromSun => yaw_of(b.earth),
-            Bearing::MoonFromEarth => yaw_of(b.moon - b.earth),
-        };
+        self.end_pose(s, b, s.radii, s.pitch, s.jitter, 0)
+    }
+
+    /// The pose it composes to by the end of its dwell — the same one again for
+    /// a station that holds still.
+    fn dolly_of(&self, s: &Station, b: &Bodies) -> Pose {
+        let (radii, pitch) = (s.radii_end.unwrap_or(s.radii), s.pitch_end.unwrap_or(s.pitch));
+        self.end_pose(s, b, radii, pitch, Jitter { dist: 0.0, ..s.jitter }, 2)
+    }
+
+    /// One end of a station's framing. `salt` separates the two ends' draws
+    /// from the jitter, so a dolly starts high and wide *and* finishes
+    /// somewhere slightly different, rather than sliding the same move about.
+    fn end_pose(
+        &self,
+        s: &Station,
+        b: &Bodies,
+        radii: f32,
+        pitch: f32,
+        j: Jitter,
+        salt: u32,
+    ) -> Pose {
+        let (bearing, elev) = self.bearing_of(s.relative_to, b);
         let (_, radius) = b.focus(s.focus);
-        let (lo, hi) = dist_range(radius);
+        let dist = (radius * radii * (1.0 + j.dist * lap_noise(self.lap, salt)))
+            .clamp(dist_floor(s, radius), MAX_DIST);
+        // A station's pitch is the latitude the camera flies **over**, which is
+        // the pose's own pitch only for a centred shot. Dropping the pivot by a
+        // body radius lifts the eye off the pose direction by exactly the angle
+        // the axis grazes the sphere at, and a shot aimed at somebody's grid
+        // square has to be aimed in the frame that grid square is in.
+        let tilt = if s.drop > 0.0 { (radius * s.drop / dist).atan() } else { 0.0 };
         Pose::new(
-            bearing + s.yaw_offset,
-            s.pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT),
-            (radius * s.radii).clamp(lo, hi),
+            // One draw for the azimuth, shared by both ends: a descent that
+            // swung round the planet on the way down would read as an orbit,
+            // not as an approach.
+            bearing + s.yaw_offset + j.yaw * lap_noise(self.lap, 9),
+            (elev + pitch + j.pitch * lap_noise(self.lap, salt + 1) - tilt)
+                .clamp(-PITCH_LIMIT, PITCH_LIMIT),
+            dist,
         )
     }
+
+    /// The pose a station holds `held` seconds into its dwell: the dolly, and
+    /// the drift on top of it.
+    fn held_pose(&self, s: &Station, b: &Bodies, held: f32) -> Pose {
+        let from = self.pose_of(s, b);
+        let mut p = from;
+        if s.radii_end.is_some() || s.pitch_end.is_some() {
+            let to = self.dolly_of(s, b);
+            // Eased at both ends, like a transition: the shot leaves the pose it
+            // flew in at with no kick, and is at rest again when the dwell times
+            // out and the next flight takes over.
+            let k = smootherstep(held / s.dwell_s.max(1e-3));
+            p = Pose {
+                yaw: from.yaw + short_angle(from.yaw, to.yaw) * k,
+                pitch: from.pitch + (to.pitch - from.pitch) * k,
+                ln_dist: from.ln_dist + (to.ln_dist - from.ln_dist) * k,
+            };
+        }
+        Pose { yaw: p.yaw + s.drift * held, ..p }
+    }
+
+    /// Where the camera pivots for a station at `p`, and the radius its
+    /// distance clamp is measured in.
+    fn focus_of(&self, s: &Station, b: &Bodies, p: Pose) -> (V3, f32) {
+        let (pos, radius) = b.focus(s.focus);
+        if s.drop <= 0.0 {
+            return (pos, radius);
+        }
+        // Pushing the pivot along the screen's up by one body radius puts the
+        // view axis exactly tangent to the sphere — the horizon lands on the
+        // middle of the frame at *any* distance, which is what makes this a
+        // framing rather than a magic number per station.
+        //
+        // The clamp radius has to be relaxed to let the shot stay this low, and
+        // by more than the bare minimum: it is interpolated linearly across a
+        // transition while the distance is interpolated in log space, and the
+        // log curve runs below the straight line between the same two ends.
+        let dist = p.ln_dist.exp();
+        (pos + screen_up(orbit_dir(p.yaw, p.pitch)) * (radius * s.drop), radius.min(dist / 2.0))
+    }
+
+    /// The live direction a station's framing hangs off: a bearing in the
+    /// ecliptic plane, and an elevation above it.
+    ///
+    /// Only the QTH contributes an elevation. Everything else is a body seen
+    /// from another body, and those lie in that plane to within the Moon's 5°
+    /// of orbital inclination — which the lunar station is composed *with*,
+    /// having been framed against the flat bearing since it was written.
+    fn bearing_of(&self, r: Bearing, b: &Bodies) -> (f32, f32) {
+        let dir = match r {
+            Bearing::SunFromEarth => V3::ZERO - b.earth,
+            Bearing::EarthFromSun => b.earth,
+            Bearing::MoonFromEarth => b.moon - b.earth,
+            Bearing::HomeFromEarth => match self.home {
+                Some((lat, lon)) => {
+                    let d = b.surface_dir(lat, lon);
+                    return (yaw_of(d), d.z.clamp(-1.0, 1.0).asin());
+                }
+                // No grid entered: a low pass over nowhere in particular, which
+                // is still a better shot than no shot.
+                None => return (0.0, 0.0),
+            },
+        };
+        (yaw_of(dir), 0.0)
+    }
+}
+
+/// How close a station may bring the camera to its focus body, in gigametres.
+///
+/// Normally the camera's own limit. A station with a `drop` has the body off
+/// the view axis, so what must stay clear of the surface is the eye's true
+/// distance — `hypot(dist, drop · r)` — and demanding 1.6 radii along the axis
+/// as well would put every orbital shot straight back out into space.
+fn dist_floor(s: &Station, radius: f32) -> f32 {
+    if s.drop <= 0.0 {
+        return dist_range(radius).0;
+    }
+    radius * (ORBIT_FLOOR * ORBIT_FLOOR - s.drop * s.drop).max(0.04).sqrt()
+}
+
+/// Which way is up on screen for a camera whose eye lies along `dir` from what
+/// it is looking at: the world up with the view axis taken out of it, which is
+/// what [`M4::look_at`] resolves the fixed ecliptic up-hint to.
+fn screen_up(dir: V3) -> V3 {
+    let z = v3(0.0, 0.0, 1.0);
+    let u = z - dir * dir.dot(z);
+    if u.len() > 1e-4 { u.normalize() } else { any_perp(dir) }
+}
+
+/// Deterministic per-lap noise in −1..1.
+///
+/// Not a clock and not a generator: the spline asks a station for the same pose
+/// several frames running and has to be told the same thing each time, and the
+/// tour is stepped by tests that have to be reproducible. The lap counter is
+/// the only thing that moves.
+fn lap_noise(lap: u32, salt: u32) -> f32 {
+    let mut h = lap.wrapping_mul(0x9E37_79B9) ^ salt.wrapping_add(1).wrapping_mul(0x85EB_CA6B);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2545_F491);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0x27D4_EB2F);
+    h ^= h >> 16;
+    h as f32 / (u32::MAX as f32 * 0.5) - 1.0
 }
 
 /// Re-express `p`'s yaw as the branch nearest `near`.
@@ -705,6 +1014,16 @@ mod tests {
     use super::*;
     use crate::solar3d::scene;
     use crate::view::Solar3dView;
+
+    /// The operator's QTH for every test that needs one: JN88, mid-latitude
+    /// north, well off both the ecliptic equator and the prime meridian, so a
+    /// station aimed at it is aimed somewhere specific.
+    const VIENNA: (f64, f64) = (48.2, 16.4);
+
+    /// One whole lap of the tour: every dwell, every transition, and margin.
+    fn loop_s() -> f32 {
+        STATIONS.iter().map(|s| s.dwell_s + TRANSITION_S).sum::<f32>() + 6.0
+    }
 
     /// The camera, its bodies, and the point it is pivoting around.
     fn cam_at(dist: f32, yaw: f32, pitch: f32) -> (Camera, Bodies, V3) {
@@ -807,7 +1126,7 @@ mod tests {
         let mut tour = Tour::default();
         let (mut poses, mut names, mut eyes) = (Vec::new(), Vec::new(), Vec::new());
         for _ in 0..(seconds / dt) as usize {
-            let pivot = tour.step(&mut st.view, &b, dt, None, None);
+            let pivot = tour.step(&mut st.view, &b, dt, None, None, Some(VIENNA));
             st.focus_override = Some(pivot);
             poses.push(Pose::new(st.view.yaw, st.view.pitch, st.view.dist));
             eyes.push(Camera::from_view(&st, &b, [1600.0, 900.0]).eye);
@@ -825,7 +1144,7 @@ mod tests {
     #[test]
     fn the_tour_path_is_continuous() {
         let dt = 1.0 / 60.0;
-        let (poses, _) = run_tour(140.0, dt);
+        let (poses, _) = run_tour(loop_s(), dt);
         assert!(poses.len() > 8000);
         let mut worst = (0.0f32, 0usize);
         for (i, w) in poses.windows(2).enumerate() {
@@ -852,7 +1171,7 @@ mod tests {
     #[test]
     fn the_tour_has_no_velocity_discontinuities() {
         let dt = 1.0 / 60.0;
-        let (poses, _) = run_tour(140.0, dt);
+        let (poses, _) = run_tour(loop_s(), dt);
         let vel: Vec<f32> = poses.windows(2).map(|w| short_angle(w[0].yaw, w[1].yaw)).collect();
         let worst = vel.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
         assert!(worst < 0.02, "yaw acceleration spike of {worst} rad/frame²");
@@ -868,7 +1187,7 @@ mod tests {
     #[test]
     fn the_eye_never_jumps_between_stations() {
         let dt = 1.0 / 60.0;
-        let (_, _, eyes) = run_tour_eyes(160.0, dt);
+        let (_, _, eyes) = run_tour_eyes(loop_s(), dt);
         assert!(eyes.len() > 9000);
 
         // The criterion is the *smoothness* of the step profile, not its
@@ -909,9 +1228,9 @@ mod tests {
         let mut tour = Tour::default();
 
         // Settle at station 0 (Sun), then advance to station 1 (Earth).
-        let mut pivot = tour.step(&mut st.view, &b, 1.0 / 60.0, None, None);
+        let mut pivot = tour.step(&mut st.view, &b, 1.0 / 60.0, None, None, Some(VIENNA));
         while tour.index == 0 {
-            pivot = tour.step(&mut st.view, &b, 0.05, None, None);
+            pivot = tour.step(&mut st.view, &b, 0.05, None, None, Some(VIENNA));
         }
         assert_eq!(tour.station().focus, Focus::Earth);
         // The first frame of the new move must still be at the Sun, not at the
@@ -921,7 +1240,7 @@ mod tests {
         let mut prev = pivot.0;
         let mut worst = 0.0f32;
         for _ in 0..(TRANSITION_S / 0.02) as usize + 4 {
-            let p = tour.step(&mut st.view, &b, 0.02, None, None).0;
+            let p = tour.step(&mut st.view, &b, 0.02, None, None, Some(VIENNA)).0;
             worst = worst.max((p - prev).len());
             prev = p;
         }
@@ -937,8 +1256,7 @@ mod tests {
 
     #[test]
     fn the_tour_visits_every_station_and_loops() {
-        // One full loop is ~8 stations × (3.2 s transition + ~12 s dwell).
-        let (_, names) = run_tour(160.0, 1.0 / 30.0);
+        let (_, names) = run_tour(loop_s(), 1.0 / 30.0);
         let mut seen: Vec<&str> = Vec::new();
         for n in &names {
             if !seen.contains(n) {
@@ -953,7 +1271,7 @@ mod tests {
 
     #[test]
     fn the_tour_stays_within_the_camera_limits() {
-        let (poses, _) = run_tour(160.0, 1.0 / 30.0);
+        let (poses, _) = run_tour(loop_s(), 1.0 / 30.0);
         for p in &poses {
             assert!(p.pitch.abs() <= PITCH_LIMIT + 1e-4, "pitch {} out of range", p.pitch);
             let d = p.ln_dist.exp();
@@ -977,7 +1295,7 @@ mod tests {
         st.view.dist = target.ln_dist.exp();
         tour.index = 0;
         tour.request_resume();
-        tour.step(&mut st.view, &b, 1.0 / 60.0, None, None);
+        tour.step(&mut st.view, &b, 1.0 / 60.0, None, None, Some(VIENNA));
         assert_eq!(tour.index, 4, "resumed at {} instead", tour.station().name);
     }
 
@@ -988,9 +1306,9 @@ mod tests {
         let mut st = SolarUi::new(Solar3dView::default());
         let b = scene::bodies(&st, 1_784_937_600.0);
         let mut tour = Tour::default();
-        tour.step(&mut st.view, &b, 1.0 / 60.0, None, None);
+        tour.step(&mut st.view, &b, 1.0 / 60.0, None, None, Some(VIENNA));
         let before = Pose::new(st.view.yaw, st.view.pitch, st.view.dist);
-        tour.step(&mut st.view, &b, 5.0, None, None);
+        tour.step(&mut st.view, &b, 5.0, None, None, Some(VIENNA));
         let after = Pose::new(st.view.yaw, st.view.pitch, st.view.dist);
         assert!(tour.elapsed <= 0.3, "elapsed jumped to {}", tour.elapsed);
         assert!(
@@ -1009,11 +1327,246 @@ mod tests {
         assert!(far.yaw > std::f32::consts::PI, "took the long way: {}", far.yaw);
     }
 
+    // ── The earth-side stations ─────────────────────────────────────────────
+
+    /// Fly the tour, from cold, until it is `into` seconds into the named
+    /// station's dwell — which is what a viewer who leaves AUTO running sees,
+    /// as opposed to the pose the table asks for.
+    fn settled_at(name: &str, into: f32, home: Option<(f64, f64)>) -> (SolarUi, Bodies, Camera) {
+        let mut st = SolarUi::new(Solar3dView::default());
+        st.view.auto = true;
+        let b = scene::bodies(&st, 1_784_937_600.0);
+        let mut tour = Tour::default();
+        let dt = 1.0 / 60.0;
+        let want = STATIONS.iter().position(|s| s.name == name).expect("no such station");
+        for _ in 0..(loop_s() * 2.0 / dt) as usize {
+            let pivot = tour.step(&mut st.view, &b, dt, None, None, home);
+            st.focus_override = Some(pivot);
+            if tour.index == want && tour.elapsed >= TRANSITION_S + into {
+                let cam = Camera::from_view(&st, &b, [1600.0, 900.0]);
+                return (st, b, cam);
+            }
+        }
+        panic!("the tour never reached {name}");
+    }
+
+    /// Directions of the globe's visible cap: everything the camera can see of
+    /// it, sampled evenly enough to find its silhouette.
+    fn visible_cap(cam: &Camera, b: &Bodies) -> Vec<V3> {
+        let d = (cam.eye - b.earth).len();
+        let u = (cam.eye - b.earth).normalize();
+        let (e1, e2) = (any_perp(u), u.cross(any_perp(u)));
+        let alpha = (b.earth_r / d).clamp(-1.0, 1.0).acos();
+        let mut out = Vec::new();
+        for i in 0..=40 {
+            let theta = alpha * i as f32 / 40.0;
+            for k in 0..120 {
+                let phi = k as f32 / 120.0 * std::f32::consts::TAU;
+                out.push(u * theta.cos() + (e1 * phi.cos() + e2 * phi.sin()) * theta.sin());
+            }
+        }
+        out
+    }
+
+    /// The low pass has to look like one: the planet across the bottom of the
+    /// frame, its horizon on the middle of it, and space above.
+    #[test]
+    fn the_home_orbit_lays_the_earth_across_the_lower_half() {
+        for into in [0.0, 9.0, 19.4] {
+            let (_, b, cam) = settled_at("HOME ORBIT", into, Some(VIENNA));
+            let mut top = -2.0f32;
+            let mut reaches_bottom = false;
+            for dir in visible_cap(&cam, &b) {
+                let Some((x, y)) = ndc(&cam, b.earth + dir * b.earth_r) else { continue };
+                if x.abs() < 0.2 {
+                    top = top.max(y);
+                    reaches_bottom |= y < -0.95;
+                }
+            }
+            // The horizon crosses the middle of the frame...
+            assert!(
+                top.abs() < 0.12,
+                "{into} s in: the globe's silhouette tops out at {top:.2}, not on the middle",
+            );
+            // ...and the globe runs off the bottom of it rather than floating.
+            assert!(
+                reaches_bottom,
+                "{into} s in: the globe does not reach the bottom of the frame"
+            );
+            // Low, and still in space.
+            let h = (cam.eye - b.earth).len();
+            assert!(
+                (b.earth_r * 1.05..b.earth_r * 1.45).contains(&h),
+                "{into} s in: flying at {:.2} radii — that is not a low orbit",
+                h / b.earth_r,
+            );
+        }
+    }
+
+    /// ...and it has to be going somewhere: the operator's own grid square,
+    /// which it closes on across the whole dwell and never overshoots.
+    #[test]
+    fn the_home_orbit_closes_on_the_operators_grid() {
+        let qth = |b: &Bodies| b.surface_dir(VIENNA.0, VIENNA.1);
+        let separation = |cam: &Camera, b: &Bodies| {
+            let sub = (cam.eye - b.earth).normalize();
+            sub.dot(qth(b)).clamp(-1.0, 1.0).acos() / DEG
+        };
+
+        let mut prev = f32::MAX;
+        for into in [0.0, 5.0, 10.0, 15.0, 19.4] {
+            let (_, b, cam) = settled_at("HOME ORBIT", into, Some(VIENNA));
+            let sep = separation(&cam, &b);
+            assert!(sep < prev - 0.2, "{into} s in: {sep:.0}° from the QTH, was {prev:.0}°");
+            prev = sep;
+        }
+        // It closes most of the way and then stops, leaving the grid square in
+        // the lower half of the frame — under the horizon the drop laid across
+        // the middle of it, which is where the ground is.
+        let (_, b, cam) = settled_at("HOME ORBIT", 19.4, Some(VIENNA));
+        assert!((10.0..24.0).contains(&prev), "the pass finished {prev:.0}° from the QTH");
+        let (x, y) =
+            ndc(&cam, b.earth + qth(&b) * b.earth_r).expect("the QTH is behind the camera");
+        assert!(x.abs() < 0.5 && (-1.0..0.0).contains(&y), "the QTH sits at ({x:.2}, {y:.2})");
+    }
+
+    /// No grid entered is not a reason to break the loop: the pass still flies,
+    /// it is just aimed at nobody.
+    #[test]
+    fn the_home_orbit_flies_without_a_grid() {
+        let (st, b, cam) = settled_at("HOME ORBIT", 10.0, None);
+        let h = (cam.eye - b.earth).len();
+        assert!(h > b.earth_r * 1.05, "eye {h} inside a {} globe", b.earth_r);
+        assert!(st.view.yaw.is_finite() && st.view.pitch.is_finite() && st.view.dist.is_finite());
+        assert!(cam.eye.x.is_finite() && cam.eye.y.is_finite() && cam.eye.z.is_finite());
+    }
+
+    /// How many of the visible surface samples on screen are in daylight, and
+    /// how many are in the dark.
+    fn lit_and_dark_on_screen(cam: &Camera, b: &Bodies) -> (usize, usize) {
+        let sun = (V3::ZERO - b.earth).normalize();
+        let (mut lit, mut dark) = (0, 0);
+        for dir in visible_cap(cam, b) {
+            let on = ndc(cam, b.earth + dir * b.earth_r)
+                .is_some_and(|(x, y)| x.abs() <= 1.0 && y.abs() <= 1.0);
+            if !on {
+                continue;
+            }
+            if dir.dot(sun) > 0.0 { lit += 1 } else { dark += 1 }
+        }
+        (lit, dark)
+    }
+
+    /// The two greyline stations must be on *opposite* sides of the line, and
+    /// each on the side its name claims.
+    ///
+    /// Which limb is which follows from the way the Earth turns: a place 90°
+    /// round from the subsolar point in the direction of rotation is losing its
+    /// daylight, and the one 90° back is about to get it. The test measures
+    /// exactly that — the rate at which the ground in the middle of the frame is
+    /// gaining or losing sun, `d(r·ŝ)/dt` with `r` turning about the pole.
+    #[test]
+    fn the_dusk_and_dawn_stations_take_the_right_sides_of_the_line() {
+        for (name, want_darkening) in [("DUSK LINE", true), ("DAWN LINE", false)] {
+            let (_, b, cam) = settled_at(name, 5.0, Some(VIENNA));
+            let sun = (V3::ZERO - b.earth).normalize();
+            let middle = (cam.eye - b.earth).normalize();
+            let rate = b.earth_basis.2.cross(middle).dot(sun);
+            assert!(
+                (rate < 0.0) == want_darkening,
+                "{name}: the ground in frame is {} — wrong side of the terminator",
+                if rate < 0.0 { "going dark" } else { "coming into the light" },
+            );
+            // Both sides of the line have to be in the frame, or there is no
+            // border in the shot at all.
+            let (lit, dark) = lit_and_dark_on_screen(&cam, &b);
+            assert!(lit > 200 && dark > 200, "{name}: {lit} lit and {dark} dark samples on screen");
+            // Angled, not the flat side-on view the greyline station already is.
+            let (st, _, _) = settled_at(name, 5.0, Some(VIENNA));
+            assert!(
+                st.view.pitch.abs() > 25.0 * DEG,
+                "{name}: {}° off the ecliptic",
+                st.view.pitch
+            );
+        }
+    }
+
+    /// The descent is a descent: a long way out at the top of the dwell, in
+    /// orbit by the end of it, and never through the surface on the way.
+    #[test]
+    fn the_orbit_descent_falls_from_far_out_into_orbit() {
+        let mut last = f32::MAX;
+        for into in [0.0, 7.0, 14.0, 20.6] {
+            let (_, b, cam) = settled_at("ORBIT DESCENT", into, Some(VIENNA));
+            let h = (cam.eye - b.earth).len() / b.earth_r;
+            assert!(h < last, "{into} s in: {h:.1} radii out, was {last:.1} — not descending");
+            assert!(h > 1.05, "{into} s in: {h:.1} radii — inside the globe");
+            last = h;
+        }
+        assert!(last < 1.5, "the descent finished {last:.1} radii out, nowhere near orbit");
+
+        let (_, b, cam) = settled_at("ORBIT DESCENT", 0.0, Some(VIENNA));
+        let start = (cam.eye - b.earth).len() / b.earth_r;
+        assert!(start > 8.0, "the descent starts only {start:.1} radii out");
+    }
+
+    /// ...and it is not the *same* descent twice: the bearing, the height it
+    /// starts from and the angle it comes in at are all drawn afresh each lap.
+    #[test]
+    fn the_orbit_descent_is_composed_afresh_each_lap() {
+        let st = SolarUi::new(Solar3dView::default());
+        let b = scene::bodies(&st, 1_784_937_600.0);
+        let s = STATIONS.iter().find(|s| s.name == "ORBIT DESCENT").expect("the descent");
+        let mut tour = Tour::default();
+
+        let mut seen: Vec<Pose> = Vec::new();
+        for lap in 0..8u32 {
+            tour.lap = lap;
+            let p = tour.pose_of(s, &b);
+            assert!(p.yaw.is_finite() && p.pitch.is_finite() && p.ln_dist.is_finite());
+            // Within the spread it was given, not wandering off it.
+            let (bearing, _) = tour.bearing_of(s.relative_to, &b);
+            let radius = b.focus(s.focus).1;
+            assert!(short_angle(bearing + s.yaw_offset, p.yaw).abs() <= s.jitter.yaw + 1e-3);
+            assert!(
+                (p.ln_dist - (radius * s.radii).ln()).abs() <= (1.0 + s.jitter.dist).ln() + 1e-3,
+                "lap {lap} starts {:.1} radii out",
+                p.ln_dist.exp() / radius,
+            );
+            // The two ends of one lap's move share a bearing: it is an approach,
+            // not an orbit.
+            assert!(short_angle(p.yaw, tour.dolly_of(s, &b).yaw).abs() < 1e-4);
+            seen.push(p);
+        }
+        for (i, a) in seen.iter().enumerate() {
+            for (j, c) in seen.iter().enumerate().skip(i + 1) {
+                let d = short_angle(a.yaw, c.yaw).abs() + (a.ln_dist - c.ln_dist).abs();
+                assert!(d > 0.02, "laps {i} and {j} fly the same descent");
+            }
+        }
+    }
+
+    /// One shot of the Sun's own disk, and only one — the rest of the loop is
+    /// the planet the operator is working from.
+    #[test]
+    fn only_one_station_frames_the_solar_disk() {
+        let close: Vec<&str> = STATIONS
+            .iter()
+            .filter(|s| s.focus == Focus::Sun && s.radii < 100.0)
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(close, ["SUNSIDE"], "solar stations in the loop: {close:?}");
+        // And the wide one is a system view, far enough out for the planets'
+        // orbits rather than the Sun's surface.
+        let system = STATIONS.iter().find(|s| s.name == "SYSTEM ANGLED").expect("the system view");
+        assert!(system.radii > 1000.0 && system.pitch > 20.0 * DEG);
+    }
+
     // ── The contact view ────────────────────────────────────────────────────
 
     /// A path of `sep` degrees, from a mid-latitude QTH along a meridian.
     fn path_of(sep: f64) -> QsoPath {
-        QsoPath { home: (48.2, 16.4), dx: (48.2 - sep, 16.4) }
+        QsoPath { home: VIENNA, dx: (VIENNA.0 - sep, VIENNA.1) }
     }
 
     /// Fly the tour with a contact in progress until it has settled on it.
@@ -1025,7 +1578,7 @@ mod tests {
         let dt = 1.0 / 60.0;
         // Long enough for the flight in (3.2 s) and a good part of the sway.
         for _ in 0..(12.0 / dt) as usize {
-            let pivot = tour.step(&mut st.view, &b, dt, Some(path), None);
+            let pivot = tour.step(&mut st.view, &b, dt, Some(path), None, Some(VIENNA));
             st.focus_override = Some(pivot);
         }
         assert_eq!(tour.leg_name(), "QSO PATH");
@@ -1059,7 +1612,7 @@ mod tests {
         let mut tour = Tour::default();
         let dt = 1.0 / 60.0;
         for _ in 0..(12.0 / dt) as usize {
-            let pivot = tour.step(&mut st.view, &b, dt, None, Some(path));
+            let pivot = tour.step(&mut st.view, &b, dt, None, Some(path), Some(VIENNA));
             st.focus_override = Some(pivot);
         }
         let cam = Camera::from_view(&st, &b, [1600.0, 900.0]);
@@ -1112,7 +1665,7 @@ mod tests {
         let sat = Some(sat_at(&b, 8.0, 1.066));
         let dt = 1.0 / 60.0;
         for _ in 0..(8.0 / dt) as usize {
-            let pivot = tour.step(&mut st.view, &b, dt, qso, sat);
+            let pivot = tour.step(&mut st.view, &b, dt, qso, sat, Some(VIENNA));
             st.focus_override = Some(pivot);
         }
         // The pivot sits on the QTH–satellite sightline, not up on the
@@ -1273,7 +1826,7 @@ mod tests {
         let mut tour = Tour::default();
         let path = QsoPath { home: (48.2, 16.4), dx: (48.200_01, 16.400_01) };
         for _ in 0..600 {
-            tour.step(&mut st.view, &b, 1.0 / 60.0, Some(path), None);
+            tour.step(&mut st.view, &b, 1.0 / 60.0, Some(path), None, Some(VIENNA));
         }
         assert_ne!(tour.leg_name(), "QSO PATH");
     }
@@ -1292,7 +1845,7 @@ mod tests {
 
         let mut eyes: Vec<V3> = Vec::new();
         let frame = |tour: &mut Tour, st: &mut SolarUi, qso, eyes: &mut Vec<V3>| {
-            let pivot = tour.step(&mut st.view, &b, dt, qso, None);
+            let pivot = tour.step(&mut st.view, &b, dt, qso, None, Some(VIENNA));
             st.focus_override = Some(pivot);
             eyes.push(Camera::from_view(st, &b, [1600.0, 900.0]).eye);
         };

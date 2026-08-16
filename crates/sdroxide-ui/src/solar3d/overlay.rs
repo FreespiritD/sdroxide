@@ -2639,7 +2639,7 @@ fn advance_tour(ui: &egui::Ui, st: &mut SolarUi, data: Option<&SolarData>, sim_n
     // `Tour` is `Copy`, so step a local and write it back rather than fighting
     // the borrow of `st.view` inside it.
     let mut tour = st.tour;
-    let pivot = tour.step(&mut st.view, &b, dt, qso, sat);
+    let pivot = tour.step(&mut st.view, &b, dt, qso, sat, st.qth);
     st.tour = tour;
     st.focus_override = Some(pivot);
     ui.ctx().request_repaint();

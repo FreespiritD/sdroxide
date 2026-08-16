@@ -4922,17 +4922,8 @@ Earth–Moon midpoint), then a row per planet with its own moons beside it.
 Choosing a target pulls the camera in to frame it. You can also simply click a
 planet, a moon or its name in the view — hovering marks the body with a reticle
 first, so there is no guessing about what a click will grab. **▶ AUTO** flies a
-continuous camera path through
-eight framed viewpoints — overhead of the whole system, over the Earth's
-shoulder towards the Sun, face-on to the solar disk, along the day/night
-terminator, over the Sun's pole, a diagonal on the Earth–Moon pair, a long look
-back at the Earth from out by the Sun, and a wide inner-system view. The path is
-a spline through those viewpoints, so the camera curves between them rather than
-stopping and restarting at each. Moving between viewpoints that frame different
-bodies flies the camera across the gap — Earth to Sun is a 1 AU trip — rather
-than cutting; it holds each one for ten to sixteen seconds
-with a slow drift, and the whole loop takes about two minutes. Re-enabling AUTO
-picks up at whichever viewpoint is nearest your current view.
+continuous camera path through various framed viewpoints to make for an informative 
+and visually pleasing display that you could have on a main monitor or projector.
 
 While you are working a station, AUTO leaves the loop and flies down to the
 contact instead, holding it for as long as the QSO lasts — the readout calls it
