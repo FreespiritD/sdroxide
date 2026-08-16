@@ -102,7 +102,16 @@ impl HpsdrSource {
             label,
             rx: Some(rx),
             board: Some(board),
-            tx_latency_ms: cfg.tx_latency_ms,
+            // Held to the offered range here rather than trusting the file: a
+            // cushion deeper than the host TX ring cannot be delivered, and
+            // asking for one only saturates the ring (see
+            // `HpsdrConfig::TX_LATENCY_MS_RANGE`). A `radio.json` written by
+            // hand, or by the one build whose ceiling was 1000 ms, still opens
+            // on something the ring can hold.
+            tx_latency_ms: cfg.tx_latency_ms.clamp(
+                *sdroxide_types::HpsdrConfig::TX_LATENCY_MS_RANGE.start(),
+                *sdroxide_types::HpsdrConfig::TX_LATENCY_MS_RANGE.end(),
+            ),
         })
     }
 

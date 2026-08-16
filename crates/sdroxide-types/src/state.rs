@@ -158,6 +158,32 @@ impl TxEqState {
     pub const MID_Q_RANGE: std::ops::RangeInclusive<f32> = 0.3..=5.0;
     /// Shelf-slope range for the low/high (shelving) bands.
     pub const SHELF_SLOPE_RANGE: std::ops::RangeInclusive<f32> = 0.1..=1.0;
+
+    /// This state with every field forced into the range the UI offers.
+    ///
+    /// The controls cannot leave these ranges, but two other doors into this
+    /// type can: a `SetTxEq` from a WebSocket client, and the `session.json`
+    /// restored at startup, which is a file an operator may have edited. Both
+    /// go through here, so the coefficient maths in `sdroxide-dsp` only ever
+    /// sees corner frequencies inside the voice band and a Q it was designed
+    /// for.
+    pub fn clamped(self) -> Self {
+        let band = |b: TxEqBand,
+                    freq: std::ops::RangeInclusive<f32>,
+                    q: std::ops::RangeInclusive<f32>| {
+            TxEqBand {
+                freq_hz: b.freq_hz.clamp(*freq.start(), *freq.end()),
+                gain_db: b.gain_db.clamp(*Self::GAIN_DB_RANGE.start(), *Self::GAIN_DB_RANGE.end()),
+                q: b.q.clamp(*q.start(), *q.end()),
+            }
+        };
+        TxEqState {
+            enabled: self.enabled,
+            low: band(self.low, Self::LOW_FREQ_HZ_RANGE, Self::SHELF_SLOPE_RANGE),
+            mid: band(self.mid, Self::MID_FREQ_HZ_RANGE, Self::MID_Q_RANGE),
+            high: band(self.high, Self::HIGH_FREQ_HZ_RANGE, Self::SHELF_SLOPE_RANGE),
+        }
+    }
 }
 
 /// Decimation off — the receiver runs at the device's own rate.

@@ -414,7 +414,7 @@ pub(in crate::app) fn settings_hpsdr_tab(
              this only widens sdroxide's own margin. Raise it on a WiFi link or a VPN, where \
              the low default (right for a direct wired connection) is not enough headroom \
              against jitter and the transmitted audio or PTT stutters; higher costs transmit \
-             latency.",
+             latency. Takes effect on APPLY, which reconnects to the board.",
         );
         ui.end_row();
     });

@@ -545,7 +545,18 @@ a **Slope** instead (how sharply they roll off). Off by default, and flat
 (0 dB every band) the first time you turn it on, so enabling it changes
 nothing until you actually move a slider. Voice modes only (SSB/AM/FM);
 digital modes and CW carry synthesized or keyed audio that never reaches it.
-Applies immediately, like the IARU region setting: there is no Apply step.
+Applies immediately, like the IARU region setting: there is no Apply step —
+including while you are transmitting, so you can set it by ear against the
+transmit monitor.
+
+It sits after **Mic** gain and before whatever modulates the audio, on every
+interface: a radio sdroxide modulates itself, and a rig that modulates its own
+audio (a CAT rig over its sound card, TCI, Icom LAN, SmartSDR) alike. Boosting
+a band therefore raises the level going into the transmitter, and there is
+nothing behind it but a limiter at full scale — on a transmitter, clipping is
+splatter on your neighbours' frequencies. **After boosting anything, watch the
+ALC/TX meter and take the same amount back off Mic gain.** Cutting is free; a
+cut band and a little more mic gain gets the same tone with none of the risk.
 
 > **Transmit safety:** by default sdroxide refuses to transmit outside the
 > amateur bands (`tx_ham_only`). Transmit hardware gains start at minimum and
@@ -2834,6 +2845,19 @@ involved:
   board** selected, the low-pass filter follows the band you are on (the
   transmit band while keyed) and the board's 3 MHz receive high-pass is switched
   in above 3 MHz.
+- **Transmit buffer** — how far ahead of real time transmit audio is fed toward
+  the board, 10 to 500 ms, before sdroxide slows down to feed it at exactly the
+  rate the board consumes it. That head start is the only thing covering a
+  hiccup between one block and the next: a stall shorter than it is inaudible,
+  a longer one empties the buffer and goes out as chopped audio. The **30 ms**
+  default is right for a wired LAN, where the link contributes almost no jitter
+  of its own. Over **WiFi or a VPN**, where it does, raise this until the
+  stutter stops — 100 to 200 ms is usually plenty. The cost is transmit
+  latency: the same delay is added between speaking and transmitting, and
+  between releasing PTT and the transmitter dropping. Unlike the Icom LAN
+  setting of the same name, this is not a buffer inside the radio — OpenHPSDR
+  has no such thing — so it only widens sdroxide's own margin on this side of
+  the network. Takes effect on **APPLY**, which reconnects to the board.
 
 Receive is wideband IQ, so the full panadapter and the skimmers work.
 

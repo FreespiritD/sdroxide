@@ -722,9 +722,20 @@ impl HpsdrConfig {
     }
 
     /// Range offered in the UI. The floor keeps the round trip to the board
-    /// from dominating; the ceiling is Icom LAN's own transmit-buffer ceiling,
-    /// so the two controls read the same way.
-    pub const TX_LATENCY_MS_RANGE: std::ops::RangeInclusive<f64> = 10.0..=1000.0;
+    /// from dominating.
+    ///
+    /// The ceiling is set by the ring this cushion actually lives in, which is
+    /// the host's: `sdroxide-hpsdr` sizes it at `48000 * 2 * 0.5` floats
+    /// rounded up to a power of two, so ~683 ms at the fixed 48 kHz transmit
+    /// rate both protocols use. Asking for more than the ring can hold does
+    /// not buy headroom — the ring simply saturates, `HpsdrRx::tx_write` spins
+    /// waiting for room and, after 200 ms of that, drops the sample pair,
+    /// which is the very glitch this setting exists to prevent. 500 ms leaves
+    /// room under that limit while still covering a link far worse than the
+    /// default assumes. Deliberately lower than Icom LAN's identically-named
+    /// ceiling: that one sizes a buffer inside the radio, this one has to fit
+    /// a buffer here.
+    pub const TX_LATENCY_MS_RANGE: std::ops::RangeInclusive<f64> = 10.0..=500.0;
 
     /// Supported DDC sample rates (Hz) for Protocol 2 boards.
     pub const SAMPLE_RATES: [f64; 6] =
