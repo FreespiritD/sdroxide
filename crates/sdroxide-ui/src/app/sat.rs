@@ -32,6 +32,12 @@ pub(in crate::app) struct SatWinState {
     /// another client, in which case the toggles are not shown.
     pub sent: Option<SatLockConfig>,
     list: Option<SatList>,
+    /// The sampled arcs behind the two pass diagrams — the locked bird's and
+    /// the selected one's. Two slots because both are on screen at once when
+    /// the operator is eyeing up the next pass during the current one, and a
+    /// single slot would rebuild itself twice a frame.
+    lock_curve: Option<PassCurve>,
+    pick_curve: Option<PassCurve>,
 }
 
 /// The parsed satellite list, rebuilt when the station's satellite config
@@ -123,6 +129,388 @@ fn build_list(cfg: &std::sync::Arc<sdroxide_types::SatConfig>, now: i64) -> SatL
     SatList { cfg: std::sync::Arc::clone(cfg), built_unix: now, entries }
 }
 
+/// How many points the elevation arc is sampled at. Far too many sgp4 runs to
+/// do per repaint, which is the whole reason a [`PassCurve`] is kept.
+const CURVE_SAMPLES: usize = 121;
+/// The lead-in and run-out the diagram shows either side of the pass: a minute
+/// of each, so the arc is seen crossing the horizon rather than starting on it.
+const PASS_MARGIN_S: i64 = 60;
+/// Height of the diagram under the lock pane, and of the shorter one the
+/// picker draws for whatever satellite is selected.
+const DIAGRAM_H: f32 = 92.0;
+const DIAGRAM_H_SMALL: f32 = 76.0;
+
+/// One pass sampled into an elevation arc: the pass diagram's data, held
+/// across frames.
+struct PassCurve {
+    norad_id: u64,
+    /// Which pass this is, identified by its *set* time. A search that starts
+    /// mid-pass reports the search start as the rise — so `rise_unix` creeps
+    /// forward with the clock every time the engine recomputes and cannot key
+    /// a memo. The set is a real horizon crossing and stays put.
+    key_set_unix: i64,
+    /// The window drawn: the true AOS less [`PASS_MARGIN_S`], to LOS plus it.
+    t0: i64,
+    t1: i64,
+    rise_unix: i64,
+    set_unix: i64,
+    /// Elevation and azimuth in degrees at [`CURVE_SAMPLES`] evenly spaced
+    /// instants from `t0` to `t1`.
+    pts: Vec<(f32, f32)>,
+}
+
+impl PassCurve {
+    fn build(
+        norad_id: u64,
+        sat: &sdroxide_solar::Satellite,
+        lat: f64,
+        lon: f64,
+        p: &sdroxide_types::SatPass,
+    ) -> Option<PassCurve> {
+        let el_at = |t: i64| sat.at(t as f64).map(|s| s.az_el_from(lat, lon).1);
+        let rise = true_rise(&el_at, p.rise_unix);
+        let (t0, t1) = (rise - PASS_MARGIN_S, p.set_unix + PASS_MARGIN_S);
+        if t1 - t0 < 2 {
+            return None;
+        }
+        let span = (t1 - t0) as f64;
+        let mut pts = Vec::with_capacity(CURVE_SAMPLES);
+        for i in 0..CURVE_SAMPLES {
+            let t = t0 as f64 + span * i as f64 / (CURVE_SAMPLES - 1) as f64;
+            let (az, el) = sat.at(t)?.az_el_from(lat, lon);
+            pts.push((el as f32, az as f32));
+        }
+        Some(PassCurve {
+            norad_id,
+            key_set_unix: p.set_unix,
+            t0,
+            t1,
+            rise_unix: rise,
+            set_unix: p.set_unix,
+            pts,
+        })
+    }
+
+    /// Where an instant falls across the window, 0 at `t0` and 1 at `t1`.
+    fn frac(&self, unix: f64) -> f64 {
+        (unix - self.t0 as f64) / (self.t1 - self.t0).max(1) as f64
+    }
+
+    /// Elevation and azimuth at an instant inside the window, interpolated
+    /// between samples so the marker sits *on* the drawn arc rather than near
+    /// it. `None` outside the window — a pass still hours away has no present
+    /// position on it.
+    fn sample(&self, unix: f64) -> Option<(f32, f32)> {
+        let f = self.frac(unix);
+        if !(0.0..=1.0).contains(&f) || self.pts.len() < 2 {
+            return None;
+        }
+        let x = f * (self.pts.len() - 1) as f64;
+        let i = (x.floor() as usize).min(self.pts.len() - 2);
+        let k = (x - i as f64) as f32;
+        let (a, b) = (self.pts[i], self.pts[i + 1]);
+        // Azimuth wraps: interpolate the short way round, or a pass crossing
+        // north swings the compass letter through south on the way.
+        let mut daz = b.1 - a.1;
+        if daz > 180.0 {
+            daz -= 360.0;
+        } else if daz < -180.0 {
+            daz += 360.0;
+        }
+        Some((a.0 + (b.0 - a.0) * k, (a.1 + daz * k).rem_euclid(360.0)))
+    }
+
+    /// The highest sample: its index, elevation and azimuth. Taken from the
+    /// samples rather than the pass summary so the label and the drawn apex
+    /// cannot disagree.
+    fn apex(&self) -> (usize, f32, f32) {
+        let mut best = (0usize, f32::MIN, 0.0);
+        for (i, &(el, az)) in self.pts.iter().enumerate() {
+            if el > best.1 {
+                best = (i, el, az);
+            }
+        }
+        best
+    }
+}
+
+/// The horizon crossing that really began the pass.
+///
+/// A search that starts mid-pass reports its own start time as the rise — the
+/// satellite was already up when it looked — so a diagram drawn from that
+/// would begin part-way up the arc and, worse, shift leftwards every time the
+/// engine recomputed. Walk back to where the elevation last crossed zero and
+/// bisect it to the second. Returns `reported` untouched in the normal case,
+/// where it *is* the crossing, for the cost of one propagation.
+fn true_rise(el_at: &impl Fn(i64) -> Option<f64>, reported: i64) -> i64 {
+    if el_at(reported).unwrap_or(-90.0) <= 0.1 {
+        return reported;
+    }
+    /// Coarse step back, then bisect. A pass never turns over inside this.
+    const STEP: i64 = 15;
+    /// An hour covers any low-Earth pass several times; a bird that stays up
+    /// longer than that is drawn from wherever the search picked it up.
+    const LIMIT: i64 = 3600;
+    let mut up = reported;
+    while reported - up < LIMIT {
+        let below = up - STEP;
+        if el_at(below).unwrap_or(-90.0) <= 0.0 {
+            let (mut lo, mut hi) = (below, up);
+            while hi - lo > 1 {
+                let mid = lo + (hi - lo) / 2;
+                if el_at(mid).unwrap_or(-90.0) > 0.0 { hi = mid } else { lo = mid }
+            }
+            return hi;
+        }
+        up = below;
+    }
+    up
+}
+
+/// Bring `slot` up to date for this satellite and pass and hand back the arc
+/// to draw. `None` when the element set will not propagate that far.
+fn curve_for<'a>(
+    slot: &'a mut Option<PassCurve>,
+    norad_id: u64,
+    sat: &sdroxide_solar::Satellite,
+    lat: f64,
+    lon: f64,
+    p: &sdroxide_types::SatPass,
+) -> Option<&'a PassCurve> {
+    let fresh =
+        slot.as_ref().is_some_and(|c| c.norad_id == norad_id && c.key_set_unix == p.set_unix);
+    if !fresh {
+        *slot = PassCurve::build(norad_id, sat, lat, lon, p);
+    }
+    slot.as_ref()
+}
+
+/// `12:03` — the clock on the diagram's axis, UTC like every other time here.
+fn hhmm(unix: i64) -> String {
+    let (_, _, _, h, mi, _) = sdroxide_types::utc_ymd_hms(unix);
+    format!("{h:02}:{mi:02}")
+}
+
+/// Paint the pass profile: elevation up the side, the clock and the compass
+/// along the bottom, and a marker down the arc at the satellite's present
+/// position.
+///
+/// A painted panel rather than a plot widget, because it has to read as part
+/// of this window's chrome: night sky over a lit ground band, the arc glowing
+/// out of the horizon and back into it, and a hot marker at *now*.
+fn pass_diagram(ui: &mut egui::Ui, curve: &PassCurve, now: i64, height: f32) {
+    use eframe::egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, epaint::Mesh};
+    use egui::{pos2, vec2};
+
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    if !ui.is_rect_visible(rect) || curve.pts.len() < 2 {
+        return;
+    }
+    let p = ui.painter_at(rect);
+    let font = FontId::proportional(8.5);
+    let dim = theme::CYAN_DIM();
+    let green = theme::GREEN();
+    let ghost = |c: Color32, a: u8| Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
+
+    // Three bands: the caption strip, the sky, and the ground the axis labels
+    // are set into. The ground is deeper than one line of text because the
+    // minute of run-in either side dips the arc `DIP` below the horizon, and
+    // that dip must not land on the lettering.
+    const HEAD_H: f32 = 13.0;
+    const GROUND_H: f32 = 17.0;
+    const DIP: f32 = 5.0;
+    let plot = Rect::from_min_max(
+        pos2(rect.left() + 1.0, rect.top() + HEAD_H),
+        pos2(rect.right() - 1.0, rect.bottom() - 1.0),
+    );
+    let horizon_y = plot.bottom() - GROUND_H;
+    let sky_top = plot.top() + 1.0;
+    if plot.width() < 60.0 || horizon_y - sky_top < 16.0 {
+        return; // nothing legible would fit
+    }
+
+    // An axis scaled to the pass. A 12° grazer flattened onto a 90° axis says
+    // nothing at all, so the top of the scale is the next step above the peak
+    // — and labelled, so the grazer is never mistaken for an overhead pass.
+    let (apex_i, apex_el, apex_az) = curve.apex();
+    let top_el = match apex_el {
+        e if e <= 12.0 => 15.0f32,
+        e if e <= 25.0 => 30.0,
+        e if e <= 40.0 => 45.0,
+        e if e <= 55.0 => 60.0,
+        _ => 90.0,
+    };
+    let ey = |el: f32| {
+        if el >= 0.0 {
+            horizon_y - (el / top_el).clamp(0.0, 1.0) * (horizon_y - sky_top)
+        } else {
+            // The sub-horizon band has its own compressed scale — it exists to
+            // show the crossing, not to be measured.
+            horizon_y + (-el / (top_el / 9.0)).clamp(0.0, 1.0) * DIP
+        }
+    };
+    let ex = |unix: f64| plot.left() + plot.width() * curve.frac(unix).clamp(0.0, 1.0) as f32;
+
+    // --- ground and sky ---------------------------------------------------
+    p.rect_filled(rect, 0.0, theme::INPUT_BG());
+    let mut sky = Mesh::default();
+    sky.colored_vertex(pos2(plot.left(), sky_top), Color32::TRANSPARENT);
+    sky.colored_vertex(pos2(plot.right(), sky_top), Color32::TRANSPARENT);
+    sky.colored_vertex(pos2(plot.right(), horizon_y), ghost(theme::CYAN(), 22));
+    sky.colored_vertex(pos2(plot.left(), horizon_y), ghost(theme::CYAN(), 22));
+    sky.add_triangle(0, 1, 2);
+    sky.add_triangle(0, 2, 3);
+    p.add(Shape::mesh(sky));
+    p.rect_filled(
+        Rect::from_min_max(pos2(plot.left(), horizon_y), pos2(plot.right(), plot.bottom())),
+        0.0,
+        theme::FILL(),
+    );
+
+    // --- grid -------------------------------------------------------------
+    let grid = ghost(theme::LINE_LIT(), 150);
+    for frac in [1.0f32, 2.0 / 3.0, 1.0 / 3.0] {
+        let (y, el) = (ey(top_el * frac), top_el * frac);
+        p.extend(Shape::dashed_line(
+            &[pos2(plot.left(), y), pos2(plot.right(), y)],
+            Stroke::new(1.0, grid),
+            3.0,
+            4.0,
+        ));
+        p.text(
+            pos2(plot.left() + 4.0, y + 1.0),
+            Align2::LEFT_TOP,
+            format!("{el:.0}°"),
+            font.clone(),
+            dim,
+        );
+    }
+    // Clock divisions, picked so the pass gets a handful of them whether it is
+    // eight minutes long or eight hours.
+    let span = (curve.t1 - curve.t0) as f64;
+    let step = [60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0, 10800.0]
+        .into_iter()
+        .find(|s| span / s <= 8.0)
+        .unwrap_or(21600.0);
+    let mut tick = (curve.t0 as f64 / step).ceil() * step;
+    while tick <= curve.t1 as f64 {
+        let x = ex(tick);
+        p.extend(Shape::dashed_line(
+            &[pos2(x, sky_top), pos2(x, horizon_y)],
+            Stroke::new(1.0, ghost(theme::LINE_LIT(), 90)),
+            2.0,
+            5.0,
+        ));
+        tick += step;
+    }
+
+    // --- the arc ----------------------------------------------------------
+    let xs: Vec<f32> = (0..curve.pts.len())
+        .map(|i| plot.left() + plot.width() * i as f32 / (curve.pts.len() - 1) as f32)
+        .collect();
+    let line: Vec<Pos2> = curve.pts.iter().zip(&xs).map(|(&(el, _), &x)| pos2(x, ey(el))).collect();
+    // Fill the sky under the arc, fading out towards the horizon.
+    let mut under = Mesh::default();
+    for i in 0..line.len() - 1 {
+        let (a, b) = (line[i], line[i + 1]);
+        let base = under.vertices.len() as u32;
+        under.colored_vertex(pos2(a.x, a.y.min(horizon_y)), ghost(green, 64));
+        under.colored_vertex(pos2(b.x, b.y.min(horizon_y)), ghost(green, 64));
+        under.colored_vertex(pos2(b.x, horizon_y), ghost(green, 6));
+        under.colored_vertex(pos2(a.x, horizon_y), ghost(green, 6));
+        under.add_triangle(base, base + 1, base + 2);
+        under.add_triangle(base, base + 2, base + 3);
+    }
+    p.add(Shape::mesh(under));
+    p.add(Shape::line(line.clone(), Stroke::new(4.0, ghost(green, 34))));
+    p.add(Shape::line(line, Stroke::new(1.6, green)));
+
+    // The horizon itself, over the arc: the one line on the diagram that is a
+    // hard boundary rather than a reading.
+    p.line_segment(
+        [pos2(plot.left(), horizon_y), pos2(plot.right(), horizon_y)],
+        Stroke::new(1.2, theme::CYAN()),
+    );
+
+    // --- the apex ---------------------------------------------------------
+    let apex_p = pos2(xs[apex_i], ey(apex_el));
+    p.circle_filled(apex_p, 2.0, ghost(green, 200));
+    let apex_label =
+        format!("{apex_el:.0}° {}", sdroxide_solar::satellites::compass(apex_az as f64));
+    let (align, dy) = if apex_p.y - sky_top < 12.0 {
+        (Align2::CENTER_TOP, 4.0)
+    } else {
+        (Align2::CENTER_BOTTOM, -4.0)
+    };
+    p.text(pos2(apex_p.x, apex_p.y + dy), align, apex_label, font.clone(), theme::TEXT_STRONG());
+
+    // --- horizon crossings, on the axis where they happen ------------------
+    let compass = |unix: i64| {
+        curve
+            .sample(unix as f64)
+            .map(|(_, az)| sdroxide_solar::satellites::compass(az as f64))
+            .unwrap_or("")
+    };
+    for t in [curve.rise_unix, curve.set_unix] {
+        let x = ex(t as f64);
+        p.line_segment(
+            [pos2(x, horizon_y - 3.0), pos2(x, horizon_y + 3.0)],
+            Stroke::new(1.2, theme::CYAN()),
+        );
+    }
+    let aos = format!("AOS {} {}", hhmm(curve.rise_unix), compass(curve.rise_unix));
+    let los = format!("LOS {} {}", hhmm(curve.set_unix), compass(curve.set_unix));
+    let baseline = plot.bottom() - 1.0;
+    let aos_r =
+        p.text(pos2(plot.left() + 5.0, baseline), Align2::LEFT_BOTTOM, &aos, font.clone(), dim);
+    if plot.right() - 5.0 - crate::chrome::text_width(ui, &los, font.clone()) > aos_r.right() + 6.0
+    {
+        p.text(pos2(plot.right() - 5.0, baseline), Align2::RIGHT_BOTTOM, &los, font.clone(), dim);
+    }
+
+    // --- now ---------------------------------------------------------------
+    if let Some((el, _)) = curve.sample(now as f64) {
+        let pink = theme::PINK();
+        let x = ex(now as f64);
+        p.line_segment(
+            [pos2(x, plot.top()), pos2(x, plot.bottom())],
+            Stroke::new(1.0, ghost(pink, 110)),
+        );
+        p.line_segment([pos2(x, sky_top), pos2(x, horizon_y)], Stroke::new(1.4, pink));
+        p.add(Shape::convex_polygon(
+            vec![pos2(x - 3.5, plot.top()), pos2(x + 3.5, plot.top()), pos2(x, plot.top() + 5.0)],
+            pink,
+            Stroke::NONE,
+        ));
+        let dot = pos2(x, ey(el));
+        p.circle_filled(dot, 4.5, ghost(pink, 70));
+        p.circle_filled(dot, 2.2, pink);
+        // The marker is the only thing on here that moves; keep it moving even
+        // when nothing else asks for a frame.
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+    }
+
+    // --- caption and frame -------------------------------------------------
+    p.text(
+        pos2(rect.left() + 7.0, rect.top() + 2.0),
+        Align2::LEFT_TOP,
+        "PASS PROFILE",
+        font.clone(),
+        dim,
+    );
+    p.text(
+        pos2(rect.right() - 13.0, rect.top() + 2.0),
+        Align2::RIGHT_TOP,
+        format!(
+            "{} above the horizon",
+            sdroxide_solar::timefmt::age(curve.set_unix - curve.rise_unix)
+        ),
+        font,
+        dim,
+    );
+    crate::chrome::paint_cut_border(&p, rect, theme::LINE_LIT(), theme::PANEL());
+}
+
 /// The mode a link's published emission maps onto. Satellite SSB convention
 /// is USB on the downlink, whatever the band.
 fn mode_for_link(l: &sdroxide_types::SatLink) -> Mode {
@@ -197,6 +585,15 @@ impl SdroxideApp {
     }
 
     fn sat_body(&mut self, ui: &mut egui::Ui, win: &mut SatWinState, cmds: &mut Vec<Command>) {
+        // (Re)built here rather than down in the picker: the lock pane draws
+        // its pass diagram from the same element sets, and it runs first.
+        let now = crate::time::now_unix();
+        let stale = win.list.as_ref().is_none_or(|l| {
+            !std::sync::Arc::ptr_eq(&l.cfg, &self.sat_cfg) || now - l.built_unix > MEMO_FRESH_S
+        });
+        if stale {
+            win.list = Some(build_list(&self.sat_cfg, now));
+        }
         if let Some(track) = self.sat_track.clone() {
             self.sat_locked_pane(ui, win, cmds, &track);
             ui.add_space(8.0);
@@ -320,6 +717,29 @@ impl SdroxideApp {
             }
         }
 
+        // The shape of that pass, drawn from the elements *this* client holds
+        // — a curated bird whose element set only the engine has keeps the
+        // numbers above and goes without the diagram.
+        let qth = win
+            .sent
+            .as_ref()
+            .and_then(|c| c.observer)
+            .or_else(|| sdroxide_types::grid_to_latlon(&self.my_grid()));
+        if let (Some(pass), Some((lat, lon))) = (&t.next_pass, qth) {
+            let sat = win
+                .list
+                .as_ref()
+                .and_then(|l| l.entries.iter().find(|e| e.norad_id == t.norad_id))
+                .and_then(|e| e.sat.as_ref());
+            if let Some(sat) = sat {
+                if let Some(c) = curve_for(&mut win.lock_curve, t.norad_id, sat, lat, lon, pass) {
+                    ui.add_space(5.0);
+                    pass_diagram(ui, c, now, DIAGRAM_H);
+                    ui.add_space(2.0);
+                }
+            }
+        }
+
         // The warnings, in the order an operator has to act on them.
         if t.stale_elements {
             ui.label(
@@ -395,14 +815,7 @@ impl SdroxideApp {
         let now = crate::time::now_unix();
         let qth = sdroxide_types::grid_to_latlon(&self.my_grid());
 
-        // (Re)build the list when the config changed or the memos aged out.
-        let stale = win.list.as_ref().is_none_or(|l| {
-            !std::sync::Arc::ptr_eq(&l.cfg, &self.sat_cfg) || now - l.built_unix > MEMO_FRESH_S
-        });
-        if stale {
-            win.list = Some(build_list(&self.sat_cfg, now));
-        }
-        let list = win.list.as_mut().expect("built above");
+        let list = win.list.as_mut().expect("built in sat_body");
 
         ui.horizontal(|ui| {
             ui.label(RichText::new("🔍").size(11.0));
@@ -565,6 +978,23 @@ impl SdroxideApp {
         ui.separator();
         ui.add_space(4.0);
 
+        // The selected bird's next pass, unless the lock pane above is already
+        // showing this one's. Ahead of the links on purpose: *when* it can be
+        // worked comes before *how*, and a satellite with no frequencies on
+        // file returns below this point without ever reaching the links.
+        let locked_here = self.sat_track.as_ref().is_some_and(|t| t.norad_id == id);
+        if !locked_here {
+            let e = &list.entries[entry_idx];
+            if let (Some(sat), Some((_, PassMemo::Pass(pass))), Some((lat, lon))) =
+                (e.sat.as_ref(), e.pass.as_ref(), qth)
+            {
+                if let Some(c) = curve_for(&mut win.pick_curve, id, sat, lat, lon, pass) {
+                    pass_diagram(ui, c, now, DIAGRAM_H_SMALL);
+                    ui.add_space(6.0);
+                }
+            }
+        }
+
         let links: Vec<sdroxide_types::SatLink> =
             freqs.as_ref().map(|f| f.usable_links().cloned().collect()).unwrap_or_default();
         if links.is_empty() {
@@ -639,7 +1069,6 @@ impl SdroxideApp {
                     mode: mode_for_link(link),
                 });
             }
-            let locked_here = self.sat_track.as_ref().is_some_and(|t| t.norad_id == id);
             if crate::chrome::chip_accent(
                 ui,
                 locked_here,
