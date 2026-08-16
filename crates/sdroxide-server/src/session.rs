@@ -5,9 +5,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::response::Response;
+use axum::extract::{Path, State};
+use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -16,17 +16,42 @@ use sdroxide_proto::{AudioCaps, AudioCodec, ClientMsg, PROTO_VERSION, ServerMsg,
 use sdroxide_types::Command;
 
 use crate::auth;
-use crate::{SessionTx, Shared};
+use crate::{SessionTx, Shared, Station};
 
-pub async fn ws_route(State(shared): State<Arc<Shared>>, upgrade: WebSocketUpgrade) -> Response {
-    upgrade.on_upgrade(|socket| session(socket, shared))
+/// `/ws` — the station's first radio, which is the whole of what a station
+/// with one radio has. Every client that predates the roster arrives here, so
+/// this address must never mean anything else.
+pub async fn ws_route(State(station): State<Arc<Station>>, upgrade: WebSocketUpgrade) -> Response {
+    let shared = station.radios[0].clone();
+    upgrade.on_upgrade(|socket| session(socket, shared, station))
+}
+
+/// `/ws/<id>` — one named radio out of the station's roster. Unknown ids are
+/// refused rather than rounded to a neighbour: a client that asked for the
+/// Pluto and silently got the RTL-SDR would be operating the wrong radio.
+pub async fn ws_route_for(
+    State(station): State<Arc<Station>>,
+    Path(id): Path<u32>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    match station.radio(id) {
+        Some(shared) => upgrade.on_upgrade(|socket| session(socket, shared, station)),
+        None => {
+            let known: Vec<String> = station.radios.iter().map(|r| r.id.to_string()).collect();
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                format!("this station has no radio {id}; it serves {}", known.join(", ")),
+            )
+                .into_response()
+        }
+    }
 }
 
 fn msg(m: &ServerMsg) -> Message {
     Message::Binary(encode(m).expect("encode").into())
 }
 
-async fn session(mut socket: WebSocket, shared: Arc<Shared>) {
+async fn session(mut socket: WebSocket, shared: Arc<Shared>, station: Arc<Station>) {
     // Hello and the sign-in first, and only then the single-client slot. The
     // order matters: claiming the slot before knowing who this is would let
     // anyone who can open a socket lock the operator out of their own radio
@@ -42,14 +67,14 @@ async fn session(mut socket: WebSocket, shared: Arc<Shared>) {
         let _ = socket.close().await;
         return;
     }
-    run_session(&mut socket, &shared, audio_caps).await;
+    run_session(&mut socket, &shared, &station, audio_caps).await;
 
     // Cleanup — whatever happened, release the slot and drop the key.
     *shared.session.lock().unwrap() = None;
     shared.busy.store(false, Ordering::SeqCst);
     let _ = shared.cmd_tx.send(Command::SetPtt(false));
     let _ = shared.cmd_tx.send(Command::SetTune(false));
-    info!("remote session ended");
+    info!(radio = shared.id, "remote session ended");
 }
 
 /// `Hello`, then the sign-in challenge if this server has one. `None` means the
@@ -98,7 +123,14 @@ async fn handshake(socket: &mut WebSocket, shared: &Arc<Shared>) -> Option<Audio
     signed_in.then_some(audio_caps)
 }
 
-async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>, audio_caps: AudioCaps) {
+async fn run_session(
+    socket: &mut WebSocket,
+    shared: &Arc<Shared>,
+    // The station this radio belongs to, for the roster it announces. Named
+    // apart from the `station` below, which is the *config* of the station.
+    roster: &Arc<Station>,
+    audio_caps: AudioCaps,
+) {
     let rx_codec =
         if audio_caps.opus_decode { AudioCodec::Opus48kMono } else { AudioCodec::Pcm16_48k };
     let tx_codec =
@@ -140,6 +172,20 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>, audio_caps: A
     if socket.send(msg(&ack)).await.is_err() {
         return;
     }
+    // Which radio this is, and what else the station has. Straight after the
+    // acknowledgement because a client that can hold several radios opens the
+    // rest from it, and it should do that before the operator has finished
+    // looking at the first one.
+    let _ = socket
+        .send(msg(&ServerMsg::Radios {
+            me: shared.id,
+            radios: roster
+                .radios
+                .iter()
+                .map(|r| sdroxide_proto::RadioInfo { id: r.id, name: r.display_name() })
+                .collect(),
+        }))
+        .await;
     let _ = socket.send(msg(&ServerMsg::Memories(memories))).await;
     let _ = socket.send(msg(&ServerMsg::MemoryFolders(mem_folders))).await;
     let _ = socket.send(msg(&ServerMsg::Scanner(scanner))).await;
@@ -184,7 +230,7 @@ async fn run_session(socket: &mut WebSocket, shared: &Arc<Shared>, audio_caps: A
     if notice.is_some() {
         let _ = socket.send(msg(&ServerMsg::Notice(notice))).await;
     }
-    info!(?rx_codec, ?tx_codec, "remote client connected");
+    info!(radio = shared.id, ?rx_codec, ?tx_codec, "remote client connected");
 
     // --- register lanes -----------------------------------------------
     let (rel_tx, mut rel_rx) = mpsc::channel::<ServerMsg>(256);

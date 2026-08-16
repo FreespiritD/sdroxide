@@ -19,7 +19,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use sdroxide_proto::{AudioCaps, ClientMsg, PROTO_VERSION, ServerMsg, decode, encode};
 use sdroxide_radio::{EngineConfig, SigGenSource, start_engine};
-use sdroxide_server::{ProbeFn, ServerParams, serve};
+use sdroxide_server::{ProbeFn, RadioParams, ServerParams, serve};
 use sdroxide_types::{DeviceCaps, DeviceProbe, ProbeAnswer, ProbeTest, RtlSdrDevice, TestKind};
 
 const PORT: u16 = 39474;
@@ -77,12 +77,16 @@ async fn spawn_server(port: u16, probe: Option<ProbeFn>) {
         EngineConfig::default(),
     );
     tokio::spawn(serve(ServerParams {
-        cmd_tx: handles.cmd_tx,
-        event_rx: handles.event_rx,
-        spectrum_out: handles.spectrum_out,
-        wide_spectrum_out: handles.wide_spectrum_out,
-        audio_rx: sdroxide_radio::rtrb::RingBuffer::<f32>::new(96_000).1,
-        mic_tx: sdroxide_radio::rtrb::RingBuffer::<f32>::new(48_000).0,
+        radios: vec![RadioParams {
+            id: 0,
+            name: String::new(),
+            cmd_tx: handles.cmd_tx,
+            event_rx: handles.event_rx,
+            spectrum_out: handles.spectrum_out,
+            wide_spectrum_out: handles.wide_spectrum_out,
+            audio_rx: sdroxide_radio::rtrb::RingBuffer::<f32>::new(96_000).1,
+            mic_tx: sdroxide_radio::rtrb::RingBuffer::<f32>::new(48_000).0,
+        }],
         bind: "127.0.0.1".into(),
         port,
         web_root: None,

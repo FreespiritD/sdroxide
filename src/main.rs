@@ -116,6 +116,10 @@ struct Cli {
 
     /// Connect as a native remote client to a running sdroxide server
     /// (e.g. "host:4950" or a full ws:// URL)
+    ///
+    /// A bare address reaches the station's first radio. To reach one of its
+    /// others, name it: "host:4950/ws/1" — the server lists which id is which
+    /// at http://host:4950/radios.
     #[arg(long, value_name = "HOST[:PORT]")]
     connect: Option<String>,
 
@@ -267,55 +271,86 @@ fn main() -> anyhow::Result<()> {
         return freedv_reporter_probe(&cli.freedv_reporter_host, secs.clamp(2.0, 300.0));
     }
     if cli.server {
-        let initial_mode = cli.restore_session();
-        let (source, caps) = open_source(&cli, &settings)?;
+        // The same roster the GUI brings up, for the same reason: a station
+        // with two radios has two radios whether or not anybody is sitting at
+        // it. Each is served under its own address — see `sdroxide-server`.
+        let radios = boot_radios(&mut cli, &settings)?;
         let port = cli.port.unwrap_or(settings.server_port);
         return server_main::run(
-            source,
-            caps,
+            radios,
             &settings,
             cli.tx_ham_only(&settings),
-            initial_mode,
-            cli.initial_antenna(),
             port,
             cli.web_root.clone(),
-            Some(reopen_factory(&cli)),
         );
     }
     // A remote client drives somebody else's engine; that engine is the one
     // that remembers where its radio was left.
     if let Some(target) = &cli.connect {
-        let url = if target.contains("://") { target.clone() } else { format!("ws://{target}/ws") };
+        // A bare address means the station's first radio. One that already
+        // carries a path is left alone — that is how a client asks for one of
+        // the station's *other* radios ("host:4950/ws/1"), and appending our
+        // own `/ws` to it would break exactly the case it was typed for.
+        let url = match target {
+            t if t.contains("://") => t.clone(),
+            t if t.contains('/') => format!("ws://{t}"),
+            t => format!("ws://{t}/ws"),
+        };
         return gui_main::run_remote(&url);
     }
 
-    // The station's radio roster: the legacy single radio unless more have
-    // been added. Radio 0 keeps every command-line override and the legacy
-    // config paths; the others boot purely from their own scope, and a device
-    // that isn't there right now costs a "reconnecting" tab, not the launch.
+    let radios = boot_radios(&mut cli, &settings)?;
+    let factory_cli = secondary_cli(&cli);
+    gui_main::run_multi(radios, &settings, cli.tx_ham_only(&settings), factory_cli)
+}
+
+/// Everything `main` resolved for one radio before it is put on screen or on
+/// the air: its (possibly stand-in) front end and where its configuration
+/// lives.
+pub struct RadioBoot {
+    pub id: u32,
+    pub name: String,
+    pub source: Box<dyn IqSource>,
+    pub caps: DeviceCaps,
+    pub initial_mode: Option<sdroxide_types::Mode>,
+    /// Antenna ports named on the command line (RX, TX) — radio 0 only; the
+    /// remembered session fills in whichever the operator left out.
+    pub initial_antenna: (Option<String>, Option<String>),
+    pub reopen: Option<sdroxide_radio::ReopenFn>,
+    pub store: sdroxide_config::Store,
+}
+
+/// Open the station's radio roster: the legacy single radio unless more have
+/// been added. Radio 0 keeps every command-line override and the legacy config
+/// paths; the others boot purely from their own scope, and a device that isn't
+/// there right now costs a "reconnecting" radio, not the launch.
+///
+/// Shared by the GUI and the server, which differ in what they do with the
+/// radios, not in which ones the station has.
+fn boot_radios(cli: &mut Cli, settings: &Settings) -> anyhow::Result<Vec<RadioBoot>> {
     let roster = sdroxide_config::load_radios();
     let mut radios = Vec::new();
     for (i, slot) in roster.radios.iter().enumerate() {
         let store = sdroxide_config::Store::radio(slot.id);
         let boot = if i == 0 {
             let initial_mode = cli.restore_session();
-            let (source, caps) = open_source(&cli, &settings)?;
-            gui_main::RadioBoot {
+            let (source, caps) = open_source(cli, settings)?;
+            RadioBoot {
                 id: slot.id,
                 name: slot.name.clone(),
                 source,
                 caps,
                 initial_mode,
                 initial_antenna: cli.initial_antenna(),
-                reopen: Some(reopen_factory(&cli)),
+                reopen: Some(reopen_factory(cli)),
                 store,
             }
         } else {
-            let mut c = secondary_cli(&cli);
+            let mut c = secondary_cli(cli);
             let session = store.load_session();
             let initial_mode = c.apply_session(session);
             let (source, caps) =
-                match open_converted_source(&store.load_radio_config(), &c, &settings) {
+                match open_converted_source(&store.load_radio_config(), &c, settings) {
                     Ok(pair) => pair,
                     Err(e) => {
                         // Names are often empty now (the tab derives one from
@@ -332,7 +367,7 @@ fn main() -> anyhow::Result<()> {
                         )
                     }
                 };
-            gui_main::RadioBoot {
+            RadioBoot {
                 id: slot.id,
                 name: slot.name.clone(),
                 source,
@@ -345,8 +380,7 @@ fn main() -> anyhow::Result<()> {
         };
         radios.push(boot);
     }
-    let factory_cli = secondary_cli(&cli);
-    gui_main::run_multi(radios, &settings, cli.tx_ham_only(&settings), factory_cli)
+    Ok(radios)
 }
 
 /// Factory the engine calls to rebuild the interface at runtime: when the

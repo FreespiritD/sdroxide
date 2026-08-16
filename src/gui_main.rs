@@ -3,29 +3,12 @@
 
 use anyhow::Result;
 use sdroxide_config::Settings;
-use sdroxide_radio::{
-    AudioParams, EngineConfig, IqSource, ReopenFn, StoreSync, TxGate, start_engine,
-};
-use sdroxide_types::{DeviceCaps, Mode};
+use sdroxide_radio::{AudioParams, EngineConfig, IqSource, StoreSync, TxGate, start_engine};
 use std::sync::Arc;
 use tracing::warn;
 
+use crate::RadioBoot;
 use crate::local_controller::LocalController;
-
-/// Everything `main` resolved for one radio before the GUI comes up: its
-/// (possibly stand-in) front end and where its configuration lives.
-pub struct RadioBoot {
-    pub id: u32,
-    pub name: String,
-    pub source: Box<dyn IqSource>,
-    pub caps: DeviceCaps,
-    pub initial_mode: Option<Mode>,
-    /// Antenna ports named on the command line (RX, TX) — radio 0 only; the
-    /// remembered session fills in whichever the operator left out.
-    pub initial_antenna: (Option<String>, Option<String>),
-    pub reopen: Option<ReopenFn>,
-    pub store: sdroxide_config::Store,
-}
 
 /// Engine + audio + controller for one radio. Every radio gets its own cpal
 /// output stream — the operating system mixes them — and its own microphone
@@ -329,9 +312,22 @@ fn connect_remote(
     // Named after the address, minus the parts every server shares — the shell
     // overrides this with whatever the operator typed when the connection came
     // from the Remote tab.
-    let name =
-        url.split_once("://").map_or(url, |(_, rest)| rest).trim_end_matches("/ws").to_string();
-    Ok(sdroxide_ui::RadioTab { id, name, ctrl: Box::new(ctrl) })
+    Ok(sdroxide_ui::RadioTab { id, name: tab_name(url), ctrl: Box::new(ctrl) })
+}
+
+/// What to call a connection in the tab strip: the address without the scheme
+/// or the endpoint every server shares, and — when the address names one of a
+/// station's further radios — which radio it is, since that is the only thing
+/// telling two tabs on the same station apart.
+fn tab_name(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest).trim_end_matches('/');
+    let Some((host, path)) = rest.split_once("/ws") else { return rest.to_string() };
+    match path.trim_start_matches('/').parse::<u32>() {
+        // Radio 0 is what a bare address reaches anyway; spelling it out in
+        // the strip would only take room from the host.
+        Ok(0) | Err(_) => host.to_string(),
+        Ok(id) => format!("{host} radio {}", id + 1),
+    }
 }
 
 /// The Remote tab's dialler, handed to the shell so CONNECT has something to

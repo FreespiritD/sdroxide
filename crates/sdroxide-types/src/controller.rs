@@ -415,4 +415,37 @@ pub trait RadioController {
     /// which is what lets an operator away from the shack switch the server's
     /// radio over to another device without anyone restarting it.
     fn reopen_source(&mut self) {}
+
+    /// The *other* radios the station at the far end serves, each with the
+    /// address a further connection would reach it at. The shell opens them
+    /// beside this one, so dialling a station gives the same tab strip as
+    /// standing in it.
+    ///
+    /// Empty by default and always for an in-process engine: this machine's
+    /// own radios come from its roster, not from a controller. Empty as well
+    /// until the far end has said — the answer arrives with the handshake, a
+    /// few frames after the connection is made.
+    fn peer_radios(&self) -> Vec<PeerRadio> {
+        Vec::new()
+    }
+
+    /// The address this controller is connected to, in the one form the far
+    /// end names it by, so the shell can tell whether a radio it was offered
+    /// is already on screen. `None` where there is no address — an in-process
+    /// engine.
+    fn peer_url(&self) -> Option<String> {
+        None
+    }
+}
+
+/// One of the far end's other radios: what to call it, and where to reach it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerRadio {
+    /// The station's id for it, which is how it is addressed.
+    pub id: u32,
+    /// What the station calls it — the operator's name for it where they gave
+    /// one, otherwise its interface's.
+    pub name: String,
+    /// The full URL to dial, built from the one this connection is on.
+    pub url: String,
 }

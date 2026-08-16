@@ -35,27 +35,30 @@ pub type ProbeFn = Box<dyn Fn(DeviceProbe) -> ProbeAnswer + Send + Sync>;
 /// deeper.
 const QUEUE: usize = 8;
 
-pub(crate) struct ProbeWorker {
-    tx: Option<crossbeam_channel::Sender<DeviceProbe>>,
+/// One worker for the station, not one per radio: a bus scan is a question
+/// about this machine, and two radios asking at once is exactly the pile-up
+/// the single worker exists to prevent. Which radio asked rides with the
+/// question, so the answer goes back to the session that wanted it.
+pub(crate) struct ProbeHub {
+    tx: Option<crossbeam_channel::Sender<(Arc<Shared>, DeviceProbe)>>,
 }
 
-impl ProbeWorker {
+impl ProbeHub {
     /// Start the worker, or make one that refuses everything when this server
     /// was built without a way to answer.
-    pub(crate) fn start(probe: Option<ProbeFn>, shared: &Arc<Shared>) -> ProbeWorker {
-        let Some(probe) = probe else { return ProbeWorker { tx: None } };
-        let (tx, rx) = crossbeam_channel::bounded::<DeviceProbe>(QUEUE);
-        let shared = shared.clone();
+    pub(crate) fn start(probe: Option<ProbeFn>) -> ProbeHub {
+        let Some(probe) = probe else { return ProbeHub { tx: None } };
+        let (tx, rx) = crossbeam_channel::bounded::<(Arc<Shared>, DeviceProbe)>(QUEUE);
         std::thread::Builder::new()
             .name("sdroxide-probe".into())
             .spawn(move || {
-                for req in rx {
+                for (shared, req) in rx {
                     let answer = probe(req);
                     reply(&shared, answer);
                 }
             })
             .expect("spawn probe thread");
-        ProbeWorker { tx: Some(tx) }
+        ProbeHub { tx: Some(tx) }
     }
 }
 
@@ -63,9 +66,9 @@ impl ProbeWorker {
 /// has no prober, so the client can grey the controls out with a reason instead
 /// of waiting for something that will never arrive.
 pub(crate) fn ask(shared: &Arc<Shared>, req: DeviceProbe) {
-    match shared.probes.get().and_then(|w| w.tx.as_ref()) {
+    match shared.probes.tx.as_ref() {
         Some(tx) => {
-            if tx.try_send(req).is_err() {
+            if tx.try_send((shared.clone(), req)).is_err() {
                 warn!("device probe dropped: the queue is full");
             }
         }

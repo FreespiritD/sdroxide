@@ -9,7 +9,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use sdroxide_proto::{AudioCaps, ClientMsg, PROTO_VERSION, ServerMsg, decode, encode};
 use sdroxide_radio::{AudioParams, EngineConfig, MicParams, SigGenSource, start_engine};
-use sdroxide_server::{AccessFn, ServerParams, serve};
+use sdroxide_server::{AccessFn, RadioParams, ServerParams, serve};
 use sdroxide_types::{Command, DeviceCaps, RemoteAccess, Vfo};
 
 const PORT: u16 = 39471;
@@ -55,12 +55,16 @@ async fn spawn_server(port: u16, access: Option<AccessFn>) {
     );
 
     tokio::spawn(serve(ServerParams {
-        cmd_tx: handles.cmd_tx,
-        event_rx: handles.event_rx,
-        spectrum_out: handles.spectrum_out,
-        wide_spectrum_out: handles.wide_spectrum_out,
-        audio_rx: audio_consumer,
-        mic_tx: mic_producer,
+        radios: vec![RadioParams {
+            id: 0,
+            name: String::new(),
+            cmd_tx: handles.cmd_tx,
+            event_rx: handles.event_rx,
+            spectrum_out: handles.spectrum_out,
+            wide_spectrum_out: handles.wide_spectrum_out,
+            audio_rx: audio_consumer,
+            mic_tx: mic_producer,
+        }],
         bind: "127.0.0.1".into(),
         port,
         web_root: None,

@@ -1,5 +1,10 @@
-//! Server mode: HTTP (static WASM client) + a single-client WebSocket
-//! session speaking `sdroxide-proto`.
+//! Server mode: HTTP (static WASM client) + a WebSocket session per radio,
+//! speaking `sdroxide-proto`.
+//!
+//! One session per radio, and one client per session: `/ws` is the station's
+//! first radio — all a single-radio station has, and all a client that knows
+//! nothing of a roster ever asks for — while `/ws/<id>` names any of them.
+//! `/radios` lists what is on offer.
 //!
 //! Lanes into the socket (per the project plan):
 //! - control/state/memories/meters: reliable queue, never intentionally dropped
@@ -36,6 +41,11 @@ use sdroxide_types::{
 pub enum ServerError {
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
+    /// A station with no radio has nothing to serve, and `/ws` would have
+    /// nothing to answer with. The roster on disk always has at least one, so
+    /// this is a caller bug rather than something an operator can configure.
+    #[error("the server was given no radios to serve")]
+    NoRadios,
 }
 
 /// How the server finds out who may connect.
@@ -52,7 +62,20 @@ pub type AccessFn = Box<dyn Fn() -> sdroxide_types::RemoteAccess + Send + Sync>;
 
 pub use probe::ProbeFn;
 
-pub struct ServerParams {
+/// One radio's engine endpoints. A station hands the server one of these per
+/// radio in its roster, and each gets an address of its own on the socket —
+/// see [`ServerParams::radios`].
+pub struct RadioParams {
+    /// This radio's id in the station roster (`radios.json`), which is also
+    /// what addresses it on the wire: `/ws/<id>`. The roster id rather than a
+    /// position in the list, so that deleting one radio cannot renumber the
+    /// others under whatever a client bookmarked.
+    pub id: u32,
+    /// The operator's name for it. Often empty — the roster leaves it so the
+    /// GUI can name the tab after whatever interface the radio turns out to
+    /// have — in which case the listing falls back to what the front end calls
+    /// itself.
+    pub name: String,
     pub cmd_tx: crossbeam_channel::Sender<Command>,
     pub event_rx: crossbeam_channel::Receiver<RadioEvent>,
     pub spectrum_out: triple_buffer::Output<SpectrumFrame>,
@@ -61,6 +84,14 @@ pub struct ServerParams {
     pub audio_rx: rtrb::Consumer<f32>,
     /// Mono 48 kHz mic samples into the engine.
     pub mic_tx: rtrb::Producer<f32>,
+}
+
+pub struct ServerParams {
+    /// Every radio this station serves, in roster order. The first one is what
+    /// `/ws` reaches — the whole of what a single-radio station ever offered,
+    /// and what every client that knows nothing of a roster still gets — and
+    /// each radio is also addressable in its own right at `/ws/<id>`.
+    pub radios: Vec<RadioParams>,
     pub bind: String,
     pub port: u16,
     /// Directory with the built web client; `None` uses embedded assets
@@ -140,7 +171,36 @@ pub(crate) struct Latest {
     pub radio: Option<Box<sdroxide_types::RadioConfig>>,
 }
 
+/// Everything the routes are served out of: the station's radios and the two
+/// things that belong to the station rather than to any one of them — the
+/// solar feed on `/solar-ws`, and the sign-in gate.
+pub(crate) struct Station {
+    /// In roster order; `radios[0]` is what `/ws` reaches.
+    pub radios: Vec<Arc<Shared>>,
+    pub solar: Arc<solar::SolarHub>,
+    pub auth: Arc<auth::AuthGate>,
+}
+
+impl Station {
+    /// The radio a client asked for by id, or `None` — which the route turns
+    /// into a 404 rather than quietly handing over a different radio.
+    pub(crate) fn radio(&self, id: u32) -> Option<Arc<Shared>> {
+        self.radios.iter().find(|r| r.id == id).cloned()
+    }
+}
+
 pub(crate) struct Shared {
+    /// This radio's roster id, as it is addressed on the wire.
+    pub id: u32,
+    /// The operator's name for it, empty when they never gave one.
+    pub name: String,
+    /// The station's first radio, which is the one that relays the
+    /// station-wide facts — the operating status on the solar arc, the
+    /// satellite subscriptions — to the viewers on `/solar-ws`. Every radio
+    /// contributes its *observations* (decodes, spots) to that feed; only this
+    /// one says what the station is doing, because two radios both announcing
+    /// it would take turns overwriting each other.
+    pub primary: bool,
     pub cmd_tx: crossbeam_channel::Sender<Command>,
     pub latest: Mutex<Latest>,
     pub session: Mutex<Option<SessionTx>>,
@@ -151,15 +211,38 @@ pub(crate) struct Shared {
     /// The solar-system viewers on `/solar-ws`. Independent of `busy`: they
     /// control nothing, so any number may watch alongside the one control
     /// client. See [`solar`].
-    pub solar: solar::SolarHub,
-    /// The sign-in gate both endpoints pass through — shared, so the
+    ///
+    /// One feed for the station, held by every radio: it is a picture of the
+    /// sky over this site, and a second radio does not put the station under a
+    /// second sun.
+    pub solar: Arc<solar::SolarHub>,
+    /// The sign-in gate every endpoint passes through — shared, so the
     /// one-attempt-at-a-time rule and the lockout after a wrong password apply
-    /// across the whole server rather than per socket. See [`auth`].
-    pub auth: auth::AuthGate,
-    /// The thread that answers device questions. Set once, immediately after
-    /// this struct is built — it needs a handle to it, and this is how the two
-    /// are tied together without a second `Arc`. See [`probe`].
-    pub probes: std::sync::OnceLock<probe::ProbeWorker>,
+    /// across the whole server rather than per socket, and so that a station
+    /// with several radios cannot be attacked one radio at a time. See
+    /// [`auth`].
+    pub auth: Arc<auth::AuthGate>,
+    /// The thread that answers device questions, shared by every radio: a bus
+    /// scan is about this machine, and running one per radio at once is
+    /// exactly what [`probe`] exists to prevent.
+    pub probes: Arc<probe::ProbeHub>,
+}
+
+impl Shared {
+    /// What to call this radio to somebody who cannot see the shack: the name
+    /// the operator gave it, failing that whatever its interface calls itself
+    /// — which is what the tab strip here falls back to as well — and failing
+    /// both, its number, because a client still has to be able to point at it.
+    pub(crate) fn display_name(&self) -> String {
+        if !self.name.trim().is_empty() {
+            return self.name.clone();
+        }
+        let label = self.latest.lock().unwrap().caps.label.clone();
+        if !label.trim().is_empty() {
+            return label;
+        }
+        format!("Radio {}", self.id + 1)
+    }
 }
 
 /// Build a tokio runtime and serve until the process exits.
@@ -168,45 +251,63 @@ pub fn run_blocking(params: ServerParams) -> Result<(), ServerError> {
 }
 
 pub async fn serve(params: ServerParams) -> Result<(), ServerError> {
-    let (spectrum_watch, spectrum_rx) = watch::channel(None);
-    let (wide_watch, wide_spectrum_rx) = watch::channel(None);
-    let shared = Arc::new(Shared {
-        cmd_tx: params.cmd_tx,
-        latest: Mutex::new(Latest::default()),
-        session: Mutex::new(None),
-        busy: AtomicBool::new(false),
-        mic_tx: Mutex::new(params.mic_tx),
-        spectrum_rx,
-        wide_spectrum_rx,
-        solar: solar::SolarHub::default(),
-        auth: auth::AuthGate::new(params.access),
-        probes: std::sync::OnceLock::new(),
-    });
-    let _ = shared.probes.set(probe::ProbeWorker::start(params.probe, &shared));
+    if params.radios.is_empty() {
+        return Err(ServerError::NoRadios);
+    }
+    let solar = Arc::new(solar::SolarHub::default());
+    let auth = Arc::new(auth::AuthGate::new(params.access));
+    let probes = Arc::new(probe::ProbeHub::start(params.probe));
 
-    {
-        let shared = shared.clone();
-        std::thread::Builder::new()
-            .name("sdroxide-pump".into())
-            .spawn(move || {
-                pump(
-                    shared,
-                    params.event_rx,
-                    params.spectrum_out,
-                    params.wide_spectrum_out,
-                    params.audio_rx,
-                    spectrum_watch,
-                    wide_watch,
-                )
-            })
-            .expect("spawn pump thread");
+    let mut radios = Vec::with_capacity(params.radios.len());
+    for (i, r) in params.radios.into_iter().enumerate() {
+        let (spectrum_watch, spectrum_rx) = watch::channel(None);
+        let (wide_watch, wide_spectrum_rx) = watch::channel(None);
+        let shared = Arc::new(Shared {
+            id: r.id,
+            name: r.name,
+            primary: i == 0,
+            cmd_tx: r.cmd_tx,
+            latest: Mutex::new(Latest::default()),
+            session: Mutex::new(None),
+            busy: AtomicBool::new(false),
+            mic_tx: Mutex::new(r.mic_tx),
+            spectrum_rx,
+            wide_spectrum_rx,
+            solar: solar.clone(),
+            auth: auth.clone(),
+            probes: probes.clone(),
+        });
+        {
+            let shared = shared.clone();
+            // Radio 0 keeps the historical thread name, as the engine's own
+            // does: it is what profiling notes and thread filters key on.
+            let name = match r.id {
+                0 => "sdroxide-pump".to_string(),
+                id => format!("sdroxide-pump{id}"),
+            };
+            std::thread::Builder::new()
+                .name(name)
+                .spawn(move || {
+                    pump(
+                        shared,
+                        r.event_rx,
+                        r.spectrum_out,
+                        r.wide_spectrum_out,
+                        r.audio_rx,
+                        spectrum_watch,
+                        wide_watch,
+                    )
+                })
+                .expect("spawn pump thread");
+        }
+        radios.push(shared);
     }
 
     // Worth saying out loud either way. This port hands out a transmitter, and
     // an operator who forwarded it through a router without noticing that it
     // asks for nothing should find that out from the log rather than from a
     // complaint about what went out on their callsign.
-    match shared.auth.required() {
+    match auth.required() {
         Some(a) if a.username.is_empty() => info!("remote clients must give the password"),
         Some(a) => info!("remote clients must sign in as {:?}", a.username),
         None => warn!(
@@ -214,11 +315,26 @@ pub async fn serve(params: ServerParams) -> Result<(), ServerError> {
              operate the radio; set [remote_access] in config.toml, or Settings → General"
         ),
     }
+    // Which radio is where, because the addresses are the only way a client
+    // reaches the second one and nothing else on this machine will say.
+    if radios.len() > 1 {
+        for (i, r) in radios.iter().enumerate() {
+            let path =
+                if i == 0 { format!("/ws (also /ws/{})", r.id) } else { format!("/ws/{}", r.id) };
+            match r.name.as_str() {
+                "" => info!("radio {} on {path}", r.id),
+                name => info!("radio {} ({name}) on {path}", r.id),
+            }
+        }
+    }
 
+    let station = Arc::new(Station { radios, solar, auth });
     let mut app = Router::new()
         .route("/ws", get(session::ws_route))
+        .route("/ws/{id}", get(session::ws_route_for))
+        .route("/radios", get(radios_route))
         .route("/solar-ws", get(solar::ws_route))
-        .with_state(shared);
+        .with_state(station);
     app = add_static_routes(app, params.web_root);
 
     let addr: SocketAddr = format!("{}:{}", params.bind, params.port)
@@ -228,6 +344,40 @@ pub async fn serve(params: ServerParams) -> Result<(), ServerError> {
     info!("server listening on http://{addr}/");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// The station's radios and where to reach each one, as JSON:
+/// `[{"id":0,"name":"RTL-SDR","path":"/ws/0"}, …]`.
+///
+/// Plain HTTP rather than something on the socket, because this answers the
+/// question a client has *before* it opens one — and because it is then
+/// readable with a browser or curl by an operator working out why their second
+/// radio is not where they expected it.
+async fn radios_route(
+    axum::extract::State(station): axum::extract::State<Arc<Station>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    #[derive(serde::Serialize)]
+    struct Listing {
+        id: u32,
+        name: String,
+        /// Always the explicit form, including for radio 0: `/ws` is the alias
+        /// that keeps single-radio clients working, not a second identity.
+        path: String,
+    }
+
+    let list: Vec<Listing> = station
+        .radios
+        .iter()
+        .map(|r| Listing { id: r.id, name: r.display_name(), path: format!("/ws/{}", r.id) })
+        .collect();
+    match serde_json::to_string(&list) {
+        Ok(body) => {
+            ([(axum::http::header::CONTENT_TYPE, "application/json")], body).into_response()
+        }
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 /// Bridge thread: engine endpoints → session lanes + latest-state cache.
@@ -387,7 +537,9 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             // at neither end, which is exactly why they are worth having.
             shared.solar.observe_paths(paths, sdroxide_types::PropSource::Rbn, now_utc());
         }
-        RadioEvent::Ft8Status(s) => {
+        // What the station is doing right now, as against what it has heard:
+        // the first radio speaks for the station here. See [`Shared::primary`].
+        RadioEvent::Ft8Status(s) if shared.primary => {
             // The dial comes from the state this server holds, as it does for
             // the decodes above: the card over the arc names a band, and the
             // solar tab has no radio of its own to ask.
@@ -530,7 +682,12 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             RadioEvent::MailDeleted { folder, mid } => Some(ServerMsg::MailDeleted { folder, mid }),
             RadioEvent::StationConfig(c) => {
                 latest.station = Some(c.clone());
-                sat = Some(c.sat.clone());
+                // The satellite half drives the station's own tracker, which
+                // there is one of: every engine announces the same file, so
+                // the first radio is the one that acts on it.
+                if shared.primary {
+                    sat = Some(c.sat.clone());
+                }
                 Some(ServerMsg::StationConfig(c))
             }
             RadioEvent::TleSubStatus(s) => {

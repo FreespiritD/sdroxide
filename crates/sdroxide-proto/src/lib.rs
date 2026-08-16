@@ -306,7 +306,14 @@ use sdroxide_types::{
 /// also gained `Capabilities`, appended after it: with the interface
 /// changeable from a client, the radio a session is talking to can become a
 /// different one mid-session, and what it can do has to follow.
-pub const PROTO_VERSION: u16 = 56;
+///
+/// **57** — a station serves every radio in its roster, each on its own
+/// address, so a session now says which radio it is on and what else the
+/// station has: [`ServerMsg::Radios`], sent once, right after `HelloAck`.
+/// Without it a client could reach a second radio only if somebody typed its
+/// address in by hand, and could never put the station's radios in tabs the
+/// way it does with the ones plugged into this machine.
+pub const PROTO_VERSION: u16 = 57;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -605,6 +612,35 @@ pub enum ServerMsg {
     /// have. It also covers the case that was always possible: an interface
     /// that was not there at startup and attached later.
     Capabilities(DeviceCaps),
+    /// Which radio this session is on, and every radio the station serves.
+    ///
+    /// Sent once, immediately after `HelloAck`. A station has as many radios as
+    /// its roster says, each reached at an address of its own, and nothing else
+    /// on the wire would tell a client that the machine it just dialled has a
+    /// second one — leaving the operator to find out by reading the server's
+    /// log. With it, a client that can hold several radios at once opens the
+    /// rest beside the one it asked for.
+    ///
+    /// Appended last, like everything before it: postcard encodes the variant
+    /// as a positional discriminant, so inserting anywhere else would silently
+    /// renumber every message after it.
+    Radios {
+        /// The id of the radio this session is on, out of `radios` below.
+        me: u32,
+        radios: Vec<RadioInfo>,
+    },
+}
+
+/// One radio in a station's roster, as a client sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RadioInfo {
+    /// The station's own id for it, which is also what addresses it: `/ws/<id>`.
+    /// Not a position in the list — deleting a radio must not renumber the
+    /// others under whatever a client saved.
+    pub id: u32,
+    /// What to call it: the operator's name where they gave one, otherwise
+    /// what its interface calls itself, and failing both its number.
+    pub name: String,
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {

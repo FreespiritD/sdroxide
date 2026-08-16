@@ -107,6 +107,12 @@ pub struct MultiApp {
     /// Kept for tabs created at runtime, which are built long after the
     /// [`eframe::CreationContext`] is gone.
     wgpu: Option<eframe::egui_wgpu::RenderState>,
+    /// Addresses of a station's further radios that have already been opened
+    /// beside the one that was dialled. Kept for the whole session and never
+    /// cleared on close: a tab the operator shut is one they did not want, and
+    /// the offer arrives again on every reconnect. See
+    /// [`MultiApp::open_peer_radios`].
+    peers_opened: std::collections::HashSet<String>,
 }
 
 impl MultiApp {
@@ -139,7 +145,15 @@ impl MultiApp {
             .collect();
         assert!(!tabs.is_empty(), "MultiApp needs at least one radio");
         let panes = vec![tabs[0].id];
-        MultiApp { tabs, focused: 0, panes, factory, remote, wgpu: cc.wgpu_render_state.clone() }
+        MultiApp {
+            tabs,
+            focused: 0,
+            panes,
+            factory,
+            remote,
+            wgpu: cc.wgpu_render_state.clone(),
+            peers_opened: std::collections::HashSet::new(),
+        }
     }
 
     /// The main window's strip is a switcher, so it is only drawn once there
@@ -413,6 +427,67 @@ impl MultiApp {
         }
     }
 
+    /// A free id for a tab that holds somebody else's radio. Never one from
+    /// the roster: that station is not one of ours.
+    fn next_remote_id(&self) -> u32 {
+        self.tabs
+            .iter()
+            .map(|t| t.id)
+            .filter(|id| *id >= REMOTE_TAB_ID_BASE)
+            .max()
+            .map_or(REMOTE_TAB_ID_BASE, |m| m.saturating_add(1))
+    }
+
+    /// Bring up the rest of a station's radios beside the one that was
+    /// dialled, so connecting to a station gives the same tab strip as
+    /// standing in it: a server serves every radio in its roster, and an
+    /// operator who asked for the station meant the station.
+    ///
+    /// Each address is opened once. A tab the operator closes stays closed —
+    /// the far end goes on offering it, and reopening it every frame would
+    /// make it impossible to shut. Addresses already on screen are skipped
+    /// too, which is what keeps two tabs of the same station from opening each
+    /// other for ever.
+    fn open_peer_radios(&mut self, ctx: &egui::Context) {
+        if self.remote.is_none() {
+            return;
+        }
+        let open: std::collections::HashSet<String> =
+            self.tabs.iter().filter_map(|t| t.app.peer_url()).collect();
+        let wanted: Vec<sdroxide_types::PeerRadio> = self
+            .tabs
+            .iter()
+            .flat_map(|t| t.app.peer_radios())
+            .filter(|p| !open.contains(&p.url) && !self.peers_opened.contains(&p.url))
+            .collect();
+
+        for peer in wanted {
+            // Marked before the attempt, not after: a station that cannot be
+            // reached must not be retried once a frame for the rest of the
+            // session.
+            self.peers_opened.insert(peer.url.clone());
+            let id = self.next_remote_id();
+            let Some(remote) = self.remote.as_mut() else { return };
+            match remote(&peer.url, id, ctx) {
+                Ok(mut r) => {
+                    // Named as the station names it, which is what the strip
+                    // shows for a local radio too. The address is already on
+                    // the tab this one came from.
+                    if !peer.name.trim().is_empty() {
+                        r.name = peer.name.clone();
+                    }
+                    // Into the strip, not in front of the operator: they asked
+                    // for the station, and the radio they dialled is the one
+                    // they are looking at.
+                    self.append_tab(r, ctx);
+                }
+                Err(e) => self.tabs[self.focused]
+                    .app
+                    .show_notice(format!("Could not open {}: {e}", peer.name)),
+            }
+        }
+    }
+
     /// Dial another sdroxide server and give it a tab of its own — Settings →
     /// Remote's CONNECT button.
     ///
@@ -421,20 +496,16 @@ impl MultiApp {
     /// the operator is looking at is where they are expecting an answer.
     fn connect_tab(&mut self, url: &str, name: String, ctx: &egui::Context) {
         let origin = self.focused;
-        let Some(remote) = self.remote.as_mut() else {
+        if self.remote.is_none() {
             self.tabs[origin]
                 .app
                 .set_remote_status(Err("This client cannot open a connection.".into()));
             return;
-        };
-        // Never an id from the roster: this station is not one of ours.
-        let id = self
-            .tabs
-            .iter()
-            .map(|t| t.id)
-            .filter(|id| *id >= REMOTE_TAB_ID_BASE)
-            .max()
-            .map_or(REMOTE_TAB_ID_BASE, |m| m.saturating_add(1));
+        }
+        // The id is worked out before the factory is borrowed: both read
+        // `self`, and only one of them may hold it.
+        let id = self.next_remote_id();
+        let Some(remote) = self.remote.as_mut() else { return };
         match remote(url, id, ctx) {
             Ok(mut r) => {
                 // The address as the operator entered it wins over whatever
@@ -454,10 +525,14 @@ impl MultiApp {
         }
     }
 
-    /// Put a freshly built radio on screen: append it, take over the active
-    /// pane, hand it the keyboard. Returns its index.
-    fn install_tab(&mut self, r: RadioTab, ctx: &egui::Context) -> usize {
-        let new_id = r.id;
+    /// Append a freshly built radio to the strip without disturbing what is on
+    /// screen. Returns its index.
+    ///
+    /// This is the whole of what a radio the *shell* opened needs — the rest
+    /// of a station's roster arriving beside the one that was dialled. A radio
+    /// the operator asked for goes through [`MultiApp::install_tab`], which
+    /// also puts it in front of them.
+    fn append_tab(&mut self, r: RadioTab, ctx: &egui::Context) -> usize {
         let remote = r.ctrl.engine_is_remote();
         let mut app = SdroxideApp::new_tab(
             ctx,
@@ -477,6 +552,14 @@ impl MultiApp {
         for tab in &mut self.tabs {
             tab.app.set_shared_log(true);
         }
+        self.tabs.len() - 1
+    }
+
+    /// Put a freshly built radio on screen: append it, take over the active
+    /// pane, hand it the keyboard. Returns its index.
+    fn install_tab(&mut self, r: RadioTab, ctx: &egui::Context) -> usize {
+        let new_id = r.id;
+        let i = self.append_tab(r, ctx);
         // The dialog follows: if the request came from inside Settings, that
         // dialog belongs on the new radio now (a no-op when it came from the
         // main window's strip).
@@ -484,7 +567,6 @@ impl MultiApp {
         // In a split the new radio takes over the active pane rather than
         // opening yet another column unasked.
         let pane = self.active_pane();
-        let i = self.tabs.len() - 1;
         self.panes[pane] = new_id;
         self.focus_tab(i, ctx);
         i
@@ -618,6 +700,7 @@ impl eframe::App for MultiApp {
         }
         self.apply_strip_actions(actions, &ctx);
         self.handle_requests(reqs, &ctx);
+        self.open_peer_radios(&ctx);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

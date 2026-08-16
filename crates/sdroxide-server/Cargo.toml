@@ -16,6 +16,10 @@ sdroxide-proto = { path = "../sdroxide-proto" }
 # native-only network and cache half — which the server always is.
 sdroxide-solar = { path = "../sdroxide-solar" }
 sdroxide-types = { path = "../sdroxide-types" }
+# The radio listing on /radios, which is the only JSON this server speaks —
+# everything on the sockets is postcard.
+serde = { workspace = true }
+serde_json = "1.0.151"
 thiserror.workspace = true
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 tower-http = { version = "0.7.0", features = ["fs", "set-header"] }

@@ -31,7 +31,7 @@ use sdroxide_proto::solar::{SOLAR_PROTO_VERSION, SolarClientMsg, SolarServerMsg}
 use sdroxide_proto::{decode, encode};
 use sdroxide_solar::{FeedCmd, RawUpdate, SdoChannel, SolarData, SolarFeed};
 
-use crate::Shared;
+use crate::Station;
 
 /// How often the bridge thread re-reads the snapshot. The feed's own wake is
 /// what usually drives a publish; this is the floor, and it is generous because
@@ -329,18 +329,21 @@ fn feed_tle_cmds(cfg: &sdroxide_types::SatConfig) -> [FeedCmd; 2] {
     ]
 }
 
-pub async fn ws_route(State(shared): State<Arc<Shared>>, upgrade: WebSocketUpgrade) -> Response {
-    upgrade.on_upgrade(|socket| session(socket, shared))
+pub async fn ws_route(State(station): State<Arc<Station>>, upgrade: WebSocketUpgrade) -> Response {
+    // The feed and the door, not a radio: this endpoint shows the sky over the
+    // station, which is the same sky however many radios stand under it.
+    let (hub, auth) = (station.solar.clone(), station.auth.clone());
+    upgrade.on_upgrade(|socket| session(socket, hub, auth))
 }
 
 fn msg(m: &SolarServerMsg) -> Message {
     Message::Binary(encode(m).expect("encode").into())
 }
 
-async fn session(mut socket: WebSocket, shared: Arc<Shared>) {
+async fn session(mut socket: WebSocket, hub: Arc<SolarHub>, auth: Arc<crate::auth::AuthGate>) {
     // Subscribe *before* the snapshot, so an update that lands between the two
     // is queued rather than missed.
-    let mut rx = shared.solar.tx.subscribe();
+    let mut rx = hub.tx.subscribe();
 
     // --- Hello handshake (5 s budget) ---------------------------------
     let hello = tokio::time::timeout(Duration::from_secs(5), socket.recv()).await;
@@ -369,7 +372,7 @@ async fn session(mut socket: WebSocket, shared: Arc<Shared>) {
     // stranger cannot start thirteen outbound fetches by opening a socket.
     let signed_in = crate::auth::challenge(
         &mut socket,
-        &shared.auth,
+        &auth,
         crate::auth::Frames {
             what: "/solar-ws",
             required: encode(&SolarServerMsg::AuthRequired).expect("encode"),
@@ -390,16 +393,16 @@ async fn session(mut socket: WebSocket, shared: Arc<Shared>) {
         return;
     }
 
-    let viewers = acquire_feed(&shared);
+    let viewers = acquire_feed(&hub);
     info!(viewers, "solar viewer connected");
 
     // Collect and release before sending: the guard must not be held across an
     // await, or the whole session future stops being `Send` and every publisher
     // blocks behind one slow socket.
-    let snapshot = shared.solar.latest.lock().unwrap().snapshot();
+    let snapshot = hub.latest.lock().unwrap().snapshot();
     for m in snapshot {
         if socket.send(msg(&m)).await.is_err() {
-            release_feed(&shared);
+            release_feed(&hub);
             return;
         }
     }
@@ -434,16 +437,16 @@ async fn session(mut socket: WebSocket, shared: Arc<Shared>) {
                 // outbound traffic to NASA by the number of open tabs.
                 Ok(SolarClientMsg::SetChannel(c)) => {
                     let ch = SdoChannel::from_u8(c);
-                    shared.solar.feed.lock().unwrap().channel = ch;
-                    shared.solar.send_cmd(FeedCmd::SetChannel(ch));
+                    hub.feed.lock().unwrap().channel = ch;
+                    hub.send_cmd(FeedCmd::SetChannel(ch));
                 }
                 Ok(SolarClientMsg::SetResolution(r)) => {
                     let res = u32::from(r);
-                    shared.solar.feed.lock().unwrap().resolution = res;
-                    shared.solar.send_cmd(FeedCmd::SetResolution(res));
+                    hub.feed.lock().unwrap().resolution = res;
+                    hub.send_cmd(FeedCmd::SetResolution(res));
                 }
-                Ok(SolarClientMsg::RefreshAll) => shared.solar.send_cmd(FeedCmd::RefreshAll),
-                Ok(SolarClientMsg::Ping) => shared.solar.publish(SolarServerMsg::Pong),
+                Ok(SolarClientMsg::RefreshAll) => hub.send_cmd(FeedCmd::RefreshAll),
+                Ok(SolarClientMsg::Ping) => hub.publish(SolarServerMsg::Pong),
                 Ok(SolarClientMsg::Hello { .. }) => {}
                 // A late `Auth` is ignored for the same reason `/ws` ignores
                 // one: this viewer is already in, and re-running the gate would
@@ -459,14 +462,14 @@ async fn session(mut socket: WebSocket, shared: Arc<Shared>) {
         _ = receiver => {}
     }
 
-    let left = release_feed(&shared);
+    let left = release_feed(&hub);
     info!(viewers = left, "solar viewer disconnected");
 }
 
 /// Register a viewer, starting the feed if this is the first. Returns the new
 /// viewer count.
-fn acquire_feed(shared: &Arc<Shared>) -> usize {
-    let mut st = shared.solar.feed.lock().unwrap();
+fn acquire_feed(hub: &Arc<SolarHub>) -> usize {
+    let mut st = hub.feed.lock().unwrap();
     st.viewers += 1;
     if st.feed.is_some() {
         return st.viewers;
@@ -496,10 +499,10 @@ fn acquire_feed(shared: &Arc<Shared>) -> usize {
     let viewers = st.viewers;
     drop(st);
 
-    let shared = Arc::clone(shared);
+    let hub = Arc::clone(hub);
     std::thread::Builder::new()
         .name("sdroxide-solarpump".into())
-        .spawn(move || solar_pump(shared, data, raw_rx, wake_rx, generation))
+        .spawn(move || solar_pump(hub, data, raw_rx, wake_rx, generation))
         .expect("spawn solar pump thread");
     info!("solar feed started");
     viewers
@@ -507,8 +510,8 @@ fn acquire_feed(shared: &Arc<Shared>) -> usize {
 
 /// Deregister a viewer, dropping the feed when the last one goes. Returns the
 /// remaining viewer count.
-fn release_feed(shared: &Arc<Shared>) -> usize {
-    let mut st = shared.solar.feed.lock().unwrap();
+fn release_feed(hub: &Arc<SolarHub>) -> usize {
+    let mut st = hub.feed.lock().unwrap();
     st.viewers = st.viewers.saturating_sub(1);
     if st.viewers == 0 {
         // Dropping the handle disconnects the worker's command channel, which
@@ -519,7 +522,7 @@ fn release_feed(shared: &Arc<Shared>) -> usize {
         // The feed's cached products go with it: serving a viewer ten minutes
         // from now with readings from a feed that has since stopped would
         // present stale numbers as current. What the radio published stays.
-        shared.solar.latest.lock().unwrap().clear_feed_products();
+        hub.latest.lock().unwrap().clear_feed_products();
         info!("solar feed stopped: no viewers left");
     }
     st.viewers
@@ -527,7 +530,7 @@ fn release_feed(shared: &Arc<Shared>) -> usize {
 
 /// Bridge thread: the feed's snapshot and raw payloads → broadcast messages.
 fn solar_pump(
-    shared: Arc<Shared>,
+    hub: Arc<SolarHub>,
     data: Arc<Mutex<SolarData>>,
     raw_rx: crossbeam_channel::Receiver<RawUpdate>,
     wake_rx: crossbeam_channel::Receiver<()>,
@@ -539,7 +542,7 @@ fn solar_pump(
         // Either the feed woke us or the poll floor expired; both mean "look".
         let _ = wake_rx.recv_timeout(POLL);
 
-        if shared.solar.feed.lock().unwrap().generation != generation {
+        if hub.feed.lock().unwrap().generation != generation {
             break;
         }
 
@@ -548,17 +551,17 @@ fn solar_pump(
         while let Ok(u) = raw_rx.try_recv() {
             match u {
                 RawUpdate::Sun { channel, fetched_unix, jpeg } => {
-                    shared.solar.publish(SolarServerMsg::Sun {
+                    hub.publish(SolarServerMsg::Sun {
                         channel: channel.to_u8(),
                         fetched_unix,
                         jpeg,
                     });
                 }
                 RawUpdate::Tle { geo, text } => {
-                    shared.solar.publish(SolarServerMsg::Tles { geo, text });
+                    hub.publish(SolarServerMsg::Tles { geo, text });
                 }
                 RawUpdate::Clouds { band, frame_unix, fetched_unix, png } => {
-                    shared.solar.publish(SolarServerMsg::Clouds {
+                    hub.publish(SolarServerMsg::Clouds {
                         infrared: band == sdroxide_solar::Band::Longwave,
                         frame_unix,
                         fetched_unix,
@@ -617,7 +620,7 @@ fn solar_pump(
         };
 
         for m in [weather, events, aurora, status].into_iter().flatten() {
-            shared.solar.publish(m);
+            hub.publish(m);
         }
     }
     debug!("solar pump thread stopped");

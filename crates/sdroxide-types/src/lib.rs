@@ -73,7 +73,7 @@ pub use callsign::{CallsignInfo, UploadResult, UploadTarget};
 pub use caps::{DeviceCaps, Direction, GainElement};
 pub use command::Command;
 pub use contacts::FsqContact;
-pub use controller::{AudioDevices, RadioController, RadioEvent};
+pub use controller::{AudioDevices, PeerRadio, RadioController, RadioEvent};
 pub use digi::{
     ClockHealth, CwStatus, Decode, DigiConfig, DigiStatus, DxpedMode, FOX_MAX_SLOTS,
     FOX_ZONE_MAX_HZ, FoxCaller, FsqHeard, FsqMsg, HOUND_ZONE_MAX_HZ, HellVariant, PACKET_HEARD_MAX,

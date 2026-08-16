@@ -132,6 +132,10 @@ pub struct RemoteController {
     /// Answers to the settings dialog's device questions, in the order the
     /// server ran them. Drained by [`RadioController::poll_probe`].
     probe_answers: VecDeque<sdroxide_types::ProbeAnswer>,
+    /// The far end's roster and which of it this session is on, as announced
+    /// in the handshake. `None` until it lands, and re-announced on every
+    /// reconnect — the station may have gained or lost a radio in between.
+    peers: Option<(u32, Vec<sdroxide_proto::RadioInfo>)>,
 }
 
 /// How long an edited interface configuration is held before it goes out.
@@ -144,6 +148,18 @@ pub struct RemoteController {
 /// already reached the hardware through `Command::SetGain` as it moved, and
 /// this is only the copy that survives a restart. Apply skips the wait.
 const RADIO_CFG_COALESCE_S: f64 = 0.25;
+
+/// The address of one of a station's radios, built from the address a
+/// connection is already on: everything up to the endpoint, then the radio's
+/// own. Keeps whatever the operator typed — the scheme, a port, a reverse
+/// proxy's path prefix — and changes only which radio is being asked for.
+fn radio_url(connected_to: &str, id: u32) -> String {
+    let base = match connected_to.rfind("/ws") {
+        Some(i) => &connected_to[..i],
+        None => connected_to.trim_end_matches('/'),
+    };
+    format!("{base}/ws/{id}")
+}
 
 impl RemoteController {
     /// `wake` is called from the socket thread whenever an event arrives —
@@ -174,6 +190,7 @@ impl RemoteController {
             radio_cfg_dirty: false,
             radio_cfg_sent: 0.0,
             probe_answers: VecDeque::new(),
+            peers: None,
         })
     }
 
@@ -327,6 +344,11 @@ impl RemoteController {
             // to do with this — it is the same event an in-process engine
             // sends when it adopts a source.
             ServerMsg::Capabilities(c) => self.pending.push_back(RadioEvent::Capabilities(c)),
+            // Which of the station's radios this session is on, and what else
+            // it has. Kept rather than turned into an event: it is a fact about
+            // the *connection*, which the shell reads to put the station's
+            // other radios in tabs of their own.
+            ServerMsg::Radios { me, radios } => self.peers = Some((me, radios)),
         }
     }
 
@@ -433,6 +455,30 @@ impl RadioController for RemoteController {
         true
     }
 
+    fn peer_radios(&self) -> Vec<sdroxide_types::PeerRadio> {
+        let Some((me, radios)) = self.peers.as_ref() else { return Vec::new() };
+        radios
+            .iter()
+            .filter(|r| r.id != *me)
+            .map(|r| sdroxide_types::PeerRadio {
+                id: r.id,
+                name: r.name.clone(),
+                url: radio_url(&self.url, r.id),
+            })
+            .collect()
+    }
+
+    fn peer_url(&self) -> Option<String> {
+        // The canonical form once the far end has said which radio this is, so
+        // that a session dialled at `/ws` and the same radio offered by a
+        // sibling as `/ws/0` are recognised as one and the same. Before that,
+        // whatever was dialled — it is all there is to go on.
+        Some(match self.peers.as_ref() {
+            Some((me, _)) => radio_url(&self.url, *me),
+            None => self.url.clone(),
+        })
+    }
+
     fn auth_phase(&self) -> AuthPhase {
         self.auth.clone()
     }
@@ -467,6 +513,9 @@ impl RadioController for RemoteController {
         self.voice_recording = false;
         self.mic_buf.clear();
         self.mic_seq = 0;
+        // ...and the roster, which the new session announces afresh: the
+        // station may have gained or lost a radio while the link was down.
+        self.peers = None;
         // The interface configuration is per-session too: the new socket may
         // reach a different station, and an edit queued against the dead one
         // must not be applied to it. The fresh session announces its own.
@@ -526,6 +575,25 @@ impl RadioController for RemoteController {
 mod tests {
     use super::*;
     use sdroxide_types::SpectrumConfig;
+
+    /// A station's other radios are dialled from the address this connection
+    /// is already on — whatever shape the operator gave it.
+    #[test]
+    fn a_sibling_radio_is_dialled_beside_the_one_we_are_on() {
+        // The bare endpoint, which is what `--connect host:4950` builds.
+        assert_eq!(radio_url("ws://192.168.1.10:4950/ws", 1), "ws://192.168.1.10:4950/ws/1");
+        // ...and from a session that is already on a named radio.
+        assert_eq!(radio_url("ws://192.168.1.10:4950/ws/10", 0), "ws://192.168.1.10:4950/ws/0");
+        // A reverse proxy's path prefix is part of the address, not of the
+        // endpoint: it has to survive.
+        assert_eq!(radio_url("wss://shack.example/sdr/ws", 2), "wss://shack.example/sdr/ws/2");
+        // An address with no endpoint at all still names one.
+        assert_eq!(radio_url("ws://host:4950", 3), "ws://host:4950/ws/3");
+        assert_eq!(radio_url("ws://host:4950/", 3), "ws://host:4950/ws/3");
+        // A host that begins with the endpoint's own letters must not be
+        // mistaken for it.
+        assert_eq!(radio_url("ws://wsserver:4950/ws", 1), "ws://wsserver:4950/ws/1");
+    }
 
     /// The first-frame `SetSpectrumCfg` that the capture from the bug report
     /// caught on the wire ahead of `Hello`.

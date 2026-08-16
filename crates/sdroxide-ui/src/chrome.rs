@@ -1060,6 +1060,13 @@ impl TabBar {
                     // shoulder-to-shoulder gap belongs between tabs, not
                     // between a tab's label and its buttons.
                     ui.spacing_mut().item_spacing = spacing;
+                    // A tab's text is the name on a button, not a passage to
+                    // select. egui's selectable labels take `click_and_drag`
+                    // to run the selection, which swallows the click before
+                    // the tab under them ever sees it — so the tab only
+                    // switched when the pointer landed on the padding *around*
+                    // its name.
+                    ui.style_mut().interaction.selectable_labels = false;
                     add(ui)
                 })
                 .inner

@@ -1,64 +1,86 @@
-//! Headless server mode: engine + WebSocket/HTTP frontend.
+//! Headless server mode: one engine per radio in the station roster, behind a
+//! single WebSocket/HTTP frontend.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use sdroxide_config::Settings;
 use sdroxide_radio::rtrb;
-use sdroxide_radio::{AudioParams, EngineConfig, IqSource, MicParams, ReopenFn, start_engine};
-use sdroxide_server::ServerParams;
-use sdroxide_types::{DeviceCaps, Mode};
+use sdroxide_radio::{AudioParams, EngineConfig, MicParams, StoreSync, TxGate, start_engine};
+use sdroxide_server::{RadioParams, ServerParams};
+
+use crate::RadioBoot;
 
 pub fn run(
-    source: Box<dyn IqSource>,
-    caps: DeviceCaps,
+    // The station's radios, in roster order, already opened by `main` — the
+    // same list the GUI would have put in tabs. The first is what a client
+    // that names no radio gets.
+    radios: Vec<RadioBoot>,
     settings: &Settings,
-    // Whether the engine refuses to key outside the amateur bands. Resolved in
+    // Whether the engines refuse to key outside the amateur bands. Resolved in
     // `main` from `config.toml` and the `--oob-tx` flag.
     tx_ham_only: bool,
-    initial_mode: Option<Mode>,
-    // Antenna ports named on the command line (RX, TX); the remembered session
-    // fills in whichever the operator left out. The main reason this flag
-    // exists: nobody is sitting at a headless server to pick a port by hand.
-    initial_antenna: (Option<String>, Option<String>),
     port: u16,
     web_root: Option<PathBuf>,
-    reopen: Option<ReopenFn>,
 ) -> Result<()> {
-    // Demod audio ring (engine → server, interleaved stereo @48 k) and mic
-    // ring (server → engine, mono @48 k).
-    let (audio_producer, audio_consumer) = rtrb::RingBuffer::<f32>::new(48_000 * 2);
-    let (mic_producer, mic_consumer) = rtrb::RingBuffer::<f32>::new(48_000);
+    // Shared by every engine in this process, exactly as in the GUI: one
+    // transmitter on the air at a time, and a store change made through one
+    // radio seen by the rest. A server needs the interlock more than the shack
+    // does, not less — nobody is sitting here to notice two radios keying.
+    let gate = Arc::new(TxGate::new());
+    let sync = Arc::new(StoreSync::new());
 
-    let handles = start_engine(
-        source,
-        caps,
-        EngineConfig {
-            audio: Some(AudioParams { producer: audio_producer, out_rate: 48_000.0 }),
-            mic: Some(MicParams { consumer: mic_consumer, rate: 48_000.0 }),
-            cal_offset_db: settings.cal_offset_db as f32,
-            initial_mode,
-            initial_antenna,
-            tx_ham_only,
-            // A headless server is typically started before the rig it talks
-            // to; the engine uses this to attach as soon as the radio is there.
-            reopen,
-            // The server *is* the radio for everyone connected to it, so it is
-            // the side that remembers where the last session was left.
-            remember_session: true,
-            // Server mode is single-radio: the station scope, no interlock,
-            // no peer engines to sync stores with.
-            ..Default::default()
-        },
-    );
+    let mut params = Vec::with_capacity(radios.len());
+    for (i, boot) in radios.into_iter().enumerate() {
+        // Demod audio ring (engine → server, interleaved stereo @48 k) and mic
+        // ring (server → engine, mono @48 k), one pair per radio.
+        let (audio_producer, audio_consumer) = rtrb::RingBuffer::<f32>::new(48_000 * 2);
+        let (mic_producer, mic_consumer) = rtrb::RingBuffer::<f32>::new(48_000);
+
+        let handles = start_engine(
+            boot.source,
+            boot.caps,
+            EngineConfig {
+                audio: Some(AudioParams { producer: audio_producer, out_rate: 48_000.0 }),
+                mic: Some(MicParams { consumer: mic_consumer, rate: 48_000.0 }),
+                cal_offset_db: settings.cal_offset_db as f32,
+                initial_mode: boot.initial_mode,
+                initial_antenna: boot.initial_antenna,
+                tx_ham_only,
+                // A headless server is typically started before the rig it
+                // talks to; the engine uses this to attach as soon as the
+                // radio is there.
+                reopen: boot.reopen,
+                // The server *is* the radio for everyone connected to it, so it
+                // is the side that remembers where the last session was left —
+                // each radio in its own scope.
+                remember_session: true,
+                store: boot.store,
+                instance: boot.id,
+                // Exactly one engine runs the station-wide network services,
+                // for the same reason as in the GUI: they hold logins and
+                // sockets that must not be opened once per radio.
+                primary: i == 0,
+                tx_gate: Some(gate.clone()),
+                store_sync: Some(sync.clone()),
+            },
+        );
+
+        params.push(RadioParams {
+            id: boot.id,
+            name: boot.name,
+            cmd_tx: handles.cmd_tx,
+            event_rx: handles.event_rx,
+            spectrum_out: handles.spectrum_out,
+            wide_spectrum_out: handles.wide_spectrum_out,
+            audio_rx: audio_consumer,
+            mic_tx: mic_producer,
+        });
+    }
 
     sdroxide_server::run_blocking(ServerParams {
-        cmd_tx: handles.cmd_tx,
-        event_rx: handles.event_rx,
-        spectrum_out: handles.spectrum_out,
-        wide_spectrum_out: handles.wide_spectrum_out,
-        audio_rx: audio_consumer,
-        mic_tx: mic_producer,
+        radios: params,
         bind: settings.server_bind.clone(),
         port,
         web_root,

@@ -92,6 +92,17 @@ mod web {
         eframe::WebOptions { wgpu_options: options, ..Default::default() }
     }
 
+    /// The radio id in `?radio=N`, if the query string names one. Anything
+    /// that is not a number is ignored rather than guessed at: the fallback is
+    /// the station's first radio, which is always there.
+    fn radio_query(search: &str) -> Option<u32> {
+        search
+            .trim_start_matches('?')
+            .split('&')
+            .find_map(|p| p.strip_prefix("radio="))
+            .and_then(|v| v.parse::<u32>().ok())
+    }
+
     pub fn run() {
         console_error_panic_hook::set_once();
 
@@ -141,7 +152,14 @@ mod web {
                     )
                     .await
             } else {
-                let url = format!("{ws_proto}://{host}/ws");
+                // `?radio=N` picks one of a station's radios; without it this
+                // page opens the first, which is the whole of what a station
+                // with one radio has. The list is at `/radios` on the same
+                // host, and a browser can be pointed straight at it.
+                let url = match radio_query(&search) {
+                    Some(id) => format!("{ws_proto}://{host}/ws/{id}"),
+                    None => format!("{ws_proto}://{host}/ws"),
+                };
                 runner
                     .start(
                         canvas,

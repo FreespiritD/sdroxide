@@ -959,6 +959,19 @@ impl SdroxideApp {
         self.ctrl.set_muted(muted);
     }
 
+    /// The other radios of the station this tab is connected to, and the
+    /// address this tab itself is on — what the shell needs to put the rest of
+    /// a station's radios in tabs beside it. Both empty for a local radio.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn peer_radios(&self) -> Vec<sdroxide_types::PeerRadio> {
+        self.ctrl.peer_radios()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn peer_url(&self) -> Option<String> {
+        self.ctrl.peer_url()
+    }
+
     /// Detach from this radio: disconnect the engine, drop the audio streams,
     /// join the DSP thread. Tab close and app exit.
     #[cfg(not(target_arch = "wasm32"))]

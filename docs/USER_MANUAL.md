@@ -1060,11 +1060,14 @@ other streaming, and the transmitter belongs to the first receiver's radio:
   same spectrum — retune either radio and both move. See
   [§5.2.7](#527-plutosdr-adalm-pluto).
 
-**Remote and browser clients** connect to one radio — the first — for now;
-multi-radio remote operation is a planned follow-up. The other direction already
-works: a station dialled from **Settings → Remote**
-([7.2](#72-connect-a-native-remote-client)) becomes a tab like any other, so one
-screen can hold this machine's radios and somebody else's at the same time.
+**A server serves every radio in the roster**, each on an address of its own —
+`--server` brings up the same radios the GUI would ([7.1](#71-start-the-server)).
+A native client that dials such a station gets **all of its radios as tabs**,
+the same as if they were plugged into this machine
+([7.2](#72-connect-a-native-remote-client)) — one connection per radio,
+made for you. That is the same mechanism that lets one screen hold this
+machine's radios and somebody else's at the same time. A browser tab holds one
+radio at a time and picks it with `?radio=<id>` ([8.1](#81-serve-the-web-client)).
 
 ---
 
@@ -5665,6 +5668,36 @@ Set a username and password first — see
 [§ 7.3](#73-sign-in-who-may-operate-the-station). Without one the server is open
 to anyone who can reach the port, and says so in its log at startup.
 
+**A station with more than one radio** ([2.17](#217-running-more-than-one-radio))
+serves all of them from the one port. Every radio in the roster is opened —
+each with its own engine, exactly as the GUI would — and each is reachable in
+its own right:
+
+| Address | Reaches |
+| --- | --- |
+| `/ws` | the first radio in the roster |
+| `/ws/<id>` | the radio with that roster id, the first one included |
+| `/radios` | the list, as JSON: `[{"id":0,"name":"RTL-SDR","path":"/ws/0"}, …]` |
+
+The id is the one in `radios.json`, not a position in the list, so deleting a
+radio never renumbers the others. The server logs which radio is on which
+address at startup, and `curl http://HOST:4950/radios` answers the same question
+from anywhere. A radio that is not plugged in right now still gets its address
+and keeps trying to attach, the same way it would in the GUI.
+
+One *connection* operates one radio: the single-client rule is per radio, so
+two people can work two radios of the same station at once — and a native
+client makes one connection per radio by itself, so one operator gets the whole
+station in tabs ([7.2](#72-connect-a-native-remote-client)). A radio id that the
+station does not have is refused with a 404 rather than quietly answered by a
+different radio.
+
+The interlock applies across the whole station: only one of its radios can
+transmit at a time, as in the shack. Note that each radio has its own
+`rigctld.json` and `tciserver.json` in its own scope — if you enable those
+built-in servers on more than one radio, give each a port of its own, or the
+second one to start finds the address taken.
+
 ### 7.2 Connect a native remote client
 
 From the GUI, on any other machine running sdroxide: open **Settings →
@@ -5695,6 +5728,26 @@ sdroxide --connect HOST:4950
 `--connect` accepts `host`, `host:port`, or a full `ws://…` URL. A client
 started this way has no radio of its own — and can still reach **Settings →
 Remote** to connect to a second station.
+
+**A station with several radios arrives with all of them.** The connection you
+make is to one radio — the first, unless you named another — and the station
+says what else it has; the client opens the rest beside it, one tab each. So
+dialling a server that has an RTL-SDR and a Pluto gives you the same two tabs
+you would have standing in front of them, ⊞ included
+([2.17](#217-running-more-than-one-radio)). The tab you dialled keeps the name
+you typed; the others are named as the station names them.
+
+Each of those tabs is a connection of its own, which has two consequences worth
+knowing. A station that asks for a password asks each tab separately — tick
+**Remember me** on the first and the rest sign themselves in
+([7.3](#73-sign-in-who-may-operate-the-station)). And each carries its own audio
+and spectrum, so on a thin link close the radios you are not using: a tab you
+close stays closed until you dial the station again.
+
+To open just one radio of a station, name it in the address:
+`sdroxide --connect HOST:4950/ws/1`, or type the full `ws://HOST:4950/ws/1` in
+the **Address** box. `/radios` on the server says which id is which
+([7.1](#71-start-the-server)).
 
 Either way, a remote client is the full sdroxide GUI running against the server:
 control, state, memories, meters, spectrum, FT8 decodes and logging, and skimmer
@@ -5796,7 +5849,17 @@ Then open a browser at:
 http://HOST:4950/
 ```
 
-The page connects back to the server over a WebSocket at `/ws` automatically.
+The page connects back to the server over a WebSocket at `/ws` automatically —
+the station's first radio. To open one of its other radios, add the roster id
+to the page address:
+
+```
+http://HOST:4950/?radio=1
+```
+
+Two browser tabs on two different radios work the way two clients do; two tabs
+on the *same* radio do not, since one client operates a radio at a time. The
+station's radios and their ids are listed at `http://HOST:4950/radios`.
 
 If you are running a build without the embedded web UI, point the server at a
 trunk-built web directory:

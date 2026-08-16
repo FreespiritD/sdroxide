@@ -28,9 +28,11 @@ One binary, three ways to run it:
 - **Native** — a local desktop transceiver against your SDR hardware.
 - **Server** — `sdroxide --server`; the DSP runs on the machine with the radio
   and the full UI (plus audio and the waterfall) is served to a browser as
-  WebAssembly. One remote client at a time.
+  WebAssembly. Every radio the station has is served, one client each: `/ws`
+  and `/ws/<id>`, listed at `/radios`.
 - **Native remote** — `sdroxide --connect host:4950`; the desktop UI driving a
-  remote server instead of local hardware.
+  remote server instead of local hardware. A station with several radios comes
+  up with all of them, one tab each.
 
 ## Core features
 
@@ -1016,6 +1018,10 @@ sdroxide --server --web-root crates/sdroxide-web/dist
 
 # Desktop UI driven by a remote server (no web client involved):
 sdroxide --connect 192.168.1.10:4950
+
+# ...just one of that server's radios, instead of all of them in tabs
+# (ids: curl http://192.168.1.10:4950/radios):
+sdroxide --connect 192.168.1.10:4950/ws/1
 ```
 
 **Raspberry Pi 4/5 (and 400/500).** Mesa's Vulkan driver for the Pi's V3D GPU
