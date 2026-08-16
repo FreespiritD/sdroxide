@@ -2768,6 +2768,20 @@ setup and for radios whose keyer sdroxide cannot drive.
 > dial itself, and it tunes VFO A — so a rig left on VFO B or in memory mode
 > would answer every frequency read and ignore every retune.
 
+> **Note (Kenwood meters):** the S-meter and the transmit SWR come from the
+> radio's own meters, and both are read against the *model*, which sdroxide asks
+> for at connect (`ID;`). It has to: `SM` and `RM` answer with a count of lit
+> bars, and full deflection is 20 bars on a TS-2000, 30 on a TS-590 and 70 on a
+> TS-890 — so the same reading of 12 is a 3:1 fault on one rig and very nearly
+> flat on another. Scales are carried for the TS-480, TS-590S/SG, TS-890S,
+> TS-990S and TS-2000.
+>
+> On a model sdroxide has no scales for, the S-meter still reads — on a generic
+> straight line, so approximately — and the **SWR meter stays blank** rather
+> than showing a number with no meaning behind it. The log line
+> `Kenwood CAT: rig reports model ID …` carries the number, which is what would
+> let the model be added.
+
 > **Note (Elecraft):** at connect sdroxide does the same — auto-information off,
 > clarifier cleared, RIT, XIT and split off — and two things besides. It puts
 > the rig into `K20;K31;`, because a K3 left in K2 command mode 1 or 3 by

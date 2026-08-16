@@ -25,7 +25,7 @@
 
 use crate::{CatUpdate, Protocol};
 use sdroxide_types::{KenwoodSend, Mode};
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 /// Digits in the `FA`/`FB` frequency field. Fixed across the family, unlike
 /// Yaesu — "enter 00014195000 for 14.195 MHz. Blank digits must be entered
@@ -39,6 +39,170 @@ const CW_MAX: usize = 24;
 /// table, then the six symbols that stand for prosigns. A semicolon is not
 /// among them, which is what keeps operator text from ending the frame early.
 const KEYER_PUNCTUATION: &str = " '\"()*+,-./:=?@[_<>]\\";
+
+/// What a Kenwood's meters read on — which is a question about the *model*, not
+/// about the family.
+///
+/// Nothing else in this file needs to know which Kenwood it is talking to. The
+/// meters do, and unavoidably: `SM` and `RM` both answer with a count of lit
+/// bars on the rig's own display, and how many bars that display has changed
+/// twice across the family. A TS-2000's SWR runs to 20, a TS-590's to 30 and a
+/// TS-890's to 70, so the same reading of 12 is a 3:1 fault, a 2:1 match, or
+/// very nearly flat, depending on a rig this side cannot see.
+///
+/// Which is why the model is *asked for* (`ID;`) rather than assumed, and why a
+/// model with no published curve reports no SWR at all. A meter that reads
+/// plausibly and means nothing is worse than an empty one.
+#[derive(Clone, Copy)]
+struct Meters {
+    /// The model, for the log.
+    name: &'static str,
+    /// `SM` reading → dB relative to S9, or `None` to use [`generic_strength`].
+    str_cal: Option<&'static [(f32, f32)]>,
+    /// Which `RM` digit carries the SWR on this model, and the curve it reads
+    /// on. `None` where no published curve exists.
+    swr: Option<(char, &'static [(f32, f32)])>,
+    /// Whether the SWR meter has to be switched on before `RM;` will report it.
+    /// The TS-480/590/2000 generation answers `RM;` with every meter at once;
+    /// the TS-890 and TS-990 report only the ones enabled.
+    swr_needs_enable: bool,
+    /// Whether the S-meter read carries a receiver digit (`SM0;`). The rigs
+    /// that predate a sub receiver have only the bare `SM;`.
+    smeter_has_vfo: bool,
+}
+
+// Bars → dB relative to S9. All from Hamlib's per-model `str_cal` tables.
+const TS2000_STR: &[(f32, f32)] = &[
+    (0.0, -54.0),
+    (3.0, -48.0),
+    (6.0, -36.0),
+    (9.0, -24.0),
+    (12.0, -12.0),
+    (15.0, 0.0),
+    (20.0, 20.0),
+    (25.0, 40.0),
+    (30.0, 60.0),
+];
+const TS480_STR: &[(f32, f32)] = &[
+    (0.0, -60.0),
+    (3.0, -48.0),
+    (5.0, -36.0),
+    (7.0, -24.0),
+    (9.0, -12.0),
+    (11.0, 0.0),
+    (14.0, 20.0),
+    (17.0, 40.0),
+    (20.0, 60.0),
+];
+const TS590_STR: &[(f32, f32)] = &[
+    (0.0, -60.0),
+    (3.0, -48.0),
+    (6.0, -36.0),
+    (9.0, -24.0),
+    (12.0, -12.0),
+    (15.0, 0.0),
+    (20.0, 20.0),
+    (25.0, 40.0),
+    (30.0, 60.0),
+];
+const TS990_STR: &[(f32, f32)] = &[
+    (0.0, -54.0),
+    (4.0, -48.0),
+    (11.0, -36.0),
+    (19.0, -24.0),
+    (27.0, -12.0),
+    (35.0, 0.0),
+    (70.0, 60.0),
+];
+
+// Bars → SWR. Also Hamlib's, and note how differently the three generations
+// scale: full deflection is 20 bars on a TS-2000, 30 on a TS-590, 70 on a
+// TS-890.
+const TS2000_SWR: &[(f32, f32)] = &[(0.0, 1.0), (4.0, 1.5), (8.0, 2.0), (12.0, 3.0), (20.0, 10.0)];
+const TS590_SWR: &[(f32, f32)] = &[(0.0, 1.0), (6.0, 1.5), (12.0, 2.0), (18.0, 3.0), (30.0, 10.0)];
+const TS890_SWR: &[(f32, f32)] = &[(0.0, 1.0), (11.0, 1.5), (23.0, 2.0), (35.0, 3.0), (70.0, 15.0)];
+const TS990_SWR: &[(f32, f32)] = &[(0.0, 1.0), (7.0, 1.5), (36.0, 3.0), (43.0, 6.0), (70.0, 10.0)];
+
+/// The meters of the model behind an `ID;` reply, or `None` for one this file
+/// has never been told about.
+///
+/// Note 017: an Elecraft K2, K3 or KX3 answers `ID;` with it too. That is not a
+/// problem to solve here — an Elecraft belongs on [`crate::elecraft`] — but it
+/// is why the TS-570's entry claims no SWR curve.
+fn meters_for(id: u32) -> Option<Meters> {
+    Some(match id {
+        // TS-870S, TS-570D/S. No published meter curves, and no sub receiver,
+        // so the S-meter read is the bare one.
+        15 | 17 | 18 => Meters {
+            name: if id == 15 { "TS-870S" } else { "TS-570" },
+            str_cal: None,
+            swr: None,
+            swr_needs_enable: false,
+            smeter_has_vfo: false,
+        },
+        19 => Meters {
+            name: "TS-2000",
+            str_cal: Some(TS2000_STR),
+            swr: Some(('1', TS2000_SWR)),
+            swr_needs_enable: false,
+            smeter_has_vfo: true,
+        },
+        20 => Meters {
+            name: "TS-480",
+            str_cal: Some(TS480_STR),
+            // The TS-480's own bar count matches the TS-2000's.
+            swr: Some(('1', TS2000_SWR)),
+            swr_needs_enable: false,
+            smeter_has_vfo: true,
+        },
+        21 | 23 => Meters {
+            name: if id == 21 { "TS-590S" } else { "TS-590SG" },
+            str_cal: Some(TS590_STR),
+            swr: Some(('1', TS590_SWR)),
+            swr_needs_enable: false,
+            smeter_has_vfo: true,
+        },
+        22 => Meters {
+            name: "TS-990S",
+            str_cal: Some(TS990_STR),
+            // The later pair moved the SWR to meter 2 — meter 1 is the ALC
+            // there, and reading it as an SWR would show a clean antenna as a
+            // fault every time the compressor worked.
+            swr: Some(('2', TS990_SWR)),
+            swr_needs_enable: true,
+            smeter_has_vfo: true,
+        },
+        24 => Meters {
+            name: "TS-890S",
+            // No published S-meter curve for this one; the generic line stands.
+            str_cal: None,
+            swr: Some(('2', TS890_SWR)),
+            swr_needs_enable: true,
+            smeter_has_vfo: true,
+        },
+        _ => return None,
+    })
+}
+
+/// `SM` bars → dB relative to S9 on a rig with no published curve.
+///
+/// Hamlib's fallback, and the only defensible one: a straight line through the
+/// two points every Kenwood bar graph agrees on — no bars is S0 (54 dB below
+/// S9) and each bar is 4 dB.
+fn generic_strength(bars: f32) -> f32 {
+    bars * 4.0 - 54.0
+}
+
+/// The meters assumed before `ID;` has been answered — none. The S-meter still
+/// reads, on the generic line; the SWR waits for the model, because there is no
+/// generic SWR curve worth showing.
+const UNKNOWN_METERS: Meters = Meters {
+    name: "unidentified",
+    str_cal: None,
+    swr: None,
+    swr_needs_enable: false,
+    smeter_has_vfo: true,
+};
 
 /// How many mode replies to wait through before concluding the rig has no `DA`
 /// command. A TS-2000-generation rig has no DATA mode and answers `?;`, which
@@ -58,6 +222,10 @@ pub struct Kenwood {
     da_seen: bool,
     /// `MD;` replies seen, counted only until [`DATA_PROBE_POLLS`].
     md_replies: u32,
+    /// What this rig's meters read on, learned from its `ID;` reply.
+    meters: Meters,
+    /// True once `ID;` has been answered, so the model is only logged once.
+    model_known: bool,
 }
 
 impl Kenwood {
@@ -69,6 +237,30 @@ impl Kenwood {
             data_on: false,
             da_seen: false,
             md_replies: 0,
+            meters: UNKNOWN_METERS,
+            model_known: false,
+        }
+    }
+
+    /// Adopt the meter scales of the model behind an `ID;` reply.
+    ///
+    /// An unrecognised number is worth saying out loud: it leaves the SWR meter
+    /// blank for the rest of the session, and the number in the log is the one
+    /// thing that would let the model be added.
+    fn learn_model(&mut self, id: u32) {
+        if self.model_known {
+            return;
+        }
+        self.model_known = true;
+        match meters_for(id) {
+            Some(m) => {
+                info!(model = m.name, id, swr = m.swr.is_some(), "Kenwood CAT: rig identified");
+                self.meters = m;
+            }
+            None => warn!(
+                "Kenwood CAT: rig reports model ID {id:03}, which sdroxide has no meter scales \
+                 for — the S-meter will read approximately and the SWR not at all"
+            ),
         }
     }
 
@@ -132,6 +324,20 @@ fn mode_digit(m: Mode) -> (char, bool) {
         | Mode::Rade => ('2', true),
         Mode::Usb | Mode::Spec | Mode::Sstv | Mode::Wefax | Mode::RfPaint => ('2', false),
     }
+}
+
+/// A meter reply's numeric field — a count of lit bars — or `None` when it is
+/// not one.
+///
+/// The width is fixed at four across both meter commands. A short or mangled
+/// reply is no reading at all: it has to leave the meter where it was rather
+/// than slam it to the bottom of the scale, which on the SWR meter would read
+/// as a perfect match at exactly the moment something is wrong.
+fn bars(digits: &str) -> Option<f32> {
+    if digits.len() != 4 {
+        return None;
+    }
+    digits.parse::<u32>().ok().map(|v| v as f32)
 }
 
 /// Reduce `text` to what the `KY` buffer will accept: the letters, digits and
@@ -212,11 +418,40 @@ impl Protocol for Kenwood {
         reqs
     }
 
+    fn tx_telemetry_requests(&self) -> Vec<Vec<u8>> {
+        let Some((digit, _)) = self.meters.swr else {
+            // No curve for this model: asking would only produce a number
+            // there is nothing honest to do with.
+            return Vec::new();
+        };
+        let mut reqs = Vec::new();
+        if self.meters.swr_needs_enable {
+            // The TS-890/990 report only the meters that are switched on, and
+            // the operator may have the front panel on ALC. Re-asserted with
+            // every read rather than once at connect: this only goes out while
+            // transmitting, when SWR is the meter that matters anyway.
+            reqs.push(format!("RM{digit}1;").into_bytes());
+        }
+        // One read, every meter: the rig answers `RM10000;RM20000;RM30000;` and
+        // the digit says which is which.
+        reqs.push(b"RM;".to_vec());
+        reqs
+    }
+
+    fn rx_telemetry_requests(&self) -> Vec<Vec<u8>> {
+        if self.meters.smeter_has_vfo { vec![b"SM0;".to_vec()] } else { vec![b"SM;".to_vec()] }
+    }
+
     fn clear_offsets(&self) -> Vec<Vec<u8>> {
         vec![
             // Stop unsolicited status the rig would otherwise push at us — we
             // poll, and a previous program may have left auto-information on.
             b"AI0;".to_vec(),
+            // Which Kenwood this is. Only the meters care (see `Meters`), but
+            // they cannot read anything until it has been answered, so it goes
+            // out with the rest of the connect traffic rather than waiting for
+            // the first key-down.
+            b"ID;".to_vec(),
             // Clear the clarifier while it is still on: `RC` is an error once
             // RIT and XIT are both off, so it cannot come after them.
             b"RC;".to_vec(),
@@ -301,6 +536,34 @@ impl Protocol for Kenwood {
             } else if let Some(rest) = msg.strip_prefix("PC") {
                 if let Some(frac) = crate::pc_parse(rest) {
                     out.push(CatUpdate::Power(frac));
+                }
+            } else if let Some(rest) = msg.strip_prefix("ID") {
+                if let Ok(id) = rest.trim().parse::<u32>() {
+                    self.learn_model(id);
+                }
+            } else if let Some(rest) = msg.strip_prefix("SM") {
+                // `SM<vfo><4 digits>` on a rig with a sub receiver, `SM<4
+                // digits>` on one without — and only the main receiver's is
+                // followed either way.
+                let bars = match self.meters.smeter_has_vfo {
+                    true => rest.strip_prefix('0').and_then(bars),
+                    false => bars(rest),
+                };
+                if let Some(bars) = bars {
+                    let db = match self.meters.str_cal {
+                        Some(cal) => crate::interp(cal, bars),
+                        None => generic_strength(bars),
+                    };
+                    out.push(CatUpdate::Signal(crate::S9_DBM + db));
+                }
+            } else if let Some(rest) = msg.strip_prefix("RM") {
+                // Every meter answers on this one command, so the digit is the
+                // only thing that says which reading arrived — and which digit
+                // is the SWR is itself a question about the model.
+                if let Some((digit, cal)) = self.meters.swr
+                    && let Some(v) = rest.strip_prefix(digit).and_then(bars)
+                {
+                    out.push(CatUpdate::Swr(crate::interp(cal, v)));
                 }
             } else if let Some(rest) = msg.strip_prefix("DA") {
                 if let Some(d) = rest.chars().next() {
@@ -510,6 +773,97 @@ mod tests {
         // `RC` before `RT0`/`XT0`: it is an error once both are already off.
         // `FR0` last, and never `FT2` — that is Yaesu's split-off and a
         // forbidden memory-channel select here.
-        assert_eq!(frames(kenwood().clear_offsets()), vec!["AI0;", "RC;", "RT0;", "XT0;", "FR0;"]);
+        assert_eq!(
+            frames(kenwood().clear_offsets()),
+            vec!["AI0;", "ID;", "RC;", "RT0;", "XT0;", "FR0;"]
+        );
+    }
+
+    #[test]
+    fn the_meter_scales_come_from_the_model_the_rig_reports() {
+        let swr = |k: &mut Kenwood, s: &str| match parse_str(k, s).as_slice() {
+            [CatUpdate::Swr(v)] => Some(*v),
+            [] => None,
+            other => panic!("expected at most one SWR reading, got {other:?}"),
+        };
+
+        // A TS-590: thirty bars of SWR, on meter 1, and the whole set of meters
+        // arrives on one read.
+        let mut k = kenwood();
+        parse_str(&mut k, "ID021;");
+        assert_eq!(frames(k.tx_telemetry_requests()), vec!["RM;"]);
+        assert_eq!(swr(&mut k, "RM10012;"), Some(2.0));
+
+        // The identical reading on a TS-2000, whose scale is twenty bars, is a
+        // three-to-one fault rather than a two-to-one match. This is the whole
+        // reason the model is asked for.
+        let mut k = kenwood();
+        parse_str(&mut k, "ID019;");
+        assert_eq!(swr(&mut k, "RM10012;"), Some(3.0));
+
+        // A TS-890 keeps its SWR on meter *2* — meter 1 is the ALC there — and
+        // has to be told to report it at all.
+        let mut k = kenwood();
+        parse_str(&mut k, "ID024;");
+        assert_eq!(frames(k.tx_telemetry_requests()), vec!["RM21;", "RM;"]);
+        assert_eq!(swr(&mut k, "RM20023;"), Some(2.0));
+        // Reading meter 1 there would show a clean antenna as a fault whenever
+        // the ALC moved.
+        assert_eq!(swr(&mut k, "RM10023;"), None);
+    }
+
+    #[test]
+    fn an_unrecognised_model_reports_no_swr_at_all() {
+        let mut k = kenwood();
+        // Nothing asked yet, and nothing to ask with.
+        assert!(frames(k.tx_telemetry_requests()).is_empty());
+        assert!(parse_str(&mut k, "RM10012;").is_empty());
+        // A model with no published curve stays that way rather than borrowing
+        // another generation's scale, which would read plausibly and mean
+        // nothing.
+        parse_str(&mut k, "ID099;");
+        assert!(frames(k.tx_telemetry_requests()).is_empty());
+        assert!(parse_str(&mut k, "RM10012;").is_empty());
+    }
+
+    #[test]
+    fn the_s_meter_reads_against_this_models_bar_count() {
+        let dbm = |k: &mut Kenwood, s: &str| match parse_str(k, s).as_slice() {
+            [CatUpdate::Signal(d)] => Some(*d),
+            [] => None,
+            other => panic!("expected at most one signal reading, got {other:?}"),
+        };
+
+        let mut k = kenwood();
+        parse_str(&mut k, "ID021;"); // TS-590: fifteen bars is S9
+        assert_eq!(frames(k.rx_telemetry_requests()), vec!["SM0;"]);
+        assert_eq!(dbm(&mut k, "SM00015;"), Some(-73.0));
+        assert_eq!(dbm(&mut k, "SM00030;"), Some(-13.0)); // S9+60
+        assert_eq!(dbm(&mut k, "SM00000;"), Some(-133.0)); // S0
+
+        // A TS-990's scale runs to seventy, so the same fifteen bars is a much
+        // weaker signal.
+        let mut k = kenwood();
+        parse_str(&mut k, "ID022;");
+        assert_eq!(dbm(&mut k, "SM00035;"), Some(-73.0));
+        let fifteen = dbm(&mut k, "SM00015;").unwrap();
+        assert!(fifteen < -90.0, "fifteen bars on a TS-990 reads {fifteen} dBm");
+
+        // The sub receiver's meter is a signal nobody here is listening to, and
+        // a short or mangled reply must leave the meter where it was rather
+        // than drop it to the bottom of the scale.
+        assert_eq!(dbm(&mut k, "SM10015;"), None);
+        assert_eq!(dbm(&mut k, "SM0015;"), None);
+        assert_eq!(dbm(&mut k, "SM0abcd;"), None);
+    }
+
+    #[test]
+    fn a_rig_from_before_the_sub_receiver_is_asked_without_one() {
+        let mut k = kenwood();
+        parse_str(&mut k, "ID017;"); // TS-570
+        assert_eq!(frames(k.rx_telemetry_requests()), vec!["SM;"]);
+        // No published curve, so the generic line: no bars is S0, each bar 4 dB.
+        assert_eq!(parse_str(&mut k, "SM0000;"), vec![CatUpdate::Signal(-127.0)]);
+        assert_eq!(parse_str(&mut k, "SM0015;"), vec![CatUpdate::Signal(-127.0 + 60.0)]);
     }
 }
