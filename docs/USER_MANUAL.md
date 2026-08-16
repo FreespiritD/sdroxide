@@ -2817,6 +2817,15 @@ setup and for radios whose keyer sdroxide cannot drive.
 > slider is the QRP scale, so the first moments after connect can only ask for
 > *less* power than the radio has, never more.
 >
+> A K3 whose `CONFIG:CW WGHT` is set to `VFO OFS` shifts its own dial by the CW
+> pitch whenever the mode crosses into or out of CW, so that zero-beat stays
+> zero-beat. That is useful at the radio and invisible over CAT, so sdroxide
+> re-asserts the frequency behind every mode command it sends an Elecraft —
+> otherwise an operator who asked for 14.050 would find themselves transmitting
+> six hundred hertz away with nothing on screen to say so. Nothing on the wire
+> reports how that menu entry is set, so the re-assert is unconditional; on a
+> rig already on the right frequency it costs one frame and changes nothing.
+>
 > Setting the mode sends `DT0;` after the mode itself, which pins DATA to
 > **DATA A** — the sound-card path. It has to: `MD6;` on its own restores
 > whichever of the four sub-modes that band was last left in, and on a rig used

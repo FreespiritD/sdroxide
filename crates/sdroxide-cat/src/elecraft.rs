@@ -417,6 +417,21 @@ impl Protocol for Elecraft {
         true
     }
 
+    fn mode_moves_dial(&self) -> bool {
+        // A K3 whose `CONFIG:CW WGHT` is set to `VFO OFS` shifts its displayed
+        // frequency by the CW pitch whenever the mode crosses into or out of
+        // CW, so that zero-beat stays zero-beat. Useful at the radio; invisible
+        // and wrong over CAT, where an operator who asked for 14.050 would find
+        // themselves transmitting six hundred hertz away with nothing on screen
+        // to say so.
+        //
+        // Unconditional, because nothing on the wire says which way that menu
+        // entry is set — and because re-asserting a frequency the rig is
+        // already on costs one frame and changes nothing. Elecraft's own sample
+        // macros send the second `FA` for exactly this reason.
+        true
+    }
+
     // Deliberately no `refused()`. On CI-V, "NG" arriving on the heels of a
     // key-down is worth telling the operator about: the rig said no, and a
     // transmitter that did not come up has nothing else to show for it. Here

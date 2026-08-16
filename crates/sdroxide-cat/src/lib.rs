@@ -155,6 +155,19 @@ trait Protocol: Send {
         false
     }
 
+    /// Whether a mode change can move this rig's *dial*.
+    ///
+    /// Most radios keep the VFO where it is when the mode changes. Some can be
+    /// set not to: they shift the displayed frequency by the CW pitch when
+    /// entering or leaving CW, so that zero-beat stays zero-beat, and the
+    /// operator's 14.050 becomes 14.050 6 without anything having asked for it.
+    /// A protocol that answers true has the frequency re-asserted behind every
+    /// mode command it writes — which is what the radio's own documentation
+    /// tells applications to do.
+    fn mode_moves_dial(&self) -> bool {
+        false
+    }
+
     /// True when [`Protocol::parse`] learned something about the rig's framing
     /// that invalidates frames written before it — the Yaesu frequency-field
     /// width. Reported once, to whoever can re-issue the frame.
@@ -302,6 +315,19 @@ impl Protocol for Civ {
 /// from a 12 W KX2 to a 110 W K3, has an `OM` query that says which one is on
 /// the other end of the cable.
 const ASCII_FULL_POWER_W: f32 = 100.0;
+
+/// Where to put the dial back after a mode change moved it, or `None` when
+/// there is nothing to put back.
+///
+/// What we last *set* comes first: that is where the operator asked to be, and
+/// it is right even if the rig has since shifted itself somewhere else. Only
+/// when nothing has been set — a session that has done nothing but adopt the
+/// radio's own dial — does the last frequency the rig *reported* stand in, and
+/// it is the pre-shift one, because the reply carrying the shifted frequency
+/// cannot have arrived before the mode command that caused it went out.
+fn dial_to_restore(moves: bool, last_sent: Option<f64>, reported: Option<f64>) -> Option<f64> {
+    moves.then(|| last_sent.or(reported)).flatten()
+}
 
 /// Piecewise-linear interpolation over a rising calibration table, clamped to
 /// its ends.
@@ -826,9 +852,26 @@ fn serial_thread(
                     Ok(CatCmd::Mode(m)) => {
                         if let Some(mm) = mode_cmd(m) {
                             let f = protocol.set_mode(mm);
-                            if mode_memory.needs(&f) && write_frame(&mut *port, &f, &mut last_write)
-                            {
-                                break 'io true;
+                            if mode_memory.needs(&f) {
+                                if write_frame(&mut *port, &f, &mut last_write) {
+                                    break 'io true;
+                                }
+                                // On a rig that shifts its VFO with the mode,
+                                // that command has just moved the dial out from
+                                // under the operator. Put it back — before the
+                                // next poll reads the shifted frequency and
+                                // walks the app's dial to it, and before any
+                                // key-down, which is the moment being a pitch
+                                // off frequency actually costs something.
+                                if let Some(hz) = dial_to_restore(
+                                    protocol.mode_moves_dial(),
+                                    last_sent_freq,
+                                    emit_freq,
+                                ) {
+                                    last_sent_freq = None; // past the dedup
+                                    pending_freq = Some(hz);
+                                    freq_deadline = Instant::now();
+                                }
                             }
                         }
                     }
@@ -1181,6 +1224,38 @@ mod tests {
         assert!(!m.needs(&p.set_mode(Mode::Lsb)));
         // And a mode the rig is *not* in still goes out.
         assert!(m.needs(&p.set_mode(Mode::Usb)));
+    }
+
+    /// A mode change on an Elecraft can shift the dial by the CW pitch, so the
+    /// frequency is re-asserted behind every mode command. Which frequency is
+    /// the whole question: the operator's, not the rig's.
+    #[test]
+    fn the_dial_put_back_after_a_mode_change_is_the_one_that_was_asked_for() {
+        // What we last set wins — that is where the operator asked to be.
+        assert_eq!(
+            dial_to_restore(true, Some(14_050_000.0), Some(14_050_600.0)),
+            Some(14_050_000.0)
+        );
+        // With nothing set this session, the last frequency the rig reported
+        // stands in. It is the pre-shift one: the reply carrying the shifted
+        // frequency cannot have arrived before the mode command that caused it.
+        assert_eq!(dial_to_restore(true, None, Some(7_030_000.0)), Some(7_030_000.0));
+        // Nothing known at all is nothing to put back.
+        assert_eq!(dial_to_restore(true, None, None), None);
+        // And a family whose dial does not move is not written to at all — a
+        // needless frame in front of the next key-down is exactly what the
+        // rate limiting elsewhere in this file exists to avoid.
+        assert_eq!(dial_to_restore(false, Some(14_050_000.0), Some(14_050_600.0)), None);
+    }
+
+    /// Only the family whose radios document the behaviour asks for it.
+    #[test]
+    fn only_elecraft_re_asserts_the_dial_after_a_mode_change() {
+        let family = |f| make_protocol(&CatConfig { family: f, ..CatConfig::default() });
+        assert!(family(CatFamily::Elecraft).mode_moves_dial());
+        for f in [CatFamily::Icom, CatFamily::Xiegu, CatFamily::Yaesu, CatFamily::Kenwood] {
+            assert!(!family(f).mode_moves_dial(), "{f:?}");
+        }
     }
 
     /// `PC` is watts, and the families' documented floor is 5 W — a rig cannot
