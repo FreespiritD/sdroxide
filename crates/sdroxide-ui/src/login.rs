@@ -7,11 +7,43 @@
 //!
 //! Shared by both clients: the main window and, in the browser, the
 //! solar-system tab, which is challenged by the same server for the same
-//! reason. Ticking "remember" is what stops that being two sign-ins — the
-//! second tab finds the first one's answer and offers it without asking.
+//! reason.
+//!
+//! A station serves each of its radios on a connection of its own, and asks
+//! each one for a password — so a client holding a whole station would face
+//! one sign-in per radio. It does not: an answer a station has *accepted* is
+//! kept for as long as the program runs ([`SESSION_LOGINS`]) and offered to
+//! every other connection to that same station, so the operator signs in once
+//! and the rest of the tabs let themselves in. Ticking "remember" is the
+//! separate, longer-lived decision to keep it on this device between runs.
+
+use std::collections::BTreeMap;
+use std::sync::{LazyLock, Mutex};
 
 use eframe::egui::{self, RichText};
 use sdroxide_types::{AuthPhase, RemoteAccess};
+
+/// Sign-ins accepted this run, by station. Memory only, and never written
+/// anywhere: what survives a restart is the "remember" store at the bottom of
+/// this file, which is the operator's decision and not ours.
+static SESSION_LOGINS: LazyLock<Mutex<BTreeMap<String, RemoteAccess>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+/// Which station an address belongs to: everything up to the endpoint, so the
+/// several radios of one station (`/ws`, `/ws/1`, …) and its solar feed
+/// (`/solar-ws`) come out the same, and a *different* station never does.
+///
+/// A password is answered to the station that asked for it and to nothing
+/// else: two stations on one screen are two doors, however alike their
+/// addresses look.
+pub fn station_key(url: &str) -> String {
+    let rest = url.trim_end_matches('/');
+    match (rest.rfind("/ws"), rest.rfind("/solar-ws")) {
+        (_, Some(i)) => rest[..i].to_string(),
+        (Some(i), None) => rest[..i].to_string(),
+        (None, None) => rest.to_string(),
+    }
+}
 
 /// What the operator has typed, and what to do with it.
 #[derive(Default)]
@@ -26,6 +58,14 @@ pub struct LoginForm {
     /// Once only, so a stored password the server no longer accepts asks the
     /// operator instead of being posted back for ever.
     offered_stored: bool,
+    /// Likewise for the sign-in another tab of this station made — offered
+    /// once per connection, so a station that turns it down (the operator's
+    /// access was withdrawn mid-session) asks this tab rather than looping.
+    offered_session: bool,
+    /// Which station this form belongs to, remembered from the last frame it
+    /// was told: [`LoginForm::settle`] runs on the frame the answer is
+    /// accepted, which is the frame that has to record it.
+    station: String,
     /// Whether the attempt now being judged came out of storage, so a
     /// rejection can throw it away rather than leave a password behind that is
     /// known not to work.
@@ -47,7 +87,10 @@ impl LoginForm {
     /// The sign-in is written out on acceptance rather than on submission:
     /// storing what the operator typed before the server has agreed with it
     /// would leave a wrong password behind to be offered again next time.
-    pub fn settle(&mut self, phase: &AuthPhase) {
+    pub fn settle(&mut self, phase: &AuthPhase, station: &str) {
+        if !station.is_empty() {
+            self.station = station.to_string();
+        }
         if phase.is_pending() {
             self.was_pending = true;
             return;
@@ -55,7 +98,15 @@ impl LoginForm {
         if !std::mem::take(&mut self.was_pending) {
             return;
         }
-        // Accepted.
+        // Accepted. Every other tab of this station may use this answer for as
+        // long as the program runs — including tabs that have not been asked
+        // yet, which is most of them at the moment the first one gets in.
+        if !self.station.is_empty() && !self.password.is_empty() {
+            SESSION_LOGINS.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                self.station.clone(),
+                RemoteAccess { username: self.username.clone(), password: self.password.clone() },
+            );
+        }
         if self.remember {
             store(&RemoteAccess {
                 username: self.username.clone(),
@@ -109,6 +160,33 @@ impl LoginForm {
         ui.ctx().request_repaint();
     }
 
+    /// An answer this connection can give without asking anybody: the sign-in
+    /// another tab of this station has already had accepted, or the one kept
+    /// on this device. `None` means the operator has to be asked.
+    ///
+    /// Public because a tab that is not on screen never draws the sign-in and
+    /// still has to be able to let itself in — see `SdroxideApp::poll_auth`.
+    pub fn answer_without_asking(&mut self, phase: &AuthPhase) -> Option<RemoteAccess> {
+        self.session_answer(phase).or_else(|| self.stored_answer(phase))
+    }
+
+    /// The answer another tab of this station has already had accepted, if
+    /// there is one. Offered once per connection, and ahead of the stored
+    /// sign-in: it is the one this station is known to be taking *now*.
+    fn session_answer(&mut self, phase: &AuthPhase) -> Option<RemoteAccess> {
+        if !matches!(phase, AuthPhase::Prompt(None)) || self.offered_session {
+            return None;
+        }
+        let known =
+            SESSION_LOGINS.lock().unwrap_or_else(|e| e.into_inner()).get(&self.station).cloned()?;
+        self.offered_session = true;
+        self.username = known.username.clone();
+        self.password = known.password.clone();
+        // Not `submitted_stored`: this did not come out of storage, so a
+        // refusal must not erase the operator's saved sign-in.
+        Some(known)
+    }
+
     /// What was stored, offered once against the first challenge of a
     /// connection.
     fn stored_answer(&mut self, phase: &AuthPhase) -> Option<RemoteAccess> {
@@ -136,8 +214,10 @@ pub fn screen(
     phase: &AuthPhase,
     render_state: Option<&eframe::egui_wgpu::RenderState>,
 ) -> Option<RemoteAccess> {
-    if let Some(stored) = form.stored_answer(phase) {
-        return Some(stored);
+    // A tab of a station somebody has already signed in to — or a sign-in
+    // kept on this device — lets itself in without troubling the operator.
+    if let Some(known) = form.answer_without_asking(phase) {
+        return Some(known);
     }
     let refused = match phase {
         AuthPhase::Prompt(why) => why.as_deref(),
@@ -372,7 +452,7 @@ mod tests {
     fn a_local_engine_settles_to_nothing() {
         let mut form = LoginForm { remember: true, ..LoginForm::default() };
         for _ in 0..5 {
-            form.settle(&AuthPhase::Open);
+            form.settle(&AuthPhase::Open, "");
         }
         assert!(!form.was_pending, "nothing was ever pending, so nothing was decided");
     }
@@ -382,15 +462,65 @@ mod tests {
     #[test]
     fn acceptance_is_what_ends_the_exchange() {
         let mut form = LoginForm::default();
-        form.settle(&AuthPhase::Prompt(None));
+        form.settle(&AuthPhase::Prompt(None), "");
         assert!(form.was_pending);
-        form.settle(&AuthPhase::Checking);
+        form.settle(&AuthPhase::Checking, "");
         assert!(form.was_pending);
-        form.settle(&AuthPhase::Open);
+        form.settle(&AuthPhase::Open, "");
         assert!(!form.was_pending, "the verdict was acted on exactly once");
         // ...and not again on every subsequent frame.
-        form.settle(&AuthPhase::Open);
+        form.settle(&AuthPhase::Open, "");
         assert!(!form.was_pending);
+    }
+
+    /// A station asks each of its radios' connections for the password
+    /// separately. The operator answers once: the tab that got in leaves the
+    /// answer where the others find it.
+    #[test]
+    fn one_sign_in_gets_the_stations_other_tabs_in() {
+        let station = "ws://one-sign-in.test:4950";
+        let mut first = LoginForm {
+            username: "oe3jjs".into(),
+            password: "hunter2".into(),
+            ..LoginForm::default()
+        };
+        first.settle(&AuthPhase::Prompt(None), station);
+        first.settle(&AuthPhase::Open, station);
+
+        // The second radio's tab, challenged afterwards, answers by itself.
+        let mut second = LoginForm { station: station.to_string(), ..LoginForm::default() };
+        let answer = second
+            .session_answer(&AuthPhase::Prompt(None))
+            .expect("the station's sign-in was not offered to its other tab");
+        assert_eq!(answer.username, "oe3jjs");
+        assert_eq!(answer.password, "hunter2");
+        // Once only: a station that turns it down asks this tab rather than
+        // posting the same answer back for ever.
+        assert!(second.session_answer(&AuthPhase::Prompt(None)).is_none());
+
+        // ...and a *different* station is a different door.
+        let mut elsewhere =
+            LoginForm { station: "ws://elsewhere.test:4950".into(), ..LoginForm::default() };
+        assert!(
+            elsewhere.session_answer(&AuthPhase::Prompt(None)).is_none(),
+            "one station's password was offered to another"
+        );
+    }
+
+    /// Every connection to one station — each radio, and the solar feed —
+    /// resolves to the same door, and no other station's does.
+    #[test]
+    fn a_stations_addresses_share_one_key() {
+        let station = "ws://shack.test:4950";
+        assert_eq!(station_key("ws://shack.test:4950/ws"), station);
+        assert_eq!(station_key("ws://shack.test:4950/ws/10"), station);
+        assert_eq!(station_key("ws://shack.test:4950/solar-ws"), station);
+        assert_eq!(station_key("ws://shack.test:4950/"), station);
+        assert_eq!(station_key("ws://shack.test:4950"), station);
+        // A path prefix belongs to the address, so two stations behind one
+        // reverse proxy stay two stations.
+        assert_eq!(station_key("wss://host/a/ws/1"), "wss://host/a");
+        assert_ne!(station_key("wss://host/a/ws/1"), station_key("wss://host/b/ws/1"));
     }
 
     /// The password is dropped once the server has taken it: keeping it in the
@@ -399,8 +529,8 @@ mod tests {
     #[test]
     fn the_password_does_not_linger_after_a_successful_sign_in() {
         let mut form = LoginForm { password: "hunter2".into(), ..LoginForm::default() };
-        form.settle(&AuthPhase::Prompt(None));
-        form.settle(&AuthPhase::Open);
+        form.settle(&AuthPhase::Prompt(None), "ws://lingering.test:4950");
+        form.settle(&AuthPhase::Open, "ws://lingering.test:4950");
         assert!(form.password.is_empty());
     }
 

@@ -126,7 +126,10 @@ impl eframe::App for SolarApp {
         // than over it: without the feed there is no Sun, no aurora and no
         // satellites, so what is behind this is a scene of exactly one planet.
         let phase = self.net.auth.clone();
-        self.login.settle(&phase);
+        // The same door as the radios of this station, so the sign-in the
+        // operator made in a radio tab lets the map in too.
+        let station = crate::login::station_key(self.net.url());
+        self.login.settle(&phase, &station);
         if phase.is_pending() {
             let rs = frame.wgpu_render_state();
             if let Some(login) = crate::login::screen(ui, &mut self.login, &phase, rs) {

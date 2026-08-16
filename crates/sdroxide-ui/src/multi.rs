@@ -666,6 +666,11 @@ impl eframe::App for MultiApp {
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             if !pane_tabs.contains(&i) {
                 tab.app.drain_events(&ctx, now);
+                // ...and let a hidden radio through a sign-in it can answer
+                // by itself. A station asks each of its radios separately, so
+                // without this the tabs behind the one on screen would each
+                // wait at a challenge nobody is looking at.
+                tab.app.poll_auth();
             }
         }
         // Publish the roster before the frame (the settings dialog draws it),

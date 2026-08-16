@@ -963,6 +963,31 @@ impl SdroxideApp {
         self.ctrl.peer_name()
     }
 
+    /// This connection's station, as the sign-in keys it: every radio of one
+    /// station shares a door.
+    fn station_key(&self) -> String {
+        self.ctrl.peer_url().map(|u| crate::login::station_key(&u)).unwrap_or_default()
+    }
+
+    /// Answer a sign-in challenge from what the operator has already given
+    /// this station — or from what this device has kept — without drawing
+    /// anything.
+    ///
+    /// For the tabs that are not on screen. They never run a frame, so their
+    /// sign-in screen never runs either: a station's second radio would sit at
+    /// a challenge nobody can see, staying unconnected until it was clicked,
+    /// even though the operator signed in to that very station a moment ago.
+    pub(crate) fn poll_auth(&mut self) {
+        let phase = self.ctrl.auth_phase();
+        self.login.settle(&phase, &self.station_key());
+        if !phase.is_pending() {
+            return;
+        }
+        if let Some(a) = self.login.answer_without_asking(&phase) {
+            self.ctrl.send_auth(a.username, a.password);
+        }
+    }
+
     /// Detach from this radio: disconnect the engine, drop the audio streams,
     /// join the DSP thread. Tab close and app exit.
     pub(crate) fn shutdown_ctrl(&mut self) {

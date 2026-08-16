@@ -77,9 +77,18 @@ pub struct SolarClient {
     pub sat_cfg: Arc<sdroxide_types::SatConfig>,
     /// Channel/resolution last requested, so a change in the UI is sent once.
     sent_channel: Option<(u8, u16)>,
+    /// What this feed was dialled at. Kept so the sign-in can tell which
+    /// station is asking — the map is challenged by the same door as that
+    /// station's radios.
+    url: String,
 }
 
 impl SolarClient {
+    /// The address this feed is on.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
     /// `wake` is called from the socket thread whenever a message arrives —
     /// pass `ctx.request_repaint` so a new solar image appears without waiting
     /// for the next scheduled frame.
@@ -91,6 +100,7 @@ impl SolarClient {
         Ok(SolarClient {
             sender,
             receiver,
+            url: url.to_string(),
             link: Link::Connecting,
             auth: sdroxide_types::AuthPhase::Open,
             data: Arc::new(Mutex::new(SolarData::default())),

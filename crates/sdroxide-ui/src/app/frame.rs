@@ -110,7 +110,9 @@ impl eframe::App for SdroxideApp {
         // nothing below it may run either: the bindings would happily send PTT
         // to a socket that is not going to read it.
         let phase = self.ctrl.auth_phase();
-        self.login.settle(&phase);
+        // Keyed by station, not by radio: a station challenges each of its
+        // radios separately, and the operator signs in to the station.
+        self.login.settle(&phase, &self.station_key());
         if phase.is_pending() {
             let rs = frame.wgpu_render_state();
             if let Some(login) = crate::login::screen(ui, &mut self.login, &phase, rs) {

@@ -5737,12 +5737,13 @@ you would have standing in front of them, ⊞ included
 ([2.17](#217-running-more-than-one-radio)). The tab you dialled keeps the name
 you typed; the others are named as the station names them.
 
-Each of those tabs is a connection of its own, which has two consequences worth
-knowing. A station that asks for a password asks each tab separately — tick
-**Remember me** on the first and the rest sign themselves in
-([7.3](#73-sign-in-who-may-operate-the-station)). And each carries its own audio
-and spectrum, so on a thin link close the radios you are not using: a tab you
-close stays closed until you dial the station again.
+Each of those tabs is a connection of its own. **You still sign in once**: a
+station that asks for a password asks each connection separately, and the tabs
+behind the one you answered let themselves in with what you gave it, for as
+long as the program runs ([7.3](#73-sign-in-who-may-operate-the-station)). Each
+tab does carry its own audio and spectrum, though, so on a thin link close the
+radios you are not using: a tab you close stays closed until you dial the
+station again.
 
 To open just one radio of a station, name it in the address:
 `sdroxide --connect HOST:4950/ws/1`, or type the full `ws://HOST:4950/ws/1` in
@@ -5775,6 +5776,15 @@ server is open to anyone who can reach it.
 Nothing crosses before the sign-in is accepted, and — the part that matters most
 — an unauthenticated connection does **not** take the single-client slot. A
 stranger cannot lock you out of your own radio by opening a socket to it.
+
+**One sign-in per station, not per radio.** A station serves each of its radios
+on a connection of its own and asks each one for the password, but you answer
+only the first: an answer the station has accepted is kept for as long as the
+program runs and offered by every other tab of *that* station — its other
+radios, and the 3D solar view. Another station is another door and asks for
+itself. Ticking **Remember me** is the separate decision to keep the sign-in on
+this device between runs (in `config.toml`, or the browser's local storage —
+in plain text either way).
 
 > **Sign-in is not encryption.** It stops the wrong people operating the radio;
 > it does not hide what you are doing from anyone watching the network, and the
