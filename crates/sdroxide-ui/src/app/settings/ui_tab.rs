@@ -99,7 +99,11 @@ pub(in crate::app) fn settings_ui_tab(
         enum_combo(ui, "ui-wf-font", &mut cfg.waterfall_font_size, &FontSize::ALL, FontSize::label);
         ui.end_row();
 
-        ui.label("Menu font size");
+        ui.label("Interface font size").on_hover_text(
+            "Scales the whole interface — menus, dialogs, windows, the radio \
+             tabs, the top bar and its buttons. The two sizes above are \
+             relative to it.",
+        );
         enum_combo(ui, "ui-menu-font", &mut cfg.menu_font_size, &FontSize::ALL, FontSize::label);
         ui.end_row();
     });

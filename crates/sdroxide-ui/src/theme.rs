@@ -1068,11 +1068,32 @@ pub fn panadapter_font_scale() -> f32 {
     [1.0, 1.25, 1.5][PANADAPTER_FONT.load(Ordering::Relaxed) as usize]
 }
 
-/// Scale for the popup menus' text. The historic sizes — the egui text styles
-/// unscaled — are the `Medium` step, so that is 1.
+/// Scale for the interface itself — menus, dialogs, windows, the tab strip,
+/// the top bar and every button and label on it. The historic sizes are the
+/// `Medium` step, so that is 1.
+///
+/// This is applied as egui's own zoom factor (see [`apply_zoom`]) rather than
+/// by scaling the text styles: barely half the text in this crate takes its
+/// size from a [`TextStyle`], the rest asks for a point size by hand
+/// (`RichText::size`, `FontId::proportional`), and a rewrite of the styles
+/// alone left all of that — and the padding around it — at the historic size.
+/// The zoom factor multiplies *every* point, so nothing is missed and nothing
+/// outgrows the box it sits in.
 #[inline]
-pub fn menu_font_scale() -> f32 {
+pub fn ui_scale() -> f32 {
     [0.85, 1.0, 1.2][MENU_FONT.load(Ordering::Relaxed) as usize]
+}
+
+/// Put the current [`ui_scale`] into `ctx` as its zoom factor.
+///
+/// Called at startup and whenever the setting changes, never unconditionally
+/// per frame: egui also owns this value — its own ctrl+plus / ctrl+minus zoom
+/// writes to it — and re-asserting the setting every frame would undo an
+/// operator's zoom the moment they made it. The panadapter and skimmer scales
+/// ride on top of this one, so those two settings stay relative adjustments to
+/// whatever size the interface as a whole is wearing.
+pub fn apply_zoom(ctx: &egui::Context) {
+    ctx.set_zoom_factor(ui_scale());
 }
 
 /// The palette under the historic constant names — these were `pub const`s
@@ -1189,6 +1210,7 @@ pub fn apply(ctx: &egui::Context) {
     install_fonts(ctx);
     apply_metrics(ctx, crate::layout::Tier::Desktop);
     apply_visuals(ctx);
+    apply_zoom(ctx);
 }
 
 /// Write the current palette and chrome shapes into the context style. Split

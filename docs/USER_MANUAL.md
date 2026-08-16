@@ -4220,6 +4220,22 @@ spoken announcements below them under `[speech]`:
 - **Spectrum background** — a vertical gradient behind the spectrum line, filled
   from the **top** colour down to the **bottom** colour (default dark red →
   black). Untick **Gradient** for a plain background.
+- **Skimmer font size** — how large the spot and decode boxes the skimmer paints
+  on the waterfall are: **Small**, **Medium** or **Large**. Larger boxes are
+  easier to read across the shack and cover more of the band while they sit
+  there.
+- **Waterfall / spectrum font size** — the labels painted onto the panadapter:
+  the frequency scale, the band plan, the marker and measurement readouts.
+- **Interface font size** — everything else: the menus, the dialogs, the
+  floating windows, the radio tabs, the top bar and every button and readout on
+  it. It is the whole interface's scale, not the text alone, so the padding
+  around a label grows with it and nothing outgrows the box it sits in. Applied
+  the moment it is picked, no restart. The two sizes above are *relative* to it,
+  so a Large interface with a Small waterfall font still has larger frequency
+  labels than a Medium one. Bear in mind that **Large** leaves the window fewer
+  points to lay out in, so a small window may drop to the tablet control strip
+  ([8.4](#84-phones-and-tablets)) — force **Layout: Desktop** above if you would
+  rather keep the full strip.
 
 Under **3D view**:
 

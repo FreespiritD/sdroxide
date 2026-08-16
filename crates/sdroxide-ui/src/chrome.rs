@@ -534,15 +534,8 @@ fn popup_body<R>(
         .show(|ui| {
             ui.set_opacity(alpha);
             window_body_bg(ui);
-            // The menu font-size setting scales every text style inside the
-            // popup — the buttons, labels and sliders a menu is made of pick
-            // their fonts from these styles, so one scope covers them all.
-            let fscale = theme::menu_font_scale();
-            if fscale != 1.0 {
-                for font in ui.style_mut().text_styles.values_mut() {
-                    font.size *= fscale;
-                }
-            }
+            // (The menu font-size setting is egui's zoom factor — see
+            // `theme::apply_zoom` — so it is already in every point here.)
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
             let body = Rect::from_min_size(ui.max_rect().min, vec2(max_w, max_h));
             ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
@@ -564,11 +557,9 @@ fn popup_body<R>(
 }
 
 /// A section caption inside a menu popup — the same small cyan label the
-/// module boxes wear, so a menu reads as the box it replaced. Sized by the
-/// menu font-size setting like the rest of the popup's text.
+/// module boxes wear, so a menu reads as the box it replaced.
 pub fn menu_caption(ui: &mut Ui, text: &str) {
-    let size = 9.5 * theme::menu_font_scale();
-    ui.label(RichText::new(text.to_uppercase()).color(theme::CYAN_DIM()).size(size).strong());
+    ui.label(RichText::new(text.to_uppercase()).color(theme::CYAN_DIM()).size(9.5).strong());
 }
 
 /// Small L-shaped corner accents (page decoration, reference-style).

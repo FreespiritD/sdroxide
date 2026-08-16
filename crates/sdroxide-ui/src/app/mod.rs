@@ -153,6 +153,10 @@ pub struct SdroxideApp {
     /// the settings dialog changes any of them — no restart.
     applied_look:
         (sdroxide_types::UiTheme, sdroxide_types::ChromeStyle, sdroxide_types::ChromeStyle),
+    /// The interface font size last written into the context as its zoom
+    /// factor, for the same reason — and so the zoom is left alone in between,
+    /// where it belongs to egui's own ctrl+plus / ctrl+minus.
+    applied_ui_font: sdroxide_types::FontSize,
     /// Spoken announcements: the state machine that decides what to say, and
     /// the synthesizer that says it. Always present — switched off, it holds a
     /// null sink and costs a comparison per event.
@@ -639,13 +643,19 @@ impl SdroxideApp {
         radio_id: u32,
         station_writer: bool,
     ) -> Self {
-        // The look must be selected before `theme::apply` reads it, or the
-        // first frame flashes the default theme.
+        // The look and the font sizes must be selected before `theme::apply`
+        // reads them, or the first frame flashes the default theme at the
+        // default scale.
         let ui_settings = load_ui_settings(storage);
         crate::theme::set_look(
             ui_settings.theme,
             ui_settings.button_style,
             ui_settings.window_style,
+        );
+        crate::theme::set_font_sizes(
+            ui_settings.skimmer_font_size,
+            ui_settings.waterfall_font_size,
+            ui_settings.menu_font_size,
         );
         crate::theme::apply(egui_ctx);
         if let Some(rs) = &wgpu_render_state {
@@ -708,6 +718,7 @@ impl SdroxideApp {
             settings_tab: SettingsTab::General,
             ui_settings,
             applied_look: (ui_settings.theme, ui_settings.button_style, ui_settings.window_style),
+            applied_ui_font: ui_settings.menu_font_size,
             speech: speech::SpeechRuntime::new(load_speech_settings(storage)),
             speech_voices: Vec::new(),
             radio_cfg: None,

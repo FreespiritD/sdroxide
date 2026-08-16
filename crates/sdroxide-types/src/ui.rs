@@ -208,7 +208,10 @@ pub struct UiSettings {
     /// the frequency scale, the band plan, the measurement and marker
     /// labels. `Small` is the historic size.
     pub waterfall_font_size: FontSize,
-    /// Font size for the popup menus. `Medium` is the historic size.
+    /// Font size for the interface itself — menus, dialogs, windows, the tab
+    /// strip, the top bar and every button on it. Applied as the client's zoom
+    /// factor, so the spacing around the text follows it and the waterfall and
+    /// skimmer sizes below are relative to it. `Medium` is the historic size.
     pub menu_font_size: FontSize,
 }
 

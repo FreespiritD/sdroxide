@@ -53,6 +53,11 @@ impl SolarApp {
         // and never gets here.
         let ui = crate::app::persist::load_ui_settings(cc.storage);
         crate::theme::set_look(ui.theme, ui.button_style, ui.window_style);
+        crate::theme::set_font_sizes(
+            ui.skimmer_font_size,
+            ui.waterfall_font_size,
+            ui.menu_font_size,
+        );
         crate::theme::apply(&cc.egui_ctx);
         if let Some(rs) = cc.wgpu_render_state.as_ref() {
             super::gpu::init(rs);
