@@ -1,7 +1,8 @@
 //! PowerSDR-style frequency readout: each digit tunes with the scroll wheel,
-//! or click upper/lower half to increment/decrement. Compact layouts use
-//! [`show_typed`] instead — the same dial, but a tap on it opens a type-in
-//! field rather than nudging whichever place value was under the finger.
+//! click upper/lower half to increment/decrement, or right-click to zero that
+//! digit and everything to its right. Compact layouts use [`show_typed`]
+//! instead: the same dial, but a tap on it opens a type-in field rather than
+//! nudging whichever place value was under the finger.
 
 use eframe::egui::{self, Color32, Label, RichText, Sense, Ui};
 use sdroxide_types::WheelSettings;
@@ -80,11 +81,26 @@ pub fn show(ui: &mut Ui, id: egui::Id, hz: f64, wheel: WheelSettings, size: f32)
                     }
                 }
             }
+
+            // Right-click: a quick way to reset the dial without walking every
+            // digit down by hand. Zeros this digit and everything to its
+            // right, so clicking the 5 in 7.090.054 gives 7.090.000 and
+            // clicking the 4 gives 7.090.050.
+            if resp.secondary_clicked() {
+                freq = zero_from_digit(freq, step);
+            }
         }
         ui.add(Label::new(RichText::new(" Hz").size(size * 0.3).color(Color32::from_gray(140))));
     });
 
     (freq != orig).then_some(freq as f64)
+}
+
+/// Floor `freq` to a multiple of `step * 10`: zeros the digit at `step`'s
+/// place and every digit to its right, leaving everything above it alone.
+fn zero_from_digit(freq: i64, step: i64) -> i64 {
+    let modulus = step * 10;
+    freq - freq % modulus
 }
 
 /// The readout for a compact layout: the same lit dial, but one click target.
@@ -252,5 +268,22 @@ mod tests {
         for hz in [14_074_000.0, 7_000_000.0, 477_612.0] {
             assert_eq!(parse_mhz(&format_mhz(hz)), Some(hz), "prefill for {hz} did not round-trip");
         }
+    }
+
+    #[test]
+    fn right_click_zeros_the_digit_and_everything_right_of_it() {
+        // 7,090,054 Hz: right-clicking the tens digit ("5", step 10) clears
+        // the tens and units, right-clicking the units digit ("4", step 1)
+        // clears only itself.
+        assert_eq!(zero_from_digit(7_090_054, 10), 7_090_000);
+        assert_eq!(zero_from_digit(7_090_054, 1), 7_090_050);
+        // A higher digit works the same way: zeroing the ten-thousands digit
+        // ("9") clears everything below it too.
+        assert_eq!(zero_from_digit(7_090_054, 10_000), 7_000_000);
+        // Zeroing a digit that is already zero still clears what's to its
+        // right.
+        assert_eq!(zero_from_digit(7_090_054, 100), 7_090_000);
+        // Zeroing a digit above the whole frequency just gives zero.
+        assert_eq!(zero_from_digit(7_090_054, 10_000_000_000), 0);
     }
 }
