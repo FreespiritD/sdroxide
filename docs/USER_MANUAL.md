@@ -2786,6 +2786,17 @@ setup and for radios whose keyer sdroxide cannot drive.
 > left in AFSK A, FSK D or PSK D it reports no mode at all rather than one the
 > two would then argue about.
 
+> **Note (Yaesu):** the S-meter and the transmit SWR come from the radio's own
+> meters (`SM0` and `RM6`), because on a CAT rig there is nothing else to
+> measure — the audio arriving at the sound card has already been through the
+> radio's filter and AGC. Both are read against the FT-991 calibration Hamlib
+> uses for the whole current generation, so an FT-891, FT-991/991A, FTDX10,
+> FTDX101D/MP, FTDX1200/3000/5000 all read alike.
+>
+> On an FTDX3000 or FTDX5000 with the tuner in line the rig only answers the SWR
+> read when its own meter is already set to SWR; there set the front-panel meter
+> to SWR, or the reading stays at the bottom of the scale.
+
 > **Note:** on a Yaesu USB interface the *Enhanced* port is the CAT port
 > configured above. The *Standard* port is the one whose RTS/DTR lines are wired
 > to PTT and KEY; sdroxide does not use it, and `PTT method` `DTR`/`RTS` set on

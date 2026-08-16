@@ -276,6 +276,31 @@ impl Protocol for Civ {
 /// the other end of the cable.
 const ASCII_FULL_POWER_W: f32 = 100.0;
 
+/// Piecewise-linear interpolation over a rising calibration table, clamped to
+/// its ends.
+///
+/// Every meter a rig reports arrives as a number on a scale its manufacturer
+/// chose and only ever published as a handful of points — "reading 130 is S9",
+/// "reading 89 is 2:1" — so turning one into a decibel or a ratio is always
+/// this: find the segment, interpolate, and refuse to extrapolate past either
+/// end, where the curve is not just unknown but often not monotonic.
+pub(crate) fn interp(cal: &[(f32, f32)], x: f32) -> f32 {
+    if x <= cal[0].0 {
+        return cal[0].1;
+    }
+    for w in cal.windows(2) {
+        let ((x0, y0), (x1, y1)) = (w[0], w[1]);
+        if x <= x1 {
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0);
+        }
+    }
+    cal[cal.len() - 1].1
+}
+
+/// dBm of an S9 signal on HF, the reference every S-meter curve here is
+/// expressed against.
+pub(crate) const S9_DBM: f32 = -73.0;
+
 /// `PC` — set output power (Yaesu "new CAT" and Kenwood alike). The three-digit
 /// field is in watts, and the families' documented minimum is 5 W: a rig cannot
 /// be asked for less, so the bottom of the slider is as low as it goes.

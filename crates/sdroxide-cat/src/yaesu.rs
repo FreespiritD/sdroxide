@@ -31,6 +31,35 @@ const CW_MEM: u8 = 1;
 /// Longest message the rig's keyer memory holds.
 const CW_MAX: usize = 50;
 
+/// `SM0` reading (0..255) → dB relative to S9.
+///
+/// The family's own scale, and not a linear one: Yaesu spreads S0..S9 over the
+/// bottom half of the range and the 60 dB above S9 over the top half. The
+/// points are the FT-991 measurements Hamlib carries as `yaesu_default_str_cal`
+/// (from W6HN), which it applies to the whole current generation — FTDX1200,
+/// FTDX3000, FTDX5000, FT-891, FT-991, FTDX101D/MP and FTDX10 alike.
+const STR_CAL: &[(f32, f32)] = &[
+    (0.0, -54.0),  // S0
+    (26.0, -42.0), // S2
+    (51.0, -30.0), // S4
+    (81.0, -18.0), // S6
+    (105.0, -9.0), // S7.5
+    (130.0, 0.0),  // S9
+    (157.0, 12.0), // S9+12
+    (186.0, 25.0), // S9+25
+    (203.0, 35.0), // S9+35
+    (237.0, 50.0), // S9+50
+    (255.0, 60.0), // S9+60
+];
+
+/// `RM6` reading (0..255) → SWR.
+///
+/// Hamlib's `yaesu_default_swr_cal`, measured on an FT-991 by M7OTP. Note where
+/// it starts: a reading of 12 is already 1.0:1, so the bottom of the scale is a
+/// dead zone rather than a perfect match — which is why this is clamped at both
+/// ends rather than extrapolated.
+const SWR_CAL: &[(f32, f32)] = &[(12.0, 1.0), (39.0, 1.35), (65.0, 1.5), (89.0, 2.0), (242.0, 5.0)];
+
 pub struct Yaesu {
     buf: String,
     /// Digits in the `FA`/`FB` frequency field on this particular rig.
@@ -126,6 +155,21 @@ fn mode_from_digit(d: char) -> Option<Mode> {
     })
 }
 
+/// The numeric part of a meter reply — the digits after the command letters and
+/// the selector — as a 0..255 reading, or `None` when it is not one.
+///
+/// Three digits is the documented width, but an FTDX101 answers `RM` with six:
+/// the reading, then three more the reference does not describe. Hamlib
+/// truncates to the first three and so does this. Anything shorter, or with a
+/// non-digit in it, is not a reading at all — a mangled reply must leave the
+/// meter where it was rather than slam it to zero.
+fn reading(digits: &str) -> Option<f32> {
+    if digits.len() < 3 {
+        return None;
+    }
+    digits[..3].parse::<u32>().ok().map(|v| v as f32)
+}
+
 /// Reduce `text` to what a Yaesu keyer memory will accept: upper case, the
 /// letters, digits and punctuation the rig can key, and nothing longer than the
 /// memory holds. A character the rig would refuse is dropped rather than sent,
@@ -163,6 +207,25 @@ impl Protocol for Yaesu {
     }
     fn poll_requests(&self) -> Vec<Vec<u8>> {
         vec![b"FA;".to_vec(), b"MD0;".to_vec()]
+    }
+
+    fn tx_telemetry_requests(&self) -> Vec<Vec<u8>> {
+        // `RM` reads one of the transmit meters, chosen by the digit: 6 is SWR
+        // on every model of this generation. It is a read, not a meter
+        // selection — the rig's own display is left showing whatever the
+        // operator put it on.
+        //
+        // The FTDX3000 and FTDX5000 are the exception Hamlib special-cases:
+        // with their tuner in line they answer `RM6` only when the front panel
+        // is already on SWR. There is nothing to detect that with here, so
+        // those two report a meter that reads zero rather than a wrong one.
+        vec![b"RM6;".to_vec()]
+    }
+
+    fn rx_telemetry_requests(&self) -> Vec<Vec<u8>> {
+        // `SM0` — the main receiver's S-meter. `SM1` is the sub, which sdroxide
+        // does not receive on.
+        vec![b"SM0;".to_vec()]
     }
     fn clear_offsets(&self) -> Vec<Vec<u8>> {
         // Clarifier to zero, RIT/XIT off, transmit back on VFO-A (split off) —
@@ -237,6 +300,20 @@ impl Protocol for Yaesu {
             } else if let Some(rest) = msg.strip_prefix("PC") {
                 if let Some(frac) = crate::pc_parse(rest) {
                     out.push(CatUpdate::Power(frac));
+                }
+            } else if let Some(rest) = msg.strip_prefix("SM") {
+                // `SM<vfo><3 digits>`. Only the main receiver's is asked for,
+                // and only that one is followed: a sub-receiver reading would
+                // move the meter to a signal nobody is listening to.
+                if let Some(raw) = rest.strip_prefix('0').and_then(reading) {
+                    out.push(CatUpdate::Signal(crate::S9_DBM + crate::interp(STR_CAL, raw)));
+                }
+            } else if let Some(rest) = msg.strip_prefix("RM") {
+                // `RM<meter><3 digits>` — and only meter 6, the SWR, is ours.
+                // The other meters answer on the same command, so the digit is
+                // the only thing that says which reading this is.
+                if let Some(raw) = rest.strip_prefix('6').and_then(reading) {
+                    out.push(CatUpdate::Swr(crate::interp(SWR_CAL, raw)));
                 }
             } else if let Some(rest) = msg.strip_prefix("MD") {
                 // `MD<P1><P2>` — P1 selects the VFO (always 0 here), P2 is the
@@ -360,6 +437,67 @@ mod tests {
         // The panel offers speeds the rig's keyer does not go to.
         assert_eq!(frame(&mut y, 80.0).unwrap(), "KS060;");
         assert_eq!(frame(&mut y, 1.0).unwrap(), "KS004;");
+    }
+
+    fn frames(v: Vec<Vec<u8>>) -> Vec<String> {
+        v.iter().map(|f| String::from_utf8_lossy(f).into_owned()).collect()
+    }
+
+    #[test]
+    fn the_meters_are_read_from_the_main_receiver_and_the_swr_selector() {
+        let y = Yaesu::new();
+        assert_eq!(frames(y.rx_telemetry_requests()), vec!["SM0;"]);
+        assert_eq!(frames(y.tx_telemetry_requests()), vec!["RM6;"]);
+    }
+
+    #[test]
+    fn the_s_meter_reads_on_the_familys_own_scale() {
+        let mut y = Yaesu::new();
+        let dbm = |u: &[CatUpdate]| match u {
+            [CatUpdate::Signal(d)] => *d,
+            other => panic!("expected one signal reading, got {other:?}"),
+        };
+        // The published anchors: 130 is S9, and S9 is −73 dBm.
+        assert_eq!(dbm(&parse_str(&mut y, "SM0130;")), -73.0);
+        assert_eq!(dbm(&parse_str(&mut y, "SM0000;")), -127.0); // S0
+        assert_eq!(dbm(&parse_str(&mut y, "SM0255;")), -13.0); // S9+60
+        assert_eq!(dbm(&parse_str(&mut y, "SM0051;")), -103.0); // S4
+        // Between anchors, interpolated rather than stepped.
+        let mid = dbm(&parse_str(&mut y, "SM0143;"));
+        assert!((-73.0..-61.0).contains(&mid), "S9+ half way up reads {mid}");
+
+        // The sub receiver's meter is a signal nobody here is listening to.
+        assert!(parse_str(&mut y, "SM1130;").is_empty());
+        // A mangled reply must leave the meter where it was, not zero it.
+        assert!(parse_str(&mut y, "SM0;").is_empty());
+        assert!(parse_str(&mut y, "SM0xy;").is_empty());
+    }
+
+    #[test]
+    fn only_the_swr_meter_moves_the_swr_reading() {
+        let mut y = Yaesu::new();
+        let swr = |u: &[CatUpdate]| match u {
+            [CatUpdate::Swr(v)] => *v,
+            other => panic!("expected one SWR reading, got {other:?}"),
+        };
+        assert_eq!(swr(&parse_str(&mut y, "RM6089;")), 2.0);
+        assert_eq!(swr(&parse_str(&mut y, "RM6065;")), 1.5);
+        // Below the bottom of the calibration the scale is a dead zone, not a
+        // reason to extrapolate under 1:1 — an SWR cannot be less than that.
+        assert_eq!(swr(&parse_str(&mut y, "RM6000;")), 1.0);
+        assert_eq!(swr(&parse_str(&mut y, "RM6255;")), 5.0);
+        // An FTDX101 answers with six digits; the reading is the first three.
+        assert_eq!(swr(&parse_str(&mut y, "RM6089000;")), 2.0);
+
+        // The other meters ride the same command and are not the SWR: ALC (4),
+        // power out (5), compression (3). Read as one they would show a
+        // perfectly matched antenna as a 5:1 fault, or the reverse.
+        for other in ['0', '1', '2', '3', '4', '5', '7', '8', '9'] {
+            assert!(
+                parse_str(&mut y, &format!("RM{other}089;")).is_empty(),
+                "meter {other} is not the SWR"
+            );
+        }
     }
 
     #[test]
