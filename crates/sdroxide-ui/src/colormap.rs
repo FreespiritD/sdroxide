@@ -153,6 +153,7 @@ pub fn band_color(band: sdroxide_types::Band) -> [u8; 3] {
         Band::M12 => [70, 116, 232], // blue
         Band::M10 => [122, 92, 236], // indigo
         Band::M6 => [176, 84, 226],  // violet
+        Band::M4 => [202, 78, 224],  // purple
         Band::M2 => [226, 76, 190],  // magenta
         Band::M70 => [236, 96, 140], // rose
         // Not a band: nothing is ever binned here.

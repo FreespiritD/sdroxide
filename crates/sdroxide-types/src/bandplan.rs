@@ -209,8 +209,9 @@ fn hz_to_mhz(hz: f64) -> f64 {
 /// One band's edges, in MHz.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct BandRow {
-    /// Which band. `M160` … `M10`, `M6`, `M2`, `M70`. Leave a band out and this
-    /// region simply does not have it.
+    /// Which band. `M160` … `M10`, `M6`, `M4`, `M2`, `M70`. Leave a band out and
+    /// this region simply does not have it — which is how the built-in tables
+    /// give Regions 2 and 3 no 4 m.
     band: Band,
     lo_mhz: f64,
     hi_mhz: f64,
@@ -263,6 +264,10 @@ fn readme() -> Vec<String> {
         "bands: the amateur allocations. Omit a band and this region does not have it; \
          narrow one to your own licence and sdroxide will refuse to transmit outside it \
          (with tx_ham_only set, which is the default).",
+        "A band sdroxide adds in a later version — 4 m (M4) is the first — is not in a file \
+         written before it existed, so it is filled in from the built-in tables when this file \
+         names it in no region at all. Give it a row in any region and this file decides it \
+         everywhere, as it does for every other band.",
         "segments: the sub-band plan drawn on the waterfall. kind is Cw, Digi, Phone, \
          Beacon or All.",
         "psk_windows / rtty_windows: where the wideband skimmers listen. Narrow windows \
@@ -348,14 +353,43 @@ impl std::fmt::Display for BandPlanError {
 
 impl std::error::Error for BandPlanError {}
 
+/// Bands sdroxide gained *after* `bandplan.json` became the authority.
+///
+/// Omitting a band from a region means that region does not have it — that is
+/// the file's whole contract, and it is not weakened here. But a file written
+/// before a band existed is not omitting it; it has never heard of it, and every
+/// installation that already had a file would otherwise be the one place the new
+/// band never appears. So a band on this list that the file names in *no* region
+/// is filled in from the built-in tables, exactly as a freshly seeded file would
+/// have it. Name it in any region — even to give it different edges there — and
+/// the file is the authority again, in all three.
+///
+/// New entries are appended as bands are added. Old ones stay: a file that
+/// predates 4 m predates everything after it too.
+const BANDS_ADDED_SINCE_THE_FILE: &[Band] = &[Band::M4];
+
 impl TryFrom<PlanFile> for BandPlan {
     type Error = BandPlanError;
 
     fn try_from(f: PlanFile) -> Result<BandPlan, BandPlanError> {
         let mut problems = Vec::new();
-        let r1 = RegionPlan::from_file(&f.region1, Region::R1, &mut problems)?;
-        let r2 = RegionPlan::from_file(&f.region2, Region::R2, &mut problems)?;
-        let r3 = RegionPlan::from_file(&f.region3, Region::R3, &mut problems)?;
+        let mut r1 = RegionPlan::from_file(&f.region1, Region::R1, &mut problems)?;
+        let mut r2 = RegionPlan::from_file(&f.region2, Region::R2, &mut problems)?;
+        let mut r3 = RegionPlan::from_file(&f.region3, Region::R3, &mut problems)?;
+        for band in BANDS_ADDED_SINCE_THE_FILE {
+            let named = [&f.region1, &f.region2, &f.region3]
+                .iter()
+                .any(|r| r.bands.iter().any(|row| row.band == *band));
+            if named {
+                continue;
+            }
+            let Some(i) = Band::ALL.iter().position(|b| b == band) else { continue };
+            for (plan, region) in
+                [(&mut r1, Region::R1), (&mut r2, Region::R2), (&mut r3, Region::R3)]
+            {
+                plan.edges[i] = band.iaru_default_edges_in(region);
+            }
+        }
         Ok(BandPlan { r1, r2, r3, problems })
     }
 }
@@ -651,6 +685,12 @@ mod tests {
         let text = BandPlan::iaru_defaults().to_json_document();
         assert!(text.contains(r#"{"band": "M160", "lo_mhz": 1.81, "hi_mhz": 2.0}"#), "{text}");
         assert!(text.contains(r#"{"band": "M70", "lo_mhz": 430.0, "hi_mhz": 440.0}"#), "{text}");
+        // 4 m is written into the one region that has it, and nowhere else.
+        assert_eq!(
+            text.matches(r#"{"band": "M4", "lo_mhz": 70.0, "hi_mhz": 70.5}"#).count(),
+            1,
+            "{text}"
+        );
         assert!(!text.contains("1810000"), "hertz should not appear in the file");
         // And it explains itself, since JSON cannot carry a comment.
         assert!(text.contains("\"readme\""));
@@ -703,6 +743,45 @@ mod tests {
         assert_eq!(r1.containing(5_357_000.0), Band::Gen);
         assert_eq!(r1.containing(14_200_000.0), Band::M20);
         assert!(!p.is_default());
+    }
+
+    /// A file written before sdroxide had 4 m is not saying "no 4 m here" — it
+    /// has never heard of the band. So it fills in from the built-in tables,
+    /// which is what keeps every installation that already has a file from being
+    /// the one place a new band never appears. Name it anywhere and the file is
+    /// the authority again, in all three regions.
+    #[test]
+    fn a_band_added_after_the_file_fills_itself_in() {
+        let older = parse(
+            r#"{"region1":{"bands":[{"band":"M20","lo_mhz":14.0,"hi_mhz":14.35}]},
+                "region2":{"bands":[{"band":"M20","lo_mhz":14.0,"hi_mhz":14.35}]},
+                "region3":{"bands":[{"band":"M20","lo_mhz":14.0,"hi_mhz":14.35}]}}"#,
+        );
+        assert_eq!(older.region(Region::R1).edges(Band::M4), Some((70_000_000.0, 70_500_000.0)));
+        assert_eq!(older.region(Region::R1).containing(70_174_000.0), Band::M4);
+        // And only into the region that has the band at all.
+        assert_eq!(older.region(Region::R2).edges(Band::M4), None);
+        assert_eq!(older.region(Region::R3).edges(Band::M4), None);
+
+        // Named in one region: the file decides 4 m everywhere from then on, so
+        // leaving it out of Region 1 means Region 1 has not got it.
+        let named = parse(
+            r#"{"region1":{"bands":[{"band":"M20","lo_mhz":14.0,"hi_mhz":14.35}]},
+                "region2":{"bands":[{"band":"M4","lo_mhz":70.0,"hi_mhz":70.5}]},
+                "region3":{"bands":[{"band":"M20","lo_mhz":14.0,"hi_mhz":14.35}]}}"#,
+        );
+        assert_eq!(named.region(Region::R1).edges(Band::M4), None);
+        assert_eq!(named.region(Region::R2).edges(Band::M4), Some((70_000_000.0, 70_500_000.0)));
+
+        // A narrowed 4 m is obeyed like any other row — Germany's 50 kHz of it.
+        let narrowed = parse(
+            r#"{"region1":{"bands":[{"band":"M4","lo_mhz":70.15,"hi_mhz":70.2}]},
+                "region2":{"bands":[{"band":"M20","lo_mhz":14.0,"hi_mhz":14.35}]},
+                "region3":{"bands":[{"band":"M20","lo_mhz":14.0,"hi_mhz":14.35}]}}"#,
+        );
+        assert_eq!(narrowed.region(Region::R1).edges(Band::M4), Some((70_150_000.0, 70_200_000.0)));
+        assert_eq!(narrowed.region(Region::R1).containing(70_174_000.0), Band::M4);
+        assert_eq!(narrowed.region(Region::R1).containing(70_300_000.0), Band::Gen);
     }
 
     /// A narrowed band is the whole point: an operator whose licence stops at

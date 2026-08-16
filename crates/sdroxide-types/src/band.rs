@@ -22,10 +22,14 @@ pub enum Band {
     /// postcard-encoded by declaration index and stored in band stacks and
     /// memories; [`Band::ALL`] puts it where it belongs on screen.
     M70,
+    /// 4 m — 70 MHz, between 6 m and 2 m. Appended for the same reason as
+    /// [`Band::M70`], and the only band here that a region can simply not have:
+    /// 70 MHz is an amateur allocation in Region 1 alone.
+    M4,
 }
 
 impl Band {
-    pub const ALL: [Band; 14] = [
+    pub const ALL: [Band; 15] = [
         Band::M160,
         Band::M80,
         Band::M60,
@@ -37,6 +41,7 @@ impl Band {
         Band::M12,
         Band::M10,
         Band::M6,
+        Band::M4,
         Band::M2,
         Band::M70,
         Band::Gen,
@@ -55,6 +60,7 @@ impl Band {
             Band::M12 => "12M",
             Band::M10 => "10M",
             Band::M6 => "6M",
+            Band::M4 => "4M",
             Band::M2 => "2M",
             Band::M70 => "70CM",
             Band::Gen => "GEN",
@@ -93,6 +99,9 @@ impl Band {
     /// - **40 m** ends at 7.200 outside Region 2, which has the whole
     ///   7.000–7.300 to itself.
     /// - **6 m** ends at 52 MHz in Region 1 and 54 MHz elsewhere.
+    /// - **4 m** is Region 1's alone. Regions 2 and 3 have no 70 MHz amateur
+    ///   allocation at all, so there the band is *absent* rather than narrower —
+    ///   the only band in this table of which that is true.
     /// - **2 m** ends at 146 MHz in Region 1 and 148 MHz elsewhere.
     /// - **70 cm** is 430–440 in Region 1, 420–450 in Region 2 and 430–450 in
     ///   Region 3.
@@ -139,6 +148,14 @@ impl Band {
                 (50_000_000.0, 54_000_000.0),
                 (50_000_000.0, 54_000_000.0),
             ),
+            // The IARU Region 1 band plan's 70.000–70.500. Several national
+            // licences grant a slice of that rather than the whole (Germany's
+            // 4 m is 70.150–70.200), which is what a hand-edited bandplan.json
+            // is for. Regions 2 and 3 get `None`: 70 MHz is not an amateur
+            // allocation there, and an operator in the Americas pointed at a
+            // "band" their licence does not contain is worse served than one
+            // told they have no such band.
+            Band::M4 => (region == Region::R1).then_some((70_000_000.0, 70_500_000.0)),
             Band::M2 => by_region(
                 (144_000_000.0, 146_000_000.0),
                 (144_000_000.0, 148_000_000.0),
@@ -185,6 +202,9 @@ impl Band {
             Band::M12 => (24_940_000.0, Mode::Usb),
             Band::M10 => (28_400_000.0, Mode::Usb),
             Band::M6 => (50_150_000.0, Mode::Usb),
+            // 70.200 is the 4 m SSB/CW calling frequency, in the narrow-band
+            // part of a band whose bottom 100 kHz is beacons only.
+            Band::M4 => (70_200_000.0, Mode::Usb),
             Band::M2 => (145_500_000.0, Mode::Nfm),
             // 70 cm opens on the RIFP calling frequency: it is the band this
             // mode is meant for, and the band stack overrides this the moment
@@ -251,6 +271,14 @@ mod tests {
         // 160 m's lower edge.
         assert_eq!(Band::containing_in(1_805_000.0, Region::R1), Band::Gen);
         assert_eq!(Band::containing_in(1_805_000.0, Region::R2), Band::M160);
+        // 4 m is Region 1's alone — a band that is absent elsewhere rather
+        // than merely a different width. 70.174 is the FT8 frequency on it.
+        assert_eq!(Band::containing_in(70_174_000.0, Region::R1), Band::M4);
+        assert_eq!(Band::containing_in(70_174_000.0, Region::R2), Band::Gen);
+        assert_eq!(Band::containing_in(70_174_000.0, Region::R3), Band::Gen);
+        assert_eq!(Band::M4.edges_in(Region::R1), Some((70_000_000.0, 70_500_000.0)));
+        assert_eq!(Band::M4.edges_in(Region::R2), None);
+        assert_eq!(Band::M4.edges_in(Region::R3), None);
         // 6 m and 2 m are 2 MHz wider outside Region 1.
         assert_eq!(Band::containing_in(53_000_000.0, Region::R1), Band::Gen);
         assert_eq!(Band::containing_in(53_000_000.0, Region::R2), Band::M6);

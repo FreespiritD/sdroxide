@@ -216,8 +216,11 @@ Regions 1 and 3 and amateur in Region 2).
 Click the **Band / Mode** button (which reads, for example, `20M · USB`) to open a
 popup with three rows:
 
-- **BAND:** `160M 80M 60M 40M 30M 20M 17M 15M 12M 10M 6M 2M 70CM GEN`. Each band
-  remembers your last frequency, mode, and filter. Once band conditions have
+- **BAND:** `160M 80M 60M 40M 30M 20M 17M 15M 12M 10M 6M 4M 2M 70CM GEN`. Each
+  band remembers your last frequency, mode, and filter. A band your region's
+  band plan does not have gets no button at all — `4M` (70 MHz) is an amateur
+  allocation in IARU Region 1 only, so it is absent in Regions 2 and 3. Once
+  band conditions have
   been fetched the button are tinted by the published forecast — green Good,
   yellow Fair, pink Poor — and hovering one gives it in words. Bands the
   forecast does not cover are left uncoloured; see
@@ -2305,9 +2308,12 @@ decides every band plan sdroxide draws and enforces:
   430–450 in Region 3, so 446 MHz is out of band in Europe and in band in the
   Americas. 40 m runs to 7.200 outside Region 2 and to 7.300 inside it; 80 m
   ends at 3.800, 4.000 or 3.900; 160 m starts at 1.810 in Region 1 and 1.800
-  elsewhere; 6 m and 2 m are 2 MHz wider outside Region 1. These edges are what
-  the band buttons jump to, what `Band` a frequency reports as, and — with
-  `tx_ham_only` set, which is the default — where transmit is refused.
+  elsewhere; 6 m and 2 m are 2 MHz wider outside Region 1. **4 m** (70.000–
+  70.500) is Region 1's alone — the one band a region can simply not have, so
+  outside Region 1 it has no band button and band stepping passes it by. These
+  edges are what the band buttons jump to, what `Band` a frequency reports as,
+  and — with `tx_ham_only` set, which is the default — where transmit is
+  refused.
 - **Sub-segments** — the CW / data / SSB / beacon blocks on the waterfall's
   band strip ([§ 2.8](#28-the-display-and-fft-controls)). Region 1 splits the top of each
   band into a phone sub-band; Regions 2 and 3 hand it to all modes, and their
@@ -2319,6 +2325,8 @@ decides every band plan sdroxide draws and enforces:
   offer your region's convention: PSK31 and RTTY on 40 m, and SSTV on 80 m and
   40 m (3.730 / 7.165 in Region 1, 3.845 / 7.171 elsewhere — and 3.845 is
   outside the Region 1 allocation altogether, so it is never offered there).
+  FT8's 4 m dial, **70.174**, goes the same way: it is offered in Region 1 and
+  in neither of the others, which have no 70 MHz band to put it in.
 
 The default is **Region 1**, which is the band plan every sdroxide before this
 setting had; an existing installation is not moved by upgrading. It is a
@@ -2344,7 +2352,7 @@ The file is one row per line, in **megahertz**, and it explains itself in a
 
 | List | What it sets |
 | --- | --- |
-| `bands` | The allocations. Leave a band out and the region does not have it. |
+| `bands` | The allocations. Leave a band out and the region does not have it — with one exception, below. |
 | `segments` | The CW / data / phone / beacon / all-modes blocks on the waterfall strip. `kind` is `Cw`, `Digi`, `Phone`, `Beacon` or `All`. |
 | `psk_windows` | Where the PSK31 skimmer listens. |
 | `rtty_windows` | Where the RTTY skimmer listens. |
@@ -2359,6 +2367,13 @@ The file is one row per line, in **megahertz**, and it explains itself in a
 That edit is the common one: **narrow a band to your own licence**, and with
 `tx_ham_only` set (the default) sdroxide refuses to transmit outside it. The
 band buttons, the waterfall strip and the frequency displays all follow.
+
+**A band sdroxide adds later** — 4 m (`M4`) is the first — is not in a file
+written before it existed, and a file that has never heard of a band is not
+saying you have not got it. So a band on that short list is filled in from the
+built-in tables when your file names it in **no** region at all, exactly as a
+fresh file would have it. Give it a row anywhere and your file decides it
+everywhere again, in all three regions, like every other band.
 
 If a row says something impossible — edges the wrong way round, a band listed
 twice, `GEN` where a real band belongs — that row is dropped, the rest of the
@@ -6573,8 +6588,9 @@ using. Bind them under **Speech** on the Controls tab:
 ### Bands
 
 `160M`, `80M`, `60M`, `40M`, `30M`, `20M`, `17M`, `15M`, `12M`, `10M`, `6M`,
-`2M`, and `GEN` (general coverage). Bands your device cannot receive are
-disabled in the selector.
+`4M` (Region 1 only), `2M`, `70CM`, and `GEN` (general coverage). Bands your
+device cannot receive are disabled in the selector; bands your region does not
+have are not offered.
 
 ### Waterfall colour schemes
 

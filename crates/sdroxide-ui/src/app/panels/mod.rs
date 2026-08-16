@@ -400,6 +400,7 @@ fn digi_dial_freqs(mode: Mode) -> &'static [(&'static str, f64)] {
             ("12m", 24_915_000.0),
             ("10m", 28_074_000.0),
             ("6m", 50_313_000.0),
+            ("4m", 70_174_000.0),
             ("2m", 144_174_000.0),
             // The European convention, mirroring 144.174; North American
             // activity sits elsewhere (432.065 among others).

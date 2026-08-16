@@ -479,10 +479,20 @@ pub const FT8_DXPED_DIALS: &[f64] = &[
     28_091_000.0,
 ];
 
-/// FT8 dial frequencies above HF (Hz). 6 m has two: 50.313 is the calling
-/// frequency and 50.323 is where the DX goes when it is busy, which during a
-/// sporadic-E opening is most of the time.
-pub const FT8_VHF_DIALS: &[f64] = &[50_313_000.0, 50_323_000.0, 144_174_000.0, 432_174_000.0];
+/// FT8 dial frequencies above HF (Hz), tagged with the regions each belongs to.
+/// 6 m has two: 50.313 is the calling frequency and 50.323 is where the DX goes
+/// when it is busy, which during a sporadic-E opening is most of the time.
+///
+/// 4 m carries a region tag because the *band* does: 70 MHz is an amateur
+/// allocation in Region 1 alone, so 70.174 is offered there and nowhere else.
+/// The rest follow 144.174's pattern of x.174.
+pub const FT8_VHF_DIALS: &[(f64, &str, u8)] = &[
+    (50_313_000.0, "", mask::ALL),
+    (50_323_000.0, "", mask::ALL),
+    (70_174_000.0, "", mask::R1),
+    (144_174_000.0, "", mask::ALL),
+    (432_174_000.0, "", mask::ALL),
+];
 
 /// PSK31 dial frequencies (Hz), tagged with the regions each belongs to.
 ///
@@ -626,7 +636,7 @@ pub fn digi_channels_for(mode: crate::Mode, region: Region) -> Vec<DigiChannel> 
                     .iter()
                     .map(|&dial_hz| DigiChannel { dial_hz, note: "DXpedition (Fox/Hound)" }),
             );
-            v.extend(plain(FT8_VHF_DIALS));
+            v.extend(tagged(FT8_VHF_DIALS));
             v
         }
         Mode::Ft4 => plain(FT4_DIALS),
@@ -906,6 +916,17 @@ mod tests {
         // 6 m has two FT8 frequencies; 2 m has one, so it shows no picker.
         assert_eq!(digi_channels_in_region(Mode::Ft8, Band::M6, Region::R1).len(), 2);
         assert_eq!(digi_channels_in_region(Mode::Ft8, Band::M2, Region::R1).len(), 1);
+        // 4 m has one, in the one region that has the band at all.
+        let ft8_4 = digi_channels_in_region(Mode::Ft8, Band::M4, Region::R1);
+        assert_eq!(ft8_4.len(), 1, "{ft8_4:?}");
+        assert_eq!(ft8_4[0].dial_hz, 70_174_000.0);
+        for r in [Region::R2, Region::R3] {
+            assert!(digi_channels_in_region(Mode::Ft8, Band::M4, r).is_empty(), "{r:?}");
+            assert!(
+                !digi_channels_for(Mode::Ft8, r).iter().any(|c| c.dial_hz == 70_174_000.0),
+                "{r:?} was offered 70.174, which is not an amateur band there"
+            );
+        }
         // FT4 and FT2 have a single convention everywhere, in every region.
         for region in Region::ALL {
             for b in Band::ALL {

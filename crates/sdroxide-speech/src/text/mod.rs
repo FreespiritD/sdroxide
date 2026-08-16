@@ -161,6 +161,7 @@ impl<'a> Speaker<'a> {
             Band::M12 => "twelve meters",
             Band::M10 => "ten meters",
             Band::M6 => "six meters",
+            Band::M4 => "four meters",
             Band::M2 => "two meters",
             Band::M70 => "seventy centimeters",
             Band::Gen => "general coverage",

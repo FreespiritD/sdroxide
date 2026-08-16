@@ -271,7 +271,14 @@ use sdroxide_types::{
 /// per connect — which keeps `Command::WinlinkConnect` unchanged and means an
 /// older client still forwards by telnet instead of failing to encode a command
 /// it has never heard of.
-pub const PROTO_VERSION: u16 = 53;
+/// v54: the 4 m band. `Band::M4` is appended to the enum, so no postcard
+/// discriminant moves and every band stack and memory already on disk still
+/// decodes — but `Band::ALL` puts it between 6 m and 2 m, where it belongs on
+/// screen, and that list's *position* is what the propagation messages index by
+/// (`SolarServerMsg`'s per-band planes, and the band masks the globe and map
+/// carry). A v53 client would file 2 m's plane under 4 m and 70 cm's under 2 m,
+/// which is the one thing a version byte exists to prevent.
+pub const PROTO_VERSION: u16 = 54;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

@@ -644,10 +644,11 @@ fn set_mode(args: &[&str], st: &RigState, cmds: &mut Vec<Command>, out: Out) -> 
     out.finish(OK, false)
 }
 
-/// Next or previous amateur band, skipping the general-coverage pseudo-band.
+/// Next or previous amateur band, skipping the general-coverage pseudo-band and
+/// any band this region's band plan does not have (4 m outside Region 1).
 fn step_band(cur: sdroxide_types::Band, up: bool) -> Option<sdroxide_types::Band> {
     use sdroxide_types::Band;
-    let ham: Vec<Band> = Band::ALL.iter().copied().filter(|b| *b != Band::Gen).collect();
+    let ham: Vec<Band> = Band::ALL.iter().copied().filter(|b| b.edges().is_some()).collect();
     let i = ham.iter().position(|b| *b == cur)?;
     let n = ham.len();
     Some(if up { ham[(i + 1) % n] } else { ham[(i + n - 1) % n] })

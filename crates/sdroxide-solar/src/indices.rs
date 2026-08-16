@@ -241,7 +241,7 @@ fn band_group(band: sdroxide_types::Band) -> Option<&'static str> {
         // respectively; 6 m and up are covered — if at all — by the sporadic-E
         // and aurora entries, which are about a phenomenon rather than a band
         // and are not interchangeable with a Good/Fair/Poor verdict.
-        Band::M160 | Band::M60 | Band::M6 | Band::M2 | Band::M70 | Band::Gen => None,
+        Band::M160 | Band::M60 | Band::M6 | Band::M4 | Band::M2 | Band::M70 | Band::Gen => None,
     }
 }
 
@@ -539,7 +539,7 @@ mod tests {
     fn unpublished_bands_have_no_verdict_rather_than_a_guess() {
         use sdroxide_types::Band;
         let c = parse_band_conditions(HAMQSL).unwrap();
-        for b in [Band::M160, Band::M60, Band::M6, Band::M2, Band::M70, Band::Gen] {
+        for b in [Band::M160, Band::M60, Band::M6, Band::M4, Band::M2, Band::M70, Band::Gen] {
             assert_eq!(c.for_band(b, true), None, "{b:?} was given a verdict");
             assert_eq!(c.for_band(b, false), None, "{b:?} was given a verdict");
             assert_eq!(c.rating_for_band(b, true), None);

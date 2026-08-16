@@ -362,10 +362,12 @@ pub(crate) fn apply_action(
     }
 }
 
-/// Next/previous amateur band, skipping the general-coverage pseudo-band.
+/// Next/previous amateur band, skipping the general-coverage pseudo-band and
+/// any band the station's own band plan does not give this region — stepping
+/// onto Region 1's 4 m in the Americas would be stepping out of band.
 fn step_band(cur: sdroxide_types::Band, up: bool) -> Option<sdroxide_types::Band> {
     use sdroxide_types::Band;
-    let ham: Vec<Band> = Band::ALL.iter().copied().filter(|b| *b != Band::Gen).collect();
+    let ham: Vec<Band> = Band::ALL.iter().copied().filter(|b| b.edges().is_some()).collect();
     let i = ham.iter().position(|b| *b == cur)?;
     let n = ham.len();
     Some(if up { ham[(i + 1) % n] } else { ham[(i + n - 1) % n] })
@@ -1213,6 +1215,10 @@ mod tests {
     fn band_stepping_skips_general_coverage() {
         assert_eq!(step_band(Band::M20, true), Some(Band::M17));
         assert_eq!(step_band(Band::M20, false), Some(Band::M30));
+        // 4 m sits between 6 m and 2 m, in the region that has it — which is
+        // Region 1, the default these tests run under.
+        assert_eq!(step_band(Band::M6, true), Some(Band::M4));
+        assert_eq!(step_band(Band::M4, true), Some(Band::M2));
         assert_eq!(step_band(Band::M2, true), Some(Band::M70));
         // Wraps within the ham bands only, from the highest to the lowest.
         assert_eq!(step_band(Band::M70, true), Some(Band::M160));

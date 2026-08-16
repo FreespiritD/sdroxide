@@ -3014,6 +3014,15 @@ fn band_mode_menu(
     let digital = mode.is_digital();
     ui.horizontal_wrapped(|ui| {
         for b in Band::ALL {
+            // A band the station's own band plan does not give this region gets
+            // no button: 4 m is Region 1's alone, and offering an operator in
+            // the Americas a button that tunes to 70 MHz — out of band, and
+            // with `tx_ham_only` set, straight into a transmit lockout — would
+            // be offering them something their licence has not got. GEN is the
+            // one bandless entry that stays: it is the absence of a band.
+            if b != Band::Gen && b.edges().is_none() {
+                continue;
+            }
             // In a digital mode, a band button tunes to the band's standard
             // dial frequency where the mode has one (SetVfo keeps the mode),
             // and the chip carries a cyan underline saying so. A band without

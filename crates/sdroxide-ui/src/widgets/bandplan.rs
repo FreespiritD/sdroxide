@@ -74,6 +74,7 @@ fn ham_label(band: Band) -> &'static str {
         Band::M12 => "12m HAM",
         Band::M10 => "10m HAM",
         Band::M6 => "6m HAM",
+        Band::M4 => "4m HAM",
         Band::M2 => "2m HAM",
         Band::M70 => "70cm HAM",
         Band::Gen => "GEN",
