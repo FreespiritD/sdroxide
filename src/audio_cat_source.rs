@@ -20,6 +20,12 @@ pub struct AudioCatSource {
     in_consumer: rtrb::Consumer<f32>,
     in_rate: f64,
     format: SoundFormat,
+    /// What the right channel is multiplied by on the way into the complex
+    /// stream: `1.0` normally, `-1.0` when the rig's I and Q are the other way
+    /// round (`CatConfig::invert_spectrum`). Conjugating the sample is the
+    /// whole of the fix, and folding it into a factor keeps the inner loop the
+    /// same shape for both.
+    q_sign: f32,
     audio_bw: f64,
 
     // TX audio to the rig (interleaved stereo playback ring).
@@ -140,6 +146,14 @@ impl AudioCatSource {
             format!("CAT rig ({}) on {}", cfg.family.label(), sdroxide_cat::link_label(&cfg));
         let audio_bw = cfg.audio_bw_hz;
         let format = cfg.format;
+        // Said out loud at open: a mirrored panadapter looks like a working one
+        // until you notice signals are on the wrong side of the dial, so which
+        // way round this rig is wired belongs in the log next to the rest of
+        // what was assumed about it.
+        if matches!(format, SoundFormat::Iq) && cfg.invert_spectrum {
+            tracing::info!("radio I/Q inverted (Q negated) — spectrum mirrored about the dial");
+        }
+        let q_sign = if cfg.invert_spectrum { -1.0 } else { 1.0 };
         let cat = sdroxide_cat::spawn(cfg);
 
         Ok(AudioCatSource {
@@ -147,6 +161,7 @@ impl AudioCatSource {
             in_consumer,
             in_rate,
             format,
+            q_sign,
             audio_bw,
             out,
             tx_resampler,
@@ -159,6 +174,24 @@ impl AudioCatSource {
             last_signal: None,
         })
     }
+}
+
+/// Drain interleaved (I, Q) pairs from the capture ring into `buf`, with the
+/// right channel scaled by `q_sign` — `-1.0` conjugates the stream, mirroring
+/// the spectrum about the dial (see [`sdroxide_types::CatConfig::invert_spectrum`]).
+///
+/// A free function rather than a method so the inversion can be exercised
+/// without a sound card and a serial port behind it.
+fn fill_iq(src: &mut rtrb::Consumer<f32>, buf: &mut [Complex32], q_sign: f32) -> usize {
+    let mut n = 0;
+    // Need pairs (I, Q); only consume when both are available.
+    while n < buf.len() && src.slots() >= 2 {
+        let i = src.pop().unwrap_or(0.0);
+        let q = src.pop().unwrap_or(0.0);
+        buf[n] = Complex32::new(i, q * q_sign);
+        n += 1;
+    }
+    n
 }
 
 impl IqSource for AudioCatSource {
@@ -200,14 +233,7 @@ impl IqSource for AudioCatSource {
                 Ok(n)
             }
             SoundFormat::Iq => {
-                let mut n = 0;
-                // Need pairs (I, Q); only consume when both are available.
-                while n < buf.len() && self.in_consumer.slots() >= 2 {
-                    let i = self.in_consumer.pop().unwrap_or(0.0);
-                    let q = self.in_consumer.pop().unwrap_or(0.0);
-                    buf[n] = Complex32::new(i, q);
-                    n += 1;
-                }
+                let n = fill_iq(&mut self.in_consumer, buf, self.q_sign);
                 if n == 0 {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
@@ -402,5 +428,67 @@ impl IqSource for AudioCatSource {
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RATE: f32 = 48_000.0;
+
+    /// Push a complex tone at `hz` onto a ring as a sound card would deliver
+    /// it: I on the left channel, Q on the right, interleaved.
+    fn tone_ring(hz: f32, n: usize) -> rtrb::Consumer<f32> {
+        let (mut p, c) = rtrb::RingBuffer::<f32>::new(n * 2);
+        for k in 0..n {
+            let phase = std::f32::consts::TAU * hz * k as f32 / RATE;
+            p.push(phase.cos()).unwrap();
+            p.push(phase.sin()).unwrap();
+        }
+        c
+    }
+
+    /// Which side of the dial the stream sits on, as the sign of its mean
+    /// frequency: the argument of the average of each sample against the one
+    /// before it. Positive is above the dial, negative below.
+    fn mean_freq_hz(x: &[Complex32]) -> f32 {
+        let acc: Complex32 = x.windows(2).map(|w| w[1] * w[0].conj()).sum();
+        acc.arg() * RATE / std::f32::consts::TAU
+    }
+
+    /// The whole of the setting: a signal the radio puts 1 kHz *above* its dial
+    /// has to read as 1 kHz above it on a normally wired rig, and 1 kHz below
+    /// on one whose I and Q are the other way round — which is the mirrored
+    /// waterfall the operator sees, and the wrong sideband SSB comes out on.
+    #[test]
+    fn inverting_iq_mirrors_the_signal_about_the_dial() {
+        let mut buf = [Complex32::new(0.0, 0.0); 512];
+
+        let n = fill_iq(&mut tone_ring(1000.0, 512), &mut buf, 1.0);
+        assert_eq!(n, 512, "every pair consumed");
+        assert!((mean_freq_hz(&buf[..n]) - 1000.0).abs() < 1.0, "above the dial, unchanged");
+
+        let n = fill_iq(&mut tone_ring(1000.0, 512), &mut buf, -1.0);
+        assert_eq!(n, 512);
+        assert!((mean_freq_hz(&buf[..n]) + 1000.0).abs() < 1.0, "below the dial once inverted");
+    }
+
+    /// The pairing is what makes the stream complex at all: a half-pair left in
+    /// the ring has to stay there until its partner arrives, or every sample
+    /// after it swaps I for Q and the spectrum is nonsense from then on.
+    #[test]
+    fn an_odd_sample_is_left_for_its_partner() {
+        let (mut p, mut c) = rtrb::RingBuffer::<f32>::new(8);
+        for v in [1.0f32, 2.0, 3.0] {
+            p.push(v).unwrap();
+        }
+        let mut buf = [Complex32::new(0.0, 0.0); 4];
+        assert_eq!(fill_iq(&mut c, &mut buf, 1.0), 1);
+        assert_eq!(buf[0], Complex32::new(1.0, 2.0));
+        // The odd `3.0` is still waiting, and pairs with what arrives next.
+        p.push(4.0).unwrap();
+        assert_eq!(fill_iq(&mut c, &mut buf, -1.0), 1);
+        assert_eq!(buf[0], Complex32::new(3.0, -4.0));
     }
 }

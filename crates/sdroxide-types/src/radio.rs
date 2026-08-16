@@ -679,6 +679,27 @@ pub struct CatConfig {
     /// Which `TX` command keys a Kenwood.
     pub kenwood_send: KenwoodSend,
     pub format: SoundFormat,
+    /// Conjugate the sound card's I/Q, mirroring the panadapter about the
+    /// tuned frequency. Only read for [`SoundFormat::Iq`]: demod audio is real
+    /// and has no sideband to swap.
+    ///
+    /// Which of the two channels a quadrature rig calls I is a wiring
+    /// convention, and the ones that disagree with this end are indistinguishable
+    /// from correct until you look at what is on the waterfall — the band is
+    /// mirrored about the dial, so signals sit on the wrong side of it and SSB
+    /// comes out on the opposite sideband. Reversing the two cables at the sound
+    /// card would fix it just as well; this is the same fix without the soldering
+    /// iron, and it is why the setting exists per rig rather than per family.
+    ///
+    /// **Off by default** — the convention this end assumes (I on the left
+    /// channel, Q on the right) is the common one, and every rig already working
+    /// has to keep working.
+    ///
+    /// Receive only. The transmit side of this interface is not quadrature: it
+    /// hands the rig one real audio signal, which the radio modulates, and a
+    /// real signal has no sideband to invert.
+    #[serde(default)]
+    pub invert_spectrum: bool,
     /// Displayed panadapter bandwidth for demod-audio mode (Hz).
     pub audio_bw_hz: f64,
 }
@@ -704,6 +725,7 @@ impl Default for CatConfig {
             rigctld_addr: default_rigctld_addr(),
             kenwood_send: KenwoodSend::default(),
             format: SoundFormat::default(),
+            invert_spectrum: false,
             audio_bw_hz: 4000.0,
         }
     }
@@ -3548,6 +3570,29 @@ mod tests {
         let off: HpsdrConfig =
             serde_json::from_str(r#"{"invert_spectrum": false}"#).expect("parses");
         assert!(!off.invert_spectrum);
+    }
+
+    /// The sound-card rig's copy of the same setting goes the other way: every
+    /// CAT rig already working is on the convention this end assumes, so the
+    /// only safe value for a config that predates the checkbox is off.
+    #[test]
+    fn a_cat_rigs_iq_is_not_inverted_unless_asked() {
+        for json in [
+            // Written before the setting existed.
+            r#"{"format": "Iq"}"#,
+            r#"{}"#,
+        ] {
+            let cfg: CatConfig = serde_json::from_str(json).expect("parses");
+            assert!(!cfg.invert_spectrum, "left alone after loading {json}");
+        }
+        assert!(!CatConfig::default().invert_spectrum);
+        // And an operator who ticks it is still inverted on the next load.
+        let on: CatConfig = serde_json::from_str(r#"{"invert_spectrum": true}"#).expect("parses");
+        assert!(on.invert_spectrum);
+        // Round trips through the file it is written to.
+        let back: CatConfig =
+            serde_json::from_str(&serde_json::to_string(&on).expect("serialises")).expect("parses");
+        assert_eq!(back, on);
     }
 
     /// Every `radio.json` written before the converter existed has to keep

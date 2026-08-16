@@ -2768,6 +2768,18 @@ separately from your computer's own speakers and microphone.
   Turning the radio's own VFO knob moves its synthesiser, and with it everything
   it is sending us, so the whole display recentres on the new frequency.
 
+**Invert spectrum (Swap I/Q)** (IQ format only) — mirrors the panadapter about
+the tuned frequency, for a radio that carries I and Q the other way round on its
+sound card. Which channel a quadrature rig calls I is a wiring convention, and
+one that disagrees with sdroxide's (I left, Q right) looks perfectly healthy
+until you read the waterfall: it fills with convincing signals that are all on
+the wrong side of the dial, and SSB comes out on the opposite sideband.
+Swapping the two cables at the sound card fixes it just as well — this is the
+same fix without the soldering iron. Leave it off unless you see that symptom.
+
+It applies to receive only. Transmit hands the radio one real audio signal for
+it to modulate, and a real signal has no sideband to invert.
+
 **Serial (CAT) settings**, in the order they appear:
 
 - **Serial port** — the radio's CAT serial port. On Linux, USB-style ports
@@ -2811,6 +2823,11 @@ separately from your computer's own speakers and microphone.
 - **CW keying** — where CW you send comes from, `Rig keyer (CAT)` or
   `Sound card (MCW)`. See below.
 - **Poll rate** — how often (Hz) sdroxide reads the rig's frequency and mode.
+  This is the half of the control link that runs *from* the radio: turn the
+  rig's own VFO knob, or change its mode on the front panel, and the readout,
+  the band and the panadapter follow within one poll. The default of 5 Hz is a
+  fifth of a second behind the knob; raise it for a snappier follow, lower it on
+  a slow or shared control port. It applies to every CAT family.
 - **Send command** (Kenwood only) — which transceiver *generation* keys the rig
   when **PTT method** is `CAT`. The two disagree about what the `TX` parameter
   means, nothing on the wire tells them apart, and there is no value that is

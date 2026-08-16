@@ -54,6 +54,23 @@ pub(in crate::app) fn settings_cat_tab(
         enum_combo(ui, "sfmt", &mut cfg.cat.format, &SoundFormat::ALL, SoundFormat::label);
         ui.end_row();
 
+        // Only meaningful for I/Q: demod audio is a real signal, with no
+        // sideband to swap.
+        if matches!(cfg.cat.format, SoundFormat::Iq) {
+            ui.label("Invert spectrum");
+            ui.checkbox(&mut cfg.cat.invert_spectrum, "Swap I/Q").on_hover_text(
+                "Mirror the panadapter about the tuned frequency, for a rig that \
+                 carries I and Q the other way round on its sound card. The \
+                 giveaway is a waterfall full of convincing signals that are all \
+                 on the wrong side of the dial, with SSB coming out on the \
+                 opposite sideband — swapping the two cables at the sound card \
+                 would fix it just as well.\n\n\
+                 Receive only: transmit hands the radio one real audio signal, \
+                 which has no sideband to invert.",
+            );
+            ui.end_row();
+        }
+
         if matches!(cfg.cat.format, SoundFormat::DemodAudio) {
             ui.label("Panadapter BW");
             ui.add(
@@ -198,7 +215,15 @@ pub(in crate::app) fn settings_cat_tab(
         enum_combo(ui, "cwkey", &mut cfg.cat.cw_keying, &CwKeying::ALL, CwKeying::label);
         ui.end_row();
 
-        ui.label("Poll rate");
+        ui.label("Poll rate").on_hover_text(
+            "How often the radio is asked what it is doing. This is the half of \
+             the control link that runs from the radio back to sdroxide: turn \
+             the rig's own VFO knob or change its mode on the front panel and \
+             the readout, the band and the panadapter follow within one poll. \
+             The default of 5 Hz is a fifth of a second behind the knob. Raise \
+             it for a snappier follow, lower it on a slow or shared control \
+             port.",
+        );
         ui.add(DragValue::new(&mut cfg.cat.poll_hz).speed(0.5).range(0.5..=20.0).suffix(" Hz"));
         ui.end_row();
 
