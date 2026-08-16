@@ -314,73 +314,75 @@ impl MultiApp {
     /// is deliberately absent — that lives in Settings → Radio, behind a
     /// dialog, not one stray click away on the main window.
     fn strip_row(&self, ui: &mut egui::Ui, pane: usize, actions: &mut Vec<StripAction>) {
-        ui.horizontal_wrapped(|ui| {
+        crate::chrome::tab_bar(ui, |ui, bar| {
             for (i, tab) in self.tabs.iter().enumerate() {
                 let id = tab.id;
                 let here = self.panes.get(pane) == Some(&id);
                 let elsewhere = !here && self.panes.contains(&id);
                 let split_on = self.panes.len() > 1 && self.panes.contains(&id);
                 // In a split the accent marks the pane holding the keyboard.
-                let stroke = if here && split_on && i == self.focused {
+                let accent = if here && split_on && i == self.focused {
                     crate::theme::PINK()
                 } else {
-                    crate::theme::LINE()
+                    crate::theme::CYAN()
                 };
-                egui::Frame::new()
-                    .stroke(egui::Stroke::new(1.0, stroke))
-                    .corner_radius(egui::CornerRadius::same(3))
-                    .inner_margin(egui::Margin::symmetric(5, 2))
-                    .show(ui, |ui| {
-                        let mut label = RichText::new(Self::display_name(tab)).size(12.5);
-                        if here {
-                            label = label.strong().color(crate::theme::TEXT_STRONG());
-                        } else if elsewhere {
-                            label = label.weak();
-                        }
-                        let name = crate::chrome::chip(ui, here, label);
-                        let name = if elsewhere {
-                            name.on_hover_text("Already open in another split view")
-                        } else if here {
-                            name
-                        } else {
-                            name.on_hover_text("Show this radio here")
-                        };
-                        if name.clicked() && !here && !elsewhere {
-                            actions.push(StripAction::Show { pane, id });
-                        }
-                        // On the air: the one thing worth seeing from any tab.
-                        if tab.app.tab_tx_on() {
-                            ui.label(RichText::new("● TX").size(11.0).color(crate::theme::ALERT()));
-                        } else if tab.app.tab_error() {
-                            ui.label(RichText::new("⚠").size(11.0).color(crate::theme::ALERT()));
-                        }
-                        let mute = crate::chrome::chip(
-                            ui,
-                            tab.muted,
-                            RichText::new(if tab.muted { "🔇" } else { "🔊" }).size(11.0),
-                        );
-                        if mute.on_hover_text("Mute this radio's audio").clicked() {
-                            actions.push(StripAction::Mute { id, muted: !tab.muted });
-                        }
-                        let split =
-                            crate::chrome::chip(ui, split_on, RichText::new("⊞").size(11.0));
-                        let tip = if split_on {
-                            "Close this radio's split view"
-                        } else {
-                            "Open this radio in a split view of its own"
-                        };
-                        if split.on_hover_text(tip).clicked() {
-                            actions.push(StripAction::ToggleSplit(id));
-                        }
-                    });
-                ui.add_space(4.0);
+                // A real tab, not a chip: this strip decides which radio the
+                // page below belongs to, which is the one thing a row of
+                // buttons cannot say. The mute and split toggles ride inside
+                // their own tab the way a close box rides in a browser's.
+                let body = bar.tab_body_accent(ui, here, accent, |ui| {
+                    let mut label = RichText::new(Self::display_name(tab)).size(12.5);
+                    if here {
+                        label = label.strong().color(crate::theme::TEXT_STRONG());
+                    } else if elsewhere {
+                        label = label.weak();
+                    }
+                    ui.label(label);
+                    // On the air: the one thing worth seeing from any tab.
+                    if tab.app.tab_tx_on() {
+                        ui.label(RichText::new("● TX").size(11.0).color(crate::theme::ALERT()));
+                    } else if tab.app.tab_error() {
+                        ui.label(RichText::new("⚠").size(11.0).color(crate::theme::ALERT()));
+                    }
+                    let mute = crate::chrome::chip(
+                        ui,
+                        tab.muted,
+                        RichText::new(if tab.muted { "🔇" } else { "🔊" }).size(11.0),
+                    );
+                    if mute.on_hover_text("Mute this radio's audio").clicked() {
+                        actions.push(StripAction::Mute { id, muted: !tab.muted });
+                    }
+                    let split = crate::chrome::chip(ui, split_on, RichText::new("⊞").size(11.0));
+                    let tip = if split_on {
+                        "Close this radio's split view"
+                    } else {
+                        "Open this radio in a split view of its own"
+                    };
+                    if split.on_hover_text(tip).clicked() {
+                        actions.push(StripAction::ToggleSplit(id));
+                    }
+                });
+                // The tab itself switches the pane — anywhere on it that is not
+                // one of its own buttons, which keep their clicks.
+                let body = if elsewhere {
+                    body.response.on_hover_text("Already open in another split view")
+                } else if here {
+                    body.response
+                } else {
+                    body.response.on_hover_text("Show this radio here")
+                };
+                if body.clicked() && !here && !elsewhere {
+                    actions.push(StripAction::Show { pane, id });
+                }
             }
-            if self.factory.is_some()
-                && crate::chrome::chip(ui, false, RichText::new("+").size(13.0))
+            if self.factory.is_some() {
+                bar.end_tabs(ui);
+                if crate::chrome::chip(ui, false, RichText::new("+").size(13.0))
                     .on_hover_text("Add a radio")
                     .clicked()
-            {
-                actions.push(StripAction::Add);
+                {
+                    actions.push(StripAction::Add);
+                }
             }
         });
     }
@@ -546,9 +548,12 @@ impl eframe::App for MultiApp {
             if self.strip_wanted() {
                 egui::Panel::top(egui::Id::new("radio-tab-strip"))
                     .frame(
+                        // No bottom margin: the tabs' baseline is the top edge
+                        // of the page below them, and a gap under it would
+                        // leave the strip floating over the page instead.
                         egui::Frame::new()
                             .fill(crate::theme::BG_DEEP())
-                            .inner_margin(egui::Margin::symmetric(8, 3)),
+                            .inner_margin(egui::Margin { left: 8, right: 8, top: 3, bottom: 0 }),
                     )
                     .show(ui, |ui| self.strip_row(ui, 0, &mut actions));
             }
@@ -579,7 +584,7 @@ impl eframe::App for MultiApp {
                 // This pane's strip — switches what the pane shows.
                 egui::Frame::new()
                     .fill(crate::theme::BG_DEEP())
-                    .inner_margin(egui::Margin::symmetric(8, 3))
+                    .inner_margin(egui::Margin { left: 8, right: 8, top: 3, bottom: 0 })
                     .show(&mut pane_ui, |ui| {
                         ui.set_min_width(ui.available_width());
                         self.strip_row(ui, k, &mut actions);

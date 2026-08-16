@@ -924,6 +924,328 @@ fn chip_impl(
     resp
 }
 
+/// Corner cut — or radius, under the rounded styles — of a tab's two *top*
+/// corners. The bottom two stay square: that edge is where the tab meets the
+/// page it opens, and a folder tab is not shaped there.
+const TAB_CUT: f32 = 6.0;
+/// How far below the top of the strip an unselected tab sits. The step is what
+/// says the selected tab is in front of the others rather than beside them.
+const TAB_LIFT: f32 = 3.0;
+/// The gap between neighbouring tabs. Small on purpose: a tab strip has to read
+/// as one run of folder edges, not as a row of separate buttons.
+const TAB_GAP: f32 = 2.0;
+
+/// A tab's padding. Roomier than a chip's ([`chip_padding`]) in both
+/// directions, because a tab is a place the operator goes rather than a button
+/// they press — and because the extra height is what lets an unselected tab
+/// drop by [`TAB_LIFT`] without its label ending up cramped against the top.
+fn tab_padding(ui: &Ui) -> egui::Vec2 {
+    ui.spacing().button_padding + vec2(6.0, 4.0)
+}
+
+/// The strip [`tab_bar`] is building.
+///
+/// It hands out the tabs and remembers where each one landed, so the baseline
+/// can be drawn along the row afterwards with a gap under the selected one.
+/// That gap is the whole point: it is the only mark that says *this* tab and
+/// the page below it are the same surface. A row of chips cannot say that, and
+/// a chip strip standing in for a tab strip — as the Settings dialog's did —
+/// reads as a row of buttons that happen to stay pressed.
+pub struct TabBar {
+    /// Every tab drawn, in layout order, and whether it was the selected one.
+    tabs: Vec<(Rect, bool)>,
+    /// The strip's own left and right edge — how far its baseline runs. The
+    /// right is `f32::MIN` where the width was not known (an unbounded
+    /// measuring pass), and the widest row stands in for it.
+    span: (f32, f32),
+    /// The row's ordinary item spacing, kept for whatever follows the tabs —
+    /// see [`TabBar::end_tabs`].
+    spacing: egui::Vec2,
+}
+
+/// A row of tabs: the strip's tabs in a wrapping row, with the baseline drawn
+/// under them afterwards, broken under the selected one.
+///
+/// The closure gets the strip as well as the `Ui`, so a bar may carry ordinary
+/// widgets beside its tabs (the Winlink header's session buttons) — only what
+/// is drawn through [`TabBar::tab`] is treated as a tab, and the baseline runs
+/// on under everything else.
+pub fn tab_bar<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui, &mut TabBar) -> R) -> R {
+    let left = ui.cursor().left();
+    let avail = ui.available_width();
+    let mut bar = TabBar {
+        tabs: Vec::new(),
+        span: (left, if avail.is_finite() { left + avail } else { f32::MIN }),
+        spacing: ui.spacing().item_spacing,
+    };
+    let inner = ui
+        .horizontal_wrapped(|ui| {
+            // Shoulder to shoulder, and stacked without a gap where the strip
+            // wraps: a second row of tabs sits on the first one's baseline the
+            // way a second row of folders sits in a drawer.
+            ui.spacing_mut().item_spacing = vec2(TAB_GAP, 0.0);
+            add(ui, &mut bar)
+        })
+        .inner;
+    bar.paint_baseline(ui);
+    inner
+}
+
+impl TabBar {
+    /// One tab carrying `text`. Click it like a chip; it reports the same
+    /// [`Response`].
+    pub fn tab(&mut self, ui: &mut Ui, selected: bool, text: impl Into<RichText>) -> Response {
+        let galley = WidgetText::from(text.into()).into_galley(
+            ui,
+            None,
+            f32::INFINITY,
+            FontSelection::Style(TextStyle::Button),
+        );
+        let size = galley.size() + tab_padding(ui) * 2.0;
+        let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+        if ui.is_rect_visible(rect) {
+            let face = tab_face(rect, selected);
+            let (shape, ink) = tab_shape(face, selected, resp.hovered(), theme::CYAN());
+            let p = ui.painter();
+            p.add(shape);
+            let pos = Pos2 {
+                x: face.center().x - galley.size().x / 2.0,
+                y: face.center().y - galley.size().y / 2.0,
+            };
+            p.galley(pos, galley, ink);
+        }
+        self.tabs.push((rect, selected));
+        resp
+    }
+
+    /// A tab wide enough to hold `add` — for a strip whose tabs carry more than
+    /// a label (the radio strip's mute and split-view buttons, which belong to
+    /// their tab the way a close box belongs to a browser's).
+    ///
+    /// The returned response is the tab's own background, sensed *below* its
+    /// contents: a click anywhere on the tab that did not land on a widget
+    /// inside it comes back here, and the widgets keep their own clicks.
+    pub fn tab_body<R>(
+        &mut self,
+        ui: &mut Ui,
+        selected: bool,
+        add: impl FnOnce(&mut Ui) -> R,
+    ) -> egui::InnerResponse<R> {
+        self.tab_body_accent(ui, selected, theme::CYAN(), add)
+    }
+
+    /// [`TabBar::tab_body`] in a colour of its own — for a strip where the
+    /// selected tab has more than one state to report (the radio strip marks
+    /// the pane holding the keyboard in pink, the rest in cyan).
+    pub fn tab_body_accent<R>(
+        &mut self,
+        ui: &mut Ui,
+        selected: bool,
+        accent: Color32,
+        add: impl FnOnce(&mut Ui) -> R,
+    ) -> egui::InnerResponse<R> {
+        // The face has to be painted under the content, and its size is only
+        // known once the content has been laid out — so reserve the slot now
+        // and fill it in afterwards.
+        let slot = ui.painter().add(Shape::Noop);
+        let pad = tab_padding(ui);
+        let (x, y) = (pad.x.round() as i8, pad.y.round() as i8);
+        let spacing = self.spacing;
+        let out = ui.scope_builder(egui::UiBuilder::new().sense(Sense::click()), |ui| {
+            egui::Frame::new()
+                .inner_margin(egui::Margin {
+                    left: x,
+                    right: x,
+                    // The lift comes out of the top margin, so a tab's content
+                    // sits centred in the face rather than in the slot.
+                    top: y + TAB_LIFT.round() as i8,
+                    bottom: y,
+                })
+                .show(ui, |ui| {
+                    // Inside the tab, ordinary spacing again: the strip's own
+                    // shoulder-to-shoulder gap belongs between tabs, not
+                    // between a tab's label and its buttons.
+                    ui.spacing_mut().item_spacing = spacing;
+                    add(ui)
+                })
+                .inner
+        });
+        let rect = out.response.rect;
+        if ui.is_rect_visible(rect) {
+            // `contains_pointer`, not `hovered`: the pointer resting on a tab's
+            // own mute button is still on the tab, and a tab that unlit itself
+            // there would read as two things side by side.
+            let hovered = out.response.contains_pointer();
+            let (shape, _) = tab_shape(tab_face(rect, selected), selected, hovered, accent);
+            ui.painter().set(slot, shape);
+        }
+        self.tabs.push((rect, selected));
+        out
+    }
+
+    /// End the run of tabs: puts the row's ordinary spacing back and leaves a
+    /// gap, for a strip that carries buttons beside its tabs. Without it they
+    /// would inherit the tabs' shoulder-to-shoulder spacing and read as part of
+    /// the strip.
+    pub fn end_tabs(&self, ui: &mut Ui) {
+        ui.spacing_mut().item_spacing = self.spacing;
+        ui.add_space(10.0);
+    }
+
+    /// The line along the bottom of each row of tabs — the top edge of the page
+    /// the strip opens onto, drawn everywhere except under the selected tab.
+    fn paint_baseline(&self, ui: &Ui) {
+        let right = self.tabs.iter().map(|(r, _)| r.right()).fold(self.span.1, f32::max);
+        let stroke = Stroke::new(1.2, theme::CYAN_DIM());
+        let p = ui.painter();
+        for (y, segments) in baseline_segments(&self.tabs, (self.span.0, right)) {
+            for (a, b) in segments {
+                p.hline(a..=b, y, stroke);
+            }
+        }
+    }
+}
+
+/// Where the baseline runs under a strip of tabs: one entry per row of tabs,
+/// keyed by that row's bottom edge, each holding the x segments that are drawn
+/// — everything between `span`'s two edges except the selected tab.
+///
+/// Pure arithmetic so the join can be tested without a painter: the gap under
+/// the selected tab is the one thing about a tab strip that must not break.
+fn baseline_segments(tabs: &[(Rect, bool)], span: (f32, f32)) -> Vec<(f32, Vec<(f32, f32)>)> {
+    // Rows in the order they were drawn, each with the selected tab's span (a
+    // wrapped strip has one row per line, and only one of them has the gap).
+    let mut rows: Vec<(f32, Vec<(f32, f32)>)> = Vec::new();
+    for (rect, selected) in tabs {
+        let y = rect.bottom();
+        let row = match rows.iter().position(|(ry, _)| (*ry - y).abs() < 0.5) {
+            Some(i) => i,
+            None => {
+                rows.push((y, Vec::new()));
+                rows.len() - 1
+            }
+        };
+        if *selected {
+            rows[row].1.push((rect.left(), rect.right()));
+        }
+    }
+    rows.into_iter()
+        .map(|(y, gaps)| {
+            let mut segments = Vec::new();
+            let mut x = span.0;
+            for (l, r) in gaps {
+                if l > x {
+                    segments.push((x, l));
+                }
+                x = x.max(r);
+            }
+            if span.1 > x {
+                segments.push((x, span.1));
+            }
+            (y, segments)
+        })
+        .collect()
+}
+
+/// The rect a tab is actually painted in, given the slot it was allocated: the
+/// selected one fills its slot and reaches a point past the baseline so the
+/// join is seamless; the others start [`TAB_LIFT`] lower, behind it.
+fn tab_face(rect: Rect, selected: bool) -> Rect {
+    if selected {
+        Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() + 1.0))
+    } else {
+        Rect::from_min_max(pos2(rect.left(), rect.top() + TAB_LIFT), rect.max)
+    }
+}
+
+/// The outline of a tab in the current button style: up the left edge, across
+/// the top, down the right — and *open* along the bottom, which is what a
+/// closed rect cannot express. Filled as a polygon (the fill closes itself
+/// along the bottom) and stroked as a line, so no border is ever drawn across
+/// the join with the page.
+fn tab_outline(rect: Rect, style: ChromeStyle) -> Vec<Pos2> {
+    let (l, r, t, b) = (rect.left(), rect.right(), rect.top(), rect.bottom());
+    let cut = TAB_CUT.min(rect.height() * 0.4).min(rect.width() * 0.35);
+    match style {
+        ChromeStyle::Angled => vec![
+            pos2(l, b),
+            pos2(l, t + cut),
+            pos2(l + cut, t),
+            pos2(r - cut, t),
+            pos2(r, t + cut),
+            pos2(r, b),
+        ],
+        ChromeStyle::Rounded => {
+            let mut pts = vec![pos2(l, b)];
+            quarter_turn(&mut pts, pos2(l + cut, t + cut), cut, std::f32::consts::PI);
+            quarter_turn(&mut pts, pos2(r - cut, t + cut), cut, 1.5 * std::f32::consts::PI);
+            pts.push(pos2(r, b));
+            pts
+        }
+        _ => vec![pos2(l, b), pos2(l, t), pos2(r, t), pos2(r, b)],
+    }
+}
+
+/// Points along a quarter circle of `radius` about `center`, from `from`
+/// radians clockwise on screen (y grows downwards).
+fn quarter_turn(out: &mut Vec<Pos2>, center: Pos2, radius: f32, from: f32) {
+    const STEPS: usize = 5;
+    for k in 0..=STEPS {
+        let a = from + std::f32::consts::FRAC_PI_2 * k as f32 / STEPS as f32;
+        out.push(center + vec2(a.cos() * radius, a.sin() * radius));
+    }
+}
+
+/// The shape a tab wears, and the colour its label is drawn in.
+///
+/// The selected tab is filled with the *page's* own colour and outlined in the
+/// accent, so it and the page below read as one surface; the rest are darker
+/// than the page and outlined in a hairline, so they read as sitting behind it.
+/// That difference — not the fill alone — is what tells a tab from a chip.
+fn tab_shape(face: Rect, selected: bool, hovered: bool, accent: Color32) -> (Shape, Color32) {
+    let (fill, line, ink) = if selected {
+        (theme::PANEL(), accent, theme::TEXT_STRONG())
+    } else if hovered {
+        (theme::FILL(), theme::CYAN_DIM(), theme::TEXT_STRONG())
+    } else {
+        (theme::BG_DEEP(), theme::LINE_LIT(), theme::TEXT())
+    };
+    let style = theme::button_style();
+    let pts = tab_outline(face, style);
+    let stroke = Stroke::new(1.2, line);
+    let mut shapes = Vec::new();
+    match style {
+        ChromeStyle::Gradient => {
+            shapes.push(grad_rect(face, lerp(fill, Color32::WHITE, 0.18), fill));
+            shapes.push(Shape::line(pts, stroke));
+        }
+        ChromeStyle::Bevel => {
+            shapes.push(Shape::convex_polygon(pts, fill, Stroke::NONE));
+            let rr = face.shrink(0.75);
+            let light = Stroke::new(1.5, lerp(fill, Color32::WHITE, 0.35));
+            let dark = Stroke::new(1.5, lerp(fill, Color32::BLACK, 0.5));
+            shapes.push(Shape::line_segment([rr.left_bottom(), rr.left_top()], light));
+            shapes.push(Shape::line_segment([rr.left_top(), rr.right_top()], light));
+            shapes.push(Shape::line_segment([rr.right_top(), rr.right_bottom()], dark));
+        }
+        _ => {
+            shapes.push(Shape::convex_polygon(pts.clone(), fill, Stroke::NONE));
+            shapes.push(Shape::line(pts, stroke));
+        }
+    }
+    // The accent bar across the top of the selected tab: the strip's one bright
+    // mark, so which page is open survives a glance from across the room.
+    if selected {
+        let cut = TAB_CUT.min(face.height() * 0.4).min(face.width() * 0.35);
+        let y = face.top() + 1.6;
+        shapes.push(Shape::line_segment(
+            [pos2(face.left() + cut, y), pos2(face.right() - cut, y)],
+            Stroke::new(2.2, accent),
+        ));
+    }
+    (Shape::Vec(shapes), ink)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1075,6 +1397,155 @@ mod tests {
                 r.right()
             );
         }
+    }
+
+    /// A row of tabs `w` wide and `h` tall starting at x = 10, with tab
+    /// `selected` picked, wrapping into a new row every `per_row` of them.
+    fn a_strip(count: usize, selected: usize, per_row: usize) -> Vec<(Rect, bool)> {
+        let (w, h) = (60.0, 24.0);
+        (0..count)
+            .map(|i| {
+                let (col, row) = (i % per_row, i / per_row);
+                let min = pos2(10.0 + col as f32 * w, 5.0 + row as f32 * h);
+                (Rect::from_min_size(min, vec2(w, h)), i == selected)
+            })
+            .collect()
+    }
+
+    /// The gap under the selected tab is the whole of what makes a tab strip a
+    /// tab strip: it is the only mark that says the tab and the page below it
+    /// are one surface. Everything either side of it is drawn.
+    #[test]
+    fn the_baseline_breaks_under_the_selected_tab() {
+        let tabs = a_strip(4, 1, 4);
+        let rows = baseline_segments(&tabs, (10.0, 400.0));
+        assert_eq!(rows.len(), 1, "one row of tabs, one baseline");
+        let (y, segments) = &rows[0];
+        assert_eq!(*y, 29.0, "the baseline runs along the bottom of the tabs");
+        assert_eq!(segments, &vec![(10.0, 70.0), (130.0, 400.0)], "tab 1 spans 70..130");
+    }
+
+    /// A selected tab at either end leaves one segment, not an empty one of
+    /// zero width — and the line still runs to the far edge of the strip, past
+    /// the last tab, because that is where the page below ends.
+    #[test]
+    fn a_baseline_has_no_empty_segments_at_the_ends() {
+        for (pick, want) in
+            [(0usize, vec![(70.0, 400.0)]), (3, vec![(10.0, 190.0), (250.0, 400.0)])]
+        {
+            let rows = baseline_segments(&a_strip(4, pick, 4), (10.0, 400.0));
+            assert_eq!(rows[0].1, want, "with tab {pick} selected");
+        }
+    }
+
+    /// The Settings strip wraps to two lines on a narrow window. Each line is a
+    /// row of tabs in its own right and gets its own baseline — with the gap on
+    /// whichever line the selected tab landed on.
+    #[test]
+    fn a_wrapped_strip_gets_a_baseline_per_row() {
+        let rows = baseline_segments(&a_strip(6, 4, 3), (10.0, 400.0));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1, vec![(10.0, 400.0)], "the first row is unbroken");
+        assert_eq!(rows[1].1, vec![(10.0, 70.0), (130.0, 400.0)], "tab 4 is the second of its row");
+    }
+
+    /// A tab is open at the bottom in every chrome style: that edge is the join
+    /// with the page, and a border across it would draw the tab shut. The
+    /// outline therefore has to start and end on the bottom edge, and touch it
+    /// nowhere in between.
+    #[test]
+    fn every_tab_outline_is_open_along_its_bottom_edge() {
+        let rect = Rect::from_min_max(pos2(10.0, 20.0), pos2(90.0, 50.0));
+        for style in [
+            ChromeStyle::Angled,
+            ChromeStyle::Rounded,
+            ChromeStyle::Rectangular,
+            ChromeStyle::Gradient,
+            ChromeStyle::Bevel,
+        ] {
+            let pts = tab_outline(rect, style);
+            assert_eq!(pts.first(), Some(&pos2(10.0, 50.0)), "{style:?} starts bottom-left");
+            assert_eq!(pts.last(), Some(&pos2(90.0, 50.0)), "{style:?} ends bottom-right");
+            assert!(
+                pts[1..pts.len() - 1].iter().all(|p| p.y < 50.0),
+                "{style:?} runs back along its own bottom edge"
+            );
+            assert!(
+                pts.iter().all(|p| rect.expand(0.01).contains(*p)),
+                "{style:?} paints outside the tab"
+            );
+        }
+    }
+
+    /// The selected tab reaches past the baseline so the two surfaces meet with
+    /// no seam; an unselected one starts lower, which is the step that says it
+    /// is behind. Both keep the bottom edge they were allocated, so the whole
+    /// row shares one baseline.
+    #[test]
+    fn a_selected_tab_stands_taller_than_its_neighbours() {
+        let slot = Rect::from_min_max(pos2(10.0, 20.0), pos2(90.0, 50.0));
+        let (on, off) = (tab_face(slot, true), tab_face(slot, false));
+        assert!(on.top() < off.top(), "the selected tab is the taller one");
+        assert_eq!(off.top() - on.top(), TAB_LIFT);
+        assert!(on.bottom() > slot.bottom(), "the selected tab crosses the baseline");
+        assert_eq!(off.bottom(), slot.bottom());
+    }
+
+    /// One frame of a one-tab strip carrying a chip, with the pointer clicking
+    /// at `pos`. Returns where the tab and the chip landed, and which of them
+    /// took the click.
+    fn strip_click(ctx: &egui::Context, pos: Option<Pos2>) -> (Rect, Rect, bool, bool) {
+        let mut input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+            ..Default::default()
+        };
+        if let Some(pos) = pos {
+            let button = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            input.events = vec![egui::Event::PointerMoved(pos), button(true), button(false)];
+        }
+        let (mut tab, mut inner) = (Rect::NOTHING, Rect::NOTHING);
+        let (mut tab_hit, mut chip_hit) = (false, false);
+        let _ = ctx.run_ui(input, |ui| {
+            tab_bar(ui, |ui, bar| {
+                let out = bar.tab_body(ui, true, |ui| {
+                    ui.label("Radio 1");
+                    let c = chip(ui, false, "🔊");
+                    inner = c.rect;
+                    chip_hit = c.clicked();
+                });
+                tab = out.response.rect;
+                tab_hit = out.response.clicked();
+            });
+        });
+        (tab, inner, tab_hit, chip_hit)
+    }
+
+    /// The radio strip's tabs carry buttons of their own (mute, split view). A
+    /// click on one of those belongs to the button; a click anywhere else on
+    /// the tab switches to that radio. Getting this backwards would mute a
+    /// radio every time the operator reached for its tab — the tab's own sense
+    /// has to sit *below* its contents.
+    #[test]
+    fn a_tab_body_yields_its_clicks_to_the_buttons_inside_it() {
+        let ctx = egui::Context::default();
+        // A first frame to place everything: egui hit-tests against the layout
+        // of the frame before.
+        let (tab, chip, ..) = strip_click(&ctx, None);
+        assert!(tab.contains(chip.center()), "the chip is inside its tab");
+
+        let (.., tab_hit, chip_hit) = strip_click(&ctx, Some(chip.center()));
+        assert!(chip_hit, "the chip did not get its own click");
+        assert!(!tab_hit, "the tab stole its chip's click");
+
+        let elsewhere = pos2(tab.left() + 3.0, tab.center().y);
+        let (.., tab_hit, chip_hit) = strip_click(&ctx, Some(elsewhere));
+        assert!(tab_hit, "clicking the tab itself did nothing");
+        assert!(!chip_hit);
     }
 
     /// The Angled chip outline is the app's signature shape and must never

@@ -969,11 +969,12 @@ is, and what crosses the network is the spectrum, the audio and the commands.
 Such a tab is closed from the roster like any other, which hangs up and changes
 nothing on the server.
 
-**The tab strip.** Each radio's controls sit in a small box of their own on
-the strip. Click a radio's name to switch to it. Everything else keeps
-running behind the radio you are looking at — audio keeps playing, digital
-modes keep decoding, skimmers keep skimming, the scanner keeps scanning.
-Besides its name, each box carries:
+**The tab strip.** Each radio gets a tab of its own, and the open one is joined
+to the page below it. Click anywhere on a tab — not just its name — to switch
+to that radio; the small buttons a tab carries keep their own clicks.
+Everything else keeps running behind the radio you are looking at — audio keeps
+playing, digital modes keep decoding, skimmers keep skimming, the scanner keeps
+scanning. Besides its name, each tab carries:
 
 - **● TX** — this radio is transmitting. Visible from every tab on purpose:
   it is the one thing worth knowing about a radio you are not looking at.
@@ -994,7 +995,7 @@ side; a third radio makes three. Every pane carries its own copy of the
 radio strip, so any pane can be switched to any radio that is not already on
 screen — a radio is never shown twice, and its name is greyed out in the
 other panes' strips while it is up. Keyboard shortcuts and MIDI go to one
-pane at a time: the one whose box carries the accent outline, and clicking
+pane at a time: the one whose open tab carries the accent outline, and clicking
 anywhere in a pane moves them there. Close the split views (or their radios)
 and the last pane left takes the whole window back.
 

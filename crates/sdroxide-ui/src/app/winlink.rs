@@ -231,7 +231,9 @@ impl crate::app::SdroxideApp {
     }
 
     fn mail_header(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
-        ui.horizontal_wrapped(|ui| {
+        // The folders are tabs — each opens a different listing below — so they
+        // are drawn as tabs, and the session buttons that follow stay buttons.
+        crate::chrome::tab_bar(ui, |ui, bar| {
             for folder in MailFolder::ALL {
                 let count = self.mail.status.counts[folder as usize];
                 let label = if count > 0 {
@@ -239,12 +241,12 @@ impl crate::app::SdroxideApp {
                 } else {
                     folder.label().to_string()
                 };
-                if ui.selectable_label(self.mail.folder == folder, label).clicked() {
+                if bar.tab(ui, self.mail.folder == folder, label).clicked() {
                     self.mail.select_folder(folder);
                 }
             }
 
-            ui.separator();
+            bar.end_tabs(ui);
 
             let busy = self.mail.status.busy;
             // One button, two jobs. A session that cannot be stopped is a

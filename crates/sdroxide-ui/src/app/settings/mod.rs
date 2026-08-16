@@ -1042,14 +1042,19 @@ impl SdroxideApp {
         tabs.push((SettingsTab::Remote, "Remote"));
         tabs.push((SettingsTab::Tle, "TLE"));
         // Wrapped: the tab strip no longer fits the window's width on one line.
-        ui.horizontal_wrapped(|ui| {
+        // Real tabs rather than chips — a chip strip standing in for a tab strip
+        // reads as a row of buttons that happen to stay pressed, with nothing to
+        // say the page below belongs to the one that is lit.
+        crate::chrome::tab_bar(ui, |ui, bar| {
             for (t, label) in tabs {
-                if crate::chrome::chip(ui, *io.tab == t, label).clicked() {
+                if bar.tab(ui, *io.tab == t, label).clicked() {
                     *io.tab = t;
                 }
             }
         });
-        ui.separator();
+        // No separator: the strip's own baseline is the line between the tabs
+        // and the page they open.
+        ui.add_space(8.0);
 
         let backend = io.radio_edit.as_ref().map(|c| c.backend);
 
