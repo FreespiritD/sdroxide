@@ -62,6 +62,39 @@ use self::persist::{
 use self::settings::servers::TciServerStatus;
 use self::settings::{SatEditState, SettingsTab, TestOutcome};
 
+/// What a greyed-out transmit control says on hover.
+///
+/// Every operating panel has one, and a disabled button with no explanation
+/// reads as a broken one — the reason it is dead is a property of the radio,
+/// not of the panel, so it is worded once here rather than per mode.
+const RX_ONLY_HINT: &str = "This radio can only receive — it has no transmitter to key.";
+
+/// Attach [`RX_ONLY_HINT`] to a control greyed *because* this radio cannot
+/// transmit.
+///
+/// Only then: several of these controls are also greyed for reasons of their
+/// own — no station selected, nothing composed yet, an over already running —
+/// and naming the receiver there would be the wrong answer to "why can't I
+/// press this". `tx_ok` is [`SdroxideApp::tx_capable`] at the call site.
+pub(in crate::app) fn rx_only_hint(resp: egui::Response, tx_ok: bool) -> egui::Response {
+    if tx_ok { resp } else { resp.on_disabled_hover_text(RX_ONLY_HINT) }
+}
+
+/// Draw a control that puts this station on the air: as `add` draws it on a
+/// transceiver, greyed out and explaining itself on a receiver.
+///
+/// For the controls whose only condition is that there *is* a transmitter. One
+/// that is also greyed for a reason of its own keeps its own
+/// `add_enabled_ui` and passes the response through [`rx_only_hint`], so the
+/// two reasons do not end up wearing each other's explanation.
+pub(in crate::app) fn tx_gated(
+    ui: &mut egui::Ui,
+    tx_ok: bool,
+    add: impl FnOnce(&mut egui::Ui) -> egui::Response,
+) -> egui::Response {
+    rx_only_hint(ui.add_enabled_ui(tx_ok, add).inner, tx_ok)
+}
+
 pub struct SdroxideApp {
     ctrl: Box<dyn RadioController>,
     caps: Option<DeviceCaps>,
@@ -1044,6 +1077,20 @@ impl SdroxideApp {
         self.radio_notice = Some(text);
     }
 
+    /// Whether this radio has a transmitter at all.
+    ///
+    /// `tx_channels == 0` is how a receive-only interface says so — an RTL
+    /// dongle, a SpyServer, a HackRF nobody armed — and it is the same field
+    /// the engine's own transmit gate reads, so a control this answers `false`
+    /// for could not have keyed anything anyway. Greying it out is what makes
+    /// that visible before it is pressed instead of after.
+    ///
+    /// No capabilities yet reads as "cannot", matching the rest of the window:
+    /// the top bar leaves its PTT out until the engine has said what it has.
+    pub(in crate::app) fn tx_capable(&self) -> bool {
+        self.caps.as_ref().is_some_and(|c| c.is_transmit_capable())
+    }
+
     /// What this radio should be called while the operator hasn't named it:
     /// the interface it runs, read from the capabilities the engine reported —
     /// so the name follows a reconfiguration by itself. `None` while there is
@@ -1091,5 +1138,50 @@ impl SdroxideApp {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Press a chip drawn inside a `Ui` that is enabled or not, and report
+    /// whether the press reached it. Two passes: the first tells egui where the
+    /// chip is, the second aims at it.
+    fn press_chip(enabled: bool) -> bool {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 200.0));
+        let draw = |ui: &mut egui::Ui| {
+            ui.add_enabled_ui(enabled, |ui| crate::chrome::chip(ui, false, "REPLY")).inner
+        };
+
+        let mut at = egui::Pos2::ZERO;
+        let _ =
+            ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
+                at = draw(ui).rect.center();
+            });
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let mut clicked = false;
+        for events in [vec![egui::Event::PointerMoved(at), button(true)], vec![button(false)]] {
+            let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            let _ = ctx.run_ui(input, |ui| clicked |= draw(ui).clicked());
+        }
+        clicked
+    }
+
+    /// Every transmit control greyed out for a receive-only radio is greyed the
+    /// same way — drawn inside a disabled `Ui` — so this is the one mechanism
+    /// all eleven operating panels rest on. A chip that merely *looked* dead
+    /// while still reporting clicks would key a QSO from a panel that says it
+    /// cannot, so pin it here rather than eleven times over.
+    #[test]
+    fn a_control_in_a_disabled_ui_cannot_be_clicked() {
+        assert!(press_chip(true), "the same press has to work when the radio can transmit");
+        assert!(!press_chip(false), "a greyed transmit control took a click");
     }
 }

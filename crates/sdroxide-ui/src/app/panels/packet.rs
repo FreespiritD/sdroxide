@@ -12,7 +12,7 @@
 use eframe::egui::{self, RichText};
 use sdroxide_types::{Command, PacketStatus};
 
-use crate::app::SdroxideApp;
+use crate::app::{SdroxideApp, tx_gated};
 use crate::theme;
 
 impl SdroxideApp {
@@ -27,6 +27,9 @@ impl SdroxideApp {
             ui.label(RichText::new("starting the packet modem…").weak());
             return;
         };
+        // Monitoring the channel is worth doing on a receiver; announcing
+        // ourselves on it is not.
+        let tx_ok = self.tx_capable();
 
         ui.horizontal(|ui| {
             // ── MONITOR ───────────────────────────────────────────────────
@@ -111,14 +114,16 @@ impl SdroxideApp {
                 ui.label(RichText::new("in Settings → Winlink first.").weak());
 
                 ui.add_space(10.0);
-                if crate::chrome::chip_accent(
-                    ui,
-                    false,
-                    RichText::new(" BEACON ").strong(),
-                    theme::GREEN(),
-                    theme::INK_ON_CYAN(),
-                )
-                .on_hover_text("Send one UNPROTO identification frame now")
+                if tx_gated(ui, tx_ok, |ui| {
+                    crate::chrome::chip_accent(
+                        ui,
+                        false,
+                        RichText::new(" BEACON ").strong(),
+                        theme::GREEN(),
+                        theme::INK_ON_CYAN(),
+                    )
+                    .on_hover_text("Send one UNPROTO identification frame now")
+                })
                 .clicked()
                 {
                     cmds.push(Command::PacketBeacon);

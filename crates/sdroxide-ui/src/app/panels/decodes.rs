@@ -12,8 +12,8 @@ use sdroxide_types::{Command, Decode, Mode};
 use crate::theme::ThemedScroll;
 use crate::time::now_unix;
 
-use crate::app::SdroxideApp;
 use crate::app::panels::widgets::{row_cell, snr_color, station_card};
+use crate::app::{SdroxideApp, rx_only_hint, tx_gated};
 
 /// How the FT8/FT4 decode list orders the stations within each turn.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -162,6 +162,9 @@ impl SdroxideApp {
         let mut hover_ll: Option<(f64, f64)> = None;
         let cq_only = self.digi_cq_only;
         let new_only = self.digi_new_only;
+        // Read once for the whole list: every row's REPLY and queue chip asks
+        // the same question of the same radio.
+        let tx_ok = self.tx_capable();
         let auto_tx_freq = self.digi_status.as_ref().map(|s| s.config.auto_tx_freq).unwrap_or(true);
         let sort = self.digi_sort;
         let desc = self.digi_sort_desc;
@@ -365,29 +368,38 @@ impl SdroxideApp {
                     // pin to the right edge in either layout. The queue chip
                     // marks a station for later; pressing it again drops the
                     // station, so one button both queues and un-queues.
+                    //
+                    // Both are greyed on a receiver: answering a station and
+                    // lining one up to answer later are the same promise to
+                    // transmit, and a list of stations you cannot work should
+                    // say so on the row rather than only when the key fails.
                     let buttons = |ui: &mut egui::Ui| {
-                        let resp = crate::chrome::chip_accent(
-                            ui,
-                            false,
-                            RichText::new("REPLY").size(12.0).strong(),
-                            if to_me {
-                                crate::theme::YELLOW()
-                            } else if cq {
-                                crate::theme::GREEN()
+                        let resp = tx_gated(ui, tx_ok, |ui| {
+                            crate::chrome::chip_accent(
+                                ui,
+                                false,
+                                RichText::new("REPLY").size(12.0).strong(),
+                                if to_me {
+                                    crate::theme::YELLOW()
+                                } else if cq {
+                                    crate::theme::GREEN()
+                                } else {
+                                    crate::theme::CYAN()
+                                },
+                                crate::theme::INK_ON_CYAN(),
+                            )
+                        });
+                        let qresp = tx_gated(ui, tx_ok, |ui| {
+                            crate::chrome::chip(
+                                ui,
+                                queued,
+                                RichText::new(if queued { "＋" } else { "+" }).size(12.0).strong(),
+                            )
+                            .on_hover_text(if queued {
+                                "Queued — click to remove"
                             } else {
-                                crate::theme::CYAN()
-                            },
-                            crate::theme::INK_ON_CYAN(),
-                        );
-                        let qresp = crate::chrome::chip(
-                            ui,
-                            queued,
-                            RichText::new(if queued { "＋" } else { "+" }).size(12.0).strong(),
-                        )
-                        .on_hover_text(if queued {
-                            "Queued — click to remove"
-                        } else {
-                            "Work this station after the current one"
+                                "Work this station after the current one"
+                            })
                         });
                         (resp, qresp)
                     };
@@ -1147,14 +1159,21 @@ impl SdroxideApp {
         // Action buttons (larger for touch). Wrapped, so a column too narrow
         // for all three takes a second row rather than clipping the last one —
         // and STOP TX is the one that would have been clipped.
+        // Only the two controls that put us on the air are gated on there being
+        // a transmitter: STOP QSO and STOP TX stay live, because a stop is
+        // worth having even where it should have nothing to stop.
+        let tx_ok = self.tx_capable();
         ui.horizontal_wrapped(|ui| {
-            let cq = ui.add_enabled_ui(!in_qso, |ui| {
-                crate::chrome::chip_accent(
-                    ui,
-                    false,
-                    RichText::new("  CALL CQ  ").size(15.0).strong(),
-                    crate::theme::GREEN(),
-                    crate::theme::INK_ON_CYAN(),
+            let cq = ui.add_enabled_ui(!in_qso && tx_ok, |ui| {
+                rx_only_hint(
+                    crate::chrome::chip_accent(
+                        ui,
+                        false,
+                        RichText::new("  CALL CQ  ").size(15.0).strong(),
+                        crate::theme::GREEN(),
+                        crate::theme::INK_ON_CYAN(),
+                    ),
+                    tx_ok,
                 )
             });
             if cq.inner.clicked() {
@@ -1206,14 +1225,19 @@ impl SdroxideApp {
                     .char_limit(13)
                     .hint_text("free text (13 chars)"),
             );
-            let send = crate::chrome::chip_accent(
-                ui,
-                false,
-                RichText::new("SEND").size(11.0).strong(),
-                crate::theme::CYAN(),
-                crate::theme::INK_ON_CYAN(),
-            );
-            let entered = entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let send = tx_gated(ui, tx_ok, |ui| {
+                crate::chrome::chip_accent(
+                    ui,
+                    false,
+                    RichText::new("SEND").size(11.0).strong(),
+                    crate::theme::CYAN(),
+                    crate::theme::INK_ON_CYAN(),
+                )
+            });
+            // Return is the same button: a receiver must not have a keyboard
+            // path onto the air that the greyed chip beside it denies.
+            let entered =
+                tx_ok && entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if (send.clicked() || entered) && !self.digi_free_text.trim().is_empty() {
                 cmds.push(Command::DigiSendText(self.digi_free_text.clone()));
                 self.digi_free_text.clear();

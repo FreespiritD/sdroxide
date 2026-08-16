@@ -12,8 +12,8 @@ use sdroxide_types::{Command, Decode};
 use crate::theme::ThemedScroll;
 use crate::time::now_unix;
 
-use crate::app::SdroxideApp;
 use crate::app::panels::widgets::{row_cell, snr_color, station_card};
+use crate::app::{SdroxideApp, rx_only_hint, tx_gated};
 
 /// Roughly how many JS8 frames a message will take.
 ///
@@ -906,24 +906,32 @@ impl SdroxideApp {
         js8: &sdroxide_types::Js8Status,
     ) {
         let has_target = !self.js8_target.is_empty();
+        // Every chip in this row puts a frame on the air, so a receiver greys
+        // the lot of them — the CLEAR TO chip below only forgets a selection
+        // and stays live.
+        let tx_ok = self.tx_capable();
 
         // Actions — the lower of the two rows. Wrapped, because the right
         // column can be dragged narrow and a chip that does not fit must move
         // to the next line rather than be clipped off the edge.
         ui.horizontal_wrapped(|ui| {
-            if crate::chrome::chip(ui, false, " CQ ").clicked() {
+            // `chip_enabled` rather than a scope around the pair: this row
+            // wraps, and a child `Ui` in a wrapping row does not.
+            if rx_only_hint(crate::chrome::chip_enabled(ui, tx_ok, false, " CQ "), tx_ok).clicked()
+            {
                 cmds.push(Command::DigiCallCq);
             }
-            if crate::chrome::chip(ui, false, " HB ").clicked() {
+            if rx_only_hint(crate::chrome::chip_enabled(ui, tx_ok, false, " HB "), tx_ok).clicked()
+            {
                 cmds.push(Command::DigiSendText("@ALLCALL HB".into()));
             }
             // The queries address whichever station is selected. Shown greyed
             // rather than hidden when there is none: a row that changes shape
             // as you click around is hard to aim at, and chips that only exist
             // sometimes are chips nobody discovers.
-            ui.add_enabled_ui(has_target, |ui| {
+            ui.add_enabled_ui(has_target && tx_ok, |ui| {
                 for q in ["SNR?", "GRID?", "HEARING?", "STATUS?", "HW CPY?"] {
-                    if crate::chrome::chip(ui, false, q).clicked() {
+                    if rx_only_hint(crate::chrome::chip(ui, false, q), tx_ok).clicked() {
                         let full = format!("{} {q}", self.js8_target);
                         self.js8_last_sent = full.clone();
                         cmds.push(Command::DigiSendText(full));
@@ -933,7 +941,7 @@ impl SdroxideApp {
                 // they are the most-typed things on the band, and typing them
                 // is the one moment an operator is not watching the panel.
                 for q in ["RR", "73"] {
-                    if crate::chrome::chip(ui, false, q).clicked() {
+                    if rx_only_hint(crate::chrome::chip(ui, false, q), tx_ok).clicked() {
                         let full = format!("{} {q}", self.js8_target);
                         self.js8_last_sent = full.clone();
                         cmds.push(Command::DigiSendText(full));
@@ -964,13 +972,15 @@ impl SdroxideApp {
                 if crate::chrome::chip(ui, false, " STOP ").clicked() {
                     cmds.push(Command::DigiAbortTx);
                 }
-                send = crate::chrome::chip_accent(
-                    ui,
-                    false,
-                    " SEND ",
-                    crate::theme::ALERT(),
-                    crate::theme::INK_ON_CYAN(),
-                )
+                send = tx_gated(ui, tx_ok, |ui| {
+                    crate::chrome::chip_accent(
+                        ui,
+                        false,
+                        " SEND ",
+                        crate::theme::ALERT(),
+                        crate::theme::INK_ON_CYAN(),
+                    )
+                })
                 .clicked();
                 // Before pressing send, say how long it will take. JS8's most
                 // surprising property to a new operator is that a sentence can
@@ -991,7 +1001,8 @@ impl SdroxideApp {
                         .desired_width(ui.available_width().max(60.0))
                         .hint_text("Message…"),
                 );
-                send |= resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                // Return does what SEND does, so it has to be shut off with it.
+                send |= tx_ok && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             });
             if send && !self.text_tx.trim().is_empty() {
                 let body = self.text_tx.trim();

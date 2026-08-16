@@ -7,7 +7,7 @@
 use eframe::egui::{self, RichText};
 use sdroxide_types::Command;
 
-use crate::app::SdroxideApp;
+use crate::app::{SdroxideApp, tx_gated};
 
 impl SdroxideApp {
     pub(in crate::app) fn rade_panel(
@@ -116,15 +116,18 @@ impl SdroxideApp {
 
         // Transmit. `DigiTxActive` is the same command the main PTT button ends
         // up sending in this mode, so the two stay in step.
+        let tx_ok = self.tx_capable();
         ui.horizontal(|ui| {
             let label = if transmitting { "STOP TALKING" } else { "TALK (PTT)" };
-            let resp = crate::chrome::chip_accent(
-                ui,
-                transmitting,
-                RichText::new(label).size(13.0).strong(),
-                crate::theme::ALERT(),
-                crate::theme::TEXT_STRONG(),
-            );
+            let resp = tx_gated(ui, tx_ok, |ui| {
+                crate::chrome::chip_accent(
+                    ui,
+                    transmitting,
+                    RichText::new(label).size(13.0).strong(),
+                    crate::theme::ALERT(),
+                    crate::theme::TEXT_STRONG(),
+                )
+            });
             if resp.clicked() {
                 cmds.push(Command::DigiTxActive(!transmitting));
             }

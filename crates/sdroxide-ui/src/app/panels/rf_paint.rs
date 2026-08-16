@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use eframe::egui::{self, Color32, RichText};
 use sdroxide_types::Command;
 
-use crate::app::SdroxideApp;
 use crate::app::panels::widgets::{pick_image, sstv_section};
+use crate::app::{SdroxideApp, rx_only_hint};
 
 // ───────────────────────── RF Paint panel ──────────────────────────────
 
@@ -212,6 +212,10 @@ impl SdroxideApp {
         let transmitting = status.as_ref().map(|s| s.transmitting).unwrap_or(false);
         let progress =
             status.as_ref().map(|s| (s.tx_sent as f32 / 1000.0).clamp(0.0, 1.0)).unwrap_or(0.0);
+        // Both halves of this panel exist only to paint something onto the
+        // band, but composing and previewing still work on a receiver — it is
+        // the two TRANSMIT buttons that go grey.
+        let tx_ok = self.tx_capable();
 
         // Header: title, transmit-speed slider, and the transmit indicator.
         ui.horizontal_wrapped(|ui| {
@@ -301,13 +305,16 @@ impl SdroxideApp {
                     );
                     ui.add_space(6.0);
                     let ready = !self.rf_paint.text.trim().is_empty();
-                    ui.add_enabled_ui(ready && !transmitting, |ui| {
-                        if crate::chrome::chip_accent(
-                            ui,
-                            true,
-                            "  TRANSMIT  ",
-                            crate::theme::ALERT(),
-                            Color32::WHITE,
+                    ui.add_enabled_ui(ready && !transmitting && tx_ok, |ui| {
+                        if rx_only_hint(
+                            crate::chrome::chip_accent(
+                                ui,
+                                true,
+                                "  TRANSMIT  ",
+                                crate::theme::ALERT(),
+                                Color32::WHITE,
+                            ),
+                            tx_ok,
                         )
                         .clicked()
                             && let Some((gray, w, h)) =
@@ -355,13 +362,16 @@ impl SdroxideApp {
                     );
                     ui.add_space(6.0);
                     let ready = self.rf_paint.img_gray.is_some();
-                    ui.add_enabled_ui(ready && !transmitting, |ui| {
-                        if crate::chrome::chip_accent(
-                            ui,
-                            true,
-                            "  TRANSMIT  ",
-                            crate::theme::ALERT(),
-                            Color32::WHITE,
+                    ui.add_enabled_ui(ready && !transmitting && tx_ok, |ui| {
+                        if rx_only_hint(
+                            crate::chrome::chip_accent(
+                                ui,
+                                true,
+                                "  TRANSMIT  ",
+                                crate::theme::ALERT(),
+                                Color32::WHITE,
+                            ),
+                            tx_ok,
                         )
                         .clicked()
                             && let Some((gray, w, h)) = &self.rf_paint.img_gray

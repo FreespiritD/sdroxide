@@ -10,8 +10,8 @@ use sdroxide_types::{Command, Decode};
 
 use crate::theme::ThemedScroll;
 
-use crate::app::SdroxideApp;
 use crate::app::panels::widgets::pick_image;
+use crate::app::{SdroxideApp, tx_gated};
 use crate::time::now_unix;
 
 /// How long an FSQ station stays lit on the maps after it was last heard.
@@ -163,8 +163,15 @@ impl SdroxideApp {
             if !c.fsq_call.is_empty() { c.fsq_call.clone() } else { c.my_call.clone() }
         };
 
-        // A picked image → transmit (the engine grayscales/scales it).
-        if let Some(bytes) = self.fsq_img_inbox.lock().ok().and_then(|mut g| g.take()) {
+        let tx_ok = self.tx_capable();
+
+        // A picked image → transmit (the engine grayscales/scales it). The
+        // picker is greyed on a receiver, but drain the inbox regardless: a
+        // file chosen just before the interface was swapped would otherwise sit
+        // there and go out the moment a transmitter appeared.
+        if let Some(bytes) = self.fsq_img_inbox.lock().ok().and_then(|mut g| g.take())
+            && tx_ok
+        {
             cmds.push(Command::DigiAbortTx);
             cmds.push(Command::DigiImageTx { png: bytes });
         }
@@ -259,7 +266,9 @@ impl SdroxideApp {
                             self.fsq_rx_images.clear();
                         }
                     });
-                    if crate::chrome::chip(ui, false, "Send image…").clicked() {
+                    if tx_gated(ui, tx_ok, |ui| crate::chrome::chip(ui, false, "Send image…"))
+                        .clicked()
+                    {
                         pick_image(self.fsq_img_inbox.clone());
                     }
                     let mut drop_at = None;
@@ -357,15 +366,21 @@ impl SdroxideApp {
                                 .desired_width((ui.available_width() - 62.0).max(60.0))
                                 .hint_text("Message…"),
                         );
-                        let send = crate::chrome::chip_accent(
-                            ui,
-                            false,
-                            " SEND ",
-                            crate::theme::ALERT(),
-                            crate::theme::INK_ON_CYAN(),
-                        )
-                        .clicked()
-                            || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        // Return is the same button, so it is shut off with it.
+                        let entered = tx_ok
+                            && resp.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let send = entered
+                            || tx_gated(ui, tx_ok, |ui| {
+                                crate::chrome::chip_accent(
+                                    ui,
+                                    false,
+                                    " SEND ",
+                                    crate::theme::ALERT(),
+                                    crate::theme::INK_ON_CYAN(),
+                                )
+                            })
+                            .clicked();
                         if send && !self.text_tx.trim().is_empty() {
                             let call = if my_call.is_empty() { "NOCALL" } else { &my_call };
                             let body = self.text_tx.trim();
@@ -382,11 +397,14 @@ impl SdroxideApp {
                     });
                     // Row 2: CQ / ? heard / CLEAR.
                     ui.horizontal(|ui| {
-                        if crate::chrome::chip(ui, false, " CALL CQ ").clicked() {
+                        if tx_gated(ui, tx_ok, |ui| crate::chrome::chip(ui, false, " CALL CQ "))
+                            .clicked()
+                        {
                             cmds.push(Command::DigiCallCq);
                         }
                         if !self.fsq_target.is_empty()
-                            && crate::chrome::chip(ui, false, " ? heard ").clicked()
+                            && tx_gated(ui, tx_ok, |ui| crate::chrome::chip(ui, false, " ? heard "))
+                                .clicked()
                         {
                             let call = if my_call.is_empty() { "NOCALL" } else { &my_call };
                             let full = format!("{call}:{}?\n", self.fsq_target);

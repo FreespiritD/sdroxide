@@ -19,9 +19,9 @@
 use eframe::egui::{self, Color32, RichText};
 use sdroxide_types::{Band, Command, WSPR_SLOT_S, WsprSpot, power_label};
 
-use crate::app::SdroxideApp;
 use crate::app::panels::widgets::{SlotState, row_cell, slot_bar, slot_phase_s};
 use crate::app::util::fmt_age;
+use crate::app::{SdroxideApp, rx_only_hint};
 use crate::time::{now_unix, now_unix_f64};
 
 /// How many receptions the panel keeps. Two hours of a busy 20 m evening.
@@ -317,6 +317,11 @@ impl SdroxideApp {
         // row of chips here and not in a dialog. The duty cycle is the setting
         // *and* the switch: nought is receive-only, so there is no second
         // control that could disagree with it about what this station is doing.
+        // A receiver keeps OFF — the duty cycle is the switch as well as the
+        // setting, so leaving the resting state live is what lets a beacon that
+        // was on be turned off after the radio was swapped for one that cannot
+        // key. The percentages go grey.
+        let tx_ok = self.tx_capable();
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.label(RichText::new("TRANSMIT").size(9.5).color(crate::theme::CYAN_DIM()));
@@ -328,12 +333,17 @@ impl SdroxideApp {
                 let resp = if pct == 0 {
                     crate::chrome::chip(ui, cur == 0, RichText::new(label).size(10.5))
                 } else {
-                    crate::chrome::chip_accent(
-                        ui,
-                        cur == pct,
-                        RichText::new(label).size(10.5),
-                        crate::theme::PINK(),
-                        crate::theme::INK_ON_CYAN(),
+                    rx_only_hint(
+                        crate::chrome::chip_accent_enabled(
+                            ui,
+                            tx_ok,
+                            cur == pct,
+                            label,
+                            Some(10.5),
+                            crate::theme::PINK(),
+                            crate::theme::INK_ON_CYAN(),
+                        ),
+                        tx_ok,
                     )
                 };
                 if resp

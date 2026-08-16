@@ -1485,7 +1485,7 @@ impl SdroxideApp {
                 // It applies the same way regardless of which interface is
                 // selected above, so it sits here rather than in one of the
                 // per-backend sections below.
-                if self.caps.as_ref().is_some_and(|c| c.is_transmit_capable()) {
+                if self.tx_capable() {
                     ui.separator();
                     ui.label(
                         RichText::new("Transmit EQ")

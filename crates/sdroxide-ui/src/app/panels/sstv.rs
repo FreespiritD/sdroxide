@@ -24,9 +24,9 @@ use sdroxide_types::{
 
 use crate::theme::ThemedScroll;
 
-use crate::app::SdroxideApp;
 use crate::app::panels::widgets::{pick_image, sstv_section};
 use crate::app::util::shorten;
+use crate::app::{SdroxideApp, rx_only_hint};
 
 // ───────────────────────────── SSTV panel ──────────────────────────────
 
@@ -1121,21 +1121,28 @@ impl SdroxideApp {
                     ui.horizontal(|ui| {
                         // The source has to have arrived as well as be stored:
                         // pressing TX while it is still on its way would compose
-                        // nothing and look like the button was broken.
-                        let can_tx = self
-                            .sstv
-                            .slots
-                            .get(self.sstv.selected_slot)
-                            .is_some_and(|s| s.is_some())
+                        // nothing and look like the button was broken. The radio
+                        // has to have a transmitter too — composing a picture is
+                        // worth doing on a receiver, sending it is not.
+                        let tx_ok = self.tx_capable();
+                        let can_tx = tx_ok
+                            && self
+                                .sstv
+                                .slots
+                                .get(self.sstv.selected_slot)
+                                .is_some_and(|s| s.is_some())
                             && !tx_active;
                         let tx = ui
                             .add_enabled_ui(can_tx, |ui| {
-                                crate::chrome::chip_accent(
-                                    ui,
-                                    can_tx,
-                                    RichText::new("   TX   ").size(16.0).strong(),
-                                    crate::theme::ALERT(),
-                                    Color32::WHITE,
+                                rx_only_hint(
+                                    crate::chrome::chip_accent(
+                                        ui,
+                                        can_tx,
+                                        RichText::new("   TX   ").size(16.0).strong(),
+                                        crate::theme::ALERT(),
+                                        Color32::WHITE,
+                                    ),
+                                    tx_ok,
                                 )
                             })
                             .inner;

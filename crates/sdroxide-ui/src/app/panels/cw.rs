@@ -15,7 +15,7 @@
 use eframe::egui::{self, Color32, RichText};
 use sdroxide_types::Command;
 
-use crate::app::SdroxideApp;
+use crate::app::{SdroxideApp, tx_gated};
 use crate::theme::ThemedScroll;
 
 /// Speeds the WPM chip offers. The range an operator actually sets a keyer to.
@@ -197,39 +197,47 @@ impl SdroxideApp {
         // and the keyer reads it as a word space.
         let send_on_enter = self.digi_cfg_edit.send_on_enter;
         let tx_id = ui.id().with("cw-tx-edit");
-        let entered = send_on_enter && crate::chrome::take_return(ui, tx_id);
+        // On a receiver the box goes grey with the buttons, and here that is
+        // more than tidiness: typing into it *is* the instruction to send, so a
+        // live box on a radio with no transmitter would key nothing on every
+        // keystroke.
+        let tx_ok = self.tx_capable();
+        let entered = tx_ok && send_on_enter && crate::chrome::take_return(ui, tx_id);
 
         let resp = ui
-            .allocate_ui(egui::vec2(ui.available_width(), input_h), |ui| {
-                egui::Frame::new()
-                    .fill(crate::theme::ROW_BG())
-                    .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP()))
-                    .inner_margin(egui::Margin::symmetric(6, 4))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.set_min_height(ui.available_height());
-                        egui::ScrollArea::vertical()
-                            .id_salt("cw-tx")
-                            .max_height((input_h - 8.0).max(20.0))
-                            .auto_shrink([false, false])
-                            .stick_to_bottom(true)
-                            .show_themed(ui, |ui| {
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut self.text_tx)
-                                        .id(tx_id)
-                                        .layouter(&mut layouter)
-                                        .frame(egui::Frame::NONE)
-                                        .desired_width(f32::INFINITY)
-                                        .hint_text(if send_on_enter {
-                                            "Type a line, Return sends it…"
-                                        } else {
-                                            "Type here to send…"
-                                        }),
-                                )
-                            })
-                            .inner
-                    })
-                    .inner
+            .add_enabled_ui(tx_ok, |ui| {
+                ui.allocate_ui(egui::vec2(ui.available_width(), input_h), |ui| {
+                    egui::Frame::new()
+                        .fill(crate::theme::ROW_BG())
+                        .stroke(egui::Stroke::new(1.0, crate::theme::RED_DEEP()))
+                        .inner_margin(egui::Margin::symmetric(6, 4))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.set_min_height(ui.available_height());
+                            egui::ScrollArea::vertical()
+                                .id_salt("cw-tx")
+                                .max_height((input_h - 8.0).max(20.0))
+                                .auto_shrink([false, false])
+                                .stick_to_bottom(true)
+                                .show_themed(ui, |ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut self.text_tx)
+                                            .id(tx_id)
+                                            .layouter(&mut layouter)
+                                            .frame(egui::Frame::NONE)
+                                            .desired_width(f32::INFINITY)
+                                            .hint_text(if send_on_enter {
+                                                "Type a line, Return sends it…"
+                                            } else {
+                                                "Type here to send…"
+                                            }),
+                                    )
+                                })
+                                .inner
+                        })
+                        .inner
+                })
+                .inner
             })
             .inner;
         if resp.changed() {
@@ -261,17 +269,19 @@ impl SdroxideApp {
 
         ui.horizontal(|ui| {
             let label = if tx_on { "  TX ON  " } else { "   TX   " };
-            if crate::chrome::chip_accent(
-                ui,
-                tx_on,
-                RichText::new(label).size(14.0).strong(),
-                crate::theme::ALERT(),
-                Color32::WHITE,
-            )
-            .on_hover_text(if send_on_enter {
-                "Send what is in the box now, without waiting for Return"
-            } else {
-                "Hold the key down between characters, so nothing typed waits"
+            if tx_gated(ui, tx_ok, |ui| {
+                crate::chrome::chip_accent(
+                    ui,
+                    tx_on,
+                    RichText::new(label).size(14.0).strong(),
+                    crate::theme::ALERT(),
+                    Color32::WHITE,
+                )
+                .on_hover_text(if send_on_enter {
+                    "Send what is in the box now, without waiting for Return"
+                } else {
+                    "Hold the key down between characters, so nothing typed waits"
+                })
             })
             .clicked()
             {
@@ -283,13 +293,15 @@ impl SdroxideApp {
                 }
                 cmds.push(Command::DigiTxActive(!tx_on));
             }
-            if crate::chrome::chip_accent(
-                ui,
-                false,
-                RichText::new(" CALL CQ ").size(13.0).strong(),
-                crate::theme::GREEN(),
-                crate::theme::INK_ON_CYAN(),
-            )
+            if tx_gated(ui, tx_ok, |ui| {
+                crate::chrome::chip_accent(
+                    ui,
+                    false,
+                    RichText::new(" CALL CQ ").size(13.0).strong(),
+                    crate::theme::GREEN(),
+                    crate::theme::INK_ON_CYAN(),
+                )
+            })
             .clicked()
             {
                 let call = if my_call.is_empty() { "NOCALL".to_string() } else { my_call.clone() };

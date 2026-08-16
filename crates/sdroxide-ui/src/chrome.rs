@@ -753,6 +753,35 @@ pub fn chip_enabled(ui: &mut Ui, enabled: bool, selected: bool, label: &str) -> 
         .inner
 }
 
+/// [`chip_enabled`] with an explicit accent fill and text size — a transmit
+/// control that greys out on a receive-only radio, in a row allowed to wrap.
+///
+/// The reservation is the point, for the reason [`chip_enabled`] gives: the
+/// disabled chips in a wrapping row (WSPR's duty cycle among them) would
+/// otherwise run off the edge instead of breaking at it.
+pub fn chip_accent_enabled(
+    ui: &mut Ui,
+    enabled: bool,
+    selected: bool,
+    label: &str,
+    size: Option<f32>,
+    fill: Color32,
+    ink: Color32,
+) -> Response {
+    let exact = vec2(chip_width(ui, label, size), chip_height(ui, size));
+    let text = match size {
+        Some(pt) => RichText::new(label).size(pt),
+        None => RichText::new(label),
+    };
+    ui.allocate_ui(exact, |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
+            chip_impl(ui, selected, text, Some((fill, ink)), Sense::click(), None)
+        })
+        .inner
+    })
+    .inner
+}
+
 /// [`chip_enabled`], with the label carrying a colour while it is unselected,
 /// and an optional accent line along the chip's bottom edge.
 ///
