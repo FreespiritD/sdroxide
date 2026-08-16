@@ -378,6 +378,24 @@ impl Protocol for Elecraft {
         vec![format!("KS{wpm:03};").into_bytes()]
     }
 
+    fn set_filter(&mut self, _mode: Mode, lo_hz: f32, hi_hz: f32) -> Vec<Vec<u8>> {
+        // `BW` in ten-hertz units, 0000-9999 — the one filter command in any of
+        // these families that takes a real bandwidth rather than an index into
+        // a per-model table, and the same command in every mode. The rig
+        // quantises and range-limits it to what the present mode allows, which
+        // is exactly the right place for that to happen.
+        //
+        // Width only, no `IS`: the passband's centre belongs to the rig. In CW
+        // and DATA it follows the operator's PITCH, and moving it from here
+        // would drag the sidetone the operator zero-beats against.
+        let width = (hi_hz - lo_hz).abs().round().clamp(0.0, 99_990.0);
+        vec![format!("BW{:04};", (width / 10.0).round() as u32).into_bytes()]
+    }
+
+    fn commands_filter(&self) -> bool {
+        true
+    }
+
     fn set_power(&mut self, frac: f32) -> Vec<Vec<u8>> {
         // Watts, against whatever scale `OM` said this radio has. No 5 W floor:
         // Elecraft documents the range as starting at 000, and the rig's own
@@ -693,6 +711,22 @@ mod tests {
         // what was asked for. Read on this scale it would show S9+60 for a bare
         // S1, so it must not be read at all.
         assert!(parse_str(&mut e, "SMH005;").is_empty());
+    }
+
+    #[test]
+    fn the_filter_is_a_real_bandwidth_in_ten_hertz_units() {
+        let mut e = Elecraft::new();
+        // The one filter command in any of these families that takes a width
+        // rather than an index into a per-model table — and the same command
+        // in every mode.
+        assert_eq!(frames(e.set_filter(Mode::Usb, 200.0, 2600.0)), vec!["BW0240;"]);
+        assert_eq!(frames(e.set_filter(Mode::Cw, 500.0, 1000.0)), vec!["BW0050;"]);
+        assert_eq!(frames(e.set_filter(Mode::Am, 0.0, 6000.0)), vec!["BW0600;"]);
+        // LSB arrives with its edges negative — sideband lives in their sign
+        // here — and is the same width for all that.
+        assert_eq!(frames(e.set_filter(Mode::Lsb, -2600.0, -200.0)), vec!["BW0240;"]);
+        // Rounded to the unit the command has, not truncated.
+        assert_eq!(frames(e.set_filter(Mode::Usb, 0.0, 2445.0)), vec!["BW0245;"]);
     }
 
     #[test]

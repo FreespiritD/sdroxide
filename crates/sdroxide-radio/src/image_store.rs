@@ -442,15 +442,27 @@ fn fingerprint(png: &[u8]) -> u32 {
 /// What the worker hands back to the engine.
 pub enum GalleryEvent {
     /// An upload, decoded and scaled, ready for a slot.
-    Normalised { slot: u8, png: Vec<u8>, w: u16, h: u16 },
+    Normalised {
+        slot: u8,
+        png: Vec<u8>,
+        w: u16,
+        h: u16,
+    },
     /// An upload that was not a picture, or was too big to be one — becomes an
     /// operator notice.
     Rejected(String),
     Listing(ImageListing),
-    File { kind: ImageKind, name: String, png: Vec<u8> },
+    File {
+        kind: ImageKind,
+        name: String,
+        png: Vec<u8>,
+    },
     Saved(ImageEntry),
     /// A stored picture is gone — either just removed, or already absent.
-    Deleted { kind: ImageKind, name: String },
+    Deleted {
+        kind: ImageKind,
+        name: String,
+    },
 }
 
 /// Directory walks, thumbnailing, full-size reads and upload decoding, all off
@@ -499,13 +511,8 @@ impl GalleryWorker {
             let (all, dir) = scan_all(kind);
             let (wanted, total) = page(all, offset, count);
             let entries = wanted.iter().filter_map(|r| entry_for(kind, r, None)).collect();
-            let _ = tx.send(GalleryEvent::Listing(ImageListing {
-                kind,
-                offset,
-                total,
-                entries,
-                dir,
-            }));
+            let _ =
+                tx.send(GalleryEvent::Listing(ImageListing { kind, offset, total, entries, dir }));
         });
     }
 

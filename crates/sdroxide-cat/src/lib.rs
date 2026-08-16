@@ -114,6 +114,24 @@ trait Protocol: Send {
         Vec::new()
     }
 
+    /// Set the rig's own receive filter, from audio-band edges in Hz either
+    /// side of the dial.
+    ///
+    /// The mode is passed because no family expresses a filter without one: the
+    /// same 500 Hz is one index in CW and a different one in SSB, and some rigs
+    /// take a width in CW but a pair of slope frequencies in SSB. What each
+    /// family can express varies too, so a protocol that cannot say this
+    /// particular passband on this particular rig returns nothing — leaving the
+    /// radio's filter where the operator last put it, which is a far better
+    /// answer than a guess at an index.
+    fn set_filter(&mut self, _mode: Mode, _lo_hz: f32, _hi_hz: f32) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+    /// Whether [`Protocol::set_filter`] reaches this family at all.
+    fn commands_filter(&self) -> bool {
+        false
+    }
+
     /// Set the transmitter's output power, as a `0..1` fraction of what the rig
     /// can do.
     ///
@@ -196,6 +214,12 @@ impl Protocol for Civ {
     }
     fn set_cw_wpm(&mut self, wpm: f32) -> Vec<Vec<u8>> {
         vec![civ::keyer_speed_frame(self.radio, wpm)]
+    }
+    fn set_filter(&mut self, mode: Mode, lo_hz: f32, hi_hz: f32) -> Vec<Vec<u8>> {
+        civ::set_filter_frame(self.radio, mode, lo_hz, hi_hz).into_iter().collect()
+    }
+    fn commands_filter(&self) -> bool {
+        true
     }
     fn set_power(&mut self, frac: f32) -> Vec<Vec<u8>> {
         vec![civ::set_power_frame(self.radio, frac)]
@@ -343,6 +367,9 @@ enum CatCmd {
     CwWpm(f32),
     /// Output power as a 0..1 fraction of the rig's maximum.
     Power(f32),
+    /// The rig's own receive filter: the mode it applies to, and the audio-band
+    /// edges in Hz.
+    Filter(Mode, f32, f32),
     Stop,
 }
 
@@ -354,6 +381,7 @@ pub struct CatHandle {
     signal_rx: Receiver<f32>,
     cw_chunk_len: usize,
     commands_power: bool,
+    commands_filter: bool,
 }
 
 impl CatHandle {
@@ -401,6 +429,15 @@ impl CatHandle {
     /// Whether [`Self::set_power`] reaches this rig.
     pub fn commands_power(&self) -> bool {
         self.commands_power
+    }
+    /// Set the rig's own receive filter to the passband the operator chose,
+    /// as audio-band edges in Hz. Silently ignored on a family — or a model —
+    /// whose filter sdroxide cannot address.
+    pub fn set_filter(&self, mode: Mode, lo_hz: f32, hi_hz: f32) {
+        if !self.commands_filter {
+            return;
+        }
+        let _ = self.cmd_tx.send(CatCmd::Filter(mode, lo_hz, hi_hz));
     }
     /// Non-blocking drain of rig-reported freq/mode changes.
     pub fn poll(&self) -> Vec<CatUpdate> {
@@ -473,11 +510,20 @@ pub fn spawn(cfg: CatConfig) -> CatHandle {
     // Same reason: the engine asks whether this rig's power can be commanded
     // before it commands anything.
     let commands_power = make_protocol(&cfg).commands_power();
+    let commands_filter = make_protocol(&cfg).commands_filter();
     std::thread::Builder::new()
         .name("sdroxide-cat".into())
         .spawn(move || serial_thread(cfg, cmd_rx, event_tx, telem_tx, signal_tx))
         .expect("spawn cat thread");
-    CatHandle { cmd_tx, event_rx, telem_rx, signal_rx, cw_chunk_len, commands_power }
+    CatHandle {
+        cmd_tx,
+        event_rx,
+        telem_rx,
+        signal_rx,
+        cw_chunk_len,
+        commands_power,
+        commands_filter,
+    }
 }
 
 fn map_parity(p: Parity) -> serialport::Parity {
@@ -525,6 +571,11 @@ const FRAME_GAP: Duration = Duration::from_millis(30);
 /// than anyone can read a wattmeter and slow enough that the queue in front of
 /// the next PTT stays empty.
 const POWER_GAP: Duration = Duration::from_millis(100);
+
+/// Shortest gap between two receive-filter writes. Longer than the power's: a
+/// filter edge is dragged rather than nudged, several frames can go out per
+/// change on some families, and nothing about a receive filter is urgent.
+const FILTER_GAP: Duration = Duration::from_millis(250);
 
 /// Write one frame, leaving at least [`FRAME_GAP`] since the last one went out.
 /// Returns true on a write error — the caller's signal to reconnect.
@@ -747,6 +798,13 @@ fn serial_thread(
         let mut pending_power: Option<f32> = None;
         let mut last_sent_power: Option<f32> = None;
         let mut power_deadline = Instant::now();
+        // The rig's own receive filter, on the same rate limit and the same
+        // only-on-change rule. Unlike the power it is never asserted before a
+        // key-down: it is a receive setting, and the one moment it must not
+        // compete for the bus is the moment the transmitter is coming up.
+        let mut pending_filter: Option<(Mode, f32, f32)> = None;
+        let mut last_sent_filter: Option<(Mode, f32, f32)> = None;
+        let mut filter_deadline = Instant::now();
         let mut mode_memory = ModeMemory::default();
         // Only forward genuine changes so the engine isn't re-notified every poll.
         let mut emit_freq: Option<f64> = None;
@@ -864,6 +922,11 @@ fn serial_thread(
                             }
                         }
                     }
+                    // Coalesced exactly as the power is, and for the same
+                    // reason: dragging a filter edge produces a command per
+                    // pixel, and a rig served one frame at a time must not be
+                    // handed hundreds of them.
+                    Ok(CatCmd::Filter(m, lo, hi)) => pending_filter = Some((m, lo, hi)),
                     Ok(CatCmd::Power(frac)) => pending_power = Some(frac), // coalesce
                     Ok(CatCmd::Stop) => return,
                     Err(TryRecvError::Empty) => break,
@@ -886,6 +949,29 @@ fn serial_thread(
                         &mut last_write,
                     ) {
                         break 'io true;
+                    }
+                }
+            }
+
+            // Rate-limited filter write, on the same principle — and skipped
+            // entirely while transmitting, where a receive setting has nothing
+            // to do and the bus belongs to the meter.
+            if let Some(f) = pending_filter
+                && !ptt
+            {
+                let now = Instant::now();
+                if now >= filter_deadline {
+                    pending_filter = None;
+                    filter_deadline = now + FILTER_GAP;
+                    if last_sent_filter != Some(f) {
+                        let mut failed = false;
+                        for frame in protocol.set_filter(f.0, f.1, f.2) {
+                            failed |= write_frame(&mut *port, &frame, &mut last_write);
+                        }
+                        if failed {
+                            break 'io true;
+                        }
+                        last_sent_filter = Some(f);
                     }
                 }
             }

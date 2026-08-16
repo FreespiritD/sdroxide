@@ -115,7 +115,9 @@ fn slot_sources(events: &[RadioEvent]) -> Vec<(u8, u32, usize)> {
     events
         .iter()
         .filter_map(|e| match e {
-            RadioEvent::ImageSlotSource { slot, version, png } => Some((*slot, *version, png.len())),
+            RadioEvent::ImageSlotSource { slot, version, png } => {
+                Some((*slot, *version, png.len()))
+            }
             _ => None,
         })
         .collect()

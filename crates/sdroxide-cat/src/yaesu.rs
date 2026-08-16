@@ -15,7 +15,7 @@
 
 use crate::{CatUpdate, Protocol};
 use sdroxide_types::Mode;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Frequency-field width assumed before the rig has answered a poll. The newer
 /// generation, which is also the one still being sold.
@@ -60,8 +60,89 @@ const STR_CAL: &[(f32, f32)] = &[
 /// ends rather than extrapolated.
 const SWR_CAL: &[(f32, f32)] = &[(12.0, 1.0), (39.0, 1.35), (65.0, 1.5), (89.0, 2.0), (242.0, 5.0)];
 
+/// `SH` index → filter width in Hz, for the FT-891 and FT-991/991A.
+///
+/// Yaesu has no command that takes a bandwidth: `SH` selects a *position* in a
+/// table the rig holds, and that table is a property of the model. Index 0 is
+/// the rig's own default for the mode, so it is never selected from here — a
+/// width the operator asked for should not silently become whatever the radio
+/// prefers.
+const FT991_CW_WIDTHS: &[u32] =
+    &[0, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 800, 1200, 1400, 1700, 2000, 2400, 3000];
+const FT991_SSB_WIDTHS: &[u32] = &[
+    0, 200, 400, 600, 850, 1100, 1350, 1500, 1650, 1800, 1950, 2100, 2200, 2300, 2400, 2500, 2600,
+    2700, 2800, 2900, 3000, 3200,
+];
+
+/// The same for the FTDX10, FTDX101D/MP and FT-710 — a longer table, and a
+/// different one: index 11 is 600 Hz here and 800 Hz on the pair above.
+const FTDX101_CW_WIDTHS: &[u32] = &[
+    0, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 1200, 1400, 1700, 2000, 2400,
+    3000, 3200, 3500, 4000,
+];
+const FTDX101_SSB_WIDTHS: &[u32] = &[
+    0, 300, 400, 600, 850, 1100, 1200, 1500, 1650, 1800, 1950, 2100, 2200, 2300, 2400, 2500, 2600,
+    2700, 2800, 2900, 3000, 3200, 3500, 4000,
+];
+
+/// Widths above which the rig's NARROW switch has to be off, and below which it
+/// has to be on, for the FT-991 generation. The FTDX101 generation has no such
+/// preselect.
+const FT991_CW_NARROW_MAX: u32 = 500;
+const FT991_SSB_NARROW_MAX: u32 = 1800;
+
+/// What a Yaesu's filter tables look like, which is a question about the model.
+#[derive(Clone, Copy)]
+struct ModelCaps {
+    /// The model, for the log.
+    name: &'static str,
+    /// `SH` tables for CW-like and SSB-like modes.
+    cw_widths: &'static [u32],
+    ssb_widths: &'static [u32],
+    /// Widths at or below which `NA` has to select the narrow position first,
+    /// or `None` on a generation that has no such switch.
+    narrow_max: Option<(u32, u32)>,
+}
+
+/// The model behind an `ID;` reply, or `None` for one this file has no tables
+/// for — where the rig's filter is then left exactly as the operator set it.
+fn caps_for(id: u32) -> Option<ModelCaps> {
+    let (ft991, ftdx101) = (
+        ModelCaps {
+            name: "FT-991",
+            cw_widths: FT991_CW_WIDTHS,
+            ssb_widths: FT991_SSB_WIDTHS,
+            narrow_max: Some((FT991_CW_NARROW_MAX, FT991_SSB_NARROW_MAX)),
+        },
+        ModelCaps {
+            name: "FTDX101",
+            cw_widths: FTDX101_CW_WIDTHS,
+            ssb_widths: FTDX101_SSB_WIDTHS,
+            narrow_max: None,
+        },
+    );
+    Some(match id {
+        135 => ModelCaps { name: "FT-891", ..ft991 },
+        570 => ModelCaps { name: "FT-991", ..ft991 },
+        670 => ModelCaps { name: "FT-991A", ..ft991 },
+        761 => ModelCaps { name: "FTDX10", ..ftdx101 },
+        681 => ModelCaps { name: "FTDX101D", ..ftdx101 },
+        682 => ModelCaps { name: "FTDX101MP", ..ftdx101 },
+        800 => ModelCaps { name: "FT-710", ..ftdx101 },
+        _ => return None,
+    })
+}
+
+/// What is assumed before `ID;` has been answered: no filter tables at all.
+const UNKNOWN_CAPS: ModelCaps =
+    ModelCaps { name: "unidentified", cw_widths: &[], ssb_widths: &[], narrow_max: None };
+
 pub struct Yaesu {
     buf: String,
+    /// What this rig's filter tables and keyer look like, learned from `ID;`.
+    caps: ModelCaps,
+    /// True once `ID;` has been answered, so the model is only logged once.
+    model_known: bool,
     /// Digits in the `FA`/`FB` frequency field on this particular rig.
     width: usize,
     /// True once the rig has told us its width, so a later reply that disagrees
@@ -73,7 +154,65 @@ pub struct Yaesu {
 
 impl Yaesu {
     pub fn new() -> Self {
-        Yaesu { buf: String::new(), width: DEFAULT_WIDTH, width_known: false, reframed: false }
+        Yaesu {
+            buf: String::new(),
+            caps: UNKNOWN_CAPS,
+            model_known: false,
+            width: DEFAULT_WIDTH,
+            width_known: false,
+            reframed: false,
+        }
+    }
+
+    /// Adopt the tables of the model behind an `ID;` reply.
+    ///
+    /// An unrecognised number is worth saying out loud: it leaves the rig's own
+    /// filter under the operator's hand for the rest of the session, and the
+    /// number in the log is the one thing that would let the model be added.
+    fn learn_model(&mut self, id: u32) {
+        if self.model_known {
+            return;
+        }
+        self.model_known = true;
+        match caps_for(id) {
+            Some(c) => {
+                info!(model = c.name, id, "Yaesu CAT: rig identified");
+                self.caps = c;
+            }
+            None => warn!(
+                "Yaesu CAT: rig reports model ID {id:04}, which sdroxide has no filter table for \
+                 — the width control will not reach the radio"
+            ),
+        }
+    }
+
+    /// The rig's own RIT, XIT and split, switched off. sdroxide carries all
+    /// three on the dial, so anything the radio is still holding would add to
+    /// ours unseen.
+    fn offsets(&self) -> Vec<Vec<u8>> {
+        // `FT2` rather than the `ST0` other families use: this generation has
+        // no `ST` command, and a split the rig was still holding would transmit
+        // us a VFO away.
+        vec![b"RC;".to_vec(), b"RT0;".to_vec(), b"XT0;".to_vec(), b"FT2;".to_vec()]
+    }
+
+    /// The `SH` table this mode selects from, or an empty one where the model
+    /// is unknown or the mode has no table.
+    fn widths(&self, mode: Mode) -> (&'static [u32], Option<u32>) {
+        let narrow = self.caps.narrow_max;
+        match mode {
+            Mode::Cw => (self.caps.cw_widths, narrow.map(|(cw, _)| cw)),
+            // FM and AM select a roofing filter rather than a DSP width on this
+            // family, which is a different command and a different table.
+            Mode::Nfm
+            | Mode::Wfm
+            | Mode::Am
+            | Mode::Sam
+            | Mode::Dsb
+            | Mode::Rifp
+            | Mode::Packet => (&[], None),
+            _ => (self.caps.ssb_widths, narrow.map(|(_, ssb)| ssb)),
+        }
     }
 
     /// Adopt the frequency-field width the rig just demonstrated.
@@ -228,11 +367,12 @@ impl Protocol for Yaesu {
         vec![b"SM0;".to_vec()]
     }
     fn clear_offsets(&self) -> Vec<Vec<u8>> {
-        // Clarifier to zero, RIT/XIT off, transmit back on VFO-A (split off) —
-        // sdroxide puts all three on the dial itself. `FT2` rather than the
-        // `ST0` other families use: this generation has no `ST` command, and a
-        // split the rig was still holding would transmit us a VFO away.
-        vec![b"RC;".to_vec(), b"RT0;".to_vec(), b"XT0;".to_vec(), b"FT2;".to_vec()]
+        // Which Yaesu this is, first: the filter tables and the keyer's
+        // playback range both hang off it, and neither can do anything until
+        // it has been answered.
+        let mut frames = vec![b"ID;".to_vec()];
+        frames.extend(self.offsets());
+        frames
     }
 
     fn cw_chunk_len(&self) -> usize {
@@ -263,6 +403,38 @@ impl Protocol for Yaesu {
         // The rig keys at its own speed, so the panel's WPM has to be its WPM.
         let wpm = wpm.round().clamp(4.0, 60.0) as u32;
         vec![format!("KS{wpm:03};").into_bytes()]
+    }
+
+    fn set_filter(&mut self, mode: Mode, lo_hz: f32, hi_hz: f32) -> Vec<Vec<u8>> {
+        let (table, narrow_max) = self.widths(mode);
+        // No table, no command. Guessing an index against the wrong
+        // generation's table is how a request for 2.4 kHz becomes 500 Hz.
+        if table.is_empty() {
+            return Vec::new();
+        }
+        let want = (hi_hz - lo_hz).abs().round().max(0.0) as u32;
+        // The narrowest entry that is still at least as wide as asked — index 0
+        // skipped, because it is the rig's own default rather than a width.
+        let idx = table
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find(|&(_, &w)| w >= want)
+            .map(|(i, _)| i)
+            .unwrap_or(table.len() - 1);
+        let mut frames = Vec::new();
+        // On the FT-991 generation the NARROW switch has to be in the right
+        // position before the width is selected, or the rig quantises the
+        // request into the other half of its table.
+        if let Some(max) = narrow_max {
+            frames.push(format!("NA0{};", u8::from(table[idx] <= max)).into_bytes());
+        }
+        frames.push(format!("SH0{idx:02};").into_bytes());
+        frames
+    }
+
+    fn commands_filter(&self) -> bool {
+        true
     }
 
     fn set_power(&mut self, frac: f32) -> Vec<Vec<u8>> {
@@ -314,6 +486,10 @@ impl Protocol for Yaesu {
                 // the only thing that says which reading this is.
                 if let Some(raw) = rest.strip_prefix('6').and_then(reading) {
                     out.push(CatUpdate::Swr(crate::interp(SWR_CAL, raw)));
+                }
+            } else if let Some(rest) = msg.strip_prefix("ID") {
+                if let Ok(id) = rest.trim().parse::<u32>() {
+                    self.learn_model(id);
                 }
             } else if let Some(rest) = msg.strip_prefix("MD") {
                 // `MD<P1><P2>` — P1 selects the VFO (always 0 here), P2 is the
@@ -500,6 +676,72 @@ mod tests {
         }
     }
 
+    /// A model this file has no table for keeps its own filter. Guessing an
+    /// index against the wrong generation's table is how a request for 2.4 kHz
+    /// becomes 500 Hz.
+    #[test]
+    fn an_unidentified_rigs_filter_is_left_alone() {
+        let mut y = Yaesu::new();
+        assert!(y.set_filter(Mode::Usb, 200.0, 2600.0).is_empty());
+        parse_str(&mut y, "ID0251;"); // FT-2000 — no table here
+        assert!(y.set_filter(Mode::Usb, 200.0, 2600.0).is_empty());
+        // And the model is asked for before anything that depends on it.
+        assert_eq!(frames(y.clear_offsets())[0], "ID;");
+    }
+
+    #[test]
+    fn the_filter_index_comes_from_this_models_own_table() {
+        let mut y = Yaesu::new();
+        parse_str(&mut y, "ID0570;"); // FT-991
+        let mut d = Yaesu::new();
+        parse_str(&mut d, "ID0761;"); // FTDX10
+
+        // 2400 Hz is an entry in both tables, at the same index — and wide
+        // enough that the FT-991's NARROW switch has to be off first, while
+        // the later generation has no such switch to set.
+        assert_eq!(frames(y.set_filter(Mode::Usb, 200.0, 2600.0)), vec!["NA00;", "SH014;"]);
+        assert_eq!(frames(d.set_filter(Mode::Usb, 200.0, 2600.0)), vec!["SH014;"]);
+
+        // 1350 Hz is where they part: an entry on the FT-991, absent from the
+        // FTDX10, which takes the next one up. The same index would be two
+        // different filters, which is why the model has to be asked for.
+        assert_eq!(frames(y.set_filter(Mode::Usb, 0.0, 1350.0)), vec!["NA01;", "SH006;"]);
+        assert_eq!(frames(d.set_filter(Mode::Usb, 0.0, 1350.0)), vec!["SH007;"]);
+
+        // CW selects from the CW table, and a narrow one turns NARROW on.
+        assert_eq!(frames(y.set_filter(Mode::Cw, 600.0, 1000.0)), vec!["NA01;", "SH008;"]);
+    }
+
+    #[test]
+    fn a_width_is_rounded_up_so_the_passband_is_never_quietly_narrower() {
+        let mut y = Yaesu::new();
+        parse_str(&mut y, "ID0570;");
+        let idx = |y: &mut Yaesu, w: f32| {
+            let f = frames(y.set_filter(Mode::Usb, 0.0, w));
+            f.last().unwrap().clone()
+        };
+        // 2400 is in the table exactly.
+        assert_eq!(idx(&mut y, 2400.0), "SH014;");
+        // 2450 is not, and takes the next one *up* — a filter that is quietly
+        // too narrow presents as a signal that simply is not there.
+        assert_eq!(idx(&mut y, 2450.0), "SH015;");
+        // Wider than the table goes tops out rather than wrapping.
+        assert_eq!(idx(&mut y, 9000.0), "SH021;");
+        // And index 0 — the rig's own default rather than a width — is never
+        // selected, however narrow the request.
+        assert_eq!(idx(&mut y, 1.0), "SH001;");
+    }
+
+    #[test]
+    fn the_modes_with_no_width_table_send_nothing() {
+        let mut y = Yaesu::new();
+        parse_str(&mut y, "ID0570;");
+        // FM and AM select a roofing filter on this family, not a DSP width.
+        for m in [Mode::Nfm, Mode::Wfm, Mode::Am, Mode::Packet] {
+            assert!(y.set_filter(m, 0.0, 6000.0).is_empty(), "{m:?} has no SH table");
+        }
+    }
+
     #[test]
     fn split_is_cleared_with_the_command_this_generation_has() {
         let frames: Vec<String> = Yaesu::new()
@@ -507,6 +749,6 @@ mod tests {
             .iter()
             .map(|f| String::from_utf8_lossy(f).into_owned())
             .collect();
-        assert_eq!(frames, vec!["RC;", "RT0;", "XT0;", "FT2;"]);
+        assert_eq!(frames, vec!["ID;", "RC;", "RT0;", "XT0;", "FT2;"]);
     }
 }

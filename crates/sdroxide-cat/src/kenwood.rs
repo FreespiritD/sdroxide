@@ -40,8 +40,8 @@ const CW_MAX: usize = 24;
 /// among them, which is what keeps operator text from ending the frame early.
 const KEYER_PUNCTUATION: &str = " '\"()*+,-./:=?@[_<>]\\";
 
-/// What a Kenwood's meters read on — which is a question about the *model*, not
-/// about the family.
+/// What a Kenwood's meters read on and how its receive filter is addressed —
+/// both of which are questions about the *model*, not about the family.
 ///
 /// Nothing else in this file needs to know which Kenwood it is talking to. The
 /// meters do, and unavoidably: `SM` and `RM` both answer with a count of lit
@@ -54,7 +54,7 @@ const KEYER_PUNCTUATION: &str = " '\"()*+,-./:=?@[_<>]\\";
 /// model with no published curve reports no SWR at all. A meter that reads
 /// plausibly and means nothing is worse than an empty one.
 #[derive(Clone, Copy)]
-struct Meters {
+struct ModelCaps {
     /// The model, for the log.
     name: &'static str,
     /// `SM` reading → dB relative to S9, or `None` to use [`generic_strength`].
@@ -69,6 +69,39 @@ struct Meters {
     /// Whether the S-meter read carries a receiver digit (`SM0;`). The rigs
     /// that predate a sub receiver have only the bare `SM;`.
     smeter_has_vfo: bool,
+    /// The rig's SSB-side slope filter as `(low-cut, high-cut)` index tables,
+    /// in Hz. `None` where sdroxide has no table for this model, in which case
+    /// its filter is left alone rather than moved to a guessed index.
+    slopes: Option<(&'static [u32], &'static [u32])>,
+}
+
+// `SL`/`SH` index → Hz, from Hamlib's per-model slope tables. The TS-480 and
+// TS-590 agree; the TS-2000's high-cut table starts two steps further up, so
+// the same index is a different filter on it — which is exactly the sort of
+// thing that has to come from the model rather than the family.
+const TS480_SL: &[u32] = &[0, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000];
+const TS480_SH: &[u32] =
+    &[1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000, 3400, 4000, 5000];
+const TS2000_SL: &[u32] = TS480_SL;
+const TS2000_SH: &[u32] = &[1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000, 3400, 4000, 5000];
+
+/// The index into `table` for a cut at `hz`, erring in the direction that keeps
+/// the passband *wider* than asked for.
+///
+/// `at_least` picks the first entry that reaches `hz` (a high cut: never let
+/// less through than the operator asked for); clearing it picks the last entry
+/// that does not exceed it (a low cut: never cut more away than they asked).
+/// Between them the rig ends up with a filter no narrower than the one on
+/// screen, which matters because a filter that is quietly too narrow presents
+/// as a signal that is simply not there.
+fn slope_index(table: &[u32], hz: f32, at_least: bool) -> u32 {
+    let hz = hz.max(0.0).round() as u32;
+    let idx = if at_least {
+        table.iter().position(|&v| v >= hz).unwrap_or(table.len() - 1)
+    } else {
+        table.iter().rposition(|&v| v <= hz).unwrap_or(0)
+    };
+    idx as u32
 }
 
 // Bars → dB relative to S9. All from Hamlib's per-model `str_cal` tables.
@@ -129,40 +162,45 @@ const TS990_SWR: &[(f32, f32)] = &[(0.0, 1.0), (7.0, 1.5), (36.0, 3.0), (43.0, 6
 /// Note 017: an Elecraft K2, K3 or KX3 answers `ID;` with it too. That is not a
 /// problem to solve here — an Elecraft belongs on [`crate::elecraft`] — but it
 /// is why the TS-570's entry claims no SWR curve.
-fn meters_for(id: u32) -> Option<Meters> {
+fn caps_for(id: u32) -> Option<ModelCaps> {
     Some(match id {
         // TS-870S, TS-570D/S. No published meter curves, and no sub receiver,
         // so the S-meter read is the bare one.
-        15 | 17 | 18 => Meters {
+        15 | 17 | 18 => ModelCaps {
             name: if id == 15 { "TS-870S" } else { "TS-570" },
             str_cal: None,
             swr: None,
             swr_needs_enable: false,
             smeter_has_vfo: false,
+            slopes: None,
         },
-        19 => Meters {
+        19 => ModelCaps {
             name: "TS-2000",
             str_cal: Some(TS2000_STR),
             swr: Some(('1', TS2000_SWR)),
             swr_needs_enable: false,
             smeter_has_vfo: true,
+            slopes: Some((TS2000_SL, TS2000_SH)),
         },
-        20 => Meters {
+        20 => ModelCaps {
             name: "TS-480",
             str_cal: Some(TS480_STR),
             // The TS-480's own bar count matches the TS-2000's.
             swr: Some(('1', TS2000_SWR)),
             swr_needs_enable: false,
             smeter_has_vfo: true,
+            slopes: Some((TS480_SL, TS480_SH)),
         },
-        21 | 23 => Meters {
+        21 | 23 => ModelCaps {
             name: if id == 21 { "TS-590S" } else { "TS-590SG" },
             str_cal: Some(TS590_STR),
             swr: Some(('1', TS590_SWR)),
             swr_needs_enable: false,
             smeter_has_vfo: true,
+            // The TS-590's slope tables are the TS-480's.
+            slopes: Some((TS480_SL, TS480_SH)),
         },
-        22 => Meters {
+        22 => ModelCaps {
             name: "TS-990S",
             str_cal: Some(TS990_STR),
             // The later pair moved the SWR to meter 2 — meter 1 is the ALC
@@ -171,14 +209,18 @@ fn meters_for(id: u32) -> Option<Meters> {
             swr: Some(('2', TS990_SWR)),
             swr_needs_enable: true,
             smeter_has_vfo: true,
+            // The later pair address their filters differently again, and
+            // sdroxide has no table for them.
+            slopes: None,
         },
-        24 => Meters {
+        24 => ModelCaps {
             name: "TS-890S",
             // No published S-meter curve for this one; the generic line stands.
             str_cal: None,
             swr: Some(('2', TS890_SWR)),
             swr_needs_enable: true,
             smeter_has_vfo: true,
+            slopes: None,
         },
         _ => return None,
     })
@@ -196,12 +238,13 @@ fn generic_strength(bars: f32) -> f32 {
 /// The meters assumed before `ID;` has been answered — none. The S-meter still
 /// reads, on the generic line; the SWR waits for the model, because there is no
 /// generic SWR curve worth showing.
-const UNKNOWN_METERS: Meters = Meters {
+const UNKNOWN_CAPS: ModelCaps = ModelCaps {
     name: "unidentified",
     str_cal: None,
     swr: None,
     swr_needs_enable: false,
     smeter_has_vfo: true,
+    slopes: None,
 };
 
 /// How many mode replies to wait through before concluding the rig has no `DA`
@@ -222,8 +265,8 @@ pub struct Kenwood {
     da_seen: bool,
     /// `MD;` replies seen, counted only until [`DATA_PROBE_POLLS`].
     md_replies: u32,
-    /// What this rig's meters read on, learned from its `ID;` reply.
-    meters: Meters,
+    /// What this rig's meters and filters do, learned from its `ID;` reply.
+    caps: ModelCaps,
     /// True once `ID;` has been answered, so the model is only logged once.
     model_known: bool,
 }
@@ -237,7 +280,7 @@ impl Kenwood {
             data_on: false,
             da_seen: false,
             md_replies: 0,
-            meters: UNKNOWN_METERS,
+            caps: UNKNOWN_CAPS,
             model_known: false,
         }
     }
@@ -252,10 +295,10 @@ impl Kenwood {
             return;
         }
         self.model_known = true;
-        match meters_for(id) {
+        match caps_for(id) {
             Some(m) => {
                 info!(model = m.name, id, swr = m.swr.is_some(), "Kenwood CAT: rig identified");
-                self.meters = m;
+                self.caps = m;
             }
             None => warn!(
                 "Kenwood CAT: rig reports model ID {id:03}, which sdroxide has no meter scales \
@@ -419,13 +462,13 @@ impl Protocol for Kenwood {
     }
 
     fn tx_telemetry_requests(&self) -> Vec<Vec<u8>> {
-        let Some((digit, _)) = self.meters.swr else {
+        let Some((digit, _)) = self.caps.swr else {
             // No curve for this model: asking would only produce a number
             // there is nothing honest to do with.
             return Vec::new();
         };
         let mut reqs = Vec::new();
-        if self.meters.swr_needs_enable {
+        if self.caps.swr_needs_enable {
             // The TS-890/990 report only the meters that are switched on, and
             // the operator may have the front panel on ALC. Re-asserted with
             // every read rather than once at connect: this only goes out while
@@ -439,7 +482,7 @@ impl Protocol for Kenwood {
     }
 
     fn rx_telemetry_requests(&self) -> Vec<Vec<u8>> {
-        if self.meters.smeter_has_vfo { vec![b"SM0;".to_vec()] } else { vec![b"SM;".to_vec()] }
+        if self.caps.smeter_has_vfo { vec![b"SM0;".to_vec()] } else { vec![b"SM;".to_vec()] }
     }
 
     fn clear_offsets(&self) -> Vec<Vec<u8>> {
@@ -447,10 +490,10 @@ impl Protocol for Kenwood {
             // Stop unsolicited status the rig would otherwise push at us — we
             // poll, and a previous program may have left auto-information on.
             b"AI0;".to_vec(),
-            // Which Kenwood this is. Only the meters care (see `Meters`), but
-            // they cannot read anything until it has been answered, so it goes
-            // out with the rest of the connect traffic rather than waiting for
-            // the first key-down.
+            // Which Kenwood this is. Only the meters and the receive filter
+            // care (see `ModelCaps`), but neither can do anything until it has
+            // been answered, so it goes out with the rest of the connect
+            // traffic rather than waiting for the first key-down.
             b"ID;".to_vec(),
             // Clear the clarifier while it is still on: `RC` is an error once
             // RIT and XIT are both off, so it cannot come after them.
@@ -500,6 +543,46 @@ impl Protocol for Kenwood {
         vec![format!("KS{wpm:03};").into_bytes()]
     }
 
+    fn set_filter(&mut self, mode: Mode, lo_hz: f32, hi_hz: f32) -> Vec<Vec<u8>> {
+        // Sideband lives in the sign of the edges on this side, so an LSB
+        // passband arrives negative. The rig knows nothing of that: its filter
+        // is a pair of distances from the carrier either way.
+        let (lo, hi) = (lo_hz.abs().min(hi_hz.abs()), lo_hz.abs().max(hi_hz.abs()));
+        match mode {
+            // CW is the one mode this family takes a real bandwidth for —
+            // `FW` in Hz — because the rig's CW filter is centred on its own
+            // pitch and only its width is in question.
+            Mode::Cw => {
+                let w = (hi - lo).round().clamp(0.0, 9999.0) as u32;
+                vec![format!("FW{w:04};").into_bytes()]
+            }
+            // FM and AM have their own slope tables, which sdroxide does not
+            // carry: their filters are wide, rarely worth narrowing from here,
+            // and getting an index wrong in AM costs more than it buys.
+            Mode::Nfm
+            | Mode::Wfm
+            | Mode::Am
+            | Mode::Sam
+            | Mode::Dsb
+            | Mode::Rifp
+            | Mode::Packet => Vec::new(),
+            // Everything else rides a sideband, where the filter is not a width
+            // at all but a pair of cuts — which is exactly what sdroxide's own
+            // filter edges are, so the two map onto each other directly.
+            _ => {
+                let Some((sl, sh)) = self.caps.slopes else {
+                    return Vec::new();
+                };
+                let (l, h) = (slope_index(sl, lo, false), slope_index(sh, hi, true));
+                vec![format!("SL{l:02};SH{h:02};").into_bytes()]
+            }
+        }
+    }
+
+    fn commands_filter(&self) -> bool {
+        true
+    }
+
     fn set_power(&mut self, frac: f32) -> Vec<Vec<u8>> {
         vec![crate::pc_set_frame(frac)]
     }
@@ -545,12 +628,12 @@ impl Protocol for Kenwood {
                 // `SM<vfo><4 digits>` on a rig with a sub receiver, `SM<4
                 // digits>` on one without — and only the main receiver's is
                 // followed either way.
-                let bars = match self.meters.smeter_has_vfo {
+                let bars = match self.caps.smeter_has_vfo {
                     true => rest.strip_prefix('0').and_then(bars),
                     false => bars(rest),
                 };
                 if let Some(bars) = bars {
-                    let db = match self.meters.str_cal {
+                    let db = match self.caps.str_cal {
                         Some(cal) => crate::interp(cal, bars),
                         None => generic_strength(bars),
                     };
@@ -560,7 +643,7 @@ impl Protocol for Kenwood {
                 // Every meter answers on this one command, so the digit is the
                 // only thing that says which reading arrived — and which digit
                 // is the SWR is itself a question about the model.
-                if let Some((digit, cal)) = self.meters.swr
+                if let Some((digit, cal)) = self.caps.swr
                     && let Some(v) = rest.strip_prefix(digit).and_then(bars)
                 {
                     out.push(CatUpdate::Swr(crate::interp(cal, v)));
@@ -855,6 +938,65 @@ mod tests {
         assert_eq!(dbm(&mut k, "SM10015;"), None);
         assert_eq!(dbm(&mut k, "SM0015;"), None);
         assert_eq!(dbm(&mut k, "SM0abcd;"), None);
+    }
+
+    #[test]
+    fn a_sideband_filter_is_a_pair_of_cuts_and_cw_is_a_width() {
+        let mut k = kenwood();
+        parse_str(&mut k, "ID021;"); // TS-590
+        // On a sideband the rig's filter is two cuts, which is exactly what
+        // sdroxide's own filter edges are — so they map across directly rather
+        // than being collapsed into a width and centred again.
+        assert_eq!(frames(k.set_filter(Mode::Usb, 200.0, 2400.0)), vec!["SL03;SH07;"]);
+        // LSB arrives negative — sideband lives in the sign of the edges here —
+        // and comes out as the same pair of distances from the carrier.
+        assert_eq!(frames(k.set_filter(Mode::Lsb, -2400.0, -200.0)), vec!["SL03;SH07;"]);
+        // CW is the one mode this family takes a real bandwidth for.
+        assert_eq!(frames(k.set_filter(Mode::Cw, 500.0, 1000.0)), vec!["FW0500;"]);
+    }
+
+    #[test]
+    fn the_slope_indices_err_towards_the_wider_passband() {
+        let mut k = kenwood();
+        parse_str(&mut k, "ID021;");
+        // 250 Hz is not in the low-cut table. Taking the next one *up* would
+        // cut away more than was asked for, so the one below is chosen.
+        assert_eq!(frames(k.set_filter(Mode::Usb, 250.0, 2400.0)), vec!["SL03;SH07;"]);
+        // 2450 is not in the high-cut table either, and there the next one up
+        // is the safe direction: a filter quietly too narrow presents as a
+        // signal that simply is not there.
+        assert_eq!(frames(k.set_filter(Mode::Usb, 200.0, 2450.0)), vec!["SL03;SH08;"]);
+        // Past either end of the table, clamped rather than wrapped.
+        assert_eq!(frames(k.set_filter(Mode::Usb, 0.0, 99_000.0)), vec!["SL00;SH13;"]);
+    }
+
+    #[test]
+    fn the_same_index_is_a_different_filter_on_a_different_model() {
+        // The TS-2000's high-cut table starts two steps above the TS-590's, so
+        // the same passband is a different index on each.
+        let mut older = kenwood();
+        parse_str(&mut older, "ID019;");
+        let mut newer = kenwood();
+        parse_str(&mut newer, "ID021;");
+        assert_eq!(frames(older.set_filter(Mode::Usb, 200.0, 2400.0)), vec!["SL03;SH05;"]);
+        assert_eq!(frames(newer.set_filter(Mode::Usb, 200.0, 2400.0)), vec!["SL03;SH07;"]);
+    }
+
+    #[test]
+    fn a_model_with_no_slope_table_keeps_its_own_filter() {
+        // Nothing known yet, and a TS-890, whose filters are addressed
+        // differently again. Neither is a reason to guess at an index.
+        let mut k = kenwood();
+        assert!(k.set_filter(Mode::Usb, 200.0, 2400.0).is_empty());
+        parse_str(&mut k, "ID024;");
+        assert!(k.set_filter(Mode::Usb, 200.0, 2400.0).is_empty());
+        // AM and FM have slope tables of their own that sdroxide does not
+        // carry, on every model.
+        let mut k = kenwood();
+        parse_str(&mut k, "ID021;");
+        for m in [Mode::Am, Mode::Nfm, Mode::Wfm, Mode::Packet] {
+            assert!(k.set_filter(m, 0.0, 6000.0).is_empty(), "{m:?} has no slope table");
+        }
     }
 
     #[test]

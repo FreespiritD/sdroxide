@@ -2953,6 +2953,20 @@ impl Engine {
         if let Some(d) = self.main.as_mut().and_then(|c| c.demod.as_mut()) {
             d.set_filter(lo, hi);
         }
+        self.push_control_filter();
+    }
+
+    /// Hand the main receiver's passband to a radio that filters for us.
+    ///
+    /// A no-op everywhere but a CAT rig. There the operator's width control has
+    /// nothing on this side to act on — the audio arrives already filtered — so
+    /// unless it reaches the radio it is a control that moves and does nothing.
+    fn push_control_filter(&mut self) {
+        if !self.audio_mode {
+            return;
+        }
+        let r = &self.state.rx[0];
+        self.source.set_control_filter(r.mode, r.filter_lo as f64, r.filter_hi as f64);
     }
 
     /// Construct or tear down the digi controller to match the current mode.
@@ -3242,6 +3256,9 @@ impl Engine {
                     if let Some(m) = self.tx.as_mut().and_then(|tx| tx.modulator.as_mut()) {
                         m.set_filter(lo, hi);
                     }
+                    // And on a radio that does its own filtering, the width the
+                    // operator just set belongs to the radio.
+                    self.push_control_filter();
                 }
             }
             SetAgc { rx, agc } => {
@@ -5193,9 +5210,9 @@ impl Engine {
                         // clash does not resolve itself.
                         warn!("KISS server: {e}");
                         self.digi_config.packet_kiss_server = false;
-                        let _ = self.event_tx.send(RadioEvent::Notice(Some(format!(
-                            "KISS server: {e}"
-                        ))));
+                        let _ = self
+                            .event_tx
+                            .send(RadioEvent::Notice(Some(format!("KISS server: {e}"))));
                     }
                 }
                 return;
@@ -5220,7 +5237,10 @@ impl Engine {
                         // Reported, not applied — TXDELAY and friends are the
                         // operator's settings here, and a host overriding them
                         // invisibly would be a mystery to debug.
-                        debug!(?cmd, v, "KISS host set a parameter; ignoring in favour of the operator's");
+                        debug!(
+                            ?cmd,
+                            v, "KISS host set a parameter; ignoring in favour of the operator's"
+                        );
                     }
                     sdroxide_kiss::KissRequest::Clients(_) => {}
                 }
@@ -5300,6 +5320,10 @@ impl Engine {
         // the sideband flips which half of the audio band is RF, re-center.
         if self.audio_mode && rx == RxId::Main {
             let _ = self.source.set_control_mode(mode);
+            // After the mode, never before: every family expresses a filter in
+            // terms of the mode the rig is in, so a width sent ahead of the
+            // mode is a width measured against the old one.
+            self.push_control_filter();
             self.update_display_center();
         }
         // The main receiver's mode drives the digital-mode engine; entering

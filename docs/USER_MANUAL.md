@@ -2800,6 +2800,37 @@ setup and for radios whose keyer sdroxide cannot drive.
 > left in AFSK A, FSK D or PSK D it reports no mode at all rather than one the
 > two would then argue about.
 
+> **Note (the filter width on a CAT rig):** the width control in the receive
+> panel is sent to the *radio*. It has to be: there is no demodulator on this
+> side of a CAT rig — the audio arrives already filtered, and already levelled
+> by an AGC that has ridden the interference down — so narrowing it here would
+> only cut what the radio had let through, long after the damage was done.
+>
+> What each family can express differs, and where sdroxide cannot say a
+> passband exactly it leaves the radio's filter alone rather than guess:
+>
+> - **Elecraft** — `BW`, a real bandwidth in 10 Hz steps, every mode. The rig
+>   quantises it to what the mode allows.
+> - **Icom** — the filter-width index, which follows a formula rather than a
+>   per-model table: 50–500 Hz in fifties then 600–3600 Hz in hundreds on a
+>   sideband, and 200 Hz–10 kHz in two-hundreds in AM. FM picks its filter with
+>   the mode, so nothing is sent there.
+> - **Kenwood** — `FW` in Hz in CW; on a sideband the rig has no width at all
+>   but a pair of *cuts* (`SL`/`SH`), which is exactly what the panel's two
+>   filter edges are, so they map across directly. Index tables are carried for
+>   the TS-480, TS-590S/SG and TS-2000; on any other model, and in AM and FM,
+>   the rig's filter is left alone.
+> - **Yaesu** — `SH`, an index into a table the *model* holds, so the rig is
+>   asked what it is (`ID;`) at connect. Tables are carried for the FT-891,
+>   FT-991/991A, FTDX10, FTDX101D/MP and FT-710. On any other model, and in AM
+>   and FM, the rig's filter is left alone. The NARROW switch is set first where
+>   the generation has one, because otherwise the rig quantises the request into
+>   the other half of its table.
+>
+> Where a width is not an exact entry in the rig's table it is rounded **up**,
+> so the radio's filter is never quietly narrower than the one on screen — a
+> filter that is too narrow presents as a signal that simply is not there.
+
 > **Note (Yaesu):** the S-meter and the transmit SWR come from the radio's own
 > meters (`SM0` and `RM6`), because on a CAT rig there is nothing else to
 > measure — the audio arriving at the sound card has already been through the

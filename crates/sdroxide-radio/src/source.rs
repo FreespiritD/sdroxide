@@ -276,6 +276,24 @@ pub trait IqSource: Send {
         Ok(())
     }
 
+    /// Command the rig's own receive filter to the passband the operator picked
+    /// here, as audio-band edges in Hz either side of the dial.
+    ///
+    /// Only a radio that hands over *demodulated audio* needs this, and it needs
+    /// it badly: there is no DDC and no demodulator on this side, so the width
+    /// control in the panel has nothing to act on — the audio arrives already
+    /// filtered, and narrowing it here would only cut what the rig had already
+    /// let through, after its AGC had already ridden the interference down.
+    /// Passing the width to the radio puts it where it does some good.
+    ///
+    /// The mode comes with it because every family expresses a filter in terms
+    /// of the mode it is in: the same 500 Hz is one index in CW and a different
+    /// one in SSB, and some rigs take a width in CW but a pair of slopes in SSB.
+    ///
+    /// Default: no-op — an SDR's filter is the engine's own, applied to IQ it
+    /// has all of.
+    fn set_control_filter(&mut self, _mode: Mode, _lo_hz: f64, _hi_hz: f64) {}
+
     /// The receive offset (RIT) this front end has to carry itself, in Hz —
     /// zero when RIT is off.
     ///
@@ -635,6 +653,12 @@ impl IqSource for ConvertedSource {
 
     fn set_control_mode(&mut self, mode: Mode) -> Result<()> {
         self.inner.set_control_mode(mode)
+    }
+
+    /// Audio-band edges either side of the dial, which the converter does not
+    /// move.
+    fn set_control_filter(&mut self, mode: Mode, lo_hz: f64, hi_hz: f64) {
+        self.inner.set_control_filter(mode, lo_hz, hi_hz);
     }
 
     /// Relative (an offset from the dial), so untouched.

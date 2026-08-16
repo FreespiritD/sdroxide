@@ -257,6 +257,16 @@ impl IqSource for AudioCatSource {
         Ok(())
     }
 
+    /// The panel's width control, sent to the only filter in the path.
+    ///
+    /// There is no demodulator on this side of a CAT rig — the audio arrives
+    /// already filtered, levelled by an AGC that has ridden the interference
+    /// down, and narrowing it here would only cut what the radio had already
+    /// let through. The rig's own filter is the one that does the work.
+    fn set_control_filter(&mut self, mode: Mode, lo_hz: f64, hi_hz: f64) {
+        self.cat.set_filter(mode, lo_hz as f32, hi_hz as f32);
+    }
+
     // ── Output power ─────────────────────────────────────────────────────────
     // The rig's own power control, over CAT. It is the only transmit level that
     // means anything in every mode: the audio we put into the sound card is not

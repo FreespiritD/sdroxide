@@ -174,7 +174,15 @@ fn encode_loop(
             (None, None) => pending.extend_from_slice(&drained),
         }
         while pending.len() >= spp * ch {
-            encode_frame(&mut file, &mut enc, &pending[..spp * ch], ch, &mut pcm_l, &mut pcm_r, &path);
+            encode_frame(
+                &mut file,
+                &mut enc,
+                &pending[..spp * ch],
+                ch,
+                &mut pcm_l,
+                &mut pcm_r,
+                &path,
+            );
             pending.drain(..spp * ch);
         }
     }
@@ -237,9 +245,8 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("sdroxide-rec-test-{}.mp3", std::process::id()));
         let _ = std::fs::remove_file(&path);
-        let (rec, mut prod) =
-            Recorder::start(path.clone(), 48_000.0, RecordingChannels::Stereo)
-                .expect("start recorder");
+        let (rec, mut prod) = Recorder::start(path.clone(), 48_000.0, RecordingChannels::Stereo)
+            .expect("start recorder");
 
         // ~1 s at 48 kHz: 1 kHz in the left ear, 400 Hz in the right, so the
         // two channels are genuinely different, fed as it drains.
@@ -266,8 +273,8 @@ mod tests {
 
     #[test]
     fn records_a_valid_mono_mp3() {
-        let path = std::env::temp_dir()
-            .join(format!("sdroxide-rec-test-mono-{}.mp3", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("sdroxide-rec-test-mono-{}.mp3", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let (rec, mut prod) = Recorder::start(path.clone(), 48_000.0, RecordingChannels::Mono)
             .expect("start recorder");

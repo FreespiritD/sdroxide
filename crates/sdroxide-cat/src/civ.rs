@@ -322,6 +322,48 @@ pub fn parse_smeter_reply(data: &[u8]) -> Option<f32> {
 // Set-mode menu items
 // ---------------------------------------------------------------------------
 
+/// Set the receive filter width (`1A 03 <index>`), from audio-band edges in Hz.
+///
+/// Icom's filter is an index rather than a bandwidth, but unlike Yaesu's it is
+/// a *formula* rather than a per-model table, and the same one on every rig
+/// that has the command: on a sideband, in CW and in RTTY, indices 0..9 are
+/// 50 Hz to 500 Hz in fifty-hertz steps and 10..40 are 600 Hz to 3600 Hz in
+/// hundreds. AM has a scale of its own — 0..49 for 200 Hz to 10 kHz in
+/// two-hundreds — which is why the mode comes in.
+///
+/// FM has no such setting at all (its filter follows the mode's own
+/// wide/narrow), and neither has WFM, so both answer `None` rather than an
+/// index that would land in some other scale entirely.
+pub fn set_filter_frame(radio: u8, mode: Mode, lo_hz: f32, hi_hz: f32) -> Option<Vec<u8>> {
+    // Sideband lives in the sign of the edges on this side; the rig's filter is
+    // a width and knows nothing of that.
+    let want = (hi_hz - lo_hz).abs().round().max(0.0) as u32;
+    let index = match mode {
+        // No filter-width setting: the mode itself picks the filter.
+        Mode::Nfm | Mode::Wfm | Mode::Rifp | Mode::Packet => return None,
+        Mode::Am | Mode::Sam | Mode::Dsb => {
+            // 200 Hz .. 10 kHz in 200 Hz steps, rounded up so the passband is
+            // never quietly narrower than the one on screen.
+            want.div_ceil(200).clamp(1, 50) - 1
+        }
+        _ => {
+            if want <= 500 {
+                // 50 Hz .. 500 Hz, index 0..9.
+                want.div_ceil(50).clamp(1, 10) - 1
+            } else {
+                // 600 Hz .. 3600 Hz, index 10..40.
+                want.div_ceil(100).clamp(6, 36) + 4
+            }
+        }
+    };
+    Some(frame(radio, 0x1A, &[0x03, to_bcd(index as u8)]))
+}
+
+/// A 0..99 value as the packed BCD byte Icom's level and index fields take.
+fn to_bcd(v: u8) -> u8 {
+    ((v / 10) << 4) | (v % 10)
+}
+
 /// Write a Set-mode menu item: `1A 05 <hi> <lo> <value…>`.
 ///
 /// The item number is *not* portable between models — Icom renumbers this
@@ -603,6 +645,41 @@ mod tests {
             .collect();
         assert_eq!(freqs, vec![7_055_000.0]);
         assert!(buf.is_empty());
+    }
+
+    /// Icom's filter is an index, but unlike Yaesu's it comes from a formula
+    /// that is the same on every rig with the command — so no per-model table
+    /// is needed, only the mode, because AM has a scale of its own.
+    #[test]
+    fn the_filter_width_maps_onto_icoms_two_index_scales() {
+        let idx = |mode: Mode, lo: f32, hi: f32| {
+            set_filter_frame(0x94, mode, lo, hi).map(|f| f[f.len() - 2])
+        };
+        // Sideband/CW/RTTY: 0..9 is 50..500 Hz in fifties, 10..40 is 600..3600
+        // in hundreds. The index goes on the wire as BCD.
+        assert_eq!(idx(Mode::Cw, 0.0, 50.0), Some(0x00));
+        assert_eq!(idx(Mode::Cw, 0.0, 500.0), Some(0x09));
+        assert_eq!(idx(Mode::Usb, 0.0, 600.0), Some(0x10));
+        assert_eq!(idx(Mode::Usb, 200.0, 2600.0), Some(0x28)); // 2400 Hz
+        assert_eq!(idx(Mode::Usb, 0.0, 3600.0), Some(0x40));
+        // Rounded up, so the passband is never quietly narrower than the one on
+        // screen, and clamped rather than wrapped past the ends.
+        assert_eq!(idx(Mode::Usb, 0.0, 2450.0), Some(0x29)); // 2500 Hz
+        assert_eq!(idx(Mode::Usb, 0.0, 99_000.0), Some(0x40));
+        assert_eq!(idx(Mode::Cw, 0.0, 1.0), Some(0x00));
+        // LSB arrives with its edges negative; the width is the same.
+        assert_eq!(idx(Mode::Lsb, -2600.0, -200.0), Some(0x28));
+        // AM runs on its own scale: 200 Hz .. 10 kHz in two-hundreds.
+        assert_eq!(idx(Mode::Am, 0.0, 6000.0), Some(0x29));
+        assert_eq!(idx(Mode::Am, 0.0, 200.0), Some(0x00));
+        // FM picks its filter with the mode; there is no width to set.
+        assert_eq!(idx(Mode::Nfm, 0.0, 12_000.0), None);
+        assert_eq!(idx(Mode::Wfm, 0.0, 200_000.0), None);
+        // And the whole frame is the documented sub-command.
+        assert_eq!(
+            set_filter_frame(0x94, Mode::Usb, 200.0, 2600.0).unwrap(),
+            vec![0xFE, 0xFE, 0x94, 0xE0, 0x1A, 0x03, 0x28, 0xFD]
+        );
     }
 
     #[test]
