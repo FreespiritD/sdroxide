@@ -1,4 +1,4 @@
-//! Native HackRF One (and Jawbreaker / rad1o) driver.
+//! Native HackRF One and HackRF Pro (and Jawbreaker / rad1o) driver.
 //!
 //! Pure Rust over `nusb`: no libhackrf, no libusb, no SoapySDR module, so this
 //! backend is in every build variant on every platform.

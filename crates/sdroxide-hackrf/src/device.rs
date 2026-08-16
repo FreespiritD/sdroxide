@@ -26,9 +26,8 @@ use sdroxide_types::HackRfConfig;
 
 use crate::error::Result;
 use crate::protocol::{
-    BoardKind, GainSetter, MAX_SAMPLE_RATE, MIN_SAMPLE_RATE, PartIdSerial, Request,
-    TransceiverMode, auto_filter_bw, compute_filter_bw, encode_sample_rate, encode_set_freq,
-    parse_ascii, rate_params,
+    BoardKind, GainSetter, PartIdSerial, Request, TransceiverMode, auto_filter_bw,
+    compute_filter_bw, encode_sample_rate, encode_set_freq, parse_ascii, rate_params,
 };
 use crate::usb::{Transport, TransportExt};
 
@@ -65,6 +64,11 @@ impl<T: Transport> Device<T> {
     /// been driven to their minimum — so however this function fails, and
     /// whatever state a previous program left the radio in, it cannot be left
     /// able to emit power.
+    ///
+    /// The requested rate is held unclamped until [`Self::identify`] has run,
+    /// because the floor is the board's: a HackRF Pro takes rates a decade
+    /// below anything the other boards will do, and clamping to the MAX5864's
+    /// 2 Msps before knowing which radio this is would quietly take that away.
     pub fn open(io: T, cfg: &HackRfConfig, center_hz: f64) -> Result<Device<T>> {
         let mut dev = Device {
             io,
@@ -76,7 +80,7 @@ impl<T: Transport> Device<T> {
             mode: TransceiverMode::Ss,
             center_hz,
             tx_center_hz: center_hz,
-            rate_hz: cfg.sample_rate_hz.clamp(MIN_SAMPLE_RATE, MAX_SAMPLE_RATE),
+            rate_hz: cfg.sample_rate_hz,
             filter_bw: 0,
             filter_pref_hz: cfg.filter_bw_hz,
             ppm: cfg.ppm,
@@ -90,6 +94,7 @@ impl<T: Transport> Device<T> {
 
         dev.safety_rail()?;
         dev.identify();
+        dev.rate_hz = dev.snap_rate(cfg.sample_rate_hz);
         dev.apply_rate()?;
         dev.retune()?;
         dev.set_mode(TransceiverMode::Receive)?;
@@ -161,6 +166,19 @@ impl<T: Transport> Device<T> {
         self.rate_hz
     }
 
+    /// The rates this particular board will accept. Published rather than
+    /// assumed so the message an operator sees names their radio's limits and
+    /// not a HackRF One's.
+    pub fn rate_range(&self) -> (f64, f64) {
+        self.kind.rate_range()
+    }
+
+    /// Whether the baseband filter is the radio's choice rather than the
+    /// operator's. See [`BoardKind::sets_own_filter`].
+    pub fn sets_own_filter(&self) -> bool {
+        self.kind.sets_own_filter()
+    }
+
     pub fn center_hz(&self) -> f64 {
         self.center_hz
     }
@@ -225,6 +243,25 @@ impl<T: Transport> Device<T> {
     }
 
     fn apply_filter(&mut self) -> Result<()> {
+        // A board that derives its own filter is not sent the request — the
+        // same rule as the bias tee two functions down, and for the same
+        // reason. The firmware would accept it and discard it, and the driver
+        // would then be holding a bandwidth the radio is not running. That
+        // figure is not decoration: it is what `lo_offset_for` decides the
+        // zero-IF offset from.
+        if self.kind.sets_own_filter() {
+            let bw = self.kind.auto_filter_bw(self.rate_hz);
+            if self.filter_bw != bw {
+                self.io.trace().note(format!(
+                    "{} sets its own baseband filter; at {:.3} Msps that is {:.3} MHz",
+                    self.kind.name(),
+                    self.rate_hz / 1e6,
+                    bw as f64 / 1e6,
+                ));
+            }
+            self.filter_bw = bw;
+            return Ok(());
+        }
         let bw = if self.filter_pref_hz > 0.0 {
             compute_filter_bw(self.filter_pref_hz as u32)
         } else {
@@ -293,13 +330,25 @@ impl<T: Transport> Device<T> {
     /// generator the synthesiser is derived from, so the frequency has to be
     /// restated or the radio is left near — but not on — the dial.
     pub fn set_rate(&mut self, hz: f64) -> Result<()> {
-        let want = hz.clamp(MIN_SAMPLE_RATE, MAX_SAMPLE_RATE);
-        if want != hz {
-            self.io.trace().note(format!("rate {hz} is outside 2–20 Msps; using {want}"));
-        }
-        self.rate_hz = want;
+        self.rate_hz = self.snap_rate(hz);
         self.apply_rate()?;
         self.retune()
+    }
+
+    /// Bring a requested rate inside what *this* board takes, saying so in the
+    /// trace when it moves.
+    fn snap_rate(&self, hz: f64) -> f64 {
+        let (min, max) = self.kind.rate_range();
+        let want = hz.clamp(min, max);
+        if want != hz {
+            self.io.trace().note(format!(
+                "rate {hz} is outside this {}'s {:.1}–{:.1} Msps; using {want}",
+                self.kind.name(),
+                min / 1e6,
+                max / 1e6,
+            ));
+        }
+        want
     }
 
     pub fn set_filter_pref(&mut self, hz: f64) -> Result<()> {
@@ -686,5 +735,70 @@ mod tests {
         assert_eq!(dev.rate_hz(), 20.0e6);
         dev.set_rate(0.5e6).expect("clamped, not refused");
         assert_eq!(dev.rate_hz(), 2.0e6);
+    }
+
+    /// The floor belongs to the board, and the board is not known until
+    /// `identify` has answered — so a rate the Pro can run must survive the
+    /// open rather than being clamped to a HackRF One's 2 Msps on the way in.
+    #[test]
+    fn a_pro_keeps_the_narrow_rate_it_was_opened_with() {
+        let io = FakeTransport::new().reply(Request::BoardIdRead, &[5]);
+        let mut c = cfg();
+        c.sample_rate_hz = 500.0e3;
+        let mut dev = Device::open(io, &c, 14.1e6).unwrap();
+        assert_eq!(dev.kind(), BoardKind::HackRfPro);
+        assert_eq!(dev.rate_hz(), 500.0e3, "the Pro's floor is 200 ksps, not 2 Msps");
+        assert_eq!(dev.rate_range(), (200.0e3, 20.0e6));
+
+        // Still bounded at both ends, just at this board's bounds.
+        dev.set_rate(100.0e3).unwrap();
+        assert_eq!(dev.rate_hz(), 200.0e3);
+        dev.set_rate(50.0e6).unwrap();
+        assert_eq!(dev.rate_hz(), 20.0e6);
+
+        // The same rate on a HackRF One is out of range and gets clamped, which
+        // is the behaviour that must not change.
+        let io = FakeTransport::new().reply(Request::BoardIdRead, &[2]);
+        let dev = Device::open(io, &c, 14.1e6).unwrap();
+        assert_eq!(dev.kind(), BoardKind::HackRfOne);
+        assert_eq!(dev.rate_hz(), 2.0e6);
+    }
+
+    /// The Pro derives its own baseband filter and discards what the host asks
+    /// for. Sending the request anyway would leave the driver reporting a
+    /// bandwidth the radio is not running — and that figure is what the
+    /// zero-IF LO offset is computed from.
+    #[test]
+    fn a_pro_is_never_sent_a_baseband_filter_request() {
+        let io = FakeTransport::new().reply(Request::BoardIdRead, &[5]);
+        let mut c = cfg();
+        c.filter_bw_hz = 5.0e6;
+        let mut dev = Device::open(io, &c, 14.1e6).unwrap();
+        assert!(dev.sets_own_filter());
+        assert!(
+            dev.io().all(Request::BasebandFilterBandwidthSet).is_empty(),
+            "the firmware would accept this and ignore it"
+        );
+        // What is reported is what the radio really settles on: 0.75 of the
+        // rate, unquantised, rather than the MAX2837 table's nearest step.
+        assert_eq!(dev.filter_bw(), 1_500_000, "0.75 × 2 Msps");
+
+        // An override applied later is equally ignored, and the reported width
+        // follows the rate instead.
+        dev.io().clear();
+        dev.set_filter_pref(28.0e6).unwrap();
+        assert!(dev.io().all(Request::BasebandFilterBandwidthSet).is_empty());
+        assert_eq!(dev.filter_bw(), 1_500_000);
+
+        dev.set_rate(20.0e6).unwrap();
+        assert_eq!(dev.filter_bw(), 15_000_000);
+
+        // A HackRF One still honours the override, which is the behaviour this
+        // must not have cost anybody.
+        let io = FakeTransport::new().reply(Request::BoardIdRead, &[2]);
+        let dev = Device::open(io, &c, 14.1e6).unwrap();
+        assert!(!dev.sets_own_filter());
+        assert_eq!(dev.io().all(Request::BasebandFilterBandwidthSet).len(), 1);
+        assert_eq!(dev.filter_bw(), 5_000_000);
     }
 }

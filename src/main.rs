@@ -732,9 +732,10 @@ fn probe_hackrf() {
         println!("=== HackRF (native USB driver) ===");
         for (i, d) in devices.iter().enumerate() {
             // The board *revision* needs a control transfer, so it is not here;
-            // the product id is what enumeration gives away for free, and it is
-            // enough to separate a HackRF One from a Jawbreaker or a rad1o —
-            // which matters, because the three do not tune the same range.
+            // the product id and product string are what enumeration gives away
+            // for free, and between them they separate a HackRF One from a Pro,
+            // a Jawbreaker or a rad1o — which matters, because the four do not
+            // tune the same range.
             println!("  {}: {}", i, d.label());
         }
     }

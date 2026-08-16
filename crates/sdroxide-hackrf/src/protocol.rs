@@ -21,12 +21,26 @@
 /// USB vendor id, shared by every board.
 pub const VID: u16 = 0x1d50;
 
-/// Product ids. All three are driven identically; they differ only in the
-/// frequency range they will actually tune ([`BoardKind::freq_range`]) and in
-/// whether a bias tee exists.
+/// Product ids. All of them are driven identically; they differ only in the
+/// frequency range they will actually tune ([`BoardKind::freq_range`]), the
+/// sample rates they accept ([`BoardKind::rate_range`]), whether a bias tee
+/// exists, and whether the baseband filter can be set from the host
+/// ([`BoardKind::sets_own_filter`]).
+///
+/// **`0x6089` is not one board.** The HackRF Pro ships the same id as the
+/// HackRF One — GSG's firmware shares one device descriptor between them
+/// (`firmware/hackrf_usb/usb_descriptor.c`, `#if defined(IS_HACKRF_ONE) ||
+/// defined(IS_PRALINE)`) and libhackrf's own device list has no entry for the
+/// Pro at all. The two are told apart by the USB **product string**, which is
+/// free at enumeration ([`BoardKind::from_product`]), and definitively by
+/// [`Request::BoardIdRead`] once the radio is open.
 pub const PID_HACKRF_ONE: u16 = 0x6089;
 pub const PID_JAWBREAKER: u16 = 0x604b;
 pub const PID_RAD1O: u16 = 0xcc15;
+
+/// The product string a HackRF Pro reports, verbatim from the firmware's
+/// `usb_descriptor_string_product_praline`.
+pub const PRODUCT_HACKRF_PRO: &str = "HackRF Pro";
 
 /// The DFU bootloader's id. This driver never enters it and cannot flash
 /// firmware; it is here only so a radio left in DFU by an interrupted
@@ -58,8 +72,22 @@ pub const BYTES_PER_SAMPLE: usize = 2;
 /// offers, which is `HackRfConfig::SAMPLE_RATES` over in `sdroxide-types` —
 /// that list has to be wasm-safe because the settings UI is shared, and having
 /// it in one place is what stops the two drifting.
+///
+/// The floor is per-board; see [`BoardKind::rate_range`]. This one is the
+/// MAX5864 boards': below 2 Msps the converter is out of spec and the narrowest
+/// analog filter is still 1.75 MHz wide, so what comes back is aliased.
 pub const MIN_SAMPLE_RATE: f64 = 2.0e6;
 pub const MAX_SAMPLE_RATE: f64 = 20.0e6;
+
+/// The HackRF Pro's floor.
+///
+/// Lower than every other board because the Pro decimates in its FPGA rather
+/// than running the converter slowly: the firmware picks a resampling ratio
+/// that keeps the analog front end between 200 kHz and 40 MHz whatever the host
+/// asks for (`firmware/common/radio.c`, `compute_resample_log`), and clamps the
+/// host-side rate to `MIN_MCU_RATE` = 200 kHz. So a narrow rate here is a
+/// genuinely narrow, genuinely filtered stream rather than an aliased one.
+pub const MIN_SAMPLE_RATE_PRO: f64 = 200.0e3;
 
 /// Vendor requests, as `bRequest`. Values from libhackrf's
 /// `hackrf_vendor_request`.
@@ -69,6 +97,27 @@ pub const MAX_SAMPLE_RATE: f64 = 20.0e6;
 /// jumps from `SpiFlashRead` to `BoardIdRead` — and that the SPI-flash trio is
 /// 10/11/12, which is a different numbering from every other radio in this
 /// workspace and the likeliest place to paste in the wrong table.
+///
+/// # Two of the gaps are load-bearing
+///
+/// **49–55 are the HackRF Pro's own** — FPGA register access, the P1/P2 SMA
+/// signal selectors, the clock-input selector, the narrowband filter and the
+/// FPGA bitstream loader. None is needed to receive or transmit, all of them
+/// stall on every other board, and one of them is dangerous: request 54 swaps
+/// the gateware, and the alternate bitstreams are what put the radio into its
+/// 4-bit and 16-bit sample formats. This driver decodes 8-bit I/Q and nothing
+/// else, so it never touches 54. (The converse is a real failure mode worth
+/// recognising in a bug report: a Pro left in half-precision by
+/// `hackrf_debug -P` stays there until it is unplugged, and everything after
+/// that is noise.)
+///
+/// **61 is `GET_BUFFER_SIZE`, and reading it changes behaviour.** The firmware
+/// treats the read as the host announcing that it will flush the transmit
+/// buffer itself, and switches its own automatic flush off
+/// (`auto_tx_flush = false` in `usb_api_transceiver.c`). Leaving it unsent is
+/// what makes the firmware hold the mode-off request until the tail of an over
+/// has actually gone out — which is the behaviour this driver's transmit path
+/// is built on. Do not add it without also adding the flush.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Request {
@@ -160,14 +209,20 @@ pub enum TransceiverMode {
 /// Which board answered [`Request::BoardIdRead`].
 ///
 /// The USB product id says which family; this says which revision, and the two
-/// can disagree — a rev-9 HackRF One and an older one share `0x6089`.
+/// can disagree — a rev-9 HackRF One and an older one share `0x6089`, and so
+/// does a HackRF Pro.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoardKind {
     Jellybean,
     Jawbreaker,
     HackRfOne,
     Rad1o,
-    Praline,
+    /// The HackRF Pro. GSG's firmware and libhackrf call this board "Praline"
+    /// internally — the codename is what `BOARD_ID_PRALINE` and
+    /// `HACKRF_PLATFORM_PRALINE` are named after — but every surface an
+    /// operator sees says "HackRF Pro", including `hackrf_board_id_name`, so
+    /// that is what this is called here.
+    HackRfPro,
     Unknown(u8),
 }
 
@@ -182,7 +237,7 @@ impl BoardKind {
             // which — only the name does, and both are "HackRF One".
             2 | 4 => BoardKind::HackRfOne,
             3 => BoardKind::Rad1o,
-            5 => BoardKind::Praline,
+            5 => BoardKind::HackRfPro,
             other => BoardKind::Unknown(other),
         }
     }
@@ -193,21 +248,36 @@ impl BoardKind {
             BoardKind::Jawbreaker => "Jawbreaker",
             BoardKind::HackRfOne => "HackRF One",
             BoardKind::Rad1o => "rad1o",
-            BoardKind::Praline => "Praline",
+            BoardKind::HackRfPro => "HackRF Pro",
             BoardKind::Unknown(_) => "HackRF",
         }
     }
 
     /// What this board will actually tune, in Hz.
     ///
-    /// These differ per board and getting them from the product id rather than
+    /// These differ per board and getting them from the radio rather than
     /// assuming a HackRF One is the difference between a rad1o owner seeing an
-    /// honest 50–4000 MHz and being told they can work 6 GHz.
+    /// honest 50–4000 MHz and being told they can work 6 GHz. The Pro reaches a
+    /// decade lower than the One at the bottom — 100 kHz against 1 MHz — which
+    /// is most of the reason to own one for HF.
     pub fn freq_range(self) -> (f64, f64) {
         match self {
             BoardKind::Jawbreaker => (10.0e6, 6.0e9),
             BoardKind::Rad1o => (50.0e6, 4.0e9),
+            BoardKind::HackRfPro => (100.0e3, 6.0e9),
             _ => (1.0e6, 6.0e9),
+        }
+    }
+
+    /// The sample rates this board will accept, in Hz.
+    ///
+    /// Only the floor differs, and it differs by a factor of ten: see
+    /// [`MIN_SAMPLE_RATE_PRO`] for why the Pro can go narrow and the others
+    /// cannot.
+    pub fn rate_range(self) -> (f64, f64) {
+        match self {
+            BoardKind::HackRfPro => (MIN_SAMPLE_RATE_PRO, MAX_SAMPLE_RATE),
+            _ => (MIN_SAMPLE_RATE, MAX_SAMPLE_RATE),
         }
     }
 
@@ -215,16 +285,73 @@ impl BoardKind {
     /// the rad1o do not, and offering the control anyway would be a switch that
     /// silently does nothing.
     pub fn has_bias_tee(self) -> bool {
-        matches!(self, BoardKind::HackRfOne | BoardKind::Praline)
+        matches!(self, BoardKind::HackRfOne | BoardKind::HackRfPro)
+    }
+
+    /// Whether the radio picks its own baseband filter and ignores what the
+    /// host asks for.
+    ///
+    /// True on the Pro, and it is not a firmware oversight to be worked around:
+    /// `radio_update_bandwidth` in `firmware/common/radio.c` discards the
+    /// requested bank outright on this board (`(void) bank;`) and always
+    /// derives the filter from the sample rate, because the analog chain it has
+    /// to drive is nothing like the MAX2837's. The MAX2831's narrowest coarse
+    /// setting is about 10 MHz of complex baseband — narrower than that is an
+    /// extra switched filter plus decimation in the FPGA, which only the
+    /// firmware knows how to combine.
+    ///
+    /// So [`Request::BasebandFilterBandwidthSet`] is not sent at all on such a
+    /// board. Sending it would be accepted and ignored, and the driver would
+    /// then report a filter width the radio is not running — which feeds the
+    /// zero-IF LO offset and would be a lie with consequences.
+    pub fn sets_own_filter(self) -> bool {
+        matches!(self, BoardKind::HackRfPro)
+    }
+
+    /// The baseband filter this board ends up at for `rate_hz` when the host
+    /// does not override it.
+    ///
+    /// Both branches are the same 0.75-of-rate rule; they differ in where it
+    /// lands. The MAX2837 boards snap to a 16-entry table, so the driver has to
+    /// snap the same way to report what the radio is really doing. The Pro
+    /// keeps the figure as-is — its firmware carries `bb_bandwidth = 3/4 *
+    /// sample_rate` through to the FPGA and only the analog part of the chain
+    /// is quantised, so the table would be the wrong answer here.
+    pub fn auto_filter_bw(self, rate_hz: f64) -> u32 {
+        if self.sets_own_filter() { (0.75 * rate_hz) as u32 } else { auto_filter_bw(rate_hz) }
     }
 
     /// The board a product id implies, for the device list — where the id is
     /// all there is, because naming a radio must not require opening it.
+    ///
+    /// `0x6089` answers "HackRF One" for want of anything better; use
+    /// [`Self::from_product`] where the product string is to hand, because that
+    /// is what separates a One from a Pro without opening anything.
     pub fn from_pid(pid: u16) -> BoardKind {
         match pid {
             PID_JAWBREAKER => BoardKind::Jawbreaker,
             PID_RAD1O => BoardKind::Rad1o,
             _ => BoardKind::HackRfOne,
+        }
+    }
+
+    /// The board a product id *and* the USB product string imply.
+    ///
+    /// Still free — the strings come from sysfs, the registry or IOKit, so this
+    /// opens nothing — and it is the only way to tell a HackRF Pro from a
+    /// HackRF One before [`Request::BoardIdRead`] can be asked. The two share a
+    /// product id, and the settings UI has to offer a different rate list for
+    /// each, so this has to work at enumeration time rather than at open.
+    ///
+    /// A radio whose descriptor says nothing falls back to [`Self::from_pid`],
+    /// which is the conservative answer: a Pro treated as a One works, and a
+    /// One treated as a Pro would be offered rates that alias.
+    pub fn from_product(pid: u16, product: Option<&str>) -> BoardKind {
+        match product.map(str::trim) {
+            Some(p) if pid == PID_HACKRF_ONE && p.eq_ignore_ascii_case(PRODUCT_HACKRF_PRO) => {
+                BoardKind::HackRfPro
+            }
+            _ => BoardKind::from_pid(pid),
         }
     }
 }
@@ -415,18 +542,14 @@ pub fn parse_ascii(b: &[u8]) -> String {
 ///
 /// An empty `want` matches everything — that is "no serial configured", not "a
 /// serial that happens to be blank".
+///
+/// The rule itself lives in `sdroxide-types` so the settings UI can apply the
+/// identical one — it has to pick out the selected device to know which board's
+/// rates to offer — and the settings UI is shared with the wasm client, which
+/// cannot depend on this crate. The tests below are still the ones that pin the
+/// behaviour.
 pub fn serial_matches(want: &str, found: Option<&str>) -> bool {
-    let want = want.trim();
-    if want.is_empty() {
-        return true;
-    }
-    match found {
-        Some(f) => {
-            let f = f.trim();
-            f.len() >= want.len() && f[f.len() - want.len()..].eq_ignore_ascii_case(want)
-        }
-        None => false,
-    }
+    sdroxide_types::hackrf_serial_matches(want, found)
 }
 
 #[cfg(test)]
@@ -667,19 +790,100 @@ mod tests {
         assert_eq!(BoardKind::Rad1o.freq_range(), (50.0e6, 4.0e9));
         assert_eq!(BoardKind::Jawbreaker.freq_range(), (10.0e6, 6.0e9));
         assert_eq!(BoardKind::HackRfOne.freq_range(), (1.0e6, 6.0e9));
+        assert_eq!(BoardKind::HackRfPro.freq_range(), (100.0e3, 6.0e9));
 
         // Rev 9 and pre-rev-9 are both a HackRF One as far as this driver is
         // concerned; only the name would differ and it does not.
         assert_eq!(BoardKind::from_code(2), BoardKind::HackRfOne);
         assert_eq!(BoardKind::from_code(4), BoardKind::HackRfOne);
+        assert_eq!(BoardKind::from_code(5), BoardKind::HackRfPro);
         assert_eq!(BoardKind::from_code(0xfe), BoardKind::Unknown(0xfe));
         assert_eq!(BoardKind::Unknown(0xfe).name(), "HackRF");
+        // The codename is the firmware's, not the operator's: libhackrf's
+        // `hackrf_board_id_name` answers "HackRF Pro" for board id 5 and so
+        // does every label this driver produces.
+        assert_eq!(BoardKind::HackRfPro.name(), "HackRF Pro");
 
         // Offering a bias tee that does not exist is a switch that silently
-        // does nothing.
+        // does nothing. The Pro has one — the firmware accepts
+        // `AntennaEnable` for `BOARD_ID_PRALINE` alongside the two HackRF One
+        // revisions and stalls it for everything else.
         assert!(BoardKind::HackRfOne.has_bias_tee());
+        assert!(BoardKind::HackRfPro.has_bias_tee());
         assert!(!BoardKind::Jawbreaker.has_bias_tee());
         assert!(!BoardKind::Rad1o.has_bias_tee());
+    }
+
+    /// A HackRF Pro shares `0x6089` with a HackRF One, so the product id alone
+    /// cannot separate them and the product string has to. Getting this wrong
+    /// in the safe direction costs a Pro owner the bottom of their band and
+    /// their narrow rates; getting it wrong the other way offers a One rates
+    /// that come back aliased.
+    #[test]
+    fn a_pro_is_told_from_a_one_by_its_product_string() {
+        let pro = BoardKind::from_product(PID_HACKRF_ONE, Some("HackRF Pro"));
+        assert_eq!(pro, BoardKind::HackRfPro);
+        // Descriptors are the firmware's choice of case and may arrive padded.
+        assert_eq!(BoardKind::from_product(PID_HACKRF_ONE, Some(" hackrf pro ")), pro);
+
+        // Everything else on that id is a One, including a radio that offers
+        // no product string at all.
+        assert_eq!(
+            BoardKind::from_product(PID_HACKRF_ONE, Some("HackRF One")),
+            BoardKind::HackRfOne
+        );
+        assert_eq!(BoardKind::from_product(PID_HACKRF_ONE, None), BoardKind::HackRfOne);
+        assert_eq!(BoardKind::from_product(PID_HACKRF_ONE, Some("")), BoardKind::HackRfOne);
+
+        // And the string never overrides an id that already says something
+        // else — a rad1o calling itself a Pro is a rad1o.
+        assert_eq!(BoardKind::from_product(PID_RAD1O, Some("HackRF Pro")), BoardKind::Rad1o);
+        assert_eq!(
+            BoardKind::from_product(PID_JAWBREAKER, Some("HackRF Pro")),
+            BoardKind::Jawbreaker
+        );
+    }
+
+    /// The Pro decimates in its FPGA, so it goes a decade narrower than any
+    /// board built around the MAX5864 — and the driver must not clamp that
+    /// away.
+    #[test]
+    fn only_the_pro_goes_below_two_megasamples() {
+        assert_eq!(BoardKind::HackRfPro.rate_range(), (200.0e3, 20.0e6));
+        for b in [BoardKind::HackRfOne, BoardKind::Jawbreaker, BoardKind::Rad1o] {
+            assert_eq!(b.rate_range(), (2.0e6, 20.0e6), "{b:?}");
+        }
+    }
+
+    /// The Pro's firmware discards the requested baseband bandwidth and derives
+    /// its own, so the driver must not send the request and must not report the
+    /// MAX2837 table's answer — that figure feeds the zero-IF LO offset.
+    #[test]
+    fn the_pro_picks_its_own_filter_and_says_so() {
+        assert!(BoardKind::HackRfPro.sets_own_filter());
+        for b in [BoardKind::HackRfOne, BoardKind::Jawbreaker, BoardKind::Rad1o] {
+            assert!(!b.sets_own_filter(), "{b:?}");
+        }
+
+        // Same 0.75-of-rate rule, different landing place.
+        assert_eq!(BoardKind::HackRfOne.auto_filter_bw(20.0e6), 15_000_000);
+        assert_eq!(BoardKind::HackRfPro.auto_filter_bw(20.0e6), 15_000_000);
+        assert_eq!(BoardKind::HackRfOne.auto_filter_bw(10.0e6), 7_000_000, "snapped to the table");
+        assert_eq!(BoardKind::HackRfPro.auto_filter_bw(10.0e6), 7_500_000, "not snapped");
+
+        // Below the MAX2837's narrowest step the two diverge completely, which
+        // is the whole point: at 250 ksps the table would claim 1.75 MHz of
+        // analog bandwidth on a radio running 187.5 kHz.
+        assert_eq!(BoardKind::HackRfOne.auto_filter_bw(250.0e3), 1_750_000);
+        assert_eq!(BoardKind::HackRfPro.auto_filter_bw(250.0e3), 187_500);
+
+        // And the LO offset survives at every rate either board can run — the
+        // same relationship `the_auto_filter_never_costs_the_lo_offset` pins
+        // for the MAX2837 boards, checked across the Pro's wider span.
+        for rate in [200.0e3, 250.0e3, 500.0e3, 1.0e6, 2.0e6, 8.0e6, 20.0e6] {
+            let bw = BoardKind::HackRfPro.auto_filter_bw(rate) as f64;
+            assert!(rate * 0.25 <= bw * 0.45, "at {rate} sps the Pro's filter is {bw} Hz");
+        }
     }
 
     #[test]

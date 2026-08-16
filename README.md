@@ -448,10 +448,10 @@ starting sdroxide before the rig is fine:
 
   **Not yet verified against real hardware** — the Radio tab has a **Copy
   diagnostic report** button, and that report is what makes a fix possible.
-- **HackRF One (USB)** — a HackRF One (or a Jawbreaker or rad1o), driven
-  directly over USB by a native pure-Rust driver. **No SoapySDR, no libusb and
-  no libhackrf needed**, so it works in every build including the standard
-  `.msi` and `.dmg`. 1 MHz–6 GHz, 2–20 Msps, wideband IQ receive *and*
+- **HackRF One / Pro (USB)** — a HackRF One or HackRF Pro (or a Jawbreaker or
+  rad1o), driven directly over USB by a native pure-Rust driver. **No SoapySDR,
+  no libusb and no libhackrf needed**, so it works in every build including the
+  standard `.msi` and `.dmg`. 1 MHz–6 GHz, 2–20 Msps, wideband IQ receive *and*
   transmit. See "HackRF permissions" under Building for the Linux udev rule.
 
   **Half duplex**: receive stops for the length of an over, the way the hardware
@@ -470,10 +470,21 @@ starting sdroxide before the rig is fine:
   the board's real tuning range is read off it, so a rad1o is honestly reported
   as 50–4000 MHz rather than offered a HackRF One's span.
 
-  Receive is verified against hardware; **transmit has not yet been measured**.
-  Into a dummy load first, and the Radio tab has a **Copy diagnostic report**
-  button that records every command exchanged with the radio, in order,
-  including the sequence around each key-down.
+  A **HackRF Pro** is the same driver and the same protocol — it shares the
+  HackRF One's USB id and every vendor request this driver sends — with three
+  differences sdroxide reads off the board rather than assuming: it tunes down
+  to **100 kHz** instead of 1 MHz, it accepts sample rates down to **250 ksps**
+  because it decimates in its FPGA rather than running the converter slowly, and
+  it **chooses its own baseband filter** (three quarters of the sample rate) and
+  ignores anything the host asks for, so that control is greyed out. sdroxide
+  decodes the Pro's standard 8-bit stream; its half-precision and
+  extended-precision gateware modes are not driven, and a Pro left in one of
+  them by `hackrf_debug -P` will need unplugging.
+
+  Receive on a HackRF One is verified against hardware; **transmit has not yet
+  been measured, and HackRF Pro is unverified** — the Pro path is
+  transcribed from Great Scott Gadgets' firmware and libhackrf sources. In case of problems, use the **Copy diagnostic report** button
+  which  records every command exchanged with the radio.
 - **SDRplay RSP (USB)** — any SDRplay RSP (RSP1, RSP1A, RSP1B, RSP2, RSPduo,
   RSPdx, RSPdx R2), driven natively through the vendor's **SDRplay API
   service** — no SoapySDR in the path. The RSPs after the original RSP1 have
@@ -931,10 +942,11 @@ sudo udevadm control --reload
 
 The `.deb` installs this for you. If Great Scott Gadgets' own `53-hackrf.rules`
 is already installed it covers the same ids and there is nothing to do. The rule
-covers the HackRF One (`1d50:6089`), the Jawbreaker (`604b`) and the rad1o
-(`cc15`), plus `1fc9:000c` — the DFU bootloader. sdroxide cannot flash firmware
-and never enters DFU, but a radio left there by an interrupted `hackrf_spiflash`
-is otherwise invisible to a non-root user.
+covers the HackRF One *and Pro* (`1d50:6089` — the two share an id), the
+Jawbreaker (`604b`) and the rad1o (`cc15`), plus `1fc9:000c` — the DFU
+bootloader. sdroxide cannot flash firmware and never enters DFU, but a radio
+left there by an interrupted `hackrf_spiflash` is otherwise invisible to a
+non-root user.
 
 **Windows.** A HackRF carries the Microsoft OS descriptors that ask Windows to
 bind WinUSB by itself, so this normally needs nothing. A radio that has been
@@ -947,7 +959,11 @@ The board *revision* is not in the USB descriptors — a rev-9 HackRF One and an
 older one both report `1d50:6089` — so the device list names the family and
 sdroxide asks the radio once it is open. The product id does separate a HackRF
 One from a Jawbreaker or a rad1o, which matters because the three do not tune
-the same range.
+the same range. It does **not** separate a HackRF One from a HackRF Pro: Great
+Scott Gadgets ship one device descriptor for both, and only the USB *product
+string* differs. sdroxide reads that string during enumeration so the settings
+dialog can offer the Pro's extra low sample rates without opening anything, and
+confirms the board from its board-id register once the radio is open.
 
 ### SDRplay RSP prerequisites
 

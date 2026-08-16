@@ -2476,10 +2476,10 @@ radio. Everything below the selector changes to match the choice:
 - **Airspy R2 / Mini (USB)** — an Airspy R2 or Mini, driven by sdroxide's own
   USB driver. A different receiver from the Airspy HF+ above, with its own
   interface. See [5.2.13](#5213-airspy-r2--mini-usb).
-- **HackRF One (USB)** — a HackRF One, Jawbreaker or rad1o, driven by
-  sdroxide's own USB driver with no SoapySDR and no libhackrf involved. The one
-  USB interface here that transmits, and half duplex. See
-  [5.2.12](#5212-hackrf-one-usb).
+- **HackRF One / Pro (USB)** — a HackRF One, HackRF Pro, Jawbreaker or rad1o,
+  driven by sdroxide's own USB driver with no SoapySDR and no libhackrf
+  involved. The one USB interface here that transmits, and half duplex. See
+  [5.2.12](#5212-hackrf-one--pro-usb).
 - **SDRplay RSP (USB)** — any RSP, through the vendor's API service. See
   [5.2.8](#528-sdrplay-rsp-usb).
 - **PlutoSDR (network)** — an ADALM-Pluto, driven by sdroxide's own IIOD client
@@ -3629,12 +3629,13 @@ reduction is a **reduction**, so a bigger number is less signal.
 > (`ssh -L 1234:localhost:1234 pi@host`, then connect to `127.0.0.1:1234` here,
 > leaving `rtl_tcp` bound to localhost on the far end).
 
-#### 5.2.12 HackRF One (USB)
+#### 5.2.12 HackRF One / Pro (USB)
 
-A HackRF One — or a Jawbreaker or a rad1o — driven directly over USB by
-sdroxide's own pure-Rust driver. No SoapySDR, no libusb and no libhackrf, so
-this interface is in every build variant on every platform. 1 MHz to 6 GHz,
-2 to 20 Msps, wideband IQ in both directions.
+A HackRF One or HackRF Pro — or a Jawbreaker or a rad1o — driven directly over
+USB by sdroxide's own pure-Rust driver. No SoapySDR, no libusb and no libhackrf,
+so this interface is in every build variant on every platform. 1 MHz to 6 GHz,
+2 to 20 Msps, wideband IQ in both directions; a Pro reaches lower at both ends,
+100 kHz and 250 ksps.
 
 This is the only USB interface here that transmits, and the only one that is
 **half duplex**: receive stops for the length of every over, because the
@@ -3650,12 +3651,30 @@ descriptors that ask for WinUSB by itself. macOS needs nothing.
 serial is 32 hex characters of which the leading half is zeroes on every unit,
 and nobody types the whole thing. Leave it empty for "the first one found".
 
+A **HackRF Pro** appears in this list as "HackRF Pro" and is otherwise the same
+radio to drive: it carries the HackRF One's USB id, answers the same vendor
+requests, and streams the same 8-bit I/Q. Three things about it are different
+and sdroxide reads all three off the board rather than assuming — see the notes
+on sample rate, tuning range and baseband filter below. Its half-precision
+(4-bit, 40 Msps) and extended-precision (16-bit) gateware modes are **not**
+driven here; if some other program has loaded one with `hackrf_debug -P`, the
+radio stays in it until you unplug it and sdroxide will show noise.
+
 **Sample rate.** 2 Msps is the default and the gentlest on the host. Everything
 below 8 Msps is outside the MAX5864's specified range — it is what everyone
 uses regardless, and it is the rate the LO-offset behaviour was measured at, so
 it is offered with a note rather than hidden. 20 Msps is 40 MB/s and wants a
 real SuperSpeed port; on a USB 2.0 link sdroxide says so at open rather than
 leaving you to diagnose dropped samples. Changing the rate reopens the radio.
+
+A **HackRF Pro** is offered four extra rates below that — 250 and 500 ksps, 1
+and 1.5 Msps — and only a Pro, because only a Pro can use them. On the other
+boards a low rate just runs the converter slowly while the narrowest analog
+filter is still 1.75 MHz wide, so most of what you get back is the rest of the
+band folded in. The Pro runs its front end fast and decimates in its FPGA, so
+its narrow rates are narrow all the way through — and at 500 ksps it is sending
+1 MB/s over USB instead of 4, with the whole panadapter-and-decoder chain
+running on a fortieth of the samples.
 
 **Gains.** The radio's own model, three stages and a switch:
 
@@ -3689,6 +3708,21 @@ edges — it silently turns off the DC-spike avoidance, which looks exactly like
 the offset being broken. Automatic picks 0.75 × the sample rate, which always
 leaves room.
 
+On a **HackRF Pro** this control is greyed out, because that board chooses the
+filter itself and discards what the host asks for. Its analog chain is nothing
+like a HackRF One's — the narrowest setting its transceiver offers is around
+10 MHz wide, and everything below that is a switched filter plus decimation
+that only the radio's own firmware knows how to combine — so it derives the
+same 0.75 × sample rate itself and applies it across the whole chain. sdroxide
+does not send the request at all on that board rather than send one that would
+be accepted and ignored; if you have a filter pinned from another radio, the
+status line at open says so.
+
+**Tuning range.** Read off the board, not assumed. A HackRF One is 1 MHz to
+6 GHz, a Jawbreaker starts at 10 MHz, a rad1o is 50–4000 MHz, and a HackRF Pro
+reaches down to **100 kHz** — a decade below the One, which is most of the
+reason to have one for the low bands.
+
 **IQ correction.** On by default. This is a zero-IF radio: its own oscillator
 leakage sits at the centre of the span, and the mixer's quadrature error puts a
 mirror image across it. The correction removes both, adaptively. Turning it off
@@ -3696,9 +3730,9 @@ shows raw hardware output, which is the quick way to tell a driver problem from
 a DSP one.
 
 **Bias tee.** About 3 V at 50 mA on the antenna port, for an active antenna or a
-preamp. A HackRF One only — the Jawbreaker and the rad1o have no such circuit,
-and on those sdroxide does not send the command at all and says so rather than
-leaving a switch that quietly does nothing.
+preamp. A HackRF One or Pro only — the Jawbreaker and the rad1o have no such
+circuit, and on those sdroxide does not send the command at all and says so
+rather than leaving a switch that quietly does nothing.
 
 ##### Transmit
 
@@ -6126,7 +6160,7 @@ to its default, and a partial file is normal rather than a special case.
 | `"Rx888"` | RX-888 Mk2 | `"rx888"` |
 | `"AirspyHf"` | Airspy HF+ | `"airspyhf"` |
 | `"Airspy"` | Airspy R2 / Mini | `"airspy"` |
-| `"HackRf"` | HackRF One / Jawbreaker / rad1o | `"hackrf"` |
+| `"HackRf"` | HackRF One / Pro / Jawbreaker / rad1o | `"hackrf"` |
 | `"SdrPlay"` | SDRplay RSP | `"sdrplay"` |
 
 The per-interface object is only read when `backend` names it, so leaving the

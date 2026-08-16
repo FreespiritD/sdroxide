@@ -202,7 +202,9 @@ fn run(
         sample_rate_hz: rate,
         filter_bw_hz: dev.filter_bw(),
         freq_range: dev.kind().freq_range(),
+        rate_range: dev.rate_range(),
         has_bias_tee: dev.has_bias_tee(),
+        filter_is_automatic: dev.sets_own_filter(),
         snapped_from: (cfg.sample_rate_hz != rate).then_some(cfg.sample_rate_hz),
         link_warning,
     }));

@@ -70,11 +70,11 @@ pub enum Backend {
     /// Airspy HF+ above: different silicon, different USB id, different
     /// protocol. Appended last, for the same reason as `SmartSdr` above.
     Airspy,
-    /// HackRF One (or a Jawbreaker / rad1o), driven directly over USB by the
-    /// native pure-Rust driver — no libhackrf, no SoapySDR. The only native
-    /// USB backend here that transmits, and half duplex: receive stops for the
-    /// length of an over. Appended last, for the same reason as `SmartSdr`
-    /// above.
+    /// HackRF One or HackRF Pro (or a Jawbreaker / rad1o), driven directly over
+    /// USB by the native pure-Rust driver — no libhackrf, no SoapySDR. The only
+    /// native USB backend here that transmits, and half duplex: receive stops
+    /// for the length of an over. Appended last, for the same reason as
+    /// `SmartSdr` above.
     HackRf,
 }
 
@@ -111,7 +111,7 @@ impl Backend {
             Backend::Rx888 => "RX-888 (USB)",
             Backend::AirspyHf => "Airspy HF+ (USB)",
             Backend::Airspy => "Airspy R2 / Mini (USB)",
-            Backend::HackRf => "HackRF One (USB)",
+            Backend::HackRf => "HackRF One / Pro (USB)",
             Backend::SdrPlay => "SDRplay RSP (USB)",
             Backend::None => "Not configured",
         }
@@ -1715,10 +1715,67 @@ pub struct HackRfDevice {
     /// HackRF One from a Jawbreaker or a rad1o without opening the device, and
     /// the three do not tune the same range — see `BoardKind::freq_range` in
     /// `sdroxide-hackrf`.
+    ///
+    /// It does **not** separate a HackRF One from a HackRF Pro: those two share
+    /// `0x6089`. That is what [`Self::is_pro`] is for.
     pub pid: u16,
 }
 
+/// Whether an operator-supplied serial names a radio whose USB serial is
+/// `found`.
+///
+/// **Suffix** matching, which is libhackrf's behaviour and the reason every
+/// HackRF instruction on the internet quotes only the last few digits: the
+/// serial is 32 hex characters of which the leading half is usually zeroes, so
+/// nobody types the whole thing. Case-insensitive and whitespace-tolerant where
+/// libhackrf is neither, because the value in `radio.json` was typed or pasted
+/// by a human and the descriptor's case is the firmware's choice.
+///
+/// An empty `want` matches everything — that is "no serial configured", not "a
+/// serial that happens to be blank".
+///
+/// Lives here rather than in `sdroxide-hackrf` because the settings UI has to
+/// apply the same rule as the driver — it decides which device's capabilities
+/// to draw the panel from — and the settings UI is shared with the wasm client,
+/// which cannot depend on a USB crate. `sdroxide_hackrf::protocol::serial_matches`
+/// delegates here, so there is one rule and one set of tests for it.
+pub fn hackrf_serial_matches(want: &str, found: Option<&str>) -> bool {
+    let want = want.trim();
+    if want.is_empty() {
+        return true;
+    }
+    match found {
+        Some(f) => {
+            let f = f.trim();
+            f.len() >= want.len() && f[f.len() - want.len()..].eq_ignore_ascii_case(want)
+        }
+        None => false,
+    }
+}
+
 impl HackRfDevice {
+    /// Whether a configured serial names this radio. See
+    /// [`hackrf_serial_matches`] — suffix, not equality.
+    pub fn matches_serial(&self, want: &str) -> bool {
+        hackrf_serial_matches(want, self.serial.as_deref())
+    }
+
+    /// Whether this is a HackRF Pro rather than a HackRF One.
+    ///
+    /// Read off the USB product string, because the product id cannot tell:
+    /// GSG's firmware ships one device descriptor for both boards and only the
+    /// string differs. The board id would be definitive but needs a control
+    /// transfer, and this has to answer in the settings dialog — which lists
+    /// radios without opening any of them, so that pressing Rescan while one is
+    /// transmitting stays harmless.
+    ///
+    /// The settings UI needs the answer because the two boards do not accept
+    /// the same sample rates: the Pro decimates in its FPGA and takes rates a
+    /// decade below anything a MAX5864 board can usefully run.
+    pub fn is_pro(&self) -> bool {
+        self.pid == 0x6089 && self.name.trim().eq_ignore_ascii_case("HackRF Pro")
+    }
+
     /// One-line label for the selection UI.
     pub fn label(&self) -> String {
         match &self.serial {
@@ -1737,8 +1794,8 @@ impl HackRfDevice {
     }
 }
 
-/// HackRF One (USB) backend configuration. Receive, and transmit once it is
-/// armed — see [`Self::tx_enabled`].
+/// HackRF (USB) backend configuration — One, Pro, Jawbreaker or rad1o. Receive,
+/// and transmit once it is armed — see [`Self::tx_enabled`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HackRfConfig {
@@ -1787,6 +1844,11 @@ pub struct HackRfConfig {
     /// choosing one too narrow silently withdraws the offset rather than merely
     /// softening the band edges. `sdroxide-hackrf`'s `auto_filter_bw` has the
     /// arithmetic and a test that pins it.
+    ///
+    /// Ignored on a HackRF Pro, whose firmware derives the filter from the
+    /// sample rate and discards what the host asks for — see
+    /// `BoardKind::sets_own_filter`. The driver does not send the request on
+    /// that board, and the open status says so if this is set anyway.
     pub filter_bw_hz: f64,
     /// Crystal error in parts per million.
     pub ppm: f64,
@@ -1870,11 +1932,42 @@ impl HackRfConfig {
     /// so this list is the whole menu.
     pub const SAMPLE_RATES: [f64; 7] = [2.0e6, 4.0e6, 8.0e6, 10.0e6, 12.5e6, 16.0e6, 20.0e6];
 
+    /// The extra rates a **HackRF Pro** offers, below everything the other
+    /// boards can do. Prepended to [`Self::SAMPLE_RATES`] by
+    /// [`Self::rates_for`].
+    ///
+    /// Not offered on a HackRF One, and the distinction is not pedantry. On the
+    /// MAX5864 boards the converter simply runs slower while the narrowest
+    /// analog filter stays 1.75 MHz wide, so a 500 ksps stream comes back with
+    /// three-quarters of a megahertz of everything else folded into it. The Pro
+    /// runs its front end fast and decimates in the FPGA instead, so its narrow
+    /// rates are narrow all the way through.
+    ///
+    /// Worth having rather than decimating on the host: at 500 ksps a Pro is
+    /// sending 1 MB/s over the USB link instead of 4, and the whole
+    /// panadapter-and-decoders chain runs on a fortieth of the samples.
+    pub const PRO_SAMPLE_RATES: [f64; 4] = [0.25e6, 0.5e6, 1.0e6, 1.5e6];
+
+    /// The rates to offer for a given board — the Pro's extra low rates first,
+    /// then the ones every HackRF shares.
+    pub fn rates_for(is_pro: bool) -> Vec<f64> {
+        let mut out = Vec::with_capacity(Self::PRO_SAMPLE_RATES.len() + Self::SAMPLE_RATES.len());
+        if is_pro {
+            out.extend_from_slice(&Self::PRO_SAMPLE_RATES);
+        }
+        out.extend_from_slice(&Self::SAMPLE_RATES);
+        out
+    }
+
     /// A short note on a rate, for the settings combo. The interesting facts
     /// are at the two ends: what the datasheet actually covers, and what the
     /// host and the USB link have to keep up with.
     pub fn rate_note(rate_hz: f64) -> &'static str {
         match rate_hz as u32 {
+            250_000 => "HackRF Pro only — 0.5 MB/s, and narrow in the FPGA rather than aliased",
+            500_000 => "HackRF Pro only — 1 MB/s",
+            1_000_000 => "HackRF Pro only — 2 MB/s",
+            1_500_000 => "HackRF Pro only — 3 MB/s",
             2_000_000 => "below the MAX5864's spec — but the usual choice, and 4 MB/s",
             4_000_000 => "below the MAX5864's spec — 8 MB/s",
             8_000_000 => "lowest specified rate — 16 MB/s",
@@ -2840,6 +2933,74 @@ pub struct RadioConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hackrf(name: &str, pid: u16) -> HackRfDevice {
+        HackRfDevice {
+            serial: Some("0000000000000000457863c8267a765f".into()),
+            name: name.into(),
+            pid,
+        }
+    }
+
+    /// A HackRF Pro and a HackRF One share `0x6089`, so the settings UI has to
+    /// tell them apart by the USB product string — and it has to, because the
+    /// two do not accept the same sample rates.
+    #[test]
+    fn a_hackrf_pro_is_recognised_from_its_product_string() {
+        assert!(hackrf("HackRF Pro", 0x6089).is_pro());
+        // The descriptor's case and padding are the firmware's choice.
+        assert!(hackrf(" hackrf pro ", 0x6089).is_pro());
+
+        assert!(!hackrf("HackRF One", 0x6089).is_pro());
+        assert!(!hackrf("", 0x6089).is_pro());
+        // The string never overrides an id that already names another board.
+        assert!(!hackrf("HackRF Pro", 0xcc15).is_pro());
+        assert!(!hackrf("HackRF Pro", 0x604b).is_pro());
+    }
+
+    /// Suffix matching, because nobody types 32 hex digits. The driver opens by
+    /// this rule, so the settings panel has to select by it too or the two
+    /// disagree about which radio is being configured.
+    #[test]
+    fn a_configured_serial_selects_a_device_by_its_suffix() {
+        let d = hackrf("HackRF Pro", 0x6089);
+        assert!(d.matches_serial("267a765f"));
+        assert!(d.matches_serial("267A765F"), "case is the firmware's choice");
+        assert!(d.matches_serial(" 267a765f "), "pasted values carry whitespace");
+        assert!(d.matches_serial("0000000000000000457863c8267a765f"));
+        // No serial configured means the first radio listed will do.
+        assert!(d.matches_serial(""));
+        assert!(d.matches_serial("  "));
+        // A prefix is not a suffix, a wrong tail is not a match, and something
+        // longer than the real serial must not panic.
+        assert!(!d.matches_serial("00000000"));
+        assert!(!d.matches_serial("267a7650"));
+        assert!(!d.matches_serial(&"f".repeat(64)));
+        // A radio with no serial descriptor can only ever satisfy "any".
+        let anon = HackRfDevice { serial: None, ..d };
+        assert!(anon.matches_serial(""));
+        assert!(!anon.matches_serial("267a765f"));
+    }
+
+    /// The Pro's extra rates are the Pro's alone: offering them on a HackRF One
+    /// would hand somebody a stream with three quarters of a megahertz of the
+    /// rest of the band folded into it.
+    #[test]
+    fn only_a_pro_is_offered_the_narrow_rates() {
+        let one = HackRfConfig::rates_for(false);
+        assert_eq!(one, HackRfConfig::SAMPLE_RATES.to_vec());
+
+        let pro = HackRfConfig::rates_for(true);
+        assert_eq!(pro.len(), one.len() + HackRfConfig::PRO_SAMPLE_RATES.len());
+        assert_eq!(pro[0], 250_000.0, "narrowest first, so the menu reads in order");
+        assert!(pro.ends_with(&one), "every shared rate is still there, unchanged");
+        assert!(pro.windows(2).all(|w| w[0] < w[1]), "the menu must be sorted: {pro:?}");
+
+        // Every offered rate carries a note, or the combo shows a bare dash.
+        for r in pro {
+            assert!(!HackRfConfig::rate_note(r).is_empty(), "{r} has no note");
+        }
+    }
 
     #[test]
     fn the_if_source_falls_back_when_the_rate_cannot_carry_it() {

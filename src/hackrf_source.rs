@@ -43,6 +43,19 @@ const SILENCE_BEFORE_REOPEN: Duration = Duration::from_secs(3);
 /// the over with an error rather than wedging the engine's transmit thread.
 const TX_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// A sample rate for an operator-facing message.
+///
+/// A HackRF Pro's floor is 200 ksps, and `{:.1} Msps` renders that as "0.2
+/// Msps" — a figure with one significant digit pretending to be a limit. Below
+/// a megasample the unit is kilosamples.
+fn rate_text(rate_hz: f64) -> String {
+    if rate_hz < 1.0e6 {
+        format!("{:.0} ksps", rate_hz / 1e3)
+    } else {
+        format!("{:.1} Msps", rate_hz / 1e6)
+    }
+}
+
 pub struct HackRfSource {
     handle: HackRfHandle,
     center: f64,
@@ -61,6 +74,9 @@ pub struct HackRfSource {
     tx_amp: bool,
     bias_tee: bool,
     tx_enabled: bool,
+    /// Whether the operator has pinned the baseband filter rather than leaving
+    /// it automatic. Only needed to tell them when their radio ignores it.
+    filter_override: bool,
     /// Front-end DC and image correction, applied to every block as it arrives
     /// so the panadapter, the demodulators and the skimmers all see the same
     /// clean stream. `None` while the operator has it switched off. See
@@ -97,14 +113,16 @@ impl HackRfSource {
             tx_amp: cfg.tx_amp,
             bias_tee: cfg.bias_tee,
             tx_enabled: cfg.tx_enabled,
+            filter_override: cfg.filter_bw_hz > 0.0,
             iq_correct: cfg.iq_correction.then(|| IqCorrect::new(DC_BLOCK_HZ, rate)),
             handle,
         })
     }
 
-    /// What this board will actually tune. A rad1o is 50–4000 MHz and a
-    /// Jawbreaker starts at 10 MHz, so this is read off the radio rather than
-    /// assumed to be a HackRF One's 1 MHz – 6 GHz.
+    /// What this board will actually tune. A rad1o is 50–4000 MHz, a
+    /// Jawbreaker starts at 10 MHz and a Pro reaches down to 100 kHz, so this
+    /// is read off the radio rather than assumed to be a HackRF One's
+    /// 1 MHz – 6 GHz.
     pub fn freq_range(&self) -> (f64, f64) {
         self.handle.freq_range
     }
@@ -369,10 +387,25 @@ impl IqSource for HackRfSource {
             );
         }
         if let Some(from) = self.handle.snapped_from {
+            let (min, max) = self.handle.rate_range;
             parts.push(format!(
-                "{:.1} Msps is outside this radio's 2–20 Msps; using {:.1} Msps. \
+                "{} is outside this radio's {}–{}; using {}. \
                  Pick a listed rate in Settings → Radio to make this permanent.",
-                from / 1e6,
+                rate_text(from),
+                rate_text(min),
+                rate_text(max),
+                rate_text(self.handle.sample_rate_hz),
+            ));
+        }
+        // The switch is set and this board derives its own filter. Same shape
+        // as the bias-tee case above: the driver does not send the request, so
+        // nothing happens, and "nothing happens" is not something an operator
+        // can see.
+        if self.filter_override && self.handle.filter_is_automatic {
+            parts.push(format!(
+                "the baseband filter is pinned in Settings → Radio, but this board \
+                 chooses its own — it is running {:.3} MHz for {:.3} Msps",
+                self.handle.filter_bw_hz as f64 / 1e6,
                 self.handle.sample_rate_hz / 1e6,
             ));
         }

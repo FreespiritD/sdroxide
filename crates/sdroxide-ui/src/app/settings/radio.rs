@@ -2820,6 +2820,18 @@ pub(in crate::app) fn settings_hackrf_tab(
         cfg.hackrf.transfer_kib,
     );
 
+    // Which board is selected decides two rows below: a HackRF Pro takes rates
+    // no other HackRF can run, and it picks its own baseband filter. Read off
+    // the *selected* device rather than the open one, so the menu is right
+    // before Apply as well as after — and off the USB product string, because
+    // the Pro and the One share a product id. With nothing enumerated yet this
+    // is false, which offers the conservative menu; a Pro owner sees their
+    // extra rates as soon as the list arrives.
+    // Matched on the suffix, the same rule the driver opens by, so a serial
+    // typed by hand into `radio.json` selects the same radio here as there.
+    let is_pro =
+        devices.iter().find(|d| d.matches_serial(&cfg.hackrf.serial)).is_some_and(|d| d.is_pro());
+
     egui::Grid::new("hackrf-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Radio");
         local_only(ui, local, |ui| {
@@ -2864,13 +2876,13 @@ pub(in crate::app) fn settings_hackrf_tab(
         ui.horizontal(|ui| {
             ComboBox::from_id_salt("hackrf_rate")
                 .width(150.0)
-                .selected_text(format!("{:.1} Msps", cfg.hackrf.sample_rate_hz / 1e6))
+                .selected_text(hackrf_rate_label(cfg.hackrf.sample_rate_hz))
                 .show_ui(ui, |ui| {
-                    for r in HackRfConfig::SAMPLE_RATES {
+                    for r in HackRfConfig::rates_for(is_pro) {
                         ui.selectable_value(
                             &mut cfg.hackrf.sample_rate_hz,
                             r,
-                            format!("{:.1} Msps — {}", r / 1e6, HackRfConfig::rate_note(r)),
+                            format!("{} — {}", hackrf_rate_label(r), HackRfConfig::rate_note(r)),
                         );
                     }
                 });
@@ -2935,29 +2947,39 @@ pub(in crate::app) fn settings_hackrf_tab(
                 format!("{:.2} MHz", cfg.hackrf.filter_bw_hz / 1e6)
             };
             let mut picked = cfg.hackrf.filter_bw_hz;
-            ComboBox::from_id_salt("hackrf_bbfilt").width(150.0).selected_text(shown).show_ui(
-                ui,
-                |ui| {
-                    ui.selectable_value(&mut picked, 0.0, "Automatic");
-                    for bw in [
-                        1.75e6, 2.5e6, 3.5e6, 5.0e6, 5.5e6, 6.0e6, 7.0e6, 8.0e6, 9.0e6, 10.0e6,
-                        12.0e6, 14.0e6, 15.0e6, 20.0e6, 24.0e6, 28.0e6,
-                    ] {
-                        ui.selectable_value(&mut picked, bw, format!("{:.2} MHz", bw / 1e6));
-                    }
-                },
-            );
+            // A Pro derives its filter from the sample rate and discards what
+            // the host asks for, so the driver does not send the request at
+            // all. A control that cannot do anything is worse than no control:
+            // grey it out and say which it is.
+            ui.add_enabled_ui(!is_pro, |ui| {
+                ComboBox::from_id_salt("hackrf_bbfilt").width(150.0).selected_text(shown).show_ui(
+                    ui,
+                    |ui| {
+                        ui.selectable_value(&mut picked, 0.0, "Automatic");
+                        for bw in [
+                            1.75e6, 2.5e6, 3.5e6, 5.0e6, 5.5e6, 6.0e6, 7.0e6, 8.0e6, 9.0e6, 10.0e6,
+                            12.0e6, 14.0e6, 15.0e6, 20.0e6, 24.0e6, 28.0e6,
+                        ] {
+                            ui.selectable_value(&mut picked, bw, format!("{:.2} MHz", bw / 1e6));
+                        }
+                    },
+                );
+            });
             if picked != cfg.hackrf.filter_bw_hz {
                 cfg.hackrf.filter_bw_hz = picked;
                 push_gain(cmds, HackRfConfig::FILTER_ELEMENT, picked);
             }
             ui.add(
                 egui::Label::new(
-                    RichText::new(
+                    RichText::new(if is_pro {
+                        "A HackRF Pro chooses this itself — three quarters of the \
+                         sample rate, filtered in the FPGA — and ignores anything \
+                         the host asks for."
+                    } else {
                         "Leave on Automatic. Choosing one too narrow does not just \
                          soften the band edges — it withdraws the LO offset that \
-                         keeps the DC spike off your signal.",
-                    )
+                         keeps the DC spike off your signal."
+                    })
                     .weak(),
                 )
                 .wrap(),
@@ -2970,8 +2992,8 @@ pub(in crate::app) fn settings_hackrf_tab(
             .checkbox(&mut cfg.hackrf.bias_tee, "DC on the antenna port")
             .on_hover_text(
                 "About 3 V at 50 mA down the coax, for an active antenna or a \
-                 preamp. A HackRF One only; the Jawbreaker and rad1o have no \
-                 such circuit.",
+                 preamp. A HackRF One or Pro only; the Jawbreaker and rad1o have \
+                 no such circuit.",
             )
             .changed()
         {
@@ -3127,13 +3149,30 @@ pub(in crate::app) fn settings_hackrf_tab(
 
     ui.add_space(4.0);
     ui.label(
-        RichText::new(
+        RichText::new(if is_pro {
+            "100 kHz – 6 GHz, half duplex. No SoapySDR, no libusb and no libhackrf \
+             needed. The radio and the sample rate take effect on Apply; \
+             everything else applies as you change it."
+        } else {
             "1 MHz – 6 GHz, half duplex. No SoapySDR, no libusb and no libhackrf \
              needed. The radio and the sample rate take effect on Apply; \
-             everything else applies as you change it.",
-        )
+             everything else applies as you change it."
+        })
         .weak(),
     );
+}
+
+/// A HackRF sample rate for the settings combo.
+///
+/// Sub-megahertz rates exist only on the Pro, and `{:.1} Msps` renders 250 ksps
+/// as "0.2 Msps" — wrong to two different decimal places at once. Below a
+/// megasample the useful unit is kilosamples.
+fn hackrf_rate_label(rate_hz: f64) -> String {
+    if rate_hz < 1.0e6 {
+        format!("{:.0} ksps", rate_hz / 1e3)
+    } else {
+        format!("{:.1} Msps", rate_hz / 1e6)
+    }
 }
 
 /// SDRplay RSP interface: device, rate, and the RSP's gain model (IF gain

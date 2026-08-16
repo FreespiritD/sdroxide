@@ -72,8 +72,11 @@ pub fn list() -> Vec<HackRfDevice> {
             let dfu = d.vendor_id() == VID_DFU;
             // The board id would be more precise, but reading it needs a
             // control transfer and enumeration must not open anything. The
-            // product id is what can be known for free.
-            let kind = BoardKind::from_pid(d.product_id());
+            // product id and the product string are what can be known for free
+            // — and the string is not a nicety here: a HackRF Pro carries the
+            // same product id as a HackRF One, and the settings UI decides
+            // which rates to offer from this list.
+            let kind = BoardKind::from_product(d.product_id(), d.product_string());
             let name = match d.product_string() {
                 Some(p) if !p.is_empty() => p.to_string(),
                 _ => kind.name().to_string(),
@@ -227,7 +230,7 @@ impl UsbDev {
         };
 
         let serial = info.serial_number().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        let kind = BoardKind::from_pid(info.product_id());
+        let kind = BoardKind::from_product(info.product_id(), info.product_string());
         let label = match info.product_string() {
             Some(p) if !p.is_empty() => p.to_string(),
             _ => kind.name().to_string(),
@@ -357,7 +360,9 @@ impl UsbDev {
     }
 }
 
-/// The product id back out of the board kind, for the log line only.
+/// The product id back out of the board kind, for the log line only. A HackRF
+/// Pro falls in with the One here and that is not a lossy default: they really
+/// do share `0x6089`.
 fn info_pid(dev: &UsbDev) -> u16 {
     match dev.kind {
         BoardKind::Jawbreaker => PID_JAWBREAKER,

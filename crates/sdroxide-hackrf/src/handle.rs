@@ -345,7 +345,14 @@ pub(crate) struct DeviceInfo {
     pub sample_rate_hz: f64,
     pub filter_bw_hz: u32,
     pub freq_range: (f64, f64),
+    /// What this board takes, for the message an operator reads when their
+    /// rate was moved. A HackRF Pro's floor is a decade below the rest.
+    pub rate_range: (f64, f64),
     pub has_bias_tee: bool,
+    /// Set on a board that derives its own baseband filter, so a stored
+    /// override can be reported as having no effect rather than silently
+    /// ignored. See `BoardKind::sets_own_filter`.
+    pub filter_is_automatic: bool,
     /// Set when the configured rate was outside what the hardware takes.
     /// Surfaced through `IqSource::open_status` rather than logged and
     /// forgotten.
@@ -373,7 +380,9 @@ pub struct HackRfHandle {
     pub sample_rate_hz: f64,
     pub filter_bw_hz: u32,
     pub freq_range: (f64, f64),
+    pub rate_range: (f64, f64),
     pub has_bias_tee: bool,
+    pub filter_is_automatic: bool,
     pub snapped_from: Option<f64>,
     pub link_warning: Option<String>,
 }
@@ -605,7 +614,9 @@ impl HackRfHandle {
             sample_rate_hz: info.sample_rate_hz,
             filter_bw_hz: info.filter_bw_hz,
             freq_range: info.freq_range,
+            rate_range: info.rate_range,
             has_bias_tee: info.has_bias_tee,
+            filter_is_automatic: info.filter_is_automatic,
             snapped_from: info.snapped_from,
             link_warning: info.link_warning,
         }

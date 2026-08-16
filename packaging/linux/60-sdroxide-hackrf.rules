@@ -1,4 +1,5 @@
-# HackRF One (and Jawbreaker / rad1o), for sdroxide's native USB driver.
+# HackRF One and HackRF Pro (and Jawbreaker / rad1o), for sdroxide's native USB
+# driver.
 #
 # sdroxide talks to these directly with nusb rather than through libusb,
 # libhackrf or libSoapySDR, but the kernel-level requirement is the same: the
@@ -16,8 +17,10 @@
 # Great Scott Gadgets' own 53-hackrf.rules covers the same ids. If it is already
 # installed this file is harmless duplication, not a conflict.
 
-# HackRF One. The board revision (pre-rev-9 vs rev 9 and later) is not in the
-# descriptors — sdroxide asks the opened device — and does not affect the rule.
+# HackRF One *and* HackRF Pro: Great Scott Gadgets ship one device descriptor
+# for both boards, so 6089 is the id for either. Nor is the board revision in
+# the descriptors (pre-rev-9 vs rev 9 and later) — sdroxide asks the opened
+# device for both facts, and neither affects the rule.
 SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="6089", MODE="0660", TAG+="uaccess"
 
 # Jawbreaker, the beta platform. 10 MHz - 6 GHz and no bias tee; sdroxide reads
