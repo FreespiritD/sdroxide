@@ -1,0 +1,183 @@
+//! A rig that reports its own dial *and* is the front end.
+//!
+//! A transceiver whose I/Q output goes into a sound card (a KX3, a K3 with the
+//! I/Q tap) is not an SDR with a rig beside it: its synthesiser is the centre of
+//! the baseband we capture. Turning its knob moves the spectrum as surely as it
+//! moves the readout, so the engine has to adopt the new centre when the rig
+//! reports one — otherwise the window keeps the old axis, the waterfall shows
+//! content that no longer matches its labels, and the DDC, left on the offset
+//! between a stale centre and the new VFO, demodulates somewhere else again.
+//!
+//! Clicking inside the captured span is the opposite case and must keep
+//! working: the signal is already in the baseband, so the DDC tunes to it and
+//! the rig stays where it is.
+
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use sdroxide_radio::{Complex32, ControlUpdate, EngineConfig, IqSource, Result, start_engine};
+use sdroxide_types::{Command, DeviceCaps, RadioEvent, Vfo};
+
+const DIAL: f64 = 14_074_000.0;
+const RATE: f64 = 48_000.0;
+
+/// The rig's one frequency control, shared with the test.
+#[derive(Default)]
+struct Rig {
+    /// Where the rig's synthesiser is — the centre of the I/Q it sends us.
+    dial: f64,
+    /// Set by the test to stand in for a hand on the knob; the source reports it
+    /// on its next poll exactly as the CAT thread would.
+    knob: Option<f64>,
+    /// Frequencies the engine commanded, in order.
+    commanded: Vec<f64>,
+}
+
+/// A stand-in for a CAT rig whose I/Q output is the capture device: the dial is
+/// the centre, and the rig reports the operator's knob out-of-band.
+struct MockIqRig {
+    rig: Arc<Mutex<Rig>>,
+}
+
+impl IqSource for MockIqRig {
+    fn sample_rate(&self) -> f64 {
+        RATE
+    }
+    fn center_hz(&self) -> f64 {
+        self.rig.lock().unwrap().dial
+    }
+    fn set_center_hz(&mut self, hz: f64) -> Result<()> {
+        let mut r = self.rig.lock().unwrap();
+        r.dial = hz;
+        r.commanded.push(hz);
+        Ok(())
+    }
+    fn read(&mut self, buf: &mut [Complex32]) -> Result<usize> {
+        std::thread::sleep(Duration::from_millis(5));
+        let n = buf.len().min(1024);
+        buf[..n].fill(Complex32::new(0.0, 0.0));
+        Ok(n)
+    }
+    fn describe(&self) -> String {
+        "mock rig with an I/Q output".into()
+    }
+    fn poll_control(&mut self) -> Vec<ControlUpdate> {
+        let mut r = self.rig.lock().unwrap();
+        match r.knob.take() {
+            // The knob moved the synthesiser; the baseband we capture moved
+            // with it, and the rig tells us where it ended up.
+            Some(hz) => {
+                r.dial = hz;
+                vec![ControlUpdate::Freq(hz)]
+            }
+            None => Vec::new(),
+        }
+    }
+}
+
+/// I/Q from a CAT rig takes the ordinary DDC path — `audio_mode` is for the
+/// demodulated-audio format, and this is the case that used to be missed.
+fn iq_rig_caps() -> DeviceCaps {
+    DeviceCaps {
+        driver: "mock-cat".into(),
+        label: "mock CAT rig (I/Q)".into(),
+        rx_channels: 1,
+        tx_channels: 1,
+        audio_mode: false,
+        sample_rates: vec![RATE],
+        freq_ranges_rx: vec![(10_000.0, 60_000_000.0)],
+        freq_ranges_tx: vec![(1_800_000.0, 54_000_000.0)],
+        ..DeviceCaps::default()
+    }
+}
+
+/// An engine on the mock rig, parked on `DIAL`, plus the rig the test drives.
+fn engine() -> (sdroxide_radio::EngineHandles, Arc<Mutex<Rig>>) {
+    let rig = Arc::new(Mutex::new(Rig { dial: DIAL, ..Rig::default() }));
+    let src = MockIqRig { rig: Arc::clone(&rig) };
+    let cfg = EngineConfig { tx_ham_only: false, ..Default::default() };
+    let h = start_engine(Box::new(src), iq_rig_caps(), cfg);
+    h.cmd_tx.send(Command::SetVfo { vfo: Vfo::A, hz: DIAL }).unwrap();
+    (h, rig)
+}
+
+/// Wait for a published state that satisfies `f`, returning the last state seen.
+fn settle(
+    h: &sdroxide_radio::EngineHandles,
+    mut f: impl FnMut(&sdroxide_types::RadioState) -> bool,
+) -> sdroxide_types::RadioState {
+    let mut last = None;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        while let Ok(ev) = h.event_rx.try_recv() {
+            if let RadioEvent::State(s) = ev {
+                let done = f(&s);
+                last = Some(s);
+                if done {
+                    return last.unwrap();
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    last.expect("the engine should publish state")
+}
+
+fn shutdown(mut h: sdroxide_radio::EngineHandles) {
+    let thread = h.thread.take();
+    drop(h.cmd_tx);
+    if let Some(t) = thread {
+        let _ = t.join();
+    }
+}
+
+/// The knob turns, the rig reports it, and the display window has to follow the
+/// synthesiser it belongs to — down to the smallest step the rig can report.
+#[test]
+fn the_window_follows_a_dial_the_rig_moved_itself() {
+    let (h, rig) = engine();
+    let state = settle(&h, |s| s.vfo_a_hz == DIAL);
+    assert_eq!(state.center_hz, DIAL, "the engine starts on the rig's dial");
+
+    // A hand on the knob: two kilohertz, then ten hertz — well inside the
+    // captured span, which is exactly the case that used to stay put.
+    for step in [2_000.0, 10.0] {
+        let want = rig.lock().unwrap().dial + step;
+        rig.lock().unwrap().knob = Some(want);
+        let state = settle(&h, |s| s.center_hz == want);
+        assert_eq!(state.vfo_a_hz, want, "the readout follows the rig");
+        assert_eq!(
+            state.center_hz, want,
+            "the spectrum window has to follow the synthesiser that moved it \
+             (a {step} Hz step left it on the old centre)"
+        );
+    }
+
+    // Adoption, not a correction: nothing was commanded back at the rig, which
+    // is what would fight the operator's hand on the knob.
+    assert!(
+        rig.lock().unwrap().commanded.iter().all(|&hz| hz == DIAL),
+        "a dial the rig reported must not be commanded back at it"
+    );
+    shutdown(h);
+}
+
+/// The other half of the contract: a click inside the captured baseband is a
+/// DDC move, not a retune. The signal is already in the span, and the rig has
+/// no business being dragged to it.
+#[test]
+fn clicking_inside_the_span_does_not_move_the_rig() {
+    let (h, rig) = engine();
+    settle(&h, |s| s.vfo_a_hz == DIAL);
+    rig.lock().unwrap().commanded.clear();
+
+    let clicked = DIAL + 5_000.0;
+    h.cmd_tx.send(Command::SetVfo { vfo: Vfo::A, hz: clicked }).unwrap();
+    let state = settle(&h, |s| s.vfo_a_hz == clicked);
+    assert_eq!(state.center_hz, DIAL, "the window stays on the baseband we are capturing");
+    assert!(
+        rig.lock().unwrap().commanded.is_empty(),
+        "a signal already inside the span is tuned by the DDC, not by the rig"
+    );
+    shutdown(h);
+}

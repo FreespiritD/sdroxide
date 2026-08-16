@@ -2432,6 +2432,7 @@ impl Engine {
                     Vfo::B => self.state.vfo_b_hz = hz,
                 }
                 self.state.band = Band::containing(hz);
+                self.adopt_source_center();
                 self.update_display_center();
                 let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
             }
@@ -2538,6 +2539,49 @@ impl Engine {
         self.state.center_hz =
             if lsb { dial - self.audio_bw / 2.0 } else { dial + self.audio_bw / 2.0 };
         self.state.sample_rate = self.audio_bw;
+    }
+
+    /// Follow the front end's centre after it reported a dial move of its own.
+    ///
+    /// On a rig that *is* the front end — a transceiver feeding its I/Q output
+    /// into a sound card, an Icom sending its 12 kHz IF — the dial and the
+    /// centre of the baseband we capture are the same synthesiser. Turning the
+    /// knob moves the spectrum as surely as it moves the readout, so the window
+    /// has to move with it, or it labels new content with the old axis: the
+    /// waterfall shows one frequency while the demodulator, tuned to the offset
+    /// between a stale centre and the new VFO, hears another.
+    ///
+    /// A front end whose stream centre is independent of the rig's VFO — TCI's
+    /// wideband IQ, a Flex panadapter, an SDR with a CAT rig alongside it —
+    /// reports the same centre it had before, so this costs one comparison and
+    /// changes nothing. Nothing is commanded back at the hardware either: the
+    /// front end is where it says it is, and answering an adoption with a
+    /// correction is how the operator's knob and our retune would fight (the
+    /// same rule as [`ControlUpdate::Center`]).
+    fn adopt_source_center(&mut self) {
+        if self.audio_mode {
+            return; // no IQ window here — `update_display_center` owns the axis
+        }
+        let center = self.source.center_hz();
+        if (center - self.state.center_hz).abs() < 0.5 {
+            return;
+        }
+        self.state.center_hz = center;
+        // Where the hardware demonstrably is, is by definition a frequency it
+        // took — this is the dial the rig itself just reported.
+        self.good_vfo_hz = self.state.active_freq_hz();
+        // The skim window follows the hardware centre; re-label spots and clear
+        // tracks so nothing straddles the old and new axes (as `retune_named`
+        // does for a retune we asked for).
+        if let Some(sk) = self.skimmer.as_ref() {
+            sk.set_center(center);
+        }
+        self.sync_skimmer_view();
+        // Re-seat the DDCs on the new centre. Without this the main receiver
+        // keeps the offset it had against the old one, which is exactly how a
+        // rig-initiated retune ends up demodulating somewhere the readout does
+        // not claim.
+        self.update_tuning();
     }
 
     /// Hand a slot's decodes to PSK Reporter. Every station we can name and

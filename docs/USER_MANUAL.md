@@ -2691,6 +2691,13 @@ separately from your computer's own speakers and microphone.
   on the right). This gives a full panadapter but requires a **stereo** capture
   device (see the note in [5.1](#51-general-station-audio-and-remote-access)).
 
+  The radio's dial is the centre of that panadapter, so the two ways of tuning
+  do different things. Clicking a signal already on screen tunes sdroxide's own
+  receiver inside the span the radio is sending and leaves the radio's dial
+  alone — the waterfall stays put and the passband marker moves to the signal.
+  Turning the radio's own VFO knob moves its synthesiser, and with it everything
+  it is sending us, so the whole display recentres on the new frequency.
+
 **Serial (CAT) settings**, in the order they appear:
 
 - **Serial port** — the radio's CAT serial port. On Linux, USB-style ports
