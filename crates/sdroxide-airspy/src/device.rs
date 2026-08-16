@@ -120,6 +120,10 @@ impl Device {
     /// to answer falls back to the R2's two rates, which is what libairspy does
     /// — and which is right for an R2 and wrong for a Mini, so the fallback is
     /// traced rather than silent.
+    ///
+    /// **The receiver lists complex rates**, so they are doubled on the way in
+    /// — this list is programmed rates throughout, and the reply is the one
+    /// place the two units meet. See [`parse_rates`].
     fn read_rates(&mut self) {
         let count = self
             .usb
@@ -132,7 +136,15 @@ impl Device {
         {
             let rates = parse_rates(&b);
             if !rates.is_empty() {
-                self.rates_programmed = rates;
+                self.usb.trace().note(format!(
+                    "the receiver offers {} complex, digitising at twice each",
+                    rates
+                        .iter()
+                        .map(|r| format!("{:.3} Msps", r / 1e6))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+                self.rates_programmed = rates.iter().map(|r| program_rate_hz(*r)).collect();
                 return;
             }
         }
@@ -252,7 +264,7 @@ impl Device {
             &format!("{arg:?}"),
             &self.rates_programmed,
         );
-        self.usb.out(Request::SetSamplerate, 0, arg.value())
+        self.usb.set(Request::SetSamplerate, 0, arg.value())
     }
 
     fn apply_packing(&mut self) {
@@ -274,23 +286,30 @@ impl Device {
     /// owns a moment after this sets it, which reads as a gain control that
     /// does nothing.
     fn apply_gains(&mut self) -> Result<()> {
-        self.usb.out(Request::SetLnaAgc, u16::from(self.lna_agc), 0)?;
-        self.usb.out(Request::SetMixerAgc, u16::from(self.mixer_agc), 0)?;
+        // Every one of these carries its argument in `wIndex` and is a control
+        // *read* with a one-byte return code — see `UsbDev::set`.
+        self.usb.set(Request::SetLnaAgc, 0, u16::from(self.lna_agc))?;
+        self.usb.set(Request::SetMixerAgc, 0, u16::from(self.mixer_agc))?;
         let (lna, mixer, vga) = self.curve.stages(self.gain_step);
         // Only the stages the AGC is not driving. Writing a stage under its own
         // loop is not harmful, but it is a write that does nothing and it
         // clutters the trace a fault would be read from.
         if !self.lna_agc {
-            self.usb.out(Request::SetLnaGain, 0, lna as u16)?;
+            self.usb.set(Request::SetLnaGain, 0, lna as u16)?;
         }
         if !self.mixer_agc {
-            self.usb.out(Request::SetMixerGain, 0, mixer as u16)?;
+            self.usb.set(Request::SetMixerGain, 0, mixer as u16)?;
         }
-        self.usb.out(Request::SetVgaGain, 0, vga as u16)
+        self.usb.set(Request::SetVgaGain, 0, vga as u16)
     }
 
+    /// The bias tee, which is one of the few genuine control-OUTs — and which
+    /// still reads its argument from `wIndex`, not `wValue`
+    /// (`usb_vendor_request_set_rf_bias_command` compares `setup.index` with
+    /// 1). Putting it in `wValue` leaves the feedline unpowered however the
+    /// switch is set, with a transfer that completes and says nothing.
     fn apply_bias_tee(&mut self) -> Result<()> {
-        self.usb.out(Request::SetRfBias, u16::from(self.bias_tee), 0)
+        self.usb.out(Request::SetRfBias, 0, u16::from(self.bias_tee))
     }
 
     // ---- operations ------------------------------------------------------
@@ -350,7 +369,8 @@ impl Device {
         let _ = self.usb.out(Request::ReceiverMode, ReceiverMode::Off as u16, 0);
         self.mode = ReceiverMode::Off;
         // The bias tee outlives the process on this hardware, so leaving it on
-        // would leave DC on a feedline with nobody driving it.
+        // would leave DC on a feedline with nobody driving it. Off is `wIndex`
+        // zero, as it is everywhere else.
         let _ = self.usb.out(Request::SetRfBias, 0, 0);
     }
 }

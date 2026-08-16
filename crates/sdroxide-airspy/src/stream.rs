@@ -25,7 +25,7 @@ use crate::convert::HostDsp;
 use crate::device::Device;
 use crate::error::{Error, Result};
 use crate::handle::{AirspyHandle, Ctrl, DeviceInfo, Pending, RxStats, Shared, push_iq, ring_for};
-use crate::protocol::{BULK_EP, packed_whole_words, unpack12};
+use crate::protocol::{BULK_EP, PACKED_GROUP_BYTES, unpack12_bytes};
 use crate::trace::{self, Trace};
 use crate::usb::UsbDev;
 
@@ -192,6 +192,9 @@ fn pump(
     let mut samples: Vec<Complex32> = Vec::with_capacity(transfer_bytes / 2);
     let mut interleaved: Vec<f32> = Vec::with_capacity(transfer_bytes);
     let mut logged_first = false;
+    // Bytes of a sample group that a completion ended in the middle of. See
+    // `decode_raw`.
+    let mut carry: Vec<u8> = Vec::with_capacity(PACKED_GROUP_BYTES);
 
     let mut ep = open_endpoint(dev, in_flight, transfer_bytes)?;
     dev.start()?;
@@ -211,6 +214,8 @@ fn pump(
             if let Some(hz) = pending.rate {
                 close(ep);
                 let outcome = rebuild(dev, hz, &mut dsp, &mut stats, shared, trace);
+                // Whatever was mid-group belonged to the old rate.
+                carry.clear();
                 ep = open_endpoint(dev, in_flight, transfer_bytes)?;
                 dev.start()?;
                 if let Err(e) = outcome {
@@ -251,7 +256,7 @@ fn pump(
                 Ok(()) => {
                     let bytes = &completion.buffer[..];
                     raw.clear();
-                    decode_raw(bytes, dev.packing_active(), &mut raw);
+                    decode_raw(bytes, dev.packing_active(), &mut carry, &mut raw);
 
                     samples.clear();
                     dsp.process(&raw, &mut samples);
@@ -289,6 +294,7 @@ fn pump(
                     // The stream restarts from a packet boundary, so the filter
                     // history and the packing phase both belong to nothing.
                     dsp.reset();
+                    carry.clear();
                     stats.on_stall();
                 }
                 Err(e) => {
@@ -325,16 +331,50 @@ fn pump(
 /// four bits clear. Packed, it sends three `u32` words per eight samples — a
 /// third less USB bandwidth, and on a USB 2.0 device carrying 30 MB/s that is
 /// the difference between keeping up and not.
-fn decode_raw(bytes: &[u8], packed: bool, out: &mut Vec<u16>) {
+///
+/// # Why the carry is not optional
+///
+/// The receiver's stream is **continuous across transfers**. A completion ends
+/// wherever the host's buffer filled — a boundary the receiver knows nothing
+/// about — and the packed format's unit is twelve bytes, which 4 KiB is not a
+/// multiple of. So a completion routinely ends part-way through a group, and
+/// the bytes that finish it arrive at the head of the next one.
+///
+/// Dropping that remainder would not cost eight samples; it would cost every
+/// sample afterwards. The next completion would be decoded from an offset the
+/// format does not start on, and each group would be read across two real ones
+/// — full-scale nonsense, indistinguishable from a receiver that is simply
+/// producing noise. Hence `carry`, which the caller keeps for the life of the
+/// stream and clears wherever sync is lost.
+fn decode_raw(bytes: &[u8], packed: bool, carry: &mut Vec<u8>, out: &mut Vec<u16>) {
+    // The smallest run of bytes that decodes on its own: one packed group, or
+    // one little-endian sample.
+    let unit = if packed { PACKED_GROUP_BYTES } else { 2 };
+    let mut src = bytes;
+
+    if !carry.is_empty() {
+        let take = (unit - carry.len()).min(src.len());
+        carry.extend_from_slice(&src[..take]);
+        src = &src[take..];
+        if carry.len() < unit {
+            // A completion shorter than the rest of one group. Vanishingly
+            // rare, but "vanishingly rare" and "impossible" are different
+            // states to leave a decoder in.
+            return;
+        }
+        decode_whole(carry, packed, out);
+        carry.clear();
+    }
+
+    let whole = src.len() / unit * unit;
+    decode_whole(&src[..whole], packed, out);
+    carry.extend_from_slice(&src[whole..]);
+}
+
+/// The decode proper, over a length that is a whole number of units.
+fn decode_whole(bytes: &[u8], packed: bool, out: &mut Vec<u16>) {
     if packed {
-        // The packed format is defined on 32-bit words, and a completion is a
-        // whole number of them by construction — the transfer size is a
-        // multiple of 4 KiB. A partial group at the end carries no whole
-        // samples and is dropped rather than half-decoded.
-        let words: Vec<u32> =
-            bytes.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
-        let whole = packed_whole_words(words.len());
-        unpack12(&words[..whole], out);
+        unpack12_bytes(bytes, out);
     } else {
         out.extend(bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]) & 0x0fff));
     }
@@ -403,6 +443,11 @@ fn open_endpoint(
         .interface()
         .endpoint::<Bulk, In>(BULK_EP)
         .map_err(|e| Error::Access(format!("cannot open the Airspy bulk endpoint: {e}")))?;
+    // libairspy clears this halt every time it programs a rate, and it is worth
+    // keeping: a session that died mid-stream can leave the endpoint halted,
+    // and nothing else in an open would clear it. It also resets the data
+    // toggle, which is what the receiver assumes when its own stream restarts.
+    let _ = ep.clear_halt().wait();
     for _ in 0..in_flight {
         ep.submit(ep.allocate(transfer_bytes));
     }
@@ -463,22 +508,59 @@ mod tests {
         // full-scale one.
         let bytes: Vec<u8> =
             [0x00u16, 0x0800, 0xF7FF, 0x0FFF].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let mut carry = Vec::new();
         let mut out = Vec::new();
-        decode_raw(&bytes, false, &mut out);
+        decode_raw(&bytes, false, &mut carry, &mut out);
         assert_eq!(out, vec![0x000, 0x800, 0x7FF, 0xFFF]);
+        assert!(carry.is_empty());
 
         // Packed: three words in, eight samples out, all within 12 bits.
         let words = [0x1234_5678u32, 0x9ABC_DEF0, 0x0F1E_2D3C];
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let mut carry = Vec::new();
         let mut out = Vec::new();
-        decode_raw(&bytes, true, &mut out);
+        decode_raw(&bytes, true, &mut carry, &mut out);
         assert_eq!(out.len(), 8);
         assert!(out.iter().all(|s| *s <= 0xfff));
 
-        // A partial group carries no whole samples and is dropped rather than
-        // half-decoded — a half-decoded group would shift every sample after it.
+        // A partial group is held, not dropped: the bytes that finish it are at
+        // the head of the next completion.
+        let mut carry = Vec::new();
         let mut out = Vec::new();
-        decode_raw(&bytes[..8], true, &mut out);
+        decode_raw(&bytes[..8], true, &mut carry, &mut out);
         assert!(out.is_empty(), "two words are not a group");
+        assert_eq!(carry.len(), 8, "the partial group has to survive the boundary");
+    }
+
+    /// The stream does not restart at a transfer boundary, so the decode must
+    /// not either. This is the test that would have caught a decoder that reads
+    /// every completion from byte zero: at 4 KiB granularity a packed transfer
+    /// never ends on a group, so everything after the first one would be noise.
+    #[test]
+    fn a_group_split_across_completions_decodes_the_same_as_a_whole_one() {
+        // Six groups' worth of recognisable bytes.
+        let stream: Vec<u8> = (0..(PACKED_GROUP_BYTES * 6) as u32)
+            .map(|i| (i.wrapping_mul(37) ^ 0x5a) as u8)
+            .collect();
+
+        for packed in [true, false] {
+            let mut whole = Vec::new();
+            decode_raw(&stream, packed, &mut Vec::new(), &mut whole);
+
+            // Deliberately awkward splits: one shorter than a group, one that
+            // lands mid-group, one that lands on a boundary.
+            let mut carry = Vec::new();
+            let mut split = Vec::new();
+            let mut pos = 0;
+            for len in [5usize, 7, 1, 13, 24, 3] {
+                let end = (pos + len).min(stream.len());
+                decode_raw(&stream[pos..end], packed, &mut carry, &mut split);
+                pos = end;
+            }
+            decode_raw(&stream[pos..], packed, &mut carry, &mut split);
+
+            assert_eq!(whole, split, "packed = {packed}: the split decode drifted");
+            assert!(carry.is_empty(), "the whole stream is a whole number of groups");
+        }
     }
 }

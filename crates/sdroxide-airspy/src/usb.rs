@@ -123,15 +123,11 @@ impl UsbDev {
             .wait()
             .map_err(|e| Error::from_open(e, &label))?;
 
-        // Alt setting 1 is where the sample endpoint lives; alt 0 is the
-        // zero-bandwidth setting. This must happen before any endpoint is
-        // opened.
-        iface.set_alt_setting(ALT_SETTING).wait().map_err(|e| {
-            Error::Access(format!(
-                "cannot select alternate setting {ALT_SETTING} on {label}: {e} — \
-                 the receiver's descriptors are not the shape this driver expects"
-            ))
-        })?;
+        // No `SET_INTERFACE` here, deliberately. This receiver declares one
+        // alternate setting and the bulk endpoints are in it, so claiming the
+        // interface is already all of it — see [`ALT_SETTING`], and note that
+        // asking for one that does not exist is how this driver used to fail to
+        // open at all on macOS.
 
         let dev = UsbDev { iface, label, serial, speed, trace: trace.clone() };
         dev.check_bulk_endpoint()?;
@@ -143,7 +139,8 @@ impl UsbDev {
             dev.speed_name(),
         );
         trace.note(format!(
-            "claimed interface {INTERFACE} alt {ALT_SETTING} on {} (serial {}, {})",
+            "claimed interface {INTERFACE} (alt {ALT_SETTING}, the only one) on {} \
+             (serial {}, {})",
             dev.label,
             dev.serial.as_deref().unwrap_or("none"),
             dev.speed_name(),
@@ -326,9 +323,27 @@ impl UsbDev {
         }
     }
 
-    /// A control-OUT with no payload — the shape of most of this protocol.
+    /// A control-OUT with no payload, for the requests the firmware answers
+    /// with a bare acknowledgement.
     pub fn out(&self, req: Request, value: u16, index: u16) -> Result<()> {
         self.control_out(req, value, index, &[])
+    }
+
+    /// A *setting* whose reply is a one-byte return code.
+    ///
+    /// Most of this protocol's setters are control **reads** on the wire, not
+    /// writes: the firmware acts in the setup stage and then queues a byte on
+    /// the IN endpoint for the host to collect, and libairspy duly issues them
+    /// with `LIBUSB_ENDPOINT_IN` and a one-byte buffer. Sending such a request
+    /// as an OUT does not merely lose the return code — the queued byte arrives
+    /// where a zero-length status stage was expected, which fails the transfer
+    /// and leaves the byte to be read as the front of the *next* control reply.
+    /// See [`Request`] for which requests are which.
+    ///
+    /// The byte itself is the firmware's "I handled it", so it is checked for
+    /// length and then discarded, exactly as libairspy does.
+    pub fn set(&self, req: Request, value: u16, index: u16) -> Result<()> {
+        self.control_in_exact(req, value, index, 1).map(|_| ())
     }
 
     /// A control-IN whose reply must be at least `len` bytes.

@@ -14,9 +14,11 @@
 //! 1. **Remove DC.** A one-pole high-pass, because the ADC's offset would
 //!    otherwise land at the edge of the output band rather than at its centre —
 //!    a spur in a place nobody thinks to look for one.
-//! 2. **Translate by fs/4.** Multiplying by `e^{-jπn/2}` cycles through
-//!    `1, -j, -1, j`, so it is sign flips and swaps and **not a single
+//! 2. **Translate by fs/4.** Multiplying by `e^{+jπn/2}` cycles through
+//!    `1, j, -1, -j`, so it is sign flips and swaps and **not a single
 //!    multiply**. This is the whole reason the receiver puts the signal there.
+//!    Which of the two directions to shift in is libairspy's call, not a free
+//!    choice — see [`HostDsp::process`], and the test that pins it.
 //! 3. **Half-band low-pass, decimated by two.** After the translate, the image
 //!    sits where the filter's stopband is. Decimating by two gives complex
 //!    baseband at `fs/2`.
@@ -205,14 +207,25 @@ impl HostDsp {
             }
             let v = v * SAMPLE_SCALE;
 
-            // Translate by fs/4: multiply by 1, -j, -1, j in turn. No
+            // Translate by fs/4: multiply by 1, j, -1, -j in turn. No
             // multiplies — the whole point of the receiver putting the signal
             // at fs/4.
+            //
+            // **The sign is libairspy's, and it is not free to choose.** Its
+            // `translate_fs_4` scales the real stream by (-1, -hbc, +1, +hbc)
+            // and takes even samples as I and odd as Q, which is this rotation
+            // times a constant -1 — a phase offset nothing downstream can see.
+            // The *other* sign is a perfectly good fs/4 shift too, and it
+            // produces the conjugate: a spectrum mirrored about the dial, with
+            // sidebands swapped and every signal on the wrong side of centre.
+            // Nothing in a real tone says which is right, because the receiver
+            // hands over a real IF that is itself reversed; the reference
+            // implementation is what settles it.
             let z = match self.phase {
                 0 => Complex32::new(v, 0.0),
-                1 => Complex32::new(0.0, -v),
+                1 => Complex32::new(0.0, v),
                 2 => Complex32::new(-v, 0.0),
-                _ => Complex32::new(0.0, v),
+                _ => Complex32::new(0.0, -v),
             };
             self.phase = (self.phase + 1) & 3;
 
@@ -318,15 +331,20 @@ mod tests {
         }
     }
 
-    /// End to end, against a vector built from the standard rather than from
-    /// the code under test: a real tone at `fs/4 + d` must land at `+2d` in the
-    /// complex output, on the *positive* side of DC.
+    /// End to end: a real tone at `fs/4 + d` must land **below** DC, at `-d`,
+    /// because that is where libairspy's `translate_fs_4` puts it.
     ///
-    /// The sign is the point. A real signal has no sidedness, so getting the
-    /// rotation backwards mirrors the spectrum — and on a symmetric test signal
-    /// that looks like nothing at all being wrong.
+    /// The sign is the point, and it cannot be reasoned out from the test
+    /// vector — a real tone has no sidedness, and the ADC's IF arrives already
+    /// reversed by the tuner, so the *other* rotation is an equally valid fs/4
+    /// shift that yields the conjugate. Conjugating it mirrors every spectrum
+    /// this driver produces about the dial: signals on the wrong side of
+    /// centre, USB demodulating as LSB, and nothing anywhere saying so. So this
+    /// test pins the convention to the reference implementation — which is what
+    /// every other program's picture of this hardware is drawn in — rather than
+    /// to an argument.
     #[test]
-    fn a_tone_above_the_quarter_rate_lands_above_dc() {
+    fn a_tone_above_the_quarter_rate_lands_below_dc_as_libairspy_puts_it() {
         const N: usize = 65_536;
         let fs = 20.0e6f32;
         // 100 kHz above fs/4.
@@ -363,13 +381,13 @@ mod tests {
         let at_plus = corr(offset);
         let at_minus = corr(-offset);
         assert!(
-            at_plus > at_minus * 50.0,
+            at_minus > at_plus * 50.0,
             "the tone landed on the wrong side of DC: +{offset} Hz = {at_plus:.5}, \
-             -{offset} Hz = {at_minus:.5}. The fs/4 rotation is inverted, which \
-             mirrors the spectrum."
+             -{offset} Hz = {at_minus:.5}. The fs/4 rotation is conjugated \
+             relative to libairspy's, which mirrors the spectrum."
         );
         // And it really is where it should be, not merely on the right side.
-        assert!(at_plus > 0.1, "the tone should be strong at +{offset} Hz: {at_plus:.5}");
+        assert!(at_minus > 0.1, "the tone should be strong at -{offset} Hz: {at_minus:.5}");
     }
 
     /// The rotation and the decimation phase are properties of the sample

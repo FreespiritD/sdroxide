@@ -29,7 +29,20 @@ pub const PID: u16 = 0x60a1;
 /// The configuration and interface the sample endpoint lives in.
 pub const CONFIGURATION: u8 = 1;
 pub const INTERFACE: u8 = 0;
-pub const ALT_SETTING: u8 = 1;
+
+/// The alternate setting the sample endpoint lives in — and there is only one.
+///
+/// The firmware's configuration descriptor (`airspy_m0/usb_descriptor.c`)
+/// declares interface 0 with a **single** alternate setting, 0, carrying two
+/// bulk endpoints. There is no alternate setting 1 to select, which is why
+/// libairspy claims interface 0 and streams without ever calling
+/// `libusb_set_interface_alt_setting`. Selecting one anyway is not a harmless
+/// extra step: macOS fails `SetAlternateInterface` with `kIOReturnNotFound`
+/// (`0xe00002f0`) and the receiver never opens at all.
+///
+/// So this is only what [`crate::usb::UsbDev`] checks the endpoint list
+/// against; nothing sends a `SET_INTERFACE`.
+pub const ALT_SETTING: u8 = 0;
 
 /// The bulk IN endpoint carrying the sample stream.
 pub const BULK_EP: u8 = 0x81;
@@ -47,6 +60,27 @@ pub const MIN_SAMPLERATE_BY_VALUE: u32 = 1_000_000;
 pub const FALLBACK_RATES: [f64; 2] = [10.0e6, 2.5e6];
 
 /// Vendor requests, as `bRequest`. Values from `airspy_commands.h`.
+///
+/// # Two shapes, and the direction is not a formality
+///
+/// Most of what look like *writes* here are control **reads**: the firmware
+/// handles them entirely in the setup stage and then queues a one-byte return
+/// code on the IN endpoint (`usb_vendor_request_set_lna_gain` and friends), so
+/// the host has to come and collect it. Sending one as an OUT with no data
+/// leaves that byte queued where the host expects a zero-length status stage —
+/// the transfer errors, and the byte is still sitting there to corrupt the next
+/// control read. See [`crate::usb::UsbDev::set`].
+///
+/// The genuine OUTs are the ones whose handler answers with
+/// `usb_transfer_schedule_ack`: [`Request::ReceiverMode`], [`Request::SetFreq`]
+/// (which also carries four bytes of payload), [`Request::SetRfBias`], and the
+/// register/GPIO writes.
+///
+/// Note also where the argument goes. Of the requests this driver sends, only
+/// [`Request::ReceiverMode`] reads `wValue` and only [`Request::SetFreq`] takes
+/// a payload; every other one — gains, AGC, packing, rate, and the bias tee —
+/// reads `wIndex`, and putting the value in `wValue` instead is a transfer that
+/// succeeds and changes nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Request {
@@ -144,30 +178,43 @@ impl RateArg {
 
 /// Encode a *programmed* (already doubled) rate for the wire.
 ///
-/// The bimodal encoding is libairspy's (`airspy.c:1119-1156`) and is the second
-/// most likely thing in this file to be got wrong. A rate at or above
-/// [`MIN_SAMPLERATE_BY_VALUE`] is divided by 1000 and sent as kilohertz; below
-/// that, the *index* of the rate in the receiver's list is sent instead. Send
-/// an index where a kilohertz figure was expected and the receiver quietly
-/// runs at whatever rate index 2 happens to be.
+/// The bimodal encoding is libairspy's `airspy_set_samplerate`, and the order
+/// of the two branches is part of it. A rate the receiver **listed** goes out
+/// as its *index* in that list, whatever its magnitude; only a rate that is not
+/// on the list falls through to being sent as kilohertz, and then only if it is
+/// at or above [`MIN_SAMPLERATE_BY_VALUE`]. The firmware makes the same
+/// distinction from the other side — `usb_vendor_request_set_samplerate` reads
+/// `wIndex` as an index while it is below the number of configurations it has,
+/// and as a kilohertz figure above that — so the two branches are not
+/// interchangeable for a supported rate.
+///
+/// The kilohertz figure is of the *programmed* rate, which is why this takes
+/// one: libairspy doubles the operator's complex rate before dividing by 1000.
 ///
 /// `rates` is the receiver's programmed-rate list, in the order it reported
-/// them. Returns `None` when a sub-megahertz rate is not in that list, because
-/// there is then no index to send and guessing one would be worse than
-/// refusing.
+/// them. Returns `None` when a rate is neither in that list nor expressible as
+/// kilohertz, because there is then nothing to send and guessing would be worse
+/// than refusing.
 pub fn encode_samplerate(programmed_hz: f64, rates: &[f64]) -> Option<RateArg> {
     let hz = programmed_hz.round().max(0.0) as u32;
-    if hz >= MIN_SAMPLERATE_BY_VALUE {
-        return Some(RateArg::Khz((hz / 1000) as u16));
+    if let Some(i) = rates.iter().position(|r| (r.round() as u32) == hz) {
+        return Some(RateArg::Index(i as u16));
     }
-    rates.iter().position(|r| (r.round() as u32) == hz).map(|i| RateArg::Index(i as u16))
+    if hz < MIN_SAMPLERATE_BY_VALUE {
+        return None;
+    }
+    u16::try_from(hz / 1000).ok().map(RateArg::Khz)
 }
 
-/// The rate list the receiver reports, as programmed (real) rates in Hz.
+/// The rate list the receiver reports, in Hz. Little-endian `u32` apiece.
 ///
-/// Little-endian `u32` apiece. The values are what the *ADC* will run at, so
-/// they are twice the complex rates the operator picks between — see
-/// [`complex_rate_hz`].
+/// **These are complex rates, not what the ADC runs at.** libairspy hands this
+/// list straight to a caller asking for IQ and doubles every entry for a caller
+/// asking for the raw real stream (`airspy_get_samplerates`), which is what
+/// fixes the units: an R2 reports 10 and 2.5 Msps and digitises at 20 and 5.
+/// Read them as programmed rates and every rate on offer comes out half its
+/// real size, with a receiver that streams correctly and a span that is
+/// silently wrong by an octave. [`program_rate_hz`] is what converts.
 pub fn parse_rates(b: &[u8]) -> Vec<f64> {
     b.chunks_exact(4)
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
@@ -324,16 +371,40 @@ impl GainCurve {
 /// remainder into the next transfer.
 pub fn unpack12(words: &[u32], out: &mut Vec<u16>) {
     for w in words.chunks_exact(3) {
-        let (a, b, c) = (w[0], w[1], w[2]);
-        out.push(((a >> 20) & 0xfff) as u16);
-        out.push(((a >> 8) & 0xfff) as u16);
-        out.push((((a & 0xff) << 4) | ((b >> 28) & 0xf)) as u16);
-        out.push(((b & 0x0fff_0000) >> 16) as u16);
-        out.push(((b & 0x0000_fff0) >> 4) as u16);
-        out.push((((b & 0xf) << 8) | ((c & 0xff00_0000) >> 24)) as u16);
-        out.push(((c >> 12) & 0xfff) as u16);
-        out.push((c & 0xfff) as u16);
+        unpack_group(w[0], w[1], w[2], out);
     }
+}
+
+/// How many bytes one packed group occupies: three `u32` words, eight samples.
+///
+/// The stream is continuous across USB transfers, so this is also the alignment
+/// a completion has to be decoded on — see [`unpack12_bytes`].
+pub const PACKED_GROUP_BYTES: usize = 12;
+
+/// [`unpack12`] straight off the wire, decoding only whole groups.
+///
+/// Saves materialising a `Vec<u32>` per completion — at the top rate that is a
+/// 128 KiB allocation every thirteen milliseconds — and, more to the point,
+/// lets the caller hold a partial group back until the bytes that finish it
+/// arrive. A trailing partial group is *ignored* here, not consumed: it is the
+/// caller's to carry.
+pub fn unpack12_bytes(bytes: &[u8], out: &mut Vec<u16>) {
+    for g in bytes.chunks_exact(PACKED_GROUP_BYTES) {
+        let word = |i: usize| u32::from_le_bytes([g[i], g[i + 1], g[i + 2], g[i + 3]]);
+        unpack_group(word(0), word(4), word(8), out);
+    }
+}
+
+/// The bit layout itself, in one place so the two entry points cannot drift.
+fn unpack_group(a: u32, b: u32, c: u32, out: &mut Vec<u16>) {
+    out.push(((a >> 20) & 0xfff) as u16);
+    out.push(((a >> 8) & 0xfff) as u16);
+    out.push((((a & 0xff) << 4) | ((b >> 28) & 0xf)) as u16);
+    out.push(((b & 0x0fff_0000) >> 16) as u16);
+    out.push(((b & 0x0000_fff0) >> 4) as u16);
+    out.push((((b & 0xf) << 8) | ((c & 0xff00_0000) >> 24)) as u16);
+    out.push(((c >> 12) & 0xfff) as u16);
+    out.push((c & 0xfff) as u16);
 }
 
 /// How many whole `u32` words of a packed buffer carry complete sample groups.
@@ -358,29 +429,37 @@ mod tests {
         }
     }
 
-    /// Index below a megahertz, kilohertz above it. Sending the wrong one does
-    /// not fail — the receiver runs at some other rate and says nothing.
+    /// A listed rate goes out as its index; only an unlisted one goes out as
+    /// kilohertz. Sending the wrong one does not fail — the receiver runs at
+    /// some other rate and says nothing.
     #[test]
-    fn a_rate_goes_out_as_an_index_or_as_kilohertz() {
+    fn a_listed_rate_goes_out_as_its_index_and_the_rest_as_kilohertz() {
         // The R2's own list, as programmed (doubled) rates.
         let rates = [20.0e6, 5.0e6];
 
-        // 10 Msps complex is 20 Msps programmed: well above the threshold, so
-        // kilohertz.
-        assert_eq!(encode_samplerate(program_rate_hz(10.0e6), &rates), Some(RateArg::Khz(20_000)));
-        assert_eq!(encode_samplerate(program_rate_hz(2.5e6), &rates), Some(RateArg::Khz(5_000)));
-        // Exactly on the threshold is a value, not an index.
+        // Both of the R2's rates are on that list, so both go out as indices —
+        // which is what libairspy sends and what the firmware reads first.
+        assert_eq!(encode_samplerate(program_rate_hz(10.0e6), &rates), Some(RateArg::Index(0)));
+        assert_eq!(encode_samplerate(program_rate_hz(2.5e6), &rates), Some(RateArg::Index(1)));
+        // A Mini's list, to pin that the index is a position and not a rank.
+        let mini = [12.0e6, 6.0e6, 3.0e6];
+        assert_eq!(encode_samplerate(program_rate_hz(3.0e6), &mini), Some(RateArg::Index(1)));
+
+        // Not on the list, and big enough to name in kilohertz — of the
+        // programmed rate, not the complex one.
+        assert_eq!(encode_samplerate(program_rate_hz(4.0e6), &rates), Some(RateArg::Khz(8_000)));
         assert_eq!(
             encode_samplerate(MIN_SAMPLERATE_BY_VALUE as f64, &rates),
             Some(RateArg::Khz(1_000))
         );
-        // Below it, the index into the receiver's list.
+        // Sub-megahertz and unlisted: no index to send, and guessing one would
+        // be worse than refusing.
         let slow = [500_000.0, 250_000.0];
         assert_eq!(encode_samplerate(250_000.0, &slow), Some(RateArg::Index(1)));
-        assert_eq!(encode_samplerate(500_000.0, &slow), Some(RateArg::Index(0)));
-        // A sub-megahertz rate that is not in the list has no index to send,
-        // and guessing one would be worse than refusing.
         assert_eq!(encode_samplerate(300_000.0, &slow), None);
+        // Too large for `wIndex` in kilohertz is also a refusal rather than a
+        // wrapped number that would program some unrelated rate.
+        assert_eq!(encode_samplerate(100.0e9, &rates), None);
     }
 
     /// The tables are indexed backwards. If this reverses, every gain slider in
@@ -443,15 +522,37 @@ mod tests {
         assert_eq!(packed_whole_words(7), 6);
         assert_eq!(packed_whole_words(2), 0);
         assert_eq!(packed_whole_words(3), 3);
+
+        // The wire-order entry point decodes the same samples from the same
+        // bytes, and stops at the last whole group rather than consuming the
+        // tail — the caller carries that into the next completion.
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let mut from_words = Vec::new();
+        unpack12(&words, &mut from_words);
+        let mut from_bytes = Vec::new();
+        unpack12_bytes(&bytes, &mut from_bytes);
+        assert_eq!(from_words, from_bytes);
+        assert_eq!(PACKED_GROUP_BYTES, 12);
+        let mut partial = Vec::new();
+        unpack12_bytes(&bytes[..PACKED_GROUP_BYTES - 1], &mut partial);
+        assert!(partial.is_empty(), "eleven bytes are not a group");
     }
 
     #[test]
     fn the_rate_list_is_little_endian_and_drops_zeroes() {
+        // An R2's actual reply. These are *complex* rates — the receiver
+        // digitises at twice each of them — which is why the driver doubles
+        // them into programmed rates before using them for anything.
         let mut b = Vec::new();
-        for r in [20_000_000u32, 5_000_000] {
+        for r in [10_000_000u32, 2_500_000] {
             b.extend_from_slice(&r.to_le_bytes());
         }
-        assert_eq!(parse_rates(&b), vec![20.0e6, 5.0e6]);
+        assert_eq!(parse_rates(&b), vec![10.0e6, 2.5e6]);
+        assert_eq!(
+            parse_rates(&b).iter().map(|r| program_rate_hz(*r)).collect::<Vec<_>>(),
+            vec![20.0e6, 5.0e6],
+            "the ADC runs at twice the listed rate"
+        );
         // A trailing partial word is dropped, not misread.
         b.push(0x01);
         assert_eq!(parse_rates(&b).len(), 2);

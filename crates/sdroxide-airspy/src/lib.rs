@@ -31,6 +31,24 @@
 //! # Not verified against hardware
 //!
 //! This driver was written from the reference implementation, not on a bench.
+//! The first field report settled four things that only a receiver could, and
+//! each is now pinned where it was got wrong:
+//!
+//! * There is **no alternate setting 1** — the interface has one setting and
+//!   the bulk endpoints are in it. Selecting one is what stopped the receiver
+//!   opening at all on macOS. See [`protocol::ALT_SETTING`].
+//! * The rate list the receiver reports is in **complex** rates, not ADC rates.
+//!   See [`protocol::parse_rates`].
+//! * Most of the *setters* are control **reads** carrying a return byte, and
+//!   nearly all of them take their argument in `wIndex`. See [`usb::UsbDev::set`].
+//! * A completion does not end on a packed group, so the remainder has to be
+//!   carried into the next one.
+//!
+//! What a bench still has to settle is **which way the spectrum runs**: the
+//! fs/4 rotation now matches libairspy's sign, which is the convention every
+//! other program's picture of this hardware is drawn in, but nothing here has
+//! watched a known carrier land on the correct side of the dial. The `probe`
+//! example prints the two lines that answer it.
 
 pub mod convert;
 pub mod device;
