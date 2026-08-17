@@ -88,6 +88,15 @@ pub struct Settings {
     pub server_port: u16,
     /// Refuse to transmit outside amateur bands.
     pub tx_ham_only: bool,
+    /// Abort the transmission and latch out further transmit when the rig
+    /// reports an SWR at or above [`Self::swr_limit`].
+    ///
+    /// Only rigs that actually measure SWR and report it over CAT/TCI can arm
+    /// this; on anything that leaves `TxTelemetry::swr` as `None` it is inert,
+    /// so it costs nothing to leave on.
+    pub swr_guard: bool,
+    /// The SWR ratio the guard trips at, e.g. `2.5` = 2.5:1.
+    pub swr_limit: f32,
     /// Preferred audio output device name; `None` = system default.
     pub audio_output: Option<String>,
     /// Preferred audio input (microphone) device name; `None` = system default.
@@ -137,6 +146,13 @@ impl Default for Settings {
             server_bind: "0.0.0.0".into(),
             server_port: 4950,
             tx_ham_only: true,
+            // On by default, and defensible: it cannot fire on a rig that does
+            // not report SWR, and on one that does, the case it prevents is
+            // transmitting into a fault. 2.5:1 is high enough not to trip on a
+            // normally-tuned antenna near a band edge and low enough to catch a
+            // disconnected feeder or a stuck relay.
+            swr_guard: true,
+            swr_limit: 2.5,
             audio_output: None,
             audio_input: None,
             region: sdroxide_types::Region::default(),

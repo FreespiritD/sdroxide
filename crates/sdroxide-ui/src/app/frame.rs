@@ -198,7 +198,32 @@ impl eframe::App for SdroxideApp {
                         ui.label(RichText::new("⚠").size(15.0).color(mark));
                         ui.label(RichText::new(notice).size(13.0).color(ink));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("Dismiss").clicked() {
+                            // ⛔ A TRIPPED SWR GUARD IS NOT DISMISSIBLE, and the
+                            // distinction is the point. Plain "Dismiss" clears
+                            // the banner locally and changes nothing in the
+                            // engine, which for a latch would be the worst of
+                            // both worlds: the warning gone and transmit still
+                            // locked out, with nothing left on screen saying
+                            // why. The latch therefore gets its own button that
+                            // actually clears it in the engine.
+                            if let Some(swr) = self.state.tx.swr_tripped {
+                                if ui
+                                    .button(
+                                        RichText::new("Acknowledge and re-enable transmit")
+                                            .size(13.0),
+                                    )
+                                    .on_hover_text(format!(
+                                        "The rig reported {swr:.1}:1. Check the antenna, feeder \
+                                         and any switch or ATU before transmitting again. If the \
+                                         fault is still there, the guard will stop the next \
+                                         transmission too."
+                                    ))
+                                    .clicked()
+                                {
+                                    cmds.push(Command::ClearSwrTrip);
+                                    self.radio_notice = None;
+                                }
+                            } else if ui.small_button("Dismiss").clicked() {
                                 self.radio_notice = None;
                             }
                         });

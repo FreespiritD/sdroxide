@@ -50,6 +50,8 @@ fn build_controller(
         initial_mode: boot.initial_mode,
         initial_antenna: boot.initial_antenna,
         tx_ham_only,
+        swr_guard: settings.swr_guard,
+        swr_limit: settings.swr_limit,
         reopen: boot.reopen,
         // This engine is one of the operator's radios: remember where they
         // leave it, in its own scope.

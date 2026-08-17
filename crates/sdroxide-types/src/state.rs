@@ -109,6 +109,15 @@ pub struct TxState {
     pub mic_gain: f32,
     /// Parametric EQ on the mic/modulator audio (voice modes only).
     pub eq: TxEqState,
+    /// Set when the SWR guard has tripped, holding the SWR that tripped it.
+    /// While it is `Some`, transmit is refused until the operator acknowledges
+    /// it with [`Command::ClearSwrTrip`].
+    ///
+    /// It lives in the shared state rather than being inferred from the notice
+    /// text so that every client, native and remote, can offer the
+    /// acknowledgement and can grey out transmit for the right reason. Matching
+    /// on a human-readable string would break the moment the wording changed.
+    pub swr_tripped: Option<f32>,
 }
 
 /// One band of [`TxEqState`]: corner/center frequency and gain, plus either Q

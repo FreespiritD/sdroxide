@@ -109,6 +109,13 @@ pub enum Command {
     // Transmit
     SetPtt(bool),
     SetTune(bool),
+    /// Acknowledge a tripped SWR guard and allow transmit again.
+    ///
+    /// Deliberately its own command rather than a side effect of the next
+    /// key-up: the operator confirming they have looked at the antenna is the
+    /// entire point of latching, and a latch any old PTT press clears is not a
+    /// latch.
+    ClearSwrTrip,
     SetTxDrive(f32),
     SetTuneDrive(f32),
     SetMicGain(f32),
