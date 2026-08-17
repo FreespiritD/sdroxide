@@ -1088,6 +1088,10 @@ mod tests {
         let cfg = RadioConfig {
             backend: Backend::RtlSdr,
             converter_offset_hz: 125_000_000.0,
+            // The transmit converter is an enum with a payload on one variant
+            // only — the shape a self-describing format forgives and postcard
+            // does not, so it is carried here rather than left at its default.
+            converter_tx: sdroxide_types::ConverterTx::Own(-2_256_000_000.0),
             freq_ranges_rx: vec![(0.0, 14_400_000.0), (24_000_000.0, 1_766_000_000.0)],
             rtlsdr: RtlSdrConfig {
                 serial: Some("00000001".into()),

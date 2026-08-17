@@ -986,6 +986,15 @@ holds the shot through the pass. The pass window there gets a **LOCK ON**
 button of its own, so a satellite found by searching the globe is one click
 from being operated.
 
+**QO-100 and anything else behind a converter.** The dial is the *published*
+frequency throughout, so a station hearing the 10 GHz downlink through an LNB
+sets that LNB as its **Converter** offset and locks on exactly as it would on a
+low-orbit bird — the transponder mapping then derives the 2.4 GHz uplink from
+wherever the dial sits. What it also needs is the **Transmit** row beside that
+offset ([6.2](#62-radio-choosing-and-configuring-the-rig)) set to what is in the transmit line, or
+transmit stays switched off: for the usual QO-100 station that is *its own
+offset*, of nought.
+
 Locking needs your **grid locator** (Settings ▸ General) and current element
 sets (Settings ▸ TLE). On a CAT rig the lock still tracks, predicts and
 steers the rotator, but Doppler stays uncorrected — riding a serial dial a few
@@ -2864,14 +2873,41 @@ plan, memories, the logbook, cluster and PSK Reporter spots, what gets uploaded
 after a digital contact, and the tuning range quoted if you ask for a frequency
 the radio cannot reach. Nothing needs a second correction anywhere.
 
+**Transmit**, the row under the offset, is where you say what is in the
+*transmit* line — because a converter is a receive accessory and sdroxide cannot
+see what the other half of your station looks like. Three answers:
+
+- **Off while converting** (the default). Nothing is transmitted while an offset
+  is set. Right for a receive-only accessory: a dongle behind a Ham It Up has no
+  transmitter, and a transceiver behind one would key up 125 MHz away from the
+  frequency on the dial — legal on 30 m, an aeronautical band up there.
+- **Through the same converter.** One box converts both ways: a transverter.
+  Transmit takes the same offset as receive and follows it when you trim it, so
+  a 23 cm transverter with a 144 MHz I.F. works 1152 MHz below the dial in both
+  directions.
+- **Its own offset**, with a hertz box beside it, when the transmit line is
+  different from the receive one. **Nought is the common case**, and it is the
+  QO-100 station: the 10 GHz downlink comes through an LNB (`-9750000000` on
+  receive) while the 2.4 GHz uplink leaves the radio directly, so transmit is not
+  converted at all and the radio keys on the frequency shown. A transmit
+  converter that takes an I.F. *up* is a negative number, on the same sign rule
+  as the receive offset: the radio works below the dial.
+
+The amateur-band check still applies on top, on the frequency you are actually
+transmitting on, and so does the radio's own transmit range — quoted in dial
+numbers, with the transmit offset taken off.
+
+**Working QO-100** (or any other split-band satellite) needs one more thing: the
+transmit frequency, which is nowhere near the dial. Two ways to get it there —
+switch **Split** on and put the uplink on VFO B (2400.050 MHz for a downlink of
+10489.550), or lock onto the satellite ([2.16](#216-satellite-operation-sat)) and let
+the transponder mapping derive the uplink from wherever you tune the downlink,
+which is what you want for anything that moves. Receive is torn down for the
+length of an over on a half-duplex front end such as a Pluto, so you will not
+hear your own downlink while transmitting.
+
 Three things to know:
 
-- **Transmit is switched off while a converter is set.** A converter sits between
-  the antenna and the receiver's *input*, so it is not in the transmit path.
-  Keying through it would put the radio 125 MHz away from the frequency on the
-  dial — legal on 30 m, an aeronautical band up there — so sdroxide withdraws
-  transmit entirely rather than risk it. Bidirectional transverters are not
-  supported yet.
 - **Frequencies you saved before setting the offset are now wrong.** If you have
   been doing this arithmetic by hand, your memories, band stacks and last-used
   frequency all hold the receiver's numbers (135.1008 MHz). Once the offset is
@@ -2927,8 +2963,9 @@ device a transmitter — a device with no TX channel stays receive-only.
 
 Ranges describe the radio, on the hardware side of any converter offset, which
 is the same side the device's own answer comes from. With a converter set they
-are shifted onto the dial along with everything else — and transmit is off
-regardless, as above.
+are shifted onto the dial along with everything else — the receive range by the
+receive offset and the transmit range by whatever the **Transmit** row says, so
+each ends up in the numbers you will actually be reading.
 
 #### 6.2.1 SoapySDR devices
 

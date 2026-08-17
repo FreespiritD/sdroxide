@@ -1455,10 +1455,78 @@ impl SdroxideApp {
                          other SDR program states. Positive for an upconverter (a Ham It Up is \
                          125000000), negative for a down-converter such as a satellite LNB. \
                          0 = no converter.\n\nDrag to trim it a hertz at a time, which is what \
-                         a converter whose oscillator is slightly off wants.\n\nReceive only: a \
-                         converter is not in the transmit path, so transmit is switched off \
-                         while this is set.\n\nTakes effect on Apply.",
+                         a converter whose oscillator is slightly off wants.\n\nThis is the \
+                         receive path. What is in the transmit line is the row below.\n\nTakes \
+                         effect on Apply.",
                     );
+                    ui.end_row();
+
+                    // A converter is a receive accessory, so what the transmit
+                    // line does is a separate fact about the station — and one
+                    // only its operator knows. Withdrawing transmit is the safe
+                    // default, but it is not the answer for the station that
+                    // hears through a converter and transmits around it: a
+                    // QO-100 operator receives 10 GHz through an LNB and puts
+                    // 2.4 GHz straight out of the radio.
+                    ui.label(RichText::new("Transmit").strong());
+                    // Greyed out with no converter set, because that is exactly
+                    // when it decides nothing: the transmit path was never
+                    // touched to begin with.
+                    ui.add_enabled_ui(*converter != 0.0, |ui| {
+                        ui.horizontal(|ui| {
+                            use sdroxide_types::ConverterTx as Tx;
+                            let tx = &mut cfg.converter_tx;
+                            egui::ComboBox::from_id_salt("converter-tx")
+                                .selected_text(tx.label())
+                                .show_ui(ui, |ui| {
+                                    for opt in [Tx::Off, Tx::Transverter, Tx::Own(0.0)] {
+                                        // Matched on the *kind*, so choosing "its
+                                        // own offset" again does not wipe the
+                                        // number already typed beside it.
+                                        let on = std::mem::discriminant(&opt)
+                                            == std::mem::discriminant(tx);
+                                        if ui.selectable_label(on, opt.label()).clicked() && !on {
+                                            *tx = opt;
+                                        }
+                                    }
+                                })
+                                .response
+                                .on_hover_text(
+                                    "What is in the transmit line while a converter is set.\n\n\
+                                     Off while converting: nothing is transmitted — the safe \
+                                     default, and right for a receive-only accessory.\n\n\
+                                     Through the same converter: one box converts both ways, a \
+                                     transverter. Transmit takes the offset above and follows it \
+                                     when it is trimmed.\n\nIts own offset: the transmit line is \
+                                     different from the receive one. Nought is the common case — \
+                                     a converter (an LNB, a Ham It Up) on receive with the \
+                                     transmitter on its own antenna, which is the QO-100 station.\
+                                     \n\nThe amateur-band check still applies, on the frequency \
+                                     you are transmitting on.\n\nTakes effect on Apply.",
+                                );
+                            if let Tx::Own(hz) = tx {
+                                ui.add(
+                                    egui::DragValue::new(hz)
+                                        .speed(1.0)
+                                        .range(
+                                            -sdroxide_types::CONVERTER_OFFSET_MAX_HZ
+                                                ..=sdroxide_types::CONVERTER_OFFSET_MAX_HZ,
+                                        )
+                                        .max_decimals(0)
+                                        .suffix(" Hz"),
+                                )
+                                .on_hover_text(
+                                    "How far the transmit line moves the signal, in Hz, on the \
+                                     same sign rule as the receive offset: the radio transmits at \
+                                     dial + offset.\n\n0 = the transmitter is wired to its own \
+                                     antenna and works on the frequency the dial says — a QO-100 \
+                                     station's 2.4 GHz uplink.\n\nA transmit converter that \
+                                     takes an I.F. *up* is a negative number: the radio works \
+                                     below the dial.",
+                                );
+                            }
+                        });
+                    });
                     ui.end_row();
 
                     // The ranges the operator says this radio has, for a driver
@@ -1507,16 +1575,37 @@ impl SdroxideApp {
                     .weak(),
                 );
                 if *converter != 0.0 {
-                    ui.label(
-                        RichText::new(if backend == Backend::RtlSdr && *converter < 0.0 {
-                            "Transmit is off while a converter is set. Careful on an RTL-SDR: the \
-                             Blog V4 upconverts on its own below 28.8 MHz, so a negative offset \
-                             that lands the hardware there shifts twice."
-                        } else {
-                            "Transmit is off while a converter is set."
-                        })
-                        .weak(),
-                    );
+                    // What the two rows above add up to, in one sentence: the
+                    // transmit answer is the one an operator gets wrong, and a
+                    // radio that will not key is the symptom either way.
+                    let tx = match cfg.converter_tx {
+                        sdroxide_types::ConverterTx::Off => {
+                            "Transmit is off while a converter is set — say what is in the \
+                             transmit line above to turn it back on."
+                        }
+                        sdroxide_types::ConverterTx::Transverter => {
+                            "Transmit goes through the same converter, so the radio works the \
+                             same offset away from the dial in both directions."
+                        }
+                        sdroxide_types::ConverterTx::Own(0.0) => {
+                            "Transmit is not converted: the radio transmits on the frequency the \
+                             dial shows, while receive comes through the converter."
+                        }
+                        sdroxide_types::ConverterTx::Own(_) => {
+                            "Transmit takes its own offset, separate from the receive one."
+                        }
+                    };
+                    ui.label(RichText::new(tx).weak());
+                    if backend == Backend::RtlSdr && *converter < 0.0 {
+                        ui.label(
+                            RichText::new(
+                                "Careful on an RTL-SDR: the Blog V4 upconverts on its own below \
+                                 28.8 MHz, so a negative offset that lands the hardware there \
+                                 shifts twice.",
+                            )
+                            .weak(),
+                        );
+                    }
                 }
 
                 self.settings_panadapter(ui, cfg);

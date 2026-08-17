@@ -304,17 +304,32 @@ impl IqSource for PlutoSource {
         self.rx.as_ref().is_none_or(|rx| !rx.is_alive() || rx.silent_for() >= SILENCE_BEFORE_REOPEN)
     }
 
-    /// Give this chain's stream back ahead of a rebuild — and only the stream.
-    /// The connection is deliberately kept: a sibling may be streaming the
-    /// other chain over it, and even alone, an Apply with the address
-    /// unchanged should re-attach over the live connection (the registry will
-    /// find it through this very `Arc`) rather than reopen the device —
-    /// `iiod` will not hand the same buffer to a second connection, so a
-    /// premature close-and-redial is exactly the "device busy" failure this
-    /// avoids. The connection closes when the last source holding it is
-    /// dropped, which for a genuine backend switch happens right after the
-    /// replacement is adopted.
+    /// Give this chain's stream back ahead of a rebuild — and only the stream,
+    /// as long as the connection still works. It is deliberately kept: a
+    /// sibling may be streaming the other chain over it, and even alone, an
+    /// Apply with the address unchanged should re-attach over the live
+    /// connection (the registry will find it through this very `Arc`) rather
+    /// than reopen the device — `iiod` will not hand the same buffer to a
+    /// second connection, so a premature close-and-redial is exactly the
+    /// "device busy" failure this avoids. The connection closes when the last
+    /// source holding it is dropped, which for a genuine backend switch happens
+    /// right after the replacement is adopted.
+    ///
+    /// A connection that has already failed is the opposite case, and it gets
+    /// the opposite treatment. Nothing will be attached to it again — the
+    /// registry hands out no dead device — while its receive thread may still
+    /// be sitting in a `READBUF` that has seconds left to run, and until that
+    /// returns the *device's* buffer stays open. The reconnect this release is
+    /// preparing for would then be refused as busy, back off, and try again:
+    /// the several-second gap between "the radio froze" and "the radio came
+    /// back" that has nothing to do with what broke the link. Shutting the
+    /// sockets down here ends that read at once.
     fn release(&mut self) {
         self.rx = None;
+        if let Some(rig) = self.rig.as_ref()
+            && !rig.is_alive()
+        {
+            rig.release();
+        }
     }
 }

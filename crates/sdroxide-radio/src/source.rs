@@ -484,23 +484,32 @@ pub trait IqSource: Send {
 /// CAT servers, memories, spots, the logbook — works in the operator's
 /// frequency, and everything below it in the hardware's.
 ///
-/// # Receive only
+/// # The transmit path is its own question
 ///
-/// A converter sits between the antenna and the receiver *input*; it is not in
-/// the transmit path. So [`Self::tx_begin`] is forwarded untouched, and
-/// [`shift_caps`] takes the transmit capability away entirely rather than
-/// translating it. Translating it would be worse than useless: the licence gate
-/// in the engine checks the operator's frequency, which would pass on 30 m and
-/// then key the radio 125 MHz up, in an aeronautical band.
+/// A converter sits between the antenna and the receiver *input*, so what the
+/// transmit line does is a separate fact about the station that only its
+/// operator knows — and `tx_offset_hz` is where they say it. `None` withdraws
+/// transmit ([`shift_caps`] takes the capability away entirely), which is the
+/// default because guessing the receive offset would be worse than useless: the
+/// licence gate in the engine checks the operator's frequency, which would pass
+/// on 30 m and then key the radio 125 MHz up, in an aeronautical band.
+///
+/// `Some(t)` translates transmit by `t` instead — the same sign rule, so a
+/// transverter that converts both ways passes its receive offset and a receive
+/// converter with the transmitter on its own antenna passes `0.0`. The latter is
+/// the QO-100 station: the 10 GHz downlink arrives through an LNB while the
+/// 2.4 GHz uplink leaves the radio direct, and only the receive side is offset.
 pub struct ConvertedSource {
     inner: Box<dyn IqSource>,
     /// Hardware frequency minus operator frequency. Positive for an upconverter.
     offset_hz: f64,
+    /// The same, for the transmit path; `None` when transmit is withdrawn.
+    tx_offset_hz: Option<f64>,
 }
 
 impl ConvertedSource {
-    pub fn new(inner: Box<dyn IqSource>, offset_hz: f64) -> Self {
-        ConvertedSource { inner, offset_hz }
+    pub fn new(inner: Box<dyn IqSource>, offset_hz: f64, tx_offset_hz: Option<f64>) -> Self {
+        ConvertedSource { inner, offset_hz, tx_offset_hz }
     }
 
     /// Operator frequency → hardware frequency.
@@ -512,28 +521,48 @@ impl ConvertedSource {
     fn down(&self, hz: f64) -> f64 {
         hz - self.offset_hz
     }
+
+    /// Operator frequency → hardware frequency, on the transmit path.
+    fn up_tx(&self, hz: f64) -> Option<f64> {
+        self.tx_offset_hz.map(|t| hz + t)
+    }
 }
 
-/// Move a device's published tuning ranges into the operator's domain, and take
-/// its transmit capability away (see [`ConvertedSource`]).
+/// Move a device's published tuning ranges into the operator's domain, and
+/// either translate its transmit capability or take it away (see
+/// [`ConvertedSource`]).
 ///
-/// The receive edges are clamped at DC and ranges that collapse are dropped: a
-/// negative frequency is not one, and it would read as nonsense in the "outside
-/// this radio's receive range" notice and in what the rigctld and TCI servers
+/// The edges are clamped at DC and ranges that collapse are dropped: a negative
+/// frequency is not one, and it would read as nonsense in the "outside this
+/// radio's receive range" notice and in what the rigctld and TCI servers
 /// advertise to their clients.
+///
+/// `tx_offset_hz` of `None` withdraws transmit entirely — no ranges, no
+/// antennas, no channel — so the engine's gate refuses a key-down before
+/// anything reaches the hardware. `Some(t)` shifts the transmit ranges by `t`
+/// instead, leaving the gate to vet the operator's transmit frequency against
+/// where the radio can actually put its transmit LO.
 pub fn shift_caps(
     mut caps: sdroxide_types::DeviceCaps,
     offset_hz: f64,
+    tx_offset_hz: Option<f64>,
 ) -> sdroxide_types::DeviceCaps {
-    caps.freq_ranges_rx = caps
-        .freq_ranges_rx
-        .into_iter()
-        .map(|(lo, hi)| ((lo - offset_hz).max(0.0), hi - offset_hz))
-        .filter(|&(lo, hi)| hi > lo)
-        .collect();
-    caps.freq_ranges_tx.clear();
-    caps.antennas_tx.clear();
-    caps.tx_channels = 0;
+    fn shift(ranges: Vec<(f64, f64)>, offset_hz: f64) -> Vec<(f64, f64)> {
+        ranges
+            .into_iter()
+            .map(|(lo, hi)| ((lo - offset_hz).max(0.0), hi - offset_hz))
+            .filter(|&(lo, hi)| hi > lo)
+            .collect()
+    }
+    caps.freq_ranges_rx = shift(caps.freq_ranges_rx, offset_hz);
+    match tx_offset_hz {
+        Some(tx) => caps.freq_ranges_tx = shift(caps.freq_ranges_tx, tx),
+        None => {
+            caps.freq_ranges_tx.clear();
+            caps.antennas_tx.clear();
+            caps.tx_channels = 0;
+        }
+    }
     caps
 }
 
@@ -662,10 +691,25 @@ impl IqSource for ConvertedSource {
         self.inner.current_antenna()
     }
 
-    /// Deliberately *not* translated — see the type documentation. The engine
-    /// never gets here anyway, because [`shift_caps`] withdraws transmit.
+    /// Translated by the *transmit* offset, which is a different number from the
+    /// receive one — and refused outright when there is none, rather than
+    /// falling back on either the receive offset or the operator's frequency.
+    ///
+    /// The engine's gate stops a key-down long before this, since [`shift_caps`]
+    /// has withdrawn transmit; this is the backstop for every other way in (a
+    /// CAT client, a digital mode, a future caller) and it must not be the one
+    /// that guesses. Keying a Pluto behind a 9750 MHz LNB on the dial frequency
+    /// would ask it for 10.489 GHz, which it would clamp to the top of its range
+    /// and transmit there.
     fn tx_begin(&mut self, center_hz: f64, rate: f64) -> Result<f64> {
-        self.inner.tx_begin(center_hz, rate)
+        match self.up_tx(center_hz) {
+            Some(hw) => self.inner.tx_begin(hw, rate),
+            None => Err(crate::RadioError::Msg(
+                "transmit is off while a converter is set — say what is in the transmit line \
+                 under Settings → Radio → Transmit"
+                    .into(),
+            )),
+        }
     }
 
     fn tx_write(&mut self, samples: &[Complex32]) -> Result<()> {
@@ -717,11 +761,15 @@ impl IqSource for ConvertedSource {
         self.inner.set_if_offset(hz);
     }
 
-    /// A transmit frequency, so it converts like every other one: what the
-    /// hardware behind the converter actually emits is what its accessory
-    /// boards switch bands for.
+    /// A transmit frequency, so it takes the transmit offset: what the hardware
+    /// behind the converter actually emits is what its accessory boards switch
+    /// bands for. With transmit withdrawn there is no such frequency, and a
+    /// board is better left where it is than switched to a band nothing will be
+    /// keyed on.
     fn set_tx_freq_hz(&mut self, hz: f64) {
-        self.inner.set_tx_freq_hz(self.up(hz));
+        if let Some(hw) = self.up_tx(hz) {
+            self.inner.set_tx_freq_hz(hw);
+        }
     }
 
     fn display_bandwidth(&self) -> Option<f64> {

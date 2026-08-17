@@ -597,9 +597,13 @@ transverter, or a satellite LNB. Pick one from the list or type an offset in Hz
 — the same number and sign the converter's documentation and other SDR programs
 use — and tune in real frequencies: with a Ham It Up you work 10.1008 MHz while
 the receiver is quietly sent to 135.1008 MHz. The dial, band buttons, memories,
-the logbook and every spot and upload stay on the real on-air frequency. Receive
-only — transmit is switched off while a converter is set, because a converter is
-not in the transmit path. Not yet verified against physical hardware.
+the logbook and every spot and upload stay on the real on-air frequency. A
+**Transmit** row beside it says what is in the transmit line, since a converter
+is a receive accessory: nothing (the default, so a receive-only accessory cannot
+key up 125 MHz away from the dial), the same conversion for a bidirectional
+transverter, or an offset of its own — including none at all, which is the
+QO-100 station that hears 10 GHz through an LNB and puts 2.4 GHz straight out of
+the radio. Not yet verified against physical hardware.
 
 Beside it, **RX range** and **TX range** state which frequencies the radio
 covers, in MHz (`144-146, 430-440`). Leave them empty and sdroxide uses what the

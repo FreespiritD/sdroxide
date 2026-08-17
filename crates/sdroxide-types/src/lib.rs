@@ -127,9 +127,9 @@ pub use propagation::{
 pub use radio::{
     AirspyConfig, AirspyDevice, AirspyGain, AirspyHfConfig, AirspyHfDevice, AirspyHfModel, Backend,
     CAT_IQ_OFFSET_MAX_HZ, CONVERTER_OFFSET_MAX_HZ, CONVERTER_PRESETS, CatConfig, CatFamily,
-    CwKeying, DigiMode, FREQ_RANGE_MAX_HZ, HackRfConfig, HackRfDevice, HpsdrConfig, HpsdrDevice,
-    HpsdrFilterBoard, HpsdrIoRxInput, IcomModel, IcomNetConfig, IcomRxSource, IfModeClass,
-    KenwoodSend, LineState, ModeControl, PANADAPTER_OFFSET_MAX_HZ, PanadapterAudio,
+    ConverterTx, CwKeying, DigiMode, FREQ_RANGE_MAX_HZ, HackRfConfig, HackRfDevice, HpsdrConfig,
+    HpsdrDevice, HpsdrFilterBoard, HpsdrIoRxInput, IcomModel, IcomNetConfig, IcomRxSource,
+    IfModeClass, KenwoodSend, LineState, ModeControl, PANADAPTER_OFFSET_MAX_HZ, PanadapterAudio,
     PanadapterConfig, PanadapterTap, Parity, PlutoAgc, PlutoConfig, PlutoDevice, PttMethod,
     RadioConfig, RtlSdrAgc, RtlSdrConfig, RtlSdrDevice, RtlSdrHfMode, RtlTcpConfig, Rx888Config,
     Rx888Device, SdrPlayAgc, SdrPlayConfig, SdrPlayDevice, SdrPlayDuoTuner, SdrPlayModel,

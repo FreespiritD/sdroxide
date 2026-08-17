@@ -136,6 +136,10 @@ struct DeviceState {
     /// Pause in the middle of the next `READBUF` payload, once. Models the
     /// intermittent gap a Pluto on a USB gadget produces every few minutes.
     stall_next_readbuf: bool,
+    /// Answer every `READBUF` with `-EAGAIN` until the buffer is reopened.
+    /// Models a wedged DMA: the connection is fine, the server is answering,
+    /// and no amount of further reading will ever produce a sample.
+    wedged_until_reopen: bool,
 }
 
 /// The sample-rate floor a stock Pluto publishes — and refuses.
@@ -179,6 +183,15 @@ impl Fake {
     fn start_that_stalls_mid_buffer() -> Fake {
         Fake::start_with(
             DeviceState { stall_next_readbuf: true, ..DeviceState::default() },
+            CONTEXT_XML.to_string(),
+        )
+    }
+
+    /// A device whose first buffer produces nothing at all and whose second
+    /// one — after a reopen — works.
+    fn start_wedged_until_reopened() -> Fake {
+        Fake::start_with(
+            DeviceState { wedged_until_reopen: true, ..DeviceState::default() },
             CONTEXT_XML.to_string(),
         )
     }
@@ -374,6 +387,12 @@ fn serve(sock: TcpStream, state: Arc<Mutex<DeviceState>>, stop: Arc<AtomicBool>,
                 if words[1] == "iio:device3" {
                     g.rx_buffer_opens += 1;
                     g.rx_buffer_open = true;
+                    // What a reopen is *for*: the DMA that was producing
+                    // nothing starts again. The buffer this radio opened on the
+                    // way up is the wedged one, so it takes a *second* open.
+                    if g.rx_buffer_opens > 1 {
+                        g.wedged_until_reopen = false;
+                    }
                     g.rx_open_masks.push(mask);
                 } else {
                     g.tx_buffer_opens += 1;
@@ -402,6 +421,16 @@ fn serve(sock: TcpStream, state: Arc<Mutex<DeviceState>>, stop: Arc<AtomicBool>,
                     if !g.rx_buffer_open {
                         drop(g);
                         let _ = writer.write_all(b"-9\n");
+                        continue;
+                    }
+                    if g.wedged_until_reopen {
+                        drop(g);
+                        // -EAGAIN: the server is alive and the device has
+                        // nothing. Paced, because a real `iiod` holds this
+                        // answer back for its whole device timeout.
+                        std::thread::sleep(Duration::from_millis(20));
+                        let _ = writer.write_all(b"-11\n");
+                        let _ = writer.flush();
                         continue;
                     }
                     g.rx_open_masks.last().cloned().unwrap_or_else(|| "00000003".into())
@@ -720,6 +749,39 @@ fn a_gap_in_the_middle_of_a_buffer_does_not_end_the_stream() {
     assert!(handle.is_alive(), "a stall must not take the connection down");
     // The samples either side of the gap are still the ones the device sent,
     // in the right order — a retry that lost its place would interleave I and Q.
+    assert!((buf[0] - (SAMPLE_I as f32 / 2048.0)).abs() < 1e-6, "I was {}", buf[0]);
+    assert!((buf[1] - (SAMPLE_Q as f32 / 2048.0)).abs() < 1e-6, "Q was {}", buf[1]);
+    handle.release();
+}
+
+/// A device that answers but produces nothing gets its buffer reopened, and the
+/// stream comes back on the connection we already have.
+///
+/// This is the other half of the stall above, and the opposite treatment is
+/// right for it. There the link hiccups and reading again is all that is
+/// needed; here the server keeps answering `-EAGAIN` from a buffer that will
+/// never produce another sample, and reading again is the one thing that cannot
+/// help. Without the reopen the only way out is the engine's silence watchdog
+/// tearing the radio down and dialling it again — seconds of dead air, and a
+/// "reconnecting" line in the log that names the symptom rather than the fault.
+#[test]
+fn a_buffer_that_stops_producing_is_reopened_rather_than_read_again() {
+    let fake = Fake::start_wedged_until_reopened();
+    let mut handle =
+        PlutoHandle::open(&fake.address(), &config(), 435_000_000.0).expect("open the fake Pluto");
+
+    let mut buf = vec![0f32; 4096];
+    let mut got = 0;
+    // The client waits out its patience window (a second, at this buffer and
+    // rate) before deciding the buffer is wedged rather than merely quiet.
+    wait_up_to(Duration::from_secs(6), "samples after the buffer was reopened", || {
+        got = handle.rx_read(&mut buf);
+        got > 0
+    });
+    assert!(handle.is_alive(), "the connection was never the problem, and must survive");
+    let opens = fake.state.lock().expect("lock").rx_buffer_opens;
+    assert!(opens >= 2, "the buffer should have been reopened, opened {opens} time(s)");
+    // And what came back is a real sample set, not a resynchronised guess.
     assert!((buf[0] - (SAMPLE_I as f32 / 2048.0)).abs() < 1e-6, "I was {}", buf[0]);
     assert!((buf[1] - (SAMPLE_Q as f32 / 2048.0)).abs() < 1e-6, "Q was {}", buf[1]);
     handle.release();

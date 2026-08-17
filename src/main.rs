@@ -1015,11 +1015,22 @@ fn open_converted_source(
     c.freq = Some(cli.center_hz() + offset);
     let (source, caps) = open_configured_source(radio, &c, settings)?;
     let caps = stated_ranges(caps, radio);
+    // The transmit line is a separate fact about the station, and the operator
+    // states it — see `sdroxide_types::ConverterTx`.
+    let tx_offset = radio.converter_tx.offset_hz(offset);
     tracing::info!(
-        "frequency converter: hardware tuned {:.6} MHz above the dial; transmit withdrawn",
-        offset / 1e6
+        "frequency converter: hardware tuned {:.6} MHz above the dial; transmit {}",
+        offset / 1e6,
+        match tx_offset {
+            None => "withdrawn".to_string(),
+            Some(t) if t == 0.0 => "not converted (the radio transmits on the dial)".to_string(),
+            Some(t) => format!("tuned {:.6} MHz above the dial", t / 1e6),
+        }
     );
-    Ok((Box::new(ConvertedSource::new(source, offset)), shift_caps(caps, offset)))
+    Ok((
+        Box::new(ConvertedSource::new(source, offset, tx_offset)),
+        shift_caps(caps, offset, tx_offset),
+    ))
 }
 
 /// Open a radio that borrows another roster radio's receiver as its panadapter:

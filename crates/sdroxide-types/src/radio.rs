@@ -3278,6 +3278,62 @@ pub const CONVERTER_PRESETS: [(&str, f64); 5] = [
 /// front of a receiver; an HF upconverter is two orders of magnitude inside it.
 pub const CONVERTER_OFFSET_MAX_HZ: f64 = 12_000_000_000.0;
 
+/// What the transmit path does while a receive converter is set — see
+/// [`RadioConfig::converter_tx`].
+///
+/// A converter is a receive accessory: an LNB, a Ham It Up, anything in the
+/// antenna line ahead of the receiver's input. What sits in the *transmit* line
+/// is a separate question with three real answers, and the operator is the only
+/// one who can give it, so it is asked rather than assumed.
+/// Externally tagged (serde's default shape) rather than something prettier in
+/// `radio.json`: this config crosses the remote link as postcard, which is not
+/// self-describing and refuses an internally or adjacently tagged enum outright
+/// — see `roundtrip_radio_config` in `sdroxide-proto`.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConverterTx {
+    /// Nothing is transmitted while the converter is set. The safe default, and
+    /// right for the receive-only accessory the offset usually describes: a
+    /// dongle behind a Ham It Up has no transmitter, and a transceiver behind
+    /// one would key up 125 MHz away from where the dial says.
+    #[default]
+    Off,
+    /// The same box converts both ways — a transverter. The transmit offset is
+    /// the receive one, and follows it when it is trimmed.
+    Transverter,
+    /// The transmit path has an offset of its own, on the same sign rule as
+    /// [`RadioConfig::converter_offset_hz`]: the hardware transmits at
+    /// `dial + offset`.
+    ///
+    /// `0.0` — the common case — is a receive-only converter with the
+    /// transmitter wired straight to its own antenna. That is the QO-100
+    /// station: the downlink arrives through a 10 GHz LNB and the 2.4 GHz
+    /// uplink leaves the radio directly, so receive is offset and transmit is
+    /// not.
+    Own(f64),
+}
+
+impl ConverterTx {
+    /// The offset the transmit path takes given the receive converter's, or
+    /// `None` when transmit is withdrawn.
+    pub fn offset_hz(self, rx_offset_hz: f64) -> Option<f64> {
+        match self {
+            ConverterTx::Off => None,
+            ConverterTx::Transverter => Some(rx_offset_hz),
+            ConverterTx::Own(hz) => Some(hz),
+        }
+    }
+
+    /// What the settings dialog calls this.
+    pub fn label(self) -> &'static str {
+        match self {
+            ConverterTx::Off => "Off while converting",
+            ConverterTx::Transverter => "Through the same converter",
+            ConverterTx::Own(_) => "Its own offset",
+        }
+    }
+}
+
 /// The preset name for an offset, or `"Manual"` when it is not one of them.
 pub fn converter_preset_name(offset_hz: f64) -> &'static str {
     CONVERTER_PRESETS
@@ -3578,9 +3634,18 @@ pub struct RadioConfig {
     /// documentation and every other SDR program states it in, and a number
     /// copied from one of those has to mean the same thing here.
     ///
-    /// Receive only — a converter is not in the transmit path, so transmit is
-    /// withdrawn while this is set.
+    /// Receive by default — a converter is a receive accessory, so transmit is
+    /// withdrawn while this is set unless [`Self::converter_tx`] says what is
+    /// in the transmit line.
     pub converter_offset_hz: f64,
+    /// What the transmit path does while [`Self::converter_offset_hz`] is set:
+    /// nothing (the default), the same conversion (a transverter), or an offset
+    /// of its own — including none at all, which is the QO-100 station whose
+    /// downlink comes through an LNB and whose uplink leaves the radio direct.
+    ///
+    /// Ignored when there is no converter: with the offset at zero the transmit
+    /// path was never touched to begin with.
+    pub converter_tx: ConverterTx,
     /// Tuning ranges the operator states for this radio, in Hz, replacing what
     /// the device publishes about itself. Empty (the default) leaves the
     /// device's own answer alone.
@@ -4148,6 +4213,44 @@ mod tests {
         assert_eq!(10_489_000_000.0 + lnb, 739_000_000.0);
         assert_eq!(converter_preset_name(0.0), "None");
         assert_eq!(converter_preset_name(28_000_000.0), "Manual");
+    }
+
+    /// The three shapes a station's transmit line takes behind a receive
+    /// converter, in the numbers each one actually produces.
+    #[test]
+    fn the_transmit_converter_answers_for_the_transmit_line_only() {
+        // A universal LNB on receive, the transmitter wired to its own dish
+        // feed: the QO-100 station. Receive is offset, transmit is not, so
+        // 2400.050 MHz on the dial is 2400.050 MHz out of the radio.
+        let lnb = -9_750_000_000.0;
+        assert_eq!(ConverterTx::Own(0.0).offset_hz(lnb), Some(0.0));
+        // One box both ways — a 23 cm transverter with a 144 MHz IF: the
+        // hardware works 1152 MHz below the dial in both directions.
+        assert_eq!(ConverterTx::Transverter.offset_hz(-1_152_000_000.0), Some(-1_152_000_000.0));
+        // The default withdraws transmit, which is what every `radio.json`
+        // written before this existed has to keep meaning.
+        assert_eq!(ConverterTx::default(), ConverterTx::Off);
+        assert_eq!(ConverterTx::Off.offset_hz(lnb), None);
+        let old: RadioConfig =
+            serde_json::from_str(r#"{"converter_offset_hz": 125000000.0}"#).expect("parses");
+        assert_eq!(old.converter_tx, ConverterTx::Off);
+        assert_eq!(old.converter_tx.offset_hz(old.converter_offset_hz), None);
+    }
+
+    /// The transmit converter is written to `radio.json` and read back by the
+    /// remote client, so its wire form has to survive the round trip — and be
+    /// legible to whoever opens the file.
+    #[test]
+    fn the_transmit_converter_round_trips_through_json() {
+        for tx in [ConverterTx::Off, ConverterTx::Transverter, ConverterTx::Own(0.0)] {
+            let cfg = RadioConfig { converter_tx: tx, ..RadioConfig::default() };
+            let json = serde_json::to_string(&cfg).expect("serializes");
+            let back: RadioConfig = serde_json::from_str(&json).expect("parses");
+            assert_eq!(back.converter_tx, tx);
+        }
+        let own = serde_json::to_string(&ConverterTx::Own(-2_256_000_000.0)).expect("serializes");
+        assert_eq!(own, r#"{"own":-2256000000.0}"#);
+        assert_eq!(serde_json::to_string(&ConverterTx::Off).expect("serializes"), r#""off""#);
     }
 
     /// The forms an operator will actually type, including one copied straight

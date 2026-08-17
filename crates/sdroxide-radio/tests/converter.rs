@@ -31,6 +31,8 @@ struct Hardware {
     rate_hz: f64,
     lo_offset_hz: f64,
     landed: Arc<Mutex<f64>>,
+    /// Where the transmitter was keyed, in the hardware's own domain.
+    keyed: Arc<Mutex<Option<f64>>>,
 }
 
 impl Hardware {
@@ -40,6 +42,7 @@ impl Hardware {
             rate_hz: RATE,
             lo_offset_hz: 0.0,
             landed: Arc::new(Mutex::new(center_hz)),
+            keyed: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -68,7 +71,27 @@ impl IqSource for Hardware {
     fn describe(&self) -> String {
         "test front end".into()
     }
+    fn tx_begin(&mut self, center_hz: f64, rate: f64) -> Result<f64> {
+        *self.keyed.lock().unwrap() = Some(center_hz);
+        Ok(rate)
+    }
+    /// Accepted and dropped. The default refuses, which ends the engine's loop
+    /// — a transmit test would then measure a dead engine.
+    fn tx_write(&mut self, _samples: &[Complex32]) -> Result<()> {
+        Ok(())
+    }
+    fn tx_end(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
+
+/// A universal Ku-band LNB's low-band oscillator, the QO-100 station's receive
+/// converter: the 10489.550 MHz downlink arrives at the radio as 739.550 MHz.
+const LNB: f64 = -9_750_000_000.0;
+/// The QO-100 narrowband transponder, in the numbers on the dial: an SSB
+/// downlink and the uplink 8089.5 MHz below it.
+const DOWNLINK: f64 = 10_489_550_000.0;
+const UPLINK: f64 = 2_400_050_000.0;
 
 /// A device that can hear the whole VHF range the converter's output lands in,
 /// and transmit on it — so the transmit withdrawal is a real change, not a
@@ -82,6 +105,23 @@ fn hardware_caps() -> DeviceCaps {
         sample_rates: vec![RATE],
         freq_ranges_rx: vec![(24_000_000.0, 1_766_000_000.0)],
         freq_ranges_tx: vec![(24_000_000.0, 1_766_000_000.0)],
+        antennas_tx: vec!["TX/RX".into()],
+        ..DeviceCaps::default()
+    }
+}
+
+/// An AD9361 board — a Pluto, a LibreSDR — which is what a QO-100 station has
+/// at both ends of the transponder: it hears the LNB's 739 MHz output and it
+/// transmits at 2.4 GHz, and neither of those is 10 GHz.
+fn qo100_caps() -> DeviceCaps {
+    DeviceCaps {
+        driver: "test".into(),
+        label: "test".into(),
+        rx_channels: 1,
+        tx_channels: 1,
+        sample_rates: vec![RATE],
+        freq_ranges_rx: vec![(70_000_000.0, 6_000_000_000.0)],
+        freq_ranges_tx: vec![(70_000_000.0, 6_000_000_000.0)],
         antennas_tx: vec!["TX/RX".into()],
         ..DeviceCaps::default()
     }
@@ -115,10 +155,10 @@ fn drain(rx: &Receiver<RadioEvent>, secs: f64) -> (Vec<String>, f64, f64) {
 fn the_dial_stays_on_air_while_the_hardware_takes_the_offset() {
     let inner = Hardware::new(DIAL + OFFSET);
     let landed = Arc::clone(&inner.landed);
-    let source = ConvertedSource::new(Box::new(inner), OFFSET);
+    let source = ConvertedSource::new(Box::new(inner), OFFSET, None);
     let mut h = start_engine(
         Box::new(source),
-        shift_caps(hardware_caps(), OFFSET),
+        shift_caps(hardware_caps(), OFFSET, None),
         EngineConfig::default(),
     );
     let thread = h.thread.take();
@@ -150,10 +190,10 @@ fn the_dial_stays_on_air_while_the_hardware_takes_the_offset() {
 #[test]
 fn the_engine_starts_on_the_operator_frequency() {
     let inner = Hardware::new(DIAL + OFFSET);
-    let source = ConvertedSource::new(Box::new(inner), OFFSET);
+    let source = ConvertedSource::new(Box::new(inner), OFFSET, None);
     let mut h = start_engine(
         Box::new(source),
-        shift_caps(hardware_caps(), OFFSET),
+        shift_caps(hardware_caps(), OFFSET, None),
         EngineConfig::default(),
     );
     let thread = h.thread.take();
@@ -177,10 +217,10 @@ fn a_converter_composes_with_a_zero_if_lo_offset() {
     const LO: f64 = 600_000.0;
     let inner = Hardware { lo_offset_hz: LO, ..Hardware::new(DIAL + LO + OFFSET) };
     let landed = Arc::clone(&inner.landed);
-    let source = ConvertedSource::new(Box::new(inner), OFFSET);
+    let source = ConvertedSource::new(Box::new(inner), OFFSET, None);
     let mut h = start_engine(
         Box::new(source),
-        shift_caps(hardware_caps(), OFFSET),
+        shift_caps(hardware_caps(), OFFSET, None),
         EngineConfig::default(),
     );
     let thread = h.thread.take();
@@ -216,10 +256,10 @@ fn a_converter_composes_with_a_zero_if_lo_offset() {
 #[test]
 fn an_unreachable_dial_is_refused_in_the_operators_own_numbers() {
     let inner = Hardware::new(DIAL + OFFSET);
-    let source = ConvertedSource::new(Box::new(inner), OFFSET);
+    let source = ConvertedSource::new(Box::new(inner), OFFSET, None);
     let mut h = start_engine(
         Box::new(source),
-        shift_caps(hardware_caps(), OFFSET),
+        shift_caps(hardware_caps(), OFFSET, None),
         EngineConfig::default(),
     );
     let thread = h.thread.take();
@@ -240,12 +280,12 @@ fn an_unreachable_dial_is_refused_in_the_operators_own_numbers() {
     }
 }
 
-/// A converter is not in the transmit path, so it takes transmit with it. The
-/// alternative is worse than no feature: the licence check passes on the dial
-/// and the radio keys 125 MHz up, in an aeronautical band.
+/// A converter is not in the transmit path, so by default it takes transmit
+/// with it. The alternative is worse than no feature: the licence check passes
+/// on the dial and the radio keys 125 MHz up, in an aeronautical band.
 #[test]
 fn a_converter_withdraws_transmit() {
-    let caps = shift_caps(hardware_caps(), OFFSET);
+    let caps = shift_caps(hardware_caps(), OFFSET, None);
     assert!(!caps.is_transmit_capable(), "transmit must be gone entirely");
     assert!(!caps.can_tx_hz(DIAL), "and no frequency may be transmittable");
     assert!(caps.antennas_tx.is_empty());
@@ -255,6 +295,89 @@ fn a_converter_withdraws_transmit() {
     assert!(!hardware_caps().can_rx_hz(DIAL), "and was not before it");
     assert!(!caps.can_rx_hz(1_700_000_000.0), "the ceiling came down with everything else");
     assert!(hardware_caps().can_rx_hz(1_700_000_000.0), "though the hardware itself reaches it");
+}
+
+/// …but a station that says what is in its transmit line keeps it. The QO-100
+/// shape: the 10 GHz downlink arrives through an LNB, the 2.4 GHz uplink leaves
+/// the radio direct, so receive is offset by −9750 MHz and transmit is not
+/// offset at all.
+#[test]
+fn a_stated_transmit_line_keeps_transmit() {
+    let caps = shift_caps(qo100_caps(), LNB, Some(0.0));
+    assert!(caps.is_transmit_capable(), "the transmitter is still there");
+    assert_eq!(caps.antennas_tx, vec!["TX/RX".to_string()], "and so is its antenna");
+    // The downlink is reachable on receive through the LNB…
+    assert!(caps.can_rx_hz(DOWNLINK), "10489.550 MHz through a 9750 MHz LNB");
+    // …and the uplink is transmittable, in the radio's own untouched domain.
+    assert!(caps.may_tx_hz(UPLINK), "2400.050 MHz straight out of the radio");
+    assert!(!caps.may_tx_hz(DOWNLINK), "but not 10 GHz, which nothing here can key");
+}
+
+/// One box converting both ways is a transverter, and then the transmit offset
+/// *is* the receive one — 1296 MHz on the dial, 144 MHz at the radio, in both
+/// directions.
+#[test]
+fn a_transverter_converts_the_transmit_path_by_the_same_offset() {
+    const IF_OFFSET: f64 = -1_152_000_000.0;
+    let inner = Hardware::new(1_296_200_000.0 + IF_OFFSET);
+    let keyed = Arc::clone(&inner.keyed);
+    let mut s = ConvertedSource::new(Box::new(inner), IF_OFFSET, Some(IF_OFFSET));
+    s.tx_begin(1_296_200_000.0, RATE).expect("keys up");
+    assert_eq!(
+        *keyed.lock().unwrap(),
+        Some(144_200_000.0),
+        "the radio transmits at its IF, not at the dial"
+    );
+}
+
+/// With no transmit line stated, `tx_begin` refuses rather than guessing. The
+/// engine's gate stops a key-down long before this — but every other way in
+/// (a CAT client, a digital mode) has to land somewhere safe, and "somewhere
+/// safe" is not the dial frequency: a Pluto asked for 10.489 GHz clamps to the
+/// top of its range and transmits *there*.
+#[test]
+fn transmit_through_a_converter_is_refused_when_nothing_is_stated() {
+    let inner = Hardware::new(DOWNLINK + LNB);
+    let keyed = Arc::clone(&inner.keyed);
+    let mut s = ConvertedSource::new(Box::new(inner), LNB, None);
+    let err = s.tx_begin(DOWNLINK, RATE).expect_err("transmit is withdrawn");
+    assert!(format!("{err}").contains("transmit line"), "the reason should say so, got {err}");
+    assert_eq!(*keyed.lock().unwrap(), None, "and nothing reached the radio");
+}
+
+/// End to end, the way the operator drives it: dial on the downlink, split with
+/// the uplink on VFO B, and PTT. The transmitter has to key on 2400.050 MHz —
+/// no "outside this radio's transmit range", no 10 GHz reaching the hardware.
+#[test]
+fn a_qo100_station_keys_up_on_its_uplink() {
+    let inner = Hardware::new(DOWNLINK + LNB);
+    let keyed = Arc::clone(&inner.keyed);
+    let source = ConvertedSource::new(Box::new(inner), LNB, Some(0.0));
+    let mut h = start_engine(
+        Box::new(source),
+        shift_caps(qo100_caps(), LNB, Some(0.0)),
+        EngineConfig::default(),
+    );
+    let thread = h.thread.take();
+
+    h.cmd_tx.send(Command::SetVfo { vfo: Vfo::A, hz: DOWNLINK }).unwrap();
+    h.cmd_tx.send(Command::SetVfo { vfo: Vfo::B, hz: UPLINK }).unwrap();
+    h.cmd_tx.send(Command::SetSplit(true)).unwrap();
+    h.cmd_tx.send(Command::SetPtt(true)).unwrap();
+    let (notices, dial, _) = drain(&h.event_rx, 1.0);
+
+    assert!(notices.is_empty(), "the uplink is inside the radio's range, got {notices:?}");
+    assert!((dial - DOWNLINK).abs() < 1.0, "the dial stays on the downlink, got {dial}");
+    match *keyed.lock().unwrap() {
+        Some(hz) => assert!((hz - UPLINK).abs() < 1.0, "keyed on {hz}, not on the uplink"),
+        None => panic!("the transmitter never keyed"),
+    }
+
+    h.cmd_tx.send(Command::SetPtt(false)).unwrap();
+    drop(h.cmd_tx);
+    if let Some(t) = thread {
+        let _ = t.join();
+    }
 }
 
 /// Receive edges move into the operator's domain, and never below DC: a
@@ -268,7 +391,7 @@ fn shifted_receive_ranges_are_clamped_at_dc() {
         freq_ranges_rx: vec![(0.0, 1_766_000_000.0), (0.0, 1_000_000.0)],
         ..DeviceCaps::default()
     };
-    let shifted = shift_caps(caps, OFFSET);
+    let shifted = shift_caps(caps, OFFSET, None);
     assert_eq!(shifted.freq_ranges_rx, vec![(0.0, 1_766_000_000.0 - OFFSET)]);
     // The second range ended below the offset, so through this converter there
     // is nothing in it to hear; it is dropped rather than inverted.
@@ -440,7 +563,9 @@ fn every_call_reaches_the_front_end_underneath() {
     let seen = Calls(Arc::clone(&calls.0));
     let released = Arc::new(AtomicBool::new(false));
     let inner = Recorder { calls, hw_center: DIAL + OFFSET, released: Arc::clone(&released) };
-    let mut s = ConvertedSource::new(Box::new(inner), OFFSET);
+    // With a transmit line stated — otherwise transmit is withdrawn and half
+    // these calls have nowhere to go, which is a different test.
+    let mut s = ConvertedSource::new(Box::new(inner), OFFSET, Some(0.0));
 
     // Translated, and checked for the direction of the translation.
     assert!((s.center_hz() - DIAL).abs() < 1.0);
@@ -465,7 +590,8 @@ fn every_call_reaches_the_front_end_underneath() {
         }
         other => panic!("unexpected control updates: {other:?}"),
     }
-    // Never translated: a converter is not in the transmit path.
+    // Translated by the transmit offset, which here is nought: a receive
+    // converter with the transmitter on its own antenna.
     assert_eq!(s.tx_begin(DIAL, RATE).unwrap(), DIAL);
 
     // Forwarded verbatim — the answers prove they came from the recorder and
@@ -548,7 +674,7 @@ fn a_frequency_below_dc_after_the_offset_is_refused() {
     let inner =
         Recorder { calls, hw_center: 28_000_000.0, released: Arc::new(AtomicBool::new(false)) };
     // A 2 m transverter with a 28 MHz IF.
-    let mut s = ConvertedSource::new(Box::new(inner), -116_000_000.0);
+    let mut s = ConvertedSource::new(Box::new(inner), -116_000_000.0, Some(-116_000_000.0));
     assert!(s.set_center_hz(144_000_000.0).is_ok(), "in range");
     let err = s.set_center_hz(10_000_000.0).expect_err("below DC once translated");
     assert!(format!("{err}").contains("below DC"), "the reason should say so, got {err}");

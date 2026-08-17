@@ -28,6 +28,32 @@ const EAGAIN: i64 = -11;
 /// `-ETIMEDOUT`, the other spelling of the same thing.
 const ETIMEDOUT: i64 = -110;
 
+/// The shortest a receive buffer may go without producing a sample before it is
+/// closed and reopened rather than read again — see [`silence_before_restart`].
+const RESTART_FLOOR: Duration = Duration::from_millis(1_000);
+
+/// How long a receive buffer that is answering "nothing yet" is given before it
+/// is closed and reopened.
+///
+/// `-EAGAIN` on its own is ordinary and absorbed by reading again: it is what
+/// the server says when its own device timeout expired with nothing to hand
+/// over. What is *not* ordinary is that answer arriving over and over from a
+/// buffer that was streaming a moment ago, which is the shape a stalled DMA
+/// takes from this side of the link — and no number of further `READBUF`s on
+/// the same buffer will restart it. Reopening might; it costs a few
+/// milliseconds and it happens on the connection we already have, where the
+/// alternative is the engine's watchdog tearing the whole radio down and
+/// dialling it again.
+///
+/// Scaled by the buffer's own airtime rather than fixed, because a buffer only
+/// produces once per that period: an operator who asks for a megasample buffer
+/// at the lowest rate on offer is legitimately two seconds between deliveries,
+/// and a fixed floor would have us reopening a perfectly healthy stream forever.
+fn silence_before_restart(buffer_samples: usize, rate_hz: f64) -> Duration {
+    let span = Duration::from_secs_f64(buffer_samples as f64 / rate_hz.max(1.0));
+    (span * 3).max(RESTART_FLOOR)
+}
+
 /// Periodic throughput accounting, emitted once per [`STATS_INTERVAL`] so a
 /// tester can see whether samples are flowing — and at what rate — without a
 /// per-buffer log flood. A wrong sample layout or a wrong rate shows up
@@ -193,6 +219,11 @@ pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Pro
     let mut iq1: Vec<f32> = Vec::with_capacity(shared.buffer_samples * 2);
     let mut stats = Stats::new("RX", shared.rate_hz);
     let mut open_pairs = 0usize;
+    // When this buffer last produced anything, and how long it may go without
+    // before it is reopened. Reset on every open so a buffer is judged from
+    // when it started, not from the last one's death.
+    let patience = silence_before_restart(shared.buffer_samples, shared.rate_hz);
+    let mut last_sets = Instant::now();
 
     while shared.alive.load(Ordering::Relaxed) {
         let want_pairs = shared.rx_pairs.load(Ordering::Relaxed).clamp(1, max_pairs);
@@ -221,6 +252,7 @@ pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Pro
             }
             open_pairs = want_pairs;
             stats.opened();
+            last_sets = Instant::now();
             shared.rx_active.store(true, Ordering::Relaxed);
             tracing::debug!(
                 "PlutoSDR: receive buffer open, {} samples × {} bytes ({} pair(s))",
@@ -234,6 +266,26 @@ pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Pro
         // than the buffer carries would change the request on the wire.
         let set_bytes = phy.rx_sample_bytes(open_pairs);
         let want_bytes = shared.buffer_samples * set_bytes;
+        // An open buffer that has stopped producing is reopened rather than
+        // read again — see `silence_before_restart`. Checked here rather than
+        // in the `-EAGAIN` arm below so that every shape of silence is caught,
+        // including a server answering with an empty buffer. The clock is reset
+        // by the reopen, so a device that is genuinely gone costs one restart
+        // per window rather than a tight loop of them while the engine's
+        // watchdog runs down.
+        if last_sets.elapsed() >= patience {
+            tracing::warn!(
+                "PlutoSDR: no samples for {:.1}s — reopening the receive buffer",
+                last_sets.elapsed().as_secs_f64()
+            );
+            shared.trace.note("~~ receive buffer reopened after a silence");
+            let _ = conn.close_buffer(&phy.rx_buffer_id);
+            open_pairs = 0;
+            stats.closed();
+            shared.rx_active.store(false, Ordering::Relaxed);
+            last_sets = Instant::now();
+            continue;
+        }
         let n = match conn.read_buf(&phy.rx_buffer_id, open_pairs * 2, &mut raw[..want_bytes]) {
             Ok(n) => n,
             Err(Error::Remote { code, .. }) if code == EAGAIN || code == ETIMEDOUT => continue,
@@ -246,6 +298,7 @@ pub(crate) fn rx_thread(mut conn: Connection, shared: Arc<Shared>, mut ring: Pro
         if sets == 0 {
             continue;
         }
+        last_sets = Instant::now();
         let i_bytes = phy.rx_scan[0].bytes();
         iq.clear();
         iq1.clear();
