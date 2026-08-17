@@ -693,6 +693,14 @@ impl eframe::App for SdroxideApp {
         }
 
         for c in cmds {
+            // Marked here rather than at the button, because the settings panel
+            // holds borrows of `self` while it draws and cannot take a mutable
+            // one. This is the point where the command is definitely going out,
+            // which is the honest moment to call the check "in flight" anyway.
+            if let Command::TestLogin(t) = &c {
+                self.login_tests_pending.insert(*t);
+                self.login_tests.remove(t);
+            }
             self.ctrl.send(c);
         }
 
@@ -833,6 +841,15 @@ impl SdroxideApp {
                         self.speech.announcer.on_error(&e, now);
                     }
                     self.error = Some(e);
+                }
+                RadioEvent::LoginTest(r) => {
+                    self.login_tests_pending.remove(&r.target);
+                    self.push_net_log(format!(
+                        "{}: {}",
+                        r.target.label(),
+                        if r.ok { format!("ok, {}", r.message) } else { r.message.clone() }
+                    ));
+                    self.login_tests.insert(r.target, r);
                 }
                 RadioEvent::Notice(n) => {
                     if self.focused {

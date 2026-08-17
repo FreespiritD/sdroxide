@@ -743,6 +743,12 @@ fn handle_event(shared: &Shared, ev: RadioEvent) {
             // solar relay already carries what it adds up to. See
             // `RadioEvent::PropPaths`.
             RadioEvent::PropPaths(_) => None,
+            // Not forwarded, and the UI hides the buttons on a remote engine to
+            // match. The answer names the account the service recognised, which
+            // is the station owner's business rather than every connected
+            // client's, and it is only ever asked for from the machine the
+            // credentials live on. Same treatment as `RadioEvent::Notice`.
+            RadioEvent::LoginTest(_) => None,
         }
     };
     // The satellite half of the station config also drives this machine's own

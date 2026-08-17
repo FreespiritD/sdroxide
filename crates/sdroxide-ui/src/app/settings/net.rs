@@ -249,3 +249,56 @@ pub(in crate::app) fn broadcast_stations_settings(
         .weak(),
     );
 }
+
+impl crate::app::SdroxideApp {
+    /// One "Test" button and its answer, for a logging service's credentials.
+    ///
+    /// The point of it: today the first sign that a password is wrong is a QSO
+    /// that failed to upload, hours after the contact. This asks the service
+    /// directly, before anything depends on the answer.
+    ///
+    /// ⛔ It sends the EDITED config first. The engine tests what it has
+    /// applied, so without that a freshly pasted key would be checked against
+    /// the old one, and the operator would be told their new credentials were
+    /// wrong when they had simply not been saved yet. Pressing Test therefore
+    /// also applies the network settings, which is what someone pressing it
+    /// means, and the label says so.
+    ///
+    /// Nothing is cached between sessions: a green tick from an hour ago says
+    /// nothing about the password typed since.
+    pub(in crate::app) fn login_test_row(
+        &self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<sdroxide_types::Command>,
+        edited: &sdroxide_types::NetworkConfig,
+        target: sdroxide_types::LoginTarget,
+    ) {
+        ui.horizontal(|ui| {
+            let pending = self.login_tests_pending.contains(&target);
+            let btn = ui.add_enabled(
+                !pending,
+                egui::Button::new(RichText::new(format!("Test {}", target.label())).size(11.0)),
+            );
+            if btn
+                .on_hover_text(
+                    "Ask the service whether these credentials work. Applies the settings above \
+                     first, and logs nothing: it only reads.",
+                )
+                .clicked()
+            {
+                cmds.push(sdroxide_types::Command::SetNetworkConfig(edited.clone()));
+                cmds.push(sdroxide_types::Command::TestLogin(target));
+            }
+            if pending {
+                ui.label(RichText::new("checking…").size(11.0).weak());
+            } else if let Some(r) = self.login_tests.get(&target) {
+                let (mark, colour) = if r.ok {
+                    ("✔", crate::theme::GREEN())
+                } else {
+                    ("✖", Color32::from_rgb(255, 120, 120))
+                };
+                ui.label(RichText::new(format!("{mark} {}", r.message)).size(11.0).color(colour));
+            }
+        });
+    }
+}

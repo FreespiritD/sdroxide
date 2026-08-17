@@ -295,6 +295,35 @@ impl SpotManager {
         });
     }
 
+    /// Check one service's stored credentials; the result arrives via `poll`.
+    ///
+    /// On its own thread like every other network job, because these talk to
+    /// servers that can take seconds to answer and the UI thread is drawing a
+    /// waterfall. Read-only throughout: see [`crate::upload::test_login`].
+    ///
+    /// Tests the APPLIED config. The settings dialog therefore sends its edits
+    /// with [`sdroxide_types::Command::SetNetworkConfig`] immediately before
+    /// asking for a test, so what is checked is what is on screen: testing the
+    /// applied config alone would answer about the old password whenever
+    /// someone pasted a new one and pressed Test before Apply, which is exactly
+    /// when they would press it.
+    pub fn test_login(&self, target: sdroxide_types::LoginTarget) {
+        let cfg = self.cfg.clone();
+        let my_call = self.op_call.clone();
+        let tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let (ok, message) = match crate::upload::test_login(&cfg, &my_call, target) {
+                Ok(m) => (true, m),
+                Err(e) => (false, e),
+            };
+            let _ = tx.send(NetEvent::LoginTest(sdroxide_types::LoginTestResult {
+                target,
+                ok,
+                message,
+            }));
+        });
+    }
+
     /// Download QSL confirmations; results arrive via `poll`.
     pub fn sync_confirmations(&self) {
         let cfg = self.cfg.clone();

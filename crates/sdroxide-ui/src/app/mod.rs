@@ -481,6 +481,12 @@ pub struct SdroxideApp {
     net_rbn_cmds: String,
     /// Rolling upload/lookup result log for the spots window (newest first).
     net_log: Vec<String>,
+    /// Latest credential-check result per logging service, and which checks are
+    /// still in flight. Not persisted: an answer from an hour ago says nothing
+    /// about the password typed since, and a stale green tick is worse than no
+    /// tick at all.
+    login_tests: std::collections::HashMap<sdroxide_types::LoginTarget, sdroxide_types::LoginTestResult>,
+    login_tests_pending: std::collections::HashSet<sdroxide_types::LoginTarget>,
     /// Inbox for an ADIF file chosen via the native "Import" dialog (a picker
     /// thread writes; the UI drains it each frame).
     adif_import_inbox: Arc<Mutex<Option<String>>>,
@@ -935,6 +941,8 @@ impl SdroxideApp {
             net_cluster_cmds: String::new(),
             net_rbn_cmds: String::new(),
             net_log: Vec::new(),
+            login_tests: std::collections::HashMap::new(),
+            login_tests_pending: std::collections::HashSet::new(),
             adif_import_inbox: Arc::new(Mutex::new(None)),
             pending_lookups: Vec::new(),
             callsign_cache: Default::default(),

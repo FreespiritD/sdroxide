@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgcMode, Band, DigiConfig, Direction, ImageKind, Mode, NetworkConfig, NrLevel, QsoStep,
+    AgcMode, Band, DigiConfig, Direction, ImageKind, LoginTarget, Mode, NetworkConfig, NrLevel,
+    QsoStep,
     RadioConfig, RigctldConfig, RotatorConfig, RxId, SatConfig, SatLockConfig, SkimmerSettings,
     SpectrumConfig, SstvMode, TciServerConfig, TxEqState, UploadTarget, Vfo, WsjtxConfig,
 };
@@ -256,6 +257,12 @@ pub enum Command {
     /// Apply (and persist) the network-feature configuration: (re)connect the
     /// DX cluster, (dis)arm the POTA/SOTA/PSK feeds, and store credentials.
     SetNetworkConfig(NetworkConfig),
+    /// Check one logging service's credentials, without logging anything.
+    ///
+    /// Tests the APPLIED network config, so a dialog with unsaved edits sends
+    /// [`Command::SetNetworkConfig`] immediately before this one. The answer
+    /// comes back as [`crate::RadioEvent::LoginTest`].
+    TestLogin(LoginTarget),
     /// The operator's current dial frequency, so band-scoped feeds (PSK
     /// Reporter) can query the right slice. Sent by the engine on VFO change.
     SpotDialHint(f64),
