@@ -238,10 +238,12 @@ impl SdroxideApp {
                  or above this figure, stops the transmission and locks transmit out until you \
                  acknowledge it. Meant for the antenna that is not connected, the feeder that has \
                  failed, or the switch left on the wrong port. It needs a rig that reports SWR \
-                 over CAT; on one that does not, it never fires. It ignores the first fraction of \
-                 a second of each transmission and anything under 5 W, because the reading is not \
-                 trustworthy until power has risen. Acknowledging does not fix anything: if the \
-                 fault is still there, the next transmission is stopped too.",
+                 over CAT; on one that does not, it never fires. It ignores the first fifth of a \
+                 second of each transmission, because the reading is not trustworthy until the \
+                 transmitter has settled. It does NOT wait for high power: a rig that folds its \
+                 power back on high SWR is doing so because the SWR is bad, and that is precisely \
+                 when this has to work. Acknowledging does not fix anything: if the fault is \
+                 still there, the next transmission is stopped too.",
             )
             .size(10.5)
             .color(crate::theme::gray(140)),

@@ -53,10 +53,27 @@ const METER_INTERVAL: Duration = Duration::from_millis(33);
 /// the transmitter is not left into a fault.
 const SWR_TRIP_SAMPLES: u8 = 6;
 
-/// Forward power below which an SWR reading is ignored. Reflection is a ratio,
-/// and at nearly no forward power the ratio is noise: rigs commonly report wild
-/// SWR in the first milliseconds of an over, and during a barely-driven one.
-const SWR_MIN_FWD_W: f32 = 5.0;
+/// Meter samples to ignore after key-up before the SWR is believed at all.
+///
+/// This is the right way to discard the key-up transient, and it replaced a
+/// forward-power floor that looked equivalent and was not. See
+/// [`SWR_MIN_FWD_W`].
+const SWR_SETTLE_SAMPLES: u8 = 6;
+
+/// Forward power below which an SWR reading is ignored, purely to reject a
+/// reading taken when the transmitter is not really producing anything.
+///
+/// ⛔ THIS MUST STAY LOW. It was 5.0 W until 17 August 2026 and that was a real
+/// bug, found on the first live test: a rig with SWR foldback REDUCES POWER
+/// BECAUSE THE SWR IS BAD. Rodger's IC-7300 dropped to 3 W into a 7.5:1 load,
+/// every reading was therefore discarded as untrustworthy, and the guard sat
+/// silent through exactly the fault it exists to catch. A power floor high
+/// enough to be useful as a transient filter is high enough to gate out the
+/// emergency.
+///
+/// Discarding the transient is [`SWR_SETTLE_SAMPLES`]'s job, which is what a
+/// key-up transient actually is: a property of time, not of power.
+const SWR_MIN_FWD_W: f32 = 0.5;
 
 /// How often the RDS snapshot goes out. Far slower than the meters: a station
 /// name changes never, radio text every few seconds, and the only thing arriving
@@ -1203,6 +1220,10 @@ struct Engine {
     swr_limit: f32,
     /// Consecutive over-limit meter samples seen so far this over.
     swr_over: u8,
+    /// Meter samples since this over began, counted so the key-up transient can
+    /// be ignored by TIME rather than by forward power. See [`SWR_MIN_FWD_W`]
+    /// for why the power-based version of this was wrong.
+    swr_settle: u8,
     /// Set when the guard has fired, holding the SWR that fired it. While this
     /// is `Some`, transmit is refused. Cleared only by the operator
     /// acknowledging it ([`Command::ClearSwrTrip`]), which is the "latch"
@@ -1784,6 +1805,7 @@ fn engine_thread(
         swr_guard: engine_cfg.swr_guard,
         swr_limit: engine_cfg.swr_limit.clamp(1.1, 10.0),
         swr_over: 0,
+        swr_settle: 0,
         swr_tripped: None,
         wide_scratch: Vec::new(),
         wide_seq: 0,
@@ -2146,7 +2168,11 @@ fn engine_thread(
                 // the engine where a fresh SWR reading and `tx_active` are both
                 // in hand; it runs before the meters are published so the trip
                 // and the reading the operator sees cannot disagree.
-                if engine.swr_guard && engine.swr_tripped.is_none() {
+                engine.swr_settle = engine.swr_settle.saturating_add(1);
+                if engine.swr_guard
+                    && engine.swr_tripped.is_none()
+                    && engine.swr_settle > SWR_SETTLE_SAMPLES
+                {
                     match (tele.swr, tele.fwd_w) {
                         // Both figures required. `fwd_w` is what makes the
                         // reading meaningful, and a rig that reports SWR but no
@@ -2197,6 +2223,14 @@ fn engine_thread(
                     tone: None,
                 })
             } else {
+                // Not transmitting: both SWR counters belong to an over, so they
+                // reset here. Doing it on every receive sample rather than at
+                // one un-key site means no path out of transmit can leave a
+                // stale count behind to blank or trip the NEXT over.
+                // ⚠️ The LATCH is deliberately not touched: it survives until
+                // acknowledged, which is the whole point of it.
+                engine.swr_over = 0;
+                engine.swr_settle = 0;
                 let stereo = engine.main.as_ref().is_some_and(|c| c.stereo_locked());
                 let tone = engine.main.as_ref().and_then(|c| c.sub_tone());
                 engine.rx_signal_dbm().map(|s_dbm| Meters {
