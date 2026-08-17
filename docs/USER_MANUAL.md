@@ -2661,6 +2661,13 @@ Three things to know:
   in below 28.8 MHz. A positive offset is fine — the converter's output lands
   well above that — but a *negative* offset that drops the hardware frequency
   below 28.8 MHz would be shifted a second time by the dongle.
+- **This is not the field for a rig with a shifted I.F.** A radio whose own menu
+  has moved its receive I.F. off zero — an Elecraft with `RX SHFT` at `8.0` —
+  still displays and transmits the real frequency; only the samples on the sound
+  card have moved. Putting that 8 kHz here retunes the radio instead, and the
+  display comes out 8 kHz *wrong* rather than corrected. Use **I/Q centre
+  offset** on the CAT tab
+  ([5.2.2](#522-cat-radios-serial-control--usb-audio)) for that.
 
 This has been tested against sdroxide's own simulated front ends, not against a
 physical converter. If you have one, reports are welcome.
@@ -2801,6 +2808,32 @@ same fix without the soldering iron. Leave it off unless you see that symptom.
 
 It applies to receive only. Transmit hands the radio one real audio signal for
 it to modulate, and a real signal has no sideband to invert.
+
+**I/Q centre offset** (IQ format only) — how far above the radio's own dial its
+I/Q output is centred, for a rig whose receive I.F. has been moved off zero.
+Leave it at 0 unless you have turned such a setting on in the radio.
+
+A quadrature rig normally puts its local oscillator on the dial, which piles the
+mixer's DC offset, the LO's own leakage and the sound card's zero-hertz junk on
+exactly the signal you are listening to — the permanent spike in the middle of
+the waterfall. Rigs that offer a way out move the I.F. instead: on an Elecraft
+K3/KX3, `MENU:RX SHFT` set to `8.0` rather than `NOR` puts the oscillator 8 kHz
+from the dial, which takes the dial off the spike (and, per Elecraft, stops a
+strong nearby SSB or AM station being detected in the receiver). Set this field
+to `8000` to match, and the panadapter and everything reading from it stay on
+frequency.
+
+The radio goes on displaying and transmitting the real frequency, so this is
+**not** a converter offset — the field under **Radio → Converter** retunes the
+radio itself, which is the one thing a shifted I.F. does not do, and using it
+here moves the whole display off by the offset instead of correcting it. Nothing
+typed here is ever sent to the radio: it only says where the samples arriving on
+the sound card sit, and the stream is shifted back onto the dial as it arrives.
+The rig's DC spike lands the offset away from the dial, where it can be seen and
+ignored.
+
+If signals end up at *twice* the offset from where they belong, the sign is the
+other way round for your radio — enter `-8000` instead. Receive only, as above.
 
 **Serial (CAT) settings**, in the order they appear:
 

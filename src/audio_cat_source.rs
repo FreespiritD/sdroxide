@@ -5,7 +5,7 @@
 //! stereo **IQ** (complex baseband → normal engine path) and mono **demod
 //! audio** (real → the engine's audio-band bypass, `DeviceCaps.audio_mode`).
 
-use sdroxide_dsp::MonoResampler;
+use sdroxide_dsp::{MonoResampler, Nco};
 use sdroxide_radio::rtrb;
 use sdroxide_radio::{Complex32, ControlUpdate, IqSource, Result};
 use sdroxide_types::{CatConfig, Mode, SoundFormat, TxTelemetry};
@@ -26,6 +26,11 @@ pub struct AudioCatSource {
     /// whole of the fix, and folding it into a factor keeps the inner loop the
     /// same shape for both.
     q_sign: f32,
+    /// Brings a shifted I.F. back to the dial: an oscillator running at
+    /// `+CatConfig::iq_offset_hz`, mixed into every block as it arrives. `None`
+    /// when the rig's LO is on its dial, which is the ordinary case and the one
+    /// that must cost nothing.
+    iq_shift: Option<Nco>,
     audio_bw: f64,
 
     // TX audio to the rig (interleaved stereo playback ring).
@@ -154,6 +159,21 @@ impl AudioCatSource {
             tracing::info!("radio I/Q inverted (Q negated) — spectrum mirrored about the dial");
         }
         let q_sign = if cfg.invert_spectrum { -1.0 } else { 1.0 };
+        let shift = matches!(format, SoundFormat::Iq)
+            .then_some(cfg.iq_offset_hz)
+            .filter(|hz| hz.is_finite() && *hz != 0.0);
+        // Said out loud for the same reason as the inversion above: a rig whose
+        // I.F. has been shifted and a host that has not been told about it look
+        // identical until you notice every signal is the offset away from where
+        // it belongs, and this line is the only place the assumption is recorded.
+        if let Some(hz) = shift {
+            tracing::info!(
+                "radio I/Q centre {:.0} Hz from the dial (e.g. Elecraft RX SHFT) — stream \
+                 shifted back onto it; the rig's own dial is untouched",
+                hz
+            );
+        }
+        let iq_shift = shift.map(|hz| Nco::new(hz, in_rate));
         let cat = sdroxide_cat::spawn(cfg);
 
         Ok(AudioCatSource {
@@ -162,6 +182,7 @@ impl AudioCatSource {
             in_rate,
             format,
             q_sign,
+            iq_shift,
             audio_bw,
             out,
             tx_resampler,
@@ -178,11 +199,24 @@ impl AudioCatSource {
 
 /// Drain interleaved (I, Q) pairs from the capture ring into `buf`, with the
 /// right channel scaled by `q_sign` — `-1.0` conjugates the stream, mirroring
-/// the spectrum about the dial (see [`sdroxide_types::CatConfig::invert_spectrum`]).
+/// the spectrum about the dial (see [`sdroxide_types::CatConfig::invert_spectrum`])
+/// — and the result mixed by `shift` when the rig's I.F. is not on its dial
+/// (see [`sdroxide_types::CatConfig::iq_offset_hz`]).
 ///
-/// A free function rather than a method so the inversion can be exercised
-/// without a sound card and a serial port behind it.
-fn fill_iq(src: &mut rtrb::Consumer<f32>, buf: &mut [Complex32], q_sign: f32) -> usize {
+/// The two are in that order because they undo the radio in the order the radio
+/// applied it: which wire carries Q decides what the stream *means*, and only a
+/// stream that means the right thing can be moved the right way. Conjugating
+/// afterwards would mirror the shift along with everything else and land the
+/// dial twice the offset away.
+///
+/// A free function rather than a method so both can be exercised without a
+/// sound card and a serial port behind them.
+fn fill_iq(
+    src: &mut rtrb::Consumer<f32>,
+    buf: &mut [Complex32],
+    q_sign: f32,
+    shift: Option<&mut Nco>,
+) -> usize {
     let mut n = 0;
     // Need pairs (I, Q); only consume when both are available.
     while n < buf.len() && src.slots() >= 2 {
@@ -190,6 +224,13 @@ fn fill_iq(src: &mut rtrb::Consumer<f32>, buf: &mut [Complex32], q_sign: f32) ->
         let q = src.pop().unwrap_or(0.0);
         buf[n] = Complex32::new(i, q * q_sign);
         n += 1;
+    }
+    // Phase-continuous across blocks, which is the whole reason the oscillator
+    // outlives the call: restarting it at every read would put a step in the
+    // phase of every signal on the band, at whatever rate the sound card
+    // happens to hand over blocks.
+    if let Some(nco) = shift {
+        nco.mix_in_place(&mut buf[..n]);
     }
     n
 }
@@ -233,7 +274,7 @@ impl IqSource for AudioCatSource {
                 Ok(n)
             }
             SoundFormat::Iq => {
-                let n = fill_iq(&mut self.in_consumer, buf, self.q_sign);
+                let n = fill_iq(&mut self.in_consumer, buf, self.q_sign, self.iq_shift.as_mut());
                 if n == 0 {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
@@ -465,13 +506,74 @@ mod tests {
     fn inverting_iq_mirrors_the_signal_about_the_dial() {
         let mut buf = [Complex32::new(0.0, 0.0); 512];
 
-        let n = fill_iq(&mut tone_ring(1000.0, 512), &mut buf, 1.0);
+        let n = fill_iq(&mut tone_ring(1000.0, 512), &mut buf, 1.0, None);
         assert_eq!(n, 512, "every pair consumed");
         assert!((mean_freq_hz(&buf[..n]) - 1000.0).abs() < 1.0, "above the dial, unchanged");
 
-        let n = fill_iq(&mut tone_ring(1000.0, 512), &mut buf, -1.0);
+        let n = fill_iq(&mut tone_ring(1000.0, 512), &mut buf, -1.0, None);
         assert_eq!(n, 512);
         assert!((mean_freq_hz(&buf[..n]) + 1000.0).abs() < 1.0, "below the dial once inverted");
+    }
+
+    /// A rig whose I.F. has been shifted — an Elecraft with `RX SHFT` at 8.0 —
+    /// puts the station the operator is tuned to 8 kHz from the centre of its
+    /// I/Q output, while still displaying and transmitting on the dial. Undoing
+    /// that here is what keeps the dial the dial everywhere above.
+    #[test]
+    fn a_shifted_if_comes_back_onto_the_dial() {
+        let mut buf = [Complex32::new(0.0, 0.0); 512];
+        let mut nco = Nco::new(8_000.0, RATE as f64);
+
+        // The rig's centre is 8 kHz above the dial, so the station on the dial
+        // arrives 8 kHz below centre — and has to read as being on it.
+        let n = fill_iq(&mut tone_ring(-8_000.0, 512), &mut buf, 1.0, Some(&mut nco));
+        assert_eq!(n, 512);
+        assert!(mean_freq_hz(&buf[..n]).abs() < 1.0, "the dial is the dial again");
+
+        // Everything else keeps its distance from it: a station 1 kHz up the
+        // band is 1 kHz up the band, not 9.
+        let mut nco = Nco::new(8_000.0, RATE as f64);
+        let n = fill_iq(&mut tone_ring(-7_000.0, 512), &mut buf, 1.0, Some(&mut nco));
+        assert!((mean_freq_hz(&buf[..n]) - 1000.0).abs() < 1.0, "1 kHz above the dial");
+    }
+
+    /// The order the two corrections are applied in. A rig that is both
+    /// miswired and shifted has to come out on the dial, not at twice the
+    /// offset from it — which is what mirroring a stream that has already been
+    /// moved would do.
+    #[test]
+    fn inversion_is_undone_before_the_shift() {
+        let mut buf = [Complex32::new(0.0, 0.0); 512];
+        let mut nco = Nco::new(8_000.0, RATE as f64);
+
+        // Miswired, so the card delivers the conjugate: the station that sits
+        // 8 kHz below the rig's centre arrives looking like +8 kHz.
+        let n = fill_iq(&mut tone_ring(8_000.0, 512), &mut buf, -1.0, Some(&mut nco));
+        assert!(mean_freq_hz(&buf[..n]).abs() < 1.0, "on the dial, both corrections applied");
+    }
+
+    /// The oscillator carries its phase from one block to the next: a sound
+    /// card hands over a few hundred samples at a time, and an oscillator
+    /// restarted at each boundary would put a phase step through every signal
+    /// on the band at the block rate.
+    #[test]
+    fn the_shift_is_phase_continuous_across_blocks() {
+        let mut nco = Nco::new(8_000.0, RATE as f64);
+        let mut whole = [Complex32::new(0.0, 0.0); 512];
+        let mut ring = tone_ring(-8_000.0, 512);
+
+        // Same input, drained in two halves through the same oscillator.
+        let mut halves = [Complex32::new(0.0, 0.0); 512];
+        let a = fill_iq(&mut ring, &mut halves[..256], 1.0, Some(&mut nco));
+        let b = fill_iq(&mut ring, &mut halves[256..], 1.0, Some(&mut nco));
+        assert_eq!((a, b), (256, 256));
+
+        let mut nco = Nco::new(8_000.0, RATE as f64);
+        let n = fill_iq(&mut tone_ring(-8_000.0, 512), &mut whole, 1.0, Some(&mut nco));
+        assert_eq!(n, 512);
+        for (k, (x, y)) in whole.iter().zip(halves.iter()).enumerate() {
+            assert!((x - y).norm() < 1e-4, "sample {k} differs across the block boundary");
+        }
     }
 
     /// The pairing is what makes the stream complex at all: a half-pair left in
@@ -484,11 +586,11 @@ mod tests {
             p.push(v).unwrap();
         }
         let mut buf = [Complex32::new(0.0, 0.0); 4];
-        assert_eq!(fill_iq(&mut c, &mut buf, 1.0), 1);
+        assert_eq!(fill_iq(&mut c, &mut buf, 1.0, None), 1);
         assert_eq!(buf[0], Complex32::new(1.0, 2.0));
         // The odd `3.0` is still waiting, and pairs with what arrives next.
         p.push(4.0).unwrap();
-        assert_eq!(fill_iq(&mut c, &mut buf, -1.0), 1);
+        assert_eq!(fill_iq(&mut c, &mut buf, -1.0, None), 1);
         assert_eq!(buf[0], Complex32::new(3.0, -4.0));
     }
 }

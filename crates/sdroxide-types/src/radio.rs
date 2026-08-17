@@ -700,9 +700,48 @@ pub struct CatConfig {
     /// real signal has no sideband to invert.
     #[serde(default)]
     pub invert_spectrum: bool,
+    /// How far the rig's I/Q output is centred *above* its own dial, in Hz —
+    /// the Elecraft KX3's `RX SHFT`, and anything else that moves a quadrature
+    /// rig's receive I.F. off zero. Only read for [`SoundFormat::Iq`]; demod
+    /// audio has already been mixed down by the radio.
+    ///
+    /// A quadrature rig normally puts its local oscillator on the dial, which
+    /// piles the mixer's own DC offset, LO leakage and the sound card's zero-Hz
+    /// junk exactly on the signal being listened to. The cure, on rigs that
+    /// offer it, is to move the I.F. off zero: the KX3's `RX SHFT` menu entry
+    /// set to `8.0` puts the LO 8 kHz from the dial, so the dial is no longer
+    /// on the spike — and, per Elecraft's own note, also stops a nearby
+    /// high-power SSB/AM station being AM-detected in the receiver.
+    ///
+    /// The rig keeps displaying — and transmitting on — the real frequency, so
+    /// this must **not** be entered as a converter offset: a converter retunes
+    /// the radio, which is precisely what a shifted I.F. does not do. This
+    /// number never reaches the rig. It says where the samples on the sound
+    /// card actually sit, and the stream is translated by it on the way in, so
+    /// the dial stays the dial for the panadapter, the demodulators, the
+    /// skimmer, the logbook and the rig's own display alike.
+    ///
+    /// **Sign**: positive means the I/Q centre is above the dial, so the signal
+    /// tuned appears *below* centre in the stream. `0.0` (the default) is a rig
+    /// with its LO on the dial, which is every rig until its owner says
+    /// otherwise. See [`CAT_IQ_OFFSET_MAX_HZ`] for the range.
+    ///
+    /// Receive only, for the same reason as [`Self::invert_spectrum`]: transmit
+    /// hands the radio one real audio signal and the rig's own dial decides
+    /// where it lands.
+    #[serde(default)]
+    pub iq_offset_hz: f64,
     /// Displayed panadapter bandwidth for demod-audio mode (Hz).
     pub audio_bw_hz: f64,
 }
+
+/// How far either way [`CatConfig::iq_offset_hz`] may be set, in Hz.
+///
+/// Half of the 48 kHz the radio's sound card is opened at: an offset past that
+/// puts the dial outside the window the card digitises at all, which is not a
+/// shifted I.F. but a receiver pointed at nothing. The 8 kHz an Elecraft asks
+/// for is comfortably inside it.
+pub const CAT_IQ_OFFSET_MAX_HZ: f64 = 24_000.0;
 
 /// Where a `rigctld` listens unless told otherwise — the daemon's own default
 /// port, on this machine.
@@ -726,6 +765,7 @@ impl Default for CatConfig {
             kenwood_send: KenwoodSend::default(),
             format: SoundFormat::default(),
             invert_spectrum: false,
+            iq_offset_hz: 0.0,
             audio_bw_hz: 4000.0,
         }
     }

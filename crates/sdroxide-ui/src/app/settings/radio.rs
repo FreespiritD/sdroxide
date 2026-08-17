@@ -69,6 +69,31 @@ pub(in crate::app) fn settings_cat_tab(
                  which has no sideband to invert.",
             );
             ui.end_row();
+
+            ui.label("I/Q centre offset").on_hover_text(
+                "How far the radio's I/Q output is centred above its own dial, \
+                 for a rig whose receive I.F. has been moved off zero — on an \
+                 Elecraft, MENU:RX SHFT set to 8.0 instead of NOR, which takes \
+                 the dial off the mixer's DC spike (and stops a strong nearby \
+                 SSB/AM station being AM-detected).\n\n\
+                 Not a converter: the radio still displays and transmits on the \
+                 real frequency, and nothing here is ever sent to it. This only \
+                 says where the samples on the sound card sit, and the stream is \
+                 shifted back onto the dial as it arrives.\n\n\
+                 Leave at 0 unless you have turned such a menu entry on. If \
+                 signals land twice the offset away, the sign is the other way \
+                 round.",
+            );
+            ui.add(
+                DragValue::new(&mut cfg.cat.iq_offset_hz)
+                    .speed(100.0)
+                    .range(
+                        -sdroxide_types::CAT_IQ_OFFSET_MAX_HZ
+                            ..=sdroxide_types::CAT_IQ_OFFSET_MAX_HZ,
+                    )
+                    .suffix(" Hz"),
+            );
+            ui.end_row();
         }
 
         if matches!(cfg.cat.format, SoundFormat::DemodAudio) {
