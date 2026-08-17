@@ -121,6 +121,8 @@ pub const PHY: Phy = Phy {
     preamble_bits: 16,
     payload_min: 8,
     payload_max: 26,
+    // Plain NRZ: one bit per symbol on the air.
+    manchester: false,
 };
 
 pub const CHANNEL_HZ: f64 = 868_300_000.0;

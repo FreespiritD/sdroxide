@@ -71,6 +71,8 @@ pub const PHY: Phy = Phy {
     // thirty-two (WS90).
     payload_min: 9,
     payload_max: 32,
+    // Plain NRZ: one bit per symbol on the air.
+    manchester: false,
 };
 
 pub const CHANNEL_HZ: f64 = 868_300_000.0;

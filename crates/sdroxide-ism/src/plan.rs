@@ -52,8 +52,21 @@ pub const CHANNELS: &[Channel] = &[
     },
     Channel {
         center_hz: 868_420_000.0,
-        // Z-Wave's 100 kbps rate runs ±58 kHz.
-        rate_hz: 400_000.0,
+        // Z-Wave's slowest rate — the only one decoded here — is 19 200 chips a
+        // second at about ±20 kHz, so it occupies well under 100 kHz.
+        //
+        // This was 400 kHz, sized for Z-Wave's 100 kbps rate at ±58 kHz, and that
+        // width made the 9.6 kbit/s traffic *undecodable*: deviation and symbol
+        // rate are measured across the whole channel, so a wideband neighbour
+        // three hundred kilohertz away dominated both. The same bursts that read
+        // 22.9 kHz deviation and 19 191 baud through a 150 kHz window read 160 to
+        // 191 kHz and no measurable rate through a 400 kHz one.
+        //
+        // So the channel is as narrow as the traffic that is actually read here.
+        // Adding the faster Z-Wave rates later means a second, wider channel on
+        // this centre rather than widening this one back — see the note on
+        // `Channel::rate_hz`.
+        rate_hz: 150_000.0,
         label: "Z-Wave EU",
         families: &[IsmFamily::HomeAuto],
     },

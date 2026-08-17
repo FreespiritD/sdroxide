@@ -2919,6 +2919,23 @@ impl Engine {
                 // frequency it took.
                 self.good_vfo_hz = vfo;
                 self.reseat_sub_freq();
+                // The windows that are placed against the hardware centre have
+                // to be re-placed against the new one, exactly as
+                // `adopt_source_center` and `set_center_hz` do — this arm is the
+                // third way the centre can move and was the one that did not.
+                //
+                // The symptom was specific: an RX-888 crossing into its VHF path
+                // re-parks its tuner and reports the move through here, so the
+                // ISM decoder kept a window on wherever the receiver used to be
+                // and reported "no ISM channel is inside the receiver's window"
+                // while the dial plainly read 868.88 MHz. Switching the decoder
+                // off and on rebuilt it and it worked, which is the tell: the
+                // window was stale, not wrong.
+                if let Some(sk) = self.skimmer.as_ref() {
+                    sk.set_center(hz);
+                }
+                self.sync_skimmer_view();
+                self.sync_ism_window();
                 self.update_tuning();
                 let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
             }

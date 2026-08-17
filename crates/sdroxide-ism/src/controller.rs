@@ -390,6 +390,8 @@ impl Worker {
             // worth showing rather than leaving the panel looking broken.
             bursts: self.chans.iter().map(|c| c.gate.opened).sum(),
             decodes: self.decodes,
+            window_center_hz: self.window_center_hz,
+            window_rate_hz: self.window_rate_hz,
         }
     }
 }
@@ -433,23 +435,40 @@ mod tests {
 
     /// A window on the ISM band opens the channels that have an enabled decoder
     /// and no others, and says why for each one it skipped.
+    ///
+    /// The two reasons are not interchangeable and the test insists on which is
+    /// which: 868.42 has a decoder that this configuration has switched off,
+    /// while the metering channels have none at all, and an operator can only act
+    /// on the first of those.
     #[test]
     fn the_worker_opens_only_the_channels_it_can_use() {
         let w = Worker::new(plan::ideal_center_hz(), 2_025_000.0, on());
-        assert_eq!(w.chans.len(), 1, "only the 868.3 MHz channel has a decoder today");
+        assert_eq!(w.chans.len(), 1, "only the weather channel is enabled here");
         assert_eq!(w.status_chans.len(), plan::CHANNELS.len());
         let live: Vec<f64> = w.status_chans.iter().filter(|c| c.live).map(|c| c.freq_hz).collect();
         assert_eq!(live, vec![868_300_000.0]);
         for c in w.status_chans.iter().filter(|c| !c.live) {
+            let want = if c.freq_hz == 868_420_000.0 { "switched off" } else { "not decoded yet" };
             assert_eq!(
                 c.reason.as_deref(),
-                Some("not decoded yet"),
+                Some(want),
                 "{:.3} MHz is in the window, so that is not why it is idle",
                 c.freq_hz / 1e6
             );
         }
         assert!(w.status().unavailable.is_none());
         assert!(w.status().suggest_center_hz.is_none());
+    }
+
+    /// Turning the home-automation family on opens the Z-Wave channel, which is
+    /// the switch an operator uses after seeing it reported as switched off.
+    #[test]
+    fn enabling_home_automation_opens_the_zwave_channel() {
+        let mut cfg = on();
+        cfg.set_family(IsmFamily::HomeAuto, true);
+        let w = Worker::new(plan::ideal_center_hz(), 2_025_000.0, cfg);
+        let live: Vec<f64> = w.status_chans.iter().filter(|c| c.live).map(|c| c.freq_hz).collect();
+        assert_eq!(live, vec![868_300_000.0, 868_420_000.0]);
     }
 
     /// A receiver tuned away from the band has to say so, and say where to go —

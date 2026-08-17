@@ -36,12 +36,24 @@ pub enum IsmFamily {
     HomeAuto,
     /// LoRa, recognised and labelled but never demodulated.
     LoRa,
+    /// Bursts that no decoder claimed, reported by what could be measured about
+    /// them rather than dropped.
+    ///
+    /// Its own family so that it is a switch the operator controls: on a busy
+    /// band this is the noisiest thing the panel can show, and on a quiet one it
+    /// is the only thing that says the receiver is working.
+    Unidentified,
 }
 
 impl IsmFamily {
     /// Every family, in UI order.
-    pub const ALL: [IsmFamily; 4] =
-        [IsmFamily::Weather, IsmFamily::Meter, IsmFamily::HomeAuto, IsmFamily::LoRa];
+    pub const ALL: [IsmFamily; 5] = [
+        IsmFamily::Weather,
+        IsmFamily::Meter,
+        IsmFamily::HomeAuto,
+        IsmFamily::LoRa,
+        IsmFamily::Unidentified,
+    ];
 
     /// The chip's label.
     pub fn label(self) -> &'static str {
@@ -50,6 +62,7 @@ impl IsmFamily {
             IsmFamily::Meter => "METERS",
             IsmFamily::HomeAuto => "HOME",
             IsmFamily::LoRa => "LORA",
+            IsmFamily::Unidentified => "UNKNOWN",
         }
     }
 
@@ -60,6 +73,7 @@ impl IsmFamily {
             IsmFamily::Meter => "Wireless M-Bus water, heat, gas and electricity meters",
             IsmFamily::HomeAuto => "Z-Wave, Homematic, KNX-RF, EnOcean, FS20",
             IsmFamily::LoRa => "Recognise LoRa chirps and report their parameters",
+            IsmFamily::Unidentified => "List bursts nothing decoded, by symbol rate and sync word",
         }
     }
 
@@ -75,7 +89,7 @@ impl IsmFamily {
     /// operator who can see that meters are "not yet" is better informed than
     /// one who sees nothing and concludes there are none.
     pub fn implemented(self) -> bool {
-        matches!(self, IsmFamily::Weather)
+        matches!(self, IsmFamily::Weather | IsmFamily::HomeAuto | IsmFamily::Unidentified)
     }
 }
 
@@ -94,18 +108,38 @@ pub enum IsmProtocol {
     /// Bresser weather centres. Same channel and sync word as the Fine Offset
     /// family, at less than half the symbol rate.
     Bresser,
+    /// Z-Wave, on the 868.42 MHz European channel. The frame's routing header is
+    /// in clear even on a secured network, so a report says which node spoke to
+    /// which; the application payload above it may be encrypted.
+    ZWave,
+    /// Homematic BidCoS. Recognised by its sync word and reported as present —
+    /// the frame behind it is obfuscated and nothing here reads it.
+    Homematic,
+    /// Not a protocol: a burst that gated, held still enough to measure, and
+    /// matched no decoder. Reported by its symbol rate and the sync word derived
+    /// from its own preamble.
+    Unidentified,
 }
 
 impl IsmProtocol {
     /// Every protocol, in UI order.
-    pub const ALL: [IsmProtocol; 3] =
-        [IsmProtocol::LaCrosseIt, IsmProtocol::FineOffset, IsmProtocol::Bresser];
+    pub const ALL: [IsmProtocol; 6] = [
+        IsmProtocol::LaCrosseIt,
+        IsmProtocol::FineOffset,
+        IsmProtocol::Bresser,
+        IsmProtocol::ZWave,
+        IsmProtocol::Homematic,
+        IsmProtocol::Unidentified,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             IsmProtocol::LaCrosseIt => "LaCrosse IT+",
             IsmProtocol::FineOffset => "Fine Offset",
             IsmProtocol::Bresser => "Bresser",
+            IsmProtocol::ZWave => "Z-Wave",
+            IsmProtocol::Homematic => "Homematic",
+            IsmProtocol::Unidentified => "unidentified",
         }
     }
 
@@ -115,6 +149,8 @@ impl IsmProtocol {
             IsmProtocol::LaCrosseIt | IsmProtocol::FineOffset | IsmProtocol::Bresser => {
                 IsmFamily::Weather
             }
+            IsmProtocol::ZWave | IsmProtocol::Homematic => IsmFamily::HomeAuto,
+            IsmProtocol::Unidentified => IsmFamily::Unidentified,
         }
     }
 }
@@ -408,4 +444,16 @@ pub struct IsmStatus {
     /// leaving the panel looking broken.
     pub bursts: u64,
     pub decodes: u64,
+    /// Where the decoder's own window actually is, and how wide, in Hz.
+    ///
+    /// Shown because "no ISM channel is inside the receiver's window" is a claim
+    /// about a number the operator cannot otherwise see. The window is placed
+    /// against the **hardware centre**, not the VFO, and on a wide front end the
+    /// two are routinely megahertz apart — so a panel saying nothing fits while
+    /// the dial plainly reads 868.88 MHz is not obviously wrong until the window
+    /// it is talking about is on screen next to it.
+    ///
+    /// Zero when no decoder is running.
+    pub window_center_hz: f64,
+    pub window_rate_hz: f64,
 }

@@ -67,6 +67,15 @@ pub struct Phy {
     /// longest and lets the parser check its own CRC at whichever length it
     /// expects. Taking a fixed count instead would reject every shorter member.
     pub payload_max: usize,
+    /// Whether each pair of transmitted chips carries one data bit.
+    ///
+    /// Z-Wave's slowest rate is Manchester, and it is the reason this field
+    /// exists: at 9.6 kbit/s it puts 19 200 chips a second on the air, so a
+    /// decoder that sliced at the *data* rate would read every second edge and
+    /// find nothing. [`baud`](Self::baud) is always the chip rate — what the
+    /// symbol-rate estimator actually measures off the signal — and the pair
+    /// decoding happens after slicing, before the sync search.
+    pub manchester: bool,
 }
 
 /// One candidate frame lifted out of a burst.
@@ -140,51 +149,86 @@ fn frames_at(
     bits: &mut Vec<u8>,
     out: &mut Vec<Frame>,
 ) {
+    // Holds the pair-decoded stream when the protocol is Manchester. The raw
+    // slice stays in `bits`, because the second pair alignment has to be decoded
+    // from the chips again rather than from the first alignment's output.
+    let mut decoded: Vec<u8> = Vec::new();
     for p in 0..PHASES {
         let phase = sps * p as f64 / PHASES as f64;
         slice_bits(disc, level, sps, phase, bits);
 
-        for inverted in [false, true] {
-            let target = if inverted {
-                // Complement, kept inside the sync word's own width.
-                (!phy.sync) & mask(phy.sync_bits)
+        // A Manchester stream has two possible pair alignments and only one of
+        // them is the transmitter's. Rather than pick by counting coding
+        // violations — which would need a threshold to justify — both are offered
+        // to the sync search and the sync word settles it for free. The wrong
+        // alignment reads as noise and matches nothing.
+        for pair in 0..if phy.manchester { 2 } else { 1 } {
+            let view: &[u8] = if phy.manchester {
+                manchester_decode(bits, pair, &mut decoded);
+                &decoded
             } else {
-                phy.sync & mask(phy.sync_bits)
+                bits
             };
-            // Every match, not just the best one: a false match earlier in the
-            // burst can tie on sync errors with the real one, and taking only
-            // the first would then lose the frame to the preamble check below.
-            for (at, errs) in find_sync(&bits, target, phy.sync_bits, phy.sync_errors) {
-                if !preamble_ok(&bits, at, phy.preamble_bits) {
-                    continue;
-                }
-                let start = at + phy.sync_bits as usize;
-                if start + phy.payload_min * 8 > bits.len() {
-                    continue;
-                }
-                // As much as the burst holds, up to the longest frame the
-                // protocol can send.
-                let take = phy.payload_max.min((bits.len() - start) / 8);
-                let mut bytes = pack(&bits[start..start + take * 8]);
-                if inverted {
-                    for b in bytes.iter_mut() {
-                        *b = !*b;
+
+            for inverted in [false, true] {
+                let target = if inverted {
+                    // Complement, kept inside the sync word's own width.
+                    (!phy.sync) & mask(phy.sync_bits)
+                } else {
+                    phy.sync & mask(phy.sync_bits)
+                };
+                // Every match, not just the best one: a false match earlier in the
+                // burst can tie on sync errors with the real one, and taking only
+                // the first would then lose the frame to the preamble check below.
+                for (at, errs) in find_sync(view, target, phy.sync_bits, phy.sync_errors) {
+                    if !preamble_ok(view, at, phy.preamble_bits) {
+                        continue;
                     }
-                }
-                // Two adjacent phases usually read the same frame. Keep the
-                // better match rather than handing the protocol layer
-                // duplicates to CRC-check.
-                match out.iter_mut().find(|f| f.bytes == bytes) {
-                    Some(f) if f.sync_errors > errs => {
-                        f.sync_errors = errs;
-                        f.inverted = inverted;
-                        f.sps = sps;
+                    let start = at + phy.sync_bits as usize;
+                    if start + phy.payload_min * 8 > view.len() {
+                        continue;
                     }
-                    Some(_) => {}
-                    None => out.push(Frame { bytes, sync_errors: errs, inverted, sps }),
+                    // As much as the burst holds, up to the longest frame the
+                    // protocol can send.
+                    let take = phy.payload_max.min((view.len() - start) / 8);
+                    let mut bytes = pack(&view[start..start + take * 8]);
+                    if inverted {
+                        for b in bytes.iter_mut() {
+                            *b = !*b;
+                        }
+                    }
+                    // Two adjacent phases usually read the same frame. Keep the
+                    // better match rather than handing the protocol layer
+                    // duplicates to CRC-check.
+                    match out.iter_mut().find(|f| f.bytes == bytes) {
+                        Some(f) if f.sync_errors > errs => {
+                            f.sync_errors = errs;
+                            f.inverted = inverted;
+                            f.sps = sps;
+                        }
+                        Some(_) => {}
+                        None => out.push(Frame { bytes, sync_errors: errs, inverted, sps }),
+                    }
                 }
             }
         }
+    }
+}
+
+/// Fold Manchester chip pairs into data bits, starting at chip `phase`.
+///
+/// `10` is a one and `01` a zero. A pair of equal chips is a coding violation —
+/// noise, or the wrong pair alignment — and is emitted as the first chip of the
+/// pair rather than dropped, so the bit positions after it stay put: a violation
+/// mid-frame should cost that one bit and let the frame's own checksum decide,
+/// not shift everything after it and destroy the whole frame.
+fn manchester_decode(chips: &[u8], phase: usize, out: &mut Vec<u8>) {
+    out.clear();
+    out.reserve(chips.len() / 2);
+    let mut i = phase;
+    while i + 1 < chips.len() {
+        out.push(chips[i]);
+        i += 2;
     }
 }
 
@@ -299,6 +343,7 @@ mod tests {
             preamble_bits: 16,
             payload_min: 5,
             payload_max: 5,
+            manchester: false,
         }
     }
 

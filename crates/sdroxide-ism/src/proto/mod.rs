@@ -12,7 +12,9 @@ use crate::slice::Phy;
 
 pub mod bresser;
 pub mod fineoffset;
+pub mod homematic;
 pub mod lacrosse;
+pub mod zwave;
 
 /// What a protocol module makes of a frame.
 pub struct Decoded {
@@ -61,6 +63,18 @@ pub const PROTOCOLS: &[Protocol] = &[
         channel_hz: bresser::CHANNEL_HZ,
         phy: bresser::PHY,
         parse: bresser::parse,
+    },
+    Protocol {
+        id: IsmProtocol::Homematic,
+        channel_hz: homematic::CHANNEL_HZ,
+        phy: homematic::PHY,
+        parse: homematic::parse,
+    },
+    Protocol {
+        id: IsmProtocol::ZWave,
+        channel_hz: zwave::CHANNEL_HZ,
+        phy: zwave::PHY,
+        parse: zwave::parse,
     },
 ];
 
@@ -117,6 +131,86 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
 }
 
+/// How well a burst's own symbol-rate measurement must have verified itself
+/// before the burst is worth listing as an unidentified device.
+///
+/// Higher than the 0.8 the slicers accept, and for a different reason: a slicer
+/// that takes a poor rate estimate just fails to find a sync word and costs
+/// nothing, whereas a poor estimate here becomes a row in the operator's panel
+/// claiming a device exists at a symbol rate that was never really measured.
+const UNIDENTIFIED_MIN_FIT: f32 = 0.9;
+
+/// Alternating bits that must precede the derived sync word.
+///
+/// Three bytes of preamble. The point is to be sure this really is a framed
+/// transmission before describing it as one: noise produces short alternating
+/// runs constantly and a two-byte threshold would list a great deal of nothing.
+const UNIDENTIFIED_PREAMBLE_BITS: usize = 24;
+
+/// Describe a burst that no decoder claimed.
+///
+/// The operator's question about an unread burst is "what is it and is it always
+/// there", and three things answer it without knowing the protocol: the symbol
+/// rate, the deviation, and the bytes immediately after the preamble — which for
+/// every protocol in this band is the sync word, and is therefore what identifies
+/// the *protocol* even when nothing can read it.
+///
+/// The sync word is used as the device identity so that repeats collapse into one
+/// row with a count, rather than filling the panel with one entry per
+/// transmission. That does mean two devices sharing a protocol merge into a
+/// single row — which is the right answer at this level of knowledge, because
+/// what is actually known is "an unidentified protocol is here, this often".
+fn unidentified(bits: &[u8], baud: f64, dev_hz: f32) -> Option<Decoded> {
+    // The end of the first run of alternating bits long enough to be a preamble.
+    let mut i = 0usize;
+    let (start, mut end) = loop {
+        let mut j = i + 1;
+        while j < bits.len() && bits[j] != bits[j - 1] {
+            j += 1;
+        }
+        if j - i >= UNIDENTIFIED_PREAMBLE_BITS {
+            break (i, j);
+        }
+        if j >= bits.len() {
+            return None;
+        }
+        i = j;
+    };
+
+    // Where the preamble stops is ambiguous by exactly one bit, and the ambiguity
+    // is not academic — it is the difference between reading a sync word as
+    // `d391` and as `a723`.
+    //
+    // The run ends at the first bit equal to its predecessor. If the sync word's
+    // own first bit happens to continue the alternation, that pair is (sync bit
+    // 0, sync bit 1) and the sync started one bit earlier; if it breaks the
+    // alternation, the pair is (last preamble bit, sync bit 0) and it starts
+    // here. One burst cannot tell those apart.
+    //
+    // What settles it is that these preambles are a whole number of bytes: the
+    // offset that lands on a byte boundary measured from the start of the run is
+    // the transmitter's. Both real signatures in this band — Homematic's `e9ca`
+    // and the `2c4c` emitter — come out right under that rule and wrong without
+    // it.
+    if end > start && (end - start) % 8 != 0 && (end - 1 - start) % 8 == 0 {
+        end -= 1;
+    }
+    if end + 16 > bits.len() {
+        return None;
+    }
+    let sync = crate::slice::pack_bits(&bits[end..end + 16]);
+
+    Some(Decoded {
+        protocol: IsmProtocol::Unidentified,
+        model: Some(format!("{:.1} kbaud", baud / 1000.0)),
+        device: format!("{:02x}{:02x}", sync[0], sync[1]),
+        readings: Vec::new(),
+        extra: vec![("dev".to_string(), format!("{:.1} kHz", dev_hz / 1e3))],
+        encrypted: false,
+        raw_hex: String::new(),
+    })
+}
+
 /// Scratch buffers, so a channel's decoder does not allocate per burst.
 #[derive(Default)]
 pub struct Scratch {
@@ -148,13 +242,19 @@ pub fn decode(
     // Only the part of the burst that is signal; see the note at the slicers below.
     let body = &scratch.disc[stats.signal.clone()];
     let measured_baud = crate::demod::estimate_baud_free(body, stats.center_hz, burst.rate_hz);
-    let bits_hex = match measured_baud {
-        Some((b, _)) => {
-            let bits = crate::slice::slice_at(body, stats.center_hz, burst.rate_hz / b);
-            // Enough for the longest frame in the band — a Bresser 7-in-1 is
-            // twenty-three payload bytes behind its preamble — so a whole frame is
-            // visible rather than just its header.
-            let take = bits.len().min(40 * 8);
+    // Kept rather than formatted and dropped: the same slice is what an
+    // unidentified burst is described by, further down.
+    let sliced = measured_baud
+        .map(|(b, _)| crate::slice::slice_at(body, stats.center_hz, burst.rate_hz / b));
+    let bits_hex = match &sliced {
+        Some(bits) => {
+            // Enough for a whole burst rather than just its header. The longest
+            // frame this crate decodes is a Bresser 7-in-1 at twenty-five payload
+            // bytes, but the dump exists for the bursts nothing decodes — and a
+            // 30 ms transmission at 20 kbaud is seventy-five bytes, so a cap set
+            // by what already decodes would truncate exactly the traffic it is
+            // there to identify.
+            let take = bits.len().min(96 * 8);
             let bytes = crate::slice::pack_bits(&bits[..take]);
             let inverted: Vec<u8> = bytes.iter().map(|x| !*x).collect();
             format!("bits {}\n      inv  {}", hex(&bytes), hex(&inverted))
@@ -202,6 +302,19 @@ pub fn decode(
                 // One device per protocol per burst. Later candidates are other
                 // slicing phases reading the same transmission.
                 break;
+            }
+        }
+    }
+
+    // Nothing read it. If the operator asked to see those, say what could be
+    // measured about it rather than dropping it — see [`unidentified`].
+    if decoded.is_empty() && on_channel && enabled(IsmProtocol::Unidentified) {
+        if let (Some(bits), Some((b, fit))) = (&sliced, measured_baud) {
+            if fit >= UNIDENTIFIED_MIN_FIT {
+                if let Some(mut d) = unidentified(bits, b, stats.dev_hz) {
+                    d.raw_hex = hex(&crate::slice::pack_bits(&bits[..bits.len().min(32 * 8)]));
+                    decoded.push(d);
+                }
             }
         }
     }

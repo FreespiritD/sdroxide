@@ -2524,7 +2524,43 @@ These sensors run at **8.2 kbaud** — less than half the Fine Offset rate — b
 the same channel, preamble and sync word. That mattered more than it sounds: see
 the note below.
 
-Wireless M-Bus, Z-Wave, Homematic and LoRa recognition are not implemented yet.
+**Z-Wave** — the European 868.42 MHz channel at the 9.6 kbit/s rate, which is
+Manchester-coded and so needs a decoder that slices at 19 200 chips a second
+rather than at the data rate. Each report names the **home identifier**, the
+**source and destination nodes** and the frame type, because Z-Wave encrypts at
+the application layer and not the link layer: the mesh has to be able to route a
+frame without opening it, so the routing header is in clear even on a secured
+network. The command class is named where it is a familiar one. A frame carrying
+a secured command class is marked `payload encrypted` — SDRoxide holds no keys.
+
+This one was not transcribed from a write-up: the frame layout was derived from a
+capture taken off the air with `ism_forensics`, and confirmed by its own checksum
+reproducing.
+
+**Homematic BidCoS** — 868.3 MHz, recognised and **reported as present, not
+read**. The recognition is solid: a 32-bit sync word at the right rate and
+deviation. The contents are obfuscated by the protocol, and rather than derive a
+de-obfuscation from prose and apply it to a single unverifiable capture — which
+would produce device addresses that look authoritative and might be nonsense —
+the frame is listed with its bytes and no interpretation.
+
+**Unidentified bursts** — the `UNKNOWN` chip. Off by default. With it on, a burst
+that gates, holds still long enough for its symbol rate to be measured, and
+matches no decoder is listed anyway, described by what *could* be measured: its
+symbol rate, its deviation, and the two bytes immediately after its preamble.
+Those two bytes are the sync word for every protocol in this band, so they
+identify the **protocol** even when nothing can read it — and they are used as
+the device identity, so repeats collapse into one row with a count instead of
+filling the panel.
+
+That is how the 868 MHz band around this author's bench turned out to hold a
+`2c4c` emitter at 10 kbaud that heartbeats every 60 seconds and a `d391` one —
+`0xd391` being the factory default sync word of the TI CC1101, which a great many
+cheap 868 MHz devices never change. Neither is decoded. Knowing they are there,
+how often they speak and what to search for is most of the way to finding out
+what they are.
+
+Wireless M-Bus and LoRa recognition are not implemented yet.
 
 > **Why a sensor can be plainly visible and still not decode.** Each protocol
 > declares a symbol rate, and the bit slicer used to search only ±20 % around it.

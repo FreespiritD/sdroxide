@@ -168,6 +168,27 @@ impl SdroxideApp {
 
         if let Some(why) = &st.unavailable {
             ui.label(RichText::new(why).size(11.0).color(crate::theme::YELLOW()));
+            // Which window, exactly. The decoder's window sits on the *hardware
+            // centre*, not the VFO, and on a wide front end those are routinely
+            // far apart — so "nothing is inside the window" reads as plainly
+            // wrong next to a dial showing 868.88 MHz until the window it means
+            // is on screen too.
+            if st.window_rate_hz > 0.0 {
+                ui.label(
+                    RichText::new(format!(
+                        "window {:.3} MHz, {:.3} MHz wide",
+                        st.window_center_hz / 1e6,
+                        st.window_rate_hz / 1e6
+                    ))
+                    .size(10.5)
+                    .color(crate::theme::CYAN_DIM()),
+                )
+                .on_hover_text(
+                    "Where the decoder is actually listening. This follows the receiver's \
+                     hardware centre, not the VFO — on a wide front end the two can be a long \
+                     way apart, and it is the window that decides which channels are reachable.",
+                );
+            }
             // The one problem the operator can fix with a click.
             if let Some(hz) = st.suggest_center_hz {
                 ui.horizontal(|ui| {
