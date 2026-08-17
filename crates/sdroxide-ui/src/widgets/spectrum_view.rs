@@ -419,16 +419,30 @@ pub struct IsmLabel {
     pub encrypted: bool,
 }
 
-const ISM_BOX_H: f32 = 18.0;
 const ISM_LANE_GAP: f32 = 3.0;
 const ISM_H_GAP: f32 = 6.0;
 const ISM_LEADER: f32 = 14.0;
 const ISM_MAX_LANES: usize = 4;
+const ISM_PAD_X: f32 = 5.0;
+const ISM_PAD_Y: f32 = 3.0;
+const ISM_PT: f32 = 11.5;
+
+/// Widest an ISM label may grow before it wraps onto another line.
+///
+/// A decoded weather station says a lot — temperature, humidity, direction,
+/// gust, average, rain, light and UV is eight readings — and on one line that is
+/// wider than most panadapters. It used to be clamped to this width and then
+/// painted at full length anyway, so the text simply ran out of its own box and
+/// across the waterfall. Wrapping is the honest version of that clamp.
+const ISM_BOX_MAX_W: f32 = 300.0;
 
 struct IsmBox {
     rect: Rect,
     sig_x: f32,
     idx: usize,
+    /// Laid out once during placement, because the wrapped height is what decides
+    /// where the next lane starts.
+    galley: Arc<egui::Galley>,
 }
 
 /// Lay visible ISM labels into staggered lanes at the *newest* waterfall edge,
@@ -456,20 +470,25 @@ fn layout_ism_labels(
         .collect();
     vis.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    let box_h = ISM_BOX_H * fs;
+    // Two passes, because a wrapped label's height is not known until it has been
+    // laid out and a lane cannot be positioned until every box in the lane above
+    // it has been. First: wrap each label, assign it a lane, and record how tall
+    // that lane has to be.
     let mut lane_right: Vec<f32> = Vec::new();
-    let mut out = Vec::with_capacity(vis.len());
+    let mut lane_h: Vec<f32> = Vec::new();
+    let mut placed: Vec<(usize, usize, f32, Arc<egui::Galley>)> = Vec::with_capacity(vis.len());
     for (xc, idx) in vis {
-        let box_w = p
-            .layout_no_wrap(
-                labels[idx].text.clone(),
-                FontId::proportional(11.5 * fs),
-                Color32::WHITE,
-            )
-            .size()
-            .x
-            .clamp(40.0, 300.0 * fs)
-            + 10.0;
+        // Laid out with a placeholder colour so the tint can be chosen at paint
+        // time — a hovered box is drawn brighter than a resting one.
+        let galley = p.layout(
+            labels[idx].text.clone(),
+            FontId::proportional(ISM_PT * fs),
+            Color32::PLACEHOLDER,
+            ISM_BOX_MAX_W * fs,
+        );
+        let box_w = galley.size().x.max(40.0) + ISM_PAD_X * 2.0;
+        let box_h = galley.size().y + ISM_PAD_Y * 2.0;
+
         let box_left = xc + ISM_LEADER;
         let foot_right = box_left + box_w + ISM_H_GAP;
         let mut lane = lane_right.len();
@@ -484,22 +503,37 @@ fn layout_ism_labels(
         }
         if lane == lane_right.len() {
             lane_right.push(0.0);
+            lane_h.push(0.0);
         }
         lane_right[lane] = foot_right;
+        lane_h[lane] = lane_h[lane].max(box_h);
+        placed.push((idx, lane, box_left, galley));
+    }
 
+    // Second: each lane starts below the tallest box in every lane above it, so a
+    // three-line label pushes the next lane down instead of being written over.
+    let mut lane_top: Vec<f32> = Vec::with_capacity(lane_h.len());
+    let mut run = SPOT_TOP_MARGIN + SPOT_MAX_LANES as f32 * (SPOT_BOX_H * fs + SPOT_LANE_GAP);
+    for h in &lane_h {
+        lane_top.push(run);
+        run += h + ISM_LANE_GAP;
+    }
+
+    let mut out = Vec::with_capacity(placed.len());
+    for (idx, lane, box_left, galley) in placed {
+        let size =
+            vec2(galley.size().x.max(40.0) + ISM_PAD_X * 2.0, galley.size().y + ISM_PAD_Y * 2.0);
         // Past the skimmer's lanes, at whichever end of the waterfall is newest.
-        let base = SPOT_TOP_MARGIN
-            + SPOT_MAX_LANES as f32 * (SPOT_BOX_H * fs + SPOT_LANE_GAP)
-            + lane as f32 * (box_h + ISM_LANE_GAP);
         let top = if view.waterfall_flip {
-            wf_rect.bottom() - base - box_h
+            wf_rect.bottom() - lane_top[lane] - size.y
         } else {
-            wf_rect.top() + base
+            wf_rect.top() + lane_top[lane]
         };
         out.push(IsmBox {
-            rect: Rect::from_min_size(pos2(box_left, top), vec2(box_w, box_h)),
-            sig_x: xc,
+            rect: Rect::from_min_size(pos2(box_left, top), size),
+            sig_x: view.freq_to_x(labels[idx].freq_hz, rect),
             idx,
+            galley,
         });
     }
     out
@@ -508,7 +542,6 @@ fn layout_ism_labels(
 /// Draw one ISM label box: the formatted device line, tinted green for a reading
 /// and amber for a frame whose payload is encrypted.
 fn draw_ism_box(p: &egui::Painter, b: &IsmBox, label: &IsmLabel, hovered: bool) {
-    let fs = crate::theme::skimmer_font_scale();
     let tint = if label.encrypted { crate::theme::YELLOW() } else { crate::theme::GREEN() };
     let border = if hovered {
         tint
@@ -517,13 +550,9 @@ fn draw_ism_box(p: &egui::Painter, b: &IsmBox, label: &IsmLabel, hovered: bool) 
     };
     p.rect_filled(b.rect, 2.0, Color32::from_rgba_unmultiplied(0, 0, 0, 200));
     p.rect_stroke(b.rect, 2.0, Stroke::new(1.0, border), egui::StrokeKind::Inside);
-    p.text(
-        pos2(b.rect.left() + 5.0, b.rect.center().y),
-        Align2::LEFT_CENTER,
-        &label.text,
-        FontId::proportional(11.5 * fs),
-        border,
-    );
+    // The galley was wrapped during layout, so this paints however many lines it
+    // came to — the box was sized around exactly that.
+    p.galley(pos2(b.rect.left() + ISM_PAD_X, b.rect.top() + ISM_PAD_Y), b.galley.clone(), border);
 }
 
 /// Kind tint, brightened on hover.

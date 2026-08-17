@@ -2462,24 +2462,63 @@ pass — which is what makes it safe to decode on a band this busy.
   gust below the average, which no anemometer reports), and rather than publish a
   number derived from an inconsistency they are omitted until there is a capture
   to settle it.
+- **WS80 outdoor array**: temperature, humidity, wind average, gust and
+  direction, UV, light and battery voltage — the full set, and this one's
+  reference capture is internally consistent.
+- **WS90 "Wittboy"**: the same measurements plus the supercapacitor voltage.
+- **WS85**: wind average, gust and direction, battery and supercapacitor.
+- **WN34 / WN38 soil and water probes** (Froggit DP150 / DP35, Ecowitt WN34S,
+  WN34L, WN34D): temperature and cell voltage.
+- **WH57 lightning detector** (Froggit DP60, Ambient Weather WH31L): distance to
+  the last strike, the running strike count, and what the sensor is reporting —
+  a strike, interference, noise, or that it has just powered up.
 - **Any other Fine Offset sensor** whose two checks pass is still listed, with its
-  model or family code and its serial but no readings — a WH57 lightning detector
-  or WH40 rain gauge will appear as "payload not decoded". That is not a guess: a
-  CRC and an independent sum both agreeing means it really is one of these
-  sensors, and knowing it is there is more use than silence.
+  model or family code and its serial but no readings — a WH45 air-quality unit
+  will appear as "payload not decoded". That is not a guess: a CRC and an
+  independent sum both agreeing means it really is one of these sensors, and
+  knowing it is there is more use than silence.
 
-**Bresser** — the Weather Center 5-in-1 and 6-in-1 outdoor sensors, and the units
-rebadged from them (Froggit among others). Temperature, humidity, wind speed, gust
-and direction, and battery state, depending on which family and which of its
-alternating message types.
+> **Rainfall on the WS85 and WS90 is not decoded**, and the row says so rather
+> than reading zero. The layouts set aside five bytes for rain and name two of
+> them as the total, but the only published capture of each was taken in the dry —
+> so nothing there distinguishes a right guess from a wrong one, and on the WS90
+> a neighbouring byte would read as a plausible 18.6 mm. A rain total read out of
+> the wrong bytes is worse than no rain total. If you have one of these and it
+> rains, a recording made with `--record-iq` would settle it.
 
-- **6-in-1**: temperature, humidity and battery. Verified on air — the readings
-  matched the actual conditions exactly.
+**Bresser** — the Weather Center 5-in-1, 6-in-1 and 7-in-1 outdoor sensors, the
+water-leakage sensor, and the units rebadged from them (Froggit among others).
+
+- **6-in-1 family**: temperature, humidity and battery. Verified on air — the
+  readings matched the actual conditions exactly. Byte 6 says which member sent
+  the frame, so a **thermo-hygro** unit, a **pool thermometer** and a **soil
+  probe** are each named; the soil probe reports moisture on its own sixteen-step
+  scale rather than a humidity percentage.
+- **7-in-1 / 3-in-1 / 8-in-1**: temperature, humidity, wind average, gust and
+  direction, rainfall, light and UV. The frame is whitened and every field is
+  BCD; a sensor without an anemometer or a light cell sends `0xf` digits and
+  those readings are simply absent rather than reported as zero. The
+  **air-quality** members of the same family (CO₂, HCHO/VOC) are named as present
+  but not read — those are not weather measurements.
 - **5-in-1**: temperature, humidity, wind average, gust and direction. Rainfall is
   left out: it is two BCD bytes whose digit order no published capture states a
   value for, and a rain total with its digits reversed is worse than none.
+- **Water-leakage sensor**: wet or dry, the channel, and the battery state. It
+  measures nothing, so it has no readings — only a state.
 - A Bresser **rain gauge** shares the framing with a payload meaning something
   else; it is listed as present without a reading.
+
+> **The 7-in-1 is the weakest frame in the band that SDRoxide accepts**, and worth
+> knowing as such. A 5-in-1 carries about a hundred bits of redundancy and a
+> leakage sensor a 16-bit CRC plus five checkable flag bits; a 7-in-1 has a
+> 16-bit digest and nothing else, so one random burst in 65 536 passes it before
+> any other check. Everything the format offers on top is taken — the sensor-type
+> nibble must be a documented one, every BCD field must be wholly decimal or
+> wholly `0xf`, and a value outside the range its sensor can produce fails the
+> whole frame rather than being dropped on its own — which together gets it to
+> around one in 200 000. This is what the **heard count** in the device list is
+> for: a device seen once may be a lucky digest, one seen fifty times is really
+> there.
 
 These sensors run at **8.2 kbaud** — less than half the Fine Offset rate — behind
 the same channel, preamble and sync word. That mattered more than it sounds: see

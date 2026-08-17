@@ -39,7 +39,26 @@ impl IsmSort {
     }
 }
 
+/// Least tall a device row may be. Rows grow past it: the readings column wraps,
+/// and a weather station with eight readings needs two or three lines at any
+/// window width somebody would actually use.
 const ROW_H: f32 = 19.0;
+
+/// Column widths, in the order they are drawn.
+///
+/// Every one of these is a hard clip — the labels are built with `.truncate()`,
+/// so a long model name ends in an ellipsis instead of being painted across the
+/// device id next to it.
+const W_AGE: f32 = 30.0;
+const W_FREQ: f32 = 62.0;
+const W_KIND: f32 = 132.0;
+const W_DEVICE: f32 = 78.0;
+const W_SNR: f32 = 36.0;
+const W_COUNT: f32 = 32.0;
+const COL_GAP: f32 = 5.0;
+
+/// Below this the signal columns are dropped rather than squeezing the readings.
+const NARROW_W: f32 = 560.0;
 
 impl SdroxideApp {
     pub(in crate::app) fn ism_window(&mut self, ctx: &egui::Context, cmds: &mut Vec<Command>) {
@@ -56,7 +75,9 @@ impl SdroxideApp {
             .open(&mut open)
             .frame(crate::chrome::window_frame())
             .resizable(true)
-            .default_width(crate::layout::window_w(ctx, 620.0))
+            // Wide enough that a full weather station's readings fold onto two
+            // lines rather than five. It is resizable either way.
+            .default_width(crate::layout::window_w(ctx, 760.0))
             .show(ctx, |ui| {
                 crate::chrome::window_body_bg(ui);
                 self.ism_body(ui, &mut cfg, cmds)
@@ -264,7 +285,8 @@ impl SdroxideApp {
         // Staged out of the closure: it borrows `self` and cannot also push a
         // tune command through `cmds`.
         let mut tune_to: Option<f64> = None;
-        let narrow = ui.available_width() < 560.0;
+        let narrow = ui.available_width() < NARROW_W;
+        ism_header(ui, narrow);
         egui::ScrollArea::vertical()
             .id_salt("ism-devices")
             .max_height(ui.available_height())
@@ -288,34 +310,72 @@ impl SdroxideApp {
     }
 }
 
+/// The column headings, so the numbers in a row say what they are.
+fn ism_header(ui: &mut egui::Ui, narrow: bool) {
+    let head = |ui: &mut egui::Ui, w: f32, right: bool, text: &str| {
+        row_cell(
+            ui,
+            w,
+            14.0,
+            right,
+            egui::Label::new(
+                RichText::new(text).size(9.5).color(crate::theme::CYAN_DIM()).monospace(),
+            )
+            .truncate(),
+        );
+    };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = COL_GAP;
+        // The frame's left margin, so the headings sit over their columns.
+        ui.add_space(6.0);
+        head(ui, W_AGE, true, "age");
+        head(ui, W_FREQ, true, "MHz");
+        head(ui, W_KIND, false, "device");
+        head(ui, W_DEVICE, false, "id");
+        if !narrow {
+            head(ui, W_SNR, true, "sig");
+            head(ui, W_COUNT, true, "n");
+        }
+        head(ui, ui.available_width().max(40.0), false, "readings");
+    });
+}
+
 /// One device. Reads the way the question is asked: when, what, which one, and
 /// what it said.
+///
+/// The fixed columns truncate and the readings column wraps, which between them
+/// are what keep a row inside the window: a long model name used to be painted
+/// straight over the device id beside it, and a weather station's eight readings
+/// used to force the whole window wider than the screen.
 fn ism_row(ui: &mut egui::Ui, r: &IsmReport, now: i64, narrow: bool) -> egui::Response {
     let inner = egui::Frame::new()
         .fill(crate::theme::ROW_BG())
         .inner_margin(egui::Margin { left: 6, right: 6, top: 3, bottom: 3 })
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.horizontal(|ui| {
+            // Top-aligned, not centred: the readings wrap to two or three lines
+            // and the columns beside them should stay level with the first.
+            ui.horizontal_top(|ui| {
                 ui.set_min_height(ROW_H);
-                ui.spacing_mut().item_spacing.x = 5.0;
+                ui.spacing_mut().item_spacing.x = COL_GAP;
 
                 // Age, not a clock: "how long since this spoke" is the question,
                 // and a device that has gone quiet is the thing worth noticing.
                 row_cell(
                     ui,
-                    30.0,
+                    W_AGE,
                     ROW_H,
                     true,
                     egui::Label::new(
                         RichText::new(fmt_age(now - r.last_at))
                             .size(10.5)
                             .color(crate::theme::CYAN_DIM()),
-                    ),
+                    )
+                    .truncate(),
                 );
                 row_cell(
                     ui,
-                    62.0,
+                    W_FREQ,
                     ROW_H,
                     true,
                     egui::Label::new(
@@ -323,55 +383,64 @@ fn ism_row(ui: &mut egui::Ui, r: &IsmReport, now: i64, narrow: bool) -> egui::Re
                             .size(11.0)
                             .monospace()
                             .color(crate::theme::TEXT()),
-                    ),
+                    )
+                    .truncate(),
                 );
                 row_cell(
                     ui,
-                    96.0,
+                    W_KIND,
                     ROW_H,
                     false,
                     egui::Label::new(
                         RichText::new(r.fmt_kind()).size(11.0).color(crate::theme::CYAN()),
-                    ),
+                    )
+                    .truncate(),
                 );
                 row_cell(
                     ui,
-                    46.0,
+                    W_DEVICE,
                     ROW_H,
                     false,
-                    egui::Label::new(RichText::new(&r.device).size(11.0).monospace().strong()),
+                    egui::Label::new(RichText::new(&r.device).size(11.0).monospace().strong())
+                        .truncate(),
                 );
                 if !narrow {
                     row_cell(
                         ui,
-                        34.0,
+                        W_SNR,
                         ROW_H,
                         true,
                         egui::Label::new(
                             RichText::new(format!("{} dB", r.snr_db))
                                 .size(10.5)
                                 .color(crate::theme::CYAN_DIM()),
-                        ),
+                        )
+                        .truncate(),
                     );
                     // How many times it has been heard: one frame is a CRC that
                     // happened to pass, fifty is a device that is really there.
                     row_cell(
                         ui,
-                        30.0,
+                        W_COUNT,
                         ROW_H,
                         true,
                         egui::Label::new(
                             RichText::new(format!("×{}", r.count))
                                 .size(10.5)
                                 .color(crate::theme::CYAN_DIM()),
-                        ),
+                        )
+                        .truncate(),
                     );
                 }
-                // The readings take whatever is left, so a narrow pane drops the
-                // signal columns rather than squeezing the values that matter.
+                // The readings take whatever is left and wrap inside it, so a
+                // narrow pane drops the signal columns and then folds the values
+                // rather than pushing the window wider than the screen.
                 let colour =
                     if r.encrypted { crate::theme::YELLOW() } else { crate::theme::GREEN() };
-                ui.add(egui::Label::new(RichText::new(r.fmt_readings()).size(11.0).color(colour)));
+                ui.add(
+                    egui::Label::new(RichText::new(r.fmt_readings()).size(11.0).color(colour))
+                        .wrap(),
+                );
             });
         });
 

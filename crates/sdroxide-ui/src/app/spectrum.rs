@@ -395,7 +395,11 @@ impl SdroxideApp {
             .iter()
             .map(|r| crate::widgets::spectrum_view::IsmLabel {
                 freq_hz: r.freq_hz,
-                text: format!("{} {}  {}", r.fmt_kind(), r.device, r.fmt_readings()),
+                // The id gets a `#` in front of it. The window can put it in a
+                // column of its own; here it is run together with the model
+                // name, and a model ending in a digit — "7-in-1" — reads as one
+                // number with the id when only a space separates them.
+                text: format!("{} #{}  {}", r.fmt_kind(), r.device, r.fmt_readings()),
                 encrypted: r.encrypted,
             })
             .collect()

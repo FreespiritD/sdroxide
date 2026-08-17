@@ -139,6 +139,13 @@ pub enum IsmQuantity {
     SoilMoisturePct,
     BatteryPct,
     BatteryVolts,
+    /// Distance to the nearest detected lightning strike. These sensors are
+    /// AS3935 Franklin front ends: the figure is a storm-energy estimate binned
+    /// into a few kilometres, not a range measurement.
+    LightningKm,
+    /// Strikes counted since the sensor was last reset. A running total, so what
+    /// matters is that it went up.
+    StrikeCount,
 }
 
 impl IsmQuantity {
@@ -157,6 +164,8 @@ impl IsmQuantity {
             IsmQuantity::SoilMoisturePct => "soil",
             IsmQuantity::BatteryPct => "batt",
             IsmQuantity::BatteryVolts => "batt",
+            IsmQuantity::LightningKm => "strike",
+            IsmQuantity::StrikeCount => "strikes",
         }
     }
 
@@ -171,9 +180,10 @@ impl IsmQuantity {
             IsmQuantity::WindDirDeg => "°",
             IsmQuantity::RainMm => "mm",
             IsmQuantity::PressureHpa => "hPa",
-            IsmQuantity::UvIndex => "",
+            IsmQuantity::UvIndex | IsmQuantity::StrikeCount => "",
             IsmQuantity::LuxLx => "lx",
             IsmQuantity::BatteryVolts => "V",
+            IsmQuantity::LightningKm => "km",
         }
     }
 
@@ -191,7 +201,9 @@ impl IsmQuantity {
             | IsmQuantity::PressureHpa
             | IsmQuantity::LuxLx
             | IsmQuantity::SoilMoisturePct
-            | IsmQuantity::BatteryPct => 0,
+            | IsmQuantity::BatteryPct
+            | IsmQuantity::LightningKm
+            | IsmQuantity::StrikeCount => 0,
         }
     }
 }

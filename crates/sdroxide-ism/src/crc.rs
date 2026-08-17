@@ -28,6 +28,23 @@ pub fn crc8(poly: u8, init: u8, data: &[u8]) -> u8 {
     crc
 }
 
+/// Bitwise CRC-16, MSB-first, no reflection and no final xor.
+///
+/// With `poly = 0x1021, init = 0x0000` this is CRC-16/XMODEM, which is what the
+/// Bresser leakage sensor carries. None of the CRC-16s elsewhere in the tree is
+/// this one: `sdroxide-ax25` reflects both directions and xors the output,
+/// `sdroxide-winlink` augments the message.
+pub fn crc16(poly: u16, init: u16, data: &[u8]) -> u16 {
+    let mut crc = init;
+    for &b in data {
+        crc ^= u16::from(b) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 { (crc << 1) ^ poly } else { crc << 1 };
+        }
+    }
+    crc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -43,6 +60,22 @@ mod tests {
         assert_eq!(crc8(0x31, 0xFF, msg), 0xF7);
         // CRC-8/SMBUS: poly 0x07, init 0x00, no reflection, no xorout.
         assert_eq!(crc8(0x07, 0x00, msg), 0xF4);
+        // CRC-16/XMODEM: poly 0x1021, init 0x0000, no reflection, no xorout.
+        assert_eq!(crc16(0x1021, 0x0000, msg), 0x31C3);
+        // And CRC-16/CCITT-FALSE, the same polynomial with init 0xFFFF, which
+        // pins the init parameter as well as the polynomial.
+        assert_eq!(crc16(0x1021, 0xFFFF, msg), 0x29B1);
+    }
+
+    /// The same append-and-check property, for the sixteen-bit width.
+    #[test]
+    fn a_message_with_its_crc16_appended_checks_to_zero() {
+        for msg in [b"\x00".as_slice(), b"\xff\x00\xa5", b"hello ism", &[0u8; 32]] {
+            let c = crc16(0x1021, 0x0000, msg);
+            let mut with = msg.to_vec();
+            with.extend_from_slice(&c.to_be_bytes());
+            assert_eq!(crc16(0x1021, 0x0000, &with), 0, "over {msg:?}");
+        }
     }
 
     /// A CRC appended to its own message leaves zero. This is the property the
