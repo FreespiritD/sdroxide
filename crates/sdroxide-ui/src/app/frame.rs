@@ -208,15 +208,11 @@ impl eframe::App for SdroxideApp {
                             // actually clears it in the engine.
                             if let Some(swr) = self.state.tx.swr_tripped {
                                 if ui
-                                    .button(
-                                        RichText::new("Acknowledge and re-enable transmit")
-                                            .size(13.0),
-                                    )
+                                    .button(RichText::new("Acknowledge").size(13.0))
                                     .on_hover_text(format!(
-                                        "The rig reported {swr:.1}:1. Check the antenna, feeder \
-                                         and any switch or ATU before transmitting again. If the \
-                                         fault is still there, the guard will stop the next \
-                                         transmission too."
+                                        "Re-enables transmit after {swr:.1}:1. Check the antenna \
+                                         first: if the fault is still there, the next \
+                                         transmission stops too."
                                     ))
                                     .clicked()
                                 {

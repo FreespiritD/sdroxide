@@ -2209,10 +2209,13 @@ fn engine_thread(
                                 // TCI starvation unkey uses.
                                 engine.apply(Command::SetTune(false));
                                 engine.apply(Command::SetPtt(false));
+                                // Short on purpose. This lands on a banner in
+                                // front of an operator who has just had a
+                                // transmission cut off, and the two things worth
+                                // reading are the figure and what to look at.
                                 engine.notice(&format!(
-                                    "transmit stopped — SWR {swr:.1}:1 is at or above the \
-                                     {limit:.1}:1 limit. CHECK YOUR ANTENNA. Transmit stays \
-                                     locked out until you acknowledge this."
+                                    "Transmit stopped. SWR {swr:.1}:1, limit {limit:.1}:1. \
+                                     Check the antenna."
                                 ));
                                 engine.emit_state();
                             }
@@ -7461,8 +7464,7 @@ impl Engine {
             // to key into a fault.
             if let Some(swr) = self.swr_tripped {
                 return self.deny_tx(&format!(
-                    "SWR guard tripped at {swr:.1}:1 — CHECK YOUR ANTENNA, then acknowledge it to \
-                     transmit again"
+                    "SWR guard tripped at {swr:.1}:1. Acknowledge it to transmit again"
                 ));
             }
             // The station's transmit interlock: one radio on the air at a

@@ -234,16 +234,11 @@ impl SdroxideApp {
         ui.add_space(6.0);
         ui.label(
             RichText::new(
-                "Reads the SWR the radio itself measures while transmitting, and if it stays at \
-                 or above this figure, stops the transmission and locks transmit out until you \
-                 acknowledge it. Meant for the antenna that is not connected, the feeder that has \
-                 failed, or the switch left on the wrong port. It needs a rig that reports SWR \
-                 over CAT; on one that does not, it never fires. It ignores the first fifth of a \
-                 second of each transmission, because the reading is not trustworthy until the \
-                 transmitter has settled. It does NOT wait for high power: a rig that folds its \
-                 power back on high SWR is doing so because the SWR is bad, and that is precisely \
-                 when this has to work. Acknowledging does not fix anything: if the fault is \
-                 still there, the next transmission is stopped too.",
+                "Stops the transmission when the radio reports an SWR at or above this figure, and \
+                 keeps transmit locked out until you acknowledge it. Catches a disconnected \
+                 antenna, a failed feeder, or a switch left on the wrong port.\n\n\
+                 Needs a rig that reports SWR over CAT. Ignores the first fifth of a second of \
+                 each transmission, and does not wait for high power.",
             )
             .size(10.5)
             .color(crate::theme::gray(140)),
