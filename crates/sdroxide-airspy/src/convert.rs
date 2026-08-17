@@ -23,6 +23,15 @@
 //!    sits where the filter's stopband is. Decimating by two gives complex
 //!    baseband at `fs/2`.
 //!
+//! # This is the only backend whose CPU cost is the *ADC* rate
+//!
+//! Everything above runs once per sample the ADC took, not once per sample the
+//! operator asked for — 12 Msps on a Mini at 3, 20 on an R2 at 10 — and it runs
+//! before anything else in the program gets a look at the signal. So it is
+//! worth the structure [`HostDsp`] has rather than the obvious one: measure it
+//! with `cargo run --release --example convert_bench`, which reports each stage
+//! as a fraction of one core at both rates.
+//!
 //! # Why the filter is designed rather than transcribed
 //!
 //! libairspy ships a 47-tap half-band as float literals. Copying 47 numbers is
@@ -54,8 +63,10 @@ pub const SAMPLE_SCALE: f32 = 1.0 / 2048.0;
 /// that length a Blackman-Harris half-band is only 37 dB down at `0.30 fs`,
 /// which is not enough — the transition is still open where the image of a
 /// signal near the band edge lands. 63 reaches −61 dB there with 0.008 dB of
-/// passband ripple, and costs nothing extra in practice because half the taps
-/// are exactly zero and are never evaluated (see [`HostDsp::filter`]).
+/// passband ripple, and costs **less** than libairspy's 47 in practice: the
+/// half-band's zeros, its parity split and its symmetry between them leave 16
+/// multiplies per output sample against the reference's 24 (see [`HostDsp`]).
+/// The length is a quality decision and the structure pays for it.
 ///
 /// Odd, so the filter has an exact centre tap and therefore an integer group
 /// delay.
@@ -108,30 +119,71 @@ pub fn halfband(taps: usize) -> Vec<f32> {
     h
 }
 
+/// Even-index taps: the ones the real branch sees. The odd ones are the
+/// half-band's zeros, plus the centre.
+const EVEN_TAPS: usize = HALFBAND_TAPS.div_ceil(2);
+
+/// Delay-line length. A power of two, so a ring index is a mask and not a
+/// division — 63 is not, and dividing once per tap per output was most of what
+/// this conversion used to cost.
+const RING: usize = EVEN_TAPS.next_power_of_two();
+const MASK: usize = RING - 1;
+
+/// How far back the imaginary branch reaches, in output samples.
+const IM_DELAY: usize = (HALFBAND_TAPS / 2).div_ceil(2);
+
+const _: () = assert!(EVEN_TAPS <= RING, "the ring must hold every even tap");
+const _: () = assert!(
+    HALFBAND_TAPS % 4 == 3,
+    "the centre tap must land on an odd index and the even taps must pair up"
+);
+
 /// The whole real-to-complex chain, in the order it has to run.
 ///
 /// Held together in one struct so the order cannot drift: DC first (it is a
 /// property of the ADC, not of the band), then the translate, then the
 /// decimating filter.
+///
+/// # Why this is two real filters and not one complex one
+///
+/// The obvious implementation — rotate into a complex delay line, convolve it
+/// with the half-band, keep every second result — is the one this started as,
+/// and it does **four times the arithmetic it needs to**. Two facts collapse it:
+///
+/// * After the fs/4 rotation every sample is *either* real or imaginary, never
+///   both. So a complex multiply-accumulate per tap spends half its multiplies
+///   on a number that is exactly zero.
+/// * The taps that survive the half-band's zeros split by parity. At an output
+///   instant the even-index taps land on real samples and the single centre tap
+///   lands on an imaginary one. So the imaginary branch is not a filter at all:
+///   it is a delay and one multiply.
+///
+/// That leaves 32 real taps, and a linear-phase filter is symmetric, so the
+/// pairs `(k, EVEN_TAPS-1-k)` share a coefficient and can be added before
+/// multiplying: **16 multiplies per output sample** where the direct form did
+/// 66, on a ring indexed by a mask rather than by `% 63`.
+///
+/// This is the structure libairspy uses (`fir_interleaved` on the even samples,
+/// `delay_interleaved` on the odd ones), reached from its own arithmetic rather
+/// than copied — and the test below holds it against the direct form, which is
+/// the definition it has to keep matching.
 pub struct HostDsp {
-    /// The non-zero taps only, as `(offset from the oldest sample, coefficient)`.
-    ///
-    /// A half-band's even taps either side of centre are exactly zero — that is
-    /// what makes it a half-band — so evaluating them is half the arithmetic
-    /// thrown away. At 20 Msps that matters.
-    taps: Vec<(usize, f32)>,
-    /// Delay line for the decimating filter, complex because the translate has
-    /// already happened by the time it runs.
-    hist: Vec<Complex32>,
-    /// Where the next sample goes in `hist`, which is a ring.
-    pos: usize,
-    /// The fs/4 rotation's phase, 0..3. Carried across calls: the rotation is a
-    /// property of the sample *index*, so restarting it every transfer would
-    /// put a phase step at every buffer boundary.
+    /// Folded even taps: `fold[k]` is `h[2k]`, and serves both members of the
+    /// symmetric pair in one multiply.
+    fold: Vec<f32>,
+    /// The centre tap — the whole of the imaginary branch.
+    centre: f32,
+    /// Even-phase (real) history, indexed by output number.
+    re_hist: [f32; RING],
+    /// Odd-phase (imaginary) history, likewise.
+    im_hist: [f32; RING],
+    /// Which complex output is being built. Carried across calls: the
+    /// decimation phase is a property of the sample index, so restarting it
+    /// every transfer would put a step at every buffer boundary.
+    m: usize,
+    /// The fs/4 rotation's phase, 0..3 — the sample's parity in the low bit and
+    /// its sign in the second. Carried across calls for the same reason.
     phase: u8,
-    /// Whether this sample is kept, alternating for the decimate-by-two.
-    /// Carried across calls for the same reason.
-    keep: bool,
     /// One-pole DC estimate, in ADC counts.
     dc: f32,
     /// Whether the DC blocker runs at all.
@@ -152,21 +204,16 @@ impl HostDsp {
 
     pub fn new() -> HostDsp {
         let full = halfband(HALFBAND_TAPS);
-        // Tap `j` pairs with the sample `HALFBAND_TAPS - 1 - j` slots after the
-        // oldest, because the taps are applied in reverse over a ring whose
-        // head is the oldest sample.
-        let taps = full
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| t.abs() > 1e-9)
-            .map(|(j, t)| (HALFBAND_TAPS - 1 - j, *t))
-            .collect();
+        // Half of the even taps: each entry is used twice, once for each end of
+        // the symmetric pair it belongs to.
+        let fold = (0..EVEN_TAPS / 2).map(|k| full[2 * k]).collect();
         HostDsp {
-            taps,
-            hist: vec![Complex32::new(0.0, 0.0); HALFBAND_TAPS],
-            pos: 0,
+            fold,
+            centre: full[HALFBAND_TAPS / 2],
+            re_hist: [0.0; RING],
+            im_hist: [0.0; RING],
+            m: 0,
             phase: 0,
-            keep: true,
             dc: SAMPLE_MID,
             dc_enabled: true,
         }
@@ -180,10 +227,10 @@ impl HostDsp {
     /// an endpoint stall. Without this the taps carry a few dozen samples of
     /// the *previous* band into the new one.
     pub fn reset(&mut self) {
-        self.hist.iter_mut().for_each(|s| *s = Complex32::new(0.0, 0.0));
-        self.pos = 0;
+        self.re_hist = [0.0; RING];
+        self.im_hist = [0.0; RING];
+        self.m = 0;
         self.phase = 0;
-        self.keep = true;
         self.dc = SAMPLE_MID;
     }
 
@@ -207,9 +254,11 @@ impl HostDsp {
             }
             let v = v * SAMPLE_SCALE;
 
-            // Translate by fs/4: multiply by 1, j, -1, -j in turn. No
-            // multiplies — the whole point of the receiver putting the signal
-            // at fs/4.
+            // Translate by fs/4: multiply by 1, j, -1, -j in turn. That is a
+            // sign and a choice of branch — no multiply, which is the whole
+            // point of the receiver putting the signal there. The second bit of
+            // the phase is the sign; the first is the parity, and therefore
+            // which of the two delay lines the sample belongs to.
             //
             // **The sign is libairspy's, and it is not free to choose.** Its
             // `translate_fs_4` scales the real stream by (-1, -hbc, +1, +hbc)
@@ -221,37 +270,38 @@ impl HostDsp {
             // Nothing in a real tone says which is right, because the receiver
             // hands over a real IF that is itself reversed; the reference
             // implementation is what settles it.
-            let z = match self.phase {
-                0 => Complex32::new(v, 0.0),
-                1 => Complex32::new(0.0, v),
-                2 => Complex32::new(-v, 0.0),
-                _ => Complex32::new(0.0, -v),
-            };
-            self.phase = (self.phase + 1) & 3;
+            let v = if self.phase & 2 == 0 { v } else { -v };
 
-            self.hist[self.pos] = z;
-            self.pos = (self.pos + 1) % HALFBAND_TAPS;
-
-            // Decimate by two: filter only the samples that survive.
-            if self.keep {
+            if self.phase & 1 == 0 {
+                // Even sample: the real branch, and the instant an output falls
+                // on. The imaginary partner of this output arrived long ago —
+                // see `IM_DELAY` — so nothing waits for the sample after it.
+                self.re_hist[self.m & MASK] = v;
                 out.push(self.filter());
+            } else {
+                self.im_hist[self.m & MASK] = v;
+                self.m = self.m.wrapping_add(1);
             }
-            self.keep = !self.keep;
+            self.phase = (self.phase + 1) & 3;
         }
     }
 
-    /// One output of the half-band, over the current delay line.
+    /// One complex output, from the two real delay lines.
     ///
-    /// Only the non-zero taps are visited. `pos` points at the slot the *next*
-    /// sample will take, so it is also the oldest sample in the ring.
+    /// The real branch is the folded half-band; the imaginary branch is one
+    /// multiply on a sample `IM_DELAY` outputs back, which is where the
+    /// filter's group delay puts it. See [`HostDsp`] for why that is the whole
+    /// of it.
     fn filter(&self) -> Complex32 {
-        let mut acc = Complex32::new(0.0, 0.0);
-        for (offset, t) in &self.taps {
-            let s = self.hist[(self.pos + offset) % HALFBAND_TAPS];
-            acc.re += s.re * t;
-            acc.im += s.im * t;
+        let m = self.m;
+        let mut re = 0.0f32;
+        for (k, c) in self.fold.iter().enumerate() {
+            // The two ends of a symmetric pair, added before the multiply.
+            let a = self.re_hist[m.wrapping_sub(k) & MASK];
+            let b = self.re_hist[m.wrapping_sub(EVEN_TAPS - 1 - k) & MASK];
+            re += (a + b) * c;
         }
-        acc
+        Complex32::new(re, self.centre * self.im_hist[m.wrapping_sub(IM_DELAY) & MASK])
     }
 }
 
@@ -388,6 +438,74 @@ mod tests {
         );
         // And it really is where it should be, not merely on the right side.
         assert!(at_minus > 0.1, "the tone should be strong at -{offset} Hz: {at_minus:.5}");
+    }
+
+    /// The fast structure against the definition it stands for.
+    ///
+    /// [`HostDsp`] no longer looks like "rotate, convolve, decimate": it is two
+    /// real filters that exploit the half-band's zeros, its parity and its
+    /// symmetry, and it computes a sixteenth of the multiplies the obvious form
+    /// does. That is only worth having if the numbers are the same ones, so
+    /// here is the obvious form, written as plainly as it can be, held against
+    /// it sample for sample.
+    ///
+    /// If this ever fails, the folded filter is wrong and the direct form is
+    /// right — it is the one that says what the conversion *is*.
+    #[test]
+    fn the_folded_form_matches_the_direct_convolution() {
+        let h = halfband(HALFBAND_TAPS);
+        // Noise-like, so no accidental symmetry in the input can hide a
+        // misplaced tap, and full-scale enough that a wrong one shows.
+        let mut state = 0x1234_5678u32;
+        let raw: Vec<u16> = (0..4096)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 20) as u16 & 0x0fff
+            })
+            .collect();
+
+        // Direct form: rotate each sample into a complex delay line, convolve
+        // with the whole kernel, keep every second result.
+        let mut hist = vec![Complex32::new(0.0, 0.0); HALFBAND_TAPS];
+        let mut want = Vec::new();
+        for (n, &s) in raw.iter().enumerate() {
+            let v = (s as f32 - SAMPLE_MID) * SAMPLE_SCALE;
+            let z = match n % 4 {
+                0 => Complex32::new(v, 0.0),
+                1 => Complex32::new(0.0, v),
+                2 => Complex32::new(-v, 0.0),
+                _ => Complex32::new(0.0, -v),
+            };
+            hist.rotate_right(1);
+            hist[0] = z;
+            if n % 2 == 0 {
+                let mut acc = Complex32::new(0.0, 0.0);
+                for (j, t) in h.iter().enumerate() {
+                    acc.re += hist[j].re * t;
+                    acc.im += hist[j].im * t;
+                }
+                want.push(acc);
+            }
+        }
+
+        let mut dsp = HostDsp::new();
+        // The direct form above subtracts a fixed mid-scale, so the tracking
+        // blocker has to be out of the way for the two to be comparable.
+        dsp.set_dc_enabled(false);
+        let mut got = Vec::new();
+        dsp.process(&raw, &mut got);
+
+        assert_eq!(got.len(), want.len(), "the two forms disagree about the output count");
+        for (i, (a, b)) in got.iter().zip(&want).enumerate() {
+            assert!(
+                (a.re - b.re).abs() < 1e-6 && (a.im - b.im).abs() < 1e-6,
+                "output {i}: folded {a:?} vs direct {b:?}"
+            );
+        }
+        // And the direct form really did produce signal, so this is not two
+        // implementations agreeing on silence.
+        let peak = want.iter().map(|s| s.norm_sqr().sqrt()).fold(0.0f32, f32::max);
+        assert!(peak > 0.05, "the test vector is too quiet to prove anything: {peak}");
     }
 
     /// The rotation and the decimation phase are properties of the sample
