@@ -26,7 +26,7 @@ pub(in crate::app) mod tle;
 pub(in crate::app) mod ui_tab;
 
 use eframe::egui::{self, Color32, ComboBox, RichText};
-use sdroxide_types::{Command, LookupProvider, NetworkConfig};
+use sdroxide_types::{Command, LoginTarget, LookupProvider, NetworkConfig};
 
 use self::controls::settings_controls_tab;
 use self::general::{device_combo, region_combo, remote_access_settings};
@@ -2301,9 +2301,20 @@ impl SdroxideApp {
                     ui.checkbox(&mut io.net_edit.auto_upload_clublog, "Club Log");
                 });
 
+                // Only where the engine is in this process: the result is not
+                // sent to remote clients, so a button there would spin for ever.
+                if !self.ctrl.engine_is_remote() {
+                    self.login_test_row(ui, cmds, io.net_edit, LoginTarget::Eqsl);
+                    self.login_test_row(ui, cmds, io.net_edit, LoginTarget::QrzLogbook);
+                    self.login_test_row(ui, cmds, io.net_edit, LoginTarget::ClubLog);
+                }
+
                 net_heading(ui, "Confirmations (download)");
                 net_row(ui, "LoTW user", &mut io.net_edit.lotw.user, 140.0);
                 net_secret(ui, "LoTW pass", &mut io.net_edit.lotw.password, 140.0);
+                if !self.ctrl.engine_is_remote() {
+                    self.login_test_row(ui, cmds, io.net_edit, LoginTarget::Lotw);
+                }
                 ui.label(
                     RichText::new(
                         "LoTW upload uses TQSL — export ADIF from the logbook and sign it. \

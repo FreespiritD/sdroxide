@@ -71,7 +71,9 @@ pub use band_segments::{
 };
 pub use bandplan::{BandPlan, BandPlanError, RegionPlan, band_plan, set_band_plan};
 pub use broadcast::{BroadcastStation, BroadcastStations};
-pub use callsign::{CallsignInfo, UploadResult, UploadTarget};
+pub use callsign::{
+    CallsignInfo, LoginTarget, LoginTestResult, UploadResult, UploadTarget,
+};
 pub use caps::{DeviceCaps, Direction, GainElement};
 pub use command::Command;
 pub use contacts::FsqContact;

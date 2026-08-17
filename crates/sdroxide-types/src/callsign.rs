@@ -76,6 +76,43 @@ impl UploadTarget {
         [UploadTarget::Eqsl, UploadTarget::QrzLogbook, UploadTarget::ClubLog];
 }
 
+/// A service whose stored credentials can be checked without logging a QSO.
+///
+/// Deliberately a separate enum from [`UploadTarget`] rather than an extension
+/// of it. LoTW is testable but is not an upload target (its upload needs TQSL
+/// signing), and the two lists would drift apart the moment a download-only
+/// service was added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LoginTarget {
+    Eqsl,
+    QrzLogbook,
+    ClubLog,
+    Lotw,
+}
+
+impl LoginTarget {
+    pub fn label(self) -> &'static str {
+        match self {
+            LoginTarget::Eqsl => "eQSL",
+            LoginTarget::QrzLogbook => "QRZ Logbook",
+            LoginTarget::ClubLog => "Club Log",
+            LoginTarget::Lotw => "LoTW",
+        }
+    }
+
+    pub const ALL: [LoginTarget; 4] =
+        [LoginTarget::Eqsl, LoginTarget::QrzLogbook, LoginTarget::ClubLog, LoginTarget::Lotw];
+}
+
+/// The outcome of checking one service's stored credentials.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoginTestResult {
+    pub target: LoginTarget,
+    pub ok: bool,
+    /// What the service said, or why the check could not be made.
+    pub message: String,
+}
+
 /// The outcome of an upload attempt for one QSO to one target.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UploadResult {

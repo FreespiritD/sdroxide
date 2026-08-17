@@ -3,7 +3,7 @@
 //! (it requires TQSL signing) — the UI exports ADIF for the operator to sign;
 //! but confirmations can still be downloaded here to drive award tracking.
 
-use sdroxide_types::{NetworkConfig, QsoRecord, UploadTarget};
+use sdroxide_types::{LoginTarget, NetworkConfig, QsoRecord, UploadTarget};
 
 use crate::http;
 
@@ -101,6 +101,157 @@ fn upload_clublog(cfg: &NetworkConfig, my_call: &str, adif: &str) -> Result<Stri
     } else {
         Ok("Club Log: accepted".into())
     }
+}
+
+/// Check one service's stored credentials, without logging anything.
+///
+/// ⛔ NOTHING HERE MAY WRITE. A credential check that inserted a dummy QSO to
+/// see whether the login worked would put a fictional contact in the operator's
+/// permanent log and, for the services that forward to LoTW or an award
+/// programme, somewhere it cannot be withdrawn from. Every branch below uses
+/// the cheapest READ endpoint the service publishes, and the upload endpoints
+/// above are deliberately not reachable from here.
+///
+/// The message on success is what the operator sees next to the button, so it
+/// says something they can check against — the account or callsign the service
+/// answered for, where the service gives one.
+pub fn test_login(
+    cfg: &NetworkConfig,
+    my_call: &str,
+    target: LoginTarget,
+) -> Result<String, String> {
+    match target {
+        LoginTarget::Eqsl => test_eqsl(cfg),
+        LoginTarget::QrzLogbook => test_qrz(cfg),
+        LoginTarget::ClubLog => test_clublog(cfg, my_call),
+        LoginTarget::Lotw => test_lotw(cfg),
+    }
+}
+
+fn test_eqsl(cfg: &NetworkConfig) -> Result<String, String> {
+    if cfg.eqsl.user.trim().is_empty() || cfg.eqsl.password.trim().is_empty() {
+        return Err("username/password not set".into());
+    }
+    // The inbox download, asked for a date nothing can be newer than: the
+    // question is whether the login is accepted, not what is in the inbox, and
+    // this keeps eQSL from building an ADIF file to answer it.
+    let url = format!(
+        "https://www.eqsl.cc/qslcard/DownloadInBox.cfm?UserName={}&Password={}&RcvdSince=20991231",
+        urlencode(cfg.eqsl.user.trim()),
+        urlencode(cfg.eqsl.password.trim())
+    );
+    let page = http::get(&url)?;
+    let text = strip_html(&page);
+    let low = text.to_ascii_lowercase();
+    // Every rule below is taken from what eQSL actually returned on 17 August
+    // 2026, for a good login, a good login with nothing to fetch, and a
+    // deliberately wrong password. Guessing at this is how the first version
+    // managed to be wrong in both directions at once: eQSL says
+    // "Error: No such Username/Password found", which contains neither "invalid"
+    // nor "not found", and its empty-inbox answer is "You have no log entries",
+    // which contains neither "no qso" nor a ".adi" link.
+    if low.contains("no such username/password") || low.contains("error:") {
+        let line = text
+            .lines()
+            .map(str::trim)
+            .find(|l| l.to_ascii_lowercase().contains("error") || l.to_ascii_lowercase().contains("no such"))
+            .unwrap_or("login rejected");
+        return Err(line.trim_start_matches("Error:").trim().chars().take(120).collect());
+    }
+    if low.contains("no log entries") || low.contains("has been built") || page.to_ascii_lowercase().contains(".adi") {
+        return Ok(format!("signed in as {}", cfg.eqsl.user.trim()));
+    }
+    Err("unexpected reply; check the username and password".into())
+}
+
+fn test_qrz(cfg: &NetworkConfig) -> Result<String, String> {
+    if cfg.qrz_logbook_key.trim().is_empty() {
+        return Err("API key not set".into());
+    }
+    // STATUS reports the logbook's own details and inserts nothing. This is the
+    // one service of the four with an endpoint meant for exactly this.
+    let body = http::post_form(
+        "https://logbook.qrz.com/api",
+        &[("KEY", cfg.qrz_logbook_key.trim()), ("ACTION", "STATUS")],
+    )?;
+    let kv = parse_kv(&body);
+    let get = |k: &str| kv.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone());
+    match get("RESULT").as_deref() {
+        Some("OK") => {
+            let call = get("CALLSIGN").unwrap_or_else(|| "logbook".into());
+            match get("COUNT") {
+                Some(n) => Ok(format!("{call}, {n} QSOs")),
+                None => Ok(call),
+            }
+        }
+        _ => Err(get("REASON")
+            .or_else(|| get("STATUS"))
+            .unwrap_or_else(|| "key rejected".into())
+            .chars()
+            .take(120)
+            .collect()),
+    }
+}
+
+/// Club Log needs BOTH an account password and an API key, and the upload uses
+/// both, so a check that proved only one would pass while uploads still failed.
+/// They have separate read endpoints, so both are exercised.
+fn test_clublog(cfg: &NetworkConfig, my_call: &str) -> Result<String, String> {
+    if cfg.clublog.user.trim().is_empty() || cfg.clublog.password.trim().is_empty() {
+        return Err("email/password not set".into());
+    }
+    let call = my_call.trim();
+    if call.is_empty() {
+        return Err("station callsign not set".into());
+    }
+    // The OQRS ADIF download. `type=dxqsl` asks for OQRS requests rather than
+    // the whole log, so this stays small on a station with fifty thousand QSOs,
+    // and POST is required rather than GET.
+    //
+    // ⚠️ THIS CHECKS THE ACCOUNT, NOT THE API KEY, and the upload needs both.
+    // The documented key check is `GET /dxcc?call=&api=&full=1`, which returned
+    // 403 Forbidden on every attempt here on 17 August 2026, with and without a
+    // User-Agent, while the account call below succeeded from the same host
+    // seconds later. Rather than report a guess about the key, the message says
+    // which half was actually checked.
+    let body = http::post_form(
+        "https://clublog.org/getadif.php",
+        &[
+            ("email", cfg.clublog.user.trim()),
+            ("password", cfg.clublog.password.trim()),
+            ("call", call),
+            ("type", "dxqsl"),
+        ],
+    )?;
+    // A positive marker, not an error-word search: Club Log's own success text
+    // is prose, and a rule that hunts for "error" in prose eventually finds one.
+    if body.to_ascii_lowercase().contains("club log") {
+        return Ok(format!("{call}: account accepted (API key not checked)"));
+    }
+    Err(body.trim().chars().take(120).collect())
+}
+
+fn test_lotw(cfg: &NetworkConfig) -> Result<String, String> {
+    if cfg.lotw.user.trim().is_empty() || cfg.lotw.password.trim().is_empty() {
+        return Err("login not set".into());
+    }
+    // The same report the confirmation sync uses, bounded to a date that cannot
+    // return records, so this costs ARRL almost nothing to answer.
+    let url = format!(
+        "https://lotw.arrl.org/lotwuser/lotwreport.adi?login={}&password={}&qso_query=1&qso_qsl=yes&qso_qslsince=2099-12-31",
+        urlencode(cfg.lotw.user.trim()),
+        urlencode(cfg.lotw.password.trim())
+    );
+    let body = http::get(&url)?;
+    // A rejected login is an HTML page; an accepted one is ADIF, whose header
+    // ends in <eoh> even when no records follow.
+    if body.to_ascii_lowercase().contains("username/password") || body.contains("<!DOCTYPE") {
+        return Err("login rejected (LoTW returned its log-on page)".into());
+    }
+    if body.to_ascii_lowercase().contains("<eoh>") {
+        return Ok(format!("signed in as {}", cfg.lotw.user.trim()));
+    }
+    Err("unexpected reply; check the login and password".into())
 }
 
 /// Download QSL confirmations from LoTW and eQSL, returning parsed confirmation

@@ -16,6 +16,10 @@ pub enum NetEvent {
     Callsign(CallsignInfo),
     /// One QSO/target upload result.
     Upload(UploadResult),
+    /// The outcome of checking one service's stored credentials. Distinct
+    /// from [`NetEvent::Upload`] because nothing was logged: this is an
+    /// answer about the account, not about a QSO.
+    LoginTest(sdroxide_types::LoginTestResult),
     /// Parsed confirmation records downloaded from LoTW/eQSL.
     Confirmations(Vec<QsoRecord>),
     /// WSPR reception reports fetched from WSPRnet — normally reports of *our*

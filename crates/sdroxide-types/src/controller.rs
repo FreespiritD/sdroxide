@@ -27,6 +27,9 @@ pub enum RadioEvent {
     /// audio input was unavailable or a mono card was selected for IQ). `None`
     /// clears it. Native-local only — not forwarded to remote clients.
     Notice(Option<String>),
+    /// The outcome of a credential check asked for by
+    /// [`crate::Command::TestLogin`]. Nothing was logged to produce it.
+    LoginTest(crate::LoginTestResult),
     /// FT8/FT4 decodes from one receive slot.
     Ft8Decodes(Vec<Decode>),
     /// FT8/FT4 engine status change.
