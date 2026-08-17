@@ -6,6 +6,12 @@
 //! on disk (and in the wasm build). A small hand-rolled markdown parser turns
 //! the manual into a block list once, then the window renders it with angled,
 //! hazard-striped section headers to match the rest of the UI chrome.
+//!
+//! Across the top is a find bar that searches as you type: every occurrence is
+//! highlighted where it is drawn, ◀/▶ (or Enter / F3) step through them, and
+//! the CONTENTS rows holding a hit are tinted and badged with their count, so
+//! a term that appears in one chapter out of eleven is visible before any
+//! scrolling happens.
 
 use std::collections::HashMap;
 
@@ -157,28 +163,82 @@ struct NavEntry {
     label: String,
 }
 
-/// The parsed manual: block list plus the derived navigation outline. Built
-/// once and never mutated, so it can be borrowed alongside the mutable UI
-/// state without conflict.
+/// The parsed manual: block list, the derived navigation outline, and the
+/// flattened text the find bar searches. Built once and never mutated, so it
+/// can be borrowed alongside the mutable UI state without conflict.
 struct Doc {
     blocks: Vec<Block>,
     nav: Vec<NavEntry>,
+    /// Each block's visible text, in block order — the haystack the outline
+    /// badges are counted from, so a keystroke costs one pass over a few
+    /// hundred short strings instead of a walk of the whole block tree.
+    text: Vec<String>,
+    /// For each block, the outline rows it sits under: its chapter (a level-2
+    /// heading) and its subsection (level 3), where each exists. This is what
+    /// lets a hit deep in the body light up the chapter that holds it.
+    owner: Vec<[Option<usize>; 2]>,
 }
 
 impl Doc {
     fn parse(md: &str) -> Self {
         let blocks = parse_blocks(md);
-        let nav = blocks
-            .iter()
-            .filter_map(|b| match b {
-                Block::Heading { level, text, slug } if *level == 2 || *level == 3 => {
-                    Some(NavEntry { slug: slug.clone(), level: *level, label: plain_text(text) })
+        let mut nav: Vec<NavEntry> = Vec::new();
+        let mut owner = Vec::with_capacity(blocks.len());
+        let (mut chapter, mut section) = (None, None);
+        for b in &blocks {
+            // A heading owns itself as well as everything under it, so
+            // searching for a chapter's title lights up that chapter's row.
+            if let Block::Heading { level, text, slug } = b {
+                match level {
+                    // The document title ends the previous chapter's run.
+                    1 => (chapter, section) = (None, None),
+                    2 | 3 => {
+                        nav.push(NavEntry {
+                            slug: slug.clone(),
+                            level: *level,
+                            label: plain_text(text),
+                        });
+                        if *level == 2 {
+                            (chapter, section) = (Some(nav.len() - 1), None);
+                        } else {
+                            section = Some(nav.len() - 1);
+                        }
+                    }
+                    _ => {}
                 }
-                _ => None,
-            })
-            .collect();
-        Doc { blocks, nav }
+            }
+            owner.push([chapter, section]);
+        }
+        let text = blocks.iter().map(block_text).collect();
+        Doc { blocks, nav, text, owner }
     }
+}
+
+/// Every piece of a block's text that reaches the screen, newline-separated so
+/// a search term can never match across a join the reader does not see.
+fn block_text(b: &Block) -> String {
+    fn push(s: &mut String, t: &str) {
+        if !s.is_empty() {
+            s.push('\n');
+        }
+        s.push_str(t);
+    }
+    let mut s = String::new();
+    match b {
+        Block::Heading { text, .. } | Block::Paragraph(text) | Block::Quote(text) => {
+            push(&mut s, &plain_text(text));
+        }
+        Block::Bullets(items) => items.iter().for_each(|i| push(&mut s, &plain_text(i))),
+        Block::Numbered(items) => items.iter().for_each(|(_, i)| push(&mut s, &plain_text(i))),
+        Block::Code(code) => push(&mut s, code),
+        Block::Image { alt, .. } => push(&mut s, alt),
+        Block::Rule => {}
+        Block::Table { header, rows } => {
+            header.iter().for_each(|c| push(&mut s, &plain_text(c)));
+            rows.iter().flatten().for_each(|c| push(&mut s, &plain_text(c)));
+        }
+    }
+    s
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +269,27 @@ pub struct Help {
     viewport_h: f32,
     content_h: f32,
     offset_y: f32,
+    /// Find-in-page: the term, which occurrence is selected, and how many the
+    /// last drawn frame found. The tally comes from the drawing pass rather
+    /// than a second scan of the text, so "3 / 17" can never disagree with
+    /// what the ◀/▶ buttons step through.
+    search: String,
+    hit: usize,
+    hits: usize,
+    /// Frames left to keep pulling the viewport onto the selected hit. Held
+    /// for a few, like [`Help::scroll_to`], because a screenshot decoding
+    /// above the hit moves it after the first pull.
+    seek_frames: u8,
+    /// Hits per outline row, indexed like `doc.nav` — what tints the CONTENTS
+    /// rows that hold a match. Recomputed only when the term changes.
+    nav_hits: Vec<usize>,
+    /// The term `nav_hits` was counted for.
+    nav_needle: String,
+    /// Set by Ctrl+F, spent by the find field the next time it draws.
+    focus_find: bool,
+    /// False until the window has been drawn once since it was opened — that
+    /// first frame is the one that sizes it to fill the viewport.
+    shown: bool,
 }
 
 impl Default for Help {
@@ -226,15 +307,58 @@ impl Default for Help {
             viewport_h: 0.0,
             content_h: 0.0,
             offset_y: 0.0,
+            search: String::new(),
+            hit: 0,
+            hits: 0,
+            seek_frames: 0,
+            nav_hits: Vec::new(),
+            nav_needle: String::new(),
+            focus_find: false,
+            shown: false,
         }
     }
 }
 
-/// Actions a rendered inline element (a link) wants to trigger, collected
-/// during the frame and applied afterwards to avoid borrow conflicts.
-#[derive(Default)]
-struct Actions {
+/// The side channel the block renderers get: what a rendered link wants to
+/// trigger (collected during the frame and applied afterwards, to avoid borrow
+/// conflicts) and the find pass the text renderers register their highlights
+/// with.
+struct Pass<'a> {
     link: Option<String>,
+    find: Find<'a>,
+}
+
+/// One frame of find-in-page.
+///
+/// The occurrence index is a *drawing* index: every renderer that puts text on
+/// screen claims its matches in document order as it goes, whether or not they
+/// are on screen. Deriving it from the drawing rather than from a separate
+/// scan of the text is what guarantees the selected hit is a hit that exists —
+/// the ◀/▶ buttons can never step onto something the pane will not draw.
+struct Find<'a> {
+    /// What to look for; empty when the find bar is idle.
+    needle: &'a str,
+    /// Which occurrence, in document order, is selected.
+    sel: usize,
+    /// Occurrences claimed so far this frame.
+    seen: usize,
+    /// Where the selected occurrence landed — what the pane scrolls to.
+    rect: Option<Rect>,
+}
+
+impl Find<'_> {
+    /// Take the next occurrence in document order; true if it is the selected
+    /// one, in which case the caller follows up with [`Find::place`] once it
+    /// knows where the occurrence ended up.
+    fn claim(&mut self) -> bool {
+        let selected = self.seen == self.sel;
+        self.seen += 1;
+        selected
+    }
+
+    fn place(&mut self, rect: Rect) {
+        self.rect = Some(rect);
+    }
 }
 
 impl Help {
@@ -259,8 +383,36 @@ impl Help {
         if !self.open {
             return;
         }
+
+        // Ctrl+F and F3 are claimed before the focus test below, because they
+        // are the two keys the operator reaches for *while* typing a search
+        // term — and the find field having the keyboard is exactly the case
+        // the test would bail out on. Like the scrolling keys, they are only
+        // taken from the bindings while the manual is open.
+        let (mut focus, mut step) = (false, 0i32);
+        ctx.input_mut(|i| {
+            i.events.retain(|e| {
+                let egui::Event::Key { key, pressed, modifiers, .. } = e else { return true };
+                match key {
+                    Key::F if modifiers.command || modifiers.ctrl => focus |= *pressed,
+                    Key::F3 => {
+                        if *pressed {
+                            step = if modifiers.shift { -1 } else { 1 };
+                        }
+                    }
+                    _ => return true,
+                }
+                false
+            });
+        });
+        self.focus_find |= focus;
+        if step != 0 {
+            self.step_hit(step);
+        }
+
         // A focused text field elsewhere (the settings dialog can sit on top of
-        // the manual) owns the keyboard; leave its arrows alone.
+        // the manual) owns the keyboard; leave its arrows alone. So does the
+        // find field, whose arrows move the text cursor.
         if ctx.egui_wants_keyboard_input() || ctx.memory(|m| m.focused()).is_some() {
             return;
         }
@@ -328,16 +480,156 @@ impl Help {
         self.go_to(self.doc.nav[i].slug.clone());
     }
 
+    /// The term to look for — empty (the find bar is idle) when nothing but
+    /// whitespace has been typed, so a stray space does not light up the whole
+    /// manual.
+    fn needle(&self) -> &str {
+        if self.search.trim().is_empty() { "" } else { self.search.as_str() }
+    }
+
+    /// Select the next / previous match, wrapping at the ends. Wrapping is
+    /// right here where stepping *sections* clamps: a search that has run off
+    /// the last hit means "start again", while paging off the last chapter
+    /// means nothing.
+    ///
+    /// The count is the one the last frame drew, which is also the count the
+    /// tally shows, so the buttons and the readout always agree.
+    fn step_hit(&mut self, dir: i32) {
+        if self.hits == 0 {
+            return;
+        }
+        let n = self.hits as i32;
+        self.hit = (self.hit as i32 + dir).rem_euclid(n) as usize;
+        self.seek_frames = 3;
+    }
+
+    /// Recount the outline badges. One pass over the flattened blocks, run only
+    /// when the term changes rather than on every frame.
+    fn recount_nav(&mut self) {
+        self.nav_needle = self.search.clone();
+        self.nav_hits.clear();
+        self.nav_hits.resize(self.doc.nav.len(), 0);
+        let needle = if self.search.trim().is_empty() { "" } else { self.search.as_str() };
+        if needle.is_empty() {
+            return;
+        }
+        for (i, text) in self.doc.text.iter().enumerate() {
+            let n = count_ci(text, needle);
+            if n == 0 {
+                continue;
+            }
+            // Both owners: a hit in 5.2.3 belongs to that subsection's row and
+            // to chapter 5's, because the reader scanning the outline for
+            // somewhere to look is reading the chapters.
+            for row in self.doc.owner[i].iter().flatten() {
+                self.nav_hits[*row] += n;
+            }
+        }
+    }
+
+    /// The find bar across the top of the window: the term, the two step
+    /// buttons and the tally. Everything it changes takes effect in the same
+    /// frame, in the body drawn below it.
+    fn find_bar(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            // Spelled out rather than drawn: the bundled fonts have no
+            // magnifier glyph (nor ⌕), and a tofu box is worse than a word.
+            ui.label(RichText::new("FIND").color(theme::CYAN_DIM()).size(10.0).strong());
+
+            // The buttons and the tally are budgeted first so the field takes
+            // what is left: on a phone that is a stub, but it is still a field.
+            let reserved = 230.0;
+            let w = (ui.available_width() - reserved).clamp(70.0, 460.0);
+            let before = self.search.clone();
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut self.search)
+                    .desired_width(w)
+                    .hint_text("find in manual")
+                    .text_color(theme::TEXT_STRONG()),
+            );
+            if std::mem::take(&mut self.focus_find) {
+                field.request_focus();
+            }
+            if self.search != before {
+                // A new term: back to the first hit, and one more repaint so
+                // the tally — drawn above the body that counts it — catches up
+                // with the number the body is about to arrive at.
+                self.hit = 0;
+                self.seek_frames = 3;
+                ui.ctx().request_repaint();
+            }
+            // Enter steps like the buttons, and keeps the field, so a run of
+            // presses walks the matches. (egui surrenders focus on Enter in a
+            // single-line field, hence the re-request.)
+            if field.has_focus() {
+                let (enter, shift) =
+                    ui.input(|i| (i.key_pressed(egui::Key::Enter), i.modifiers.shift));
+                if enter {
+                    self.step_hit(if shift { -1 } else { 1 });
+                    field.request_focus();
+                }
+            }
+
+            let any = self.hits > 0;
+            if crate::chrome::chip_enabled(ui, any, false, "◀")
+                .on_hover_text("Previous match  (Shift+Enter, Shift+F3)")
+                .clicked()
+            {
+                self.step_hit(-1);
+            }
+            if crate::chrome::chip_enabled(ui, any, false, "▶")
+                .on_hover_text("Next match  (Enter, F3)")
+                .clicked()
+            {
+                self.step_hit(1);
+            }
+            let (tally, color) = if self.needle().is_empty() {
+                (String::new(), theme::CYAN_DIM())
+            } else if self.hits == 0 {
+                ("no matches".to_string(), theme::ALERT())
+            } else {
+                (format!("{} / {}", self.hit + 1, self.hits), theme::CYAN())
+            };
+            ui.label(RichText::new(tally).color(color).size(12.0));
+
+            // Next to the tally, not out at the right edge: a second ✕ sitting
+            // under the window's own close button is a trap. (`×`, because the
+            // heavier ✕ is one of the glyphs the bundled fonts lack.)
+            if !self.search.is_empty()
+                && crate::chrome::chip(ui, false, "×")
+                    .on_hover_text("Clear the search  (Esc)")
+                    .clicked()
+            {
+                self.clear_search();
+            }
+        });
+    }
+
+    /// Drop the search term and everything derived from it.
+    fn clear_search(&mut self) {
+        self.search.clear();
+        self.hit = 0;
+        self.hits = 0;
+        self.seek_frames = 0;
+    }
+
     /// Draw the help window if open. Self-contained: needs only the egui
     /// context, so it never touches the radio controller.
     pub fn ui(&mut self, ctx: &egui::Context) {
         if !self.open {
+            // Re-opening starts a fresh window, sized to the viewport again.
+            self.shown = false;
             return;
         }
-        // Esc closes, matching the other overlays.
+        // Esc closes, matching the other overlays — but a search in progress
+        // is dismissed first, the way every find bar behaves.
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.open = false;
-            return;
+            if self.search.is_empty() {
+                self.open = false;
+                return;
+            }
+            self.clear_search();
         }
 
         // A pending scroll target set by a link click last frame, or a nav
@@ -350,166 +642,217 @@ impl Help {
         let key_scroll = std::mem::take(&mut self.key_scroll);
         let key_scroll = if target.is_some() { 0.0 } else { key_scroll };
 
+        // Hits counted by this frame's drawing, once it has happened. `None`
+        // if the window did not draw at all, which must leave the tally alone
+        // rather than reset it to zero.
+        let mut counted: Option<usize> = None;
+
         let mut open = self.open;
-        let resp = egui::Window::new("SDROXIDE MANUAL")
+        let win = egui::Window::new("SDROXIDE MANUAL")
             .id(crate::layout::salted_id(ctx, "SDROXIDE MANUAL"))
             .open(&mut open)
             .frame(crate::chrome::window_frame())
-            .resizable(true)
-            .collapsible(false)
-            .default_width(crate::layout::window_w(ctx, 940.0))
-            .default_height(crate::layout::window_h(ctx, 680.0))
-            .min_width(crate::layout::window_w(ctx, 560.0))
-            .min_height(crate::layout::window_h(ctx, 360.0))
-            .show(ctx, |ui| {
-                crate::chrome::window_body_bg(ui);
-                // egui's resizable window never shrinks and grows every frame to
-                // `max(desired_size, last_content_size)` (see egui resize.rs). We
-                // allocate each column to exactly the available width/height, and
-                // egui rounds every widget rect to the pixel grid independently, so
-                // the summed columns can land a hair larger than the window — which
-                // the ratchet then locks in and repeats until the window fills the
-                // screen. A few pixels of slack keeps the content strictly inside
-                // the window so its size stays put.
-                const SLACK: f32 = 2.0;
-                let full_h = (ui.available_height() - SLACK).max(0.0);
-                let mut actions = Actions::default();
-                let mut nav_click: Option<String> = None;
+            .collapsible(false);
+        // The manual opens filling the viewport: it is a reference document,
+        // and at the old 940 pt a screenshot alone took the width.
+        //
+        // `default_*` cannot do this, because egui persists a window's size
+        // and only consults the default for a window it has never seen — the
+        // second F1 of the session would come back at whatever size the first
+        // was left at. `fixed_size` for the one frame the window opens does:
+        // `Resize` clamps its remembered size into [min, max], and fixed_size
+        // sets both to the size we pass. Every frame after this one is
+        // resizable again, starting from a full-screen window.
+        let full = ctx.content_rect().shrink(8.0);
+        let win = if std::mem::replace(&mut self.shown, true) {
+            win.resizable(true)
+                .default_width(crate::layout::window_w(ctx, 940.0))
+                .default_height(crate::layout::window_h(ctx, 680.0))
+                .min_width(crate::layout::window_w(ctx, 560.0))
+                .min_height(crate::layout::window_h(ctx, 360.0))
+        } else {
+            win.current_pos(full.min).fixed_size(full.size())
+        };
+        let resp = win.show(ctx, |ui| {
+            crate::chrome::window_body_bg(ui);
 
-                // A compact layout drops the contents column: 236 pt of it is
-                // two thirds of a phone's width, spent on an index for a
-                // document the reader would then have no room to read. The
-                // manual's own headings still get there by scrolling.
-                let nav = !crate::layout::tier(ctx).compact();
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
+            // The find bar first: what it changes applies to the body
+            // below it in this same frame, so typing highlights without a
+            // frame of lag, and it takes its height out of the columns'
+            // `available_height` for free.
+            self.find_bar(ui);
+            ui.add_space(4.0);
+            if self.nav_needle != self.search {
+                self.recount_nav();
+            }
+            // Borrowed by the renderers for the whole pass, so it is a
+            // local copy rather than a field of `self`, which they also
+            // need mutably (the texture cache, the active outline row).
+            let needle = self.needle().to_string();
+            let seek = self.seek_frames > 0;
+            // egui's resizable window never shrinks and grows every frame to
+            // `max(desired_size, last_content_size)` (see egui resize.rs). We
+            // allocate each column to exactly the available width/height, and
+            // egui rounds every widget rect to the pixel grid independently, so
+            // the summed columns can land a hair larger than the window — which
+            // the ratchet then locks in and repeats until the window fills the
+            // screen. A few pixels of slack keeps the content strictly inside
+            // the window so its size stays put.
+            const SLACK: f32 = 2.0;
+            let full_h = (ui.available_height() - SLACK).max(0.0);
+            let mut pass = Pass {
+                link: None,
+                find: Find { needle: &needle, sel: self.hit, seen: 0, rect: None },
+            };
+            let mut nav_click: Option<String> = None;
 
-                    // --- Left: navigation outline (own scroll area) ---
-                    const NAV_W: f32 = 236.0;
-                    if nav {
-                        ui.allocate_ui_with_layout(
-                            vec2(NAV_W, full_h),
-                            Layout::top_down(Align::Min),
-                            |ui| {
-                                egui::Frame::new()
-                                    .fill(theme::BG_DEEP())
-                                    .inner_margin(egui::Margin {
-                                        left: 8,
-                                        right: 8,
-                                        top: 8,
-                                        bottom: 8,
-                                    })
-                                    .show(ui, |ui| {
-                                        ui.set_min_height(full_h - 16.0);
-                                        ui.set_width(NAV_W - 16.0);
-                                        ui.label(
-                                            RichText::new("CONTENTS")
-                                                .color(theme::CYAN_DIM())
-                                                .size(10.0)
-                                                .strong(),
-                                        );
-                                        ui.add_space(6.0);
-                                        egui::ScrollArea::vertical()
-                                            .id_salt("help_nav")
-                                            .auto_shrink([false, false])
-                                            .show_themed(ui, |ui| {
-                                                ui.spacing_mut().item_spacing.y = 1.0;
-                                                for entry in &self.doc.nav {
-                                                    if nav_item(
-                                                        ui,
-                                                        entry,
-                                                        entry.slug == self.active,
-                                                    ) {
-                                                        nav_click = Some(entry.slug.clone());
-                                                    }
-                                                }
-                                            });
-                                    });
-                            },
-                        );
+            // A compact layout drops the contents column: 236 pt of it is
+            // two thirds of a phone's width, spent on an index for a
+            // document the reader would then have no room to read. The
+            // manual's own headings still get there by scrolling.
+            let nav = !crate::layout::tier(ctx).compact();
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
 
-                        // Divider between the panes.
-                        let (drect, _) = ui.allocate_exact_size(vec2(9.0, full_h), Sense::hover());
-                        ui.painter().vline(
-                            drect.center().x,
-                            drect.y_range(),
-                            Stroke::new(1.0, theme::LINE_LIT()),
-                        );
-                    }
-
-                    // A nav click wins over a stale link target and takes
-                    // effect this same frame.
-                    if let Some(slug) = &nav_click {
-                        target = Some(slug.clone());
-                    }
-
-                    // --- Right: rendered manual (own scroll area) ---
-                    // Slack (see above) so the two panes never quite reach the
-                    // window edge, which would ratchet the window wider each frame.
-                    let content_w = (ui.available_width() - SLACK).max(0.0);
+                // --- Left: navigation outline (own scroll area) ---
+                const NAV_W: f32 = 236.0;
+                if nav {
                     ui.allocate_ui_with_layout(
-                        vec2(content_w, full_h),
+                        vec2(NAV_W, full_h),
                         Layout::top_down(Align::Min),
                         |ui| {
-                            let out = egui::ScrollArea::vertical()
-                                .id_salt("help_body")
-                                .auto_shrink([false, false])
-                                .show_themed(ui, |ui| {
-                                    ui.set_width(ui.available_width() - 6.0);
-                                    // `scroll_with_delta` moves the *content*, so
-                                    // scrolling down means shifting it up.
-                                    if key_scroll != 0.0 {
-                                        ui.scroll_with_delta(vec2(0.0, -key_scroll));
-                                    }
-                                    let mut heading_tops: Vec<(String, f32)> = Vec::new();
-                                    for (idx, block) in self.doc.blocks.iter().enumerate() {
-                                        draw_block(
-                                            ui,
-                                            idx,
-                                            block,
-                                            &mut self.textures,
-                                            target.as_deref(),
-                                            &mut heading_tops,
-                                            &mut actions,
-                                        );
-                                    }
-                                    heading_tops
+                            egui::Frame::new()
+                                .fill(theme::BG_DEEP())
+                                .inner_margin(egui::Margin { left: 8, right: 8, top: 8, bottom: 8 })
+                                .show(ui, |ui| {
+                                    ui.set_min_height(full_h - 16.0);
+                                    ui.set_width(NAV_W - 16.0);
+                                    ui.label(
+                                        RichText::new("CONTENTS")
+                                            .color(theme::CYAN_DIM())
+                                            .size(10.0)
+                                            .strong(),
+                                    );
+                                    ui.add_space(6.0);
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("help_nav")
+                                        .auto_shrink([false, false])
+                                        .show_themed(ui, |ui| {
+                                            ui.spacing_mut().item_spacing.y = 1.0;
+                                            for (i, entry) in self.doc.nav.iter().enumerate() {
+                                                let hits =
+                                                    self.nav_hits.get(i).copied().unwrap_or(0);
+                                                if nav_item(
+                                                    ui,
+                                                    entry,
+                                                    entry.slug == self.active,
+                                                    hits,
+                                                ) {
+                                                    nav_click = Some(entry.slug.clone());
+                                                }
+                                            }
+                                        });
                                 });
-
-                            // Remembered for the next frame's Page/Home/End keys,
-                            // which need to know how tall a page is and how far
-                            // there is left to travel.
-                            self.viewport_h = out.inner_rect.height();
-                            self.content_h = out.content_size.y;
-                            self.offset_y = out.state.offset.y;
-
-                            // Scroll-spy: highlight the last heading whose top
-                            // has passed the viewport top — but don't fight an
-                            // in-progress jump.
-                            if self.scroll_to.is_none() {
-                                let top = out.inner_rect.top() + 6.0;
-                                for (slug, y) in &out.inner {
-                                    if *y <= top {
-                                        self.active = slug.clone();
-                                    } else {
-                                        break;
-                                    }
-                                }
-                            }
                         },
                     );
-                });
 
-                // Apply a link click: an in-page anchor jumps the outline, an
-                // external URL opens in the browser.
-                if let Some(href) = actions.link.take() {
-                    if let Some(anchor) = href.strip_prefix('#') {
-                        self.go_to(anchor.to_string());
-                    } else {
-                        ctx.open_url(egui::OpenUrl::new_tab(href));
-                    }
+                    // Divider between the panes.
+                    let (drect, _) = ui.allocate_exact_size(vec2(9.0, full_h), Sense::hover());
+                    ui.painter().vline(
+                        drect.center().x,
+                        drect.y_range(),
+                        Stroke::new(1.0, theme::LINE_LIT()),
+                    );
                 }
+
+                // A nav click wins over a stale link target and takes
+                // effect this same frame.
+                if let Some(slug) = &nav_click {
+                    target = Some(slug.clone());
+                }
+
+                // --- Right: rendered manual (own scroll area) ---
+                // Slack (see above) so the two panes never quite reach the
+                // window edge, which would ratchet the window wider each frame.
+                let content_w = (ui.available_width() - SLACK).max(0.0);
+                ui.allocate_ui_with_layout(
+                    vec2(content_w, full_h),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        let out = egui::ScrollArea::vertical()
+                            .id_salt("help_body")
+                            .auto_shrink([false, false])
+                            .show_themed(ui, |ui| {
+                                ui.set_width(ui.available_width() - 6.0);
+                                // `scroll_with_delta` moves the *content*, so
+                                // scrolling down means shifting it up.
+                                if key_scroll != 0.0 {
+                                    ui.scroll_with_delta(vec2(0.0, -key_scroll));
+                                }
+                                let mut heading_tops: Vec<(String, f32)> = Vec::new();
+                                for (idx, block) in self.doc.blocks.iter().enumerate() {
+                                    draw_block(
+                                        ui,
+                                        idx,
+                                        block,
+                                        &mut self.textures,
+                                        target.as_deref(),
+                                        &mut heading_tops,
+                                        &mut pass,
+                                    );
+                                }
+                                // Bring the selected match into view — but
+                                // only while a step is in flight, so the
+                                // reader can scroll away from a hit and
+                                // stay where they went. A heading jump
+                                // asked for first wins: both end up
+                                // setting the pane's scroll target, and it
+                                // is the more specific request.
+                                if seek
+                                    && target.is_none()
+                                    && let Some(r) = pass.find.rect
+                                {
+                                    ui.scroll_to_rect(r, Some(Align::Center));
+                                }
+                                heading_tops
+                            });
+
+                        // Remembered for the next frame's Page/Home/End keys,
+                        // which need to know how tall a page is and how far
+                        // there is left to travel.
+                        self.viewport_h = out.inner_rect.height();
+                        self.content_h = out.content_size.y;
+                        self.offset_y = out.state.offset.y;
+
+                        // Scroll-spy: highlight the last heading whose top
+                        // has passed the viewport top — but don't fight an
+                        // in-progress jump.
+                        if self.scroll_to.is_none() {
+                            let top = out.inner_rect.top() + 6.0;
+                            for (slug, y) in &out.inner {
+                                if *y <= top {
+                                    self.active = slug.clone();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    },
+                );
             });
+
+            counted = Some(pass.find.seen);
+
+            // Apply a link click: an in-page anchor jumps the outline, an
+            // external URL opens in the browser.
+            if let Some(href) = pass.link.take() {
+                if let Some(anchor) = href.strip_prefix('#') {
+                    self.go_to(anchor.to_string());
+                } else {
+                    ctx.open_url(egui::OpenUrl::new_tab(href));
+                }
+            }
+        });
 
         if let Some(r) = &resp {
             crate::chrome::paint_window_border(ctx, &r.response);
@@ -524,6 +867,20 @@ impl Help {
                 self.scroll_to = None;
             }
         }
+
+        // Adopt this frame's hit count. Fewer matches than before (a longer
+        // term) can leave the selection past the end, which starts again at
+        // the first — the same place typing a term lands.
+        if let Some(hits) = counted {
+            self.hits = hits;
+            if self.hit >= hits {
+                self.hit = 0;
+            }
+        }
+        if self.seek_frames > 0 {
+            ctx.request_repaint();
+            self.seek_frames -= 1;
+        }
     }
 }
 
@@ -533,18 +890,30 @@ impl Help {
 
 /// One clickable outline row. Level-3 entries are indented; the active row gets
 /// a yellow accent bar and a faint fill. Returns true when clicked.
-fn nav_item(ui: &mut Ui, entry: &NavEntry, active: bool) -> bool {
+///
+/// `hits` is how many times the search term appears in this row's section
+/// (subsections counting towards their chapter as well). A row that holds any
+/// gets a warm wash and its tally on the right, which is what turns the
+/// outline into a map of where the term lives.
+fn nav_item(ui: &mut Ui, entry: &NavEntry, active: bool, hits: usize) -> bool {
     let indent = if entry.level >= 3 { 15.0 } else { 2.0 };
     let size = if entry.level >= 3 { 12.0 } else { 13.0 };
     let color = if active {
         theme::CYAN()
+    } else if hits > 0 {
+        theme::YELLOW()
     } else if entry.level >= 3 {
         theme::TEXT()
     } else {
         theme::TEXT_STRONG()
     };
     let avail = ui.available_width();
-    let text_w = (avail - indent - 10.0).max(40.0);
+    let badge = (hits > 0).then(|| {
+        let font = FontId::new(10.0, FontFamily::Proportional);
+        ui.painter().layout_no_wrap(hits.to_string(), font, theme::YELLOW())
+    });
+    let badge_w = badge.as_ref().map_or(0.0, |g| g.size().x + 8.0);
+    let text_w = (avail - indent - 10.0 - badge_w).max(40.0);
     let font = FontId::new(size, FontFamily::Proportional);
     let galley = ui.painter().layout(entry.label.clone(), font, color, text_w);
     let h = galley.size().y + 6.0;
@@ -554,16 +923,27 @@ fn nav_item(ui: &mut Ui, entry: &NavEntry, active: bool) -> bool {
         let p = ui.painter();
         if active {
             p.rect_filled(rect, 0.0, theme::FILL());
+        } else if resp.hovered() {
+            // Hover wins over the search wash, or a badged row would be the
+            // one row in the outline that does not answer the pointer.
+            p.rect_filled(rect, 0.0, theme::ROW_HOVER());
+        } else if hits > 0 {
+            p.rect_filled(rect, 0.0, theme::YELLOW().gamma_multiply(0.16));
+        }
+        if active {
             p.rect_filled(
                 Rect::from_min_max(rect.left_top(), pos2(rect.left() + 3.0, rect.bottom())),
                 0.0,
                 theme::YELLOW(),
             );
-        } else if resp.hovered() {
-            p.rect_filled(rect, 0.0, theme::ROW_HOVER());
         }
         let ty = rect.center().y - galley.size().y / 2.0;
         p.galley(pos2(rect.left() + indent + 6.0, ty), galley, color);
+        if let Some(badge) = badge {
+            let at =
+                pos2(rect.right() - badge.size().x - 4.0, rect.center().y - badge.size().y / 2.0);
+            p.galley(at, badge, theme::YELLOW());
+        }
     }
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -583,7 +963,7 @@ fn draw_block(
     textures: &mut HashMap<String, Option<egui::TextureHandle>>,
     scroll_target: Option<&str>,
     heading_tops: &mut Vec<(String, f32)>,
-    actions: &mut Actions,
+    pass: &mut Pass,
 ) {
     match block {
         Block::Heading { level, text, slug } => {
@@ -596,7 +976,7 @@ fn draw_block(
             } else {
                 28.0
             });
-            let resp = draw_header(ui, *level, &plain_text(text));
+            let resp = draw_header(ui, *level, &plain_text(text), &mut pass.find);
             if *level == 2 || *level == 3 {
                 heading_tops.push((slug.clone(), resp.rect.top()));
             }
@@ -612,7 +992,7 @@ fn draw_block(
             });
         }
         Block::Paragraph(inl) => {
-            draw_inline(ui, inl, theme::TEXT(), false, actions);
+            draw_inline(ui, inl, theme::TEXT(), false, pass);
             ui.add_space(7.0);
         }
         Block::Bullets(items) => {
@@ -621,7 +1001,7 @@ fn draw_block(
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.add_space(8.0);
                     ui.label(RichText::new("▸ ").color(theme::YELLOW()).strong());
-                    draw_inline(ui, item, theme::TEXT(), false, actions);
+                    draw_inline(ui, item, theme::TEXT(), false, pass);
                 });
                 ui.add_space(2.0);
             }
@@ -633,7 +1013,7 @@ fn draw_block(
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.add_space(8.0);
                     ui.label(RichText::new(format!("{num}. ")).color(theme::CYAN()).strong());
-                    draw_inline(ui, item, theme::TEXT(), false, actions);
+                    draw_inline(ui, item, theme::TEXT(), false, pass);
                 });
                 ui.add_space(2.0);
             }
@@ -646,7 +1026,7 @@ fn draw_block(
                 .inner_margin(egui::Margin { left: 13, right: 10, top: 7, bottom: 7 })
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width() - 23.0);
-                    draw_inline(ui, inl, theme::TEXT_STRONG(), false, actions);
+                    draw_inline(ui, inl, theme::TEXT_STRONG(), false, pass);
                 });
             let r = inner.response.rect;
             ui.painter().rect_filled(
@@ -665,7 +1045,9 @@ fn draw_block(
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width() - 20.0);
                     for line in code.lines() {
-                        ui.label(RichText::new(line).monospace().color(theme::GREEN()));
+                        draw_found_row(ui, line, &mut pass.find, |s| {
+                            RichText::new(s).monospace().color(theme::GREEN())
+                        });
                     }
                 });
             ui.add_space(6.0);
@@ -696,13 +1078,15 @@ fn draw_block(
             }
             if !alt.is_empty() {
                 ui.add_space(3.0);
-                ui.label(RichText::new(alt.as_str()).italics().color(theme::CYAN_DIM()).size(11.5));
+                draw_found_row(ui, alt, &mut pass.find, |s| {
+                    RichText::new(s).italics().color(theme::CYAN_DIM()).size(11.5)
+                });
             }
             ui.add_space(9.0);
         }
         Block::Table { header, rows } => {
             ui.add_space(5.0);
-            draw_table(ui, idx, header, rows, actions);
+            draw_table(ui, idx, header, rows, pass);
             ui.add_space(8.0);
         }
     }
@@ -716,7 +1100,7 @@ fn draw_table(
     idx: usize,
     header: &[Vec<Inline>],
     rows: &[Vec<Vec<Inline>>],
-    actions: &mut Actions,
+    pass: &mut Pass,
 ) {
     let cols = header.len().max(1);
     let total = ui.available_width();
@@ -732,10 +1116,10 @@ fn draw_table(
     egui::Frame::new().stroke(Stroke::new(1.0, theme::LINE_LIT())).inner_margin(0).show(ui, |ui| {
         ui.set_width(total);
         // Header row.
-        table_row(ui, header, &col_w, spacing, theme::FILL(), true, actions, idx);
+        table_row(ui, header, &col_w, spacing, theme::FILL(), true, pass, idx);
         for (ri, row) in rows.iter().enumerate() {
             let fill = if ri % 2 == 0 { theme::ROW_BG() } else { theme::PANEL() };
-            table_row(ui, row, &col_w, spacing, fill, false, actions, idx);
+            table_row(ui, row, &col_w, spacing, fill, false, pass, idx);
         }
     });
 }
@@ -748,7 +1132,7 @@ fn table_row(
     spacing: f32,
     fill: Color32,
     header: bool,
-    actions: &mut Actions,
+    pass: &mut Pass,
     idx: usize,
 ) {
     egui::Frame::new()
@@ -771,7 +1155,7 @@ fn table_row(
                                 } else {
                                     (theme::TEXT(), false)
                                 };
-                                draw_inline(ui, cell, color, strong, actions);
+                                draw_inline(ui, cell, color, strong, pass);
                             },
                         );
                     });
@@ -819,7 +1203,7 @@ fn cut_outline(rect: Rect, cut: f32) -> Vec<egui::Pos2> {
 /// An angled section header: a cut-corner bar with a yellow/black hazard tab on
 /// the left and the section title in the techno heading face. Level 1 is the
 /// document title, 2 is a section, 3 a subsection.
-fn draw_header(ui: &mut Ui, level: u8, text: &str) -> Response {
+fn draw_header(ui: &mut Ui, level: u8, text: &str, find: &mut Find) -> Response {
     let (size, bar_h, accent, fill, txt_col) = match level {
         1 => (23.0, 50.0, theme::CYAN(), theme::FILL(), theme::TEXT_STRONG()),
         2 => (17.0, 37.0, theme::PINK(), theme::FILL(), theme::CYAN()),
@@ -827,6 +1211,20 @@ fn draw_header(ui: &mut Ui, level: u8, text: &str) -> Response {
     };
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(w, bar_h), Sense::hover());
+
+    // Claimed before the visibility test, and before the painting below can
+    // return early: an occurrence's document-order index must not depend on
+    // whether its heading happens to be on screen.
+    let marks: Vec<(usize, usize, bool)> = matches(text, find.needle)
+        .into_iter()
+        .map(|(s, e)| {
+            let selected = find.claim();
+            if selected {
+                find.place(rect);
+            }
+            (s, e, selected)
+        })
+        .collect();
 
     if ui.is_rect_visible(rect) {
         let p = ui.painter().clone();
@@ -853,9 +1251,21 @@ fn draw_header(ui: &mut Ui, level: u8, text: &str) -> Response {
         p.add(Shape::closed_line(cut_outline(rect, cut), Stroke::new(1.4, accent)));
         // Title text, clear of the hazard tab.
         let font = FontId::new(size, FontFamily::Name("chakra-bold".into()));
-        let galley = p.layout_no_wrap(text.to_string(), font, txt_col);
+        let galley = p.layout_no_wrap(text.to_string(), font.clone(), txt_col);
+        let tx = rect.left() + 24.0;
         let ty = rect.center().y - galley.size().y / 2.0;
-        p.galley(pos2(rect.left() + 24.0, ty), galley, txt_col);
+        p.galley(pos2(tx, ty), galley, txt_col);
+        // Found terms are painted over the title: the run before the match
+        // measures where it starts, and the match itself is re-laid in the
+        // highlight's ink so it stays readable on a bright wash.
+        for (s, e, selected) in marks {
+            let (bg, ink) = hit_colors(selected);
+            let lead = p.layout_no_wrap(text[..s].to_string(), font.clone(), ink);
+            let hit = p.layout_no_wrap(text[s..e].to_string(), font.clone(), ink);
+            let at = pos2(tx + lead.size().x, ty);
+            p.rect_filled(Rect::from_min_size(at, hit.size()).expand2(vec2(1.0, 0.0)), 0.0, bg);
+            p.galley(at, hit, ink);
+        }
     }
     resp
 }
@@ -866,11 +1276,11 @@ fn draw_header(ui: &mut Ui, level: u8, text: &str) -> Response {
 
 /// Render a run of inline spans, wrapping at the available width. Zero
 /// horizontal item spacing keeps adjacent styled runs from gaining stray gaps.
-fn draw_inline(ui: &mut Ui, inl: &[Inline], base: Color32, strong: bool, actions: &mut Actions) {
+fn draw_inline(ui: &mut Ui, inl: &[Inline], base: Color32, strong: bool, pass: &mut Pass) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.spacing_mut().item_spacing.y = 3.0;
-        draw_runs(ui, inl, strong, false, base, actions);
+        draw_runs(ui, inl, strong, false, base, pass);
     });
 }
 
@@ -880,47 +1290,183 @@ fn draw_runs(
     strong: bool,
     italic: bool,
     base: Color32,
-    actions: &mut Actions,
+    pass: &mut Pass,
 ) {
     for span in inl {
         match span {
             Inline::Text(t) => {
                 let col = if strong && base == theme::TEXT() { theme::TEXT_STRONG() } else { base };
-                let mut rt = RichText::new(t).color(col);
-                if strong {
-                    rt = rt.strong();
-                }
-                if italic {
-                    rt = rt.italics();
-                }
-                ui.label(rt);
+                draw_found(ui, t, &mut pass.find, |s| {
+                    let mut rt = RichText::new(s).color(col);
+                    if strong {
+                        rt = rt.strong();
+                    }
+                    if italic {
+                        rt = rt.italics();
+                    }
+                    rt
+                });
             }
             Inline::Code(c) => {
+                // A code span stays one chip rather than being split at the
+                // match: the padded box is the point of it. It takes the
+                // highlight whole, and counts every occurrence inside it so
+                // the tally still adds up.
+                let hits = matches(c, pass.find.needle);
+                let selected = hits.iter().fold(false, |acc, _| pass.find.claim() || acc);
+                let (bg, fg) = if hits.is_empty() {
+                    (theme::INPUT_BG(), theme::CYAN())
+                } else {
+                    hit_colors(selected)
+                };
                 // Padded with no-break spaces so the highlight doesn't crowd
                 // the glyphs.
-                ui.label(
+                let resp = ui.label(
                     RichText::new(format!("\u{00a0}{c}\u{00a0}"))
                         .monospace()
-                        .color(theme::CYAN())
-                        .background_color(theme::INPUT_BG()),
+                        .color(fg)
+                        .background_color(bg),
                 );
+                if selected {
+                    pass.find.place(resp.rect);
+                }
             }
-            Inline::Bold(v) => draw_runs(ui, v, true, italic, base, actions),
-            Inline::Italic(v) => draw_runs(ui, v, strong, true, base, actions),
+            Inline::Bold(v) => draw_runs(ui, v, true, italic, base, pass),
+            Inline::Italic(v) => draw_runs(ui, v, strong, true, base, pass),
             Inline::Link { text, href } => {
                 let label = plain_text(text);
-                let resp = ui.add(
-                    egui::Label::new(RichText::new(label).color(theme::CYAN()).underline())
-                        .sense(Sense::click()),
-                );
+                let style = |s: &str| RichText::new(s).color(theme::CYAN()).underline();
+                let resp = if matches(&label, pass.find.needle).is_empty() {
+                    ui.add(egui::Label::new(style(&label)).sense(Sense::click()))
+                } else {
+                    // Highlighting splits the label into several, so the click
+                    // is taken from the box those pieces occupy between them
+                    // rather than from any one of them.
+                    let rect = draw_found(ui, &label, &mut pass.find, style);
+                    let id = ui.next_auto_id();
+                    ui.skip_ahead_auto_ids(1);
+                    ui.interact(rect, id, Sense::click())
+                };
                 if resp.hovered() {
                     ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                 }
                 if resp.clicked() {
-                    actions.link = Some(href.clone());
+                    pass.link = Some(href.clone());
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Find in page
+// ---------------------------------------------------------------------------
+
+/// Every occurrence of `needle` in `hay`, as byte ranges in order. Empty when
+/// nothing is being looked for, which is the idle case and allocates nothing.
+///
+/// The comparison is byte-wise and ASCII-case-insensitive, which is safe on
+/// UTF-8 text: a valid needle's bytes can only ever occur at character
+/// boundaries, and no non-ASCII byte is folded. So `SSTV` finds `sstv` and
+/// `Grüße` still finds itself.
+fn matches(hay: &str, needle: &str) -> Vec<(usize, usize)> {
+    let (h, n) = (hay.as_bytes(), needle.as_bytes());
+    if n.is_empty() || h.len() < n.len() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + n.len() <= h.len() {
+        if h[i..i + n.len()].eq_ignore_ascii_case(n) {
+            out.push((i, i + n.len()));
+            i += n.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// How many times `needle` appears in `hay` — [`matches`] without the vector,
+/// for the outline badges, which count a few hundred blocks per keystroke.
+fn count_ci(hay: &str, needle: &str) -> usize {
+    let (h, n) = (hay.as_bytes(), needle.as_bytes());
+    if n.is_empty() || h.len() < n.len() {
+        return 0;
+    }
+    let (mut i, mut count) = (0, 0);
+    while i + n.len() <= h.len() {
+        if h[i..i + n.len()].eq_ignore_ascii_case(n) {
+            count += 1;
+            i += n.len();
+        } else {
+            i += 1;
+        }
+    }
+    count
+}
+
+/// Background and ink for a found term: the selected hit takes the yellow this
+/// UI uses for "you are here" everywhere else, the rest a cyan wash that reads
+/// as found without competing with it.
+fn hit_colors(selected: bool) -> (Color32, Color32) {
+    if selected {
+        (theme::YELLOW(), theme::INK_ON_BRIGHT())
+    } else {
+        (theme::CYAN().gamma_multiply(0.32), theme::TEXT_STRONG())
+    }
+}
+
+/// Draw one run of text, split around any occurrence of the find term so each
+/// can be highlighted and the selected one scrolled to. `style` gives a piece
+/// its normal look; a highlighted piece takes that and overrides the colours.
+/// Returns the box the pieces occupy.
+///
+/// Splitting a run into several labels is what lets the highlight sit *inside*
+/// a sentence, and costs a wrap opportunity at each seam — which is why it
+/// only happens for runs that actually match.
+fn draw_found(
+    ui: &mut Ui,
+    text: &str,
+    find: &mut Find,
+    style: impl Fn(&str) -> RichText,
+) -> egui::Rect {
+    let hits = matches(text, find.needle);
+    if hits.is_empty() {
+        return ui.label(style(text)).rect;
+    }
+    let mut union = Rect::NOTHING;
+    let mut at = 0;
+    for (s, e) in hits {
+        if s > at {
+            union = union.union(ui.label(style(&text[at..s])).rect);
+        }
+        let selected = find.claim();
+        let (bg, ink) = hit_colors(selected);
+        let rect = ui.label(style(&text[s..e]).color(ink).background_color(bg)).rect;
+        if selected {
+            find.place(rect);
+        }
+        union = union.union(rect);
+        at = e;
+    }
+    if at < text.len() {
+        union = union.union(ui.label(style(&text[at..])).rect);
+    }
+    union
+}
+
+/// [`draw_found`] for a label that sits in a vertical layout — a line of a code
+/// block, an image caption. The split pieces have to be laid out side by side,
+/// but an unsplit one stays a plain label so an empty line keeps its height.
+fn draw_found_row(ui: &mut Ui, text: &str, find: &mut Find, style: impl Fn(&str) -> RichText) {
+    if matches(text, find.needle).is_empty() {
+        ui.label(style(text));
+    } else {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            draw_found(ui, text, find, style);
+        });
     }
 }
 
@@ -1502,6 +2048,203 @@ mod tests {
             slugify("5.2.11 RTL-SDR over rtl_tcp (network dongles)"),
             "5211-rtl-sdr-over-rtl_tcp-network-dongles"
         );
+    }
+
+    /// The find is case-insensitive, non-overlapping, and never splits a
+    /// character: a byte-wise scan over UTF-8 text has to land on boundaries
+    /// or the slicing in `draw_found` would panic on a manual full of ←, ▸ and
+    /// °.
+    #[test]
+    fn matching_is_case_insensitive_and_utf8_safe() {
+        assert_eq!(matches("SSTV, sstv and Sstv", "sstv").len(), 3);
+        assert_eq!(matches("anything", ""), vec![], "an idle find bar matches nothing");
+        assert_eq!(matches("aaaa", "aa"), vec![(0, 2), (2, 4)], "matches do not overlap");
+        assert_eq!(count_ci("Wefax, WEFAX", "wefax"), 2);
+
+        // Multi-byte text: the ranges must be slice-able, and a non-ASCII
+        // needle must not be found inside a different character.
+        let hay = "← tune ° Grüße ▸ grüße";
+        for (s, e) in matches(hay, "GRÜSSE") {
+            assert!(hay.is_char_boundary(s) && hay.is_char_boundary(e));
+        }
+        assert_eq!(matches(hay, "grüße").len(), 2, "only the ASCII half folds case");
+        for (s, e) in matches(hay, "grüße") {
+            assert_eq!(&hay[s..e].to_lowercase(), "grüße");
+        }
+        assert_eq!(matches("°", "\u{00b0}").len(), 1);
+    }
+
+    /// A hit anywhere in a section lights up that section's outline row *and*
+    /// the chapter above it — that is the whole point of the badges: to say
+    /// which chapter to go and read.
+    #[test]
+    fn outline_badges_count_the_chapter_a_hit_sits_in() {
+        let md = "\
+# Manual
+
+## 1. Antennas
+
+Text about dipoles.
+
+### 1.1 Verticals
+
+A vertical is a dipole stood on end.
+
+## 2. Filters
+
+Nothing to see here.
+";
+        let mut help = Help { doc: Doc::parse(md), ..Help::default() };
+        help.search = "dipole".to_string();
+        help.recount_nav();
+
+        fn row(help: &Help, slug: &str) -> usize {
+            let i = help.doc.nav.iter().position(|n| n.slug == slug).expect("row exists");
+            help.nav_hits[i]
+        }
+        assert_eq!(row(&help, "11-verticals"), 1, "the subsection holds one");
+        assert_eq!(row(&help, "1-antennas"), 2, "the chapter holds its own and its subsection's");
+        assert_eq!(row(&help, "2-filters"), 0, "and the chapter without the term stays unlit");
+
+        // Searching a chapter's own title lights that chapter.
+        help.search = "filters".to_string();
+        help.recount_nav();
+        assert_eq!(row(&help, "2-filters"), 1);
+        assert_eq!(row(&help, "1-antennas"), 0);
+
+        // An idle bar leaves the whole outline alone.
+        help.search = "   ".to_string();
+        help.recount_nav();
+        assert!(help.nav_hits.iter().all(|&n| n == 0));
+    }
+
+    /// The blocks a section owns are the ones between its heading and the
+    /// next, and every block belongs to something — an off-by-one here would
+    /// badge the wrong chapter, which is worse than no badge at all.
+    #[test]
+    fn every_block_of_the_manual_lands_under_its_chapter() {
+        let doc = Doc::parse(MANUAL_MD);
+        assert_eq!(doc.owner.len(), doc.blocks.len());
+        assert_eq!(doc.text.len(), doc.blocks.len());
+        for (i, b) in doc.blocks.iter().enumerate() {
+            let [chapter, section] = doc.owner[i];
+            if let Some(c) = chapter {
+                assert_eq!(doc.nav[c].level, 2, "a chapter row is a level-2 heading");
+            }
+            if let Some(s) = section {
+                assert_eq!(doc.nav[s].level, 3);
+                assert!(chapter.is_some(), "a subsection always sits in a chapter");
+            }
+            // The title and the table of contents come before section 1; past
+            // that, every block has a chapter.
+            if let Block::Heading { level: 2, slug, .. } = b {
+                assert_eq!(doc.nav[chapter.expect("its own row")].slug, *slug);
+            }
+        }
+        let orphans = doc.owner.iter().filter(|o| o[0].is_none()).count();
+        assert!(orphans < doc.blocks.len() / 10, "{orphans} blocks sit outside every chapter");
+    }
+
+    /// Stepping wraps at both ends and does nothing at all with no matches —
+    /// the buttons are enabled off the same count, so a mismatch would leave a
+    /// live button that moves nothing.
+    #[test]
+    fn stepping_matches_wraps_at_both_ends() {
+        let mut help = Help { open: true, ..Help::default() };
+        help.step_hit(1);
+        assert_eq!(help.hit, 0, "no matches, nowhere to step");
+        assert_eq!(help.seek_frames, 0, "and nothing to scroll to");
+
+        help.hits = 3;
+        help.step_hit(1);
+        assert_eq!(help.hit, 1);
+        assert!(help.seek_frames > 0, "a step asks the pane to follow");
+        help.step_hit(1);
+        help.step_hit(1);
+        assert_eq!(help.hit, 0, "past the last match, back to the first");
+        help.step_hit(-1);
+        assert_eq!(help.hit, 2, "and back off the first to the last");
+    }
+
+    /// F1 opens the manual filling the viewport, however small the window was
+    /// left last time — and hands it back resizable.
+    ///
+    /// This is the one behaviour here built on an egui internal (`Resize`
+    /// clamping its remembered size into the min/max a `fixed_size` window
+    /// sets), so it is worth a test that would notice the day that changes and
+    /// the manual starts coming back at whatever size it was closed at.
+    #[test]
+    fn the_manual_opens_filling_the_viewport() {
+        // A short manual: this is about the window, and decoding forty
+        // screenshots to find that out would be a slow way to ask.
+        let doc = Doc::parse("# Manual\n\n## 1. One\n\nText.\n\n## 2. Two\n\nMore text.\n");
+        let mut help = Help { doc, ..Help::default() };
+
+        let ctx = egui::Context::default();
+        // The section headers are drawn in the techno face, which a bare
+        // context has never heard of.
+        crate::theme::apply(&ctx);
+        let id = crate::layout::salted_id(&ctx, "SDROXIDE MANUAL");
+        let pass = |help: &mut Help, w: f32, h: f32| {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(w, h))),
+                ..Default::default()
+            });
+            help.ui(&ctx);
+            let _ = ctx.end_pass();
+            ctx.memory(|m| m.area_rect(id)).expect("the manual is on screen")
+        };
+
+        // A session in a small window, so the manual has a remembered size.
+        help.open = true;
+        let small = pass(&mut help, 900.0, 700.0);
+        pass(&mut help, 900.0, 700.0);
+        assert!(small.width() < 950.0);
+
+        // Closed, then opened again on a bigger screen: it must fill *that*,
+        // not come back at the size it was left.
+        help.open = false;
+        pass(&mut help, 1600.0, 1000.0);
+        help.open = true;
+        let rect = pass(&mut help, 1600.0, 1000.0);
+        // Within a couple of points of the viewport less its margin: the
+        // window's own frame rounds to the pixel grid.
+        assert!(
+            (rect.width() - 1584.0).abs() < 6.0 && (rect.height() - 984.0).abs() < 6.0,
+            "opened at {:?}, wanted the 1600x1000 viewport less its margin",
+            rect.size()
+        );
+        assert!(rect.min.x < 12.0 && rect.min.y < 12.0, "and in the corner, not at {:?}", rect.min);
+
+        // The frames after it leave the size alone rather than re-forcing it,
+        // so the operator can drag the manual smaller again.
+        let again = pass(&mut help, 1600.0, 1000.0);
+        assert_eq!(again.size(), rect.size(), "a settled manual keeps its size");
+    }
+
+    /// Ctrl+F and F3 are claimed even while the find field owns the keyboard —
+    /// that is when they are reached for — and they never reach the radio's
+    /// bindings.
+    #[test]
+    fn find_keys_are_claimed_while_open() {
+        let mut help = Help { open: true, hits: 4, ..Help::default() };
+        let ctrl_f = egui::Event::Key {
+            key: egui::Key::F,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::CTRL,
+        };
+        let left = grab(&mut help, vec![ctrl_f, press(egui::Key::F3)]);
+        assert!(left.is_empty(), "find keys should be consumed, got {left:?}");
+        assert!(help.focus_find, "Ctrl+F puts the caret in the find field");
+        assert_eq!(help.hit, 1, "F3 steps to the next match");
+
+        // Plain F is the "fit the view" binding and must survive.
+        let mut help = Help { open: true, ..Help::default() };
+        let left = grab(&mut help, vec![press(egui::Key::F)]);
+        assert_eq!(left.len(), 1, "plain F belongs to the bindings");
+        assert!(!help.focus_find);
     }
 
     /// Every whole-line image the manual references must be baked into the

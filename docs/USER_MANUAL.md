@@ -400,7 +400,7 @@ can't quietly add itself to the one you set here.
   you will not hear it switch. Forcing mono is still worth doing on a marginal
   signal you want to listen to for a long time.
 - **RDS** (WFM only) — the **data the station carries beside its audio**: what it
-  is called, what it is playing, and what else it wants you to know. The chip
+  is called, what it is playing, and what else it wants you to know. The button
   lights when data is actually arriving, so it answers "does this transmitter
   carry RDS?" without your opening anything. Click it for the window.
 
@@ -2415,7 +2415,7 @@ decides every band plan sdroxide draws and enforces:
 - **Skimmer windows** — where the PSK and RTTY skimmers listen. 40 m PSK is
   around 7.040 in Region 1 and 7.070 in the other two; RTTY, 7.040 against
   7.080.
-- **Calling frequencies** — the ⇵ frequency chip and the digital band buttons
+- **Calling frequencies** — the ⇵ frequency button and the digital band buttons
   offer your region's convention: PSK31 and RTTY on 40 m, and SSTV on 80 m and
   40 m (3.730 / 7.165 in Region 1, 3.845 / 7.171 elsewhere — and 3.845 is
   outside the Region 1 allocation altogether, so it is never offered there).
@@ -2958,7 +2958,7 @@ What that needs on the radio:
   transmitter itself there, the way a recorded message does.
 - **The panel's WPM is sent to the rig's keyer** (Yaesu, Kenwood and Elecraft
   `KS`, Icom keyer speed),
-  so the speed chip in the CW panel is the speed on the air. Farnsworth spacing
+  so the speed button in the CW panel is the speed on the air. Farnsworth spacing
   is the sidetone keyer's and has no equivalent in a rig's keyer, so it does not
   apply on this route. Elecraft's keyer stops at 8 and 50 WPM, so the panel's
   ends are clamped to those.
@@ -4261,7 +4261,7 @@ Airspy HF+ behind an 8-bit server gets 32 dB of it before anything else, because
 its analog dynamic range leaves its I/Q a long way down the scale.
 
 **Full-band strip** asks the server for a low-rate FFT of the whole band as well
-as the I/Q, and draws it in the strip above the panadapter (the **WIDE** chip in
+as the I/Q, and draws it in the strip above the panadapter (the **WIDE** button in
 the Display module shows and hides it). It costs almost nothing — a couple of
 kilobytes a frame, a dozen or so times a second — and it shows the whole
 receiver rather than the slice being demodulated. Clicking anywhere in it tunes
@@ -4649,7 +4649,7 @@ button held for PTT behaves like a footswitch.
 
 F1 always opens this manual, even while you are typing, so it is not rebindable.
 While the manual is open, the arrow, Page and Home/End keys scroll it instead of
-running whatever you have bound them to.
+running whatever you have bound them to, and Ctrl+F / F3 drive its search bar.
 
 #### 5.4.3 MIDI controller
 
@@ -6574,7 +6574,7 @@ Longwave and the HF standard-time stations are not in EiBi's file — it starts 
 
 ## 10. Winlink radio email
 
-**MAIL** in the system chips opens the mailbox. Winlink is the amateur
+**MAIL** in the system button area opens the mailbox. Winlink is the amateur
 store-and-forward email network: messages are held by a Common Message Server
 (CMS) and collected when you connect, either over the internet or — eventually,
 see below — over the air.
@@ -7130,6 +7130,27 @@ never tunes the radio at the same time: Up / Down scroll a few lines, Page Up /
 Page Down scroll a screen, Home / End jump to the ends, and Left / Right step to
 the previous / next section in the CONTENTS outline. Esc or F1 closes it and the
 keys go back to tuning.
+
+It opens filling the window, and you can move and resize it from there like any
+other panel.
+
+**Finding something.** The bar across the top searches the whole manual as you
+type. Every occurrence is highlighted where it stands, the one you are on in
+yellow and the rest in cyan, and the view follows it:
+
+| Key / button | What it does |
+| --- | --- |
+| Ctrl+F | Puts the caret in the find field. |
+| ▶ or Enter or F3 | Next match (wraps round at the end). |
+| ◀ or Shift+Enter or Shift+F3 | Previous match. |
+| ✕ or Esc | Clears the search. A second Esc closes the manual. |
+
+The tally beside the buttons reads `3 / 17` — which match you are on, out of how
+many there are. In the CONTENTS outline every chapter and subsection holding the
+term turns yellow with a count beside it, so a term that only appears in one
+chapter out of eleven is visible before you scroll anywhere: search for `WSPR`
+and the outline tells you where it is discussed and how much is said about it.
+The search is case-insensitive, so `wspr` and `WSPR` find the same things.
 
 These are the **defaults**. Every one of them can be rebound — and PTT, band
 changes, filter width and much else bound to keys, mouse buttons or a MIDI
