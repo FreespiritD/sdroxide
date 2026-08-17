@@ -35,7 +35,11 @@ const GPIO_BIAS_TEE: u8 = 0;
 const GPIO_TUNER_RESET: u8 = 5;
 
 /// The R82xx's default intermediate frequency — the DVB-T 6 MHz mode's.
-pub const R82XX_IF_FREQ: f64 = 3_570_000.0;
+///
+/// The tuner owns this number, so it is re-exported rather than restated: the
+/// DDC below has to be programmed to whatever IF the tuner's filter choice
+/// actually leaves it on.
+pub use sdroxide_r82xx::DEFAULT_IF_HZ as R82XX_IF_FREQ;
 
 /// Which ADC branch feeds the DDC when the tuner is bypassed.
 ///

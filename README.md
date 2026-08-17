@@ -416,7 +416,14 @@ starting sdroxide before the rig is fine:
   There is no hardware downconverter in this receiver: the full ADC stream is
   converted to complex baseband on the host, which is why retuning anywhere in
   HF is instantaneous, and why it wants a modern CPU and a real USB 3 port.
-  Receive only; the VHF/UHF tuner is not driven.
+
+  Above the ADC's Nyquist limit the receiver switches automatically to its
+  R828D tuner and the VHF SMA, reaching to 1.75 GHz, so both antennas want to
+  be connected. The bundled firmware carries no tuner driver — it was removed
+  upstream over a licence conflict — so sdroxide drives the tuner itself over
+  the firmware's I2C passthrough, including the synthesiser output that clocks
+  it. VHF needs an ADC clock of 32.4 Msps or more for the tuner's 8 MHz IF to
+  fit under Nyquist. Receive only.
 
 - **Airspy HF+ (USB)** — an Airspy HF+ Dual, Discovery or Ranger, driven
   directly over USB by a native pure-Rust driver. **No SoapySDR, no libusb and

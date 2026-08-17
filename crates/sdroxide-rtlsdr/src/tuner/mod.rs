@@ -1,16 +1,15 @@
-//! Tuner detection.
+//! Tuner detection, and the demodulator's side of the tuner's register bus.
 //!
-//! Only the R82xx family is implemented, so there is no tuner trait — a trait
-//! with one implementor would be abstraction without a second case to justify
-//! it. If an E4000 or FC001x driver is ever added, that is the moment to
-//! introduce one.
+//! The driver itself is [`sdroxide_r82xx`], shared with the RX-888 backend —
+//! the same chip family sits behind both, and the only thing that differs is
+//! how its registers are reached. What stays here is what is genuinely about
+//! *this* dongle: probing over the I2C repeater, and the transport itself.
 
-pub mod r82xx;
-pub mod tables;
+pub mod bus;
 
 use crate::error::{Error, Result};
 use crate::rtl2832::Rtl2832;
-use r82xx::{Chip, R82XX_CHECK_VAL, R82xx, R820T_I2C_ADDR, R828D_I2C_ADDR};
+use sdroxide_r82xx::{Chip, R82XX_CHECK_VAL, R82xx, R820T_I2C_ADDR, R828D_I2C_ADDR};
 
 /// Identify the tuner behind the demodulator's I2C repeater.
 ///

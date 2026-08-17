@@ -12,11 +12,11 @@ use sdroxide_types::{RtlSdrAgc, RtlSdrConfig, RtlSdrHfMode};
 use crate::error::{Error, Result};
 use crate::regs;
 use crate::rtl2832::{DirectSampling, Rtl2832};
-use crate::tuner::{
-    self,
-    r82xx::{Chip, GainSetting, R82xx},
-};
+use crate::tuner;
 use crate::usb::UsbDev;
+// The tuner driver itself lives in `sdroxide-r82xx`, shared with the RX-888
+// backend — the same chip family, reached over a different bus.
+use sdroxide_r82xx::{Chip, GainSetting, R82xx};
 
 /// Frequency below which the tuner cannot reach and HF handling takes over.
 const HF_CROSSOVER_HZ: f64 = 28_800_000.0;
@@ -192,7 +192,7 @@ impl Device {
         // The tuner filter is chosen for the rate the hardware will really
         // run at, not the one that was asked for.
         let (_, achieved) = regs::resamp_ratio(regs::RTL_XTAL_HZ, requested);
-        let int_freq = self.with_repeater(|d| d.tuner.set_bandwidth(&d.rtl, achieved))?;
+        let int_freq = self.with_repeater(|d| Ok(d.tuner.set_bandwidth(&d.rtl, achieved)?))?;
         self.rtl.set_if_freq(int_freq)?;
         let achieved = self.rtl.set_sample_rate(rate_hz)?;
 
@@ -211,7 +211,7 @@ impl Device {
             // The ADC is the receiver; the DDC does the tuning.
             self.rtl.set_if_freq(hz)?;
         } else {
-            self.with_repeater(|d| d.tuner.set_freq(&d.rtl, hz))?;
+            self.with_repeater(|d| Ok(d.tuner.set_freq(&d.rtl, hz)?))?;
         }
         self.rtl.set_center(hz);
         Ok(())
@@ -261,12 +261,12 @@ impl Device {
         if mode != DirectSampling::Off {
             // Power the tuner down before bypassing it — a live LO leaks into
             // the ADC and puts a birdie in the middle of the passband.
-            self.with_repeater(|d| d.tuner.standby(&d.rtl))?;
+            self.with_repeater(|d| Ok(d.tuner.standby(&d.rtl)?))?;
         }
 
         let reinit_tuner = self.rtl.set_direct_sampling(mode)?;
         if reinit_tuner {
-            self.with_repeater(|d| d.tuner.init(&d.rtl))?;
+            self.with_repeater(|d| Ok(d.tuner.init(&d.rtl)?))?;
             self.rtl.configure_for_r82xx()?;
             // Re-assert gain: a re-initialised tuner is back at its defaults.
             let agc = self.agc;
@@ -285,8 +285,9 @@ impl Device {
     /// Set the manual tuner gain, in dB. Returns the snapped value.
     pub fn set_gain_db(&mut self, db: f64) -> Result<Option<f64>> {
         self.gain_db = db;
-        let eff =
-            self.with_repeater(|d| d.tuner.set_gain(&d.rtl, GainSetting::Manual { total_db: db }))?;
+        let eff = self.with_repeater(|d| {
+            Ok(d.tuner.set_gain(&d.rtl, GainSetting::Manual { total_db: db })?)
+        })?;
         self.effective_gain_db = eff;
         Ok(eff)
     }
@@ -296,7 +297,7 @@ impl Device {
         self.agc = agc;
         self.rtl.set_rtl_agc(agc.rtl_auto())?;
         if agc.tuner_auto() {
-            self.with_repeater(|d| d.tuner.set_gain(&d.rtl, GainSetting::Auto))?;
+            self.with_repeater(|d| Ok(d.tuner.set_gain(&d.rtl, GainSetting::Auto)?))?;
             self.effective_gain_db = None;
         } else {
             let g = self.gain_db;

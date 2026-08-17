@@ -118,10 +118,12 @@ fn main() {
 
     // The full-band lane: prove it produces frames, and that the strongest
     // things in them land where they physically are.
-    let (wc, wsp) = h.wide_span_hz();
-    println!("\nfull-band lane: centre {:.3} MHz, span {:.3} MHz", wc / 1e6, wsp / 1e6);
+    //
+    // The axis comes off the frame rather than from the handle, because above
+    // the VHF crossover it is a slice of the tuner's IF mapped back to RF and
+    // moves with the tuner — `wide_span_hz` only describes the HF case.
     let mut frames = 0usize;
-    let mut last: Option<Vec<f32>> = None;
+    let mut last: Option<sdroxide_rx888::handle::WideFrame> = None;
     let until = Instant::now() + Duration::from_secs(2);
     while Instant::now() < until {
         if let Some(f) = h.take_wide_spectrum() {
@@ -131,7 +133,10 @@ fn main() {
         let _ = h.read(&mut buf);
     }
     println!("  {frames} frames in 2 s ({:.1} fps)", frames as f64 / 2.0);
-    if let Some(f) = last {
+    if let Some(frame) = last {
+        let (wc, wsp) = (frame.center_hz, frame.span_hz);
+        println!("\nfull-band lane: centre {:.3} MHz, span {:.3} MHz", wc / 1e6, wsp / 1e6);
+        let f = frame.bins;
         let lo = wc - wsp / 2.0;
         let bin_hz = wsp / (f.len() - 1) as f64;
         let floor = {

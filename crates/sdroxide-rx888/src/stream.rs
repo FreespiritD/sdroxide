@@ -24,10 +24,11 @@ use nusb::transfer::{Bulk, In, TransferError};
 use rtrb::Producer;
 use sdroxide_dsp::{Complex32, WbDdc, WideSpectrum};
 
+use crate::band::{self, Band};
 use crate::convert;
-use crate::device::{Device, Settings};
+use crate::device::{Device, Settings, Tune};
 use crate::error::{Error, Result};
-use crate::handle::{Ctrl, Pending, Rx888Handle, RxStats, Shared, push_iq, ring_for};
+use crate::handle::{Ctrl, Pending, Rx888Handle, RxStats, Shared, WideFrame, push_iq, ring_for};
 use crate::protocol::{BULK_EP, BULK_PACKET_HS, BULK_PACKET_SS};
 
 /// Input block size for the downconverter. 8192 gives a 7.9 kHz tuning grid at
@@ -52,6 +53,22 @@ const MAX_TRANSFER_KIB: usize = 1024;
 
 /// How long the USB thread waits for a completion before serving control.
 const COMPLETE_TIMEOUT: Duration = Duration::from_millis(5);
+
+/// Least time between two tuner PLL reprograms.
+///
+/// On VHF a retune is an I2C conversation that sleeps up to 20 ms waiting for
+/// lock, and it happens on this thread — the one servicing the bulk endpoint,
+/// which holds about 32 ms of samples. Back-to-back retunes are exactly what
+/// dragging the panadapter produces, and they would drop most of the stream.
+///
+/// So the dial keeps moving on screen and in the downconverter, and the tuner
+/// follows it at most this often; the last position always wins, so the dial
+/// never ends up somewhere stale. Only *hardware* retunes are rate-limited —
+/// sliding the downconverter inside the IF costs nothing and is not delayed.
+///
+/// 100 ms is a starting figure rather than a measured one. Its failure mode is
+/// dropped buffers, which the overrun counter below already reports.
+const MIN_HW_RETUNE: Duration = Duration::from_millis(100);
 
 /// How many filled buffers may be in flight to the converter thread.
 ///
@@ -104,6 +121,7 @@ pub fn spawn(settings: &Settings, center_hz: f64) -> Result<Rx888Handle> {
             info.out_rate_hz,
             info.bin_hz,
             info.warning,
+            info.vhf_capable,
         )),
         Ok(Err(e)) => {
             let _ = join.join();
@@ -123,6 +141,7 @@ struct DeviceInfo {
     out_rate_hz: f64,
     bin_hz: f64,
     warning: Option<String>,
+    vhf_capable: bool,
 }
 
 /// One buffer travelling between the USB thread and the converter.
@@ -159,6 +178,7 @@ fn run(
         out_rate_hz: out_rate,
         bin_hz: ddc.bin_hz(),
         warning: dev.warning().map(str::to_string),
+        vhf_capable: dev.vhf_capable(),
     }));
 
     tracing::info!(
@@ -173,13 +193,32 @@ fn run(
     let (full_tx, full_rx) = crossbeam_channel::bounded::<Filled>(HANDOFF_DEPTH);
     let (empty_tx, empty_rx) = crossbeam_channel::bounded::<Vec<u8>>(HANDOFF_DEPTH + 4);
 
+    // The initial tune has to happen after `Device::open` — which settles the
+    // ADC rate, and so the crossover — and before the handle is handed out.
+    let initial_tune = dev.set_center_hz(center_hz).unwrap_or_else(|e| {
+        tracing::warn!("RX-888: initial tune failed: {e}");
+        Tune { band: Band::Hf, lo_dial_hz: 0.0, ddc_center_hz: center_hz, conjugate: false }
+    });
+    ddc.set_center_hz(initial_tune.ddc_center_hz);
+
     let wide = WideSpectrum::new(adc_rate, WIDE_FFT, WIDE_FPS);
     let conv_shared = Arc::clone(&shared);
     let randomized = dev.randomized();
-    let (ddc_ctrl_tx, ddc_ctrl_rx) = crossbeam_channel::unbounded::<f64>();
+    let (ddc_ctrl_tx, ddc_ctrl_rx) = crossbeam_channel::unbounded::<Tune>();
     let converter =
         std::thread::Builder::new().name("sdroxide-rx888-ddc".into()).spawn(move || {
-            convert_loop(ddc, wide, randomized, full_rx, empty_tx, rx, conv_shared, ddc_ctrl_rx);
+            convert_loop(
+                ddc,
+                wide,
+                randomized,
+                adc_rate,
+                initial_tune,
+                full_rx,
+                empty_tx,
+                rx,
+                conv_shared,
+                ddc_ctrl_rx,
+            );
         });
     let converter = match converter {
         Ok(t) => t,
@@ -213,7 +252,7 @@ fn pump(
     ctrl: &Receiver<Ctrl>,
     full: &Sender<Filled>,
     empty: &Receiver<Vec<u8>>,
-    ddc_ctrl: &Sender<f64>,
+    ddc_ctrl: &Sender<Tune>,
     settings: &Settings,
 ) -> Result<()> {
     let packet = match dev.usb().speed() {
@@ -238,6 +277,9 @@ fn pump(
     let mut settings = settings.clone();
     let started = Instant::now();
     let mut overruns = 0u64;
+    // Last dial the operator asked for but the tuner has not reached yet.
+    let mut want_center: Option<f64> = None;
+    let mut next_hw_retune = Instant::now();
 
     loop {
         // 1. Collapse the control channel and apply each field once.
@@ -252,7 +294,33 @@ fn pump(
             while ep.pending() < in_flight {
                 ep.submit(ep.allocate(xfer_bytes));
             }
-            apply(dev, &pending, &mut settings, ddc_ctrl);
+            if let Some(hz) = pending.center {
+                want_center = Some(hz);
+            }
+            apply(dev, &pending, &mut settings);
+        }
+
+        // Retune outside `apply`, because unlike every other control this one
+        // can block for PLL lock and so has to be paced.
+        if let Some(hz) = want_center {
+            let hw = dev.hardware_retune_needed(hz);
+            if !hw || Instant::now() >= next_hw_retune {
+                // Top the queue up first: the retune is about to stop
+                // servicing it.
+                while ep.pending() < in_flight {
+                    ep.submit(ep.allocate(xfer_bytes));
+                }
+                match dev.set_center_hz(hz) {
+                    Ok(t) => {
+                        let _ = ddc_ctrl.send(t);
+                    }
+                    Err(e) => tracing::warn!("RX-888: {e}"),
+                }
+                want_center = None;
+                if hw {
+                    next_hw_retune = Instant::now() + MIN_HW_RETUNE;
+                }
+            }
         }
 
         // 2. Refill before draining, so the queue is never empty while the
@@ -327,11 +395,8 @@ fn pump(
     Ok(())
 }
 
-fn apply(dev: &mut Device, p: &Pending, settings: &mut Settings, ddc_ctrl: &Sender<f64>) {
-    // Retuning is the converter's business: there is no hardware LO to move.
-    if let Some(hz) = p.center {
-        let _ = ddc_ctrl.send(hz);
-    }
+/// Apply everything except the dial, which `pump` paces separately.
+fn apply(dev: &mut Device, p: &Pending, settings: &mut Settings) {
     if let Some(db) = p.vga {
         settings.vga_db = db;
         if let Err(e) = dev.set_vga_db(db) {
@@ -362,6 +427,39 @@ fn apply(dev: &mut Device, p: &Pending, settings: &mut Settings, ddc_ctrl: &Send
             tracing::warn!("RX-888: {e}");
         }
     }
+    if let Some(db) = p.tuner_gain {
+        settings.tuner_gain_db = db;
+        if let Err(e) = dev.set_tuner_gain_db(db) {
+            tracing::warn!("RX-888: {e}");
+        }
+    }
+    if let Some(on) = p.tuner_agc {
+        settings.tuner_agc = on;
+        if let Err(e) = dev.set_tuner_agc(on) {
+            tracing::warn!("RX-888: {e}");
+        }
+    }
+    if let Some(on) = p.bias_tee_vhf {
+        settings.bias_tee_vhf = on;
+        if let Err(e) = dev.set_bias_tee_vhf(on) {
+            tracing::warn!("RX-888: {e}");
+        }
+    }
+}
+
+/// Cut the analyser's frame down to the axis the front end is actually on.
+///
+/// On HF that is the whole frame unchanged. On VHF the analyser is looking at
+/// the tuner's IF, so the display is the slice covering the IF filter, reversed
+/// — ascending IF is descending RF — and carrying the RF axis it belongs on.
+fn project_wide(frame: &[f32], m: &band::WideMap) -> WideFrame {
+    let hi = m.hi_bin.min(frame.len());
+    let lo = m.lo_bin.min(hi);
+    let mut bins = frame[lo..hi].to_vec();
+    if m.reverse {
+        bins.reverse();
+    }
+    WideFrame { bins, center_hz: m.center_hz, span_hz: m.span_hz }
 }
 
 /// The arithmetic half: bytes in, complex baseband out.
@@ -370,13 +468,17 @@ fn convert_loop(
     mut ddc: WbDdc,
     mut wide: WideSpectrum,
     randomized: bool,
+    adc_rate_hz: f64,
+    initial: Tune,
     full: Receiver<Filled>,
     empty: Sender<Vec<u8>>,
     mut rx: Producer<f32>,
     shared: Arc<Shared>,
-    retune: Receiver<f64>,
+    retune: Receiver<Tune>,
 ) {
     let mut stats = RxStats::new(ddc.out_rate());
+    let mut conjugate = initial.conjugate;
+    let mut wmap = band::wide_map(initial.band, initial.lo_dial_hz, adc_rate_hz, WIDE_FFT / 2 + 1);
     let mut carry: Option<u8> = None;
     let mut real: Vec<f32> = Vec::with_capacity(1 << 20);
     let mut cplx: Vec<Complex32> = Vec::with_capacity(1 << 16);
@@ -384,13 +486,17 @@ fn convert_loop(
     let started = Instant::now();
 
     while let Ok(filled) = full.recv() {
-        // Last retune wins, and it is free: no hardware is involved.
+        // Last retune wins. On HF this is free; on VHF the expensive half has
+        // already happened on the USB thread and what arrives here is only
+        // where to point the downconverter.
         let mut want = None;
-        while let Ok(hz) = retune.try_recv() {
-            want = Some(hz);
+        while let Ok(t) = retune.try_recv() {
+            want = Some(t);
         }
-        if let Some(hz) = want {
-            ddc.set_center_hz(hz);
+        if let Some(t) = want {
+            ddc.set_center_hz(t.ddc_center_hz);
+            conjugate = t.conjugate;
+            wmap = band::wide_map(t.band, t.lo_dial_hz, adc_rate_hz, WIDE_FFT / 2 + 1);
         }
 
         convert::to_f32(&filled.buf, randomized, &mut carry, &mut real);
@@ -400,7 +506,7 @@ fn convert_loop(
         // its own.
         wide.process(&real);
         if let Some((frame, mut slot)) = wide.take().zip(shared.wide.lock().ok()) {
-            *slot = Some(frame);
+            *slot = Some(project_wide(&frame, &wmap));
         }
 
         cplx.clear();
@@ -411,7 +517,13 @@ fn convert_loop(
             inter.reserve(cplx.len() * 2);
             for v in &cplx {
                 inter.push(v.re);
-                inter.push(v.im);
+                // The R828D's LO sits above the wanted signal, so its IF runs
+                // backwards and the whole VHF spectrum arrives mirrored.
+                // Negating Q is the conjugate, which puts it the right way
+                // round — measured on the bench, see `crate::band`. Without
+                // it every VHF signal tunes the wrong way and every SSB
+                // sideband is the other one.
+                inter.push(if conjugate { -v.im } else { v.im });
             }
             let dropped = push_iq(&mut rx, &inter, &mut stats);
             if dropped > 0 {

@@ -354,11 +354,100 @@ impl UsbDev {
         tracing::trace!("vendor in  {cmd:?} value={value:#06x} index={index:#06x} -> {data:02x?}");
         Ok(data)
     }
+
+    // ---- I2C passthrough ---------------------------------------------------
+
+    /// Write `data` to consecutive registers starting at `reg`, on the I2C
+    /// device at `dev_addr`.
+    ///
+    /// # The device address travels in `wValue` and the register in `wIndex`
+    ///
+    /// The published API reference has these the other way round. The firmware
+    /// is authoritative and unambiguous about it: the handler calls
+    /// `I2cTransfer(wIndex, wValue, wLength, buf, isRead)` against a signature
+    /// of `I2cTransfer(byteAddress, devAddr, byteCount, buffer, isRead)`. So
+    /// `wValue` is the 8-bit device address — `0x74` for the R828D, `0xC0` for
+    /// the clock generator — and `wIndex` is the sub-address.
+    ///
+    /// Swapping them does not fail. It addresses whatever answers at `0x0b` and
+    /// writes its register `0x74`, which on this board is nothing at all: the
+    /// transfer succeeds, the tuner never wakes, and VHF is silently deaf. That
+    /// is the same shape of trap as the `SETARGFX3` gotcha documented on
+    /// [`crate::device::Device::set_arg`], and it is worth the same paragraph.
+    ///
+    /// # The clock generator is on this bus too
+    ///
+    /// `0xC0` is the MS5351M synthesising the ADC sample clock. The firmware
+    /// permits host writes only to registers 0–3, 9, 15–92, 149–170, 177, 183
+    /// and 187; a write to a reserved register can wedge that part until the
+    /// receiver is unplugged. [`crate::si5351`] is the only thing in this crate
+    /// that may address it, and it stays inside that set.
+    pub fn i2c_write(&self, dev_addr: u8, reg: u8, data: &[u8]) -> Result<()> {
+        let mut pos = 0usize;
+        let mut addr = reg;
+        loop {
+            let n = (data.len() - pos).min(EP0_MAX);
+            let (value, index) = i2c_request_fields(dev_addr, addr);
+            self.vendor_out(Cmd::I2cWrite, value, index, &data[pos..pos + n])?;
+            pos += n;
+            if pos >= data.len() {
+                return Ok(());
+            }
+            addr = addr.wrapping_add(n as u8);
+        }
+    }
+
+    /// Read consecutive registers starting at `reg`.
+    ///
+    /// The firmware issues `[devAddr, reg, devAddr|1]` — write the sub-address,
+    /// repeated start, then read — which is what both parts on this bus expect.
+    /// Addressing is as described on [`UsbDev::i2c_write`].
+    pub fn i2c_read(&self, dev_addr: u8, reg: u8, out: &mut [u8]) -> Result<()> {
+        let mut pos = 0usize;
+        let mut addr = reg;
+        while pos < out.len() {
+            let n = (out.len() - pos).min(EP0_MAX);
+            let (value, index) = i2c_request_fields(dev_addr, addr);
+            let got = self.vendor_in(Cmd::I2cRead, value, index, n)?;
+            if got.len() < n {
+                return Err(Error::Unsupported(format!(
+                    "I2C read at 0x{dev_addr:02x} register 0x{addr:02x} returned {} bytes, \
+                     wanted {n}",
+                    got.len()
+                )));
+            }
+            out[pos..pos + n].copy_from_slice(&got[..n]);
+            pos += n;
+            addr = addr.wrapping_add(n as u8);
+        }
+        Ok(())
+    }
+}
+
+/// The `(wValue, wIndex)` a passthrough request carries.
+///
+/// Trivial, and it exists so the ordering above is asserted rather than only
+/// commented — see [`UsbDev::i2c_write`] for why getting it backwards is
+/// invisible at runtime.
+pub(crate) fn i2c_request_fields(dev_addr: u8, reg: u8) -> (u16, u16) {
+    (u16::from(dev_addr), u16::from(reg))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The device address goes in `wValue`, the register in `wIndex`. The
+    /// published API reference states the opposite; the firmware source does
+    /// not, and the firmware is what answers the request.
+    #[test]
+    fn the_device_address_goes_in_wvalue_and_the_register_in_windex() {
+        // The R828D at 0x74, register 0x0b — the IF filter register, and a
+        // pair whose two orderings are both plausible-looking numbers.
+        assert_eq!(i2c_request_fields(0x74, 0x0b), (0x0074, 0x000b));
+        // The clock generator at 0xC0, register 18 (CLK2_CONTROL).
+        assert_eq!(i2c_request_fields(0xc0, 18), (0x00c0, 0x0012));
+    }
 
     #[test]
     fn only_the_two_rx888_ids_are_recognised() {

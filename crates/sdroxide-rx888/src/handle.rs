@@ -24,16 +24,23 @@ pub(crate) enum Ctrl {
     Dither(bool),
     BiasTee(bool),
     Pga(bool),
+    TunerGain(f64),
+    TunerAgc(bool),
+    BiasTeeVhf(bool),
     Shutdown,
 }
 
 /// Control messages accumulated over one pass of the thread loop.
 ///
-/// Dragging the panadapter emits hundreds of `Center` messages a second. Unlike
-/// the RTL-SDR, retuning here is nearly free — it is a change of FFT bin, not an
-/// I2C transaction — but the coalescing still matters: applying a hundred
-/// retunes per pass would reset the downconverter's block phase a hundred times.
-/// Last value wins, which is the right semantics for a dial.
+/// Dragging the panadapter emits hundreds of `Center` messages a second. On HF
+/// retuning is nearly free — a change of FFT bin, not an I2C transaction — but
+/// coalescing still matters, because applying a hundred retunes per pass would
+/// reset the downconverter's block phase a hundred times.
+///
+/// Above the VHF crossover it stops being free at all: a large jump reprograms
+/// the tuner's PLL and waits for lock. So this is load-bearing rather than
+/// merely tidy, and `stream::pump` paces the hardware half on top of it. Last
+/// value wins, which is the right semantics for a dial.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Pending {
     pub center: Option<f64>,
@@ -42,6 +49,9 @@ pub(crate) struct Pending {
     pub dither: Option<bool>,
     pub bias_tee: Option<bool>,
     pub pga: Option<bool>,
+    pub tuner_gain: Option<f64>,
+    pub tuner_agc: Option<bool>,
+    pub bias_tee_vhf: Option<bool>,
     pub shutdown: bool,
 }
 
@@ -54,6 +64,9 @@ impl Pending {
             Ctrl::Dither(v) => self.dither = Some(v),
             Ctrl::BiasTee(v) => self.bias_tee = Some(v),
             Ctrl::Pga(v) => self.pga = Some(v),
+            Ctrl::TunerGain(v) => self.tuner_gain = Some(v),
+            Ctrl::TunerAgc(v) => self.tuner_agc = Some(v),
+            Ctrl::BiasTeeVhf(v) => self.bias_tee_vhf = Some(v),
             Ctrl::Shutdown => self.shutdown = true,
         }
     }
@@ -75,12 +88,24 @@ pub(crate) struct Shared {
     pub att_tenth_db: AtomicI64,
     /// Samples the ring could not take because the consumer fell behind.
     pub dropped: AtomicU64,
-    /// Latest full-band spectrum frame, in dBFS ascending from DC.
+    /// Latest full-band spectrum frame, with the axis it belongs on.
     ///
     /// Latest-wins rather than queued: a display that falls behind wants the
     /// newest picture, not a backlog of stale ones. A mutex is fine here — it is
     /// taken twenty times a second, not per sample.
-    pub wide: Mutex<Option<Vec<f32>>>,
+    pub wide: Mutex<Option<WideFrame>>,
+}
+
+/// A full-band frame and the axis it sits on.
+///
+/// The axis travels with the bins rather than being asked for separately: on
+/// VHF it moves with the tuner, and a frame captured before a band change must
+/// not be drawn on the axis that came after it.
+pub struct WideFrame {
+    /// dBFS, ascending in RF.
+    pub bins: Vec<f32>,
+    pub center_hz: f64,
+    pub span_hz: f64,
 }
 
 /// Throughput and health accounting.
@@ -180,6 +205,9 @@ pub struct Rx888Handle {
     out_rate_hz: f64,
     bin_hz: f64,
     warning: Option<String>,
+    /// Whether this receiver has an R828D and an ADC clock with room for its
+    /// IF. Fixed at open: neither can change without a re-open.
+    vhf_capable: bool,
     opened_at: Instant,
     released: bool,
 }
@@ -197,6 +225,7 @@ impl Rx888Handle {
         out_rate_hz: f64,
         bin_hz: f64,
         warning: Option<String>,
+        vhf_capable: bool,
     ) -> Rx888Handle {
         Rx888Handle {
             rx,
@@ -209,6 +238,7 @@ impl Rx888Handle {
             out_rate_hz,
             bin_hz,
             warning,
+            vhf_capable,
             opened_at: Instant::now(),
             released: false,
         }
@@ -238,14 +268,22 @@ impl Rx888Handle {
         self.bin_hz
     }
 
-    /// Centre and span of the full-band spectrum, in Hz. A real ADC stream
-    /// covers DC to Nyquist, so this is a quarter and a half of the ADC clock.
+    /// Centre and span the full-band spectrum covers while the receiver is on
+    /// HF: a real ADC stream runs DC to Nyquist, so a quarter and a half of the
+    /// ADC clock.
+    ///
+    /// Only true on HF, which is why it is no longer what the source reports —
+    /// above the crossover the analyser is looking at the tuner's IF and the
+    /// axis moves with the tuner. Each frame carries its own; see
+    /// [`Rx888Handle::take_wide_spectrum`]. Kept for the bring-up examples,
+    /// which only ever run on HF.
     pub fn wide_span_hz(&self) -> (f64, f64) {
         (self.adc_rate_hz / 4.0, self.adc_rate_hz / 2.0)
     }
 
-    /// Take the newest full-band spectrum frame, if one is waiting.
-    pub fn take_wide_spectrum(&self) -> Option<Vec<f32>> {
+    /// Take the newest full-band spectrum frame, if one is waiting, with the
+    /// axis it belongs on.
+    pub fn take_wide_spectrum(&self) -> Option<WideFrame> {
         self.shared.wide.lock().ok().and_then(|mut g| g.take())
     }
 
@@ -334,6 +372,26 @@ impl Rx888Handle {
 
     pub fn set_pga(&self, on: bool) {
         let _ = self.ctrl.send(Ctrl::Pga(on));
+    }
+
+    /// R828D RF gain, in dB. Has no effect below the VHF crossover.
+    pub fn set_tuner_gain_db(&self, db: f64) {
+        let _ = self.ctrl.send(Ctrl::TunerGain(db));
+    }
+
+    /// Let the tuner run its own LNA and mixer loops.
+    pub fn set_tuner_agc(&self, on: bool) {
+        let _ = self.ctrl.send(Ctrl::TunerAgc(on));
+    }
+
+    /// Power the VHF antenna port.
+    pub fn set_bias_tee_vhf(&self, on: bool) {
+        let _ = self.ctrl.send(Ctrl::BiasTeeVhf(on));
+    }
+
+    /// Whether this receiver has a usable VHF front end.
+    pub fn vhf_capable(&self) -> bool {
+        self.vhf_capable
     }
 
     /// Stop the thread and let go of the device.
@@ -427,6 +485,7 @@ mod tests {
             2.025e6,
             7910.0,
             None,
+            false,
         );
         // A receiver that delivered a sample "just now" has near-zero silence,
         // however long the handle has been open. Reading the raw timestamp
@@ -465,6 +524,7 @@ mod tests {
             2.025e6,
             7910.0,
             None,
+            false,
         );
         let mut buf = [0f32; 32];
         // Nine samples are available; an even count must come back.

@@ -103,9 +103,11 @@ pub const RTL_XTAL_HZ: f64 = 28_800_000.0;
 const TWO_POW_22: f64 = 4_194_304.0;
 
 /// Apply a parts-per-million correction to a nominal frequency.
-pub fn apply_ppm(nominal_hz: f64, ppm: i32) -> f64 {
-    nominal_hz * (1.0 + ppm as f64 / 1e6)
-}
+///
+/// Shared with the tuner driver, which corrects its *own* reference the same
+/// way — see the note on [`crate::rtl2832::Rtl2832::set_ppm`] about the three
+/// routes ppm takes into the hardware.
+pub use sdroxide_r82xx::apply_ppm;
 
 /// Whether the resampler can produce this rate.
 ///
@@ -158,6 +160,18 @@ pub fn ppm_regs(ppm: i32) -> [u8; 2] {
 
 #[cfg(test)]
 mod tests {
+    /// A Blog V4 clocks its tuner from the demodulator's crystal rather than
+    /// the R828D's own, so the tuner driver carries its own copy of that
+    /// frequency — it cannot reach into this crate for it.
+    ///
+    /// The two must stay equal. If they drift, a V4's PLL is computed against
+    /// one reference while its resampler and DDC use another, and every
+    /// frequency is quietly wrong by the ratio.
+    #[test]
+    fn the_blog_v4_tuner_reference_is_this_demodulators_crystal() {
+        assert_eq!(super::RTL_XTAL_HZ, sdroxide_r82xx::BLOG_V4_REF_HZ);
+    }
+
     use super::*;
 
     #[test]

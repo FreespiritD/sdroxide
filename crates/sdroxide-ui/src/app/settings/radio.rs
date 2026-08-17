@@ -2652,6 +2652,57 @@ pub(in crate::app) fn settings_rx888_tab(
         }
         ui.end_row();
 
+        ui.label("VHF tuner gain");
+        ui.horizontal(|ui| {
+            let slider = ui.add_enabled(
+                !cfg.rx888.tuner_agc,
+                egui::Slider::new(
+                    &mut cfg.rx888.tuner_gain_db,
+                    0.0..=Rx888Config::TUNER_GAIN_MAX_DB,
+                )
+                .suffix(" dB"),
+            );
+            if slider
+                .on_hover_text(
+                    "R828D RF gain, used above the automatic HF/VHF crossover. \
+                     29 discrete steps; the nearest is used.",
+                )
+                .changed()
+            {
+                cmds.push(Command::SetGain {
+                    dir: sdroxide_types::Direction::Rx,
+                    element: Rx888Config::TUNER_GAIN_ELEMENT.into(),
+                    db: cfg.rx888.tuner_gain_db,
+                });
+            }
+            if ui
+                .checkbox(&mut cfg.rx888.tuner_agc, "Auto")
+                .on_hover_text("Let the tuner run its own LNA and mixer loops.")
+                .changed()
+            {
+                cmds.push(Command::SetGain {
+                    dir: sdroxide_types::Direction::Rx,
+                    element: Rx888Config::TUNER_AGC_ELEMENT.into(),
+                    db: cfg.rx888.tuner_agc as u8 as f64,
+                });
+            }
+        });
+        ui.end_row();
+
+        ui.label("Bias tee (VHF)");
+        if ui
+            .checkbox(&mut cfg.rx888.bias_tee_vhf, "DC on the VHF antenna port")
+            .on_hover_text("Powers an active antenna or preamp down the coax.")
+            .changed()
+        {
+            cmds.push(Command::SetGain {
+                dir: sdroxide_types::Direction::Rx,
+                element: Rx888Config::BIAS_TEE_VHF_ELEMENT.into(),
+                db: cfg.rx888.bias_tee_vhf as u8 as f64,
+            });
+        }
+        ui.end_row();
+
         ui.label("Clock trim");
         let r = ui
             .add(
@@ -2678,10 +2729,15 @@ pub(in crate::app) fn settings_rx888_tab(
     ui.add_space(6.0);
     ui.label(
         egui::RichText::new(
-            "Receive only, 0–32 MHz by direct sampling. There is no hardware \
-             downconverter: the full ADC stream is converted to baseband on the \
-             host, so retuning anywhere in HF is instant. Every setting here \
-             applies straight away — there is no Apply button to press.",
+            "Receive only. Below the ADC's Nyquist limit the antenna is sampled \
+             directly and retuning is instant, because there is no hardware \
+             downconverter — the full ADC stream is converted to baseband on the \
+             host. Above it the receiver switches to its R828D tuner and the VHF \
+             SMA automatically, so both antennas need to be connected. VHF needs \
+             an ADC clock of 32.4 Msps or more for the tuner's IF to fit, and at \
+             clocks below 48 Msps there is a gap between the two ranges that \
+             nothing can reach. Every setting here applies straight away — there \
+             is no Apply button to press.",
         )
         .weak(),
     );

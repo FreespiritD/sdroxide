@@ -20,13 +20,16 @@
 //!
 //! Pure Rust via `nusb` — no libusb, no libSoapySDR, no C dependency.
 
+pub mod band;
 pub mod convert;
 pub mod device;
 pub mod error;
 pub mod firmware;
 pub mod handle;
 pub mod protocol;
+pub mod si5351;
 pub mod stream;
+pub mod tuner;
 pub mod usb;
 
 pub use device::{ADC_RATES, DEFAULT_ADC_HZ, Device, Settings};

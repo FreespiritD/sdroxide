@@ -43,6 +43,15 @@ pub enum Error {
     #[error("{0}")]
     Unsupported(String),
 
+    /// The VHF tuner refused.
+    ///
+    /// Kept as its own variant rather than flattened into a string because it
+    /// is the one failure the band machine acts on: a tuner that will not come
+    /// up sends the receiver back to HF and latches, instead of retrying an
+    /// I2C conversation on every step of a dial spin.
+    #[error("RX-888 VHF tuner: {0}")]
+    Tuner(#[from] sdroxide_r82xx::Error),
+
     #[error("USB error: {0}")]
     Usb(#[from] nusb::Error),
 }

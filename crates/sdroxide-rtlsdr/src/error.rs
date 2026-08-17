@@ -58,6 +58,21 @@ pub enum Error {
     Usb(#[from] nusb::Error),
 }
 
+/// Fold the tuner driver's errors into this crate's.
+///
+/// [`Error::PllUnlocked`] survives as itself rather than collapsing into a
+/// string, because it is the one tuner failure this crate reasons about — a
+/// dongle that streams noise because its synthesiser never locked looks exactly
+/// like a dead antenna, and the distinction has to reach the operator.
+impl From<sdroxide_r82xx::Error> for Error {
+    fn from(e: sdroxide_r82xx::Error) -> Error {
+        match e {
+            sdroxide_r82xx::Error::PllUnlocked(mhz) => Error::PllUnlocked(mhz),
+            other => Error::Unsupported(other.to_string()),
+        }
+    }
+}
+
 impl Error {
     /// Translate a device-open failure into an instruction.
     ///

@@ -8,8 +8,12 @@ use std::time::Duration;
 
 use nusb::transfer::TransferError;
 
+use sdroxide_r82xx::{Chip, GainSetting, R82xx};
+
+use crate::band::{self, Band, BandState};
 use crate::error::{Error, Result};
 use crate::protocol::{Cmd, Identity, STATS_LEN, Stats, Version, arg, gpio};
+use crate::si5351;
 use crate::usb::{self, UsbDev};
 
 /// Default ADC clock. 64.8 Msps covers 0–32.4 MHz, needs 129.6 MB/s, and leaves
@@ -31,6 +35,11 @@ const MIN_ADC_HZ: f64 = 4_000_000.0;
 /// Gain element names, shared with the settings UI.
 pub const ATT_ELEMENT: &str = "ATT";
 pub const VGA_ELEMENT: &str = "VGA";
+
+/// The AD8370 code the VHF path pins the VGA to: high range, code 3, about
+/// +1.3 dB. Upstream's figure, written as a register value rather than a gain
+/// because the dB-based setter would snap it to the nearest of two ranges.
+const VHF_VGA_REG: u8 = 0x80 | 3;
 
 /// PE4312 step attenuator: 0..=63 in 0.5 dB steps.
 const ATT_MAX_CODE: u8 = 63;
@@ -62,6 +71,13 @@ pub struct Settings {
     pub vga_db: f64,
     /// Reference trim, parts per million.
     pub ppm: f64,
+    /// Power the VHF antenna port.
+    pub bias_tee_vhf: bool,
+    /// R828D RF gain in dB, used above the automatic crossover.
+    pub tuner_gain_db: f64,
+    /// Let the tuner run its own LNA and mixer loops instead of the fixed
+    /// ladder.
+    pub tuner_agc: bool,
 }
 
 impl Default for Settings {
@@ -76,6 +92,9 @@ impl Default for Settings {
             attenuator_db: 0.0,
             vga_db: 12.0,
             ppm: 0.0,
+            bias_tee_vhf: false,
+            tuner_gain_db: 30.0,
+            tuner_agc: false,
         }
     }
 }
@@ -94,6 +113,47 @@ pub struct Device {
     /// firmware never initialised the front end, for `IqSource::open_status`.
     warning: Option<String>,
     streaming: bool,
+
+    // ---- the VHF front end ----------------------------------------------
+    /// Built on first entry into VHF and kept afterwards: `standby` already
+    /// returns the part to a known state, so there is nothing to rebuild.
+    tuner: Option<R82xx>,
+    band: Band,
+    /// The RF the tuner is parked on. Meaningless in HF.
+    lo_dial_hz: f64,
+    /// Whether the firmware found an R828D at boot *and* the ADC clock leaves
+    /// room for its IF.
+    vhf_capable: bool,
+    /// Latched after a failed entry, so a dial spin does not retry a broken
+    /// tuner on every step.
+    vhf_failed: Option<String>,
+    /// What the operator asked for on the HF gain controls.
+    ///
+    /// In VHF the hardware is forced elsewhere — the attenuator to maximum and
+    /// the VGA to a fixed code — so these are what gets restored on the way
+    /// back. Without them the slider would be able to undo the front end's own
+    /// settings and quietly put the whole broadcast band back on top of the IF.
+    requested_att_db: f64,
+    requested_vga_db: f64,
+    tuner_gain_db: f64,
+    tuner_agc: bool,
+    ppm: f64,
+}
+
+/// What a retune means downstream.
+///
+/// The band machine runs on the thread that owns the USB device; the converter
+/// is a different thread and cannot ask, so it is told.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tune {
+    pub band: Band,
+    pub lo_dial_hz: f64,
+    /// Where the wideband downconverter must be centred, in ADC baseband Hz.
+    pub ddc_center_hz: f64,
+    /// True in VHF: the tuner's high-side LO mirrors the spectrum, and the
+    /// converter undoes it by negating Q. Measured on the bench — see
+    /// [`crate::band`].
+    pub conjugate: bool,
 }
 
 impl Device {
@@ -119,6 +179,14 @@ impl Device {
         let (adc_rate_hz, link_warning) = clamp_rate_to_link(settings.adc_rate_hz, &usb);
         let warning = join_warnings(link_warning, front_end_warning(identity));
 
+        // The firmware sets hardware id 0x04 only when its boot-time I2C probe
+        // found an R828D, so it already answers "is there a tuner" — but a
+        // clock too slow for the tuner's IF rules VHF out just as firmly.
+        let vhf_capable = band::vhf_available(
+            adc_rate_hz,
+            identity.is_some_and(|i| i.front_end_ready()) && tuner_present(&usb),
+        );
+
         let mut dev = Device {
             usb,
             gpio_word: 0,
@@ -127,6 +195,16 @@ impl Device {
             identity,
             warning,
             streaming: false,
+            tuner: None,
+            band: Band::Hf,
+            lo_dial_hz: 0.0,
+            vhf_capable,
+            vhf_failed: None,
+            requested_att_db: settings.attenuator_db,
+            requested_vga_db: settings.vga_db,
+            tuner_gain_db: settings.tuner_gain_db,
+            tuner_agc: settings.tuner_agc,
+            ppm: settings.ppm,
         };
 
         dev.apply_gpio(settings)?;
@@ -199,8 +277,15 @@ impl Device {
         if settings.pga {
             w |= gpio::PGA_EN;
         }
-        // HF-only for now, so the VHF front end stays out of circuit.
-        w &= !gpio::VHF_EN;
+        if settings.bias_tee_vhf {
+            w |= gpio::BIAS_VHF;
+        }
+        // The RF switch follows the band, never the settings: the band machine
+        // owns that bit and re-states it here like every other one, because the
+        // firmware keeps no shadow of its own.
+        if self.band == Band::Vhf {
+            w |= gpio::VHF_EN;
+        }
         self.randomize = settings.randomize;
         self.write_gpio(w)
     }
@@ -235,6 +320,34 @@ impl Device {
         self.write_gpio(w)
     }
 
+    /// Switch the ADC's input between the HF chain and the VHF tuner's IF.
+    ///
+    /// The two front ends share one ADC, so this is an either/or: with the
+    /// tuner in circuit the HF chain must be attenuated out of the way, or the
+    /// whole of the broadcast band lands on top of the IF.
+    pub fn set_vhf_en(&mut self, on: bool) -> Result<()> {
+        let w = if on { self.gpio_word | gpio::VHF_EN } else { self.gpio_word & !gpio::VHF_EN };
+        self.write_gpio(w)
+    }
+
+    /// Power the VHF antenna port.
+    pub fn set_bias_tee_vhf(&mut self, on: bool) -> Result<()> {
+        let w = if on { self.gpio_word | gpio::BIAS_VHF } else { self.gpio_word & !gpio::BIAS_VHF };
+        self.write_gpio(w)
+    }
+
+    /// Set the AD8370 by raw register value.
+    ///
+    /// The dB-based [`Device::set_vga_db`] snaps to whichever of the part's two
+    /// ranges lands nearer, which is right for an operator's slider and wrong
+    /// for reproducing a specific value: the VHF path wants exactly the code
+    /// upstream uses, not the nearest gain to it.
+    pub fn set_vga_reg(&mut self, reg: u8) -> Result<()> {
+        self.set_arg(arg::AD8370_VGA, reg)?;
+        tracing::debug!("RX-888: VGA register 0x{reg:02x} ({:+.1} dB)", ad8370_db_for(reg));
+        Ok(())
+    }
+
     fn write_gpio(&mut self, word: u32) -> Result<()> {
         tracing::debug!("RX-888: GPIO <- 0x{word:08x}");
         self.usb.vendor_out(Cmd::GpioFx3, 0, 0, &word.to_le_bytes())?;
@@ -251,7 +364,22 @@ impl Device {
     ///
     /// Returns the attenuation actually programmed, which is `db` rounded to the
     /// hardware's 0.5 dB grid.
+    /// Set the step attenuator. `db` is a gain, so -31.5..=0.
+    ///
+    /// On VHF the request is remembered and applied on the way back to HF
+    /// rather than programmed now: the HF chain is deliberately held at maximum
+    /// attenuation there, because both front ends share one ADC and letting it
+    /// back in puts the whole broadcast band on top of the tuner's IF.
     pub fn set_attenuator_db(&mut self, db: f64) -> Result<f64> {
+        self.requested_att_db = db;
+        if self.band == Band::Vhf {
+            return Ok(att_db_for(att_code_for(db)));
+        }
+        self.program_att(db)
+    }
+
+    /// Program the attenuator, whatever the band. Used by the band machine.
+    fn program_att(&mut self, db: f64) -> Result<f64> {
         let code = att_code_for(db);
         self.set_arg(arg::DAT31_ATT, code)?;
         let achieved = att_db_for(code);
@@ -260,10 +388,17 @@ impl Device {
     }
 
     /// Set the AD8370 VGA. Returns the gain actually programmed.
+    ///
+    /// Held on VHF for the same reason as the attenuator — the VGA is in the
+    /// tuner's path too, and this stage is pinned near unity there.
     pub fn set_vga_db(&mut self, db: f64) -> Result<f64> {
+        self.requested_vga_db = db;
         let code = ad8370_code_for(db);
-        self.set_arg(arg::AD8370_VGA, code)?;
         let achieved = ad8370_db_for(code);
+        if self.band == Band::Vhf {
+            return Ok(achieved);
+        }
+        self.set_arg(arg::AD8370_VGA, code)?;
         tracing::debug!("RX-888: VGA {achieved:+.1} dB (code 0x{code:02x})");
         Ok(achieved)
     }
@@ -344,8 +479,163 @@ impl Device {
         if self.streaming {
             let _ = self.stop();
         }
+        // Leave the front end where an HF user expects to find it, and the
+        // tuner asleep rather than injecting its LO into a shared ADC.
+        if self.band == Band::Vhf {
+            let _ = self.leave_vhf();
+        }
         let _ = self.set_led(false);
     }
+
+    // ---- the VHF front end ------------------------------------------------
+
+    /// Whether this receiver can use its VHF front end at all.
+    pub fn vhf_capable(&self) -> bool {
+        self.vhf_capable && self.vhf_failed.is_none()
+    }
+
+    pub fn band(&self) -> Band {
+        self.band
+    }
+
+    /// Why VHF is unavailable, if it was tried and failed.
+    pub fn vhf_failure(&self) -> Option<&str> {
+        self.vhf_failed.as_deref()
+    }
+
+    /// Tune, switching the front end if the dial has crossed the crossover.
+    ///
+    /// Returns what the converter thread has to do about it. Everything here
+    /// runs on the thread that owns the [`UsbDev`], which is why the converter
+    /// is told rather than asked.
+    pub fn set_center_hz(&mut self, dial_hz: f64) -> Result<Tune> {
+        let cur = BandState { band: self.band, lo_dial_hz: self.lo_dial_hz };
+        let p = band::plan(dial_hz, self.adc_rate_hz, self.vhf_capable(), cur);
+
+        match (self.band, p.band) {
+            (Band::Hf, Band::Vhf) => {
+                if let Err(e) = self.enter_vhf(p.lo_dial_hz) {
+                    tracing::warn!("RX-888: cannot use the VHF front end: {e}");
+                    let _ = self.leave_vhf();
+                    self.vhf_failed = Some(e.to_string());
+                    // Fall back to HF rather than sit deaf. The dial is above
+                    // Nyquist so what comes back is an alias — wrong, but
+                    // honest, and it keeps the receiver answering.
+                    return Ok(Tune {
+                        band: Band::Hf,
+                        lo_dial_hz: 0.0,
+                        ddc_center_hz: dial_hz,
+                        conjugate: false,
+                    });
+                }
+            }
+            (Band::Vhf, Band::Hf) => self.leave_vhf()?,
+            (Band::Vhf, Band::Vhf) if p.move_lo => {
+                if let Some(t) = self.tuner.as_mut() {
+                    t.set_freq(&self.usb, p.lo_dial_hz)?;
+                }
+                self.lo_dial_hz = p.lo_dial_hz;
+            }
+            _ => {}
+        }
+
+        Ok(Tune {
+            band: p.band,
+            lo_dial_hz: p.lo_dial_hz,
+            ddc_center_hz: p.ddc_center_hz,
+            conjugate: p.conjugate,
+        })
+    }
+
+    /// Whether tuning to `dial_hz` would reprogram the tuner's PLL.
+    ///
+    /// Pure, so the stream thread can rate-limit the expensive case without
+    /// paying for it first — a PLL write sleeps for lock on the same thread
+    /// that services the bulk endpoint.
+    pub fn hardware_retune_needed(&self, dial_hz: f64) -> bool {
+        let cur = BandState { band: self.band, lo_dial_hz: self.lo_dial_hz };
+        let p = band::plan(dial_hz, self.adc_rate_hz, self.vhf_capable(), cur);
+        p.move_lo || p.band != self.band
+    }
+
+    /// Bring the tuner up and put the ADC on its IF.
+    ///
+    /// The order is upstream's and none of it is arbitrary: the HF chain has to
+    /// be attenuated away before the switch throws, because both front ends
+    /// share one ADC; and CLK2 has to be running before the tuner is spoken to,
+    /// because initialisation calibrates the IF filter against a PLL that has
+    /// nothing to lock to without it.
+    fn enter_vhf(&mut self, lo_dial_hz: f64) -> Result<()> {
+        self.program_att(ATT_MIN_DB)?;
+        self.set_vhf_en(true)?;
+        // Upstream pins the VGA near unity here and lets the R828D's own ladder
+        // provide the gain.
+        self.set_vga_reg(VHF_VGA_REG)?;
+        si5351::set_clk2_hz(&self.usb, si5351::TUNER_REF_HZ)?;
+
+        let mut t = R82xx::new(Chip::R828D, false, self.ppm.round() as i32);
+        t.init(&self.usb)?;
+        let int_freq = t.set_bandwidth(&self.usb, band::IF_BW_HZ)?;
+        debug_assert_eq!(int_freq, band::IF_CENTER_HZ);
+        t.set_freq(&self.usb, lo_dial_hz)?;
+        self.tuner = Some(t);
+
+        self.band = Band::Vhf;
+        self.lo_dial_hz = lo_dial_hz;
+        self.apply_tuner_gain()?;
+        tracing::info!("RX-888: VHF front end on, tuner parked at {:.4} MHz", lo_dial_hz / 1e6);
+        Ok(())
+    }
+
+    /// Put the tuner away and give the ADC back to the HF chain.
+    ///
+    /// Best-effort on the tuner and its clock: a receiver on its way back to HF
+    /// must not be left with `VHF_EN` set because the tuner stopped answering.
+    fn leave_vhf(&mut self) -> Result<()> {
+        if let Some(t) = self.tuner.as_mut() {
+            let _ = t.standby(&self.usb);
+        }
+        let _ = si5351::clk2_off(&self.usb);
+        self.set_vhf_en(false)?;
+        self.band = Band::Hf;
+        self.lo_dial_hz = 0.0;
+        // Restore what the operator actually asked for.
+        let vga = self.requested_vga_db;
+        let att = self.requested_att_db;
+        self.set_vga_reg(ad8370_code_for(vga))?;
+        self.program_att(att)?;
+        tracing::info!("RX-888: HF front end restored");
+        Ok(())
+    }
+
+    /// R828D RF gain, in dB. Ignored while the receiver is on HF.
+    pub fn set_tuner_gain_db(&mut self, db: f64) -> Result<()> {
+        self.tuner_gain_db = db;
+        self.apply_tuner_gain()
+    }
+
+    /// Let the tuner run its own gain loops.
+    pub fn set_tuner_agc(&mut self, on: bool) -> Result<()> {
+        self.tuner_agc = on;
+        self.apply_tuner_gain()
+    }
+
+    fn apply_tuner_gain(&mut self) -> Result<()> {
+        let setting = if self.tuner_agc {
+            GainSetting::Auto
+        } else {
+            GainSetting::Manual { total_db: self.tuner_gain_db }
+        };
+        if let Some(t) = self.tuner.as_mut() {
+            t.set_gain(&self.usb, setting)?;
+        }
+        Ok(())
+    }
+}
+
+/// Whether an R828D answers on the FX3's I2C bus.
+fn tuner_present(usb: &UsbDev) -> bool {
+    crate::tuner::present(usb, sdroxide_r82xx::R828D_I2C_ADDR)
 }
 
 /// Ask the running firmware what it is and what it thinks it is driving.

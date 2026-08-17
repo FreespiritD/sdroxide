@@ -9,6 +9,7 @@ edition.workspace = true
 [dependencies]
 sdroxide-types.workspace = true
 sdroxide-dsp.workspace = true
+sdroxide-r82xx.workspace = true
 crossbeam-channel.workspace = true
 rtrb.workspace = true
 thiserror.workspace = true

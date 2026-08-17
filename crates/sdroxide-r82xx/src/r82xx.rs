@@ -1,23 +1,33 @@
-//! The Rafael Micro R820T / R820T2 / R828D tuner.
+//! The tuner itself: bring-up, tuning, filters and gain.
 //!
-//! Transcribed from osmocom `librtlsdr` `src/tuner_r82xx.c` at commit
-//! `84195f169f5b4b7dc06a10efb1e210d02b49e51c`, which already carries the
-//! RTL-SDR Blog V4 branches — so this is one reference, not a blend of
-//! upstream and the blog fork.
-//!
-//! Two properties of the part shape everything here. Its registers are
-//! write-only above R5, so a shadow copy is mandatory and read-modify-write
-//! goes through the shadow rather than the bus. And reads come back
-//! bit-reversed, which [`tables::bitrev`] undoes.
+//! See the crate documentation for provenance and for the two properties of the
+//! part — write-only registers and bit-reversed reads — that shape all of it.
 
 use std::time::Duration;
 
+use crate::bus::TunerBus;
 use crate::error::{Error, Result};
-use crate::rtl2832::Rtl2832;
-use crate::tuner::tables::{
+use crate::tables::{
     self, FILT_HP_BW1, FILT_HP_BW2, GAINS_TENTH_DB, IF_LOW_PASS_BW, INIT_ARRAY, LNA_GAIN_STEPS,
     MIXER_GAIN_STEPS, NUM_REGS, REG_SHADOW_START, VER_NUM,
 };
+
+/// The IF `set_tv_standard` leaves the part on, and what [`R82xx::set_bandwidth`]
+/// reports for anything under 6 MHz.
+pub const DEFAULT_IF_HZ: f64 = 3_570_000.0;
+
+/// The tuner reference on an RTL-SDR Blog V4.
+///
+/// The same number as [`V4_HF_CROSSOVER_HZ`] and for the same reason: it is the
+/// demodulator's crystal, which is also what the board's upconverter mixes
+/// against. The RTL-SDR backend cross-checks it against its own `RTL_XTAL_HZ`
+/// so the two cannot drift apart.
+pub const BLOG_V4_REF_HZ: f64 = 28_800_000.0;
+
+/// Apply a parts-per-million correction to a nominal frequency.
+pub fn apply_ppm(nominal_hz: f64, ppm: i32) -> f64 {
+    nominal_hz * (1.0 + ppm as f64 / 1e6)
+}
 
 /// I2C address of an R820T/R820T2.
 pub const R820T_I2C_ADDR: u8 = 0x34;
@@ -26,10 +36,6 @@ pub const R828D_I2C_ADDR: u8 = 0x74;
 /// Register 0 of any R82xx reads back as this once bit-reversed.
 pub const R82XX_CHECK_VAL: u8 = 0x69;
 
-/// The RTL2832U's I2C block writes at most this many bytes per transfer,
-/// including the register index — so 7 payload bytes at a time.
-const MAX_I2C_MSG_LEN: usize = 8;
-
 /// Reference crystal on an R820T/R820T2 board.
 pub const R820T_XTAL_HZ: f64 = 28_800_000.0;
 /// The R828D uses a different part. Feeding the R820T value to an R828D PLL
@@ -37,7 +43,7 @@ pub const R820T_XTAL_HZ: f64 = 28_800_000.0;
 pub const R828D_XTAL_HZ: f64 = 16_000_000.0;
 
 /// Frequency below which a Blog V4 upconverts, and the top of its HF input.
-const V4_HF_CROSSOVER_HZ: f64 = 28_800_000.0;
+pub const V4_HF_CROSSOVER_HZ: f64 = 28_800_000.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Chip {
@@ -116,9 +122,9 @@ impl R82xx {
             chip,
             is_blog_v4,
             regs: [0; NUM_REGS],
-            int_freq: crate::rtl2832::R82XX_IF_FREQ,
+            int_freq: DEFAULT_IF_HZ,
             has_lock: false,
-            xtal: crate::regs::apply_ppm(Self::reference_xtal_hz(chip, is_blog_v4), ppm),
+            xtal: apply_ppm(Self::reference_xtal_hz(chip, is_blog_v4), ppm),
             fil_cal_code: 0,
             band: None,
             input: 0,
@@ -144,14 +150,13 @@ impl R82xx {
     /// mirror of the hazard on [`R828D_XTAL_HZ`] and puts every frequency out
     /// by the same factor of 1.8.
     fn reference_xtal_hz(chip: Chip, is_blog_v4: bool) -> f64 {
-        if is_blog_v4 { crate::regs::RTL_XTAL_HZ } else { chip.nominal_xtal_hz() }
+        if is_blog_v4 { BLOG_V4_REF_HZ } else { chip.nominal_xtal_hz() }
     }
 
     /// Re-derive the PLL reference from a new ppm figure. The caller must
     /// retune afterwards for it to take effect.
     pub fn set_ppm(&mut self, ppm: i32) {
-        self.xtal =
-            crate::regs::apply_ppm(Self::reference_xtal_hz(self.chip, self.is_blog_v4), ppm);
+        self.xtal = apply_ppm(Self::reference_xtal_hz(self.chip, self.is_blog_v4), ppm);
         self.last_lo_hz = None;
     }
 
@@ -168,7 +173,7 @@ impl R82xx {
     /// Upstream does the same, and it matters here for a different reason: the
     /// retune path runs on the streaming thread, and every I2C byte skipped is
     /// bulk-transfer time not lost.
-    fn write(&mut self, dev: &Rtl2832, reg: u8, val: &[u8]) -> Result<()> {
+    fn write(&mut self, bus: &dyn TunerBus, reg: u8, val: &[u8]) -> Result<()> {
         if let Some(i) = Self::shadow_index(reg) {
             if i + val.len() <= NUM_REGS && self.regs[i..i + val.len()] == *val {
                 return Ok(());
@@ -181,62 +186,57 @@ impl R82xx {
             self.regs[i..i + n].copy_from_slice(&val[..n]);
         }
 
-        let mut pos = 0;
-        let mut addr = reg;
-        while pos < val.len() {
-            let size = (val.len() - pos).min(MAX_I2C_MSG_LEN - 1);
-            let mut buf = Vec::with_capacity(size + 1);
-            buf.push(addr);
-            buf.extend_from_slice(&val[pos..pos + size]);
-            dev.usb().i2c_write(self.chip.i2c_addr(), &buf)?;
-            addr = addr.wrapping_add(size as u8);
-            pos += size;
-        }
-        Ok(())
+        // Chunking is the bus's business: the limit that forces it belongs to
+        // whatever is carrying the bytes, not to the tuner.
+        Ok(bus.write_regs(self.chip.i2c_addr(), reg, val)?)
     }
 
-    fn write_reg(&mut self, dev: &Rtl2832, reg: u8, val: u8) -> Result<()> {
-        self.write(dev, reg, &[val])
+    fn write_reg(&mut self, bus: &dyn TunerBus, reg: u8, val: u8) -> Result<()> {
+        self.write(bus, reg, &[val])
     }
 
     /// Read-modify-write against the shadow, since the part cannot be read
     /// back register by register.
-    fn write_reg_mask(&mut self, dev: &Rtl2832, reg: u8, val: u8, mask: u8) -> Result<()> {
+    fn write_reg_mask(&mut self, bus: &dyn TunerBus, reg: u8, val: u8, mask: u8) -> Result<()> {
         let cur = Self::shadow_index(reg).map(|i| self.regs[i]).ok_or_else(|| {
             Error::Unsupported(format!("R82xx register {reg:#04x} is not shadowed"))
         })?;
-        self.write_reg(dev, reg, (cur & !mask) | (val & mask))
+        self.write_reg(bus, reg, (cur & !mask) | (val & mask))
     }
 
     /// Read `len` registers starting at R0, undoing the part's bit reversal.
-    fn read(&self, dev: &Rtl2832, len: u16) -> Result<Vec<u8>> {
-        dev.usb().i2c_write(self.chip.i2c_addr(), &[0])?;
-        let raw = dev.usb().i2c_read(self.chip.i2c_addr(), len)?;
+    ///
+    /// Always from R0: the part has no random-access read, it just runs on from
+    /// the start. The bit reversal is the tuner's own quirk, so it is undone
+    /// here rather than in the bus.
+    fn read(&self, bus: &dyn TunerBus, len: u16) -> Result<Vec<u8>> {
+        let mut raw = vec![0u8; len as usize];
+        bus.read_regs(self.chip.i2c_addr(), 0, &mut raw)?;
         Ok(raw.into_iter().map(tables::bitrev).collect())
     }
 
     // ---- bring-up --------------------------------------------------------
 
-    pub fn init(&mut self, dev: &Rtl2832) -> Result<()> {
+    pub fn init(&mut self, bus: &dyn TunerBus) -> Result<()> {
         self.regs = [0; NUM_REGS];
         let init = INIT_ARRAY;
-        self.write(dev, REG_SHADOW_START, &init)?;
-        self.set_tv_standard(dev)?;
-        self.sysfreq_sel(dev)?;
+        self.write(bus, REG_SHADOW_START, &init)?;
+        self.set_tv_standard(bus)?;
+        self.sysfreq_sel(bus)?;
         self.init_done = true;
         Ok(())
     }
 
     /// Put the tuner to sleep. Used when switching to direct sampling, where
     /// a live tuner only injects its LO into the ADC.
-    pub fn standby(&mut self, dev: &Rtl2832) -> Result<()> {
+    pub fn standby(&mut self, bus: &dyn TunerBus) -> Result<()> {
         if !self.init_done {
             return Ok(());
         }
         // Upstream writes these directly rather than through the shadow, so
         // the shadow is deliberately invalidated afterwards.
         for (reg, val) in [(0x06, 0xb1), (0x05, 0xa0), (0x07, 0x3a), (0x08, 0x40), (0x09, 0xc0)] {
-            self.write_reg(dev, reg, val)?;
+            self.write_reg(bus, reg, val)?;
         }
         self.regs = [0; NUM_REGS];
         self.init_done = false;
@@ -246,7 +246,7 @@ impl R82xx {
     }
 
     /// The DVB-T defaults plus the IF filter calibration.
-    fn set_tv_standard(&mut self, dev: &Rtl2832) -> Result<()> {
+    fn set_tv_standard(&mut self, bus: &dyn TunerBus) -> Result<()> {
         // "BW < 6 MHz" constants from upstream, kept with their comments.
         let filt_cal_lo = 56_000u32; // kHz
         let filt_gain = 0x10; // +3 dB, 6 MHz on
@@ -262,35 +262,35 @@ impl R82xx {
         self.regs = INIT_ARRAY;
 
         // Init flag and xtal-check result (also initialises VGA gain).
-        self.write_reg_mask(dev, 0x0c, 0x00, 0x0f)?;
-        self.write_reg_mask(dev, 0x13, VER_NUM, 0x3f)?;
+        self.write_reg_mask(bus, 0x0c, 0x00, 0x0f)?;
+        self.write_reg_mask(bus, 0x13, VER_NUM, 0x3f)?;
         // For LT gain test.
-        self.write_reg_mask(dev, 0x1d, 0x00, 0x38)?;
+        self.write_reg_mask(bus, 0x1d, 0x00, 0x38)?;
 
         self.int_freq = 3_570_000.0;
 
         // Filter calibration. Upstream always runs it, because rtlsdr calls
         // this exactly once per open.
         for _ in 0..2 {
-            self.write_reg_mask(dev, 0x0b, hp_cor, 0x60)?;
+            self.write_reg_mask(bus, 0x0b, hp_cor, 0x60)?;
             // Calibration clock on.
-            self.write_reg_mask(dev, 0x0f, 0x04, 0x04)?;
+            self.write_reg_mask(bus, 0x0f, 0x04, 0x04)?;
             // 0 pF crystal cap for the PLL.
-            self.write_reg_mask(dev, 0x10, 0x00, 0x03)?;
+            self.write_reg_mask(bus, 0x10, 0x00, 0x03)?;
 
-            self.set_pll(dev, filt_cal_lo as f64 * 1000.0)?;
+            self.set_pll(bus, filt_cal_lo as f64 * 1000.0)?;
             if !self.has_lock {
                 return Err(Error::PllUnlocked(filt_cal_lo as f64 / 1000.0));
             }
 
             // Trigger the calibration, then stop it.
-            self.write_reg_mask(dev, 0x0b, 0x10, 0x10)?;
+            self.write_reg_mask(bus, 0x0b, 0x10, 0x10)?;
             std::thread::sleep(Duration::from_millis(2));
-            self.write_reg_mask(dev, 0x0b, 0x00, 0x10)?;
+            self.write_reg_mask(bus, 0x0b, 0x00, 0x10)?;
             // Calibration clock off.
-            self.write_reg_mask(dev, 0x0f, 0x00, 0x04)?;
+            self.write_reg_mask(bus, 0x0f, 0x00, 0x04)?;
 
-            let data = self.read(dev, 5)?;
+            let data = self.read(bus, 5)?;
             self.fil_cal_code = data[4] & 0x0f;
             if self.fil_cal_code != 0 && self.fil_cal_code != 0x0f {
                 break;
@@ -302,22 +302,22 @@ impl R82xx {
             self.fil_cal_code = 0;
         }
 
-        self.write_reg_mask(dev, 0x0a, filt_q | self.fil_cal_code, 0x1f)?;
-        self.write_reg_mask(dev, 0x0b, hp_cor, 0xef)?;
-        self.write_reg_mask(dev, 0x07, img_r, 0x80)?;
-        self.write_reg_mask(dev, 0x06, filt_gain, 0x30)?;
-        self.write_reg_mask(dev, 0x1e, ext_enable, 0x60)?;
-        self.write_reg_mask(dev, 0x05, loop_through, 0x80)?;
-        self.write_reg_mask(dev, 0x1f, lt_att, 0x80)?;
-        self.write_reg_mask(dev, 0x0f, flt_ext_widest, 0x80)?;
-        self.write_reg_mask(dev, 0x19, polyfil_cur, 0x60)?;
+        self.write_reg_mask(bus, 0x0a, filt_q | self.fil_cal_code, 0x1f)?;
+        self.write_reg_mask(bus, 0x0b, hp_cor, 0xef)?;
+        self.write_reg_mask(bus, 0x07, img_r, 0x80)?;
+        self.write_reg_mask(bus, 0x06, filt_gain, 0x30)?;
+        self.write_reg_mask(bus, 0x1e, ext_enable, 0x60)?;
+        self.write_reg_mask(bus, 0x05, loop_through, 0x80)?;
+        self.write_reg_mask(bus, 0x1f, lt_att, 0x80)?;
+        self.write_reg_mask(bus, 0x0f, flt_ext_widest, 0x80)?;
+        self.write_reg_mask(bus, 0x19, polyfil_cur, 0x60)?;
         Ok(())
     }
 
     /// The DVB-T system settings. Upstream branches on delivery system and
     /// tuner type; rtlsdr only ever uses `SYS_DVBT` with `TUNER_DIGITAL_TV` at
     /// frequency 0, so only that path is transcribed.
-    fn sysfreq_sel(&mut self, dev: &Rtl2832) -> Result<()> {
+    fn sysfreq_sel(&mut self, bus: &dyn TunerBus) -> Result<()> {
         let mixer_top = 0x24; // mixer top 13, top-1, low discharge
         let lna_top = 0xe5; // detect bw 3, lna top 4, predet top 2
         let cp_cur = 0x38; // 111, auto
@@ -329,45 +329,45 @@ impl R82xx {
         let lna_discharge = 14;
         let filter_cur = 0x40; // 10, low
 
-        self.write_reg_mask(dev, 0x1d, lna_top, 0xc7)?;
-        self.write_reg_mask(dev, 0x1c, mixer_top, 0xf8)?;
-        self.write_reg(dev, 0x0d, lna_vth_l)?;
-        self.write_reg(dev, 0x0e, mixer_vth_l)?;
+        self.write_reg_mask(bus, 0x1d, lna_top, 0xc7)?;
+        self.write_reg_mask(bus, 0x1c, mixer_top, 0xf8)?;
+        self.write_reg(bus, 0x0d, lna_vth_l)?;
+        self.write_reg(bus, 0x0e, mixer_vth_l)?;
 
         self.input = air_cable1_in;
-        self.write_reg_mask(dev, 0x05, air_cable1_in, 0x60)?;
-        self.write_reg_mask(dev, 0x06, cable2_in, 0x08)?;
-        self.write_reg_mask(dev, 0x11, cp_cur, 0x38)?;
-        self.write_reg_mask(dev, 0x17, div_buf_cur, 0x30)?;
-        self.write_reg_mask(dev, 0x0a, filter_cur, 0x60)?;
+        self.write_reg_mask(bus, 0x05, air_cable1_in, 0x60)?;
+        self.write_reg_mask(bus, 0x06, cable2_in, 0x08)?;
+        self.write_reg_mask(bus, 0x11, cp_cur, 0x38)?;
+        self.write_reg_mask(bus, 0x17, div_buf_cur, 0x30)?;
+        self.write_reg_mask(bus, 0x0a, filter_cur, 0x60)?;
 
         // LNA setup. The odd-looking 0x04 mask on register 0x1c is upstream's;
         // its own comment calls it wrong but keeps it to match the original
         // vendor driver, so it stays here too.
-        self.write_reg_mask(dev, 0x1d, 0, 0x38)?;
-        self.write_reg_mask(dev, 0x1c, 0, 0x04)?;
-        self.write_reg_mask(dev, 0x06, 0, 0x40)?;
-        self.write_reg_mask(dev, 0x1a, 0x30, 0x30)?;
-        self.write_reg_mask(dev, 0x1d, 0x18, 0x38)?;
-        self.write_reg_mask(dev, 0x1c, mixer_top, 0x04)?;
-        self.write_reg_mask(dev, 0x1e, lna_discharge, 0x1f)?;
-        self.write_reg_mask(dev, 0x1a, 0x20, 0x30)?;
+        self.write_reg_mask(bus, 0x1d, 0, 0x38)?;
+        self.write_reg_mask(bus, 0x1c, 0, 0x04)?;
+        self.write_reg_mask(bus, 0x06, 0, 0x40)?;
+        self.write_reg_mask(bus, 0x1a, 0x30, 0x30)?;
+        self.write_reg_mask(bus, 0x1d, 0x18, 0x38)?;
+        self.write_reg_mask(bus, 0x1c, mixer_top, 0x04)?;
+        self.write_reg_mask(bus, 0x1e, lna_discharge, 0x1f)?;
+        self.write_reg_mask(bus, 0x1a, 0x20, 0x30)?;
         Ok(())
     }
 
     // ---- tuning ----------------------------------------------------------
 
     /// Select the tracking filter and mux for an LO frequency.
-    fn set_mux(&mut self, dev: &Rtl2832, lo_hz: f64) -> Result<()> {
+    fn set_mux(&mut self, bus: &dyn TunerBus, lo_hz: f64) -> Result<()> {
         let range = tables::freq_range_for(lo_hz);
-        self.write_reg_mask(dev, 0x17, range.open_d, 0x08)?;
-        self.write_reg_mask(dev, 0x1a, range.rf_mux_ploy, 0xc3)?;
-        self.write_reg(dev, 0x1b, range.tf_c)?;
+        self.write_reg_mask(bus, 0x17, range.open_d, 0x08)?;
+        self.write_reg_mask(bus, 0x1a, range.rf_mux_ploy, 0xc3)?;
+        self.write_reg(bus, 0x1b, range.tf_c)?;
         // rtlsdr always selects XTAL_HIGH_CAP_0P, so the `| 0x08` drive bit
         // that the other cases add is deliberately absent.
-        self.write_reg_mask(dev, 0x10, range.xtal_cap0p, 0x0b)?;
-        self.write_reg_mask(dev, 0x08, 0x00, 0x3f)?;
-        self.write_reg_mask(dev, 0x09, 0x00, 0x3f)?;
+        self.write_reg_mask(bus, 0x10, range.xtal_cap0p, 0x0b)?;
+        self.write_reg_mask(bus, 0x08, 0x00, 0x3f)?;
+        self.write_reg_mask(bus, 0x09, 0x00, 0x3f)?;
         Ok(())
     }
 
@@ -376,7 +376,7 @@ impl R82xx {
     /// Sets [`R82xx::has_lock`]; the caller decides whether an unlocked PLL is
     /// fatal. Costs up to 20 ms when the first VCO current setting does not
     /// lock, which is the stall the bulk queue depth is sized to absorb.
-    fn set_pll(&mut self, dev: &Rtl2832, lo_hz: f64) -> Result<()> {
+    fn set_pll(&mut self, bus: &dyn TunerBus, lo_hz: f64) -> Result<()> {
         const VCO_MIN_KHZ: u64 = 1_770_000;
         const VCO_MAX_KHZ: u64 = VCO_MIN_KHZ * 2;
 
@@ -385,7 +385,7 @@ impl R82xx {
         let pll_ref = self.xtal.round() as u64;
 
         // PLL autotune 128 kHz while we move.
-        self.write_reg_mask(dev, 0x1a, 0x00, 0x0c)?;
+        self.write_reg_mask(bus, 0x1a, 0x00, 0x0c)?;
 
         // Upstream batches R16..R22 into one 7-byte write, so build them up
         // from the shadow rather than writing each individually.
@@ -414,7 +414,7 @@ impl R82xx {
             mix_div <<= 1;
         }
 
-        let data = self.read(dev, 5)?;
+        let data = self.read(bus, 5)?;
         let vco_power_ref: u32 = if self.chip == Chip::R828D { 1 } else { 2 };
         let vco_fine_tune = ((data[4] & 0x30) >> 4) as u32;
         if vco_fine_tune > vco_power_ref {
@@ -445,19 +445,19 @@ impl R82xx {
         regs[5] = (sdm & 0xff) as u8;
         regs[6] = (sdm >> 8) as u8;
 
-        self.write(dev, 0x10, &regs)?;
+        self.write(bus, 0x10, &regs)?;
 
         let mut locked = false;
         for attempt in 0..2 {
             std::thread::sleep(Duration::from_millis(10));
-            let data = self.read(dev, 3)?;
+            let data = self.read(bus, 3)?;
             if data[2] & 0x40 != 0 {
                 locked = true;
                 break;
             }
             if attempt == 0 {
                 // Didn't lock — raise the VCO current and try once more.
-                self.write_reg_mask(dev, 0x12, 0x60, 0xe0)?;
+                self.write_reg_mask(bus, 0x12, 0x60, 0xe0)?;
             }
         }
 
@@ -468,7 +468,7 @@ impl R82xx {
         }
 
         // PLL autotune back to 8 kHz now that we have arrived.
-        self.write_reg_mask(dev, 0x1a, 0x08, 0x08)
+        self.write_reg_mask(bus, 0x1a, 0x08, 0x08)
     }
 
     /// The frequency the tuner itself must reach for a given dial setting.
@@ -486,15 +486,15 @@ impl R82xx {
     }
 
     /// Tune to `hz`, handling the Blog V4's upconverter and input switching.
-    pub fn set_freq(&mut self, dev: &Rtl2832, hz: f64) -> Result<()> {
+    pub fn set_freq(&mut self, bus: &dyn TunerBus, hz: f64) -> Result<()> {
         let lo_hz = self.tuned_freq_hz(hz) + self.int_freq;
 
         if self.last_lo_hz == Some(lo_hz) && self.has_lock {
             return Ok(());
         }
 
-        self.set_mux(dev, lo_hz)?;
-        self.set_pll(dev, lo_hz)?;
+        self.set_mux(bus, lo_hz)?;
+        self.set_pll(bus, lo_hz)?;
         if !self.has_lock {
             self.last_lo_hz = None;
             return Err(Error::PllUnlocked(hz / 1e6));
@@ -502,7 +502,7 @@ impl R82xx {
         self.last_lo_hz = Some(lo_hz);
 
         if self.is_blog_v4 {
-            self.v4_switch_inputs(dev, hz)?;
+            self.v4_switch_inputs(bus, hz)?;
         } else if self.chip == Chip::R828D {
             // Switch between Cable1 and Air-In at 345 MHz, where the noise
             // floor is about equal with identical LNA settings. Only on a
@@ -511,14 +511,14 @@ impl R82xx {
             let air_cable1_in = if hz > 345e6 { 0x00 } else { 0x60 };
             if air_cable1_in != self.input {
                 self.input = air_cable1_in;
-                self.write_reg_mask(dev, 0x05, air_cable1_in, 0x60)?;
+                self.write_reg_mask(bus, 0x05, air_cable1_in, 0x60)?;
             }
         }
         Ok(())
     }
 
     /// Blog V4 notch filters and three-way input switching.
-    fn v4_switch_inputs(&mut self, dev: &Rtl2832, hz: f64) -> Result<()> {
+    fn v4_switch_inputs(&mut self, bus: &dyn TunerBus, hz: f64) -> Result<()> {
         // Notches are OFF inside the band they protect against and ON outside
         // it — so tuning *to* broadcast FM or DAB does not notch out the very
         // thing being received.
@@ -528,7 +528,7 @@ impl R82xx {
         } else {
             0x08
         };
-        self.write_reg_mask(dev, 0x17, open_d, 0x08)?;
+        self.write_reg_mask(bus, 0x17, open_d, 0x08)?;
 
         let band = if hz <= 28.8e6 {
             Band::Hf
@@ -544,14 +544,14 @@ impl R82xx {
 
         // Cable 2 is the HF input.
         let cable_2_in = if band == Band::Hf { 0x08 } else { 0x00 };
-        self.write_reg_mask(dev, 0x06, cable_2_in, 0x08)?;
+        self.write_reg_mask(bus, 0x06, cable_2_in, 0x08)?;
         // Newer V4 batches gate the upconverter with GPIO 5.
-        dev.set_gpio_bit_output(5, cable_2_in == 0)?;
+        bus.set_upconverter_gate(cable_2_in == 0)?;
         // Cable 1 is VHF, air-in is UHF.
         let cable_1_in = if band == Band::Vhf { 0x40 } else { 0x00 };
-        self.write_reg_mask(dev, 0x05, cable_1_in, 0x40)?;
+        self.write_reg_mask(bus, 0x05, cable_1_in, 0x40)?;
         let air_in = if band == Band::Uhf { 0x00 } else { 0x20 };
-        self.write_reg_mask(dev, 0x05, air_in, 0x20)?;
+        self.write_reg_mask(bus, 0x05, air_in, 0x20)?;
         Ok(())
     }
 
@@ -561,7 +561,7 @@ impl R82xx {
     /// The returned value is not decoration: the demodulator's DDC must be
     /// reprogrammed to it, because the filter choice *moves the IF*. Callers
     /// that ignore it end up receiving up to a megahertz away from the dial.
-    pub fn set_bandwidth(&mut self, dev: &Rtl2832, bw_hz: f64) -> Result<f64> {
+    pub fn set_bandwidth(&mut self, bus: &dyn TunerBus, bw_hz: f64) -> Result<f64> {
         let mut bw = bw_hz.round() as i32;
         let mut real_bw = 0i32;
         let reg_0a;
@@ -614,8 +614,8 @@ impl R82xx {
             self.int_freq = (int_freq - real_bw / 2) as f64;
         }
 
-        self.write_reg_mask(dev, 0x0a, reg_0a, 0x10)?;
-        self.write_reg_mask(dev, 0x0b, reg_0b, 0xef)?;
+        self.write_reg_mask(bus, 0x0a, reg_0a, 0x10)?;
+        self.write_reg_mask(bus, 0x0b, reg_0b, 0xef)?;
         // The IF moved, so any cached LO is stale.
         self.last_lo_hz = None;
         Ok(self.int_freq)
@@ -625,23 +625,23 @@ impl R82xx {
 
     /// Apply a gain setting, returning the gain actually in effect in dB
     /// (`None` when the tuner's own loops are driving it).
-    pub fn set_gain(&mut self, dev: &Rtl2832, gain: GainSetting) -> Result<Option<f64>> {
+    pub fn set_gain(&mut self, bus: &dyn TunerBus, gain: GainSetting) -> Result<Option<f64>> {
         match gain {
             GainSetting::Auto => {
                 // LNA and mixer loops on, VGA fixed at ~26.5 dB.
-                self.write_reg_mask(dev, 0x05, 0, 0x10)?;
-                self.write_reg_mask(dev, 0x07, 0x10, 0x10)?;
-                self.write_reg_mask(dev, 0x0c, 0x0b, 0x9f)?;
+                self.write_reg_mask(bus, 0x05, 0, 0x10)?;
+                self.write_reg_mask(bus, 0x07, 0x10, 0x10)?;
+                self.write_reg_mask(bus, 0x0c, 0x0b, 0x9f)?;
                 Ok(None)
             }
             GainSetting::Manual { total_db } => {
                 let want = tables::snap_gain_tenth_db(total_db);
 
                 // LNA and mixer loops off, VGA fixed at ~16.3 dB.
-                self.write_reg_mask(dev, 0x05, 0x10, 0x10)?;
-                self.write_reg_mask(dev, 0x07, 0, 0x10)?;
-                let _ = self.read(dev, 4)?;
-                self.write_reg_mask(dev, 0x0c, 0x08, 0x9f)?;
+                self.write_reg_mask(bus, 0x05, 0x10, 0x10)?;
+                self.write_reg_mask(bus, 0x07, 0, 0x10)?;
+                let _ = self.read(bus, 4)?;
+                self.write_reg_mask(bus, 0x0c, 0x08, 0x9f)?;
 
                 // Walk the two stages alternately until the target is met.
                 let mut total = 0i32;
@@ -659,8 +659,8 @@ impl R82xx {
                     total += MIXER_GAIN_STEPS[mix_index];
                 }
 
-                self.write_reg_mask(dev, 0x05, lna_index as u8, 0x0f)?;
-                self.write_reg_mask(dev, 0x07, mix_index as u8, 0x0f)?;
+                self.write_reg_mask(bus, 0x05, lna_index as u8, 0x0f)?;
+                self.write_reg_mask(bus, 0x07, mix_index as u8, 0x0f)?;
                 Ok(Some(total as f64 / 10.0))
             }
         }
@@ -675,6 +675,71 @@ impl R82xx {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::MockBus;
+
+    /// Every register this driver writes to bring an R828D up on 145 MHz with
+    /// the 8 MHz IF filter — which is exactly the RX-888's VHF sequence.
+    ///
+    /// Captured from this code before the tuner driver was lifted out behind
+    /// [`TunerBus`], so it is the contract that extraction had to preserve: a
+    /// transcription of someone else's register sequence has no other way to
+    /// say "still correct". Lines are `addr reg payload…`, and they record what
+    /// the *driver* asked for — chunking belongs to the bus now, and is checked
+    /// separately in [`crate::tuner::bus`].
+    ///
+    /// If this fails, the question is not "what is the new value" but "which
+    /// upstream commit changed, and did the radio get better or deafer".
+    const R828D_145MHZ_TRACE: &str = "\
+74 05 83 32 75 c0 40 d6 6c f5 63 75 68 6c 83 80 00 0f 00 c0 30 48 cc 60 00 54 ae 4a c0 00 00 00
+74 0c f0
+74 13 31
+74 1d 86
+74 0f 6c
+74 10 8c 83 88 31 ca 00 00
+74 1a 68
+74 0b 7c
+74 0b 6c
+74 0f 68
+74 0a d5
+74 0b 6b
+74 06 12
+74 1e 6a
+74 05 03
+74 1f 40
+74 19 ec
+74 1d c5
+74 1c 24
+74 0d 53
+74 11 bb
+74 1c 20
+74 1a 78
+74 1d dd
+74 1c 24
+74 1e 6e
+74 1a 68
+74 0b 0b
+74 1a 2a
+74 1b 14
+74 10 84
+74 1a 22
+74 10 64 bb 80 31 4f f6 c8
+74 1a 2a
+74 05 63";
+
+    #[test]
+    fn the_r828d_bring_up_writes_exactly_what_it_always_has() {
+        let bus = MockBus::healthy();
+        let mut t = R82xx::new(Chip::R828D, false, 0);
+        t.init(&bus).expect("init");
+        let int_freq = t.set_bandwidth(&bus, 8_000_000.0).expect("bandwidth");
+        t.set_freq(&bus, 145_000_000.0).expect("freq");
+
+        assert_eq!(bus.trace().join("\n"), R828D_145MHZ_TRACE);
+        // The 8 MHz filter is what puts the IF here, and the RX-888's VHF path
+        // downconverts to this exact frequency. Upstream calls it
+        // `R828D_IF_CARRIER`.
+        assert_eq!(int_freq, 4_570_000.0);
+    }
 
     /// A Blog V4 is an R828D that does *not* take the R828D crystal. Getting
     /// this backwards is silent: the PLL locks, the dongle streams, and every

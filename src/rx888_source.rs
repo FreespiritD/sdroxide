@@ -40,6 +40,9 @@ fn settings_from(cfg: &Rx888Config) -> Settings {
         attenuator_db: cfg.attenuator_db,
         vga_db: cfg.vga_db,
         ppm: cfg.ppm,
+        bias_tee_vhf: cfg.bias_tee_vhf,
+        tuner_gain_db: cfg.tuner_gain_db,
+        tuner_agc: cfg.tuner_agc,
     }
 }
 
@@ -51,6 +54,8 @@ pub struct Rx888Source {
     vga_db: f64,
     att_db: f64,
     bias_tee: bool,
+    bias_tee_vhf: bool,
+    tuner_gain_db: f64,
 }
 
 impl Rx888Source {
@@ -74,6 +79,8 @@ impl Rx888Source {
             vga_db: cfg.vga_db,
             att_db: cfg.attenuator_db,
             bias_tee: cfg.bias_tee_hf,
+            bias_tee_vhf: cfg.bias_tee_vhf,
+            tuner_gain_db: cfg.tuner_gain_db,
             handle,
         })
     }
@@ -86,6 +93,16 @@ impl Rx888Source {
     /// The ADC clock, for the settings UI to report.
     pub fn adc_rate_hz(&self) -> f64 {
         self.handle.adc_rate_hz()
+    }
+
+    /// Whether this receiver has a usable VHF front end.
+    pub fn vhf_capable(&self) -> bool {
+        self.handle.vhf_capable()
+    }
+
+    /// The ranges this receiver can reach, HF and — where it has a tuner — VHF.
+    pub fn freq_ranges(&self) -> Vec<(f64, f64)> {
+        sdroxide_rx888::band::freq_ranges(self.adc_rate_hz(), self.vhf_capable())
     }
 }
 
@@ -148,6 +165,15 @@ impl IqSource for Rx888Source {
                 self.handle.set_bias_tee(self.bias_tee);
             }
             Rx888Config::PGA_ELEMENT => self.handle.set_pga(db >= 0.5),
+            Rx888Config::TUNER_GAIN_ELEMENT => {
+                self.tuner_gain_db = db;
+                self.handle.set_tuner_gain_db(db);
+            }
+            Rx888Config::TUNER_AGC_ELEMENT => self.handle.set_tuner_agc(db >= 0.5),
+            Rx888Config::BIAS_TEE_VHF_ELEMENT => {
+                self.bias_tee_vhf = db >= 0.5;
+                self.handle.set_bias_tee_vhf(self.bias_tee_vhf);
+            }
             _ => {}
         }
         Ok(())
@@ -175,10 +201,14 @@ impl IqSource for Rx888Source {
     /// so it costs about 1 % of what the downconverter costs — see
     /// `sdroxide_dsp::WideSpectrum`.
     fn wide_spectrum_db(&mut self, out: &mut Vec<f32>) -> Option<(f64, f64)> {
+        // The axis comes with the frame rather than being asked for: above the
+        // VHF crossover the strip is a slice of the tuner's IF mapped back to
+        // RF, and it moves with the tuner, so a frame captured before a retune
+        // must not be drawn on the axis that came after it.
         let frame = self.handle.take_wide_spectrum()?;
         out.clear();
-        out.extend_from_slice(&frame);
-        Some(self.handle.wide_span_hz())
+        out.extend_from_slice(&frame.bins);
+        Some((frame.center_hz, frame.span_hz))
     }
 
     /// A receiver that has been unplugged, or whose threads have died, is
@@ -202,7 +232,10 @@ impl IqSource for Rx888Source {
             notes.push(w.to_string());
         }
         if self.bias_tee {
-            notes.push(format!("{}: bias tee is ON — DC on the antenna coax", self.label));
+            notes.push(format!("{}: HF bias tee is ON — DC on the antenna coax", self.label));
+        }
+        if self.bias_tee_vhf {
+            notes.push(format!("{}: VHF bias tee is ON — DC on the antenna coax", self.label));
         }
         (!notes.is_empty()).then(|| notes.join("  •  "))
     }

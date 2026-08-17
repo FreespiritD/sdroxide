@@ -1945,6 +1945,19 @@ pub struct Rx888Config {
     pub ppm: f64,
     /// Override the bundled FX3 firmware image. Empty uses the built-in one.
     pub firmware_path: String,
+    /// Power the VHF antenna port.
+    #[serde(default)]
+    pub bias_tee_vhf: bool,
+    /// R828D RF gain in dB, used above the automatic HF/VHF crossover.
+    #[serde(default = "default_tuner_gain_db")]
+    pub tuner_gain_db: f64,
+    /// Let the tuner run its own gain loops instead of the fixed ladder.
+    #[serde(default)]
+    pub tuner_agc: bool,
+}
+
+fn default_tuner_gain_db() -> f64 {
+    30.0
 }
 
 impl Default for Rx888Config {
@@ -1960,6 +1973,9 @@ impl Default for Rx888Config {
             vga_db: 12.0,
             ppm: 0.0,
             firmware_path: String::new(),
+            bias_tee_vhf: false,
+            tuner_gain_db: 30.0,
+            tuner_agc: false,
         }
     }
 }
@@ -1975,6 +1991,13 @@ impl Rx888Config {
     pub const DITHER_ELEMENT: &'static str = "DITHER";
     pub const BIAS_TEE_ELEMENT: &'static str = "BIASTEE";
     pub const PGA_ELEMENT: &'static str = "PGA";
+    pub const TUNER_GAIN_ELEMENT: &'static str = "TUNER";
+    pub const TUNER_AGC_ELEMENT: &'static str = "TUNERAGC";
+    pub const BIAS_TEE_VHF_ELEMENT: &'static str = "BIASTEEVHF";
+
+    /// Top of the R828D's 29-step gain ladder — the same figure the RTL-SDR
+    /// publishes, because it is the same table in the same chip family.
+    pub const TUNER_GAIN_MAX_DB: f64 = 49.6;
 
     /// ADC clocks offered in the UI. The Si5351 will synthesise others, but
     /// these are the ones in common use on this board.

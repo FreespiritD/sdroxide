@@ -2604,7 +2604,9 @@ radio. Everything below the selector changes to match the choice:
   dial, plus the server's own FFT of the whole band for the full-band strip.
   See [5.2.14](#5214-spyserver-network-receivers).
 - **RX-888 (USB)** — an RX-888 / RX-888 Mk2 direct-sampling receiver, likewise
-  driven directly over USB, with its firmware bundled and uploaded for it.
+  driven directly over USB, with its firmware bundled and uploaded for it. On a
+  Mk2 the built-in R828D tuner is driven too, so the receiver covers VHF and UHF
+  as well as HF and switches between its two antenna ports on its own.
 - **Airspy HF+ (USB)** — an Airspy HF+ Dual, Discovery or Ranger, driven by
   sdroxide's own USB driver with no SoapySDR and no libairspyhf involved. See
   [5.2.9](#529-airspy-hf-usb).

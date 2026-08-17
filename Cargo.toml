@@ -59,6 +59,7 @@ sdroxide-hpsdr = { path = "crates/sdroxide-hpsdr" }
 sdroxide-tci = { path = "crates/sdroxide-tci" }
 sdroxide-icomnet = { path = "crates/sdroxide-icomnet" }
 sdroxide-smartsdr = { path = "crates/sdroxide-smartsdr" }
+sdroxide-r82xx = { path = "crates/sdroxide-r82xx" }
 sdroxide-rtlsdr = { path = "crates/sdroxide-rtlsdr" }
 sdroxide-rx888 = { path = "crates/sdroxide-rx888" }
 sdroxide-airspyhf = { path = "crates/sdroxide-airspyhf" }

@@ -5192,6 +5192,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sdroxide-r82xx"
+version = "1.3.0"
+dependencies = [
+ "thiserror 2.0.19",
+ "tracing",
+]
+
+[[package]]
 name = "sdroxide-rade"
 version = "1.3.0"
 dependencies = [
@@ -5263,6 +5271,7 @@ dependencies = [
  "crossbeam-channel",
  "nusb",
  "rtrb",
+ "sdroxide-r82xx",
  "sdroxide-types",
  "thiserror 2.0.19",
  "tracing",
@@ -5277,6 +5286,7 @@ dependencies = [
  "nusb",
  "rtrb",
  "sdroxide-dsp",
+ "sdroxide-r82xx",
  "sdroxide-types",
  "thiserror 2.0.19",
  "tracing",

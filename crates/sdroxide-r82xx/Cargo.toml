@@ -1,0 +1,13 @@
+[package]
+name = "sdroxide-r82xx"
+version.workspace = true
+edition.workspace = true
+
+# Rafael Micro R820T/R820T2/R828D tuner driver, transport-agnostic.
+#
+# No USB, no nusb, no I/O of any kind: the caller supplies a register bus. Two
+# backends use it — the RTL2832U's I2C repeater, and the RX-888 Mk2's FX3 I2C
+# passthrough — which is the whole reason it is a crate rather than a module.
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true

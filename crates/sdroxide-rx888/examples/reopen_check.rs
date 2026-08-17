@@ -58,7 +58,7 @@ fn main() {
         let achieved = n as f64 / secs;
         let nominal = h.out_rate_hz();
         let pct = 100.0 * achieved / nominal;
-        let wide = h.take_wide_spectrum().map(|f| f.len()).unwrap_or(0);
+        let wide = h.take_wide_spectrum().map(|f| f.bins.len()).unwrap_or(0);
 
         println!(
             "cycle {i}: ADC {:>6.1} Msps -> out {:.4} Msps | open {open_ms:5.0} ms | \

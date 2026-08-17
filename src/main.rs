@@ -1398,45 +1398,58 @@ fn open_rx888_source(
     Ok((Box::new(src), caps))
 }
 
-/// Capabilities for an RX-888: wideband IQ, receive only, HF.
+/// Capabilities for an RX-888: wideband IQ, receive only.
 ///
 /// Two things differ from every other backend here. The sample rate advertised
 /// is the *downconverter's* output, not the ADC clock — the hardware has no DDC,
 /// so the conversion from 64.8 Msps of real samples to complex baseband happens
-/// on the host. And the frequency range stops at the ADC's Nyquist limit rather
-/// than at some tuner's ceiling, because direct sampling is all this receiver
-/// does: there is no VHF path in this driver.
+/// on the host. And the frequency range is two ranges, not one: direct sampling
+/// up to the ADC's Nyquist limit, then the R828D tuner above it. On a slow ADC
+/// clock the two do not meet, and the gap is published rather than papered over
+/// — see `sdroxide_rx888::band::freq_ranges`.
 fn rx888_caps(src: &rx888_source::Rx888Source) -> DeviceCaps {
     use sdroxide_types::{Direction, GainElement, Rx888Config};
     let rate = src.sample_rate_hz();
-    let nyquist = src.adc_rate_hz() / 2.0;
+    let mut gains = vec![
+        GainElement {
+            name: Rx888Config::VGA_ELEMENT.into(),
+            direction: Direction::Rx,
+            min_db: -6.0,
+            max_db: 34.0,
+            // The AD8370's vernier is linear in voltage, so the dB step
+            // varies; a request is snapped to the nearest code and reported
+            // back, which makes a fine slider honest enough.
+            step_db: 0.5,
+        },
+        GainElement {
+            name: Rx888Config::ATT_ELEMENT.into(),
+            direction: Direction::Rx,
+            min_db: -31.5,
+            max_db: 0.0,
+            step_db: 0.5,
+        },
+    ];
+    // Only offer the tuner's gain on a receiver that has one, so the control
+    // does not appear on a board where it would do nothing.
+    if src.vhf_capable() {
+        gains.push(GainElement {
+            name: Rx888Config::TUNER_GAIN_ELEMENT.into(),
+            direction: Direction::Rx,
+            min_db: 0.0,
+            max_db: Rx888Config::TUNER_GAIN_MAX_DB,
+            // 29 discrete steps, snapped and reported back like the two above.
+            step_db: 0.1,
+        });
+    }
     DeviceCaps {
         driver: "rx888".into(),
         label: src.describe(),
         rx_channels: 1,
         tx_channels: 0,
         audio_mode: false,
-        freq_ranges_rx: vec![(0.0, nyquist)],
+        freq_ranges_rx: src.freq_ranges(),
         sample_rates: vec![rate],
-        gains: vec![
-            GainElement {
-                name: Rx888Config::VGA_ELEMENT.into(),
-                direction: Direction::Rx,
-                min_db: -6.0,
-                max_db: 34.0,
-                // The AD8370's vernier is linear in voltage, so the dB step
-                // varies; a request is snapped to the nearest code and reported
-                // back, which makes a fine slider honest enough.
-                step_db: 0.5,
-            },
-            GainElement {
-                name: Rx888Config::ATT_ELEMENT.into(),
-                direction: Direction::Rx,
-                min_db: -31.5,
-                max_db: 0.0,
-                step_db: 0.5,
-            },
-        ],
+        gains,
         ..DeviceCaps::default()
     }
 }
