@@ -1619,6 +1619,11 @@ fn engine_thread(
     // Published so every UI attached to this engine — including a remote one
     // started by somebody else — can warn about it.
     state.oob_tx = !engine_cfg.tx_ham_only;
+    // Seeded here, next to the other config-derived state, so the very first
+    // broadcast carries the real guard settings and no client ever renders the
+    // 0.0 that `TxState::default()` would give it.
+    state.tx.swr_guard = engine_cfg.swr_guard;
+    state.tx.swr_limit = engine_cfg.swr_limit.clamp(1.1, 10.0);
     if let Some(mode) = engine_cfg.initial_mode {
         for rx in &mut state.rx {
             *rx = RxState::with_mode(mode);
@@ -1777,7 +1782,7 @@ fn engine_thread(
         tx_center_hz: 0.0,
         tx_ham_only: engine_cfg.tx_ham_only,
         swr_guard: engine_cfg.swr_guard,
-        swr_limit: engine_cfg.swr_limit,
+        swr_limit: engine_cfg.swr_limit.clamp(1.1, 10.0),
         swr_over: 0,
         swr_tripped: None,
         wide_scratch: Vec::new(),
@@ -3803,6 +3808,27 @@ impl Engine {
                 if self.tx_active {
                     self.source.set_tx_drive(self.tx_power_level() as f64);
                 }
+            }
+            SetSwrGuard { enabled, limit } => {
+                // Clamped, not trusted. Below about 1.1:1 no real antenna ever
+                // sits, so a low value would refuse every transmission and look
+                // like a broken radio; and the field is `0.0` in a default
+                // `TxState`, so an early edit from a client that has not yet
+                // heard from the engine would otherwise arm exactly that.
+                let limit = limit.clamp(1.1, 10.0);
+                self.swr_guard = enabled;
+                self.swr_limit = limit;
+                self.state.tx.swr_guard = enabled;
+                self.state.tx.swr_limit = limit;
+                self.swr_over = 0;
+                // Disarming clears a standing trip: leaving transmit latched
+                // out by a guard that is no longer on would be unexplainable
+                // from the screen.
+                if !enabled && self.swr_tripped.take().is_some() {
+                    self.state.tx.swr_tripped = None;
+                    self.clear_notice();
+                }
+                self.emit_state();
             }
             ClearSwrTrip => {
                 if let Some(swr) = self.swr_tripped.take() {

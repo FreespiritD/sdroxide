@@ -89,6 +89,19 @@ impl LocalController {
 
 impl RadioController for LocalController {
     fn send(&mut self, cmd: Command) {
+        // The SWR guard is a station setting, not a session one: an operator
+        // who raises the limit for a dummy load expects it still raised
+        // tomorrow. Persisted on the way past, the same way the audio device
+        // selection is, and only for a LOCAL radio — a remote session's
+        // config.toml is on the client machine, which is the wrong one.
+        if let Command::SetSwrGuard { enabled, limit } = cmd {
+            let mut s = sdroxide_config::Settings::load();
+            s.swr_guard = enabled;
+            s.swr_limit = limit;
+            if let Err(e) = s.save() {
+                warn!("saving SWR guard setting: {e}");
+            }
+        }
         let _ = self.cmd_tx.send(cmd);
     }
 
