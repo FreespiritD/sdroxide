@@ -463,9 +463,10 @@ mod tests {
         // Last code in each block is ZZZ.
         assert_eq!(pi_callsign(0x1000 + 17_575).as_deref(), Some("KZZZ"));
         assert_eq!(pi_callsign(0x54A8 + 17_575).as_deref(), Some("WZZZ"));
-        // A round trip through the standard's own arithmetic.
-        let pi = 0x54A8 + 676 * 1 + 26 * 2 + 3;
-        assert_eq!(pi_callsign(pi).as_deref(), Some("WBCD"));
+        // A round trip through the standard's own arithmetic: the three letters
+        // after the W are base-26 digits, so B, C, D is 1, 2, 3.
+        let (b, c, d) = (1u16, 2u16, 3u16);
+        assert_eq!(pi_callsign(0x54A8 + 676 * b + 26 * c + d).as_deref(), Some("WBCD"));
         // Outside both blocks: a European PI, and the range above W.
         assert_eq!(pi_callsign(0xD3C2), None);
         assert_eq!(pi_callsign(0x0FFF), None);

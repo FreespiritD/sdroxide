@@ -1,6 +1,6 @@
 //! The RDS window: what a broadcast FM station says about itself.
 //!
-//! Two views. **STATION** is the one to read — the name, the programme type, the
+//! Two tabs. **STATION** is the one to read — the name, the programme type, the
 //! radio text, and what is playing. **DIAGNOSTICS** is the one to look at when
 //! the first is empty or flickering, and answers the only question that matters
 //! then: is anything actually arriving, and how much of it survives.
@@ -94,14 +94,15 @@ impl SdroxideApp {
     fn rds_body(&mut self, ui: &mut egui::Ui) {
         let standard = self.rds_standard();
 
-        ui.horizontal(|ui| {
+        crate::chrome::tab_bar(ui, |ui, bar| {
             for (tab, label) in [(RdsTab::Station, "STATION"), (RdsTab::Diagnostics, "DIAGNOSTICS")]
             {
-                if crate::chrome::chip(ui, self.rds_tab == tab, label).clicked() {
+                if bar.tab(ui, self.rds_tab == tab, label).clicked() {
                     self.rds_tab = tab;
                 }
             }
-            ui.add_space(8.0);
+            // The selector is not a tab and the baseline runs on under it.
+            bar.end_tabs(ui);
 
             // The standard selector. A display choice, not a command: the raw
             // codes are already here, so this re-labels everything at once.
@@ -124,7 +125,9 @@ impl SdroxideApp {
                      identity code spells out. Auto follows the country code the station sends.",
                 );
         });
-        ui.add_space(6.0);
+        // No separator: the strip's own baseline is the line between the tabs
+        // and the page they open.
+        ui.add_space(8.0);
 
         match self.rds_tab {
             RdsTab::Station => self.rds_station(ui, standard),
