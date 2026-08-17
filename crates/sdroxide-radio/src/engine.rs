@@ -2173,12 +2173,20 @@ fn engine_thread(
                     && engine.swr_tripped.is_none()
                     && engine.swr_settle > SWR_SETTLE_SAMPLES
                 {
-                    match (tele.swr, tele.fwd_w) {
-                        // Both figures required. `fwd_w` is what makes the
-                        // reading meaningful, and a rig that reports SWR but no
-                        // forward power cannot be vetted, so it is left alone
-                        // rather than guessed at.
-                        (Some(swr), Some(fwd)) if fwd >= SWR_MIN_FWD_W && swr >= engine.swr_limit => {
+                    // ⛔ FORWARD POWER IS OPTIONAL AND MUST STAY OPTIONAL. This
+                    // read `(Some(swr), Some(fwd))` until 17 August 2026, on the
+                    // reasoning that a rig reporting SWR without power "cannot be
+                    // vetted". That reasoning cost two failed live tests: the
+                    // CI-V driver sends `TxTelemetry { fwd_w: None, swr: Some(v) }`,
+                    // so on every Icom the arm could never match and the guard
+                    // was dead code. Requiring a figure the most common rig
+                    // family never sends is not caution, it is a silent
+                    // disablement.
+                    match tele.swr {
+                        Some(swr)
+                            if swr >= engine.swr_limit
+                                && tele.fwd_w.map_or(true, |f| f >= SWR_MIN_FWD_W) =>
+                        {
                             engine.swr_over = engine.swr_over.saturating_add(1);
                             if engine.swr_over >= SWR_TRIP_SAMPLES {
                                 let limit = engine.swr_limit;
@@ -2209,10 +2217,17 @@ fn engine_thread(
                                 engine.emit_state();
                             }
                         }
-                        // Any good reading resets the run. The count is for
+                        // A reading that is fine resets the run. The count is for
                         // CONSECUTIVE samples: an isolated spike is exactly what
                         // the debounce exists to ignore.
-                        _ => engine.swr_over = 0,
+                        Some(_) => engine.swr_over = 0,
+                        // ⚠️ NO READING IS NOT A GOOD READING. Neither advance
+                        // nor reset: the rig has simply not said anything yet.
+                        // Resetting here would have been the same class of bug
+                        // as the one above, quietly holding the count at zero on
+                        // any rig whose telemetry arrives slower than the meter
+                        // tick.
+                        None => {}
                     }
                 }
                 Some(Meters {
