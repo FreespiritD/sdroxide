@@ -1219,9 +1219,13 @@ mod tests {
         // Region 1, the default these tests run under.
         assert_eq!(step_band(Band::M6, true), Some(Band::M4));
         assert_eq!(step_band(Band::M4, true), Some(Band::M2));
+        // 1.25 m and 33 cm are Region 2's alone, so in Region 1 the step from
+        // 2 m goes straight to 70 cm and from there to 23 cm.
         assert_eq!(step_band(Band::M2, true), Some(Band::M70));
+        assert_eq!(step_band(Band::M70, true), Some(Band::Cm23));
+        assert_eq!(step_band(Band::Cm23, false), Some(Band::M70));
         // Wraps within the ham bands only, from the highest to the lowest.
-        assert_eq!(step_band(Band::M70, true), Some(Band::M160));
+        assert_eq!(step_band(Band::Cm6, true), Some(Band::M160));
         assert_eq!(step_band(Band::Gen, true), None);
     }
 

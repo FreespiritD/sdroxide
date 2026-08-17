@@ -23,13 +23,37 @@ pub enum Band {
     /// memories; [`Band::ALL`] puts it where it belongs on screen.
     M70,
     /// 4 m — 70 MHz, between 6 m and 2 m. Appended for the same reason as
-    /// [`Band::M70`], and the only band here that a region can simply not have:
-    /// 70 MHz is an amateur allocation in Region 1 alone.
+    /// [`Band::M70`], and the first band here that a region can simply not
+    /// have: 70 MHz is an amateur allocation in Region 1 alone.
     M4,
+    /// 1.25 m — 220 MHz, between 2 m and 70 cm. Region 2's alone.
+    ///
+    /// `M125` reads "1.25 m" — the way every band plan and every ADIF file
+    /// writes this band — and not 125 metres, which is not a band at all.
+    M125,
+    /// 33 cm — 902 MHz. Region 2's alone, like 1.25 m.
+    ///
+    /// The first of the centimetre bands to take a `Cm` prefix. [`Band::M70`]
+    /// keeps its name because it shipped with it and that name is in every
+    /// `bandplan.json` already written, but the scheme could not be carried on:
+    /// `M6` is already 6 m, so 6 cm cannot be `M6`, and half a naming scheme is
+    /// worse than a new one. Everything from here up is `Cm`.
+    Cm33,
+    /// 23 cm — 1240–1300 MHz. The first of the microwave bands all three
+    /// regions share.
+    Cm23,
+    /// 13 cm — 2300–2450 MHz.
+    Cm13,
+    /// 9 cm — 3.4 GHz in Region 1, 3.3–3.5 GHz elsewhere.
+    Cm9,
+    /// 6 cm — 5650 MHz up. Called 6 cm by the IARU Region 1 VHF handbook, the
+    /// RSGB, the WIA and the NRRL, and 5 cm in the Americas; see
+    /// [`Band::label_in`], which says whichever the station's own region does.
+    Cm6,
 }
 
 impl Band {
-    pub const ALL: [Band; 15] = [
+    pub const ALL: [Band; 21] = [
         Band::M160,
         Band::M80,
         Band::M60,
@@ -43,11 +67,33 @@ impl Band {
         Band::M6,
         Band::M4,
         Band::M2,
+        Band::M125,
         Band::M70,
+        Band::Cm33,
+        Band::Cm23,
+        Band::Cm13,
+        Band::Cm9,
+        Band::Cm6,
         Band::Gen,
     ];
 
+    /// The band's name, as the station's configured region writes it.
     pub fn label(self) -> &'static str {
+        self.label_in(crate::region())
+    }
+
+    /// The band's name as `region` writes it.
+    ///
+    /// Only one band needs the parameter, and it needs it badly: the 5650 MHz
+    /// band is **6 cm** to the IARU Region 1 VHF handbook, the RSGB, the WIA and
+    /// the NRRL, and **5 cm** to plans across the other two regions. Neither is
+    /// a nickname — each is the name in a band plan — so the honest thing is to
+    /// print the one the operator's own plan uses rather than to pick a winner.
+    ///
+    /// The log is a separate question: ADIF defines `6cm` for 5.65–5.925 GHz and
+    /// nothing called `5cm`, so [`crate::adif_band`] says `6cm` wherever the
+    /// station is. This is what the operator reads; that is what the file says.
+    pub fn label_in(self, region: Region) -> &'static str {
         match self {
             Band::M160 => "160M",
             Band::M80 => "80M",
@@ -62,7 +108,16 @@ impl Band {
             Band::M6 => "6M",
             Band::M4 => "4M",
             Band::M2 => "2M",
+            Band::M125 => "1.25M",
             Band::M70 => "70CM",
+            Band::Cm33 => "33CM",
+            Band::Cm23 => "23CM",
+            Band::Cm13 => "13CM",
+            Band::Cm9 => "9CM",
+            Band::Cm6 => match region {
+                Region::R1 => "6CM",
+                Region::R2 | Region::R3 => "5CM",
+            },
             Band::Gen => "GEN",
         }
     }
@@ -100,14 +155,19 @@ impl Band {
     ///   7.000–7.300 to itself.
     /// - **6 m** ends at 52 MHz in Region 1 and 54 MHz elsewhere.
     /// - **4 m** is Region 1's alone. Regions 2 and 3 have no 70 MHz amateur
-    ///   allocation at all, so there the band is *absent* rather than narrower —
-    ///   the only band in this table of which that is true.
+    ///   allocation at all, so there the band is *absent* rather than narrower.
     /// - **2 m** ends at 146 MHz in Region 1 and 148 MHz elsewhere.
+    /// - **1.25 m** and **33 cm** are Region 2's alone, for the same reason 4 m
+    ///   is Region 1's: 220 MHz and 902 MHz are not amateur allocations in the
+    ///   other two regions at all.
     /// - **70 cm** is 430–440 in Region 1, 420–450 in Region 2 and 430–450 in
     ///   Region 3.
+    /// - **9 cm** is 3400–3475 in Region 1 and 3300–3500 elsewhere.
+    /// - **6 cm** (5 cm in the Americas — see [`Band::label_in`]) starts at
+    ///   5650 everywhere and ends at 5850 in Region 1, 5925 elsewhere.
     ///
-    /// 30 m through 10 m, and the WRC-15 60 m allocation, are the same
-    /// everywhere.
+    /// 30 m through 10 m, the WRC-15 60 m allocation, and 23 cm and 13 cm, are
+    /// the same everywhere.
     pub fn iaru_default_edges_in(self, region: Region) -> Option<(f64, f64)> {
         let by_region = |r1: (f64, f64), r2: (f64, f64), r3: (f64, f64)| match region {
             Region::R1 => Some(r1),
@@ -161,10 +221,39 @@ impl Band {
                 (144_000_000.0, 148_000_000.0),
                 (144_000_000.0, 148_000_000.0),
             ),
+            // 1.25 m, Region 2's alone. The IARU Region 2 band plan covers
+            // 220–225; the US licence grants 222–225 of it, plus 219–220 for
+            // point-to-point digital links only, and Canada 219–220 and
+            // 222–225. So this is one of the places where the *allocation* is
+            // wider than any one licence in it, and a US or Canadian operator
+            // who wants the lockout to know that puts 222–225 in their
+            // `bandplan.json`.
+            Band::M125 => (region == Region::R2).then_some((220_000_000.0, 225_000_000.0)),
             Band::M70 => by_region(
                 (430_000_000.0, 440_000_000.0),
                 (420_000_000.0, 450_000_000.0),
                 (430_000_000.0, 450_000_000.0),
+            ),
+            // 33 cm, Region 2's alone, and shared with everything from cordless
+            // telephones to ISM devices — amateur use is secondary throughout.
+            Band::Cm33 => (region == Region::R2).then_some((902_000_000.0, 928_000_000.0)),
+            Band::Cm23 => Some((1_240_000_000.0, 1_300_000_000.0)),
+            Band::Cm13 => Some((2_300_000_000.0, 2_450_000_000.0)),
+            // 9 cm. Region 1's 3400–3475 is the narrower allocation, and several
+            // national licences in it stop at 3410 — 5G in the 3.4–3.8 GHz range
+            // has been taking the top of this band across Europe, which is
+            // exactly the sort of thing a hand-edited `bandplan.json` is for.
+            Band::Cm9 => by_region(
+                (3_400_000_000.0, 3_475_000_000.0),
+                (3_300_000_000.0, 3_500_000_000.0),
+                (3_300_000_000.0, 3_500_000_000.0),
+            ),
+            // 6 cm in Region 1, 5 cm in the other two — the same band under two
+            // names, which is [`Band::label_in`]'s business, not this table's.
+            Band::Cm6 => by_region(
+                (5_650_000_000.0, 5_850_000_000.0),
+                (5_650_000_000.0, 5_925_000_000.0),
+                (5_650_000_000.0, 5_925_000_000.0),
             ),
             Band::Gen => None,
         }
@@ -184,10 +273,10 @@ impl Band {
     /// A reasonable default frequency/mode when jumping to a band with no stack
     /// history.
     ///
-    /// One set for every region: each of these sits inside the band in all
-    /// three, and inside a part of it the mode belongs in — which is the most
-    /// a starting point has to do, since the band stack replaces it the moment
-    /// the operator tunes.
+    /// One set for every region: each of these sits inside the band in every
+    /// region that has the band at all, and inside a part of it the mode belongs
+    /// in — which is the most a starting point has to do, since the band stack
+    /// replaces it the moment the operator tunes.
     pub fn default_entry(self) -> (f64, crate::Mode) {
         use crate::Mode;
         match self {
@@ -206,10 +295,29 @@ impl Band {
             // part of a band whose bottom 100 kHz is beacons only.
             Band::M4 => (70_200_000.0, Mode::Usb),
             Band::M2 => (145_500_000.0, Mode::Nfm),
+            // 223.500 is the 1.25 m national FM simplex calling frequency.
+            Band::M125 => (223_500_000.0, Mode::Nfm),
             // 70 cm opens on the RIFP calling frequency: it is the band this
             // mode is meant for, and the band stack overrides this the moment
             // the operator tunes anywhere else.
             Band::M70 => (crate::RIFP_CALLING_HZ, Mode::Rifp),
+            // The microwave bands open in their narrow-band segment, on
+            // upper sideband, which is where the weak-signal work is: these are
+            // bands an operator reaches with a transverter or a Pluto and a
+            // dish, not ones they tune across looking for activity.
+            //
+            // Each of these sits inside the band in every region that has it,
+            // which is what `default_entry` has to promise. Where a region works
+            // a different part of the band the band stack fixes it on the first
+            // tune — 33 cm and 1.25 m exist in Region 2 alone, so there is only
+            // one plan to satisfy, but 23 cm through 6 cm are shared and the
+            // narrow-band segments do not line up: the Americas call 100 kHz
+            // below Region 1 on 23 cm and in a different megahertz on 13 cm.
+            Band::Cm33 => (902_100_000.0, Mode::Usb),
+            Band::Cm23 => (1_296_200_000.0, Mode::Usb),
+            Band::Cm13 => (2_320_200_000.0, Mode::Usb),
+            Band::Cm9 => (3_400_100_000.0, Mode::Usb),
+            Band::Cm6 => (5_760_100_000.0, Mode::Usb),
             Band::Gen => (7_200_000.0, Mode::Am),
         }
     }
@@ -284,6 +392,62 @@ mod tests {
         assert_eq!(Band::containing_in(53_000_000.0, Region::R2), Band::M6);
         assert_eq!(Band::containing_in(147_000_000.0, Region::R1), Band::Gen);
         assert_eq!(Band::containing_in(147_000_000.0, Region::R3), Band::M2);
+        // 1.25 m and 33 cm are Region 2's alone, the mirror image of 4 m: absent
+        // elsewhere rather than narrower.
+        for (hz, band) in [(223_500_000.0, Band::M125), (903_000_000.0, Band::Cm33)] {
+            assert_eq!(Band::containing_in(hz, Region::R2), band);
+            for r in [Region::R1, Region::R3] {
+                assert_eq!(Band::containing_in(hz, r), Band::Gen, "{band:?} in {r:?}");
+                assert_eq!(band.edges_in(r), None, "{band:?} in {r:?}");
+            }
+        }
+        // 9 cm: Region 1 has 3400–3475, the other two 3300–3500, so a frequency
+        // either side of Region 1's window is 9 cm elsewhere and nothing there.
+        for hz in [3_350_000_000.0, 3_490_000_000.0] {
+            assert_eq!(Band::containing_in(hz, Region::R1), Band::Gen);
+            assert_eq!(Band::containing_in(hz, Region::R2), Band::Cm9);
+            assert_eq!(Band::containing_in(hz, Region::R3), Band::Cm9);
+        }
+        assert_eq!(Band::containing_in(3_400_100_000.0, Region::R1), Band::Cm9);
+        // 6 cm / 5 cm: the top 75 MHz is outside the Region 1 allocation.
+        assert_eq!(Band::containing_in(5_900_000_000.0, Region::R1), Band::Gen);
+        assert_eq!(Band::containing_in(5_900_000_000.0, Region::R2), Band::Cm6);
+        assert_eq!(Band::containing_in(5_900_000_000.0, Region::R3), Band::Cm6);
+        // 23 cm and 13 cm are the same everywhere, which is worth saying: they
+        // are the two microwave bands an operator can move between regions with.
+        for r in Region::ALL {
+            assert_eq!(Band::Cm23.edges_in(r), Some((1_240_000_000.0, 1_300_000_000.0)));
+            assert_eq!(Band::Cm13.edges_in(r), Some((2_300_000_000.0, 2_450_000_000.0)));
+            assert_eq!(Band::containing_in(1_296_174_000.0, r), Band::Cm23, "{r:?}");
+            assert_eq!(Band::containing_in(2_320_174_000.0, r), Band::Cm13, "{r:?}");
+        }
+    }
+
+    /// The 5650 MHz band is 6 cm in Region 1 and 5 cm in the other two, and both
+    /// names are in published band plans — so the label follows the region
+    /// rather than picking one and being wrong half the time.
+    #[test]
+    fn the_5650_band_is_named_the_way_the_region_names_it() {
+        assert_eq!(Band::Cm6.label_in(Region::R1), "6CM");
+        assert_eq!(Band::Cm6.label_in(Region::R2), "5CM");
+        assert_eq!(Band::Cm6.label_in(Region::R3), "5CM");
+        // Every other band reads the same wherever the station is.
+        for band in Band::ALL {
+            if band == Band::Cm6 {
+                continue;
+            }
+            assert_eq!(band.label_in(Region::R1), band.label_in(Region::R2), "{band:?}");
+            assert_eq!(band.label_in(Region::R1), band.label_in(Region::R3), "{band:?}");
+        }
+        // And no two bands share a label, or a band button would name two.
+        for region in Region::ALL {
+            let mut seen: Vec<&str> = Vec::new();
+            for band in Band::ALL {
+                let l = band.label_in(region);
+                assert!(!seen.contains(&l), "{l} is used twice in {region:?}");
+                seen.push(l);
+            }
+        }
     }
 
     /// Every band's edges have to be the right way round and disjoint from

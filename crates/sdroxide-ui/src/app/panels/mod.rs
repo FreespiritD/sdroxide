@@ -134,7 +134,7 @@ impl SdroxideApp {
         };
         // Every live band: the compact chip row has no space for a mask, and
         // picking bands apart is what the globe's menu is for.
-        self.prop_heat.texture(ctx, &field, heat_mode, band, u16::MAX).map(|t| t.id())
+        self.prop_heat.texture(ctx, &field, heat_mode, band, u32::MAX).map(|t| t.id())
     }
 
     /// The chip row that turns the flat map's propagation heat on and picks

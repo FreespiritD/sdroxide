@@ -105,9 +105,13 @@ impl Region {
 pub(crate) mod mask {
     pub(crate) const ALL: u8 = 0;
     pub(crate) const R1: u8 = 1;
+    pub(crate) const R2: u8 = 2;
     /// Regions 2 and 3 together — the split most 40 m and 80 m conventions
     /// fall along.
     pub(crate) const R23: u8 = 2 | 4;
+    /// Regions 1 and 3 together. Only the 13 cm FT8 split falls this way: the
+    /// Americas work the 2304 segment and both of the others the 2320 one.
+    pub(crate) const R13: u8 = 1 | 4;
 }
 
 /// The station's region, as a discriminant index into [`Region::ALL`].

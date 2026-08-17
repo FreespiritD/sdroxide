@@ -1282,6 +1282,23 @@ pub fn fmt_report(db: i16) -> String {
 }
 
 /// Which band a frequency falls in, as an ADIF band string (e.g. "20m").
+///
+/// ADIF's own names, which are not always the ones the operator reads on screen:
+/// the 5650 MHz band is `6cm` in the ADIF enumeration and nothing is called
+/// `5cm`, so this says `6cm` wherever the station is while
+/// [`crate::Band::label_in`] says what that region's plan calls it.
+///
+/// Deliberately frequency-only, and deliberately not the band plan: a log entry
+/// records where the contact was, and it must come out the same whatever region
+/// the station is set to or whichever edges the operator has narrowed their
+/// `bandplan.json` to. The thresholds sit above each band's top edge in the
+/// widest region that has it, so a frequency inside any region's allocation
+/// lands on the right name.
+///
+/// Above 6 cm the answer is the empty string: sdroxide has no 3 cm band or
+/// anything beyond, and naming a 10 GHz contact `6cm` would put a false
+/// statement in a log file. An empty band field is one the importer derives from
+/// the frequency, which is the truthful outcome.
 pub fn adif_band(freq_hz: f64) -> &'static str {
     let mhz = freq_hz / 1e6;
     match mhz {
@@ -1295,8 +1312,17 @@ pub fn adif_band(freq_hz: f64) -> &'static str {
         m if m < 21.5 => "15m",
         m if m < 25.0 => "12m",
         m if m < 29.8 => "10m",
-        m if m < 54.0 => "6m",
-        _ => "2m",
+        m if m < 54.1 => "6m",
+        m if m < 70.6 => "4m",
+        m if m < 148.1 => "2m",
+        m if m < 225.1 => "1.25m",
+        m if m < 450.1 => "70cm",
+        m if m < 928.1 => "33cm",
+        m if m < 1300.1 => "23cm",
+        m if m < 2450.1 => "13cm",
+        m if m < 3500.1 => "9cm",
+        m if m < 5925.1 => "6cm",
+        _ => "",
     }
 }
 
@@ -1761,6 +1787,53 @@ mod tests {
         assert!(adif.contains("<GRIDSQUARE:4>EM48"));
         assert!(adif.contains("<EOR>"));
         assert_eq!(adif_band(14_074_000.0), "20m");
+    }
+
+    /// Every band sdroxide has gets its own ADIF name, and a contact anywhere
+    /// inside it lands on that name. 70 cm through 6 cm used to come out as
+    /// "2m", which was the catch-all arm rather than an answer.
+    #[test]
+    fn every_band_logs_under_its_own_adif_name() {
+        for (hz, band) in [
+            (1_840_000.0, "160m"),
+            (28_074_000.0, "10m"),
+            (50_313_000.0, "6m"),
+            (70_174_000.0, "4m"),
+            (144_174_000.0, "2m"),
+            (147_500_000.0, "2m"),
+            (223_500_000.0, "1.25m"),
+            (432_174_000.0, "70cm"),
+            (446_000_000.0, "70cm"),
+            (902_100_000.0, "33cm"),
+            (1_296_174_000.0, "23cm"),
+            (2_304_174_000.0, "13cm"),
+            (2_320_174_000.0, "13cm"),
+            (3_400_100_000.0, "9cm"),
+            (3_456_100_000.0, "9cm"),
+            (5_760_100_000.0, "6cm"),
+            // ADIF has no "5cm": the band the Americas call 5 cm logs as 6 cm,
+            // which is the name the enumeration defines.
+            (5_900_000_000.0, "6cm"),
+        ] {
+            assert_eq!(adif_band(hz), band, "{hz} Hz");
+        }
+        // Above every band sdroxide knows, the honest answer is none at all
+        // rather than the nearest name.
+        assert_eq!(adif_band(10_368_100_000.0), "");
+        // And a contact anywhere inside a band gets one name for the whole of
+        // it, in every region — the widest allocation included, so a US 40 m
+        // contact at 7.290 and a Region 2 5 cm one at 5.9 GHz are not filed
+        // under the band above. A kilohertz inside each edge rather than on it:
+        // the thresholds are boundaries between bands, and which side an exact
+        // edge falls on is not something a log has to have an opinion about.
+        for region in crate::Region::ALL {
+            for b in crate::Band::ALL {
+                let Some((lo, hi)) = b.edges_in(region) else { continue };
+                let (inside_lo, inside_hi) = (adif_band(lo + 1000.0), adif_band(hi - 1000.0));
+                assert_eq!(inside_lo, inside_hi, "{b:?} in {region:?} straddles two ADIF bands");
+                assert!(!inside_lo.is_empty(), "{b:?} in {region:?} has no ADIF name");
+            }
+        }
     }
 
     #[test]

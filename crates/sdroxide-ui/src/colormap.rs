@@ -139,23 +139,36 @@ pub fn prop_ramp_at(t: f32) -> [u8; 3] {
 /// would be the wrong choice for a continuous quantity; the per-band display
 /// exists precisely for when the hues cannot be told apart, and the legend
 /// names each band beside its swatch rather than relying on hue recall.
+///
+/// One lap of the circle only holds so many bands. 160 m through 70 cm take it
+/// at full saturation, deep red to rose; the microwave bands carry on round the
+/// same way — salmon, amber, straw, green, sky — but pale and washed out. So the
+/// second lap cannot be mistaken for the first: 23 cm is a pale amber that no HF
+/// band comes near, rather than an orange the eye has to tell from 80 m's.
 pub fn band_color(band: sdroxide_types::Band) -> [u8; 3] {
     use sdroxide_types::Band;
     match band {
-        Band::M160 => [176, 40, 40], // deep red
-        Band::M80 => [214, 92, 32],  // orange
-        Band::M60 => [222, 150, 40], // amber
-        Band::M40 => [226, 208, 52], // yellow
-        Band::M30 => [150, 214, 60], // yellow-green
-        Band::M20 => [58, 200, 96],  // green
-        Band::M17 => [46, 200, 170], // teal
-        Band::M15 => [52, 168, 226], // sky
-        Band::M12 => [70, 116, 232], // blue
-        Band::M10 => [122, 92, 236], // indigo
-        Band::M6 => [176, 84, 226],  // violet
-        Band::M4 => [202, 78, 224],  // purple
-        Band::M2 => [226, 76, 190],  // magenta
-        Band::M70 => [236, 96, 140], // rose
+        Band::M160 => [176, 40, 40],  // deep red
+        Band::M80 => [214, 92, 32],   // orange
+        Band::M60 => [222, 150, 40],  // amber
+        Band::M40 => [226, 208, 52],  // yellow
+        Band::M30 => [150, 214, 60],  // yellow-green
+        Band::M20 => [58, 200, 96],   // green
+        Band::M17 => [46, 200, 170],  // teal
+        Band::M15 => [52, 168, 226],  // sky
+        Band::M12 => [70, 116, 232],  // blue
+        Band::M10 => [122, 92, 236],  // indigo
+        Band::M6 => [176, 84, 226],   // violet
+        Band::M4 => [202, 78, 224],   // purple
+        Band::M2 => [226, 76, 190],   // magenta
+        Band::M125 => [232, 84, 166], // magenta-rose
+        Band::M70 => [236, 96, 140],  // rose
+        // The microwave bands: the same rotation, carried on pale.
+        Band::Cm33 => [250, 152, 122], // pale salmon
+        Band::Cm23 => [246, 192, 112], // pale amber
+        Band::Cm13 => [226, 224, 140], // pale straw
+        Band::Cm9 => [160, 220, 172],  // pale green
+        Band::Cm6 => [150, 204, 236],  // pale sky
         // Not a band: nothing is ever binned here.
         Band::Gen => [128, 128, 128],
     }

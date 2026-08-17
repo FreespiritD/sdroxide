@@ -572,7 +572,7 @@ fn prop_controls(ui: &mut egui::Ui, st: &mut SolarUi) {
             }
             for b in &live {
                 let i = sdroxide_types::Band::ALL.iter().position(|x| x == b).unwrap_or(0) as u8;
-                let bit = 1u16 << i;
+                let bit = 1u32 << i;
                 let sw = crate::colormap::band_color(*b);
                 if chrome::chip(
                     ui,

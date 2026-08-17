@@ -3040,11 +3040,12 @@ fn band_mode_menu(
     ui.horizontal_wrapped(|ui| {
         for b in Band::ALL {
             // A band the station's own band plan does not give this region gets
-            // no button: 4 m is Region 1's alone, and offering an operator in
-            // the Americas a button that tunes to 70 MHz — out of band, and
-            // with `tx_ham_only` set, straight into a transmit lockout — would
-            // be offering them something their licence has not got. GEN is the
-            // one bandless entry that stays: it is the absence of a band.
+            // no button: 4 m is Region 1's alone and 1.25 m and 33 cm are the
+            // Americas', and offering an operator a button that tunes outside
+            // their own allocation — out of band, and with `tx_ham_only` set,
+            // straight into a transmit lockout — would be offering them
+            // something their licence has not got. GEN is the one bandless entry
+            // that stays: it is the absence of a band.
             if b != Band::Gen && b.edges().is_none() {
                 continue;
             }

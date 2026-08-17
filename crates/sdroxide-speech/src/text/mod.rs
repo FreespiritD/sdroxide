@@ -163,7 +163,21 @@ impl<'a> Speaker<'a> {
             Band::M6 => "six meters",
             Band::M4 => "four meters",
             Band::M2 => "two meters",
+            // Said the way an operator says it. "One point two five meters" is
+            // what the label reads; nobody says it out loud.
+            Band::M125 => "one and a quarter meters",
             Band::M70 => "seventy centimeters",
+            Band::Cm33 => "thirty three centimeters",
+            Band::Cm23 => "twenty three centimeters",
+            Band::Cm13 => "thirteen centimeters",
+            Band::Cm9 => "nine centimeters",
+            // The one band whose name depends on where the station is — six
+            // centimeters under the Region 1 plan, five in the other two. Same
+            // rule as the on-screen label; see `Band::label_in`.
+            Band::Cm6 => match sdroxide_types::region() {
+                sdroxide_types::Region::R1 => "six centimeters",
+                sdroxide_types::Region::R2 | sdroxide_types::Region::R3 => "five centimeters",
+            },
             Band::Gen => "general coverage",
         }
     }

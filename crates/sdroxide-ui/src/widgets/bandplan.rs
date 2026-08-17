@@ -61,7 +61,11 @@ const fn s(lo: f64, hi: f64, label: &'static str, kind: Kind) -> Seg {
 /// The whole-band label for a ham block. A match rather than lower-casing
 /// `Band::label` at each use: this runs every frame, and a `&'static str` costs
 /// nothing where a `String` would cost an allocation per band per frame.
-fn ham_label(band: Band) -> &'static str {
+///
+/// Takes the region for the one band whose name depends on it — 5650 MHz is
+/// 6 cm under the Region 1 plan and 5 cm in the other two. The strip is already
+/// drawn per region, so the caller has it in hand.
+fn ham_label(band: Band, region: Region) -> &'static str {
     match band {
         Band::M160 => "160m HAM",
         Band::M80 => "80m HAM",
@@ -76,7 +80,16 @@ fn ham_label(band: Band) -> &'static str {
         Band::M6 => "6m HAM",
         Band::M4 => "4m HAM",
         Band::M2 => "2m HAM",
+        Band::M125 => "1.25m HAM",
         Band::M70 => "70cm HAM",
+        Band::Cm33 => "33cm HAM",
+        Band::Cm23 => "23cm HAM",
+        Band::Cm13 => "13cm HAM",
+        Band::Cm9 => "9cm HAM",
+        Band::Cm6 => match region {
+            Region::R1 => "6cm HAM",
+            Region::R2 | Region::R3 => "5cm HAM",
+        },
         Band::Gen => "GEN",
     }
 }
@@ -140,7 +153,7 @@ fn coarse(region: Region) -> Vec<Seg> {
     let mut v = non_ham(region);
     for band in Band::ALL {
         let Some((lo, hi)) = band.edges_in(region) else { continue };
-        v.push(s(lo, hi, ham_label(band), Kind::Ham));
+        v.push(s(lo, hi, ham_label(band, region), Kind::Ham));
     }
     v.sort_by(|a, b| a.lo.total_cmp(&b.lo));
     v
@@ -166,7 +179,7 @@ fn fine(region: Region) -> Vec<Seg> {
     for band in Band::ALL {
         let Some((lo, hi)) = band.edges_in(region) else { continue };
         if !segs.iter().any(|s| s.lo < hi && s.hi > lo) {
-            v.push(s(lo, hi, ham_label(band), Kind::Ham));
+            v.push(s(lo, hi, ham_label(band, region), Kind::Ham));
         }
     }
     v.sort_by(|a, b| a.lo.total_cmp(&b.lo));

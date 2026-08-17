@@ -230,7 +230,7 @@ pub struct SolarUi {
     /// key is (field generation, mode, band, band mask) — everything the
     /// picture depends on.
     pub prop_rgba: std::sync::Arc<Vec<u8>>,
-    pub prop_rgba_key: Option<(u64, u8, u8, u16)>,
+    pub prop_rgba_key: Option<(u64, u8, u8, u32)>,
     /// Bumped on every rebuild, so the GPU upload can skip an unchanged one.
     pub prop_gen: u64,
     /// Where the activity time-lapse's replay head sits, in seconds before now.

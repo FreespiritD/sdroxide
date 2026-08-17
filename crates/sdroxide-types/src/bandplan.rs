@@ -209,9 +209,10 @@ fn hz_to_mhz(hz: f64) -> f64 {
 /// One band's edges, in MHz.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct BandRow {
-    /// Which band. `M160` … `M10`, `M6`, `M4`, `M2`, `M70`. Leave a band out and
-    /// this region simply does not have it — which is how the built-in tables
-    /// give Regions 2 and 3 no 4 m.
+    /// Which band. `M160` … `M10`, `M6`, `M4`, `M2`, `M125`, `M70`, `Cm33`,
+    /// `Cm23`, `Cm13`, `Cm9`, `Cm6`. Leave a band out and this region simply
+    /// does not have it — which is how the built-in tables give Regions 2 and 3
+    /// no 4 m.
     band: Band,
     lo_mhz: f64,
     hi_mhz: f64,
@@ -264,10 +265,11 @@ fn readme() -> Vec<String> {
         "bands: the amateur allocations. Omit a band and this region does not have it; \
          narrow one to your own licence and sdroxide will refuse to transmit outside it \
          (with tx_ham_only set, which is the default).",
-        "A band sdroxide adds in a later version — 4 m (M4) is the first — is not in a file \
-         written before it existed, so it is filled in from the built-in tables when this file \
-         names it in no region at all. Give it a row in any region and this file decides it \
-         everywhere, as it does for every other band.",
+        "A band sdroxide adds in a later version — 4 m (M4) was the first, the microwave bands \
+         (Cm33 through Cm6) the latest — is not in a file written before it existed, so it is \
+         filled in from the built-in tables when this file names it in no region at all. Give it \
+         a row in any region and this file decides it everywhere, as it does for every other \
+         band.",
         "segments: the sub-band plan drawn on the waterfall. kind is Cw, Digi, Phone, \
          Beacon or All.",
         "psk_windows / rtty_windows: where the wideband skimmers listen. Narrow windows \
@@ -366,7 +368,8 @@ impl std::error::Error for BandPlanError {}
 ///
 /// New entries are appended as bands are added. Old ones stay: a file that
 /// predates 4 m predates everything after it too.
-const BANDS_ADDED_SINCE_THE_FILE: &[Band] = &[Band::M4];
+const BANDS_ADDED_SINCE_THE_FILE: &[Band] =
+    &[Band::M4, Band::M125, Band::Cm33, Band::Cm23, Band::Cm13, Band::Cm9, Band::Cm6];
 
 impl TryFrom<PlanFile> for BandPlan {
     type Error = BandPlanError;
@@ -415,7 +418,7 @@ impl RegionPlan {
                 problems.push(format!(
                     "region {r}: {} has lo_mhz {} and hi_mhz {}, which is not a band. \
                      Row ignored.",
-                    row.band.label(),
+                    row.band.label_in(region),
                     row.lo_mhz,
                     row.hi_mhz
                 ));
@@ -425,7 +428,7 @@ impl RegionPlan {
             if edges[i].is_some() {
                 problems.push(format!(
                     "region {r}: {} is listed twice; the later row wins.",
-                    row.band.label()
+                    row.band.label_in(region)
                 ));
             }
             edges[i] = Some((lo, hi));
@@ -449,10 +452,10 @@ impl RegionPlan {
                 problems.push(format!(
                     "region {r}: {} ({}–{} MHz) overlaps {} ({}–{} MHz); a frequency in both \
                      reports as the first.",
-                    w[0].0.label(),
+                    w[0].0.label_in(region),
                     hz_to_mhz(w[0].1.0),
                     hz_to_mhz(w[0].1.1),
-                    w[1].0.label(),
+                    w[1].0.label_in(region),
                     hz_to_mhz(w[1].1.0),
                     hz_to_mhz(w[1].1.1),
                 ));
@@ -685,10 +688,19 @@ mod tests {
         let text = BandPlan::iaru_defaults().to_json_document();
         assert!(text.contains(r#"{"band": "M160", "lo_mhz": 1.81, "hi_mhz": 2.0}"#), "{text}");
         assert!(text.contains(r#"{"band": "M70", "lo_mhz": 430.0, "hi_mhz": 440.0}"#), "{text}");
-        // 4 m is written into the one region that has it, and nowhere else.
+        // 4 m is written into the one region that has it, and nowhere else — and
+        // so are 1.25 m and 33 cm, the two the Americas have to themselves.
+        for row in [
+            r#"{"band": "M4", "lo_mhz": 70.0, "hi_mhz": 70.5}"#,
+            r#"{"band": "M125", "lo_mhz": 220.0, "hi_mhz": 225.0}"#,
+            r#"{"band": "Cm33", "lo_mhz": 902.0, "hi_mhz": 928.0}"#,
+        ] {
+            assert_eq!(text.matches(row).count(), 1, "{row} in {text}");
+        }
+        // 23 cm is the same in all three, so it appears three times.
         assert_eq!(
-            text.matches(r#"{"band": "M4", "lo_mhz": 70.0, "hi_mhz": 70.5}"#).count(),
-            1,
+            text.matches(r#"{"band": "Cm23", "lo_mhz": 1240.0, "hi_mhz": 1300.0}"#).count(),
+            3,
             "{text}"
         );
         assert!(!text.contains("1810000"), "hertz should not appear in the file");
@@ -762,6 +774,26 @@ mod tests {
         // And only into the region that has the band at all.
         assert_eq!(older.region(Region::R2).edges(Band::M4), None);
         assert_eq!(older.region(Region::R3).edges(Band::M4), None);
+        // The same for every band added since, one at a time: a file written
+        // when 4 m was the newest band still gains the microwave ones.
+        assert_eq!(
+            older.region(Region::R1).edges(Band::Cm23),
+            Some((1_240_000_000.0, 1_300_000_000.0))
+        );
+        assert_eq!(older.region(Region::R1).containing(1_296_174_000.0), Band::Cm23);
+        assert_eq!(
+            older.region(Region::R2).edges(Band::M125),
+            Some((220_000_000.0, 225_000_000.0))
+        );
+        assert_eq!(older.region(Region::R1).edges(Band::M125), None);
+        assert_eq!(
+            older.region(Region::R1).edges(Band::Cm9),
+            Some((3_400_000_000.0, 3_475_000_000.0))
+        );
+        assert_eq!(
+            older.region(Region::R3).edges(Band::Cm9),
+            Some((3_300_000_000.0, 3_500_000_000.0))
+        );
 
         // Named in one region: the file decides 4 m everywhere from then on, so
         // leaving it out of Region 1 means Region 1 has not got it.

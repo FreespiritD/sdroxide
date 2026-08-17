@@ -486,12 +486,39 @@ pub const FT8_DXPED_DIALS: &[f64] = &[
 /// 4 m carries a region tag because the *band* does: 70 MHz is an amateur
 /// allocation in Region 1 alone, so 70.174 is offered there and nowhere else.
 /// The rest follow 144.174's pattern of x.174.
+///
+/// ## The microwave bands
+///
+/// 23 cm and 13 cm reach this table; 9 cm and 6 cm do not, because no FT8
+/// convention has settled on them — a dial invented here would send an operator
+/// to call on an empty frequency, which is worse than offering nothing and
+/// letting them tune to where the activity actually is.
+///
+/// 13 cm has two, and which one a band button lands on has to follow the region:
+/// the narrow-band segment of that band is at 2320 under the Region 1 plan and
+/// at 2304 in the Americas, so 2320.174 and 2304.174 are both in real use.
+/// Both are offered everywhere — a station with a 2304 transverter in Europe is
+/// not a station with nothing to work — but the *unannotated* one, which is what
+/// [`crate::Mode::Ft8`]'s band button tunes to, is the one its own region's plan
+/// puts narrow-band modes on. Region 3 is given 2320 with less confidence than
+/// the other two: its national plans put narrow-band 13 cm work in more than one
+/// place, and an operator whose does otherwise picks 2304 from the same list.
+///
+/// 23 cm's 1296.500 is a secondary rather than a rival: 1296.174 is the calling
+/// frequency, and where a national plan puts something else across it the
+/// activity moves up.
 pub const FT8_VHF_DIALS: &[(f64, &str, u8)] = &[
     (50_313_000.0, "", mask::ALL),
     (50_323_000.0, "", mask::ALL),
     (70_174_000.0, "", mask::R1),
     (144_174_000.0, "", mask::ALL),
     (432_174_000.0, "", mask::ALL),
+    (1_296_174_000.0, "", mask::ALL),
+    (1_296_500_000.0, "secondary", mask::ALL),
+    (2_304_174_000.0, "", mask::R2),
+    (2_304_174_000.0, "2304 segment", mask::R13),
+    (2_320_174_000.0, "", mask::R13),
+    (2_320_174_000.0, "2320 segment", mask::R2),
 ];
 
 /// PSK31 dial frequencies (Hz), tagged with the regions each belongs to.
@@ -968,6 +995,52 @@ mod tests {
                         w[1]
                     );
                 }
+            }
+        }
+    }
+
+    /// The microwave FT8 frequencies, and the one place they split by region:
+    /// 13 cm narrow-band work sits at 2320 under the Region 1 plan and at 2304
+    /// in the Americas, and a band button has to land on the operator's own.
+    #[test]
+    fn the_microwave_ft8_frequencies_follow_the_region_on_13cm() {
+        use crate::Mode;
+        let dials = |band, region| -> Vec<(f64, &'static str)> {
+            digi_channels_in_region(Mode::Ft8, band, region)
+                .into_iter()
+                .map(|c| (c.dial_hz, c.note))
+                .collect()
+        };
+        for r in Region::ALL {
+            // 23 cm: the calling frequency, then the one activity moves up to.
+            assert_eq!(
+                dials(Band::Cm23, r),
+                vec![(1_296_174_000.0, ""), (1_296_500_000.0, "secondary")],
+                "{r:?}"
+            );
+            // 13 cm: both frequencies everywhere, exactly one of them plain —
+            // the plain one is what the band button uses, so there must be
+            // exactly one or the choice would be made by sort order.
+            let d = dials(Band::Cm13, r);
+            assert_eq!(d.len(), 2, "{r:?}: {d:?}");
+            assert_eq!(d.iter().filter(|(_, n)| n.is_empty()).count(), 1, "{r:?}: {d:?}");
+        }
+        let plain = |region| -> f64 {
+            digi_channels_in_region(Mode::Ft8, Band::Cm13, region)
+                .into_iter()
+                .find(|c| c.note.is_empty())
+                .expect("13 cm has a plain calling frequency in every region")
+                .dial_hz
+        };
+        assert_eq!(plain(Region::R2), 2_304_174_000.0);
+        assert_eq!(plain(Region::R1), 2_320_174_000.0);
+        assert_eq!(plain(Region::R3), 2_320_174_000.0);
+        // The bands with no convention are offered none rather than an invented
+        // one — 9 cm and 6 cm have no FT8 frequency anybody has settled on, and
+        // 1.25 m and 33 cm none in this table.
+        for r in Region::ALL {
+            for b in [Band::Cm9, Band::Cm6, Band::M125, Band::Cm33] {
+                assert!(digi_channels_in_region(Mode::Ft8, b, r).is_empty(), "{b:?} in {r:?}");
             }
         }
     }

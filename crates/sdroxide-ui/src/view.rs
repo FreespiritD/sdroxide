@@ -322,8 +322,12 @@ pub struct Solar3dView {
     #[serde(default = "prop_band_default")]
     pub prop_band: u8,
     /// Which bands the combined display sums, one bit per `Band::ALL` index.
+    ///
+    /// Thirty-two bits rather than sixteen because `Band::ALL` outgrew sixteen
+    /// entries when the microwave bands arrived: at u16, 23 cm and everything
+    /// above it had no bit to be selected by.
     #[serde(default = "prop_bands_default")]
-    pub prop_bands: u16,
+    pub prop_bands: u32,
     /// Half-life of an observation's contribution, in minutes. The ionosphere's
     /// memory is short; an hour-old spot should not out-argue a two-minute one.
     #[serde(default = "prop_halflife_default")]
@@ -352,8 +356,8 @@ fn prop_band_default() -> u8 {
 
 /// Default for [`Solar3dView::prop_bands`] — every band with a hue, i.e. all of
 /// them except the general-coverage placeholder.
-fn prop_bands_default() -> u16 {
-    let mut m = 0u16;
+fn prop_bands_default() -> u32 {
+    let mut m = 0u32;
     for (i, b) in sdroxide_types::Band::ALL.iter().enumerate() {
         if *b != sdroxide_types::Band::Gen {
             m |= 1 << i;

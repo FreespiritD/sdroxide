@@ -218,10 +218,14 @@ Regions 1 and 3 and amateur in Region 2).
 Click the **Band / Mode** button (which reads, for example, `20M · USB`) to open a
 popup with three rows:
 
-- **BAND:** `160M 80M 60M 40M 30M 20M 17M 15M 12M 10M 6M 4M 2M 70CM GEN`. Each
+- **BAND:** `160M 80M 60M 40M 30M 20M 17M 15M 12M 10M 6M 4M 2M 1.25M 70CM 33CM
+  23CM 13CM 9CM 6CM GEN`. Each
   band remembers your last frequency, mode, and filter. A band your region's
   band plan does not have gets no button at all — `4M` (70 MHz) is an amateur
-  allocation in IARU Region 1 only, so it is absent in Regions 2 and 3. Once
+  allocation in IARU Region 1 only, so it is absent in Regions 2 and 3, and
+  `1.25M` (220 MHz) and `33CM` (902 MHz) are Region 2's alone, so they are absent
+  in the other two. `6CM` reads `5CM` outside Region 1, which is what the band
+  plans there call it. Once
   band conditions have
   been fetched the button are tinted by the published forecast — green Good,
   yellow Fair, pink Poor — and hovering one gives it in words. Bands the
@@ -893,10 +897,12 @@ Fair, pink Poor. Hovering gives the verdict in words along with its source.
 **Three things this deliberately does not do.**
 
 - **Bands with no published verdict stay blank.** The feed covers four groups —
-  80/40 m, 30/20 m, 17/15 m and 12/10 m — and nothing else. 160 m, 60 m, 6 m,
-  2 m and 70 cm have no `CONDX` and no button colour, and never will: filling them
-  in from a neighbouring group would be inventing data. 60 m sits *inside* the
-  published frequency range and is still not covered.
+  80/40 m, 30/20 m, 17/15 m and 12/10 m — and nothing else. 160 m, 60 m and
+  every band above 10 m have no `CONDX` and no button colour, and never will:
+  filling them in from a neighbouring group would be inventing data. 60 m sits
+  *inside* the published frequency range and is still not covered, and what opens
+  the microwave bands — rain scatter, aircraft, the troposphere — is not
+  something a solar-flux verdict knows anything about.
 - **A band with no paths is not called closed.** An empty row means nothing was
   decoded, which may mean the band was shut or only that nobody was on it. Those
   two look identical from here.
@@ -1186,7 +1192,7 @@ mode's operating panel listing them:
 
 | Mode | Where it happens |
 | --- | --- |
-| FT8 | The DXpedition (Fox/Hound) window on every HF band, and 6 m's second frequency at 50.323 |
+| FT8 | The DXpedition (Fox/Hound) window on every HF band, 6 m's second frequency at 50.323, 23 cm's 1296.500 for where 1296.174 is unusable, and 13 cm's two narrow-band segments (2320.174 and 2304.174) |
 | RTTY | The DX calling spots (3.590, 14.083) |
 | SSTV | The move-up-when-busy secondaries — a picture takes two minutes, so one frequency per band is occupied most of the time |
 
@@ -2371,12 +2377,21 @@ decides every band plan sdroxide draws and enforces:
   430–450 in Region 3, so 446 MHz is out of band in Europe and in band in the
   Americas. 40 m runs to 7.200 outside Region 2 and to 7.300 inside it; 80 m
   ends at 3.800, 4.000 or 3.900; 160 m starts at 1.810 in Region 1 and 1.800
-  elsewhere; 6 m and 2 m are 2 MHz wider outside Region 1. **4 m** (70.000–
-  70.500) is Region 1's alone — the one band a region can simply not have, so
-  outside Region 1 it has no band button and band stepping passes it by. These
+  elsewhere; 6 m and 2 m are 2 MHz wider outside Region 1. **9 cm** is
+  3400–3475 in Region 1 and 3300–3500 in the other two; **6 cm** starts at 5650
+  everywhere and stops at 5850 in Region 1 against 5925 elsewhere. Three bands a
+  region can simply not have, so where they are absent they get no band button
+  and band stepping passes them by: **4 m** (70.000–70.500) is Region 1's alone,
+  and **1.25 m** (220–225) and **33 cm** (902–928) are Region 2's. These
   edges are what the band buttons jump to, what `Band` a frequency reports as,
   and — with `tx_ham_only` set, which is the default — where transmit is
   refused.
+- **What a band is called** — the 5650 MHz band is **6 cm** to the IARU
+  Region 1 VHF handbook, the RSGB, the WIA and the NRRL, and **5 cm** to plans
+  across the other two regions, so the band button, the band-plan strip and the
+  voice announcements all say whichever your own region says. The log does not
+  follow it: ADIF defines `6cm` for 5.65–5.925 GHz and nothing called `5cm`, so
+  that is the band a contact there is filed under wherever you are.
 - **Sub-segments** — the CW / data / SSB / beacon blocks on the waterfall's
   band strip ([§ 2.8](#28-the-display-and-fft-controls)). Region 1 splits the top of each
   band into a phone sub-band; Regions 2 and 3 hand it to all modes, and their
@@ -2389,7 +2404,12 @@ decides every band plan sdroxide draws and enforces:
   40 m (3.730 / 7.165 in Region 1, 3.845 / 7.171 elsewhere — and 3.845 is
   outside the Region 1 allocation altogether, so it is never offered there).
   FT8's 4 m dial, **70.174**, goes the same way: it is offered in Region 1 and
-  in neither of the others, which have no 70 MHz band to put it in.
+  in neither of the others, which have no 70 MHz band to put it in. On **13 cm**
+  both **2320.174** and **2304.174** are offered everywhere — the narrow-band
+  segment of that band is at 2320 under the Region 1 plan and at 2304 in the
+  Americas, and stations work both — but the band button lands on the one your
+  own region's plan puts narrow-band modes on, and the other is annotated in the
+  picker.
 
 The default is **Region 1**, which is the band plan every sdroxide before this
 setting had; an existing installation is not moved by upgrading. It is a
@@ -2415,7 +2435,7 @@ The file is one row per line, in **megahertz**, and it explains itself in a
 
 | List | What it sets |
 | --- | --- |
-| `bands` | The allocations. Leave a band out and the region does not have it — with one exception, below. |
+| `bands` | The allocations. `band` is one of `M160` `M80` `M60` `M40` `M30` `M20` `M17` `M15` `M12` `M10` `M6` `M4` `M2` `M125` `M70` `Cm33` `Cm23` `Cm13` `Cm9` `Cm6` — metres up to 2 m, then the band's own name, and `Cm` from 33 cm up because `M6` was already 6 m. Leave a band out and the region does not have it — with one exception, below. |
 | `segments` | The CW / data / phone / beacon / all-modes blocks on the waterfall strip. `kind` is `Cw`, `Digi`, `Phone`, `Beacon` or `All`. |
 | `psk_windows` | Where the PSK31 skimmer listens. |
 | `rtty_windows` | Where the RTTY skimmer listens. |
@@ -2431,7 +2451,9 @@ That edit is the common one: **narrow a band to your own licence**, and with
 `tx_ham_only` set (the default) sdroxide refuses to transmit outside it. The
 band buttons, the waterfall strip and the frequency displays all follow.
 
-**A band sdroxide adds later** — 4 m (`M4`) is the first — is not in a file
+**A band sdroxide adds later** — 4 m (`M4`) was the first, and 1.25 m (`M125`),
+33 cm (`Cm33`), 23 cm (`Cm23`), 13 cm (`Cm13`), 9 cm (`Cm9`) and 6 cm (`Cm6`)
+the latest — is not in a file
 written before it existed, and a file that has never heard of a band is not
 saying you have not got it. So a band on that short list is filled in from the
 built-in tables when your file names it in **no** region at all, exactly as a
@@ -6991,7 +7013,9 @@ using. Bind them under **Speech** on the Controls tab:
 ### Bands
 
 `160M`, `80M`, `60M`, `40M`, `30M`, `20M`, `17M`, `15M`, `12M`, `10M`, `6M`,
-`4M` (Region 1 only), `2M`, `70CM`, and `GEN` (general coverage). Bands your
+`4M` (Region 1 only), `2M`, `1.25M` (Region 2 only), `70CM`, `33CM` (Region 2
+only), `23CM`, `13CM`, `9CM`, `6CM` — read as `5CM` outside Region 1 — and `GEN`
+(general coverage). Bands your
 device cannot receive are disabled in the selector; bands your region does not
 have are not offered.
 

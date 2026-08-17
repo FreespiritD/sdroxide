@@ -329,7 +329,18 @@ use sdroxide_types::{
 /// client and a v59 server would disagree about where the gateway list starts.
 /// `#[serde(default)]` covers the config file on disk, not the wire — hence
 /// the bump.
-pub const PROTO_VERSION: u16 = 59;
+///
+/// **60** — the microwave bands: 1.25 m and 33 cm (Region 2's alone, like 4 m is
+/// Region 1's), and 23 cm, 13 cm, 9 cm and 6 cm. `Band::M125`, `Band::Cm33`,
+/// `Band::Cm23`, `Band::Cm13`, `Band::Cm9` and `Band::Cm6` are appended to the
+/// enum, so no postcard discriminant moves and every band stack and memory
+/// already on disk still decodes. The bump is for the same reason v54's was:
+/// `Band::ALL` puts each new band where it belongs on screen — 1.25 m between
+/// 2 m and 70 cm, the rest above it — and that list's *position* is what the
+/// propagation messages index by (`SolarServerMsg`'s per-band planes, and the
+/// band masks the globe and the flat map carry). A v59 client would file 70 cm's
+/// plane under 1.25 m and every plane above it one band low.
+pub const PROTO_VERSION: u16 = 60;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]

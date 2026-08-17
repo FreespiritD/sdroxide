@@ -35,7 +35,7 @@ pub enum PropMode {
 pub struct PropHeat {
     tex: Option<eframe::egui::TextureHandle>,
     /// What the texture was built from, so it is rebuilt only when it changed.
-    built: Option<(u64, PropMode, u8, u16)>,
+    built: Option<(u64, PropMode, u8, u32)>,
     /// Absolute path count the top of the ramp corresponds to, for the legend.
     /// Without it the colours are relative and the map lies by omission.
     pub peak_paths: f32,
@@ -64,7 +64,7 @@ impl PropHeat {
         field: &PropField,
         mode: PropMode,
         band: Band,
-        band_mask: u16,
+        band_mask: u32,
     ) -> Option<&eframe::egui::TextureHandle> {
         let band_ix = Band::ALL.iter().position(|b| *b == band).unwrap_or(0) as u8;
         let key = (field.generation, mode, band_ix, band_mask);
@@ -96,7 +96,7 @@ impl PropHeat {
         field: &PropField,
         mode: PropMode,
         band: Band,
-        band_mask: u16,
+        band_mask: u32,
     ) -> (eframe::egui::ColorImage, f32, Vec<Band>) {
         use sdroxide_types::{PROP_GRID_H, PROP_GRID_W};
         let (rgba, peak, bands) = Self::rgba(field, mode, band, band_mask);
@@ -126,7 +126,7 @@ impl PropHeat {
         field: &PropField,
         mode: PropMode,
         band: Band,
-        band_mask: u16,
+        band_mask: u32,
     ) -> (Vec<u8>, f32, Vec<Band>) {
         use sdroxide_types::{PROP_GRID_H, PROP_GRID_W};
 
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn an_empty_field_draws_nothing() {
         let f = PropField::default();
-        let (img, peak, bands) = PropHeat::image(&f, PropMode::AllBands, Band::M20, u16::MAX);
+        let (img, peak, bands) = PropHeat::image(&f, PropMode::AllBands, Band::M20, u32::MAX);
         assert_eq!(peak, 0.0);
         assert!(bands.is_empty());
         assert!(img.pixels.iter().all(|p| p.a() == 0), "an empty field painted something");
@@ -242,7 +242,7 @@ mod tests {
         let f = s.peek();
         assert_eq!(f.live_bands().len(), 2);
 
-        let (img, _, bands) = PropHeat::image(&f, PropMode::AllBands, Band::M20, u16::MAX);
+        let (img, _, bands) = PropHeat::image(&f, PropMode::AllBands, Band::M20, u32::MAX);
         assert_eq!(bands.len(), 2);
         let hottest = img.pixels.iter().max_by_key(|p| p.a()).copied().expect("a pixel");
         let m20 = crate::colormap::band_color(Band::M20);
@@ -264,9 +264,9 @@ mod tests {
         let mut s = PropStore::default();
         s.observe_decodes(&[decode(FAR, NOW, -12)], PropSource::Ft8, 14_074_000.0, HOME, NOW);
         let f = s.peek();
-        let (lit, _, _) = PropHeat::image(&f, PropMode::PerBand, Band::M20, u16::MAX);
+        let (lit, _, _) = PropHeat::image(&f, PropMode::PerBand, Band::M20, u32::MAX);
         assert!(lit.pixels.iter().any(|p| p.a() > 0), "the band with traffic drew nothing");
-        let (dark, peak, _) = PropHeat::image(&f, PropMode::PerBand, Band::M10, u16::MAX);
+        let (dark, peak, _) = PropHeat::image(&f, PropMode::PerBand, Band::M10, u32::MAX);
         assert_eq!(peak, 0.0, "a band with no traffic reported a peak");
         assert!(dark.pixels.iter().all(|p| p.a() == 0), "a band with no traffic drew something");
     }
@@ -297,7 +297,7 @@ mod tests {
             );
         }
         let f = s.peek();
-        let (img, _, _) = PropHeat::image(&f, PropMode::AllBands, Band::M20, u16::MAX);
+        let (img, _, _) = PropHeat::image(&f, PropMode::AllBands, Band::M20, u32::MAX);
         let max_a = img.pixels.iter().map(|p| p.a()).max().unwrap_or(0);
         assert!(max_a > 100, "even the hottest cell is barely visible ({max_a})");
         assert!(max_a <= (MAX_ALPHA * 255.0) as u8 + 1, "the map was painted over ({max_a})");

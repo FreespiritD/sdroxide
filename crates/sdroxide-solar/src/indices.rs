@@ -240,8 +240,23 @@ fn band_group(band: sdroxide_types::Band) -> Option<&'static str> {
         // Not published. 160 m and 60 m are below and inside the range
         // respectively; 6 m and up are covered — if at all — by the sporadic-E
         // and aurora entries, which are about a phenomenon rather than a band
-        // and are not interchangeable with a Good/Fair/Poor verdict.
-        Band::M160 | Band::M60 | Band::M6 | Band::M4 | Band::M2 | Band::M70 | Band::Gen => None,
+        // and are not interchangeable with a Good/Fair/Poor verdict. The
+        // microwave bands are not an HF forecast's business at all: what opens
+        // them is rain scatter, aircraft and the troposphere, none of which a
+        // solar-flux verdict knows anything about.
+        Band::M160
+        | Band::M60
+        | Band::M6
+        | Band::M4
+        | Band::M2
+        | Band::M125
+        | Band::M70
+        | Band::Cm33
+        | Band::Cm23
+        | Band::Cm13
+        | Band::Cm9
+        | Band::Cm6
+        | Band::Gen => None,
     }
 }
 
@@ -535,11 +550,27 @@ mod tests {
     /// The bands the feed says nothing about must say nothing. Inventing a
     /// verdict for 160 m or 6 m from the neighbouring group would be the one
     /// way this feature could actively mislead.
+    ///
+    /// Written as "everything outside the four published groups" rather than as
+    /// a list, so a band added later is silent by default and has to be given a
+    /// group deliberately to gain a verdict.
     #[test]
     fn unpublished_bands_have_no_verdict_rather_than_a_guess() {
         use sdroxide_types::Band;
         let c = parse_band_conditions(HAMQSL).unwrap();
-        for b in [Band::M160, Band::M60, Band::M6, Band::M4, Band::M2, Band::M70, Band::Gen] {
+        for b in Band::ALL.into_iter().filter(|b| {
+            !matches!(
+                b,
+                Band::M80
+                    | Band::M40
+                    | Band::M30
+                    | Band::M20
+                    | Band::M17
+                    | Band::M15
+                    | Band::M12
+                    | Band::M10
+            )
+        }) {
             assert_eq!(c.for_band(b, true), None, "{b:?} was given a verdict");
             assert_eq!(c.for_band(b, false), None, "{b:?} was given a verdict");
             assert_eq!(c.rating_for_band(b, true), None);
